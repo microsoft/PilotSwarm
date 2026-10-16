@@ -3,10 +3,11 @@
  * timers and the Copilot CLI, with the model replaced by scripted-model.mjs so
  * every model request is counted.
  *
- *  1. Enforced (`enforce: true`): empty cycles are skipped with no model
- *     request; the first cycle the precheck reports work runs the model.
- *  2. Shadow (default): the precheck's skip is recorded, and the model still
- *     runs the cycle.
+ *  1. The prompt opts in: the agent calls cron(..., precheck="queue"). Empty
+ *     cycles are skipped with no model request; the first cycle the precheck
+ *     reports work runs the model.
+ *  2. The session opts in by default (createSession({ cronPrecheck })) and the
+ *     registration is shadow: the skip is recorded and the model still runs.
  *
  * Run: npx vitest run test/local/cron-precheck-live.test.js
  */
@@ -17,7 +18,6 @@ import { scriptTurns } from "../helpers/scripted-model.mjs";
 import { withScriptedModel } from "../helpers/scripted-workers.js";
 
 const TIMEOUT = 240_000;
-const AGENT = "work-poller";
 const REASON = "check the work queue";
 const KICKOFF = "start polling the work queue";
 const getEnv = useSuiteEnv(import.meta.url);
@@ -31,24 +31,23 @@ async function waitFor(predicate, timeoutMs, label) {
     throw new Error(`timed out waiting for ${label}`);
 }
 
-const script = () => scriptTurns([
-    [{ tools: [{ name: "cron", args: { seconds: 15, reason: REASON } }] }, { content: "armed" }],
+const script = (cronArgs) => scriptTurns([
+    [{ tools: [{ name: "cron", args: { seconds: 15, reason: REASON, ...cronArgs } }] }, { content: "armed" }],
     [{ content: "cycle ran" }],
 ]);
 
-async function startPollingSession(env, client, qualifiedModel) {
-    const session = await client.createSession({ model: qualifiedModel });
+async function startPollingSession(env, client, sessionConfig) {
+    const session = await client.createSession(sessionConfig);
     const catalog = await createCatalog(env);
     try {
-        await catalog.updateSession(session.sessionId, { agentId: AGENT });
         // The kickoff turn arms cron, so the session waits on the schedule
         // rather than going idle: wait for the armed schedule itself.
         await session.send(KICKOFF);
-        await waitForEventCount(catalog, session.sessionId, "session.cron_started", 1, 60_000);
+        const [started] = await waitForEventCount(catalog, session.sessionId, "session.cron_started", 1, 60_000);
+        return { session, started };
     } finally {
         await catalog.close?.();
     }
-    return session;
 }
 
 async function precheckEvents(env, sessionId) {
@@ -62,22 +61,20 @@ async function precheckEvents(env, sessionId) {
 }
 
 describe("cron precheck (live)", () => {
-    it("an enforced skip calls no model until the precheck reports work", { timeout: TIMEOUT }, async () => {
+    it("a cron call that names a precheck calls no model until it reports work", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
-        await withScriptedModel(env, { respond: script() }, async ({ client, worker, model, qualifiedModel }) => {
+        await withScriptedModel(env, { respond: script({ precheck: "queue" }) }, async ({ client, worker, model, qualifiedModel }) => {
             let hasWork = false;
             const seen = [];
             worker.registerCronPrechecks([{
                 name: "queue",
-                agents: [AGENT],
-                reasons: [REASON],
-                enforce: true,
                 check: ({ consecutiveSkips }) => {
                     seen.push(consecutiveSkips);
                     return hasWork ? { action: "run", detail: "one job" } : { action: "skip", detail: "queue empty" };
                 },
             }]);
-            const session = await startPollingSession(env, client, qualifiedModel);
+            const { session, started } = await startPollingSession(env, client, { model: qualifiedModel });
+            expect(started.data).toMatchObject({ reason: REASON, precheck: "queue" });
             const armedRequests = model.sessionRequests(KICKOFF).length;
 
             await waitFor(() => seen.length >= 2, 75_000, "two skipped cycles");
@@ -86,32 +83,32 @@ describe("cron precheck (live)", () => {
 
             hasWork = true;
             await waitFor(() => model.sessionRequests(KICKOFF).length > armedRequests, 45_000, "the model to run a cycle");
-            const cycle = model.sessionRequests(KICKOFF).at(-1);
-            expect(cycle.position.turn).toBe(2);
+            expect(model.sessionRequests(KICKOFF).at(-1).position.turn).toBe(2);
 
             const events = await precheckEvents(env, session.sessionId);
-            expect(events.slice(0, 2).map((e) => [e.outcome, e.skipped, e.enforced])).toEqual([
-                ["skip", true, true],
-                ["skip", true, true],
+            expect(events.slice(0, 2).map((e) => [e.precheck, e.outcome, e.skipped])).toEqual([
+                ["queue", "skip", true],
+                ["queue", "skip", true],
             ]);
             expect(events.some((e) => e.outcome === "run" && e.skipped === false)).toBe(true);
         });
     });
 
-    it("shadow mode records the skip and still runs the model", { timeout: TIMEOUT }, async () => {
+    it("a session default applies to a plain cron call, and a shadow precheck still runs the model", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
-        await withScriptedModel(env, { respond: script() }, async ({ client, worker, model, qualifiedModel }) => {
+        await withScriptedModel(env, { respond: script({}) }, async ({ client, worker, model, qualifiedModel }) => {
             worker.registerCronPrechecks([{
                 name: "queue",
-                agents: [AGENT],
+                shadow: true,
                 check: () => ({ action: "skip", detail: "queue empty" }),
             }]);
-            const session = await startPollingSession(env, client, qualifiedModel);
+            const { session, started } = await startPollingSession(env, client, { model: qualifiedModel, cronPrecheck: "queue" });
+            expect(started.data).toMatchObject({ reason: REASON, precheck: "queue" });
             const armedRequests = model.sessionRequests(KICKOFF).length;
 
             await waitFor(() => model.sessionRequests(KICKOFF).length > armedRequests, 45_000, "the model to run a cycle");
             const events = await precheckEvents(env, session.sessionId);
-            expect(events[0]).toMatchObject({ precheck: "queue", outcome: "skip", skipped: false, enforced: false, detail: "queue empty" });
+            expect(events[0]).toMatchObject({ precheck: "queue", outcome: "skip", skipped: false, shadow: true, detail: "queue empty" });
         });
     });
 });

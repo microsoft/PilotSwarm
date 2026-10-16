@@ -547,13 +547,14 @@ export class PilotSwarmWorker {
     }
 
     /**
-     * Register cron prechecks: application code that runs when an interval
-     * `cron` schedule of a matching agent fires, before the model is called.
-     * A `skip` answer skips the model turn only for a registration with
-     * `enforce: true`; otherwise it is recorded as a shadow decision and the
-     * model turn runs. Register the same prechecks on
-     * every worker: the check runs on whichever worker takes the activity, and
-     * a worker without a match runs the model turn.
+     * Register named cron prechecks: application code that runs before an
+     * interval `cron` wake-up reaches the model. A schedule opts in by name,
+     * through `cron(seconds, reason, precheck="<name>")` or the session's
+     * `cronPrecheck` default; a schedule without one is unchanged. A `skip`
+     * answer skips the model turn unless the registration is `shadow`.
+     * Register the same prechecks on every worker: the check runs on
+     * whichever worker takes the activity, and an unregistered name runs the
+     * model turn.
      */
     registerCronPrechecks(registrations: CronPrecheckRegistration[]): void {
         const validated = registrations.map(validateCronPrecheckRegistration);

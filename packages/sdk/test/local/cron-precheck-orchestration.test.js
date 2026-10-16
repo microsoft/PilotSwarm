@@ -1,20 +1,21 @@
 /**
- * Cron prechecks in orchestration 1.0.82: an interval cron wake-up asks the
- * worker's registered precheck first, and an enforced `skip` re-arms the
- * schedule without running a model turn. Driven against the generator with a
- * scripted context; no worker, database or model.
+ * Cron prechecks in orchestration 1.0.82: an interval cron schedule that names
+ * a worker-registered precheck asks it first, and a `skip` re-arms the
+ * schedule without running a model turn. A schedule without a precheck is
+ * unchanged. Driven against the generator with a scripted context; no worker,
+ * database or model.
  */
 import { describe, expect, it, vi } from "vitest";
 import { createRuntime } from "../../src/orchestration/runtime.ts";
 import { processTimer } from "../../src/orchestration/turn.ts";
-import { buildContinueInput } from "../../src/orchestration/lifecycle.ts";
+import { applyCronAction, buildContinueInput } from "../../src/orchestration/lifecycle.ts";
 
 vi.mock("../../src/session-proxy.js", () => ({
     createSessionProxy: (ctx) => ctx.proxy("session"),
     createSessionManagerProxy: (ctx) => ctx.proxy("manager"),
 }));
 
-const SCHEDULE = { intervalSeconds: 300, reason: "check the work queue" };
+const SCHEDULE = { intervalSeconds: 300, reason: "check the work queue", precheck: "queue" };
 
 function harness(overrides = {}) {
     const calls = [];
@@ -53,7 +54,7 @@ function harness(overrides = {}) {
                 prechecks.push(effect.args[0]);
                 const answer = precheckAnswers.shift();
                 if (answer instanceof Error) throw answer;
-                return answer ?? { skip: false, outcome: "unbound" };
+                return answer ?? { skip: false, outcome: "unregistered", precheck: effect.args[0].precheck };
             }
             case "session.runTurn":
                 turns.push(effect.args);
@@ -99,13 +100,23 @@ function harness(overrides = {}) {
 }
 
 describe("1.0.82 cron precheck", () => {
-    it("an enforced skip re-arms the schedule without a model turn", () => {
+    it("a schedule without a precheck runs exactly as before, with no precheck activity", () => {
+        const h = harness({ cronSchedule: { intervalSeconds: 300, reason: SCHEDULE.reason } });
+        h.fire({ skip: true, outcome: "skip" });
+        expect(h.prechecks).toHaveLength(0);
+        expect(h.turns).toHaveLength(1);
+        expect(h.turns[0][0]).toContain(`Scheduled cron wake-up for: "${SCHEDULE.reason}"`);
+        expect(h.runtime.state.cronSchedule).toEqual({ intervalSeconds: 300, reason: SCHEDULE.reason });
+    });
+
+    it("a skip re-arms the schedule without a model turn", () => {
         const h = harness();
-        h.fire({ skip: true, outcome: "skip", precheck: "queue", enforced: true });
+        h.fire({ skip: true, outcome: "skip", precheck: "queue", shadow: false });
 
         expect(h.turns).toHaveLength(0);
         expect(h.prechecks).toEqual([{
             sessionId: "cron-precheck-fixture",
+            precheck: "queue",
             reason: SCHEDULE.reason,
             intervalSeconds: SCHEDULE.intervalSeconds,
             consecutiveSkips: 0,
@@ -134,9 +145,9 @@ describe("1.0.82 cron precheck", () => {
         expect(h.runtime.state.cronSchedule).toEqual({ ...SCHEDULE, precheckSkips: 0 });
     });
 
-    it("a shadow decision (not enforced) still runs the model turn", () => {
+    it("a shadow decision still runs the model turn", () => {
         const h = harness();
-        h.fire({ skip: false, outcome: "skip", precheck: "queue", enforced: false });
+        h.fire({ skip: false, outcome: "skip", precheck: "queue", shadow: true });
         expect(h.prechecks).toHaveLength(1);
         expect(h.turns).toHaveLength(1);
         expect(h.runtime.state.cronSchedule.precheckSkips).toBeUndefined();
@@ -149,7 +160,7 @@ describe("1.0.82 cron precheck", () => {
         expect(h.runtime.state.cronSchedule.precheckSkips).toBeUndefined();
     });
 
-    it("an unbound session runs exactly as before, after one precheck call", () => {
+    it("an unregistered name runs the model turn", () => {
         const h = harness();
         h.fire();
         expect(h.prechecks).toHaveLength(1);
@@ -189,5 +200,13 @@ describe("1.0.82 cron precheck", () => {
         h.fire({ skip: true, outcome: "skip" });
         const input = buildContinueInput(h.runtime);
         expect(input.cronSchedule).toEqual({ ...SCHEDULE, precheckSkips: 1 });
+    });
+
+    it("a cron call sets the schedule's precheck, and a later call without one clears it", () => {
+        const h = harness({ cronSchedule: undefined });
+        applyCronAction(h.runtime, { type: "cron", action: "set", intervalSeconds: 60, reason: "poll", precheck: "queue" });
+        expect(h.runtime.state.cronSchedule).toEqual({ intervalSeconds: 60, reason: "poll", precheck: "queue" });
+        applyCronAction(h.runtime, { type: "cron", action: "set", intervalSeconds: 60, reason: "poll" });
+        expect(h.runtime.state.cronSchedule).toEqual({ intervalSeconds: 60, reason: "poll" });
     });
 });

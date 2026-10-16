@@ -257,16 +257,16 @@ For remote mode:
 
 An agent that polls on a `cron` schedule pays for a full model turn on every
 wake-up, including the many that only find nothing to do. A cron precheck is
-worker code that runs first and answers whether the cycle has work:
+worker code that runs first and answers whether the cycle has work. The
+application registers named prechecks; a schedule opts in by name.
 
 ```ts
+// Worker: register the check as code.
 worker.registerCronPrechecks([{
   name: "job-queue",
-  agents: ["job-poller"],              // agent ids from the session catalog
-  reasons: ["poll the job queue"],     // optional: exact cron reasons
-  enforce: true,                       // optional: default false records decisions only (shadow)
-  timeoutMs: 10_000,                   // optional, at most 60s
-  maxConsecutiveSkips: 12,             // optional: run the model at least every 13th cycle
+  timeoutMs: 10_000,          // optional, at most 60s
+  maxConsecutiveSkips: 12,    // optional: run the model at least every 13th cycle
+  shadow: false,              // optional: true records decisions without skipping
   check: async ({ sessionId, reason, consecutiveSkips, signal }) => {
     const pending = await countEligibleJobs({ signal });
     return pending > 0
@@ -276,21 +276,31 @@ worker.registerCronPrechecks([{
 }]);
 ```
 
-When an interval `cron` schedule of a matching agent fires (orchestration
-1.0.82 and later), the orchestration runs the precheck in an activity before
-any hydration or model call. A `skip` answer records the decision and re-arms
-the same schedule; the model sees nothing for that cycle.
+A schedule opts in in either of two ways:
 
-- **Shadow, then enforce.** Every decision is recorded as a
-  `session.cron_precheck` event (`precheck`, `outcome`, `skipped`, `enforced`,
-  `consecutiveSkips`, `durationMs`, `detail`). A `skip` skips the model turn
-  only for a registration with `enforce: true`; without it the precheck runs
-  in shadow mode and the model turn runs. Register the precheck in shadow
-  mode first, compare its decisions with the turns that ran, then set
-  `enforce: true` (for example from deployment configuration). Turning
-  enforcement off again needs a configuration change and a worker restart.
-- **Fail open.** A thrown, timed-out or malformed answer, or a worker without
-  a matching registration, runs the model turn as before.
+- **From the prompt.** The agent's instructions tell it to arm the schedule
+  with the precheck, and the agent calls
+  `cron(seconds=300, reason="poll the job queue", precheck="job-queue")`.
+  The cron tool rejects a name the worker has not registered.
+- **From the session.** `client.createSession({ ..., cronPrecheck: "job-queue" })`
+  sets a default for the session's `cron` calls; a call that names a precheck
+  overrides it.
+
+A schedule without a precheck behaves exactly as before: no check and no
+extra activity. Calling `cron` again replaces the schedule, including its
+precheck.
+
+When an interval `cron` schedule with a precheck fires (orchestration 1.0.82
+and later), the orchestration runs the precheck in an activity before any
+hydration or model call. A `skip` answer records the decision and re-arms the
+same schedule; the model sees nothing for that cycle.
+
+- **Observable.** Every decision is recorded as a `session.cron_precheck`
+  event (`precheck`, `outcome`, `skipped`, `shadow`, `consecutiveSkips`,
+  `durationMs`, `detail`). Register a new precheck with `shadow: true` to
+  compare its decisions with the turns that ran before relying on it.
+- **Fail open.** An unregistered name, a thrown, timed-out or malformed
+  answer, or an activity failure runs the model turn as before.
 - **Only an empty wake-up is eligible.** A wake-up that carries child updates,
   a held note, carried steers or stashed prompts runs the model without
   asking. User messages are never affected.

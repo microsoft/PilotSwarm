@@ -25,7 +25,7 @@ describe("cron precheck capability routing", () => {
         const executions = [];
         function* work(ctx) {
             const manager = createSessionManagerProxy(ctx, "turn-control-v1", { childResultProvenance: true });
-            return yield manager.runCronPrecheck({ sessionId: "fixture", reason: "poll", intervalSeconds: 60, consecutiveSkips: 0 });
+            return yield manager.runCronPrecheck({ sessionId: "fixture", precheck: "queue", reason: "poll", intervalSeconds: 60, consecutiveSkips: 0 });
         }
         function worker(id, tags) {
             const runtime = new Runtime(provider, {
@@ -40,7 +40,7 @@ describe("cron precheck capability routing", () => {
             runtime.registerOrchestration("cron-precheck-routing", work);
             runtime.registerActivity("runCronPrecheck", async (ctx) => {
                 executions.push({ worker: id, tag: ctx.tag() });
-                return { skip: false, outcome: "unbound" };
+                return { skip: false, outcome: "unregistered", precheck: "queue" };
             });
             return runtime;
         }

@@ -2371,6 +2371,7 @@ export class SessionManager {
         config.featureToolFingerprint = createHash("sha256")
             .update(JSON.stringify(featureTools.map(({ name, description, parameters }) => ({ name, description, parameters }))))
             .digest("hex");
+        config.cronPrecheckNames = this.cronPrechecks.map((registration) => registration.name);
         const nativeOwner = catalogRow?.owner ?? null;
         // An unreadable owner must not bypass a user-level OFF by resolving
         // cluster policy. Ownerless resolution is only for standalone managers.

@@ -6167,39 +6167,27 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     });
 
     // -- runCronPrecheck (1.0.82) ------------------------------
-    // Runs the worker's registered precheck for an interval cron wake-up. The
-    // activity result is recorded in history, so the orchestration's skip/run
-    // branch replays deterministically. Fail open: any failure here runs the
-    // model turn.
+    // Runs the worker's registered precheck named by an interval cron
+    // schedule. The activity result is recorded in history, so the
+    // orchestration's skip/run branch replays deterministically. Fail open:
+    // any failure here runs the model turn.
     runtime.registerActivity("runCronPrecheck", async (
         activityCtx: any,
         input: CronPrecheckInput,
     ): Promise<CronPrecheckResult> => {
-        const registrations = sessionManager.getCronPrechecks();
-        if (registrations.length === 0) return { skip: false, outcome: "unbound" };
-        const row = catalog
-            ? await cmsRetryBestEffort(
-                `runCronPrecheck.getSession session=${input.sessionId}`,
-                () => catalog!.getSession(input.sessionId),
-                (msg) => activityCtx.traceInfo(msg),
-            )
-            : null;
         const { result, event } = await evaluateCronPrecheck({
-            registrations,
+            registrations: sessionManager.getCronPrechecks(),
             input,
-            session: row ? { agentId: row.agentId ?? null } : null,
         });
-        if (event) {
-            activityCtx.traceInfo(
-                `[runCronPrecheck] session=${input.sessionId} precheck=${result.precheck} outcome=${result.outcome} enforced=${result.enforced} skip=${result.skip}`,
+        activityCtx.traceInfo(
+            `[runCronPrecheck] session=${input.sessionId} precheck=${result.precheck} outcome=${result.outcome} shadow=${result.shadow === true} skip=${result.skip}`,
+        );
+        if (catalog) {
+            await cmsRetryBestEffort(
+                `runCronPrecheck.recordEvent session=${input.sessionId}`,
+                () => catalog!.recordEvents(input.sessionId, [{ eventType: "session.cron_precheck", data: event }], workerNodeId),
+                (msg) => activityCtx.traceInfo(msg),
             );
-            if (catalog) {
-                await cmsRetryBestEffort(
-                    `runCronPrecheck.recordEvent session=${input.sessionId}`,
-                    () => catalog!.recordEvents(input.sessionId, [{ eventType: "session.cron_precheck", data: event }], workerNodeId),
-                    (msg) => activityCtx.traceInfo(msg),
-                );
-            }
         }
         return result;
     });

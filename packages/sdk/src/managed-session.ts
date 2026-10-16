@@ -12,6 +12,7 @@ import { holdsManagerBundle } from "./agent-manager-tools.js";
 // the declarations in systemToolDefs() and the handlers in runTurn().
 import { holdsProviderTools, providerToolDefs, providerToolsUnavailable } from "./provider-tools.js";
 import type { CycleReport, TurnAction, TurnResult, TurnOptions, ManagedSessionConfig, CapturedEvent } from "./types.js";
+import { normalizeCronPrecheckName } from "./cron-precheck.js";
 import type { MessageAgentDelivery } from "./parent-turn-control.js";
 import type { ReasoningEffort, ContextTier } from "./model-providers.js";
 import { LiveTurnCoalescer } from "./live-turn.js";
@@ -1017,7 +1018,8 @@ export class ManagedSession {
                 "Use this when you should keep pursuing a goal autonomously until it is done. " +
                 "If it is genuinely ambiguous whether the task should become an ongoing recurring workflow, clarify that intent before setting cron. " +
                 "Set or update the schedule with seconds + reason. Cancel it with action='cancel'. " +
-                "Minimum interval is 15 seconds.",
+                "Minimum interval is 15 seconds. " +
+                "Pass precheck only when your instructions name a cron precheck: the application then checks for work before each wake-up and skips wake-ups that have none.",
             parameters: {
                 type: "object",
                 properties: {
@@ -1028,6 +1030,10 @@ export class ManagedSession {
                     reason: {
                         type: "string",
                         description: "What to do on each wake-up. Required when setting a schedule.",
+                    },
+                    precheck: {
+                        type: "string",
+                        description: "Optional name of an application-registered cron precheck, exactly as your instructions give it. Omit it otherwise.",
                     },
                     action: {
                         type: "string",
@@ -1799,7 +1805,8 @@ export class ManagedSession {
                 "Use this when you should keep pursuing a goal autonomously until it is done. " +
                 "If it is genuinely ambiguous whether the task should become an ongoing recurring workflow, clarify that intent before setting cron. " +
                 "Set or update the schedule with seconds + reason. Cancel it with action='cancel'. " +
-                "Minimum interval is 15 seconds.",
+                "Minimum interval is 15 seconds. " +
+                "Pass precheck only when your instructions name a cron precheck: the application then checks for work before each wake-up and skips wake-ups that have none.",
             parameters: {
                 type: "object",
                 properties: {
@@ -1811,6 +1818,10 @@ export class ManagedSession {
                         type: "string",
                         description: "What to do on each wake-up. Required when setting a schedule.",
                     },
+                    precheck: {
+                        type: "string",
+                        description: "Optional name of an application-registered cron precheck, exactly as your instructions give it. Omit it otherwise.",
+                    },
                     action: {
                         type: "string",
                         enum: ["cancel"],
@@ -1818,7 +1829,7 @@ export class ManagedSession {
                     },
                 },
             },
-            handler: async (args: { seconds?: number; reason?: string; action?: "cancel" }) => {
+            handler: async (args: { seconds?: number; reason?: string; precheck?: string; action?: "cancel" }) => {
                 if (args.action === "cancel") {
                     turnState.queuedActions.push({
                         type: "cron",
@@ -1840,13 +1851,32 @@ export class ManagedSession {
                     return "Error: cron reason is required when setting a schedule.";
                 }
 
+                // An explicit precheck must name a registered one, so a typo
+                // fails here instead of silently never skipping. The session
+                // default is applied as configured; an unregistered default
+                // runs every wake-up (fail open) and records why.
+                let precheck: string | undefined;
+                if (args.precheck !== undefined && args.precheck !== null && String(args.precheck).trim() !== "") {
+                    const named = normalizeCronPrecheckName(args.precheck);
+                    const registered = this.config.cronPrecheckNames ?? [];
+                    if (!named || !registered.includes(named)) {
+                        return registered.length > 0
+                            ? `Error: unknown cron precheck "${String(args.precheck)}". Registered prechecks: ${registered.join(", ")}.`
+                            : `Error: unknown cron precheck "${String(args.precheck)}". This worker has no registered cron prechecks; omit precheck.`;
+                    }
+                    precheck = named;
+                } else {
+                    precheck = normalizeCronPrecheckName(this.config.cronPrecheck) ?? undefined;
+                }
+
                 turnState.queuedActions.push({
                     type: "cron",
                     action: "set",
                     intervalSeconds,
                     reason,
+                    ...(precheck ? { precheck } : {}),
                 });
-                return JSON.stringify({ status: "scheduled", interval: intervalSeconds, reason });
+                return JSON.stringify({ status: "scheduled", interval: intervalSeconds, reason, ...(precheck ? { precheck } : {}) });
             },
         });
 
@@ -4300,6 +4330,8 @@ export class ManagedSession {
         if (config.systemMessage !== undefined) this.config.systemMessage = config.systemMessage;
         if (config.turnSystemPrompt !== undefined) this.config.turnSystemPrompt = config.turnSystemPrompt;
         if (config.waitThreshold !== undefined) this.config.waitThreshold = config.waitThreshold;
+        if (config.cronPrecheckNames !== undefined) this.config.cronPrecheckNames = config.cronPrecheckNames;
+        if (Object.prototype.hasOwnProperty.call(config, "cronPrecheck")) this.config.cronPrecheck = config.cronPrecheck;
     }
 
     requiresModelRebind(config: Partial<ManagedSessionConfig>): boolean {

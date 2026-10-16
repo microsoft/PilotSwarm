@@ -267,8 +267,10 @@ export function applyCronAction(
     runtime.state.cronSchedule = {
         intervalSeconds: action.intervalSeconds,
         reason: action.reason,
+        // 1.0.82: the schedule's own precheck, if the cron call named one.
+        ...(typeof action.precheck === "string" && action.precheck ? { precheck: action.precheck } : {}),
     };
-    runtime.ctx.traceInfo(`[orch] cron scheduled: every ${action.intervalSeconds}s (${action.reason})`);
+    runtime.ctx.traceInfo(`[orch] cron scheduled: every ${action.intervalSeconds}s (${action.reason})${runtime.state.cronSchedule.precheck ? ` precheck=${runtime.state.cronSchedule.precheck}` : ""}`);
 }
 
 export function* applyCronAtAction(

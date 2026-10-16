@@ -2,17 +2,20 @@
 
 ## Unreleased
 
-**Cron prechecks skip empty polling cycles.** Workers can register a cron
-precheck (`worker.registerCronPrechecks`) for an agent's interval `cron`
-schedule. On orchestration 1.0.82, a wake-up that carries nothing else asks
-the precheck first; a `skip` answer re-arms the schedule without hydrating
-the session or calling the model. Decisions are recorded as
-`session.cron_precheck` events. A registration skips the model only with
-`enforce: true`; by default it runs in shadow mode, recording decisions while
-the model turn runs as before. Failures, timeouts and unbound sessions run the
-model turn as before. With no registered precheck, cron behaves as today. The
-activity is routed by a new worker capability tag, so older workers never
-receive it during a rolling deploy. Orchestration 1.0.81 is frozen.
+**Cron prechecks skip empty polling cycles.** Workers register named cron
+prechecks (`worker.registerCronPrechecks`) as code. A schedule opts in by
+name: the agent calls `cron(seconds, reason, precheck="<name>")` as its
+instructions direct, or the session was created with a default
+(`createSession({ cronPrecheck })`). On orchestration 1.0.82, when such a
+schedule fires and the wake-up carries nothing else, the precheck runs first;
+a `skip` answer re-arms the schedule without hydrating the session or calling
+the model. Decisions are recorded as `session.cron_precheck` events; a
+`shadow: true` registration records without skipping. Unregistered names,
+failures and timeouts run the model turn as before, and the cron tool rejects
+a name the worker has not registered. A schedule without a precheck behaves
+exactly as today. The activity is routed by a new worker capability tag, so
+older workers never receive it during a rolling deploy. Orchestration 1.0.81
+is frozen.
 
 ## 0.8.3 — 2026-10-14
 

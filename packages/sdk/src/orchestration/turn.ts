@@ -851,7 +851,11 @@ function* schedulePostTurnContinuation(runtime: DurableSessionRuntime): Generato
         }
         yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
             eventType: "session.cron_started",
-            data: { intervalSeconds: activeCron.intervalSeconds, reason: activeCron.reason },
+            data: {
+                intervalSeconds: activeCron.intervalSeconds,
+                reason: activeCron.reason,
+                ...(activeCron.precheck ? { precheck: activeCron.precheck } : {}),
+            },
         }]);
         const cronStartedAt: number = yield ctx.utcNow();
         ctx.traceInfo(`[orch] cron timer: ${activeCron.intervalSeconds}s (${activeCron.reason})`);
@@ -1701,14 +1705,16 @@ export function* processTimer(
                 eventType: "session.cron_fired",
                 data: {},
             }]);
-            // 1.0.82: a worker-registered precheck may skip an empty cycle so
-            // the model is not called. Only a wake-up that carries nothing
-            // else is eligible, and only an enforced `skip` answer skips.
-            if (cronWakeCarriesNothingElse(runtime)) {
+            // 1.0.82: a schedule that names a worker-registered precheck asks
+            // it first, so an empty cycle does not call the model. Only a
+            // wake-up that carries nothing else is eligible, and only a
+            // `skip` answer skips. A schedule without one is unchanged.
+            if (activeCron.precheck && cronWakeCarriesNothingElse(runtime)) {
                 let precheck: any = null;
                 try {
                     precheck = yield runtime.manager.runCronPrecheck({
                         sessionId: runtime.input.sessionId,
+                        precheck: activeCron.precheck,
                         reason: activeCron.reason,
                         intervalSeconds: activeCron.intervalSeconds,
                         consecutiveSkips: activeCron.precheckSkips ?? 0,
@@ -1719,7 +1725,7 @@ export function* processTimer(
                 if (precheck?.skip === true) {
                     const skips = (activeCron.precheckSkips ?? 0) + 1;
                     state.cronSchedule = { ...activeCron, precheckSkips: skips };
-                    ctx.traceInfo(`[orch] cron precheck ${precheck.precheck ?? ""} skipped the cycle (${skips} in a row)`);
+                    ctx.traceInfo(`[orch] cron precheck ${activeCron.precheck} skipped the cycle (${skips} in a row)`);
                     yield* schedulePostTurnContinuation(runtime);
                     return;
                 }
