@@ -2,9 +2,7 @@ import { describe, it, expect } from "vitest";
 import { CopilotSession } from "@github/copilot-sdk";
 import { ManagedSession } from "../../src/managed-session.js";
 import { SessionManager } from "../../src/session-manager.js";
-import { PilotSwarmManagementClient } from "../../src/management-client.js";
 import { stopTurnQueueName } from "../../src/types.js";
-import { normalizeRacedTurnValue } from "../../src/orchestration/turn.js";
 
 /**
  * Stop-turn (docs/proposals-impl/stop-button-turn-abort-plan.md) — deterministic
@@ -15,11 +13,9 @@ import { normalizeRacedTurnValue } from "../../src/orchestration/turn.js";
  *    unwinds a turn whose SDK never fires session.idle.
  *  - SessionManager.abortWarmSessionTurn: lock-bypassing primitive with
  *    no_active_turn / wrong-turn guards and the stop_forced escalation.
- *  - PilotSwarmManagementClient.stopSessionTurn: CMS pre-check, turn-scoped
- *    stop queue addressing, command-response polling, timeout.
- *  - normalizeRacedTurnValue: the duroxide-node select bridge flattens
- *    activity failures into raw error strings; the orchestration must be able
- *    to tell them apart from TurnResult payloads.
+ *  - The management client's stopSessionTurn is covered in
+ *    stop-turn-management.test.js; the orchestration race normalizer in
+ *    stop-turn-race-legacy.test.js.
  *  - Copilot SDK abort primitive contract (session.abort RPC shape).
  *
  * No live LLM, database, or duroxide runtime required.
@@ -241,112 +237,145 @@ describe("SessionManager.abortWarmSessionTurn", () => {
         expect(manager.invalidateWarmSessionCalls).toContain(managed.sessionId);
     });
 
+    // Session turn control (V4 Stop): the turn's background tasks are
+    // cancelled right after the abort, before the unwind wait.
+    function withTaskList(copilot, tasks, { endTurnOnCancel = null } = {}) {
+        const cancelled = [];
+        copilot.rpc = {
+            tasks: {
+                list: async () => ({ tasks: tasks.filter((t) => !cancelled.includes(t.id)) }),
+                cancel: async ({ id }) => {
+                    cancelled.push(id);
+                    // The backgrounded shell ending lets the CLI fire session.idle.
+                    if (id === endTurnOnCancel) queueMicrotask(() => copilot._emit("session.idle"));
+                    return { cancelled: true };
+                },
+            },
+        };
+        return cancelled;
+    }
+
+    it("V4 Stop (cancelTurnTasks): cancels the tasks this turn started before the wait; keeps earlier-turn tasks and tasks without startedAt", async () => {
+        const manager = createBareSessionManager();
+        const copilot = createFakeCopilotSession({ abortFiresIdle: false });
+        const managed = createManagedSession(copilot);
+        manager.sessions.set(managed.sessionId, managed);
+
+        const turnPromise = managed.runTurn("long shell", { turnIndex: 3 });
+        await waitFor(() => managed.getActiveTurn() != null);
+        const turnStart = managed.getActiveTurn().startedAt;
+        const cancelled = withTaskList(copilot, [
+            { id: "earlier-server", type: "shell", status: "running", startedAt: new Date(turnStart - 60_000).toISOString() },
+            { id: "this-turn-shell", type: "shell", status: "running", startedAt: new Date(turnStart).toISOString() },
+            { id: "no-start", type: "agent", status: "running" },
+        ], { endTurnOnCancel: "this-turn-shell" });
+
+        const t0 = Date.now();
+        const result = await manager.abortWarmSessionTurn(managed.sessionId, {
+            reason: "Stopped by user",
+            expectedTurnIndex: 3,
+            unwindGraceMs: 5_000,
+            cancelTurnTasks: true,
+        });
+        const ms = Date.now() - t0;
+        expect(result.outcome).toBe("stopped");
+        expect(cancelled).toEqual(["this-turn-shell"]);
+        expect(copilot.abortCalls).toBe(1);
+        expect(ms).toBeLessThan(2_000); // the 5 s unwind wait was not needed
+        expect((await turnPromise).type).toBe("stopped");
+    });
+
+    it("V4 Stop: a slow task list that already shows the next turn's task cancels only the stopped turn's task", async () => {
+        const manager = createBareSessionManager();
+        const copilot = createFakeCopilotSession({ abortFiresIdle: false });
+        const managed = createManagedSession(copilot);
+        manager.sessions.set(managed.sessionId, managed);
+
+        const turnPromise = managed.runTurn("long shell", { turnIndex: 6 });
+        await waitFor(() => managed.getActiveTurn() != null);
+        const turnStart = managed.getActiveTurn().startedAt;
+        const cancelled = [];
+        const tasks = [
+            { id: "stopped-turn-shell", type: "shell", status: "running", startedAt: new Date(turnStart).toISOString() },
+        ];
+        const current = () => ({ tasks: tasks.filter((t) => !cancelled.includes(t.id)) });
+        let releaseList;
+        let first = true;
+        copilot.rpc = {
+            tasks: {
+                // The first list answers late: by then the next turn has started a task of its own.
+                list: () => {
+                    if (!first) return Promise.resolve(current());
+                    first = false;
+                    return new Promise((resolve) => { releaseList = () => resolve(current()); });
+                },
+                cancel: async ({ id }) => { cancelled.push(id); return { cancelled: true }; },
+            },
+        };
+
+        const stopping = manager.abortWarmSessionTurn(managed.sessionId, {
+            reason: "Stopped by user", expectedTurnIndex: 6, unwindGraceMs: 100, cancelTurnTasks: true,
+        });
+        await waitFor(() => typeof releaseList === "function");
+        tasks.push({ id: "next-turn-shell", type: "shell", status: "running", startedAt: new Date(Date.now() + 5).toISOString() });
+        releaseList();
+        await stopping;
+        expect((await turnPromise).type).toBe("stopped");
+        await waitFor(() => cancelled.length > 0);
+        expect(cancelled).toEqual(["stopped-turn-shell"]);
+    });
+
+    it("the legacy Stop (no cancelTurnTasks) cancels no background task", async () => {
+        const manager = createBareSessionManager();
+        const copilot = createFakeCopilotSession({ abortFiresIdle: false });
+        const managed = createManagedSession(copilot);
+        manager.sessions.set(managed.sessionId, managed);
+
+        const turnPromise = managed.runTurn("long shell", { turnIndex: 4 });
+        await waitFor(() => managed.getActiveTurn() != null);
+        const turnStart = managed.getActiveTurn().startedAt;
+        const cancelled = withTaskList(copilot, [
+            { id: "this-turn-shell", type: "shell", status: "running", startedAt: new Date(turnStart).toISOString() },
+        ]);
+
+        const result = await manager.abortWarmSessionTurn(managed.sessionId, {
+            reason: "Stopped by user",
+            expectedTurnIndex: 4,
+            unwindGraceMs: 100,
+        });
+        expect(result.outcome).toBe("stop_forced");
+        expect(cancelled).toEqual([]);
+        expect((await turnPromise).type).toBe("stopped");
+    });
+
+    it("a task cancel that hangs is bounded: the Stop still unwinds through the grace backstop", async () => {
+        const manager = createBareSessionManager();
+        const copilot = createFakeCopilotSession({ abortFiresIdle: false });
+        const managed = createManagedSession(copilot);
+        manager.sessions.set(managed.sessionId, managed);
+
+        const turnPromise = managed.runTurn("long shell", { turnIndex: 5 });
+        await waitFor(() => managed.getActiveTurn() != null);
+        copilot.rpc = { tasks: { list: () => new Promise(() => {}), cancel: async () => ({ cancelled: true }) } };
+
+        const t0 = Date.now();
+        const result = await manager.abortWarmSessionTurn(managed.sessionId, {
+            reason: "Stopped by user",
+            expectedTurnIndex: 5,
+            unwindGraceMs: 100,
+            cancelTurnTasks: true,
+        });
+        expect(result.outcome).toBe("stop_forced");
+        expect(Date.now() - t0).toBeLessThan(5_000);
+        expect((await turnPromise).type).toBe("stopped");
+    });
+
     it("never takes the per-session lock (lock-bypass contract)", () => {
         // runTurn holds withRunTurnLock for the entire turn; a lock-taking
         // stop would serialize behind the turn and defeat mid-flight stop.
         const source = SessionManager.prototype.abortWarmSessionTurn.toString();
         expect(source.includes("_withSessionLock")).toBe(false);
         expect(source.includes("withRunTurnLock")).toBe(false);
-    });
-});
-
-// ─── Management client stopSessionTurn ───────────────────────────
-
-function createMgmtHarness({ row, response } = {}) {
-    const mgmt = new PilotSwarmManagementClient({});
-    mgmt._started = true;
-    const enqueues = [];
-    mgmt._duroxideClient = {
-        enqueueEvent: async (orchestrationId, queue, payload) => {
-            enqueues.push({ orchestrationId, queue, payload: JSON.parse(payload) });
-        },
-    };
-    mgmt._catalog = {
-        getSession: async () => row ?? null,
-    };
-    mgmt._assertOrchestrationLive = async () => {};
-    mgmt._readJsonValue = async (_sessionId, key) => {
-        if (response && enqueues.length > 0 && key === `command.response.${enqueues[0].payload.id}`) {
-            return { schemaVersion: 1, version: 1, emittedAt: Date.now(), id: enqueues[0].payload.id, cmd: "stop_turn", ...response };
-        }
-        return null;
-    };
-    return { mgmt, enqueues };
-}
-
-describe("PilotSwarmManagementClient.stopSessionTurn", () => {
-    it("returns no_active_turn without enqueueing when the session is not running", async () => {
-        const { mgmt, enqueues } = createMgmtHarness({
-            row: { sessionId: "s1", state: "idle", activeTurnIndex: null, deletedAt: null },
-        });
-        const result = await mgmt.stopSessionTurn("s1");
-        expect(result.outcome).toBe("no_active_turn");
-        expect(enqueues.length).toBe(0);
-    });
-
-    it("returns no_active_turn when the session does not exist", async () => {
-        const { mgmt, enqueues } = createMgmtHarness({ row: null });
-        const result = await mgmt.stopSessionTurn("missing");
-        expect(result.outcome).toBe("no_active_turn");
-        expect(enqueues.length).toBe(0);
-    });
-
-    it("enqueues on the turn-scoped stop queue and returns the polled outcome", async () => {
-        const { mgmt, enqueues } = createMgmtHarness({
-            row: { sessionId: "s2", state: "running", activeTurnIndex: 4, deletedAt: null },
-            response: { result: { outcome: "stopped", turnIndex: 4 } },
-        });
-        const result = await mgmt.stopSessionTurn("s2", { reason: "test stop" });
-
-        expect(enqueues.length).toBe(1);
-        expect(enqueues[0].orchestrationId).toBe("session-s2");
-        expect(enqueues[0].queue).toBe(stopTurnQueueName(4));
-        expect(enqueues[0].queue).toBe("stopTurn.4");
-        expect(typeof enqueues[0].payload.id).toBe("string");
-        expect(enqueues[0].payload.reason).toBe("test stop");
-
-        expect(result.outcome).toBe("stopped");
-        expect(result.turnIndex).toBe(4);
-    });
-
-    it("times out honestly when no response ever lands (stale-stop window)", async () => {
-        const { mgmt, enqueues } = createMgmtHarness({
-            row: { sessionId: "s3", state: "running", activeTurnIndex: 1, deletedAt: null },
-            // no response — the turn ended between the CMS read and the enqueue
-        });
-        const result = await mgmt.stopSessionTurn("s3", { timeoutMs: 300 });
-        expect(enqueues.length).toBe(1);
-        expect(result.outcome).toBe("timeout");
-        expect(result.turnIndex).toBe(1);
-    });
-});
-
-// ─── Raced turn value normalization ──────────────────────────────
-
-describe("normalizeRacedTurnValue", () => {
-    it("passes through structured TurnResult objects", () => {
-        const raced = normalizeRacedTurnValue({ type: "completed", content: "done" });
-        expect(raced.kind).toBe("result");
-        expect(raced.result.type).toBe("completed");
-    });
-
-    it("parses JSON-encoded TurnResult strings", () => {
-        const raced = normalizeRacedTurnValue(JSON.stringify({ type: "wait", seconds: 60, reason: "poll" }));
-        expect(raced.kind).toBe("result");
-        expect(raced.result.type).toBe("wait");
-    });
-
-    it("classifies flattened activity error strings as errors", () => {
-        // duroxide-node's select bridge maps a failed activity branch to its
-        // raw error string (Ok(v) => v, Err(e) => e) instead of throwing.
-        const raced = normalizeRacedTurnValue("live Copilot connection closed unexpectedly");
-        expect(raced.kind).toBe("error");
-        expect(raced.message).toContain("connection closed");
-    });
-
-    it("classifies non-TurnResult JSON payloads as errors", () => {
-        const raced = normalizeRacedTurnValue(JSON.stringify({ oops: true }));
-        expect(raced.kind).toBe("error");
     });
 });
 

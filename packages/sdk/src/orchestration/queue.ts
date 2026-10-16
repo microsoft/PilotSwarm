@@ -1,6 +1,7 @@
 import type { CommandMessage, OrchestrationInput, TurnResult } from "../types.js";
 import { sanitizePromptAttachmentRefs, ATTACHMENTS_MAX_COUNT } from "../types.js";
 import { messageSenderKey } from "../message-sender.js";
+import { CARRIED_STEERS_WAKE_PROMPT } from "../turn-control-contract.js";
 import {
     applyChildUpdate,
     maybeResolveAgentWaitCompletion,
@@ -15,7 +16,7 @@ import {
     promptIdsIntersectCancellation,
     publishStatus,
     queueFollowup,
-    recordCancelledMessageIds,
+    dropCancelledPrompt,
     wrapWithResumeContext,
 } from "./lifecycle.js";
 import { shouldWakeParentForChildDigest } from "../child-notifications.js";
@@ -30,6 +31,7 @@ import {
     MAX_PREDISPATCH_SWEEP,
     NON_BLOCKING_TIMER_MS,
     PREDISPATCH_CANCEL_SWEEP_MS,
+    addCancelledMessageIds,
     touchRecentClientMessageIds,
     timerGate,
     type ActiveTimer,
@@ -289,6 +291,27 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             if (race.index === 1) break;
             msg = typeof race.value === "string" ? JSON.parse(race.value) : race.value;
 
+        } else if (state.carriedSteers.length > 0 && !state.pendingInputQuestion && !state.pendingShutdown && !timerGate(state.activeTimer)) {
+            // A follow-up held by an agent wait is pending work that decide
+            // will not dispatch. End the wait as a new message would, and let
+            // the follow-up carry the steers; breaking with it still held
+            // made the run loop spin without yielding.
+            if (state.pendingPrompt && state.waitingForAgentIds) {
+                ctx.traceInfo(`[drain] carried steers interrupted agent wait`);
+                state.waitingForAgentIds = null;
+                if (state.activeTimer?.type === "agent-poll") state.activeTimer = null;
+            }
+            // Give already-pending user work priority. Otherwise the carry
+            // enters the same timer-interrupt path as a newly arrived message.
+            if (stash.length > 0 || state.pendingPrompt || state.pendingToolActions.length > 0 || hasFifoItems(runtime)) break;
+            const raced: any = yield ctx.race(
+                ctx.dequeueEvent("messages"),
+                ctx.scheduleTimer(NON_BLOCKING_TIMER_MS),
+            );
+            msg = raced.index === 1
+                ? { prompt: CARRIED_STEERS_WAKE_PROMPT, bootstrap: true, carriedSteersWake: true }
+                : typeof raced.value === "string" ? JSON.parse(raced.value) : raced.value;
+
         } else if (state.activeTimer || (state.pendingChildDigest && !state.pendingChildDigest.ready)) {
             const now: number = yield ctx.utcNow();
             const candidate = nextTimerCandidate(state.activeTimer, state.pendingChildDigest, now, {
@@ -358,9 +381,9 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 if (typeof id === "string" && id) {
                     validCancelIds.push(id);
                     cancelledThisDrain.add(id);
-                    state.cancelledMessageIds.add(id);
                 }
             }
+            addCancelledMessageIds(state, validCancelIds);
             if (validCancelIds.length > 0) {
                 ctx.traceInfo(`[drain] received cancel tombstone (ids=${validCancelIds.join(",")})`);
             }
@@ -370,7 +393,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 const ids: string[] = Array.isArray(item.clientMessageIds) ? item.clientMessageIds : [];
                 if (ids.some((id) => cancelledThisDrain.has(id))) {
                     ctx.traceInfo(`[drain] dropping stashed prompt cancelled by tombstone (ids=${ids.join(",")})`);
-                    yield* recordCancelledMessageIds(runtime, ids, "drain-stash");
+                    yield* dropCancelledPrompt(runtime, ids, "drain-stash");
                     stash.splice(s, 1);
                 }
             }
@@ -430,7 +453,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             const incomingClientMessageIds: string[] = validClientMessageIds(msg.clientMessageIds);
             if (promptIdsIntersectCancellation(runtime, incomingClientMessageIds)) {
                 ctx.traceInfo(`[drain] dropping incoming prompt cancelled by tombstone (ids=${incomingClientMessageIds.join(",")})`);
-                yield* recordCancelledMessageIds(runtime, incomingClientMessageIds, "drain-incoming");
+                yield* dropCancelledPrompt(runtime, incomingClientMessageIds, "drain-incoming");
                 continue;
             }
 
@@ -539,7 +562,18 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             }
 
             if (state.pendingChildDigest?.updates.length) {
-                userPrompt = flushPendingChildDigestIntoPrompt(runtime, userPrompt);
+                if (msg.carriedSteersWake === true) {
+                    // The wake marker is itself a [SYSTEM: ...] text; merging
+                    // the digest into it would dissolve the marker. Merge the
+                    // digest into the notes after it instead.
+                    const notes = flushPendingChildDigestIntoPrompt(
+                        runtime,
+                        userPrompt.slice(CARRIED_STEERS_WAKE_PROMPT.length).trim() || undefined,
+                    );
+                    userPrompt = notes ? `${CARRIED_STEERS_WAKE_PROMPT}\n\n${notes}` : CARRIED_STEERS_WAKE_PROMPT;
+                } else {
+                    userPrompt = flushPendingChildDigestIntoPrompt(runtime, userPrompt);
+                }
             }
 
             const incomingAttachments = sanitizePromptAttachmentRefs(msg.attachments);
@@ -547,6 +581,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 kind: "prompt",
                 prompt: userPrompt,
                 bootstrap: Boolean(msg.bootstrap),
+                ...(msg.carriedSteersWake === true ? { carriedSteersWake: true } : {}),
                 ...(msg.requiredTool ? { requiredTool: msg.requiredTool } : {}),
                 ...(incomingClientMessageIds.length > 0 ? { clientMessageIds: incomingClientMessageIds } : {}),
                 ...(msg.sender && typeof msg.sender === "object" ? { sender: msg.sender } : {}),
@@ -581,7 +616,7 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
 
         if (msg && Array.isArray(msg.cancelPending) && msg.cancelPending.length > 0) {
             const validCancelIds = validClientMessageIds(msg.cancelPending);
-            for (const id of validCancelIds) state.cancelledMessageIds.add(id);
+            addCancelledMessageIds(state, validCancelIds);
             if (validCancelIds.length > 0) {
                 ctx.traceInfo(`[predispatch] received cancel tombstone (ids=${validCancelIds.join(",")})`);
                 for (let s = stash.length - 1; s >= 0; s--) {
@@ -590,7 +625,7 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
                     const ids: string[] = Array.isArray(item.clientMessageIds) ? item.clientMessageIds : [];
                     if (ids.some((id) => validCancelIds.includes(id))) {
                         ctx.traceInfo(`[predispatch] dropping stashed prompt cancelled by tombstone (ids=${ids.join(",")})`);
-                        yield* recordCancelledMessageIds(runtime, ids, "predispatch-stash");
+                        yield* dropCancelledPrompt(runtime, ids, "predispatch-stash");
                         stash.splice(s, 1);
                     }
                 }
@@ -644,7 +679,7 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
             const incomingClientMessageIds = validClientMessageIds(msg.clientMessageIds);
             if (promptIdsIntersectCancellation(runtime, incomingClientMessageIds)) {
                 ctx.traceInfo(`[predispatch] dropping incoming prompt cancelled by tombstone (ids=${incomingClientMessageIds.join(",")})`);
-                yield* recordCancelledMessageIds(runtime, incomingClientMessageIds, "predispatch-incoming");
+                yield* dropCancelledPrompt(runtime, incomingClientMessageIds, "predispatch-incoming");
                 continue;
             }
             const duplicateIds = duplicateClientMessageIds(runtime, incomingClientMessageIds, pendingClientMessageIds);
@@ -719,19 +754,23 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
         const requiredTool = state.pendingRequiredTool;
         const cycleOrigin = state.pendingCycleOrigin;
         const pendingAttachments = state.pendingAttachments;
+        const pendingClientMessageIds = state.pendingClientMessageIds;
+        const pendingSender = state.pendingSender;
         state.pendingPrompt = undefined;
         state.bootstrapPrompt = false;
         state.pendingRequiredTool = undefined;
         state.pendingCycleOrigin = undefined;
         state.pendingAttachments = undefined;
+        state.pendingClientMessageIds = undefined;
+        state.pendingSender = undefined;
         yield* processPrompt(
             runtime,
             prompt,
             isBootstrap,
             requiredTool,
-            undefined,
+            pendingClientMessageIds,
             cycleOrigin,
-            undefined,
+            pendingSender,
             pendingAttachments && pendingAttachments.length > 0 ? pendingAttachments : undefined,
         );
         return true;
@@ -749,7 +788,7 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
                 }
                 if (promptIdsIntersectCancellation(runtime, ids)) {
                     ctx.traceInfo(`[decide] dropping FIFO prompt cancelled by tombstone (ids=${ids.join(",")})`);
-                    yield* recordCancelledMessageIds(runtime, ids, "decide-fifo");
+                    yield* dropCancelledPrompt(runtime, ids, "decide-fifo");
                     return true;
                 }
 
@@ -759,7 +798,9 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
                 // once flipped, and keep a single turn-level sender only when
                 // every merged segment came from the same identity.
                 const firstSender = noteMessageSender(runtime, item.sender);
-                let mergedPrompt = applySenderAttribution(runtime, firstSender, String(item.prompt || ""));
+                let mergedPrompt = item.carriedSteersWake === true
+                    ? String(item.prompt || "")
+                    : applySenderAttribution(runtime, firstSender, String(item.prompt || ""));
                 let mergedBootstrap = item.bootstrap ?? false;
                 let mergedRequiredTool = item.requiredTool;
                 const mergedClientMessageIds: string[] = [...ids];
@@ -776,7 +817,7 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
                     const peekIds: string[] = Array.isArray(peek.clientMessageIds) ? peek.clientMessageIds : [];
                     if (promptIdsIntersectCancellation(runtime, peekIds)) {
                         ctx.traceInfo(`[decide] dropping merged FIFO prompt cancelled by tombstone (ids=${peekIds.join(",")})`);
-                        yield* recordCancelledMessageIds(runtime, peekIds, "decide-merge");
+                        yield* dropCancelledPrompt(runtime, peekIds, "decide-merge");
                         continue;
                     }
                     // Never merge an agent's bootstrap kickoff with a person's
@@ -794,7 +835,10 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
                     // a fresh session — true, and beside the point: with
                     // [kickoff, B, C] queued, appending B left [C, B], and the
                     // person's own two messages ran in the wrong order.
-                    if (Boolean(peek.bootstrap) !== Boolean(mergedBootstrap)) {
+                    // A carried-steers wake is a turn of its own: its marker
+                    // must stay the whole prompt.
+                    if (item.carriedSteersWake === true || peek.carriedSteersWake === true
+                        || Boolean(peek.bootstrap) !== Boolean(mergedBootstrap)) {
                         prependToFifo(runtime, peek);
                         break;
                     }

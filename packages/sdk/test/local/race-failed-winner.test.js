@@ -1,9 +1,10 @@
 /**
  * A failed runTurn that wins the race against the stop queue.
  *
- * Every registered orchestration version races runTurn against the turn's
- * stop queue, then turns an error value into `throw new Error(message)`
- * inside the same try (see normalizeRacedTurnValue in orchestration/turn.ts).
+ * Every registered orchestration version up to 1.0.80 races runTurn against
+ * the turn's stop queue, then turns an error value into
+ * `throw new Error(message)` inside the same try (see normalizeRacedTurnValue
+ * in orchestration_1_0_80/turn.ts). 1.0.81 yields the turn directly.
  * duroxide-node before 0.2.0 returned a failed winner's error text as the
  * race value; 0.2.0+ throws the activity's own error from the race. Either
  * way, the orchestration must reach the same catch with the same message, so
@@ -13,7 +14,7 @@
  */
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
-import { normalizeRacedTurnValue } from "../../src/orchestration/turn.js";
+import { normalizeRacedTurnValue } from "../../src/orchestration_1_0_80/turn.js";
 
 const { Runtime, Client, SqliteProvider } = createRequire(import.meta.url)("duroxide");
 
@@ -47,7 +48,7 @@ describe("a failed runTurn that wins the stop race", () => {
                     direct = err.message;
                 }
 
-                // The same shape as the turn loop in orchestration/turn.ts.
+                // The same shape as the turn loop in orchestration_1_0_80/turn.ts.
                 let raced;
                 let path;
                 try {

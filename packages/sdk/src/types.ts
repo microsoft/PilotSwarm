@@ -70,7 +70,41 @@ type WorkspaceAttachCarrier = {
     workspaceAttached?: boolean;
 };
 
-export type TurnResult = TurnResultVariant & SnapshotCommitCarrier & WorkspaceAttachCarrier;
+/**
+ * Session turn control (1.0.81, runTurnV4): steers accepted for this turn but
+ * not delivered in it. The orchestration carries them into the next turn.
+ */
+type LateSteersCarrier = {
+    lateSteers?: LateSteer[];
+    /**
+     * Queued messages that this turn's delivered converted steers replaced
+     * (migration 0083). The orchestration drops them; they never run as
+     * their own turn.
+     */
+    replacedClientMessageIds?: string[];
+};
+
+/**
+ * Session turn control: the last steer of this turn that the saved
+ * conversation provably holds. Saved with the turn only when not 0.
+ */
+type ControlCursorCarrier = {
+    controlCursor?: { turn: number; cursor: number };
+};
+
+/**
+ * Session turn control: set when the carried steers of the activity input
+ * were used by this turn: folded into a prompt that reached the model run,
+ * returned from an already-saved attempt, or disposed by a turn that ended
+ * stopped (D6). Never set on a gate return, an error returned before the
+ * model ran, a returned error that will be retried, or a throw.
+ */
+type CarriedSteersConsumedCarrier = {
+    carriedSteersConsumed?: true;
+};
+
+export type TurnResult = TurnResultVariant & SnapshotCommitCarrier & WorkspaceAttachCarrier
+    & LateSteersCarrier & ControlCursorCarrier & CarriedSteersConsumedCarrier;
 
 type TurnResultVariant =
     | ({ type: "completed"; content: string; forceContinuePrompt?: string; events?: CapturedEvent[]; cycleReport?: CycleReport } & QueuedTurnActionCarrier)
@@ -127,6 +161,12 @@ export interface TurnOptions {
     liveTurn?: boolean;
     /** Orchestration turn index for this turn — used by stop-turn targeting. */
     turnIndex?: number;
+    /**
+     * Session turn control (runTurnV4): the running turn's live control loop.
+     * Enables the send gate; controls that arrive before the initial prompt
+     * is sent are held, and a held Stop skips the send (plan P21).
+     */
+    turnControl?: import("./turn-control.js").TurnControlBinding;
     /** Model summary text for the list_available_models tool. */
     modelSummary?: string;
     /** Internal: startup/bootstrap turn that should not be recorded as a user message. */
@@ -185,7 +225,16 @@ export interface TurnOptions {
         regenerateContext?(args: { handoff?: string }): Promise<string>;
         /** Session regeneration: enqueue the durable regenerate cmd for a DIRECT child (requestedBy-stamped). */
         regenerateAgent?(args: { agent_id: string; handoff?: string }): Promise<string>;
-        messageAgent(args: { agent_id: string; message: string; contract_patch?: Record<string, unknown> }): Promise<string>;
+        /**
+         * `deliver: "now"` steers the child's running turn and, when it has
+         * none that takes steers, queues the message for its next turn.
+         * `call.toolCallId` makes the steer's request id, so a tool call that
+         * runs again records nothing new.
+         */
+        messageAgent(
+            args: { agent_id: string; message: string; contract_patch?: Record<string, unknown>; deliver?: import("./parent-turn-control.js").MessageAgentDelivery },
+            call?: { toolCallId?: string },
+        ): Promise<string>;
         checkAgents(args?: { full?: boolean }): Promise<string>;
         resolveWaitForAgents(agentIds?: string[]): Promise<string[]>;
         listSessions(args?: {
@@ -205,6 +254,8 @@ export interface TurnOptions {
         }): Promise<string>;
         completeAgent(args: { agent_id: string; result?: Record<string, unknown> }): Promise<string>;
         cancelAgent(args: { agent_id: string; reason?: string; partial_result?: Record<string, unknown> }): Promise<string>;
+        /** Stop a DIRECT child's current turn; the child stays alive. */
+        stopAgentTurn?(args: { agent_id: string; reason?: string }, call?: { toolCallId?: string }): Promise<string>;
         deleteAgent(args: { agent_id: string; reason?: string }): Promise<string>;
         sendSessionMessage(args: { session_id: string; subject: string; body: string; reason?: string; expects_response?: boolean; expires_at?: string }): Promise<string>;
         /** Session workspaces: the attach and path check for set_session_workspace, on this worker. */
@@ -1026,6 +1077,10 @@ export interface OrchestrationInput {
     prompt?: string;
     /** Image attachment refs riding a carried prompt across continue-as-new (1.0.65+). */
     attachments?: PromptAttachmentRef[];
+    /** 1.0.81: the client message ids of a carried prompt (the retry of a failed turn), so its receipt matches the sender's outbox. */
+    clientMessageIds?: string[];
+    /** 1.0.81: who sent the carried prompt (the retry of a failed turn). */
+    sender?: import("./message-sender.js").MessageSender;
     /** Internal: require the next prompt turn to use a specific tool if available. */
     requiredTool?: string;
     /** Internal: system guidance carried alongside the next prompt without becoming user text. */
@@ -1071,6 +1126,12 @@ export interface OrchestrationInput {
     contextUsage?: SessionContextUsage;
     /** Most recently accepted client message ids, oldest to newest (max 20). */
     recentClientMessageIds?: string[];
+    /**
+     * 1.0.81: cancelled or converted client message ids whose prompt has not
+     * been dropped yet, oldest to newest (max 200). Carried so a cancel or a
+     * conversion still drops its prompt after continue-as-new.
+     */
+    cancelledMessageIds?: string[];
 
     // ─── Multi-writer attribution (security model) ───────────
     /** Distinct sender identity keys observed on sender-carrying messages. */
@@ -1113,6 +1174,21 @@ export interface OrchestrationInput {
      * time; the next turn that actually runs replays them. v1.0.70+.
      */
     budgetStash?: Array<{ prompt: string; clientMessageIds?: string[]; requiredTool?: string; attachments?: PromptAttachmentRef[]; sender?: import("./message-sender.js").MessageSender }>;
+    /**
+     * Session turn control (1.0.81+): steers accepted too late for their turn,
+     * carried into the next turn that uses them. Already recorded; never
+     * recorded again.
+     */
+    carriedSteers?: LateSteer[];
+    /**
+     * 1.0.81+: the snapshot turnKey of a runTurn attempt that threw. The retry
+     * of that same turn sends it again, so when the attempt had already
+     * committed its snapshot the worker's preamble adopts the saved result
+     * instead of running and committing the turn a second time. Carried only
+     * by the retry's continue-as-new; never reused for a new prompt or after
+     * a give-up.
+     */
+    thrownTurnKey?: string;
     // ─── Session workspaces (1.0.80) ─────────────────────────
     /** Rises by one on every workspace set or clear. Absent = 0. */
     workspaceRevision?: number;
@@ -1809,9 +1885,171 @@ export interface AbortTurnResult {
 
 /** Client-facing result of stopSessionTurn(). */
 export interface StopTurnResult {
-    outcome: "stopped" | "stop_forced" | "no_active_turn" | "timeout";
+    /**
+     * `too_late`: the Stop was accepted after the turn's model run finished
+     * (turn-control path only). `stop_forced`: legacy path only.
+     * `timeout` with `controlSeq`: the Stop was accepted and is still open,
+     * for example during a thrown-error retry backoff; it applies when the
+     * retry starts.
+     */
+    outcome: "stopped" | "stop_forced" | "no_active_turn" | "timeout" | "too_late";
     turnIndex?: number;
     detail?: string;
+    /** Turn-control path: the position of the accepted `user.stop` event. */
+    controlSeq?: number;
+}
+
+// ─── Session turn control (Stop and Steer through the CMS) ──────
+
+export type TurnControlKind = "steer" | "stop";
+
+/** One open control of a turn, in position order. */
+export interface TurnControl {
+    /** The control's `session_events.seq`. */
+    seq: number;
+    kind: TurnControlKind;
+    /** The steer text, or the Stop reason. */
+    text: string;
+    /** When the control was accepted (database clock, ISO 8601). */
+    createdAt: string;
+}
+
+export type TurnControlOutcome = "delivered" | "carried" | "not_delivered" | "stopped" | "too_late";
+
+/** A steer accepted for a turn but not delivered in it. */
+export interface LateSteer {
+    seq: number;
+    text: string;
+}
+
+export type TurnControlRefusal =
+    | "no_turn"
+    | "legacy_turn"
+    | "not_found"
+    | "too_many"
+    | "request_id_reused"
+    | "steering_disabled"
+    /** The queued message a Steer would replace already reached a turn (migration 0083). */
+    | "already_received";
+
+/** Answer of the control-add procedure. A retry with the same request id gets the first answer and `repeat`. */
+export type TurnControlAddResult =
+    | { seq: number; turn: number; repeat?: true }
+    | { refused: TurnControlRefusal };
+
+/** Answer of turn start (T3). */
+export type TurnStartResult =
+    | { stale: true }
+    | {
+        /** A stopped outcome was already recorded. Open Stops remain in controls. */
+        stopped: boolean;
+        controls: TurnControl[];
+    };
+
+/** One running turn of the worker's batched look. */
+export interface TurnLookInput {
+    sessionId: string;
+    turn: number;
+    /** Controls at or below this position were already applied. */
+    after: number;
+}
+
+export interface TurnLookRow {
+    sessionId: string;
+    turn: number;
+    controls: TurnControl[];
+}
+
+/** How the turn ended, as turn end (T8) needs it. */
+export type TurnEndKind = "stopped" | "error" | "other";
+
+/** Answer of turn end (T8). Recomputed on every call. */
+export interface TurnEndResult {
+    stopped: boolean;
+    late: LateSteer[];
+    /** Queued messages replaced by this turn's delivered converted steers. */
+    replaced: string[];
+}
+
+/** A prompt record that turn start writes in its own transaction (migration 0083). */
+export interface TurnStartRecord {
+    eventType: "user.message" | "system.message";
+    data: Record<string, unknown>;
+}
+
+/** Why carried steers left the session's pending state. */
+export type CarriedSteersCloseReason = "ran" | "stopped" | "gave_up" | "terminal";
+
+/**
+ * The caller of a Stop or Steer. The Web API overwrites it from the
+ * authenticated context; client-supplied values are ignored there. In direct
+ * mode (a trusted subsystem) it is optional: without a viewer the steering
+ * flag resolves at cluster scope; without a sender the actor is null.
+ */
+export interface TurnControlCaller {
+    sender?: import("./message-sender.js").MessageSender;
+    viewer?: import("./feature-store.js").FeatureViewer;
+}
+
+export interface SteerTurnOptions {
+    text: string;
+    /** Required. Reuse it only to retry after a transport failure. */
+    requestId: string;
+    /**
+     * Convert a queued message: the client message id of the queued message
+     * this steer replaces. Refused `already_received` once that message
+     * reached a turn. It must be one of the `clientMessageIds` given when the
+     * message was sent; a message sent without client message ids cannot be
+     * converted (the steer is accepted but the message also runs).
+     */
+    replacesClientMessageId?: string;
+    caller?: TurnControlCaller;
+}
+
+export type SteerTurnResult =
+    | { outcome: "accepted"; steerId: number; turn: number; repeat?: true }
+    | { outcome: TurnControlRefusal };
+
+export interface StopTurnOptions {
+    reason?: string;
+    timeoutMs?: number;
+    /** Pass one to make retries after a transport failure safe. */
+    requestId?: string;
+    caller?: TurnControlCaller;
+}
+
+/** `user.steer` event data. */
+export interface UserSteerEventData {
+    turn: number;
+    text: string;
+    requestId: string;
+    actor: import("./message-sender.js").MessageSender | null;
+    /** The queued message this steer replaces (a converted queued message, migration 0083). Never set on a Stop. */
+    replacesClientMessageId?: string;
+}
+
+/** `user.stop` event data. `text` is the reason. */
+export type UserStopEventData = Omit<UserSteerEventData, "replacesClientMessageId">;
+
+/** `session.control_outcome` event data. */
+export interface ControlOutcomeEventData {
+    seq: number;
+    turn: number;
+    outcome: TurnControlOutcome;
+}
+
+/** `session.steer_confirmed` event data (not a transcript item). */
+export interface SteerConfirmedEventData {
+    seq: number;
+    turn: number;
+    messageId: string;
+}
+
+/** `session.carried_steers_closed` event data. */
+export interface CarriedSteersClosedEventData {
+    seqs: number[];
+    turnIndex: number;
+    reason: CarriedSteersCloseReason;
 }
 
 export interface SessionResponsePayload {

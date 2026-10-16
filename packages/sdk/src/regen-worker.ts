@@ -22,6 +22,7 @@
 
 import fs from "node:fs";
 import { createCopilotClient } from "./copilot-client.js";
+import type { ToolCatalogCapability } from "./model-providers.js";
 import { TEXT_ARTIFACT_MAX_BYTES } from "./session-store.js";
 import { selectTranscript } from "./transcript-selection.js";
 import os from "node:os";
@@ -84,7 +85,7 @@ export interface RegenWorkerDeps {
      * {githubToken}). Ref undefined = the deployment default. Returns null
      * when the ref doesn't resolve (dead model) — the caller falls back.
      */
-    resolveModelOptions(ref?: string): { model?: string; provider?: unknown; gitHubToken?: string } | null;
+    resolveModelOptions(ref?: string): { model?: string; provider?: unknown; gitHubToken?: string; toolCatalog?: ToolCatalogCapability } | null;
     /** Deployment-configured fallback distiller model (mandatory per §9). */
     fallbackDistillerModel?: string;
     trace(message: string): void;
@@ -632,7 +633,7 @@ export async function runRegenDistill(
     }
 
     const candidates = [input.distillerModel, input.sessionModel, deps.fallbackDistillerModel, undefined];
-    let resolved: { model?: string; provider?: unknown; gitHubToken?: string } | null = null;
+    let resolved: { model?: string; provider?: unknown; gitHubToken?: string; toolCatalog?: ToolCatalogCapability } | null = null;
     let resolvedRef: string | undefined;
     for (const ref of candidates) {
         resolved = deps.resolveModelOptions(ref);
@@ -659,7 +660,7 @@ export async function runRegenDistill(
                 ...(resolved!.gitHubToken ? { gitHubToken: resolved!.gitHubToken } : {}),
                 logLevel: "error",
                 env: { ...process.env, COPILOT_HOME: tempHome },
-            }, resolved!.provider);
+            }, resolved!.provider, resolved!.toolCatalog);
             await sdk.start();
             const session: any = await sdk.createSession({
                 ...(resolved!.model ? { model: resolved!.model } : {}),

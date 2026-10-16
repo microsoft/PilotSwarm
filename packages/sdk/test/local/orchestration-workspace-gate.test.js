@@ -110,6 +110,9 @@ function createHarness({ turnResults = [], queue = [], fireTimers = 0, releaseHa
                 if (msg == null) throw new Error(`dequeue underflow (${effect.name ?? "?"})`);
                 return msg;
             }
+            case "runTurn":
+                if (script.length === 0) throw new Error("runTurn past the script");
+                return script.shift();
             case "race": {
                 if (effect.left?.effect === "runTurn") {
                     if (script.length === 0) throw new Error("runTurn past the script");

@@ -1,5 +1,5 @@
 /**
- * Durable session orchestration v1.0.77.
+ * Durable session orchestration v1.0.81.
  *
  * Flat event loop backed by a KV FIFO work buffer:
  *   1. `createRuntime` builds the mutable runtime and runs startup gates.

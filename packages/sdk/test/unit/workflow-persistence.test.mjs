@@ -137,7 +137,7 @@ test("catalog writes authoritative workflow facts through migration procedures",
 });
 
 test("workflow failure migration preserves terminal failures during projection rebuild", () => {
-    const migration = CMS_MIGRATIONS("workflow_test").find(entry => entry.version === "0090");
+    const migration = CMS_MIGRATIONS("workflow_test").find(entry => entry.version === "0092");
     assert.ok(migration);
     assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "workflow_test"\.workflow_failures/);
     assert.match(migration.sql, /CREATE OR REPLACE FUNCTION "workflow_test"\.cms_fail_workflow/);

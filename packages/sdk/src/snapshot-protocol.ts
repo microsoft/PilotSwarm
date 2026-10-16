@@ -47,6 +47,12 @@ export interface SnapshotMarker {
 export interface TurnSentinel {
     turnKey?: string;
     startedAt: string;
+    /**
+     * The turn started on a conversation this protocol created fresh with
+     * nothing saved (its preamble found an empty store, no loss). Stays true
+     * along a chain of unsaved turns; a save replaces it with a marker.
+     */
+    freshChain?: boolean;
 }
 
 export interface SnapshotProbe {
@@ -217,11 +223,15 @@ export function readTurnSentinel(sessionDir: string): TurnSentinel | null {
     }
 }
 
-export function writeTurnSentinel(sessionDir: string, turnKey?: string): void {
+export function writeTurnSentinel(sessionDir: string, turnKey?: string, opts?: { freshChain?: boolean }): void {
     fs.mkdirSync(sessionDir, { recursive: true });
     fs.writeFileSync(
         sentinelPath(sessionDir),
-        JSON.stringify({ ...(turnKey ? { turnKey } : {}), startedAt: new Date().toISOString() }),
+        JSON.stringify({
+            ...(turnKey ? { turnKey } : {}),
+            startedAt: new Date().toISOString(),
+            ...(opts?.freshChain ? { freshChain: true } : {}),
+        }),
     );
 }
 

@@ -177,7 +177,12 @@
             "models": [
                 {
                     "name": "gpt-5.4",
-                    "description": "GPT-5.4 via Azure AI Foundry. High reasoning effort, advanced multi-turn and coding tasks.",
+                    "description": "GPT-5.4 via Azure AI Foundry. Explicit overflow-dispatch example for a validated Chat Completions endpoint; remove toolCatalog to disable.",
+                    "wireApi": "completions",
+                    "toolCatalog": {
+                        "maxDeclarations": 128,
+                        "overflowStrategy": "typed-dispatch"
+                    },
                     "cost": "high",
                     "supportedReasoningEfforts": [
                         "medium",

@@ -158,6 +158,7 @@ test("session-proxy strips the block from the persisted user.message and still r
     assert.match(sp, /import \{[^}]*\bsplitSystemContextBlock\b[^}]*\} from "\.\/prompt-system-context\.js";/);
     assert.match(sp, /const promptForRecord = input\.config\?\.systemContextInPrompt\s*\? splitSystemContextBlock\(input\.prompt\)\.prompt\s*: input\.prompt;/);
     assert.match(sp, /const eventData: Record<string, unknown> = \{ content: promptForRecord \};/);
-    // The note's own event is unchanged: still gated on turnSystemPrompt.
+    // The note's own event is unchanged: still gated on turnSystemPrompt (on
+    // the turn-control path turn start records it once per turn, migration 0083).
     assert.match(sp, /if \(catalog && input\.config\.turnSystemPrompt && !isRetryAttempt\)/);
 });

@@ -73,17 +73,17 @@ test("0028: drops the old SETOF signature and joins owners", () => {
     assert.doesNotMatch(code, /RETURNS SETOF/, "paged list must not regress to SETOF sessions");
 });
 
-test("0082: workflow sessions are additive and existing rows remain agent sessions", () => {
-    const migration = migrations.find((m) => m.version === "0082");
-    assert.ok(migration, "migration 0082 must be registered");
+test("0084: workflow sessions are additive and existing rows remain agent sessions", () => {
+    const migration = migrations.find((m) => m.version === "0084");
+    assert.ok(migration, "migration 0084 must be registered");
     assert.equal(migration.name, "workflow_session_kind");
     assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS session_kind TEXT NOT NULL DEFAULT 'agent'/);
     assert.match(migration.sql, /CHECK \(session_kind IN \('agent', 'workflow'\)\)/);
 });
 
-test("0083: workflow facts are authoritative and lifecycle events are transactional", () => {
-    const migration = migrations.find((m) => m.version === "0083");
-    assert.ok(migration, "migration 0083 must be registered");
+test("0085: workflow facts are authoritative and lifecycle events are transactional", () => {
+    const migration = migrations.find((m) => m.version === "0085");
+    assert.ok(migration, "migration 0085 must be registered");
     assert.equal(migration.name, "workflow_executions");
     assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "shape_check"\.workflow_state_executions/);
     assert.match(migration.sql, /PRIMARY KEY \(workflow_session_id, execution_sequence\)/);
@@ -98,9 +98,9 @@ test("0083: workflow facts are authoritative and lifecycle events are transactio
     assert.match(migration.sql, /'workflow\.completed'/);
 });
 
-test("0084: workflow definitions retain source and normalized compiled manifests", () => {
-    const migration = migrations.find((m) => m.version === "0084");
-    assert.ok(migration, "migration 0084 must be registered");
+test("0086: workflow definitions retain source and normalized compiled manifests", () => {
+    const migration = migrations.find((m) => m.version === "0086");
+    assert.ok(migration, "migration 0086 must be registered");
     assert.equal(migration.name, "workflow_definitions");
     assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "shape_check"\.workflow_definitions/);
     assert.match(migration.sql, /source_yaml\s+TEXT NOT NULL/);
@@ -122,9 +122,9 @@ test("0084: workflow definitions retain source and normalized compiled manifests
     assert.match(migration.sql, /transition,handler,packageSha256/);
 });
 
-test("0085: workflow admission atomically enforces logical and request idempotency", () => {
-    const migration = migrations.find((m) => m.version === "0085");
-    assert.ok(migration, "migration 0085 must be registered");
+test("0087: workflow admission atomically enforces logical and request idempotency", () => {
+    const migration = migrations.find((m) => m.version === "0087");
+    assert.ok(migration, "migration 0087 must be registered");
     assert.equal(migration.name, "workflow_admissions");
     assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "shape_check"\.workflow_admissions/);
     assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "shape_check"\.workflow_admission_requests/);
@@ -157,9 +157,9 @@ test("0085: workflow admission atomically enforces logical and request idempoten
     );
 });
 
-test("0086: active workflow children retain their exact agent package version", () => {
-    const migration = migrations.find((m) => m.version === "0086");
-    assert.ok(migration, "migration 0086 must be registered");
+test("0088: active workflow children retain their exact agent package version", () => {
+    const migration = migrations.find((m) => m.version === "0088");
+    assert.ok(migration, "migration 0088 must be registered");
     assert.equal(migration.name, "workflow_agent_package_version_pins");
     assert.match(
         migration.sql,
@@ -178,9 +178,9 @@ test("0086: active workflow children retain their exact agent package version", 
     );
 });
 
-test("0087: workflow definition and agent package metadata commit atomically", () => {
-    const migration = migrations.find((m) => m.version === "0087");
-    assert.ok(migration, "migration 0087 must be registered");
+test("0089: workflow definition and agent package metadata commit atomically", () => {
+    const migration = migrations.find((m) => m.version === "0089");
+    assert.ok(migration, "migration 0089 must be registered");
     assert.equal(migration.name, "workflow_agent_package_registration");
     assert.match(
         migration.sql,
@@ -193,9 +193,9 @@ test("0087: workflow definition and agent package metadata commit atomically", (
     assert.match(migration.sql, /agentPackageId/);
 });
 
-test("0088: active workflows prevent agent package deletion", () => {
-    const migration = migrations.find((m) => m.version === "0088");
-    assert.ok(migration, "migration 0088 must be registered");
+test("0090: active workflows prevent agent package deletion", () => {
+    const migration = migrations.find((m) => m.version === "0090");
+    assert.ok(migration, "migration 0090 must be registered");
     assert.equal(migration.name, "workflow_agent_package_deletion_guard");
     assert.match(
         migration.sql,

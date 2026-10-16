@@ -4,7 +4,11 @@
  * Runs real workers + real duroxide + a real LLM:
  *  1. Stop a running turn mid-flight (blocking tool) → outcome stopped,
  *     CMS idle (not cancelled/completed/failed), session.turn_stopped event,
- *     and the session accepts and completes a follow-up prompt.
+ *     and the session accepts and completes a follow-up prompt. On
+ *     orchestration 1.0.81 (session turn control) the Stop is a user.stop
+ *     event with one `stopped` outcome and no "Turn stopped by user."
+ *     system message (P22); a session pinned to 1.0.80 takes the earlier
+ *     event path and keeps that system message.
  *  2. Stop with no active turn → idempotent no_active_turn, and a subsequent
  *     prompt completes (stale-stop leak check).
  *  3. A stale stop event enqueued for an already-finished turn index can never
@@ -18,6 +22,7 @@ import { preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { withClient, createManagementClient, defineTool } from "../helpers/local-workers.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
 import { stopTurnQueueName } from "../../src/types.js";
+import { pinSessionStartVersion, sessionOrchestrationVersion } from "../helpers/pinned-start.mjs";
 
 const TIMEOUT = 240_000;
 const getEnv = useSuiteEnv(import.meta.url);
@@ -52,12 +57,13 @@ function createBlockingTool(tracker) {
     });
 }
 
-async function testStopsRunningTurnMidFlight(env) {
+async function testStopsRunningTurnMidFlight(env, { legacy = false } = {}) {
     const tracker = {};
     const blockTool = createBlockingTool(tracker);
 
     await withClient(env, { tools: [blockTool] }, async (client) => {
         const mgmt = await createManagementClient(env);
+        const pin = legacy ? pinSessionStartVersion(client, "1.0.80") : null;
         try {
             const session = await client.createSession({
                 tools: [blockTool],
@@ -72,14 +78,25 @@ async function testStopsRunningTurnMidFlight(env) {
 
             const started = await waitFor(() => tracker.started === true, 120_000);
             assert(started, "test_block tool never started — cannot exercise mid-flight stop");
-            console.log("  Turn is mid-flight (blocking tool executing). Stopping…");
+            const version = await sessionOrchestrationVersion(client, session.sessionId);
+            console.log(`  Turn is mid-flight (blocking tool executing) on orchestration ${version}. Stopping…`);
+            assertEqual(version, legacy ? "1.0.80" : "1.0.81", "session runs the intended orchestration version");
+            if (!legacy) {
+                const detail = await mgmt.getSession(session.sessionId);
+                assertEqual(detail.acceptsTurnControl, true, "a 1.0.81 turn accepts controls while it runs");
+            }
 
-            const result = await mgmt.stopSessionTurn(session.sessionId, { reason: "Stopped by test" });
+            const result = await mgmt.stopSessionTurn(session.sessionId, { reason: "Stopped by test", requestId: `stop-live-${legacy ? "legacy" : "v81"}` });
             console.log(`  stopSessionTurn → ${JSON.stringify(result)}`);
-            assert(
-                result.outcome === "stopped" || result.outcome === "stop_forced",
-                `expected stopped/stop_forced, got ${result.outcome} (${result.detail ?? ""})`,
-            );
+            if (legacy) {
+                assert(
+                    result.outcome === "stopped" || result.outcome === "stop_forced",
+                    `expected stopped/stop_forced, got ${result.outcome} (${result.detail ?? ""})`,
+                );
+            } else {
+                assertEqual(result.outcome, "stopped", `turn-control Stop outcome (${result.detail ?? ""})`);
+                assert(Number.isFinite(result.controlSeq), "the accepted Stop reports its control seq");
+            }
 
             const idled = await waitFor(async () => {
                 const row = await mgmt._catalog.getSession(session.sessionId);
@@ -97,7 +114,20 @@ async function testStopsRunningTurnMidFlight(env) {
             const notice = events.filter((e) =>
                 e.eventType === "system.message"
                 && String(e.data?.content ?? "").includes("Turn stopped by user"));
-            assert(notice.length >= 1, "visible 'Turn stopped by user.' system message should be recorded");
+            const userStops = events.filter((e) => e.eventType === "user.stop");
+            if (legacy) {
+                assert(notice.length >= 1, "visible 'Turn stopped by user.' system message should be recorded");
+                assertEqual(userStops.length, 0, "a legacy Stop records no user.stop control");
+            } else {
+                assertEqual(notice.length, 0, "1.0.81 writes no 'Turn stopped by user.' system message (P22)");
+                assertEqual(userStops.length, 1, "exactly one user.stop line");
+                assertEqual(userStops[0].seq, result.controlSeq, "the user.stop is the accepted control");
+                assertEqual(userStops[0].data?.requestId, "stop-live-v81", "the request id is recorded unchanged");
+                const outcomes = events.filter((e) => e.eventType === "session.control_outcome" && e.data?.seq === userStops[0].seq);
+                assertEqual(outcomes.length, 1, "exactly one outcome for the Stop");
+                assertEqual(outcomes[0].data?.outcome, "stopped", "the Stop's outcome is stopped");
+                assertEqual(stopped[0].data?.interrupt, "turn-result", "1.0.81 records the stopped turn result");
+            }
 
             // Session stays usable: a follow-up prompt completes normally.
             tracker.release();
@@ -109,6 +139,7 @@ async function testStopsRunningTurnMidFlight(env) {
             console.log(`  Follow-up response: "${followup}"`);
             assert(/alive/i.test(followup), `follow-up turn should complete normally, got: ${followup}`);
         } finally {
+            pin?.restore();
             tracker.release?.();
             await mgmt.stop?.();
         }
@@ -177,6 +208,9 @@ describe("Stop turn — live", () => {
 
     it("stops a running turn mid-flight and the session stays usable", { timeout: TIMEOUT * 2 }, async () => {
         await testStopsRunningTurnMidFlight(getEnv());
+    });
+    it("a session pinned to 1.0.80 still stops through the earlier event path", { timeout: TIMEOUT * 2 }, async () => {
+        await testStopsRunningTurnMidFlight(getEnv(), { legacy: true });
     });
     it("is an idempotent no-op on an idle session", { timeout: TIMEOUT * 2 }, async () => {
         await testStopIdleSessionIsNoop(getEnv());

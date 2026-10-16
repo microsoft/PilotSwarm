@@ -7,6 +7,7 @@ import {
 import { createManagementOps, type ManagementOps } from "./generated-op-methods.js";
 import type { FeatureViewer, FeatureMutation, FeatureView, FeatureMutationResult } from "../feature-store.js";
 import type { WorkflowDefinitionRegistrationRequest } from "../management-client.js";
+import type { StopTurnOptions, StopTurnResult, SteerTurnOptions, SteerTurnResult } from "../types.js";
 
 const WAIT_SLICE_MS = 25_000;
 
@@ -156,8 +157,14 @@ export class WebPilotSwarmManagementClient {
         await this._api.call("deleteSession", { sessionId });
     }
 
-    async stopSessionTurn(sessionId: string, opts: { reason?: string; timeoutMs?: number } = {}): Promise<any> {
+    /** Same contract as the direct client. The server overwrites `opts.caller` from the authenticated request. */
+    async stopSessionTurn(sessionId: string, opts: StopTurnOptions = {}): Promise<StopTurnResult> {
         return this._api.call("stopSessionTurn", { sessionId, options: opts });
+    }
+
+    /** Same contract as the direct client. The server overwrites `opts.caller` from the authenticated request. */
+    async steerSessionTurn(sessionId: string, opts: SteerTurnOptions): Promise<SteerTurnResult> {
+        return this._api.call("steerSessionTurn", { sessionId, options: opts });
     }
 
     async setSessionModel(sessionId: string, model: string, opts: { reasoningEffort?: string | null; contextTier?: string | null; source?: string } = {}): Promise<void> {

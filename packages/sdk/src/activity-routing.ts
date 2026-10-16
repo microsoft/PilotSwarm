@@ -9,7 +9,14 @@ import {
  */
 export const AGENT_HANDOFF_CAPABILITY = "pilotswarm.agent-handoff.v2";
 export { AGENT_CHILD_BOOTSTRAP_CAPABILITY };
-export type ActivityRoutingContract = "agent-handoff-v2";
+/**
+ * Contracts:
+ * - "agent-handoff-v2" (1.0.75+): handoff activity names and tag.
+ * - "turn-control-v1" (1.0.81+): turns run as runTurnV4/runTurnEpochV4 with
+ *   TURN_CONTROL_CAPABILITY; every other routed activity keeps the handoff
+ *   names and tag.
+ */
+export type ActivityRoutingContract = "agent-handoff-v2" | "turn-control-v1";
 export const HANDOFF_ACTIVITY_NAMES = {
     runTurn: "runTurnV3",
     runTurn2: "runTurnEpochV3",
@@ -55,4 +62,33 @@ export function routeWorkspaceActivity(task: any): any {
 export function registerHandoffActivity(runtime: any, name: keyof typeof HANDOFF_ACTIVITY_NAMES, handler: any, versionedHandler = handler): void {
     runtime.registerActivity(name, handler);
     runtime.registerActivity(HANDOFF_ACTIVITY_NAMES[name], versionedHandler);
+}
+
+/**
+ * Session turn control (1.0.81): turns whose Stop and Steer go through the
+ * CMS run only on workers that declare this tag. An older worker would run
+ * the turn without listening for controls, while 1.0.81 no longer races a
+ * Stop event. Every worker that declares it also declares
+ * AGENT_HANDOFF_CAPABILITY and WORKSPACE_CAPABILITY.
+ */
+export const TURN_CONTROL_CAPABILITY = "pilotswarm.turn-control.v1";
+export const TURN_CONTROL_ACTIVITY_NAMES = {
+    runTurn: "runTurnV4",
+    runTurn2: "runTurnEpochV4",
+} as const;
+
+/**
+ * Route a V4 turn with only the turn-control capability tag. Fail closed
+ * when the runtime cannot express that tag; never schedule an untagged turn.
+ */
+export function routeTurnControlActivity(task: any): any {
+    if (typeof task.withTag !== "function") {
+        throw new Error("Session turn control requires Duroxide activity tag routing support");
+    }
+    return task.withTag(TURN_CONTROL_CAPABILITY);
+}
+
+/** Register a turn-control activity name. The legacy and handoff names stay registered by registerHandoffActivity. */
+export function registerTurnControlActivity(runtime: any, name: keyof typeof TURN_CONTROL_ACTIVITY_NAMES, handler: any): void {
+    runtime.registerActivity(TURN_CONTROL_ACTIVITY_NAMES[name], handler);
 }

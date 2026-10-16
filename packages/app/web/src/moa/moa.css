@@ -254,7 +254,7 @@
 }
 .ps-moa-pane-composer .ps-prompt-input::placeholder { font-size: inherit; line-height: inherit; }
 .ps-moa-workspace:not(.is-mobile) .ps-moa-pane-composer .ps-prompt-actions { gap: 4px; }
-.ps-moa-workspace:not(.is-mobile) .ps-moa-pane-composer :is(.ps-send-button, .ps-stop-button, .ps-attach-button) {
+.ps-moa-workspace:not(.is-mobile) .ps-moa-pane-composer :is(.ps-send-button, .ps-stop-button, .ps-steer-button, .ps-attach-button) {
   min-height: 30px; min-width: 30px; padding: 0 6px; font-size: var(--ps-font-size-dense);
 }
 

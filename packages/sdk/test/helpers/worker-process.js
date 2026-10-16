@@ -88,6 +88,14 @@ process.on("message", async (msg) => {
             const workflowStateProviders = createWorkflowTestProviders(
                 msg.workflowTestProvider,
             );
+            // Kill-harness support for workspace tests: the reference repo
+            // workspace provider, talking to a repo service in the test process.
+            let workspaceProvider = null;
+            if (msg.repoWorkspaces) {
+                const { createRepoWorkspaceProvider } = await import("../../examples/repo-workspaces/provider.mjs");
+                const { rootName, rootPath, serviceUrl } = msg.repoWorkspaces;
+                workspaceProvider = createRepoWorkspaceProvider({ roots: [{ name: rootName, path: rootPath }], serviceUrls: { [rootName]: serviceUrl } });
+            }
             const worker = new PilotSwarmWorker({
                 store: msg.store,
                 githubToken: msg.githubToken,
@@ -98,6 +106,8 @@ process.on("message", async (msg) => {
                 workerNodeId: msg.workerNodeId,
                 disableManagementAgents: true,
                 logLevel: msg.logLevel || "warn",
+                ...(msg.modelProvidersPath ? { modelProvidersPath: msg.modelProvidersPath } : {}),
+                ...(workspaceProvider ? { workspaceProvider } : {}),
                 // Kill-harness support: an explicit SHARED snapshot store dir
                 // (separate worker "disks" + one store, like pods sharing
                 // blob storage). Without it, the store derives from
@@ -114,6 +124,15 @@ process.on("message", async (msg) => {
             process.on("message", async (stopMsg) => {
                 if (stopMsg.type === "stop") {
                     try { await worker.stop(); } catch {}
+                    process.exit(0);
+                }
+                // Graceful drain (lifecycle protocol §3.8): finish in-flight
+                // turns, release idle workspaces, then exit.
+                if (stopMsg.type === "drain") {
+                    // gracefulShutdown() ends with stop().
+                    try { await worker.gracefulShutdown(); } catch (err) {
+                        process.send({ type: "drain-error", error: err?.message ?? String(err) });
+                    }
                     process.exit(0);
                 }
             });

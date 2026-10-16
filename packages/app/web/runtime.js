@@ -1342,7 +1342,17 @@ export class PortalRuntime {
             case "setSessionModel":
                 return this.transport.setSessionModel(safeParams.sessionId, safeParams.options || {});
             case "stopSessionTurn":
-                return this.transport.stopSessionTurn(safeParams.sessionId, safeParams.options || {});
+            case "steerSessionTurn":
+                // Server-stamped caller (P18): the sender and the viewer that
+                // resolves sessions.steering come from the authenticated
+                // context; a client-supplied options.caller is overwritten.
+                return this.transport[method](safeParams.sessionId, {
+                    ...(safeParams.options && typeof safeParams.options === "object" ? safeParams.options : {}),
+                    caller: {
+                        sender: this._buildSender(authContext, gate.snapshot, { isAdmin, origin: safeParams.options?.origin }),
+                        viewer: { principal: owner, isAdmin },
+                    },
+                });
             case "deleteSessionGroup":
                 return this.transport.deleteSessionGroup(safeParams.groupId);
             case "listModels":

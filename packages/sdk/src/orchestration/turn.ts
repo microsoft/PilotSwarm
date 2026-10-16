@@ -1,9 +1,10 @@
 import type { MessageSender } from "../message-sender.js";
 import { PROVIDER_BUDGET_WAKE_PROMPT } from "../provider-budgets.js";
+import { CARRIED_STEERS_WAKE_PROMPT } from "../turn-control-contract.js";
 import { appendSystemContextBlock, splitSystemContextBlock } from "../prompt-system-context.js";
 import type { PromptAttachmentRef } from "../types.js";
 import type { OrchestrationInput, TurnResult } from "../types.js";
-import { SESSION_STATE_MISSING_PREFIX, stopTurnQueueName, sanitizePromptAttachmentRefs } from "../types.js";
+import { SESSION_STATE_MISSING_PREFIX, sanitizePromptAttachmentRefs } from "../types.js";
 import { createSessionProxy } from "../session-proxy.js";
 import { sameWorkspace, validateWorkspaceText } from "../workspace-check.js";
 import { planHoldRelease } from "../wait-affinity.js";
@@ -26,6 +27,7 @@ import {
     continueInput,
     continueInputWithPrompt,
     drainLeadingQueuedScheduleActions,
+    dropConvertedMessages,
     ensureTaskContext,
     flushPendingChildDigestIntoPrompt,
     maybeSummarize,
@@ -76,6 +78,10 @@ interface RetryContext {
     requiredTool?: string;
     turnSystemPrompt?: string;
     cycleOrigin?: "cron" | "cron_at";
+    /** 1.0.81: the prompt's envelope, kept for its retry: client message ids, sender, images. */
+    clientMessageIds?: string[];
+    sender?: MessageSender;
+    attachments?: PromptAttachmentRef[];
     /** Phase tag stamped on emitted lossy_handoff / dehydrate events. */
     phase: "runTurn.throw" | "turn.result.error";
 }
@@ -188,12 +194,26 @@ function* handleConnectionClosedRetry(
         return;
     }
 
+    const giveUpMessage = `${handoffMessage} Durable handoff is unavailable because blob persistence is disabled.`;
     publishStatus(runtime, "error", {
-        error: `${handoffMessage} Durable handoff is unavailable because blob persistence is disabled.`,
+        error: giveUpMessage,
         retriesExhausted: true,
         lossyHandoff: false,
     });
+    const closed: any = yield runtime.manager.updateCmsState(runtime.input.sessionId, "error", giveUpMessage, null, { closeControls: true });
+    yield* dropConvertedMessages(runtime, closed?.replacedClientMessageIds);
+    state.carriedSteers = [];
+    state.thrownTurnKey = null;
     state.retryCount = 0;
+}
+
+/** 1.0.81: the retried prompt keeps its client message ids, sender and images. */
+function promptEnvelope(rc: RetryContext): Partial<OrchestrationInput> {
+    return {
+        ...(rc.clientMessageIds?.length ? { clientMessageIds: rc.clientMessageIds } : {}),
+        ...(rc.sender ? { sender: rc.sender } : {}),
+        ...(rc.attachments?.length ? { attachments: rc.attachments } : {}),
+    };
 }
 
 function retryContinueOverrides(state: DurableSessionRuntime["state"], rc: RetryContext): Partial<OrchestrationInput> {
@@ -202,6 +222,7 @@ function retryContinueOverrides(state: DurableSessionRuntime["state"], rc: Retry
             prompt: rc.sourcePrompt,
             ...(rc.requiredTool ? { requiredTool: rc.requiredTool } : {}),
             ...(rc.cycleOrigin ? { cycleOrigin: rc.cycleOrigin } : {}),
+            ...promptEnvelope(rc),
             retryCount: state.retryCount,
             needsHydration: state.needsHydration,
         };
@@ -218,8 +239,11 @@ function retryContinueOverrides(state: DurableSessionRuntime["state"], rc: Retry
         ...(rc.systemOnlyTurn ? { bootstrapPrompt: true } : {}),
         ...(rc.requiredTool ? { requiredTool: rc.requiredTool } : {}),
         ...(rc.cycleOrigin ? { cycleOrigin: rc.cycleOrigin } : {}),
+        ...promptEnvelope(rc),
         retryCount: state.retryCount,
         needsHydration: state.needsHydration,
+        // 1.0.81: only the retry of a thrown turn carries its key.
+        ...(rc.phase === "runTurn.throw" && state.thrownTurnKey ? { thrownTurnKey: state.thrownTurnKey } : {}),
     };
 }
 
@@ -240,7 +264,9 @@ export function* projectAuthFailure(
         type: "error",
         content: blockedDetail,
     });
-    yield runtime.manager.updateCmsState(runtime.input.sessionId, "error", blockedDetail, null);
+    const closed: any = yield runtime.manager.updateCmsState(runtime.input.sessionId, "error", blockedDetail, null, { closeControls: true });
+    yield* dropConvertedMessages(runtime, closed?.replacedClientMessageIds);
+    runtime.state.carriedSteers = [];
     runtime.state.retryCount = 0;
 }
 
@@ -259,7 +285,9 @@ function* projectNonRetryableTurnFailure(
         type: "error",
         content: errorMessage,
     });
-    yield runtime.manager.updateCmsState(runtime.input.sessionId, "error", errorMessage, null);
+    const closed: any = yield runtime.manager.updateCmsState(runtime.input.sessionId, "error", errorMessage, null, { closeControls: true });
+    yield* dropConvertedMessages(runtime, closed?.replacedClientMessageIds);
+    runtime.state.carriedSteers = [];
     if (runtime.options.parentSessionId && !runtime.state.reportedFirstCompletionToParent) {
         try {
             yield runtime.manager.sendToSession(
@@ -291,11 +319,16 @@ function* handleGenericRetry(
         // (2026-08-24 campaign). Persist the failure on the session row;
         // the next successful turn's writeback clears it.
         // (New yield — part of the 1.0.69 schedule, first shipped there.)
-        yield runtime.manager.updateCmsState(
+        const closed: any = yield runtime.manager.updateCmsState(
             runtime.input.sessionId,
             "error",
             `Failed after ${MAX_RETRIES} attempts: ${errorMessage}`,
+            null,
+            { closeControls: true },
         );
+        yield* dropConvertedMessages(runtime, closed?.replacedClientMessageIds);
+        state.carriedSteers = [];
+        state.thrownTurnKey = null;
         state.retryCount = 0;
         return;
     }
@@ -337,6 +370,15 @@ export function* processPrompt(
     // just its text. Any wake or interrupt that finally reaches the model must
     // enforce the same requiredTool as the refused attempt.
     requiredTool ??= state.budgetStash?.find((entry) => entry.requiredTool)?.requiredTool;
+    // Session turn control: a turn whose only work is carried steers starts
+    // with CARRIED_STEERS_WAKE_PROMPT, possibly followed by [SYSTEM: ...]
+    // notes (a timer interrupt, a child digest) and, on a retry, the turn's
+    // own <system_context> block. Keep the marker as the whole prompt and move
+    // every note into the turn's system context, so the worker can replace
+    // the marker with the carried text and the model never sees it.
+    const splitPrompt = splitSystemContextBlock(promptText);
+    const carriedOnlyTurn = state.carriedSteers.length > 0
+        && splitPrompt.prompt.startsWith(CARRIED_STEERS_WAKE_PROMPT);
     let prompt = promptText;
     let promptIsBootstrap = isBootstrap;
 
@@ -348,22 +390,38 @@ export function* processPrompt(
     // against the versioned store; state.needsHydration survives only as
     // one-shot normalization of legacy (≤1.0.56) continue-as-new inputs.
 
+    let carriedResumeNote: string | undefined;
     if (state.needsHydration && state.blobEnabled && prompt) {
-        prompt = wrapWithResumeContext(runtime, prompt);
+        if (carriedOnlyTurn) {
+            // The marker must stay the whole prompt: deliver the resume note
+            // (which consumes the pending rehydration message) as system context.
+            carriedResumeNote = extractPromptSystemContext(wrapWithResumeContext(runtime, "")).systemPrompt;
+        } else {
+            prompt = wrapWithResumeContext(runtime, prompt);
+        }
     }
 
     let turnSystemPrompt = state.pendingSystemPrompt;
     state.pendingSystemPrompt = undefined;
-    const extractedPrompt = extractPromptSystemContext(prompt);
+    const extractedPrompt = extractPromptSystemContext(carriedOnlyTurn
+        ? splitPrompt.prompt.slice(CARRIED_STEERS_WAKE_PROMPT.length)
+        : prompt);
     prompt = extractedPrompt.prompt ?? "";
     turnSystemPrompt = mergePrompt(turnSystemPrompt, extractedPrompt.systemPrompt);
+    if (carriedOnlyTurn) turnSystemPrompt = mergePrompt(mergePrompt(turnSystemPrompt, splitPrompt.note), carriedResumeNote);
     if (prompt && state.runtimeModelNotice) {
         turnSystemPrompt = mergePrompt(turnSystemPrompt, state.runtimeModelNotice);
         state.runtimeModelNotice = undefined;
     }
-    const systemOnlyTurn = !prompt && !!turnSystemPrompt;
+    const systemOnlyTurn = !carriedOnlyTurn && !prompt && !!turnSystemPrompt;
     if (systemOnlyTurn) {
         prompt = INTERNAL_SYSTEM_TURN_PROMPT;
+        promptIsBootstrap = true;
+    }
+    if (carriedOnlyTurn) {
+        // Machinery, never anybody's words: a retry continues as new without
+        // the queue's bootstrap flag, so set it here for every attempt.
+        prompt = CARRIED_STEERS_WAKE_PROMPT;
         promptIsBootstrap = true;
     }
     // 1.0.71: the note is delivered INSIDE the user turn, not the system
@@ -386,7 +444,7 @@ export function* processPrompt(
                 if (!state.preserveAffinityOnHydrate) {
                     state.affinityKey = yield ctx.newGuid();
                 }
-                runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "agent-handoff-v2");
+                runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "turn-control-v1");
                 yield runtime.session.hydrate();
                 state.needsHydration = false;
                 state.preserveAffinityOnHydrate = false;
@@ -407,10 +465,16 @@ export function* processPrompt(
                 hydrateAttempts++;
                 ctx.traceInfo(`[orch] hydrate FAILED (attempt ${hydrateAttempts}/${MAX_RETRIES}): ${hMsg}`);
                 if (hydrateAttempts >= MAX_RETRIES) {
+                    const giveUpMessage = `Hydrate failed after ${MAX_RETRIES} attempts: ${hMsg}`;
                     publishStatus(runtime, "error", {
-                        error: `Hydrate failed after ${MAX_RETRIES} attempts: ${hMsg}`,
+                        error: giveUpMessage,
                         retriesExhausted: true,
                     });
+                    const closed: any = yield runtime.manager.updateCmsState(runtime.input.sessionId, "error", giveUpMessage, null, { closeControls: true });
+                    yield* dropConvertedMessages(runtime, closed?.replacedClientMessageIds);
+                    state.carriedSteers = [];
+                    state.thrownTurnKey = null;
+                    state.retryCount = 0;
                     break;
                 }
                 const hydrateDelay = 10 * Math.pow(2, hydrateAttempts - 1);
@@ -433,20 +497,29 @@ export function* processPrompt(
 
     publishStatus(runtime, "running", { iteration: state.iteration + 1 });
     let turnResult: any;
+    // 1.0.81: the key this attempt sends, kept for a retry if it throws.
+    let attemptTurnKey = "";
     try {
-        // Stop-turn race: the in-flight runTurn activity vs a dequeue on the
-        // TURN-SCOPED stop queue (stopTurn.<iteration>). Scoping the queue to
-        // the turn index makes stale stop events structurally unable to kill a
-        // later turn — a race loser is dropped and cannot be un-dropped.
-        // When the stop wins, duroxide cancel-requests the dropped runTurn
-        // work item (lock-steal → isCancelled poll → SDK abort) as the
-        // guaranteed backstop; handleTurnStopped layers the fast-path
-        // same-affinity abortTurn on top.
+        // V4 applies CMS controls inside the activity. Do not race away its
+        // result: its saved conversation and control outcomes are authoritative.
         // Lifecycle protocol: a deterministic per-turn key (recorded GUID)
         // rides in the activity input with the last committed version. The
         // worker self-validates against them (preamble) and commits the
         // post-turn snapshot inside the activity, returning the new version.
-        const snapshotTurnKey: string = state.blobEnabled ? yield ctx.newGuid() : "";
+        //
+        // 1.0.81: the retry of an attempt that THREW sends that attempt's key
+        // again. If the attempt had already committed (a throw after the
+        // commit, for example a failed turn end), the preamble finds the turn
+        // saved under this key and adopts it: no second model run and no
+        // second commit. Otherwise the retry runs the turn normally. The key
+        // came from the earlier ctx.newGuid(), so nothing new is generated.
+        const reusedTurnKey = state.blobEnabled && state.retryCount > 0 && state.thrownTurnKey
+            ? state.thrownTurnKey
+            : null;
+        if (reusedTurnKey) ctx.traceInfo(`[orch] retrying a thrown turn with its earlier turnKey ${reusedTurnKey}`);
+        const snapshotTurnKey: string = reusedTurnKey ?? (state.blobEnabled ? yield ctx.newGuid() : "");
+        attemptTurnKey = snapshotTurnKey;
+        state.thrownTurnKey = null;
         const heldAttachments = sanitizePromptAttachmentRefs(
             (state.budgetStash ?? []).flatMap((entry) => entry.attachments ?? []));
         const turnTask = runtime.session.runTurn(prompt, promptIsBootstrap, state.iteration, {
@@ -467,6 +540,7 @@ export function* processPrompt(
             ...(state.budgetStash && state.budgetStash.length > 0
                 ? { stashedPrompts: state.budgetStash.map((s) => s.prompt) }
                 : {}),
+            ...(state.carriedSteers.length > 0 ? { carriedSteers: [...state.carriedSteers] } : {}),
             // 1.0.80: images held with those prompts reach the model too, kept
             // apart so the new prompt's user.message is not credited with them.
             ...(heldAttachments.length > 0 ? { stashedAttachments: heldAttachments } : {}),
@@ -493,24 +567,7 @@ export function* processPrompt(
                 ? { snapshot: { turnKey: snapshotTurnKey } }
                 : {}),
         });
-        const stopTask = ctx.dequeueEvent(stopTurnQueueName(state.iteration));
-        const race: any = yield ctx.race(turnTask, stopTask);
-
-        if (race.index === 1) {
-            yield* handleTurnStopped(runtime, race.value, clientMessageIds);
-            return;
-        }
-
-        // duroxide-node 0.2.0+ throws from the race when a failed runTurn
-        // wins, and that error reaches the retry machinery in the catch
-        // below. Older releases returned the raw error text as the value
-        // instead; this re-throw keeps that shape working, with the same
-        // message.
-        const raced = normalizeRacedTurnValue(race.value);
-        if (raced.kind === "error") {
-            throw new Error(raced.message);
-        }
-        turnResult = raced.result;
+        turnResult = yield turnTask;
 
         // Session regeneration: the rebirth is PROVEN only by the epoch-start
         // turn's committed snapshot (or, for storeless sessions, a non-error
@@ -551,17 +608,22 @@ export function* processPrompt(
         }
     } catch (err: any) {
         state.config.turnSystemPrompt = undefined;
+        // 1.0.81: keep this attempt's key for the retry of the same turn.
+        state.thrownTurnKey = attemptTurnKey || null;
         const errorMsg = err.message || String(err);
         const missingStateIndex = errorMsg.indexOf(SESSION_STATE_MISSING_PREFIX);
         if (missingStateIndex >= 0) {
             const fatalError = errorMsg.slice(missingStateIndex + SESSION_STATE_MISSING_PREFIX.length).trim();
             ctx.traceInfo(`[orch] fatal missing session state: ${fatalError}`);
             publishStatus(runtime, "failed", { error: fatalError, fatal: true });
+            state.carriedSteers = [];
+            state.thrownTurnKey = null;
             yield runtime.manager.updateCmsState(runtime.input.sessionId, "failed", fatalError);
             throw new Error(fatalError);
         }
 
         if (isAuthFailureError(errorMsg)) {
+            state.thrownTurnKey = null;
             ctx.traceInfo(`[orch] runTurn FAILED with auth error; not retrying: ${errorMsg}`);
             yield* projectAuthFailure(runtime, errorMsg);
             return;
@@ -576,6 +638,9 @@ export function* processPrompt(
             requiredTool,
             cycleOrigin,
             turnSystemPrompt,
+            clientMessageIds,
+            sender,
+            attachments,
             phase: "runTurn.throw",
         };
 
@@ -590,6 +655,19 @@ export function* processPrompt(
     state.config.turnSystemPrompt = undefined;
 
     let result: TurnResult = typeof turnResult === "string" ? JSON.parse(turnResult) : turnResult;
+    // Queued messages that delivered converted steers replaced never run as
+    // their own turn. Handled before anything else can dequeue them.
+    yield* dropConvertedMessages(runtime, (result as any)?.replacedClientMessageIds);
+    // Carried steers leave the state only on proof of consumption (plan P12),
+    // which includes a stopped consuming turn (D6). A returned error keeps
+    // them even when the model ran: its retry re-sends the same prompt and
+    // folds them again. Late steers of this turn are appended after the clear.
+    if (result.type !== "error" && result.carriedSteersConsumed === true) {
+        state.carriedSteers = [];
+    }
+    if (result.lateSteers?.length) {
+        state.carriedSteers.push(...result.lateSteers);
+    }
     // Reset the retry counter only when the turn actually succeeded. This
     // blanket-reset used to run for EVERY returned result — including
     // {type:"error"} — so a failure the activity returned (rather than
@@ -672,116 +750,6 @@ export function* processPrompt(
 
     yield* handleTurnResult(runtime, result, prompt, cycleOrigin, clientMessageIds, promptIsBootstrap, requiredTool, sender, attachments);
 }
-
-// ─── Stop-turn race support ─────────────────────────────────
-
-/**
- * Normalize a raced runTurn branch value. duroxide-node before 0.2.0
- * flattened activity failures into their raw error string
- * (make_select_future: `Ok(v) => v, Err(e) => e`) instead of throwing into
- * the generator, so the caller must distinguish a TurnResult payload from an
- * error message. 0.2.0+ throws instead; frozen orchestration versions and
- * this one keep calling this for both shapes.
- */
-export function normalizeRacedTurnValue(value: any): { kind: "result"; result: any } | { kind: "error"; message: string } {
-    let v = value;
-    if (typeof v === "string") {
-        try {
-            v = JSON.parse(v);
-        } catch {
-            return { kind: "error", message: value };
-        }
-    }
-    if (v && typeof v === "object" && typeof (v as any).type === "string") {
-        return { kind: "result", result: v };
-    }
-    return { kind: "error", message: typeof value === "string" ? value : JSON.stringify(value ?? null) };
-}
-
-/**
- * Stop won the race against the in-flight runTurn activity.
- *
- * The dropped runTurn future is already cancel-requested by duroxide (the
- * guaranteed backstop: lock-steal → isCancelled poll → SDK abort, ~2-7s).
- * This path layers the fast-path interrupt on top and owns the authoritative
- * durable bookkeeping — the aborted activity's own writeback is best-effort
- * (it is skipped entirely when the backstop delivered the abort).
- */
-function* handleTurnStopped(
-    runtime: DurableSessionRuntime,
-    stopEventRaw: any,
-    clientMessageIds?: string[],
-): Generator<any, void, any> {
-    const { ctx, state } = runtime;
-    let stopEvent: any = stopEventRaw;
-    if (typeof stopEvent === "string") {
-        try { stopEvent = JSON.parse(stopEvent); } catch { stopEvent = {}; }
-    }
-    if (!stopEvent || typeof stopEvent !== "object") stopEvent = {};
-    const reason = typeof stopEvent.reason === "string" && stopEvent.reason ? stopEvent.reason : "Stopped by user";
-    const stoppedIteration = state.iteration;
-
-    ctx.traceInfo(`[orch] stop_turn won the race for turn ${stoppedIteration}; aborting in-flight turn`);
-    state.config.turnSystemPrompt = undefined;
-    state.retryCount = 0;
-
-    // Fast-path interrupt: same-affinity abortTurn lands on the worker owning
-    // the warm session and aborts the SDK request immediately (concurrent
-    // dispatch requires stable workerNodeId + a free slot; otherwise the
-    // backstop still stops the turn, just slower). Awaiting it also
-    // guarantees the per-session run-turn lock is free again before this
-    // loop can dispatch the next prompt.
-    let abortOutcome: any = null;
-    try {
-        const raw: any = yield runtime.session.abortTurn(reason, stoppedIteration);
-        abortOutcome = typeof raw === "string" ? JSON.parse(raw) : raw;
-    } catch (err: any) {
-        ctx.traceInfo(`[orch] abortTurn activity failed (backstop cancellation still applies): ${err?.message ?? err}`);
-        abortOutcome = { outcome: "no_active_turn", detail: `abortTurn failed: ${err?.message ?? err}` };
-    }
-
-    // The race already decided the turn's fate: even when abortTurn reports
-    // no_active_turn (the backstop got there first, or the turn had just
-    // ended), the user's stop is the durable outcome. Record turn_stopped
-    // unconditionally and annotate how the interrupt was delivered.
-    yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [
-        {
-            eventType: "session.turn_stopped",
-            data: {
-                reason,
-                turnIndex: stoppedIteration,
-                interrupt: abortOutcome?.outcome ?? "unknown",
-                ...(abortOutcome?.detail ? { detail: abortOutcome.detail } : {}),
-                ...(clientMessageIds && clientMessageIds.length > 0 ? { clientMessageIds } : {}),
-            },
-        },
-        { eventType: "system.message", data: { content: "Turn stopped by user." } },
-    ]);
-    // Authoritative CMS transition — also clears active_turn_index (migration
-    // 0024 clears it on any state transition away from "running").
-    yield runtime.manager.updateCmsState(runtime.input.sessionId, "idle");
-
-    // The turn ran and consumed context even though its result was discarded.
-    state.iteration++;
-
-    if (typeof stopEvent.id === "string" && stopEvent.id) {
-        yield* writeCommandResponse(runtime, {
-            id: stopEvent.id,
-            cmd: "stop_turn",
-            result: {
-                outcome: abortOutcome?.outcome === "stop_forced" ? "stop_forced" : "stopped",
-                turnIndex: stoppedIteration,
-                ...(abortOutcome?.detail ? { detail: abortOutcome.detail } : {}),
-            },
-        });
-    }
-
-    // Same scheduling semantics as a completed turn: resume interrupted
-    // timers, re-arm cron schedules, else idle (skips: writeLatestResponse,
-    // parent CHILD_UPDATE notify, forgotten-timer nudge).
-    yield* schedulePostTurnContinuation(runtime);
-}
-
 
 // ─── Post-turn continuation: resume timers / re-arm schedules / go idle ───
 //
@@ -1137,7 +1105,7 @@ function* applyAgentWorkspaceChange(runtime: DurableSessionRuntime, result: Turn
     const extraPaths = action.extraPaths && typeof action.extraPaths === "object" ? action.extraPaths as Record<string, string> : null;
     if (next) state.config.workspace = next;
     else delete state.config.workspace;
-    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "agent-handoff-v2");
+    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "turn-control-v1");
     state.workspaceRevision = revision;
     state.workspaceNotice = [workspaceChangedNote(previous, next, path), next ? extraFoldersChangedNote(previous, next, extraPaths) : undefined]
         .filter(Boolean).join(" ");
@@ -1578,11 +1546,8 @@ export function* handleTurnResult(
             return;
 
         case "stopped": {
-            // Defensive: a turn only classifies "stopped" when the stop marker
-            // was set, which normally means handleTurnStopped already ran via
-            // the race. Handle it anyway so a marker-set turn that somehow
-            // returns through the normal path still lands idle with the event
-            // trail (processPrompt already incremented state.iteration).
+            // The V4 activity owns Stop settlement; preserve schedules and
+            // avoid a second transcript line beside the durable user.stop.
             ctx.traceInfo("[session] turn reported stopped");
             state.retryCount = 0;
             yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
@@ -1627,6 +1592,7 @@ export function* handleTurnResult(
                 const fatalError = result.message.slice(missingStateIndex + SESSION_STATE_MISSING_PREFIX.length).trim();
                 ctx.traceInfo(`[orch] fatal missing session state: ${fatalError}`);
                 publishStatus(runtime, "failed", { error: fatalError, fatal: true });
+                state.carriedSteers = [];
                 yield runtime.manager.updateCmsState(runtime.input.sessionId, "failed", fatalError);
                 throw new Error(fatalError);
             }
@@ -1654,6 +1620,9 @@ export function* handleTurnResult(
                 systemOnlyTurn: false,
                 requiredTool,
                 cycleOrigin,
+                clientMessageIds,
+                sender,
+                attachments,
                 phase: "turn.result.error",
             };
 

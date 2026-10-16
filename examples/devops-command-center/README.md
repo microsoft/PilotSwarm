@@ -93,6 +93,11 @@ shared or personal provider instance, then set the user/cluster/system defaults
 needed by the sample. The checked-in model catalog is type-only; credentials,
 budgets, allowances, and holds are runtime CMS state.
 
+If a selected Chat Completions endpoint limits tool declarations, validate its
+compatibility before adding the model's optional `toolCatalog` capability.
+Dispatch is off by default and is not enabled by a router name. It keeps tools
+callable but does not reduce schema tokens. See [Tool Catalog Overflow](../../docs/developer/reference/configuration.md#tool-catalog-overflow-toolcatalog).
+
 This launches the full TUI with:
 - Agent picker showing Investigator, Deployer, Reporter, and Builder when you press `n`
 - `Shift+N` opening the model picker first, then the same agent picker

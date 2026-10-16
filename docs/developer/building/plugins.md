@@ -531,9 +531,18 @@ Completions:
 ]
 ```
 
-Only `openai`, `openai-proxy` and `azure` models accept `wireApi`. Any other
+Only `openai`, `openai-proxy`, `azure`, and `foundry-wif` models accept `wireApi`. Any other
 value or type fails the catalog load, naming the `provider:model`. See
 [Configuration](../reference/configuration.md#request-format-wireapi).
+
+A model on a validated OpenAI-compatible Chat Completions endpoint may also
+declare `toolCatalog: { "maxDeclarations": 128, "overflowStrategy": "typed-dispatch" }`.
+Omitting it leaves overflow dispatch off, even for a model router. The
+capability applies only above the outgoing declaration limit and follows the
+selected catalog entry across model switches and resume. It is independent of
+deployment names; Responses and native GitHub/Anthropic paths reject this opt-in.
+See [Tool Catalog Overflow](../reference/configuration.md#tool-catalog-overflow-toolcatalog)
+for operator configuration, runtime-provider inheritance, and safety constraints.
 
 Credentials are write-only runtime provider data. Create shared/personal
 instances through Admin Console or `PilotSwarmManagementClient`; never check
