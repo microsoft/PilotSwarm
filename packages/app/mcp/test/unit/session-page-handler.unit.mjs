@@ -203,23 +203,19 @@ async function run() {
         //
         // 2000.5 is the discriminating input: large enough to otherwise serve a
         // real page, so the ONLY reason to refuse it is the safe-integer check.
-        for (const bad of [2000.5, 1.5, -1.5, Number.NaN]) {
-            let r;
-            try {
-                r = await client.callTool({
-                    name: "get_session_events",
-                    arguments: { session_id: SESSION, page: true, max_bytes: bad },
-                });
-            } catch (e) {
-                // A transport/schema rejection is NOT the product behaviour
-                // under test. Record it as its own outcome rather than
-                // laundering an unrelated exception into a pass.
-                record(`non-integer max_bytes (${String(bad)}) rejected upstream, handler guard NOT exercised`,
-                    String(bad) === "NaN",
-                    `unexpected upstream rejection: ${String(e?.message ?? e).slice(0, 120)}`,
-                    "schema rejected before the handler");
-                continue;
-            }
+        //
+        // NaN is deliberately NOT in this loop. The schema rejects it before
+        // dispatch, so an end-to-end case could only ever assert "something
+        // threw" — a blanket catch that passes on any unrelated transport or
+        // RPC error. NaN is covered properly below, against the real captured
+        // handler. There is no try/catch here: these are ordinary JSON numbers
+        // the schema accepts, so they MUST reach the handler. If one throws,
+        // that is a genuine failure and should surface as one.
+        for (const bad of [2000.5, 1.5, -1.5]) {
+            const r = await client.callTool({
+                name: "get_session_events",
+                arguments: { session_id: SESSION, page: true, max_bytes: bad },
+            });
             const t = r.content?.[0]?.text ?? "";
             const saysSafeInteger = /max_bytes must be a safe integer/.test(t);
             record(`non-integer max_bytes (${String(bad)}) hits the safe-integer guard`,
