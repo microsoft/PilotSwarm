@@ -23,7 +23,34 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpServer } from "../../dist/src/server.js";
+import { registerSessionTools } from "../../dist/src/tools/sessions.js";
 import { makeServerContext } from "./helpers/fake-context.mjs";
+
+/**
+ * Capture the REAL registered callback for a tool, with no schema in the path.
+ *
+ * Needed because the tool schema rejects NaN before the request ever reaches
+ * the handler, so an end-to-end call can never exercise the handler's own
+ * safe-integer branch. Routing round the schema is the ONLY way to show that
+ * the defence-in-depth guard itself works — and that guard exists precisely
+ * for the day the schema changes.
+ *
+ * This registers the real `registerSessionTools` against a minimal collector,
+ * so the callback under test is the shipped one, not a copy.
+ */
+function captureSessionTool(name, ctx) {
+    let captured = null;
+    const collector = {
+        registerTool(toolName, _spec, handler) {
+            if (toolName === name) captured = handler;
+        },
+        registerResource() {},
+        registerPrompt() {},
+    };
+    registerSessionTools(collector, ctx);
+    if (!captured) throw new Error(`[test] tool "${name}" was not registered; capture failed`);
+    return captured;
+}
 
 const results = [];
 /**
@@ -200,6 +227,39 @@ async function run() {
                 `expected the safe-integer error, got: ${t.slice(0, 160)}`);
             record(`non-integer max_bytes (${String(bad)}) emits no page`,
                 !/"events"/.test(t) && !/"transcript"/.test(t), t.slice(0, 120));
+        }
+
+        // The NaN branch CANNOT be reached end-to-end: the schema rejects NaN
+        // before dispatch. That is correct behaviour and good defence — but it
+        // means an end-to-end case can never demonstrate the handler's own
+        // guard, which exists for the day the schema changes.
+        //
+        // So call the REAL registered callback directly, with no schema in the
+        // path. This is the only way to prove the guard discriminates rather
+        // than relying on a layer above it.
+        {
+            const handler = captureSessionTool("get_session_events", makeServerContext({ mgmt: sessionMgmt(all) }));
+
+            const nanRes = await handler({
+                session_id: SESSION, page: true, max_bytes: Number.NaN,
+            });
+            const nanText = nanRes?.content?.[0]?.text ?? "";
+            record("DIRECT: the handler itself rejects NaN max_bytes (schema bypassed)",
+                nanRes?.isError === true && /max_bytes must be a safe integer/.test(nanText),
+                `expected the safe-integer error, got: ${nanText.slice(0, 160)}`);
+            record("DIRECT: the NaN rejection names NaN rather than a number",
+                /"received":\s*"NaN"/.test(nanText), nanText.slice(0, 160));
+            record("DIRECT: the NaN rejection emits no page",
+                !/"events"/.test(nanText) && !/"transcript"/.test(nanText), nanText.slice(0, 120));
+
+            // POSITIVE CONTROL. Without this the three lines above could pass
+            // on a handler that refused everything. The same captured callback
+            // must serve an ordinary budget.
+            const okRes = await handler({ session_id: SESSION, page: true, max_bytes: 200000 });
+            const okText = okRes?.content?.[0]?.text ?? "";
+            record("DIRECT control: the same captured handler serves a valid budget",
+                okRes?.isError !== true && /"events"/.test(okText),
+                okRes?.isError ? `refused: ${okText.slice(0, 140)}` : "no events in a successful response");
         }
     }
 
