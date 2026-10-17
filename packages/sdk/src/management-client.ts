@@ -170,6 +170,16 @@ import {
     readAgentPackageVersionEntries,
     resolveAgentPackageVersion,
 } from "./agent-package-service.js";
+import {
+    publishCanvasAppHtml, readCanvasAppHtml, deleteCanvasApp, exportCanvasApp, importCanvasApp,
+    migrateLegacyCanvasApps, pruneCanvasAppArtifacts, CANVAS_APP_DESCRIPTION_MIN,
+    type CanvasAppRegistryDeps, type PublishCanvasAppHtmlResult,
+} from "./canvas-app-registry.js";
+import {
+    CanvasAppError,
+    type CanvasAppViewer, type CanvasAppTarget, type CanvasAppSummary, type CanvasAppDetail,
+    type CanvasAppSearchHit, type CanvasAppLoadPage,
+} from "./canvas-app-store.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -5116,6 +5126,199 @@ export class PilotSwarmManagementClient {
             throw new Error("agent-package artifact operations require an artifact store in direct mode");
         }
         return this._artifactStore;
+    }
+
+    // ── Canvas app registry (issue 181) ───────────────────────────────
+    //
+    // Every op takes one args object plus the caller (principal, resourceAdmin).
+    // resourceAdmin is the UNRESTRICTED admin; a cluster-scoped admin passes
+    // false. Authorization is in the cms_canvas_app_* procedures; errors carry
+    // the public code (NOT_FOUND, FORBIDDEN, NAME_TAKEN, NO_OWNER,
+    // VERSION_EXISTS, APP_DISABLED, …) and an HTTP status.
+
+    private _canvasAppDeps(): CanvasAppRegistryDeps {
+        this._ensureStarted();
+        const store = this._catalog?.canvasApps;
+        if (!store) throw Object.assign(new Error("the canvas app registry needs the CMS catalog"), { code: "UNAVAILABLE", status: 503 });
+        if (!this._artifactStore) throw Object.assign(new Error("the canvas app registry needs an artifact store in direct mode"), { code: "UNAVAILABLE", status: 503 });
+        return { store, artifactStore: this._artifactStore };
+    }
+
+    private _canvasViewer(owner: AgentPrincipal | null | undefined, resourceAdmin: boolean): CanvasAppViewer {
+        return {
+            principal: owner?.provider && owner?.subject ? { provider: owner.provider, subject: owner.subject } : null,
+            resourceAdmin: Boolean(resourceAdmin),
+        };
+    }
+
+    private _canvasTarget(args: any): CanvasAppTarget {
+        const name = String(args?.name ?? "").trim();
+        if (!name) throw new CanvasAppError("BAD_REQUEST", "name is required");
+        const scope = args?.scope === "shared" || args?.scope === "user" ? args.scope : null;
+        const provider = String(args?.ownerProvider ?? args?.owner?.provider ?? "").trim();
+        const subject = String(args?.ownerSubject ?? args?.owner?.subject ?? "").trim();
+        return { name, scope, owner: provider && subject ? { provider, subject } : null };
+    }
+
+    async listCanvasApps(_args: Record<string, unknown> | null, owner: AgentPrincipal | null, resourceAdmin: boolean): Promise<CanvasAppSummary[]> {
+        return this._canvasAppDeps().store.list(this._canvasViewer(owner, resourceAdmin));
+    }
+
+    async searchCanvasApps(args: { query?: string; limit?: number }, owner: AgentPrincipal | null, resourceAdmin: boolean): Promise<CanvasAppSearchHit[]> {
+        const limit = Math.max(1, Math.min(20, Math.floor(Number(args?.limit) || 8)));
+        return this._canvasAppDeps().store.search(this._canvasViewer(owner, resourceAdmin), String(args?.query ?? ""), limit);
+    }
+
+    async getCanvasApp(args: { name: string; scope?: string; ownerProvider?: string; ownerSubject?: string }, owner: AgentPrincipal | null, resourceAdmin: boolean): Promise<CanvasAppDetail> {
+        return this._canvasAppDeps().store.get(this._canvasTarget(args), this._canvasViewer(owner, resourceAdmin));
+    }
+
+    /** The page bytes as JSON (never served as text/html). */
+    async getCanvasAppHtml(args: { name: string; version?: string; scope?: string; ownerProvider?: string; ownerSubject?: string }, owner: AgentPrincipal | null, resourceAdmin: boolean) {
+        const { html, resolved } = await readCanvasAppHtml(this._canvasAppDeps(), this._canvasTarget(args), this._canvasViewer(owner, resourceAdmin), args?.version ?? null);
+        return { name: resolved.name, version: resolved.version, sha256: resolved.sha256, sizeBytes: resolved.sizeBytes, scope: resolved.scope, html };
+    }
+
+    /** Publish the canvas on a session slot (the caller must be able to write the session). */
+    async publishCanvasApp(
+        args: { sessionId: string; slot?: number; name: string; description?: string; tags?: string[]; scope?: string; version?: string },
+        owner: AgentPrincipal | null,
+        resourceAdmin: boolean,
+    ): Promise<PublishCanvasAppHtmlResult> {
+        const deps = this._canvasAppDeps();
+        const sessionId = String(args?.sessionId ?? "");
+        const slot = normalizeShareSlot(args?.slot ?? 1);
+        const latest = await latestCanvasEventData(this._catalog, sessionId, slot);
+        if (latest.rev === 0) throw new CanvasAppError("BAD_REQUEST", `no canvas has been drawn on slot ${slot}`);
+        const html = await deps.artifactStore.downloadArtifactText(sessionId, canvasArtifactFilename(slot));
+        const result = await publishCanvasAppHtml(deps, {
+            html, name: args?.name, scope: args?.scope === "shared" ? "shared" : "user",
+            version: args?.version ?? null, description: args?.description ?? null, tags: args?.tags ?? null,
+            responseContract: latest.responseContract, viewer: this._canvasViewer(owner, resourceAdmin),
+            sourceSessionId: sessionId, sourceSlot: slot, createdBy: owner ? `${owner.provider}:${owner.subject}` : null,
+        });
+        await this._catalog!.recordEvents(sessionId, [{
+            eventType: "session.canvas_app_published",
+            data: { appId: result.appId, versionId: result.versionId, name: String(args?.name ?? ""), version: result.version, scope: result.scope, slot, rev: latest.rev, sha256: result.sha256 },
+        }]).catch(() => { /* telemetry */ });
+        return result;
+    }
+
+    /** Publish raw HTML (≤ 900 KB) without a session. */
+    async uploadCanvasApp(
+        args: { html: string; name: string; description?: string; tags?: string[]; scope?: string; version?: string },
+        owner: AgentPrincipal | null,
+        resourceAdmin: boolean,
+    ): Promise<PublishCanvasAppHtmlResult> {
+        return publishCanvasAppHtml(this._canvasAppDeps(), {
+            html: String(args?.html ?? ""), name: args?.name, scope: args?.scope === "shared" ? "shared" : "user",
+            version: args?.version ?? null, description: args?.description ?? null, tags: args?.tags ?? null,
+            viewer: this._canvasViewer(owner, resourceAdmin), createdBy: owner ? `${owner.provider}:${owner.subject}` : null,
+        });
+    }
+
+    async setCanvasAppScope(args: { name: string; scope?: string; targetScope: string; ownerProvider?: string; ownerSubject?: string }, owner: AgentPrincipal | null, resourceAdmin: boolean): Promise<{ ok: true }> {
+        const target = this._canvasTarget(args);
+        const to = args?.targetScope === "shared" ? "shared" : args?.targetScope === "user" ? "user" : null;
+        if (!to) throw new CanvasAppError("BAD_SCOPE", "targetScope must be shared or user");
+        await this._canvasAppDeps().store.setScope(target, to, this._canvasViewer(owner, resourceAdmin));
+        return { ok: true };
+    }
+
+    async setCanvasAppEnabled(args: { name: string; enabled: boolean; scope?: string; ownerProvider?: string; ownerSubject?: string }, owner: AgentPrincipal | null, resourceAdmin: boolean): Promise<{ ok: true }> {
+        await this._canvasAppDeps().store.setEnabled(this._canvasTarget(args), Boolean(args?.enabled), this._canvasViewer(owner, resourceAdmin));
+        return { ok: true };
+    }
+
+    async setCanvasAppMetadata(args: { name: string; description?: string; tags?: string[]; scope?: string; ownerProvider?: string; ownerSubject?: string }, owner: AgentPrincipal | null, resourceAdmin: boolean): Promise<{ ok: true }> {
+        const description = args?.description == null ? null : String(args.description).trim();
+        if (description !== null && description.length < CANVAS_APP_DESCRIPTION_MIN) {
+            throw new CanvasAppError("BAD_REQUEST", "description must say WHEN to use the app, in at least one full sentence");
+        }
+        await this._canvasAppDeps().store.setMetadata(this._canvasTarget(args), {
+            description, tags: Array.isArray(args?.tags) ? args.tags.map((t) => String(t).trim().toLowerCase()).filter(Boolean) : null,
+        }, this._canvasViewer(owner, resourceAdmin));
+        return { ok: true };
+    }
+
+    async pinCanvasAppVersion(args: { name: string; version: string; scope?: string; ownerProvider?: string; ownerSubject?: string }, owner: AgentPrincipal | null, resourceAdmin: boolean): Promise<{ ok: true; versionId: string }> {
+        const versionId = await this._canvasAppDeps().store.pin(this._canvasTarget(args), String(args?.version ?? ""), this._canvasViewer(owner, resourceAdmin));
+        return { ok: true, versionId };
+    }
+
+    async deleteCanvasApp(args: { name: string; scope?: string; ownerProvider?: string; ownerSubject?: string }, owner: AgentPrincipal | null, resourceAdmin: boolean) {
+        return deleteCanvasApp(this._canvasAppDeps(), this._canvasTarget(args), this._canvasViewer(owner, resourceAdmin));
+    }
+
+    async grantCanvasAppEditor(args: { name: string; user: { provider: string; subject: string } }, owner: AgentPrincipal | null, resourceAdmin: boolean): Promise<{ ok: true }> {
+        const provider = String(args?.user?.provider ?? "").trim();
+        const subject = String(args?.user?.subject ?? "").trim();
+        if (!provider || !subject) throw new CanvasAppError("BAD_REQUEST", "user { provider, subject } is required");
+        await this._canvasAppDeps().store.grantEditor(String(args?.name ?? ""), { provider, subject }, this._canvasViewer(owner, resourceAdmin));
+        return { ok: true };
+    }
+
+    async revokeCanvasAppEditor(args: { name: string; user: { provider: string; subject: string } }, owner: AgentPrincipal | null, resourceAdmin: boolean): Promise<{ ok: true }> {
+        const provider = String(args?.user?.provider ?? "").trim();
+        const subject = String(args?.user?.subject ?? "").trim();
+        if (!provider || !subject) throw new CanvasAppError("BAD_REQUEST", "user { provider, subject } is required");
+        await this._canvasAppDeps().store.revokeEditor(String(args?.name ?? ""), { provider, subject }, this._canvasViewer(owner, resourceAdmin));
+        return { ok: true };
+    }
+
+    async listCanvasAppEditors(args: { name: string }, owner: AgentPrincipal | null, resourceAdmin: boolean) {
+        return this._canvasAppDeps().store.listEditors(String(args?.name ?? ""), this._canvasViewer(owner, resourceAdmin));
+    }
+
+    /** The archive as base64 (an attachment, never text/html). */
+    async exportCanvasApp(args: { name: string; scope?: string; ownerProvider?: string; ownerSubject?: string }, owner: AgentPrincipal | null, resourceAdmin: boolean) {
+        const out = await exportCanvasApp(this._canvasAppDeps(), this._canvasTarget(args), this._canvasViewer(owner, resourceAdmin));
+        return { filename: out.filename, sha256: out.sha256, sizeBytes: out.bytes.length, contentBase64: out.bytes.toString("base64") };
+    }
+
+    async importCanvasApp(args: { contentBase64: string; scope?: string }, owner: AgentPrincipal | null, resourceAdmin: boolean) {
+        const bytes = Buffer.from(String(args?.contentBase64 ?? ""), "base64");
+        return importCanvasApp(this._canvasAppDeps(), bytes, this._canvasViewer(owner, resourceAdmin), {
+            scope: args?.scope === "shared" ? "shared" : "user",
+            createdBy: owner ? `${owner.provider}:${owner.subject}` : null,
+        });
+    }
+
+    /** One-time import of legacy apps/* facts (unrestricted admin; dry run unless dryRun === false). */
+    async migrateLegacyCanvasApps(args: { dryRun?: boolean }, owner: AgentPrincipal | null, resourceAdmin: boolean) {
+        const deps = this._canvasAppDeps();
+        if (!this._factStore) throw Object.assign(new Error("the legacy migration needs the facts store"), { code: "UNAVAILABLE", status: 503 });
+        return migrateLegacyCanvasApps({
+            ...deps,
+            factStore: this._factStore,
+            sessionOwner: async (id) => {
+                const row = await this._catalog!.getSession(id).catch(() => null);
+                return row?.owner?.provider && row?.owner?.subject ? { provider: row.owner.provider, subject: row.owner.subject } : null;
+            },
+        }, this._canvasViewer(owner, resourceAdmin), { dryRun: args?.dryRun !== false });
+    }
+
+    async getCanvasAppLoads(
+        args: { name: string; scope?: string; ownerProvider?: string; ownerSubject?: string; limit?: number; cursorAt?: string; cursorId?: string; since?: string; until?: string },
+        owner: AgentPrincipal | null,
+        resourceAdmin: boolean,
+    ): Promise<CanvasAppLoadPage> {
+        return this._canvasAppDeps().store.listLoads(this._canvasTarget(args), this._canvasViewer(owner, resourceAdmin), {
+            limit: args?.limit,
+            since: args?.since ? new Date(args.since) : null,
+            until: args?.until ? new Date(args.until) : null,
+            cursor: args?.cursorAt && args?.cursorId ? { loadedAt: String(args.cursorAt), loadId: String(args.cursorId) } : null,
+        });
+    }
+
+    /** Maintenance (unrestricted admin): expired loads, stale pending versions, unfinished deletes. */
+    async pruneCanvasApps(_args: Record<string, unknown> | null, _owner: AgentPrincipal | null, resourceAdmin: boolean) {
+        if (!resourceAdmin) throw new CanvasAppError("FORBIDDEN", "pruning the canvas app registry needs an unrestricted admin");
+        const deps = this._canvasAppDeps();
+        let loadsRemoved = 0;
+        for (let n = await deps.store.pruneLoads(new Date(), 1000); n > 0; n = await deps.store.pruneLoads(new Date(), 1000)) loadsRemoved += n;
+        const artifacts = await pruneCanvasAppArtifacts(deps);
+        return { loadsRemoved, ...artifacts };
     }
 
     async listAgentPackages(owner: AgentPrincipal | null, isAdmin: boolean): Promise<AgentPackageSummary[]> {

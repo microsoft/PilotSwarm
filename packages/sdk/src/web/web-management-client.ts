@@ -449,6 +449,65 @@ export class WebPilotSwarmManagementClient {
 
     // ── Agent packages / worker registry ──────────────────────────────
 
+    // ── Canvas app registry (issue 181): same signature as the direct client;
+    // the server derives the caller, so owner/resourceAdmin are ignored here.
+    async listCanvasApps(args: any = {}, _owner?: any, _resourceAdmin?: boolean): Promise<any> {
+        return (this.ops as any).listCanvasApps(args ?? {});
+    }
+    async searchCanvasApps(args: any = {}, _owner?: any, _resourceAdmin?: boolean): Promise<any> {
+        return (this.ops as any).searchCanvasApps(args ?? {});
+    }
+    async getCanvasApp(args: any = {}, _owner?: any, _resourceAdmin?: boolean): Promise<any> {
+        return (this.ops as any).getCanvasApp(args ?? {});
+    }
+    async getCanvasAppHtml(args: any = {}, _owner?: any, _resourceAdmin?: boolean): Promise<any> {
+        return (this.ops as any).getCanvasAppHtml(args ?? {});
+    }
+    async publishCanvasApp(args: any = {}, _owner?: any, _resourceAdmin?: boolean): Promise<any> {
+        return (this.ops as any).publishCanvasApp(args ?? {});
+    }
+    async uploadCanvasApp(args: any = {}, _owner?: any, _resourceAdmin?: boolean): Promise<any> {
+        return (this.ops as any).uploadCanvasApp(args ?? {});
+    }
+    async setCanvasAppScope(args: any = {}, _owner?: any, _resourceAdmin?: boolean): Promise<any> {
+        return (this.ops as any).setCanvasAppScope(args ?? {});
+    }
+    async setCanvasAppEnabled(args: any = {}, _owner?: any, _resourceAdmin?: boolean): Promise<any> {
+        return (this.ops as any).setCanvasAppEnabled(args ?? {});
+    }
+    async setCanvasAppMetadata(args: any = {}, _owner?: any, _resourceAdmin?: boolean): Promise<any> {
+        return (this.ops as any).setCanvasAppMetadata(args ?? {});
+    }
+    async pinCanvasAppVersion(args: any = {}, _owner?: any, _resourceAdmin?: boolean): Promise<any> {
+        return (this.ops as any).pinCanvasAppVersion(args ?? {});
+    }
+    async deleteCanvasApp(args: any = {}, _owner?: any, _resourceAdmin?: boolean): Promise<any> {
+        return (this.ops as any).deleteCanvasApp(args ?? {});
+    }
+    async grantCanvasAppEditor(args: any = {}, _owner?: any, _resourceAdmin?: boolean): Promise<any> {
+        return (this.ops as any).grantCanvasAppEditor(args ?? {});
+    }
+    async revokeCanvasAppEditor(args: any = {}, _owner?: any, _resourceAdmin?: boolean): Promise<any> {
+        return (this.ops as any).revokeCanvasAppEditor(args ?? {});
+    }
+    async listCanvasAppEditors(args: any = {}, _owner?: any, _resourceAdmin?: boolean): Promise<any> {
+        return (this.ops as any).listCanvasAppEditors(args ?? {});
+    }
+    async exportCanvasApp(args: any = {}, _owner?: any, _resourceAdmin?: boolean): Promise<any> {
+        return (this.ops as any).exportCanvasApp(args ?? {});
+    }
+    async importCanvasApp(args: any = {}, _owner?: any, _resourceAdmin?: boolean): Promise<any> {
+        return (this.ops as any).importCanvasApp(args ?? {});
+    }
+    async migrateLegacyCanvasApps(args: any = {}, _owner?: any, _resourceAdmin?: boolean): Promise<any> {
+        return (this.ops as any).migrateLegacyCanvasApps(args ?? {});
+    }
+    async getCanvasAppLoads(args: any = {}, _owner?: any, _resourceAdmin?: boolean): Promise<any> {
+        return (this.ops as any).getCanvasAppLoads(args ?? {});
+    }
+    async pruneCanvasApps(args: any = {}, _owner?: any, _resourceAdmin?: boolean): Promise<any> {
+        return (this.ops as any).pruneCanvasApps(args ?? {});
+    }
     async listAgentPackages(_owner: any, _isAdmin: boolean): Promise<any[]> {
         return this.ops.listAgentPackages();
     }

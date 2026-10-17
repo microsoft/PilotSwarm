@@ -1008,6 +1008,43 @@ export class PortalRuntime {
             }
             case "listAgentPackageEditors":
                 return this.transport.listAgentPackageEditors(safeParams.name);
+
+            // ── Canvas app registry (issue 181) ────────────────────
+            // Authorization is in the cms_canvas_app_* procedures; `owner` is
+            // the authenticated principal, `resourceAdmin` the unrestricted
+            // admin flag. publishCanvasApp's session write is checked by its
+            // access class before dispatch.
+            case "listCanvasApps":
+            case "searchCanvasApps":
+            case "getCanvasApp":
+            case "getCanvasAppHtml":
+            case "publishCanvasApp":
+            case "uploadCanvasApp":
+            case "setCanvasAppEnabled":
+            case "setCanvasAppMetadata":
+            case "pinCanvasAppVersion":
+            case "listCanvasAppEditors":
+            case "exportCanvasApp":
+            case "importCanvasApp":
+            case "getCanvasAppLoads":
+                return this.transport[method](safeParams, owner, resourceAdmin);
+            case "setCanvasAppScope":
+            case "deleteCanvasApp":
+            case "grantCanvasAppEditor":
+            case "revokeCanvasAppEditor":
+            case "migrateLegacyCanvasApps":
+            case "pruneCanvasApps": {
+                const result = await this.transport[method](safeParams, owner, resourceAdmin);
+                this._recordAudit({
+                    actor: this._auditActor(authContext),
+                    action: method,
+                    sessionId: null,
+                    target: safeParams.user ? `${safeParams.user.provider}/${safeParams.user.subject}` : String(safeParams.name ?? ""),
+                    decision: method === "grantCanvasAppEditor" || method === "revokeCanvasAppEditor" ? "share_change" : "canvas_app_change",
+                    reason: `canvasApp=${safeParams.name ?? ""}${safeParams.targetScope ? ` scope=${safeParams.targetScope}` : ""}${method === "migrateLegacyCanvasApps" ? ` dryRun=${safeParams.dryRun !== false}` : ""}`,
+                });
+                return result;
+            }
             case "pinAgentPackageVersion":
                 return this.transport.pinAgentPackageVersion(safeParams.name, safeParams.semver, owner, resourceAdmin, packageSelectorParams(safeParams));
             case "deleteAgentPackage":

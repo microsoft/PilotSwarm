@@ -749,6 +749,86 @@ export class NodeSdkTransport {
         return match.name;
     }
 
+    // ── Canvas app registry (issue 181) ─────────────────────────
+    // One args object, then the caller; the management client and the CMS
+    // procedures decide what the caller may see and change.
+
+    async listCanvasApps(args = {}, owner = this.currentUser, isAdmin = true) {
+        return this.mgmt.listCanvasApps(args ?? {}, owner, Boolean(isAdmin));
+    }
+
+    async searchCanvasApps(args = {}, owner = this.currentUser, isAdmin = true) {
+        return this.mgmt.searchCanvasApps(args ?? {}, owner, Boolean(isAdmin));
+    }
+
+    async getCanvasApp(args = {}, owner = this.currentUser, isAdmin = true) {
+        return this.mgmt.getCanvasApp(args ?? {}, owner, Boolean(isAdmin));
+    }
+
+    async getCanvasAppHtml(args = {}, owner = this.currentUser, isAdmin = true) {
+        return this.mgmt.getCanvasAppHtml(args ?? {}, owner, Boolean(isAdmin));
+    }
+
+    async publishCanvasApp(args = {}, owner = this.currentUser, isAdmin = true) {
+        return this.mgmt.publishCanvasApp(args ?? {}, owner, Boolean(isAdmin));
+    }
+
+    async uploadCanvasApp(args = {}, owner = this.currentUser, isAdmin = true) {
+        return this.mgmt.uploadCanvasApp(args ?? {}, owner, Boolean(isAdmin));
+    }
+
+    async setCanvasAppScope(args = {}, owner = this.currentUser, isAdmin = true) {
+        return this.mgmt.setCanvasAppScope(args ?? {}, owner, Boolean(isAdmin));
+    }
+
+    async setCanvasAppEnabled(args = {}, owner = this.currentUser, isAdmin = true) {
+        return this.mgmt.setCanvasAppEnabled(args ?? {}, owner, Boolean(isAdmin));
+    }
+
+    async setCanvasAppMetadata(args = {}, owner = this.currentUser, isAdmin = true) {
+        return this.mgmt.setCanvasAppMetadata(args ?? {}, owner, Boolean(isAdmin));
+    }
+
+    async pinCanvasAppVersion(args = {}, owner = this.currentUser, isAdmin = true) {
+        return this.mgmt.pinCanvasAppVersion(args ?? {}, owner, Boolean(isAdmin));
+    }
+
+    async deleteCanvasApp(args = {}, owner = this.currentUser, isAdmin = true) {
+        return this.mgmt.deleteCanvasApp(args ?? {}, owner, Boolean(isAdmin));
+    }
+
+    async grantCanvasAppEditor(args = {}, owner = this.currentUser, isAdmin = true) {
+        return this.mgmt.grantCanvasAppEditor(args ?? {}, owner, Boolean(isAdmin));
+    }
+
+    async revokeCanvasAppEditor(args = {}, owner = this.currentUser, isAdmin = true) {
+        return this.mgmt.revokeCanvasAppEditor(args ?? {}, owner, Boolean(isAdmin));
+    }
+
+    async listCanvasAppEditors(args = {}, owner = this.currentUser, isAdmin = true) {
+        return this.mgmt.listCanvasAppEditors(args ?? {}, owner, Boolean(isAdmin));
+    }
+
+    async exportCanvasApp(args = {}, owner = this.currentUser, isAdmin = true) {
+        return this.mgmt.exportCanvasApp(args ?? {}, owner, Boolean(isAdmin));
+    }
+
+    async importCanvasApp(args = {}, owner = this.currentUser, isAdmin = true) {
+        return this.mgmt.importCanvasApp(args ?? {}, owner, Boolean(isAdmin));
+    }
+
+    async migrateLegacyCanvasApps(args = {}, owner = this.currentUser, isAdmin = true) {
+        return this.mgmt.migrateLegacyCanvasApps(args ?? {}, owner, Boolean(isAdmin));
+    }
+
+    async getCanvasAppLoads(args = {}, owner = this.currentUser, isAdmin = true) {
+        return this.mgmt.getCanvasAppLoads(args ?? {}, owner, Boolean(isAdmin));
+    }
+
+    async pruneCanvasApps(args = {}, owner = this.currentUser, isAdmin = true) {
+        return this.mgmt.pruneCanvasApps(args ?? {}, owner, Boolean(isAdmin));
+    }
+
     // ── Agent packages: registry CRUD (portal ops surface) ──────
 
     async listAgentPackages(owner = this.currentUser, isAdmin = true) {
