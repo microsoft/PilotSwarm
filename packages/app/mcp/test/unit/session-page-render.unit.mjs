@@ -144,9 +144,28 @@ check("control characters are escaped", () => {
 });
 
 check("a carriage return cannot overwrite the line", () => {
+    // Regression: the original class ran \u000B\u000C then \u000E-\u001F,
+    // skipping \u000D entirely, so CR survived. A lone CR returns the cursor
+    // to column zero, letting injected text overwrite the line already
+    // rendered — the exact log-injection vector this escaping exists to stop.
     const out = escapeTranscriptText("real content\rFAKE");
     assert.ok(!out.includes("\r"));
     assert.ok(out.includes("\\x0d"));
+});
+
+check("every C0 control except tab and newline is escaped, and those two survive", () => {
+    // Pins the whole boundary rather than one character, so a future edit
+    // cannot silently reopen a hole next to the ones already covered.
+    for (let code = 0x00; code <= 0x1f; code++) {
+        const ch = String.fromCharCode(code);
+        const out = escapeTranscriptText(`a${ch}b`);
+        if (code === 0x09 || code === 0x0a) {
+            assert.ok(out.includes(ch), `code ${code} (tab/newline) must survive`);
+        } else {
+            assert.ok(!out.includes(ch), `code ${code} must be escaped`);
+        }
+    }
+    assert.ok(!escapeTranscriptText(`a\u007fb`).includes("\u007f"), "DEL must be escaped");
 });
 
 check("newlines and ordinary text survive unchanged", () => {
