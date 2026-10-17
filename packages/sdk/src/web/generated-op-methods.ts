@@ -74,6 +74,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getSessionCreationPolicy",
     "getSessionEvents",
     "getSessionEventsBefore",
+    "getSessionEventsPage",
     "getSessionFactsStats",
     "getSessionFootprint",
     "getSessionGraphEdgeSearchUsage",
@@ -781,6 +782,18 @@ export interface ManagementOps {
      */
     getSessionEventsBefore(params: {
         sessionId: string;
+        beforeSeq?: number;
+        limit?: number;
+        eventTypes?: any;
+    }): Promise<any>;
+
+    /**
+     * One page of session events plus a continuation receipt: mode (latest/forward/backward), delivered range, applied limit with the provider clamp disclosed, hasMore from an eligible-existence read, the next cursor and its direction, and a completeness strength. afterSeq and beforeSeq are mutually exclusive; omitting both returns the latest page, whose continuation is BACKWARD.
+     * @remarks `GET /management/sessions/:sessionId/events-page` — access: `session:read`
+     */
+    getSessionEventsPage(params: {
+        sessionId: string;
+        afterSeq?: number;
         beforeSeq?: number;
         limit?: number;
         eventTypes?: any;
@@ -1866,6 +1879,7 @@ export function createManagementOps(
         getSessionCreationPolicy: (params: Record<string, unknown> = {}) => callOp("getSessionCreationPolicy", params),
         getSessionEvents: (params: Record<string, unknown> = {}) => callOp("getSessionEvents", params),
         getSessionEventsBefore: (params: Record<string, unknown> = {}) => callOp("getSessionEventsBefore", params),
+        getSessionEventsPage: (params: Record<string, unknown> = {}) => callOp("getSessionEventsPage", params),
         getSessionFactsStats: (params: Record<string, unknown> = {}) => callOp("getSessionFactsStats", params),
         getSessionFootprint: (params: Record<string, unknown> = {}) => callOp("getSessionFootprint", params),
         getSessionGraphEdgeSearchUsage: (params: Record<string, unknown> = {}) => callOp("getSessionGraphEdgeSearchUsage", params),
