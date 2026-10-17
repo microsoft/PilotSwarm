@@ -1799,7 +1799,8 @@ export class NodeSdkTransport {
     async copyArtifact(fromSessionId, fromFilename, toSessionId, toFilename) {
         await this._refuseCanvasAppStorage(fromSessionId);
         await this._refuseCanvasAppStorage(toSessionId);
-        assertNotCanvasDocument(toFilename);
+        // An omitted or empty destination name is the source name (the store's rule).
+        assertNotCanvasDocument(toFilename || fromFilename);
         if (!this.artifactStore) {
             throw new Error("Artifact store is not available for this transport.");
         }

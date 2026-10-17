@@ -310,9 +310,19 @@ describe("canvas app registry: service", () => {
             await importCanvasApp(deps, archive.bytes, V.bob);
             const after = (await deps.store.get({ name }, V.bob)).versions[0].card;
             assertEqual(JSON.stringify(after.responseContract), JSON.stringify(contract), "the imported version arms the same contract");
-            // An archived contract that fails the checks is refused, never silently dropped.
             const parsed = readCanvasAppArchive(archive.bytes);
             assertEqual(JSON.stringify(parsed.manifest.versions[0].card.responseContract), JSON.stringify(contract));
+            // An archived contract that fails the checks is refused whole, never silently dropped.
+            const other = `car-contract-bad-${env.runId}`;
+            const html = page(other);
+            const badArchive = buildCanonicalTarGz([
+                { name: "canvas-app.json", body: Buffer.from(JSON.stringify({ format: 1, name: other, description: DESCRIPTION, tags: [], versions: [
+                    { version: "1.0.0", sha256: sha256Hex(html), size: Buffer.byteLength(html), card: { name: other, responseContract: { actions: { pick: { row: "banana" } } } } },
+                ] })) },
+                { name: "versions/1.0.0.html", body: Buffer.from(html) },
+            ]);
+            await expectCode(importCanvasApp(deps, badArchive, V.bob), "BAD_REQUEST");
+            await expectCode(deps.store.get({ name: other }, V.bob), "NOT_FOUND");
         } finally {
             await catalog.close();
         }
@@ -401,7 +411,111 @@ describe("canvas app registry: service", () => {
         }
     });
 
-    it("legacy migration keeps a fact that changed meanwhile and never extends a shared app someone created meanwhile", { timeout: TIMEOUT }, async () => {
+    it("pending cleanup cannot delete a version committed after its listing: a claimed publish is refused and leaves nothing", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const { catalog, deps } = await setup(env);
+        try {
+            const name = `car-claim-${env.runId}`;
+            await publishCanvasAppHtml(deps, { html: page(name), name, viewer: V.alice });
+            const space = (await readCanvasAppHtml(deps, { name }, V.alice)).resolved.artifactSessionId;
+            // Barrier: the publisher stops inside its upload; the prune runs
+            // (as if the pending window had passed), then the upload resumes.
+            let reachUpload; const reached = new Promise((resolve) => { reachUpload = resolve; });
+            let releaseUpload; const released = new Promise((resolve) => { releaseUpload = resolve; });
+            const real = deps.artifactStore;
+            const slow = { ...deps, artifactStore: Object.assign(Object.create(Object.getPrototypeOf(real)), real, {
+                uploadArtifact: async (...args) => { reachUpload(); await released; return real.uploadArtifact(...args); },
+            }) };
+            const publishing = publishCanvasAppHtml(slow, { html: page(name, "<p>v2</p>"), name, viewer: V.alice, version: "2.0.0" });
+            await reached;
+            const later = new Date(Date.now() + CANVAS_APP_PENDING_TTL_MS + 60_000);
+            const prune = await pruneCanvasAppArtifacts(deps, later);
+            assertEqual(prune.pendingRemoved, 1, "the stale version was claimed and removed");
+            releaseUpload();
+            const refused = await publishing.then(() => null, (error) => error);
+            assert(refused, "the late publish is refused");
+            assert(refused.code === "ABORTED" || refused.code === "NOT_FOUND", `refused as not committed: ${refused.code}`);
+            const detail = await deps.store.get({ name }, V.alice);
+            assertEqual(detail.versions.map((v) => v.version).join(","), "1.0.0", "no 2.0.0 version, ready or otherwise");
+            assertEqual((await real.listArtifacts(space)).length, 1, "the late upload left no orphan bytes");
+            assertEqual((await readCanvasAppHtml(deps, { name }, V.alice)).html, page(name), "1.0.0 still reads back");
+
+            // The other order: the publish commits first; a later prune touches nothing.
+            const v3 = await publishCanvasAppHtml(deps, { html: page(name, "<p>v3</p>"), name, viewer: V.alice, version: "3.0.0" });
+            assertEqual(v3.status, "published");
+            const after = await pruneCanvasAppArtifacts(deps, later);
+            assertEqual(after.pendingRemoved, 0);
+            assertEqual((await readCanvasAppHtml(deps, { name }, V.alice, "3.0.0")).html, page(name, "<p>v3</p>"), "the committed bytes stay");
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    it("a failed read-back removes the uploaded bytes, or keeps the pending row as the cleanup record until they are gone", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const { catalog, deps } = await setup(env);
+        try {
+            const name = `car-readback-${env.runId}`;
+            await publishCanvasAppHtml(deps, { html: page(name), name, viewer: V.alice });
+            const space = (await readCanvasAppHtml(deps, { name }, V.alice)).resolved.artifactSessionId;
+            const real = deps.artifactStore;
+            const mismatching = { ...deps, artifactStore: Object.assign(Object.create(Object.getPrototypeOf(real)), real, {
+                downloadArtifactText: async () => "<p>other bytes</p>",
+            }) };
+            await expectCode(publishCanvasAppHtml(mismatching, { html: page(name, "<p>v2</p>"), name, viewer: V.alice, version: "2.0.0" }), "BAD_REQUEST");
+            assertEqual((await real.listArtifacts(space)).length, 1, "the uploaded bytes were removed");
+            // Claiming with a cutoff in the future returns every pending row there is.
+            const later = new Date(Date.now() + CANVAS_APP_PENDING_TTL_MS + 60_000);
+            assertEqual((await deps.store.prunePending(later)).length, 0, "and no pending row is left");
+
+            // When the bytes cannot be removed, the pending row stays; the prune finishes later.
+            const stuck = { ...mismatching, artifactStore: Object.assign(Object.create(Object.getPrototypeOf(real)), real, {
+                downloadArtifactText: async () => "<p>other bytes</p>",
+                deleteArtifact: async () => { throw new Error("simulated storage outage"); },
+            }) };
+            await expectCode(publishCanvasAppHtml(stuck, { html: page(name, "<p>v3</p>"), name, viewer: V.alice, version: "3.0.0" }), "BAD_REQUEST");
+            assertEqual((await real.listArtifacts(space)).length, 2, "the bytes are still there");
+            const done = await pruneCanvasAppArtifacts(deps, later);
+            assertEqual(done.pendingRemoved, 1, "the prune claims and removes the leftover");
+            assertEqual((await real.listArtifacts(space)).length, 1, "only the ready version's bytes remain");
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    it("every successful export fits the expanded budget with large valid cards, counted exactly", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const { catalog, deps } = await setup(env);
+        try {
+            const name = `car-cards-${env.runId}`;
+            // A near-maximal interface block: 28 keys of about 210 bytes each.
+            const keys = Array.from({ length: 28 }, (_, i) => ({ key: `app/k${String(i).padStart(2, "0")}/${"x".repeat(200)}`.slice(0, 200) }));
+            const SIZE = 889_000;
+            const bigPage = (i) => {
+                const manifest = { name, description: DESCRIPTION, interface: { keys, requests: [], events: [] } };
+                const head = `<!doctype html>\n<!-- CANVAS-APP-MANIFEST ${JSON.stringify(manifest)} -->\n<html><body><h1>${name}</h1><p>v${i}</p><!-- `;
+                const tail = " --></body></html>\n";
+                return head + "x".repeat(SIZE - Buffer.byteLength(head + tail)) + tail;
+            };
+            assertEqual(Buffer.byteLength(bigPage(0)), SIZE);
+            for (let i = 0; i < 46; i++) await publishCanvasAppHtml(deps, { html: bigPage(i), name, viewer: V.alice, version: `1.0.${i}` });
+            const card = (await deps.store.get({ name }, V.alice)).versions[0].card;
+            assert(Buffer.byteLength(JSON.stringify(card)) >= 6000, `each card is large (${Buffer.byteLength(JSON.stringify(card))} bytes)`);
+            const near = await exportCanvasApp(deps, { name }, V.alice);
+            assert(zlib.gunzipSync(near.bytes).length <= 40 * 1024 * 1024, "the export expands within the import limit");
+            await publishCanvasAppHtml(deps, { html: bigPage(46), name, viewer: V.alice, version: "1.0.46" });
+            // Pages alone would pass the old per-page estimate; the cards push it over.
+            const refused = await expectCode(exportCanvasApp(deps, { name }, V.alice), "BAD_REQUEST");
+            assert(/an import accepts/.test(refused.message), `refused for the expanded budget: ${refused.message}`);
+            await deleteCanvasApp(deps, { name }, V.alice);
+            const imported = await importCanvasApp(deps, near.bytes, V.bob);
+            assertEqual(imported.versions.filter((v) => v.status === "imported").length, 46, "the fitting archive imports every version");
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    it("legacy migration deletes only the revision it migrated, atomically, and never extends an app someone created meanwhile", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
         const { catalog, deps } = await setup(env);
         const factStore = await createFactStoreForUrl(env.store, env.factsSchema);
@@ -410,41 +524,62 @@ describe("canvas app registry: service", () => {
             const admin = { principal: { provider: "test", subject: "car-admin" }, resourceAdmin: true };
             const changed = `car-leg-chg-${env.runId}`;
             const raced = `car-leg-race-${env.runId}`;
-            for (const name of [changed, raced]) {
-                await deps.artifactStore.uploadArtifact("sess-gone", `app-${name}.html`, page(name), "text/html");
+            const sameOwner = `car-leg-own-${env.runId}`;
+            for (const name of [changed, raced, sameOwner]) {
+                await deps.artifactStore.uploadArtifact(`sess-${name}`, `app-${name}.html`, page(name), "text/html");
                 await factStore.storeFact({ key: `apps/${name}`, shared: true, value: {
                     name, description: DESCRIPTION, tags: ["legacy"],
-                    source: { kind: "artifact", sessionId: "sess-gone", filename: `app-${name}.html`, sha256: sha256Hex(page(name)) },
+                    source: { kind: "artifact", sessionId: `sess-${name}`, filename: `app-${name}.html`, sha256: sha256Hex(page(name)) },
                 } });
             }
-            // Bob publishes a shared app with the raced name after the migration's pre-check.
+            // After the migration's pre-check: Bob publishes a shared app with
+            // the raced name, and Alice (the owner the migration publishes as)
+            // publishes other bytes under the sameOwner name.
             await publishCanvasAppHtml(deps, { html: page(raced, "<p>bob</p>"), name: raced, scope: "shared", viewer: V.bob });
+            await publishCanvasAppHtml(deps, { html: page(sameOwner, "<p>alice later</p>"), name: sameOwner, scope: "shared", viewer: V.alice });
             const racingStore = Object.assign(Object.create(Object.getPrototypeOf(deps.store)), deps.store, {
-                getVersion: async (target, viewer, version) => (target.name === raced
+                getVersion: async (target, viewer, version) => (target.name === raced || target.name === sameOwner
                     ? Promise.reject(new CanvasAppError("NOT_FOUND", "not yet"))
                     : deps.store.getVersion(target, viewer, version)),
             });
-            // The changed fact gets a new etag between the migration's read and its delete.
-            let rereads = 0;
+            // The changed fact is REPLACED at the delete boundary: after the
+            // migration decided to delete it, before the store deletes.
+            const replacement = { name: changed, description: "replaced meanwhile", tags: ["new"] };
             const changingFacts = Object.assign(Object.create(Object.getPrototypeOf(factStore)), factStore, {
-                readFacts: async (q) => {
-                    const res = await factStore.readFacts(q);
-                    if (q.keyPattern === `apps/${changed}` && ++rereads >= 1) {
-                        return { ...res, facts: res.facts.map((f) => ({ ...f, etag: Number(f.etag) + 1 })) };
-                    }
-                    return res;
+                deleteFactIfEtag: async (input) => {
+                    if (input.key === `apps/${changed}`) await factStore.storeFact({ key: input.key, shared: true, value: replacement });
+                    return factStore.deleteFactIfEtag(input);
                 },
             });
-            const mdeps = { ...deps, store: racingStore, factStore: changingFacts, sessionOwner: async () => null };
+            const owners = { [`sess-${sameOwner}`]: ALICE };
+            const mdeps = { ...deps, store: racingStore, factStore: changingFacts, sessionOwner: async (sid) => owners[sid] ?? null };
             const run = await migrateLegacyCanvasApps(mdeps, admin, { dryRun: false });
             const by = Object.fromEntries(run.lines.filter((l) => l.name.includes(env.runId)).map((l) => [l.name, l]));
             assertEqual(by[changed].outcome, "migrated");
             assertEqual(by[changed].reason, "the fact changed during migration; fact kept");
-            assert((await factStore.readFacts({ keyPattern: `apps/${changed}`, scope: "shared" })).facts.length === 1, "the changed fact is kept");
-            assertEqual(by[raced].outcome, "skipped", `the race is refused: ${JSON.stringify(by[raced])}`);
-            const bobs = await deps.store.get({ name: raced, scope: "shared" }, V.bob);
-            assertEqual(bobs.versions.length, 1, "Bob's app gained no version");
+            const kept = (await factStore.readFacts({ keyPattern: `apps/${changed}`, scope: "shared" })).facts;
+            assertEqual(kept.length, 1, "the replacement survives");
+            assertEqual(kept[0].value?.description, "replaced meanwhile", "and it is the replacement, not the migrated revision");
+            assertEqual(by[raced].outcome, "skipped", `another owner's race is refused: ${JSON.stringify(by[raced])}`);
+            assertEqual((await deps.store.get({ name: raced, scope: "shared" }, V.bob)).versions.length, 1, "Bob's app gained no version");
             assert((await factStore.readFacts({ keyPattern: `apps/${raced}`, scope: "shared" })).facts.length === 1, "the raced fact is kept");
+            assertEqual(by[sameOwner].outcome, "skipped", `the same owner's other bytes are not extended: ${JSON.stringify(by[sameOwner])}`);
+            assert(/NAME_TAKEN/.test(by[sameOwner].reason ?? ""), "refused by the reservation itself");
+            assertEqual((await deps.store.get({ name: sameOwner, scope: "shared" }, V.alice)).versions.length, 1, "Alice's app gained no version");
+            assert((await factStore.readFacts({ keyPattern: `apps/${sameOwner}`, scope: "shared" })).facts.length === 1, "its fact is kept");
+            // A store that cannot compare-and-delete keeps every migrated fact.
+            const plainName = `car-leg-plain-${env.runId}`;
+            await deps.artifactStore.uploadArtifact(`sess-${plainName}`, `app-${plainName}.html`, page(plainName), "text/html");
+            await factStore.storeFact({ key: `apps/${plainName}`, shared: true, value: {
+                name: plainName, description: DESCRIPTION,
+                source: { kind: "artifact", sessionId: `sess-${plainName}`, filename: `app-${plainName}.html`, sha256: sha256Hex(page(plainName)) },
+            } });
+            const noCas = Object.assign(Object.create(Object.getPrototypeOf(factStore)), factStore, { deleteFactIfEtag: undefined });
+            const run2 = await migrateLegacyCanvasApps({ ...deps, factStore: noCas, sessionOwner: async () => null }, admin, { dryRun: false });
+            const plain = run2.lines.find((l) => l.name === plainName);
+            assertEqual(plain.outcome, "migrated");
+            assertEqual(plain.reason, "this fact store cannot delete only the migrated revision; fact kept");
+            assert((await factStore.readFacts({ keyPattern: `apps/${plainName}`, scope: "shared" })).facts.length === 1, "kept");
         } finally {
             await catalog.close();
         }

@@ -160,6 +160,8 @@ export interface PublishCanvasAppHtmlInput {
     allowOwnerless?: boolean;
     /** Import of several versions into an app this call sequence created. */
     importCreatedApp?: boolean;
+    /** Legacy migration: extend an existing app only with these same bytes. */
+    requireNewOrSameBytes?: boolean;
 }
 
 export interface PublishCanvasAppHtmlResult {
@@ -230,6 +232,7 @@ export async function publishCanvasAppHtml(deps: CanvasAppRegistryDeps, input: P
         sourceSlot: input.sourceSlot ?? null,
         createdBy: input.createdBy ?? null,
         mode,
+        requireNewOrSameBytes: Boolean(input.requireNewOrSameBytes),
     });
     const base = {
         appId: reserved.appId, appCreated: reserved.appCreated, versionId: reserved.versionId,
@@ -254,11 +257,37 @@ export async function publishCanvasAppHtml(deps: CanvasAppRegistryDeps, input: P
             throw new CanvasAppError("BAD_REQUEST", `stored bytes of ${name}@${reserved.version} do not match the published page; nothing was published`);
         }
     } catch (err) {
-        await deps.store.abort(reserved.versionId).catch(() => {});
+        // Remove whatever was written, then the pending row. When the bytes
+        // cannot be confirmed gone, the pending row stays as the cleanup
+        // record: the prune claims it after the pending window.
+        let bytesGone = false;
+        try {
+            await deps.artifactStore.deleteArtifact(reserved.artifactSessionId, reserved.artifactFilename);
+            bytesGone = true;
+        } catch (cleanupErr: any) {
+            console.warn(`[canvas-apps] could not remove ${reserved.artifactSessionId}/${reserved.artifactFilename} after a failed publish; the prune will: ${cleanupErr?.message || cleanupErr}`);
+        }
+        if (bytesGone) await deps.store.abort(reserved.versionId).catch(() => false);
         throw err;
     }
     const mayActivate = mode === "publish" || reserved.appCreated || Boolean(input.importCreatedApp);
-    const committed = await deps.store.commit(reserved.versionId, mayActivate);
+    let committed: Awaited<ReturnType<CanvasAppStore["commit"]>>;
+    try {
+        committed = await deps.store.commit(reserved.versionId, mayActivate);
+    } catch (err) {
+        // Definitely not committed (the pruner claimed the version, or it is
+        // gone): the bytes just written have no other owner, so remove them.
+        // Any other failure leaves them: the version may have committed.
+        if (err instanceof CanvasAppError && (err.code === "ABORTED" || err.code === "NOT_FOUND")) {
+            try {
+                await deps.artifactStore.deleteArtifact(reserved.artifactSessionId, reserved.artifactFilename);
+                await deps.store.abort(reserved.versionId).catch(() => false);
+            } catch (cleanupErr: any) {
+                console.warn(`[canvas-apps] could not remove ${reserved.artifactSessionId}/${reserved.artifactFilename} after a refused commit: ${cleanupErr?.message || cleanupErr}`);
+            }
+        }
+        throw err;
+    }
     return { ...base, status: "published", active: committed.active };
 }
 
@@ -315,8 +344,7 @@ export async function pruneCanvasAppArtifacts(deps: CanvasAppRegistryDeps, now =
             console.warn(`[canvas-apps] could not delete abandoned ${p.artifactSessionId}/${p.artifactFilename}; kept for retry: ${err?.message || err}`);
             continue;
         }
-        await deps.store.abort(p.versionId);
-        pendingRemoved++;
+        if (await deps.store.abort(p.versionId)) pendingRemoved++;
     }
     let spacesPurged = 0;
     for (const t of await deps.store.listTombstones(100)) {
@@ -356,6 +384,17 @@ export interface CanvasAppArchiveManifest {
     versions: Array<{ version: string; sha256: string; size: number; card: Record<string, unknown> }>;
 }
 
+/**
+ * The exact length of the uncompressed canonical tar for members of these
+ * body sizes: a 512-byte header per member, each body padded to 512 bytes,
+ * and two 512-byte end blocks. The importer bounds this same length.
+ */
+export function canvasAppArchiveExpandedBytes(bodySizes: number[]): number {
+    let total = 1024;
+    for (const size of bodySizes) total += 512 + Math.ceil(Math.max(0, size) / 512) * 512;
+    return total;
+}
+
 /** One deterministic .tar.gz of every version, with no owner, scope or user/session id. */
 export async function exportCanvasApp(deps: CanvasAppRegistryDeps, target: CanvasAppTarget, viewer: CanvasAppViewer): Promise<{ filename: string; bytes: Buffer; sha256: string }> {
     const detail = await deps.store.get(target, viewer);
@@ -368,22 +407,25 @@ export async function exportCanvasApp(deps: CanvasAppRegistryDeps, target: Canva
         tags: [...detail.tags].sort(),
         versions: [],
     };
-    // Every export must be importable: the importer expands at most
-    // CANVAS_APP_ARCHIVE_MAX_EXPANDED_BYTES, so refuse before reading pages
-    // whose total (plus tar headers and the card) would exceed it.
-    let expanded = 0;
-    for (const v of versions) {
-        expanded += Number(v.sizeBytes || 0) + 1024;
-        if (expanded > CANVAS_APP_ARCHIVE_MAX_EXPANDED_BYTES - 64 * 1024) {
-            throw new CanvasAppError("BAD_REQUEST", `the app's versions total more than ${CANVAS_APP_ARCHIVE_MAX_EXPANDED_BYTES} bytes, which an import would refuse; delete old versions first`);
-        }
+    // Every export must be importable: the importer expands the whole tar to
+    // at most CANVAS_APP_ARCHIVE_MAX_EXPANDED_BYTES. Count the exact tar
+    // (headers, padded bodies, the end blocks and the real manifest with
+    // every card) from the recorded sizes before reading any page.
+    for (const v of versions) manifest.versions.push({ version: v.version, sha256: v.sha256, size: v.sizeBytes, card: v.card });
+    const manifestBody = Buffer.from(canonicalJson(manifest) + "\n", "utf8");
+    const planned = canvasAppArchiveExpandedBytes([manifestBody.length, ...versions.map((v) => Number(v.sizeBytes || 0))]);
+    if (planned > CANVAS_APP_ARCHIVE_MAX_EXPANDED_BYTES) {
+        throw new CanvasAppError("BAD_REQUEST", `the app's archive would expand to ${planned} bytes, more than the ${CANVAS_APP_ARCHIVE_MAX_EXPANDED_BYTES} an import accepts; delete old versions first`);
     }
     for (const v of versions) {
         const { html } = await readCanvasAppHtml(deps, target, viewer, v.version);
-        manifest.versions.push({ version: v.version, sha256: v.sha256, size: v.sizeBytes, card: v.card });
         files.push({ name: `versions/${v.version}.html`, body: Buffer.from(html, "utf8") });
     }
-    files.unshift({ name: "canvas-app.json", body: Buffer.from(canonicalJson(manifest) + "\n", "utf8") });
+    files.unshift({ name: "canvas-app.json", body: manifestBody });
+    const expanded = canvasAppArchiveExpandedBytes(files.map((f) => f.body.length));
+    if (expanded > CANVAS_APP_ARCHIVE_MAX_EXPANDED_BYTES) {
+        throw new CanvasAppError("BAD_REQUEST", `the app's archive expands to ${expanded} bytes, more than the ${CANVAS_APP_ARCHIVE_MAX_EXPANDED_BYTES} an import accepts; delete old versions first`);
+    }
     const bytes = buildCanonicalTarGz(files);
     if (bytes.length > CANVAS_APP_ARCHIVE_MAX_BYTES) {
         throw new CanvasAppError("BAD_REQUEST", `the archive is ${bytes.length} bytes; the limit is ${CANVAS_APP_ARCHIVE_MAX_BYTES}`);
@@ -560,7 +602,7 @@ export async function migrateLegacyCanvasApps(
                 description: legacyDescription.length >= CANVAS_APP_DESCRIPTION_MIN ? legacyDescription : null,
                 tags: Array.isArray(card?.tags) ? card.tags : null,
                 responseContract: card?.responseContract,
-                viewer: asOwner, allowOwnerless: !owner, createdBy: "legacy-migration",
+                viewer: asOwner, allowOwnerless: !owner, createdBy: "legacy-migration", requireNewOrSameBytes: true,
                 sourceSessionId: String(src.sessionId), mode: "publish",
             });
         } catch (err: any) {
@@ -568,15 +610,19 @@ export async function migrateLegacyCanvasApps(
         }
         const check = await readCanvasAppHtml(deps, { name, scope: "shared" }, viewer, published.version);
         if (check.resolved.sha256 !== page.sha256) { skip("read-back does not match; fact kept"); continue; }
-        // Delete only the fact that was migrated: if it changed since it was
-        // read, keep it (the next run looks at the new value).
-        const current = ((await deps.factStore.readFacts({ keyPattern: key, scope: "shared", limit: 5 } as any)) as any).facts?.find((f: any) => f.key === key);
-        if (!current || (fact.etag !== undefined && current.etag !== fact.etag)) {
-            lines.push({ key, name, outcome: "migrated", version: published.version, owner, reason: "the fact changed during migration; fact kept" });
+        // Delete only the revision that was migrated, atomically: a fact
+        // replaced after it was read has a new etag and is kept (the next run
+        // looks at the new value). A store that cannot compare-and-delete
+        // keeps the fact.
+        const deleteIfEtag = (deps.factStore as any).deleteFactIfEtag;
+        if (typeof deleteIfEtag !== "function" || typeof fact.etag !== "number") {
+            lines.push({ key, name, outcome: "migrated", version: published.version, owner, reason: "this fact store cannot delete only the migrated revision; fact kept" });
             continue;
         }
-        await deps.factStore.deleteFact({ key, shared: true } as any);
-        lines.push({ key, name, outcome: "migrated", version: published.version, owner });
+        const deleted = await deleteIfEtag.call(deps.factStore, { key, shared: true, etag: fact.etag });
+        lines.push(deleted
+            ? { key, name, outcome: "migrated", version: published.version, owner }
+            : { key, name, outcome: "migrated", version: published.version, owner, reason: "the fact changed during migration; fact kept" });
     }
     return {
         dryRun,

@@ -1338,7 +1338,8 @@ export class PortalRuntime {
                     safeParams.contentEncoding,
                 );
             case "copyArtifact":
-                if (CANVAS_SLOT_FILE.test(String(safeParams.toFilename ?? ""))) {
+                // An omitted or empty destination name is the source name.
+                if (CANVAS_SLOT_FILE.test(String(safeParams.toFilename || safeParams.fromFilename || ""))) {
                     throw forbiddenError("canvas.html … canvas5.html are written only by drawing a canvas.");
                 }
                 return this.transport.copyArtifact(

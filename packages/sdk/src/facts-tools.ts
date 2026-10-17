@@ -554,6 +554,10 @@ export function createFactTools(opts: {
             if (args.to_file && !ctx?.sessionId) {
                 return { error: "Error: to_file requires a session context to own the failure artifact." };
             }
+            // Canvas documents (issue 181) are written only by draw_canvas.
+            if (args.to_file && /^canvas[2-5]?\.html$/i.test(String(args.to_file).split(/[\\/]/).pop() || "")) {
+                return { error: `Error: ${args.to_file} is a canvas document; it is written only by draw_canvas. Choose another to_file name.` };
+            }
 
             // ── Acquire the records ─────────────────────────────────
             let records: Array<Record<string, unknown>>;

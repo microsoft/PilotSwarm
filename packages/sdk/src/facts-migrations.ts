@@ -74,7 +74,41 @@ export function FACTS_MIGRATIONS(schema: string): MigrationEntry[] {
             name: "apps_namespace",
             sql: migration_0012_apps_namespace(schema),
         },
+        {
+            version: "0013",
+            name: "conditional_delete",
+            sql: migration_0013_conditional_delete(schema),
+        },
     ];
+}
+
+// ─── Migration 0013: delete one fact only at the revision the caller read ──
+//
+// The canvas app registry's legacy migration (issue 181) deletes an
+// `apps/<name>` fact only if it still holds the value it migrated. One
+// UPDATE with the etag in its WHERE clause makes read-compare-delete atomic:
+// a replacement written after the caller's read bumps the etag and survives.
+function migration_0013_conditional_delete(schema: string): string {
+    const s = `"${schema}"`;
+    const t = `${s}.facts`;
+    return `
+CREATE OR REPLACE FUNCTION ${s}.facts_delete_fact_if_etag(
+    p_scope_key TEXT,
+    p_etag BIGINT
+) RETURNS BOOLEAN AS $$
+DECLARE
+    deleted_count BIGINT;
+BEGIN
+    UPDATE ${t}
+       SET deleted_at = now(), updated_at = now()
+     WHERE scope_key = p_scope_key
+       AND deleted_at IS NULL
+       AND etag = p_etag;
+    GET DIAGNOSTICS deleted_count = ROW_COUNT;
+    RETURN deleted_count > 0;
+END;
+$$ LANGUAGE plpgsql;
+`;
 }
 
 // ─── Migration 0012: the `apps` namespace in stats ───────────────

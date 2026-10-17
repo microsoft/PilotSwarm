@@ -190,7 +190,10 @@ system or ownerless session cannot publish. The same operations are on
 `.tar.gz` of every version and the card, with no owner or ids; import
 checks the whole archive first. The legacy `apps/<name>` facts migrate once
 with `migrateLegacyCanvasApps` (an admin action): each migrated fact is
-removed, a skipped one stays. Agents can read but no longer write them.
+removed only at the revision that was migrated (an atomic compare-and-delete
+on its etag; a fact replaced meanwhile stays), and a skipped one stays. An
+existing shared app is extended only by the same bytes. Agents can read but no
+longer write them.
 
 The card is derived from the document's `CANVAS-APP-MANIFEST`, never from
 the model's memory of it, and **publish refuses a manifest without an

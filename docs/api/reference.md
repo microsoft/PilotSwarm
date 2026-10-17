@@ -356,7 +356,9 @@ may not see answers `NOT_FOUND`; a visible app the caller may not change answers
 
 Errors (`error.code`): `NOT_FOUND`, `FORBIDDEN`, `NAME_TAKEN`, `NO_OWNER`,
 `VERSION_EXISTS`, `VERSION_NOT_FOUND`, `APP_DISABLED`, `BAD_VERSION`,
-`BAD_SCOPE`, `BAD_REQUEST`, `USER_NOT_FOUND`.
+`BAD_SCOPE`, `BAD_REQUEST`, `USER_NOT_FOUND`, `BUSY` (an abandoned upload of
+the same page is being cleaned up; try again), `ABORTED` (the publish outlived
+the pending window and was cleaned up; publish again).
 
 #### Workspace approval
 

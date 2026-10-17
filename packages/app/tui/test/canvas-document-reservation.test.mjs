@@ -71,3 +71,14 @@ test("canvas app byte spaces are absent on every generic artifact route", async 
     await transport.listArtifacts("s1");
     assert.deepEqual(writes, [["list"]], "an ordinary session is unaffected");
 });
+
+test("a copy with an omitted or empty destination name is the source name, and is refused for a canvas document", async () => {
+    const { transport, writes } = transportWithStore();
+    for (const [source, dest] of [["canvas.html", undefined], ["canvas.html", ""], ["Canvas2.HTML", null], ["dir/canvas5.html", undefined]]) {
+        await assert.rejects(transport.copyArtifact("s1", source, "s2", dest), (error) => error.code === "CANVAS_FILE_RESERVED", `${source} -> ${dest}`);
+    }
+    assert.deepEqual(writes, [], "nothing reached the store");
+    await transport.copyArtifact("s1", "app-board.html", "s2", undefined);
+    await transport.copyArtifact("s1", "canvas.html", "s2", "app-board.html");
+    assert.deepEqual(writes.map((w) => w[0]), ["copy", "copy"], "an ordinary source, and save-as under another name, still copy");
+});

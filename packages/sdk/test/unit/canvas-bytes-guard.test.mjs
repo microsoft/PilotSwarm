@@ -134,3 +134,78 @@ test("another user's PRIVATE app page is absent in every read mode, metadata and
         fs.rmSync(dir, { recursive: true, force: true });
     }
 });
+
+test("private legacy artifacts without a stored sha are absent in metadata and lists; ordinary legacy files and the owner keep them", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ps-canvas-guard-legacy-"));
+    const store = new FilesystemArtifactStore(path.join(dir, "store"));
+    const PRIVATE = "<!doctype html><!-- CANVAS-APP-MANIFEST {\"name\":\"secret\"} --><html><body>alice private</body></html>";
+    const guardCalls = [];
+    // The registry's answer: these bytes are Alice's private app; foreign to
+    // everyone but the owner's own session.
+    const canvasBytesGuard = async ({ callerSessionId, bytes, sha256, privateOnly }) => {
+        guardCalls.push({ callerSessionId, bytes: bytes != null, sha256: sha256 ?? null, privateOnly: privateOnly === true });
+        if (callerSessionId === "alice-session") return null;
+        const text = bytes == null ? null : Buffer.isBuffer(bytes) ? bytes.toString("utf8") : String(bytes);
+        return text === PRIVATE ? "artifact not found" : null;
+    };
+    const tools = Object.fromEntries(createArtifactTools({ blobStore: store, canvasBytesGuard }).map((t) => [t.name, t]));
+    const callAs = (caller) => async (name, params) => JSON.parse(String(await tools[name].handler(params, { durableSessionId: caller })));
+    const bob = callAs("bob-session");
+    const ownerless = callAs(null);
+    const alice = callAs("alice-session");
+    try {
+        // Legacy shapes the upload path no longer produces: a sidecar with no
+        // sha256 (content type only), and no sidecar at all (sniffed).
+        await store.uploadArtifact("alice-session", "app-secret.html", PRIVATE, "text/html");
+        await store.uploadArtifact("alice-session", "old-copy.txt", PRIVATE, "text/plain");
+        await store.uploadArtifact("alice-session", "readme.md", "# hello", "text/markdown");
+        const sidecar = (filename) => path.join(dir, "store", "alice-session", `${filename}.meta.json`);
+        for (const filename of ["app-secret.html", "readme.md"]) {
+            assert.ok(fs.existsSync(sidecar(filename)), `sidecar for ${filename}`);
+            const legacy = JSON.parse(fs.readFileSync(sidecar(filename), "utf8"));
+            delete legacy.sha256;
+            fs.writeFileSync(sidecar(filename), JSON.stringify(legacy));
+        }
+        fs.rmSync(sidecar("old-copy.txt"));
+        for (const filename of ["app-secret.html", "old-copy.txt", "readme.md"]) {
+            assert.equal((await store.statArtifact("alice-session", filename)).sha256, undefined, `${filename} has no stored sha256`);
+        }
+        for (const caller of [bob, ownerless]) {
+            const listed = await caller("list_artifacts", { sessionId: "alice-session" });
+            assert.deepEqual(listed.filenames, ["readme.md"], "neither copy of the private page is listed");
+            for (const filename of ["app-secret.html", "old-copy.txt"]) {
+                const meta = await caller("read_artifact", { sessionId: "alice-session", filename, metaOnly: true });
+                assert.equal(meta.error, "ARTIFACT_NOT_FOUND", `${filename} metadata`);
+                const content = await caller("read_artifact", { sessionId: "alice-session", filename });
+                assert.equal(content.error, "ARTIFACT_NOT_FOUND", `${filename} content`);
+            }
+            const ordinary = await caller("read_artifact", { sessionId: "alice-session", filename: "readme.md", metaOnly: true });
+            assert.equal(ordinary.success, true, "an ordinary legacy file keeps its metadata");
+        }
+        assert.ok(guardCalls.some((c) => c.bytes && c.privateOnly), "the guard was asked by the bytes, not by a missing sha");
+        // The owner's own session still sees everything.
+        const own = await alice("list_artifacts", { sessionId: "alice-session" });
+        assert.deepEqual(own.filenames.sort(), ["app-secret.html", "old-copy.txt", "readme.md"]);
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});
+
+test("a legacy entry whose bytes cannot be read is hidden from metadata and lists (fail closed)", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ps-canvas-guard-unreadable-"));
+    const real = new FilesystemArtifactStore(path.join(dir, "store"));
+    try {
+        await real.uploadArtifact("alice-session", "page.html", "<p>x</p>", "text/html");
+        const store = Object.assign(Object.create(Object.getPrototypeOf(real)), real, {
+            statArtifact: async (...a) => { const m = await real.statArtifact(...a); delete m.sha256; return m; },
+            listArtifacts: async (...a) => (await real.listArtifacts(...a)).map(({ sha256: _s, ...m }) => m),
+            downloadArtifactText: async () => { throw new Error("simulated storage outage"); },
+        });
+        const tools = Object.fromEntries(createArtifactTools({ blobStore: store, canvasBytesGuard: async () => null }).map((t) => [t.name, t]));
+        const call = async (name, params) => JSON.parse(String(await tools[name].handler(params, { durableSessionId: "bob-session" })));
+        assert.deepEqual((await call("list_artifacts", { sessionId: "alice-session" })).filenames, []);
+        assert.equal((await call("read_artifact", { sessionId: "alice-session", filename: "page.html", metaOnly: true })).error, "ARTIFACT_NOT_FOUND");
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});

@@ -69,3 +69,30 @@ test("management fact writes cannot reach the legacy apps/ catalog either (Web A
     assert.equal(store.calls.store.length, 2, "session-scoped apps/ and other shared keys are unaffected");
     assert.equal(store.calls.delete.length, 1);
 });
+
+test("management pattern deletes: the store's own scope and LIKE rules decide what is reserved", async () => {
+    const { PilotSwarmManagementClient, likePatternCanMatchPrefix } = await import("../../dist/management-client.js");
+    const mgmt = new PilotSwarmManagementClient({ store: "postgres://unused" });
+    mgmt._started = true;
+    const store = fakeStore();
+    mgmt._factStore = store;
+    // shared:true with no scope is a SHARED pattern delete in the store.
+    await assert.rejects(mgmt.deleteFact({ key: "apps/*", pattern: true, shared: true }), (e) => e.code === "FORBIDDEN");
+    // SQL LIKE wildcards: `_` matches one character, `%` any run.
+    for (const key of ["app_/board", "a__s/%", "_pps/x", "%", "a%", "apps/%", "app\\s/x"]) {
+        await assert.rejects(mgmt.deleteFact({ key, pattern: true, scope: "shared" }), (e) => e.code === "FORBIDDEN", key);
+    }
+    assert.equal(store.calls.delete.length, 0, "nothing reached the store");
+    // Controls: patterns that cannot reach apps/, and session scope.
+    for (const key of ["notes/*", "app_", "apps", "appz/%", "app\\_/x", "b%"]) {
+        await mgmt.deleteFact({ key, pattern: true, scope: "shared" });
+    }
+    await mgmt.deleteFact({ key: "apps/*", pattern: true, shared: false, sessionId: "s1" });
+    assert.equal(store.calls.delete.length, 7);
+    // The matcher itself, against the store's normalization.
+    assert.equal(likePatternCanMatchPrefix("apps*", "apps/"), true, "* becomes % when there is no %");
+    assert.equal(likePatternCanMatchPrefix("apps*%", "apps/"), false, "with a % present, * is a literal character");
+    assert.equal(likePatternCanMatchPrefix("ap*s/x%", "apps/"), false, "with a % present, * is a literal");
+    assert.equal(likePatternCanMatchPrefix("ap\\ps/x", "apps/"), true, "an escaped ordinary character is itself");
+    assert.equal(likePatternCanMatchPrefix("ap\\_s/x", "apps/"), false, "an escaped _ is a literal underscore");
+});

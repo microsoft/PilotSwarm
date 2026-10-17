@@ -20,6 +20,7 @@ import express from "express";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { PilotSwarmManagementClient } from "../../src/management-client.ts";
 import { FilesystemArtifactStore } from "../../src/session-store.ts";
+import { canvasArtifactFilename } from "../../src/canvas-support.ts";
 import { ApiClient } from "../../api/src/api-client.js";
 import { OPERATIONS } from "../../api/src/protocol.js";
 import { PortalRuntime } from "../../../app/web/runtime.js";
@@ -175,5 +176,28 @@ describe("canvas app registry over the Web API", () => {
         await clients.bob.call("deleteCanvasApp", { name });
         await expect(clients.bob.call("getCanvasApp", { name, scope: "user" })).rejects.toMatchObject({ status: 404, code: "NOT_FOUND" });
         expect((await clients.alice.call("getCanvasApp", { name })).versions.length).toBe(2);
+    });
+
+    it("publishing a session's canvas needs write access to that session, directly and over the wire", async () => {
+        const sessionId = randomUUID();
+        await catalog.createSession(sessionId, { model: "m", owner: PEOPLE.alice });
+        const html = page(`api-sess-${randomUUID().slice(0, 8)}`);
+        await mgmt._artifactStore.uploadArtifact(sessionId, canvasArtifactFilename(1), html, "text/html");
+        await catalog.recordEvents(sessionId, [{ eventType: "session.canvas_updated", data: { rev: 1, slot: 1, sizeBytes: html.length, trust: "owner" } }], "test");
+        const nameFor = (who) => `api-sess-${who}-${randomUUID().slice(0, 6)}`;
+        // Bob has no access: NOT_FOUND hides the session, directly and over HTTP.
+        await expect(mgmt.publishCanvasApp({ sessionId, name: nameFor("bob"), description: DESCRIPTION }, PEOPLE.bob, false)).rejects.toMatchObject({ code: "NOT_FOUND" });
+        await expect(clients.bob.call("publishCanvasApp", { sessionId, name: nameFor("bob"), description: DESCRIPTION })).rejects.toMatchObject({ status: 404 });
+        // Dev can read but not write: FORBIDDEN.
+        await catalog.grantSessionShare(sessionId, { ...PEOPLE.dev, email: null, displayName: null }, "read");
+        await expect(mgmt.publishCanvasApp({ sessionId, name: nameFor("dev"), description: DESCRIPTION }, PEOPLE.dev, false)).rejects.toMatchObject({ code: "FORBIDDEN" });
+        await expect(clients.dev.call("publishCanvasApp", { sessionId, name: nameFor("dev"), description: DESCRIPTION })).rejects.toMatchObject({ status: 403 });
+        // A caller with no identity and no admin right is refused.
+        await expect(mgmt.publishCanvasApp({ sessionId, name: nameFor("anon"), description: DESCRIPTION }, null, false)).rejects.toMatchObject({ code: "FORBIDDEN" });
+        // Write collaborator, owner and unrestricted admin may publish.
+        await catalog.grantSessionShare(sessionId, { ...PEOPLE.dev, email: null, displayName: null }, "write");
+        expect((await mgmt.publishCanvasApp({ sessionId, name: nameFor("dev"), description: DESCRIPTION }, PEOPLE.dev, false)).status).toBe("published");
+        expect((await mgmt.publishCanvasApp({ sessionId, name: nameFor("alice"), description: DESCRIPTION }, PEOPLE.alice, false)).status).toBe("published");
+        expect((await mgmt.publishCanvasApp({ sessionId, name: nameFor("ada"), description: DESCRIPTION }, PEOPLE.ada, true)).status).toBe("published");
     });
 });

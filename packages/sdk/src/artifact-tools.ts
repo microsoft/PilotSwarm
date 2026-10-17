@@ -127,6 +127,22 @@ export function createArtifactTools(opts: {
     // shared app's card and size are public anyway).
     const hiddenPrivate = async (callerSessionId: string | null | undefined, artifactSessionId: string, input: { bytes?: Buffer | string | null; sha256?: string | null }) =>
         canvasBytesGuard ? (await canvasBytesGuard({ callerSessionId, artifactSessionId, bytes: input.bytes ?? null, sha256: input.sha256 ?? null, privateOnly: true })) === "artifact not found" : false;
+    // Metadata and list entries: by the stored sha256 when there is one;
+    // otherwise (legacy metadata has none) by the bytes of any file small
+    // enough to be an app page. A file whose bytes cannot be read is hidden
+    // (fail closed) rather than described.
+    const hiddenPrivateEntry = async (callerSessionId: string | null | undefined, artifactSessionId: string, entry: { filename: string; sha256?: string | null; sizeBytes?: number | null }) => {
+        if (!canvasBytesGuard) return false;
+        if (entry.sha256) return hiddenPrivate(callerSessionId, artifactSessionId, { sha256: entry.sha256 });
+        if (!mayBeAppPage(entry.sizeBytes)) return false;
+        let bytes: string;
+        try {
+            bytes = await blobStore.downloadArtifactText(artifactSessionId, entry.filename);
+        } catch {
+            return true;
+        }
+        return hiddenPrivate(callerSessionId, artifactSessionId, { bytes });
+    };
 
     // ── write_artifact ─────────────────────────────────────────
 
@@ -405,7 +421,7 @@ export function createArtifactTools(opts: {
 
                 if (params.metaOnly) {
                     const metadata = await blobStore.statArtifact(params.sessionId, params.filename);
-                    if (!metadata || await hiddenPrivate(callerSessionId, params.sessionId, { sha256: metadata.sha256 ?? null })) {
+                    if (!metadata || await hiddenPrivateEntry(callerSessionId, params.sessionId, metadata)) {
                         return toolError("ARTIFACT_NOT_FOUND", `Artifact not found: ${params.filename} in session ${params.sessionId}`);
                     }
                     return JSON.stringify({
@@ -512,8 +528,8 @@ export function createArtifactTools(opts: {
                 const all = await blobStore.listArtifacts(targetId);
                 const files = [];
                 for (const file of all) {
-                    if (file.sha256 && file.sizeBytes <= CANVAS_APP_MAX_BYTES
-                        && await hiddenPrivate(context?.durableSessionId, targetId, { sha256: file.sha256 })) continue;
+                    if (file.sizeBytes <= CANVAS_APP_MAX_BYTES
+                        && await hiddenPrivateEntry(context?.durableSessionId, targetId, file)) continue;
                     files.push(file);
                 }
                 return JSON.stringify({

@@ -40,6 +40,9 @@ export interface CanvasAppTarget {
 export const CANVAS_APP_ERROR_CODES = [
     "NOT_FOUND", "FORBIDDEN", "NAME_TAKEN", "NO_OWNER", "VERSION_EXISTS", "VERSION_NOT_FOUND",
     "APP_DISABLED", "BAD_VERSION", "BAD_SCOPE", "BAD_REQUEST", "USER_NOT_FOUND",
+    // An abandoned upload of the same bytes is being cleaned up / this
+    // publish outlived the pending TTL and was claimed: publish again.
+    "BUSY", "ABORTED",
 ] as const;
 export type CanvasAppErrorCode = (typeof CANVAS_APP_ERROR_CODES)[number];
 
@@ -47,6 +50,7 @@ const STATUS: Record<CanvasAppErrorCode, number> = {
     NOT_FOUND: 404, VERSION_NOT_FOUND: 404, USER_NOT_FOUND: 404,
     FORBIDDEN: 403, NAME_TAKEN: 409, VERSION_EXISTS: 409, NO_OWNER: 400,
     APP_DISABLED: 409, BAD_VERSION: 400, BAD_SCOPE: 400, BAD_REQUEST: 400,
+    BUSY: 409, ABORTED: 409,
 };
 
 export class CanvasAppError extends Error {
@@ -171,6 +175,11 @@ export interface CanvasAppReserveInput {
     sourceSlot?: number | null;
     createdBy?: string | null;
     mode: "publish" | "import";
+    /**
+     * Legacy migration: an existing app may be extended only by these same
+     * bytes (refused with NAME_TAKEN otherwise), decided under the app lock.
+     */
+    requireNewOrSameBytes?: boolean;
 }
 
 export interface CanvasAppReserveResult {
@@ -245,13 +254,14 @@ export class CanvasAppStore {
 
     async reserve(input: CanvasAppReserveInput): Promise<CanvasAppReserveResult> {
         const rows = await this.call(
-            `SELECT * FROM ${this.fn("reserve")}($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+            `SELECT * FROM ${this.fn("reserve")}($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
             [
                 input.newAppId, input.newVersionId, input.artifactSessionId, input.name, input.scope,
                 ...viewerArgs(input.viewer), Boolean(input.allowOwnerless),
                 input.sha256, input.sizeBytes, input.version ?? null, JSON.stringify(input.card ?? {}),
                 input.workspaceKey ?? null, input.description ?? null, input.tags ?? null,
                 input.sourceSessionId ?? null, input.sourceSlot ?? null, input.createdBy ?? null, input.mode,
+                Boolean(input.requireNewOrSameBytes),
             ],
         );
         const r = rows[0];
@@ -293,8 +303,10 @@ export class CanvasAppStore {
         return Boolean(rows[0]?.space);
     }
 
-    async abort(versionId: string): Promise<void> {
-        await this.call(`SELECT ${this.fn("abort")}($1)`, [versionId]);
+    /** Remove a version that never became ready (pending or claimed); true when a row was removed. */
+    async abort(versionId: string): Promise<boolean> {
+        const rows = await this.call(`SELECT ${this.fn("abort")}($1) AS removed`, [versionId]);
+        return Boolean(rows[0]?.removed);
     }
 
     async list(viewer: CanvasAppViewer): Promise<CanvasAppSummary[]> {
@@ -478,7 +490,10 @@ export class CanvasAppStore {
         return Number(rows[0]?.n ?? 0);
     }
 
-    /** Stale pending versions to clean up (listed, not deleted). */
+    /**
+     * Claims stale pending versions for cleanup (they can never be committed
+     * afterwards) and returns every claimed version still to clean up.
+     */
     async prunePending(olderThan: Date): Promise<Array<{ versionId: string; artifactSessionId: string; artifactFilename: string }>> {
         const rows = await this.call(`SELECT * FROM ${this.fn("prune_pending")}($1)`, [olderThan]);
         return rows.map((r) => ({ versionId: r.version_id, artifactSessionId: r.artifact_session_id, artifactFilename: r.artifact_filename }));

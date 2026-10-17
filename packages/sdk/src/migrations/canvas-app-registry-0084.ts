@@ -55,7 +55,9 @@ CREATE TABLE IF NOT EXISTS ${s}.canvas_app_versions (
     app_id             TEXT NOT NULL REFERENCES ${s}.canvas_apps(app_id) ON DELETE CASCADE,
     version            TEXT NOT NULL,
     precedence_key     TEXT COLLATE "C" NOT NULL,
-    state              TEXT NOT NULL CHECK (state IN ('pending', 'ready')),
+    -- pending: reserved, bytes being uploaded; ready: committed; cleanup:
+    -- claimed by the pruner (never committable again), deleted with its bytes.
+    state              TEXT NOT NULL CHECK (state IN ('pending', 'ready', 'cleanup')),
     sha256             TEXT NOT NULL,
     size_bytes         BIGINT NOT NULL,
     artifact_filename  TEXT NOT NULL,
@@ -176,6 +178,9 @@ BEGIN
         RETURN v_key || '|';
     END IF;
     FOREACH v_id IN ARRAY string_to_array(v_parts[4], '.') LOOP
+        IF v_id ~ '^[0-9]+$' AND length(v_id) > 9999 THEN
+            RETURN NULL;
+        END IF;
         IF v_id ~ '^[0-9]+$' THEN
             v_ids := v_ids || ('0' || lpad(length(v_id)::TEXT, 4, '0') || v_id);
         ELSE
@@ -327,7 +332,7 @@ CREATE OR REPLACE FUNCTION ${s}.cms_canvas_app_reserve(
     p_viewer_provider TEXT, p_viewer_subject TEXT, p_resource_admin BOOLEAN, p_allow_ownerless BOOLEAN,
     p_sha256 TEXT, p_size_bytes BIGINT, p_version TEXT, p_card JSONB, p_workspace_key TEXT,
     p_description TEXT, p_tags TEXT[], p_source_session_id TEXT, p_source_slot INT,
-    p_created_by TEXT, p_mode TEXT
+    p_created_by TEXT, p_mode TEXT, p_require_new_or_same BOOLEAN DEFAULT FALSE
 ) RETURNS TABLE(
     status TEXT, app_id TEXT, version_id TEXT, version TEXT,
     artifact_session_id TEXT, artifact_filename TEXT, app_created BOOLEAN
@@ -399,6 +404,9 @@ BEGIN
     SELECT * INTO v_ver FROM ${s}.canvas_app_versions v
      WHERE v.app_id = v_app.app_id AND v.sha256 = p_sha256;
     IF FOUND THEN
+        IF v_ver.state = 'cleanup' THEN
+            RAISE EXCEPTION 'CANVAS_APP_BUSY: an abandoned upload of these bytes is being cleaned up; try again in a minute';
+        END IF;
         IF v_ver.state = 'ready' AND p_mode = 'publish' THEN
             -- A publish (not an import) of known bytes re-activates them and
             -- takes the publisher's description and tags.
@@ -413,6 +421,12 @@ BEGIN
             v_app.app_id, v_ver.version_id, v_ver.version, v_app.artifact_session_id,
             v_ver.artifact_filename, v_created;
         RETURN;
+    END IF;
+
+    -- Legacy migration: an app that already existed may be extended only by
+    -- the same bytes, decided here under the app lock, not by a precheck.
+    IF COALESCE(p_require_new_or_same, FALSE) AND NOT v_created THEN
+        RAISE EXCEPTION 'CANVAS_APP_NAME_TAKEN: a shared canvas app named "%" already exists with other content', p_name;
     END IF;
 
     IF p_version IS NULL OR BTRIM(p_version) = '' THEN
@@ -466,9 +480,11 @@ DECLARE
     v_app ${s}.canvas_apps;
     v_active_key TEXT;
     v_active BOOLEAN := FALSE;
+    v_rows INT;
 BEGIN
-    -- Lock the app first, then read the version under that lock, so a
-    -- concurrent commit, abort or delete is seen in its final state.
+    -- Lock the app first, then read the version under that lock. Abort and
+    -- the pruner's claim take the same app lock, so a concurrent commit,
+    -- abort, claim or delete is seen in its final state.
     SELECT a.* INTO v_app FROM ${s}.canvas_apps a
      WHERE a.app_id = (SELECT cv.app_id FROM ${s}.canvas_app_versions cv WHERE cv.version_id = p_version_id)
        FOR UPDATE;
@@ -482,12 +498,21 @@ BEGIN
     -- Commit is a one-time transition of a PENDING version. Committing a
     -- version that is already ready changes nothing (no state change, no
     -- move of the active pointer): idempotent, and never a way to re-pin.
+    IF v_ver.state = 'cleanup' THEN
+        -- The pruner claimed this version (its publish outlived the pending
+        -- TTL); its bytes are being deleted, so it never becomes ready.
+        RAISE EXCEPTION 'CANVAS_APP_ABORTED: version % was abandoned and is being cleaned up; publish again', p_version_id;
+    END IF;
     IF v_ver.state <> 'pending' THEN
         RETURN QUERY SELECT v_app.app_id, p_version_id, v_ver.version, v_app.active_version_id IS NOT DISTINCT FROM p_version_id;
         RETURN;
     END IF;
     UPDATE ${s}.canvas_app_versions SET state = 'ready', committed_at = now()
      WHERE canvas_app_versions.version_id = p_version_id AND state = 'pending';
+    GET DIAGNOSTICS v_rows = ROW_COUNT;
+    IF v_rows <> 1 THEN
+        RAISE EXCEPTION 'CANVAS_APP_NOT_FOUND: version % was aborted or its app was deleted', p_version_id;
+    END IF;
     IF COALESCE(p_may_activate, FALSE) OR v_app.import_open OR v_app.active_version_id IS NULL THEN
         -- Activate only a new HIGHEST version: compared with every other ready
         -- version, not only the active one, so a pinned lower version is not
@@ -532,9 +557,26 @@ BEGIN
 END;
 $$;
 
+-- Remove a version that never became ready (a failed publish, or one the
+-- pruner claimed and whose bytes are gone). Takes the app lock, like commit
+-- and claim. TRUE when a row was removed.
+DROP FUNCTION IF EXISTS ${s}.cms_canvas_app_abort(TEXT);
 CREATE OR REPLACE FUNCTION ${s}.cms_canvas_app_abort(p_version_id TEXT)
-RETURNS VOID LANGUAGE sql AS $$
-    DELETE FROM ${s}.canvas_app_versions WHERE version_id = p_version_id AND state = 'pending';
+RETURNS BOOLEAN LANGUAGE plpgsql AS $$
+DECLARE
+    v_rows INT;
+BEGIN
+    PERFORM 1 FROM ${s}.canvas_apps a
+     WHERE a.app_id = (SELECT cv.app_id FROM ${s}.canvas_app_versions cv WHERE cv.version_id = p_version_id)
+       FOR UPDATE;
+    IF NOT FOUND THEN
+        RETURN FALSE;
+    END IF;
+    DELETE FROM ${s}.canvas_app_versions
+     WHERE version_id = p_version_id AND state IN ('pending', 'cleanup');
+    GET DIAGNOSTICS v_rows = ROW_COUNT;
+    RETURN v_rows > 0;
+END;
 $$;
 
 -- ── Reads ───────────────────────────────────────────────────────
@@ -1028,18 +1070,34 @@ $$;
 
 -- ── Maintenance ─────────────────────────────────────────────────
 
--- Pending rows older than the cutoff: deleted, and returned so the service
--- deletes any bytes that were uploaded for them.
--- Stale pending versions (abandoned publishes). Listed, not deleted: the
--- pruner removes the bytes first and then aborts each row, so a failed byte
--- deletion leaves the row as the record to retry.
+-- Abandoned publishes. Each stale PENDING version is CLAIMED under its app
+-- lock (pending -> cleanup), so it can never be committed afterwards; rows
+-- already in cleanup (an earlier byte deletion failed) are returned again.
+-- The pruner deletes the bytes, then aborts the row; a failed byte deletion
+-- leaves the claimed row as the record to retry.
+DROP FUNCTION IF EXISTS ${s}.cms_canvas_app_prune_pending(TIMESTAMPTZ);
 CREATE OR REPLACE FUNCTION ${s}.cms_canvas_app_prune_pending(p_older_than TIMESTAMPTZ)
-RETURNS TABLE(version_id TEXT, artifact_session_id TEXT, artifact_filename TEXT) LANGUAGE sql STABLE AS $$
-    SELECT v.version_id, a.artifact_session_id, v.artifact_filename
-      FROM ${s}.canvas_app_versions v JOIN ${s}.canvas_apps a ON a.app_id = v.app_id
-     WHERE v.state = 'pending' AND v.created_at < p_older_than
-     ORDER BY v.created_at
-     LIMIT 1000;
+RETURNS TABLE(version_id TEXT, artifact_session_id TEXT, artifact_filename TEXT) LANGUAGE plpgsql AS $$
+DECLARE
+    r RECORD;
+BEGIN
+    FOR r IN
+        SELECT v.version_id AS vid, v.app_id AS aid FROM ${s}.canvas_app_versions v
+         WHERE v.state = 'pending' AND v.created_at < p_older_than
+         ORDER BY v.created_at
+         LIMIT 1000
+    LOOP
+        PERFORM 1 FROM ${s}.canvas_apps a WHERE a.app_id = r.aid FOR UPDATE;
+        UPDATE ${s}.canvas_app_versions cv SET state = 'cleanup'
+         WHERE cv.version_id = r.vid AND cv.state = 'pending';
+    END LOOP;
+    RETURN QUERY
+        SELECT v.version_id, a.artifact_session_id, v.artifact_filename
+          FROM ${s}.canvas_app_versions v JOIN ${s}.canvas_apps a ON a.app_id = v.app_id
+         WHERE v.state = 'cleanup'
+         ORDER BY v.created_at
+         LIMIT 1000;
+END;
 $$;
 
 CREATE OR REPLACE FUNCTION ${s}.cms_canvas_app_list_tombstones(p_limit INT)

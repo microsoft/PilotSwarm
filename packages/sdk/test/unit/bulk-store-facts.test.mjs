@@ -557,3 +557,18 @@ test("store_fact single and batch shapes are unchanged", async () => {
     assert.equal(batch.facts.length, 2);
     assert.equal(batch.facts[1].scope, "shared");
 });
+
+test("to_file never targets a canvas document (issue 181): refused before anything is written", async () => {
+    await withArtifacts(async (artifacts) => {
+        const store = fakeStore();
+        const { bulk_store_facts } = toolsFor(store, artifacts);
+        for (const to_file of ["canvas.html", "Canvas3.HTML", "dir/canvas5.html"]) {
+            const out = await bulk_store_facts.handler({ facts: [rec("a/1")], to_file }, CTX);
+            assert.match(String(out.error), /canvas document/, to_file);
+        }
+        assert.equal(store.calls.length, 0, "no record was stored");
+        assert.deepEqual(await artifacts.listArtifacts(SESSION), [], "no file was written");
+        const ok = await bulk_store_facts.handler({ facts: [rec("a/1")], to_file: "canvas-failures.json" }, CTX);
+        assert.equal(ok.error, undefined, "an ordinary name is fine");
+    });
+});

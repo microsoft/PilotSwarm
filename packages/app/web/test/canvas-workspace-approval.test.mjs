@@ -160,6 +160,13 @@ test("canvas documents cannot be uploaded or copied over through the Web API", a
     await runtime.call("uploadArtifact", { sessionId: "s1", filename: "notes.html", content: "<p>x</p>", contentType: "text/html" }, as("alice"));
     await runtime.call("copyArtifact", { fromSessionId: "s1", fromFilename: "canvas.html", toSessionId: "s1", toFilename: "app-board.html" }, as("alice"));
     assert.deepEqual(calls.map((c) => c[0]), ["upload", "copy"]);
+    // An omitted or empty destination name is the source name.
+    for (const toFilename of [undefined, ""]) {
+        await assert.rejects(runtime.call("copyArtifact", { fromSessionId: "s1", fromFilename: "canvas.html", toSessionId: "s2", ...(toFilename === undefined ? {} : { toFilename }) }, as("alice")), (error) => error.status === 403, `toFilename ${JSON.stringify(toFilename)}`);
+    }
+    await assert.rejects(runtime.call("copyArtifact", { fromSessionId: "s1", fromFilename: "Canvas3.HTML", toSessionId: "s2" }, as("alice")), (error) => error.status === 403);
+    await runtime.call("copyArtifact", { fromSessionId: "s1", fromFilename: "app-board.html", toSessionId: "s2" }, as("alice"));
+    assert.deepEqual(calls.map((c) => c[0]), ["upload", "copy", "copy"], "an ordinary source with no destination name still copies");
 });
 
 test("share door: bytes that are not the page the draw event classified are served as another user's page", async () => {

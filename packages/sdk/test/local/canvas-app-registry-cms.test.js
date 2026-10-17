@@ -62,7 +62,7 @@ async function publish(store, viewer, name, sha, opts = {}) {
         card: { name }, workspaceKey: opts.workspaceKey ?? null,
         description: opts.description ?? "Use when testing the canvas app registry procedures.",
         tags: opts.tags ?? ["test"], sourceSessionId: null, sourceSlot: null, createdBy: "test",
-        mode: opts.mode ?? "publish",
+        mode: opts.mode ?? "publish", requireNewOrSameBytes: opts.requireNewOrSameBytes ?? false,
     });
     if (res.status === "reserved" && !opts.leavePending) {
         const mayActivate = (opts.mode ?? "publish") === "publish" || res.appCreated || Boolean(opts.importCreated);
@@ -518,6 +518,146 @@ describe("canvas app registry: CMS procedures", () => {
             assertEqual(await store.shaHidden("sha-wb", V.alice), false, "shared bytes are not hidden");
             assertEqual(await store.isSpace(priv.artifactSessionId), true);
             assertEqual(await store.isSpace(randomUUID()), false);
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    it("pending cleanup claims a stale version: it can never be committed, and abort removes it once", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const catalog = await createCatalog(env);
+        await registerUsers(env);
+        try {
+            const store = catalog.canvasApps;
+            const name = `claim-${randomUUID().slice(0, 8)}`;
+            const target = { name, scope: "user" };
+            await publish(store, V.alice, name, "a".repeat(64), { version: "1.0.0" });
+            const late = await publish(store, V.alice, name, "b".repeat(64), { version: "2.0.0", leavePending: true });
+            const fresh = await publish(store, V.alice, name, "c".repeat(64), { version: "3.0.0", leavePending: true });
+            // Only versions older than the cutoff are claimed: back-date one.
+            await withPg(env, (client) => client.query(`UPDATE "${env.cmsSchema}".canvas_app_versions SET created_at = now() - INTERVAL '2 hours' WHERE version_id = $1`, [late.versionId]));
+            const claimed = await store.prunePending(new Date(Date.now() - 60 * 60 * 1000));
+            assert(claimed.some((c) => c.versionId === late.versionId), "the stale version is claimed");
+            assert(!claimed.some((c) => c.versionId === fresh.versionId), "a fresh pending version is not");
+            const state = async (id) => (await withPg(env, (client) => client.query(`SELECT state FROM "${env.cmsSchema}".canvas_app_versions WHERE version_id = $1`, [id]))).rows[0]?.state ?? null;
+            assertEqual(await state(late.versionId), "cleanup");
+            // The late publisher's commit is refused; the active pointer stays.
+            await expectCode(store.commit(late.versionId, true), "ABORTED");
+            assertEqual(await activeVersion(store, V.alice, target), "1.0.0");
+            // The same bytes cannot be re-reserved while cleanup is pending.
+            await expectCode(publish(store, V.alice, name, "b".repeat(64), { version: "2.0.1" }), "BUSY");
+            // A claimed row is listed again until it is aborted (retry record).
+            assert((await store.prunePending(new Date(Date.now() - 60 * 60 * 1000))).some((c) => c.versionId === late.versionId), "listed again");
+            assertEqual(await store.abort(late.versionId), true, "abort removes the claimed row");
+            assertEqual(await store.abort(late.versionId), false, "and only once");
+            assertEqual(await state(late.versionId), null);
+            // A ready version is never removed by abort.
+            const ready = (await store.get(target, V.alice)).versions.find((v) => v.version === "1.0.0");
+            assertEqual(await store.abort(ready.versionId), false, "abort never removes a ready version");
+            // The fresh one still commits normally.
+            const ok = await store.commit(fresh.versionId, true);
+            assertEqual(ok.active, true);
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    it("commit and abort serialize on the app lock: no dangling active pointer, in either order", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const catalog = await createCatalog(env);
+        await registerUsers(env);
+        try {
+            const store = catalog.canvasApps;
+            for (const order of ["abort-first", "commit-first"]) {
+                const name = `race-${order}-${randomUUID().slice(0, 8)}`;
+                const target = { name, scope: "user" };
+                const pending = await publish(store, V.alice, name, "d".repeat(64), { version: "1.0.0", leavePending: true });
+                // Barrier: hold the app row lock in a separate transaction,
+                // queue both operations behind it, then release.
+                const holder = new pg.Client({ connectionString: env.store });
+                await holder.connect();
+                let results;
+                try {
+                    await holder.query("BEGIN");
+                    await holder.query(`SELECT 1 FROM "${env.cmsSchema}".canvas_apps WHERE app_id = $1 FOR UPDATE`, [pending.appId]);
+                    // Each operation is queued only once the previous one is
+                    // observed waiting on that lock (no timing guesses).
+                    const lockWaiters = async () => Number((await holder.query(
+                        `SELECT count(*)::int AS n FROM pg_stat_activity
+                          WHERE datname = current_database() AND wait_event_type = 'Lock'
+                            AND pid <> pg_backend_pid() AND position($1 in query) > 0`, [env.cmsSchema])).rows[0].n);
+                    const waitForWaiters = async (n) => {
+                        for (let i = 0; i < 200; i++) {
+                            if (await lockWaiters() >= n) return;
+                            await new Promise((resolve) => setTimeout(resolve, 25));
+                        }
+                        throw new Error(`expected ${n} lock waiter(s) on canvas_apps`);
+                    };
+                    const first = order === "abort-first" ? store.abort(pending.versionId) : store.commit(pending.versionId, true);
+                    await waitForWaiters(1);
+                    const second = order === "abort-first" ? store.commit(pending.versionId, true) : store.abort(pending.versionId);
+                    await waitForWaiters(2);
+                    await holder.query("COMMIT");
+                    results = await Promise.allSettled([first, second]);
+                } finally {
+                    await holder.end().catch(() => {});
+                }
+                const row = (await withPg(env, (client) => client.query(
+                    `SELECT a.active_version_id, v.version_id, v.state FROM "${env.cmsSchema}".canvas_apps a LEFT JOIN "${env.cmsSchema}".canvas_app_versions v ON v.version_id = a.active_version_id WHERE a.app_id = $1`,
+                    [pending.appId]))).rows[0];
+                if (row.active_version_id !== null) {
+                    assertEqual(row.version_id, row.active_version_id, `${order}: the active pointer names an existing version`);
+                    assertEqual(row.state, "ready", `${order}: the active version is ready`);
+                }
+                if (order === "abort-first") {
+                    assertEqual(results[0].status === "fulfilled" && results[0].value, true, "abort won");
+                    assertEqual(results[1].status, "rejected", "the commit after it is refused");
+                    assertEqual(results[1].reason?.code, "NOT_FOUND");
+                    assertEqual(row.active_version_id, null, "nothing is active");
+                } else {
+                    assertEqual(results[0].status, "fulfilled", "commit won");
+                    assertEqual(results[1].status === "fulfilled" && results[1].value, false, "abort after commit removes nothing");
+                    assertEqual(await activeVersion(store, V.alice, target), "1.0.0");
+                }
+            }
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    it("a numeric prerelease identifier over 9,999 digits is refused, not truncated", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const catalog = await createCatalog(env);
+        await registerUsers(env);
+        try {
+            const keyOf = async (v) => withPg(env, async (client) => (await client.query(`SELECT "${env.cmsSchema}".cms_canvas_app_precedence_key($1) AS k`, [v])).rows[0].k);
+            const at = await keyOf(`1.0.0-${"9".repeat(9999)}`);
+            assert(typeof at === "string" && at.includes("09999"), "9,999 digits: ordered with its full length");
+            assertEqual(await keyOf(`1.0.0-${"9".repeat(10000)}`), null, "10,000 digits: unorderable");
+            assertEqual(await keyOf(`1.0.0-alpha.${"1".repeat(10000)}`), null, "in any position");
+            const name = `pre-${randomUUID().slice(0, 8)}`;
+            await expectCode(publish(catalog.canvasApps, V.alice, name, "e".repeat(64), { version: `1.0.0-${"9".repeat(10000)}` }), "BAD_VERSION");
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    it("legacy migration's reservation extends an existing app only with the same bytes, decided under the lock", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const catalog = await createCatalog(env);
+        await registerUsers(env);
+        try {
+            const store = catalog.canvasApps;
+            const name = `mig-${randomUUID().slice(0, 8)}`;
+            await publish(store, V.alice, name, "f".repeat(64), { scope: "shared", version: "1.0.0" });
+            await expectCode(publish(store, V.alice, name, "0".repeat(64), { scope: "shared", requireNewOrSameBytes: true }), "NAME_TAKEN");
+            const same = await publish(store, V.alice, name, "f".repeat(64), { scope: "shared", requireNewOrSameBytes: true });
+            assertEqual(same.status, "noop", "the same bytes are a no-op");
+            const fresh = await publish(store, V.alice, `${name}-new`, "1".repeat(64), { scope: "shared", requireNewOrSameBytes: true });
+            assertEqual(fresh.appCreated, true, "a new app is created normally");
+            // Without the flag the owner may still add a version (ordinary publish).
+            const plain = await publish(store, V.alice, name, "2".repeat(64), { scope: "shared", version: "1.1.0" });
+            assertEqual(plain.status, "reserved");
         } finally {
             await catalog.close();
         }

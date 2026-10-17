@@ -39,6 +39,7 @@ import type {
     SessionWorkspaceView,
 } from "./types.js";
 import { validateWorkspaceText } from "./workspace-check.js";
+import { evaluateSessionAccess } from "../api/src/session-authz.js";
 import { readDefaultsRecord } from "./workspace.js";
 import {
     DEFAULT_WORKSPACE_FILE_MAX_BYTES,
@@ -862,10 +863,29 @@ function canvasGrantKey(sessionId: string, slot: number, program: CanvasWorkspac
  * and deletes only what it migrated. Patterns that could reach it are
  * refused too.
  */
+/**
+ * Could the facts store's pattern match some key under `prefix`? Mirrors the
+ * store exactly: a pattern with no `%` has `*` turned into `%`; then SQL LIKE
+ * with `%` (any run), `_` (any one character) and `\` escaping the next one.
+ */
+export function likePatternCanMatchPrefix(rawPattern: string, prefix: string): boolean {
+    const pattern = rawPattern.includes("%") ? rawPattern : rawPattern.replaceAll("*", "%");
+    let j = 0;
+    for (let i = 0; i < pattern.length; i++) {
+        if (j >= prefix.length) return true;
+        let ch = pattern[i];
+        if (ch === "%") return true;
+        if (ch === "_") { j++; continue; }
+        if (ch === "\\" && i + 1 < pattern.length) ch = pattern[++i];
+        if (ch !== prefix[j]) return false;
+        j++;
+    }
+    return j >= prefix.length;
+}
+
 function assertNotLegacyCanvasAppFact(key: unknown, pattern: boolean): void {
     const text = String(key ?? "");
-    const head = pattern ? text.split(/[*%?]/)[0] : text;
-    const touches = pattern ? ("apps/".startsWith(head) || head.startsWith("apps/")) : text.startsWith("apps/");
+    const touches = pattern ? likePatternCanMatchPrefix(text, "apps/") : text.startsWith("apps/");
     if (touches) {
         throw Object.assign(new Error("the 'apps/' fact namespace is the legacy canvas app catalog; use the canvas app registry"), { code: "FORBIDDEN", status: 403 });
     }
@@ -4050,7 +4070,9 @@ export class PilotSwarmManagementClient {
             throw err;
         }
         // apps/ facts are shared; a session-scoped delete cannot reach them.
-        if (safe.scope === "shared" || (safe.pattern !== true && safe.shared === true)) assertNotLegacyCanvasAppFact(safe.key, safe.pattern === true);
+        // The scope is decided exactly as the store decides it.
+        const effectiveScope = safe.pattern === true ? (safe.scope ?? (safe.shared === true ? "shared" : "session")) : (safe.shared === true ? "shared" : "session");
+        if (effectiveScope === "shared") assertNotLegacyCanvasAppFact(safe.key, safe.pattern === true);
         return this._requireFactStore().deleteFact(safe);
     }
 
@@ -5436,6 +5458,7 @@ export class PilotSwarmManagementClient {
         const deps = this._canvasAppDeps();
         const sessionId = String(args?.sessionId ?? "");
         const slot = normalizeShareSlot(args?.slot ?? 1);
+        await this._assertCanvasSessionWrite(sessionId, owner, resourceAdmin);
         const latest = await latestCanvasEventData(this._catalog, sessionId, slot);
         if (latest.rev === 0) throw new CanvasAppError("BAD_REQUEST", `no canvas has been drawn on slot ${slot}`);
         const html = await deps.artifactStore.downloadArtifactText(sessionId, canvasArtifactFilename(slot));
@@ -5450,6 +5473,27 @@ export class PilotSwarmManagementClient {
             data: { appId: result.appId, versionId: result.versionId, name: String(args?.name ?? ""), version: result.version, scope: result.scope, slot, rev: latest.rev, sha256: result.sha256 },
         }]).catch(() => { /* telemetry */ });
         return result;
+    }
+
+    /**
+     * Publishing a session's canvas reads and records on that session: the
+     * caller needs write access to it (the same rule as the Web API's
+     * session:write), whichever transport called. Missing or unreadable
+     * sessions are NOT_FOUND.
+     */
+    private async _assertCanvasSessionWrite(sessionId: string, owner: AgentPrincipal | null, resourceAdmin: boolean): Promise<void> {
+        if (!owner?.provider || !owner?.subject) {
+            if (resourceAdmin) return;
+            throw new CanvasAppError("FORBIDDEN", "publishing a session's canvas needs a signed-in user with write access to the session");
+        }
+        const snapshot = await this._catalog!.getSessionAccess(sessionId, { provider: owner.provider, subject: owner.subject });
+        if (!snapshot) throw new CanvasAppError("NOT_FOUND", "no such session");
+        const verdict = evaluateSessionAccess("session:write", snapshot as any, { isAdmin: resourceAdmin });
+        if (!verdict.allowed) {
+            throw verdict.notFound
+                ? new CanvasAppError("NOT_FOUND", "no such session")
+                : new CanvasAppError("FORBIDDEN", verdict.reason || "write access to the session is required");
+        }
     }
 
     /** Publish raw HTML (≤ 900 KB) without a session. */
