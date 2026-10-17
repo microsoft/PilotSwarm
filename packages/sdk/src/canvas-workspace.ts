@@ -49,11 +49,15 @@ export const CANVAS_WS_ERROR_CODES = {
     BUSY: "CANVAS_WS_BUSY",
     TIMEOUT: "CANVAS_WS_TIMEOUT",
     RUN_FAILED: "CANVAS_WS_RUN_FAILED",
+    /** Another user's app: the session owner has not approved this page (issue 181). */
+    CONSENT_REQUIRED: "CANVAS_WS_CONSENT_REQUIRED",
+    /** The call or approval names a revision that is no longer on the slot. */
+    STALE: "CANVAS_WS_STALE",
 } as const;
 const E = CANVAS_WS_ERROR_CODES;
 
 const STATUS: Record<string, number> = {
-    [E.UNDECLARED]: 403, [E.DENIED]: 403, [E.PROGRAM_NOT_ALLOWED]: 403, [E.COMMANDS_DISABLED]: 403,
+    [E.UNDECLARED]: 403, [E.DENIED]: 403, [E.CONSENT_REQUIRED]: 403, [E.STALE]: 409, [E.PROGRAM_NOT_ALLOWED]: 403, [E.COMMANDS_DISABLED]: 403,
     [E.FOLDER_UNKNOWN]: 404, [E.COMMAND_UNKNOWN]: 404,
     [E.PARAM_INVALID]: 400, [E.BUSY]: 429, [E.RUN_FAILED]: 422, [E.TIMEOUT]: 504,
 };

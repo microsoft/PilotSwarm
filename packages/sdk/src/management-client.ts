@@ -171,7 +171,7 @@ import {
     resolveAgentPackageVersion,
 } from "./agent-package-service.js";
 import {
-    publishCanvasAppHtml, readCanvasAppHtml, deleteCanvasApp, exportCanvasApp, importCanvasApp,
+    publishCanvasAppHtml, readCanvasAppHtml, deleteCanvasApp, exportCanvasApp, importCanvasApp, classifyCanvasDraw,
     migrateLegacyCanvasApps, pruneCanvasAppArtifacts, CANVAS_APP_DESCRIPTION_MIN,
     type CanvasAppRegistryDeps, type PublishCanvasAppHtmlResult,
 } from "./canvas-app-registry.js";
@@ -2179,6 +2179,10 @@ export class PilotSwarmManagementClient {
                 ? `this canvas app's manifest is broken, so it has no workspace access: ${manifestError}`
                 : "this canvas app declared no workspace access (a \"workspace\" block in its CANVAS-APP-MANIFEST)");
         }
+        // Canvas app registry (issue 181, R20): a page that belongs to another
+        // user gets no workspace access until the session owner approves that
+        // exact revision and bytes. Decided before any declaration is honored.
+        await this._assertCanvasWorkspaceConsent(sessionId, canvasSlot, call);
         const folders = workspaceFileFolders(await this.getSessionWorkspace(sessionId), config);
         const byName = new Map(folders.map((folder) => [canvasFolderName(folder), folder]));
         const commands = this.config.canvasCommands ?? null;
@@ -2370,6 +2374,76 @@ export class PilotSwarmManagementClient {
      * The canvas's `workspace` block, from the document drawn at the slot's
      * latest revision; `error` when its manifest is broken.
      */
+    /**
+     * The trust of the slot's current revision, for the session owner: from
+     * the draw event (`trust`, `pageSha256`), or — for a revision drawn before
+     * the registry existed — classified now from the stored page.
+     */
+    private async _canvasRevisionTrust(sessionId: string, slot: number): Promise<{ rev: number; trust: string; pageSha256: string; versionId: string | null }> {
+        const latest = await latestCanvasEventData(this._catalog, sessionId, slot);
+        const data: any = latest.data ?? {};
+        if (typeof data.trust === "string" && typeof data.pageSha256 === "string") {
+            return { rev: latest.rev, trust: data.trust, pageSha256: data.pageSha256, versionId: data.app?.versionId ?? null };
+        }
+        const store = this._catalog?.canvasApps;
+        if (!store || !this._artifactStore || latest.rev === 0) return { rev: latest.rev, trust: "agent", pageSha256: "", versionId: null };
+        const html = await this._artifactStore.downloadArtifactText(sessionId, canvasArtifactFilename(slot));
+        const row = await this._catalog!.getSession(sessionId).catch(() => null);
+        const principal = row?.owner?.provider && row?.owner?.subject ? { provider: row.owner.provider, subject: row.owner.subject } : null;
+        const classification = await classifyCanvasDraw(store, {
+            html, manifest: extractCanvasAppManifest(html).manifest ?? null, viewer: { principal, resourceAdmin: false },
+        });
+        return { rev: latest.rev, trust: classification.trust, pageSha256: classification.pageSha256, versionId: classification.app?.versionId ?? null };
+    }
+
+    private async _assertCanvasWorkspaceConsent(sessionId: string, slot: number, call: Record<string, any>): Promise<void> {
+        const X = CANVAS_WS_ERROR_CODES;
+        const current = await this._canvasRevisionTrust(sessionId, slot);
+        if (current.trust !== "cross-owner") return;
+        const rev = Number(call?.rev);
+        if (!Number.isInteger(rev) || rev !== current.rev) {
+            throw canvasWsError(X.STALE, `this call is for revision ${Number.isInteger(rev) ? rev : "(none)"}, but the canvas shows revision ${current.rev}`);
+        }
+        const decision = await this._catalog!.canvasApps!.getConsent(sessionId, slot, current.rev, current.pageSha256);
+        if (decision !== "granted") {
+            throw canvasWsError(X.CONSENT_REQUIRED, decision === "denied"
+                ? "the session owner declined workspace access for this app"
+                : "this app belongs to another user; the session owner must approve its workspace access first");
+        }
+    }
+
+    /**
+     * The session owner's decision on workspace access for another user's
+     * app on a slot (R20). Bound to the revision and page bytes the owner saw;
+     * refused when the slot shows something else now. `session:files` access
+     * class (the session's owner only).
+     */
+    async setCanvasAppWorkspaceConsent(
+        args: { sessionId: string; slot: number; rev: number; pageSha256: string; decision: "granted" | "denied" },
+        owner: AgentPrincipal | null,
+        _resourceAdmin: boolean,
+    ): Promise<{ ok: true; decision: string }> {
+        this._ensureStarted();
+        const X = CANVAS_WS_ERROR_CODES;
+        if (!owner?.provider || !owner?.subject) throw new CanvasAppError("NO_OWNER", "a signed-in user must decide");
+        const sessionId = String(args?.sessionId ?? "");
+        const slot = normalizeShareSlot(args?.slot);
+        const row = await this._catalog!.getSession(sessionId).catch(() => null);
+        if (!row?.owner || row.owner.provider !== owner.provider || row.owner.subject !== owner.subject) {
+            throw new CanvasAppError("FORBIDDEN", "only the session's owner decides its workspace access");
+        }
+        const current = await this._canvasRevisionTrust(sessionId, slot);
+        if (current.rev !== Number(args?.rev) || current.pageSha256 !== String(args?.pageSha256 ?? "")) {
+            throw canvasWsError(X.STALE, "the canvas changed since this approval was shown; ask again for the current page");
+        }
+        const decision = args?.decision === "granted" ? "granted" : "denied";
+        await this._catalog!.canvasApps!.setConsent({
+            sessionId, slot, rev: current.rev, pageSha256: current.pageSha256, versionId: current.versionId,
+            decision, by: { provider: owner.provider, subject: owner.subject },
+        });
+        return { ok: true, decision };
+    }
+
     private async _canvasWorkspaceDeclaration(sessionId: string, slot: number): Promise<{ declaration: CanvasWorkspaceDeclaration | null; error?: string }> {
         // The draw event carries the checked block with its own rev (written
         // after the page's upload), so a call during a redraw gets the old

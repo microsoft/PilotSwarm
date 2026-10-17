@@ -10,7 +10,7 @@ import {
 import { extractCanvasAppManifest, canvasAppCard, normalizeCanvasResponseContract } from "./canvas-app-manifest.js";
 import { readCanvasKv, writeCanvasKv } from "./canvas-kv.js";
 import {
-    publishCanvasAppHtml, readCanvasAppHtml, deleteCanvasApp as deleteRegistryCanvasApp, classifyCanvasDraw,
+    publishCanvasAppHtml, readCanvasAppHtml, deleteCanvasApp as deleteRegistryCanvasApp, classifyCanvasDraw, canvasBytesRefusal,
     type CanvasDrawAttribution, type CanvasDrawClassification,
 } from "./canvas-app-registry.js";
 import { CanvasAppError } from "./canvas-app-store.js";
@@ -3614,6 +3614,19 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                             } catch (err: any) {
                                 return { error: `could not read artifact ${filename} from session ${sourceSessionId}: ${err?.message || String(err)}` };
                             }
+                            // Canvas app registry (issue 181): app storage spaces
+                            // and another user's PRIVATE app bytes are not a
+                            // fromArtifact source (R8). A visible app's bytes may
+                            // be drawn; the draw is classified cross-owner.
+                            const registry = (catalog as any).canvasApps;
+                            if (registry) {
+                                const refusal = await canvasBytesRefusal({ store: registry, resolveViewer: (id) => sessionManager.resolveCanvasAppViewer(id) },
+                                    { callerSessionId: input.sessionId, artifactSessionId: sourceSessionId, bytes: null });
+                                if (refusal) return { error: refusal };
+                                if (await registry.shaHidden(nodeCrypto.createHash("sha256").update(text, "utf8").digest("hex"), canvasViewer)) {
+                                    return { error: `could not read artifact ${filename} from session ${sourceSessionId}: artifact not found` };
+                                }
+                            }
                             const fetchedBytes = Buffer.byteLength(text, "utf8");
                             if (fetchedBytes > 900_000) {
                                 return { error: `artifact ${filename} is ${fetchedBytes} bytes; the canvas cap is 900 KB` };
@@ -4125,6 +4138,18 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         const rev = await latestCanvasRev(catalog, target, slot);
                         if (rev === 0) return { exists: false };
                         const text = await artifactStore.downloadArtifactText(target, canvasArtifactFilename(slot));
+                        // Canvas app registry (issue 181): another owner's app
+                        // is drawn by identity (fromApp); its page bytes are not
+                        // handed to the model. The card stays readable with
+                        // manifestOnly.
+                        const registry = (catalog as any).canvasApps;
+                        if (registry) {
+                            const refusal = await canvasBytesRefusal({ store: registry, resolveViewer: (id) => sessionManager.resolveCanvasAppViewer(id) },
+                                { callerSessionId: input.sessionId, artifactSessionId: target, bytes: text });
+                            if (refusal) {
+                                return { exists: true, rev, sizeBytes: Buffer.byteLength(text, "utf8"), withheld: true, reason: refusal, ...(await liveState()) };
+                            }
+                        }
                         const offset = Math.max(0, Math.floor(Number(args.offset) || 0));
                         const maxChars = Math.min(262_144, Math.max(1, Math.floor(Number(args.maxBytes) || 65_536)));
                         const content = text.slice(offset, offset + maxChars);

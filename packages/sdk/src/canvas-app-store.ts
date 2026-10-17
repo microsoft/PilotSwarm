@@ -265,6 +265,15 @@ export class CanvasAppStore {
         return Boolean(rows[0]?.hidden);
     }
 
+    /**
+     * Another owner's app bytes (exact sha256, or a shared app's workspace block)
+     * that this viewer may not edit: the app name, '(private)', or null.
+     */
+    async foreignBytes(sha256: string, workspaceKey: string | null, viewer: CanvasAppViewer): Promise<string | null> {
+        const rows = await this.call(`SELECT ${this.fn("foreign_bytes")}($1,$2,$3,$4,$5) AS name`, [sha256, workspaceKey, ...viewerArgs(viewer)]);
+        return rows[0]?.name ?? null;
+    }
+
     /** Is this artifact "session" id an app byte space (live or deleted)? */
     async isSpace(sessionId: string): Promise<boolean> {
         const rows = await this.call(`SELECT ${this.fn("is_space")}($1) AS space`, [sessionId]);

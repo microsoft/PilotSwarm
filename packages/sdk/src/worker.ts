@@ -22,6 +22,7 @@ import { firstRuntimeModel } from "./provider-catalog.js";
 import { loadMcpConfig, mcpAllowlistAdmits, type McpAllowlistAgent } from "./mcp-loader.js";
 
 import { createModelProvidersReloader, type ModelProviderRegistry } from "./model-providers.js";
+import { canvasBytesRefusal } from "./canvas-app-registry.js";
 import { createArtifactTools } from "./artifact-tools.js";
 import { createDistillerTools } from "./distiller-tools.js";
 import { isEnhancedFactStore, PgFactStore, type FactStore } from "./facts-store.js";
@@ -966,7 +967,23 @@ export class PilotSwarmWorker {
 
         // Auto-register artifact tools (blob storage or local filesystem)
         if (this.artifactStore) {
-            const artifactTools = createArtifactTools({ blobStore: this.artifactStore });
+            const artifactTools = createArtifactTools({
+                blobStore: this.artifactStore,
+                // Canvas app registry (issue 181): agents never receive another
+                // owner's app bytes or an app's storage space; they draw fromApp.
+                // Resolved at call time: the catalog and session manager may be
+                // attached after the tools are registered. No registry → no apps.
+                canvasBytesGuard: async (input: { callerSessionId: string | null | undefined; artifactSessionId: string; bytes?: Buffer | string | null }) => {
+                    const store = (this._catalog as any)?.canvasApps;
+                    if (!store) return null;
+                    return canvasBytesRefusal({
+                        store,
+                        resolveViewer: async (sessionId: string) => this.sessionManager
+                            ? this.sessionManager.resolveCanvasAppViewer(sessionId)
+                            : { principal: null, resourceAdmin: false },
+                    }, input);
+                },
+            });
             // The write bundle attaches patch artifacts through the same store.
             if (this.sessionManager) this.sessionManager.artifactStore = this.artifactStore ?? null;
             this.registerTools(artifactTools);

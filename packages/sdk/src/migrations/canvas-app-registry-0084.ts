@@ -668,6 +668,32 @@ CREATE OR REPLACE FUNCTION ${s}.cms_canvas_app_sha_hidden(
     );
 $$;
 
+-- Are these bytes (or their workspace block) another owner's app that this
+-- viewer may not edit? Agents never receive such bytes: they draw the app with
+-- fromApp instead. Returns the app name when it is visible to the viewer,
+-- '(private)' when it is not, NULL when the bytes are the viewer's to read.
+CREATE OR REPLACE FUNCTION ${s}.cms_canvas_app_foreign_bytes(
+    p_sha256 TEXT, p_workspace_key TEXT, p_viewer_provider TEXT, p_viewer_subject TEXT, p_resource_admin BOOLEAN
+) RETURNS TEXT LANGUAGE sql STABLE AS $$
+    WITH viewer AS (
+        SELECT NULLIF(BTRIM(p_viewer_provider), '') AS p, NULLIF(BTRIM(p_viewer_subject), '') AS s
+    ), hits AS (
+        SELECT a.app_id, a.name, a.scope, a.created_at
+          FROM ${s}.canvas_app_versions v
+          JOIN ${s}.canvas_apps a ON a.app_id = v.app_id, viewer
+         WHERE v.state = 'ready'
+           AND (v.sha256 = p_sha256 OR (p_workspace_key IS NOT NULL AND v.workspace_key = p_workspace_key AND a.scope = 'shared'))
+           AND NOT (a.owner_provider IS NOT NULL AND a.owner_provider = viewer.p AND a.owner_subject = viewer.s)
+           AND NOT (a.scope = 'shared' AND ${s}.cms_canvas_app_is_editor(a.app_id, viewer.p, viewer.s))
+    )
+    SELECT CASE WHEN COALESCE(p_resource_admin, FALSE) THEN NULL
+                WHEN h.scope = 'shared' THEN h.name
+                ELSE '(private)' END
+      FROM hits h
+     ORDER BY (h.scope = 'shared') DESC, h.created_at
+     LIMIT 1;
+$$;
+
 -- Is this id an app byte space (live or deleted)? The prefix test in TS is
 -- only a filter; this is the answer.
 CREATE OR REPLACE FUNCTION ${s}.cms_canvas_app_is_space(p_session_id TEXT)

@@ -1014,6 +1014,7 @@ export class PortalRuntime {
             // the authenticated principal, `resourceAdmin` the unrestricted
             // admin flag. publishCanvasApp's session write is checked by its
             // access class before dispatch.
+            case "setCanvasAppWorkspaceConsent":
             case "listCanvasApps":
             case "searchCanvasApps":
             case "getCanvasApp":

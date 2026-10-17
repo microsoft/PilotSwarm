@@ -593,3 +593,39 @@ export async function classifyCanvasDraw(
     }
     return { trust: "agent", app: null, pageSha256 };
 }
+
+
+// ── Bytes that agents do not receive (plan decision 14) ──────────
+
+export interface CanvasBytesGuardDeps {
+    store: CanvasAppStore;
+    /** The calling session's owner as a registry viewer. */
+    resolveViewer: (sessionId: string) => Promise<CanvasAppViewer>;
+}
+
+/**
+ * The host-side rule for model-visible reads: an agent never receives the
+ * bytes of another owner's canvas app it may not edit (exact bytes, or a page
+ * with that app's workspace block), nor any byte of an app's own storage
+ * space. It draws such an app with fromApp, which keeps the app's identity,
+ * so the cross-owner network block and workspace consent apply. Returns a
+ * refusal message, or null when the read may proceed.
+ */
+export async function canvasBytesRefusal(
+    deps: CanvasBytesGuardDeps,
+    input: { callerSessionId: string | null | undefined; artifactSessionId: string; bytes?: Buffer | string | null },
+): Promise<string | null> {
+    if (looksLikeCanvasAppSpace(input.artifactSessionId) && await deps.store.isSpace(input.artifactSessionId)) {
+        return "canvas app storage is read only through the canvas app registry (find_canvas_app, draw_canvas({fromApp}))";
+    }
+    if (input.bytes == null) return null;
+    const text = Buffer.isBuffer(input.bytes) ? input.bytes.toString("utf8") : String(input.bytes);
+    if (!text.includes("CANVAS-APP-MANIFEST") && !text.includes("<")) return null;
+    const viewer = input.callerSessionId ? await deps.resolveViewer(input.callerSessionId) : { principal: null, resourceAdmin: false };
+    const extraction = extractCanvasAppManifest(text);
+    const owner = await deps.store.foreignBytes(sha256Hex(text), canvasAppWorkspaceKey(extraction.manifest), viewer);
+    if (!owner) return null;
+    return owner === "(private)"
+        ? "artifact not found"
+        : `these bytes are the canvas app "${owner}" of another user; agents do not receive its page. Draw it with draw_canvas({fromApp: {name: "${owner}"}}), or read its card with find_canvas_app({name}).`;
+}

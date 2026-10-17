@@ -101,8 +101,18 @@ function resolveJailedPath(candidate: string, mustExist: boolean): { path?: stri
  */
 export function createArtifactTools(opts: {
     blobStore: ArtifactStore;
+    /**
+     * Canvas app registry (issue 181): refuses model-visible reads of another
+     * owner's app bytes and of app storage spaces. Returns a refusal message
+     * or null. Absent on workers without a CMS: reads behave as before.
+     */
+    canvasBytesGuard?: (input: { callerSessionId: string | null | undefined; artifactSessionId: string; bytes?: Buffer | string | null }) => Promise<string | null>;
 }): Tool<any>[] {
-    const { blobStore } = opts;
+    const { blobStore, canvasBytesGuard } = opts;
+    const isHtmlLike = (filename: string, contentType?: string | null) =>
+        /\.html?$/i.test(String(filename ?? "")) || /html/i.test(String(contentType ?? ""));
+    const guard = async (callerSessionId: string | null | undefined, artifactSessionId: string, bytes?: Buffer | string | null) =>
+        canvasBytesGuard ? canvasBytesGuard({ callerSessionId, artifactSessionId, bytes: bytes ?? null }) : null;
 
     // ── write_artifact ─────────────────────────────────────────
 
@@ -219,9 +229,20 @@ export function createArtifactTools(opts: {
                     // Source session defaults to self: the canonical save-as
                     // ("copy my canvas.html to app-<name>.html") should not
                     // require the model to know its own session id.
+                    const sourceRefusal = await guard(sessionId, from.sessionId || sessionId, null);
+                    if (sourceRefusal) return toolError("CANVAS_APP_BYTES", sourceRefusal);
                     const metadata = await blobStore.copyArtifact(
                         from.sessionId || sessionId, from.filename, sessionId, filename, { pinned },
                     );
+                    if (canvasBytesGuard && isHtmlLike(metadata.filename, (metadata as any).contentType)) {
+                        const copied = await blobStore.downloadArtifactText(sessionId, metadata.filename).catch(() => null);
+                        const refusal = copied == null ? null : await guard(sessionId, from.sessionId || sessionId, copied);
+                        if (refusal === "artifact not found") {
+                            // Another user's private app: the copy must not exist either.
+                            await blobStore.deleteArtifact(sessionId, metadata.filename).catch(() => false);
+                            return toolError("ARTIFACT_NOT_FOUND", `Artifact not found: ${from.filename} in session ${from.sessionId || sessionId}`);
+                        }
+                    }
                     if (from.expectedSha256 && metadata.sha256 !== from.expectedSha256) {
                         await blobStore.deleteArtifact(sessionId, metadata.filename);
                         return toolError(
@@ -319,7 +340,8 @@ export function createArtifactTools(opts: {
             encoding?: "utf-8" | "base64";
             maxBytes?: number;
             offset?: number;
-        }) => {
+        }, context?: any) => {
+            const callerSessionId = context?.durableSessionId ?? null;
             if ([params.metaOnly, params.manifestOnly, params.toFile].filter(Boolean).length > 1) {
                 return toolError(
                     "EXCLUSIVE_MODE",
@@ -329,6 +351,8 @@ export function createArtifactTools(opts: {
             }
 
             try {
+                const spaceRefusal = await guard(callerSessionId, params.sessionId, null);
+                if (spaceRefusal) return toolError("CANVAS_APP_BYTES", spaceRefusal);
                 if (params.manifestOnly) {
                     const text = await blobStore.downloadArtifactText(params.sessionId, params.filename);
                     const extraction = extractCanvasAppManifest(text);
@@ -371,6 +395,12 @@ export function createArtifactTools(opts: {
                     const jailed = resolveJailedPath(params.toFile, false);
                     if (jailed.error) return toolError("PATH_OUTSIDE_WORKDIR", jailed.error);
                     const result = await blobStore.downloadArtifact(params.sessionId, params.filename);
+                    if (isHtmlLike(params.filename, result.contentType)) {
+                        const refusal = await guard(callerSessionId, params.sessionId, result.body);
+                        if (refusal) return refusal === "artifact not found"
+                            ? toolError("ARTIFACT_NOT_FOUND", `Artifact not found: ${params.filename} in session ${params.sessionId}`)
+                            : toolError("CANVAS_APP_BYTES", refusal);
+                    }
                     fs.mkdirSync(path.dirname(jailed.path!), { recursive: true });
                     fs.writeFileSync(jailed.path!, result.body);
                     const { body: _body, ...metadata } = result;
@@ -385,6 +415,12 @@ export function createArtifactTools(opts: {
                 }
 
                 const result = await blobStore.downloadArtifact(params.sessionId, params.filename);
+                if (isHtmlLike(params.filename, result.contentType)) {
+                    const refusal = await guard(callerSessionId, params.sessionId, result.body);
+                    if (refusal) return refusal === "artifact not found"
+                        ? toolError("ARTIFACT_NOT_FOUND", `Artifact not found: ${params.filename} in session ${params.sessionId}`)
+                        : toolError("CANVAS_APP_BYTES", refusal);
+                }
                 const encoding = params.encoding || "utf-8";
                 if (result.isBinary && encoding !== "base64") {
                     return JSON.stringify({
@@ -446,6 +482,8 @@ export function createArtifactTools(opts: {
             }
 
             try {
+                const spaceRefusal = await guard(context?.durableSessionId, targetId, null);
+                if (spaceRefusal) return toolError("CANVAS_APP_BYTES", spaceRefusal);
                 const files = await blobStore.listArtifacts(targetId);
                 return JSON.stringify({
                     success: true,
