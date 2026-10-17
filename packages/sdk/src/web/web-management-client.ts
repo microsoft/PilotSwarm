@@ -216,6 +216,24 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("getSessionEventsBefore", { sessionId, beforeSeq, limit, eventTypes });
     }
 
+    /**
+     * Paged session events with a continuation receipt (issue 148). The direct
+     * client computes the receipt; web mode forwards the same shape unchanged,
+     * so a local agent sees identical semantics in either mode.
+     */
+    async getSessionEventsPage(
+        sessionId: string,
+        opts: { afterSeq?: number; beforeSeq?: number; limit?: number; eventTypes?: string[] } = {},
+    ): Promise<any> {
+        return this._api.call("getSessionEventsPage", {
+            sessionId,
+            afterSeq: opts.afterSeq,
+            beforeSeq: opts.beforeSeq,
+            limit: opts.limit,
+            eventTypes: opts.eventTypes,
+        });
+    }
+
     async getCanvasLive(sessionId: string): Promise<Array<{ slot: number; seq: number; docRev: number; docSha: string; payload: Record<string, unknown>; updatedBy: string; updatedAt: string }>> {
         return this._api.call("getCanvasLive", { sessionId });
     }

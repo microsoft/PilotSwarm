@@ -125,6 +125,7 @@ const BREAK_GLASS_AUDITED = {
     any: true,
     getSessionEvents: true,
     getSessionEventsBefore: true,
+    getSessionEventsPage: true,
     downloadArtifact: true,
     readArtifactBase64: true,
     getExecutionHistory: true,
@@ -1295,6 +1296,13 @@ export class PortalRuntime {
                 return this.transport.getSessionEvents(safeParams.sessionId, safeParams.afterSeq, safeParams.limit, safeParams.eventTypes);
             case "getSessionEventsBefore":
                 return this.transport.getSessionEventsBefore(safeParams.sessionId, safeParams.beforeSeq, safeParams.limit, safeParams.eventTypes);
+            case "getSessionEventsPage":
+                return this.transport.getSessionEventsPage(safeParams.sessionId, {
+                    afterSeq: safeParams.afterSeq,
+                    beforeSeq: safeParams.beforeSeq,
+                    limit: safeParams.limit,
+                    eventTypes: safeParams.eventTypes,
+                });
             case "getCanvasLive":
                 return this.transport.getCanvasLive(safeParams.sessionId);
             case "getLive":
