@@ -232,9 +232,22 @@ async function run() {
         // solved sufficient_max_bytes, so the FIRST error already names a budget
         // that works. Only that field may be followed.
         const firstErr = JSON.parse(textOf(await ask(1)));
+        const firstSufficient = firstErr.sufficient_max_bytes;
         record("G46-06: the FIRST refusal already names a sufficient budget",
-            typeof firstErr.sufficient_max_bytes === "number" && firstErr.sufficient_max_bytes > 0,
-            JSON.stringify(firstErr).slice(0, 200));
+            typeof firstSufficient === "number" && firstSufficient > 0,
+            JSON.stringify(firstErr).slice(0, 200),
+            `advertised ${firstSufficient}`);
+
+        // Presence is not sufficiency. A wrong number is still a number, and
+        // that is exactly the defect r17 found — the envelope branch named a
+        // budget that did not work. So USE it, in ONE step.
+        if (typeof firstSufficient === "number") {
+            const oneStep = await ask(firstSufficient);
+            record("G46-06: that first advertised budget SUCCEEDS in one step",
+                !oneStep.isError && bytesOf(oneStep) <= firstSufficient,
+                oneStep.isError ? textOf(oneStep).slice(0, 160) : `${bytesOf(oneStep)} exceeds ${firstSufficient}`,
+                `${firstSufficient}B accepted`);
+        }
 
         let budget = 1;
         let steps = 0;
@@ -294,8 +307,14 @@ async function run() {
             // which is precisely why that branch must carry a retry value too.
             const envelopeErr = JSON.parse(textOf(await ask2(1)));
             const floorBytes = envelopeErr.minimum_envelope_bytes;
+            // The floor value belongs in info, not detail: 673 is the number
+            // that EXPOSED the moving-floor defect in r17, and hiding it on a
+            // pass would remove the evidence a reader needs to notice the
+            // anchor shifting.
             record("G46-07 setup: the envelope refusal reports a floor",
-                typeof floorBytes === "number" && floorBytes > 0, JSON.stringify(envelopeErr).slice(0, 160));
+                typeof floorBytes === "number" && floorBytes > 0,
+                JSON.stringify(envelopeErr).slice(0, 160),
+                `floor ${floorBytes}, sufficient ${envelopeErr.sufficient_max_bytes}`);
 
             let exercised = 0;
             for (const over of [0, 1, 5, 40, 200]) {
