@@ -10,8 +10,12 @@
 //      but in the inner frame;
 //   3. a link the page asks to open by itself is ignored; a real click asks
 //      the person first;
-//   4. KV and canvas-ws calls still work through the wrapper, and a page
-//      that replaced itself gets nothing more.
+//   4. KV and canvas-ws calls still work through the wrapper.
+//
+// That a replaced inner page gets nothing more, and the relay's port and
+// result filtering, are tested on the wrapper's own script in
+// web/test/canvas-isolation.test.mjs; this file proves what only a browser
+// can: that the policy really refuses the network and self-navigation.
 //
 // The server is a fake that records what it was asked; the probe is a
 // route that counts requests. A request the browser refuses never reaches
@@ -136,7 +140,7 @@ test("canvas-ws still works through the wrapper", async ({ page, context }) => {
     expect(calls.at(-1)).toMatchObject({ slot: 1, call: { op: "info", rev: 1 } });
 });
 
-test("share viewer, another user's app: same wrapper, no requests, and a page that left gets no more data", async ({ page, context }) => {
+test("share viewer, another user's app: the same wrapper, and no request reaches the network", async ({ page, context }) => {
     const hits = await countProbe(context);
     const posted = [];
     await page.route("**/api/canvas-share/**", async (route) => {

@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 
 import {
     CROSS_OWNER_APP_CSP, CROSS_OWNER_WRAPPER_CSP, CROSS_OWNER_WRAPPER_HTML, crossOwnerWrapperHtml,
+    CANVAS_WS_UPGRADE_CODE, CANVAS_WS_UPGRADE_ERROR,
     assertPageBytes, buildIsolatedInnerHtml, injectAfterDoctype, isCanvasSlotFilename, isWrapperControlMessage, sha256HexOfBytes,
 } from "../../ui/react/src/canvas-isolation.js";
 import { createHash } from "node:crypto";
@@ -183,18 +184,51 @@ test("a request port from the page reaches the portal unchanged; every other por
     assert.equal(late.closed, true, "after the page was replaced, ports are closed, not relayed");
 });
 
-test("with request ports (issue 184), the wrapper passes only the fixed upgrade diagnostic as a canvas-ws-result", () => {
+test("with request ports (issue 184), the only canvas-ws* window message the page gets is the fixed upgrade diagnostic", () => {
     const w = bootWrapper(crossOwnerWrapperHtml({ workspaceResults: "upgrade-only" }));
     w.dispatch(w.parent, { type: "pse-wrapper-load", html: "<p>app</p>" });
     const inner = w.inner();
     inner.fireLoad();
-    const upgrade = { type: "canvas-ws-result", id: 7, ok: false, code: "CANVAS_WS_UPGRADE_REQUIRED", error: "Update this canvas workspace helper before using files or commands." };
+    // The exact text issue 184's host sends (rejectLegacyCanvasWorkspaceRequest).
+    assert.equal(CANVAS_WS_UPGRADE_ERROR, "Update this canvas workspace helper before using files or commands.");
+    const upgrade = { type: "canvas-ws-result", id: 7, ok: false, code: CANVAS_WS_UPGRADE_CODE, error: CANVAS_WS_UPGRADE_ERROR };
+    const upgradeNoId = { ...upgrade, id: null };
+    const tick = { type: "canvas-data", data: { a: 1 } };
+    const action = { type: "canvas-kv-changed", key: "app/x", value: 1 };
     w.dispatch(w.parent, upgrade);
-    w.dispatch(w.parent, { type: "canvas-ws-result", id: 8, ok: true, result: { text: "secret" } });
-    w.dispatch(w.parent, { type: "canvas-ws-result", id: 9, ok: false, code: "CANVAS_WS_DENIED", error: "may not read work/.env" });
-    w.dispatch(w.parent, { ...upgrade, extra: "leak" });
-    w.dispatch(w.parent, { type: "canvas-data", data: { a: 1 } });
-    assert.deepEqual(inner.received, [upgrade, { type: "canvas-data", data: { a: 1 } }], "only the fixed diagnostic and non-workspace messages pass");
+    // Every other canvas-ws* window message is dropped, whatever its type.
+    for (const dropped of [
+        { type: "canvas-ws-result", id: 8, ok: true, result: { text: "secret" } },
+        { type: "canvas-ws-result", id: 9, ok: false, code: "CANVAS_WS_DENIED", error: "may not read work/.env" },
+        { ...upgrade, extra: "leak" },
+        { ...upgrade, error: "Update this canvas workspace helper: work/.env" },
+        { ...upgrade, id: 0 },
+        { ...upgrade, id: -3 },
+        { ...upgrade, id: 1.5 },
+        { ...upgrade, id: "7" },
+        { ...upgrade, type: "canvas-ws-v2-result" },
+        { type: "canvas-ws-v2", version: 2, id: 3, ok: true, result: { text: "secret" } },
+        { type: "canvas-ws-dispose", id: 3 },
+        { type: "canvas-ws-watch", path: "work/a" },
+        { type: "canvas-ws", id: 4, op: "read" },
+    ]) w.dispatch(w.parent, dropped);
+    w.dispatch(w.parent, upgradeNoId);
+    w.dispatch(w.parent, tick);
+    w.dispatch(w.parent, action);
+    assert.deepEqual(inner.received, [upgrade, upgradeNoId, tick, action], "the fixed diagnostic and non-workspace messages only");
+    // Requests from the page are never filtered: v2 requests and disposals
+    // reach the portal unchanged with the exact ports they came with.
+    const reqPort = fakePort("v2");
+    const v2 = { type: "canvas-ws-v2", version: 2, documentToken: "t", id: 5, op: "read", path: "work/a" };
+    w.dispatch(inner.contentWindow, v2, [reqPort]);
+    assert.deepEqual(w.toParent.at(-1), v2);
+    assert.deepEqual(w.transfers.at(-1), [reqPort]);
+    assert.equal(reqPort.closed, false);
+    const disposePort = fakePort("dispose");
+    const dispose = { type: "canvas-ws-dispose", version: 2, documentToken: "t", id: 6, target: 5 };
+    w.dispatch(inner.contentWindow, dispose, [disposePort]);
+    assert.deepEqual(w.toParent.at(-1), dispose);
+    assert.deepEqual(w.transfers.at(-1), [disposePort]);
     // In the 181-only default the portal's window replies still pass.
     const legacy = bootWrapper();
     legacy.dispatch(legacy.parent, { type: "pse-wrapper-load", html: "<p>app</p>" });
