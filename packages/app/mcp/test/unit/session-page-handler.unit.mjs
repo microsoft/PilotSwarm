@@ -19,12 +19,11 @@
 // No database, no network, no model.
 //
 // Usage: node packages/app/mcp/test/unit/session-page-handler.unit.mjs
-//
-// STATUS: authored, NOT YET EXECUTED.
 
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { createMcpServer } from "../../dist/src/server.js";
+import { makeServerContext } from "./helpers/fake-context.mjs";
 
 const results = [];
 function record(name, ok, detail = "") {
@@ -85,12 +84,11 @@ function sessionMgmt(all, { pageLimit = 999 } = {}) {
 }
 
 async function connect(mgmt) {
-    const ctx = {
-        mgmt,
-        client: null, facts: null, enhancedFacts: null, graph: null,
-        admin: false, authz: { ownershipEnforced: false, defaultVisibility: "private", systemVisibility: "read" },
-        registeredAgents: [], systemAgentIds: new Set(), web: null,
-    };
+    // A COMPLETE context (see helpers/fake-context.mjs). A hand-rolled
+    // near-miss crashes inside a registrar during setup, which fails the file
+    // before a single case runs — the assertions below would then be neither
+    // passed nor failed, while the output shows only one error.
+    const ctx = makeServerContext({ mgmt });
     const server = createMcpServer(ctx);
     const [ct, st] = InMemoryTransport.createLinkedPair();
     const client = new Client({ name: "t", version: "0" }, { capabilities: {} });
