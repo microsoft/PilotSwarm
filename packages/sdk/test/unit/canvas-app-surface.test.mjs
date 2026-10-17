@@ -90,7 +90,7 @@ test("no canvas operation on the Node SDK transport assumes admin when the calle
     }
 });
 
-test("the app byte-space family is one pure module, and both clients refuse it as artifact storage", async () => {
+test("the app byte-space family is one pure module; membership is the registry's answer, never a guess from the id", async () => {
     const { createHash } = await import("node:crypto");
     const { CANVAS_APP_SPACE_PREFIX, looksLikeCanvasAppSpace } = await import("../../dist/canvas-app-space.js");
     assert.equal(
@@ -99,18 +99,28 @@ test("the app byte-space family is one pure module, and both clients refuse it a
         "the literal prefix is the documented derivation",
     );
     const SPACE = read("../../src/canvas-app-space.ts");
-    assert.ok(!/from "node:|require\(/.test(SPACE), "the family module imports no Node built-in (the web client uses it)");
+    assert.ok(!/from "node:|require\(/.test(SPACE), "the family module imports no Node built-in");
     const member = `${CANVAS_APP_SPACE_PREFIX.slice(0, 8)}-${CANVAS_APP_SPACE_PREFIX.slice(8, 12)}-8000-8000-000000000001`;
     assert.ok(looksLikeCanvasAppSpace(member));
     assert.ok(!looksLikeCanvasAppSpace("00000000-0000-4000-8000-000000000001"));
 
-    // Both management clients answer isCanvasAppStorage; the web client by the
-    // family alone (fail closed), so the Node transport refuses the family in
-    // either mode. TypeScript also pins the web surface against the direct one.
-    assert.match(DIRECT, /\n    async isCanvasAppStorage\(/);
-    assert.match(WEB, /\n    async isCanvasAppStorage\(sessionId: string\): Promise<boolean> \{\n        return looksLikeCanvasAppSpace\(/);
+    // Direct mode: the family pre-filters, the registry decides. A legacy
+    // session whose id is in the family but is not app storage is NOT refused.
+    const { PilotSwarmManagementClient } = await import("../../dist/management-client.js");
+    const direct = new PilotSwarmManagementClient({ store: "postgres://unused" });
+    const spaces = new Set([member]);
+    direct._catalog = { canvasApps: { isSpace: async (id) => spaces.has(id) } };
+    assert.equal(await direct.isCanvasAppStorage(member), true, "a real app space");
+    const legacy = `${CANVAS_APP_SPACE_PREFIX.slice(0, 8)}-${CANVAS_APP_SPACE_PREFIX.slice(8, 12)}-8000-8000-0000000000aa`;
+    assert.equal(await direct.isCanvasAppStorage(legacy), false, "a legacy family id that is not app storage");
+    assert.equal(await direct.isCanvasAppStorage("00000000-0000-4000-8000-000000000001"), false);
+    direct._catalog = {};
+    assert.equal(await direct.isCanvasAppStorage(legacy), true, "no registry to ask: the family is refused (fail closed)");
+
+    // Web mode does not guess: the server decides on every artifact route.
+    assert.match(WEB, /\n    async isCanvasAppStorage\(_sessionId: string\): Promise<boolean> \{\n        throw webModeUnsupported\("isCanvasAppStorage"/);
     const { WebPilotSwarmManagementClient } = await import("../../dist/web/web-management-client.js");
     const web = Object.create(WebPilotSwarmManagementClient.prototype);
-    assert.equal(await web.isCanvasAppStorage(member), true);
-    assert.equal(await web.isCanvasAppStorage("00000000-0000-4000-8000-000000000001"), false);
+    await assert.rejects(web.isCanvasAppStorage(member), (e) => e.code === "WEB_MODE_UNSUPPORTED");
+
 });

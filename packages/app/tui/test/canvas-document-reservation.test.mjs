@@ -82,3 +82,16 @@ test("a copy with an omitted or empty destination name is the source name, and i
     await transport.copyArtifact("s1", "canvas.html", "s2", "app-board.html");
     assert.deepEqual(writes.map((w) => w[0]), ["copy", "copy"], "an ordinary source, and save-as under another name, still copy");
 });
+
+test("a legacy session whose id only LOOKS like app storage keeps its artifacts: the registry's answer decides", async () => {
+    const LEGACY = "legacy-family-id";
+    const SPACE = "real-app-space";
+    const { transport, writes } = transportWithStore();
+    transport.artifactStore.listArtifacts = async (id) => { writes.push(["list", id]); return []; };
+    // The transport asks the direct management client, whose answer is the
+    // registry's membership (unit-tested in sdk canvas-app-surface).
+    transport.mgmt = { isCanvasAppStorage: async (id) => id === SPACE };
+    await transport.listArtifacts(LEGACY);
+    await assert.rejects(transport.listArtifacts(SPACE), (error) => error.code === "NOT_FOUND");
+    assert.deepEqual(writes, [["list", LEGACY]]);
+});

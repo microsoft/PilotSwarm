@@ -5,7 +5,6 @@ import {
     webModeUnsupported,
 } from "./api-connection.js";
 import { createManagementOps, type ManagementOps } from "./generated-op-methods.js";
-import { looksLikeCanvasAppSpace } from "../canvas-app-space.js";
 import type { FeatureViewer, FeatureMutation, FeatureView, FeatureMutationResult } from "../feature-store.js";
 import type { StopTurnOptions, StopTurnResult, SteerTurnOptions, SteerTurnResult } from "../types.js";
 
@@ -244,13 +243,14 @@ export class WebPilotSwarmManagementClient {
     }
 
     /**
-     * Is this id a canvas app byte space (issue 181)? Over HTTP the server
-     * decides every artifact route itself; this local answer is the id-family
-     * check only, so it refuses the whole family (fail closed). New sessions
-     * can never take such an id.
+     * App storage membership (issue 181) is decided by the server, from the
+     * registry, on every artifact route it serves; no Web API artifact route
+     * skips it, and a legacy session whose id is in the app-space family but
+     * is not app storage keeps working. A client-side guess would refuse that
+     * session, so web mode does not answer.
      */
-    async isCanvasAppStorage(sessionId: string): Promise<boolean> {
-        return looksLikeCanvasAppSpace(String(sessionId ?? ""));
+    async isCanvasAppStorage(_sessionId: string): Promise<boolean> {
+        throw webModeUnsupported("isCanvasAppStorage", "the server decides app storage membership on every artifact route");
     }
 
     async readCanvasKvForLink(_sessionId: string, _slot: number, _query?: any): Promise<any> {
