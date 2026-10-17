@@ -3969,7 +3969,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         const html = await artifactStore.downloadArtifactText(resolved.target, canvasArtifactFilename(slot));
                         const viewer = await sessionManager.resolveCanvasAppViewer(input.sessionId);
                         const result = await publishCanvasAppHtml({ store, artifactStore }, {
-                            html, name: args.name, scope: args.scope === "shared" ? "shared" : "user",
+                            html, name: String(args.name ?? ""), scope: args.scope === "shared" ? "shared" : "user",
                             version: args.version ?? null, description: args.description ?? null, tags: args.tags ?? null,
                             responseContract: latest.responseContract, viewer,
                             sourceSessionId: resolved.target, sourceSlot: slot, createdBy: input.sessionId,
