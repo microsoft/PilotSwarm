@@ -149,8 +149,9 @@ RETURNS TEXT[] LANGUAGE sql IMMUTABLE AS $$
     );
 $$;
 
--- A text whose "C" byte order equals SemVer precedence. Numbers are
--- zero-padded; a release ('|') sorts after any of its prereleases ('!');
+-- A text whose "C" byte order equals SemVer precedence. Every number is its
+-- 4-digit length then its digits (no truncation, any accepted size); a
+-- release ('|') sorts after any of its prereleases ('!');
 -- prerelease identifiers are joined by ' ' (below every identifier byte), a
 -- numeric identifier is '0' + its 4-digit length + digits, an alphanumeric one
 -- is '1' + itself. Build metadata is ignored.
@@ -165,7 +166,12 @@ BEGIN
     IF v_parts IS NULL THEN
         RETURN NULL;
     END IF;
-    v_key := lpad(v_parts[1], 12, '0') || '.' || lpad(v_parts[2], 12, '0') || '.' || lpad(v_parts[3], 12, '0');
+    IF length(v_parts[1]) > 9999 OR length(v_parts[2]) > 9999 OR length(v_parts[3]) > 9999 THEN
+        RETURN NULL;
+    END IF;
+    v_key := lpad(length(v_parts[1])::TEXT, 4, '0') || v_parts[1] || '.'
+          || lpad(length(v_parts[2])::TEXT, 4, '0') || v_parts[2] || '.'
+          || lpad(length(v_parts[3])::TEXT, 4, '0') || v_parts[3];
     IF v_parts[4] IS NULL THEN
         RETURN v_key || '|';
     END IF;
@@ -377,16 +383,16 @@ BEGIN
     END LOOP;
 
     IF NOT v_created THEN
+        -- The ownerless (legacy migration) path may extend only an ownerless
+        -- app, never one a user created meanwhile.
+        IF COALESCE(p_allow_ownerless, FALSE) AND v_owner_p IS NULL AND v_app.owner_provider IS NOT NULL THEN
+            RAISE EXCEPTION 'CANVAS_APP_NAME_TAKEN: a shared canvas app named "%" already exists and belongs to someone else', p_name;
+        END IF;
         IF NOT (COALESCE(p_resource_admin, FALSE)
                 OR ${s}.cms_canvas_app_is_owner(v_app, v_owner_p, v_owner_s)
                 OR (v_app.scope = 'shared' AND ${s}.cms_canvas_app_is_editor(v_app.app_id, v_owner_p, v_owner_s))) THEN
             RAISE EXCEPTION 'CANVAS_APP_NAME_TAKEN: a shared canvas app named "%" already exists and belongs to someone else', p_name;
         END IF;
-        UPDATE ${s}.canvas_apps a
-           SET description = CASE WHEN p_description IS NOT NULL AND BTRIM(p_description) <> '' THEN p_description ELSE a.description END,
-               tags = COALESCE(p_tags, a.tags),
-               updated_at = now()
-         WHERE a.app_id = v_app.app_id;
     END IF;
 
     -- Same bytes: no new version.
@@ -394,7 +400,13 @@ BEGIN
      WHERE v.app_id = v_app.app_id AND v.sha256 = p_sha256;
     IF FOUND THEN
         IF v_ver.state = 'ready' AND p_mode = 'publish' THEN
-            UPDATE ${s}.canvas_apps a SET active_version_id = v_ver.version_id, updated_at = now()
+            -- A publish (not an import) of known bytes re-activates them and
+            -- takes the publisher's description and tags.
+            UPDATE ${s}.canvas_apps a
+               SET active_version_id = v_ver.version_id,
+                   description = CASE WHEN p_description IS NOT NULL AND BTRIM(p_description) <> '' THEN p_description ELSE a.description END,
+                   tags = COALESCE(p_tags, a.tags),
+                   updated_at = now()
              WHERE a.app_id = v_app.app_id;
         END IF;
         RETURN QUERY SELECT CASE WHEN v_ver.state = 'ready' THEN 'noop' ELSE 'in-progress' END,
@@ -411,12 +423,26 @@ BEGIN
         v_version := BTRIM(p_version);
     END IF;
     v_key := ${s}.cms_canvas_app_precedence_key(v_version);
+    IF v_key IS NULL THEN
+        RAISE EXCEPTION 'CANVAS_APP_BAD_VERSION: "%" is not a SemVer 2.0 version this registry can order', v_version;
+    END IF;
 
     -- Version identity is the full text: 1.2.0+a and 1.2.0+b are two versions
     -- of equal precedence.
     PERFORM 1 FROM ${s}.canvas_app_versions v WHERE v.app_id = v_app.app_id AND v.version = v_version;
     IF FOUND THEN
         RAISE EXCEPTION 'CANVAS_APP_VERSION_EXISTS: %@% already exists with different content; versions are immutable', p_name, v_version;
+    END IF;
+
+    -- An existing app takes the publisher's description and tags only with a
+    -- NEW version, and never from an import: a repeated or partial import
+    -- leaves the app's metadata as it is.
+    IF NOT v_created AND p_mode = 'publish' THEN
+        UPDATE ${s}.canvas_apps a
+           SET description = CASE WHEN p_description IS NOT NULL AND BTRIM(p_description) <> '' THEN p_description ELSE a.description END,
+               tags = COALESCE(p_tags, a.tags),
+               updated_at = now()
+         WHERE a.app_id = v_app.app_id;
     END IF;
 
     v_file := p_name || '@' || v_version || '.' || left(p_sha256, 12) || '.html';
@@ -463,9 +489,12 @@ BEGIN
     UPDATE ${s}.canvas_app_versions SET state = 'ready', committed_at = now()
      WHERE canvas_app_versions.version_id = p_version_id AND state = 'pending';
     IF COALESCE(p_may_activate, FALSE) OR v_app.import_open OR v_app.active_version_id IS NULL THEN
-        SELECT v.precedence_key INTO v_active_key FROM ${s}.canvas_app_versions v
-         WHERE v.version_id = v_app.active_version_id;
-        IF v_active_key IS NULL OR v_ver.precedence_key > v_active_key THEN
+        -- Activate only a new HIGHEST version: compared with every other ready
+        -- version, not only the active one, so a pinned lower version is not
+        -- replaced by a publish that is still below the latest.
+        SELECT max(v.precedence_key COLLATE "C") INTO v_active_key FROM ${s}.canvas_app_versions v
+         WHERE v.app_id = v_app.app_id AND v.state = 'ready' AND v.version_id <> p_version_id;
+        IF v_active_key IS NULL OR (v_ver.precedence_key COLLATE "C") > (v_active_key COLLATE "C") THEN
             UPDATE ${s}.canvas_apps SET active_version_id = p_version_id, updated_at = now()
              WHERE canvas_apps.app_id = v_app.app_id;
             v_active := TRUE;
@@ -708,8 +737,12 @@ CREATE OR REPLACE FUNCTION ${s}.cms_canvas_app_foreign_bytes(
           JOIN ${s}.canvas_apps a ON a.app_id = v.app_id, viewer
          WHERE v.state = 'ready'
            AND (v.sha256 = p_sha256 OR (p_workspace_key IS NOT NULL AND v.workspace_key = p_workspace_key AND a.scope = 'shared'))
-           AND NOT (a.owner_provider IS NOT NULL AND a.owner_provider = viewer.p AND a.owner_subject = viewer.s)
-           AND NOT (a.scope = 'shared' AND ${s}.cms_canvas_app_is_editor(a.app_id, viewer.p, viewer.s))
+           -- NULL-safe: an ownerless viewer owns and edits nothing, so every
+           -- matching app is foreign to it (a bare NOT over NULL would drop it).
+           AND NOT COALESCE(a.owner_provider IS NOT NULL AND viewer.p IS NOT NULL
+                            AND a.owner_provider = viewer.p AND a.owner_subject = viewer.s, FALSE)
+           AND NOT COALESCE(a.scope = 'shared' AND viewer.p IS NOT NULL
+                            AND ${s}.cms_canvas_app_is_editor(a.app_id, viewer.p, viewer.s), FALSE)
     )
     SELECT CASE WHEN COALESCE(p_resource_admin, FALSE) THEN NULL
                 WHEN h.scope = 'shared' THEN h.name
@@ -997,15 +1030,16 @@ $$;
 
 -- Pending rows older than the cutoff: deleted, and returned so the service
 -- deletes any bytes that were uploaded for them.
+-- Stale pending versions (abandoned publishes). Listed, not deleted: the
+-- pruner removes the bytes first and then aborts each row, so a failed byte
+-- deletion leaves the row as the record to retry.
 CREATE OR REPLACE FUNCTION ${s}.cms_canvas_app_prune_pending(p_older_than TIMESTAMPTZ)
-RETURNS TABLE(artifact_session_id TEXT, artifact_filename TEXT) LANGUAGE sql AS $$
-    WITH gone AS (
-        DELETE FROM ${s}.canvas_app_versions v
-         WHERE v.state = 'pending' AND v.created_at < p_older_than
-        RETURNING v.app_id, v.artifact_filename
-    )
-    SELECT a.artifact_session_id, g.artifact_filename
-      FROM gone g JOIN ${s}.canvas_apps a ON a.app_id = g.app_id;
+RETURNS TABLE(version_id TEXT, artifact_session_id TEXT, artifact_filename TEXT) LANGUAGE sql STABLE AS $$
+    SELECT v.version_id, a.artifact_session_id, v.artifact_filename
+      FROM ${s}.canvas_app_versions v JOIN ${s}.canvas_apps a ON a.app_id = v.app_id
+     WHERE v.state = 'pending' AND v.created_at < p_older_than
+     ORDER BY v.created_at
+     LIMIT 1000;
 $$;
 
 CREATE OR REPLACE FUNCTION ${s}.cms_canvas_app_list_tombstones(p_limit INT)

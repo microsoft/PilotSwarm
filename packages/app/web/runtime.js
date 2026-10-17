@@ -1763,6 +1763,9 @@ export class PortalRuntime {
                     .filter((e) => (Number(e?.data?.slot) || 1) === Number(scope.slot))
                     .sort((a, b) => (Number(b?.data?.rev) || 0) - (Number(a?.data?.rev) || 0))[0];
                 if (latest?.data?.trust === "owner" || latest?.data?.trust === "cross-owner") trust = latest.data.trust;
+                // No draw event for this slot in the window read: its page
+                // cannot be classified here, so it is isolated.
+                if (!latest) trust = "cross-owner";
                 // The file can already hold the NEXT revision's page (a redraw
                 // uploads before it records its event): bytes that are not the
                 // ones the event classified are framed as another user's page.
@@ -1801,7 +1804,8 @@ export class PortalRuntime {
                     if ((Number(e?.data?.slot) || 1) !== slot) continue;
                     if (!latest || (Number(e?.data?.rev) || 0) > (Number(latest?.data?.rev) || 0)) latest = e;
                 }
-                if (latest?.data?.trust === "cross-owner") label = { trust: "cross-owner", ...(latest.data.app?.name ? { app: String(latest.data.app.name) } : {}) };
+                if (!latest) label = { trust: "unknown" };
+                else if (latest.data?.trust === "cross-owner") label = { trust: "cross-owner", ...(latest.data.app?.name ? { app: String(latest.data.app.name) } : {}) };
             } catch {
                 label = { trust: "unknown" };
             }

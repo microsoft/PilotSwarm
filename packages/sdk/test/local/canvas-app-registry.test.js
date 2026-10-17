@@ -20,6 +20,7 @@ import {
     looksLikeCanvasAppSpace, sha256Hex, CANVAS_APP_PENDING_TTL_MS,
 } from "../../src/canvas-app-registry.ts";
 import { buildCanonicalTarGz } from "../../src/agent-package-format.ts";
+import { CanvasAppError } from "../../src/canvas-app-store.ts";
 
 const TIMEOUT = 120_000;
 const getEnv = useSuiteEnv(import.meta.url);
@@ -188,6 +189,110 @@ describe("canvas app registry: service", () => {
         }
     });
 
+    it("service delete and pending prune keep their cleanup records when storage fails, and finish later", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const { catalog, deps } = await setup(env);
+        try {
+            const real = deps.artifactStore;
+            const outage = { ...deps, artifactStore: Object.assign(Object.create(Object.getPrototypeOf(real)), real, {
+                deleteArtifact: async () => { throw new Error("simulated storage outage"); },
+                listArtifacts: async () => { throw new Error("simulated storage outage"); },
+            }) };
+            // Delete through the SERVICE during an outage: rows go, bytes stay, tombstone stays.
+            const name = `car-outage-${env.runId}`;
+            await publishCanvasAppHtml(deps, { html: page(name), name, viewer: V.alice });
+            const space = (await readCanvasAppHtml(deps, { name }, V.alice)).resolved.artifactSessionId;
+            const del = await deleteCanvasApp(outage, { name }, V.alice);
+            assertEqual(del.pendingCleanup, true, "the caller is told cleanup is pending");
+            assert((await real.listArtifacts(space)).length > 0, "bytes are still there");
+            assert((await deps.store.listTombstones(1000)).some((t) => t.artifactSessionId === space), "the tombstone is kept");
+            // A prune during the outage keeps it too.
+            const failedPrune = await pruneCanvasAppArtifacts(outage);
+            assert(failedPrune.failures >= 1, "the prune reports the failure");
+            assert((await deps.store.listTombstones(1000)).some((t) => t.artifactSessionId === space), "still kept");
+            // After recovery the next prune finishes.
+            await pruneCanvasAppArtifacts(deps);
+            assertEqual((await real.listArtifacts(space)).length, 0, "bytes removed after recovery");
+            assert(!(await deps.store.listTombstones(1000)).some((t) => t.artifactSessionId === space), "tombstone purged");
+
+            // A stale pending version whose bytes cannot be deleted stays pending for the next run.
+            const name2 = `car-outage2-${env.runId}`;
+            await publishCanvasAppHtml(deps, { html: page(name2), name: name2, viewer: V.alice });
+            const crashing = { ...deps, store: Object.assign(Object.create(Object.getPrototypeOf(deps.store)), deps.store, {
+                commit: async () => { throw new Error("simulated crash before commit"); },
+            }) };
+            await publishCanvasAppHtml(crashing, { html: page(name2, "<p>v2</p>"), name: name2, viewer: V.alice }).catch(() => {});
+            const later = new Date(Date.now() + CANVAS_APP_PENDING_TTL_MS + 60_000);
+            const space2 = (await readCanvasAppHtml(deps, { name: name2 }, V.alice)).resolved.artifactSessionId;
+            const blocked = await pruneCanvasAppArtifacts(outage, later);
+            assertEqual(blocked.pendingRemoved, 0, "nothing is claimed removed during the outage");
+            assertEqual((await real.listArtifacts(space2)).length, 2, "the abandoned bytes are still tracked");
+            const done = await pruneCanvasAppArtifacts(deps, later);
+            assert(done.pendingRemoved >= 1, "the next prune removes them");
+            assertEqual((await real.listArtifacts(space2)).length, 1, "only the committed version's bytes remain");
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    it("no new session may take a canvas app byte-space id", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const { catalog } = await setup(env);
+        try {
+            const reserved = canvasAppArtifactSessionId(`probe-${env.runId}`);
+            assert(looksLikeCanvasAppSpace(reserved));
+            await expectCode(catalog.createSession(reserved, { model: "m" }), "RESERVED_SESSION_ID");
+            const ordinary = `00000000-0000-4000-8000-${env.runId.padStart(12, "0").slice(-12)}`;
+            assert(!looksLikeCanvasAppSpace(ordinary));
+            await catalog.createSession(ordinary, { model: "m" });
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    it("a repeated import changes nothing, metadata included", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const { catalog, deps } = await setup(env);
+        try {
+            const name = `car-reimport-${env.runId}`;
+            await publishCanvasAppHtml(deps, { html: page(name), name, viewer: V.alice, description: DESCRIPTION, tags: ["one"] });
+            const archive = await exportCanvasApp(deps, { name }, V.alice);
+            await deleteCanvasApp(deps, { name }, V.alice);
+            await importCanvasApp(deps, archive.bytes, V.bob);
+            await deps.store.setMetadata({ name }, { description: "Use when Bob edited the description after importing.", tags: ["bob"] }, V.bob);
+            const edited = await deps.store.get({ name }, V.bob);
+            const again = await importCanvasApp(deps, archive.bytes, V.bob);
+            assert(again.versions.every((v) => v.status === "unchanged"), JSON.stringify(again.versions));
+            const after = await deps.store.get({ name }, V.bob);
+            assertEqual(after.description, edited.description, "the edited description stays");
+            assertEqual(after.tags.join(","), edited.tags.join(","), "the edited tags stay");
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    it("export/import keeps a version's explicit effective contract", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const { catalog, deps } = await setup(env);
+        try {
+            const name = `car-contract-${env.runId}`;
+            const contract = { actions: { pick: { row: "number" } } };
+            await publishCanvasAppHtml(deps, { html: page(name), name, viewer: V.alice, responseContract: contract });
+            const before = (await deps.store.get({ name }, V.alice)).versions[0].card;
+            assertEqual(JSON.stringify(before.responseContract), JSON.stringify(contract), "published with the explicit contract");
+            const archive = await exportCanvasApp(deps, { name }, V.alice);
+            await deleteCanvasApp(deps, { name }, V.alice);
+            await importCanvasApp(deps, archive.bytes, V.bob);
+            const after = (await deps.store.get({ name }, V.bob)).versions[0].card;
+            assertEqual(JSON.stringify(after.responseContract), JSON.stringify(contract), "the imported version arms the same contract");
+            // An archived contract that fails the checks is refused, never silently dropped.
+            const parsed = readCanvasAppArchive(archive.bytes);
+            assertEqual(JSON.stringify(parsed.manifest.versions[0].card.responseContract), JSON.stringify(contract));
+        } finally {
+            await catalog.close();
+        }
+    });
+
     it("export is byte-stable and carries no identity; import round-trips, repeats as a no-op and isolates version conflicts", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
         const { catalog, deps } = await setup(env);
@@ -266,6 +371,55 @@ describe("canvas app registry: service", () => {
                 }
             }
             await expectCode(deps.store.get({ name }, V.alice), "NOT_FOUND");
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    it("legacy migration keeps a fact that changed meanwhile and never extends a shared app someone created meanwhile", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const { catalog, deps } = await setup(env);
+        const factStore = await createFactStoreForUrl(env.store, env.factsSchema);
+        await factStore.initialize();
+        try {
+            const admin = { principal: { provider: "test", subject: "car-admin" }, resourceAdmin: true };
+            const changed = `car-leg-chg-${env.runId}`;
+            const raced = `car-leg-race-${env.runId}`;
+            for (const name of [changed, raced]) {
+                await deps.artifactStore.uploadArtifact("sess-gone", `app-${name}.html`, page(name), "text/html");
+                await factStore.storeFact({ key: `apps/${name}`, shared: true, value: {
+                    name, description: DESCRIPTION, tags: ["legacy"],
+                    source: { kind: "artifact", sessionId: "sess-gone", filename: `app-${name}.html`, sha256: sha256Hex(page(name)) },
+                } });
+            }
+            // Bob publishes a shared app with the raced name after the migration's pre-check.
+            await publishCanvasAppHtml(deps, { html: page(raced, "<p>bob</p>"), name: raced, scope: "shared", viewer: V.bob });
+            const racingStore = Object.assign(Object.create(Object.getPrototypeOf(deps.store)), deps.store, {
+                getVersion: async (target, viewer, version) => (target.name === raced
+                    ? Promise.reject(new CanvasAppError("NOT_FOUND", "not yet"))
+                    : deps.store.getVersion(target, viewer, version)),
+            });
+            // The changed fact gets a new etag between the migration's read and its delete.
+            let rereads = 0;
+            const changingFacts = Object.assign(Object.create(Object.getPrototypeOf(factStore)), factStore, {
+                readFacts: async (q) => {
+                    const res = await factStore.readFacts(q);
+                    if (q.keyPattern === `apps/${changed}` && ++rereads >= 1) {
+                        return { ...res, facts: res.facts.map((f) => ({ ...f, etag: Number(f.etag) + 1 })) };
+                    }
+                    return res;
+                },
+            });
+            const mdeps = { ...deps, store: racingStore, factStore: changingFacts, sessionOwner: async () => null };
+            const run = await migrateLegacyCanvasApps(mdeps, admin, { dryRun: false });
+            const by = Object.fromEntries(run.lines.filter((l) => l.name.includes(env.runId)).map((l) => [l.name, l]));
+            assertEqual(by[changed].outcome, "migrated");
+            assertEqual(by[changed].reason, "the fact changed during migration; fact kept");
+            assert((await factStore.readFacts({ keyPattern: `apps/${changed}`, scope: "shared" })).facts.length === 1, "the changed fact is kept");
+            assertEqual(by[raced].outcome, "skipped", `the race is refused: ${JSON.stringify(by[raced])}`);
+            const bobs = await deps.store.get({ name: raced, scope: "shared" }, V.bob);
+            assertEqual(bobs.versions.length, 1, "Bob's app gained no version");
+            assert((await factStore.readFacts({ keyPattern: `apps/${raced}`, scope: "shared" })).facts.length === 1, "the raced fact is kept");
         } finally {
             await catalog.close();
         }

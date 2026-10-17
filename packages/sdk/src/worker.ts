@@ -974,7 +974,7 @@ export class PilotSwarmWorker {
                 // owner's app bytes or an app's storage space; they draw fromApp.
                 // Resolved at call time: the catalog and session manager may be
                 // attached after the tools are registered. No registry → no apps.
-                canvasBytesGuard: async (input: { callerSessionId: string | null | undefined; artifactSessionId: string; bytes?: Buffer | string | null }) => {
+                canvasBytesGuard: async (input: { callerSessionId: string | null | undefined; artifactSessionId: string; bytes?: Buffer | string | null; sha256?: string | null; privateOnly?: boolean }) => {
                     const store = (this._catalog as any)?.canvasApps;
                     if (!store) return null;
                     return canvasBytesRefusal({

@@ -131,3 +131,20 @@ test("there is no workspace-approval command", async () => {
     assert.equal(result.calls.length, 0);
     assert.doesNotMatch(APPS_USAGE, /consent|approve/i);
 });
+
+test("loads forwards bounds and the cursor unchanged; prune reaches the management client", async () => {
+    const page = { total30d: 3, rows: [], nextCursor: { loadedAt: "2026-10-17T10:00:00.000Z", loadId: "42" } };
+    const loads = await run(["loads", "board", "--limit", "2", "--since", "2026-10-01T00:00:00Z", "--until", "2026-10-17T00:00:00Z", "--cursor", "2026-10-16T10:00:00.000Z/41"], { getCanvasAppLoads: () => page });
+    assert.equal(loads.code, 0);
+    assert.deepEqual(loads.calls[0], { op: "getCanvasAppLoads", args: {
+        name: "board", limit: 2, since: "2026-10-01T00:00:00Z", until: "2026-10-17T00:00:00Z",
+        cursorAt: "2026-10-16T10:00:00.000Z", cursorId: "41",
+    } });
+    assert.match(loads.out, /next: --cursor 2026-10-17T10:00:00.000Z\/42/);
+    await assert.rejects(run(["loads", "board", "--cursor", "nocursor"]), /cursorAt>\/<cursorId/);
+    const prune = await run(["prune"], { pruneCanvasApps: () => ({ loadsRemoved: 1, pendingRemoved: 0, spacesPurged: 0, failures: 0 }) });
+    assert.equal(prune.code, 0);
+    assert.deepEqual(prune.calls[0], { op: "pruneCanvasApps", args: {} });
+    const failing = await run(["prune"], { pruneCanvasApps: () => ({ loadsRemoved: 0, pendingRemoved: 0, spacesPurged: 0, failures: 2 }) });
+    assert.equal(failing.code, 2, "storage failures are not reported as success");
+});

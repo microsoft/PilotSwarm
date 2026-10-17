@@ -107,7 +107,7 @@ export function createArtifactTools(opts: {
      * owner's app bytes and of app storage spaces. Returns a refusal message
      * or null. Absent on workers without a CMS: reads behave as before.
      */
-    canvasBytesGuard?: (input: { callerSessionId: string | null | undefined; artifactSessionId: string; bytes?: Buffer | string | null }) => Promise<string | null>;
+    canvasBytesGuard?: (input: { callerSessionId: string | null | undefined; artifactSessionId: string; bytes?: Buffer | string | null; sha256?: string | null; privateOnly?: boolean }) => Promise<string | null>;
 }): Tool<any>[] {
     const { blobStore, canvasBytesGuard } = opts;
     // Canvas documents (issue 181) are written only by a draw: the draw
@@ -123,6 +123,10 @@ export function createArtifactTools(opts: {
         !!canvasBytesGuard && Number.isFinite(Number(sizeBytes)) && Number(sizeBytes) <= CANVAS_APP_MAX_BYTES;
     const guard = async (callerSessionId: string | null | undefined, artifactSessionId: string, bytes?: Buffer | string | null) =>
         canvasBytesGuard ? canvasBytesGuard({ callerSessionId, artifactSessionId, bytes: bytes ?? null }) : null;
+    // Metadata reads hide another user's PRIVATE app page as if absent (a
+    // shared app's card and size are public anyway).
+    const hiddenPrivate = async (callerSessionId: string | null | undefined, artifactSessionId: string, input: { bytes?: Buffer | string | null; sha256?: string | null }) =>
+        canvasBytesGuard ? (await canvasBytesGuard({ callerSessionId, artifactSessionId, bytes: input.bytes ?? null, sha256: input.sha256 ?? null, privateOnly: true })) === "artifact not found" : false;
 
     // ── write_artifact ─────────────────────────────────────────
 
@@ -373,6 +377,9 @@ export function createArtifactTools(opts: {
                 if (spaceRefusal) return toolError("CANVAS_APP_BYTES", spaceRefusal);
                 if (params.manifestOnly) {
                     const text = await blobStore.downloadArtifactText(params.sessionId, params.filename);
+                    if (await hiddenPrivate(callerSessionId, params.sessionId, { bytes: text })) {
+                        return toolError("ARTIFACT_NOT_FOUND", `Artifact not found: ${params.filename} in session ${params.sessionId}`);
+                    }
                     const extraction = extractCanvasAppManifest(text);
                     // Same discipline as every other card surface: the contract
                     // is returned POST-normalizer (4 KB cap) or not at all — a
@@ -398,7 +405,7 @@ export function createArtifactTools(opts: {
 
                 if (params.metaOnly) {
                     const metadata = await blobStore.statArtifact(params.sessionId, params.filename);
-                    if (!metadata) {
+                    if (!metadata || await hiddenPrivate(callerSessionId, params.sessionId, { sha256: metadata.sha256 ?? null })) {
                         return toolError("ARTIFACT_NOT_FOUND", `Artifact not found: ${params.filename} in session ${params.sessionId}`);
                     }
                     return JSON.stringify({
@@ -502,7 +509,13 @@ export function createArtifactTools(opts: {
             try {
                 const spaceRefusal = await guard(context?.durableSessionId, targetId, null);
                 if (spaceRefusal) return toolError("CANVAS_APP_BYTES", spaceRefusal);
-                const files = await blobStore.listArtifacts(targetId);
+                const all = await blobStore.listArtifacts(targetId);
+                const files = [];
+                for (const file of all) {
+                    if (file.sha256 && file.sizeBytes <= CANVAS_APP_MAX_BYTES
+                        && await hiddenPrivate(context?.durableSessionId, targetId, { sha256: file.sha256 })) continue;
+                    files.push(file);
+                }
                 return JSON.stringify({
                     success: true,
                     sessionId: targetId,

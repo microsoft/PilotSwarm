@@ -85,13 +85,18 @@ describe("canvas app registry: agent tools", () => {
         const scripts = {
             // Alice: draw, publish (private), find by name, share.
             alice: toolTurn([
-                { name: "draw_canvas", args: { html: page(shared, "", ws) } },
+                // The page embeds no contract; the draw arms one explicitly.
+                { name: "draw_canvas", args: { html: page(shared, "", ws), responseContract: { actions: { pick: { row: "number" } } } } },
                 { name: "publish_canvas_app", args: { name: shared, description: DESCRIPTION } },
                 { name: "find_canvas_app", args: { name: shared } },
                 { name: "manage_canvas_app", args: { action: "share", name: shared } },
                 { name: "draw_canvas", args: { html: page(secret) } },
                 { name: "publish_canvas_app", args: { name: secret, description: DESCRIPTION } },
                 { name: "draw_canvas", args: { fromApp: { name: shared } } },
+                // A disabled app is not drawn, not even by its owner (R15).
+                { name: "manage_canvas_app", args: { action: "disable", name: shared } },
+                { name: "draw_canvas", args: { fromApp: { name: shared }, slot: 2 } },
+                { name: "manage_canvas_app", args: { action: "enable", name: shared } },
             ]),
             // Bob: search, draw Alice's shared app, try her private one, copy her shared bytes inline, draw his own page.
             bob: toolTurn([
@@ -121,11 +126,14 @@ describe("canvas app registry: agent tools", () => {
             assertEqual(card.app.name, shared);
             assert(card.app.card?.interface, "find by name returns the full card with its interface");
             assertEqual(JSON.parse(aliceResults[3]).scope, "shared");
+            assert(String(aliceResults[8]).includes("APP_DISABLED"), `the owner cannot draw a disabled app: ${aliceResults[8]}`);
 
             const aliceEvents = await canvasEvents(env, alice.sessionId);
             const ownRedraw = aliceEvents.at(-1);
             assertEqual(ownRedraw.trust, "owner", "Alice drawing her own app is owner trust");
             assertEqual(ownRedraw.source?.kind, "app");
+            assertEqual(JSON.stringify(ownRedraw.responseContract), JSON.stringify({ actions: { pick: { row: "number" } } }),
+                "fromApp arms the contract recorded at publish, not only the page's embedded one");
             assertEqual(aliceEvents[0].trust, "agent", "a page drawn before it was published is agent trust");
 
             const bob = await client.createSession({ model: qualifiedModel, owner: BOB });

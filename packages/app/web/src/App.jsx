@@ -905,6 +905,9 @@ function CanvasShareView({ token }) {
         const onMessage = (event) => {
             const frame = currentFrame();
             if (!frame || !event.source || event.source !== frame.contentWindow) return;
+            // The share link offers no request/reply channel (no workspace):
+            // any port a page transfers is closed at once.
+            for (const port of event.ports || []) { try { port.close(); } catch { /* already closed */ } }
             const asker = event.source;
             // Reply to the window that asked, and only while it is still the
             // current document's frame.

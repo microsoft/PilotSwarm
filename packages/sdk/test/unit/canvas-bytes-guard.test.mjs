@@ -105,3 +105,32 @@ test("canvas documents are written only by a draw: write_artifact refuses canvas
         assert.equal(saved.success, true);
     } finally { h.cleanup(); }
 });
+
+test("another user's PRIVATE app page is absent in every read mode, metadata and listing included", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "ps-canvas-guard-private-"));
+    const store = new FilesystemArtifactStore(path.join(dir, "store"));
+    const PRIVATE = "<!doctype html><!-- CANVAS-APP-MANIFEST {\"name\":\"secret\"} --><html><body>alice private</body></html>";
+    const crypto = await import("node:crypto");
+    const privateSha = crypto.createHash("sha256").update(PRIVATE).digest("hex");
+    const canvasBytesGuard = async ({ bytes, sha256 }) => {
+        const text = bytes == null ? null : Buffer.isBuffer(bytes) ? bytes.toString("utf8") : String(bytes);
+        if (text === PRIVATE || (text == null && sha256 === privateSha)) return "artifact not found";
+        return null;
+    };
+    const tools = Object.fromEntries(createArtifactTools({ blobStore: store, canvasBytesGuard }).map((t) => [t.name, t]));
+    const call = async (name, params) => JSON.parse(String(await tools[name].handler(params, { durableSessionId: "bob-session" })));
+    try {
+        await store.uploadArtifact("alice-session", "saved.txt", PRIVATE, "text/plain");
+        await store.uploadArtifact("alice-session", "notes.md", "# hello", "text/markdown");
+        for (const mode of [{}, { encoding: "base64" }, { manifestOnly: true }, { metaOnly: true }]) {
+            const out = await call("read_artifact", { sessionId: "alice-session", filename: "saved.txt", ...mode });
+            assert.equal(out.error, "ARTIFACT_NOT_FOUND", JSON.stringify(mode));
+        }
+        const listed = await call("list_artifacts", { sessionId: "alice-session" });
+        assert.deepEqual(listed.filenames, ["notes.md"], "the private page is not listed");
+        const meta = await call("read_artifact", { sessionId: "alice-session", filename: "notes.md", metaOnly: true });
+        assert.equal(meta.success, true, "ordinary files keep their metadata");
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
+});

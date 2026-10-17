@@ -129,11 +129,22 @@ export function registerCanvasAppTools(server: McpServer, ctx: ServerContext) {
     server.registerTool("get_canvas_app_loads", {
         title: "Canvas App Loads",
         description: "Loads of an app, newest first: time, session, user, version, and the 30-day total. Owner or unrestricted admin.",
-        inputSchema: { ...copy, limit: z.number().int().min(1).max(500).optional(), cursor_at: z.string().optional(), cursor_id: z.string().optional() },
+        inputSchema: {
+            ...copy, limit: z.number().int().min(1).max(500).optional(),
+            since: z.string().optional().describe("ISO time: loads at or after"), until: z.string().optional().describe("ISO time: loads before"),
+            cursor_at: z.string().optional(), cursor_id: z.string().optional(),
+        },
     }, withToolErrors(async (a) => jsonResult(await op("getCanvasAppLoads", {
         ...target(a), ...(a.limit ? { limit: a.limit } : {}),
+        ...(a.since ? { since: a.since } : {}), ...(a.until ? { until: a.until } : {}),
         ...(a.cursor_at && a.cursor_id ? { cursorAt: a.cursor_at, cursorId: a.cursor_id } : {}),
     }))));
+
+    server.registerTool("prune_canvas_apps", {
+        title: "Prune Canvas App Registry",
+        description: "Remove expired load rows, abandoned uploads and deleted apps' bytes. Unrestricted admin. Safe to run any time; a storage failure is retried next time.",
+        inputSchema: {},
+    }, withToolErrors(async () => jsonResult(await op("pruneCanvasApps", {}))));
 
     server.registerTool("migrate_legacy_canvas_apps", {
         title: "Migrate Legacy Canvas Apps",

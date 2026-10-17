@@ -194,8 +194,11 @@ describe("canvas app registry: CMS procedures", () => {
             assertEqual(detail.versions.length, 1, "pending row not listed");
             const again = await publish(store, V.alice, name, "sha-pending", { leavePending: true });
             assertEqual(again.status, "in-progress", "a concurrent identical publish sees the reservation");
-            const pruned = await store.prunePending(new Date(Date.now() + 60_000));
-            assert(pruned.some((p) => p.artifactFilename === pending.artifactFilename), "prune returns the pending file");
+            const stale = await store.prunePending(new Date(Date.now() + 60_000));
+            const listed = stale.find((p) => p.artifactFilename === pending.artifactFilename);
+            assert(listed && listed.versionId === pending.versionId, "the stale pending version is listed with its file");
+            assert((await store.prunePending(new Date(Date.now() + 60_000))).some((p) => p.versionId === pending.versionId), "listing alone removes nothing (the record stays until its bytes are gone)");
+            await store.abort(pending.versionId);
             await expectCode(store.commit(pending.versionId, true), "NOT_FOUND");
         } finally {
             await catalog.close();
@@ -386,8 +389,8 @@ describe("canvas app registry: CMS procedures", () => {
 
     it("commit is a one-time pending transition: a second commit changes nothing and never re-pins", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
-        await registerUsers(env);
         const catalog = await createCatalog(env);
+        await registerUsers(env);
         try {
             const store = catalog.canvasApps;
             const name = `commit-${randomUUID().slice(0, 8)}`;
@@ -409,6 +412,57 @@ describe("canvas app registry: CMS procedures", () => {
             await store.abort(pending.versionId);
             await expectCode(store.commit(pending.versionId, true), "NOT_FOUND");
             assertEqual(await activeVersion(store, V.alice, target), "1.0.0");
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    it("publishing below the latest never replaces a pinned version; a new highest does; large versions order exactly", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const catalog = await createCatalog(env);
+        await registerUsers(env);
+        try {
+            const store = catalog.canvasApps;
+            const name = `latest-${randomUUID().slice(0, 8)}`;
+            const target = { name, scope: "user" };
+            await publish(store, V.alice, name, "1".repeat(64), { version: "1.0.0" });
+            await publish(store, V.alice, name, "3".repeat(64), { version: "3.0.0" });
+            await store.pin(target, "1.0.0", V.alice);
+            await publish(store, V.alice, name, "2".repeat(64), { version: "2.0.0" });
+            assertEqual(await activeVersion(store, V.alice, target), "1.0.0", "2.0.0 is below the latest 3.0.0");
+            await publish(store, V.alice, name, "4".repeat(64), { version: "3.0.0+build.2" });
+            assertEqual(await activeVersion(store, V.alice, target), "1.0.0", "equal precedence to the latest is not higher");
+            await publish(store, V.alice, name, "5".repeat(64), { version: "4.0.0" });
+            assertEqual(await activeVersion(store, V.alice, target), "4.0.0", "a new highest version becomes active");
+
+            const big = `big-${randomUUID().slice(0, 8)}`;
+            await publish(store, V.alice, big, "6".repeat(64), { version: "999999999999.0.0" });
+            await publish(store, V.alice, big, "7".repeat(64), { version: "1000000000000.0.0" });
+            assertEqual(await activeVersion(store, V.alice, { name: big, scope: "user" }), "1000000000000.0.0", "13 digits outrank 12 digits");
+            await publish(store, V.alice, big, "8".repeat(64), { version: "1000000000000.0.0-B" });
+            await publish(store, V.alice, big, "9".repeat(64), { version: "1000000000000.0.0-a" });
+            const keys = await withPg(env, async (client) => (await client.query(
+                `SELECT version FROM "${env.cmsSchema}".canvas_app_versions WHERE app_id = (SELECT app_id FROM "${env.cmsSchema}".canvas_apps WHERE name = $1) ORDER BY precedence_key`, [big],
+            )).rows.map((r) => r.version));
+            assertEqual(keys.join(","), "999999999999.0.0,1000000000000.0.0-B,1000000000000.0.0-a,1000000000000.0.0", "SQL order: ASCII prereleases (B < a), then the release");
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    it("an ownerless reader is foreign to every app: private bytes stay hidden (NULL-safe)", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const catalog = await createCatalog(env);
+        await registerUsers(env);
+        try {
+            const store = catalog.canvasApps;
+            const name = `ownerless-${randomUUID().slice(0, 8)}`;
+            const sha = "e".repeat(64);
+            await publish(store, V.alice, name, sha, { version: "1.0.0" });
+            assertEqual(await store.foreignBytes(sha, null, V.none), "(private)", "ownerless sees Alice's private bytes as foreign and private");
+            assertEqual(await store.foreignBytes(sha, null, V.bob), "(private)");
+            assertEqual(await store.foreignBytes(sha, null, V.alice), null, "the owner is not refused");
+            assertEqual(await store.foreignBytes(sha, null, V.ada), null, "an unrestricted admin is not refused");
         } finally {
             await catalog.close();
         }

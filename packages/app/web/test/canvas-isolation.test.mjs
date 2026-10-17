@@ -28,7 +28,8 @@ function bootWrapper() {
     const script = /<script>([\s\S]*?)<\/script>/.exec(CROSS_OWNER_WRAPPER_HTML)[1];
     const listeners = [];
     const toParent = [];
-    const parent = { postMessage: (m) => toParent.push(m) };
+    const transfers = [];
+    const parent = { postMessage: (m, _origin, transfer) => { toParent.push(m); transfers.push(transfer ?? null); } };
     let inner = null;
     const document = {
         createElement: () => {
@@ -48,8 +49,8 @@ function bootWrapper() {
     };
     const run = new Function("addEventListener", "parent", "document", script);
     run((type, fn) => { if (type === "message") listeners.push(fn); }, parent, document);
-    const dispatch = (source, data) => listeners.forEach((fn) => fn({ source, data }));
-    return { parent, toParent, dispatch, inner: () => inner };
+    const dispatch = (source, data, ports) => listeners.forEach((fn) => fn({ source, data, ports }));
+    return { parent, toParent, transfers, dispatch, inner: () => inner };
 }
 
 test("the wrapper document carries no app bytes and refuses frames; the inner policy has no network", () => {
@@ -149,4 +150,35 @@ test("a canvas is framed only with the bytes its draw event classified", async (
     assert.match(WEB_APP, /fetchArtifactHtmlObjectUrl\(controller, sessionId, filename, panelKeys, true, pageSha256\)/);
     const RUNTIME = read("../runtime.js");
     assert.match(RUNTIME, /createHash\("sha256"\)\.update\(body\)\.digest\("hex"\) !== recorded\) trust = "cross-owner"/, "the share door isolates bytes the event did not classify");
+});
+
+function fakePort(name) {
+    return { name, closed: false, close() { this.closed = true; } };
+}
+
+test("a request port from the page reaches the portal unchanged; every other port is closed (issue 184 contract)", () => {
+    const w = bootWrapper();
+    const forged = fakePort("on-load");
+    w.dispatch(w.parent, { type: "pse-wrapper-load", html: "<p>app</p>" }, [forged]);
+    assert.equal(forged.closed, true, "ports never ride the load message");
+    const inner = w.inner();
+    inner.fireLoad();
+    const reply = fakePort("reply");
+    w.dispatch(inner.contentWindow, { type: "canvas-ws", op: "info" }, [reply]);
+    assert.deepEqual(w.toParent.at(-1), { type: "canvas-ws", op: "info" });
+    assert.deepEqual(w.transfers.at(-1), [reply], "the same port object, in the transfer list");
+    assert.equal(reply.closed, false);
+    const spoof = fakePort("spoof");
+    w.dispatch(inner.contentWindow, { type: "pse-wrapper-left" }, [spoof]);
+    assert.equal(spoof.closed, true, "a forged protocol message's port is closed");
+    const stranger = fakePort("stranger");
+    w.dispatch({}, { type: "canvas-ws", op: "read" }, [stranger]);
+    assert.equal(stranger.closed, true, "a port from anyone but the inner frame is closed");
+    const fromPortal = fakePort("portal");
+    w.dispatch(w.parent, { type: "canvas-data", data: {} }, [fromPortal]);
+    assert.equal(fromPortal.closed, true, "the wrapper never hands portal ports to the page");
+    inner.fireLoad();
+    const late = fakePort("late");
+    w.dispatch(inner.contentWindow, { type: "canvas-ws", op: "read" }, [late]);
+    assert.equal(late.closed, true, "after the page was replaced, ports are closed, not relayed");
 });

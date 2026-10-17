@@ -174,7 +174,7 @@ import {
 } from "./agent-package-service.js";
 import {
     publishCanvasAppHtml, readCanvasAppHtml, deleteCanvasApp, exportCanvasApp, importCanvasApp, classifyCanvasDraw,
-    migrateLegacyCanvasApps, pruneCanvasAppArtifacts, CANVAS_APP_DESCRIPTION_MIN, sha256Hex,
+    migrateLegacyCanvasApps, pruneCanvasAppArtifacts, CANVAS_APP_DESCRIPTION_MIN, sha256Hex, looksLikeCanvasAppSpace,
     type CanvasAppRegistryDeps, type PublishCanvasAppHtmlResult,
 } from "./canvas-app-registry.js";
 import {
@@ -854,6 +854,21 @@ function canvasGrantKey(sessionId: string, slot: number, program: CanvasWorkspac
         pageSha256: program.pageSha256!, declarationSha256: program.declarationSha256!, bindingsSha256: program.bindingsSha256!,
         owner: program.owner ?? { provider: "", subject: "" },
     };
+}
+
+/**
+ * The legacy canvas app catalog `apps/` (issue 181) is read-only on every
+ * supported write path: the one-time migration reads it through the store
+ * and deletes only what it migrated. Patterns that could reach it are
+ * refused too.
+ */
+function assertNotLegacyCanvasAppFact(key: unknown, pattern: boolean): void {
+    const text = String(key ?? "");
+    const head = pattern ? text.split(/[*%?]/)[0] : text;
+    const touches = pattern ? ("apps/".startsWith(head) || head.startsWith("apps/")) : text.startsWith("apps/");
+    if (touches) {
+        throw Object.assign(new Error("the 'apps/' fact namespace is the legacy canvas app catalog; use the canvas app registry"), { code: "FORBIDDEN", status: 403 });
+    }
 }
 
 function normalizeShareSlot(slot: unknown): number {
@@ -4015,6 +4030,7 @@ export class PilotSwarmManagementClient {
     }
 
     async storeFact(input: StoreFactInput | StoreFactInput[]): Promise<StoredFactResult | { stored: number; facts: StoredFactResult[] }> {
+        for (const one of Array.isArray(input) ? input : [input]) if (one?.shared === true) assertNotLegacyCanvasAppFact(one?.key, false);
         return Array.isArray(input)
             ? this._requireFactStore().storeFact(input)
             : this._requireFactStore().storeFact(input);
@@ -4033,6 +4049,8 @@ export class PilotSwarmManagementClient {
             (err as any).code = "INVALID_REQUEST";
             throw err;
         }
+        // apps/ facts are shared; a session-scoped delete cannot reach them.
+        if (safe.scope === "shared" || (safe.pattern !== true && safe.shared === true)) assertNotLegacyCanvasAppFact(safe.key, safe.pattern === true);
         return this._requireFactStore().deleteFact(safe);
     }
 
@@ -5375,6 +5393,19 @@ export class PilotSwarmManagementClient {
         const provider = String(args?.ownerProvider ?? args?.owner?.provider ?? "").trim();
         const subject = String(args?.ownerSubject ?? args?.owner?.subject ?? "").trim();
         return { name, scope, owner: provider && subject ? { provider, subject } : null };
+    }
+
+    /**
+     * @internal Is this artifact "session" a canvas app's byte space? Generic
+     * artifact routes refuse such ids; app bytes are reached only through the
+     * registry operations, which apply the app's visibility.
+     */
+    async isCanvasAppStorage(sessionId: string): Promise<boolean> {
+        if (!looksLikeCanvasAppSpace(String(sessionId ?? ""))) return false;
+        const store = this._catalog?.canvasApps;
+        // No registry here: the family is still never a session's, so refuse.
+        if (!store) return true;
+        return store.isSpace(String(sessionId));
     }
 
     async listCanvasApps(_args: Record<string, unknown> | null, owner: AgentPrincipal | null, resourceAdmin: boolean): Promise<CanvasAppSummary[]> {

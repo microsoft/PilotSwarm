@@ -50,3 +50,22 @@ test("apps/ stays readable", async () => {
     assert.equal(out.error, undefined);
     assert.deepEqual(out.facts.map((f) => f.key), ["apps/board"]);
 });
+
+test("management fact writes cannot reach the legacy apps/ catalog either (Web API, MCP)", async () => {
+    const { PilotSwarmManagementClient } = await import("../../dist/management-client.js");
+    const mgmt = new PilotSwarmManagementClient({ store: "postgres://unused" });
+    mgmt._started = true;
+    const store = fakeStore();
+    mgmt._factStore = store;
+    await assert.rejects(mgmt.storeFact({ key: "apps/board", value: {}, shared: true }), (e) => e.code === "FORBIDDEN");
+    await assert.rejects(mgmt.storeFact([{ key: "ok/a", value: 1, shared: true }, { key: "apps/board", value: 2, shared: true }]), (e) => e.code === "FORBIDDEN");
+    await assert.rejects(mgmt.deleteFact({ key: "apps/board", shared: true }), (e) => e.code === "FORBIDDEN");
+    await assert.rejects(mgmt.deleteFact({ key: "app*", pattern: true, scope: "shared" }), (e) => e.code === "FORBIDDEN");
+    assert.equal(store.calls.store.length, 0);
+    assert.equal(store.calls.delete.length, 0);
+    await mgmt.storeFact({ key: "apps/mine", value: 1 });
+    await mgmt.deleteFact({ key: "*", pattern: true, scope: "session" });
+    await mgmt.storeFact({ key: "notes/a", value: 1, shared: true });
+    assert.equal(store.calls.store.length, 2, "session-scoped apps/ and other shared keys are unaffected");
+    assert.equal(store.calls.delete.length, 1);
+});

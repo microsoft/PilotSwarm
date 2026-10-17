@@ -13,7 +13,8 @@
  *   pilotswarm apps share <name> | unshare <name> | enable <name> | disable <name>
  *   pilotswarm apps pin <name>@<version> | rm <name> --yes
  *   pilotswarm apps editors <name> [add|remove <provider>:<subject>]
- *   pilotswarm apps loads <name> [--limit <n>]
+ *   pilotswarm apps loads <name> [--limit <n>]  [--since/--until <iso>] [--cursor <at>/<id>]
+ *   pilotswarm apps prune
  *   pilotswarm apps migrate-legacy [--apply]
  */
 
@@ -37,8 +38,9 @@ Usage:
   pilotswarm apps pin <name>@<version> [--shared|--user]
   pilotswarm apps editors <name> [--json]
   pilotswarm apps editors add|remove <name> <provider>:<subject>
-  pilotswarm apps loads <name> [--limit <n>] [--json]
+  pilotswarm apps loads <name> [--limit <n>] [--since <iso>] [--until <iso>] [--cursor <at>/<id>] [--json]
   pilotswarm apps rm <name> --yes [--shared|--user]
+  pilotswarm apps prune [--json]                       unrestricted admin: expired loads, abandoned uploads, deleted apps' bytes
   pilotswarm apps migrate-legacy [--apply] [--json]
 
 Connection (web API only):
@@ -65,6 +67,9 @@ export function parseAppsArgs(argv) {
         else if (arg === "--description") flags.description = argv[++i];
         else if (arg === "--tags") flags.tags = String(argv[++i] ?? "").split(",").map((t) => t.trim()).filter(Boolean);
         else if (arg === "--limit") flags.limit = Number(argv[++i]);
+        else if (arg === "--since") flags.since = argv[++i];
+        else if (arg === "--until") flags.until = argv[++i];
+        else if (arg === "--cursor") flags.cursor = argv[++i];
         else if (arg === "--output" || arg === "-o") flags.output = argv[++i];
         else if (arg === "--help" || arg === "-h") flags.help = true;
         else positional.push(arg);
@@ -208,8 +213,23 @@ export async function runAppsCommand(argv, deps = {}) {
                 return 0;
             }
             case "loads": {
-                const page = await client.getCanvasAppLoads({ name: needName(rest[0], "loads <name>"), ...sel, ...(flags.limit ? { limit: flags.limit } : {}) });
-                print(page, (p) => [`${p.total30d} loads in the last 30 days`, ...p.rows.map((r) => `${new Date(r.loadedAt).toISOString()}  ${r.version}  ${r.userEmail || (r.user ? `${r.user.provider}:${r.user.subject}` : "-")}  ${r.sessionId}`)].join("\n"));
+                let cursor = {};
+                if (flags.cursor) {
+                    const at = String(flags.cursor).lastIndexOf("/");
+                    if (at <= 0) throw new Error("usage: --cursor <cursorAt>/<cursorId> (printed as 'next:' by the previous page)");
+                    cursor = { cursorAt: flags.cursor.slice(0, at), cursorId: flags.cursor.slice(at + 1) };
+                }
+                const page = await client.getCanvasAppLoads({
+                    name: needName(rest[0], "loads <name>"), ...sel,
+                    ...(flags.limit ? { limit: flags.limit } : {}),
+                    ...(flags.since ? { since: flags.since } : {}), ...(flags.until ? { until: flags.until } : {}),
+                    ...cursor,
+                });
+                print(page, (p) => [
+                    `${p.total30d} loads in the last 30 days`,
+                    ...p.rows.map((r) => `${new Date(r.loadedAt).toISOString()}  ${r.version}  ${r.userEmail || (r.user ? `${r.user.provider}:${r.user.subject}` : "-")}  ${r.sessionId}`),
+                    ...(p.nextCursor ? [`next: --cursor ${p.nextCursor.loadedAt}/${p.nextCursor.loadId}`] : []),
+                ].join("\n"));
                 return 0;
             }
             case "rm": {
@@ -218,6 +238,11 @@ export async function runAppsCommand(argv, deps = {}) {
                 await client.deleteCanvasApp({ name, ...sel });
                 out(`deleted ${name}`);
                 return 0;
+            }
+            case "prune": {
+                const result = await client.pruneCanvasApps({});
+                print(result, (r) => `${r.loadsRemoved ?? 0} load rows, ${r.pendingRemoved ?? 0} abandoned uploads, ${r.spacesPurged ?? 0} deleted apps' bytes removed${r.failures ? `; ${r.failures} storage failures will be retried` : ""}`);
+                return result?.failures ? 2 : 0;
             }
             case "migrate-legacy": {
                 const result = await client.migrateLegacyCanvasApps({ dryRun: !flags.apply });

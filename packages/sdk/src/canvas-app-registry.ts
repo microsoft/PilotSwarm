@@ -18,6 +18,8 @@ import { createHash, randomUUID } from "node:crypto";
 import type { ArtifactStore } from "./session-store.js";
 import {
     CanvasAppError,
+    CANVAS_APP_SPACE_PREFIX,
+    looksLikeCanvasAppSpace,
     type CanvasAppScope,
     type CanvasAppStore,
     type CanvasAppTarget,
@@ -41,7 +43,7 @@ export const CANVAS_APP_ARCHIVE_FORMAT = 1;
 /** Pending rows older than this are abandoned publishes. */
 export const CANVAS_APP_PENDING_TTL_MS = 15 * 60 * 1000;
 
-const SPACE_PREFIX = createHash("sha256").update("pilotswarm-canvas-apps:artifacts").digest("hex").slice(0, 12);
+const SPACE_PREFIX = CANVAS_APP_SPACE_PREFIX;
 
 /**
  * The byte space of one app: an artifact "session" id nobody can create.
@@ -60,15 +62,7 @@ export function canvasAppArtifactSessionId(appId: string): string {
     ].join("-");
 }
 
-/**
- * Cheap first filter: could this id be an app byte space? The answer is
- * confirmed against the CMS before anything is refused, so a session created
- * before this release whose id happens to match keeps working.
- */
-export function looksLikeCanvasAppSpace(id: string): boolean {
-    const s = String(id ?? "").toLowerCase();
-    return s.length === 36 && s.replace(/-/g, "").startsWith(SPACE_PREFIX) && s[14] === "8";
-}
+export { looksLikeCanvasAppSpace };
 
 /** JSON with sorted object keys: equal values give equal strings. */
 export function canonicalJson(value: unknown): string {
@@ -284,37 +278,72 @@ export async function readCanvasAppHtml(
 }
 
 /** Delete an app (owner or admin): rows first, then its byte space. */
-export async function deleteCanvasApp(deps: CanvasAppRegistryDeps, target: CanvasAppTarget, viewer: CanvasAppViewer): Promise<{ deleted: true; files: number }> {
+export async function deleteCanvasApp(deps: CanvasAppRegistryDeps, target: CanvasAppTarget, viewer: CanvasAppViewer): Promise<{ deleted: true; files: number; pendingCleanup: boolean }> {
     const gone = await deps.store.delete(target, viewer);
     let files = 0;
+    let failed = 0;
     if (gone.appId) {
         for (const filename of gone.artifactFilenames) {
-            if (await deps.artifactStore.deleteArtifact(gone.artifactSessionId, filename).catch(() => false)) files++;
+            try {
+                if (await deps.artifactStore.deleteArtifact(gone.artifactSessionId, filename)) files++;
+            } catch (err: any) {
+                failed++;
+                console.warn(`[canvas-apps] could not delete ${gone.artifactSessionId}/${filename}; the prune will retry: ${err?.message || err}`);
+            }
         }
-        await deps.store.markPurged(gone.appId);
+        // The tombstone is the retry record: it is marked purged only when
+        // every file is confirmed gone.
+        if (failed === 0) await deps.store.markPurged(gone.appId);
     }
-    return { deleted: true, files };
+    return { deleted: true, files, pendingCleanup: failed > 0 };
 }
 
 /**
  * Finish what interrupted publishes and deletes left: stale pending rows and
- * unpurged tombstones. Called by the sweeper hook; safe to run any time.
+ * unpurged tombstones. Called by the sweeper hook; safe to run any time. A
+ * storage failure leaves its record in place for the next run; nothing is
+ * marked done that is not confirmed done.
  */
-export async function pruneCanvasAppArtifacts(deps: CanvasAppRegistryDeps, now = new Date()): Promise<{ pendingRemoved: number; spacesPurged: number }> {
-    const stale = await deps.store.prunePending(new Date(now.getTime() - CANVAS_APP_PENDING_TTL_MS));
-    for (const p of stale) {
-        await deps.artifactStore.deleteArtifact(p.artifactSessionId, p.artifactFilename).catch(() => false);
+export async function pruneCanvasAppArtifacts(deps: CanvasAppRegistryDeps, now = new Date()): Promise<{ pendingRemoved: number; spacesPurged: number; failures: number }> {
+    let failures = 0;
+    let pendingRemoved = 0;
+    for (const p of await deps.store.prunePending(new Date(now.getTime() - CANVAS_APP_PENDING_TTL_MS))) {
+        try {
+            await deps.artifactStore.deleteArtifact(p.artifactSessionId, p.artifactFilename);
+        } catch (err: any) {
+            failures++;
+            console.warn(`[canvas-apps] could not delete abandoned ${p.artifactSessionId}/${p.artifactFilename}; kept for retry: ${err?.message || err}`);
+            continue;
+        }
+        await deps.store.abort(p.versionId);
+        pendingRemoved++;
     }
     let spacesPurged = 0;
     for (const t of await deps.store.listTombstones(100)) {
-        const files = await deps.artifactStore.listArtifacts(t.artifactSessionId).catch(() => []);
-        for (const f of files) {
-            await deps.artifactStore.deleteArtifact(t.artifactSessionId, (f as any).filename ?? (f as any).name).catch(() => false);
+        let files: any[];
+        try {
+            files = await deps.artifactStore.listArtifacts(t.artifactSessionId);
+        } catch (err: any) {
+            failures++;
+            console.warn(`[canvas-apps] could not list ${t.artifactSessionId}; tombstone kept: ${err?.message || err}`);
+            continue;
         }
-        await deps.store.markPurged(t.appId);
-        spacesPurged++;
+        let ok = true;
+        for (const f of files) {
+            try {
+                await deps.artifactStore.deleteArtifact(t.artifactSessionId, (f as any).filename ?? (f as any).name);
+            } catch (err: any) {
+                ok = false;
+                failures++;
+                console.warn(`[canvas-apps] could not delete ${t.artifactSessionId}/${(f as any).filename}; tombstone kept: ${err?.message || err}`);
+            }
+        }
+        if (ok) {
+            await deps.store.markPurged(t.appId);
+            spacesPurged++;
+        }
     }
-    return { pendingRemoved: stale.length, spacesPurged };
+    return { pendingRemoved, spacesPurged, failures };
 }
 
 // ── Export and import (R16, R17) ─────────────────────────────────
@@ -339,6 +368,16 @@ export async function exportCanvasApp(deps: CanvasAppRegistryDeps, target: Canva
         tags: [...detail.tags].sort(),
         versions: [],
     };
+    // Every export must be importable: the importer expands at most
+    // CANVAS_APP_ARCHIVE_MAX_EXPANDED_BYTES, so refuse before reading pages
+    // whose total (plus tar headers and the card) would exceed it.
+    let expanded = 0;
+    for (const v of versions) {
+        expanded += Number(v.sizeBytes || 0) + 1024;
+        if (expanded > CANVAS_APP_ARCHIVE_MAX_EXPANDED_BYTES - 64 * 1024) {
+            throw new CanvasAppError("BAD_REQUEST", `the app's versions total more than ${CANVAS_APP_ARCHIVE_MAX_EXPANDED_BYTES} bytes, which an import would refuse; delete old versions first`);
+        }
+    }
     for (const v of versions) {
         const { html } = await readCanvasAppHtml(deps, target, viewer, v.version);
         manifest.versions.push({ version: v.version, sha256: v.sha256, size: v.sizeBytes, card: v.card });
@@ -388,8 +427,11 @@ export function readCanvasAppArchive(bytes: Buffer): { manifest: CanvasAppArchiv
         if (!entry) throw new CanvasAppError("BAD_REQUEST", `INVALID_ARCHIVE: ${member} is missing`);
         const html = entry.body.toString("utf8");
         if (sha256Hex(html) !== v.sha256) throw new CanvasAppError("BAD_REQUEST", `INVALID_ARCHIVE: ${member} does not match its sha256`);
-        checkCanvasAppPage(html);
-        manifest.versions.push({ version: v.version, sha256: v.sha256, size: Buffer.byteLength(html, "utf8"), card: {} });
+        // The version's effective contract travels with it: taken from the
+        // archived card only when it passes the same checks as at publish.
+        const archivedContract = v?.card && typeof v.card === "object" ? (v.card as any).responseContract : undefined;
+        const checked = checkCanvasAppPage(html, archivedContract);
+        manifest.versions.push({ version: v.version, sha256: v.sha256, size: Buffer.byteLength(html, "utf8"), card: checked.card });
         pages.set(v.version, html);
     }
     const extra = names.filter((n) => !expected.has(n));
@@ -424,6 +466,7 @@ export async function importCanvasApp(
                 html: pages.get(v.version)!,
                 name: manifest.name, scope, version: v.version,
                 description: manifest.description || null, tags: manifest.tags,
+                responseContract: (v.card as any)?.responseContract,
                 viewer, createdBy: opts.createdBy ?? null, mode: "import",
                 importCreatedApp: createdHere,
             });
@@ -505,7 +548,10 @@ export async function migrateLegacyCanvasApps(
             if (!(err instanceof CanvasAppError) || (err.code !== "NOT_FOUND" && err.code !== "VERSION_NOT_FOUND")) throw err;
         }
         if (dryRun) { lines.push({ key, name, outcome: "migrate", version, owner }); continue; }
-        const asOwner: CanvasAppViewer = owner ? { principal: owner, resourceAdmin: true } : { principal: null, resourceAdmin: true };
+        // As the owner, without admin rights: a shared app of this name created
+        // meanwhile by someone else is NAME_TAKEN, never extended. An ownerless
+        // app needs the admin path; the procedure refuses it for a named app.
+        const asOwner: CanvasAppViewer = owner ? { principal: owner, resourceAdmin: false } : { principal: null, resourceAdmin: true };
         let published: PublishCanvasAppHtmlResult;
         try {
             const legacyDescription = String(card?.description ?? "").trim();
@@ -522,6 +568,13 @@ export async function migrateLegacyCanvasApps(
         }
         const check = await readCanvasAppHtml(deps, { name, scope: "shared" }, viewer, published.version);
         if (check.resolved.sha256 !== page.sha256) { skip("read-back does not match; fact kept"); continue; }
+        // Delete only the fact that was migrated: if it changed since it was
+        // read, keep it (the next run looks at the new value).
+        const current = ((await deps.factStore.readFacts({ keyPattern: key, scope: "shared", limit: 5 } as any)) as any).facts?.find((f: any) => f.key === key);
+        if (!current || (fact.etag !== undefined && current.etag !== fact.etag)) {
+            lines.push({ key, name, outcome: "migrated", version: published.version, owner, reason: "the fact changed during migration; fact kept" });
+            continue;
+        }
         await deps.factStore.deleteFact({ key, shared: true } as any);
         lines.push({ key, name, outcome: "migrated", version: published.version, owner });
     }
@@ -624,18 +677,28 @@ export interface CanvasBytesGuardDeps {
  */
 export async function canvasBytesRefusal(
     deps: CanvasBytesGuardDeps,
-    input: { callerSessionId: string | null | undefined; artifactSessionId: string; bytes?: Buffer | string | null },
+    input: {
+        callerSessionId: string | null | undefined; artifactSessionId: string; bytes?: Buffer | string | null;
+        /** Metadata-only reads (list, metaOnly, manifestOnly): the stored sha256, and only private apps are hidden. */
+        sha256?: string | null; privateOnly?: boolean;
+    },
 ): Promise<string | null> {
     if (looksLikeCanvasAppSpace(input.artifactSessionId) && await deps.store.isSpace(input.artifactSessionId)) {
         return "canvas app storage is read only through the canvas app registry (find_canvas_app, draw_canvas({fromApp}))";
     }
-    if (input.bytes == null) return null;
+    if (input.bytes == null) {
+        if (!input.sha256) return null;
+        const viewer = input.callerSessionId ? await deps.resolveViewer(input.callerSessionId) : { principal: null, resourceAdmin: false };
+        const owner = await deps.store.foreignBytes(String(input.sha256), null, viewer);
+        return owner === "(private)" ? "artifact not found" : null;
+    }
     const text = Buffer.isBuffer(input.bytes) ? input.bytes.toString("utf8") : String(input.bytes);
     if (!text.includes("CANVAS-APP-MANIFEST") && !text.includes("<")) return null;
     const viewer = input.callerSessionId ? await deps.resolveViewer(input.callerSessionId) : { principal: null, resourceAdmin: false };
     const extraction = extractCanvasAppManifest(text);
     const owner = await deps.store.foreignBytes(sha256Hex(text), canvasAppWorkspaceKey(extraction.manifest), viewer);
     if (!owner) return null;
+    if (input.privateOnly && owner !== "(private)") return null;
     return owner === "(private)"
         ? "artifact not found"
         : `these bytes are the canvas app "${owner}" of another user; agents do not receive its page. Draw it with draw_canvas({fromApp: {name: "${owner}"}}), or read its card with find_canvas_app({name}).`;

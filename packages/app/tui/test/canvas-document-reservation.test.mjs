@@ -43,3 +43,31 @@ test("uploads and copies never target a canvas document", async () => {
     await transport.copyArtifact("s1", "canvas.html", "s1", "app-board.html");
     assert.deepEqual(writes.map((w) => w[0]), ["upload", "copy"], "other names, and canvas.html as a SOURCE, are unchanged");
 });
+
+test("canvas app byte spaces are absent on every generic artifact route", async () => {
+    const SPACE = "app-space-id";
+    const { transport, writes } = transportWithStore();
+    Object.assign(transport.artifactStore, {
+        listArtifacts: async () => { writes.push(["list"]); return []; },
+        statArtifact: async () => { writes.push(["stat"]); return null; },
+        setArtifactPinned: async () => { writes.push(["pin"]); return {}; },
+        deleteArtifact: async () => { writes.push(["delete"]); return true; },
+        downloadArtifactText: async () => { writes.push(["text"]); return ""; },
+        downloadArtifact: async () => { writes.push(["binary"]); return { body: Buffer.from("") }; },
+    });
+    transport.mgmt = { isCanvasAppStorage: async (id) => id === SPACE };
+    const refused = (error) => error.code === "NOT_FOUND";
+    await assert.rejects(transport.listArtifacts(SPACE), refused);
+    await assert.rejects(transport.getArtifactMetadata(SPACE, "x.html"), refused);
+    await assert.rejects(transport.readArtifactBase64(SPACE, "x.html", 10), refused);
+    await assert.rejects(transport.downloadArtifact(SPACE, "x.html"), refused);
+    await assert.rejects(transport.downloadArtifactBinary(SPACE, "x.html"), refused);
+    await assert.rejects(transport.deleteArtifact(SPACE, "x.html"), refused);
+    await assert.rejects(transport.setArtifactPinned(SPACE, "x.html", true), refused);
+    await assert.rejects(transport.uploadArtifactContent(SPACE, "x.html", "x"), refused);
+    await assert.rejects(transport.copyArtifact(SPACE, "x.html", "s1", "y.html"), refused, "copy out");
+    await assert.rejects(transport.copyArtifact("s1", "y.html", SPACE, "x.html"), refused, "copy in");
+    assert.deepEqual(writes, [], "the store was never asked");
+    await transport.listArtifacts("s1");
+    assert.deepEqual(writes, [["list"]], "an ordinary session is unaffected");
+});

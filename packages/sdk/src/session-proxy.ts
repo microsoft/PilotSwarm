@@ -3584,17 +3584,26 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         // decided for them (canvas app registry, issue 181).
                         const canvasViewer = await sessionManager.resolveCanvasAppViewer(target);
                         let fromAppAttribution: CanvasDrawAttribution | null = null;
+                        let fromAppContract: unknown = undefined;
                         if (args.fromApp) {
                             const store = (catalog as any).canvasApps;
                             if (!store) return { error: "the canvas app registry is unavailable on this worker" };
                             const fa = args.fromApp;
                             try {
+                                const appTarget = { name: String(fa.name ?? ""), scope: fa.scope === "shared" || fa.scope === "user" ? fa.scope as "shared" | "user" : null };
+                                // A disabled app is never drawn, by anyone (R15);
+                                // owner, contributors and admins still find and read it.
+                                const appDetail = await store.get(appTarget, canvasViewer);
+                                if (!appDetail.enabled) {
+                                    throw new CanvasAppError("APP_DISABLED", `canvas app "${appDetail.name}" is disabled`);
+                                }
                                 const { html: appHtml, resolved: app } = await readCanvasAppHtml(
                                     { store, artifactStore },
-                                    { name: String(fa.name ?? ""), scope: fa.scope === "shared" || fa.scope === "user" ? fa.scope : null },
+                                    appTarget,
                                     canvasViewer,
                                     fa.version ?? null,
                                 );
+                                fromAppContract = (app.card as any)?.responseContract;
                                 if (fa.expectedSha256 && app.sha256 !== fa.expectedSha256) {
                                     return { error: `SHA_MISMATCH: ${app.name}@${app.version} hashes ${app.sha256}, expected ${fa.expectedSha256}; nothing was drawn` };
                                 }
@@ -3649,9 +3658,19 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         // embedded contract with no explicit override fails the draw
                         // closed rather than arming nothing silently).
                         const extraction = html ? extractCanvasAppManifest(html) : { manifest: null };
+                        // A registry app arms the contract recorded with its version
+                        // (the effective contract checked at publish), unless the
+                        // draw passes its own (B06).
                         let effectiveContract = args.responseContract;
+                        if (!effectiveContract && fromAppContract !== undefined) {
+                            const normalized = normalizeCanvasResponseContract(fromAppContract);
+                            if (normalized.error) {
+                                return { error: `the stored contract of this canvas app is invalid: ${normalized.error}. Republish the app or pass an explicit responseContract.` };
+                            }
+                            effectiveContract = normalized.contract;
+                        }
                         let manifestWarning: string | undefined;
-                        if (!effectiveContract && html) {
+                        if (!effectiveContract && html && fromAppContract === undefined) {
                             if (extraction.error && !args.fromArtifact && !args.fromApp) {
                                 // Inline draw with a broken manifest attempt: tolerate —
                                 // the author is iterating live and passed no contract —

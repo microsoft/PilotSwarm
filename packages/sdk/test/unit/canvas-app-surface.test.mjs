@@ -80,3 +80,12 @@ test("the registry's core files stay cloud-neutral", () => {
         }
     }
 });
+
+test("no canvas operation on the Node SDK transport assumes admin when the caller does not say so", () => {
+    const methods = [...NODE.matchAll(/\n    async (\w*Canvas\w*)\(args = \{\}, owner = this\.currentUser, isAdmin = (\w+)\)/g)];
+    assert.ok(methods.length >= 20, `found ${methods.length}`);
+    for (const [, name, fallback] of methods) assert.equal(fallback, "false", `${name} defaults isAdmin to ${fallback}`);
+    for (const [, name] of methods) {
+        assert.match(NODE, new RegExp(`async ${name}\\(args = \\{\\}, owner = this\\.currentUser, isAdmin = false\\) \\{\\s*return this\\.mgmt\\.${name}\\(args \\?\\? \\{\\}, owner, isAdmin === true\\);`), `${name} passes admin only when it is exactly true`);
+    }
+});

@@ -7,6 +7,21 @@
  * code. The service (canvas-app-registry.ts) owns bytes and lifecycle.
  */
 import type { Pool } from "pg";
+import { createHash } from "node:crypto";
+
+/** The fixed 12-hex prefix of every canvas app byte space id. */
+export const CANVAS_APP_SPACE_PREFIX = createHash("sha256").update("pilotswarm-canvas-apps:artifacts").digest("hex").slice(0, 12);
+
+/**
+ * Could this id be an app byte space? New sessions may not take such an id
+ * (the CMS refuses it), so for anything created from now on the prefix is the
+ * answer; refusals of reads are still confirmed against the registry so a
+ * session created before this release whose id happens to match keeps working.
+ */
+export function looksLikeCanvasAppSpace(id: string): boolean {
+    const s = String(id ?? "").toLowerCase();
+    return s.length === 36 && s.replace(/-/g, "").startsWith(CANVAS_APP_SPACE_PREFIX) && s[14] === "8";
+}
 
 export type CanvasAppScope = "shared" | "user";
 
@@ -476,9 +491,10 @@ export class CanvasAppStore {
         return Number(rows[0]?.n ?? 0);
     }
 
-    async prunePending(olderThan: Date): Promise<Array<{ artifactSessionId: string; artifactFilename: string }>> {
+    /** Stale pending versions to clean up (listed, not deleted). */
+    async prunePending(olderThan: Date): Promise<Array<{ versionId: string; artifactSessionId: string; artifactFilename: string }>> {
         const rows = await this.call(`SELECT * FROM ${this.fn("prune_pending")}($1)`, [olderThan]);
-        return rows.map((r) => ({ artifactSessionId: r.artifact_session_id, artifactFilename: r.artifact_filename }));
+        return rows.map((r) => ({ versionId: r.version_id, artifactSessionId: r.artifact_session_id, artifactFilename: r.artifact_filename }));
     }
 
     async listTombstones(limit = 100): Promise<Array<{ appId: string; artifactSessionId: string; name: string; deletedAt: Date }>> {

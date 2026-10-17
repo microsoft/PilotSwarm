@@ -1,4 +1,5 @@
 import { normalizeSessionSortMode, normalizeSessionUsage } from "../../core/src/session-sort.js";
+import { canvasKey as canvasStateKey } from "../../core/src/state.js";
 import { ChatCallLine } from "./chat-call-line.js";
 import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
@@ -3302,9 +3303,13 @@ function HtmlArtifactPreviewPanel({
     React.useEffect(() => {
         if (!isolated) return undefined;
         const onMessage = (event) => {
+            const el0 = [...isolatedFramesRef.current].find((frame) => frame?.contentWindow === event.source);
+            // A preview offers no request/reply channel: any port a page
+            // transfers is closed at once.
+            if (el0) for (const port of event.ports || []) { try { port.close(); } catch { /* already closed */ } }
             const payload = event.data;
             if (!payload || typeof payload !== "object" || !event.source) return;
-            const el = [...isolatedFramesRef.current].find((frame) => frame?.contentWindow === event.source);
+            const el = el0;
             if (!el || el.dataset.leftPage) return;
             if (payload.type === "pse-wrapper-ready" && typeof isolatedHtmlRef.current === "string") {
                 try { event.source.postMessage({ type: "pse-wrapper-load", html: isolatedHtmlRef.current }, "*"); } catch { /* frame mid-teardown */ }
@@ -8223,7 +8228,16 @@ function canvasWorkspaceApprovalLines(approval) {
     return lines;
 }
 
-function CanvasFrame({ controller, sessionId, slot = 1, latestRev, trust = "agent", pageSha256 = null, zoom, visible = true, focusOnPromote = false, dataRev = 0, dataPayload = null, dataPatch = null, onPanelKey = null }) {
+function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible = true, focusOnPromote = false, dataRev = 0, dataPayload = null, dataPatch = null, onPanelKey = null }) {
+    // Trust and page hash come from the canvas state for THIS session and
+    // slot, never from the caller: every surface that mounts a canvas (main,
+    // MoA pinned, …) gets the same decision. A revision whose classification
+    // is not known here is framed as another user's page (fail closed).
+    const trustEntry = useControllerSelector(controller, React.useCallback(
+        (state) => state.canvas?.bySessionId?.[canvasStateKey(sessionId, slot)] ?? null, [sessionId, slot]));
+    const trustKnown = Boolean(trustEntry && Number(trustEntry.latestRev) === Number(latestRev) && typeof trustEntry.trust === "string");
+    const trust = trustKnown ? trustEntry.trust : "cross-owner";
+    const pageSha256 = trustKnown && typeof trustEntry.pageSha256 === "string" ? trustEntry.pageSha256 : null;
     const crossOwner = trust === "cross-owner";
     // Canvas app registry: the inner page text per wrapper URL, handed over on
     // the wrapper's ready message; and each frame's revision, sent with every
@@ -9043,8 +9057,6 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
                     sessionId: view.sessionId,
                     slot: view.slot,
                     latestRev: view.latestRev,
-                    trust: view.trust,
-                    pageSha256: view.pageSha256,
                     zoom,
                     visible: visible && onCanvas,
                     focusOnPromote,
