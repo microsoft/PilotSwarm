@@ -203,6 +203,14 @@ settles to exactly that size.
 established for this page; narrow `event_types` or lower `limit` instead. The
 server says so rather than inventing a number.
 
+**What the value does and does not promise.** It is a statement about
+*size*, for the same request against the same rows: at that budget, a
+response of exactly that size was built and measured. It is **not** a promise
+that the next call succeeds. New events can arrive, retention can drop rows,
+a share can be revoked, a credential can expire, and changing the request
+options changes the answer. A retry can still be refused for any of those
+reasons — none of which is a size problem.
+
 A budget cut sets `truncated_reason: "byte_budget"` and still advances the
 cursor — an oversized single record is delivered with its payload omitted
 rather than stalling you. A byte cut does NOT by itself mean `has_more`: a

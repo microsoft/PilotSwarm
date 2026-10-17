@@ -1436,6 +1436,13 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                                     // receipt the retry itself will write. Null when no
                                     // such value could be established, in which case we
                                     // say so rather than invent one.
+                                    //
+                                    // SCOPE: this is a claim about SIZE for the same
+                                    // request over the same rows — not a promise that
+                                    // the retry succeeds. New events, retention, a
+                                    // revoked share, an expired credential or changed
+                                    // request options can all refuse the next call for
+                                    // reasons that have nothing to do with bytes.
                                     sufficient_max_bytes: sufficientBudget,
                                     remedy: sufficientBudget !== null
                                         ? `retry with max_bytes ${sufficientBudget}, or narrow event_types / lower limit`
