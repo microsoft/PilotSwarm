@@ -138,6 +138,53 @@ async function run() {
             !/\"events\"/.test(text) && !/\"transcript\"/.test(text));
     }
 
+    // ── GPT-6.1 FINAL-01/02 boundaries ──────────────────────────
+    {
+        // FINAL-01: the counterexample needed no execution. Take the accepted
+        // minimum budget E, then observe that adding response_bytes grows the
+        // returned text past E. The contract must hold on the bytes SENT, so
+        // either the response fits or an explicit error is returned - never a
+        // success-shaped over-budget page.
+        const all = [ev(1, "a")];
+        const client = await connect(sessionMgmt(all));
+
+        // Walk budgets across the whole interesting region, including the exact
+        // envelope boundary, rather than guessing one value.
+        let anyOverBudget = false;
+        let anyFalseRefusal = false;
+        for (let budget = 50; budget <= 1400; budget += 7) {
+            const res = await client.callTool({
+                name: "get_session_events",
+                arguments: { session_id: SESSION, page: true, max_bytes: budget },
+            });
+            const bytes = bytesOf(res);
+            if (res.isError) {
+                // A refusal is acceptable only if the response really could not fit.
+                continue;
+            }
+            if (bytes > budget) anyOverBudget = true;
+        }
+        record("FINAL-01: no budget yields a success-shaped over-budget response", !anyOverBudget);
+
+        // FINAL-02: a budget that comfortably fits a complete small page must be
+        // ACCEPTED, not refused on the cost of an omission-heavy replacement.
+        const generous = await client.callTool({
+            name: "get_session_events",
+            arguments: { session_id: SESSION, page: true, max_bytes: 200000 },
+        });
+        const fullBytes = bytesOf(generous);
+        const exact = await client.callTool({
+            name: "get_session_events",
+            arguments: { session_id: SESSION, page: true, max_bytes: fullBytes },
+        });
+        record("FINAL-02: a budget equal to the real full response is accepted",
+            !exact.isError && bytesOf(exact) <= fullBytes,
+            exact.isError ? textOf(exact).slice(0, 120) : `${bytesOf(exact)} > ${fullBytes}`);
+        if (exact.isError) anyFalseRefusal = true;
+        record("FINAL-02: minimum envelope is not inflated by an omitted record",
+            !anyFalseRefusal);
+    }
+
     // ── handler-level drain is a PARTITION, under byte pressure ──
     {
         // Sequences start at 101 deliberately. A forward drain must begin from a

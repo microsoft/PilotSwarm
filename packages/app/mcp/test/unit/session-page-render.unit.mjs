@@ -129,7 +129,7 @@ check("an unredacted secret-shaped string is NOT reported as an omission", () =>
 });
 
 check("a clean page's empty omissions list means nothing omitted, not 'scanned'", () => {
-    const { omissions, cut } = applyByteBudget([event(1, "a"), event(2, "b")], PAGE_BYTES_DEFAULT);
+    const { omissions, undispatched: cut } = applyByteBudget([event(1, "a"), event(2, "b")], PAGE_BYTES_DEFAULT);
     assert.equal(omissions.length, 0);
     assert.equal(cut, false);
 });

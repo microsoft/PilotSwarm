@@ -1158,9 +1158,17 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                      * — and the 1 MiB ceiling — while reporting nothing wrong. So the
                      * final representation is measured, not estimated.
                      */
-                    const build = (eventBudget: number) => {
-                        const { delivered, undispatched, omissions } =
-                            applyByteBudget(result.events ?? [], eventBudget, orientation);
+                    const build = (eventBudget: number, forceEmpty = false) => {
+                        // forceEmpty bypasses the progress helper entirely. Calling
+                        // applyByteBudget with a zero budget does NOT yield an
+                        // events-free envelope: its progress rule still delivers the
+                        // first considered row payload-omitted, with a payloadOmitted
+                        // field and an omissions entry. That made the "minimum
+                        // envelope" larger than a normal small complete page, so the
+                        // guard could refuse a budget that the real response fits in.
+                        const { delivered, undispatched, omissions } = forceEmpty
+                            ? { delivered: [] as Array<Record<string, any>>, undispatched: (result.events ?? []).length > 0, omissions: [] as Array<{ seq: number; kind: OmissionKind }> }
+                            : applyByteBudget(result.events ?? [], eventBudget, orientation);
 
                         const deliveredRange = delivered.length > 0
                             ? { from_seq: delivered[0]!.seq, to_seq: delivered[delivered.length - 1]!.seq }
@@ -1219,7 +1227,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                     // transport may truncate or reject that downstream, which is precisely
                     // the silent truncation this feature exists to prevent. If it cannot
                     // fit, the caller gets an explicit error INSTEAD of a response.
-                    const empty = build(0);
+                    const empty = build(0, /* forceEmpty */ true);
                     if (empty.bytes > budget) {
                         return {
                             content: [{
@@ -1238,8 +1246,11 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                     // Plan against the room the envelope leaves, then shrink until the
                     // MEASURED encoding fits. Escaping and pretty-printing both expand the
                     // encoded form, so an estimate is not enough.
-                    let attempt = build(Math.max(0, budget - empty.bytes));
+                    // Try the normal response FIRST. A complete small record can be
+                    // cheaper than its omission-heavy replacement, so refusing before
+                    // trying it would reject budgets that actually fit.
                     let room = Math.max(0, budget - empty.bytes);
+                    let attempt = build(room);
                     for (let i = 0; i < 8 && attempt.bytes > budget; i++) {
                         const overshoot = attempt.bytes - budget;
                         // Shrink by at least one byte so this always terminates.
