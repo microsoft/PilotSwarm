@@ -140,18 +140,24 @@ async function run() {
 
     // ── handler-level drain is a PARTITION, under byte pressure ──
     {
-        const all = Array.from({ length: 24 }, (_, i) => ev(i + 1, "y".repeat(400)));
+        // Sequences start at 101 deliberately. A forward drain must begin from a
+        // cursor ABOVE zero, because afterSeq=0 classifies as LATEST, not
+        // "from the beginning" (session-events-page.ts classifyPageMode). Seeding
+        // forward with after_seq=0 would silently test latest a second time and
+        // report that forward passed - the exact shape of a vacuous test.
+        const all = Array.from({ length: 24 }, (_, i) => ev(i + 101, "y".repeat(400)));
         const client = await connect(sessionMgmt(all));
 
         for (const mode of ["latest", "forward", "backward"]) {
             const seen = [];
             let args = { session_id: SESSION, page: true, limit: 5, max_bytes: 3000 };
-            if (mode === "forward") args.after_seq = 0 + 1 - 1 || undefined;
             let cursor = null, direction = null, guard = 0, ok = true;
 
-            // Seed the first call per mode.
+            // Seed the first call per mode, and assert the handler agrees with
+            // the mode we think we are exercising.
             if (mode === "backward") args.before_seq = 1000;
-            if (mode === "forward") args.after_seq = 0;
+            if (mode === "forward") args.after_seq = 100;   // below the first seq (101), and > 0
+            let modeConfirmed = null;
 
             while (guard++ < 60) {
                 const call = { ...args };
@@ -163,6 +169,7 @@ async function run() {
                 const res = await client.callTool({ name: "get_session_events", arguments: call });
                 if (res.isError) { ok = false; break; }
                 const body = JSON.parse(textOf(res));
+                if (modeConfirmed === null) modeConfirmed = body.receipt.mode;
                 if (bytesOf(res) > call.max_bytes) { ok = false; break; }
                 for (const e of body.events ?? []) seen.push(e.seq);
                 if (!body.receipt.has_more) break;
@@ -175,6 +182,9 @@ async function run() {
             const expected = all.map((e) => e.seq);
             const partition = JSON.stringify(sorted) === JSON.stringify(expected);
             const unique = new Set(seen).size === seen.length;
+            // Guard against testing a different mode than intended.
+            record(`handler drain exercises the intended mode: ${mode}`,
+                modeConfirmed === mode, `handler reported "${modeConfirmed}"`);
             record(`handler drain is a partition: ${mode}`, ok && partition && unique,
                 `saw ${seen.length}/${expected.length}, unique=${unique}`);
         }
