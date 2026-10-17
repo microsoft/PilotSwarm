@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased
+
+**Cron prechecks skip empty polling cycles.** A cron precheck is named code
+that answers whether a scheduled `cron` wake-up has work. An agent package
+exports prechecks from `tools/worker-module.js` (`createCronPrechecks`), and
+workers load them with the package, so no deployment code changes; only
+sessions bound to that package's agents can use them. Applications can also
+register them in worker code (`worker.registerCronPrechecks`). A schedule opts
+in by name, first match wins: the agent calls
+`cron(seconds, reason, precheck="<name>")`; the agent definition binds the
+cron reason in frontmatter (`cronPrechecks: - reasonPrefix: … precheck: …`);
+or the session was created with a default (`createSession({ cronPrecheck })`).
+On orchestration 1.0.82, when such a schedule fires and the wake-up carries
+nothing else, the precheck runs first; a `skip` answer re-arms the schedule
+without hydrating the session or calling the model. Decisions are recorded as
+`session.cron_precheck` events; a `shadow: true` registration records without
+skipping. Unavailable names, failures and timeouts run the model turn as
+before, and the cron tool rejects an explicit name that is not available. A
+schedule without a precheck behaves exactly as today. The activity is routed by
+a new worker capability tag, so older workers never receive it during a
+rolling deploy. Orchestration 1.0.81 is frozen.
+
+**Prechecks can call MCP directly, without a model.** The callback receives
+`callMcpTool(server, tool, arguments)` backed by the session's current
+base/bound-agent grants and authorized persisted capability selections.
+Package provenance, owner visibility and server tool allowlists still apply.
+HTTP, SSE and stdio use configured headers/env/cwd; no model session or tool
+catalog is hydrated. Each call closes its connection, honors the precheck's
+abort signal, and fails open on connection, protocol or tool errors. Transport
+errors recorded in events omit endpoint and credential details. Interactive
+OAuth is not initiated; unavailable credentials run the normal cycle.
+Stateful HTTP sessions are explicitly terminated with a bounded cleanup request,
+and cancellation also settles SSE connections that have not received an endpoint.
+Cron-reason bindings accept inline comments without incorporating them into the
+reason. Invalid package precheck export shapes are rejected, not silently ignored.
+
 ## 0.8.3 — 2026-10-14
 
 **Stop and Steer a running turn.** A turn of orchestration 1.0.81 or later

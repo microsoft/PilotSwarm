@@ -253,6 +253,103 @@ For remote mode:
 - the client does not execute tools
 - blob storage is recommended if you want reliable dehydration across nodes
 
+## Cron Prechecks
+
+An agent that polls on a `cron` schedule pays for a full model turn on every
+wake-up, including the many that only find nothing to do. A cron precheck is
+code that runs first and answers whether the cycle has work. Prechecks are
+named, and a schedule opts in by name.
+
+**Where a precheck comes from:**
+
+- **An agent package** (no deployment code): the package's
+  `tools/worker-module.js` exports `createCronPrechecks()` beside
+  `createTools()`. Workers load it with the package, and only sessions bound to
+  that package's agents can use it. See
+  [Building agent packages](../../building-agent-packages.md#cron-prechecks).
+- **Application worker code:**
+
+```ts
+worker.registerCronPrechecks([{
+  name: "job-queue",
+  timeoutMs: 10_000,          // optional, at most 60s
+  maxConsecutiveSkips: 12,    // optional: run the model at least every 13th cycle
+  shadow: false,              // optional: true records decisions without skipping
+  check: async ({ sessionId, reason, consecutiveSkips, signal }) => {
+    const pending = await countEligibleJobs({ signal });
+    return pending > 0
+      ? { action: "run", detail: `${pending} jobs` }
+      : { action: "skip", detail: "queue empty" };
+  },
+}]);
+```
+
+**How a schedule opts in**, first match wins:
+
+1. **The cron call names it.** The agent calls
+   `cron(seconds=300, reason="poll the job queue", precheck="job-queue")`.
+   The cron tool rejects a name that is not available to the session.
+2. **The agent definition binds the reason** (recommended for recurring
+   agents: deterministic, no reliance on the model). In the `.agent.md`
+   frontmatter:
+
+   ```yaml
+   cronPrechecks:
+     - reasonPrefix: "poll the job queue"   # or reason: for an exact match
+       precheck: job-queue
+   ```
+
+   Only cron schedules this agent arms with a matching reason get the
+   precheck; its other cron uses and interactive messages are unaffected.
+3. **The session default.** `client.createSession({ ..., cronPrecheck: "job-queue" })`.
+
+A worker-registered name wins over a same-named package precheck, as with
+tools.
+
+A schedule without a precheck behaves exactly as before: no check and no
+extra activity. Calling `cron` again replaces the schedule, including its
+precheck.
+
+When an interval `cron` schedule with a precheck fires (orchestration 1.0.82
+and later), the orchestration runs the precheck in an activity before any
+hydration or model call. A `skip` answer records the decision and re-arms the
+same schedule; the model sees nothing for that cycle.
+
+- **Observable.** Every decision is recorded as a `session.cron_precheck`
+  event (`precheck`, `outcome`, `skipped`, `shadow`, `consecutiveSkips`,
+  `durationMs`, `detail`). Register a new precheck with `shadow: true` to
+  compare its decisions with the turns that ran before relying on it.
+- **Fail open.** An unregistered name, a thrown, timed-out or malformed
+  answer, or an activity failure runs the model turn as before.
+- **Only an empty wake-up is eligible.** A wake-up that carries child updates,
+  a held note, carried steers or stashed prompts runs the model without
+  asking. User messages are never affected.
+- **Keep it read-only and bounded.** The check runs on whichever worker takes
+  the activity, so register the same prechecks on every worker. It should
+  answer from authoritative state; return `run` when unsure.
+- If the agent's turn renews a lease or heartbeat, set `maxConsecutiveSkips`
+  so the model still runs often enough, or renew it in the check.
+
+**Direct MCP checks.** The callback also receives
+`callMcpTool(server, tool, arguments)`. It invokes an MCP tool directly, without
+creating a Copilot session or loading model context. It resolves only the
+session's current base/bound-agent grants and authorized persisted capability
+selections, not the entire deployment catalog. Bound package ownership,
+`allowedAgents` and the server's `tools` allowlist remain in force.
+HTTP/SSE use configured headers; stdio uses configured command/args/env/cwd.
+Each call has a fresh connection closed on completion or precheck cancellation.
+Stateful HTTP sessions also receive a bounded termination request, even after
+cancellation; server-side expiry applies if the server declines with HTTP 405.
+Await calls and validate results before returning `skip`; MCP error results
+throw and transport errors omit credentials from the recorded explanation.
+The helper does not initiate interactive OAuth or offer model sampling.
+Servers that need unavailable credentials fail open. Use deterministic,
+idempotent tools: durable activity retries may repeat a call, and an MCP tool
+that itself invokes a model still has backend model cost. Package authors need
+no MCP SDK dependency; see the [package example](../../building-agent-packages.md#calling-mcp-without-a-model).
+
+`cron_at` wall-clock schedules are not prechecked.
+
 ## Layered-App Checklist
 
 For apps you expect other LLMs or engineers to extend, keep these layers separate:

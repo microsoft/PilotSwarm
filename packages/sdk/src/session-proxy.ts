@@ -1,4 +1,4 @@
-import { HANDOFF_ACTIVITY_NAMES, TURN_CONTROL_ACTIVITY_NAMES, routeHandoffActivity, routedActivityName, registerHandoffActivity, registerTurnControlActivity, routeTurnControlActivity, routeWorkspaceActivity, type ActivityRoutingContract } from "./activity-routing.js";
+import { HANDOFF_ACTIVITY_NAMES, TURN_CONTROL_ACTIVITY_NAMES, routeCronPrecheckActivity, routeHandoffActivity, routedActivityName, registerHandoffActivity, registerTurnControlActivity, routeTurnControlActivity, routeWorkspaceActivity, type ActivityRoutingContract } from "./activity-routing.js";
 import nodeCrypto from "node:crypto";
 import { createCopilotClient } from "./copilot-client.js";
 import {
@@ -58,6 +58,8 @@ import {
 } from "./regen-worker.js";
 import { REGEN_DISTILLER_SERVICE_KIND } from "./distiller-tools.js";
 import { computeCronAtNextFire, type CronAtSchedule } from "./cron-at.js";
+import { evaluateCronPrecheck, type CronPrecheckInput, type CronPrecheckResult } from "./cron-precheck.js";
+import { callCronPrecheckMcpTool } from "./cron-precheck-mcp.js";
 import { SpanStatusCode, trace as otelTrace } from "@opentelemetry/api";
 import os from "node:os";
 import fs from "node:fs";
@@ -1151,6 +1153,10 @@ export function createSessionManagerProxy(
         /** Compute the next wall-clock cron fire in an activity so tzdata-dependent results are recorded in history. */
         computeCronAtNextFire(schedule: CronAtSchedule, afterUtcMs: number, lastOccurrenceKey?: string) {
             return ctx.scheduleActivity("computeCronAtNextFire", { schedule, afterUtcMs, lastOccurrenceKey });
+        },
+        /** 1.0.82: ask the worker's registered cron precheck whether this interval cron wake-up needs a model turn. */
+        runCronPrecheck(input: CronPrecheckInput) {
+            return routeCronPrecheckActivity(ctx.scheduleActivity("runCronPrecheck", input));
         },
         // ── Session regeneration (1.0.67) ──────────────────────
         /** ARCHIVE stage: transcript slice → attempt-scoped artifact. Idempotent per attempt. */
@@ -6159,6 +6165,36 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     ): Promise<ReturnType<typeof computeCronAtNextFire>> => {
         activityCtx.traceInfo(`[computeCronAtNextFire] tz=${input.schedule?.tz} after=${input.afterUtcMs}`);
         return computeCronAtNextFire(input.schedule, input.afterUtcMs, input.lastOccurrenceKey);
+    });
+
+    // -- runCronPrecheck (1.0.82) ------------------------------
+    // Runs the worker's registered precheck named by an interval cron
+    // schedule. The activity result is recorded in history, so the
+    // orchestration's skip/run branch replays deterministically. Fail open:
+    // any failure here runs the model turn.
+    runtime.registerActivity("runCronPrecheck", async (
+        activityCtx: any,
+        input: CronPrecheckInput,
+    ): Promise<CronPrecheckResult> => {
+        const { result, event } = await evaluateCronPrecheck({
+            registrations: sessionManager.getCronPrechecksFor(input.packageId),
+            input,
+            callMcpTool: async (signal, server, tool, args) => {
+                const servers = await sessionManager.getCronPrecheckMcpServers(input);
+                return callCronPrecheckMcpTool(servers, signal, server, tool, args);
+            },
+        });
+        activityCtx.traceInfo(
+            `[runCronPrecheck] session=${input.sessionId} precheck=${result.precheck} outcome=${result.outcome} shadow=${result.shadow === true} skip=${result.skip}`,
+        );
+        if (catalog) {
+            await cmsRetryBestEffort(
+                `runCronPrecheck.recordEvent session=${input.sessionId}`,
+                () => catalog!.recordEvents(input.sessionId, [{ eventType: "session.cron_precheck", data: event }], workerNodeId),
+                (msg) => activityCtx.traceInfo(msg),
+            );
+        }
+        return result;
     });
 
     // ── Session regeneration activities (1.0.67) ──────────────

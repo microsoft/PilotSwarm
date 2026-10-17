@@ -1,5 +1,7 @@
 import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, capabilityOwnership, parseCapabilityRef, resolveCapabilitySource, workspaceCapabilityHits, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
 import { bindCapabilities, nextCapabilityState, validatePackageRequest } from "./capability-runtime.js";
+import type { CronPrecheckInput } from "./cron-precheck.js";
+import type { MCPServerConfig } from "./mcp-loader.js";
 import { baseAgentInstructions, resolveBaseAgentPolicy } from "./base-agent-policy.js";
 import { NativeTaskAccess, NATIVE_SYNCHRONOUS_TOOLS, NATIVE_TASK_NAMES, type NativeTaskTools } from "./native-task-policy.js";
 import { linkSkillFolders, resolveWorkspaceAdoption, RepoAgentAccess, type AdoptionSource } from "./workspace-repo-agents.js";
@@ -123,12 +125,15 @@ function isMissingDehydrateSnapshotError(error: unknown): boolean {
  * carry no package fields.
  */
 export interface AgentCopyEntry {
+    namespace?: string;
     prompt: string;
     /** V2 declared-skill composition excludes unrelated published packages. */
     baseV2Prompt?: string;
     /** Current named-agent declarations; [] explicitly means no additional tools. */
     toolNames?: string[];
     nativeTaskTools?: NativeTaskTools;
+    /** The agent definition's cron-reason-to-precheck bindings. */
+    cronPrechecks?: import("./cron-precheck.js").CronPrecheckBinding[];
     kind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent";
     descriptor?: import("./prompt-layers.js").PromptLayerDescriptor;
     packageId?: string;
@@ -792,6 +797,10 @@ export class SessionManager {
     private featureFlags: FeatureFlagCache | null = null;
     /** Session turn control: the worker's notification hub (null when the worker has no CMS). */
     private turnControlHub: import("./turn-control.js").TurnControlHub | null = null;
+    /** Worker-registered cron prechecks, in registration order. */
+    private cronPrechecks: import("./cron-precheck.js").CronPrecheckRegistration[] = [];
+    /** Cron prechecks exported by agent packages, by package ID. */
+    private packageCronPrechecks = new Map<string, Map<string, import("./cron-precheck.js").CronPrecheckRegistration>>();
     /** Session workspaces: the application's provider, or the built-in one. Null when neither is set. */
     private workspaceProvider: WorkspaceProvider | null = null;
     /** The worker's own ID, for releases this manager starts itself (eviction). */
@@ -1192,6 +1201,71 @@ export class SessionManager {
     /** The worker's hub for activity registration, or null when unavailable. */
     getTurnControlHub(): import("./turn-control.js").TurnControlHub | null {
         return this.turnControlHub;
+    }
+
+    /** Replace a same-named precheck or append a new one. */
+    addCronPrecheck(registration: import("./cron-precheck.js").CronPrecheckRegistration): void {
+        const existing = this.cronPrechecks.findIndex((entry) => entry.name === registration.name);
+        if (existing >= 0) this.cronPrechecks[existing] = registration;
+        else this.cronPrechecks.push(registration);
+    }
+
+    getCronPrechecks(): readonly import("./cron-precheck.js").CronPrecheckRegistration[] {
+        return this.cronPrechecks;
+    }
+
+    /** Swapped in whole on every package refresh, like the package tool registry. */
+    setPackageCronPrechecks(byPackage: Map<string, Map<string, import("./cron-precheck.js").CronPrecheckRegistration>>): void {
+        this.packageCronPrechecks = byPackage;
+    }
+
+    /** The prechecks a schedule may resolve: its package's when it names one, otherwise the worker's. */
+    getCronPrechecksFor(packageId?: string | null): readonly import("./cron-precheck.js").CronPrecheckRegistration[] {
+        return packageId ? [...(this.packageCronPrechecks.get(packageId)?.values() ?? [])] : this.cronPrechecks;
+    }
+
+    /** Resolve current grants without creating or resuming a model session. */
+    async getCronPrecheckMcpServers(input: CronPrecheckInput): Promise<Record<string, MCPServerConfig>> {
+        const config = input.agent ?? {};
+        const owner = this.sessionCatalog
+            ? await resolveEffectiveSpawnOwner(id => this.sessionCatalog!.getSession(id), input.sessionId)
+            : null;
+        const ownerKey = owner && owner.provider !== SYSTEM_USER_PRINCIPAL.provider
+            ? agentOwnerKey(owner) : null;
+        const copy = resolveBoundAgentCopy(this.workerDefaults, config, ownerKey);
+        if (input.packageId && copy?.packageId !== input.packageId) {
+            throw new Error("Cron precheck package is no longer bound to this session");
+        }
+        const originalMcp = this._boundMcpServers(config, copy);
+        const selections = this.sessionCatalog?.getSessionCapabilities
+            ? (await this.sessionCatalog.getSessionCapabilities(input.sessionId)).selections : [];
+        const agent = copy && config.boundAgentName
+            ? { name: config.boundAgentName, namespace: copy.namespace, packageId: copy.packageId, packageScope: copy.packageScope }
+            : null;
+        const originalTools = this._resolveTools({ tools: this.sessionApplicationTools.get(input.sessionId) }, {
+            ...config,
+            toolNames: [...new Set([
+                ...(this.workerDefaults.frameworkBaseToolNames ?? []),
+                ...(this.workerDefaults.appDefaultToolNames ?? []),
+                ...(config.toolNames ?? []),
+                ...(copy?.toolNames ?? []),
+            ])],
+            ...(config.boundAgentSource === "deployment" ? { detachedPackageToolPolicy: "reject" as const } : {}),
+        }, copy?.packageId);
+        const attached = config.agentIdentity === "regen-distiller" || config.agentIdentity === "agent-tuner"
+            ? {}
+            : bindCapabilities(this.workerDefaults.getCapabilitySources?.() ?? [], owner, selections, originalTools, originalMcp, agent).mcpServers;
+        return { ...originalMcp, ...attached };
+    }
+
+    private _boundMcpServers(config: Pick<SerializableSessionConfig, "boundAgentName">, copy?: AgentCopyEntry): Record<string, MCPServerConfig> {
+        const key = config.boundAgentName && copy
+            ? copy.packageId ? packageAgentKey(copy.packageId, config.boundAgentName) : config.boundAgentName
+            : undefined;
+        return {
+            ...(this.workerDefaults.baseMcpServers ?? {}),
+            ...(key ? this.workerDefaults.agentMcpServers?.[key] ?? {} : {}),
+        };
     }
 
     setFeatureFlagCache(cache: FeatureFlagCache | null): void {
@@ -1942,15 +2016,7 @@ export class SessionManager {
         }
         // Capture MCP grants with the same registry snapshot, before asynchronous
         // provider/catalog work below can allow a package reload to intervene.
-        const boundAgentMcpServers = !effectiveSerializableConfig.boundAgentName || !boundAgentCopy
-            ? undefined
-            : boundAgentCopy.packageId
-                ? this.workerDefaults.agentMcpServers?.[packageAgentKey(boundAgentCopy.packageId, effectiveSerializableConfig.boundAgentName)]
-                : this.workerDefaults.agentMcpServers?.[effectiveSerializableConfig.boundAgentName];
-        const effectiveMcpServers = {
-            ...(this.workerDefaults.baseMcpServers ?? {}),
-            ...(boundAgentMcpServers ?? {}),
-        };
+        const effectiveMcpServers = this._boundMcpServers(effectiveSerializableConfig, boundAgentCopy);
 
         const config: ManagedSessionConfig = {
             ...storedConfig,
@@ -2358,6 +2424,14 @@ export class SessionManager {
         config.featureToolFingerprint = createHash("sha256")
             .update(JSON.stringify(featureTools.map(({ name, description, parameters }) => ({ name, description, parameters }))))
             .digest("hex");
+        config.cronPrecheckSources = {
+            staticNames: this.cronPrechecks.map((registration) => registration.name),
+            ...(boundAgentCopy?.packageId ? {
+                packageId: boundAgentCopy.packageId,
+                packageNames: [...(this.packageCronPrechecks.get(boundAgentCopy.packageId)?.keys() ?? [])],
+            } : {}),
+            ...(boundAgentCopy?.cronPrechecks?.length ? { bindings: boundAgentCopy.cronPrechecks.map((binding) => ({ ...binding })) } : {}),
+        };
         const nativeOwner = catalogRow?.owner ?? null;
         // An unreadable owner must not bypass a user-level OFF by resolving
         // cluster policy. Ownerless resolution is only for standalone managers.

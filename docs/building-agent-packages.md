@@ -172,6 +172,7 @@ Frontmatter fields:
 | `inheritDefaultMcpServers` | optional | Also attach the deployment's default MCP servers. |
 | `initialPrompt` | optional | Auto-sent first message when a session starts blank. |
 | `initialRequiredTool` | optional, schema `3` | Tool with a registered session handler that must produce a real execution event during the initial prompt turn. It must also appear in `tools`. PilotSwarm corrects one prose-only response, then fails closed if the handler is unavailable or still not invoked. |
+| `cronPrechecks` | optional | Bind this agent's `cron` schedules to a cron precheck by reason: a list of `{ reason \| reasonPrefix, precheck }`. A matching schedule asks the precheck (from this package's worker module, §5) before each wake-up and skips wake-ups that have no work, without a model call. Other cron uses and interactive messages are unaffected. Any schema version. |
 
 **Rejected at validation**: `system: true` (background agents belong to the
 deployment), an agent named `default`, names colliding with a built-in agent
@@ -249,6 +250,88 @@ export default {
   activate the needed permitted tools with `use_package`; no agent file is
   required for a tools-only package. Session and deployment restrictions still
   apply, and loading a skill alone does not attach tools.
+
+### Cron prechecks
+
+A package whose agent polls on a `cron` schedule can skip empty cycles without
+a model call. Export named cron prechecks beside the tools, and bind them to the
+agent's cron reason in its frontmatter (`cronPrechecks`, §3):
+
+```js
+export default {
+    createTools: ({ workerNodeId }) => [/* … */],
+    createCronPrechecks: ({ workerNodeId }) => [{
+        name: "queue-gate",
+        // timeoutMs (<= 60000), maxConsecutiveSkips and shadow are optional.
+        check: async ({ sessionId, reason, intervalSeconds, consecutiveSkips, signal }) =>
+            (await countDueWork({ signal })) > 0
+                ? { action: "run", detail: "work due" }
+                : { action: "skip", detail: "no work" },
+    }],
+};
+```
+
+```yaml
+cronPrechecks:
+  - reasonPrefix: "Run the queue cycle"
+    precheck: queue-gate
+```
+
+Bindings accept single-line plain or quoted strings (JSON escapes for double
+quotes, doubled apostrophes for single quotes). Inline comments are ignored
+outside quotes; `#` inside a quoted reason remains part of the reason.
+
+- Each worker loads prechecks with the package; no deployment code changes.
+  Only sessions bound to this package's agents can use them.
+- `run` continues with the normal model turn. `skip` re-arms the schedule
+  without one. A thrown, timed-out or malformed answer runs the model turn,
+  and a malformed or duplicate export quarantines the package.
+- Keep the check bounded and answer from authoritative state; return `run`
+  when unsure. See [Cron Prechecks](developer/building/sdk-apps.md#cron-prechecks)
+  for the full behavior.
+
+#### Calling MCP without a model
+
+The runtime supplies `callMcpTool(server, tool, args)` to each precheck. It
+connects directly to a server already authorized for this session; the package
+does not need to bundle an MCP client or run a CLI:
+
+```js
+export default {
+    createTools: () => [],
+    createCronPrechecks: () => [{
+        name: "queue-gate",
+        check: async ({ callMcpTool }) => {
+            const result = await callMcpTool("queue", "queue_status", { scope: "both" });
+            const hasWork = result.structuredContent?.hasWork;
+            if (typeof hasWork !== "boolean") throw new Error("Invalid queue status");
+            return { action: hasWork ? "run" : "skip" };
+        },
+    }],
+};
+```
+
+Declare `queue` in the agent's `mcpServers` and its connection in the package
+or deployment MCP configuration as usual (§6). This helper grants no new
+servers or tools: the current session owner, exact bound package and server's
+`tools` allowlist apply. It also honors authorized persisted `use_package`
+MCP selections. Configured HTTP/SSE headers and stdio env/cwd are reused, but
+the model-facing MCP connection is not reused. Each call opens and closes its
+own connection, and the precheck deadline cancels it. Await every call; the
+helper becomes unusable when the check ends. Interactive OAuth and MCP model
+sampling are not provided.
+
+Stateful HTTP calls explicitly terminate their remote MCP session after closing
+the connection, including on errors or cancellation. Disposal has an independent
+one-second deadline so cancellation cannot strand a session without attempting
+cleanup. Servers may decline termination with HTTP 405; their own expiry policy
+then applies. Other cleanup failures run the normal cycle rather than skip.
+
+Connection, protocol and MCP `isError` results throw, so the normal cycle
+runs unless the handler explicitly handles the error. Do not turn an unknown
+or failed response into `skip`. Use deterministic, preferably read-only tools;
+activity retries can repeat calls. MCP tools that internally use an LLM may
+still incur backend model cost.
 
 ## 6. MCP servers — `.mcp.json` + `mcp-servers/`
 

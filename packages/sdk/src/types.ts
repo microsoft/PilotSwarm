@@ -20,7 +20,7 @@ export interface CycleReport {
 export type TurnAction =
     | { type: "completed"; content: string; forceContinuePrompt?: string; events?: CapturedEvent[] }
     | { type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; material?: boolean; content?: string; events?: CapturedEvent[] }
-    | { type: "cron"; action: "set"; intervalSeconds: number; reason: string; events?: CapturedEvent[] }
+    | { type: "cron"; action: "set"; intervalSeconds: number; reason: string; precheck?: string; precheckPackageId?: string; events?: CapturedEvent[] }
     | { type: "cron"; action: "cancel"; events?: CapturedEvent[] }
     | { type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] }
     | { type: "cron_at"; action: "cancel"; events?: CapturedEvent[] }
@@ -116,7 +116,7 @@ type TurnResultVariant =
     // failed, and the provider's `retryAfterMs`; the orchestration picks the
     // wait length, and `seconds` is only a fallback for older handlers.
     | ({ type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; material?: boolean; budget?: boolean; gate?: "budget" | "workspace"; code?: string; workerNodeId?: string; retryAfterMs?: number; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
-    | ({ type: "cron"; action: "set"; intervalSeconds: number; reason: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "cron"; action: "set"; intervalSeconds: number; reason: string; precheck?: string; precheckPackageId?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron"; action: "cancel"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron_at"; action: "cancel"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
@@ -602,6 +602,12 @@ export interface SerializableSessionConfig {
     workspace?: SessionWorkspace;
     /** Wait threshold in seconds. Waits shorter than this sleep in-process. */
     waitThreshold?: number;
+    /**
+     * Default cron precheck for this session's interval `cron` schedules: the
+     * name of a precheck registered with `worker.registerCronPrechecks()`.
+     * A `cron(..., precheck=...)` call overrides it. Absent: no precheck.
+     */
+    cronPrecheck?: string;
     /** Internal: bound definition lookup key. New static bindings retain namespace:name; published bindings use name plus packageId. */
     boundAgentName?: string;
     /** Internal: exact resolved package copy; prevents shared/private rebinding on another worker. */
@@ -658,6 +664,8 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
     nativeFeatureAllowed?: () => boolean;
     /** Internal feature tool declaration fingerprint; never a durable setting. */
     featureToolFingerprint?: string;
+    /** Runtime-only: the cron prechecks and agent bindings available to this session, for the cron tool. */
+    cronPrecheckSources?: import("./cron-precheck.js").CronPrecheckSources;
     /** Internal runtime-only Copilot tool selectors to exclude for this session. */
     excludedTools?: string[];
     /** Internal hash of resolved provider endpoint/credential; never serialized or exposed. */
@@ -916,6 +924,12 @@ export interface PilotSwarmSessionInfo {
 export interface CronSchedule {
     intervalSeconds: number;
     reason: string;
+    /** 1.0.82: name of the cron precheck this schedule asks before each wake-up. */
+    precheck?: string;
+    /** 1.0.82: the agent package that exports `precheck`; absent for a worker-registered precheck. */
+    precheckPackageId?: string;
+    /** 1.0.82: consecutive wake-ups the precheck skipped since this schedule's last model turn. */
+    precheckSkips?: number;
 }
 
 // ─── Orchestration Input ─────────────────────────────────────────

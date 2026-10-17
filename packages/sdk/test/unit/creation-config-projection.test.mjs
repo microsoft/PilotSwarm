@@ -57,6 +57,13 @@ test("waitThreshold falls back to the client default", () => {
     assert.equal(projectSerializableSessionConfig({ waitThreshold: 7 }, 30).waitThreshold, 7);
 });
 
+test("a cron precheck default rides through only when set", () => {
+    assert.equal(projectSerializableSessionConfig({ cronPrecheck: "job-queue" }, 30).cronPrecheck, "job-queue");
+    assert.ok(!("cronPrecheck" in projectSerializableSessionConfig({}, 30)), "absent stays absent");
+    assert.ok(!("cronPrecheckSources" in projectSerializableSessionConfig({ cronPrecheckSources: { staticNames: ["job-queue"] } }, 30)),
+        "the worker's runtime-only name list never rides durable state");
+});
+
 test("an absent config projects to the minimal shape, and JSON round-trips clean", () => {
     const p = projectSerializableSessionConfig(undefined, 30);
     assert.equal(p.boundAgentName, undefined);
