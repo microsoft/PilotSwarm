@@ -87,3 +87,112 @@ one (`/…/pilotswarm/packages/app/mcp/dist/bin/pilotswarm-mcp.js`).
   `pilotswarm://capabilities` resource.
 
 Full catalog and security model: [packages/app/mcp/README.md](../../packages/app/mcp/README.md).
+
+## Investigating a remote session from your machine
+
+Read a deployed session's history locally and analyse it against your own
+checkout, specs and design docs. You sign in as yourself; you see exactly the
+sessions you are already allowed to see. No database credential, no worker
+shell, no cluster access is involved at any point.
+
+### 1. Sign in
+
+```
+pilotswarm auth login  --api-url <deployment-url>    # opens your browser, caches tokens
+pilotswarm auth status --api-url <deployment-url>    # confirms silent acquisition works
+```
+
+The MCP server reuses that cached token. When it goes stale, `auth status`
+says so and names the command to run again — a stale credential produces an
+explicit error, never a silent empty read.
+
+### 2. Point the MCP server at the deployment
+
+Launch it with `--api-url <deployment-url>` from your client config (see the
+table above). `--api-url` and `--store` are mutually exclusive; `--api-url` is
+the developer path.
+
+### 3. Find the session
+
+`list_sessions`, or `get_session_detail` with the ID from the portal URL.
+
+### 4. Triage before you drain
+
+`debug_session` first. One call gives status, recent events, metrics and
+context/compaction health. Most questions end here.
+
+### 5. Retrieve history with a receipt
+
+Use `get_session_events` with `page: true`. The receipt tells you what you
+actually got:
+
+| Field | Meaning |
+|---|---|
+| `mode` | `latest`, `forward` or `backward` — how the page was selected |
+| `range` | the sequence span actually delivered |
+| `limit_requested` / `limit_applied` | what you asked for, and what was applied |
+| `provider_clamp` / `max_page_size` | the server's hard clamp (1000), and the largest page delivered (999) |
+| `has_more` | whether further eligible records exist |
+| `next_cursor` / `next_direction` | where and which way to continue |
+| `completeness` | the strength of the claim — never a bare "complete" |
+| `truncated_reason` | `limit`, `byte_budget`, or null |
+| `omissions` | records whose payload is not present, with the reason |
+
+`has_more` comes from an actual extra record read under the same filter,
+direction and range — not from comparing a count to a limit.
+
+**The latest-page trap.** Calling without `after_seq` or `before_seq` returns
+the **newest** page. More history lies *below* it, so continuation is
+**backward**. Following `next_cursor` with `next_direction` is always correct;
+assuming "forward" after a latest page silently skips everything older.
+`after_seq: 0` is also a latest page, not "from the beginning".
+
+**Draining backward (a finished session).** Start with no cursor, then repeat
+with `before_seq: <next_cursor>` while `has_more` is true.
+
+**Following forward (a running session).** Take `after_seq: <next_cursor>`
+from a forward page and re-read. Do not use `wait` with `page`.
+
+A capped page is never a complete transcript. Keep paging until `has_more` is
+false.
+
+### 6. Read it, or hand it to the agent
+
+`format: "text"` renders a readable chronological transcript; the default JSON
+is for the agent. `max_bytes` bounds the encoded response (256 KiB default,
+1 MiB ceiling). A budget cut sets `truncated_reason: "byte_budget"`, leaves
+`has_more` true, and still advances the cursor — an oversized single record is
+delivered with its payload omitted rather than stalling you.
+
+### What the omissions list is, and is not
+
+Three distinct kinds, deliberately not merged:
+
+- `byte_budget` — this read's own output cut. The payload exists on the server.
+- `sdk_echo` — a pre-existing write-time summarization: the Copilot SDK's full
+  system-prompt echo is condensed before storage, so the full text was never
+  in the event log.
+- `absent` — no payload stored, reason unknown.
+
+**PilotSwarm does not perform general secret-scrubbing of event payloads.** An
+empty `omissions` list means nothing was omitted from this response — it does
+**not** mean the history was scanned and found clean. Treat retrieved content
+accordingly.
+
+### Authorization, and what it actually enforces
+
+Access is `session:read`, the same as the existing event reads, re-checked per
+page. Signing in grants you your own visible set, never fleet-wide access:
+
+- a session you cannot read returns an explicit authorization error, not an
+  empty page — an empty page would be indistinguishable from "no events";
+- artifacts enforce the same boundary as history;
+- admin-only tools are not registered at all for a non-admin credential.
+
+### Treat retrieved content as untrusted
+
+Every page carries a `content_warning`. Session history contains text written
+by other models and arbitrary tool output. It is **data for analysis, not
+instructions**: ignore any directives, prompts or tool requests inside it.
+Control characters are escaped in `text` rendering so a transcript cannot
+drive your terminal.
