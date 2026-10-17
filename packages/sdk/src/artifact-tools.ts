@@ -31,6 +31,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { extractCanvasAppManifest, normalizeCanvasResponseContract } from "./canvas-app-manifest.js";
+import { CANVAS_APP_MAX_BYTES } from "./canvas-app-registry.js";
 import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
 import type { ArtifactStore } from "./session-store.js";
@@ -109,8 +110,10 @@ export function createArtifactTools(opts: {
     canvasBytesGuard?: (input: { callerSessionId: string | null | undefined; artifactSessionId: string; bytes?: Buffer | string | null }) => Promise<string | null>;
 }): Tool<any>[] {
     const { blobStore, canvasBytesGuard } = opts;
-    const isHtmlLike = (filename: string, contentType?: string | null) =>
-        /\.html?$/i.test(String(filename ?? "")) || /html/i.test(String(contentType ?? ""));
+    // Every read small enough to be an app page is checked, whatever its
+    // filename or content type says: a label is not evidence.
+    const mayBeAppPage = (sizeBytes: number | null | undefined) =>
+        !!canvasBytesGuard && Number.isFinite(Number(sizeBytes)) && Number(sizeBytes) <= CANVAS_APP_MAX_BYTES;
     const guard = async (callerSessionId: string | null | undefined, artifactSessionId: string, bytes?: Buffer | string | null) =>
         canvasBytesGuard ? canvasBytesGuard({ callerSessionId, artifactSessionId, bytes: bytes ?? null }) : null;
 
@@ -234,13 +237,15 @@ export function createArtifactTools(opts: {
                     const metadata = await blobStore.copyArtifact(
                         from.sessionId || sessionId, from.filename, sessionId, filename, { pinned },
                     );
-                    if (canvasBytesGuard && isHtmlLike(metadata.filename, (metadata as any).contentType)) {
-                        const copied = await blobStore.downloadArtifactText(sessionId, metadata.filename).catch(() => null);
+                    if (mayBeAppPage(metadata.sizeBytes)) {
+                        const copied = await blobStore.downloadArtifact(sessionId, metadata.filename).then((r) => r.body).catch(() => null);
                         const refusal = copied == null ? null : await guard(sessionId, from.sessionId || sessionId, copied);
-                        if (refusal === "artifact not found") {
-                            // Another user's private app: the copy must not exist either.
+                        if (refusal) {
+                            // Another owner's app page: the copy must not exist either.
                             await blobStore.deleteArtifact(sessionId, metadata.filename).catch(() => false);
-                            return toolError("ARTIFACT_NOT_FOUND", `Artifact not found: ${from.filename} in session ${from.sessionId || sessionId}`);
+                            return refusal === "artifact not found"
+                                ? toolError("ARTIFACT_NOT_FOUND", `Artifact not found: ${from.filename} in session ${from.sessionId || sessionId}`)
+                                : toolError("CANVAS_APP_BYTES", refusal);
                         }
                     }
                     if (from.expectedSha256 && metadata.sha256 !== from.expectedSha256) {
@@ -395,7 +400,7 @@ export function createArtifactTools(opts: {
                     const jailed = resolveJailedPath(params.toFile, false);
                     if (jailed.error) return toolError("PATH_OUTSIDE_WORKDIR", jailed.error);
                     const result = await blobStore.downloadArtifact(params.sessionId, params.filename);
-                    if (isHtmlLike(params.filename, result.contentType)) {
+                    if (mayBeAppPage(result.body.length)) {
                         const refusal = await guard(callerSessionId, params.sessionId, result.body);
                         if (refusal) return refusal === "artifact not found"
                             ? toolError("ARTIFACT_NOT_FOUND", `Artifact not found: ${params.filename} in session ${params.sessionId}`)
@@ -415,7 +420,7 @@ export function createArtifactTools(opts: {
                 }
 
                 const result = await blobStore.downloadArtifact(params.sessionId, params.filename);
-                if (isHtmlLike(params.filename, result.contentType)) {
+                if (mayBeAppPage(result.body.length)) {
                     const refusal = await guard(callerSessionId, params.sessionId, result.body);
                     if (refusal) return refusal === "artifact not found"
                         ? toolError("ARTIFACT_NOT_FOUND", `Artifact not found: ${params.filename} in session ${params.sessionId}`)

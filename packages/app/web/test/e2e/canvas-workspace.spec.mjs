@@ -68,6 +68,15 @@ async function drawApp(page, answers, html = APP) {
         if (url.pathname.includes("/artifacts/") && url.pathname.includes("canvas.html")) {
             return route.fulfill({ contentType: "text/html", body: html });
         }
+        if (url.pathname.endsWith(`/management/sessions/${sessionId}/canvas-workspace/approval`) && answers.approval) {
+            calls.push({ approval: true });
+            return route.fulfill({ json: { ok: true, result: answers.approval() } });
+        }
+        if (url.pathname.endsWith(`/management/sessions/${sessionId}/canvas-workspace/consent`) && answers.consent) {
+            const body = route.request().postDataJSON();
+            calls.push({ consent: body });
+            return route.fulfill({ json: { ok: true, result: answers.consent(body) } });
+        }
         if (url.pathname.endsWith(`/management/sessions/${sessionId}/canvas-workspace`)) {
             const body = route.request().postDataJSON();
             calls.push(body);
@@ -105,10 +114,10 @@ test("the page's calls reach the server for this canvas, and a click runs a decl
     await frame.getByRole("button", { name: "Run history" }).click();
     await expect(frame.locator("#out")).toHaveText("abc1234 first commit");
     const run = calls.find((c) => c.call.op === "run");
-    expect(run).toEqual({ slot: 1, call: { op: "run", command: "history", params: { limit: 3 } } });
+    expect(run).toEqual({ slot: 1, call: { op: "run", rev: 1, command: "history", params: { limit: 3 } } });
     await frame.getByRole("button", { name: "Save note" }).click();
     await expect(frame.locator("#out")).toHaveText("saved sha256:feed");
-    expect(calls.find((c) => c.call.op === "write").call).toEqual({ op: "write", path: "work/notes.md", contentBase64: Buffer.from("from the canvas").toString("base64"), ifMatch: null });
+    expect(calls.find((c) => c.call.op === "write").call).toEqual({ op: "write", rev: 1, path: "work/notes.md", contentBase64: Buffer.from("from the canvas").toString("base64"), ifMatch: null });
 });
 
 test("a refusal comes back to the page with its code", async ({ page }) => {
@@ -201,4 +210,31 @@ test("a canvas link opens a new tab; a page the canvas moves to gets nothing fro
     await expect(notice).toBeVisible();
     await notice.getByRole("button", { name: "Show the canvas again" }).click();
     await expect(frame.locator("#info")).toHaveText(/commands on/);
+});
+
+test("a page asks before it touches the session's files; the owner's click approves exactly what was shown", async ({ page }) => {
+    const KEYS = { pageSha256: "a".repeat(64), declarationSha256: "b".repeat(64), bindingsSha256: "c".repeat(64) };
+    let approved = false;
+    const answers = (call) => (approved
+        ? ANSWERS(call)
+        : { status: 403, error: { code: "CANVAS_WS_CONSENT_REQUIRED", message: "the session owner must approve this page's workspace access first" } });
+    answers.approval = () => ({
+        sessionId, slot: 1, rev: 1, decision: null, trust: "agent", app: null, ...KEYS,
+        declaration: { read: ["work/**"], write: ["work/notes.md"], watch: true, commands: { history: { in: "work", run: ["git", "log", "-n", "{limit}"] } } },
+        bindings: [{ name: "work", root: "a", folder: "proj" }],
+    });
+    answers.consent = (body) => { approved = body.decision === "granted"; return { ok: true, decision: body.decision }; };
+    const { calls, frame } = await drawApp(page, answers);
+    const prompt = page.getByRole("alertdialog", { name: "Allow this page to use the session's files?" });
+    await expect(prompt).toBeVisible();
+    // What it would get comes from the server's reading of the declaration.
+    await expect(prompt).toContainText("Read: work/**");
+    await expect(prompt).toContainText("Change: work/notes.md");
+    await expect(prompt).toContainText('Run "history" in work: git log -n {limit}');
+    await expect(prompt).toContainText('"work" is a/proj');
+    await prompt.getByRole("button", { name: "Allow", exact: true }).click();
+    await expect(prompt).toBeHidden();
+    expect(calls.find((c) => c.consent).consent).toEqual({ slot: 1, rev: 1, ...KEYS, decision: "granted" });
+    await frame.getByRole("button", { name: "Run history" }).click();
+    await expect(frame.locator("#out")).toHaveText("abc1234 first commit");
 });

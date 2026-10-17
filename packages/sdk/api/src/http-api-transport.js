@@ -129,7 +129,8 @@ export class HttpApiTransport {
     // everywhere for backward compatibility; name-only falls back to the
     // registry's own-copy-then-shared walk.
     // Canvas app registry (issue 181): one args object; the server derives the caller.
-    setCanvasAppWorkspaceConsent(args = {}) { return this.api.call("setCanvasAppWorkspaceConsent", args ?? {}); }
+    getCanvasWorkspaceApproval(args = {}) { return this.api.call("getCanvasWorkspaceApproval", args ?? {}); }
+    setCanvasWorkspaceConsent(args = {}) { return this.api.call("setCanvasWorkspaceConsent", args ?? {}); }
     listCanvasApps(args = {}) { return this.api.call("listCanvasApps", args ?? {}); }
     searchCanvasApps(args = {}) { return this.api.call("searchCanvasApps", args ?? {}); }
     getCanvasApp(args = {}) { return this.api.call("getCanvasApp", args ?? {}); }

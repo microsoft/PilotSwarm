@@ -12,6 +12,7 @@
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -326,6 +327,8 @@ describe("the canvasWorkspace call", () => {
     let html;
     let rev;
     let legacyEvent = false;
+    let grantAnswer = "granted";
+    const grantKeys = [];
     let eventWorkspace;
     const manifest = (workspace) => `<!doctype html>\n<!-- CANVAS-APP-MANIFEST\n${JSON.stringify({ name: "t", workspace })}\n-->\n<html></html>`;
     const DECLARED = {
@@ -383,6 +386,13 @@ describe("the canvasWorkspace call", () => {
             }] : []),
             getSession: async () => ({ owner: { provider: "dev", subject: "alice", email: "alice@example.test", displayName: "Alice" } }),
             recordEvents: async (sessionId, rows) => { events.push(...rows); },
+            // The canvas app registry: no app matches these pages, and the
+            // owner's approval answers `grantAnswer` (issue 181).
+            canvasApps: {
+                matchBySha: async () => [],
+                foreignWorkspaceMatch: async () => false,
+                getWorkspaceGrant: async (key) => { grantKeys.push(key); return grantAnswer; },
+            },
         };
         client.getSessionWorkspace = async () => ({
             workspace: { schema: 1, root: "a", folder: "repo", extra: {} },
@@ -392,7 +402,30 @@ describe("the canvasWorkspace call", () => {
     });
     after(() => fs.rmSync(base, { recursive: true, force: true }));
 
-    const call = (c, slot = 1) => client.canvasWorkspace("s1", slot, c);
+    // Every call carries the frame's revision, as the portal's bridge does.
+    const call = (c, slot = 1) => client.canvasWorkspace("s1", slot, { rev, ...c });
+
+    it("nothing runs before the owner approves this exact program; a call without the frame's rev is stale", async () => {
+        grantAnswer = null;
+        try {
+            await rejectsWith(call({ op: "info" }), X.CONSENT_REQUIRED);
+            grantAnswer = "denied";
+            await rejectsWith(call({ op: "read", path: "home/notes/todo.md" }), X.CONSENT_REQUIRED);
+        } finally {
+            grantAnswer = "granted";
+        }
+        await rejectsWith(client.canvasWorkspace("s1", 1, { op: "info" }), X.STALE);
+        await rejectsWith(client.canvasWorkspace("s1", 1, { op: "info", rev: rev - 1 }), X.STALE);
+        grantKeys.length = 0;
+        await call({ op: "info" });
+        const key = grantKeys.at(-1);
+        assert.equal(key.sessionId, "s1");
+        assert.equal(key.slot, 1);
+        assert.equal(key.pageSha256, crypto.createHash("sha256").update(html).digest("hex"));
+        assert.match(key.declarationSha256, /^[0-9a-f]{64}$/);
+        assert.match(key.bindingsSha256, /^[0-9a-f]{64}$/);
+        assert.deepEqual(key.owner, { provider: "dev", subject: "alice" });
+    });
 
     it("info: the folders it can reach and the commands it declared", async () => {
         const info = await call({ op: "info" });

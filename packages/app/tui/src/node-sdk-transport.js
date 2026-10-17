@@ -753,8 +753,12 @@ export class NodeSdkTransport {
     // One args object, then the caller; the management client and the CMS
     // procedures decide what the caller may see and change.
 
-    async setCanvasAppWorkspaceConsent(args = {}, owner = this.currentUser, isAdmin = true) {
-        return this.mgmt.setCanvasAppWorkspaceConsent(args ?? {}, owner, Boolean(isAdmin));
+    async getCanvasWorkspaceApproval(args = {}, owner = this.currentUser, isAdmin = true) {
+        return this.mgmt.getCanvasWorkspaceApproval(args ?? {}, owner, Boolean(isAdmin));
+    }
+
+    async setCanvasWorkspaceConsent(args = {}, owner = this.currentUser, isAdmin = true) {
+        return this.mgmt.setCanvasWorkspaceConsent(args ?? {}, owner, Boolean(isAdmin));
     }
 
     async listCanvasApps(args = {}, owner = this.currentUser, isAdmin = true) {

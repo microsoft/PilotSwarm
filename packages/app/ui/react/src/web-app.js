@@ -8173,14 +8173,43 @@ const CANVAS_WS_READS = new Set(["info", "list", "stat", "read"]);
 const CANVAS_WS_CHANGES = new Set(["write", "mkdir", "move", "delete", "run"]);
 const CANVAS_WS_FIELDS = ["path", "toPath", "contentBase64", "ifMatch", "recursive", "createParents", "command", "params"];
 
-function CanvasFrame({ controller, sessionId, slot = 1, latestRev, trust = "agent", pageSha256 = null, appName = null, zoom, visible = true, focusOnPromote = false, dataRev = 0, dataPayload = null, dataPatch = null, onPanelKey = null }) {
+/** The first sentence of the workspace approval prompt: who the page belongs to. */
+function canvasWorkspaceApprovalLead(approval) {
+    const name = approval?.app?.name ? `"${approval.app.name}"` : null;
+    if (approval?.trust === "cross-owner") {
+        return `${name || "This page"} belongs to another user and asks to use this session's files and commands. Allow this exact page?`;
+    }
+    return `${name || "This canvas page"} asks to use this session's files and commands. Allow this exact page?`;
+}
+
+/** What the page would get, from the server's reading of its declaration. */
+function canvasWorkspaceApprovalLines(approval) {
+    const d = approval?.declaration ?? {};
+    const lines = [];
+    if (d.read?.length) lines.push(`Read: ${d.read.join(", ")}${d.watch ? " (and watch for changes)" : ""}`);
+    if (d.write?.length) lines.push(`Change: ${d.write.join(", ")}`);
+    for (const [name, command] of Object.entries(d.commands ?? {})) {
+        lines.push(`Run "${name}" in ${command.in}: ${(command.run ?? []).join(" ")}`);
+    }
+    for (const binding of approval?.bindings ?? []) {
+        lines.push(binding.root
+            ? `"${binding.name}" is ${binding.root}${binding.folder ? `/${binding.folder}` : ""}`
+            : `"${binding.name}" is not a folder of this session`);
+    }
+    return lines;
+}
+
+function CanvasFrame({ controller, sessionId, slot = 1, latestRev, trust = "agent", zoom, visible = true, focusOnPromote = false, dataRev = 0, dataPayload = null, dataPatch = null, onPanelKey = null }) {
     const crossOwner = trust === "cross-owner";
     // Canvas app registry: the inner page text per wrapper URL, handed over on
     // the wrapper's ready message; and each frame's revision, sent with every
     // canvas-ws call so the server can refuse a stale page.
     const wrapperHtmlRef = React.useRef(new Map());
     const frameRevRef = React.useRef({ live: 0, staging: 0 });
-    const [consent, setConsent] = React.useState(null); // { rev, pageSha256, busy, error }
+    // The workspace approval prompt: { rev, approval?, busy, error }. Shown to
+    // the session owner when a page's first workspace call is refused for want
+    // of approval; the details come from the server, never from the page.
+    const [consent, setConsent] = React.useState(null);
     React.useEffect(() => { setConsent(null); }, [latestRev]);
     const panelKeyRef = React.useRef(onPanelKey); panelKeyRef.current = onPanelKey;
     const panelKeys = Boolean(onPanelKey);
@@ -8355,7 +8384,21 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, trust = "agen
                         setBrokenManifest(message.replace(/^.*?manifest is broken[^:]*:\s*/i, ""));
                     }
                     if (error?.code === "CANVAS_WS_CONSENT_REQUIRED" && fromLive && !/declined/i.test(message)) {
-                        setConsent((current) => current || { rev: frameRevRef.current.live, busy: false, error: null });
+                        const askedRev = frameRevRef.current.live;
+                        setConsent((current) => {
+                            if (current) return current;
+                            const transport = controller?.transport;
+                            if (typeof transport?.getCanvasWorkspaceApproval === "function") {
+                                transport.getCanvasWorkspaceApproval({ sessionId, slot })
+                                    .then((approval) => setConsent((now) => (
+                                        now && now.rev === askedRev && approval?.rev === askedRev && approval.decision !== "denied"
+                                            ? { ...now, approval, busy: false }
+                                            : null)))
+                                    // Not the owner, or the slot moved on: no prompt.
+                                    .catch(() => setConsent(null));
+                            }
+                            return { rev: askedRev, approval: null, busy: true, error: null };
+                        });
                     }
                     post({ type: "canvas-ws-result", id, ok: false, error: message, code: error?.code || code });
                 };
@@ -8674,11 +8717,11 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, trust = "agen
                     onClick: () => { autoRetryRef.current = { rev: 0, used: false }; setLeftPage(false); setRetryTick((t) => t + 1); },
                 }, "Show the canvas again"))
             : null,
-        consent && !loadError
-            ? React.createElement("div", { className: "ps-canvas-load-error ps-canvas-consent", role: "alertdialog", "aria-label": "Allow this app to use the session's files?" },
-                React.createElement("span", null,
-                    `${appName ? `"${appName}"` : "This app"} belongs to another user and asks to use this session's files and commands. `
-                    + "Allow it for this version of the page?"),
+        consent?.approval && !loadError
+            ? React.createElement("div", { className: "ps-canvas-load-error ps-canvas-consent", role: "alertdialog", "aria-label": "Allow this page to use the session's files?" },
+                React.createElement("span", null, canvasWorkspaceApprovalLead(consent.approval)),
+                React.createElement("ul", { className: "ps-canvas-consent-detail" },
+                    ...canvasWorkspaceApprovalLines(consent.approval).map((line, index) => React.createElement("li", { key: index }, line))),
                 consent.error ? React.createElement("span", { className: "is-error" }, consent.error) : null,
                 ...["granted", "denied"].map((decision) => React.createElement("button", {
                     key: decision,
@@ -8687,12 +8730,16 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, trust = "agen
                     disabled: consent.busy,
                     onClick: () => {
                         const transport = controller?.transport;
-                        if (typeof transport?.setCanvasAppWorkspaceConsent !== "function") {
+                        if (typeof transport?.setCanvasWorkspaceConsent !== "function") {
                             setConsent({ ...consent, error: "this deployment cannot record the decision" });
                             return;
                         }
+                        const a = consent.approval;
                         setConsent({ ...consent, busy: true, error: null });
-                        transport.setCanvasAppWorkspaceConsent({ sessionId, slot, rev: consent.rev, pageSha256, decision })
+                        transport.setCanvasWorkspaceConsent({
+                            sessionId, slot, rev: a.rev, pageSha256: a.pageSha256,
+                            declarationSha256: a.declarationSha256, bindingsSha256: a.bindingsSha256, decision,
+                        })
                             .then(() => {
                                 setConsent(null);
                                 // Tell the page it may try again; it re-asks for what it needs.
@@ -8958,8 +9005,6 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
                     slot: view.slot,
                     latestRev: view.latestRev,
                     trust: view.trust,
-                    pageSha256: view.pageSha256,
-                    appName: view.appName,
                     zoom,
                     visible: visible && onCanvas,
                     focusOnPromote,

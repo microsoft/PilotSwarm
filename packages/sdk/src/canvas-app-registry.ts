@@ -604,12 +604,17 @@ export interface CanvasBytesGuardDeps {
 }
 
 /**
- * The host-side rule for model-visible reads: an agent never receives the
- * bytes of another owner's canvas app it may not edit (exact bytes, or a page
- * with that app's workspace block), nor any byte of an app's own storage
- * space. It draws such an app with fromApp, which keeps the app's identity,
- * so the cross-owner network block and workspace consent apply. Returns a
- * refusal message, or null when the read may proceed.
+ * Defense in depth for the artifact and canvas read tools: they do not hand
+ * an agent bytes the registry identifies as another owner's app page it may
+ * not edit (the exact bytes, or a page with that app's workspace block), nor
+ * any byte of an app's own storage space. Drawing with fromApp keeps the
+ * app's identity, so its owner is named and its network is blocked.
+ *
+ * This is accident reduction, not an authority boundary: a near-copy is not
+ * recognized, and folders, the web, facts and messages are other channels.
+ * Workspace access is decided by the session owner's positive approval of
+ * each exact program, whoever wrote it. Returns a refusal message, or null
+ * when the read may proceed.
  */
 export async function canvasBytesRefusal(
     deps: CanvasBytesGuardDeps,

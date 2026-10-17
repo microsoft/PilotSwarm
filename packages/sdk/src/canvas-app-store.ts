@@ -12,6 +12,16 @@ export type CanvasAppScope = "shared" | "user";
 
 export interface CanvasAppPrincipal { provider: string; subject: string }
 
+/** One exact workspace program in one slot of one session, for its owner. */
+export interface CanvasWorkspaceGrantKey {
+    sessionId: string;
+    slot: number;
+    pageSha256: string;
+    declarationSha256: string;
+    bindingsSha256: string;
+    owner: CanvasAppPrincipal;
+}
+
 /** Who is asking. `resourceAdmin` is the unrestricted admin, never a cluster-scoped one. */
 export interface CanvasAppViewer {
     principal: CanvasAppPrincipal | null;
@@ -220,6 +230,7 @@ export class CanvasAppStore {
     constructor(private readonly pool: Pool, schema: string) { this.s = `"${schema.replace(/"/g, '""')}"`; }
 
     private fn(name: string): string { return `${this.s}.cms_canvas_app_${name}`; }
+    private wsFn(name: string): string { return `${this.s}.cms_canvas_workspace_${name}`; }
 
     private async call(sql: string, values: unknown[]): Promise<any[]> {
         try {
@@ -479,18 +490,24 @@ export class CanvasAppStore {
         await this.call(`SELECT ${this.fn("mark_purged")}($1)`, [appId]);
     }
 
-    async setConsent(input: {
-        sessionId: string; slot: number; rev: number; pageSha256: string; versionId?: string | null;
+    /** Record the session owner's decision on one exact workspace program. */
+    async setWorkspaceGrant(input: CanvasWorkspaceGrantKey & {
+        rev: number; trust: string; versionId?: string | null;
         decision: "granted" | "denied"; by: CanvasAppPrincipal;
     }): Promise<void> {
         await this.call(
-            `SELECT ${this.fn("set_consent")}($1,$2,$3,$4,$5,$6,$7,$8)`,
-            [input.sessionId, input.slot, input.rev, input.pageSha256, input.versionId ?? null, input.decision, input.by.provider, input.by.subject],
+            `SELECT ${this.wsFn("set_grant")}($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+            [input.sessionId, input.slot, input.pageSha256, input.declarationSha256, input.bindingsSha256,
+                input.owner.provider, input.owner.subject, input.rev, input.trust, input.versionId ?? null,
+                input.decision, input.by.provider, input.by.subject],
         );
     }
 
-    async getConsent(sessionId: string, slot: number, rev: number, pageSha256: string): Promise<"granted" | "denied" | null> {
-        const rows = await this.call(`SELECT ${this.fn("get_consent")}($1,$2,$3,$4) AS d`, [sessionId, slot, rev, pageSha256]);
+    async getWorkspaceGrant(key: CanvasWorkspaceGrantKey): Promise<"granted" | "denied" | null> {
+        const rows = await this.call(
+            `SELECT ${this.wsFn("get_grant")}($1,$2,$3,$4,$5,$6,$7) AS d`,
+            [key.sessionId, key.slot, key.pageSha256, key.declarationSha256, key.bindingsSha256, key.owner.provider, key.owner.subject],
+        );
         const d = rows[0]?.d;
         return d === "granted" || d === "denied" ? d : null;
     }

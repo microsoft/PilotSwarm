@@ -6127,7 +6127,8 @@ export class PilotSwarmUiController {
         }
         if (!limiter()) return Promise.resolve({ ok: false, reason: "rate limited" });
         const prompt = formatCanvasActionPrompt(verdict.action, verdict.data);
-        return this.transport.sendMessage(sessionId, prompt, { enqueueOnly: true })
+        // The slot lets the server label actions from another user's app.
+        return this.transport.sendMessage(sessionId, prompt, { enqueueOnly: true, canvasSlot: slot })
             .then(() => {
                 this.syncSessionEvents(sessionId).catch(() => {});
                 return { ok: true, action: verdict.action };

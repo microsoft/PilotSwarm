@@ -384,20 +384,28 @@ describe("canvas app registry: CMS procedures", () => {
         }
     });
 
-    it("consent rows", { timeout: TIMEOUT }, async () => {
+    it("workspace grants: exact program, owner-bound, every key asks again", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
         const catalog = await createCatalog(env);
         try {
             const store = catalog.canvasApps;
             const sessionId = randomUUID();
             await catalog.createSession(sessionId, {});
-            assertEqual(await store.getConsent(sessionId, 1, 3, "sha-page"), null);
-            await store.setConsent({ sessionId, slot: 1, rev: 3, pageSha256: "sha-page", decision: "granted", by: ALICE });
-            assertEqual(await store.getConsent(sessionId, 1, 3, "sha-page"), "granted");
-            assertEqual(await store.getConsent(sessionId, 1, 4, "sha-page"), null, "a new rev asks again");
-            assertEqual(await store.getConsent(sessionId, 1, 3, "sha-other"), null, "other bytes ask again");
-            await store.setConsent({ sessionId, slot: 1, rev: 3, pageSha256: "sha-page", decision: "denied", by: ALICE });
-            assertEqual(await store.getConsent(sessionId, 1, 3, "sha-page"), "denied");
+            const h = (c) => c.repeat(64);
+            const key = { sessionId, slot: 1, pageSha256: h("a"), declarationSha256: h("b"), bindingsSha256: h("c"), owner: ALICE };
+            assertEqual(await store.getWorkspaceGrant(key), null, "nothing is granted until someone decides");
+            await store.setWorkspaceGrant({ ...key, rev: 3, trust: "agent", decision: "granted", by: ALICE });
+            assertEqual(await store.getWorkspaceGrant(key), "granted");
+            assertEqual(await store.getWorkspaceGrant({ ...key, pageSha256: h("d") }), null, "other page bytes ask again");
+            assertEqual(await store.getWorkspaceGrant({ ...key, declarationSha256: h("d") }), null, "another declaration asks again");
+            assertEqual(await store.getWorkspaceGrant({ ...key, bindingsSha256: h("d") }), null, "other folders ask again");
+            assertEqual(await store.getWorkspaceGrant({ ...key, slot: 2 }), null, "another slot asks again");
+            assertEqual(await store.getWorkspaceGrant({ ...key, sessionId: randomUUID() }), null, "another session asks again");
+            assertEqual(await store.getWorkspaceGrant({ ...key, owner: BOB }), null, "a new session owner decides again");
+            await store.setWorkspaceGrant({ ...key, rev: 4, trust: "agent", decision: "denied", by: ALICE });
+            assertEqual(await store.getWorkspaceGrant(key), "denied", "the latest decision wins");
+            await expectCode(store.setWorkspaceGrant({ ...key, pageSha256: "not-a-sha", rev: 3, trust: "agent", decision: "granted", by: ALICE }), "BAD_REQUEST");
+            await expectCode(store.setWorkspaceGrant({ ...key, rev: 3, trust: "agent", decision: "maybe", by: ALICE }), "BAD_REQUEST");
         } finally {
             await catalog.close();
         }

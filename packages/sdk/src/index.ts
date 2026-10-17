@@ -64,6 +64,7 @@ export type {
     ModelDefaultInput,
     SystemModelDefaultInput,
     ResolvedModelDefault,
+    CanvasWorkspaceApproval,
 } from "./management-client.js";
 export { SessionManager } from "./session-manager.js";
 export { ManagedSession } from "./managed-session.js";
@@ -245,9 +246,10 @@ export {
     CANVAS_WS_ERROR_CODES,
     canvasCommandsConfigFromEnv,
     canvasGlobMatch,
+    canvasWorkspaceApprovalKeys,
     normalizeCanvasWorkspaceManifest,
 } from "./canvas-workspace.js";
-export type { CanvasCommand, CanvasCommandParam, CanvasCommandsConfig, CanvasWorkspaceDeclaration } from "./canvas-workspace.js";
+export type { CanvasCommand, CanvasCommandParam, CanvasCommandsConfig, CanvasWorkspaceBinding, CanvasWorkspaceDeclaration } from "./canvas-workspace.js";
 export { loadExtensionModules, parseExtensionModules, type ExtensionModuleContext } from "./extension-modules.js";
 
 // Skills loader
@@ -265,7 +267,7 @@ export { canvasArtifactFilename, normalizeCanvasSlot, latestCanvasEventData, lat
 export { buildCanvasAppCatalogRecord, normalizeCanvasAppInterface, CANVAS_APP_NAME_RE, CANVAS_INTERFACE_MAX_BYTES } from "./canvas-app-manifest.js";
 export type { CanvasAppInterface } from "./canvas-app-manifest.js";
 export { CanvasAppStore, CanvasAppError, mapCanvasAppError, CANVAS_APP_ERROR_CODES } from "./canvas-app-store.js";
-export type { CanvasAppScope, CanvasAppPrincipal, CanvasAppViewer, CanvasAppTarget, CanvasAppErrorCode, CanvasAppSummary, CanvasAppDetail, CanvasAppVersionRow, CanvasAppSearchHit, CanvasAppResolvedVersion, CanvasAppShaMatch, CanvasAppReserveInput, CanvasAppReserveResult, CanvasAppLoadRow, CanvasAppLoadPage, CanvasAppEditorInfo } from "./canvas-app-store.js";
+export type { CanvasAppScope, CanvasAppPrincipal, CanvasAppViewer, CanvasAppTarget, CanvasAppErrorCode, CanvasAppSummary, CanvasAppDetail, CanvasAppVersionRow, CanvasAppSearchHit, CanvasAppResolvedVersion, CanvasAppShaMatch, CanvasAppReserveInput, CanvasAppReserveResult, CanvasAppLoadRow, CanvasAppLoadPage, CanvasAppEditorInfo, CanvasWorkspaceGrantKey } from "./canvas-app-store.js";
 export type { McpAllowlistAgent } from "./mcp-loader.js";
 export type { Skill } from "./skills.js";
 // Local-mode user principal constant (Admin Console / per-user GitHub Copilot key)

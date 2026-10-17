@@ -481,3 +481,17 @@ test("plane-synthesized events are transient: flagged at the source, diverted be
     assert.match(TRANSPORT, /transient: true/, "synthetic events carry the flag");
     assert.match(TRANSPORT, /session\.canvas_plane_released/, "plane death propagates a release event");
 });
+
+test("no agent path decides workspace approval: no tool, no bridge method, no management call (issue 181)", () => {
+    const names = ManagedSession.systemToolDefs().map((tool) => tool.name);
+    for (const name of names) {
+        assert.doesNotMatch(name, /consent|approv/i, `agent tool ${name} must not decide workspace approval`);
+    }
+    for (const [label, source] of [["managed-session.ts", MS], ["session-proxy.ts", SP], ["session-manager.ts", SM]]) {
+        assert.doesNotMatch(source, /setCanvasWorkspaceConsent|setWorkspaceGrant|getCanvasWorkspaceApproval/,
+            `${label}: the worker never records or reads approvals; a person decides in the portal`);
+    }
+    const manage = declaredTool("manage_canvas_app");
+    assert.ok(manage, "manage_canvas_app is declared");
+    assert.doesNotMatch(JSON.stringify(manage.parameters), /consent|approv/i);
+});

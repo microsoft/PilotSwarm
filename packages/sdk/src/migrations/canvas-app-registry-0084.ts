@@ -111,17 +111,28 @@ CREATE INDEX IF NOT EXISTS canvas_app_loads_app_idx
     ON ${s}.canvas_app_loads (app_id, loaded_at DESC, load_id DESC);
 CREATE INDEX IF NOT EXISTS canvas_app_loads_age_idx ON ${s}.canvas_app_loads (loaded_at);
 
-CREATE TABLE IF NOT EXISTS ${s}.canvas_app_workspace_consents (
+-- Positive workspace approval (R20 as amended): the session owner's
+-- decision on one exact program in one slot of one session. A program is the
+-- page bytes, its checked workspace declaration and the folders those names
+-- resolve to. Every new program asks once, whoever wrote it; the identical
+-- program redrawn in the same slot keeps its decision. Owner-bound: a new
+-- session owner decides again.
+CREATE TABLE IF NOT EXISTS ${s}.canvas_workspace_grants (
     session_id          TEXT NOT NULL,
     slot                INT  NOT NULL,
-    rev                 INT  NOT NULL,
     page_sha256         TEXT NOT NULL,
+    declaration_sha256  TEXT NOT NULL,
+    bindings_sha256     TEXT NOT NULL,
+    owner_provider      TEXT NOT NULL,
+    owner_subject       TEXT NOT NULL,
+    rev                 INT  NOT NULL,
+    trust               TEXT NOT NULL,
     version_id          TEXT,
     decision            TEXT NOT NULL CHECK (decision IN ('granted', 'denied')),
     decided_by_provider TEXT NOT NULL,
     decided_by_subject  TEXT NOT NULL,
     decided_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
-    PRIMARY KEY (session_id, slot, rev, page_sha256)
+    PRIMARY KEY (session_id, slot, page_sha256, declaration_sha256, bindings_sha256, owner_provider, owner_subject)
 );
 
 
@@ -998,31 +1009,43 @@ RETURNS VOID LANGUAGE sql AS $$
     UPDATE ${s}.canvas_app_tombstones SET purged_at = now() WHERE app_id = p_app_id AND purged_at IS NULL;
 $$;
 
--- ── Workspace consent ───────────────────────────────────────────
+-- ── Workspace approval ──────────────────────────────────────────
 
-CREATE OR REPLACE FUNCTION ${s}.cms_canvas_app_set_consent(
-    p_session_id TEXT, p_slot INT, p_rev INT, p_page_sha256 TEXT, p_version_id TEXT, p_decision TEXT,
+CREATE OR REPLACE FUNCTION ${s}.cms_canvas_workspace_set_grant(
+    p_session_id TEXT, p_slot INT, p_page_sha256 TEXT, p_declaration_sha256 TEXT, p_bindings_sha256 TEXT,
+    p_owner_provider TEXT, p_owner_subject TEXT, p_rev INT, p_trust TEXT, p_version_id TEXT, p_decision TEXT,
     p_by_provider TEXT, p_by_subject TEXT
 ) RETURNS VOID LANGUAGE plpgsql AS $$
 BEGIN
     IF p_decision NOT IN ('granted', 'denied') THEN
         RAISE EXCEPTION 'CANVAS_APP_BAD_REQUEST: decision must be granted or denied';
     END IF;
-    INSERT INTO ${s}.canvas_app_workspace_consents
-        (session_id, slot, rev, page_sha256, version_id, decision, decided_by_provider, decided_by_subject)
-    VALUES (p_session_id, p_slot, p_rev, p_page_sha256, p_version_id, p_decision, p_by_provider, p_by_subject)
-    ON CONFLICT (session_id, slot, rev, page_sha256)
-    DO UPDATE SET decision = EXCLUDED.decision, version_id = EXCLUDED.version_id,
+    IF coalesce(p_page_sha256, '') !~ '^[0-9a-f]{64}$'
+       OR coalesce(p_declaration_sha256, '') !~ '^[0-9a-f]{64}$'
+       OR coalesce(p_bindings_sha256, '') !~ '^[0-9a-f]{64}$' THEN
+        RAISE EXCEPTION 'CANVAS_APP_BAD_REQUEST: an approval names the page, declaration and bindings by sha256';
+    END IF;
+    INSERT INTO ${s}.canvas_workspace_grants
+        (session_id, slot, page_sha256, declaration_sha256, bindings_sha256, owner_provider, owner_subject,
+         rev, trust, version_id, decision, decided_by_provider, decided_by_subject)
+    VALUES (p_session_id, p_slot, p_page_sha256, p_declaration_sha256, p_bindings_sha256, p_owner_provider, p_owner_subject,
+            p_rev, p_trust, p_version_id, p_decision, p_by_provider, p_by_subject)
+    ON CONFLICT (session_id, slot, page_sha256, declaration_sha256, bindings_sha256, owner_provider, owner_subject)
+    DO UPDATE SET decision = EXCLUDED.decision, rev = EXCLUDED.rev, trust = EXCLUDED.trust,
+                  version_id = EXCLUDED.version_id,
                   decided_by_provider = EXCLUDED.decided_by_provider,
                   decided_by_subject = EXCLUDED.decided_by_subject, decided_at = now();
 END;
 $$;
 
-CREATE OR REPLACE FUNCTION ${s}.cms_canvas_app_get_consent(
-    p_session_id TEXT, p_slot INT, p_rev INT, p_page_sha256 TEXT
+CREATE OR REPLACE FUNCTION ${s}.cms_canvas_workspace_get_grant(
+    p_session_id TEXT, p_slot INT, p_page_sha256 TEXT, p_declaration_sha256 TEXT, p_bindings_sha256 TEXT,
+    p_owner_provider TEXT, p_owner_subject TEXT
 ) RETURNS TEXT LANGUAGE sql STABLE AS $$
-    SELECT c.decision FROM ${s}.canvas_app_workspace_consents c
-     WHERE c.session_id = p_session_id AND c.slot = p_slot AND c.rev = p_rev AND c.page_sha256 = p_page_sha256;
+    SELECT g.decision FROM ${s}.canvas_workspace_grants g
+     WHERE g.session_id = p_session_id AND g.slot = p_slot AND g.page_sha256 = p_page_sha256
+       AND g.declaration_sha256 = p_declaration_sha256 AND g.bindings_sha256 = p_bindings_sha256
+       AND g.owner_provider = p_owner_provider AND g.owner_subject = p_owner_subject;
 $$;
 
 `;
