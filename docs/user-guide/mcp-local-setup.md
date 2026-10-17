@@ -132,14 +132,16 @@ actually got:
 | `range` | the sequence span actually delivered |
 | `limit_requested` / `limit_applied` | what you asked for, and what was applied |
 | `provider_clamp` / `max_page_size` | the server's hard clamp (1000), and the largest page delivered (999) |
-| `has_more` | whether further eligible records exist |
+| `has_more` | whether further eligible records exist, **or** a selected record could not be dispatched. A payload omitted for size does **not** by itself mean more history exists. |
 | `next_cursor` / `next_direction` | where and which way to continue |
-| `completeness` | the strength of the claim — never a bare "complete" |
+| `completeness` | READ PROVENANCE — where the page came from, not a ranked strength. `read-view` means one consistent read; it does not imply complete payloads or frozen membership. |
 | `truncated_reason` | `limit`, `byte_budget`, or null |
 | `omissions` | records whose payload is not present, with the reason |
+| `response_bytes` | the size of this response in bytes, as actually sent |
 
 `has_more` comes from an actual extra record read under the same filter,
-direction and range — not from comparing a count to a limit.
+direction and range — not from comparing a count to a limit. It is also true
+when a selected record could not be dispatched at all.
 
 **The latest-page trap.** Calling without `after_seq` or `before_seq` returns
 the **newest** page. More history lies *below* it, so continuation is
@@ -173,9 +175,17 @@ false.
 
 `format: "text"` renders a readable chronological transcript; the default JSON
 is for the agent. `max_bytes` bounds the encoded response (256 KiB default,
-1 MiB ceiling). A budget cut sets `truncated_reason: "byte_budget"`, leaves
-`has_more` true, and still advances the cursor — an oversized single record is
-delivered with its payload omitted rather than stalling you.
+1 MiB ceiling), and it is a HARD bound on the bytes actually sent — this
+notice, the receipt, the omissions list and pretty-printing all count. The
+server never returns an over-budget response: if it cannot fit, you get an
+explicit error naming the minimum, not a quietly truncated page.
+
+A budget cut sets `truncated_reason: "byte_budget"` and still advances the
+cursor — an oversized single record is delivered with its payload omitted
+rather than stalling you. A byte cut does NOT by itself mean `has_more`: a
+final oversized record is fully dispatched, so a drain can end with
+`truncated_reason` set and `has_more` false. Follow `has_more`, not
+`truncated_reason`, to decide whether to continue.
 
 ### What the omissions list is, and is not
 
@@ -186,6 +196,9 @@ Three distinct kinds, deliberately not merged:
   system-prompt echo is condensed before storage, so the full text was never
   in the event log.
 - `absent` — no payload stored, reason unknown.
+- `unencodable` — the record could not be serialized at all. It is still
+  delivered without its payload so your cursor can advance, and it is never
+  counted as costing nothing.
 
 **PilotSwarm does not perform general secret-scrubbing of event payloads.** An
 empty `omissions` list means nothing was omitted from this response — it does

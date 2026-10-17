@@ -142,7 +142,11 @@ test("system-session readability is not widened by the paged read", () => {
     const systemSnap = snap({ isSystem: true, viewerIsOwner: false });
     const withSystemRead = evaluateSessionAccess(cls, systemSnap, { isAdmin: false, systemReadable: true });
     const withoutSystemRead = evaluateSessionAccess(cls, systemSnap, { isAdmin: false, systemReadable: false });
-    assert.notEqual(withSystemRead.allowed, undefined);
+    // A real positive control. Asserting only that `allowed` is defined would
+    // pass even if system sessions were closed when they should be open, so it
+    // could not catch that regression.
+    assert.equal(withSystemRead.allowed, true,
+        "when system sessions are readable, the paged read follows that policy");
     assert.equal(withoutSystemRead.allowed, false,
         "when system sessions are not readable, the paged read must not be a way in");
 });

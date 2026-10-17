@@ -52,16 +52,16 @@ console.log("paged history rendering (issue 148)");
 
 check("a page under budget is delivered whole and not cut", () => {
     const events = [event(1, "a"), event(2, "b"), event(3, "c")];
-    const { delivered, undispatched: cut } = applyByteBudget(events, PAGE_BYTES_DEFAULT);
+    const { delivered, undispatched } = applyByteBudget(events, PAGE_BYTES_DEFAULT);
     assert.equal(delivered.length, 3);
-    assert.equal(cut, false);
+    assert.equal(undispatched, false);
 });
 
 check("the budget cuts mid-page and reports it", () => {
     const events = [event(1, "x".repeat(400)), event(2, "y".repeat(400)), event(3, "z".repeat(400))];
-    const { delivered, undispatched: cut } = applyByteBudget(events, 600);
+    const { delivered, undispatched } = applyByteBudget(events, 600);
     assert.ok(delivered.length >= 1 && delivered.length < 3, `expected a partial page, got ${delivered.length}`);
-    assert.equal(cut, true);
+    assert.equal(undispatched, true);
 });
 
 check("an oversized FIRST record is still delivered, payload omitted", () => {
@@ -69,7 +69,7 @@ check("an oversized FIRST record is still delivered, payload omitted", () => {
     // The stranding case. Without this rule the caller can never advance and
     // loops forever on the same record.
     const events = [event(1, "x".repeat(5000)), event(2, "ok")];
-    const { delivered, undispatched: cut, omissions } = applyByteBudget(events, 100);
+    const { delivered, undispatched, omissions } = applyByteBudget(events, 100);
 
     assert.equal(delivered.length, 1, "the oversized record must still come back");
     assert.equal(delivered[0].seq, 1);
@@ -90,9 +90,9 @@ check("delivery never returns a record it did not deliver", () => {
 });
 
 check("an empty page is not a cut", () => {
-    const { delivered, undispatched: cut } = applyByteBudget([], PAGE_BYTES_DEFAULT);
+    const { delivered, undispatched } = applyByteBudget([], PAGE_BYTES_DEFAULT);
     assert.deepEqual(delivered, []);
-    assert.equal(cut, false);
+    assert.equal(undispatched, false);
 });
 
 check("budget constants are the adopted values", () => {
@@ -129,9 +129,9 @@ check("an unredacted secret-shaped string is NOT reported as an omission", () =>
 });
 
 check("a clean page's empty omissions list means nothing omitted, not 'scanned'", () => {
-    const { omissions, undispatched: cut } = applyByteBudget([event(1, "a"), event(2, "b")], PAGE_BYTES_DEFAULT);
+    const { omissions, undispatched } = applyByteBudget([event(1, "a"), event(2, "b")], PAGE_BYTES_DEFAULT);
     assert.equal(omissions.length, 0);
-    assert.equal(cut, false);
+    assert.equal(undispatched, false);
 });
 
 // ── text rendering cannot drive a terminal ───────────────────────
@@ -271,8 +271,8 @@ check("F1 forward drain is unchanged (positive control)", () => {
 
 check("F1 backward cut keeps the NEWEST rows, not the oldest", () => {
     const window = [BIG(10), BIG(11), BIG(12), BIG(13)];
-    const { delivered, undispatched: cut } = applyByteBudget(window, 900, "backward");
-    assert.equal(cut, true);
+    const { delivered, undispatched } = applyByteBudget(window, 900, "backward");
+    assert.equal(undispatched, true);
     const seqs = delivered.map((e) => e.seq);
     assert.ok(seqs.includes(13), "the newest row must survive a downward-continuing cut");
     assert.ok(!seqs.includes(10), "the oldest row is the one dropped; it lies below the cursor");

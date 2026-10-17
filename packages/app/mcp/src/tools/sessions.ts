@@ -1276,19 +1276,40 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                         };
                     }
 
+                    // response_bytes must describe the bytes ACTUALLY SENT, which is
+                    // self-referential: writing the number changes the length it
+                    // reports. Previously it carried the pre-mutation measurement, so
+                    // the field under-reported the payload it was describing, and the
+                    // budget check ran against a string that was then discarded and
+                    // re-serialized. Iterate to a fixed point instead: the digit count
+                    // stabilizes within an iteration or two.
                     const body = attempt.body as Record<string, unknown>;
-                    (body.receipt as Record<string, unknown>).response_bytes = attempt.bytes;
-                    const finalText = JSON.stringify(body, null, 2);
-                    // response_bytes is itself part of the payload, so adding it can push the
-                    // encoding over. Verify the bytes we are ACTUALLY about to send.
-                    if (Buffer.byteLength(finalText, "utf8") > budget) {
+                    const receiptObj = body.receipt as Record<string, unknown>;
+                    let finalText = "";
+                    let reported = attempt.bytes;
+                    let converged = false;
+                    for (let i = 0; i < 6; i++) {
+                        receiptObj.response_bytes = reported;
+                        finalText = JSON.stringify(body, null, 2);
+                        const actual = Buffer.byteLength(finalText, "utf8");
+                        if (actual === reported) { converged = true; break; }
+                        reported = actual;
+                    }
+
+                    const finalBytes = Buffer.byteLength(finalText, "utf8");
+                    if (!converged || finalBytes > budget) {
+                        // Either the self-report would not settle, or the settled
+                        // response does not fit. Refuse rather than send something
+                        // over budget or mislabelled.
                         return {
                             content: [{
                                 type: "text" as const,
                                 text: JSON.stringify({
-                                    error: "response could not be reduced within max_bytes",
+                                    error: converged
+                                        ? "response could not be reduced within max_bytes"
+                                        : "response size could not be reported consistently",
                                     max_bytes: budget,
-                                    smallest_achieved_bytes: Buffer.byteLength(finalText, "utf8"),
+                                    smallest_achieved_bytes: finalBytes,
                                     remedy: "raise max_bytes, narrow event_types, or lower limit",
                                 }, null, 2),
                             }],
