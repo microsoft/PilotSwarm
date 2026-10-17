@@ -438,3 +438,91 @@ export async function importCanvasApp(
     if (result.appId) await deps.store.finishImport(result.appId);
     return result;
 }
+
+// ── Legacy migration (R22) ───────────────────────────────────────
+
+export interface LegacyMigrationDeps extends CanvasAppRegistryDeps {
+    factStore: import("./facts-store.js").FactStore;
+    /** Owner of a session id, or null when the session or its owner is gone. */
+    sessionOwner: (sessionId: string) => Promise<{ provider: string; subject: string } | null>;
+}
+
+export interface LegacyMigrationLine {
+    key: string;
+    name: string;
+    outcome: "migrate" | "migrated" | "skipped";
+    version?: string;
+    owner?: { provider: string; subject: string } | null;
+    reason?: string;
+}
+
+/**
+ * One-time import of the `apps/<name>` shared facts into the registry as
+ * shared apps. Admin only (the caller passes an unrestricted-admin viewer).
+ * Dry run by default. Safe to run again: same bytes are a no-op, and a fact
+ * is deleted only after the stored version is read back and matches.
+ */
+export async function migrateLegacyCanvasApps(
+    deps: LegacyMigrationDeps,
+    viewer: CanvasAppViewer,
+    opts: { dryRun?: boolean } = {},
+): Promise<{ dryRun: boolean; lines: LegacyMigrationLine[]; migrated: number; skipped: number }> {
+    if (!viewer.resourceAdmin) throw new CanvasAppError("FORBIDDEN", "migrating legacy canvas apps needs an unrestricted admin");
+    const dryRun = opts.dryRun !== false;
+    const res = await deps.factStore.readFacts({ keyPattern: "apps/*", scope: "shared", limit: 1000 } as any);
+    const lines: LegacyMigrationLine[] = [];
+    for (const fact of (res as any).facts ?? []) {
+        const key = String(fact.key);
+        const card: any = typeof fact.value === "string" ? (() => { try { return JSON.parse(fact.value); } catch { return null; } })() : fact.value;
+        const name = String(card?.name ?? key.replace(/^apps\//, "")).toLowerCase();
+        const src = card?.source ?? {};
+        const skip = (reason: string) => lines.push({ key, name, outcome: "skipped", reason });
+        if (!CANVAS_APP_NAME_RE.test(name)) { skip("the name is not a valid app name; fact kept"); continue; }
+        if (!src.sessionId || !src.filename || !src.sha256) { skip("the card has no source; fact kept"); continue; }
+        let html: string;
+        try {
+            html = await deps.artifactStore.downloadArtifactText(String(src.sessionId), String(src.filename));
+        } catch {
+            skip("source artifact missing; fact kept"); continue;
+        }
+        if (sha256Hex(html) !== String(src.sha256)) { skip("source bytes do not match the card's sha256; fact kept"); continue; }
+        let page: CanvasAppPageCheck;
+        try { page = checkCanvasAppPage(html, card?.responseContract); } catch (err: any) { skip(`the page fails the publish checks (${err?.message}); fact kept`); continue; }
+        const owner = await deps.sessionOwner(String(src.sessionId)).catch(() => null);
+        const version = isSemver(page.manifest.version) ? String(page.manifest.version).trim() : "1.0.0";
+        // A shared app with this name and other bytes already exists: keep the fact.
+        try {
+            const existing = await deps.store.getVersion({ name, scope: "shared" }, viewer, null);
+            const sameBytes = (await deps.store.get({ name, scope: "shared" }, viewer)).versions.some((v) => v.sha256 === page.sha256);
+            if (existing && !sameBytes) { skip("a shared app with this name and other bytes exists; fact kept"); continue; }
+        } catch (err: any) {
+            if (!(err instanceof CanvasAppError) || (err.code !== "NOT_FOUND" && err.code !== "VERSION_NOT_FOUND")) throw err;
+        }
+        if (dryRun) { lines.push({ key, name, outcome: "migrate", version, owner }); continue; }
+        const asOwner: CanvasAppViewer = owner ? { principal: owner, resourceAdmin: true } : { principal: null, resourceAdmin: true };
+        let published: PublishCanvasAppHtmlResult;
+        try {
+            const legacyDescription = String(card?.description ?? "").trim();
+            published = await publishCanvasAppHtml(deps, {
+                html, name, scope: "shared", version,
+                description: legacyDescription.length >= CANVAS_APP_DESCRIPTION_MIN ? legacyDescription : null,
+                tags: Array.isArray(card?.tags) ? card.tags : null,
+                responseContract: card?.responseContract,
+                viewer: asOwner, allowOwnerless: !owner, createdBy: "legacy-migration",
+                sourceSessionId: String(src.sessionId), mode: "publish",
+            });
+        } catch (err: any) {
+            skip(`publish failed (${err?.code ?? "ERROR"}: ${err?.message}); fact kept`); continue;
+        }
+        const check = await readCanvasAppHtml(deps, { name, scope: "shared" }, viewer, published.version);
+        if (check.resolved.sha256 !== page.sha256) { skip("read-back does not match; fact kept"); continue; }
+        await deps.factStore.deleteFact({ key, shared: true } as any);
+        lines.push({ key, name, outcome: "migrated", version: published.version, owner });
+    }
+    return {
+        dryRun,
+        lines,
+        migrated: lines.filter((l) => l.outcome === "migrated" || l.outcome === "migrate").length,
+        skipped: lines.filter((l) => l.outcome === "skipped").length,
+    };
+}

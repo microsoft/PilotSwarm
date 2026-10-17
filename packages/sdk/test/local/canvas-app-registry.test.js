@@ -13,10 +13,10 @@ import { describe, it } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
-import { FilesystemArtifactStore } from "../../src/index.ts";
+import { FilesystemArtifactStore, createFactStoreForUrl } from "../../src/index.ts";
 import {
     publishCanvasAppHtml, readCanvasAppHtml, deleteCanvasApp, pruneCanvasAppArtifacts,
-    exportCanvasApp, importCanvasApp, readCanvasAppArchive, canvasAppArtifactSessionId,
+    exportCanvasApp, importCanvasApp, readCanvasAppArchive, canvasAppArtifactSessionId, migrateLegacyCanvasApps,
     looksLikeCanvasAppSpace, sha256Hex, CANVAS_APP_PENDING_TTL_MS,
 } from "../../src/canvas-app-registry.ts";
 import { buildCanonicalTarGz } from "../../src/agent-package-format.ts";
@@ -245,6 +245,70 @@ describe("canvas app registry: service", () => {
             await expectCode(deps.store.get({ name }, V.alice), "NOT_FOUND");
         } finally {
             await catalog.close();
+        }
+    });
+
+    it("legacy migration: dry run, apply, apply again; owner from the bytes' session; deleted session migrates ownerless; bad sources keep their fact", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const { catalog, deps } = await setup(env);
+        const factStore = await createFactStoreForUrl(env.store, env.factsSchema);
+        await factStore.initialize();
+        try {
+            const owners = new Map();
+            const mdeps = { ...deps, factStore, sessionOwner: async (id) => owners.get(id) ?? null };
+            const admin = { principal: { provider: "test", subject: "car-admin" }, resourceAdmin: true };
+            const plant = async (name, sessionId, html, overrides = {}) => {
+                const filename = `app-${name}.html`;
+                await deps.artifactStore.uploadArtifact(sessionId, filename, html, "text/html");
+                await factStore.storeFact({ key: `apps/${name}`, shared: true, value: {
+                    name, description: DESCRIPTION, tags: ["legacy"],
+                    source: { kind: "artifact", sessionId, filename, sha256: sha256Hex(html) }, ...overrides,
+                } });
+            };
+            const ok = `car-leg-ok-${env.runId}`;
+            const orphan = `car-leg-orphan-${env.runId}`;
+            const missing = `car-leg-missing-${env.runId}`;
+            const tampered = `car-leg-tamper-${env.runId}`;
+            const versioned = `car-leg-ver-${env.runId}`;
+            owners.set("sess-alice", ALICE);
+            await plant(ok, "sess-alice", page(ok));
+            await plant(orphan, "sess-deleted", page(orphan));
+            await plant(missing, "sess-alice", page(missing));
+            await deps.artifactStore.deleteArtifact("sess-alice", `app-${missing}.html`);
+            await plant(tampered, "sess-alice", page(tampered), { source: { kind: "artifact", sessionId: "sess-alice", filename: `app-${tampered}.html`, sha256: "0".repeat(64) } });
+            await plant(versioned, "sess-alice", page(versioned).replace(`"name":"${versioned}"`, `"name":"${versioned}","version":"2.3.0"`));
+
+            const mine = (r) => r.lines.filter((l) => l.name.includes(env.runId));
+            const dry = await migrateLegacyCanvasApps(mdeps, admin, {});
+            assertEqual(dry.dryRun, true);
+            const dryBy = Object.fromEntries(mine(dry).map((l) => [l.name, l]));
+            assertEqual(dryBy[ok].outcome, "migrate");
+            assertEqual(dryBy[orphan].outcome, "migrate", "a deleted session with intact bytes migrates");
+            assertEqual(dryBy[missing].outcome, "skipped");
+            assertEqual(dryBy[tampered].outcome, "skipped");
+            assertEqual(dryBy[versioned].version, "2.3.0", "the manifest's version is used");
+            await expectCode(deps.store.get({ name: ok, scope: "shared" }, admin), "NOT_FOUND");
+
+            await expectCode(migrateLegacyCanvasApps(mdeps, { principal: ALICE, resourceAdmin: false }, { dryRun: false }), "FORBIDDEN");
+            const run = await migrateLegacyCanvasApps(mdeps, admin, { dryRun: false });
+            const by = Object.fromEntries(mine(run).map((l) => [l.name, l]));
+            assertEqual(by[ok].outcome, "migrated");
+            assertEqual(by[orphan].outcome, "migrated");
+            const okApp = await deps.store.get({ name: ok, scope: "shared" }, admin);
+            assertEqual(okApp.owner?.subject, ALICE.subject, "owner from the session that holds the bytes");
+            assertEqual(okApp.versions[0].version, "1.0.0");
+            const orphanApp = await deps.store.get({ name: orphan, scope: "shared" }, admin);
+            assertEqual(orphanApp.owner, null, "no owner when the session is gone");
+            const left = (await factStore.readFacts({ keyPattern: "apps/*", scope: "shared", limit: 100 })).facts.map((f) => f.key);
+            assert(!left.includes(`apps/${ok}`) && !left.includes(`apps/${orphan}`), "migrated facts are deleted");
+            assert(left.includes(`apps/${missing}`) && left.includes(`apps/${tampered}`), "bad facts are kept");
+            assert((await deps.artifactStore.listArtifacts("sess-alice")).some((f) => (f.filename ?? f.name) === `app-${ok}.html`), "old artifacts are never deleted");
+
+            const again = await migrateLegacyCanvasApps(mdeps, admin, { dryRun: false });
+            assertEqual(mine(again).filter((l) => l.outcome !== "skipped").length, 0, "a second run has nothing to migrate");
+        } finally {
+            await catalog.close();
+            await factStore.close?.();
         }
     });
 });
