@@ -166,15 +166,40 @@ async function run() {
         // The schema rejects these today, so this is defence in depth — which
         // is the point: the guard must not depend on a validation layer above
         // it staying exactly as it is.
-        for (const bad of [Number.NaN, 1.5, -1.5]) {
-            const r = await client.callTool({
-                name: "get_session_events",
-                arguments: { session_id: SESSION, page: true, max_bytes: bad },
-            }).catch((e) => ({ isError: true, content: [{ text: String(e?.message ?? e) }] }));
+        // These must assert the SPECIFIC validation error, not "some refusal".
+        // An earlier version accepted any thrown error or any page-less error
+        // response, and that is not regression protection: delete the guard and
+        // 1.5 still reaches a 1.5-byte budget and earns the ordinary
+        // too-small-envelope error, -1.5 still clamps to 1 and earns the same,
+        // and NaN is still caught upstream by the schema. All three would keep
+        // passing while the guard was gone.
+        //
+        // 2000.5 is the discriminating input: large enough to otherwise serve a
+        // real page, so the ONLY reason to refuse it is the safe-integer check.
+        for (const bad of [2000.5, 1.5, -1.5, Number.NaN]) {
+            let r;
+            try {
+                r = await client.callTool({
+                    name: "get_session_events",
+                    arguments: { session_id: SESSION, page: true, max_bytes: bad },
+                });
+            } catch (e) {
+                // A transport/schema rejection is NOT the product behaviour
+                // under test. Record it as its own outcome rather than
+                // laundering an unrelated exception into a pass.
+                record(`non-integer max_bytes (${String(bad)}) rejected upstream, handler guard NOT exercised`,
+                    String(bad) === "NaN",
+                    `unexpected upstream rejection: ${String(e?.message ?? e).slice(0, 120)}`,
+                    "schema rejected before the handler");
+                continue;
+            }
             const t = r.content?.[0]?.text ?? "";
-            record(`a non-integer max_bytes (${String(bad)}) is refused, never fails open`,
-                r.isError === true && !/\"events\"/.test(t) && !/\"transcript\"/.test(t),
-                t.slice(0, 140));
+            const saysSafeInteger = /max_bytes must be a safe integer/.test(t);
+            record(`non-integer max_bytes (${String(bad)}) hits the safe-integer guard`,
+                r.isError === true && saysSafeInteger,
+                `expected the safe-integer error, got: ${t.slice(0, 160)}`);
+            record(`non-integer max_bytes (${String(bad)}) emits no page`,
+                !/"events"/.test(t) && !/"transcript"/.test(t), t.slice(0, 120));
         }
     }
 
@@ -608,7 +633,19 @@ async function run() {
             const text = textOf(res);
             const clean = !text.includes("\u009b") && !text.includes("\u2028")
                 && !text.includes("\u202e") && !text.includes("\u0085");
-            record(`handler neutralizes control characters: ${format}`, clean);
+            // Absence of control characters is NOT enough on its own: a clean
+            // ERROR response, or a success that dropped the payload entirely,
+            // satisfies it just as well. Neutralization only means something
+            // if the content ARRIVED and was neutralized, so require a real
+            // page and the surrounding fixture text to still be present.
+            const isPage = !res.isError && (/"events"/.test(text) || /"transcript"/.test(text));
+            const carriesContent = /danger/.test(text) && /clear/.test(text)
+                && /break/.test(text) && /reverse/.test(text) && /nel/.test(text);
+            record(`handler neutralizes control characters: ${format}`,
+                isPage && carriesContent && clean,
+                res.isError
+                    ? `refused: ${text.slice(0, 120)}`
+                    : `isPage=${isPage} carriesContent=${carriesContent} clean=${clean}`);
         }
     }
 
