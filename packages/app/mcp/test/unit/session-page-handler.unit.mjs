@@ -26,9 +26,21 @@ import { createMcpServer } from "../../dist/src/server.js";
 import { makeServerContext } from "./helpers/fake-context.mjs";
 
 const results = [];
-function record(name, ok, detail = "") {
+/**
+ * `detail` explains a FAILURE and is printed only when the case fails.
+ * `info` is context worth seeing either way.
+ *
+ * The split exists because the r17 run printed lines like
+ *   ✅ hard budget respected: json @ 2000B -> 1449B   PASS (1449 > 2000)
+ * The detail is phrased as the failure ("actual > budget"), so beside PASS it
+ * asserted the exact opposite of what happened, and a reader scanning output
+ * could reasonably conclude the budget had been blown on a passing case. A
+ * diagnostic that misreports its own result is worse than none.
+ */
+function record(name, ok, detail = "", info = "") {
     results.push({ name, ok });
-    console.log(`${ok ? "✅" : "❌"} ${name.padEnd(68)} ${ok ? "PASS" : "FAIL"}${detail ? ` (${detail})` : ""}`);
+    const note = ok ? info : (detail || info);
+    console.log(`${ok ? "✅" : "❌"} ${name.padEnd(68)} ${ok ? "PASS" : "FAIL"}${note ? ` (${note})` : ""}`);
 }
 
 const SESSION = "11111111-2222-3333-4444-555555555555";
@@ -243,13 +255,14 @@ async function run() {
             steps++;
         }
         record("G46-06: following the advertised remedy terminates in a response",
-            !res.isError, res.isError ? textOf(res).slice(0, 160) : `after ${steps} step(s)`);
+            !res.isError, textOf(res).slice(0, 160), `after ${steps} step(s)`);
         record("G46-06: the response fits the budget its own error advertised",
             !res.isError && bytesOf(res) <= budget,
             res.isError ? "refused" : `${bytesOf(res)} > ${budget}`);
         // One retry, because the first refusal already solved it.
         record("G46-06: the ladder is ONE retry, not a crawl",
-            steps <= 1, `${steps} steps via ${JSON.stringify(advertisedChain)}`);
+            steps <= 1, `${steps} steps via ${JSON.stringify(advertisedChain)}`,
+            `chain ${JSON.stringify(advertisedChain)}`);
 
         // G46-07. smallest_achieved_bytes must be SUFFICIENT, not merely
         // larger. The trap: `room` is derived from the budget, so retrying at
@@ -305,7 +318,8 @@ async function run() {
             // Guard against this case going quiet again: if nothing was probed,
             // that is itself a failure, not a silent pass.
             record("G46-07: the retry-sufficiency contract was actually exercised",
-                exercised > 0, `${exercised} budgets reached the retry-value branch`);
+                exercised > 0, "NO budget reached the retry-value branch: this case asserted nothing",
+                `${exercised} budgets reached the retry-value branch`);
         }
 
         // FINAL-03: a budget ONE BYTE below the complete response must still
