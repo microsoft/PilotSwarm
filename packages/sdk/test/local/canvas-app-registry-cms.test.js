@@ -137,9 +137,17 @@ describe("canvas app registry: CMS procedures", () => {
             assertEqual(auto.version, "2.0.0", "patch bump of a prerelease is its release");
 
             await expectCode(publish(store, V.alice, name, "sha-6", { version: "1.5.0" }), "VERSION_EXISTS");
-            await expectCode(publish(store, V.alice, name, "sha-7", { version: "1.5.0+other" }), "VERSION_EXISTS");
+            const other = await publish(store, V.alice, name, "sha-7", { version: "1.5.0+other" });
+            assertEqual(other.status, "reserved", "a build-qualified version is its own version");
+            await expectCode(publish(store, V.alice, name, "sha-7b", { version: "1.5.0+other" }), "VERSION_EXISTS");
             const build = await publish(store, V.alice, name, "sha-8", { version: "3.0.0+build.7" });
             assertEqual(build.version, "3.0.0+build.7", "the publisher's version text is kept");
+            const build2 = await publish(store, V.alice, name, "sha-8b", { version: "3.0.0+build.8" });
+            assertEqual(build2.status, "reserved");
+            assertEqual(await activeVersion(store, V.alice, t), "3.0.0+build.7", "equal precedence does not move the active version");
+            await store.pin(t, "3.0.0+build.8", V.alice);
+            assertEqual(await activeVersion(store, V.alice, t), "3.0.0+build.8", "pin by exact text");
+            await expectCode(store.pin(t, "3.0.0", V.alice), "VERSION_NOT_FOUND");
             await expectCode(publish(store, V.alice, name, "sha-9", { version: "v3" }), "BAD_VERSION");
 
             await store.pin(t, "1.0.0", V.alice);
@@ -308,6 +316,20 @@ describe("canvas app registry: CMS procedures", () => {
             const a = await publish(store, V.alice, fresh, "sha-a", { version: "1.0.0", mode: "import" });
             await publish(store, V.alice, fresh, "sha-b", { version: "2.0.0", mode: "import", importCreated: a.appCreated });
             assertEqual(await activeVersion(store, V.alice, { name: fresh }), "2.0.0", "a new app gets its highest imported version");
+
+            // Interrupted first import: created the app, never finished. A
+            // resumed import (a new process, no memory of creating it) still
+            // activates the highest version; after finishImport, imports no
+            // longer move the pointer.
+            const resumed = `ca-imp-resume-${env.runId}`;
+            const r1 = await publish(store, V.alice, resumed, "sha-r1", { version: "1.0.0", mode: "import", leavePending: true });
+            await store.prunePending(new Date(Date.now() + 60_000));
+            await publish(store, V.alice, resumed, "sha-r1", { version: "1.0.0", mode: "import" });
+            await publish(store, V.alice, resumed, "sha-r2", { version: "2.0.0", mode: "import" });
+            assertEqual(await activeVersion(store, V.alice, { name: resumed }), "2.0.0", "resumed first import activates its highest version");
+            await store.finishImport(r1.appId);
+            await publish(store, V.alice, resumed, "sha-r3", { version: "3.0.0", mode: "import" });
+            assertEqual(await activeVersion(store, V.alice, { name: resumed }), "2.0.0", "an established app keeps its pointer");
         } finally {
             await catalog.close();
         }
@@ -398,6 +420,16 @@ describe("canvas app registry: CMS procedures", () => {
             const matches = await store.matchBySha("sha-wb", V.alice);
             assertEqual(matches.length, 1);
             assertEqual(matches[0].owner?.subject, BOB.subject);
+
+            // Private bytes are hidden from others whatever the file is called.
+            const priv = await publish(store, V.alice, `ca-hidden-${env.runId}`, "sha-hidden", { scope: "user" });
+            assertEqual(await store.shaHidden("sha-hidden", V.bob), true);
+            assertEqual(await store.shaHidden("sha-hidden", V.cara), true);
+            assertEqual(await store.shaHidden("sha-hidden", V.alice), false);
+            assertEqual(await store.shaHidden("sha-hidden", V.ada), false);
+            assertEqual(await store.shaHidden("sha-wb", V.alice), false, "shared bytes are not hidden");
+            assertEqual(await store.isSpace(priv.artifactSessionId), true);
+            assertEqual(await store.isSpace(randomUUID()), false);
         } finally {
             await catalog.close();
         }

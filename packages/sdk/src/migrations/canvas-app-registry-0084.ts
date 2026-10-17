@@ -38,6 +38,9 @@ CREATE TABLE IF NOT EXISTS ${s}.canvas_apps (
     enabled             BOOLEAN NOT NULL DEFAULT TRUE,
     active_version_id   TEXT,
     artifact_session_id TEXT NOT NULL UNIQUE,
+    -- TRUE from an import that created the app until that import finishes,
+    -- so an interrupted first import still activates its highest version.
+    import_open         BOOLEAN NOT NULL DEFAULT FALSE,
     created_by          TEXT,
     created_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -64,9 +67,11 @@ CREATE TABLE IF NOT EXISTS ${s}.canvas_app_versions (
     created_by         TEXT,
     created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
     committed_at       TIMESTAMPTZ,
-    UNIQUE (app_id, precedence_key),
+    UNIQUE (app_id, version),
     UNIQUE (app_id, sha256)
 );
+CREATE INDEX IF NOT EXISTS canvas_app_versions_precedence_idx
+    ON ${s}.canvas_app_versions (app_id, precedence_key, created_at);
 CREATE INDEX IF NOT EXISTS canvas_app_versions_sha_idx ON ${s}.canvas_app_versions (sha256);
 CREATE INDEX IF NOT EXISTS canvas_app_versions_workspace_idx
     ON ${s}.canvas_app_versions (workspace_key) WHERE workspace_key IS NOT NULL;
@@ -352,10 +357,10 @@ BEGIN
         BEGIN
             INSERT INTO ${s}.canvas_apps
                 (app_id, name, scope, owner_provider, owner_subject, description, tags,
-                 artifact_session_id, created_by)
+                 artifact_session_id, import_open, created_by)
             VALUES (p_new_app_id, p_name, p_scope, v_owner_p, v_owner_s,
                     COALESCE(p_description, ''), COALESCE(p_tags, '{}'),
-                    p_artifact_session_id, p_created_by);
+                    p_artifact_session_id, p_mode = 'import', p_created_by);
             v_created := TRUE;
         EXCEPTION WHEN unique_violation THEN
             CONTINUE retry;
@@ -391,14 +396,16 @@ BEGIN
 
     IF p_version IS NULL OR BTRIM(p_version) = '' THEN
         SELECT v.version INTO v_latest FROM ${s}.canvas_app_versions v
-         WHERE v.app_id = v_app.app_id ORDER BY v.precedence_key DESC LIMIT 1;
+         WHERE v.app_id = v_app.app_id ORDER BY v.precedence_key DESC, v.created_at DESC LIMIT 1;
         v_version := CASE WHEN v_latest IS NULL THEN '1.0.0' ELSE ${s}.cms_canvas_app_semver_next_patch(v_latest) END;
     ELSE
         v_version := BTRIM(p_version);
     END IF;
     v_key := ${s}.cms_canvas_app_precedence_key(v_version);
 
-    PERFORM 1 FROM ${s}.canvas_app_versions v WHERE v.app_id = v_app.app_id AND v.precedence_key = v_key;
+    -- Version identity is the full text: 1.2.0+a and 1.2.0+b are two versions
+    -- of equal precedence.
+    PERFORM 1 FROM ${s}.canvas_app_versions v WHERE v.app_id = v_app.app_id AND v.version = v_version;
     IF FOUND THEN
         RAISE EXCEPTION 'CANVAS_APP_VERSION_EXISTS: %@% already exists with different content; versions are immutable', p_name, v_version;
     END IF;
@@ -432,7 +439,7 @@ BEGIN
     SELECT * INTO v_app FROM ${s}.canvas_apps WHERE canvas_apps.app_id = v_ver.app_id FOR UPDATE;
     UPDATE ${s}.canvas_app_versions SET state = 'ready', committed_at = now()
      WHERE canvas_app_versions.version_id = p_version_id AND state = 'pending';
-    IF COALESCE(p_may_activate, FALSE) THEN
+    IF COALESCE(p_may_activate, FALSE) OR v_app.import_open OR v_app.active_version_id IS NULL THEN
         SELECT v.precedence_key INTO v_active_key FROM ${s}.canvas_app_versions v
          WHERE v.version_id = v_app.active_version_id;
         IF v_active_key IS NULL OR v_ver.precedence_key > v_active_key THEN
@@ -443,6 +450,33 @@ BEGIN
     END IF;
     RETURN QUERY SELECT v_app.app_id, p_version_id, v_ver.version,
         v_active OR v_app.active_version_id = p_version_id;
+END;
+$$;
+
+-- An import that created its app is finished: from now on import mode
+-- preserves the active pointer like any established app.
+CREATE OR REPLACE FUNCTION ${s}.cms_canvas_app_finish_import(p_app_id TEXT)
+RETURNS VOID LANGUAGE sql AS $$
+    UPDATE ${s}.canvas_apps SET import_open = FALSE WHERE app_id = p_app_id AND import_open;
+$$;
+
+-- Version lookup by text: the exact string, else the one version with that
+-- precedence when exactly one exists.
+CREATE OR REPLACE FUNCTION ${s}.cms_canvas_app_find_version(p_app_id TEXT, p_version TEXT)
+RETURNS TEXT LANGUAGE plpgsql STABLE AS $$
+DECLARE
+    v_id TEXT;
+    v_n  INT;
+BEGIN
+    SELECT v.version_id INTO v_id FROM ${s}.canvas_app_versions v
+     WHERE v.app_id = p_app_id AND v.state = 'ready' AND v.version = BTRIM(p_version);
+    IF v_id IS NOT NULL THEN
+        RETURN v_id;
+    END IF;
+    SELECT count(*), min(v.version_id) INTO v_n, v_id FROM ${s}.canvas_app_versions v
+     WHERE v.app_id = p_app_id AND v.state = 'ready'
+       AND v.precedence_key = ${s}.cms_canvas_app_precedence_key(p_version);
+    RETURN CASE WHEN v_n = 1 THEN v_id ELSE NULL END;
 END;
 $$;
 
@@ -561,7 +595,7 @@ BEGIN
       FROM (SELECT 1) one
       LEFT JOIN ${s}.users u ON u.provider = v_app.owner_provider AND u.subject = v_app.owner_subject
       LEFT JOIN ${s}.canvas_app_versions v ON v.app_id = v_app.app_id AND v.state = 'ready'
-     ORDER BY v.precedence_key DESC NULLS LAST;
+     ORDER BY v.precedence_key DESC NULLS LAST, v.created_at DESC;
 END;
 $$;
 
@@ -591,8 +625,7 @@ BEGIN
          WHERE v.version_id = v_app.active_version_id AND v.state = 'ready';
     ELSE
         SELECT * INTO v_ver FROM ${s}.canvas_app_versions v
-         WHERE v.app_id = v_app.app_id AND v.state = 'ready'
-           AND (v.version = BTRIM(p_version) OR v.precedence_key = ${s}.cms_canvas_app_precedence_key(p_version));
+         WHERE v.version_id = ${s}.cms_canvas_app_find_version(v_app.app_id, p_version);
     END IF;
     IF NOT FOUND OR v_ver.version_id IS NULL THEN
         RAISE EXCEPTION 'CANVAS_APP_VERSION_NOT_FOUND: %@% is not a published version', p_name, COALESCE(p_version, 'active');
@@ -620,6 +653,29 @@ CREATE OR REPLACE FUNCTION ${s}.cms_canvas_app_match_by_sha(
             OR (a.owner_provider = NULLIF(BTRIM(p_viewer_provider), '')
                 AND a.owner_subject = NULLIF(BTRIM(p_viewer_subject), '')))
      ORDER BY (a.scope = 'shared') DESC, a.created_at, a.app_id;
+$$;
+
+-- Do these bytes belong to a ready version of an app the viewer may NOT see?
+-- Cross-session artifact reads refuse such bytes, whatever the file is called.
+CREATE OR REPLACE FUNCTION ${s}.cms_canvas_app_sha_hidden(
+    p_sha256 TEXT, p_viewer_provider TEXT, p_viewer_subject TEXT, p_resource_admin BOOLEAN
+) RETURNS BOOLEAN LANGUAGE sql STABLE AS $$
+    SELECT NOT COALESCE(p_resource_admin, FALSE) AND EXISTS (
+        SELECT 1
+          FROM ${s}.canvas_app_versions v
+          JOIN ${s}.canvas_apps a ON a.app_id = v.app_id
+         WHERE v.sha256 = p_sha256 AND v.state = 'ready' AND a.scope = 'user'
+           AND (a.owner_provider IS DISTINCT FROM NULLIF(BTRIM(p_viewer_provider), '')
+                OR a.owner_subject IS DISTINCT FROM NULLIF(BTRIM(p_viewer_subject), ''))
+    );
+$$;
+
+-- Is this id an app byte space (live or deleted)? The prefix test in TS is
+-- only a filter; this is the answer.
+CREATE OR REPLACE FUNCTION ${s}.cms_canvas_app_is_space(p_session_id TEXT)
+RETURNS BOOLEAN LANGUAGE sql STABLE AS $$
+    SELECT EXISTS (SELECT 1 FROM ${s}.canvas_apps a WHERE a.artifact_session_id = p_session_id)
+        OR EXISTS (SELECT 1 FROM ${s}.canvas_app_tombstones t WHERE t.artifact_session_id = p_session_id);
 $$;
 
 -- Does a version owned by someone else, visible to the viewer, declare this
@@ -680,9 +736,7 @@ DECLARE
 BEGIN
     v_app := ${s}.cms_canvas_app_authz(p_name, p_viewer_provider, p_viewer_subject, p_resource_admin,
         p_sel_scope, p_sel_owner_provider, p_sel_owner_subject, 'editor');
-    SELECT v.version_id INTO v_id FROM ${s}.canvas_app_versions v
-     WHERE v.app_id = v_app.app_id AND v.state = 'ready'
-       AND (v.version = BTRIM(p_version) OR v.precedence_key = ${s}.cms_canvas_app_precedence_key(p_version));
+    v_id := ${s}.cms_canvas_app_find_version(v_app.app_id, p_version);
     IF v_id IS NULL THEN
         RAISE EXCEPTION 'CANVAS_APP_VERSION_NOT_FOUND: %@% is not a published version', p_name, p_version;
     END IF;

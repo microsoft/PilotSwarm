@@ -255,6 +255,22 @@ export class CanvasAppStore {
         return { appId: r.app_id, versionId: r.version_id, version: r.version, active: Boolean(r.active) };
     }
 
+    async finishImport(appId: string): Promise<void> {
+        await this.call(`SELECT ${this.fn("finish_import")}($1)`, [appId]);
+    }
+
+    /** Bytes of a ready version of an app this viewer may not see. */
+    async shaHidden(sha256: string, viewer: CanvasAppViewer): Promise<boolean> {
+        const rows = await this.call(`SELECT ${this.fn("sha_hidden")}($1,$2,$3,$4) AS hidden`, [sha256, ...viewerArgs(viewer)]);
+        return Boolean(rows[0]?.hidden);
+    }
+
+    /** Is this artifact "session" id an app byte space (live or deleted)? */
+    async isSpace(sessionId: string): Promise<boolean> {
+        const rows = await this.call(`SELECT ${this.fn("is_space")}($1) AS space`, [sessionId]);
+        return Boolean(rows[0]?.space);
+    }
+
     async abort(versionId: string): Promise<void> {
         await this.call(`SELECT ${this.fn("abort")}($1)`, [versionId]);
     }

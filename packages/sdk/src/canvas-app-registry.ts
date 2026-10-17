@@ -432,5 +432,9 @@ export async function importCanvasApp(
             throw err;
         }
     }
+    // The app this import created is now established: later imports keep
+    // its active pointer. A crash before this line leaves import_open set,
+    // so a resumed import still activates the highest version.
+    if (result.appId) await deps.store.finishImport(result.appId);
     return result;
 }
