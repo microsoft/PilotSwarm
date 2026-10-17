@@ -39,7 +39,11 @@ const results = [];
  */
 function record(name, ok, detail = "", info = "") {
     results.push({ name, ok });
-    const note = ok ? info : (detail || info);
+    // On FAILURE show both: `info` is the context that makes the failure
+    // readable, and dropping it there would discard exactly what a debugger
+    // needs. An earlier version chose `detail || info` and silently lost it.
+    const parts = ok ? [info] : [detail, info];
+    const note = parts.filter(Boolean).join(" — ");
     console.log(`${ok ? "✅" : "❌"} ${name.padEnd(68)} ${ok ? "PASS" : "FAIL"}${note ? ` (${note})` : ""}`);
 }
 
@@ -126,8 +130,15 @@ async function run() {
                 const bytes = bytesOf(res);
                 // The contract is on the bytes actually sent, including the
                 // warning, receipt, omissions, pretty-printing and escaping.
+                // Require a real PAGE too: a short clean error also fits any
+                // budget, so a size-only predicate could pass on a refusal and
+                // report byte safety that was never exercised.
+                const text = textOf(res);
+                const isPage = !res.isError && (/"events"/.test(text) || /"transcript"/.test(text));
                 record(`hard budget respected: ${format} @ ${budget}B -> ${bytes}B`,
-                    bytes <= budget, `${bytes} > ${budget}`);
+                    isPage && bytes <= budget,
+                    res.isError ? `refused: ${text.slice(0, 100)}` : `${bytes} > ${budget}`,
+                    `${bytes}B of ${budget}B`);
             }
         }
     }
@@ -231,8 +242,9 @@ async function run() {
         // necessary but not sufficient — a page carrying even one row costs more
         // than the bare envelope — so the contract is that following the numbers
         // the errors advertise TERMINATES IN A RESPONSE, and that each number is
-        // honest about which kind it is. smallest_achieved_bytes is sufficient:
-        // it names a response that was actually built and measured.
+        // honest about which kind it is. Only sufficient_max_bytes is a retry
+        // value; smallest_achieved_bytes is DIAGNOSTIC and describes the
+        // rejected request.
         const all = [ev(1, "a")];
         const client = await connect(sessionMgmt(all));
 
@@ -296,8 +308,8 @@ async function run() {
             steps <= 1, `${steps} steps via ${JSON.stringify(advertisedChain)}`,
             `chain ${JSON.stringify(advertisedChain)}`);
 
-        // G46-07. smallest_achieved_bytes must be SUFFICIENT, not merely
-        // larger. The trap: `room` is derived from the budget, so retrying at
+        // G46-07. The advertised RETRY value (sufficient_max_bytes) must be
+        // sufficient, not merely larger. The trap: `room` is derived from the budget, so retrying at
         // the size a truncated attempt happened to reach grants MORE room than
         // the attempt that produced it, can pull in another event, and refuses
         // again. A reported minimum that fails on retry is worse than none.
@@ -383,7 +395,35 @@ async function run() {
             const probe = await ask3(200000);
             const full = await ask3(bytesOf(probe));
             const fullBytes = bytesOf(full);
-            const totalCount = JSON.parse(textOf(full)).count;
+            const fullBody = JSON.parse(textOf(full));
+
+            // THE REFERENCE MUST NOT COME FROM THE HANDLER.
+            //
+            // Deriving totalCount from the full fetch lets a product-derived
+            // oracle normalize the very loss it should catch: a regression that
+            // drops seq 102 also corrupts the reference, so a tight request
+            // returning only 101 with has_more=false and a null cursor compares
+            // EQUAL to the broken reference and passes the complete-page
+            // branch, while 102 is silently gone.
+            //
+            // So the reference is the KNOWN FIXTURE. Everything downstream
+            // compares against that, not against what the handler says.
+            const EXPECTED_SEQS = two.map((e) => e.seq);      // [101, 102]
+            const totalCount = EXPECTED_SEQS.length;
+            const fullSeqs = (fullBody.events ?? []).map((e) => e.seq);
+            record("FINAL-03 reference: the full page IS the whole known fixture",
+                fullBody.count === totalCount
+                && JSON.stringify(fullSeqs) === JSON.stringify(EXPECTED_SEQS),
+                `count=${fullBody.count} seqs=${JSON.stringify(fullSeqs)} expected ${JSON.stringify(EXPECTED_SEQS)}`,
+                `reference ${JSON.stringify(fullSeqs)}`);
+            record("FINAL-03 reference: the reported count matches the rows delivered",
+                fullBody.count === fullSeqs.length,
+                `count=${fullBody.count} but ${fullSeqs.length} rows delivered`);
+
+            // Every delivered row must be a real fixture row, exactly once.
+            const inFixture = (seqs) => seqs.every((s) => EXPECTED_SEQS.includes(s))
+                && new Set(seqs).size === seqs.length;
+            let subsetsSeen = 0;
 
             for (const delta of [1, 2, 10, 50]) {
                 const b = fullBytes - delta;
@@ -394,23 +434,42 @@ async function run() {
                 if (res.isError) continue;
 
                 const parsed = JSON.parse(textOf(res));
-                // Always true: something was delivered.
+                const seqs = (parsed.events ?? []).map((e) => e.seq);
                 record(`FINAL-03: the page at full-${delta}B delivers at least one row`,
-                    parsed.count >= 1, `count=${parsed.count}`);
+                    parsed.count >= 1, `count=${parsed.count}`, `count=${parsed.count}`);
+                // Rows must be genuine fixture rows, each at most once, and the
+                // reported count must match what actually arrived.
+                record(`FINAL-03: full-${delta}B delivers only real fixture rows, once each`,
+                    inFixture(seqs) && parsed.count === seqs.length,
+                    `seqs=${JSON.stringify(seqs)} count=${parsed.count}`,
+                    `seqs=${JSON.stringify(seqs)}`);
+
                 // Continuation is required ONLY when a strict subset was
                 // delivered. A complete page that happens to fit correctly
                 // reports next_cursor null, and demanding a cursor there would
-                // reject correct behaviour.
-                if (parsed.count < totalCount) {
+                // reject correct behaviour. The comparison is against the KNOWN
+                // fixture size, never against the handler's own reference.
+                if (seqs.length < totalCount) {
+                    subsetsSeen++;
                     record(`FINAL-03: the strict subset at full-${delta}B can be continued`,
                         parsed.receipt.next_cursor !== null && parsed.receipt.has_more === true,
-                        `count=${parsed.count}/${totalCount} next_cursor=${parsed.receipt.next_cursor} has_more=${parsed.receipt.has_more}`);
+                        `count=${parsed.count}/${totalCount} next_cursor=${parsed.receipt.next_cursor} has_more=${parsed.receipt.has_more}`,
+                        `subset ${JSON.stringify(seqs)} -> cursor ${parsed.receipt.next_cursor}`);
                 } else {
                     record(`FINAL-03: the complete page at full-${delta}B ends the drain`,
                         parsed.receipt.has_more === false && parsed.receipt.next_cursor === null,
-                        `count=${parsed.count} has_more=${parsed.receipt.has_more}`);
+                        `count=${parsed.count} has_more=${parsed.receipt.has_more}`,
+                        `complete, has_more=${parsed.receipt.has_more}`);
                 }
             }
+
+            // The subset branch is where the continuation contract is actually
+            // tested. If no delta produced one, this case asserted only the
+            // terminal branch and the regression is silently half-asleep.
+            record("FINAL-03: at least one delta produced a STRICT SUBSET to continue",
+                subsetsSeen > 0,
+                "no delta delivered a strict subset: the continuation branch asserted nothing",
+                `${subsetsSeen} subset case(s)`);
 
             // The text-projection counterexample: admission sizes the compact
             // SOURCE record, but text mode renders only data.content. A small
@@ -518,7 +577,8 @@ async function run() {
             record(`handler drain exercises the intended mode: ${mode}`,
                 modeConfirmed === mode, `handler reported "${modeConfirmed}"`);
             record(`handler drain is a partition: ${mode}`, ok && partition && unique,
-                `saw ${seen.length}/${expected.length}, unique=${unique}`);
+                `saw ${seen.length}/${expected.length}, unique=${unique}`,
+                `${seen.length}/${expected.length} rows, unique=${unique}`);
         }
     }
 
