@@ -38,7 +38,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { PilotSwarmManagementClient } from "../../src/index.ts";
-import { preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
+import { useSuiteEnv, DATABASE_URL } from "../helpers/local-env.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
 import { assert, assertEqual, assertNotNull } from "../helpers/assertions.js";
 
@@ -51,8 +51,25 @@ const OWNER = { provider: "test", subject: "owner-0001" };
 const STRANGER = { provider: "test", subject: "stranger-0002" };
 const READER = { provider: "test", subject: "reader-0003" };
 
+/**
+ * DB-only preflight. Deliberately NOT the shared preflightChecks(), which also
+ * requires a model provider and throws without GITHUB_TOKEN
+ * (test/helpers/local-env.js). These suites drive the catalog directly and
+ * never call a model, so demanding a model credential would turn a missing
+ * token into a false failure of database coverage.
+ *
+ * DATABASE_URL resolves PS_TEST_DATABASE_URL first, so a runner passing that
+ * variable is already correct.
+ */
 beforeAll(async () => {
-    await preflightChecks();
+    const pg = await import("pg");
+    const client = new pg.default.Client({ connectionString: DATABASE_URL, connectionTimeoutMillis: 4000 });
+    try {
+        await client.connect();
+        await client.query("SELECT 1");
+    } finally {
+        try { await client.end(); } catch {}
+    }
 });
 
 async function managementFor(env) {
