@@ -79,6 +79,7 @@ async function activeVersion(store, viewer, target) {
 describe("canvas app registry: CMS procedures", () => {
     it("SemVer precedence key orders exactly like compareSemver; build metadata is ignored", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
+        const catalog = await createCatalog(env);
         const corpus = [
             "1.0.0-alpha", "1.0.0-alpha.1", "1.0.0-alpha.beta", "1.0.0-beta", "1.0.0-beta.2", "1.0.0-beta.11",
             "1.0.0-rc.1", "1.0.0", "1.0.1", "1.1.0", "1.10.0", "2.0.0-0", "2.0.0-1", "2.0.0-10", "2.0.0-a",
@@ -98,6 +99,7 @@ describe("canvas app registry: CMS procedures", () => {
             assertEqual(await next("2.0.0-rc.1"), "2.0.0");
             assertEqual(await next("1.4.2+build"), "1.4.3");
         });
+        await catalog.close();
     });
 
     it("publish rules: auto version, same bytes, explicit versions, lower versions, conflicts, build metadata", { timeout: TIMEOUT }, async () => {
@@ -194,8 +196,8 @@ describe("canvas app registry: CMS procedures", () => {
 
     it("visibility: private apps are NOT_FOUND to Bob and Cara on every procedure, visible to Ada", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
-        await registerUsers(env);
         const catalog = await createCatalog(env);
+        await registerUsers(env);
         try {
             const store = catalog.canvasApps;
             const name = `ca-priv-${env.runId}`;
@@ -233,8 +235,8 @@ describe("canvas app registry: CMS procedures", () => {
 
     it("shadowing, names, scope changes and contributors", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
-        await registerUsers(env);
         const catalog = await createCatalog(env);
+        await registerUsers(env);
         try {
             const store = catalog.canvasApps;
             const name = `ca-share-${env.runId}`;

@@ -845,7 +845,7 @@ CREATE OR REPLACE FUNCTION ${s}.cms_canvas_app_list_loads(
     p_since TIMESTAMPTZ, p_until TIMESTAMPTZ, p_limit INT, p_cursor_at TIMESTAMPTZ, p_cursor_id BIGINT
 ) RETURNS TABLE(
     load_id BIGINT, app_name TEXT, version TEXT, session_id TEXT, user_provider TEXT, user_subject TEXT,
-    user_email TEXT, user_display_name TEXT, loaded_at TIMESTAMPTZ, total_30d BIGINT
+    user_email TEXT, user_display_name TEXT, loaded_at TIMESTAMPTZ, total_30d BIGINT, cursor_at TEXT
 ) LANGUAGE plpgsql STABLE AS $$
 DECLARE
     v_app ${s}.canvas_apps;
@@ -860,7 +860,10 @@ BEGIN
      WHERE l.app_id = v_app.app_id AND l.loaded_at >= now() - INTERVAL '30 days';
     RETURN QUERY
     SELECT l.load_id, l.app_name, l.version, l.session_id, l.user_provider, l.user_subject,
-           u.email, u.display_name, l.loaded_at, v_total
+           u.email, u.display_name, l.loaded_at, v_total,
+           -- Full microsecond precision: a JS Date would truncate to ms and
+           -- the next page would skip rows sharing that millisecond.
+           to_char(l.loaded_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')
       FROM ${s}.canvas_app_loads l
       LEFT JOIN ${s}.users u ON u.provider = l.user_provider AND u.subject = l.user_subject
      WHERE l.app_id = v_app.app_id

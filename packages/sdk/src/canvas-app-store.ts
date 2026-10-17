@@ -425,11 +425,13 @@ export class CanvasAppStore {
             );
             total30d = probe.length ? Number(probe[0].total_30d) : 0;
         }
-        const last = mapped[mapped.length - 1];
+        const lastRow = rows[rows.length - 1];
         return {
             rows: mapped,
             total30d,
-            nextCursor: mapped.length === limit && last ? { loadedAt: last.loadedAt.toISOString(), loadId: last.loadId } : null,
+            nextCursor: mapped.length === limit && lastRow
+                ? { loadedAt: String(lastRow.cursor_at), loadId: String(lastRow.load_id) }
+                : null,
         };
     }
 
