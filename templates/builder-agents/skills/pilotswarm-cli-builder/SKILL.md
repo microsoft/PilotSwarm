@@ -137,6 +137,14 @@ Do not guess these answers when the user has not provided them. Offer the standa
 - Use `exec pilotswarm ...` for local and `exec pilotswarm remote ...` for remote.
 - Make the script executable and verify the executable bit after creation.
 - Keep compatibility workarounds in the launcher or `postinstall` scripts, not scattered across README steps.
+- A programmatic launcher can use `import { startTuiApp } from "pilotswarm"`
+  with `startTuiApp({ ...config, logFile: applicationLogPath })` to give each
+  application process its own diagnostic file. Custom paths create parent
+  directories and truncate on startup; invalid paths or tracing setup failures
+  reject, with no shared-log fallback. Omission keeps the legacy default.
+  This is an API option, not a CLI flag; see the CLI guide's
+  [Programmatic TUI Hosts](https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/cli-apps.md#programmatic-tui-hosts)
+  section for configuration and process-lifecycle details.
 
 ## Validation Guidance
 
