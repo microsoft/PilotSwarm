@@ -233,15 +233,32 @@ async function run() {
         record("G46-06: the ladder is short, not a byte-by-byte crawl",
             steps <= 2, `${steps} steps via ${JSON.stringify(advertisedChain)}`);
 
-        // smallest_achieved_bytes must be SUFFICIENT, not merely larger: asking
-        // again at exactly that number must return the page it measured.
-        const tight = await ask(1);
-        const tightErr = JSON.parse(textOf(tight));
-        if (typeof tightErr.smallest_achieved_bytes === "number") {
-            const atSmallest = await ask(tightErr.smallest_achieved_bytes);
-            record("G46-06: smallest_achieved_bytes is sufficient, not just advisory",
-                !atSmallest.isError && bytesOf(atSmallest) <= tightErr.smallest_achieved_bytes,
-                atSmallest.isError ? textOf(atSmallest).slice(0, 120) : "");
+        // G46-07. smallest_achieved_bytes must be SUFFICIENT, not merely
+        // larger. The trap: `room` is derived from the budget, so retrying at
+        // the size a truncated attempt happened to reach grants MORE room than
+        // the attempt that produced it, can pull in another event, and refuses
+        // again. A reported minimum that fails on retry is worse than none.
+        //
+        // Use a session big enough that the page really is event-truncated,
+        // which is the path that reports the number.
+        {
+            const many = Array.from({ length: 30 }, (_, i) => ev(i + 1, "y".repeat(300)));
+            const c2 = await connect(sessionMgmt(many));
+            const ask2 = (max_bytes) => c2.callTool({
+                name: "get_session_events",
+                arguments: { session_id: SESSION, page: true, limit: 30, max_bytes },
+            });
+            for (const tightBudget of [1, 60, 120, 300]) {
+                const refusedRes = await ask2(tightBudget);
+                if (!refusedRes.isError) continue;
+                const err = JSON.parse(textOf(refusedRes));
+                const n = err.smallest_achieved_bytes;
+                if (typeof n !== "number") continue;
+                const retry = await ask2(n);
+                record(`G46-07: smallest_achieved_bytes from ${tightBudget}B is sufficient on retry`,
+                    !retry.isError && bytesOf(retry) <= n,
+                    retry.isError ? textOf(retry).slice(0, 140) : `${bytesOf(retry)} > ${n}`);
+            }
         }
 
         // No budget anywhere in the band may yield an over-budget SUCCESS.

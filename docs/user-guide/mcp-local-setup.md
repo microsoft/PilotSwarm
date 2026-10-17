@@ -185,8 +185,12 @@ The refusal names two different kinds of number, and the difference matters:
 - `minimum_envelope_bytes` is **necessary, not sufficient**. It is what an
   events-free response costs. A page carrying even one row costs more, so
   clearing this bar admits a response but does not promise one.
-- `smallest_achieved_bytes` **is sufficient**. The server built and measured
-  that response; asking again at exactly that budget returns it.
+- `smallest_achieved_bytes` **is sufficient**, and sufficient *by
+  construction*. It is the size of the budget-independent minimal page, so a
+  retry at that number reaches the same floor and reproduces the same
+  response. It is not merely the smallest size this particular call happened
+  to reach — that number would grant more room on retry and could refuse
+  again.
 
 So the remedy is a short ladder, not a search: raise to the number you were
 given, and if the next call still refuses, use the `smallest_achieved_bytes`
@@ -200,6 +204,11 @@ final oversized record is fully dispatched, so a drain can end with
 `truncated_reason`, to decide whether to continue.
 
 ### What the omissions list is, and is not
+
+`omissions` describes **delivered** rows whose payload is absent. A row the
+budget could not dispatch at all is *not* in this list — that is what
+`has_more` is for. So an empty `omissions` with `has_more: true` means
+everything you received is complete and more remains.
 
 Four distinct kinds, deliberately not merged:
 

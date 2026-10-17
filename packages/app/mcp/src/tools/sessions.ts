@@ -1105,9 +1105,10 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                     "Page mode only. 'json' (default) for agent consumption, 'text' for a readable chronological transcript."),
                 max_bytes: z.number().optional().describe(
                     `Page mode only. Encoded response budget (default ${PAGE_BYTES_DEFAULT}, max ${PAGE_BYTES_MAX}). `
-                    + "A cut sets truncated_reason='byte_budget' and lists the dropped rows in omissions; it is an omission, never "
-                    + "a redaction. Decide whether to continue from has_more and next_cursor, NOT from truncated_reason: a cut on "
-                    + "the last row of the session leaves has_more false, because nothing remains beyond it."),
+                    + "A cut sets truncated_reason='byte_budget'; it is an omission, never a redaction. Decide whether to continue "
+                    + "from has_more and next_cursor, NOT from truncated_reason: a cut on the last row of the session leaves "
+                    + "has_more false, because nothing remains beyond it. omissions lists DELIVERED rows whose payload is absent, "
+                    + "not rows that were left undispatched — undelivered rows are reported by has_more, never by omissions."),
             },
         },
         async ({ session_id, after_seq, before_seq, event_types, limit, wait, wait_timeout_ms, after_version, page, format, max_bytes }) => {
@@ -1302,6 +1303,26 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                         if (attempt.delivered.length === 0) break;
                     }
 
+                    // GUARANTEED FLOOR. The shrink loop derives `room` from the
+                    // budget, so a caller who retries at the size we last reported
+                    // gets MORE room than the attempt that produced it, which can pull
+                    // in another event and refuse again. A reported "smallest" that
+                    // does not work on retry is worse than no number at all.
+                    //
+                    // build(0) is budget-INDEPENDENT: the minimal page, carrying at
+                    // most a payload-omitted row so the cursor can still advance. Fall
+                    // back to it before refusing, and report ITS size. Retrying at that
+                    // number reaches this same fallback and reproduces the same page,
+                    // so the figure we hand out is sufficient by construction rather
+                    // than by promise.
+                    // Computed ONLY on the failing path — the happy path must not pay
+                    // for an extra build and serialize.
+                    let floor: ReturnType<typeof settle> | null = null;
+                    if (!settled.converged || settled.bytes > budget) {
+                        floor = settle(build(0));
+                        if (floor.converged && floor.bytes <= budget) settled = floor;
+                    }
+
                     const finalText = settled.text;
                     const finalBytes = settled.bytes;
                     const converged = settled.converged;
@@ -1317,11 +1338,13 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                                         ? "response could not be reduced within max_bytes"
                                         : "response size could not be reported consistently",
                                     max_bytes: budget,
-                                    // SUFFICIENT: this is a response we actually built
-                                    // and measured, self-report settled. Asking again at
-                                    // this budget returns it.
-                                    smallest_achieved_bytes: finalBytes,
-                                    remedy: `raise max_bytes to at least ${finalBytes}, or narrow event_types / lower limit`,
+                                    // SUFFICIENT BY CONSTRUCTION: the budget-independent
+                                    // minimal page. A retry at this number reaches the
+                                    // same floor fallback and reproduces this exact
+                                    // response, so the figure works rather than merely
+                                    // describing what we happened to reach.
+                                    smallest_achieved_bytes: floor ? floor.bytes : finalBytes,
+                                    remedy: `raise max_bytes to at least ${floor ? floor.bytes : finalBytes}, or narrow event_types / lower limit`,
                                 }, null, 2),
                             }],
                             isError: true,
