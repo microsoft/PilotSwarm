@@ -358,6 +358,25 @@ Errors (`error.code`): `NOT_FOUND`, `FORBIDDEN`, `NAME_TAKEN`, `NO_OWNER`,
 `VERSION_EXISTS`, `VERSION_NOT_FOUND`, `APP_DISABLED`, `BAD_VERSION`,
 `BAD_SCOPE`, `BAD_REQUEST`, `USER_NOT_FOUND`.
 
+#### Workspace approval
+
+No canvas page's canvas-ws call runs until the session owner approves that
+exact program: the page sha256, the checked `workspace` declaration and the
+folders its names resolve to, in that slot. Every program asks once, whoever
+wrote it; the identical program redrawn keeps its decision. Both operations
+are the session owner's only (`session:files`); no agent tool, MCP tool or
+CLI command offers them.
+
+| Operation | Route | Parameters | Summary |
+|---|---|---|---|
+| getCanvasWorkspaceApproval | `GET /api/v1/management/sessions/:sessionId/canvas-workspace/approval` | `slot` | `{ rev, decision, trust, app, pageSha256, declarationSha256, bindingsSha256, declaration: { read, write, watch, commands: { <name>: { in, run } } }, bindings: [{ name, root, folder }] }`. |
+| setCanvasWorkspaceConsent | `POST /api/v1/management/sessions/:sessionId/canvas-workspace/consent` | `slot`, `rev`, `pageSha256`, `declarationSha256`, `bindingsSha256`, `decision` (`granted`\|`denied`) | Records the decision for exactly the program quoted; audited. |
+
+canvas-ws errors added: `CANVAS_WS_CONSENT_REQUIRED` (403: not approved, or
+declined) and `CANVAS_WS_STALE` (409: the call or approval names a revision,
+page, declaration or folders the slot no longer shows). Every canvas-ws call
+carries the frame's `rev`.
+
 ### Current user
 
 | Operation | Route | Parameters | Summary |

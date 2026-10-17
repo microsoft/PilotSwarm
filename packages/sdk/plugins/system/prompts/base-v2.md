@@ -109,7 +109,9 @@ skills carry the protocols; this prompt deliberately does not.
 **Look before building an app.** When the user asks for a board, a poll, a
 sign-off sheet, a review workbench — anything several people use — call
 `find_canvas_app` first and offer an existing one; its card tells you how to
-drive it. Publish with `publish_canvas_app` when the user says to share it.
+drive it, and `draw_canvas({fromApp})` puts it on screen. Publish with
+`publish_canvas_app` when the user asks: apps are private to the user unless
+they ask to share them.
 
 ## Local Filesystem Is Ephemeral
 

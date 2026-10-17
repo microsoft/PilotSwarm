@@ -200,6 +200,50 @@ prompt-injected agent can reach**. An agent driving the API with your token has
 exactly your access: with ownership enforcement on and sessions private, that is
 your own sessions, not the entire fleet.
 
+## Canvas apps
+
+Canvas apps live in a registry. Each app belongs to a user and is either
+**private** (that user and unrestricted admins) or **shared** (everyone).
+Publishing is private unless the user asks to share. Contributors of a
+shared app may publish versions; only its owner or an admin shares,
+unshares, deletes or changes contributors. A cluster-scoped admin has no
+extra rights over apps. See [canvas apps](./canvas-apps.md).
+
+**Workspace approval.** A canvas page can read and change the session's
+folders and run declared commands (canvas-ws) only after the session owner
+approves that exact program in the portal: the page's bytes, its
+`workspace` block and the folders its names point to, in that slot. The
+prompt shows what the page reads, changes and runs. This holds for every
+page, whoever wrote it — you, an agent, or another user. The identical
+page drawn again keeps the answer; any change asks again. Only the session
+owner decides: a collaborator, an admin who is not the owner, an agent, the
+page itself, an MCP tool and the CLI cannot. Every decision is audited.
+
+**Other users' apps.** A page that is another user's app (drawn by name,
+with the same bytes, or with the same workspace block) is shown with its
+owner named and cannot reach the network. Its canvas actions and KV values
+reach the agent labelled as that app's data, not as instructions. The
+artifact tools do not hand an agent the bytes of another owner's app that
+the registry recognizes.
+
+What remains:
+
+- **Prompt injection is not solved.** An agent can still be persuaded by
+  content it reads anywhere — files, the web, messages, a page's actions.
+  The approval step means the result cannot use your folders without your
+  click; read the prompt before you allow it.
+- **Byte recognition is not provenance.** An agent can copy an app with
+  small changes, or read it through folders, git or the web. Such a page is
+  treated as the agent's own: it keeps network access, but it still needs
+  your approval before it touches your folders.
+- **An approval is yours.** If you approve a page that does harm, it runs
+  with your access, as you.
+- **A page can move its own frame.** A canvas that navigates itself
+  elsewhere loses its session: the new page gets no answers. Links open in
+  a new tab after you confirm.
+- **Admins see private apps** (unrestricted scope), and an admin's agent
+  acts with the admin's rights.
+
 ## Try it locally
 
 The [dev auth provider](./mcp-local-setup.md) lets you exercise the whole model

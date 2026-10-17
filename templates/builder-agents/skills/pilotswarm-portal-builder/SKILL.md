@@ -1,6 +1,7 @@
 ---
 name: pilotswarm-portal-builder
 description: "Use when creating or updating a browser portal on top of PilotSwarm. Covers portal branding, plugin.json.portal, named-agent exposure, auth add-ons, and remote deployment wiring."
+version: 1.1.0
 ---
 
 # PilotSwarm Portal Builder
@@ -92,6 +93,14 @@ Do not guess these answers when they materially affect the scaffold. If the user
   and set `PLUGIN_DIRS`.
 - Validate a portal rollout with `GET /api/v1/health` and
   `GET /api/v1/auth/config`.
+- Canvas apps live in the deployment's registry (`/api/v1/canvas-apps`):
+  private by default, versioned, shareable. A portal that moves from the old
+  `apps/<name>` fact catalog runs the one-time admin migration
+  (`pilotswarm apps migrate-legacy`, see `docs/user-guide/canvas-apps.md`).
+  A canvas page with a `workspace` block waits for the session owner's
+  approval in the portal; a custom UX that renders canvases must show that
+  prompt from `getCanvasWorkspaceApproval` and send the decision with
+  `setCanvasWorkspaceConsent`, never from the page.
 
 ## Portal Config Guidance
 

@@ -162,21 +162,35 @@ delete`) and receives `canvas-kv-ready`, `canvas-kv-result` and
 `canvas-kv-change`; the `canvas-apps` skill ships the `CanvasKV()` helper a
 page pastes. Nothing is injected into the document.
 
-## The app catalog: publish and find
+## The app registry
 
-A published app is one every session in the deployment can find and draw.
-Two system tools, no schema:
+Canvas apps live in their own registry in the CMS (migration 0084), not in
+facts. An app belongs to a user (its owner), is **private** (owner and
+unrestricted admins) or **shared** (everyone), and has SemVer versions, one
+of them active. A version's bytes are stored once, content-addressed, in the
+app's own artifact space; the app outlives the session it was published
+from. Contributors of a shared app may publish versions of it.
 
 ```
-publish_canvas_app({ name, description, tags?, slot? })
-   canvas bytes            → pinned artifact app-<name>.html on the session
-   manifest + armed contract + source → SHARED fact apps/<name>   (the card)
-find_canvas_app({ query })
-   enhanced store  → searchFacts(hybrid, namespace "apps", scope shared)
-   base store      → read apps/* and rank by term overlap
-read_facts({ key_pattern: "apps/<name>", scope: "shared" })  → the full card
-draw_canvas({ fromArtifact: card.source })                     → on screen
+publish_canvas_app({ name, description, tags?, scope?, version?, slot? })
+   → a version of the user's app; private unless scope: "shared"
+   → the same bytes again: no change; new bytes: the manifest's version, else the next patch
+find_canvas_app({ query })   → ranked apps the user may see
+find_canvas_app({ name })    → that app's full card (interface, contract, workspace)
+draw_canvas({ fromApp: { name, version?, scope? } })   → on screen, card returned
+manage_canvas_app({ action, name, ... })   → enable/disable, describe, pin, share/unshare,
+                                             contributors, delete
 ```
+
+A user's private app hides a shared app of the same name for that user;
+`scope` picks the other. Agents act with their session owner's rights; a
+system or ownerless session cannot publish. The same operations are on
+`PilotSwarmManagementClient` (direct and Web API), the MCP server, the
+`pilotswarm apps` CLI and the portal. Export writes a deterministic
+`.tar.gz` of every version and the card, with no owner or ids; import
+checks the whole archive first. The legacy `apps/<name>` facts migrate once
+with `migrateLegacyCanvasApps` (an admin action): each migrated fact is
+removed, a skipped one stays. Agents can read but no longer write them.
 
 The card is derived from the document's `CANVAS-APP-MANIFEST`, never from
 the model's memory of it, and **publish refuses a manifest without an
@@ -184,13 +198,38 @@ the model's memory of it, and **publish refuses a manifest without an
 value), `requests` (which `req/*` ops the page queues, their args and the
 `result` it renders), `events` (which `evt/*` notes it shows). That block is
 what an agent that never read the HTML drives the app from. Code:
-`packages/sdk/src/canvas-app-catalog.ts`; manifest grammar and caps in
-`canvas-app-manifest.ts`.
+`canvas-app-registry.ts` (service), `canvas-app-store.ts` (procedures);
+manifest grammar and caps in `canvas-app-manifest.ts`.
 
-Publishing is a disclosure — the shared fact and the artifact are readable
-by every session — so the rule is *publish the shell, never the data*.
-Republishing a name replaces the card and the artifact. The facts stats
-views bucket the namespace as `apps` (facts migration 0012).
+Every `fromApp` draw, and every `fromArtifact` draw whose bytes equal a
+version, records a load (time, session, user, app, version), kept 400 days;
+owners and unrestricted admins read them (`getCanvasAppLoads`, the tuner's
+`read_canvas_app_loads`).
+
+### Who a page belongs to
+
+Every draw is classified for the canvas's owner and the result rides the
+draw event: `owner` (the owner's app, by `fromApp` or exact bytes),
+`cross-owner` (another user's app, by `fromApp`, exact bytes, or the same
+workspace block), or `agent` (anything else). A draw that cannot be
+classified is recorded as `cross-owner`. A `cross-owner` page is framed by
+the portal with a network-blocking policy and its owner is named; actions
+and `canvas_kv` values from it reach the agent with a `page` label. The
+artifact and canvas read tools do not hand an agent another owner's app
+bytes the registry identifies (defense in depth only: a near-copy is not
+recognized).
+
+### Workspace approval
+
+No page uses the session's folders or commands (canvas-ws) until the
+session owner approves that exact program: the page bytes, its checked
+`workspace` block and the folders its names resolve to, in that slot of
+that session. Classification never authorizes; it only changes the prompt's
+wording. The identical program redrawn keeps its decision; any change asks
+again. The portal asks in its own shell (`getCanvasWorkspaceApproval`,
+`setCanvasWorkspaceConsent`, both the session owner's only); no agent tool,
+MCP tool or CLI command reaches them. See
+[security and sharing](../user-guide/security-and-sharing.md).
 
 ## Canvas apps: save and reuse
 
@@ -226,9 +265,9 @@ draw_canvas({fromArtifact: {filename: "app-<name>.html"}})  # reuse; result = in
 
 Cross-session sources ride the platform's worker-trusted artifact layer, the
 same trust `read_artifact`/`write_artifact` already extend — the drawing
-agent vouches for what it draws. Package-shipped apps (`fromPackage`) and
-portal browse affordances are designed but unshipped (canvas-apps.md
-phases 2–3).
+agent vouches for what it draws. To reuse an app across sessions and users,
+publish it to the registry and draw it `fromApp`. Package-shipped apps
+(`fromPackage`) are designed but unshipped (canvas-apps.md phase 2).
 
 ## Presentation
 
