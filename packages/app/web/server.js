@@ -251,8 +251,13 @@ export async function startServer(opts = {}) {
                 res.status(404).type("text/plain").send("Not found");
                 return;
             }
-            res.set("Content-Security-Policy", "sandbox allow-scripts");
             res.set("Cache-Control", "no-store, max-age=0");
+            if (doc.trust === "owner" || doc.trust === "cross-owner") {
+                // A registry app page: JSON for the share viewer to frame.
+                res.json({ html: doc.html, trust: doc.trust });
+                return;
+            }
+            res.set("Content-Security-Policy", "sandbox allow-scripts");
             res.type("text/html").send(doc.html);
         } catch {
             res.status(404).type("text/plain").send("Not found");

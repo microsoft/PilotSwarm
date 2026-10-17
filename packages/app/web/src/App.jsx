@@ -781,7 +781,20 @@ function CanvasShareView({ token }) {
     const refetchDoc = React.useCallback(async () => {
         const response = await fetch(`/api/canvas-share/doc?t=${encodeURIComponent(token)}`);
         if (!response.ok) throw new Error("gone");
-        const html = await response.text();
+        let html;
+        if (/application\/json/i.test(response.headers.get("content-type") || "")) {
+            // A registry app page (issue 181): another user's app gets no
+            // network; the policy rides in the document's head.
+            const doc = await response.json();
+            html = String(doc?.html ?? "");
+            if (doc?.trust === "cross-owner") {
+                const policy = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'";
+                const prolog = /^(?:\uFEFF|\s|<!--[\s\S]*?-->)*<!doctype[^>]*>/i.exec(html)?.[0] || "";
+                html = html.slice(0, prolog.length) + `<meta http-equiv="Content-Security-Policy" content="${policy}">` + html.slice(prolog.length);
+            }
+        } else {
+            html = await response.text();
+        }
         const url = URL.createObjectURL(new Blob([html], { type: "text/html" }));
         setDoc((old) => {
             if (old?.url) window.setTimeout(() => URL.revokeObjectURL(old.url), 1000);

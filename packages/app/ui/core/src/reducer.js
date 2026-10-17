@@ -841,6 +841,16 @@ function normalizePromptAttachments(prompt, attachments) {
     });
 }
 
+
+/** Canvas app registry (issue 181): the trust fields of one canvas revision. */
+function canvasTrustFields(action) {
+    const trust = action?.trust === "cross-owner" || action?.trust === "owner" ? action.trust : "agent";
+    const app = action?.app && typeof action.app === "object" && typeof action.app.name === "string"
+        ? { name: action.app.name, version: typeof action.app.version === "string" ? action.app.version : null }
+        : null;
+    return { trust, pageSha256: typeof action?.pageSha256 === "string" ? action.pageSha256 : null, app };
+}
+
 export function appReducer(state, action) {
     const sessionId = action.sessionId ?? action.session?.sessionId;
     const contentUpdate = /^(history|files|canvas|orchestration|executionHistory|sessionStats|outbox)\//.test(action.type) || action.type === "sessions/merged";
@@ -4042,6 +4052,8 @@ function baseReducer(state, action) {
                             responseContract: action.responseContract && typeof action.responseContract === "object"
                                 ? action.responseContract
                                 : null,
+                            // Trust belongs to the revision too.
+                            ...canvasTrustFields(action),
                         },
                     },
                 },
@@ -4145,6 +4157,9 @@ function baseReducer(state, action) {
                             responseContract: (existing.latestRev || 0) > rev
                                 ? (existing.responseContract ?? null)
                                 : (action.responseContract && typeof action.responseContract === "object" ? action.responseContract : null),
+                            ...((existing.latestRev || 0) > rev
+                                ? { trust: existing.trust ?? "agent", pageSha256: existing.pageSha256 ?? null, app: existing.app ?? null }
+                                : canvasTrustFields(action)),
                             snapshotLoaded: true,
                         },
                     },

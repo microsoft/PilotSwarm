@@ -6063,6 +6063,10 @@ export class PilotSwarmUiController {
             note: typeof event?.data?.note === "string" ? event.data.note : "",
             sizeBytes: event?.data?.sizeBytes,
             responseContract: event?.data?.responseContract,
+            // Canvas app registry (issue 181): whose page this is, for the viewer.
+            trust: event?.data?.trust,
+            pageSha256: event?.data?.pageSha256,
+            app: event?.data?.app,
         });
 
         const state = this.getState();
@@ -6169,6 +6173,9 @@ export class PilotSwarmUiController {
                     note: typeof top?.data?.note === "string" ? top.data.note : "",
                     sizeBytes: top?.data?.sizeBytes,
                     responseContract: top?.data?.responseContract,
+                    trust: top?.data?.trust,
+                    pageSha256: top?.data?.pageSha256,
+                    app: top?.data?.app,
                 });
             }
             // The latest data tick per slot is that page's cold-load state —

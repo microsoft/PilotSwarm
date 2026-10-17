@@ -3598,6 +3598,10 @@ function computeCanvasView(state) {
         sessionId,
         slot,
         slots,
+        // Canvas app registry (issue 181): another user's app is framed apart.
+        trust: entry?.trust === "cross-owner" || entry?.trust === "owner" ? entry.trust : "agent",
+        pageSha256: entry?.pageSha256 ?? null,
+        appName: entry?.app?.name ?? null,
         name: typeof entry?.name === "string" ? entry.name : "",
         mode,
         exists,
