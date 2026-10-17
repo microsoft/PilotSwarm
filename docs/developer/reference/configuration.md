@@ -150,6 +150,61 @@ Override those names with `PORTAL_AUTH_PROXY_SUBJECT_HEADER`,
 `PORTAL_AUTH_PROXY_GROUPS_HEADER`. The proxy completes sign-in before the SPA
 loads, so this provider has no browser-side PKCE flow or token cache.
 
+The browser admits an enabled proxy only after `/api/auth/me` returns a
+sanitized principal and `authorization.allowed: true`. Public configuration
+is not proof of sign-in. Requests use same-origin cookies; the browser must
+not invent an access token or send identity headers.
+
+Optional actions are same-origin absolute paths, including paths outside the
+portal base:
+
+```bash
+PORTAL_AUTH_PROXY_SIGN_IN_URL='/auth/login?returnTo={returnTo}'
+PORTAL_AUTH_PROXY_SIGN_OUT_URL='/auth/logout'
+```
+
+Use at most one `{returnTo}` placeholder. It receives one encoded, validated
+portal-local target; share-capability URLs are excluded. Schemes,
+protocol-relative URLs, traversal and ambiguous paths are rejected. Without
+a sign-in action the portal offers retry. Without a sign-out action it
+explains that the proxy manages the session; it does not claim to revoke it.
+JWT/header validation and normal authorization remain server-side.
+
+**The portal does not enforce WebSocket Origin itself.** A proxy introducing
+ambient browser sessions must validate its trusted Host and exact Origin on
+unsafe methods and socket upgrades, apply CSRF protection, and strip spoofed
+identity/assertion/forwarding headers before it injects identity. Unsigned
+header mode also requires backend isolation; binding to loopback alone is
+not an isolation policy. See the separate
+[local signed-proxy example](../../../examples/proxy-auth/README.md).
+
+### Hosting below a path
+
+`PORTAL_BASE_PATH` defaults to `/`. For example, set
+`PORTAL_BASE_PATH=/tools/agents` to serve the portal at `/tools/agents/`.
+The same built browser assets work at root and below a path. Configure the
+front proxy to **preserve** that prefix, not strip it.
+
+| Surface | Example with `/tools/agents` |
+|---|---|
+| Entry and health | `/tools/agents/`, `/tools/agents/api/health` |
+| Web API and socket | `/tools/agents/api/v1`, `/tools/agents/api/v1/ws` |
+| Legacy socket | `/tools/agents/portal-ws` |
+| SDK, TUI or MCP `apiUrl` | `https://portal.example.com/tools/agents` (no added `/api`) |
+
+Configuration accepts unreserved ASCII segments and one trailing slash.
+Empty segments, dot segments, escapes, controls, queries and fragments are
+invalid. Requests must remain within the exact boundary: `/tools/agents2`
+is not this portal. An unrelated root landing page stays with the front proxy.
+Do not derive the base from forwarded headers or the current deep-link path.
+
+Register the canonical prefixed entry as the Entra SPA callback. A root
+callback is composed with the configured prefix; an explicitly non-root
+callback is retained. Root hosting keeps its existing callback unchanged.
+Update external health probes to the prefixed health path. The supported local
+`scripts/portal-start.sh` does this; legacy `scripts/deploy-portal.sh` health
+guidance is root-only and is not a prefixed deployment recipe.
+
 Portal branding and sign-in copy come from `plugin.json.portal`, with
 `plugin.json.tui` used as a fallback when the portal plugin metadata does not
 provide an override. Preferred portal metadata shape is nested under

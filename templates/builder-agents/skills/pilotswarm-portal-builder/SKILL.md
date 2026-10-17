@@ -15,6 +15,7 @@ Build browser portal experiences on top of the shipped PilotSwarm web portal.
 - Plugin architecture: `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/plugins.md`
 - AKS deployment: `https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/deploy/aks.md`
 - DevOps sample: `https://github.com/microsoft/PilotSwarm/tree/main/examples/devops-command-center`
+- Signed local proxy example: `https://github.com/microsoft/PilotSwarm/tree/main/examples/proxy-auth`
 
 ## Personal multi-session workspaces
 
@@ -70,6 +71,7 @@ Before generating files, ask:
 5. Which auth provider should the portal use?
    - `none`
    - `entra`
+   - `proxy` with a trusted identity-aware proxy
    - another provider described by the user
 6. If auth is enabled, what should the sign-in title and helper copy say?
 7. Will the portal run locally only, or also in AKS / remote deployment?
@@ -91,7 +93,9 @@ Do not guess these answers when they materially affect the scaffold. If the user
   (`creatableAgents`); that is why portal images must package the app plugin
   and set `PLUGIN_DIRS`.
 - Validate a portal rollout with `GET /api/v1/health` and
-  `GET /api/v1/auth/config`.
+  `GET /api/v1/auth/config`, beneath the configured `PORTAL_BASE_PATH`.
+  Preserve the prefix through the front proxy. SDK/TUI/MCP `apiUrl` is the
+  portal entry URL including the prefix, without an extra `/api` suffix.
 
 ## Portal Config Guidance
 
@@ -143,13 +147,27 @@ Logo notes:
   - `PORTAL_AUTH_ENTRA_TENANT_ID`
   - `PORTAL_AUTH_ENTRA_CLIENT_ID`
   - `PORTAL_AUTHZ_ADMIN_GROUPS` / `PORTAL_AUTHZ_USER_GROUPS` as comma-delimited email allowlists when admission gating is requested
-  - redirect URI registration for the portal host
+  - exact SPA redirect URI registration including the configured portal base
 - Use only the canonical `PORTAL_AUTH_*` and `PORTAL_AUTHZ_*` env vars; do not document or scaffold legacy `ENTRA_*` fallbacks.
 - If the user wants another provider such as AWS IAM, do not force Entra-specific language into the scaffold.
 - For custom providers, separate:
   - browser-side sign-in initiation
   - token acquisition/storage
   - server-side request validation
+- A request-authenticated provider does not need a browser token. For enabled
+  `proxy`, require `client.authenticatesFromRequest: true` and a sanitized,
+  allowed `/api/auth/me` response before rendering protected UI. Public
+  configuration is not admission; never fabricate tokens or identity headers.
+- Proxy login/logout actions use same-origin absolute paths. Login may include
+  one `{returnTo}` placeholder for an encoded safe portal-local target; omit
+  canvas-share capabilities. Missing logout configuration means upstream-session
+  guidance, not successful local revocation.
+- An ambient-cookie proxy must enforce exact Host/Origin and unsafe-method CSRF,
+  strip spoofed identity/assertion/forwarding headers, and validate socket
+  upgrades. The portal does not enforce WebSocket Origin itself. Header mode
+  additionally needs backend isolation; loopback alone is insufficient.
+- Use `examples/proxy-auth` for a local signed-assertion demonstration. It is
+  explicitly opt-in, not a production IdP or a replacement for dev auth.
 
 ## Local And Remote Launch Guidance
 
@@ -176,7 +194,10 @@ Logo notes:
 - Verify the portal can load branding from `plugin.json.portal`.
 - Verify named-agent creation appears in the browser UI when the plugin and session policy are present.
 - If auth is enabled, verify the portal-config/bootstrap path advertises the selected provider correctly.
-- For remote deployments, verify `GET /api/health` and `GET /api/portal-config` against the live ingress host.
+- For remote deployments, verify `GET /api/health` and `GET /api/portal-config` beneath the configured base against the live ingress host.
+- Exercise root and nested hosting with the same browser build. Keep shared
+  base-path helpers for APIs, sockets, branding, freshness, canvas and copied
+  links; never guess a base from the current deep-link pathname.
 
 ## Guardrails
 

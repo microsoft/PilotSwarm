@@ -127,7 +127,11 @@ Every deployment exposes one integration surface: the portal's Web API
 (`/api/v1` + `/api/v1/ws`). Clients — TUI (`pilotswarm remote --api-url`),
 SDK apps (`new PilotSwarmClient({ apiUrl })`), the MCP server
 (`pilotswarm-mcp --api-url`), and custom UXes on `pilotswarm-sdk/api` —
-hold only the portal URL (plus an Entra token where auth is enabled). Only
+hold only the portal entry URL (including `PORTAL_BASE_PATH`, plus the selected
+provider's credentials where required). A same-origin proxy browser uses its
+upstream session, not a fabricated token. Public auth metadata never proves
+admission. See the [local signed-proxy example](../../examples/proxy-auth/README.md)
+and [base-path configuration](../../docs/developer/reference/configuration.md#hosting-below-a-path). Only
 workers and the portal server itself hold `DATABASE_URL`/blob/`HORIZON_*`
 secrets. Direct `{ store }` client construction is for single-process demos,
 tests, and cleanup scripts. See

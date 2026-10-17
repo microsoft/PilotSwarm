@@ -156,7 +156,7 @@ for (const base of ["/", "/portal", "/tools/agents"]) {
         page.on("pageerror", error => failures.push(error.message));
         try {
             await page.goto(`${fixture.origin}${base}`);
-            await expect(page.locator(".portal-gate-title")).toHaveText("Sign in to Fixture Portal");
+            await expect(page.locator(".portal-gate-title")).toHaveText("Sign in to Fixture Portal as\u2026");
             await expect(page.locator(".portal-dev-persona-button").first()).toBeVisible();
             await expect(page.locator(".portal-gate-brand img")).toBeVisible();
             await expect(page.locator('meta[name="pilotswarm-base-path"]')).toHaveAttribute("content", fixture.paths.entryPath);

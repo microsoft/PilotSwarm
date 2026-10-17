@@ -39,6 +39,11 @@ const boot = await api.getBootstrap();      // models, creatable agents, log con
                                             // session policy, auth context — one call
 ```
 
+For a prefixed portal, pass its entry URL, for example
+`apiUrl: "https://portal.example.com/tools/agents"`. The client preserves this
+path when appending `/api/v1` and the socket endpoint; do not pass `/api/v1`
+as the base or infer the base from a session deep link.
+
 `GET /api/v1/bootstrap` exists so a UI can render its first frame from a
 single round-trip: models by provider, agents you can create sessions for,
 whether log tailing is available (and if not, why), and the caller's own
@@ -106,13 +111,19 @@ Discover the deployment's mode first — never hardcode it:
 
 ```js
 const authConfig = await api.getAuthConfig();
-// { enabled, provider: "none" | "entra" | "proxy", client: { clientId, authority, redirectUri } | null }
+// Token providers advertise their client settings; request auth advertises
+// client: { authenticatesFromRequest: true, signInUrl, signOutUrl }.
 ```
 
 - **`none`** — pass no `getAccessToken`; you're done.
 - **`proxy`** — the identity-aware proxy signs the user in before the SPA
   loads and injects identity into same-origin HTTP/WebSocket requests. Pass no
-  `getAccessToken`; `authConfig.client` is `null`.
+  `getAccessToken`. An enabled provider advertises
+  `authConfig.client.authenticatesFromRequest: true`. Require a valid principal
+  and `authorization.allowed: true` from `getAuthContext()` before displaying
+  protected UI; public discovery is not admission. Never fabricate a token or
+  copy assertion/identity headers into the browser. Optional same-origin login
+  and logout actions are navigation, not proof of session revocation.
 - **`entra`, browser SPA** — feed the discovered `clientId`/`authority` into
   MSAL's SPA flow and hand the token getter to `ApiClient`:
 
@@ -123,7 +134,8 @@ const msal = new PublicClientApplication({
   auth: {
     clientId: authConfig.client.clientId,
     authority: authConfig.client.authority,
-    redirectUri: window.location.origin,   // must be registered as a SPA redirect URI
+    redirectUri: authConfig.client.redirectUri || window.location.origin,
+    // Register this exact SPA callback, including a configured portal prefix.
   },
 });
 await msal.initialize();
@@ -141,7 +153,7 @@ async function getAccessToken() {
 }
 ```
 
-  Your app's origin must be added to the deployment's app registration as a
+  Your app's exact callback URL must be added to the deployment's app registration as a
   **SPA redirect URI** — see [Portal Entra App Roles](../developer/deploy/entra-app-roles.md).
 
 - **`entra`, headless/service** — set a service-principal token in
@@ -149,8 +161,11 @@ async function getAccessToken() {
   the cache written by `pilotswarm auth login --api-url <url>`.
 
 On 401/403 the client calls your `onUnauthorized`/`onForbidden` hooks; the
-WebSocket closes with `4401`/`4403` and suppresses reconnection until you fix
-the token. A `403` body carries the authorization engine's reason — show it.
+WebSocket closes with `4401`/`4403` and suppresses reconnection until you restore
+authentication. An upstream proxy can instead terminate its tunnel without a
+close code; do not infer admission from a reconnect attempt. HTTP admission
+remains authoritative. A `403` body carries the authorization engine's reason
+when available - show it.
 
 ## 5. Or start one level up: `HttpApiTransport`
 

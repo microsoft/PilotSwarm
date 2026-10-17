@@ -73,7 +73,7 @@ cp -R templates/builder-agents/skills/* .github/skills/
 ## Design Intent
 
 - `pilotswarm-cli-builder` helps users build plugin-driven CLI/TUI apps on top of the shipped PilotSwarm UI.
-- `pilotswarm-portal-builder` helps users customize the shipped browser portal with plugin-driven branding, named-agent exposure, and optional auth add-ons.
+- `pilotswarm-portal-builder` helps users customize the shipped browser portal with plugin-driven branding, named-agent exposure, root/nested hosting, and optional auth add-ons. Its proxy guidance separates public discovery from request admission and uses the [signed local example](../../../examples/proxy-auth/README.md) without replacing dev auth.
 - `pilotswarm-sdk-builder` helps users build SDK-first services and applications around `PilotSwarmClient` and `PilotSwarmWorker`.
 - `pilotswarm-azure-deployer` helps users package and deploy PilotSwarm-based apps to Azure / AKS, with explicit env-template and cross-cluster workload-identity guidance.
 - `pilotswarm-hybrid-datastore` (skill) helps builders wire the stock-PostgreSQL runtime store alongside optional HorizonDB enhanced facts/search/graph providers without changing the default Docker image.

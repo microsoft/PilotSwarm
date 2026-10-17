@@ -62,6 +62,18 @@ Do not bypass shared selectors/components with host-only UI logic unless the beh
 
 ## Product Rules
 
+- Browser request auth is an explicit capability, not a dummy token or account.
+  Enabled proxy metadata still requires an allowed sanitized admission response.
+  Keep proxy lifecycle guards separate from none/dev/Entra credential behavior;
+  absent proxy logout means upstream-session guidance, never claimed revocation.
+  Native clients keep their existing provider paths.
+- `PORTAL_BASE_PATH` is shared URL state supplied by the portal shell, not
+  inferred from a deep link. Keep root/nested assets, API/socket endpoints,
+  freshness, branding, canvas and copied links consistent across main/MoA views.
+  A front proxy must preserve the prefix; ambient cookie proxies enforce
+  Host/Origin/CSRF, including upgrades, because the portal does not enforce
+  WebSocket Origin itself. The separate local signed-proxy demo is opt-in and
+  leaves default dev sign-in unchanged.
 - Default repository/help links point to `microsoft/PilotSwarm`. Keep shared
   state, portal configuration and bundled plugin defaults aligned; preserve
   app-specific guide overrides. Public source and package downloads do not

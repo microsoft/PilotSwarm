@@ -16,6 +16,19 @@ For deployments with Entra ID auth enabled, you'll see a sign-in flow first.
 With identity-aware proxy auth, the proxy completes sign-in before the portal
 loads. For local development, sign-in is normally bypassed.
 
+Your deployment can instead use a path such as `/portal/`. Open the exact
+entry URL your operator gives you; copied session and canvas links keep that
+path. Proxy sign-in can redirect you to its login page and then back to a
+safe session link. An access-denied message means the authenticated identity
+was not admitted; retrying is not a way around that policy.
+
+When the proxy has no configured sign-in or sign-out page, the portal shows
+retry or upstream-session guidance. It does not pretend that clearing local
+state signs you out of the proxy. To try this locally, use the
+[signed-proxy example](../../examples/proxy-auth/README.md). It uses separate
+browser contexts for different people; ordinary tabs share the proxy cookie.
+The existing dev-auth personas remain per-tab.
+
 For several sessions at once, open the
 [Master of Agents workspace](./master-of-agents.md). It saves up to five personal
 chat/canvas dashboards. Each panel has its own message box by default.

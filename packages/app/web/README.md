@@ -28,6 +28,20 @@ node server.js           # API server at http://localhost:3001
 
 ## Portal Customization
 
+### Base-path hosting
+
+Set `PORTAL_BASE_PATH=/portal` to open `/portal/`; the default is `/`.
+Use the same production build for root, simple and nested prefixes. A front
+proxy must preserve the configured prefix for assets, APIs and WebSockets.
+Point probes at `/portal/api/health` and API clients at the portal entry URL,
+not at an extra `/api` suffix. Deep links and copied canvas/artifact links
+retain the prefix. In Vite development, set the same base on Vite and the
+API server. Only the current React entry is supported; obsolete `public/`
+shell files are not copied or served.
+
+See [configuration](../../../docs/developer/reference/configuration.md#hosting-below-a-path)
+for path restrictions, callbacks and legacy root-only deployment guidance.
+
 The web portal reads app-facing customization from `plugin.json` in your app
 plugin directory. Pass the plugin path with `--plugin` or set `PLUGIN_DIRS`
 so the portal process can see the same metadata the TUI and worker use.
@@ -93,7 +107,7 @@ Artifact behavior:
 Portal authentication is provider-based.
 
 - Default: `none`
-- Built-in optional provider: `entra`
+- Built-in optional providers: `entra`, `proxy`, and opt-in local `dev`
 - AuthZ is common across providers and currently supports Phase 1 group-based admission control
 
 Enable Entra ID with env vars:
@@ -137,6 +151,22 @@ into the same browser/server provider interfaces, while sharing the same common
 authz layer.
 
 ## Web API
+
+### Request-authenticated browser sign-in
+
+With `PORTAL_AUTH_PROVIDER=proxy`, the browser uses allowed `/api/auth/me`
+identity rather than a fabricated account or token. Optional
+`PORTAL_AUTH_PROXY_SIGN_IN_URL` and `PORTAL_AUTH_PROXY_SIGN_OUT_URL` are
+same-origin action paths; login may contain one `{returnTo}` placeholder.
+No logout URL means upstream-managed logout guidance, not successful local
+revocation. Denial, expiry and malformed admission never open the workspace.
+
+The proxy owns cookie, Host, Origin and CSRF protection. The portal does not
+check WebSocket Origin itself; enforce it at the proxy before assertion
+injection. Existing JWT/header verification and authorization still apply.
+None, dev and Entra retain their credential paths.
+The [separate signed-proxy example](../../../examples/proxy-auth/README.md)
+demonstrates this with local personas without replacing dev auth.
 
 The portal server also hosts the versioned PilotSwarm Web API — same process,
 same port (3001):
