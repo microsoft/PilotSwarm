@@ -183,6 +183,77 @@ async function run() {
             !anyFalseRefusal);
     }
 
+    // ── G46-06: the advertised remedy must actually work ────────
+    {
+        // Grok's finding, caught by source review before this file ever ran.
+        //
+        // The planning pass used to measure bodies WITHOUT response_bytes and
+        // only add the field afterwards, so it was blind to a cost it later
+        // incurred. Two false refusals follow near the bound:
+        //
+        //   1. minimum_envelope_bytes understated the true floor by the field's
+        //      width, so obeying the error's own remedy got you refused AGAIN.
+        //   2. a page whose body fit at exactly the budget grew past it once the
+        //      field arrived, and was refused instead of shrunk by one more row.
+        //
+        // The crisp observable is the REMEDY LADDER. minimum_envelope_bytes is
+        // necessary but not sufficient — a page carrying even one row costs more
+        // than the bare envelope — so the contract is that following the numbers
+        // the errors advertise TERMINATES IN A RESPONSE, and that each number is
+        // honest about which kind it is. smallest_achieved_bytes is sufficient:
+        // it names a response that was actually built and measured.
+        const all = [ev(1, "a")];
+        const client = await connect(sessionMgmt(all));
+
+        const ask = (max_bytes) => client.callTool({
+            name: "get_session_events",
+            arguments: { session_id: SESSION, page: true, max_bytes },
+        });
+
+        let budget = 1;
+        let steps = 0;
+        let res = await ask(budget);
+        const advertisedChain = [];
+        while (res.isError && steps < 5) {
+            const err = JSON.parse(textOf(res));
+            const next = err.smallest_achieved_bytes ?? err.minimum_envelope_bytes;
+            record(`G46-06: refusal at ${budget}B advertises a larger budget`,
+                typeof next === "number" && next > budget, `advertised ${next} for ${budget}`);
+            if (!(typeof next === "number" && next > budget)) break;
+            advertisedChain.push(next);
+            budget = next;
+            res = await ask(budget);
+            steps++;
+        }
+        record("G46-06: following the advertised remedy terminates in a response",
+            !res.isError, res.isError ? textOf(res).slice(0, 160) : `after ${steps} step(s)`);
+        record("G46-06: the response fits the budget its own error advertised",
+            !res.isError && bytesOf(res) <= budget,
+            res.isError ? "refused" : `${bytesOf(res)} > ${budget}`);
+        record("G46-06: the ladder is short, not a byte-by-byte crawl",
+            steps <= 2, `${steps} steps via ${JSON.stringify(advertisedChain)}`);
+
+        // smallest_achieved_bytes must be SUFFICIENT, not merely larger: asking
+        // again at exactly that number must return the page it measured.
+        const tight = await ask(1);
+        const tightErr = JSON.parse(textOf(tight));
+        if (typeof tightErr.smallest_achieved_bytes === "number") {
+            const atSmallest = await ask(tightErr.smallest_achieved_bytes);
+            record("G46-06: smallest_achieved_bytes is sufficient, not just advisory",
+                !atSmallest.isError && bytesOf(atSmallest) <= tightErr.smallest_achieved_bytes,
+                atSmallest.isError ? textOf(atSmallest).slice(0, 120) : "");
+        }
+
+        // No budget anywhere in the band may yield an over-budget SUCCESS.
+        let overBudget = 0;
+        for (let b = advertisedChain[0] ?? 1; b <= (advertisedChain[0] ?? 1) + 80; b++) {
+            const r = await ask(b);
+            if (!r.isError && bytesOf(r) > b) overBudget++;
+        }
+        record("G46-06: no over-budget success in the band above the floor",
+            overBudget === 0, `${overBudget} violations`);
+    }
+
     // ── handler-level drain is a PARTITION, under byte pressure ──
     {
         // Sequences start at 101 deliberately. A forward drain must begin from a

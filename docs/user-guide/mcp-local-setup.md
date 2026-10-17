@@ -180,6 +180,18 @@ notice, the receipt, the omissions list and pretty-printing all count. The
 server never returns an over-budget response: if it cannot fit, you get an
 explicit error naming the minimum, not a quietly truncated page.
 
+The refusal names two different kinds of number, and the difference matters:
+
+- `minimum_envelope_bytes` is **necessary, not sufficient**. It is what an
+  events-free response costs. A page carrying even one row costs more, so
+  clearing this bar admits a response but does not promise one.
+- `smallest_achieved_bytes` **is sufficient**. The server built and measured
+  that response; asking again at exactly that budget returns it.
+
+So the remedy is a short ladder, not a search: raise to the number you were
+given, and if the next call still refuses, use the `smallest_achieved_bytes`
+it reports. That terminates in at most a couple of steps.
+
 A budget cut sets `truncated_reason: "byte_budget"` and still advances the
 cursor — an oversized single record is delivered with its payload omitted
 rather than stalling you. A byte cut does NOT by itself mean `has_more`: a
@@ -189,7 +201,7 @@ final oversized record is fully dispatched, so a drain can end with
 
 ### What the omissions list is, and is not
 
-Three distinct kinds, deliberately not merged:
+Four distinct kinds, deliberately not merged:
 
 - `byte_budget` — this read's own output cut. The payload exists on the server.
 - `sdk_echo` — a pre-existing write-time summarization: the Copilot SDK's full
