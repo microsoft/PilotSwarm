@@ -250,6 +250,32 @@ describe("canvas app registry: service", () => {
         }
     });
 
+    it("every successful export fits the importer's expanded budget; a history that would not is refused up front", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const { catalog, deps } = await setup(env);
+        try {
+            const name = `car-big-${env.runId}`;
+            // 48 distinct, highly compressible pages just under the 900 KB cap:
+            // about 42 MB expanded, far below 20 MB compressed.
+            const filler = "x".repeat(870_000);
+            for (let i = 0; i < 48; i++) {
+                await publishCanvasAppHtml(deps, { html: page(name, `<p>v${i}</p><!-- ${filler} -->`), name, viewer: V.alice, version: `1.0.${i}` });
+            }
+            await expectCode(exportCanvasApp(deps, { name }, V.alice), "BAD_REQUEST");
+            // A smaller history exports and imports back.
+            const small = `car-small-${env.runId}`;
+            for (let i = 0; i < 3; i++) {
+                await publishCanvasAppHtml(deps, { html: page(small, `<p>v${i}</p><!-- ${filler} -->`), name: small, viewer: V.alice, version: `1.0.${i}` });
+            }
+            const archive = await exportCanvasApp(deps, { name: small }, V.alice);
+            await deleteCanvasApp(deps, { name: small }, V.alice);
+            const imported = await importCanvasApp(deps, archive.bytes, V.bob);
+            assertEqual(imported.versions.filter((v) => v.status === "imported").length, 3, "the exported archive imports");
+        } finally {
+            await catalog.close();
+        }
+    });
+
     it("a repeated import changes nothing, metadata included", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
         const { catalog, deps } = await setup(env);

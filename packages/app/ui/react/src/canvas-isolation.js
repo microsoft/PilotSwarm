@@ -40,7 +40,31 @@ export const CROSS_OWNER_LINK_GUARD = `<script>addEventListener('click',function
 /** MoA panel keys (Tab/Escape) forwarded to the portal, as for ordinary canvases. */
 export const CANVAS_PANEL_KEYS = `<script>window.addEventListener('keydown',function(e){if(e.isTrusted&&!e.altKey&&!e.metaKey&&!e.ctrlKey&&(e.key==='Tab'||e.key==='Escape')){e.preventDefault();e.stopImmediatePropagation();parent.postMessage({type:'moa-panel-key',key:e.key,backwards:e.shiftKey},'*')}},true);</script>`;
 
-export const CROSS_OWNER_WRAPPER_HTML = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${CROSS_OWNER_WRAPPER_CSP}"><style>html,body{margin:0;height:100%;background:transparent;overflow:hidden}iframe{border:0;width:100%;height:100%;display:block}</style></head><body><script>(function(){var inner=null,dead=false,loads=0;function own(d){return typeof d.type==='string'&&d.type.indexOf('pse-wrapper')===0}function shut(ps){for(var i=0;ps&&i<ps.length;i++){try{ps[i].close()}catch(x){}}}addEventListener('message',function(e){var d=e.data,ps=e.ports;if(dead||!d||typeof d!=='object'){shut(ps);return;}if(e.source===parent&&d.type==='pse-wrapper-load'){shut(ps);if(inner)return;inner=document.createElement('iframe');inner.setAttribute('sandbox','allow-scripts');inner.setAttribute('allow','autoplay *');inner.setAttribute('referrerpolicy','no-referrer');inner.addEventListener('load',function(){loads+=1;if(loads>1){dead=true;try{inner.remove()}catch(x){}inner=null;try{parent.postMessage({type:'pse-wrapper-left'},'*')}catch(x){}}});inner.srcdoc=String(d.html||'');document.body.appendChild(inner);return;}if(inner&&e.source===inner.contentWindow){if(own(d)){shut(ps);return;}try{parent.postMessage(d,'*',ps?Array.prototype.slice.call(ps):[])}catch(x){shut(ps)}return;}if(inner&&e.source===parent&&!own(d)){shut(ps);try{inner.contentWindow.postMessage(d,'*')}catch(x){}return;}shut(ps);});parent.postMessage({type:'pse-wrapper-ready'},'*');})();</script></body></html>`;
+/**
+ * The fixed, content-free canvas-ws diagnostic (issue 184): the only
+ * workspace message a window may receive once workspace replies travel on
+ * request ports.
+ */
+export const CANVAS_WS_UPGRADE_CODE = "CANVAS_WS_UPGRADE_REQUIRED";
+
+/**
+ * The wrapper document. `workspaceResults` says which `canvas-ws-result`
+ * messages from the portal it passes to the page:
+ *  - "relay"  (issue 181 alone): window replies, as the portal sends them
+ *    today; the wrapped inner frame cannot be navigated, and a replaced inner
+ *    frame ends the relay;
+ *  - "upgrade-only" (with issue 184's request ports): only the fixed
+ *    CANVAS_WS_UPGRADE_REQUIRED diagnostic ({ok:false, code, error} with a
+ *    string error and an integer or null id); every other result is dropped.
+ */
+export function crossOwnerWrapperHtml({ workspaceResults = "relay" } = {}) {
+    const WS_FILTER = workspaceResults === "upgrade-only"
+        ? `function wsOk(d){var k=Object.keys(d).sort().join(',');return k==='code,error,id,ok,type'&&d.ok===false&&d.code==='${CANVAS_WS_UPGRADE_CODE}'&&typeof d.error==='string'&&d.error.length<=200&&(d.id===null||(typeof d.id==='number'&&Math.floor(d.id)===d.id))}`
+        : "function wsOk(){return true}";
+    return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${CROSS_OWNER_WRAPPER_CSP}"><style>html,body{margin:0;height:100%;background:transparent;overflow:hidden}iframe{border:0;width:100%;height:100%;display:block}</style></head><body><script>(function(){var inner=null,dead=false,loads=0;function own(d){return typeof d.type==='string'&&d.type.indexOf('pse-wrapper')===0}${WS_FILTER}function shut(ps){for(var i=0;ps&&i<ps.length;i++){try{ps[i].close()}catch(x){}}}addEventListener('message',function(e){var d=e.data,ps=e.ports;if(dead||!d||typeof d!=='object'){shut(ps);return;}if(e.source===parent&&d.type==='pse-wrapper-load'){shut(ps);if(inner)return;inner=document.createElement('iframe');inner.setAttribute('sandbox','allow-scripts');inner.setAttribute('allow','autoplay *');inner.setAttribute('referrerpolicy','no-referrer');inner.addEventListener('load',function(){loads+=1;if(loads>1){dead=true;try{inner.remove()}catch(x){}inner=null;try{parent.postMessage({type:'pse-wrapper-left'},'*')}catch(x){}}});inner.srcdoc=String(d.html||'');document.body.appendChild(inner);return;}if(inner&&e.source===inner.contentWindow){if(own(d)){shut(ps);return;}try{parent.postMessage(d,'*',ps?Array.prototype.slice.call(ps):[])}catch(x){shut(ps)}return;}if(inner&&e.source===parent&&!own(d)){shut(ps);if(d.type==='canvas-ws-result'&&!wsOk(d))return;try{inner.contentWindow.postMessage(d,'*')}catch(x){}return;}shut(ps);});parent.postMessage({type:'pse-wrapper-ready'},'*');})();</script></body></html>`;
+}
+
+export const CROSS_OWNER_WRAPPER_HTML = crossOwnerWrapperHtml();
 
 /** Put the given text right after the doctype (or first, when there is none). */
 export function injectAfterDoctype(html, injected) {
@@ -50,13 +74,18 @@ export function injectAfterDoctype(html, injected) {
 }
 
 /** The inner page: the app policy, optional panel keys, then the link guard, ahead of the page's own head. */
-export function buildIsolatedInnerHtml(text, { panelKeys = false } = {}) {
-    return injectAfterDoctype(text, `<meta http-equiv="Content-Security-Policy" content="${CROSS_OWNER_APP_CSP}">${panelKeys ? CANVAS_PANEL_KEYS : ""}${CROSS_OWNER_LINK_GUARD}`);
+/**
+ * The inner page: the app policy, an optional TRUSTED bootstrap supplied by
+ * the portal (issue 184's workspace document binding; never page-supplied),
+ * optional panel keys, then the link guard, ahead of the page's own head.
+ */
+export function buildIsolatedInnerHtml(text, { panelKeys = false, bootstrap = "" } = {}) {
+    return injectAfterDoctype(text, `<meta http-equiv="Content-Security-Policy" content="${CROSS_OWNER_APP_CSP}">${bootstrap || ""}${panelKeys ? CANVAS_PANEL_KEYS : ""}${CROSS_OWNER_LINK_GUARD}`);
 }
 
 /** A fresh object URL for the wrapper document. The caller revokes it. */
-export function createIsolationWrapperUrl() {
-    return URL.createObjectURL(new Blob([CROSS_OWNER_WRAPPER_HTML], { type: "text/html;charset=utf-8" }));
+export function createIsolationWrapperUrl(options = {}) {
+    return URL.createObjectURL(new Blob([crossOwnerWrapperHtml(options)], { type: "text/html;charset=utf-8" }));
 }
 
 /** Messages that only the wrapper itself may send to the portal. */

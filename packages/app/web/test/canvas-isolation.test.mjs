@@ -16,7 +16,7 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 
 import {
-    CROSS_OWNER_APP_CSP, CROSS_OWNER_WRAPPER_CSP, CROSS_OWNER_WRAPPER_HTML,
+    CROSS_OWNER_APP_CSP, CROSS_OWNER_WRAPPER_CSP, CROSS_OWNER_WRAPPER_HTML, crossOwnerWrapperHtml,
     assertPageBytes, buildIsolatedInnerHtml, injectAfterDoctype, isCanvasSlotFilename, isWrapperControlMessage, sha256HexOfBytes,
 } from "../../ui/react/src/canvas-isolation.js";
 import { createHash } from "node:crypto";
@@ -24,8 +24,8 @@ import { createHash } from "node:crypto";
 const read = (rel) => fs.readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
 
 /** Run the wrapper's script against a fake window; returns handles to drive it. */
-function bootWrapper() {
-    const script = /<script>([\s\S]*?)<\/script>/.exec(CROSS_OWNER_WRAPPER_HTML)[1];
+function bootWrapper(html = CROSS_OWNER_WRAPPER_HTML) {
+    const script = /<script>([\s\S]*?)<\/script>/.exec(html)[1];
     const listeners = [];
     const toParent = [];
     const transfers = [];
@@ -181,4 +181,31 @@ test("a request port from the page reaches the portal unchanged; every other por
     const late = fakePort("late");
     w.dispatch(inner.contentWindow, { type: "canvas-ws", op: "read" }, [late]);
     assert.equal(late.closed, true, "after the page was replaced, ports are closed, not relayed");
+});
+
+test("with request ports (issue 184), the wrapper passes only the fixed upgrade diagnostic as a canvas-ws-result", () => {
+    const w = bootWrapper(crossOwnerWrapperHtml({ workspaceResults: "upgrade-only" }));
+    w.dispatch(w.parent, { type: "pse-wrapper-load", html: "<p>app</p>" });
+    const inner = w.inner();
+    inner.fireLoad();
+    const upgrade = { type: "canvas-ws-result", id: 7, ok: false, code: "CANVAS_WS_UPGRADE_REQUIRED", error: "Update this canvas workspace helper before using files or commands." };
+    w.dispatch(w.parent, upgrade);
+    w.dispatch(w.parent, { type: "canvas-ws-result", id: 8, ok: true, result: { text: "secret" } });
+    w.dispatch(w.parent, { type: "canvas-ws-result", id: 9, ok: false, code: "CANVAS_WS_DENIED", error: "may not read work/.env" });
+    w.dispatch(w.parent, { ...upgrade, extra: "leak" });
+    w.dispatch(w.parent, { type: "canvas-data", data: { a: 1 } });
+    assert.deepEqual(inner.received, [upgrade, { type: "canvas-data", data: { a: 1 } }], "only the fixed diagnostic and non-workspace messages pass");
+    // In the 181-only default the portal's window replies still pass.
+    const legacy = bootWrapper();
+    legacy.dispatch(legacy.parent, { type: "pse-wrapper-load", html: "<p>app</p>" });
+    legacy.inner().fireLoad();
+    legacy.dispatch(legacy.parent, { type: "canvas-ws-result", id: 1, ok: true, result: {} });
+    assert.equal(legacy.inner().received.length, 1);
+});
+
+test("a trusted bootstrap goes after the policy and before the page", () => {
+    const html = buildIsolatedInnerHtml("<!doctype html><head><script>page()</script></head>", { bootstrap: "<script>bootstrap()</script>" });
+    assert.ok(html.indexOf("Content-Security-Policy") < html.indexOf("bootstrap()"));
+    assert.ok(html.indexOf("bootstrap()") < html.indexOf("page()"));
+    assert.ok(!buildIsolatedInnerHtml("<p>x</p>").includes("bootstrap"), "nothing is injected without one");
 });

@@ -3202,7 +3202,7 @@ const CANVAS_LINK_GUARD = `<script>addEventListener('click',function(e){var a=e.
  * set as the inner frame's srcdoc PROPERTY. The one contract lives in
  * canvas-isolation.js. Returns { url, html }.
  */
-function fetchCrossOwnerCanvas(controller, sessionId, filename, panelKeys = false, expectedSha256 = null) {
+function fetchCrossOwnerCanvas(controller, sessionId, filename, panelKeys = false, expectedSha256 = null, bootstrap = "") {
     const downloadResponse = controller?.transport?.api?.downloadArtifactResponse;
     if (typeof downloadResponse !== "function") return Promise.reject(new Error("artifact download unavailable"));
     return downloadResponse.call(controller.transport.api, sessionId, filename)
@@ -3211,11 +3211,14 @@ function fetchCrossOwnerCanvas(controller, sessionId, filename, panelKeys = fals
             const bytes = await response.arrayBuffer();
             await assertPageBytes(bytes, expectedSha256);
             const text = new TextDecoder().decode(bytes);
-            return { url: createIsolationWrapperUrl(), html: buildIsolatedInnerHtml(text, { panelKeys }) };
+            return { url: createIsolationWrapperUrl(), html: buildIsolatedInnerHtml(text, { panelKeys, bootstrap }) };
         });
 }
 
-function fetchArtifactHtmlObjectUrl(controller, sessionId, filename, panelKeys = false, linkGuard = false, expectedSha256 = null) {
+// `bootstrap`: an optional TRUSTED script the portal supplies for this one
+// document (issue 184's workspace document binding). Never page-supplied;
+// never used for previews or share links.
+function fetchArtifactHtmlObjectUrl(controller, sessionId, filename, panelKeys = false, linkGuard = false, expectedSha256 = null, bootstrap = "") {
     const downloadResponse = controller?.transport?.api?.downloadArtifactResponse;
     if (typeof downloadResponse !== "function") {
         return Promise.reject(new Error("artifact download unavailable"));
@@ -3233,7 +3236,7 @@ function fetchArtifactHtmlObjectUrl(controller, sessionId, filename, panelKeys =
             // Only MoA canvases opt into panel navigation; ordinary canvases
             // retain native Tab behavior. A canvas gets the link guard; an
             // artifact preview keeps its exact document bytes.
-            const bridge = (panelKeys ? `<script>window.addEventListener('keydown',function(e){if(e.isTrusted&&!e.altKey&&!e.metaKey&&!e.ctrlKey&&(e.key==='Tab'||e.key==='Escape')){e.preventDefault();e.stopImmediatePropagation();parent.postMessage({type:'moa-panel-key',key:e.key,backwards:e.shiftKey},'*')}},true);</script>` : "")
+            const bridge = (bootstrap || "") + (panelKeys ? `<script>window.addEventListener('keydown',function(e){if(e.isTrusted&&!e.altKey&&!e.metaKey&&!e.ctrlKey&&(e.key==='Tab'||e.key==='Escape')){e.preventDefault();e.stopImmediatePropagation();parent.postMessage({type:'moa-panel-key',key:e.key,backwards:e.shiftKey},'*')}},true);</script>` : "")
                 + (linkGuard ? CANVAS_LINK_GUARD : "");
             let parts = [bytes];
             if (bridge) {
