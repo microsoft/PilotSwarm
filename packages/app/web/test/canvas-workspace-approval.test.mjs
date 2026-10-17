@@ -42,7 +42,7 @@ test("approval operations are session:files, and the old consent operation is go
     assert.equal(byName.setCanvasWorkspaceConsent?.access, "session:files");
     assert.equal(byName.setCanvasAppWorkspaceConsent, undefined);
     const params = Object.keys(byName.setCanvasWorkspaceConsent.params).sort();
-    assert.deepEqual(params, ["bindingsSha256", "declarationSha256", "decision", "pageSha256", "rev", "sessionId", "slot"]);
+    assert.deepEqual(params, ["bindingsSha256", "decision", "declarationSha256", "pageSha256", "rev", "sessionId", "slot"]);
 });
 
 test("only the session's owner approves; the decision is audited with what it approved", async () => {

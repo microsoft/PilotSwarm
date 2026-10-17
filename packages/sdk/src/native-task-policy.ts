@@ -85,6 +85,7 @@ export const NATIVE_SYNCHRONOUS_TOOLS = new Set([
     "read_agent_package_file",
     "read_artifact",
     "read_canvas",
+    "read_canvas_app_loads",
     "read_embedder_status",
     "read_execution_history",
     "read_facts",

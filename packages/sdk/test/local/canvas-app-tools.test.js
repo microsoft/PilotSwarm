@@ -14,7 +14,6 @@ import { describe, it } from "vitest";
 import pg from "pg";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
-import { scriptTurns } from "../helpers/scripted-model.mjs";
 import { withScriptedModel } from "../helpers/scripted-workers.js";
 
 const TIMEOUT = 240_000;
@@ -81,9 +80,11 @@ describe("canvas app registry: agent tools", () => {
         const shared = `cat-tools-${env.runId}`;
         const secret = `cat-secret-${env.runId}`;
         const ws = { read: ["work/**"] };
-        const respond = scriptTurns([
+        // One script per person, chosen by the session's first prompt: each
+        // session's first turn is turn 1, so a turn index cannot tell them apart.
+        const scripts = {
             // Alice: draw, publish (private), find by name, share.
-            toolTurn([
+            alice: toolTurn([
                 { name: "draw_canvas", args: { html: page(shared, "", ws) } },
                 { name: "publish_canvas_app", args: { name: shared, description: DESCRIPTION } },
                 { name: "find_canvas_app", args: { name: shared } },
@@ -93,7 +94,7 @@ describe("canvas app registry: agent tools", () => {
                 { name: "draw_canvas", args: { fromApp: { name: shared } } },
             ]),
             // Bob: search, draw Alice's shared app, try her private one, copy her shared bytes inline, draw his own page.
-            toolTurn([
+            bob: toolTurn([
                 { name: "find_canvas_app", args: { query: "registry tools end to end" } },
                 { name: "draw_canvas", args: { fromApp: { name: shared } } },
                 { name: "draw_canvas", args: { fromApp: { name: secret }, slot: 2 } },
@@ -102,7 +103,13 @@ describe("canvas app registry: agent tools", () => {
                 { name: "draw_canvas", args: { html: page(`bob-own-${env.runId}`), slot: 5 } },
                 { name: "manage_canvas_app", args: { action: "delete", name: shared, scope: "shared", confirm: true } },
             ]),
-        ]);
+        };
+        const respond = (body, position) => {
+            const who = position.firstUserText.includes("bob") ? "bob" : "alice";
+            const step = scripts[who][position.step];
+            if (!step) return { content: "ok" };
+            return typeof step === "function" ? step(body, position) : step;
+        };
 
         await withScriptedModel(env, { respond }, async ({ client, qualifiedModel }) => {
             const alice = await client.createSession({ model: qualifiedModel, owner: ALICE });

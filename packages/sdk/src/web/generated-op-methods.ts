@@ -48,6 +48,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getCanvasAppLoads",
     "getCanvasLive",
     "getCanvasShareLink",
+    "getCanvasWorkspaceApproval",
     "getChildOutcome",
     "getClusterFeatureFlags",
     "getCurrentUserProfile",
@@ -167,6 +168,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "setCanvasAppMetadata",
     "setCanvasAppScope",
     "setCanvasKvAccess",
+    "setCanvasWorkspaceConsent",
     "setClusterDefault",
     "setClusterFeatureFlag",
     "setCurrentUserGitHubCopilotKey",
@@ -260,7 +262,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * canvas-ws: one call from a canvas app to its session's folders, checked against the workspace block of the app's CANVAS-APP-MANIFEST: { op: info|list|stat|read|write|mkdir|move|delete|zip|watch, path: "<folder>/<path>" } or { op: run, command, params }. The session's owner only.
+     * canvas-ws: one call from a canvas app to its session's folders, checked against the workspace block of the app's CANVAS-APP-MANIFEST: { op: info|list|stat|read|write|mkdir|move|delete|zip|watch, path: "<folder>/<path>" } or { op: run, command, params }. Every call carries the frame's `rev`; no call runs until the session owner approved that exact page, declaration and folders (CANVAS_WS_CONSENT_REQUIRED, CANVAS_WS_STALE). The session's owner only.
      * @remarks `POST /management/sessions/:sessionId/canvas-workspace` — access: `session:files`
      */
     canvasWorkspace(params: {
@@ -613,6 +615,15 @@ export interface ManagementOps {
      * @remarks `GET /management/sessions/:sessionId/canvas-share-link` — access: `session:share`
      */
     getCanvasShareLink(params: {
+        sessionId: string;
+        slot?: number;
+    }): Promise<any>;
+
+    /**
+     * What the session owner is asked to approve before the canvas page on a slot may use its workspace: revision, page sha256, who the page belongs to, the declaration (paths, command lines), the folders it resolves to, the keys an approval quotes back, and any recorded decision. The session's owner only.
+     * @remarks `GET /management/sessions/:sessionId/canvas-workspace/approval` — access: `session:files`
+     */
+    getCanvasWorkspaceApproval(params: {
         sessionId: string;
         slot?: number;
     }): Promise<any>;
@@ -1647,6 +1658,20 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * The session owner's decision (granted|denied) on one exact workspace program on a slot: page bytes, declaration and folder bindings, as shown by getCanvasWorkspaceApproval. Every new program asks once, whoever wrote it; the identical program redrawn in that slot keeps its decision. CANVAS_WS_STALE when the slot shows something else. Given by a person in the portal; no agent tool offers it. The session's owner only.
+     * @remarks `POST /management/sessions/:sessionId/canvas-workspace/consent` — access: `session:files`
+     */
+    setCanvasWorkspaceConsent(params: {
+        sessionId: string;
+        slot?: any;
+        rev?: any;
+        pageSha256?: any;
+        declarationSha256?: any;
+        bindingsSha256?: any;
+        decision?: any;
+    }): Promise<any>;
+
+    /**
      * Deprecated alias for setModelDefault(scope=cluster). [admin]
      * @remarks `PUT /management/defaults` — access: `fleet:admin`
      */
@@ -2060,6 +2085,7 @@ export function createManagementOps(
         getCanvasAppLoads: (params: Record<string, unknown> = {}) => callOp("getCanvasAppLoads", params),
         getCanvasLive: (params: Record<string, unknown> = {}) => callOp("getCanvasLive", params),
         getCanvasShareLink: (params: Record<string, unknown> = {}) => callOp("getCanvasShareLink", params),
+        getCanvasWorkspaceApproval: (params: Record<string, unknown> = {}) => callOp("getCanvasWorkspaceApproval", params),
         getChildOutcome: (params: Record<string, unknown> = {}) => callOp("getChildOutcome", params),
         getClusterFeatureFlags: (params: Record<string, unknown> = {}) => callOp("getClusterFeatureFlags", params),
         getCurrentUserProfile: (params: Record<string, unknown> = {}) => callOp("getCurrentUserProfile", params),
@@ -2179,6 +2205,7 @@ export function createManagementOps(
         setCanvasAppMetadata: (params: Record<string, unknown> = {}) => callOp("setCanvasAppMetadata", params),
         setCanvasAppScope: (params: Record<string, unknown> = {}) => callOp("setCanvasAppScope", params),
         setCanvasKvAccess: (params: Record<string, unknown> = {}) => callOp("setCanvasKvAccess", params),
+        setCanvasWorkspaceConsent: (params: Record<string, unknown> = {}) => callOp("setCanvasWorkspaceConsent", params),
         setClusterDefault: (params: Record<string, unknown> = {}) => callOp("setClusterDefault", params),
         setClusterFeatureFlag: (params: Record<string, unknown> = {}) => callOp("setClusterFeatureFlag", params),
         setCurrentUserGitHubCopilotKey: (params: Record<string, unknown> = {}) => callOp("setCurrentUserGitHubCopilotKey", params),

@@ -55,6 +55,7 @@ const SESSION_ATTACHED_TOOL_NAMES = [
     "read_agent_events",
     "read_agent_package",
     "read_agent_package_file",
+    "read_canvas_app_loads",
     "read_embedder_status",
     "read_execution_history",
     "read_facts",

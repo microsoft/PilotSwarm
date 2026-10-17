@@ -133,9 +133,8 @@ const DRAW_CANVAS_TOOL_SPEC = {
         + "default 1) with a complete self-contained HTML document. Draw when the user asks for something visual or a "
         + "graphic would greatly clarify an outcome — most replies need no drawing, and drawing switches the user's view. "
         + "Layout change = draw_canvas; content change = update_canvas(patch) (far cheaper). Exactly one source: inline "
-        + "html (empty string clears), fromApp to draw a registered canvas app by name, or fromArtifact to render a stored "
-        + "artifact server-side without the bytes entering your context. Use other users' apps only through fromApp, never "
-        + "by copying their bytes inline. Do not paste canvas links in replies. Before an interactive or shared canvas, load_skill(\"canvas-apps\"); "
+        + "html (empty string clears), fromApp (a registry app by name; the only way to use another user's app), or "
+        + "fromArtifact to render a stored artifact server-side without the bytes entering your context. Do not paste canvas links in replies. Before an interactive or shared canvas, load_skill(\"canvas-apps\"); "
         + "for layout, charts and the sandbox rules, load_skill(\"html-visuals\").",
     parameters: {
         type: "object",
@@ -171,16 +170,12 @@ const DRAW_CANVAS_TOOL_SPEC = {
             },
             fromApp: {
                 type: "object",
-                description:
-                    "Draw a registered canvas app SERVER-SIDE by name (find_canvas_app first). Mutually exclusive with html "
-                    + "and fromArtifact. Default: your own app of that name, else the shared one; the active version unless "
-                    + "version is given. An app owned by another user runs with no network access and asks the user before "
-                    + "it touches session files.",
+                description: "Draw an app from the registry (find_canvas_app). Default: your copy of the name, else the shared one; the active version.",
                 properties: {
-                    name: { type: "string", description: "The app name, e.g. release-signoff." },
-                    version: { type: "string", description: "Optional SemVer version; default the active one." },
-                    scope: { type: "string", enum: ["shared", "user"], description: "Optional: pick the shared copy or your private copy of a name that has both." },
-                    expectedSha256: { type: "string", description: "Optional precondition: fail with SHA_MISMATCH (no draw) if the version's bytes hash differently." },
+                    name: { type: "string" },
+                    version: { type: "string", description: "SemVer" },
+                    scope: { type: "string", enum: ["shared", "user"] },
+                    expectedSha256: { type: "string", description: "Fail with SHA_MISMATCH on other bytes" },
                 },
                 required: ["name"],
             },

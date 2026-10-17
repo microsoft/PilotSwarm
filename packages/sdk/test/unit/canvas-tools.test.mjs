@@ -74,7 +74,7 @@ test("sub-agents are NOT filtered out of the canvas declarations", () => {
 test("the HANDLER half is registered on every session and refuses instead of hanging", () => {
     // Per-turn registration is unconditional — a declared tool with no
     // handler is a silent drop in the CLI. The refusal is the guard.
-    assert.match(MS, /drawCanvasTool,\r?\n\s*updateCanvasTool,\r?\n\s*readCanvasTool,\r?\n\s*showCanvasTool,\r?\n\s*canvasKvTool,\r?\n\s*publishCanvasAppTool,\r?\n\s*findCanvasAppTool,\r?\n\s*loadSkillTool,\r?\n\s*\]\.filter/,
+    assert.match(MS, /drawCanvasTool,\r?\n\s*updateCanvasTool,\r?\n\s*readCanvasTool,\r?\n\s*showCanvasTool,\r?\n\s*canvasKvTool,\r?\n\s*publishCanvasAppTool,\r?\n\s*findCanvasAppTool,\r?\n\s*manageCanvasAppTool,\r?\n\s*loadSkillTool,\r?\n\s*\]\.filter/,
         "canvas tools (and canvas_kv / the catalog / load_skill) must be unconditionally in systemToolsForTurn");
     assert.ok(!/\(controlBridge as any\)\?\.drawCanvas \? \[drawCanvasTool/.test(MS),
         "the old bridge-conditional registration must be gone");
@@ -270,7 +270,7 @@ test("draw_canvas declares fromArtifact and requires exactly one source", () => 
     assert.deepEqual(draw.parameters.properties.fromArtifact.required, ["filename"]);
     assert.deepEqual(draw.parameters.required, [], "html must no longer be hard-required");
     // The handler enforces exclusivity — schema alone cannot express XOR to every model.
-    assert.match(MS, /hasHtml === Boolean\(fromArtifact\)/);
+    assert.match(MS, /\[hasHtml, Boolean\(fromArtifact\), Boolean\(fromApp\)\]\.filter\(Boolean\)\.length !== 1/);
     assert.match(MS, /pass exactly one source/);
 });
 
