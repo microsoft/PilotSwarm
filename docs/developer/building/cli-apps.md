@@ -94,6 +94,53 @@ The module is loaded in local mode and can export:
 
 The most common use is exporting `tools`.
 
+## Programmatic TUI Hosts
+
+An application launcher can also call the public `startTuiApp` export from
+`pilotswarm`. This runs the same full-screen, process-owning TUI; normal quit
+stops the controller and exits the process. It is not a concurrent-host or
+embedded-widget API.
+
+Use the optional `logFile` string when the application needs its own diagnostic
+destination:
+
+```js
+import os from "node:os";
+import path from "node:path";
+import { startTuiApp } from "pilotswarm";
+
+await startTuiApp({
+    mode: "remote",
+    apiUrl: "https://portal.example.com",
+    logFile: path.join(os.homedir(), ".my-app", "logs", "tui.log"),
+});
+```
+
+The same option works with an existing local/direct-mode configuration:
+`startTuiApp({ ...config, logFile: applicationLogPath })`.
+
+- Absolute and relative native filesystem paths work on Windows and Unix.
+  Relative paths are resolved against the startup working directory. Missing
+  parent directories are created.
+- The selected file is **truncated at every startup**, then receives
+  `console.log`, `console.warn`, `console.error`, `process.stderr.write`,
+  `process.emitWarning`, and native duroxide tracing. Give separate application
+  processes distinct paths; starting one then does not truncate the other's
+  log.
+- An explicit value must be a non-empty string. Invalid/unusable paths and
+  tracing-initialization errors reject startup, without falling back to the
+  shared default. Post-startup writes retain the host's existing best-effort
+  behavior. Console/stderr/warning hooks are restored on quit or a startup
+  failure after redirection.
+- Omit `logFile` (or use `undefined`) to retain the existing best-effort
+  `/tmp/duroxide-tui.log` behavior, including startup truncation.
+
+Initialize the TUI before another component installs process-global duroxide
+tracing. This option only selects host diagnostics: it does not change remote
+worker log streaming, user configuration, authentication caches, or artifact
+export paths. It is a programmatic host option, not a new CLI flag or
+environment variable.
+
 ## Recommended App Layout
 
 ```text

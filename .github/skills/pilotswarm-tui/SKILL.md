@@ -56,6 +56,14 @@ The terminal UI is not a monolith.
 - `ui-react` owns shared React composition and stays host-neutral.
 - `packages/app/tui` is the thin terminal host: keyboard wiring, terminal rendering, process lifecycle, clipboard, downloads, and OS integration.
 
+The public `startTuiApp(config)` host accepts an optional `logFile` path for
+console/stderr/warnings and native duroxide tracing. Custom paths are resolved
+against cwd, their parents are created, and startup truncates only that file;
+invalid paths or tracing setup failures reject rather than falling back.
+Omission retains the best-effort `/tmp/duroxide-tui.log` default. Restore host
+logging hooks on startup failure as well as quit. Keep this terminal-only
+setting out of shared UI state and portal configuration.
+
 Do not move host rendering details into `ui-core`.
 Do not move controller or selector semantics into `packages/app/tui`.
 Do not bypass shared selectors/components with host-only UI logic unless the behavior is truly terminal-specific.
