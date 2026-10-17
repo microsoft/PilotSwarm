@@ -8742,8 +8742,12 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, trust = "agen
                         })
                             .then(() => {
                                 setConsent(null);
-                                // Tell the page it may try again; it re-asks for what it needs.
-                                if (decision === "granted") tellWatchers("owner");
+                                // Tell the page it may try again, watching or not
+                                // (a refused watch never registered); it re-asks
+                                // for what it needs.
+                                if (decision === "granted" && !liveIframeElRef.current?.dataset.leftPage) {
+                                    try { liveIframeElRef.current?.contentWindow?.postMessage({ type: "canvas-ws-change", reason: "approved" }, "*"); } catch { /* frame mid-teardown */ }
+                                }
                             })
                             .catch((error) => setConsent({ ...consent, busy: false, error: String(error?.message || error) }));
                     },
