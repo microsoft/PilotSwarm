@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-    canonicalRequestPath, composePortalAuthConfig, createPortalPaths,
+    canonicalRequestPath, composePortalAuthConfig, composePortalBranding, createPortalPaths, getBrowserPortalPaths,
     isLegacyPortalPath, isPortalNavigationPath, normalizePortalBasePath, renderPortalShell,
 } from "../portal-paths.js";
 
@@ -125,4 +125,35 @@ test("callback relocation changes only a declared root path", () => {
     }
     const nonRoot = { client: { redirectUri: "https://portal.example.invalid/callback" } };
     assert.equal(composePortalAuthConfig(nonRoot, "/portal"), nonRoot);
+});
+
+test("browser startup uses only the trusted document marker, never the current deep-link path", () => {
+    assert.throws(() => getBrowserPortalPaths({ querySelector: () => null }), /missing its base-path bootstrap/u);
+    for (const base of ["/", "/portal/", "/tools/agents/"]) {
+        assert.equal(getBrowserPortalPaths({
+            querySelector: selector => {
+                assert.equal(selector, 'meta[name="pilotswarm-base-path"]');
+                return { getAttribute: name => { assert.equal(name, "content"); return base; } };
+            },
+        }).entryPath, base);
+    }
+    assert.throws(() => getBrowserPortalPaths({
+        querySelector: () => ({ getAttribute: () => "//elsewhere.invalid" }),
+    }), /PORTAL_BASE_PATH/u);
+});
+
+test("portal composition prefixes generated branding without changing cached/native or explicit URLs", () => {
+    const branding = Object.freeze({ title: "Fixture", logoUrl: "/api/portal-assets/logo", faviconUrl: "/api/portal-assets/favicon" });
+    const files = { logo: "fixture-logo.svg", favicon: "fixture-icon.svg" };
+    for (const base of ["/", "/portal", "/tools/agents"]) {
+        const composed = composePortalBranding(branding, files, base);
+        assert.equal(composed.logoUrl, createPortalPaths(base).path("/api/portal-assets/logo"));
+        assert.equal(composed.faviconUrl, createPortalPaths(base).path("/api/portal-assets/favicon"));
+        assert.equal(branding.logoUrl, "/api/portal-assets/logo");
+        assert.notEqual(composed, branding);
+    }
+    for (const value of ["https://images.example.invalid/logo.svg", "data:image/svg+xml,fixture", "/operator-managed-logo.svg"]) {
+        assert.equal(composePortalBranding({ logoUrl: value }, files, "/portal").logoUrl, value);
+    }
+    assert.equal(composePortalBranding(branding, {}, "/portal").logoUrl, branding.logoUrl);
 });

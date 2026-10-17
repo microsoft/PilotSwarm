@@ -115,3 +115,56 @@ export function composePortalAuthConfig(config, basePath = "/") {
         client: { ...config.client, redirectUri: `${authority}${paths.entryPath}${suffix}` },
     };
 }
+
+export function getBrowserPortalPaths(document = globalThis.document) {
+    const configured = document?.querySelector('meta[name="pilotswarm-base-path"]')?.getAttribute("content");
+    if (!configured) throw new Error("Portal shell is missing its base-path bootstrap; reload the page.");
+    return createPortalPaths(configured);
+}
+
+export function composePortalBranding(branding, assetFiles, basePath = "/") {
+    const paths = createPortalPaths(basePath);
+    const result = { ...branding };
+    for (const [property, asset] of [["logoUrl", "logo"], ["faviconUrl", "favicon"]]) {
+        const generatedPath = `/api/portal-assets/${asset}`;
+        if (assetFiles?.[asset] && result[property] === generatedPath) result[property] = paths.path(generatedPath);
+    }
+    return result;
+}
+
+export function validatePortalActionUrl(value) {
+    if (value === undefined || value === null || value === "") return null;
+    if (typeof value !== "string" || CONTROL.test(value)) throw new Error("Portal sign-in/out URL must be a same-origin absolute path.");
+    const delimiter = value.search(/[?#]/u);
+    const pathname = delimiter < 0 ? value : value.slice(0, delimiter);
+    const placeholders = value.match(/\{returnTo\}/gu) || [];
+    if (canonicalRequestPath(pathname) === null || pathname.includes("{") || pathname.includes("}")
+        || placeholders.length > 1 || /[{}]/u.test(value.replace("{returnTo}", ""))
+        || /%7breturnTo%7d/iu.test(value)) {
+        throw new Error("Portal sign-in/out URL must use a canonical local path and at most one literal {returnTo} outside its path.");
+    }
+    return value;
+}
+
+export function safePortalReturnUrl(value, paths = createPortalPaths("/")) {
+    if (typeof value !== "string" || CONTROL.test(value)) return paths.entryPath;
+    const delimiter = value.search(/[?#]/u);
+    const pathname = delimiter < 0 ? value : value.slice(0, delimiter);
+    const local = paths.localPath(pathname);
+    if (local === null || !isPortalNavigationPath(local)) return paths.entryPath;
+    const hashIndex = value.indexOf("#");
+    const beforeHash = hashIndex < 0 ? value : value.slice(0, hashIndex);
+    const queryIndex = beforeHash.indexOf("?");
+    const query = queryIndex < 0 ? "" : beforeHash.slice(queryIndex + 1);
+    const hash = hashIndex < 0 ? "" : value.slice(hashIndex + 1);
+    // Canvas share capabilities must never be carried to an upstream auth URL.
+    for (const parameters of [new URLSearchParams(query), new URLSearchParams(hash)]) {
+        if ([...parameters.keys()].some((key) => key.toLowerCase() === "canvasshare")) return paths.entryPath;
+    }
+    return value;
+}
+
+export function resolvePortalActionUrl(template, returnUrl, paths = createPortalPaths("/")) {
+    const action = validatePortalActionUrl(template);
+    return action === null ? null : action.replace("{returnTo}", encodeURIComponent(safePortalReturnUrl(returnUrl, paths)));
+}

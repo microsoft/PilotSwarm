@@ -1,5 +1,6 @@
 import * as jose from "jose";
 import { normalizeProxyPrincipal } from "../normalize/proxy.js";
+import { validatePortalActionUrl } from "../../portal-paths.js";
 
 const JWKS_CACHE = new Map();
 
@@ -11,10 +12,9 @@ const JWKS_CACHE = new Map();
  * the identity, and whether it is signed — so both are configuration rather
  * than separate providers.
  *
- * There is no browser half. The proxy completes the sign-in before the SPA
- * loads, so the browser makes ordinary same-origin requests and PilotSwarm
- * reads the identity off each one. That is the whole reason this provider is
- * ~a tenth the size of an OIDC one: no PKCE, no token cache, no refresh.
+ * The proxy owns sign-in. The browser uses request-authenticated admission
+ * without a token cache or refresh flow; optional actions navigate upstream.
+ * Public action metadata never establishes an identity.
  *
  * Two modes, with very different threat models:
  *
@@ -87,6 +87,8 @@ function headerValue(req, name) {
 
 export function createProxyAuthProvider({ pluginAuthConfig, env = process.env } = {}) {
     const config = getProxyConfig(env, pluginAuthConfig);
+    const signInUrl = validatePortalActionUrl(env.PORTAL_AUTH_PROXY_SIGN_IN_URL);
+    const signOutUrl = validatePortalActionUrl(env.PORTAL_AUTH_PROXY_SIGN_OUT_URL);
 
     return {
         id: "proxy",
@@ -127,14 +129,11 @@ export function createProxyAuthProvider({ pluginAuthConfig, env = process.env } 
         },
 
         async getPublicConfig() {
-            // No client-side configuration exists to hand out: the browser
-            // never talks to an identity provider, so `client` stays null and
-            // the SPA simply makes ordinary requests.
             return {
                 enabled: Boolean(config),
                 provider: "proxy",
                 displayName: config?.displayName || "Proxy",
-                client: null,
+                client: config ? { authenticatesFromRequest: true, signInUrl, signOutUrl } : null,
             };
         },
     };

@@ -1,4 +1,5 @@
 import { HttpApiTransport } from "pilotswarm-sdk/api";
+import { getPortalEntryUrl } from "./lib/portal-paths.js";
 
 function encodeBytesToBase64(bytes) {
     const chunkSize = 0x8000;
@@ -80,7 +81,7 @@ const ADO_RESOURCE_ID = "499b84ac-1321-427f-aa17-267ca6975798";
 export class BrowserPortalTransport extends HttpApiTransport {
     constructor({ getAccessToken, getResourceToken, onUnauthorized, onForbidden } = {}) {
         super({
-            apiUrl: window.location.origin,
+            apiUrl: getPortalEntryUrl(),
             getAccessToken,
             onUnauthorized,
             onForbidden,

@@ -3,13 +3,14 @@ import { CompactViewNavigation } from "./navigation/CompactViewNavigation.jsx";
 import { useMoa, MoaWorkspace, MobileZen } from "./moa/MoaWorkspace.jsx";
 import React from "react";
 import { createPortal } from "react-dom";
-import { createWebPilotSwarmController, PilotSwarmWebApp, setPortalLinkOrigins, setPortalWorkspaceFiles } from "pilotswarm/ui-react";
+import { createWebPilotSwarmController, PilotSwarmWebApp, setPortalLinkOrigins, setPortalEntryPath, setPortalWorkspaceFiles } from "pilotswarm/ui-react";
 import { jsonMergePatch } from "pilotswarm-sdk/api";
 import { getTheme } from "pilotswarm/ui-core";
 import { selectSessionFilterExceptionNotice, selectStatusBar } from "pilotswarm/ui-core";
 import { BrowserPortalTransport } from "./browser-transport.js";
 import { usePortalAuth } from "./auth-client.js";
 import { PILOTSWARM_PORTAL_VERSION_LABEL } from "./version.js";
+import { getPortalPaths, getPortalSocketUrl } from "./lib/portal-paths.js";
 import {
     DEEP_LINK_SESSION_STORAGE_KEY,
     parseStashedDeepLinkTarget,
@@ -128,7 +129,7 @@ function ensureFaviconLink(href) {
 }
 
 async function fetchPortalConfig() {
-    const response = await fetch("/api/portal-config");
+    const response = await fetch(getPortalPaths().path("/api/portal-config"));
     if (!response.ok) {
         throw new Error(`Failed to load portal config (${response.status})`);
     }
@@ -350,6 +351,7 @@ function DevPersonaPicker({ authConfig, onSignIn }) {
 function PortalSignedOut({ branding, authUi, authConfig, error, onSignIn, shellStyle }) {
     const providerDisplayName = authConfig?.displayName || branding?.title || "Authentication";
     const isDevProvider = authConfig?.provider === "dev";
+    const requestAuth = authConfig?.provider === "proxy";
     return React.createElement("div", { className: "portal-gate", style: shellStyle },
         React.createElement("div", { className: "portal-gate-card" },
             isDevProvider
@@ -375,7 +377,7 @@ function PortalSignedOut({ branding, authUi, authConfig, error, onSignIn, shellS
                     type: "button",
                     className: "portal-primary-button",
                     onClick: () => onSignIn().catch(() => {}),
-                }, authUi?.signInLabel || "Sign In"),
+                }, requestAuth && !authConfig?.client?.signInUrl ? "Retry Sign-In" : authUi?.signInLabel || "Sign In"),
         ));
 }
 
@@ -392,7 +394,7 @@ function PortalForbidden({ branding, authUi, authConfig, error, onSignOut, shell
                 type: "button",
                 className: "portal-primary-button",
                 onClick: () => onSignOut().catch(() => {}),
-            }, "Sign Out"),
+            }, authConfig?.provider === "proxy" && !authConfig?.client?.signOutUrl ? "Sign-out help" : "Sign Out"),
         ));
 }
 
@@ -439,7 +441,7 @@ function useBuildFreshness() {
         let cancelled = false;
         const check = async () => {
             try {
-                const response = await fetch("/", { cache: "no-store", headers: { accept: "text/html" } });
+                const response = await fetch(getPortalPaths().entryPath, { cache: "no-store", headers: { accept: "text/html" } });
                 if (!response.ok) return;
                 const html = await response.text();
                 // Entry filenames only — same shape as BUILD_FILE, no hash parsing.
@@ -458,7 +460,7 @@ function useBuildFreshness() {
     return stale;
 }
 
-function PortalHeader({ account, authEnabled, isAdmin = false, branding, onSignOut, versionLabel = null, statusText = "", themeIcon = null }) {
+function PortalHeader({ account, principal = null, upstreamSignOut = false, authEnabled, isAdmin = false, branding, onSignOut, versionLabel = null, statusText = "", themeIcon = null }) {
     const buildStale = useBuildFreshness();
     // The desktop toolbar (portalled into this header) exposes two slots so
     // the right side reads as ONE cluster: version/status · bug · settings ·
@@ -480,9 +482,9 @@ function PortalHeader({ account, authEnabled, isAdmin = false, branding, onSignO
         return () => cancelAnimationFrame(raf);
     });
     // Admins are marked with a leading "(*)" so elevated rights are visible at a glance.
-    const baseName = account?.name || account?.username || "Signed in";
+    const baseName = principal?.displayName || principal?.email || principal?.subject || account?.name || account?.username || "Signed in";
     const name = isAdmin ? `(*) ${baseName}` : baseName;
-    const email = account?.username || account?.idTokenClaims?.preferred_username || "";
+    const email = principal?.email || account?.username || account?.idTokenClaims?.preferred_username || "";
     return React.createElement("header", { className: "portal-header" },
         React.createElement("div", { className: "portal-header-brand" },
             React.createElement(PortalBrandMark, { branding, themeIcon }),
@@ -526,8 +528,8 @@ function PortalHeader({ account, authEnabled, isAdmin = false, branding, onSignO
                     // land the exact same size.
                     className: signOutSlot ? "ps-toolbar-button ps-icon-button" : "portal-secondary-button is-icon",
                     onClick: () => onSignOut().catch(() => {}),
-                    title: "Sign out",
-                    "aria-label": "Sign out",
+                    title: upstreamSignOut ? "Sign-out is managed by the upstream proxy" : "Sign out",
+                    "aria-label": upstreamSignOut ? "Sign-out help" : "Sign out",
                 }, React.createElement("svg", { viewBox: "0 0 20 20", width: 16, height: 16, fill: "none", stroke: "currentColor", strokeWidth: 1.7, strokeLinecap: "round", strokeLinejoin: "round", "aria-hidden": "true" },
                     React.createElement("path", { d: "M12.5 3.5H5.5a1.5 1.5 0 0 0-1.5 1.5v10a1.5 1.5 0 0 0 1.5 1.5h7" }),
                     React.createElement("path", { d: "M13.5 6.8 16.7 10l-3.2 3.2M16.5 10H8" })))
@@ -717,6 +719,8 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
         // mounted header from layout, focus order and the accessibility tree.
         React.createElement(PortalHeader, {
             account: auth.account,
+            principal: auth.requestAuth ? auth.principal : null,
+            upstreamSignOut: auth.requestAuth && !auth.config?.client?.signOutUrl,
             authEnabled: auth.authEnabled,
             isAdmin: auth.authorization?.role === "admin",
             branding: portal?.branding,
@@ -725,6 +729,12 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
             statusText,
             themeIcon,
         }),
+        auth.requestAuth && (auth.actionError || auth.actionNotice)
+            ? React.createElement("div", {
+                className: "portal-auth-notice",
+                role: auth.actionError ? "alert" : "status",
+            }, auth.actionError || auth.actionNotice)
+            : null,
         chromeHidden
             ? null
             : React.createElement(PortalMobileStatus, {
@@ -766,7 +776,7 @@ function CanvasShareView({ token }) {
     }, []);
 
     const refetchLive = React.useCallback(async () => {
-        const response = await fetch(`/api/canvas-share/live?t=${encodeURIComponent(token)}`);
+        const response = await fetch(getPortalPaths().path(`/api/canvas-share/live?t=${encodeURIComponent(token)}`));
         if (!response.ok) throw new Error("gone");
         const state = await response.json();
         const live = state?.live;
@@ -779,7 +789,7 @@ function CanvasShareView({ token }) {
     }, [token, postState]);
 
     const refetchDoc = React.useCallback(async () => {
-        const response = await fetch(`/api/canvas-share/doc?t=${encodeURIComponent(token)}`);
+        const response = await fetch(getPortalPaths().path(`/api/canvas-share/doc?t=${encodeURIComponent(token)}`));
         if (!response.ok) throw new Error("gone");
         const html = await response.text();
         const url = URL.createObjectURL(new Blob([html], { type: "text/html" }));
@@ -813,7 +823,7 @@ function CanvasShareView({ token }) {
         let retryMs = 1000;
         const connect = () => {
             if (closed) return;
-            const wsUrl = `${window.location.origin.replace(/^http/, "ws")}/api/v1/ws?canvasShare=${encodeURIComponent(token)}`;
+            const wsUrl = getPortalSocketUrl(`/api/v1/ws?canvasShare=${encodeURIComponent(token)}`);
             socket = new WebSocket(wsUrl);
             socket.addEventListener("open", () => {
                 retryMs = 1000;
@@ -834,7 +844,7 @@ function CanvasShareView({ token }) {
                     };
                     if (message.op === "delete") { deliver(null); return; }
                     if (message.value && typeof message.value === "object") { deliver({ v: message.value.v, by: message.value.by, at: message.value.at }); return; }
-                    fetch(`/api/canvas-share/kv?t=${encodeURIComponent(token)}&key=${encodeURIComponent(message.key)}`)
+                    fetch(getPortalPaths().path(`/api/canvas-share/kv?t=${encodeURIComponent(token)}&key=${encodeURIComponent(message.key)}`))
                         .then((r) => (r.ok ? r.json() : null))
                         .then((read) => deliver(read?.entries?.[0] ?? null))
                         .catch(() => { /* the page's next list catches up */ });
@@ -887,7 +897,7 @@ function CanvasShareView({ token }) {
             if ((op === "list" || op === "ready") && payload.prefix) q.set("prefix", String(payload.prefix));
             if (payload.after) q.set("after", String(payload.after));
             if (payload.limit) q.set("limit", String(payload.limit));
-            fetch(`/api/canvas-share/kv?${q.toString()}`)
+            fetch(getPortalPaths().path(`/api/canvas-share/kv?${q.toString()}`))
                 .then((r) => (r.ok ? r.json() : Promise.reject(new Error("gone"))))
                 .then((read) => {
                     if (op === "get") {
@@ -948,6 +958,7 @@ export default function App() {
     // Multi-origin link generation: hand the configured entry points to the
     // link builders as soon as the portal config lands.
     React.useEffect(() => {
+        setPortalEntryPath(getPortalPaths().entryPath);
         setPortalLinkOrigins(publicConfig.config?.portal?.linkOrigins || []);
     }, [publicConfig.config?.portal?.linkOrigins]);
 
@@ -975,12 +986,12 @@ export default function App() {
             error: publicConfig.error,
         });
     }
-    if (!auth.signedIn) {
+    if (!auth.signedIn && !(auth.provider === "proxy" && auth.forbidden)) {
         return React.createElement(PortalSignedOut, {
             branding: publicConfig.config?.portal?.branding,
             authUi: publicConfig.config?.portal?.auth,
             authConfig: publicConfig.config?.auth,
-            error: auth.error,
+            error: auth.actionError || auth.actionNotice || auth.error,
             onSignIn: auth.signIn,
             shellStyle,
         });
@@ -990,7 +1001,7 @@ export default function App() {
             branding: publicConfig.config?.portal?.branding,
             authUi: publicConfig.config?.portal?.auth,
             authConfig: publicConfig.config?.auth,
-            error: auth.error,
+            error: auth.actionError || auth.actionNotice || auth.error,
             onSignOut: auth.signOut,
             shellStyle,
         });

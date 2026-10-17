@@ -154,9 +154,11 @@ test("the stash key is unchanged, so an in-flight sign-in still lands", () => {
 
 test("the share dialog appends show_chrome only when the box is checked", () => {
     const link = WEB_APP.slice(WEB_APP.indexOf("const sessionLink ="));
-    const line = link.slice(0, link.indexOf("\n"));
-    assert.match(line, /hideChrome \? "&show_chrome=false" : ""/,
+    const statement = link.slice(0, link.indexOf(";"));
+    assert.match(statement, /hideChrome \? "&show_chrome=false" : ""/,
         "the parameter is conditional on the checkbox, not always present");
+    assert.match(statement, /buildPortalEntryLink\(window\.location,[\s\S]*portalEntryPath \?\? "\/"/,
+        "the configured portal entry is used, with the original root fallback");
     assert.match(WEB_APP, /const \[hideChrome, setHideChrome\] = React\.useState\(false\)/,
         "default unchecked");
 });

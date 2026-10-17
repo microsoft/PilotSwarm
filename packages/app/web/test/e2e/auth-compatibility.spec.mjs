@@ -1,9 +1,6 @@
 import { test, expect } from "@playwright/test";
-import { createServer } from "vite";
-import react from "@vitejs/plugin-react";
-import { fileURLToPath } from "node:url";
+import { createAuthTestServer } from "./fixtures/auth-server.mjs";
 
-const webRoot = fileURLToPath(new URL("../../", import.meta.url));
 const account = { homeAccountId: "fixture-alice", name: "Alice Example", username: "alice@example.invalid" };
 const users = [
     { id: "alice", displayName: "Alice Example", email: "alice@example.invalid", role: "user" },
@@ -22,21 +19,7 @@ let vite;
 let origin;
 
 test.beforeAll(async () => {
-    vite = await createServer({
-        configFile: false,
-        root: webRoot,
-        publicDir: false,
-        plugins: [react()],
-        optimizeDeps: { entries: ["test/e2e/fixtures/auth-browser.html"] },
-        resolve: { alias: {
-            "@azure/msal-browser": fileURLToPath(new URL("./fixtures/msal-browser.mjs", import.meta.url)),
-            "pilotswarm/ui-core": fileURLToPath(new URL("../../../ui/core/src/index.js", import.meta.url)),
-            "pilotswarm/ui-react": fileURLToPath(new URL("../../../ui/react/src/index.js", import.meta.url)),
-            "pilotswarm-sdk/api": fileURLToPath(new URL("../../../../sdk/api/index.js", import.meta.url)),
-        } },
-        server: { host: "127.0.0.1", port: 0, hmr: false },
-    });
-    await vite.listen();
+    vite = await createAuthTestServer();
     origin = `http://127.0.0.1:${vite.httpServer.address().port}`;
 });
 
@@ -95,7 +78,7 @@ test("disabled proxy cannot enter the anonymous browser branch", async ({ page }
     const requests = await openAuth(page, { provider: "proxy" });
     expect(await state(page)).toMatchObject({ signedIn: false, account: null, accessToken: null, principal: null });
     expect(await page.evaluate(() => window.__authFixture.current.error))
-        .toBe('Unsupported portal auth provider "proxy"');
+        .toBe('Portal auth provider "proxy" is selected but not fully configured.');
     expect(requests).toEqual([]);
     expect(await calls(page)).toEqual([]);
 });

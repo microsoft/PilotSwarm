@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { terminalMarkupToHtml } from "./terminalMarkupToHtml";
+import { getPortalPaths } from "../../lib/portal-paths.js";
 
 interface StartupSplashProps {
   onNewSession: () => void;
@@ -9,7 +10,7 @@ export default function StartupSplash({ onNewSession }: StartupSplashProps) {
   const [splashHtml, setSplashHtml] = useState("");
 
   useEffect(() => {
-    fetch("/splash.txt")
+    fetch(getPortalPaths().path("/splash.txt"))
       .then((r) => r.text())
       .then((text) => setSplashHtml(terminalMarkupToHtml(text)))
       .catch(() => setSplashHtml("PilotSwarm"));

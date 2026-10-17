@@ -260,12 +260,15 @@ describe("portal proxy auth provider", () => {
         assertEqual(principal.subject, "glottis@grimfanda.com", "email becomes the subject");
     });
 
-    it("advertises no browser client, because the proxy signs the user in", async () => {
+    it("advertises request-auth capability without exposing verifier configuration", async () => {
         const provider = jwtProvider();
         const cfg = await provider.getPublicConfig();
         assertEqual(cfg.provider, "proxy", "public config names the provider");
         assertEqual(cfg.enabled, true, "public config reports enabled");
-        assertEqual(cfg.client, null, "there is no browser-side client to configure");
+        assertEqual(cfg.client.authenticatesFromRequest, true, "browser requests admission without a bearer token");
+        assertEqual(cfg.client.signInUrl, null, "no upstream action is invented");
+        assertEqual(cfg.client.signOutUrl, null, "no upstream logout is invented");
+        assertEqual(Object.keys(cfg.client).sort().join(","), "authenticatesFromRequest,signInUrl,signOutUrl", "no verifier details are public");
     });
 
     it("declares that it authenticates from the request, not a bearer token", () => {
