@@ -255,22 +255,21 @@ describe("canvas app registry: service", () => {
         const { catalog, deps } = await setup(env);
         try {
             const name = `car-big-${env.runId}`;
-            // 48 distinct, highly compressible pages just under the 900 KB cap:
-            // about 42 MB expanded, far below 20 MB compressed.
+            // Distinct, highly compressible pages just under the 900 KB cap,
+            // far below 20 MB compressed in any case. The importer expands at
+            // most 40 MiB (41,943,040 bytes): 48 pages total about 41.8 MB and
+            // still fit; 52 total over 45 MB and do not.
             const filler = "x".repeat(870_000);
-            for (let i = 0; i < 48; i++) {
-                await publishCanvasAppHtml(deps, { html: page(name, `<p>v${i}</p><!-- ${filler} -->`), name, viewer: V.alice, version: `1.0.${i}` });
-            }
-            await expectCode(exportCanvasApp(deps, { name }, V.alice), "BAD_REQUEST");
-            // A smaller history exports and imports back.
-            const small = `car-small-${env.runId}`;
-            for (let i = 0; i < 3; i++) {
-                await publishCanvasAppHtml(deps, { html: page(small, `<p>v${i}</p><!-- ${filler} -->`), name: small, viewer: V.alice, version: `1.0.${i}` });
-            }
-            const archive = await exportCanvasApp(deps, { name: small }, V.alice);
-            await deleteCanvasApp(deps, { name: small }, V.alice);
-            const imported = await importCanvasApp(deps, archive.bytes, V.bob);
-            assertEqual(imported.versions.filter((v) => v.status === "imported").length, 3, "the exported archive imports");
+            const publish = async (i) => publishCanvasAppHtml(deps, { html: page(name, `<p>v${i}</p><!-- ${filler} -->`), name, viewer: V.alice, version: `1.0.${i}` });
+            for (let i = 0; i < 48; i++) await publish(i);
+            const near = await exportCanvasApp(deps, { name }, V.alice);
+            for (let i = 48; i < 52; i++) await publish(i);
+            const refused = await expectCode(exportCanvasApp(deps, { name }, V.alice), "BAD_REQUEST");
+            assert(/an import would refuse/.test(refused.message), `refused for the expanded budget: ${refused.message}`);
+            // The near-limit export it did produce imports back, every version.
+            await deleteCanvasApp(deps, { name }, V.alice);
+            const imported = await importCanvasApp(deps, near.bytes, V.bob);
+            assertEqual(imported.versions.filter((v) => v.status === "imported").length, 48, "the near-limit archive imports");
         } finally {
             await catalog.close();
         }

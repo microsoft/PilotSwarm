@@ -284,7 +284,12 @@ test("the bridge resolves fromArtifact server-side: fetch, cap, sha precondition
 
 test("contract precedence: explicit argument wins, manifest fills, invalid manifest fails an artifact draw closed", () => {
     assert.match(SP, /let effectiveContract = args\.responseContract/);
-    assert.match(SP, /if \(!effectiveContract && html\)/);
+    // A registry app arms its version's recorded contract first; the page's
+    // manifest fills only for non-registry draws (issue 181, B06).
+    const fromAppAt = SP.search(/if \(!effectiveContract && fromAppContract !== undefined\)/);
+    const manifestAt = SP.search(/if \(!effectiveContract && html && fromAppContract === undefined\)/);
+    assert.ok(fromAppAt > 0 && manifestAt > fromAppAt, "the recorded contract precedes the manifest fill");
+    assert.match(SP, /the stored contract of this canvas app is invalid/);
     assert.match(SP, /the embedded CANVAS-APP-MANIFEST contract is invalid/);
     assert.match(SP, /the artifact's CANVAS-APP-MANIFEST is broken/);
     // The event must carry the EFFECTIVE contract, not the raw argument.

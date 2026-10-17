@@ -7,21 +7,8 @@
  * code. The service (canvas-app-registry.ts) owns bytes and lifecycle.
  */
 import type { Pool } from "pg";
-import { createHash } from "node:crypto";
 
-/** The fixed 12-hex prefix of every canvas app byte space id. */
-export const CANVAS_APP_SPACE_PREFIX = createHash("sha256").update("pilotswarm-canvas-apps:artifacts").digest("hex").slice(0, 12);
-
-/**
- * Could this id be an app byte space? New sessions may not take such an id
- * (the CMS refuses it), so for anything created from now on the prefix is the
- * answer; refusals of reads are still confirmed against the registry so a
- * session created before this release whose id happens to match keeps working.
- */
-export function looksLikeCanvasAppSpace(id: string): boolean {
-    const s = String(id ?? "").toLowerCase();
-    return s.length === 36 && s.replace(/-/g, "").startsWith(CANVAS_APP_SPACE_PREFIX) && s[14] === "8";
-}
+export { CANVAS_APP_SPACE_PREFIX, looksLikeCanvasAppSpace } from "./canvas-app-space.js";
 
 export type CanvasAppScope = "shared" | "user";
 

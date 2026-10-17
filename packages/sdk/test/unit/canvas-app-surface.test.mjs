@@ -89,3 +89,28 @@ test("no canvas operation on the Node SDK transport assumes admin when the calle
         assert.match(NODE, new RegExp(`async ${name}\\(args = \\{\\}, owner = this\\.currentUser, isAdmin = false\\) \\{\\s*return this\\.mgmt\\.${name}\\(args \\?\\? \\{\\}, owner, isAdmin === true\\);`), `${name} passes admin only when it is exactly true`);
     }
 });
+
+test("the app byte-space family is one pure module, and both clients refuse it as artifact storage", async () => {
+    const { createHash } = await import("node:crypto");
+    const { CANVAS_APP_SPACE_PREFIX, looksLikeCanvasAppSpace } = await import("../../dist/canvas-app-space.js");
+    assert.equal(
+        CANVAS_APP_SPACE_PREFIX,
+        createHash("sha256").update("pilotswarm-canvas-apps:artifacts").digest("hex").slice(0, 12),
+        "the literal prefix is the documented derivation",
+    );
+    const SPACE = read("../../src/canvas-app-space.ts");
+    assert.ok(!/from "node:|require\(/.test(SPACE), "the family module imports no Node built-in (the web client uses it)");
+    const member = `${CANVAS_APP_SPACE_PREFIX.slice(0, 8)}-${CANVAS_APP_SPACE_PREFIX.slice(8, 12)}-8000-8000-000000000001`;
+    assert.ok(looksLikeCanvasAppSpace(member));
+    assert.ok(!looksLikeCanvasAppSpace("00000000-0000-4000-8000-000000000001"));
+
+    // Both management clients answer isCanvasAppStorage; the web client by the
+    // family alone (fail closed), so the Node transport refuses the family in
+    // either mode. TypeScript also pins the web surface against the direct one.
+    assert.match(DIRECT, /\n    async isCanvasAppStorage\(/);
+    assert.match(WEB, /\n    async isCanvasAppStorage\(sessionId: string\): Promise<boolean> \{\n        return looksLikeCanvasAppSpace\(/);
+    const { WebPilotSwarmManagementClient } = await import("../../dist/web/web-management-client.js");
+    const web = Object.create(WebPilotSwarmManagementClient.prototype);
+    assert.equal(await web.isCanvasAppStorage(member), true);
+    assert.equal(await web.isCanvasAppStorage("00000000-0000-4000-8000-000000000001"), false);
+});

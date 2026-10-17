@@ -5,6 +5,7 @@ import {
     webModeUnsupported,
 } from "./api-connection.js";
 import { createManagementOps, type ManagementOps } from "./generated-op-methods.js";
+import { looksLikeCanvasAppSpace } from "../canvas-app-space.js";
 import type { FeatureViewer, FeatureMutation, FeatureView, FeatureMutationResult } from "../feature-store.js";
 import type { StopTurnOptions, StopTurnResult, SteerTurnOptions, SteerTurnResult } from "../types.js";
 
@@ -240,6 +241,16 @@ export class WebPilotSwarmManagementClient {
 
     async setCanvasKvAccess(sessionId: string, slot: number, access: "owner" | "readers" | "link"): Promise<any> {
         return this._api.call("setCanvasKvAccess", { sessionId, slot, access });
+    }
+
+    /**
+     * Is this id a canvas app byte space (issue 181)? Over HTTP the server
+     * decides every artifact route itself; this local answer is the id-family
+     * check only, so it refuses the whole family (fail closed). New sessions
+     * can never take such an id.
+     */
+    async isCanvasAppStorage(sessionId: string): Promise<boolean> {
+        return looksLikeCanvasAppSpace(String(sessionId ?? ""));
     }
 
     async readCanvasKvForLink(_sessionId: string, _slot: number, _query?: any): Promise<any> {
