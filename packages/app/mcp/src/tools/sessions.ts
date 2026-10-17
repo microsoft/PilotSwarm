@@ -162,13 +162,25 @@ export function applyByteBudget(
     undispatched: boolean;
     omissions: Array<{ seq: number; kind: OmissionKind }>;
     /**
-     * Compact encoded bytes actually consumed by the delivered rows.
+     * Compact encoded bytes consumed by rows accepted with their payload
+     * INTACT. A payload-omitted row costs nothing here, so this is not the
+     * total cost of everything delivered.
      *
-     * A caller shrinking a page needs this to make progress. Lowering the
-     * event budget by an OUTPUT overshoot need not drop any row — the two are
+     * A caller shrinking a page needs it to make progress: lowering the event
+     * budget by an OUTPUT overshoot need not drop any row — the two are
      * different units — so a budget-only decrement can re-select the identical
-     * set over and over. Setting the next budget below `used` guarantees at
-     * least one fewer row, which bounds the search by row count.
+     * set over and over. Crossing below `used` changes the admitted set.
+     *
+     * It does NOT make the delivered row count monotonic, and a caller must
+     * not assume it does. Below `used` a large first row can become
+     * payload-omitted, which frees compact budget for rows behind it, so the
+     * count can GROW. Three rows of 1000/200/200 bytes deliver one row at a
+     * budget of 1000 (used = 1000); at 999 the first is omitted, costs
+     * nothing, and both later rows are admitted — one row becomes three.
+     *
+     * Termination therefore comes from the caller's bounded guard and its
+     * final fit check, never from an assumed decreasing count. Do not remove
+     * either on the strength of this field.
      */
     used: number;
 } {
