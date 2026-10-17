@@ -276,8 +276,9 @@ export async function publishCanvasAppHtml(deps: CanvasAppRegistryDeps, input: P
         committed = await deps.store.commit(reserved.versionId, mayActivate);
     } catch (err) {
         // Definitely not committed (the pruner claimed the version, or it is
-        // gone): the bytes just written have no other owner, so remove them.
-        // Any other failure leaves them: the version may have committed.
+        // gone): the bytes just written are this reservation's own object
+        // (its path carries the version id and is never reused), so remove
+        // them. Any other failure leaves them: the version may have committed.
         if (err instanceof CanvasAppError && (err.code === "ABORTED" || err.code === "NOT_FOUND")) {
             try {
                 await deps.artifactStore.deleteArtifact(reserved.artifactSessionId, reserved.artifactFilename);

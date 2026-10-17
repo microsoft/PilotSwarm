@@ -451,6 +451,85 @@ describe("canvas app registry: service", () => {
         }
     });
 
+    it("a stale publisher cannot delete a replacement ready version after prune and re-reserve", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const { catalog, deps } = await setup(env);
+        try {
+            const name = `car-replace-${env.runId}`;
+            await publishCanvasAppHtml(deps, { html: page(name), name, viewer: V.alice });
+            const space = (await readCanvasAppHtml(deps, { name }, V.alice)).resolved.artifactSessionId;
+            const html2 = page(name, "<p>v2</p>");
+            // P1 reserves 2.0.0 and pauses inside its upload.
+            let reachUpload; const reached = new Promise((resolve) => { reachUpload = resolve; });
+            let releaseUpload; const released = new Promise((resolve) => { releaseUpload = resolve; });
+            const real = deps.artifactStore;
+            const slow = { ...deps, artifactStore: Object.assign(Object.create(Object.getPrototypeOf(real)), real, {
+                uploadArtifact: async (...args) => { reachUpload(); await released; return real.uploadArtifact(...args); },
+            }) };
+            const p1 = publishCanvasAppHtml(slow, { html: html2, name, viewer: V.alice, version: "2.0.0" });
+            await reached;
+            // The prune claims and removes P1's reservation.
+            const later = new Date(Date.now() + CANVAS_APP_PENDING_TTL_MS + 60_000);
+            assertEqual((await pruneCanvasAppArtifacts(deps, later)).pendingRemoved, 1);
+            // P2 publishes the SAME version and bytes: a new reservation.
+            const p2 = await publishCanvasAppHtml(deps, { html: html2, name, viewer: V.alice, version: "2.0.0" });
+            assertEqual(p2.status, "published");
+            assertEqual(p2.active, true);
+            // P1 resumes: its upload, read-back and refused commit happen now.
+            releaseUpload();
+            const refused = await p1.then(() => null, (error) => error);
+            assert(refused && (refused.code === "NOT_FOUND" || refused.code === "ABORTED"), `P1 is refused: ${refused?.code}`);
+            const read = await readCanvasAppHtml(deps, { name }, V.alice, "2.0.0");
+            assertEqual(read.html, html2, "the replacement's bytes survive P1's cleanup");
+            assertEqual(read.resolved.versionId, p2.versionId);
+            assertEqual(sha256Hex(read.html), p2.sha256);
+            const detail = await deps.store.get({ name }, V.alice);
+            assertEqual(detail.activeVersionId, p2.versionId, "the replacement stays active");
+            const files = (await real.listArtifacts(space)).map((f) => f.filename).sort();
+            assert(files.includes(read.resolved.artifactFilename), "the replacement artifact exists");
+            assertEqual(files.length, 2, `1.0.0 and the replacement only, no orphan: ${files.join(", ")}`);
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    it("a second pruner's stale receipt cannot delete bytes of a replacement reservation", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const { catalog, deps } = await setup(env);
+        try {
+            const name = `car-pruners-${env.runId}`;
+            await publishCanvasAppHtml(deps, { html: page(name), name, viewer: V.alice });
+            const html2 = page(name, "<p>v2</p>");
+            // An abandoned publish of 2.0.0: bytes uploaded, never committed.
+            const crashing = { ...deps, store: Object.assign(Object.create(Object.getPrototypeOf(deps.store)), deps.store, {
+                commit: async () => { throw new Error("simulated crash before commit"); },
+            }) };
+            await publishCanvasAppHtml(crashing, { html: html2, name, viewer: V.alice, version: "2.0.0" }).catch(() => {});
+            const later = new Date(Date.now() + CANVAS_APP_PENDING_TTL_MS + 60_000);
+            // Two pruners obtain the same cleanup receipt before either finishes it.
+            const receiptsA = await deps.store.prunePending(later);
+            const receiptsB = await deps.store.prunePending(later);
+            assertEqual(receiptsA.length, 1);
+            assertEqual(JSON.stringify(receiptsB), JSON.stringify(receiptsA), "the same receipt twice");
+            const withReceipts = (receipts) => ({ ...deps, store: Object.assign(Object.create(Object.getPrototypeOf(deps.store)), deps.store, {
+                prunePending: async () => receipts,
+                listTombstones: async () => [],
+            }) });
+            assertEqual((await pruneCanvasAppArtifacts(withReceipts(receiptsA), later)).pendingRemoved, 1, "the first pruner finishes it");
+            // A replacement reserves and commits the same version and bytes.
+            const replacement = await publishCanvasAppHtml(deps, { html: html2, name, viewer: V.alice, version: "2.0.0" });
+            assertEqual(replacement.status, "published");
+            // The second pruner acts on its stale receipt now.
+            const stale = await pruneCanvasAppArtifacts(withReceipts(receiptsB), later);
+            assertEqual(stale.pendingRemoved, 0, "its old row is already gone");
+            const read = await readCanvasAppHtml(deps, { name }, V.alice, "2.0.0");
+            assertEqual(read.html, html2, "the replacement's bytes survive");
+            assertEqual(read.resolved.versionId, replacement.versionId);
+        } finally {
+            await catalog.close();
+        }
+    });
+
     it("a failed read-back removes the uploaded bytes, or keeps the pending row as the cleanup record until they are gone", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
         const { catalog, deps } = await setup(env);

@@ -459,7 +459,11 @@ BEGIN
          WHERE a.app_id = v_app.app_id;
     END IF;
 
-    v_file := p_name || '@' || v_version || '.' || left(p_sha256, 12) || '.html';
+    -- The stored object is named after THIS reservation (its version id), so
+    -- a path is never reused: a stale publisher or pruner holding an old
+    -- reservation can only ever delete its own bytes, never a later
+    -- reservation's for the same version and page.
+    v_file := p_name || '@' || v_version || '.' || left(p_sha256, 12) || '.' || p_new_version_id || '.html';
     INSERT INTO ${s}.canvas_app_versions
         (version_id, app_id, version, precedence_key, state, sha256, size_bytes, artifact_filename,
          card, workspace_key, source_session_id, source_slot, created_by)
@@ -1079,18 +1083,23 @@ DROP FUNCTION IF EXISTS ${s}.cms_canvas_app_prune_pending(TIMESTAMPTZ);
 CREATE OR REPLACE FUNCTION ${s}.cms_canvas_app_prune_pending(p_older_than TIMESTAMPTZ)
 RETURNS TABLE(version_id TEXT, artifact_session_id TEXT, artifact_filename TEXT) LANGUAGE plpgsql AS $$
 DECLARE
-    r RECORD;
+    v_ids TEXT[];
 BEGIN
-    FOR r IN
-        SELECT v.version_id AS vid, v.app_id AS aid FROM ${s}.canvas_app_versions v
-         WHERE v.state = 'pending' AND v.created_at < p_older_than
-         ORDER BY v.created_at
-         LIMIT 1000
-    LOOP
-        PERFORM 1 FROM ${s}.canvas_apps a WHERE a.app_id = r.aid FOR UPDATE;
+    -- The apps with stale pending versions, locked in app-id order: every
+    -- pruner takes app locks in the same global order, and every other
+    -- operation locks exactly one app, so no lock cycle can form.
+    SELECT array_agg(DISTINCT v.app_id COLLATE "C" ORDER BY v.app_id COLLATE "C") INTO v_ids
+      FROM (SELECT cv.app_id FROM ${s}.canvas_app_versions cv
+             WHERE cv.state = 'pending' AND cv.created_at < p_older_than
+             ORDER BY cv.created_at
+             LIMIT 1000) v;
+    IF v_ids IS NOT NULL THEN
+        PERFORM 1 FROM ${s}.canvas_apps a WHERE a.app_id = ANY(v_ids) ORDER BY a.app_id COLLATE "C" FOR UPDATE;
+        -- Re-checked under the locks: a version committed meanwhile is ready
+        -- and is never claimed.
         UPDATE ${s}.canvas_app_versions cv SET state = 'cleanup'
-         WHERE cv.version_id = r.vid AND cv.state = 'pending';
-    END LOOP;
+         WHERE cv.app_id = ANY(v_ids) AND cv.state = 'pending' AND cv.created_at < p_older_than;
+    END IF;
     RETURN QUERY
         SELECT v.version_id, a.artifact_session_id, v.artifact_filename
           FROM ${s}.canvas_app_versions v JOIN ${s}.canvas_apps a ON a.app_id = v.app_id
