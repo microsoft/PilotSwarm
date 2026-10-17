@@ -106,21 +106,30 @@ function makeRuntime(accessFor) {
         mgmt: { getSessionEventsPage: page },
     };
 
-    // A missing stub method must NAME ITSELF rather than surfacing as a bare
-    // 500 with no body. That is exactly what cost a run: the failure said
-    // only "500 !== 200", which is indistinguishable from a product fault.
-    runtime.transport = new Proxy(stub, {
-        get(target, prop, receiver) {
-            if (prop in target) return Reflect.get(target, prop, receiver);
-            if (typeof prop === "symbol" || prop === "then") return undefined;
-            return () => {
-                throw new Error(
-                    `[test stub] runtime called transport.${String(prop)}(), which this fixture does not provide. `
-                    + "Add it to the stub, or the runtime has started using a surface this test does not model.",
-                );
-            };
-        },
-    });
+    // NO Proxy here, deliberately.
+    //
+    // A first attempt wrapped this stub in a Proxy so a missing method would
+    // name itself instead of surfacing as a bare 500. That BREAKS the
+    // runtime: it feature-detects optional capabilities with
+    // `typeof this.transport.X === "function"` (runtime.js — getWorkerCount,
+    // getLogConfig, getDefaultModel, listCreatableAgents, listKnownUsers,
+    // downloadArtifactBinary, and more). A Proxy returning a function for
+    // every unknown name makes every optional capability look PRESENT, so
+    // the runtime calls it and the Proxy throws — converting graceful
+    // optional paths into failures and changing the behaviour under test.
+    //
+    // Plain object instead, so absent means absent. Diagnosability comes
+    // from the response BODY in the assertions below, which names the real
+    // error rather than leaving a bare status code.
+    runtime.transport = stub;
+
+    // Fail loudly and immediately if the surface the runtime dispatches to is
+    // missing, rather than discovering it as a 500 three assertions later.
+    // This is the exact mistake r24 caught: the method existed, one level too
+    // deep, and only the POSITIVE cases could notice.
+    if (typeof runtime.transport.getSessionEventsPage !== "function") {
+        throw new Error("[test stub] transport.getSessionEventsPage is missing — the runtime dispatches it directly, not via .mgmt");
+    }
     return { runtime, calls };
 }
 
