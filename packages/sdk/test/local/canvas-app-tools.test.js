@@ -33,10 +33,20 @@ function page(title, extra = "", workspace = null) {
     return `<!doctype html>\n<!-- CANVAS-APP-MANIFEST ${JSON.stringify(manifest)} -->\n<html><body><h1>${title}</h1>${extra}</body></html>\n`;
 }
 
-/** One scripted turn that calls the tools in order and returns their results as JSON. */
+/**
+ * One scripted turn that calls the tools in order, one per step, and answers
+ * with every result as JSON. position.toolResults holds only the results since
+ * the last assistant message, so each step collects the previous step's result.
+ */
 function toolTurn(calls) {
-    const steps = calls.map((call) => ({ tools: [call] }));
-    steps.push((_body, position) => ({ content: JSON.stringify(position.toolResults) }));
+    const results = [];
+    const steps = [{ tools: [calls[0]] }];
+    for (let i = 1; i <= calls.length; i++) {
+        steps.push((_body, position) => {
+            results.push(...position.toolResults);
+            return i < calls.length ? { tools: [calls[i]] } : { content: JSON.stringify(results) };
+        });
+    }
     return steps;
 }
 
