@@ -2,8 +2,7 @@
  * Migration 0084 — the canvas app registry (issue 181).
  * See docs/proposals/canvas-app-registry.md and migrations/0084_diff.md.
  *
- * Additive: five new tables, one nullable session column, new procedures.
- * Nothing existing is altered except `sessions.cross_owner_seen_at`.
+ * Additive: six new tables and new procedures. Nothing existing is altered.
  *
  * Vocabulary:
  * - an app is (scope, owner, name); `shared` names are deployment-unique,
@@ -125,7 +124,6 @@ CREATE TABLE IF NOT EXISTS ${s}.canvas_app_workspace_consents (
     PRIMARY KEY (session_id, slot, rev, page_sha256)
 );
 
-ALTER TABLE ${s}.sessions ADD COLUMN IF NOT EXISTS cross_owner_seen_at TIMESTAMPTZ;
 
 -- ── SemVer ───────────────────────────────────────────────────────
 
@@ -974,7 +972,7 @@ RETURNS VOID LANGUAGE sql AS $$
     UPDATE ${s}.canvas_app_tombstones SET purged_at = now() WHERE app_id = p_app_id AND purged_at IS NULL;
 $$;
 
--- ── Workspace consent and session taint ─────────────────────────
+-- ── Workspace consent ───────────────────────────────────────────
 
 CREATE OR REPLACE FUNCTION ${s}.cms_canvas_app_set_consent(
     p_session_id TEXT, p_slot INT, p_rev INT, p_page_sha256 TEXT, p_version_id TEXT, p_decision TEXT,
@@ -1001,15 +999,5 @@ CREATE OR REPLACE FUNCTION ${s}.cms_canvas_app_get_consent(
      WHERE c.session_id = p_session_id AND c.slot = p_slot AND c.rev = p_rev AND c.page_sha256 = p_page_sha256;
 $$;
 
-CREATE OR REPLACE FUNCTION ${s}.cms_canvas_app_mark_cross_owner_seen(p_session_id TEXT)
-RETURNS VOID LANGUAGE sql AS $$
-    UPDATE ${s}.sessions SET cross_owner_seen_at = COALESCE(cross_owner_seen_at, now())
-     WHERE session_id = p_session_id;
-$$;
-
-CREATE OR REPLACE FUNCTION ${s}.cms_canvas_app_cross_owner_seen(p_session_id TEXT)
-RETURNS BOOLEAN LANGUAGE sql STABLE AS $$
-    SELECT COALESCE((SELECT x.cross_owner_seen_at IS NOT NULL FROM ${s}.sessions x WHERE x.session_id = p_session_id), FALSE);
-$$;
 `;
 }

@@ -485,13 +485,4 @@ export class CanvasAppStore {
         const d = rows[0]?.d;
         return d === "granted" || d === "denied" ? d : null;
     }
-
-    async markCrossOwnerSeen(sessionId: string): Promise<void> {
-        await this.call(`SELECT ${this.fn("mark_cross_owner_seen")}($1)`, [sessionId]);
-    }
-
-    async crossOwnerSeen(sessionId: string): Promise<boolean> {
-        const rows = await this.call(`SELECT ${this.fn("cross_owner_seen")}($1) AS seen`, [sessionId]);
-        return Boolean(rows[0]?.seen);
-    }
 }

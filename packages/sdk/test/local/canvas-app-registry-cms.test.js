@@ -384,17 +384,13 @@ describe("canvas app registry: CMS procedures", () => {
         }
     });
 
-    it("consent rows and session taint", { timeout: TIMEOUT }, async () => {
+    it("consent rows", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
         const catalog = await createCatalog(env);
         try {
             const store = catalog.canvasApps;
             const sessionId = randomUUID();
             await catalog.createSession(sessionId, {});
-            assertEqual(await store.crossOwnerSeen(sessionId), false);
-            await store.markCrossOwnerSeen(sessionId);
-            assertEqual(await store.crossOwnerSeen(sessionId), true);
-
             assertEqual(await store.getConsent(sessionId, 1, 3, "sha-page"), null);
             await store.setConsent({ sessionId, slot: 1, rev: 3, pageSha256: "sha-page", decision: "granted", by: ALICE });
             assertEqual(await store.getConsent(sessionId, 1, 3, "sha-page"), "granted");
