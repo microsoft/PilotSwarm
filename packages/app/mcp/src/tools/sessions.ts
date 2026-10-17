@@ -1161,6 +1161,31 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                             isError: true,
                         };
                     }
+                    // Validate BEFORE clamping. NaN is the dangerous input here,
+                    // because the clamp propagates it (Math.max(1, Math.min(NaN, n))
+                    // is NaN) and every subsequent `bytes > budget` comparison against
+                    // NaN is FALSE. The hard byte bound would then pass vacuously and
+                    // the handler would dispatch an unbounded response — the guard
+                    // failing open, which is the worst way for it to fail.
+                    //
+                    // The tool schema currently rejects NaN, so this is defence in
+                    // depth rather than a live hole. That is the point: a size guard
+                    // must not depend on a validation layer above it staying exactly
+                    // as it is today. Fractions are rejected for the same reason — a
+                    // budget of 1.5 bytes is not meaningful.
+                    if (max_bytes !== undefined && !Number.isSafeInteger(max_bytes)) {
+                        return {
+                            content: [{
+                                type: "text" as const,
+                                text: JSON.stringify({
+                                    error: "max_bytes must be a safe integer",
+                                    received: Number.isNaN(max_bytes) ? "NaN" : String(max_bytes),
+                                    remedy: `omit max_bytes for the ${PAGE_BYTES_DEFAULT} default, or pass an integer between 1 and ${PAGE_BYTES_MAX}`,
+                                }, null, 2),
+                            }],
+                            isError: true,
+                        };
+                    }
                     const budget = Math.max(1, Math.min(max_bytes ?? PAGE_BYTES_DEFAULT, PAGE_BYTES_MAX));
                     const result: any = await ctx.mgmt.getSessionEventsPage(session_id, {
                         afterSeq: after_seq,
@@ -1301,6 +1326,17 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                      *
                      * Returns null rather than a guess when no supported, verified
                      * value exists.
+                     *
+                     * DISCLOSURE NOTE: this number is CONTENT-DEPENDENT. It is the
+                     * size of a minimal page, which encodes the boundary record's
+                     * non-payload fields and the digit magnitude of its omitted
+                     * payload size — so it varies with the session's content. The
+                     * older envelope-only figure did not. Both refusal branches are
+                     * reached only AFTER the gated reads above, so this is disclosed
+                     * only to a caller already entitled to the whole event, and is
+                     * not a widening of who can learn what. Recorded because the
+                     * dependence is real and a future change to when these branches
+                     * run would make it matter.
                      */
                     const solveSufficient = (): number | null => {
                         let proposed = settle(build(0, false, budget)).bytes;

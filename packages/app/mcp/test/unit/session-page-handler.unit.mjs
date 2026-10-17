@@ -146,6 +146,25 @@ async function run() {
             text.slice(0, 120));
         record("impossible budget does NOT emit a truncated page",
             !/\"events\"/.test(text) && !/\"transcript\"/.test(text));
+
+        // A size guard that FAILS OPEN is worse than no guard. NaN propagates
+        // through the clamp, and every `bytes > NaN` comparison is false, so
+        // the hard bound would pass vacuously and dispatch an unbounded
+        // response. Fractions are meaningless as a byte budget.
+        //
+        // The schema rejects these today, so this is defence in depth — which
+        // is the point: the guard must not depend on a validation layer above
+        // it staying exactly as it is.
+        for (const bad of [Number.NaN, 1.5, -1.5]) {
+            const r = await client.callTool({
+                name: "get_session_events",
+                arguments: { session_id: SESSION, page: true, max_bytes: bad },
+            }).catch((e) => ({ isError: true, content: [{ text: String(e?.message ?? e) }] }));
+            const t = r.content?.[0]?.text ?? "";
+            record(`a non-integer max_bytes (${String(bad)}) is refused, never fails open`,
+                r.isError === true && !/\"events\"/.test(t) && !/\"transcript\"/.test(t),
+                t.slice(0, 140));
+        }
     }
 
     // ── GPT-6.1 FINAL-01/02 boundaries ──────────────────────────
@@ -440,6 +459,18 @@ async function run() {
     }
 
     // ── handler-level drain is a PARTITION, under byte pressure ──
+    //
+    // LOAD-BEARING. Do not delete or weaken these in favour of the FINAL-03
+    // cases. The adversarial review identified exactly one way the FINAL-03
+    // oracle can be evaded: a defect that drops the SAME event at EVERY budget
+    // — including the full-budget probe — corrupts `totalCount` too, so a
+    // uniformly short page reads as "complete" and passes.
+    //
+    // These drains close that hole, because they compare the drained sequence
+    // set against the KNOWN fixture rather than against anything the handler
+    // reported. Absolute completeness is asserted HERE; FINAL-03 only asserts
+    // that a budget-forced subset advertises its continuation. Neither is
+    // sufficient alone.
     {
         // Sequences start at 101 deliberately. A forward drain must begin from a
         // cursor ABOVE zero, because afterSeq=0 classifies as LATEST, not
