@@ -526,3 +526,70 @@ export async function migrateLegacyCanvasApps(
         skipped: lines.filter((l) => l.outcome === "skipped").length,
     };
 }
+
+// ── Draw trust and attribution (plan decision 4) ─────────────────
+
+export type CanvasDrawTrust = "owner" | "cross-owner" | "agent";
+
+export interface CanvasDrawAttribution {
+    appId: string;
+    versionId: string;
+    name: string;
+    version: string;
+    scope: CanvasAppScope;
+    owner: { provider: string; subject: string } | null;
+}
+
+export interface CanvasDrawClassification {
+    trust: CanvasDrawTrust;
+    /** Set only for fromApp and exact sha256 matches; never by the workspace rule. */
+    app: CanvasDrawAttribution | null;
+    pageSha256: string;
+}
+
+function samePrincipal(a: { provider: string; subject: string } | null | undefined, b: { provider: string; subject: string } | null | undefined): boolean {
+    return Boolean(a && b && a.provider === b.provider && a.subject === b.subject);
+}
+
+/**
+ * Classify a draw for the canvas's owner (the viewer):
+ * - fromApp keeps the app it resolved; owner when the viewer owns it, else cross-owner;
+ * - other bytes equal to a version the viewer owns → owner (attributed);
+ * - else equal to a visible version owned by someone else → cross-owner
+ *   (attributed: shared first, then the oldest app);
+ * - else a workspace block equal to a visible version owned by someone else
+ *   → cross-owner (not attributed);
+ * - else agent, as today.
+ */
+export async function classifyCanvasDraw(
+    store: CanvasAppStore,
+    input: {
+        html: string;
+        manifest: CanvasAppManifest | null;
+        viewer: CanvasAppViewer;
+        fromApp?: CanvasDrawAttribution | null;
+    },
+): Promise<CanvasDrawClassification> {
+    const pageSha256 = sha256Hex(input.html);
+    if (input.fromApp) {
+        return {
+            trust: samePrincipal(input.fromApp.owner, input.viewer.principal) ? "owner" : "cross-owner",
+            app: input.fromApp,
+            pageSha256,
+        };
+    }
+    if (!input.html) return { trust: "agent", app: null, pageSha256 };
+    const matches = await store.matchBySha(pageSha256, input.viewer);
+    const mine = matches.find((m) => samePrincipal(m.owner, input.viewer.principal));
+    const toAttribution = (m: typeof matches[number]): CanvasDrawAttribution => ({
+        appId: m.appId, versionId: m.versionId, name: m.name, version: m.version, scope: m.scope, owner: m.owner,
+    });
+    if (mine) return { trust: "owner", app: toAttribution(mine), pageSha256 };
+    const foreign = matches.find((m) => !samePrincipal(m.owner, input.viewer.principal));
+    if (foreign) return { trust: "cross-owner", app: toAttribution(foreign), pageSha256 };
+    const workspaceKey = canvasAppWorkspaceKey(input.manifest);
+    if (workspaceKey && await store.foreignWorkspaceMatch(workspaceKey, input.viewer)) {
+        return { trust: "cross-owner", app: null, pageSha256 };
+    }
+    return { trust: "agent", app: null, pageSha256 };
+}

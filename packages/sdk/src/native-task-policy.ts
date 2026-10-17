@@ -72,6 +72,7 @@ export const NATIVE_SYNCHRONOUS_TOOLS = new Set([
     "list_providers",
     "list_sessions",
     "load_skill",
+    "manage_canvas_app",
     "manage_provider",
     "pin_agent_package_version",
     "propose_agent_patch",

@@ -133,8 +133,9 @@ const DRAW_CANVAS_TOOL_SPEC = {
         + "default 1) with a complete self-contained HTML document. Draw when the user asks for something visual or a "
         + "graphic would greatly clarify an outcome — most replies need no drawing, and drawing switches the user's view. "
         + "Layout change = draw_canvas; content change = update_canvas(patch) (far cheaper). Exactly one source: inline "
-        + "html (empty string clears), or fromArtifact to render a stored app server-side without the bytes entering your "
-        + "context. Do not paste canvas links in replies. Before an interactive or shared canvas, load_skill(\"canvas-apps\"); "
+        + "html (empty string clears), fromApp to draw a registered canvas app by name, or fromArtifact to render a stored "
+        + "artifact server-side without the bytes entering your context. Use other users' apps only through fromApp, never "
+        + "by copying their bytes inline. Do not paste canvas links in replies. Before an interactive or shared canvas, load_skill(\"canvas-apps\"); "
         + "for layout, charts and the sandbox rules, load_skill(\"html-visuals\").",
     parameters: {
         type: "object",
@@ -167,6 +168,21 @@ const DRAW_CANVAS_TOOL_SPEC = {
                     expectedSha256: { type: "string", description: "Optional precondition: fail with SHA_MISMATCH (no draw) if the source bytes hash differently." },
                 },
                 required: ["filename"],
+            },
+            fromApp: {
+                type: "object",
+                description:
+                    "Draw a registered canvas app SERVER-SIDE by name (find_canvas_app first). Mutually exclusive with html "
+                    + "and fromArtifact. Default: your own app of that name, else the shared one; the active version unless "
+                    + "version is given. An app owned by another user runs with no network access and asks the user before "
+                    + "it touches session files.",
+                properties: {
+                    name: { type: "string", description: "The app name, e.g. release-signoff." },
+                    version: { type: "string", description: "Optional SemVer version; default the active one." },
+                    scope: { type: "string", enum: ["shared", "user"], description: "Optional: pick the shared copy or your private copy of a name that has both." },
+                    expectedSha256: { type: "string", description: "Optional precondition: fail with SHA_MISMATCH (no draw) if the version's bytes hash differently." },
+                },
+                required: ["name"],
             },
             responseContract: {
                 type: "object",
@@ -299,17 +315,20 @@ const CANVAS_KV_TOOL_SPEC = {
 
 const PUBLISH_CANVAS_APP_TOOL_SPEC = {
     description:
-        "Publish the canvas on a slot as a reusable app that EVERY session in the deployment can find and draw. "
-        + "Copies the document to a pinned artifact app-<name>.html and writes the catalog card (shared fact apps/<name>) "
-        + "from the document's CANVAS-APP-MANIFEST — which MUST carry an `interface` block (keys, requests, events) so "
-        + "another agent can drive the app from the card alone. Call it when the user says to share the app with the "
-        + "team. Publishing is a disclosure: publish the SHELL, never a page with data baked in.",
+        "Publish the canvas on a slot as a version of a canvas app in the registry. PRIVATE by default: only the user "
+        + "(and admins) can find and draw it; pass scope: \"shared\" only when the user asks to share it with everyone. "
+        + "The page must carry a CANVAS-APP-MANIFEST with an `interface` block (keys, requests, events) so another agent "
+        + "can drive it from the card alone. Publishing the same bytes again changes nothing; new bytes become a new "
+        + "version (the next patch version unless you or the manifest give one). Publish the SHELL, never a page with "
+        + "data baked in.",
     parameters: {
         type: "object",
         properties: {
-            name: { type: "string", description: "Catalog slug, e.g. release-signoff. Lowercase letters, digits, dashes. Republishing the same name replaces the card." },
-            description: { type: "string", description: "The text the catalog RANKS on. Say WHEN to use the app: 'Use when several approvers sign off a release train together.' Not the mechanics." },
-            tags: { type: "array", items: { type: "string" }, description: "Optional catalog tags, e.g. [\"review\", \"release\"]." },
+            name: { type: "string", description: "App name slug, e.g. release-signoff. Lowercase letters, digits, dashes." },
+            description: { type: "string", description: "The text search RANKS on. Say WHEN to use the app: 'Use when several approvers sign off a release train together.' Not the mechanics." },
+            tags: { type: "array", items: { type: "string" }, description: "Optional tags, e.g. [\"review\", \"release\"]." },
+            scope: { type: "string", enum: ["user", "shared"], description: "user (private, default) or shared (everyone). Share only when the user asks." },
+            version: { type: "string", description: "Optional SemVer version for this publish. Default: the manifest's version, else the next patch version." },
             slot: { type: "number", description: "Which canvas to publish, 1-5. Default 1." },
             session_id: { type: "string", description: "Publish an ANCESTOR session's canvas instead of your own." },
         },
@@ -320,18 +339,43 @@ const PUBLISH_CANVAS_APP_TOOL_SPEC = {
 
 const FIND_CANVAS_APP_TOOL_SPEC = {
     description:
-        "Search the deployment's catalog of published canvas apps. LOOK BEFORE BUILDING: when the user asks for an app "
-        + "(a board, a poll, a sign-off sheet, a review workbench), search first and offer an existing one. Returns ranked "
-        + "cards {key, name, description, tags, kv, source}. Then read_facts(key_pattern=\"apps/<name>\", scope=\"shared\") "
-        + "for the full card — its `interface` tells you the KV keys and req/* ops the app speaks — and "
-        + "draw_canvas({fromArtifact: card.source}) to put it on screen.",
+        "Search the canvas app registry. LOOK BEFORE BUILDING: when the user asks for an app (a board, a poll, a "
+        + "sign-off sheet, a review workbench), search first and offer an existing one. With query: ranked apps the user "
+        + "may see {name, scope, description, tags, version}. With name: that app's full card — its `interface` tells you "
+        + "the KV keys and req/* ops it speaks. Then draw_canvas({fromApp: {name}}).",
     parameters: {
         type: "object",
         properties: {
             query: { type: "string", description: "The situation, in words: 'review a pull request diff', 'team availability', 'release sign-off'." },
+            name: { type: "string", description: "Return this app's full card instead of searching." },
+            scope: { type: "string", enum: ["shared", "user"], description: "With name: pick the shared or the private copy." },
             limit: { type: "number", description: "Max results (default 8, cap 20)." },
         },
-        required: ["query"],
+        required: [],
+    },
+    handler: async () => "stub",
+} as const;
+
+const MANAGE_CANVAS_APP_TOOL_SPEC = {
+    description:
+        "Change a canvas app in the registry, with the user's rights (owner, contributor or admin). Actions: enable, "
+        + "disable, describe (description/tags), pin (make a version active), share / unshare (owner or admin), "
+        + "add_contributor / remove_contributor (shared apps; owner or admin), delete (owner or admin; needs confirm: true "
+        + "and the user's request). To EDIT an app's page: draw_canvas({fromApp}), change it, then publish_canvas_app "
+        + "again — that makes a new version.",
+    parameters: {
+        type: "object",
+        properties: {
+            action: { type: "string", enum: ["enable", "disable", "describe", "pin", "share", "unshare", "add_contributor", "remove_contributor", "delete"] },
+            name: { type: "string", description: "The app name." },
+            scope: { type: "string", enum: ["shared", "user"], description: "Optional: pick the shared or the private copy." },
+            version: { type: "string", description: "pin: the version to make active." },
+            description: { type: "string", description: "describe: the new description (one full sentence saying when to use the app)." },
+            tags: { type: "array", items: { type: "string" }, description: "describe: the new tags." },
+            user: { type: "object", properties: { provider: { type: "string" }, subject: { type: "string" } }, description: "add_contributor / remove_contributor: the user." },
+            confirm: { type: "boolean", description: "delete: must be true." },
+        },
+        required: ["action", "name"],
     },
     handler: async () => "stub",
 } as const;
@@ -1242,9 +1286,10 @@ export class ManagedSession {
         const canvasKvTool = defineTool("canvas_kv", CANVAS_KV_TOOL_SPEC);
         const publishCanvasAppTool = defineTool("publish_canvas_app", PUBLISH_CANVAS_APP_TOOL_SPEC);
         const findCanvasAppTool = defineTool("find_canvas_app", FIND_CANVAS_APP_TOOL_SPEC);
+        const manageCanvasAppTool = defineTool("manage_canvas_app", MANAGE_CANVAS_APP_TOOL_SPEC);
         const loadSkillTool = defineTool("load_skill", opts?.workspaceTools ? LOAD_SKILL_WITH_PATH_TOOL_SPEC : LOAD_SKILL_TOOL_SPEC);
 
-        return [waitTool, waitOnWorkerTool, cronTool, cronAtTool, askUserTool, reportCycleTool, listModelsTool, setSessionModelTool, regenerateContextTool, regenerateAgentTool, sendSessionMessageTool, replySessionMessageTool, showArtifactTool, drawCanvasTool, updateCanvasTool, readCanvasTool, showCanvasTool, canvasKvTool, publishCanvasAppTool, findCanvasAppTool, loadSkillTool, ...capabilityToolDeclarations(),
+        return [waitTool, waitOnWorkerTool, cronTool, cronAtTool, askUserTool, reportCycleTool, listModelsTool, setSessionModelTool, regenerateContextTool, regenerateAgentTool, sendSessionMessageTool, replySessionMessageTool, showArtifactTool, drawCanvasTool, updateCanvasTool, readCanvasTool, showCanvasTool, canvasKvTool, publishCanvasAppTool, findCanvasAppTool, manageCanvasAppTool, loadSkillTool, ...capabilityToolDeclarations(),
             ...(holdsProviderTools(opts?.agentIdentity) ? providerToolDefs() : []),
             // Session workspaces: only for a session that has a workspace or
             // whose agent lists set_session_workspace. Every other session keeps
@@ -2030,7 +2075,7 @@ export class ManagedSession {
         // predicate, so a child neither sees nor can run them.
         const drawCanvasTool = defineTool("draw_canvas", {
             ...DRAW_CANVAS_TOOL_SPEC,
-            handler: async (args: { html?: string; fromArtifact?: { sessionId?: string; filename?: string; expectedSha256?: string }; note?: string; responseContract?: unknown; slot?: number; name?: string; session_id?: string }) => {
+            handler: async (args: { html?: string; fromArtifact?: { sessionId?: string; filename?: string; expectedSha256?: string }; fromApp?: { name?: string; version?: string; scope?: string; expectedSha256?: string }; note?: string; responseContract?: unknown; slot?: number; name?: string; session_id?: string }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("draw_canvas");
                 if (typeof (controlBridge as any)?.drawCanvas !== "function") {
                     return "Error: the canvas bridge is unavailable on this session.";
@@ -2040,8 +2085,12 @@ export class ManagedSession {
                 }
                 const hasHtml = typeof args?.html === "string";
                 const fromArtifact = args?.fromArtifact && typeof args.fromArtifact === "object" ? args.fromArtifact : null;
-                if (hasHtml === Boolean(fromArtifact)) {
-                    return "Error: pass exactly one source — html (inline document; empty string clears) OR fromArtifact ({filename, sessionId?}).";
+                const fromApp = args?.fromApp && typeof args.fromApp === "object" ? args.fromApp : null;
+                if ([hasHtml, Boolean(fromArtifact), Boolean(fromApp)].filter(Boolean).length !== 1) {
+                    return "Error: pass exactly one source — html (inline document; empty string clears), fromApp ({name, version?}) OR fromArtifact ({filename, sessionId?}).";
+                }
+                if (fromApp && !String(fromApp.name || "").trim()) {
+                    return "Error: fromApp.name is required.";
                 }
                 if (fromArtifact && !String(fromArtifact.filename || "").trim()) {
                     return "Error: fromArtifact.filename is required.";
@@ -2072,6 +2121,12 @@ export class ManagedSession {
                         ...(fromArtifact.sessionId ? { sessionId: String(fromArtifact.sessionId) } : {}),
                         filename: String(fromArtifact.filename),
                         ...(fromArtifact.expectedSha256 ? { expectedSha256: String(fromArtifact.expectedSha256) } : {}),
+                    } } : {}),
+                    ...(fromApp ? { fromApp: {
+                        name: String(fromApp.name).trim().toLowerCase(),
+                        ...(fromApp.version ? { version: String(fromApp.version) } : {}),
+                        ...(fromApp.scope === "shared" || fromApp.scope === "user" ? { scope: fromApp.scope } : {}),
+                        ...(fromApp.expectedSha256 ? { expectedSha256: String(fromApp.expectedSha256) } : {}),
                     } } : {}),
                     note,
                     responseContract: contractResult.contract,
@@ -2220,7 +2275,7 @@ export class ManagedSession {
         });
         const publishCanvasAppTool = defineTool("publish_canvas_app", {
             ...PUBLISH_CANVAS_APP_TOOL_SPEC,
-            handler: async (args: { name?: string; description?: string; tags?: string[]; slot?: number; session_id?: string }) => {
+            handler: async (args: { name?: string; description?: string; tags?: string[]; slot?: number; session_id?: string; scope?: string; version?: string }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("publish_canvas_app");
                 if (typeof (controlBridge as any)?.publishCanvasApp !== "function") {
                     return "Error: the canvas bridge is unavailable on this session.";
@@ -2230,6 +2285,8 @@ export class ManagedSession {
                     ...(Array.isArray(args?.tags) ? { tags: args.tags } : {}),
                     ...(args?.slot !== undefined ? { slot: args.slot } : {}),
                     ...(args?.session_id !== undefined ? { session_id: String(args.session_id) } : {}),
+                    ...(args?.scope === "shared" || args?.scope === "user" ? { scope: args.scope } : {}),
+                    ...(args?.version !== undefined ? { version: String(args.version) } : {}),
                 });
                 if (result?.error) return `Error: could not publish the app: ${result.error}`;
                 return JSON.stringify(result);
@@ -2237,14 +2294,33 @@ export class ManagedSession {
         });
         const findCanvasAppTool = defineTool("find_canvas_app", {
             ...FIND_CANVAS_APP_TOOL_SPEC,
-            handler: async (args: { query?: string; limit?: number }) => {
+            handler: async (args: { query?: string; limit?: number; name?: string; scope?: string }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("find_canvas_app");
                 if (typeof (controlBridge as any)?.findCanvasApp !== "function") {
                     return "Error: the canvas bridge is unavailable on this session.";
                 }
-                const result = await (controlBridge as any).findCanvasApp({ query: args?.query, limit: args?.limit });
-                if (result?.error) return `Error: could not search the app catalog: ${result.error}`;
-                if (!result?.count) return JSON.stringify({ count: 0, apps: [], note: "No published app matches. Build one, and publish_canvas_app it when the user wants it shared." });
+                if (!String(args?.query ?? "").trim() && !String(args?.name ?? "").trim()) {
+                    return "Error: pass query (to search) or name (for one app's full card).";
+                }
+                const result = await (controlBridge as any).findCanvasApp({
+                    query: args?.query, limit: args?.limit,
+                    ...(args?.name ? { name: String(args.name) } : {}),
+                    ...(args?.scope === "shared" || args?.scope === "user" ? { scope: args.scope } : {}),
+                });
+                if (result?.error) return `Error: could not search the canvas app registry: ${result.error}`;
+                if (!result?.count) return JSON.stringify({ count: 0, apps: [], note: "No app matches. Build one, and publish_canvas_app it when the user wants to keep it." });
+                return JSON.stringify(result);
+            },
+        });
+        const manageCanvasAppTool = defineTool("manage_canvas_app", {
+            ...MANAGE_CANVAS_APP_TOOL_SPEC,
+            handler: async (args: { action?: string; name?: string; scope?: string; enabled?: boolean; version?: string; description?: string; tags?: string[]; user?: { provider?: string; subject?: string }; confirm?: boolean }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("manage_canvas_app");
+                if (typeof (controlBridge as any)?.manageCanvasApp !== "function") {
+                    return "Error: the canvas bridge is unavailable on this session.";
+                }
+                const result = await (controlBridge as any).manageCanvasApp({ ...args });
+                if (result?.error) return `Error: could not change the app: ${result.error}`;
                 return JSON.stringify(result);
             },
         });
@@ -2849,7 +2925,7 @@ export class ManagedSession {
         });
 
         const SYSTEM_TOOL_NAMES = new Set([
-    "update_canvas","wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "send_session_message", "reply_session_message", "show_artifact", "draw_canvas", "read_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "find_canvas_app", "load_skill", "load_agent", "search_capabilities", "load_agent_guidelines", "list_session_capabilities", "use_package", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "stop_agent_turn", "delete_agent"]);
+    "update_canvas","wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "send_session_message", "reply_session_message", "show_artifact", "draw_canvas", "read_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "find_canvas_app", "manage_canvas_app", "load_skill", "load_agent", "search_capabilities", "load_agent_guidelines", "list_session_capabilities", "use_package", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "stop_agent_turn", "delete_agent"]);
 
         // Merge user tools with system tools
         const userTools = this.config.tools ?? [];
@@ -2896,7 +2972,7 @@ export class ManagedSession {
         // the schema. Gate both halves on the same list so there is no tool
         // that exists-but-is-hidden in an ordinary session.
         const isManagerSession = holdsManagerBundle(this.config.agentIdentity);
-        const mutatingSystemToolNames = new Set(["send_session_message", "reply_session_message", "draw_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "use_package", "load_agent",
+        const mutatingSystemToolNames = new Set(["send_session_message", "reply_session_message", "draw_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "manage_canvas_app", "use_package", "load_agent",
     "update_canvas"]);
         const systemToolsForTurn: Tool<any>[] = isServiceSession ? [] : [
             waitTool,
@@ -2929,6 +3005,7 @@ export class ManagedSession {
             canvasKvTool,
             publishCanvasAppTool,
             findCanvasAppTool,
+            manageCanvasAppTool,
             loadSkillTool,
         ].filter((tool: any) => !isReadOnlyTuner || !mutatingSystemToolNames.has(tool.name));
 

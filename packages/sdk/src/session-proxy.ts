@@ -9,7 +9,11 @@ import {
 } from "./session-manager.js";
 import { extractCanvasAppManifest, canvasAppCard, normalizeCanvasResponseContract } from "./canvas-app-manifest.js";
 import { readCanvasKv, writeCanvasKv } from "./canvas-kv.js";
-import { publishCanvasApp, findCanvasApp } from "./canvas-app-catalog.js";
+import {
+    publishCanvasAppHtml, readCanvasAppHtml, deleteCanvasApp as deleteRegistryCanvasApp, classifyCanvasDraw,
+    type CanvasDrawAttribution, type CanvasDrawClassification,
+} from "./canvas-app-registry.js";
+import { CanvasAppError } from "./canvas-app-store.js";
 import { canvasArtifactFilename, normalizeCanvasSlot, eventSlot, latestCanvasEventData, latestCanvasRev } from "./canvas-support.js";
 import type { SessionStateStore } from "./session-store.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "./cms.js";
@@ -3557,7 +3561,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             // cross-session canvas access here, so a child cannot touch its
             // parent's surface any more than a stranger's.
             ...({
-                drawCanvas: async (args: { html?: string; fromArtifact?: { sessionId?: string; filename: string; expectedSha256?: string }; note?: string; responseContract?: Record<string, any>; slot?: number; name?: string; session_id?: string }) => {
+                drawCanvas: async (args: { html?: string; fromArtifact?: { sessionId?: string; filename: string; expectedSha256?: string }; fromApp?: { name: string; version?: string; scope?: string; expectedSha256?: string }; note?: string; responseContract?: Record<string, any>; slot?: number; name?: string; session_id?: string }) => {
                     if (!artifactStore) return { error: "this worker has no artifact store" };
                     if (!catalog) return { error: "canvas requires the CMS catalog" };
                     const slot = normalizeCanvasSlot(args.slot);
@@ -3575,8 +3579,32 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         // cross-session paths (the artifact layer is worker-trusted);
                         // the model never carries the document.
                         let html: string;
-                        let source: { kind: "artifact"; sessionId: string; filename: string; sha256: string } | undefined;
-                        if (args.fromArtifact) {
+                        let source: Record<string, unknown> | undefined;
+                        // The canvas owner is who sees the page: trust is
+                        // decided for them (canvas app registry, issue 181).
+                        const canvasViewer = await sessionManager.resolveCanvasAppViewer(target);
+                        let fromAppAttribution: CanvasDrawAttribution | null = null;
+                        if (args.fromApp) {
+                            const store = (catalog as any).canvasApps;
+                            if (!store) return { error: "the canvas app registry is unavailable on this worker" };
+                            const fa = args.fromApp;
+                            try {
+                                const { html: appHtml, resolved: app } = await readCanvasAppHtml(
+                                    { store, artifactStore },
+                                    { name: String(fa.name ?? ""), scope: fa.scope === "shared" || fa.scope === "user" ? fa.scope : null },
+                                    canvasViewer,
+                                    fa.version ?? null,
+                                );
+                                if (fa.expectedSha256 && app.sha256 !== fa.expectedSha256) {
+                                    return { error: `SHA_MISMATCH: ${app.name}@${app.version} hashes ${app.sha256}, expected ${fa.expectedSha256}; nothing was drawn` };
+                                }
+                                html = appHtml;
+                                fromAppAttribution = { appId: app.appId, versionId: app.versionId, name: app.name, version: app.version, scope: app.scope, owner: app.owner };
+                                source = { kind: "app", appId: app.appId, name: app.name, version: app.version, versionId: app.versionId, sha256: app.sha256 };
+                            } catch (err: any) {
+                                return { error: err instanceof CanvasAppError ? `${err.code}: ${err.message}` : (err?.message || String(err)) };
+                            }
+                        } else if (args.fromArtifact) {
                             const from = args.fromArtifact;
                             const sourceSessionId = String(from.sessionId || input.sessionId);
                             const filename = String(from.filename || "");
@@ -3611,7 +3639,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         let effectiveContract = args.responseContract;
                         let manifestWarning: string | undefined;
                         if (!effectiveContract && html) {
-                            if (extraction.error && !args.fromArtifact) {
+                            if (extraction.error && !args.fromArtifact && !args.fromApp) {
                                 // Inline draw with a broken manifest attempt: tolerate —
                                 // the author is iterating live and passed no contract —
                                 // but SAY SO, or they first learn at reuse time when the
@@ -3629,6 +3657,20 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                             }
                         }
                         const app = canvasAppCard(extraction.manifest);
+                        // Canvas app registry (issue 181): who this page belongs
+                        // to, for the canvas owner. A registry failure never
+                        // fails a draw; it degrades to today's `agent` trust.
+                        let classification: CanvasDrawClassification = { trust: "agent", app: null, pageSha256: "" };
+                        const registryStore = (catalog as any).canvasApps;
+                        if (registryStore && html) {
+                            try {
+                                classification = await classifyCanvasDraw(registryStore, {
+                                    html, manifest: extraction.manifest ?? null, viewer: canvasViewer, fromApp: fromAppAttribution,
+                                });
+                            } catch (err: any) {
+                                console.warn(`[canvas] trust classification failed; drawing as agent: ${err?.message || err}`);
+                            }
+                        }
                         const note = args.note ? String(args.note) : undefined;
                         // Atomic rev mint (multi-writer safe), AFTER every
                         // validation refusal above: the mint writes latest_rev
@@ -3674,6 +3716,15 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                                 workspace: extraction.manifest?.workspace ?? null,
                                 ...(extraction.error ? { manifestError: String(extraction.error).slice(0, 300) } : {}),
                                 ...(source ? { source } : {}),
+                                // Canvas app registry: trust decides the network
+                                // block and workspace consent; `app` is set only
+                                // for fromApp and exact-bytes matches.
+                                trust: classification.trust,
+                                ...(classification.pageSha256 ? { pageSha256: classification.pageSha256 } : {}),
+                                ...(classification.app ? { app: {
+                                    appId: classification.app.appId, versionId: classification.app.versionId,
+                                    name: classification.app.name, version: classification.app.version,
+                                } } : {}),
                                 // Attribution: who actually drew this revision.
                                 // Only present on cross-session draws, so the
                                 // portal can badge "drawn by sub-agent X".
@@ -3688,6 +3739,20 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         try {
                             await catalog.upsertSessionCanvas?.(target, slot, rawName ?? null, rev, sizeBytes);
                         } catch { /* self-heals on the next draw */ }
+                        // R27: one load row for a fromApp draw, and for a
+                        // fromArtifact draw whose bytes equal a registered
+                        // version the canvas owner may see. Inline draws record
+                        // none. After the durable commit; never fails the draw.
+                        if (registryStore && classification.app && (args.fromApp || args.fromArtifact)) {
+                            try {
+                                await registryStore.recordLoad({
+                                    appId: classification.app.appId, versionId: classification.app.versionId,
+                                    sessionId: target, user: canvasViewer.principal,
+                                });
+                            } catch (err: any) {
+                                console.warn(`[canvas] load not recorded for ${classification.app.name}: ${err?.message || err}`);
+                            }
+                        }
                         // The app's half of the KV write switch (Part D.3),
                         // cached so a KV write never re-reads the document.
                         // A document with no manifest clears it: the new page
@@ -3888,24 +3953,120 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         return { error: err?.message || String(err) };
                     }
                 },
-                // The app catalog (interactive-canvas-apps Part F). Publish
-                // copies the canvas bytes to a pinned `app-<name>.html`
-                // artifact and writes ONE shared fact `apps/<name>` whose value
-                // is the card — derived from the document's manifest, never
-                // from the model's memory of it. Find is a ranked search over
-                // that namespace (hybrid on an enhanced store, a plain listing
-                // with a lexical filter on a base store).
-                publishCanvasApp: async (args: { name?: string; description?: string; tags?: string[]; slot?: number; session_id?: string }) => {
+                // The canvas app registry (issue 181). The agent acts with
+                // its session owner's rights; the CMS procedures decide what
+                // that owner may see and change.
+                publishCanvasApp: async (args: { name?: string; description?: string; tags?: string[]; slot?: number; session_id?: string; scope?: string; version?: string }) => {
+                    const store = (catalog as any)?.canvasApps;
+                    if (!artifactStore || !store) return { error: "the canvas app registry is unavailable on this worker" };
                     const slot = normalizeCanvasSlot(args.slot);
                     if (slot === null) return { error: "slot must be an integer 1-5" };
                     const resolved = await resolveCanvasTarget(args.session_id);
                     if ("error" in resolved) return { error: resolved.error };
-                    return publishCanvasApp(
-                        { artifactStore, catalog, factStore, sessionId: input.sessionId, agentIdentity: runConfig.agentIdentity ?? null, workerNodeId },
-                        { name: args.name, description: args.description, tags: args.tags, slot, target: resolved.target },
-                    );
+                    try {
+                        const latest = await latestCanvasEventData(catalog!, resolved.target, slot);
+                        if (latest.rev === 0) return { error: `no canvas has been drawn on slot ${slot}` };
+                        const html = await artifactStore.downloadArtifactText(resolved.target, canvasArtifactFilename(slot));
+                        const viewer = await sessionManager.resolveCanvasAppViewer(input.sessionId);
+                        const result = await publishCanvasAppHtml({ store, artifactStore }, {
+                            html, name: args.name, scope: args.scope === "shared" ? "shared" : "user",
+                            version: args.version ?? null, description: args.description ?? null, tags: args.tags ?? null,
+                            responseContract: latest.responseContract, viewer,
+                            sourceSessionId: resolved.target, sourceSlot: slot, createdBy: input.sessionId,
+                        });
+                        await catalog!.recordEvents(resolved.target, [{
+                            eventType: "session.canvas_app_published",
+                            data: { appId: result.appId, versionId: result.versionId, name: String(args.name ?? "").toLowerCase(), version: result.version, scope: result.scope, slot, rev: latest.rev, sha256: result.sha256 },
+                        }], workerNodeId).catch(() => { /* telemetry */ });
+                        return {
+                            published: result.status === "published",
+                            unchanged: result.status === "unchanged",
+                            name: String(args.name ?? "").toLowerCase(),
+                            scope: result.scope,
+                            version: result.version,
+                            active: result.active,
+                            card: result.card,
+                            reminder: result.scope === "shared"
+                                ? "Published to everyone in this deployment. It must not contain baked data — the shell reads its rows from the KV."
+                                : "Published privately: only you (and admins) can find and draw it. Make it shared only when the user asks.",
+                            next: `draw_canvas({fromApp: {name: "${String(args.name ?? "").toLowerCase()}"}}) draws it in any of your sessions.`,
+                        };
+                    } catch (err: any) {
+                        return { error: err instanceof CanvasAppError ? `${err.code}: ${err.message}` : (err?.message || String(err)) };
+                    }
                 },
-                findCanvasApp: async (args: { query?: string; limit?: number }) => findCanvasApp({ factStore }, args),
+                findCanvasApp: async (args: { query?: string; limit?: number; name?: string; scope?: string }) => {
+                    const store = (catalog as any)?.canvasApps;
+                    if (!store) return { error: "the canvas app registry is unavailable on this worker" };
+                    const viewer = await sessionManager.resolveCanvasAppViewer(input.sessionId);
+                    try {
+                        if (args.name) {
+                            const target = { name: String(args.name).trim().toLowerCase(), scope: args.scope === "shared" || args.scope === "user" ? args.scope as any : null };
+                            const detail = await store.get(target, viewer);
+                            const active = detail.versions.find((v: any) => v.versionId === detail.activeVersionId) ?? null;
+                            return {
+                                count: 1,
+                                app: {
+                                    name: detail.name, scope: detail.scope, description: detail.description, tags: detail.tags,
+                                    enabled: detail.enabled, version: active?.version ?? null,
+                                    versions: detail.versions.map((v: any) => v.version),
+                                    card: active?.card ?? null, canEdit: detail.canEdit, canManage: detail.canManage,
+                                },
+                                next: `draw_canvas({fromApp: {name: "${detail.name}"${detail.scope === "shared" ? ', scope: "shared"' : ""}}}); the card's interface tells you how to drive it.`,
+                            };
+                        }
+                        const limit = Math.max(1, Math.min(20, Math.floor(Number(args.limit) || 8)));
+                        const hits = await store.search(viewer, String(args.query ?? ""), limit);
+                        return {
+                            count: hits.length,
+                            apps: hits.map((h: any) => ({ name: h.name, scope: h.scope, description: h.description, tags: h.tags, version: h.version, score: h.score })),
+                            next: "find_canvas_app({name}) returns one app's full card (its interface is how you drive it); then draw_canvas({fromApp: {name}}).",
+                        };
+                    } catch (err: any) {
+                        return { error: err instanceof CanvasAppError ? `${err.code}: ${err.message}` : (err?.message || String(err)) };
+                    }
+                },
+                manageCanvasApp: async (args: { action?: string; name?: string; scope?: string; enabled?: boolean; version?: string; description?: string; tags?: string[]; targetScope?: string; user?: { provider?: string; subject?: string }; confirm?: boolean }) => {
+                    const store = (catalog as any)?.canvasApps;
+                    if (!store || !artifactStore) return { error: "the canvas app registry is unavailable on this worker" };
+                    const viewer = await sessionManager.resolveCanvasAppViewer(input.sessionId);
+                    const name = String(args.name ?? "").trim().toLowerCase();
+                    const target = { name, scope: args.scope === "shared" || args.scope === "user" ? args.scope as any : null };
+                    try {
+                        switch (args.action) {
+                            case "enable":
+                            case "disable":
+                                await store.setEnabled(target, args.action === "enable", viewer);
+                                return { ok: true, name, enabled: args.action === "enable" };
+                            case "describe":
+                                await store.setMetadata(target, { description: args.description ?? null, tags: Array.isArray(args.tags) ? args.tags : null }, viewer);
+                                return { ok: true, name };
+                            case "pin":
+                                await store.pin(target, String(args.version ?? ""), viewer);
+                                return { ok: true, name, active: String(args.version ?? "") };
+                            case "share":
+                            case "unshare":
+                                await store.setScope(target, args.action === "share" ? "shared" : "user", viewer);
+                                return { ok: true, name, scope: args.action === "share" ? "shared" : "user" };
+                            case "add_contributor":
+                            case "remove_contributor": {
+                                const grantee = { provider: String(args.user?.provider ?? ""), subject: String(args.user?.subject ?? "") };
+                                if (!grantee.provider || !grantee.subject) return { error: "user {provider, subject} is required" };
+                                if (args.action === "add_contributor") await store.grantEditor(name, grantee, viewer);
+                                else await store.revokeEditor(name, grantee, viewer);
+                                return { ok: true, name, contributors: (await store.listEditors(name, viewer)).map((e: any) => `${e.provider}:${e.subject}`) };
+                            }
+                            case "delete":
+                                if (args.confirm !== true) return { error: "delete removes every version of the app; call again with confirm: true when the user asked for it" };
+                                await deleteRegistryCanvasApp({ store, artifactStore }, target, viewer);
+                                return { ok: true, name, deleted: true };
+                            default:
+                                return { error: "action must be enable, disable, describe, pin, share, unshare, add_contributor, remove_contributor or delete" };
+                        }
+                    } catch (err: any) {
+                        return { error: err instanceof CanvasAppError ? `${err.code}: ${err.message}` : (err?.message || String(err)) };
+                    }
+                },
                 readCanvas: async (args: { offset?: number; maxBytes?: number; manifestOnly?: boolean; includeData?: boolean; slot?: number; session_id?: string }) => {
                     if (!artifactStore) return { error: "this worker has no artifact store" };
                     if (!catalog) return { error: "canvas requires the CMS catalog" };
