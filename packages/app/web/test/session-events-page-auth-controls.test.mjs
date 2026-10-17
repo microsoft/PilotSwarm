@@ -121,9 +121,16 @@ test("REAL AUTH: a non-string credential cannot authenticate", async () => {
 
 test("REAL AUTH: extractToken reads the credential the shipped way", () => {
     assert.equal(extractToken({ headers: { authorization: "Bearer dev:alice" } }), "dev:alice");
-    assert.equal(extractToken({ headers: {} }), undefined, "no header yields no credential");
-    assert.equal(extractToken({ headers: { authorization: "dev:alice" } }), undefined,
+    // The shipped function returns NULL, not undefined, when nothing is
+    // found (auth/index.js, final return). r24 caught this: I asserted my
+    // assumption about the contract rather than reading it. Both are falsy,
+    // so the distinction never changes an auth outcome — but a test that
+    // encodes a guess is not evidence about shipped behaviour.
+    assert.equal(extractToken({ headers: {} }), null, "no header yields no credential");
+    assert.equal(extractToken({ headers: { authorization: "dev:alice" } }), null,
         "a credential without the Bearer scheme is not extracted");
+    assert.equal(extractToken({ headers: { authorization: "Basic dev:alice" } }), null,
+        "a non-Bearer scheme is not extracted");
 });
 
 test("REAL AUTH: a header-extracted credential survives the full parse", async () => {

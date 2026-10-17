@@ -87,20 +87,40 @@ function makeRuntime(accessFor) {
     const calls = [];
     runtime.start = async () => { runtime.started = true; };
     runtime.authz = { ...runtime.authz, enforce: true, adminScope: "unrestricted", systemVisibility: "read" };
-    runtime.transport = {
+    const page = async () => ({
+        events: [{ seq: 1, eventType: "assistant.message", data: { content: "hi" }, createdAt: new Date(0) }],
+        receipt: { mode: "latest", hasMore: false, nextCursor: null, nextDirection: null },
+    });
+
+    const stub = {
         async getSessionAccess(sessionId, viewer) {
             calls.push({ sessionId, viewer });
             return accessFor(viewer, calls.length);
         },
-        mgmt: {
-            async getSessionEventsPage() {
-                return {
-                    events: [{ seq: 1, eventType: "assistant.message", data: { content: "hi" }, createdAt: new Date(0) }],
-                    receipt: { mode: "latest", hasMore: false, nextCursor: null, nextDirection: null },
-                };
-            },
-        },
+        // The runtime dispatches `this.transport.getSessionEventsPage(...)`
+        // directly (runtime.js, the getSessionEventsPage case) — NOT through
+        // `.mgmt`. The r24 run proved that: the denials passed because they
+        // never reach dispatch, while every POSITIVE case returned 500
+        // because the stub exposed this method one level too deep.
+        getSessionEventsPage: page,
+        mgmt: { getSessionEventsPage: page },
     };
+
+    // A missing stub method must NAME ITSELF rather than surfacing as a bare
+    // 500 with no body. That is exactly what cost a run: the failure said
+    // only "500 !== 200", which is indistinguishable from a product fault.
+    runtime.transport = new Proxy(stub, {
+        get(target, prop, receiver) {
+            if (prop in target) return Reflect.get(target, prop, receiver);
+            if (typeof prop === "symbol" || prop === "then") return undefined;
+            return () => {
+                throw new Error(
+                    `[test stub] runtime called transport.${String(prop)}(), which this fixture does not provide. `
+                    + "Add it to the stub, or the runtime has started using a surface this test does not model.",
+                );
+            };
+        },
+    });
     return { runtime, calls };
 }
 
@@ -142,8 +162,10 @@ test("POSITIVE: the owner receives a page over a real request", async () => {
     const { baseUrl, close } = await serve(runtime, authed(OWNER));
     try {
         const res = await fetch(`${baseUrl}${PATH}`);
-        assert.equal(res.status, 200, "owner must be served");
         const body = await res.json();
+        // Include the BODY in the message. A bare "500 !== 200" is
+        // indistinguishable from a product fault; the body names the cause.
+        assert.equal(res.status, 200, `owner must be served — got ${res.status}: ${JSON.stringify(body).slice(0, 300)}`);
         assert.equal(body.ok, true);
         assert.ok(body.result?.events?.length >= 1, "owner receives actual events");
     } finally {
@@ -156,8 +178,8 @@ test("POSITIVE: a shared reader receives a page", async () => {
     const { baseUrl, close } = await serve(runtime, authed(STRANGER));
     try {
         const res = await fetch(`${baseUrl}${PATH}`);
-        assert.equal(res.status, 200, "a read grant is sufficient for a history read");
         const body = await res.json();
+        assert.equal(res.status, 200, `a read grant is sufficient for a history read — got ${res.status}: ${JSON.stringify(body).slice(0, 300)}`);
         assert.ok(body.result?.events?.length >= 1);
     } finally {
         await close();
@@ -201,7 +223,8 @@ test("MID-DRAIN: revoking a share between pages refuses the next page", async ()
     const { baseUrl, close } = await serve(runtime, authed(STRANGER));
     try {
         const first = await fetch(`${baseUrl}${PATH}`);
-        assert.equal(first.status, 200, "control: allowed before revocation");
+        assert.equal(first.status, 200,
+            `control: allowed before revocation — got ${first.status}: ${JSON.stringify(await first.clone().json()).slice(0, 300)}`);
 
         revoked = true;
 
