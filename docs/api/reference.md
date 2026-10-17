@@ -323,6 +323,41 @@ survives session and provider deletion; current rules/meters are removed with a
 deleted provider. The budget table always shows fixed day/week/month windows,
 while the selected daily chart offers 14-, 30-, and 90-day history ranges.
 
+### Canvas apps
+
+The canvas app registry (issue 181). An app is `(scope, owner, name)`; `scope` is
+`shared` or `user` (private). Per-app operations accept an optional `scope` and,
+for an unrestricted admin, `ownerProvider` + `ownerSubject` to pick a copy; the
+default is the caller's own copy, then the shared one. A private app the caller
+may not see answers `NOT_FOUND`; a visible app the caller may not change answers
+`FORBIDDEN`. A cluster-scoped admin is an ordinary user here.
+
+| Operation | Route | Parameters | Summary |
+|---|---|---|---|
+| listCanvasApps | `GET /api/v1/canvas-apps` | — | Apps the caller may see; disabled apps only for owner, contributors and admins. |
+| searchCanvasApps | `GET /api/v1/canvas-apps/search` | `query`, `limit` | Ranked search over name, tags and description. |
+| getCanvasApp | `GET /api/v1/canvas-apps/:name` | copy selector | Card, versions, owner, `canEdit`, `canManage`. |
+| getCanvasAppHtml | `GET /api/v1/canvas-apps/:name/html` | `version`, copy selector | `{ html, sha256, version, … }` as JSON; never `text/html`. |
+| publishCanvasApp | `POST /api/v1/management/sessions/:sessionId/canvas-apps/publish` | `slot`, `name`, `description`, `tags`, `scope`, `version` | Session write. Publishes the slot's canvas; private unless `scope` is `shared`. |
+| uploadCanvasApp | `POST /api/v1/canvas-apps/upload` | `html`, `name`, `description`, `tags`, `scope`, `version` | Publishes a raw page (≤ 900 KB). |
+| setCanvasAppScope | `PUT /api/v1/canvas-apps/:name/scope` | `targetScope`, copy selector | Owner or admin. |
+| setCanvasAppEnabled | `PUT /api/v1/canvas-apps/:name/enabled` | `enabled`, copy selector | Owner, contributor or admin. |
+| setCanvasAppMetadata | `PUT /api/v1/canvas-apps/:name/metadata` | `description`, `tags`, copy selector | Owner, contributor or admin. |
+| pinCanvasAppVersion | `PUT /api/v1/canvas-apps/:name/active` | `version`, copy selector | Owner, contributor or admin. |
+| deleteCanvasApp | `DELETE /api/v1/canvas-apps/:name` | copy selector | Owner or admin; drawn canvases keep working. |
+| grantCanvasAppEditor | `POST /api/v1/canvas-apps/:name/editors` | `user { provider, subject }` | Shared apps; owner or admin. |
+| revokeCanvasAppEditor | `POST /api/v1/canvas-apps/:name/editors/revoke` | `user { provider, subject }` | Owner or admin; idempotent. |
+| listCanvasAppEditors | `GET /api/v1/canvas-apps/:name/editors` | — | Contributors of the shared copy. |
+| exportCanvasApp | `GET /api/v1/canvas-apps/:name/export` | copy selector | `{ filename, sha256, sizeBytes, contentBase64 }`: a deterministic `.tar.gz` with no owner, scope or user/session ids. |
+| importCanvasApp | `POST /api/v1/canvas-apps/import` | `contentBase64`, `scope` | Archive ≤ 20 MB; checked whole before any write; `VERSION_EXISTS` fails only that version. |
+| migrateLegacyCanvasApps | `POST /api/v1/canvas-apps/migrate-legacy` | `dryRun` | **[admin]** unrestricted; dry run unless `dryRun` is `false`. |
+| getCanvasAppLoads | `GET /api/v1/canvas-apps/:name/loads` | `limit`, `cursorAt`, `cursorId`, `since`, `until`, copy selector | Owner or unrestricted admin. `{ rows, nextCursor, total30d }`. |
+| pruneCanvasApps | `POST /api/v1/canvas-apps/prune` | — | **[admin]** unrestricted; expired loads, abandoned versions, deleted apps' bytes. |
+
+Errors (`error.code`): `NOT_FOUND`, `FORBIDDEN`, `NAME_TAKEN`, `NO_OWNER`,
+`VERSION_EXISTS`, `VERSION_NOT_FOUND`, `APP_DISABLED`, `BAD_VERSION`,
+`BAD_SCOPE`, `BAD_REQUEST`, `USER_NOT_FOUND`.
+
 ### Current user
 
 | Operation | Route | Parameters | Summary |
