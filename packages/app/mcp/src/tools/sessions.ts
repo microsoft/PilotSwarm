@@ -1213,42 +1213,80 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                         return { body, text, bytes: Buffer.byteLength(text, "utf8"), delivered };
                     };
 
-                    // An envelope with zero events still costs something. If even that
-                    // cannot fit, say so explicitly rather than emitting an over-budget
-                    // response that a transport may truncate or reject.
+                    // HARD CONTRACT. max_bytes bounds the SERIALIZED WIRE BYTES actually
+                    // sent — warning, receipt, omissions, pretty-printing, escaping and all.
+                    // We never emit an over-budget response and then merely admit it: a
+                    // transport may truncate or reject that downstream, which is precisely
+                    // the silent truncation this feature exists to prevent. If it cannot
+                    // fit, the caller gets an explicit error INSTEAD of a response.
                     const empty = build(0);
                     if (empty.bytes > budget) {
                         return {
                             content: [{
                                 type: "text" as const,
                                 text: JSON.stringify({
-                                    error: "max_bytes is too small for a response envelope",
+                                    error: "max_bytes is too small to hold a response envelope",
                                     max_bytes: budget,
                                     minimum_envelope_bytes: empty.bytes,
+                                    remedy: `raise max_bytes to at least ${empty.bytes}`,
                                 }, null, 2),
                             }],
                             isError: true,
                         };
                     }
 
-                    // Plan against the room actually left by the envelope, then re-plan if
-                    // rendering expanded beyond it (escaping and pretty-printing both grow
-                    // the encoded form). Bounded, and never loops.
+                    // Plan against the room the envelope leaves, then shrink until the
+                    // MEASURED encoding fits. Escaping and pretty-printing both expand the
+                    // encoded form, so an estimate is not enough.
                     let attempt = build(Math.max(0, budget - empty.bytes));
-                    for (let i = 0; i < 3 && attempt.bytes > budget && attempt.delivered.length > 0; i++) {
+                    let room = Math.max(0, budget - empty.bytes);
+                    for (let i = 0; i < 8 && attempt.bytes > budget; i++) {
                         const overshoot = attempt.bytes - budget;
-                        attempt = build(Math.max(0, budget - empty.bytes - overshoot));
+                        // Shrink by at least one byte so this always terminates.
+                        room = Math.max(0, room - Math.max(1, overshoot));
+                        attempt = build(room);
+                        if (attempt.delivered.length === 0) break;
+                    }
+
+                    if (attempt.bytes > budget) {
+                        // Only reachable when even a zero-event envelope grew past the
+                        // budget between measurements. Refuse rather than overrun.
+                        return {
+                            content: [{
+                                type: "text" as const,
+                                text: JSON.stringify({
+                                    error: "response could not be reduced within max_bytes",
+                                    max_bytes: budget,
+                                    smallest_achieved_bytes: attempt.bytes,
+                                    remedy: "raise max_bytes, narrow event_types, or lower limit",
+                                }, null, 2),
+                            }],
+                            isError: true,
+                        };
                     }
 
                     const body = attempt.body as Record<string, unknown>;
                     (body.receipt as Record<string, unknown>).response_bytes = attempt.bytes;
-                    // Honest disclosure: if the final encoding still exceeds the budget,
-                    // the caller is told rather than left to discover it downstream.
-                    if (attempt.bytes > budget) {
-                        (body.receipt as Record<string, unknown>).response_bytes_exceeded = true;
+                    const finalText = JSON.stringify(body, null, 2);
+                    // response_bytes is itself part of the payload, so adding it can push the
+                    // encoding over. Verify the bytes we are ACTUALLY about to send.
+                    if (Buffer.byteLength(finalText, "utf8") > budget) {
+                        return {
+                            content: [{
+                                type: "text" as const,
+                                text: JSON.stringify({
+                                    error: "response could not be reduced within max_bytes",
+                                    max_bytes: budget,
+                                    smallest_achieved_bytes: Buffer.byteLength(finalText, "utf8"),
+                                    remedy: "raise max_bytes, narrow event_types, or lower limit",
+                                }, null, 2),
+                            }],
+                            isError: true,
+                        };
                     }
 
-                    return { content: [{ type: "text" as const, text: JSON.stringify(body, null, 2) }] };
+                    return { content: [{ type: "text" as const, text: finalText }] };
+
 
                 }
 

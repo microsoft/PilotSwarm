@@ -49,10 +49,55 @@ export function classifyPageMode(opts: { afterSeq?: number; beforeSeq?: number }
     return "latest";
 }
 
-/** Apply the default, then the probe-headroom cap. Never returns below 1. */
+/**
+ * Apply the default, then the probe-headroom cap.
+ *
+ * A non-integer limit is REJECTED rather than coerced. The stored procedure
+ * takes an INT, so 1.5 would silently become something else on the way down;
+ * a caller that asked for a fractional page has made a mistake and should be
+ * told, not quietly given a different page than it requested.
+ */
 export function resolvePageLimit(requested?: number | null): number {
-    const base = requested ?? SESSION_EVENT_PAGE_DEFAULT;
-    return Math.max(1, Math.min(base, SESSION_EVENT_PAGE_MAX));
+    if (requested === undefined || requested === null) return SESSION_EVENT_PAGE_DEFAULT;
+    if (!Number.isSafeInteger(requested)) {
+        throw new Error(`limit must be a safe integer, received ${String(requested)}`);
+    }
+    return Math.max(1, Math.min(requested, SESSION_EVENT_PAGE_MAX));
+}
+
+/**
+ * Validate a cursor. Sequence numbers are BIGSERIAL values compared against an
+ * INT-bounded procedure; a fractional, infinite or unsafe cursor cannot mean
+ * anything, so it is refused rather than silently reinterpreted.
+ */
+export function assertValidCursor(name: string, value: number | undefined): void {
+    if (value === undefined) return;
+    if (!Number.isSafeInteger(value) || value < 0) {
+        throw new Error(`${name} must be a non-negative safe integer, received ${String(value)}`);
+    }
+}
+
+/**
+ * Post-condition: the returned rows must honour the requested filter.
+ *
+ * The catalog falls back to an UNFILTERED procedure when the database predates
+ * migration 0025 (cms.ts, isUndefinedFunctionError). For the legacy array
+ * reads that is a tolerable compatibility shim, but for a paged diagnostic
+ * read it would silently BROADEN what the caller receives: they asked to
+ * narrow to a few event types and would get the whole stream, with a receipt
+ * that mentions nothing. A filter that cannot be applied must fail loudly.
+ */
+export function assertFilterHonoured(rows: SessionEvent[], eventTypes?: string[]): void {
+    if (!Array.isArray(eventTypes) || eventTypes.length === 0) return;
+    const allowed = new Set(eventTypes);
+    const stray = rows.find((r) => !allowed.has(r.eventType));
+    if (stray) {
+        throw new Error(
+            "event-type filter was not applied by the catalog (event "
+            + `${stray.seq} is "${stray.eventType}", which was not requested). `
+            + "This database may predate migration 0025; refusing to return a silently broadened page.",
+        );
+    }
 }
 
 /** Rows to request so the eligible-existence probe fits inside the clamp. */

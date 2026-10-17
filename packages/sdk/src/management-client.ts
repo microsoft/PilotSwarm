@@ -85,6 +85,8 @@ import {
     resolvePageLimit,
     probeFetchSize,
     buildSessionEventPage,
+    assertValidCursor,
+    assertFilterHonoured,
 } from "./session-events-page.js";
 import { readCanvasKv, writeCanvasKv, CanvasKvError } from "./canvas-kv.js";
 import type { CanvasKvStore, CanvasKvPrincipal, CanvasKvReadResult, CanvasKvWriteOp, CanvasKvWriteResult, CanvasKvMe } from "./canvas-kv.js";
@@ -3171,6 +3173,13 @@ export class PilotSwarmManagementClient {
         if (afterSeq !== undefined && beforeSeq !== undefined) {
             throw new Error("getSessionEventsPage: afterSeq and beforeSeq are mutually exclusive");
         }
+        // Invalid input is refused explicitly rather than coerced into a
+        // different request than the caller made.
+        assertValidCursor("afterSeq", afterSeq);
+        assertValidCursor("beforeSeq", beforeSeq);
+        if (eventTypes !== undefined && (!Array.isArray(eventTypes) || eventTypes.some((t) => typeof t !== "string" || t.length === 0))) {
+            throw new Error("eventTypes must be an array of non-empty strings when provided");
+        }
 
         const mode = classifyPageMode({ afterSeq, beforeSeq });
         const limitRequested = opts.limit ?? null;
@@ -3180,6 +3189,9 @@ export class PilotSwarmManagementClient {
         const fetched = mode === "backward"
             ? await this._catalog!.getSessionEventsBefore(sessionId, beforeSeq!, probe, eventTypes)
             : await this._catalog!.getSessionEvents(sessionId, mode === "forward" ? afterSeq : undefined, probe, eventTypes);
+
+        // A filter the catalog could not apply must not silently broaden the page.
+        assertFilterHonoured(fetched, eventTypes);
 
         return buildSessionEventPage({ mode, fetched, limitApplied, limitRequested });
     }

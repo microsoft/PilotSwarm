@@ -153,6 +153,19 @@ with `before_seq: <next_cursor>` while `has_more` is true.
 **Following forward (a running session).** Take `after_seq: <next_cursor>`
 from a forward page and re-read. Do not use `wait` with `page`.
 
+**Keeping a live tail.** `next_cursor` is for walking *history*; it is null
+once `has_more` is false. To follow a session as it runs, keep your own
+high-water mark from **`range.to_seq`** of the newest page you received, and
+**retain it across empty responses** — an empty page means nothing new yet,
+not that your position was lost. Re-read with `after_seq: <your high-water
+mark>`. A latest page starts a tail; its `next_direction` is backward and
+leads into history, not forward into new events.
+
+**Invalid input is refused, not reinterpreted.** A non-integer `limit`, or a
+fractional or negative cursor, returns an error rather than being coerced into
+a different request than you made. An `event_types` filter the server cannot
+apply fails explicitly rather than returning a silently broadened page.
+
 A capped page is never a complete transcript. Keep paging until `has_more` is
 false.
 
