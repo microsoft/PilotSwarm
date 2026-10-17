@@ -1,4 +1,5 @@
 import { getPluginDirsFromEnv, resolvePortalConfigBundleFromPluginDirs } from "pilotswarm/host";
+import { normalizePortalBasePath } from "./portal-paths.js";
 
 let cachedPortalBundle = null;
 
@@ -10,7 +11,11 @@ function getPortalBundle() {
 }
 
 export function getPortalConfig() {
-    return getPortalBundle().portalConfig;
+    return { ...getPortalBundle().portalConfig, basePath: getPortalBasePath() };
+}
+
+export function getPortalBasePath() {
+    return normalizePortalBasePath(process.env.PORTAL_BASE_PATH);
 }
 
 export function getPortalAssetFile(assetName) {
