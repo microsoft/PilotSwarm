@@ -1,5 +1,26 @@
 # Changelog
 
+## 0.8.4 — 2026-10-17
+
+**Application-owned TUI diagnostic logs.** Programmatic launchers can pass
+`logFile` to `startTuiApp` to route console, stderr, warnings and native
+duroxide tracing to an application-owned path. The host creates missing parent
+directories and truncates only the selected file at startup. Explicit invalid
+paths or initialization failures reject startup without a shared-log fallback;
+omitting the option preserves the existing best-effort default. Host logging
+hooks are restored on shutdown and startup failure. See
+[Programmatic TUI Hosts](docs/developer/building/cli-apps.md#programmatic-tui-hosts).
+
+**Opt-in tool-catalog overflow dispatch.** Models using supported Chat
+Completions providers can explicitly configure `toolCatalog` to fit large
+logical tool catalogs within an endpoint's function-declaration limit. Typed
+dispatch preserves each original tool's argument schema and restores canonical
+names, arguments and call IDs before ordinary permissions, hooks and handlers.
+The capability remains off unless configured per model; unsupported or unsafe
+catalogs fail rather than silently dropping tools. See
+[Tool Catalog Overflow](docs/developer/reference/configuration.md#tool-catalog-overflow-toolcatalog)
+for provider restrictions and endpoint validation requirements.
+
 ## 0.8.3 — 2026-10-14
 
 **Stop and Steer a running turn.** A turn of orchestration 1.0.81 or later
