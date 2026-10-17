@@ -80,6 +80,12 @@ import type {
     AgentPackageScope, AgentPackageSummary, AgentPackageDetail, AgentPackageEditorInfo, AgentWorkerStateRow, WorkerRow,
 } from "./cms.js";
 import { SYSTEM_USER_PRINCIPAL } from "./cms.js";
+import {
+    classifyPageMode,
+    resolvePageLimit,
+    probeFetchSize,
+    buildSessionEventPage,
+} from "./session-events-page.js";
 import { readCanvasKv, writeCanvasKv, CanvasKvError } from "./canvas-kv.js";
 import type { CanvasKvStore, CanvasKvPrincipal, CanvasKvReadResult, CanvasKvWriteOp, CanvasKvWriteResult, CanvasKvMe } from "./canvas-kv.js";
 import type {
@@ -189,23 +195,9 @@ const MAX_SESSION_PAGE_LIMIT = 200;
 const DEFAULT_TOP_EVENT_EMITTER_LIMIT = 20;
 const MAX_TOP_EVENT_EMITTER_LIMIT = 100;
 
-// ─── Session event paging (issue 148) ────────────────────────────
-//
-// The stored procedures clamp their own limit:
-//   v_limit INT := GREATEST(1, LEAST(COALESCE(p_limit, 1000), 1000));
-// (cms_get_session_events — cms-migrations.ts:7370;
-//  cms_get_session_events_before — :7398)
-//
-// getSessionEventsPage proves "is there more?" by fetching ONE extra row in
-// the same call, under the same filter, direction and range. For that probe to
-// be real evidence it must never be the row the clamp removes, so the largest
-// page we deliver is one BELOW the clamp. That single reserved row is the
-// whole reason MAX is 999 rather than 1000, and the receipt discloses both
-// numbers so the cap is explicable rather than arbitrary.
-const SESSION_EVENT_PROVIDER_CLAMP = 1000;
-const SESSION_EVENT_PAGE_MAX = SESSION_EVENT_PROVIDER_CLAMP - 1;
-/** Unchanged from the existing MCP default; adopted decision keeps it at 50. */
-const SESSION_EVENT_PAGE_DEFAULT = 50;
+// Session event paging constants and pure page shaping live in
+// ./session-events-page.js so they can be unit-tested without importing
+// this module's Postgres/Azure dependency stack (issue 148).
 
 function clampInteger(value: number | undefined, defaultValue: number, min: number, max: number): number {
     if (value == null) return defaultValue;
@@ -3180,78 +3172,16 @@ export class PilotSwarmManagementClient {
             throw new Error("getSessionEventsPage: afterSeq and beforeSeq are mutually exclusive");
         }
 
-        // The procedure's own guard is `p_after_seq IS NOT NULL AND p_after_seq > 0`,
-        // so afterSeq=0 falls through to the latest-page branch. Classify by the
-        // same rule rather than by whether the caller passed the argument.
-        const mode: import("./cms.js").SessionEventPageMode =
-            beforeSeq !== undefined ? "backward"
-                : (afterSeq !== undefined && afterSeq > 0) ? "forward"
-                    : "latest";
-
+        const mode = classifyPageMode({ afterSeq, beforeSeq });
         const limitRequested = opts.limit ?? null;
-        const limitApplied = Math.max(
-            1,
-            Math.min(limitRequested ?? SESSION_EVENT_PAGE_DEFAULT, SESSION_EVENT_PAGE_MAX),
-        );
-
-        // The eligible-existence probe. limitApplied <= providerClamp - 1, so
-        // probe <= providerClamp and the clamp never truncates it.
-        const probe = limitApplied + 1;
+        const limitApplied = resolvePageLimit(limitRequested);
+        const probe = probeFetchSize(limitApplied);
 
         const fetched = mode === "backward"
             ? await this._catalog!.getSessionEventsBefore(sessionId, beforeSeq!, probe, eventTypes)
             : await this._catalog!.getSessionEvents(sessionId, mode === "forward" ? afterSeq : undefined, probe, eventTypes);
 
-        const hasMore = fetched.length > limitApplied;
-
-        // Both procedures return ascending by seq, but they select opposite
-        // ends of the range, so the surplus probe row sits at a different end
-        // per mode. Dropping the wrong end would silently skip a delivered row.
-        //
-        //   forward  — selects the OLDEST rows above the cursor; surplus is last.
-        //   latest   — selects the NEWEST rows overall;          surplus is first.
-        //   backward — selects the NEWEST rows below the cursor; surplus is first.
-        const events = !hasMore
-            ? fetched
-            : mode === "forward"
-                ? fetched.slice(0, limitApplied)
-                : fetched.slice(fetched.length - limitApplied);
-
-        const range = events.length > 0
-            ? { fromSeq: events[0]!.seq, toSeq: events[events.length - 1]!.seq }
-            : null;
-
-        // More history lies ABOVE a forward page and BELOW the other two, so
-        // `latest` continues BACKWARD. Continuing it forward is the
-        // latest-page trap: it skips every older event.
-        const nextDirection: "forward" | "backward" | null =
-            !hasMore || range === null ? null : (mode === "forward" ? "forward" : "backward");
-
-        // Always the last DELIVERED record in the continuation direction, so a
-        // fetched-but-undelivered row can never be stepped over.
-        const nextCursor = nextDirection === null
-            ? null
-            : (nextDirection === "forward" ? range!.toSeq : range!.fromSeq);
-
-        return {
-            events,
-            receipt: {
-                mode,
-                range,
-                limitRequested,
-                limitApplied,
-                providerClamp: SESSION_EVENT_PROVIDER_CLAMP,
-                maxPageSize: SESSION_EVENT_PAGE_MAX,
-                hasMore,
-                nextCursor,
-                nextDirection,
-                // One query, one read view. Not an immutable membership
-                // snapshot: a late-committing transaction may still become
-                // visible below this page's bound.
-                completeness: "read-view",
-                truncatedReason: hasMore ? "limit" : null,
-            },
-        };
+        return buildSessionEventPage({ mode, fetched, limitApplied, limitRequested });
     }
 
     /**

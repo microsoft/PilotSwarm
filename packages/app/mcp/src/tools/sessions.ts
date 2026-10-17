@@ -57,7 +57,7 @@ function encodedBytes(value: unknown): number {
  * PilotSwarm performs no general secret-scrubbing of event payloads, so no
  * count here may be read as "this history was sanitized".
  */
-type OmissionKind = "byte_budget" | "sdk_echo" | "absent";
+export type OmissionKind = "byte_budget" | "sdk_echo" | "absent";
 
 export const SDK_ECHO_MARKER = "[SYSTEM: Copilot SDK rebuilt the full system prompt for model input.";
 

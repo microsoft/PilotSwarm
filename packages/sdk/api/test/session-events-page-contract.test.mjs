@@ -76,9 +76,9 @@ test("a paged request builds the expected URL and query", () => {
     });
     assert.equal(method, "GET");
     assert.equal(path, `${API_PREFIX}/management/sessions/11111111-2222-3333-4444-555555555555/events-page`);
-    assert.equal(String(query.beforeSeq), "500");
-    assert.equal(String(query.limit), "100");
-    assert.equal(query.eventTypes, JSON.stringify(["assistant.message"]));
+    assert.equal(query.get("beforeSeq"), "500");
+    assert.equal(query.get("limit"), "100");
+    assert.equal(query.get("eventTypes"), JSON.stringify(["assistant.message"]));
 });
 
 test("the operation name is unique and does not shadow the legacy reads", () => {
@@ -122,6 +122,6 @@ test("a legacy request still builds exactly as before", () => {
     });
     assert.equal(method, "GET");
     assert.equal(path, `${API_PREFIX}/management/sessions/11111111-2222-3333-4444-555555555555/events`);
-    assert.equal(String(query.afterSeq), "42");
-    assert.equal(String(query.limit), "50");
+    assert.equal(query.get("afterSeq"), "42");
+    assert.equal(query.get("limit"), "50");
 });
