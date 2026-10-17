@@ -1,0 +1,250 @@
+/**
+ * Canvas app registry: the service (issue 181, plan r4 phase 2). No LLM turns.
+ *
+ * Publishes real pages through publishCanvasAppHtml into a filesystem
+ * artifact store, then reads, deletes, prunes, exports and imports them.
+ *
+ * Run: npx vitest run test/local/canvas-app-registry.test.js
+ */
+
+import * as path from "node:path";
+import * as zlib from "node:zlib";
+import { describe, it } from "vitest";
+import { useSuiteEnv } from "../helpers/local-env.js";
+import { createCatalog } from "../helpers/cms-helpers.js";
+import { assert, assertEqual } from "../helpers/assertions.js";
+import { FilesystemArtifactStore } from "../../src/index.ts";
+import {
+    publishCanvasAppHtml, readCanvasAppHtml, deleteCanvasApp, pruneCanvasAppArtifacts,
+    exportCanvasApp, importCanvasApp, readCanvasAppArchive, canvasAppArtifactSessionId,
+    looksLikeCanvasAppSpace, sha256Hex, CANVAS_APP_PENDING_TTL_MS,
+} from "../../src/canvas-app-registry.ts";
+import { buildCanonicalTarGz } from "../../src/agent-package-format.ts";
+
+const TIMEOUT = 120_000;
+const getEnv = useSuiteEnv(import.meta.url);
+
+const ALICE = { provider: "test", subject: "car-alice" };
+const BOB = { provider: "test", subject: "car-bob" };
+const V = { alice: { principal: ALICE, resourceAdmin: false }, bob: { principal: BOB, resourceAdmin: false } };
+const DESCRIPTION = "Use when testing the canvas app registry service end to end.";
+
+function page(title, extra = "") {
+    const manifest = {
+        name: title, description: DESCRIPTION,
+        interface: { keys: [{ key: "app/items/*", purpose: "rows" }], requests: [], events: [] },
+    };
+    return `<!doctype html>\n<!-- CANVAS-APP-MANIFEST ${JSON.stringify(manifest)} -->\n<html><body><h1>${title}</h1>${extra}</body></html>\n`;
+}
+
+function readCanvasAppArchiveJson(bytes) {
+    const tar = zlib.gunzipSync(bytes);
+    // First member is canvas-app.json: header 512 bytes, then the body.
+    const size = parseInt(tar.subarray(124, 136).toString("ascii").replace(/\0.*$/, "").trim(), 8);
+    return tar.subarray(512, 512 + size).toString("utf8");
+}
+
+async function expectCode(promise, code) {
+    try {
+        await promise;
+    } catch (error) {
+        assertEqual(error?.code, code, `expected ${code}, got ${error?.code}: ${error?.message}`);
+        return error;
+    }
+    throw new Error(`expected ${code}, but the call succeeded`);
+}
+
+async function setup(env) {
+    const catalog = await createCatalog(env);
+    const artifactStore = new FilesystemArtifactStore(path.join(env.baseDir, "canvas-app-artifacts"));
+    return { catalog, deps: { store: catalog.canvasApps, artifactStore } };
+}
+
+describe("canvas app registry: service", () => {
+    it("byte space ids are a recognisable family that real session ids are never in", { timeout: TIMEOUT }, async () => {
+        const id = canvasAppArtifactSessionId("app-1");
+        assert(looksLikeCanvasAppSpace(id), "derived ids are in the family");
+        assertEqual(id, canvasAppArtifactSessionId("app-1"), "deterministic");
+        assert(id !== canvasAppArtifactSessionId("app-2"), "one space per app");
+        assertEqual(id[14], "8", "UUID version nibble 8");
+        for (let i = 0; i < 200; i++) assert(!looksLikeCanvasAppSpace(crypto.randomUUID()), "v4 ids are never in the family");
+    });
+
+    it("publish, read back, checks and errors", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const { catalog, deps } = await setup(env);
+        try {
+            const name = `car-pub-${env.runId}`;
+            const html = page(name);
+            const first = await publishCanvasAppHtml(deps, { html, name, viewer: V.alice, description: DESCRIPTION });
+            assertEqual(first.status, "published");
+            assertEqual(first.scope, "user", "private by default");
+            assertEqual(first.version, "1.0.0");
+            assertEqual(first.sha256, sha256Hex(html));
+            assert(first.card.interface, "card carries the interface");
+
+            const read = await readCanvasAppHtml(deps, { name }, V.alice);
+            assertEqual(read.html, html, "byte-identical");
+            assert(looksLikeCanvasAppSpace(read.resolved.artifactSessionId), "stored in the app's own space");
+
+            const again = await publishCanvasAppHtml(deps, { html, name, viewer: V.alice });
+            assertEqual(again.status, "unchanged");
+
+            const manifestVersion = page(name, "").replace(`"name":"${name}"`, `"name":"${name}","version":"4.2.0"`);
+            const mv = await publishCanvasAppHtml(deps, { html: manifestVersion, name, viewer: V.alice });
+            assertEqual(mv.version, "4.2.0", "the manifest's SemVer version is used when none is given");
+
+            await expectCode(publishCanvasAppHtml(deps, { html: "<!doctype html><p>no manifest</p>", name, viewer: V.alice }), "BAD_REQUEST");
+            await expectCode(publishCanvasAppHtml(deps, { html: page(name, "x".repeat(900_001)), name, viewer: V.alice }), "BAD_REQUEST");
+            await expectCode(publishCanvasAppHtml(deps, { html, name: "Bad Name", viewer: V.alice }), "BAD_REQUEST");
+            await expectCode(publishCanvasAppHtml(deps, { html, name, viewer: { principal: null, resourceAdmin: false } }), "NO_OWNER");
+            await expectCode(readCanvasAppHtml(deps, { name }, V.bob), "NOT_FOUND");
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    it("two owners' private apps with the same name, version and bytes live apart; deleting one leaves the other", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const { catalog, deps } = await setup(env);
+        try {
+            const name = `car-twin-${env.runId}`;
+            const html = page(name);
+            const a = await publishCanvasAppHtml(deps, { html, name, viewer: V.alice });
+            const b = await publishCanvasAppHtml(deps, { html, name, viewer: V.bob });
+            assert(a.appId !== b.appId, "two apps");
+            const ra = await readCanvasAppHtml(deps, { name }, V.alice);
+            const rb = await readCanvasAppHtml(deps, { name }, V.bob);
+            assert(ra.resolved.artifactSessionId !== rb.resolved.artifactSessionId, "separate byte spaces");
+            const del = await deleteCanvasApp(deps, { name }, V.alice);
+            assertEqual(del.files, 1);
+            await expectCode(readCanvasAppHtml(deps, { name }, V.alice), "NOT_FOUND");
+            assertEqual((await readCanvasAppHtml(deps, { name }, V.bob)).html, html, "Bob's copy is intact");
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    it("crashes converge: after reserve, after upload, and during delete", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const { catalog, deps } = await setup(env);
+        try {
+            const store = deps.store;
+            // Crash after reserve (and after upload): a pending row stays; prune removes row and bytes.
+            const name = `car-crash-${env.runId}`;
+            await publishCanvasAppHtml(deps, { html: page(name), name, viewer: V.alice });
+            const space0 = (await readCanvasAppHtml(deps, { name }, V.alice)).resolved.artifactSessionId;
+            const crashing = {
+                ...deps,
+                store: Object.assign(Object.create(Object.getPrototypeOf(store)), store, {
+                    commit: async () => { throw new Error("simulated crash before commit"); },
+                }),
+            };
+            const html2 = page(name, "<p>v2</p>");
+            await publishCanvasAppHtml(crashing, { html: html2, name, viewer: V.alice }).catch(() => {});
+            assertEqual((await deps.artifactStore.listArtifacts(space0)).length, 2, "the uploaded bytes of the uncommitted version are there");
+            assertEqual((await store.get({ name }, V.alice)).versions.length, 1, "the pending version is invisible");
+            const pruned = await pruneCanvasAppArtifacts(deps, new Date(Date.now() + CANVAS_APP_PENDING_TTL_MS + 60_000));
+            assert(pruned.pendingRemoved >= 1, "prune removes the stale pending row");
+            assertEqual((await deps.artifactStore.listArtifacts(space0)).length, 1, "and its bytes");
+            const retry = await publishCanvasAppHtml(deps, { html: html2, name, viewer: V.alice });
+            assertEqual(retry.status, "published", "the same publish succeeds afterwards");
+
+            // Crash during delete: rows gone, bytes left; prune finishes from the tombstone.
+            const space = (await readCanvasAppHtml(deps, { name }, V.alice)).resolved.artifactSessionId;
+            const failingBytes = { ...deps, artifactStore: Object.assign(Object.create(Object.getPrototypeOf(deps.artifactStore)), deps.artifactStore, {
+                deleteArtifact: async () => { throw new Error("simulated storage outage"); },
+            }) };
+            const gone = await store.delete({ name }, V.alice);
+            for (const f of gone.artifactFilenames) await failingBytes.artifactStore.deleteArtifact(gone.artifactSessionId, f).catch(() => {});
+            assert((await deps.artifactStore.listArtifacts(space)).length > 0, "bytes left behind");
+            await pruneCanvasAppArtifacts(deps);
+            assertEqual((await deps.artifactStore.listArtifacts(space)).length, 0, "prune finished the delete");
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    it("export is byte-stable and carries no identity; import round-trips, repeats as a no-op and isolates version conflicts", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const { catalog, deps } = await setup(env);
+        try {
+            const name = `car-exp-${env.runId}`;
+            await publishCanvasAppHtml(deps, { html: page(name), name, viewer: V.alice, scope: "shared", version: "1.0.0", tags: ["b", "a"] });
+            await publishCanvasAppHtml(deps, { html: page(name, "<p>2</p>"), name, viewer: V.alice, scope: "shared", version: "2.0.0" });
+            const one = await exportCanvasApp(deps, { name, scope: "shared" }, V.alice);
+            const two = await exportCanvasApp(deps, { name, scope: "shared" }, V.alice);
+            assertEqual(one.sha256, two.sha256, "byte-stable");
+            const parsed = readCanvasAppArchive(one.bytes);
+            assertEqual(parsed.manifest.versions.map((v) => v.version).join(","), "1.0.0,2.0.0");
+            const text = zlib.gunzipSync(one.bytes).toString("latin1");
+            assert(!text.includes(ALICE.subject), "no user identity in the archive");
+            const json = JSON.parse(readCanvasAppArchiveJson(one.bytes));
+            const forbidden = ["owner", "scope", "enabled", "contributors", "editors", "sessionId", "source", "createdBy", "appId"];
+            for (const key of forbidden) {
+                assert(!(key in json), `archive manifest must not carry ${key}`);
+                for (const v of json.versions) assert(!(key in v), `archive version must not carry ${key}`);
+            }
+            assertEqual(Object.keys(json).sort().join(","), "description,format,name,tags,versions", "whitelist");
+
+            // Bob imports it as his private app (another cluster in practice).
+            const imp = await importCanvasApp(deps, one.bytes, V.bob);
+            assertEqual(imp.scope, "user");
+            assertEqual(imp.versions.map((v) => v.status).join(","), "imported,imported");
+            const bobActive = await readCanvasAppHtml(deps, { name, scope: "user" }, V.bob);
+            assertEqual(bobActive.resolved.version, "2.0.0", "a new app gets its highest version");
+            const repeat = await importCanvasApp(deps, one.bytes, V.bob);
+            assertEqual(repeat.versions.map((v) => v.status).join(","), "unchanged,unchanged", "repeat import is a no-op");
+
+            // A conflicting version fails alone.
+            await deps.store.pin({ name, scope: "user" }, "1.0.0", V.bob);
+            const conflictName = `car-conflict-${env.runId}`;
+            await publishCanvasAppHtml(deps, { html: page(name, "<p>other 2</p>"), name: conflictName, viewer: V.bob, version: "2.0.0" });
+            const files = [
+                { name: "canvas-app.json", body: Buffer.from(JSON.stringify({ format: 1, name: conflictName, description: DESCRIPTION, tags: [], versions: [
+                    { version: "2.0.0", sha256: sha256Hex(page(name, "<p>2</p>")), size: 1, card: {} },
+                    { version: "3.0.0", sha256: sha256Hex(page(name, "<p>3</p>")), size: 1, card: {} },
+                ] })) },
+                { name: "versions/2.0.0.html", body: Buffer.from(page(name, "<p>2</p>")) },
+                { name: "versions/3.0.0.html", body: Buffer.from(page(name, "<p>3</p>")) },
+            ];
+            const mixed = await importCanvasApp(deps, buildCanonicalTarGz(files), V.bob);
+            assertEqual(mixed.versions.map((v) => `${v.version}:${v.status}${v.code ? ":" + v.code : ""}`).join(","), "2.0.0:failed:VERSION_EXISTS,3.0.0:imported");
+            assertEqual((await readCanvasAppHtml(deps, { name: conflictName }, V.bob)).resolved.version, "2.0.0", "import does not move an established app's pointer");
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    it("bad archives are refused whole, with nothing written", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const { catalog, deps } = await setup(env);
+        try {
+            const name = `car-bad-${env.runId}`;
+            const good = page(name);
+            const manifest = (versions) => ({ name: "canvas-app.json", body: Buffer.from(JSON.stringify({ format: 1, name, description: DESCRIPTION, tags: [], versions })) });
+            const v1 = { version: "1.0.0", sha256: sha256Hex(good), size: 1, card: {} };
+            const v2 = { version: "2.0.0", sha256: sha256Hex(good + " "), size: 1, card: {} };
+            const cases = {
+                badHashOnLastMember: buildCanonicalTarGz([manifest([v1, v2]), { name: "versions/1.0.0.html", body: Buffer.from(good) }, { name: "versions/2.0.0.html", body: Buffer.from(good + "tampered") }]),
+                extraMember: buildCanonicalTarGz([manifest([v1]), { name: "versions/1.0.0.html", body: Buffer.from(good) }, { name: "evil.sh", body: Buffer.from("x") }]),
+                duplicateMember: buildCanonicalTarGz([manifest([v1]), { name: "versions/1.0.0.html", body: Buffer.from(good) }, { name: "versions/1.0.0.html", body: Buffer.from(good) }]),
+                badPath: buildCanonicalTarGz([manifest([v1]), { name: "../versions/1.0.0.html", body: Buffer.from(good) }]),
+                missingManifest: buildCanonicalTarGz([{ name: "versions/1.0.0.html", body: Buffer.from(good) }]),
+                truncated: buildCanonicalTarGz([manifest([v1]), { name: "versions/1.0.0.html", body: Buffer.from(good) }]).subarray(0, 60),
+                bomb: zlib.gzipSync(Buffer.alloc(45 * 1024 * 1024)),
+            };
+            for (const [label, bytes] of Object.entries(cases)) {
+                try {
+                    await importCanvasApp(deps, bytes, V.alice);
+                    throw new Error(`${label}: accepted`);
+                } catch (error) {
+                    assertEqual(error?.code, "BAD_REQUEST", `${label}: ${error?.message}`);
+                }
+            }
+            await expectCode(deps.store.get({ name }, V.alice), "NOT_FOUND");
+        } finally {
+            await catalog.close();
+        }
+    });
+});
