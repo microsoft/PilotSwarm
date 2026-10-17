@@ -298,19 +298,78 @@ async function run() {
                 name: "get_session_events",
                 arguments: { session_id: SESSION, page: true, after_seq: 100, limit: 2, max_bytes },
             });
-            const full = await ask3(200000);
+            // The reference size must be measured in the SAME budget
+            // representation the later requests use. A generous probe
+            // serializes a six-digit response_bytes_budget; the real requests
+            // serialize four digits, so the identical complete response is two
+            // bytes smaller. Subtracting from the generous figure therefore
+            // lands ABOVE the true full size, the complete page still fits, and
+            // a correct null continuation looked like a failure. Re-measure at
+            // the probe's own answer so the width matches before subtracting.
+            const probe = await ask3(200000);
+            const full = await ask3(bytesOf(probe));
             const fullBytes = bytesOf(full);
+            const totalCount = JSON.parse(textOf(full)).count;
+
             for (const delta of [1, 2, 10, 50]) {
                 const b = fullBytes - delta;
                 const res = await ask3(b);
                 record(`FINAL-03: ${delta}B below the full response still returns a page`,
                     !res.isError && bytesOf(res) <= b,
                     res.isError ? textOf(res).slice(0, 140) : `${bytesOf(res)} > ${b}`);
-                if (!res.isError) {
-                    const parsed = JSON.parse(textOf(res));
-                    record(`FINAL-03: the smaller page at full-${delta}B makes progress`,
-                        parsed.count >= 1 && parsed.receipt.next_cursor !== null,
-                        `count=${parsed.count} next_cursor=${parsed.receipt.next_cursor}`);
+                if (res.isError) continue;
+
+                const parsed = JSON.parse(textOf(res));
+                // Always true: something was delivered.
+                record(`FINAL-03: the page at full-${delta}B delivers at least one row`,
+                    parsed.count >= 1, `count=${parsed.count}`);
+                // Continuation is required ONLY when a strict subset was
+                // delivered. A complete page that happens to fit correctly
+                // reports next_cursor null, and demanding a cursor there would
+                // reject correct behaviour.
+                if (parsed.count < totalCount) {
+                    record(`FINAL-03: the strict subset at full-${delta}B can be continued`,
+                        parsed.receipt.next_cursor !== null && parsed.receipt.has_more === true,
+                        `count=${parsed.count}/${totalCount} next_cursor=${parsed.receipt.next_cursor} has_more=${parsed.receipt.has_more}`);
+                } else {
+                    record(`FINAL-03: the complete page at full-${delta}B ends the drain`,
+                        parsed.receipt.has_more === false && parsed.receipt.next_cursor === null,
+                        `count=${parsed.count} has_more=${parsed.receipt.has_more}`);
+                }
+            }
+
+            // The text-projection counterexample: admission sizes the compact
+            // SOURCE record, but text mode renders only data.content. A small
+            // content beside a large auxiliary field must not be refused when
+            // the complete rendered response fits.
+            {
+                const fat = [{
+                    seq: 1,
+                    sessionId: SESSION,
+                    eventType: "assistant.message",
+                    data: { content: "a", padding: "x".repeat(5000) },
+                    createdAt: new Date(0),
+                }];
+                const c4 = await connect(sessionMgmt(fat));
+                const askText = (max_bytes) => c4.callTool({
+                    name: "get_session_events",
+                    arguments: { session_id: SESSION, page: true, format: "text", max_bytes },
+                });
+                const generous = await askText(200000);
+                record("FINAL-03 setup: the complete text rendering succeeds generously",
+                    !generous.isError, generous.isError ? textOf(generous).slice(0, 140) : "");
+                if (!generous.isError) {
+                    const renderedBytes = bytesOf(generous);
+                    // The whole point: the rendered form is far smaller than the
+                    // compact source, so a budget sized for the RENDERING must be
+                    // accepted rather than refused on the source's size.
+                    const res = await askText(renderedBytes);
+                    record("FINAL-03: a text budget that fits the RENDERED output is accepted",
+                        !res.isError && bytesOf(res) <= renderedBytes,
+                        res.isError ? textOf(res).slice(0, 180) : `${bytesOf(res)} > ${renderedBytes}`);
+                    record("FINAL-03: and it delivers the content, not an omission",
+                        !res.isError && /\ba\b/.test(textOf(res)) && !/payload omitted/.test(textOf(res)),
+                        res.isError ? "refused" : textOf(res).slice(0, 180));
                 }
             }
         }

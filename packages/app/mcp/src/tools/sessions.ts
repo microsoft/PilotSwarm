@@ -1315,9 +1315,14 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                     // identical rows, so a fixed number of decrements can reject the
                     // same candidate repeatedly while a smaller page that fits plainly
                     // exists. Dropping the budget below what the delivered rows
-                    // actually consumed removes at least one row every pass, which
-                    // both guarantees progress and bounds the search by row count
-                    // instead of an arbitrary iteration cap.
+                    // actually consumed changes the admitted set every pass and
+                    // bounds the search by row count instead of an arbitrary cap.
+                    //
+                    // NOT a proof that the row COUNT strictly decreases: below `used`
+                    // a full first row can become payload-omitted, freeing compact
+                    // budget for later rows, so membership can grow. This guard gives
+                    // finite termination and candidate change, not an exhaustive
+                    // search of every representation.
                     let guard = (result.events ?? []).length + 2;
                     while ((!settled.converged || settled.bytes > budget) && guard-- > 0) {
                         if (attempt.delivered.length === 0) break;
@@ -1326,6 +1331,35 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                         room = next;
                         attempt = build(room);
                         settled = settle(attempt);
+                    }
+
+                    // COMPLETE BOUNDARY CANDIDATE.
+                    //
+                    // Admission sizes the COMPACT SOURCE record, but the response
+                    // carries the REQUESTED PROJECTION. In text mode the renderer
+                    // emits data.content and ignores every other field, so a record
+                    // with a small content and a large auxiliary field is admitted as
+                    // huge while rendering tiny. The helper then substitutes an
+                    // omission — whose own metadata can be LARGER than the complete
+                    // rendering it replaced — and `used` is 0 for that row, so the
+                    // loop above rebuilds the same thing and stops.
+                    //
+                    // The result was a refusal for a budget that the ordinary
+                    // complete response fits. So before settling for an omission,
+                    // MEASURE the complete boundary record in the representation the
+                    // caller actually asked for, and prefer it when it fits.
+                    if (!settled.converged || settled.bytes > budget) {
+                        const pool = result.events ?? [];
+                        const boundary = orientation === "backward" ? pool[pool.length - 1] : pool[0];
+                        const boundaryCost = boundary ? encodedBytes(boundary) : null;
+                        if (boundaryCost !== null) {
+                            const complete = build(boundaryCost);
+                            const completeSettled = settle(complete);
+                            if (completeSettled.converged && completeSettled.bytes <= budget) {
+                                attempt = complete;
+                                settled = completeSettled;
+                            }
+                        }
                     }
 
                     // GUARANTEED FLOOR. The shrink loop derives `room` from the
