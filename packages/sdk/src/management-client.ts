@@ -5286,6 +5286,8 @@ export class PilotSwarmManagementClient {
 
     /** One-time import of legacy apps/* facts (unrestricted admin; dry run unless dryRun === false). */
     async migrateLegacyCanvasApps(args: { dryRun?: boolean }, owner: AgentPrincipal | null, resourceAdmin: boolean) {
+        // Authorization before availability: a non-admin learns nothing about the deployment.
+        if (!resourceAdmin) throw new CanvasAppError("FORBIDDEN", "migrating legacy canvas apps needs an unrestricted admin");
         const deps = this._canvasAppDeps();
         if (!this._factStore) throw Object.assign(new Error("the legacy migration needs the facts store"), { code: "UNAVAILABLE", status: 503 });
         return migrateLegacyCanvasApps({
