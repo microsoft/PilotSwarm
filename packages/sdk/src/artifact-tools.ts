@@ -110,6 +110,13 @@ export function createArtifactTools(opts: {
     canvasBytesGuard?: (input: { callerSessionId: string | null | undefined; artifactSessionId: string; bytes?: Buffer | string | null }) => Promise<string | null>;
 }): Tool<any>[] {
     const { blobStore, canvasBytesGuard } = opts;
+    // Canvas documents (issue 181) are written only by a draw: the draw
+    // event records which page the file holds, and workspace approval is
+    // bound to that page. No tool may write or copy over them.
+    const CANVAS_SLOT_FILE = /^canvas[2-5]?\.html$/i;
+    const canvasFileRefusal = (filename: string | null | undefined) => CANVAS_SLOT_FILE.test(path.basename(String(filename ?? "")))
+        ? toolError("CANVAS_FILE_RESERVED", `${path.basename(String(filename))} is a canvas document; it is written only by draw_canvas.`, "Draw the page with draw_canvas, or save it under another name (e.g. app-<name>.html).")
+        : null;
     // Every read small enough to be an app page is checked, whatever its
     // filename or content type says: a label is not evidence.
     const mayBeAppPage = (sizeBytes: number | null | undefined) =>
@@ -215,6 +222,8 @@ export function createArtifactTools(opts: {
                     const jailed = resolveJailedPath(params.fromFile, true);
                     if (jailed.error) return toolError("PATH_OUTSIDE_WORKDIR", jailed.error);
                     const filename = params.filename || path.basename(jailed.path!);
+                    const reserved = canvasFileRefusal(filename);
+                    if (reserved) return reserved;
                     const metadata = await blobStore.uploadArtifactFromFile(
                         sessionId, filename, jailed.path!, contentType, { pinned },
                     );
@@ -229,6 +238,8 @@ export function createArtifactTools(opts: {
                 if (params.fromArtifact) {
                     const from = params.fromArtifact;
                     const filename = params.filename || path.basename(from.filename);
+                    const reserved = canvasFileRefusal(filename);
+                    if (reserved) return reserved;
                     // Source session defaults to self: the canonical save-as
                     // ("copy my canvas.html to app-<name>.html") should not
                     // require the model to know its own session id.
@@ -270,6 +281,8 @@ export function createArtifactTools(opts: {
                         "filename is required when writing inline content.",
                     );
                 }
+                const reservedInline = canvasFileRefusal(params.filename);
+                if (reservedInline) return reservedInline;
                 const metadata = await blobStore.uploadArtifact(
                     sessionId, params.filename, params.content!, contentType,
                     { encoding: params.encoding, pinned },

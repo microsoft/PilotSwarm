@@ -441,11 +441,25 @@ DECLARE
     v_active_key TEXT;
     v_active BOOLEAN := FALSE;
 BEGIN
+    -- Lock the app first, then read the version under that lock, so a
+    -- concurrent commit, abort or delete is seen in its final state.
+    SELECT a.* INTO v_app FROM ${s}.canvas_apps a
+     WHERE a.app_id = (SELECT cv.app_id FROM ${s}.canvas_app_versions cv WHERE cv.version_id = p_version_id)
+       FOR UPDATE;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'CANVAS_APP_NOT_FOUND: version % was aborted or its app was deleted', p_version_id;
+    END IF;
     SELECT * INTO v_ver FROM ${s}.canvas_app_versions WHERE canvas_app_versions.version_id = p_version_id;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'CANVAS_APP_NOT_FOUND: version % was aborted or its app was deleted', p_version_id;
     END IF;
-    SELECT * INTO v_app FROM ${s}.canvas_apps WHERE canvas_apps.app_id = v_ver.app_id FOR UPDATE;
+    -- Commit is a one-time transition of a PENDING version. Committing a
+    -- version that is already ready changes nothing (no state change, no
+    -- move of the active pointer): idempotent, and never a way to re-pin.
+    IF v_ver.state <> 'pending' THEN
+        RETURN QUERY SELECT v_app.app_id, p_version_id, v_ver.version, v_app.active_version_id IS NOT DISTINCT FROM p_version_id;
+        RETURN;
+    END IF;
     UPDATE ${s}.canvas_app_versions SET state = 'ready', committed_at = now()
      WHERE canvas_app_versions.version_id = p_version_id AND state = 'pending';
     IF COALESCE(p_may_activate, FALSE) OR v_app.import_open OR v_app.active_version_id IS NULL THEN

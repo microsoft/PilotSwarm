@@ -3,6 +3,7 @@ import { ChatCallLine } from "./chat-call-line.js";
 import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
 import { NativeTaskCard } from "./native-task-card.js";
+import { assertPageBytes, buildIsolatedInnerHtml, createIsolationWrapperUrl, isCanvasSlotFilename } from "./canvas-isolation.js";
 import { WorkspacePane, WORKSPACE_CHANGED_EVENT, announceWorkspaceChange, downloadBase64, workspaceToolActivity } from "./workspace-pane.js";
 // createPortal is only invoked by browser-only surfaces (tooltips, toolbar
 // slots, and viewport-level dialogs); the import itself is side-effect-free
@@ -3194,44 +3195,26 @@ function useElementBox(ref) {
 // click handlers, and leaves "#" links, targets and downloads alone.
 const CANVAS_LINK_GUARD = `<script>addEventListener('click',function(e){var a=e.target&&e.target.closest&&e.target.closest('a[href],area[href]');if(!a||e.defaultPrevented||a.hasAttribute('download'))return;var h=a.getAttribute('href')||'';if(!h||h.charAt(0)==='#'||/^javascript:/i.test(h))return;var t=a.getAttribute('target');if(t&&t!=='_self')return;e.preventDefault();try{window.open(new URL(h,document.baseURI).href,'_blank','noopener')}catch(x){}});</script>`;
 
-// Canvas app registry (issue 181): another user's app runs with no network
-// and cannot navigate. Its policy is the app policy; the wrapper adds
-// frame-src so the inner frame cannot load any URL. An about:srcdoc child
-// inherits the wrapper's policy, so the wrapper's list must allow what the
-// app may load (data:/blob: images, fonts, media).
-const CROSS_OWNER_APP_CSP = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'";
-const CROSS_OWNER_WRAPPER_CSP = `${CROSS_OWNER_APP_CSP}; frame-src 'none'`;
-// Inside the inner frame, a link click asks the portal (which confirms with
-// the person) instead of opening a window.
-const CROSS_OWNER_LINK_GUARD = `<script>addEventListener('click',function(e){var a=e.target&&e.target.closest&&e.target.closest('a[href],area[href]');if(!a||e.defaultPrevented)return;var h=a.getAttribute('href')||'';if(!h||h.charAt(0)==='#'||/^javascript:/i.test(h))return;e.preventDefault();try{parent.postMessage({type:'canvas-open-link',href:new URL(h,document.baseURI).href},'*')}catch(x){}},true);</script>`;
-const CROSS_OWNER_WRAPPER_HTML = `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${CROSS_OWNER_WRAPPER_CSP}"><style>html,body{margin:0;height:100%;background:transparent;overflow:hidden}iframe{border:0;width:100%;height:100%;display:block}</style></head><body><script>(function(){var inner=null;addEventListener('message',function(e){var d=e.data;if(!d||typeof d!=='object')return;if(e.source===parent&&d.type==='pse-wrapper-load'){if(inner)return;inner=document.createElement('iframe');inner.setAttribute('sandbox','allow-scripts');inner.setAttribute('allow','autoplay *');inner.setAttribute('referrerpolicy','no-referrer');inner.srcdoc=String(d.html||'');document.body.appendChild(inner);return;}if(inner&&e.source===inner.contentWindow){try{parent.postMessage(d,'*')}catch(x){}return;}if(inner&&e.source===parent){try{inner.contentWindow.postMessage(d,'*')}catch(x){}}});parent.postMessage({type:'pse-wrapper-ready'},'*');})();</script></body></html>`;
-
-/** Put the policy meta, then the given scripts, right after the doctype (or first, when there is none). */
-function injectAfterDoctype(html, injected) {
-    const prolog = /^(?:\uFEFF|\s|<!--[\s\S]*?-->)*<!doctype[^>]*>/i.exec(html)?.[0] || "";
-    return html.slice(0, prolog.length) + injected + html.slice(prolog.length);
-}
-
 /**
- * Another user's app: a portal-authored wrapper document (no app bytes in its
+ * Another user's app: the portal-authored wrapper (no app bytes in its
  * markup) plus the inner page text, handed to the wrapper by postMessage and
- * set as the inner frame's srcdoc PROPERTY. Returns { url, html }.
+ * set as the inner frame's srcdoc PROPERTY. The one contract lives in
+ * canvas-isolation.js. Returns { url, html }.
  */
-function fetchCrossOwnerCanvas(controller, sessionId, filename, panelKeys = false) {
+function fetchCrossOwnerCanvas(controller, sessionId, filename, panelKeys = false, expectedSha256 = null) {
     const downloadResponse = controller?.transport?.api?.downloadArtifactResponse;
     if (typeof downloadResponse !== "function") return Promise.reject(new Error("artifact download unavailable"));
     return downloadResponse.call(controller.transport.api, sessionId, filename)
         .then(async (response) => {
             if (!response?.ok) throw new Error(`download failed (${response?.status})`);
-            const text = new TextDecoder().decode(await response.arrayBuffer());
-            const keys = panelKeys ? `<script>window.addEventListener('keydown',function(e){if(e.isTrusted&&!e.altKey&&!e.metaKey&&!e.ctrlKey&&(e.key==='Tab'||e.key==='Escape')){e.preventDefault();e.stopImmediatePropagation();parent.postMessage({type:'moa-panel-key',key:e.key,backwards:e.shiftKey},'*')}},true);</script>` : "";
-            const html = injectAfterDoctype(text, `<meta http-equiv="Content-Security-Policy" content="${CROSS_OWNER_APP_CSP}">${keys}${CROSS_OWNER_LINK_GUARD}`);
-            const url = URL.createObjectURL(new Blob([CROSS_OWNER_WRAPPER_HTML], { type: "text/html;charset=utf-8" }));
-            return { url, html };
+            const bytes = await response.arrayBuffer();
+            await assertPageBytes(bytes, expectedSha256);
+            const text = new TextDecoder().decode(bytes);
+            return { url: createIsolationWrapperUrl(), html: buildIsolatedInnerHtml(text, { panelKeys }) };
         });
 }
 
-function fetchArtifactHtmlObjectUrl(controller, sessionId, filename, panelKeys = false, linkGuard = false) {
+function fetchArtifactHtmlObjectUrl(controller, sessionId, filename, panelKeys = false, linkGuard = false, expectedSha256 = null) {
     const downloadResponse = controller?.transport?.api?.downloadArtifactResponse;
     if (typeof downloadResponse !== "function") {
         return Promise.reject(new Error("artifact download unavailable"));
@@ -3244,6 +3227,8 @@ function fetchArtifactHtmlObjectUrl(controller, sessionId, filename, panelKeys =
             // would otherwise make the iframe offer a download instead of
             // rendering, and a missing charset would mojibake UTF-8 content.
             const bytes = await response.arrayBuffer();
+            // A canvas revision is framed only with the bytes its event classified.
+            await assertPageBytes(bytes, expectedSha256);
             // Only MoA canvases opt into panel navigation; ordinary canvases
             // retain native Tab behavior. A canvas gets the link guard; an
             // artifact preview keeps its exact document bytes.
@@ -3307,13 +3292,48 @@ function HtmlArtifactPreviewPanel({
     // unmount or artifact change. It deliberately does not share the thumbnail
     // LRU: that cache revokes at its cap, which would blank a frame the user
     // is still reading.
+    // Canvas slot files (canvas.html … canvas5.html) are previewed through
+    // the isolated wrapper, whoever's page is in them: the file may hold
+    // another user's app, and the canvas pane, not this preview, is where a
+    // page runs with the session. Other HTML artifacts keep today's preview.
+    const isolated = isCanvasSlotFilename(filename);
+    const isolatedHtmlRef = React.useRef(null);
+    const isolatedFramesRef = React.useRef(new Set());
+    React.useEffect(() => {
+        if (!isolated) return undefined;
+        const onMessage = (event) => {
+            const payload = event.data;
+            if (!payload || typeof payload !== "object" || !event.source) return;
+            const el = [...isolatedFramesRef.current].find((frame) => frame?.contentWindow === event.source);
+            if (!el || el.dataset.leftPage) return;
+            if (payload.type === "pse-wrapper-ready" && typeof isolatedHtmlRef.current === "string") {
+                try { event.source.postMessage({ type: "pse-wrapper-load", html: isolatedHtmlRef.current }, "*"); } catch { /* frame mid-teardown */ }
+                return;
+            }
+            if (payload.type === "pse-wrapper-left") { el.dataset.leftPage = "1"; return; }
+            if (payload.type === "canvas-open-link") {
+                if (!navigator.userActivation?.isActive || document.activeElement !== el) return;
+                let href = "";
+                try { href = new URL(String(payload.href || "")).href; } catch { return; }
+                if (!/^https?:/i.test(href)) return;
+                if (window.confirm(`This page wants to open:\n\n${href}\n\nOpen it in a new tab?`)) window.open(href, "_blank", "noopener,noreferrer");
+            }
+            // Nothing else: a preview has no KV, actions or workspace.
+        };
+        window.addEventListener("message", onMessage);
+        return () => window.removeEventListener("message", onMessage);
+    }, [isolated]);
+
     React.useEffect(() => {
         setFrameUrl(null);
         setError(null);
+        isolatedHtmlRef.current = null;
         if (mode !== "rendered" || !controller || !sessionId || !filename) return undefined;
         let cancelled = false;
         let created = null;
-        fetchArtifactHtmlObjectUrl(controller, sessionId, filename)
+        (isolated
+            ? fetchCrossOwnerCanvas(controller, sessionId, filename).then(({ url, html }) => { isolatedHtmlRef.current = html; return url; })
+            : fetchArtifactHtmlObjectUrl(controller, sessionId, filename))
             .then((url) => {
                 created = url;
                 if (cancelled) {
@@ -3327,7 +3347,7 @@ function HtmlArtifactPreviewPanel({
             cancelled = true;
             if (created) URL.revokeObjectURL(created);
         };
-    }, [controller, sessionId, filename, mode]);
+    }, [controller, sessionId, filename, mode, isolated]);
 
     const deepLink = buildArtifactLinkUrl(sessionId, filename);
     const actions = chromeless ? null : React.createElement(React.Fragment, null,
@@ -3392,8 +3412,12 @@ function HtmlArtifactPreviewPanel({
                                 : undefined,
                         src: frameUrl,
                         title: filename || "HTML artifact",
+                        ref: isolated
+                            ? ((el) => { if (el) isolatedFramesRef.current.add(el); else isolatedFramesRef.current.forEach((f) => { if (!f.isConnected) isolatedFramesRef.current.delete(f); }); })
+                            : undefined,
                         // No allow-same-origin — see the block comment above.
-                        sandbox: "allow-scripts allow-popups allow-popups-to-escape-sandbox",
+                        // An isolated canvas file gets no popups either.
+                        sandbox: isolated ? "allow-scripts" : "allow-scripts allow-popups allow-popups-to-escape-sandbox",
                         // Opaque origin ≠ "self", so the autoplay policy would
                         // silently mute an interactive artifact (same fix the
                         // canvas frame carries).
@@ -8199,7 +8223,7 @@ function canvasWorkspaceApprovalLines(approval) {
     return lines;
 }
 
-function CanvasFrame({ controller, sessionId, slot = 1, latestRev, trust = "agent", zoom, visible = true, focusOnPromote = false, dataRev = 0, dataPayload = null, dataPatch = null, onPanelKey = null }) {
+function CanvasFrame({ controller, sessionId, slot = 1, latestRev, trust = "agent", pageSha256 = null, zoom, visible = true, focusOnPromote = false, dataRev = 0, dataPayload = null, dataPatch = null, onPanelKey = null }) {
     const crossOwner = trust === "cross-owner";
     // Canvas app registry: the inner page text per wrapper URL, handed over on
     // the wrapper's ready message; and each frame's revision, sent with every
@@ -8277,8 +8301,16 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, trust = "agen
             // safe to answer from the staging frame of THIS canvas (it holds
             // the revision about to go live; the reply goes back to the
             // window that asked). Writes and actions stay live-frame only.
-            const fromStaging = Boolean(stagingIframeElRef.current && event.source === stagingIframeElRef.current.contentWindow && stagingIframeElRef.current.dataset.session === sessionId);
+            const fromStaging = Boolean(stagingIframeElRef.current && event.source === stagingIframeElRef.current.contentWindow && stagingIframeElRef.current.dataset.session === sessionId && !stagingIframeElRef.current.dataset.leftPage);
             if (!fromLive && !fromStaging) return;
+            if (payload.type === "pse-wrapper-left") {
+                // The wrapper saw its inner page replaced: it has stopped
+                // relaying, and this frame gets nothing more from the session.
+                const el = fromLive ? frameEl : stagingIframeElRef.current;
+                if (el) el.dataset.leftPage = "1";
+                if (fromLive) setLeftPage(true);
+                return;
+            }
             if (payload.type === "pse-wrapper-ready") {
                 // A cross-owner wrapper asks for its page. The text was fetched
                 // for that frame's URL; the wrapper sets it as srcdoc.
@@ -8292,7 +8324,10 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, trust = "agen
             if (payload.type === "canvas-open-link") {
                 // Another user's app may not open windows itself; the person
                 // decides, from a real click on the portal's confirm dialog.
+                // Only right after a click IN this canvas: a message the page
+                // posts by itself is ignored.
                 if (!fromLive) return;
+                if (!navigator.userActivation?.isActive || document.activeElement !== frameEl) return;
                 let href = "";
                 try { href = new URL(String(payload.href || "")).href; } catch { return; }
                 if (!/^https?:/i.test(href)) return;
@@ -8507,8 +8542,8 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, trust = "agen
         let retryTimer = null;
         const filename = slot <= 1 ? "canvas.html" : `canvas${slot}.html`;
         (crossOwner
-            ? fetchCrossOwnerCanvas(controller, sessionId, filename, panelKeys).then(({ url, html }) => { wrapperHtmlRef.current.set(url, html); return url; })
-            : fetchArtifactHtmlObjectUrl(controller, sessionId, filename, panelKeys, true))
+            ? fetchCrossOwnerCanvas(controller, sessionId, filename, panelKeys, pageSha256).then(({ url, html }) => { wrapperHtmlRef.current.set(url, html); return url; })
+            : fetchArtifactHtmlObjectUrl(controller, sessionId, filename, panelKeys, true, pageSha256))
             .then((url) => {
                 if (cancelled) { URL.revokeObjectURL(url); wrapperHtmlRef.current.delete(url); return; }
                 // A staging revision that never loaded is superseded here —
@@ -8536,7 +8571,7 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, trust = "agen
             cancelled = true;
             if (retryTimer) clearTimeout(retryTimer);
         };
-    }, [controller, sessionId, slot, latestRev, retryTick, panelKeys, crossOwner]);
+    }, [controller, sessionId, slot, latestRev, retryTick, panelKeys, crossOwner, pageSha256]);
 
     // Session switch / unmount: drop both frames — a different session is a
     // different document, and showing the old canvas under a new session is a
@@ -9009,6 +9044,7 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
                     slot: view.slot,
                     latestRev: view.latestRev,
                     trust: view.trust,
+                    pageSha256: view.pageSha256,
                     zoom,
                     visible: visible && onCanvas,
                     focusOnPromote,

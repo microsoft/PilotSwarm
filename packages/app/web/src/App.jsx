@@ -3,7 +3,7 @@ import { CompactViewNavigation } from "./navigation/CompactViewNavigation.jsx";
 import { useMoa, MoaWorkspace, MobileZen } from "./moa/MoaWorkspace.jsx";
 import React from "react";
 import { createPortal } from "react-dom";
-import { createWebPilotSwarmController, PilotSwarmWebApp, setPortalLinkOrigins, setPortalWorkspaceFiles } from "pilotswarm/ui-react";
+import { createWebPilotSwarmController, PilotSwarmWebApp, setPortalLinkOrigins, setPortalWorkspaceFiles, buildIsolatedInnerHtml, createIsolationWrapperUrl } from "pilotswarm/ui-react";
 import { jsonMergePatch } from "pilotswarm-sdk/api";
 import { getTheme } from "pilotswarm/ui-core";
 import { selectSessionFilterExceptionNotice, selectStatusBar } from "pilotswarm/ui-core";
@@ -747,23 +747,36 @@ function PortalWorkspace({ auth, portal, shellStyle }) {
  * postMessages from the page are simply dropped here.
  */
 function CanvasShareView({ token }) {
-    const [doc, setDoc] = React.useState(null);          // { url, docRev }
+    const [doc, setDoc] = React.useState(null);          // { url, isolated }
     const [status, setStatus] = React.useState("loading"); // loading | live | gone
+    const [leftPage, setLeftPage] = React.useState(false);
     const iframeRef = React.useRef(null);
     const mirrorRef = React.useRef({ seq: 0, payload: null });
     const docRevRef = React.useRef(0);
+    // The page text for an isolated (another user's) app, by wrapper URL.
+    const isolatedHtmlRef = React.useRef(new Map());
+
+    // The frame the session talks to: the CURRENT document's frame, and only
+    // while it still shows that document. A frame that left its page (a
+    // second load, or the wrapper reporting its inner page was replaced)
+    // gets nothing more.
+    const currentFrame = React.useCallback(() => {
+        const frame = iframeRef.current;
+        if (!frame?.contentWindow || frame.dataset.leftPage) return null;
+        return frame;
+    }, []);
 
     const postState = React.useCallback((patch) => {
-        const frame = iframeRef.current;
+        const frame = currentFrame();
         const m = mirrorRef.current;
-        if (!frame?.contentWindow || m.payload === null) return;
+        if (!frame || m.payload === null) return;
         try {
             frame.contentWindow.postMessage({ type: "canvas-data", data: m.payload, dataRev: m.seq }, "*");
             if (patch) {
                 frame.contentWindow.postMessage({ type: "canvas-patch", patch, dataRev: m.seq }, "*");
             }
         } catch { /* frame mid-load */ }
-    }, []);
+    }, [currentFrame]);
 
     const refetchLive = React.useCallback(async () => {
         const response = await fetch(`/api/canvas-share/live?t=${encodeURIComponent(token)}`);
@@ -781,24 +794,31 @@ function CanvasShareView({ token }) {
     const refetchDoc = React.useCallback(async () => {
         const response = await fetch(`/api/canvas-share/doc?t=${encodeURIComponent(token)}`);
         if (!response.ok) throw new Error("gone");
-        let html;
+        let next;
         if (/application\/json/i.test(response.headers.get("content-type") || "")) {
-            // A registry app page (issue 181): another user's app gets no
-            // network; the policy rides in the document's head.
+            // A registry app page (issue 181). Another user's app runs through
+            // the same isolated wrapper as on the session canvas
+            // (canvas-isolation.js): no app bytes in the framed document, the
+            // page set as the inner frame's srcdoc, no navigation.
             const doc = await response.json();
-            html = String(doc?.html ?? "");
+            const html = String(doc?.html ?? "");
             if (doc?.trust === "cross-owner") {
-                const policy = "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:; connect-src 'none'; form-action 'none'; base-uri 'none'";
-                const prolog = /^(?:\uFEFF|\s|<!--[\s\S]*?-->)*<!doctype[^>]*>/i.exec(html)?.[0] || "";
-                html = html.slice(0, prolog.length) + `<meta http-equiv="Content-Security-Policy" content="${policy}">` + html.slice(prolog.length);
+                const url = createIsolationWrapperUrl();
+                isolatedHtmlRef.current.set(url, buildIsolatedInnerHtml(html));
+                next = { url, isolated: true };
+            } else {
+                next = { url: URL.createObjectURL(new Blob([html], { type: "text/html" })), isolated: false };
             }
         } else {
-            html = await response.text();
+            next = { url: URL.createObjectURL(new Blob([await response.text()], { type: "text/html" })), isolated: false };
         }
-        const url = URL.createObjectURL(new Blob([html], { type: "text/html" }));
+        setLeftPage(false);
         setDoc((old) => {
-            if (old?.url) window.setTimeout(() => URL.revokeObjectURL(old.url), 1000);
-            return { url };
+            if (old?.url) {
+                const stale = old.url;
+                window.setTimeout(() => { URL.revokeObjectURL(stale); isolatedHtmlRef.current.delete(stale); }, 1000);
+            }
+            return next;
         });
     }, [token]);
 
@@ -841,8 +861,9 @@ function CanvasShareView({ token }) {
                     return;
                 }
                 if (message.kind === "kv") {
-                    const frame = iframeRef.current;
                     const deliver = (entry) => {
+                        // Resolved at delivery time: the frame current THEN.
+                        const frame = currentFrame();
                         try { frame?.contentWindow?.postMessage({ type: "canvas-kv-change", key: message.key, rev: message.rev, op: message.op, ...(entry ? { v: entry.v, by: entry.by, at: entry.at } : {}) }, "*"); } catch { /* frame mid-load */ }
                     };
                     if (message.op === "delete") { deliver(null); return; }
@@ -873,7 +894,7 @@ function CanvasShareView({ token }) {
             closed = true;
             try { socket?.close(); } catch { /* going away */ }
         };
-    }, [status, token, refetchDoc, refetchLive, postState]);
+    }, [status, token, refetchDoc, refetchLive, postState, currentFrame]);
 
     // The KV bridge through the link door — READ ONLY (a read/write link is
     // phase 4). The page asks (`canvas-kv` ready/get/list); writes are
@@ -881,14 +902,41 @@ function CanvasShareView({ token }) {
     // the page as `canvas-kv-change` off the same share socket.
     React.useEffect(() => {
         if (status !== "live") return undefined;
-        const post = (message) => {
-            try { iframeRef.current?.contentWindow?.postMessage(message, "*"); } catch { /* frame mid-load */ }
-        };
         const onMessage = (event) => {
-            const frame = iframeRef.current;
+            const frame = currentFrame();
             if (!frame || !event.source || event.source !== frame.contentWindow) return;
+            const asker = event.source;
+            // Reply to the window that asked, and only while it is still the
+            // current document's frame.
+            const post = (message) => {
+                const now = currentFrame();
+                if (!now || now.contentWindow !== asker) return;
+                try { asker.postMessage(message, "*"); } catch { /* frame mid-load */ }
+            };
             const payload = event.data;
-            if (!payload || typeof payload !== "object" || payload.type !== "canvas-kv") return;
+            if (!payload || typeof payload !== "object") return;
+            if (payload.type === "pse-wrapper-ready") {
+                const html = isolatedHtmlRef.current.get(frame.getAttribute("src"));
+                if (typeof html === "string") {
+                    try { asker.postMessage({ type: "pse-wrapper-load", html }, "*"); } catch { /* frame mid-teardown */ }
+                }
+                return;
+            }
+            if (payload.type === "pse-wrapper-left") {
+                frame.dataset.leftPage = "1";
+                setLeftPage(true);
+                return;
+            }
+            if (payload.type === "canvas-open-link") {
+                // Only right after a click in the canvas; a page cannot ask by itself.
+                if (!navigator.userActivation?.isActive || document.activeElement !== frame) return;
+                let href = "";
+                try { href = new URL(String(payload.href || "")).href; } catch { return; }
+                if (!/^https?:/i.test(href)) return;
+                if (window.confirm(`This canvas wants to open:\n\n${href}\n\nOpen it in a new tab?`)) window.open(href, "_blank", "noopener,noreferrer");
+                return;
+            }
+            if (payload.type !== "canvas-kv") return;
             const id = payload.id;
             const op = String(payload.op || "");
             if (op === "put" || op === "delete") {
@@ -918,7 +966,7 @@ function CanvasShareView({ token }) {
         };
         window.addEventListener("message", onMessage);
         return () => window.removeEventListener("message", onMessage);
-    }, [status, token]);
+    }, [status, token, currentFrame]);
 
     if (status === "gone") {
         return React.createElement("div", { className: "ps-share-view ps-share-view-gone" },
@@ -930,14 +978,29 @@ function CanvasShareView({ token }) {
             React.createElement("span", null, "Shared canvas — live, view only")),
         doc
             ? React.createElement("iframe", {
+                // One element per document: a redraw is a new frame, never
+                // the old frame pointed somewhere else.
+                key: doc.url,
                 ref: iframeRef,
                 className: "ps-share-view-frame",
                 src: doc.url,
                 sandbox: "allow-scripts",
+                referrerPolicy: "no-referrer",
                 title: "Shared canvas",
-                onLoad: () => postState(),
+                onLoad: (event) => {
+                    // The first load is the document; any later load means the
+                    // page sent its frame elsewhere, which gets nothing more.
+                    const el = event.currentTarget;
+                    if (el.dataset.loaded) { el.dataset.leftPage = "1"; setLeftPage(true); return; }
+                    el.dataset.loaded = "1";
+                    postState();
+                },
             })
-            : React.createElement("div", { className: "ps-share-view-loading" }, "Loading canvas..."));
+            : React.createElement("div", { className: "ps-share-view-loading" }, "Loading canvas..."),
+        leftPage
+            ? React.createElement("div", { className: "ps-share-view-sub", role: "status" },
+                "The canvas opened another page, so that page gets nothing from this link. Reload to see the canvas again.")
+            : null);
 }
 
 export default function App() {

@@ -58,9 +58,10 @@ test("the MCP tools and the CLI call only canvas app operations, and never the a
     }
 });
 
-test("the approval operations are the session owner's (session:files)", () => {
+test("the approval operations are the session owner's (session:files), and never assume admin", () => {
     for (const name of APPROVAL_OPS) {
         assert.equal(OPERATIONS.find((op) => op.name === name)?.access, "session:files", name);
+        assert.match(NODE, new RegExp(`async ${name}\\(args = \\{\\}, owner = this\\.currentUser, isAdmin = false\\) \\{\\s*return this\\.mgmt\\.${name}\\(args \\?\\? \\{\\}, owner, isAdmin === true\\);`), `Node SDK transport ${name} defaults to no admin`);
     }
 });
 

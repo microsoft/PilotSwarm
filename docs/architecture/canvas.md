@@ -213,7 +213,13 @@ draw event: `owner` (the owner's app, by `fromApp` or exact bytes),
 `cross-owner` (another user's app, by `fromApp`, exact bytes, or the same
 workspace block), or `agent` (anything else). A draw that cannot be
 classified is recorded as `cross-owner`. A `cross-owner` page is framed by
-the portal with a network-blocking policy and its owner is named; actions
+the portal through one isolation contract (`ui/react/src/canvas-isolation.js`):
+a portal-authored wrapper document holds no app bytes, sets the page as its
+inner frame's `srcdoc`, carries the app policy plus `frame-src 'none'`, relays
+only between the portal and that one inner frame, and stops for good if the
+inner frame loads twice. The session canvas, the share viewer and the Files
+preview of canvas files all use it, and a frame's bytes must match the
+`pageSha256` its draw event recorded. Its owner is named; actions
 and `canvas_kv` values from it reach the agent with a `page` label. The
 artifact and canvas read tools do not hand an agent another owner's app
 bytes the registry identifies (defense in depth only: a near-copy is not
@@ -262,6 +268,11 @@ write_artifact({fromArtifact: {filename: "canvas.html"},
 read_artifact({sessionId, filename, manifestOnly: true})  # browse candidates
 draw_canvas({fromArtifact: {filename: "app-<name>.html"}})  # reuse; result = interface card
 ```
+
+The canvas documents themselves (`canvas.html` … `canvas5.html`) are
+written only by a draw: `write_artifact` and the Web API upload and copy
+operations refuse them as targets, and a workspace call runs only when the
+stored file still hashes to the page its draw event recorded.
 
 Cross-session sources ride the platform's worker-trusted artifact layer, the
 same trust `read_artifact`/`write_artifact` already extend — the drawing

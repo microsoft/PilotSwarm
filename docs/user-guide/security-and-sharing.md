@@ -221,7 +221,12 @@ page itself, an MCP tool and the CLI cannot. Every decision is audited.
 
 **Other users' apps.** A page that is another user's app (drawn by name,
 with the same bytes, or with the same workspace block) is shown with its
-owner named and cannot reach the network. Its canvas actions and KV values
+owner named and cannot reach the network. The portal frames it inside a
+wrapper page of its own, on the session canvas and in a share link alike: the
+app cannot load other pages into its frame, and a page that replaces itself
+gets nothing more from the session. A link it shows opens only after you
+click it and confirm. Canvas files (`canvas.html` … `canvas5.html`)
+previewed in the Files tab always use this wrapper, whoever's page is in them. Its canvas actions and KV values
 reach the agent labelled as that app's data, not as instructions. The
 artifact tools do not hand an agent the bytes of another owner's app that
 the registry recognizes.

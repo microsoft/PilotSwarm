@@ -91,9 +91,11 @@ test("nothing is preloaded: the default agent's prompt carries no skill bodies, 
     // down from ~14,900. The bound guards against the prose creeping back;
     // the schemas are the floor.
     assert.ok(section.length < 2000, `canvas section is ${section.length} chars`);
-    // 2026-10-17 (issue 181): draw_canvas gained the fromApp source, about
-    // 450 chars of schema (the base had ~50 chars of headroom). Prose is
-    // still bounded by the section check above.
+    // 2026-10-17 (issue 181): measured 8,416 = section 1,863 + tool text
+    // 6,553. The base was about 7,822 (~178 chars of headroom). The registry
+    // added ~594: the fromApp source schema +419, the draw description +79
+    // and the prompt's registry paragraph +96. Prose stays bounded by the
+    // section check above.
     assert.ok(section.length + defChars < 8500, `always-on canvas text is ${section.length + defChars} chars`);
 });
 

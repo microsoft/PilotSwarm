@@ -210,6 +210,32 @@ describe("canvas workspace approval", () => {
         await mgmt.canvasWorkspace(sessionId, 1, { op: "info", rev });
     });
 
+    it("a page swapped under an existing approval does not run (no redraw, no new event)", async () => {
+        const sessionId = randomUUID();
+        await catalog.createSession(sessionId, { model: "m", owner: ALICE });
+        const rev = await draw(sessionId, page("approved-page"));
+        await grant(sessionId, 1);
+        await mgmt.canvasWorkspace(sessionId, 1, { op: "info", rev });
+        // The canvas file is overwritten without a draw: same event, other bytes.
+        await mgmt._artifactStore.uploadArtifact(sessionId, canvasArtifactFilename(1), page("swapped-page"), "text/html");
+        await expectWsCode(mgmt.canvasWorkspace(sessionId, 1, { op: "info", rev }), "CANVAS_WS_STALE");
+        await expectWsCode(mgmt.getCanvasWorkspaceApproval({ sessionId, slot: 1 }, ALICE, false), "CANVAS_WS_STALE");
+        // Putting the approved bytes back restores exactly the approved program.
+        await mgmt._artifactStore.uploadArtifact(sessionId, canvasArtifactFilename(1), page("approved-page"), "text/html");
+        await mgmt.canvasWorkspace(sessionId, 1, { op: "info", rev });
+        // The same on another slot, and the approval quoting the old hash cannot be replayed.
+        const rev2 = await draw(sessionId, page("slot-two"), { slot: 2 });
+        await grant(sessionId, 2);
+        await mgmt.canvasWorkspace(sessionId, 2, { op: "info", rev: rev2 });
+        const approved = await mgmt.getCanvasWorkspaceApproval({ sessionId, slot: 2 }, ALICE, false);
+        await mgmt._artifactStore.uploadArtifact(sessionId, canvasArtifactFilename(2), page("slot-two-swapped"), "text/html");
+        await expectWsCode(mgmt.canvasWorkspace(sessionId, 2, { op: "info", rev: rev2 }), "CANVAS_WS_STALE");
+        await expectWsCode(mgmt.setCanvasWorkspaceConsent({
+            sessionId, slot: 2, rev: approved.rev, pageSha256: approved.pageSha256,
+            declarationSha256: approved.declarationSha256, bindingsSha256: approved.bindingsSha256, decision: "granted",
+        }, ALICE, false), "CANVAS_WS_STALE");
+    });
+
     it("a page drawn before draw events carried trust is read and still needs approval", async () => {
         const sessionId = randomUUID();
         await catalog.createSession(sessionId, { model: "m", owner: ALICE });

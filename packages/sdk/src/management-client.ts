@@ -2444,6 +2444,13 @@ export class PilotSwarmManagementClient {
         const pageSha256 = typeof data.pageSha256 === "string" && /^[0-9a-f]{64}$/.test(data.pageSha256)
             ? data.pageSha256
             : sha256Hex(await page());
+        // The approval names the page the draw event recorded; the page the
+        // portal actually serves is the stored file. A redraw uploads its page
+        // before it records its event, so in that window the file is already
+        // the NEXT page. Both must agree, or nothing runs.
+        if (sha256Hex(await page()) !== pageSha256) {
+            throw canvasWsError(X.STALE, "the canvas is being redrawn; try again in a moment");
+        }
         let trust = typeof data.trust === "string" && ["owner", "agent", "cross-owner"].includes(data.trust) ? data.trust : "";
         let app: CanvasWorkspaceProgram["app"] = data.app?.name
             ? { name: String(data.app.name), version: String(data.app.version ?? ""), versionId: data.app.versionId ?? null }

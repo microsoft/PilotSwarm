@@ -328,6 +328,7 @@ describe("the canvasWorkspace call", () => {
     let rev;
     let legacyEvent = false;
     let grantAnswer = "granted";
+    let eventPageSha = null;
     const grantKeys = [];
     let eventWorkspace;
     const manifest = (workspace) => `<!doctype html>\n<!-- CANVAS-APP-MANIFEST\n${JSON.stringify({ name: "t", workspace })}\n-->\n<html></html>`;
@@ -382,6 +383,7 @@ describe("the canvasWorkspace call", () => {
                     slot: 1,
                     rev,
                     ...(legacyEvent ? {} : { workspace: eventWorkspace !== undefined ? eventWorkspace : (extractCanvasAppManifest(html).manifest?.workspace ?? null) }),
+                    ...(eventPageSha ? { pageSha256: eventPageSha } : {}),
                 },
             }] : []),
             getSession: async () => ({ owner: { provider: "dev", subject: "alice", email: "alice@example.test", displayName: "Alice" } }),
@@ -505,6 +507,21 @@ describe("the canvasWorkspace call", () => {
         assert.equal(log.stdout, "from the canvas\nfirst\n");
         await rejectsWith(call({ op: "run", command: "srcLog", params: { path: "work/README.md" } }), X.PARAM_INVALID);
         await rejectsWith(call({ op: "run", command: "missing" }), W.NOT_FOUND);
+    });
+
+    it("a call whose draw event names other bytes than the stored page is stale (redraw window)", async () => {
+        const sha = (text) => crypto.createHash("sha256").update(text).digest("hex");
+        eventPageSha = sha(html);
+        try {
+            await call({ op: "info" });
+            const drawn = html;
+            html = manifest({ ...DECLARED, read: ["work/**"] });
+            await rejectsWith(call({ op: "info" }), X.STALE);
+            html = drawn;
+            await call({ op: "info" });
+        } finally {
+            eventPageSha = null;
+        }
     });
 
     it("the rules come from the draw event, not from a page uploaded after it", async () => {

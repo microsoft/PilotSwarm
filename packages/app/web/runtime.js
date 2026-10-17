@@ -176,6 +176,9 @@ function providerNames(raw) {
     return list.map((name) => String(name || "").trim()).filter(Boolean);
 }
 
+/** Canvas documents (issue 181): written only by a draw, never uploaded or copied over. */
+const CANVAS_SLOT_FILE = /^canvas[2-5]?\.html$/i;
+
 export class PortalRuntime {
     constructor({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser } = {}) {
         this.transport = new NodeSdkTransport({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser });
@@ -1322,6 +1325,11 @@ export class PortalRuntime {
             case "downloadArtifact":
                 return this.transport.downloadArtifact(safeParams.sessionId, safeParams.filename);
             case "uploadArtifact":
+                // Canvas documents are written only by a draw (issue 181): the
+                // draw event records which page the file holds.
+                if (CANVAS_SLOT_FILE.test(String(safeParams.filename ?? ""))) {
+                    throw forbiddenError("canvas.html … canvas5.html are written only by drawing a canvas.");
+                }
                 return this.transport.uploadArtifactContent(
                     safeParams.sessionId,
                     safeParams.filename,
@@ -1330,6 +1338,9 @@ export class PortalRuntime {
                     safeParams.contentEncoding,
                 );
             case "copyArtifact":
+                if (CANVAS_SLOT_FILE.test(String(safeParams.toFilename ?? ""))) {
+                    throw forbiddenError("canvas.html … canvas5.html are written only by drawing a canvas.");
+                }
                 return this.transport.copyArtifact(
                     safeParams.fromSessionId,
                     safeParams.fromFilename,
@@ -1752,6 +1763,12 @@ export class PortalRuntime {
                     .filter((e) => (Number(e?.data?.slot) || 1) === Number(scope.slot))
                     .sort((a, b) => (Number(b?.data?.rev) || 0) - (Number(a?.data?.rev) || 0))[0];
                 if (latest?.data?.trust === "owner" || latest?.data?.trust === "cross-owner") trust = latest.data.trust;
+                // The file can already hold the NEXT revision's page (a redraw
+                // uploads before it records its event): bytes that are not the
+                // ones the event classified are framed as another user's page.
+                const recorded = latest?.data?.pageSha256;
+                const { createHash } = await import("node:crypto");
+                if (typeof recorded === "string" && createHash("sha256").update(body).digest("hex") !== recorded) trust = "cross-owner";
             } catch { /* unknown trust: served as an app page, the stricter path */ trust = "cross-owner"; }
             return { ...scope, html, trust };
         } catch {
@@ -1772,19 +1789,22 @@ export class PortalRuntime {
         if (!body || typeof body !== "object" || Array.isArray(body)) return prompt;
         const slot = Number.isInteger(Number(slotValue)) && Number(slotValue) >= 1 && Number(slotValue) <= 5 ? Number(slotValue) : null;
         let label = null;
-        try {
-            const events = await this.transport.getSessionEventsBefore?.(sessionId, Number.MAX_SAFE_INTEGER, 30, ["session.canvas_updated"]);
-            const latestBySlot = new Map();
-            for (const e of events || []) {
-                const s = Number(e?.data?.slot) || 1;
-                if ((Number(e?.data?.rev) || 0) > (Number(latestBySlot.get(s)?.data?.rev) || 0)) latestBySlot.set(s, e);
-            }
-            // Without a slot, any slot showing another user's app labels it.
-            const candidates = slot ? [latestBySlot.get(slot)] : [...latestBySlot.values()];
-            const foreign = candidates.find((e) => e?.data?.trust === "cross-owner");
-            if (foreign) label = { trust: "cross-owner", ...(foreign.data.app?.name ? { app: String(foreign.data.app.name) } : {}) };
-        } catch {
+        if (!slot) {
+            // The portal always names the slot; an action that does not cannot
+            // be attributed, so it is labelled unknown (never another slot's app).
             label = { trust: "unknown" };
+        } else {
+            try {
+                const events = await this.transport.getSessionEventsBefore?.(sessionId, Number.MAX_SAFE_INTEGER, 30, ["session.canvas_updated"]);
+                let latest = null;
+                for (const e of events || []) {
+                    if ((Number(e?.data?.slot) || 1) !== slot) continue;
+                    if (!latest || (Number(e?.data?.rev) || 0) > (Number(latest?.data?.rev) || 0)) latest = e;
+                }
+                if (latest?.data?.trust === "cross-owner") label = { trust: "cross-owner", ...(latest.data.app?.name ? { app: String(latest.data.app.name) } : {}) };
+            } catch {
+                label = { trust: "unknown" };
+            }
         }
         const had = Object.prototype.hasOwnProperty.call(body, "page");
         if (!label && !had) return prompt;

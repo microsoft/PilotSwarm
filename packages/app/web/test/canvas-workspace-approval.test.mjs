@@ -132,3 +132,47 @@ test("the page cannot approve itself: the portal records a decision only from it
     // The prompt's text comes from the server's reading of the declaration, never from the page.
     assert.match(APP, /transport\.getCanvasWorkspaceApproval\(\{ sessionId, slot \}\)/);
 });
+
+test("an action that names no slot is labelled unknown, never with another slot's app", async () => {
+    const sent = [];
+    const runtime = runtimeWith({
+        getSessionEventsBefore: async () => drawEvents({ 1: { trust: "owner" }, 2: { trust: "cross-owner", app: { name: "bobs-board" } } }),
+        sendMessage: async (sessionId, prompt) => { sent.push(prompt); return { ok: true }; },
+    });
+    await runtime.call("sendMessage", { sessionId: "s1", prompt: `[canvas-action] {"action":"go","data":{}}` }, as("alice"));
+    const body = JSON.parse(sent[0].slice("[canvas-action] ".length));
+    assert.equal(body.page.trust, "unknown");
+    assert.equal(body.page.app, undefined);
+    await runtime.call("sendMessage", { sessionId: "s1", prompt: `[canvas-action] {"action":"go","data":{}}`, options: { canvasSlot: 1 } }, as("alice"));
+    assert.equal(sent[1], `[canvas-action] {"action":"go","data":{}}`, "slot 1 (owner) is unchanged although slot 2 is another user's app");
+});
+
+test("canvas documents cannot be uploaded or copied over through the Web API", async () => {
+    const calls = [];
+    const runtime = runtimeWith({
+        uploadArtifactContent: async (...args) => { calls.push(["upload", ...args]); return { ok: true }; },
+        copyArtifact: async (...args) => { calls.push(["copy", ...args]); return { ok: true }; },
+    });
+    for (const filename of ["canvas.html", "canvas2.html", "Canvas5.HTML"]) {
+        await assert.rejects(runtime.call("uploadArtifact", { sessionId: "s1", filename, content: "<p>x</p>", contentType: "text/html" }, as("alice")), (error) => error.status === 403, filename);
+    }
+    await assert.rejects(runtime.call("copyArtifact", { fromSessionId: "s1", fromFilename: "page.html", toSessionId: "s1", toFilename: "canvas.html" }, as("alice")), (error) => error.status === 403);
+    await runtime.call("uploadArtifact", { sessionId: "s1", filename: "notes.html", content: "<p>x</p>", contentType: "text/html" }, as("alice"));
+    await runtime.call("copyArtifact", { fromSessionId: "s1", fromFilename: "canvas.html", toSessionId: "s1", toFilename: "app-board.html" }, as("alice"));
+    assert.deepEqual(calls.map((c) => c[0]), ["upload", "copy"]);
+});
+
+test("share door: bytes that are not the page the draw event classified are served as another user's page", async () => {
+    const { createHash } = await import("node:crypto");
+    const drawn = "<!doctype html><p>drawn</p>";
+    const sha = createHash("sha256").update(drawn).digest("hex");
+    let stored = drawn;
+    const runtime = runtimeWith({
+        resolveCanvasShareTokenHash: async () => ({ sessionId: "s1", slot: 1 }),
+        downloadArtifactBinary: async () => ({ body: Buffer.from(stored) }),
+        getSessionEventsBefore: async () => [{ data: { slot: 1, rev: 3, trust: "owner", pageSha256: sha } }],
+    });
+    assert.equal((await runtime.getCanvasShareDoc("tok")).trust, "owner", "the drawn bytes keep their trust");
+    stored = "<!doctype html><p>swapped</p>";
+    assert.equal((await runtime.getCanvasShareDoc("tok")).trust, "cross-owner", "swapped bytes are isolated");
+});

@@ -253,6 +253,12 @@ export async function publishCanvasAppHtml(deps: CanvasAppRegistryDeps, input: P
     }
     try {
         await deps.artifactStore.uploadArtifact(reserved.artifactSessionId, reserved.artifactFilename, page.html, "text/html", { pinned: true } as any);
+        // A version becomes ready only for the bytes it was reserved for: read
+        // the stored page back and compare before commit.
+        const stored = await deps.artifactStore.downloadArtifactText(reserved.artifactSessionId, reserved.artifactFilename);
+        if (sha256Hex(stored) !== page.sha256) {
+            throw new CanvasAppError("BAD_REQUEST", `stored bytes of ${name}@${reserved.version} do not match the published page; nothing was published`);
+        }
     } catch (err) {
         await deps.store.abort(reserved.versionId).catch(() => {});
         throw err;

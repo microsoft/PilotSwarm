@@ -384,6 +384,36 @@ describe("canvas app registry: CMS procedures", () => {
         }
     });
 
+    it("commit is a one-time pending transition: a second commit changes nothing and never re-pins", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        await registerUsers(env);
+        const catalog = await createCatalog(env);
+        try {
+            const store = catalog.canvasApps;
+            const name = `commit-${randomUUID().slice(0, 8)}`;
+            const target = { name, scope: "user" };
+            const v1 = await publish(store, V.alice, name, "a".repeat(64), { version: "1.0.0" });
+            const v2 = await publish(store, V.alice, name, "b".repeat(64), { version: "2.0.0" });
+            assertEqual(await activeVersion(store, V.alice, target), "2.0.0");
+            await store.pin(target, "1.0.0", V.alice);
+            assertEqual(await activeVersion(store, V.alice, target), "1.0.0", "pinned back to 1.0.0");
+            // Committing the already-ready 2.0.0 again, even asking to activate,
+            // must not move the pointer the owner pinned.
+            const again = await store.commit(v2.versionId, true);
+            assertEqual(again.active, false, "a ready version is returned unchanged");
+            assertEqual(await activeVersion(store, V.alice, target), "1.0.0", "the pin holds");
+            const same = await store.commit(v1.versionId, true);
+            assertEqual(same.active, true, "the active version reports active");
+            // A version that was aborted cannot be committed.
+            const pending = await publish(store, V.alice, name, "c".repeat(64), { version: "3.0.0", leavePending: true });
+            await store.abort(pending.versionId);
+            await expectCode(store.commit(pending.versionId, true), "NOT_FOUND");
+            assertEqual(await activeVersion(store, V.alice, target), "1.0.0");
+        } finally {
+            await catalog.close();
+        }
+    });
+
     it("workspace grants: exact program, owner-bound, every key asks again", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
         const catalog = await createCatalog(env);

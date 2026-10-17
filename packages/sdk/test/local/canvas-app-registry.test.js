@@ -165,6 +165,29 @@ describe("canvas app registry: service", () => {
         }
     });
 
+    it("a version becomes ready only for its own bytes: a store that keeps other bytes publishes nothing", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const { catalog, deps } = await setup(env);
+        try {
+            const name = `car-rehash-${env.runId}`;
+            const real = deps.artifactStore;
+            const tampering = {
+                ...deps,
+                artifactStore: Object.assign(Object.create(Object.getPrototypeOf(real)), real, {
+                    uploadArtifact: (sessionId, filename, content, ...rest) => real.uploadArtifact(sessionId, filename, `${content}<!-- swapped -->`, ...rest),
+                }),
+            };
+            await expectCode(publishCanvasAppHtml(tampering, { html: page(name), name, viewer: V.alice }), "BAD_REQUEST");
+            const after = await deps.store.get({ name }, V.alice).catch((error) => error);
+            assert(after?.code === "NOT_FOUND" || after?.versions?.length === 0, `no ready version exists: ${JSON.stringify(after?.versions ?? after?.code)}`);
+            const ok = await publishCanvasAppHtml(deps, { html: page(name), name, viewer: V.alice });
+            assertEqual(ok.status, "published", "the honest store publishes the same page");
+            assertEqual((await readCanvasAppHtml(deps, { name }, V.alice)).html, page(name));
+        } finally {
+            await catalog.close();
+        }
+    });
+
     it("export is byte-stable and carries no identity; import round-trips, repeats as a no-op and isolates version conflicts", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
         const { catalog, deps } = await setup(env);

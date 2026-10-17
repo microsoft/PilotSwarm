@@ -83,3 +83,25 @@ test("a near-copy is NOT recognized: the guard is accident reduction, not lineag
         assert.equal(read.error, undefined, "one extra byte reads normally; workspace approval, not this guard, is the boundary");
     } finally { h.cleanup(); }
 });
+
+test("canvas documents are written only by a draw: write_artifact refuses canvas.html … canvas5.html by any source", async () => {
+    const h = harness();
+    try {
+        await h.store.uploadArtifact("alice-session", "canvas.html", "<p>drawn page</p>", "text/html");
+        for (const filename of ["canvas.html", "canvas2.html", "canvas5.html", "CANVAS3.HTML"]) {
+            const inline = await h.call("write_artifact", { filename, content: "<p>swapped</p>" });
+            assert.equal(inline.error, "CANVAS_FILE_RESERVED", filename);
+        }
+        const local = path.join(h.dir, "canvas.html");
+        fs.writeFileSync(local, "<p>swapped</p>");
+        const fromFile = await h.call("write_artifact", { fromFile: local });
+        assert.equal(fromFile.error, "CANVAS_FILE_RESERVED", "a local file named canvas.html");
+        await h.store.uploadArtifact("bob-session", "canvas.html", "<p>bob</p>", "text/html");
+        const copied = await h.call("write_artifact", { fromArtifact: { sessionId: "bob-session", filename: "canvas.html" } });
+        assert.equal(copied.error, "CANVAS_FILE_RESERVED", "a copy whose default name is canvas.html");
+        assert.equal(await h.store.downloadArtifactText("alice-session", "canvas.html"), "<p>drawn page</p>", "the drawn page is untouched");
+        // The save-as recipe still works: canvas.html is the source, not the target.
+        const saved = await h.call("write_artifact", { fromArtifact: { filename: "canvas.html" }, filename: "app-board.html" });
+        assert.equal(saved.success, true);
+    } finally { h.cleanup(); }
+});
