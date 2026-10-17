@@ -14,6 +14,7 @@
 import assert from "node:assert/strict";
 import {
     applyByteBudget,
+    sanitizeForJson,
     classifyStoredOmission,
     escapeTranscriptText,
     renderTranscriptText,
@@ -202,6 +203,159 @@ check("escaping applies to rendered content too", () => {
 check("the untrusted notice states data, not instructions", () => {
     assert.match(UNTRUSTED_NOTICE, /UNTRUSTED CONTENT/);
     assert.match(UNTRUSTED_NOTICE, /not instructions/i);
+});
+
+
+// ── F1: orientation-aware cutting (Opus 4.8 review, blocking) ────
+
+/**
+ * Simulate a receipt-driven drain over a whole session, cutting by budget at
+ * every step, and return the multiset of seqs the caller would actually see.
+ *
+ * This is the shape of the real bug: each individual page looked fine, and
+ * only following the cursor across pages revealed that some rows were never
+ * returned by anything.
+ */
+function drain({ mode, all, pageSize, budget }) {
+    const seen = [];
+    let cursor = null;
+    let guard = 0;
+    while (guard++ < 200) {
+        let window;
+        if (mode === "forward") {
+            const from = cursor === null ? 0 : all.findIndex((e) => e.seq === cursor) + 1;
+            window = all.slice(from, from + pageSize);
+        } else {
+            const end = cursor === null ? all.length : all.findIndex((e) => e.seq === cursor);
+            window = all.slice(Math.max(0, end - pageSize), end);
+        }
+        if (window.length === 0) break;
+        const orientation = mode === "forward" ? "forward" : "backward";
+        const { delivered } = applyByteBudget(window, budget, orientation);
+        if (delivered.length === 0) break;
+        seen.push(...delivered.map((e) => e.seq));
+        cursor = orientation === "forward"
+            ? delivered[delivered.length - 1].seq
+            : delivered[0].seq;
+    }
+    return seen;
+}
+
+const BIG = (seq) => event(seq, "x".repeat(400));
+
+check("F1 latest drain with budget cuts loses no events and duplicates none", () => {
+    // The regression. Before the fix the budget kept the OLDEST rows while the
+    // cursor moved DOWNWARD, so the newest rows sat above everything the drain
+    // would ever revisit and vanished silently.
+    const all = Array.from({ length: 20 }, (_, i) => BIG(i + 1));
+    const seen = drain({ mode: "latest", all, pageSize: 5, budget: 900 });
+    const sorted = [...seen].sort((a, b) => a - b);
+    assert.deepEqual(sorted, all.map((e) => e.seq), "every seq delivered exactly once");
+    assert.equal(new Set(seen).size, seen.length, "no duplicates");
+});
+
+check("F1 backward drain with budget cuts loses no events and duplicates none", () => {
+    const all = Array.from({ length: 20 }, (_, i) => BIG(i + 1));
+    const seen = drain({ mode: "backward", all, pageSize: 4, budget: 900 });
+    assert.deepEqual([...seen].sort((a, b) => a - b), all.map((e) => e.seq));
+    assert.equal(new Set(seen).size, seen.length);
+});
+
+check("F1 forward drain is unchanged (positive control)", () => {
+    // Forward was always correct. If this breaks, the fix over-corrected.
+    const all = Array.from({ length: 20 }, (_, i) => BIG(i + 1));
+    const seen = drain({ mode: "forward", all, pageSize: 5, budget: 900 });
+    assert.deepEqual([...seen].sort((a, b) => a - b), all.map((e) => e.seq));
+    assert.equal(new Set(seen).size, seen.length);
+});
+
+check("F1 backward cut keeps the NEWEST rows, not the oldest", () => {
+    const window = [BIG(10), BIG(11), BIG(12), BIG(13)];
+    const { delivered, cut } = applyByteBudget(window, 900, "backward");
+    assert.equal(cut, true);
+    const seqs = delivered.map((e) => e.seq);
+    assert.ok(seqs.includes(13), "the newest row must survive a downward-continuing cut");
+    assert.ok(!seqs.includes(10), "the oldest row is the one dropped; it lies below the cursor");
+    assert.deepEqual(seqs, [...seqs].sort((a, b) => a - b), "delivered stays ascending");
+});
+
+check("F1 oversized first record still advances in BOTH orientations", () => {
+    for (const orientation of ["forward", "backward"]) {
+        const window = [event(1, "a"), event(2, "x".repeat(5000)), event(3, "c")];
+        const { delivered } = applyByteBudget(window, 50, orientation);
+        assert.ok(delivered.length >= 1, `${orientation}: must deliver something to advance`);
+        assert.ok(delivered.some((e) => e.payloadOmitted), `${orientation}: oversized record delivered with payload omitted`);
+    }
+});
+
+check("F1 property: random oversized records still partition the session", () => {
+    const all = Array.from({ length: 30 }, (_, i) =>
+        event(i + 1, (i % 4 === 0 ? "x".repeat(3000) : "y".repeat(200))));
+    for (const mode of ["latest", "backward", "forward"]) {
+        const seen = drain({ mode, all, pageSize: 6, budget: 1200 });
+        assert.deepEqual([...seen].sort((a, b) => a - b), all.map((e) => e.seq), `${mode}: drain is a partition`);
+        assert.equal(new Set(seen).size, seen.length, `${mode}: no duplicates`);
+    }
+});
+
+// ── F2: C1, line separators, bidi, and JSON mode ─────────────────
+
+check("F2 C1 controls, line separators and bidi overrides are escaped", () => {
+    const cases = {
+        "CSI U+009B": "\u009b", "NEL U+0085": "\u0085",
+        "C1 low U+0080": "\u0080", "C1 high U+009F": "\u009f",
+        "LINE SEP U+2028": "\u2028", "PARA SEP U+2029": "\u2029",
+        "RLO U+202E": "\u202e", "LRI U+2066": "\u2066",
+    };
+    for (const [name, ch] of Object.entries(cases)) {
+        const out = escapeTranscriptText(`a${ch}b`);
+        assert.ok(!out.includes(ch), `${name} must not survive`);
+    }
+});
+
+check("F2 tab, newline and printable Unicode still survive", () => {
+    assert.equal(escapeTranscriptText("one\ttwo\nthree"), "one\ttwo\nthree");
+    assert.equal(escapeTranscriptText("héllo — 日本語 🙂"), "héllo — 日本語 🙂");
+});
+
+check("F2 JSON mode is neutralized too, not just text mode", () => {
+    // JSON.stringify escapes C0 but NOT DEL, C1, U+2028 or U+2029, so JSON
+    // readers were exposed to exactly what the text renderer guards against.
+    const payload = sanitizeForJson({
+        seq: 1,
+        data: { content: "danger\u009b2Jclear\u2028injected", nested: ["\u0085", "\u202e"] },
+    });
+    const encoded = JSON.stringify(payload);
+    for (const ch of ["\u009b", "\u2028", "\u0085", "\u202e"]) {
+        assert.ok(!encoded.includes(ch), `JSON output must not carry ${escape(ch)}`);
+    }
+    assert.ok(encoded.includes("danger"), "ordinary text survives");
+});
+
+check("F2 sanitizeForJson preserves structure and non-string values", () => {
+    const out = sanitizeForJson({ seq: 7, ok: true, nil: null, list: [1, "a"], deep: { k: "v" } });
+    assert.equal(out.seq, 7);
+    assert.equal(out.ok, true);
+    assert.equal(out.nil, null);
+    assert.deepEqual(out.list, [1, "a"]);
+    assert.equal(out.deep.k, "v");
+});
+
+// ── unencodable records must not bypass the budget ───────────────
+
+check("an unencodable record is omitted explicitly, never counted as free", () => {
+    // encodedBytes used to return 0 on failure. Zero is success-shaped: the
+    // record would consume no budget and be delivered uncounted.
+    const circular = { seq: 2, sessionId: "s", eventType: "assistant.message", createdAt: new Date(0) };
+    circular.data = { self: circular };
+    const { delivered, omissions } = applyByteBudget([event(1, "a"), circular], 10_000, "forward");
+
+    const bad = delivered.find((e) => e.seq === 2);
+    assert.ok(bad, "the record is still delivered so the cursor can advance");
+    assert.equal(bad.data, null, "its payload is dropped");
+    assert.equal(bad.payloadOmitted.kind, "unencodable");
+    assert.ok(omissions.some((o) => o.seq === 2 && o.kind === "unencodable"),
+        "and it is reported as an omission, not silently passed");
 });
 
 console.log(failures === 0 ? "\nall passed" : `\n${failures} failed`);
