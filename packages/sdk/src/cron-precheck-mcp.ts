@@ -6,6 +6,8 @@ import { CallToolResultSchema, type CallToolResult } from "@modelcontextprotocol
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { MCPServerConfig } from "./mcp-loader.js";
 
+const MCP_SESSION_CLEANUP_TIMEOUT_MS = 1_000;
+
 /**
  * A fresh, bounded connection per call: no stale credentials or shared
  * session state, and no Copilot client, prompt hydration or model request.
@@ -29,16 +31,29 @@ export async function callCronPrecheckMcpTool(
     // The evaluator records errors in operator-visible events. Do not expose
     // transport messages there: they may contain auth headers or signed URLs.
     let closeFailure = false;
-    const close = () => client.close().catch(() => { closeFailure = true; });
-    const abort = () => { void close(); };
+    let closing: Promise<void> | undefined;
+    const close = () => closing ??= client.close().catch(() => { closeFailure = true; });
+    let rejectAbort: (reason: unknown) => void;
+    const aborted = new Promise<never>((_, reject) => { rejectAbort = reject; });
+    const abort = () => {
+        rejectAbort(signal.reason);
+        void close();
+    };
+    let httpTransport: StreamableHTTPClientTransport | undefined;
     signal.addEventListener("abort", abort, { once: true });
     try {
         signal.throwIfAborted();
         let transport: Transport;
         if (config.type === "http") {
-            transport = new StreamableHTTPClientTransport(new URL(config.url), {
+            httpTransport = new StreamableHTTPClientTransport(new URL(config.url), {
                 requestInit: { headers: config.headers },
+                // Session disposal must still work after close() aborts the
+                // in-flight call. Give DELETE its own short cleanup deadline.
+                fetch: (url, init) => fetch(url, init?.method === "DELETE"
+                    ? { ...init, signal: AbortSignal.timeout(MCP_SESSION_CLEANUP_TIMEOUT_MS) }
+                    : init),
             });
+            transport = httpTransport;
         } else if (config.type === "sse") {
             transport = new SSEClientTransport(new URL(config.url), {
                 requestInit: { headers: config.headers },
@@ -60,7 +75,9 @@ export async function callCronPrecheckMcpTool(
             throw new Error("Unsupported cron precheck MCP transport");
         }
         const options = { signal, ...(config.timeout !== undefined ? { timeout: config.timeout } : {}) };
-        await client.connect(transport, options);
+        // The MCP SDK's request signal does not cover transport.start()
+        // (notably SSE waiting for its endpoint event).
+        await Promise.race([client.connect(transport, options), aborted]);
         const result = CallToolResultSchema.parse(await client.callTool({ name: tool, arguments: args }, CallToolResultSchema, options));
         if (result.isError) throw new Error("MCP tool returned an error");
         return result;
@@ -69,6 +86,13 @@ export async function callCronPrecheckMcpTool(
     } finally {
         signal.removeEventListener("abort", abort);
         await close();
+        if (httpTransport?.sessionId) {
+            try {
+                await httpTransport.terminateSession();
+            } catch {
+                closeFailure = true;
+            }
+        }
         if (closeFailure) throw new Error("Cron precheck MCP connection cleanup failed; run the normal cycle");
     }
 }

@@ -227,14 +227,16 @@ export async function loadAgentPackageCronPrechecks(
     const url = `${pathToFileURL(pkg.workerModulePath).href}?v=${pkg.sha256.slice(0, 12)}`;
     const mod: any = await import(url);
     const surface = mod?.default ?? mod;
-    let declared: unknown = [];
-    if (typeof surface?.createCronPrechecks === "function") {
+    let declared: unknown;
+    if (surface?.createCronPrechecks !== undefined) {
+        if (typeof surface.createCronPrechecks !== "function") throw new Error("createCronPrechecks must be a function");
         declared = await surface.createCronPrechecks({ workerNodeId: context.workerNodeId });
-    } else if (Array.isArray(surface?.cronPrechecks)) {
+    } else if (surface?.cronPrechecks !== undefined) {
         declared = surface.cronPrechecks;
+    } else {
+        return [];
     }
-    if (declared == null) return [];
-    if (!Array.isArray(declared)) throw new Error("createCronPrechecks must return an array");
+    if (!Array.isArray(declared)) throw new Error("cronPrechecks exports and createCronPrechecks results must be arrays");
     const prechecks = declared.map((entry) => validateCronPrecheckRegistration(entry as CronPrecheckRegistration));
     const names = new Set<string>();
     for (const precheck of prechecks) {

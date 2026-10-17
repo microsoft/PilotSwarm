@@ -1,18 +1,27 @@
 import http from "node:http";
 import { once } from "node:events";
+import { randomUUID } from "node:crypto";
 
 /** A real HTTP/SSE MCP protocol fixture; never calls a model. */
-export async function startPrecheckMcpServer({ sse = false } = {}) {
-    const state = { hasWork: false, calls: [], headers: [], fail: false, hang: false, malformed: false, unauthorized: false, hangInitialize: false };
+export async function startPrecheckMcpServer({ sse = false, stateful = false, omitEndpoint = false } = {}) {
+    const state = { hasWork: false, calls: [], headers: [], fail: false, hang: false, malformed: false, unauthorized: false, hangInitialize: false,
+        sessions: new Set(), terminations: [], terminateStatus: 200, hangTerminate: false };
     const streams = new Set();
     let stream;
     const server = http.createServer(async (req, res) => {
         if (req.method === "GET" && sse && req.url === "/sse") {
             res.writeHead(200, { "Content-Type": "text/event-stream", "Cache-Control": "no-cache" });
-            res.write("event: endpoint\ndata: /messages\n\n");
+            res.write(omitEndpoint ? ": connected\n\n" : "event: endpoint\ndata: /messages\n\n");
             stream = res;
             streams.add(res);
             res.on("close", () => streams.delete(res));
+            return;
+        }
+        if (req.method === "DELETE" && stateful) {
+            state.terminations.push(req.headers);
+            if (state.hangTerminate) return;
+            if (state.terminateStatus === 200) state.sessions.delete(req.headers["mcp-session-id"]);
+            res.writeHead(state.terminateStatus).end();
             return;
         }
         if (req.method !== "POST") { res.writeHead(405).end(); return; }
@@ -25,6 +34,11 @@ export async function startPrecheckMcpServer({ sse = false } = {}) {
         let result;
         if (message.method === "initialize") {
             if (state.hangInitialize) return;
+            if (stateful) {
+                const sessionId = randomUUID();
+                state.sessions.add(sessionId);
+                res.setHeader("Mcp-Session-Id", sessionId);
+            }
             result = { protocolVersion: message.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: "queue", version: "1" } };
         } else if (message.method === "tools/list") {
             result = { tools: [{ name: "queue_status", inputSchema: { type: "object" } }] };

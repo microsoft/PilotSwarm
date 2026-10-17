@@ -231,6 +231,18 @@ export function agentSupportsDirectStart(agent: {
  */
 const BLOCK_SCALAR_KEYS = new Set(["splash", "splashMobile", "initialPrompt", "description"]);
 
+function parseCronPrecheckScalar(raw: string): string {
+    const value = raw.trim();
+    if (value.startsWith('"') || value.startsWith("'")) {
+        const quoted = /^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*')(?:\s+#.*)?$/.exec(value);
+        if (!quoted) throw new Error("Malformed quoted cronPrechecks value");
+        return quoted[1].startsWith('"')
+            ? JSON.parse(quoted[1])
+            : quoted[1].slice(1, -1).replace(/''/g, "'");
+    }
+    return value.replace(/(?:^|\s+)#.*$/, "").trimEnd();
+}
+
 /**
  * Parse YAML frontmatter from an .agent.md file.
  * Handles simple `key: value` pairs and YAML list syntax for `tools` and `skills`.
@@ -287,7 +299,7 @@ function parseAgentFrontmatter(content: string): {
     const cronIndex = lines.findIndex(line => /^cronPrechecks:/.test(line));
     if (cronIndex >= 0) {
         if (lines.filter(line => /^cronPrechecks:/.test(line)).length !== 1) throw new Error("Duplicate cronPrechecks declaration");
-        if (lines[cronIndex].trim() !== "cronPrechecks:") throw new Error("cronPrechecks requires a list of entries");
+        if (!/^cronPrechecks:\s*(?:#.*)?$/.test(lines[cronIndex].trimEnd())) throw new Error("cronPrechecks requires a list of entries");
         const entries: Array<Record<string, string>> = [];
         let end = cronIndex + 1;
         // The block runs until the next top-level key; a column-0 "- " item still belongs to it.
@@ -301,11 +313,7 @@ function parseAgentFrontmatter(content: string): {
             if (first) entries.push({});
             const entry = entries[entries.length - 1];
             if (Object.hasOwn(entry, match[1])) throw new Error(`Duplicate cronPrechecks field ${match[1]}`);
-            let value = match[2].trim();
-            if (value.length >= 2 && ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'")))) {
-                value = value.slice(1, -1);
-            }
-            entry[match[1]] = value;
+            entry[match[1]] = parseCronPrecheckScalar(match[2]);
         }
         if (entries.length === 0) throw new Error("cronPrechecks requires a list of entries");
         meta.cronPrechecks = validateCronPrecheckBindings(entries);

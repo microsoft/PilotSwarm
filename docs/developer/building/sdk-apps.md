@@ -338,6 +338,8 @@ selections, not the entire deployment catalog. Bound package ownership,
 `allowedAgents` and the server's `tools` allowlist remain in force.
 HTTP/SSE use configured headers; stdio uses configured command/args/env/cwd.
 Each call has a fresh connection closed on completion or precheck cancellation.
+Stateful HTTP sessions also receive a bounded termination request, even after
+cancellation; server-side expiry applies if the server declines with HTTP 405.
 Await calls and validate results before returning `skip`; MCP error results
 throw and transport errors omit credentials from the recorded explanation.
 The helper does not initiate interactive OAuth or offer model sampling.

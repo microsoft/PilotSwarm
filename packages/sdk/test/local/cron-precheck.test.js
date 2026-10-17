@@ -226,6 +226,47 @@ describe("cron precheck declarations in agent definitions and packages", () => {
         }
     });
 
+    it("parses the documented inline comment without changing the cron reason", () => {
+        const dir = tempDir();
+        try {
+            fs.writeFileSync(path.join(dir, "poller.agent.md"), [
+                "---", "name: poller", "schemaVersion: 1", "version: 1.0.0",
+                "cronPrechecks:",
+                '  - reasonPrefix: "poll the job queue"   # or reason: for an exact match',
+                "    precheck: job-queue",
+                "---", "", "Body.",
+            ].join("\n"));
+            const [agent] = loadAgentFiles(dir);
+            expect(agent.cronPrechecks).toEqual([{ reasonPrefix: "poll the job queue", precheck: "job-queue" }]);
+            expect(chooseCronPrecheck({ reason: "poll the job queue (scope=both)", sources: {
+                staticNames: ["job-queue"], bindings: agent.cronPrechecks,
+            } })).toEqual({ ok: true, precheck: "job-queue" });
+        } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    });
+
+    it("preserves quoted hash characters and escaped quotes while stripping inline comments", () => {
+        const dir = tempDir();
+        try {
+            fs.writeFileSync(path.join(dir, "poller.agent.md"), [
+                "---", "name: poller", "schemaVersion: 1", "version: 1.0.0",
+                "cronPrechecks: # only scheduled checks",
+                '  - reason: "Run \\"queue #1\\"" # keep hash',
+                "    precheck: gate-one # inline",
+                "  - reason: 'Check the owner''s queue #2' # inline",
+                "    precheck: 'gate-two' # inline",
+                "  - reasonPrefix: queue#3 # comment",
+                "    precheck: gate-three",
+                "---", "", "Body.",
+            ].join("\r\n"));
+            const [agent] = loadAgentFiles(dir);
+            expect(agent.cronPrechecks).toEqual([
+                { reason: 'Run "queue #1"', precheck: "gate-one" },
+                { reason: "Check the owner's queue #2", precheck: "gate-two" },
+                { reasonPrefix: "queue#3", precheck: "gate-three" },
+            ]);
+        } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    });
+
     it("skips an agent whose cronPrechecks block is malformed", () => {
         const dir = tempDir();
         try {
@@ -267,6 +308,16 @@ describe("cron precheck declarations in agent definitions and packages", () => {
 
             const invalid = write("invalid.mjs", "export default { cronPrechecks: [{ name: 'g' }] };\n");
             await expect(loadAgentPackageCronPrechecks(invalid, {})).rejects.toThrow(/check function/);
+            for (const [index, declaration] of [
+                "cronPrechecks: 'not-an-array'",
+                "cronPrechecks: null",
+                "createCronPrechecks: 'not-a-function'",
+                "createCronPrechecks: () => undefined",
+                "createCronPrechecks: () => null",
+            ].entries()) {
+                const malformed = write(`malformed-${index}.mjs`, `export default { ${declaration} };\n`);
+                await expect(loadAgentPackageCronPrechecks(malformed, {})).rejects.toThrow(/must/);
+            }
         } finally {
             fs.rmSync(dir, { recursive: true, force: true });
         }

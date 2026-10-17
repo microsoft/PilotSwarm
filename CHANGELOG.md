@@ -31,6 +31,10 @@ catalog is hydrated. Each call closes its connection, honors the precheck's
 abort signal, and fails open on connection, protocol or tool errors. Transport
 errors recorded in events omit endpoint and credential details. Interactive
 OAuth is not initiated; unavailable credentials run the normal cycle.
+Stateful HTTP sessions are explicitly terminated with a bounded cleanup request,
+and cancellation also settles SSE connections that have not received an endpoint.
+Cron-reason bindings accept inline comments without incorporating them into the
+reason. Invalid package precheck export shapes are rejected, not silently ignored.
 
 ## 0.8.3 — 2026-10-14
 

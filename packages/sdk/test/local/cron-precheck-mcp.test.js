@@ -114,6 +114,69 @@ describe("non-LLM MCP precheck calls", () => {
         });
         expect(result).toMatchObject({ outcome: "error", skip: false });
     });
+
+    it("terminates each stateful HTTP session rather than just closing its connection", async () => {
+        const fixture = await startPrecheckMcpServer({ stateful: true });
+        try {
+            for (let i = 0; i < 2; i++) {
+                await callCronPrecheckMcpTool({ queue: fixture.config }, new AbortController().signal, "queue", "queue_status");
+            }
+            expect(fixture.state.sessions.size).toBe(0);
+            expect(fixture.state.terminations).toHaveLength(2);
+            expect(fixture.state.terminations.every(headers => headers["mcp-session-id"] && headers["mcp-protocol-version"])).toBe(true);
+        } finally { await fixture.close(); }
+    });
+
+    it("settles an aborted SSE connection even when the server never sends its endpoint", async () => {
+        const fixture = await startPrecheckMcpServer({ sse: true, omitEndpoint: true });
+        const controller = new AbortController();
+        let timer;
+        try {
+            const call = callCronPrecheckMcpTool({ queue: fixture.config }, controller.signal, "queue", "queue_status");
+            const settled = call.then(() => "resolved", () => "rejected");
+            await new Promise(resolve => setTimeout(resolve, 100));
+            controller.abort();
+            expect(await Promise.race([
+                settled,
+                new Promise(resolve => { timer = setTimeout(() => resolve("pending"), 500); }),
+            ])).toBe("rejected");
+        } finally { clearTimeout(timer); controller.abort(); await fixture.close(); }
+    });
+
+    it.each(["tool-error", "abort"])("terminates a stateful HTTP session after %s", async (failure) => {
+        const fixture = await startPrecheckMcpServer({ stateful: true });
+        const controller = new AbortController();
+        try {
+            fixture.state.fail = failure === "tool-error";
+            fixture.state.hang = failure === "abort";
+            const call = callCronPrecheckMcpTool({ queue: fixture.config }, controller.signal, "queue", "queue_status");
+            const rejected = expect(call).rejects.toThrow(/call failed/);
+            if (failure === "abort") {
+                await vi.waitFor(() => expect(fixture.state.calls).toHaveLength(1));
+                controller.abort();
+            }
+            await rejected;
+            expect(fixture.state.sessions.size).toBe(0);
+            expect(fixture.state.terminations).toHaveLength(1);
+        } finally { controller.abort(); await fixture.close(); }
+    });
+
+    it.each([405, 500, "hung"])("handles stateful HTTP termination status %s without an unbounded wait", async (status) => {
+        const fixture = await startPrecheckMcpServer({ stateful: true });
+        let timer;
+        try {
+            fixture.state.terminateStatus = status === "hung" ? 200 : status;
+            fixture.state.hangTerminate = status === "hung";
+            const settled = callCronPrecheckMcpTool({ queue: fixture.config }, new AbortController().signal, "queue", "queue_status")
+                .then(() => "resolved", error => error.message);
+            const outcome = await Promise.race([
+                settled,
+                new Promise(resolve => { timer = setTimeout(() => resolve("pending"), 3_000); }),
+            ]);
+            expect(outcome).toBe(status === 405 ? "resolved" : "Cron precheck MCP connection cleanup failed; run the normal cycle");
+            expect(fixture.state.terminations).toHaveLength(1);
+        } finally { clearTimeout(timer); await fixture.close(); }
+    });
 });
 
 describe("precheck session MCP grants without model hydration", () => {

@@ -277,6 +277,10 @@ cronPrechecks:
     precheck: queue-gate
 ```
 
+Bindings accept single-line plain or quoted strings (JSON escapes for double
+quotes, doubled apostrophes for single quotes). Inline comments are ignored
+outside quotes; `#` inside a quoted reason remains part of the reason.
+
 - Each worker loads prechecks with the package; no deployment code changes.
   Only sessions bound to this package's agents can use them.
 - `run` continues with the normal model turn. `skip` re-arms the schedule
@@ -316,6 +320,12 @@ the model-facing MCP connection is not reused. Each call opens and closes its
 own connection, and the precheck deadline cancels it. Await every call; the
 helper becomes unusable when the check ends. Interactive OAuth and MCP model
 sampling are not provided.
+
+Stateful HTTP calls explicitly terminate their remote MCP session after closing
+the connection, including on errors or cancellation. Disposal has an independent
+one-second deadline so cancellation cannot strand a session without attempting
+cleanup. Servers may decline termination with HTTP 405; their own expiry policy
+then applies. Other cleanup failures run the normal cycle rather than skip.
 
 Connection, protocol and MCP `isError` results throw, so the normal cycle
 runs unless the handler explicitly handles the error. Do not turn an unknown

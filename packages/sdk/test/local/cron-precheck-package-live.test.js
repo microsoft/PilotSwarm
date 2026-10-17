@@ -82,7 +82,7 @@ function writePackage(dir, mcpConfig) {
 describe("package cron precheck (live)", () => {
     it.each([false, true])("a package precheck (MCP=%s) skips empty cycles without model calls", { timeout: TIMEOUT }, async (mcp) => {
         const env = await getEnv();
-        const fixture = mcp ? await startPrecheckMcpServer() : null;
+        const fixture = mcp ? await startPrecheckMcpServer({ stateful: true }) : null;
         const state = (globalThis.__cronPrecheckFixture ??= { hasWork: false, calls: [] });
         const catalog = await createCatalog(env);
         const artifactStore = new FilesystemArtifactStore(path.join(path.dirname(env.sessionStateDir), "artifacts"));
@@ -104,6 +104,7 @@ describe("package cron precheck (live)", () => {
                 const [started] = await waitForEventCount(catalog, session.sessionId, "session.cron_started", 1, 60_000);
                 expect(started.data).toMatchObject({ reason: REASON, precheck: "queue-gate" });
                 const armedRequests = model.sessionRequests(KICKOFF).length;
+                const armedMcpSessions = fixture ? new Set(fixture.state.sessions) : null;
 
                 await waitForEventCount(catalog, session.sessionId, "session.cron_precheck", 2, 75_000);
                 expect(model.sessionRequests(KICKOFF).length).toBe(armedRequests);
@@ -116,6 +117,8 @@ describe("package cron precheck (live)", () => {
                 if (fixture) {
                     expect(fixture.state.calls.length).toBeGreaterThanOrEqual(2);
                     expect(fixture.state.calls[0]).toEqual({ name: "queue_status", arguments: { scope: "both" } });
+                    expect(fixture.state.terminations.length).toBeGreaterThanOrEqual(2);
+                    expect(fixture.state.sessions).toEqual(armedMcpSessions);
                     fixture.state.hasWork = true;
                 }
                 await waitFor(() => model.sessionRequests(KICKOFF).length > armedRequests, 45_000, "the model to run a cycle");
