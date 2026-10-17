@@ -224,7 +224,7 @@ export class WebPilotSwarmManagementClient {
     async getSessionEventsPage(
         sessionId: string,
         opts: { afterSeq?: number; beforeSeq?: number; limit?: number; eventTypes?: string[] } = {},
-    ): Promise<any> {
+    ): Promise<import("../cms.js").SessionEventPage> {
         return this._api.call("getSessionEventsPage", {
             sessionId,
             afterSeq: opts.afterSeq,

@@ -156,25 +156,34 @@ export function applyByteBudget(
     events: Array<Record<string, any>>,
     maxBytes: number,
     orientation: "forward" | "backward" = "forward",
-): { delivered: Array<Record<string, any>>; cut: boolean; omissions: Array<{ seq: number; kind: OmissionKind }> } {
+): {
+    delivered: Array<Record<string, any>>;
+    /** True when at least one SELECTED row was not dispatched at all. */
+    undispatched: boolean;
+    omissions: Array<{ seq: number; kind: OmissionKind }>;
+} {
     const omissions: Array<{ seq: number; kind: OmissionKind }> = [];
     // Consider records starting from the end the continuation will NOT revisit.
     const order = orientation === "backward" ? [...events].reverse() : events;
 
     const kept: Array<Record<string, any>> = [];
     let used = 0;
-    let cut = false;
+    let undispatched = false;
 
     for (const event of order) {
+        // Classification is computed here but recorded ONLY if the row is
+        // actually accepted below. Recording it up front reported omission
+        // evidence for rows outside the delivered range, which made the
+        // statement "omissions describes this response" false and let a
+        // consumer count the same omission twice once the row arrived.
         const stored = classifyStoredOmission(event);
-        if (stored) omissions.push({ seq: event.seq, kind: stored });
-
         const size = encodedBytes(event);
 
         if (size === null) {
             // Unencodable: deliver the record without its payload rather than
             // counting it as free. Never silently exceed the budget.
             kept.push({ ...event, data: null, payloadOmitted: { kind: "unencodable", encodedBytes: null } });
+            if (stored) omissions.push({ seq: event.seq, kind: stored });
             omissions.push({ seq: event.seq, kind: "unencodable" });
             continue;
         }
@@ -182,23 +191,28 @@ export function applyByteBudget(
         if (used + size <= maxBytes) {
             kept.push(event);
             used += size;
+            if (stored) omissions.push({ seq: event.seq, kind: stored });
             continue;
         }
 
         if (kept.length === 0) {
             // Oversized first record, in whichever orientation applies.
             // Delivered with its payload omitted so the caller can advance;
-            // otherwise it would be requested forever.
+            // otherwise it would be requested forever. This row IS dispatched,
+            // so it does not by itself mean history remains.
             kept.push({ ...event, data: null, payloadOmitted: { kind: "byte_budget", encodedBytes: size } });
+            if (stored) omissions.push({ seq: event.seq, kind: stored });
             omissions.push({ seq: event.seq, kind: "byte_budget" });
+            continue;
         }
-        cut = true;
+        // A selected row could not be dispatched at all: history remains.
+        undispatched = true;
         break;
     }
 
     // Always hand back ascending, regardless of the order considered.
     const delivered = orientation === "backward" ? kept.reverse() : kept;
-    return { delivered, cut, omissions };
+    return { delivered, undispatched, omissions };
 }
 
 /** Human-readable transcript. One block per record, chronological. */
@@ -1132,51 +1146,110 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                     // Orientation must follow the CONTINUATION direction, not the array order.
                     // forward pages continue upward; latest and backward continue downward.
                     const orientation = receipt.mode === "forward" ? "forward" as const : "backward" as const;
-                    const { delivered, cut, omissions } = applyByteBudget(result.events ?? [], budget, orientation);
 
-                    // The cursor must follow what was DELIVERED, not what was
-                    // paged, or a byte-budget cut would silently skip records.
-                    const deliveredRange = delivered.length > 0
-                        ? { from_seq: delivered[0]!.seq, to_seq: delivered[delivered.length - 1]!.seq }
-                        : null;
-                    const cutShort = cut && deliveredRange !== null;
-                    const nextDirection = cutShort
-                        ? (receipt.mode === "forward" ? "forward" : "backward")
-                        : receipt.nextDirection;
-                    const nextCursor = cutShort
-                        ? (nextDirection === "forward" ? deliveredRange!.to_seq : deliveredRange!.from_seq)
-                        : receipt.nextCursor;
+                    /**
+                     * Build the complete response for a given event budget.
+                     *
+                     * max_bytes is advertised as a bound on the ENCODED RESPONSE, but the
+                     * events are only part of what is sent: the untrusted-content notice,
+                     * the receipt, the omissions list, array syntax and pretty-print
+                     * whitespace all count, and text mode re-renders content entirely.
+                     * Sizing only the events let a response exceed its own declared budget
+                     * — and the 1 MiB ceiling — while reporting nothing wrong. So the
+                     * final representation is measured, not estimated.
+                     */
+                    const build = (eventBudget: number) => {
+                        const { delivered, undispatched, omissions } =
+                            applyByteBudget(result.events ?? [], eventBudget, orientation);
 
-                    const body: Record<string, unknown> = {
-                        content_warning: UNTRUSTED_NOTICE,
-                        session_id,
-                        count: delivered.length,
-                        receipt: {
-                            mode: receipt.mode,
-                            range: deliveredRange,
-                            limit_requested: receipt.limitRequested,
-                            limit_applied: receipt.limitApplied,
-                            provider_clamp: receipt.providerClamp,
-                            max_page_size: receipt.maxPageSize,
-                            has_more: cut ? true : receipt.hasMore,
-                            next_cursor: nextCursor,
-                            next_direction: nextDirection,
-                            completeness: receipt.completeness,
-                            truncated_reason: cut ? "byte_budget" : receipt.truncatedReason,
-                            // Omissions are NOT a redaction report. PilotSwarm
-                            // performs no general secret-scrubbing of payloads;
-                            // an empty list means nothing was omitted here, not
-                            // that the history was sanitized.
-                            omissions,
-                            response_bytes_budget: budget,
-                        },
+                        const deliveredRange = delivered.length > 0
+                            ? { from_seq: delivered[0]!.seq, to_seq: delivered[delivered.length - 1]!.seq }
+                            : null;
+                        // has_more is an EXISTENCE claim: a further eligible row was found,
+                        // or a selected row was never dispatched. A payload omitted for size
+                        // is NOT remaining history.
+                        const cutShort = undispatched && deliveredRange !== null;
+                        const hasMore = receipt.hasMore || undispatched;
+                        const nextDirection = !hasMore
+                            ? null
+                            : cutShort
+                                ? (receipt.mode === "forward" ? "forward" : "backward")
+                                : receipt.nextDirection;
+                        const nextCursor = !hasMore || nextDirection === null
+                            ? null
+                            : cutShort
+                                ? (nextDirection === "forward" ? deliveredRange!.to_seq : deliveredRange!.from_seq)
+                                : receipt.nextCursor;
+
+                        const body: Record<string, unknown> = {
+                            content_warning: UNTRUSTED_NOTICE,
+                            session_id,
+                            count: delivered.length,
+                            receipt: {
+                                mode: receipt.mode,
+                                range: deliveredRange,
+                                limit_requested: receipt.limitRequested,
+                                limit_applied: receipt.limitApplied,
+                                provider_clamp: receipt.providerClamp,
+                                max_page_size: receipt.maxPageSize,
+                                has_more: hasMore,
+                                next_cursor: nextCursor,
+                                next_direction: nextDirection,
+                                completeness: receipt.completeness,
+                                truncated_reason: undispatched || omissions.some((o) => o.kind === "byte_budget")
+                                    ? "byte_budget"
+                                    : receipt.truncatedReason,
+                                // NOT a redaction report. PilotSwarm performs no general
+                                // secret-scrubbing; an empty list means nothing was omitted
+                                // here, never that the history was scanned.
+                                omissions,
+                                response_bytes_budget: budget,
+                            },
+                        };
+                        if (format === "text") body.transcript = renderTranscriptText(delivered);
+                        else body.events = sanitizeForJson(delivered);
+
+                        const text = JSON.stringify(body, null, 2);
+                        return { body, text, bytes: Buffer.byteLength(text, "utf8"), delivered };
                     };
-                    if (format === "text") body.transcript = renderTranscriptText(delivered);
-                    // JSON.stringify escapes C0 but not DEL, C1, U+2028 or U+2029, so a
-                    // JSON reader needs the same neutralization the text renderer applies.
-                    else body.events = sanitizeForJson(delivered);
+
+                    // An envelope with zero events still costs something. If even that
+                    // cannot fit, say so explicitly rather than emitting an over-budget
+                    // response that a transport may truncate or reject.
+                    const empty = build(0);
+                    if (empty.bytes > budget) {
+                        return {
+                            content: [{
+                                type: "text" as const,
+                                text: JSON.stringify({
+                                    error: "max_bytes is too small for a response envelope",
+                                    max_bytes: budget,
+                                    minimum_envelope_bytes: empty.bytes,
+                                }, null, 2),
+                            }],
+                            isError: true,
+                        };
+                    }
+
+                    // Plan against the room actually left by the envelope, then re-plan if
+                    // rendering expanded beyond it (escaping and pretty-printing both grow
+                    // the encoded form). Bounded, and never loops.
+                    let attempt = build(Math.max(0, budget - empty.bytes));
+                    for (let i = 0; i < 3 && attempt.bytes > budget && attempt.delivered.length > 0; i++) {
+                        const overshoot = attempt.bytes - budget;
+                        attempt = build(Math.max(0, budget - empty.bytes - overshoot));
+                    }
+
+                    const body = attempt.body as Record<string, unknown>;
+                    (body.receipt as Record<string, unknown>).response_bytes = attempt.bytes;
+                    // Honest disclosure: if the final encoding still exceeds the budget,
+                    // the caller is told rather than left to discover it downstream.
+                    if (attempt.bytes > budget) {
+                        (body.receipt as Record<string, unknown>).response_bytes_exceeded = true;
+                    }
 
                     return { content: [{ type: "text" as const, text: JSON.stringify(body, null, 2) }] };
+
                 }
 
                 // Backward history paging — a plain read, no long-poll.

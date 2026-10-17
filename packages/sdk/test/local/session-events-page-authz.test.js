@@ -115,7 +115,15 @@ describe("paged read carries the same authorization as the legacy reads", () => 
 });
 
 describe("access resolution for owner, stranger and shared reader", () => {
-    it("the owner resolves to read access on their own session", { timeout: TIMEOUT }, async () => {
+    // These assert the REAL SessionAccessSnapshot fields: rootSessionId,
+    // isSystem, visibility, owner, viewerIsOwner, viewerShareAccess
+    // (packages/sdk/src/cms.ts:301-308). There is no canRead and no role.
+    // An earlier version of this file asserted those invented fields; the
+    // shared-reader check would have passed VACUOUSLY, because
+    // `undefined !== "none"` is true. Caught in independent review before any
+    // database run, which is exactly when it was still cheap.
+
+    it("the owner is reported as the owner", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const catalog = await createCatalog(env);
         const mgmt = await managementFor(env);
@@ -124,60 +132,69 @@ describe("access resolution for owner, stranger and shared reader", () => {
 
         const access = await mgmt.getSessionAccess(sessionId, OWNER);
         assertNotNull(access, "owner must resolve to an access snapshot");
-        assert(access.canRead === true || access.role === "owner",
-            "owner must have read access");
+        assertEqual(access.viewerIsOwner, true, "viewerIsOwner identifies the owner");
+        assertEqual(access.owner.subject, OWNER.subject, "the snapshot names the owning subject");
 
         await mgmt.stop?.();
     });
 
-    it("POSITIVE CONTROL: a shared reader resolves to read access", { timeout: TIMEOUT }, async () => {
-        // Without this, the negative test below proves only that a call
-        // failed, not that authorization is what made it fail.
+    it("POSITIVE CONTROL: a granted reader carries viewerShareAccess 'read'", { timeout: TIMEOUT }, async () => {
+        // Without this, the stranger case below proves only that a call
+        // returned something, not that granting changes the answer.
         const env = getEnv();
         const catalog = await createCatalog(env);
         const mgmt = await managementFor(env);
         const sessionId = sid("b");
         await catalog.createSession(sessionId, { title: "authz-shared", owner: OWNER });
-        await mgmt.grantSessionShare(sessionId, { ...READER, access: "read" });
+
+        // access is the THIRD POSITIONAL argument, not a field on the grantee
+        // (management-client.ts:1176-1180).
+        await mgmt.grantSessionShare(sessionId, READER, "read");
 
         const access = await mgmt.getSessionAccess(sessionId, READER);
         assertNotNull(access, "a shared reader must resolve to an access snapshot");
-        assert(access.canRead === true || (access.role && access.role !== "none"),
-            "a granted reader must have read access");
+        assertEqual(access.viewerShareAccess, "read", "the grant is visible on the snapshot");
+        assertEqual(access.viewerIsOwner, false, "a grantee is not the owner");
 
         await mgmt.stop?.();
     });
 
-    it("a stranger does NOT resolve to read access on a private session", { timeout: TIMEOUT }, async () => {
+    it("a stranger has no grant and is not the owner on a private session", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const catalog = await createCatalog(env);
         const mgmt = await managementFor(env);
         const sessionId = sid("c");
-        await catalog.createSession(sessionId, { title: "authz-private", owner: OWNER });
+        await catalog.createSession(sessionId, { title: "authz-private", owner: OWNER, visibility: "private" });
 
         const access = await mgmt.getSessionAccess(sessionId, STRANGER);
-        const denied = access === null || access.canRead === false || access.role === "none";
-        assert(denied, "a stranger must not resolve to read access on a private session");
+        if (access !== null) {
+            assertEqual(access.viewerIsOwner, false, "a stranger is not the owner");
+            assertEqual(access.viewerShareAccess, null, "a stranger holds no grant");
+            assertEqual(access.visibility, "private", "and the session is private");
+        }
+        // The snapshot is raw input to the policy engine; the DENIAL itself is
+        // asserted at the portal layer, in
+        // packages/app/web/test/session-events-page-boundaries.test.mjs, where
+        // a stranger is refused as not-found rather than as an empty page.
 
         await mgmt.stop?.();
     });
 
-    it("revoking a share removes read access", { timeout: TIMEOUT }, async () => {
+    it("revoking a share clears viewerShareAccess", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const catalog = await createCatalog(env);
         const mgmt = await managementFor(env);
         const sessionId = sid("d");
         await catalog.createSession(sessionId, { title: "authz-revoke", owner: OWNER });
 
-        await mgmt.grantSessionShare(sessionId, { ...READER, access: "read" });
+        await mgmt.grantSessionShare(sessionId, READER, "read");
         const granted = await mgmt.getSessionAccess(sessionId, READER);
-        assert(granted && (granted.canRead === true || granted.role !== "none"),
-            "control: the share took effect before revocation");
+        assertEqual(granted.viewerShareAccess, "read", "control: the grant took effect first");
 
         await mgmt.revokeSessionShare(sessionId, READER);
         const after = await mgmt.getSessionAccess(sessionId, READER);
-        const revoked = after === null || after.canRead === false || after.role === "none";
-        assert(revoked, "revocation must remove read access, so a mid-drain change is enforceable");
+        assertEqual(after === null ? null : after.viewerShareAccess, null,
+            "revocation clears the grant, so a mid-drain change is enforceable");
 
         await mgmt.stop?.();
     });

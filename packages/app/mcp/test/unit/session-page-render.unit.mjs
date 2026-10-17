@@ -52,30 +52,30 @@ console.log("paged history rendering (issue 148)");
 
 check("a page under budget is delivered whole and not cut", () => {
     const events = [event(1, "a"), event(2, "b"), event(3, "c")];
-    const { delivered, cut } = applyByteBudget(events, PAGE_BYTES_DEFAULT);
+    const { delivered, undispatched: cut } = applyByteBudget(events, PAGE_BYTES_DEFAULT);
     assert.equal(delivered.length, 3);
     assert.equal(cut, false);
 });
 
 check("the budget cuts mid-page and reports it", () => {
     const events = [event(1, "x".repeat(400)), event(2, "y".repeat(400)), event(3, "z".repeat(400))];
-    const { delivered, cut } = applyByteBudget(events, 600);
+    const { delivered, undispatched: cut } = applyByteBudget(events, 600);
     assert.ok(delivered.length >= 1 && delivered.length < 3, `expected a partial page, got ${delivered.length}`);
     assert.equal(cut, true);
 });
 
 check("an oversized FIRST record is still delivered, payload omitted", () => {
+    // Note: it is DISPATCHED, so it does not by itself mean history remains.
     // The stranding case. Without this rule the caller can never advance and
     // loops forever on the same record.
     const events = [event(1, "x".repeat(5000)), event(2, "ok")];
-    const { delivered, cut, omissions } = applyByteBudget(events, 100);
+    const { delivered, undispatched: cut, omissions } = applyByteBudget(events, 100);
 
     assert.equal(delivered.length, 1, "the oversized record must still come back");
     assert.equal(delivered[0].seq, 1);
     assert.equal(delivered[0].data, null, "its payload is dropped");
     assert.equal(delivered[0].payloadOmitted.kind, "byte_budget");
     assert.ok(delivered[0].payloadOmitted.encodedBytes > 100, "the real size is reported");
-    assert.equal(cut, true);
     assert.ok(omissions.some((o) => o.seq === 1 && o.kind === "byte_budget"));
 });
 
@@ -90,7 +90,7 @@ check("delivery never returns a record it did not deliver", () => {
 });
 
 check("an empty page is not a cut", () => {
-    const { delivered, cut } = applyByteBudget([], PAGE_BYTES_DEFAULT);
+    const { delivered, undispatched: cut } = applyByteBudget([], PAGE_BYTES_DEFAULT);
     assert.deepEqual(delivered, []);
     assert.equal(cut, false);
 });
@@ -271,7 +271,7 @@ check("F1 forward drain is unchanged (positive control)", () => {
 
 check("F1 backward cut keeps the NEWEST rows, not the oldest", () => {
     const window = [BIG(10), BIG(11), BIG(12), BIG(13)];
-    const { delivered, cut } = applyByteBudget(window, 900, "backward");
+    const { delivered, undispatched: cut } = applyByteBudget(window, 900, "backward");
     assert.equal(cut, true);
     const seqs = delivered.map((e) => e.seq);
     assert.ok(seqs.includes(13), "the newest row must survive a downward-continuing cut");
@@ -356,6 +356,42 @@ check("an unencodable record is omitted explicitly, never counted as free", () =
     assert.equal(bad.payloadOmitted.kind, "unencodable");
     assert.ok(omissions.some((o) => o.seq === 2 && o.kind === "unencodable"),
         "and it is reported as an omission, not silently passed");
+});
+
+
+// ── G61-04 / G61-05: receipt honesty (different-family review) ───
+
+check("a dispatched oversized record does NOT mean history remains", () => {
+    // G61-04. Payload omission and row exhaustion are different properties.
+    // One oversized row, fully dispatched, must not report undispatched work.
+    const { delivered, undispatched } = applyByteBudget([event(1, "x".repeat(5000))], 100, "forward");
+    assert.equal(delivered.length, 1, "the row is dispatched, in omitted form");
+    assert.ok(delivered[0].payloadOmitted, "its payload is omitted");
+    assert.equal(undispatched, false,
+        "nothing was left undispatched, so the handler must not invent remaining history");
+});
+
+check("a genuinely undispatched row IS reported", () => {
+    const { delivered, undispatched } = applyByteBudget(
+        [event(1, "a".repeat(300)), event(2, "b".repeat(300)), event(3, "c".repeat(300))], 400, "forward");
+    assert.ok(delivered.length < 3, "some rows did not fit");
+    assert.equal(undispatched, true, "and that is remaining history");
+});
+
+check("G61-05 every omission belongs to a DELIVERED row", () => {
+    // Omissions were previously recorded before the row was accepted, so the
+    // receipt could claim omission evidence for a sequence outside the
+    // delivered range - making "omissions describes this response" false.
+    const marked = (seq) => event(seq, `${SDK_ECHO_MARKER} Full content omitted from CMS (9000 chars). Snippet: ...]`);
+    const window = [event(1, "a".repeat(300)), marked(2), marked(3)];
+    for (const orientation of ["forward", "backward"]) {
+        const { delivered, omissions } = applyByteBudget(window, 400, orientation);
+        const deliveredSeqs = new Set(delivered.map((e) => e.seq));
+        for (const o of omissions) {
+            assert.ok(deliveredSeqs.has(o.seq),
+                `${orientation}: omission for seq ${o.seq} must belong to a delivered row`);
+        }
+    }
 });
 
 console.log(failures === 0 ? "\nall passed" : `\n${failures} failed`);
