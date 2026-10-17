@@ -20,17 +20,23 @@
  *
  * ── WHAT THIS CANNOT COVER, STATED PLAINLY ──────────────────────────────
  *
- * EXPIRY IS NOT TESTED HERE, AND NOT ANYWHERE ELSE IN THIS REPO'S OFFLINE
- * TESTS. The dev provider has no expiry concept at all: its credential is the
+ * EXPIRY IS NOT TESTED HERE, AND IS NOT TESTED ANYWHERE IN THIS REPO TODAY.
+ * The dev provider has no expiry concept at all: its credential is the
  * literal string `dev:<persona>` with no validity window, so an expired dev
  * token is not a thing that can exist. Real expiry enforcement lives in the
- * Entra provider, where `jose.jwtVerify` checks `exp` against a JWKS fetched
- * from the identity provider (auth/providers/entra.js). That needs a real
- * IdP, so it cannot run offline.
+ * Entra provider, where `jose.jwtVerify` checks `exp` (auth/providers/entra.js).
  *
- * I am NOT simulating an expired token to close that gap. A hand-rolled fake
+ * To be precise about what that gap is and is not: it is NOT a claim that a
+ * live identity provider is permanently required to test expiry. `jose`
+ * verifies against a key set, and a SUPPORTED local JWKS fixture — a
+ * generated key pair, a signed token with a past `exp`, and the real
+ * `jwtVerify` call — would exercise the genuine validation path offline
+ * without bypassing anything. That is a reasonable thing to build later.
+ *
+ * What I will not do is fake it HERE. A hand-rolled expiry check in this file
  * would assert my idea of expiry rather than `jose`'s, and would read in a
- * report as coverage that does not exist. The gap is recorded as a gap.
+ * report as coverage that does not exist. So: expiry is an OPEN GAP as of
+ * this head, closable by a JWKS fixture against real validation.
  *
  * The catalog substitution in the companion file also remains an explicit
  * limit: these controls are about CREDENTIALS, not about the session store.
@@ -156,6 +162,7 @@ test("REAL AUTH: expiry is NOT enforceable by this provider, and is not faked", 
     const principal = await provider().authenticateRequest("dev:alice");
     assert.ok(principal, "control: the credential authenticates");
     assert.equal(principal.rawClaims?.exp, undefined,
-        "the dev credential carries no expiry claim; expiry lives in the Entra provider "
-        + "(jose.jwtVerify against a JWKS) and needs a real IdP, so it is NOT covered offline");
+        "the dev credential carries no expiry claim, so expiry cannot be exercised through "
+        + "this provider. Real enforcement is jose.jwtVerify in the Entra provider; a local "
+        + "JWKS fixture could drive that genuine path later. Open gap, not faked here.");
 });

@@ -451,10 +451,22 @@ async function run() {
                 // fixture size, never against the handler's own reference.
                 if (seqs.length < totalCount) {
                     subsetsSeen++;
-                    record(`FINAL-03: the strict subset at full-${delta}B can be continued`,
-                        parsed.receipt.next_cursor !== null && parsed.receipt.has_more === true,
-                        `count=${parsed.count}/${totalCount} next_cursor=${parsed.receipt.next_cursor} has_more=${parsed.receipt.has_more}`,
-                        `subset ${JSON.stringify(seqs)} -> cursor ${parsed.receipt.next_cursor}`);
+                    // EXACT values, not merely "non-null". This is a forward
+                    // drain over a two-row fixture, so the only correct subset
+                    // is [101] continuing FORWARD from 101. Asserting
+                    // next_cursor !== null would accept a cursor pointing at
+                    // the wrong row or a backward direction that re-reads what
+                    // was just delivered — both of which lose or duplicate
+                    // history while looking like valid continuation.
+                    const r = parsed.receipt;
+                    record(`FINAL-03: the strict subset at full-${delta}B continues EXACTLY from the delivered row`,
+                        r.has_more === true
+                        && r.next_cursor === seqs[seqs.length - 1]
+                        && r.next_direction === "forward"
+                        && JSON.stringify(seqs) === JSON.stringify([101]),
+                        `seqs=${JSON.stringify(seqs)} next_cursor=${r.next_cursor} `
+                        + `next_direction=${r.next_direction} has_more=${r.has_more} (want [101]/101/forward/true)`,
+                        `subset ${JSON.stringify(seqs)} -> ${r.next_direction} from ${r.next_cursor}`);
                 } else {
                     record(`FINAL-03: the complete page at full-${delta}B ends the drain`,
                         parsed.receipt.has_more === false && parsed.receipt.next_cursor === null,
