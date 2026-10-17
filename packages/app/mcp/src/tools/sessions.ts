@@ -1334,12 +1334,12 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                     // in another event and refuse again. A reported "smallest" that
                     // does not work on retry is worse than no number at all.
                     //
-                    // build(0) is budget-INDEPENDENT: the minimal page, carrying at
-                    // most a payload-omitted row so the cursor can still advance. Fall
-                    // back to it before refusing, and report ITS size. Retrying at that
-                    // number reaches this same fallback and reproduces the same page,
-                    // so the figure we hand out is sufficient by construction rather
-                    // than by promise.
+                    // An earlier version of this block claimed build(0) was
+                    // budget-INDEPENDENT and therefore sufficient by construction.
+                    // That was wrong: the receipt declares the caller's max_bytes back
+                    // as response_bytes_budget, so the minimal page is call-dependent
+                    // too. The solver below replaces that claim with a check.
+                    //
                     // Computed ONLY on the failing path — the happy path must not pay
                     // for an extra build and serialize.
                     //
@@ -1358,14 +1358,24 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                         if (minimalNow.converged && minimalNow.bytes <= budget) {
                             settled = minimalNow;
                         } else {
+                            // Advertise ONLY a value we have actually VERIFIED, never
+                            // the loop's last guess. Arguing that the iteration cap is
+                            // generous is the same kind of reasoning that produced the
+                            // three wrong claims this block already had to walk back;
+                            // a cheap equality check removes the argument entirely.
                             let proposed = minimalNow.bytes;
+                            let verified = false;
                             for (let i = 0; i < 8; i++) {
                                 const candidate = settle(build(0, false, proposed));
-                                if (candidate.converged && candidate.bytes === proposed) break;
-                                if (!candidate.converged) { proposed = 0; break; }
+                                if (!candidate.converged) break;
+                                if (candidate.bytes === proposed) { verified = true; break; }
                                 proposed = Math.max(proposed + 1, candidate.bytes);
                             }
-                            sufficientBudget = proposed > 0 ? proposed : null;
+                            // Beyond the ceiling the value is unusable even if solved:
+                            // the handler would clamp it straight back down.
+                            if (verified && proposed > 0 && proposed <= PAGE_BYTES_MAX) {
+                                sufficientBudget = proposed;
+                            }
                         }
                     }
 

@@ -180,7 +180,7 @@ notice, the receipt, the omissions list and pretty-printing all count. The
 server never returns an over-budget response: if it cannot fit, you get an
 explicit error naming the minimum, not a quietly truncated page.
 
-The refusal names two different kinds of number, and the difference matters:
+The refusal names three different kinds of number, and the differences matter:
 
 - `minimum_envelope_bytes` is **necessary, not sufficient**. It is what an
   events-free response costs. A page carrying even one row costs more, so
