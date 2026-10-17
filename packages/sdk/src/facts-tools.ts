@@ -10,6 +10,12 @@ const TUNER_AGENT_ID = "agent-tuner";
 const RESERVED_WRITE_PREFIXES = ["skills/", "asks/", "config/facts-manager/"];
 const RESERVED_READ_PREFIXES = ["intake/", "config/facts-manager/"];
 const RESERVED_DELETE_PREFIXES = ["intake/", "skills/", "asks/", "config/facts-manager/"];
+// The legacy canvas app catalog (issue 181). Canvas apps live in their own
+// registry now; the old `apps/<name>` cards stay readable for the one-time
+// migration, but no agent writes or deletes them (no exemption).
+const CANVAS_APP_LEGACY_PREFIX = "apps/";
+const CANVAS_APP_LEGACY_ERROR = "Error: the 'apps/' key namespace is the legacy canvas app catalog. "
+    + "Publish and manage canvas apps with publish_canvas_app, find_canvas_app and manage_canvas_app.";
 
 // Keys that belong to TOOLS, reachable only through the invocation-context
 // facts accessor (tool-facts-accessor.ts). Unlike the lists above these have
@@ -91,6 +97,7 @@ function checkNamespaceWrite(key: string, agentIdentity?: string, toolOnly: read
     }
     const toolPrefix = toolOnlyPrefixFor(key, toolOnly);
     if (toolPrefix) return toolNamespaceError(toolPrefix);
+    if (key.startsWith(CANVAS_APP_LEGACY_PREFIX)) return CANVAS_APP_LEGACY_ERROR;
     for (const prefix of RESERVED_WRITE_PREFIXES) {
         if (key.startsWith(prefix) && agentIdentity !== FACTS_MANAGER_AGENT_ID) {
             return `Error: the '${prefix}' key namespace is reserved for the Facts Manager. ` +
@@ -287,6 +294,7 @@ function checkNamespaceDelete(key: string, agentIdentity?: string, toolOnly: rea
     }
     const toolPrefix = toolOnlyPrefixFor(key, toolOnly);
     if (toolPrefix) return toolNamespaceError(toolPrefix);
+    if (key.startsWith(CANVAS_APP_LEGACY_PREFIX)) return CANVAS_APP_LEGACY_ERROR;
     for (const prefix of RESERVED_DELETE_PREFIXES) {
         if (key.startsWith(prefix) && agentIdentity !== FACTS_MANAGER_AGENT_ID) {
             return `Error: the '${prefix}' key namespace is reserved. Only the Facts Manager can delete from it.`;
@@ -304,6 +312,7 @@ function checkNamespaceDeletePattern(keyPattern: string, agentIdentity?: string,
     for (const prefix of toolOnly) {
         if (patternTouchesPrefix(keyPattern, prefix)) return toolNamespaceError(prefix);
     }
+    if (patternTouchesPrefix(keyPattern, CANVAS_APP_LEGACY_PREFIX)) return CANVAS_APP_LEGACY_ERROR;
     for (const prefix of RESERVED_DELETE_PREFIXES) {
         if (patternTouchesPrefix(keyPattern, prefix) && agentIdentity !== FACTS_MANAGER_AGENT_ID) {
             return `Error: the '${prefix}' key namespace is reserved. Only the Facts Manager can delete from it.`;

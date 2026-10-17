@@ -1272,6 +1272,44 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         return [readAgentEventsTool, contextHealthTool, ...systemReadTools, ...lineageRetrievalTools];
     }
 
+    // Canvas app registry (issue 181): an app's loads, for the tuner. The
+    // same rows the owner sees in the Admin Console; fleet-admin only.
+    const readCanvasAppLoadsTool = defineTool("read_canvas_app_loads", {
+        description:
+            "Read the loads of one canvas app, newest first: time, session, user, version, and the 30-day total. "
+            + "Use to see whether and where an app is used. Administrators only.",
+        parameters: {
+            type: "object" as const,
+            properties: {
+                name: { type: "string", description: "App name" },
+                scope: { type: "string", enum: ["shared", "user"], description: "Which same-named app; default shared, then a private one" },
+                owner_provider: { type: "string", description: "A private app's owner (with owner_subject)" },
+                owner_subject: { type: "string" },
+                limit: { type: "number", description: "1-500, default 50" },
+                since_iso: { type: "string", description: "Optional ISO lower bound on load time" },
+            },
+            required: ["name"],
+        },
+        handler: async (args: { name: string; scope?: string; owner_provider?: string; owner_subject?: string; limit?: number; since_iso?: string }) => {
+            const denied = await requireAdmin("read_canvas_app_loads");
+            if (denied) return denied;
+            const registry = (catalog as any).canvasApps;
+            if (!registry) return { error: "read_canvas_app_loads: this deployment has no canvas app registry (CMS migration 0084)" };
+            const since = parseSince("read_canvas_app_loads", args.since_iso);
+            if (since && !(since instanceof Date)) return since;
+            try {
+                const target = {
+                    name: String(args.name ?? ""),
+                    ...(args.scope === "shared" || args.scope === "user" ? { scope: args.scope } : {}),
+                    ...(args.owner_provider && args.owner_subject ? { owner: { provider: args.owner_provider, subject: args.owner_subject } } : {}),
+                };
+                return await registry.listLoads(target, { principal: null, resourceAdmin: true }, { since: since ?? null, limit: args.limit });
+            } catch (err: any) {
+                return { error: `read_canvas_app_loads: ${err?.message || String(err)}` };
+            }
+        },
+    });
+
     const factsTools: Tool<any>[] = [];
     if (factStore) {
         factsTools.push(defineTool("read_session_facts_stats", {
@@ -1419,6 +1457,7 @@ export function createInspectTools(opts: CreateInspectToolsOptions): Tool<any>[]
         readSessionGraphNodeUsageTool,
         readFleetGraphNodeUsageTool,
         readSessionGraphEdgeSearchUsageTool,
+        readCanvasAppLoadsTool,
         ...factsTools,
     ];
 

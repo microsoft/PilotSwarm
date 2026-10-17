@@ -961,6 +961,7 @@ export class PilotSwarmWorker {
                 factStore: this.factStore,
                 duroxideSchema: storage.duroxide.schema,
                 storeUrl: storage.duroxide.url,
+                artifactStore: this.artifactStore ?? null,
             });
             this.registerTools(sweeperTools);
         }
