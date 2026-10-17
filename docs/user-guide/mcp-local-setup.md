@@ -182,22 +182,31 @@ explicit error naming the minimum, not a quietly truncated page.
 
 The refusal names three different kinds of number, and the differences matter:
 
-- `minimum_envelope_bytes` is **necessary, not sufficient**. It is what an
-  events-free response costs. A page carrying even one row costs more, so
-  clearing this bar admits a response but does not promise one.
-- `smallest_achieved_bytes` is **diagnostic only**. It is the size of the
-  response that could not be shrunk far enough — a property of the request you
-  just made. **Do not retry at this number.**
-- `sufficient_max_bytes` is **the value to retry with**. It is solved to be
-  self-consistent with the receipt the retry itself writes.
+**Only one of them is a retry value. Use `sufficient_max_bytes` and ignore the
+other two.**
 
-That last distinction is subtle and was wrong here twice. The receipt declares
-your budget back to you as `response_bytes_budget`, so the retry serializes a
-*different* number than the rejected request did. When that crosses a decimal
-width — 677 to 1081 is three digits to four — the response grows by a byte and
-a naively measured "smallest" refuses the very budget it advertised. So the
-server solves for a budget whose own minimal page, declaring that budget,
-settles to exactly that size.
+- `sufficient_max_bytes` is **the value to retry with**. It is solved to be
+  self-consistent with the receipt the retry itself writes. Both kinds of
+  refusal carry it, so the *first* error you get already names a budget that
+  works. It is `null` when no supported value could be established — then
+  narrow `event_types` or lower `limit`.
+- `minimum_envelope_bytes` is **diagnostic**. It is what an events-free
+  response costs *at the budget you just sent*. A page carrying even one row
+  costs more, and the figure itself shifts with the declared budget's width.
+  **Do not retry at this number.**
+- `smallest_achieved_bytes` is **diagnostic**. It is the size of the response
+  that could not be shrunk far enough — again a property of the request you
+  just made. **Do not retry at this number either.**
+
+Why the two diagnostics are traps, and this was wrong here more than once: the
+receipt declares your budget back to you as `response_bytes_budget`, so a
+retry serializes a *different* number there than the rejected request did.
+When that crosses a decimal width — 1 to 673 is one digit to three, 677 to
+1081 is three to four — the response grows and a naively measured "minimum"
+refuses the very budget it advertised. Execution caught exactly that: a floor
+reported as 673 became 675 on the retry. So the server solves instead for a
+budget whose own minimal page, *declaring that budget*, settles to exactly
+that size, and publishes only a verified solution.
 
 `sufficient_max_bytes` can be `null`, which means no budget could be
 established for this page; narrow `event_types` or lower `limit` instead. The

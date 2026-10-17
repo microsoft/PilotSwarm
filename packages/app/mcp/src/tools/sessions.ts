@@ -1286,24 +1286,61 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                         return { text, bytes: Buffer.byteLength(text, "utf8"), converged: false };
                     };
 
+                    /**
+                     * Solve for a budget N at which the MINIMAL page, declaring N,
+                     * settles to exactly N — a value a retry can actually use.
+                     *
+                     * Every measured body declares the caller's max_bytes back as
+                     * `response_bytes_budget`, so a size measured against the
+                     * REJECTED budget is not a valid retry value: the retry writes a
+                     * different number there, and crossing a decimal width changes
+                     * the size. Execution caught this on the envelope path — a floor
+                     * reported as 673 under a 1-digit budget became 675 under a
+                     * 3-digit one, so following the advertised number was refused
+                     * again and the recovery ladder grew a step.
+                     *
+                     * Returns null rather than a guess when no supported, verified
+                     * value exists.
+                     */
+                    const solveSufficient = (): number | null => {
+                        let proposed = settle(build(0, false, budget)).bytes;
+                        for (let i = 0; i < 8; i++) {
+                            const candidate = settle(build(0, false, proposed));
+                            if (!candidate.converged) return null;
+                            if (candidate.bytes === proposed) {
+                                return proposed > 0 && proposed <= PAGE_BYTES_MAX ? proposed : null;
+                            }
+                            proposed = Math.max(proposed + 1, candidate.bytes);
+                        }
+                        return null;
+                    };
+
                     const emptySettled = settle(build(0, /* forceEmpty */ true));
                     if (!emptySettled.converged || emptySettled.bytes > budget) {
+                        // This branch used to offer ONLY minimum_envelope_bytes, and
+                        // that number is measured with the rejected budget declared,
+                        // so obeying it could land below the real floor and be
+                        // refused again. Carry the solved retry value here too, so
+                        // the first refusal already names a budget that works.
+                        const sufficient = solveSufficient();
                         return {
                             content: [{
                                 type: "text" as const,
                                 text: JSON.stringify({
                                     error: "max_bytes is too small to hold a response envelope",
                                     max_bytes: budget,
-                                    // The SETTLED floor — what an events-free response
-                                    // actually costs on the wire, self-report included.
-                                    // NECESSARY, NOT SUFFICIENT: a page carrying even one
-                                    // row costs more than the bare envelope, so clearing
-                                    // this bar admits a response but does not guarantee
-                                    // one. If the next attempt still cannot be reduced,
-                                    // that error reports `sufficient_max_bytes`, which
-                                    // IS a usable budget.
+                                    // DIAGNOSTIC: what an events-free response costs
+                                    // AT YOUR BUDGET. Necessary, not sufficient — a
+                                    // page carrying even one row costs more — and it
+                                    // shifts with the declared budget's width, so do
+                                    // not retry at this number.
                                     minimum_envelope_bytes: emptySettled.bytes,
-                                    remedy: `raise max_bytes above ${emptySettled.bytes}; if the next call still refuses, retry with the sufficient_max_bytes it reports`,
+                                    // The value to retry with, or null when none could
+                                    // be established.
+                                    sufficient_max_bytes: sufficient,
+                                    remedy: sufficient !== null
+                                        ? `retry with max_bytes ${sufficient}`
+                                        : "narrow event_types or lower limit; no budget could be established for this page",
                                 }, null, 2),
                             }],
                             isError: true,
@@ -1404,24 +1441,10 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                         if (minimalNow.converged && minimalNow.bytes <= budget) {
                             settled = minimalNow;
                         } else {
-                            // Advertise ONLY a value we have actually VERIFIED, never
-                            // the loop's last guess. Arguing that the iteration cap is
-                            // generous is the same kind of reasoning that produced the
-                            // three wrong claims this block already had to walk back;
-                            // a cheap equality check removes the argument entirely.
-                            let proposed = minimalNow.bytes;
-                            let verified = false;
-                            for (let i = 0; i < 8; i++) {
-                                const candidate = settle(build(0, false, proposed));
-                                if (!candidate.converged) break;
-                                if (candidate.bytes === proposed) { verified = true; break; }
-                                proposed = Math.max(proposed + 1, candidate.bytes);
-                            }
-                            // Beyond the ceiling the value is unusable even if solved:
-                            // the handler would clamp it straight back down.
-                            if (verified && proposed > 0 && proposed <= PAGE_BYTES_MAX) {
-                                sufficientBudget = proposed;
-                            }
+                            // Same solver as the envelope branch: advertise ONLY a
+                            // value actually VERIFIED self-consistent and within the
+                            // ceiling, never the loop's last guess.
+                            sufficientBudget = solveSufficient();
                         }
                     }
 

@@ -210,16 +210,30 @@ async function run() {
             arguments: { session_id: SESSION, page: true, max_bytes },
         });
 
+        // EXECUTION found the real defect here, which no source review caught:
+        // the envelope refusal advertised only minimum_envelope_bytes, measured
+        // with the REJECTED budget declared. Following it landed below the real
+        // floor (673 reported at a 1-digit budget became 675 at a 3-digit one),
+        // so the retry was refused again and the ladder grew to three steps.
+        //
+        // The contract now is stronger and simpler: EVERY refusal carries a
+        // solved sufficient_max_bytes, so the FIRST error already names a budget
+        // that works. Only that field may be followed.
+        const firstErr = JSON.parse(textOf(await ask(1)));
+        record("G46-06: the FIRST refusal already names a sufficient budget",
+            typeof firstErr.sufficient_max_bytes === "number" && firstErr.sufficient_max_bytes > 0,
+            JSON.stringify(firstErr).slice(0, 200));
+
         let budget = 1;
         let steps = 0;
         let res = await ask(budget);
         const advertisedChain = [];
         while (res.isError && steps < 5) {
             const err = JSON.parse(textOf(res));
-            // Prefer the solved retry value; fall back to the envelope floor,
-            // which is only a necessary condition. NEVER smallest_achieved_bytes:
-            // that describes the rejected request, not the retry.
-            const next = err.sufficient_max_bytes ?? err.minimum_envelope_bytes;
+            // ONLY the solved value. minimum_envelope_bytes and
+            // smallest_achieved_bytes both describe the REJECTED request and
+            // both shift with the declared budget's width.
+            const next = err.sufficient_max_bytes;
             record(`G46-06: refusal at ${budget}B advertises a larger budget`,
                 typeof next === "number" && next > budget, `advertised ${next} for ${budget}`);
             if (!(typeof next === "number" && next > budget)) break;
@@ -233,8 +247,9 @@ async function run() {
         record("G46-06: the response fits the budget its own error advertised",
             !res.isError && bytesOf(res) <= budget,
             res.isError ? "refused" : `${bytesOf(res)} > ${budget}`);
-        record("G46-06: the ladder is short, not a byte-by-byte crawl",
-            steps <= 2, `${steps} steps via ${JSON.stringify(advertisedChain)}`);
+        // One retry, because the first refusal already solved it.
+        record("G46-06: the ladder is ONE retry, not a crawl",
+            steps <= 1, `${steps} steps via ${JSON.stringify(advertisedChain)}`);
 
         // G46-07. smallest_achieved_bytes must be SUFFICIENT, not merely
         // larger. The trap: `room` is derived from the budget, so retrying at
@@ -254,10 +269,16 @@ async function run() {
 
             // The budgets must be DERIVED, not guessed. My first version of this
             // case guessed 1/60/120/300 and skipped on a missing field; every one
-            // of those takes the ENVELOPE refusal branch, which reports no retry
-            // value at all, so the whole case silently asserted nothing. Find the
-            // envelope floor first, then probe just above it, where the refusal
-            // actually carries a retry value.
+            // of those takes the ENVELOPE refusal branch, and at the time that
+            // branch reported no retry value, so the whole case silently
+            // asserted nothing.
+            //
+            // The anchor below is DIAGNOSTIC and it MOVES: the floor is measured
+            // with the rejected budget declared, so the figure reported at
+            // max_bytes 1 is smaller than the one reported at a three-digit
+            // budget. Execution proved that (673 then 675). It is fine as a
+            // probe anchor, but floor+0 can still land in the envelope branch —
+            // which is precisely why that branch must carry a retry value too.
             const envelopeErr = JSON.parse(textOf(await ask2(1)));
             const floorBytes = envelopeErr.minimum_envelope_bytes;
             record("G46-07 setup: the envelope refusal reports a floor",
@@ -270,7 +291,8 @@ async function run() {
                 if (!refusedRes.isError) continue;
                 const err = JSON.parse(textOf(refusedRes));
                 const n = err.sufficient_max_bytes;
-                // Above the envelope floor a refusal MUST offer a retry value.
+                // EVERY refusal must offer a retry value, whichever branch it
+                // came from. This failed at floor+0 and floor+1 in r17.
                 record(`G46-07: refusal at floor+${over} offers a sufficient budget`,
                     typeof n === "number" && n > 0, JSON.stringify(err).slice(0, 160));
                 if (typeof n !== "number") continue;
