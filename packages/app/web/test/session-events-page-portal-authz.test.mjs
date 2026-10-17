@@ -27,12 +27,18 @@
  *   - the AUTHENTICATION MIDDLEWARE. `requireAuth` is scripted per test.
  *
  * That last one bounds the anonymous and expired cases sharply, so read them
- * narrowly. They assert the CONSEQUENCE of a 401 — that the request is
- * refused and, critically, that it never reaches the session catalog at all.
- * They do NOT validate a real token issuer, real signature checking, or a
- * real expiry implementation; the middleware is told to reject rather than
- * deciding to. A genuine expired-token test needs the auth provider, which
- * is a separate surface from the one this file covers.
+ * narrowly. `requireAuth` here is REPLACED by a test function that returns
+ * `reject: true`. These cases therefore prove only that a rejection
+ * PROPAGATES — the request is refused and, critically, never reaches the
+ * session catalog at all. They prove NOTHING about whether the shipped code
+ * would have rejected that caller: the middleware is told to refuse, it does
+ * not decide to. No credential parsing, signature check or expiry
+ * enforcement is exercised here.
+ *
+ * The shipped credential path is covered separately, with the real provider
+ * and real authorization engine, in
+ * session-events-page-auth-controls.test.mjs. Expiry is not covered by
+ * either file and is recorded there as an explicit gap rather than faked.
  *
  * So: the authorization decisions (owner, shared reader, stranger,
  * revoked-share mid-drain) are real end-to-end through the runtime. The
@@ -211,7 +217,7 @@ test("MID-DRAIN: revoking a share between pages refuses the next page", async ()
     }
 });
 
-test("ANONYMOUS (structural): a refused caller never reaches the session catalog", async () => {
+test("PROPAGATION (scripted rejection): a refused caller never reaches the session catalog", async () => {
     const { runtime, calls } = makeRuntime(() => snapshot({ viewerIsOwner: true }));
     const { baseUrl, close } = await serve(runtime, () => ({
         reject: true, status: 401, message: "authentication required",
@@ -226,7 +232,7 @@ test("ANONYMOUS (structural): a refused caller never reaches the session catalog
     }
 });
 
-test("EXPIRED (structural): a refused credential reads nothing; real expiry is the auth provider's surface", async () => {
+test("PROPAGATION (scripted rejection): a refused credential reads nothing; real expiry is NOT tested anywhere", async () => {
     const { runtime, calls } = makeRuntime(() => snapshot({ viewerIsOwner: true }));
     const { baseUrl, close } = await serve(runtime, () => ({
         reject: true, status: 401, message: "token expired",
