@@ -185,16 +185,23 @@ The refusal names two different kinds of number, and the difference matters:
 - `minimum_envelope_bytes` is **necessary, not sufficient**. It is what an
   events-free response costs. A page carrying even one row costs more, so
   clearing this bar admits a response but does not promise one.
-- `smallest_achieved_bytes` **is sufficient**, and sufficient *by
-  construction*. It is the size of the budget-independent minimal page, so a
-  retry at that number reaches the same floor and reproduces the same
-  response. It is not merely the smallest size this particular call happened
-  to reach — that number would grant more room on retry and could refuse
-  again.
+- `smallest_achieved_bytes` is **diagnostic only**. It is the size of the
+  response that could not be shrunk far enough — a property of the request you
+  just made. **Do not retry at this number.**
+- `sufficient_max_bytes` is **the value to retry with**. It is solved to be
+  self-consistent with the receipt the retry itself writes.
 
-So the remedy is a short ladder, not a search: raise to the number you were
-given, and if the next call still refuses, use the `smallest_achieved_bytes`
-it reports. That terminates in at most a couple of steps.
+That last distinction is subtle and was wrong here twice. The receipt declares
+your budget back to you as `response_bytes_budget`, so the retry serializes a
+*different* number than the rejected request did. When that crosses a decimal
+width — 677 to 1081 is three digits to four — the response grows by a byte and
+a naively measured "smallest" refuses the very budget it advertised. So the
+server solves for a budget whose own minimal page, declaring that budget,
+settles to exactly that size.
+
+`sufficient_max_bytes` can be `null`, which means no budget could be
+established for this page; narrow `event_types` or lower `limit` instead. The
+server says so rather than inventing a number.
 
 A budget cut sets `truncated_reason: "byte_budget"` and still advances the
 cursor — an oversized single record is delivered with its payload omitted

@@ -161,6 +161,16 @@ export function applyByteBudget(
     /** True when at least one SELECTED row was not dispatched at all. */
     undispatched: boolean;
     omissions: Array<{ seq: number; kind: OmissionKind }>;
+    /**
+     * Compact encoded bytes actually consumed by the delivered rows.
+     *
+     * A caller shrinking a page needs this to make progress. Lowering the
+     * event budget by an OUTPUT overshoot need not drop any row — the two are
+     * different units — so a budget-only decrement can re-select the identical
+     * set over and over. Setting the next budget below `used` guarantees at
+     * least one fewer row, which bounds the search by row count.
+     */
+    used: number;
 } {
     const omissions: Array<{ seq: number; kind: OmissionKind }> = [];
     // Consider records starting from the end the continuation will NOT revisit.
@@ -212,7 +222,7 @@ export function applyByteBudget(
 
     // Always hand back ascending, regardless of the order considered.
     const delivered = orientation === "backward" ? kept.reverse() : kept;
-    return { delivered, undispatched, omissions };
+    return { delivered, undispatched, omissions, used };
 }
 
 /** Human-readable transcript. One block per record, chronological. */
@@ -1162,7 +1172,13 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                      * — and the 1 MiB ceiling — while reporting nothing wrong. So the
                      * final representation is measured, not estimated.
                      */
-                    const build = (eventBudget: number, forceEmpty = false) => {
+                    // `budgetForReceipt` is the max_bytes value this body should
+                    // DECLARE. It defaults to the request's budget, but when we are
+                    // computing a figure to hand back as a sufficient retry value we
+                    // must build the body the RETRY would produce — its receipt will
+                    // carry the proposed number, whose digit count can differ from the
+                    // rejected request's and change the size we are trying to report.
+                    const build = (eventBudget: number, forceEmpty = false, budgetForReceipt = budget) => {
                         // forceEmpty bypasses the progress helper entirely. Calling
                         // applyByteBudget with a zero budget does NOT yield an
                         // events-free envelope: its progress rule still delivers the
@@ -1170,8 +1186,8 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                         // field and an omissions entry. That made the "minimum
                         // envelope" larger than a normal small complete page, so the
                         // guard could refuse a budget that the real response fits in.
-                        const { delivered, undispatched, omissions } = forceEmpty
-                            ? { delivered: [] as Array<Record<string, any>>, undispatched: (result.events ?? []).length > 0, omissions: [] as Array<{ seq: number; kind: OmissionKind }> }
+                        const { delivered, undispatched, omissions, used } = forceEmpty
+                            ? { delivered: [] as Array<Record<string, any>>, undispatched: (result.events ?? []).length > 0, omissions: [] as Array<{ seq: number; kind: OmissionKind }>, used: 0 }
                             : applyByteBudget(result.events ?? [], eventBudget, orientation);
 
                         const deliveredRange = delivered.length > 0
@@ -1215,14 +1231,14 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                                 // secret-scrubbing; an empty list means nothing was omitted
                                 // here, never that the history was scanned.
                                 omissions,
-                                response_bytes_budget: budget,
+                                response_bytes_budget: budgetForReceipt,
                             },
                         };
                         if (format === "text") body.transcript = renderTranscriptText(delivered);
                         else body.events = sanitizeForJson(delivered);
 
                         const text = JSON.stringify(body, null, 2);
-                        return { body, text, bytes: Buffer.byteLength(text, "utf8"), delivered };
+                        return { body, text, bytes: Buffer.byteLength(text, "utf8"), delivered, used };
                     };
 
                     // HARD CONTRACT. max_bytes bounds the SERIALIZED WIRE BYTES actually
@@ -1272,10 +1288,10 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                                     // row costs more than the bare envelope, so clearing
                                     // this bar admits a response but does not guarantee
                                     // one. If the next attempt still cannot be reduced,
-                                    // that error reports `smallest_achieved_bytes`, which
-                                    // IS a sufficient budget.
+                                    // that error reports `sufficient_max_bytes`, which
+                                    // IS a usable budget.
                                     minimum_envelope_bytes: emptySettled.bytes,
-                                    remedy: `raise max_bytes above ${emptySettled.bytes}; if the next call still refuses, use the smallest_achieved_bytes it reports`,
+                                    remedy: `raise max_bytes above ${emptySettled.bytes}; if the next call still refuses, retry with the sufficient_max_bytes it reports`,
                                 }, null, 2),
                             }],
                             isError: true,
@@ -1292,15 +1308,24 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                     let room = Math.max(0, budget - emptySettled.bytes);
                     let attempt = build(room);
                     let settled = settle(attempt);
-                    for (let i = 0; i < 8 && (!settled.converged || settled.bytes > budget); i++) {
-                        // Shrink by at least one byte so this always terminates. When
-                        // the self-report has not settled there is no overshoot to
-                        // measure, so fall back to the minimum step.
-                        const overshoot = Math.max(1, settled.bytes - budget);
-                        room = Math.max(0, room - overshoot);
+
+                    // Each failed fit must CHANGE THE SELECTION. Decrementing the
+                    // event budget by the OUTPUT overshoot mixes two different units:
+                    // shaving a few bytes off an event budget usually re-selects the
+                    // identical rows, so a fixed number of decrements can reject the
+                    // same candidate repeatedly while a smaller page that fits plainly
+                    // exists. Dropping the budget below what the delivered rows
+                    // actually consumed removes at least one row every pass, which
+                    // both guarantees progress and bounds the search by row count
+                    // instead of an arbitrary iteration cap.
+                    let guard = (result.events ?? []).length + 2;
+                    while ((!settled.converged || settled.bytes > budget) && guard-- > 0) {
+                        if (attempt.delivered.length === 0) break;
+                        const next = Math.min(room - 1, attempt.used - 1);
+                        if (next < 0) { room = 0; attempt = build(0); settled = settle(attempt); break; }
+                        room = next;
                         attempt = build(room);
                         settled = settle(attempt);
-                        if (attempt.delivered.length === 0) break;
                     }
 
                     // GUARANTEED FLOOR. The shrink loop derives `room` from the
@@ -1317,10 +1342,31 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                     // than by promise.
                     // Computed ONLY on the failing path — the happy path must not pay
                     // for an extra build and serialize.
-                    let floor: ReturnType<typeof settle> | null = null;
+                    //
+                    // `sufficientBudget` is the number we will hand back as a retry
+                    // value, and it must be the size of the response the RETRY will
+                    // build, not of the one we just rejected. The receipt declares
+                    // max_bytes as `response_bytes_budget`, so a retry writes a
+                    // DIFFERENT number there; crossing a decimal-width boundary
+                    // (677 -> 1081 is three digits to four) grows the body by a byte
+                    // and refuses the very value we advertised. Solve for a
+                    // self-consistent pair instead: a budget N whose minimal page,
+                    // declaring N, settles to exactly N.
+                    let sufficientBudget: number | null = null;
                     if (!settled.converged || settled.bytes > budget) {
-                        floor = settle(build(0));
-                        if (floor.converged && floor.bytes <= budget) settled = floor;
+                        const minimalNow = settle(build(0, false, budget));
+                        if (minimalNow.converged && minimalNow.bytes <= budget) {
+                            settled = minimalNow;
+                        } else {
+                            let proposed = minimalNow.bytes;
+                            for (let i = 0; i < 8; i++) {
+                                const candidate = settle(build(0, false, proposed));
+                                if (candidate.converged && candidate.bytes === proposed) break;
+                                if (!candidate.converged) { proposed = 0; break; }
+                                proposed = Math.max(proposed + 1, candidate.bytes);
+                            }
+                            sufficientBudget = proposed > 0 ? proposed : null;
+                        }
                     }
 
                     const finalText = settled.text;
@@ -1338,13 +1384,18 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                                         ? "response could not be reduced within max_bytes"
                                         : "response size could not be reported consistently",
                                     max_bytes: budget,
-                                    // SUFFICIENT BY CONSTRUCTION: the budget-independent
-                                    // minimal page. A retry at this number reaches the
-                                    // same floor fallback and reproduces this exact
-                                    // response, so the figure works rather than merely
-                                    // describing what we happened to reach.
-                                    smallest_achieved_bytes: floor ? floor.bytes : finalBytes,
-                                    remedy: `raise max_bytes to at least ${floor ? floor.bytes : finalBytes}, or narrow event_types / lower limit`,
+                                    // The size of the response we could not shrink far
+                                    // enough. Diagnostic only — do NOT retry at this
+                                    // number; it describes the REJECTED request.
+                                    smallest_achieved_bytes: finalBytes,
+                                    // A budget solved to be self-consistent with the
+                                    // receipt the retry itself will write. Null when no
+                                    // such value could be established, in which case we
+                                    // say so rather than invent one.
+                                    sufficient_max_bytes: sufficientBudget,
+                                    remedy: sufficientBudget !== null
+                                        ? `retry with max_bytes ${sufficientBudget}, or narrow event_types / lower limit`
+                                        : "narrow event_types or lower limit; no budget could be established for this page",
                                 }, null, 2),
                             }],
                             isError: true,

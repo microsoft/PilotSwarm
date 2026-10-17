@@ -216,7 +216,10 @@ async function run() {
         const advertisedChain = [];
         while (res.isError && steps < 5) {
             const err = JSON.parse(textOf(res));
-            const next = err.smallest_achieved_bytes ?? err.minimum_envelope_bytes;
+            // Prefer the solved retry value; fall back to the envelope floor,
+            // which is only a necessary condition. NEVER smallest_achieved_bytes:
+            // that describes the rejected request, not the retry.
+            const next = err.sufficient_max_bytes ?? err.minimum_envelope_bytes;
             record(`G46-06: refusal at ${budget}B advertises a larger budget`,
                 typeof next === "number" && next > budget, `advertised ${next} for ${budget}`);
             if (!(typeof next === "number" && next > budget)) break;
@@ -248,16 +251,67 @@ async function run() {
                 name: "get_session_events",
                 arguments: { session_id: SESSION, page: true, limit: 30, max_bytes },
             });
-            for (const tightBudget of [1, 60, 120, 300]) {
+
+            // The budgets must be DERIVED, not guessed. My first version of this
+            // case guessed 1/60/120/300 and skipped on a missing field; every one
+            // of those takes the ENVELOPE refusal branch, which reports no retry
+            // value at all, so the whole case silently asserted nothing. Find the
+            // envelope floor first, then probe just above it, where the refusal
+            // actually carries a retry value.
+            const envelopeErr = JSON.parse(textOf(await ask2(1)));
+            const floorBytes = envelopeErr.minimum_envelope_bytes;
+            record("G46-07 setup: the envelope refusal reports a floor",
+                typeof floorBytes === "number" && floorBytes > 0, JSON.stringify(envelopeErr).slice(0, 160));
+
+            let exercised = 0;
+            for (const over of [0, 1, 5, 40, 200]) {
+                const tightBudget = floorBytes + over;
                 const refusedRes = await ask2(tightBudget);
                 if (!refusedRes.isError) continue;
                 const err = JSON.parse(textOf(refusedRes));
-                const n = err.smallest_achieved_bytes;
+                const n = err.sufficient_max_bytes;
+                // Above the envelope floor a refusal MUST offer a retry value.
+                record(`G46-07: refusal at floor+${over} offers a sufficient budget`,
+                    typeof n === "number" && n > 0, JSON.stringify(err).slice(0, 160));
                 if (typeof n !== "number") continue;
+                exercised++;
                 const retry = await ask2(n);
-                record(`G46-07: smallest_achieved_bytes from ${tightBudget}B is sufficient on retry`,
+                record(`G46-07: sufficient_max_bytes ${n} (from floor+${over}) actually succeeds`,
                     !retry.isError && bytesOf(retry) <= n,
                     retry.isError ? textOf(retry).slice(0, 140) : `${bytesOf(retry)} > ${n}`);
+            }
+            // Guard against this case going quiet again: if nothing was probed,
+            // that is itself a failure, not a silent pass.
+            record("G46-07: the retry-sufficiency contract was actually exercised",
+                exercised > 0, `${exercised} budgets reached the retry-value branch`);
+        }
+
+        // FINAL-03: a budget ONE BYTE below the complete response must still
+        // return a smaller page, not refuse. This is the case a budget-only
+        // decrement loop fails: shaving bytes off the event budget re-selects
+        // the same rows, so the identical over-budget candidate is rejected
+        // repeatedly while a one-row page plainly fits.
+        {
+            const two = [ev(101, "x".repeat(500)), ev(102, "x".repeat(500))];
+            const c3 = await connect(sessionMgmt(two));
+            const ask3 = (max_bytes) => c3.callTool({
+                name: "get_session_events",
+                arguments: { session_id: SESSION, page: true, after_seq: 100, limit: 2, max_bytes },
+            });
+            const full = await ask3(200000);
+            const fullBytes = bytesOf(full);
+            for (const delta of [1, 2, 10, 50]) {
+                const b = fullBytes - delta;
+                const res = await ask3(b);
+                record(`FINAL-03: ${delta}B below the full response still returns a page`,
+                    !res.isError && bytesOf(res) <= b,
+                    res.isError ? textOf(res).slice(0, 140) : `${bytesOf(res)} > ${b}`);
+                if (!res.isError) {
+                    const parsed = JSON.parse(textOf(res));
+                    record(`FINAL-03: the smaller page at full-${delta}B makes progress`,
+                        parsed.count >= 1 && parsed.receipt.next_cursor !== null,
+                        `count=${parsed.count} next_cursor=${parsed.receipt.next_cursor}`);
+                }
             }
         }
 
