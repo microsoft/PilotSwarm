@@ -14,6 +14,7 @@ import { registerTurnControlTools } from "./tools/turn-control.js";
 import { registerWorkspaceTools } from "./tools/workspaces.js";
 import { registerArtifactTools } from "./tools/artifacts.js";
 import { registerAgentPackageTools } from "./tools/agent-packages.js";
+import { registerCanvasAppTools } from "./tools/canvas-apps.js";
 import { registerGroupTools } from "./tools/groups.js";
 import { registerObservabilityTools } from "./tools/observability.js";
 import { registerDebugTools } from "./tools/debug.js";
@@ -104,6 +105,7 @@ export function createMcpServer(ctx: ServerContext): McpServer {
     registerGraphTools(server, ctx);        // iff ctx.graph ([admin] subset iff ctx.admin)
     registerArtifactTools(server, ctx);     // iff web mode (ctx.api)
     registerAgentPackageTools(server, ctx); // iff web mode + ctx.agentMgmt != "off"
+    registerCanvasAppTools(server, ctx);    // iff web mode (canvas app registry, issue 181)
 
     // Resources
     registerSessionResources(server, ctx);
