@@ -125,8 +125,11 @@ describeOrSkip("CATALOG JOIN: owner, grant, revoke and persistence against real 
     // the management client and would have thrown a TypeError during setup,
     // before a single case ran — caught in independent review, before any
     // database existed to run it against.
-    catalog = new PgSessionCatalog({ connectionString: DB_URL });
-    await catalog.initialize();
+    // N1: PgSessionCatalog's CONSTRUCTOR IS PRIVATE. `new PgSessionCatalog(...)`
+    // does not work, so my first correction swapped one unusable API for
+    // another. The real entry point is the static factory, which builds the
+    // pool itself — the same call the existing database helper makes.
+    catalog = await PgSessionCatalog.create(DB_URL);
     sessionId = `catalog-join-${process.pid}-${Date.now()}`;
     await catalog.createSession(sessionId, { title: "catalog-join", owner: OWNER });
     // REAL events, so a drain has something to page through. Without these the
@@ -201,10 +204,16 @@ describeOrSkip("CATALOG JOIN: owner, grant, revoke and persistence against real 
             const first = await fetch(`${baseUrl}${pagePath(sessionId)}?page=true&limit=2`);
             assert.equal(first.status, 200, "control: the drain starts readable");
             const firstBody = await first.json();
+            // N2: the receipt crosses the Web API as the MANAGEMENT CLIENT's
+            // shape, which is camelCase (hasMore / nextCursor,
+            // session-events-page.ts:161-162). snake_case is the MCP tool's
+            // own rendering and does not apply on this path. Asserting
+            // has_more here compared undefined and would have failed at the
+            // control — loudly, but for the wrong reason.
             const receipt = firstBody.result?.receipt;
             assert.ok(Array.isArray(firstBody.result?.events) && firstBody.result.events.length > 0,
                 "control: page one must deliver real rows to continue from");
-            assert.ok(receipt?.has_more === true && receipt?.next_cursor !== null,
+            assert.ok(receipt?.hasMore === true && receipt?.nextCursor !== null,
                 `control: the drain must be INCOMPLETE so continuing is meaningful; receipt=${JSON.stringify(receipt)}`);
 
             await runtime.transport.mgmt.revokeSessionShare(sessionId, READER);
@@ -212,7 +221,7 @@ describeOrSkip("CATALOG JOIN: owner, grant, revoke and persistence against real 
             // Continue from the server's own cursor — the exact request a
             // mid-drain client would make next.
             const after = await fetch(
-                `${baseUrl}${pagePath(sessionId)}?page=true&limit=2&afterSeq=${receipt.next_cursor}`);
+                `${baseUrl}${pagePath(sessionId)}?page=true&limit=2&afterSeq=${receipt.nextCursor}`);
             const body = await after.json();
             assert.equal(after.status, 404,
                 "a drain in progress must STOP when the share is revoked, not continue from its cursor");
