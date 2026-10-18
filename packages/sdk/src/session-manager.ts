@@ -132,6 +132,8 @@ export interface AgentCopyEntry {
     kind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent";
     descriptor?: import("./prompt-layers.js").PromptLayerDescriptor;
     packageId?: string;
+    packageVersionId?: string;
+    packageSha256?: string;
     packageScope?: "shared" | "user";
     packageOwner?: { provider: string; subject: string } | null;
 }
@@ -1892,7 +1894,36 @@ export class SessionManager {
         let boundAgentCopy: AgentCopyEntry | undefined;
         let resolvedTools: Tool<any>[];
         try {
+            let binding = effectiveSerializableConfig.boundAgentName
+                ? await this.sessionCatalog?.packageReviews?.getSessionBinding(sessionId)
+                : null;
+            if (binding) {
+                if (!binding.allowed || binding.agentName !== effectiveSerializableConfig.boundAgentName
+                    || effectiveSerializableConfig.boundAgentSource === "deployment"
+                    || (effectiveSerializableConfig.boundAgentPackageId
+                        && effectiveSerializableConfig.boundAgentPackageId !== binding.packageId)) {
+                    throw new BoundAgentPackageUnavailableError(binding.packageId, "The durable package binding is denied or conflicts with session configuration.");
+                }
+                effectiveSerializableConfig = { ...effectiveSerializableConfig, boundAgentPackageId: binding.packageId };
+            }
             boundAgentCopy = resolveBoundAgentCopy(this.workerDefaults, effectiveSerializableConfig, sessionOwnerKey);
+            if (boundAgentCopy?.packageId) {
+                if (!binding && this.sessionCatalog?.packageReviews?.bindNewSession) {
+                    // New named roots may resolve their package after creation. SQL permits
+                    // this only for post-migration sessions; historical sessions require admin CAS.
+                    await this.sessionCatalog.packageReviews.bindNewSession(
+                        sessionId, boundAgentCopy.packageId, effectiveSerializableConfig.boundAgentName!,
+                    );
+                    binding = await this.sessionCatalog.packageReviews.getSessionBinding(sessionId);
+                }
+                if (!binding?.allowed || binding.packageId !== boundAgentCopy.packageId
+                    || binding.versionId !== boundAgentCopy.packageVersionId
+                    || binding.sha256 !== boundAgentCopy.packageSha256
+                    || binding.agentName !== effectiveSerializableConfig.boundAgentName) {
+                    throw new BoundAgentPackageUnavailableError(boundAgentCopy.packageId,
+                        "The exact bound package version/digest is unavailable, denied or changed; explicit rebind is required. No active-name fallback is permitted.");
+                }
+            }
             // Snapshot the selected prompt and descriptor. A registry refresh in the
             // middle of a turn must not change instructions while handlers still
             // belong to the previously selected version.

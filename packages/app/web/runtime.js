@@ -951,6 +951,52 @@ export class PortalRuntime {
             // authenticated principal, `resourceAdmin` the resolved role.
             case "listAgentPackages":
                 return this.transport.listAgentPackages(owner, resourceAdmin);
+            case "listAgentPackageReviews":
+            case "decideAgentPackageReview":
+            case "getAgentPackageReviewAudit":
+            case "activateAgentPackageVersion":
+            case "getAgentPackageActivationAudit":
+            case "getSessionAgentPackageBinding":
+            case "rebindSessionAgentPackage": {
+                // Unlike ordinary no-auth operator features, executable trust
+                // decisions always require an authenticated server admin.
+                if (!resourceAdmin || role !== "admin" || !owner) {
+                    throw forbiddenError("Package reviews require an authenticated administrator.");
+                }
+                if (method === "listAgentPackageReviews") return this.transport.listAgentPackageReviews(owner, true);
+                if (method === "getAgentPackageReviewAudit") {
+                    return this.transport.getAgentPackageReviewAudit(safeParams.versionId, owner, true);
+                }
+                if (method === "getAgentPackageActivationAudit") {
+                    return this.transport.getAgentPackageActivationAudit(safeParams.packageId, owner, true);
+                }
+                if (method === "getSessionAgentPackageBinding") {
+                    return this.transport.getSessionAgentPackageBinding(safeParams.sessionId, owner, true);
+                }
+                const input = safeParams.input || {};
+                if (method === "activateAgentPackageVersion") {
+                    await this.transport.activateAgentPackageVersion({
+                        packageId: input.packageId, versionId: input.versionId, sha256: input.sha256,
+                        expectedReviewRevision: input.expectedReviewRevision,
+                        expectedActivationRevision: input.expectedActivationRevision,
+                        expectedActiveVersionId: input.expectedActiveVersionId, reason: input.reason,
+                    }, owner, true);
+                    return { activated: true, executionAllowed: false, runtimeFencing: "not-reported" };
+                }
+                if (method === "rebindSessionAgentPackage") {
+                    await this.transport.rebindSessionAgentPackage({
+                        sessionId: input.sessionId, packageId: input.packageId, versionId: input.versionId,
+                        sha256: input.sha256, agentName: input.agentName,
+                        expectedBindingRevision: input.expectedBindingRevision, reason: input.reason,
+                    }, owner, true);
+                    return { rebound: true, executionAllowed: false, runtimeFencing: "not-reported" };
+                }
+                await this.transport.decideAgentPackageReview({
+                    packageId: input.packageId, versionId: input.versionId, sha256: input.sha256,
+                    expectedRevision: input.expectedRevision, decision: input.decision, reason: input.reason,
+                }, owner, true);
+                return { recorded: true, approvalScope: "artifact-content", activationAllowed: false, runtimeFencing: "not-reported" };
+            }
             case "getAgentPackage":
                 return this.transport.getAgentPackage(safeParams.name, owner, resourceAdmin, packageSelectorParams(safeParams));
             case "getAgentPackageTree":

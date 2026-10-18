@@ -1,5 +1,19 @@
 # Building a Package for PilotSwarm
 
+> **Executable published-package safety gate:** publishing code records a pending
+> immutable candidate, never automatic activation or grandfathered execution.
+> Supported ESM module tools require administrator content approval, verified
+> packaged dependencies/config, explicit activation and exact durable session pins.
+> They run only in supervised child processes; every tool invocation rechecks
+> authoritative current identity/owner/capability/registration state. Prefer
+> `tools/worker-module.mjs`; `.js` requires packaged `"type":"module"`.
+> Automatic package MCP registration and free-form handlers/prechecks remain
+> quarantined; a lower-level session-authorized supervised stdio MCP API is tested.
+> Declarative prompts/skills retain their behavior. Historical unbound sessions
+> require explicit admin rebind. This prerequisite is **not release-ready**:
+> see the supported/unsupported shapes and remaining integration/review gates.
+> See the [platform prerequisite and remaining gates](proposals/executable-package-authorization.md).
+
 > **Point your coding assistant (Copilot / Claude / …) at this file.** It is a
 > complete, self-contained recipe for authoring a package that uploads
 > to PilotSwarm and passes validation on the first try. Every schema, rule,
@@ -204,9 +218,9 @@ description: House style for responses.
 - Every subdirectory of `skills/` must contain a parseable `SKILL.md`;
   stray directories fail validation.
 
-## 5. Worker tools — `tools/worker-module.js`
+## 5. Worker tools — `tools/worker-module.mjs` (or packaged ESM `.js`)
 
-Real code executed on the worker. The exact contract (copy this shape):
+Trusted code executed only in a supervised package child. The supported declaration contract:
 
 ```js
 /**
@@ -238,15 +252,17 @@ export default {
 
 - `parameters` is a JSON-Schema object; `handler` is async and returns a
   JSON-serializable value.
-- **No bare imports.** The module loads from an install cache with no
-  `node_modules` above it — `import x from "some-pkg"` fails at load and
-  quarantines the package. `node:` built-ins are fine; anything else must be
-  vendored inside the package (discouraged — export plain objects instead).
+- **Closed imports only.** Bare npm imports, vendored `node_modules`, dynamic
+  imports, child-process/native loading and external executable dependencies are
+  rejected before activation. Static relative packaged ESM imports and a
+  documented subset of `node:` builtins are supported. `.js` needs a packaged
+  `package.json` with `"type":"module"` (include it when using manifest staging).
 - The file must be valid **ES module** syntax; it is compile-checked (never
   executed) at validation.
-- A named agent can declare the tool's `name` in its frontmatter `tools:`
-  list. Generic and named sessions can also discover a package's tools and
-  activate the needed permitted tools with `use_package`; no agent file is
+- A named agent must declare the tool's `name` in its frontmatter `tools:`
+  list and hold an exact durable package pin. Executable `use_package` selection
+  from another package or a generic agent is not supported in this tranche;
+  those invocations are denied. In the historical declarative workflow no agent file is
   required for a tools-only package. Session and deployment restrictions still
   apply, and loading a skill alone does not attach tools.
 

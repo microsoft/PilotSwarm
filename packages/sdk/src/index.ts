@@ -367,6 +367,30 @@ export { SessionDumper } from "./session-dumper.js";
 
 // ─── Agent packages (docs/proposals/agent-packages.md) ───────────
 export {
+    inspectAgentPackageArtifact,
+    ExecutablePackageDeniedError,
+    denyPublishedPackageExecution,
+} from "./agent-package-authorization.js";
+export type {
+    ExecutablePackageIdentity,
+    AgentPackageInspection,
+    PackageReviewDecision,
+    AgentPackageReviewCandidate,
+    AgentPackageReviewMutation,
+    AgentPackageActivationMutation,
+    SessionAgentPackageBinding,
+    SessionAgentPackageRebind,
+    AgentPackageReviewAudit,
+    ExecutablePackageAdmissionRequest,
+    ExecutablePackageAdmissionAuthority,
+} from "./agent-package-authorization.js";
+export { AgentPackageReviewError } from "./agent-package-review-store.js";
+export { PgPackageRuntimeAuthority } from "./package-runtime-authority.js";
+export type { PackageRuntimeAuthority, PackageRegistration, PackageInvocationContext } from "./package-runtime-authority.js";
+export { SupervisedPackageRuntime } from "./package-runtime-supervisor.js";
+export { verifyPackageRuntime, type VerifiedPackageRuntime } from "./package-runtime-format.js";
+export type { AgentPackageReviewCatalog, AgentPackageReviewActor } from "./agent-package-review-store.js";
+export {
     agentPackagesArtifactSessionId,
     agentPackageArtifactFilename,
     agentPackageTarSha256,

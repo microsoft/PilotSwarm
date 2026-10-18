@@ -39,6 +39,7 @@ import type { PilotSwarmWorkerOptions, ManagedSessionConfig, WorkspaceProvider }
 import { createBuiltInWorkspaceProvider } from "./workspace.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { installAgentPackages, loadAgentPackageTools } from "./agent-package-installer.js";
+import type { SupervisedPackageRuntime } from "./package-runtime-supervisor.js";
 import fs from "node:fs";
 import os from "node:os";
 import { monitorEventLoopDelay, type IntervalHistogram } from "node:perf_hooks";
@@ -311,13 +312,15 @@ export class PilotSwarmWorker {
      * agent packages. Empty for plugin dirs the deployment configured itself.
      */
     private _capabilitySources: CapabilitySource[] = [];
-    private _packageDirOwners = new Map<string, { packageId: string; revision: string; scope: "shared" | "user"; owner: { provider: string; subject: string } | null }>();
+    private _packageDirOwners = new Map<string, { packageId: string; versionId?: string; revision: string; scope: "shared" | "user"; owner: { provider: string; subject: string } | null }>();
     /** Agent-package dynamic install state (docs/proposals/agent-packages.md). */
     private _agentPackagesCacheDir: string | null = null;
     private _agentPackagesRefreshMs = 20_000;
     private _agentPackagesEpoch = -1;
     private _agentPackagesTimer: ReturnType<typeof setInterval> | null = null;
     private _agentPackagesRefreshing = false;
+    private _packageRuntimeInstances = new Set<SupervisedPackageRuntime>();
+    private _agentPackagesRefreshDone: Promise<void> | null = null;
     /** Tools contributed by installed packages, merged under static tools. */
     private _agentPackageTools = new Map<string, Tool<any>>();
     /** Per-package tool maps — lets a session prefer ITS package's handler on a name collision. */
@@ -1057,6 +1060,9 @@ export class PilotSwarmWorker {
 
     async stop(): Promise<void> {
         this._stopRequested = true;
+        await this._agentPackagesRefreshDone;
+        await Promise.allSettled([...this._packageRuntimeInstances].map(runtime => runtime.stop()));
+        this._packageRuntimeInstances.clear();
         this._stopProviderPolling();
         if (this._evictionTimer) {
             clearInterval(this._evictionTimer);
@@ -1325,20 +1331,26 @@ export class PilotSwarmWorker {
     }
 
     async refreshAgentPackages(opts: { force?: boolean } = {}): Promise<void> {
-        if (!this._agentPackagesCacheDir || !this._catalog || !this.artifactStore) return;
+        if (this._stopRequested || !this._agentPackagesCacheDir || !this._catalog || !this.artifactStore) return;
         if (this._agentPackagesRefreshing) return;
         this._agentPackagesRefreshing = true;
+        let finished!: () => void;
+        this._agentPackagesRefreshDone = new Promise(resolve => { finished = resolve; });
         try {
             const currentEpoch = await this._catalog.agentRegistryEpoch();
             if (!opts.force && currentEpoch === this._agentPackagesEpoch) {
                 return;
             }
+            await Promise.allSettled([...this._packageRuntimeInstances].map(runtime => runtime.stop()));
+            this._packageRuntimeInstances.clear();
 
             const result = await installAgentPackages({
                 catalog: this._catalog,
                 artifactStore: this.artifactStore,
                 cacheDir: this._agentPackagesCacheDir,
+                runtimeAuthority: this._catalog.packageRuntime,
             });
+            if (this._stopRequested) return;
 
             // Import worker modules BEFORE the swap; an import failure
             // quarantines the whole package (prompts included) so a package
@@ -1355,7 +1367,14 @@ export class PilotSwarmWorker {
             for (const pkg of result.packages) {
                 if (pkg.status !== "ok" || !pkg.workerModulePath) continue;
                 try {
-                    const tools = await loadAgentPackageTools(pkg, { workerNodeId: this.config.workerNodeId });
+                    const tools = await loadAgentPackageTools(pkg, {
+                        workerNodeId: this.config.workerNodeId,
+                        runtimeAuthority: this._catalog.packageRuntime,
+                        onRuntime: runtime => {
+                            this._packageRuntimeInstances.add(runtime);
+                            if (this._stopRequested) void runtime.stop().catch(() => {});
+                        },
+                    });
                     const collision = findReservedPackageToolName(
                         tools.map((tool: any) => String(tool?.name || "")),
                         [
@@ -1376,6 +1395,7 @@ export class PilotSwarmWorker {
                     }
                     if (ownMap.size > 0) packageToolsByPackage.set(pkg.packageId, ownMap);
                 } catch (error: any) {
+                    await pkg.runtime?.stop().catch(() => {});
                     pkg.status = "error";
                     pkg.error = `worker-module import failed: ${String(error?.message ?? error)}`;
                 }
@@ -1398,7 +1418,7 @@ export class PilotSwarmWorker {
             this._packageDirOwners = new Map(
                 result.packages
                     .filter((p) => p.status === "ok")
-                    .map((p) => [path.resolve(p.dir), { packageId: p.packageId, revision: p.sha256, scope: p.scope, owner: p.owner }]),
+                    .map((p) => [path.resolve(p.dir), { packageId: p.packageId, versionId: p.versionId, revision: p.sha256, scope: p.scope, owner: p.owner }]),
             );
 
             // Synchronous swap — no await between reset and reload, so no
@@ -1448,6 +1468,8 @@ export class PilotSwarmWorker {
             // once a refresh resolves; never throws.
             await this._reportAgentWorkerState();
             this._agentPackagesRefreshing = false;
+            finished();
+            this._agentPackagesRefreshDone = null;
         }
     }
 
@@ -1999,6 +2021,8 @@ export class PilotSwarmWorker {
                 descriptor: agent.layerDescriptor,
                 ...(agent.packageId ? {
                     packageId: agent.packageId,
+                    packageVersionId: agent.packageVersionId,
+                    packageSha256: agent.packageSha256,
                     packageScope: agent.packageScope ?? "shared",
                     packageOwner: agent.packageOwner ?? null,
                 } : {}),
@@ -2191,6 +2215,8 @@ export class PilotSwarmWorker {
                     const provenance = this._packageDirOwners.get(absDir);
                     if (provenance) {
                         (agent as any).packageId = provenance.packageId;
+                        (agent as any).packageVersionId = provenance.versionId;
+                        (agent as any).packageSha256 = provenance.revision;
                         (agent as any).packageDir = absDir;
                     }
                     if (provenance && provenance.scope === "user" && provenance.owner) {

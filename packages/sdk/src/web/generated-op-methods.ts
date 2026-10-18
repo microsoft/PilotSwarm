@@ -7,6 +7,7 @@
 
 /** Every operation name in the protocol table, sorted. */
 export const GENERATED_OP_NAMES: readonly string[] = [
+    "activateAgentPackageVersion",
     "adoptLegacySystemGitHubCopilotKey",
     "assignSessionsToGroup",
     "cancelPendingMessage",
@@ -23,6 +24,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "createSession",
     "createSessionForAgent",
     "createSessionGroup",
+    "decideAgentPackageReview",
     "deleteAgentPackage",
     "deleteArtifact",
     "deleteFact",
@@ -38,7 +40,9 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "factsCapabilities",
     "forcePurgeFacts",
     "getAgentPackage",
+    "getAgentPackageActivationAudit",
     "getAgentPackageFile",
+    "getAgentPackageReviewAudit",
     "getAgentPackageTree",
     "getArtifactMetadata",
     "getCanvasLive",
@@ -71,6 +75,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getProviderUsageSummary",
     "getSession",
     "getSessionAccess",
+    "getSessionAgentPackageBinding",
     "getSessionCreationPolicy",
     "getSessionEvents",
     "getSessionEventsBefore",
@@ -100,6 +105,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "graphNeighbourhood",
     "graphStats",
     "listAgentPackageEditors",
+    "listAgentPackageReviews",
     "listAgentPackages",
     "listAgentWorkerState",
     "listArtifacts",
@@ -127,6 +133,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "readArtifactBase64",
     "readCanvasKv",
     "readFacts",
+    "rebindSessionAgentPackage",
     "regenerateSession",
     "removeCanvasShareLink",
     "removeProviderLimit",
@@ -197,6 +204,14 @@ export const GENERATED_OP_NAMES: readonly string[] = [
  * the server generates its routes from.
  */
 export interface ManagementOps {
+    /**
+     * Exact digest/review/active-pointer revision CAS activation. Unverifiable executable closure remains denied.
+     * @remarks `POST /agent-package-reviews/activation` — access: `fleet:admin` (admin)
+     */
+    activateAgentPackageVersion(params: {
+        input?: any;
+    }): Promise<any>;
+
     /**
      * Adopt the legacy synthetic System GHCP key into the calling admin's private, system-enabled provider. [admin]
      * @remarks `POST /management/providers/adopt-system-github-key` — access: `fleet:admin`
@@ -357,6 +372,14 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Authenticated administrator: CAS exact package/version/digest/revision; append audit. Does not activate code.
+     * @remarks `POST /agent-package-reviews/decision` — access: `fleet:admin` (admin)
+     */
+    decideAgentPackageReview(params: {
+        input?: any;
+    }): Promise<any>;
+
+    /**
      * Delete a package: every version and its artifacts. Creator or admin. Live sessions using its agents fail resolution on their next turn. `scope` picks which same-named copy.
      * @remarks `DELETE /agent-packages/:name` — access: `authed`
      */
@@ -487,6 +510,14 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Authenticated administrator: retained activation audit.
+     * @remarks `GET /agent-package-activations/:packageId/audit` — access: `fleet:admin` (admin)
+     */
+    getAgentPackageActivationAudit(params: {
+        packageId: string;
+    }): Promise<any>;
+
+    /**
      * One file from the package tarball (preview; text size-capped, binary flagged).
      * @remarks `GET /agent-packages/:name/file` — access: `authed`
      */
@@ -497,6 +528,14 @@ export interface ManagementOps {
         scope?: string;
         ownerProvider?: string;
         ownerSubject?: string;
+    }): Promise<any>;
+
+    /**
+     * Authenticated administrator: append-only package decision history.
+     * @remarks `GET /agent-package-reviews/:versionId/audit` — access: `fleet:admin` (admin)
+     */
+    getAgentPackageReviewAudit(params: {
+        versionId: string;
     }): Promise<any>;
 
     /**
@@ -759,6 +798,14 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Authenticated administrator: exact durable named-agent package binding, never an execution grant.
+     * @remarks `GET /agent-package-bindings/:sessionId` — access: `fleet:admin` (admin)
+     */
+    getSessionAgentPackageBinding(params: {
+        sessionId: string;
+    }): Promise<any>;
+
+    /**
      * Session creation policy.
      * @remarks `GET /session-creation-policy` — access: `authed`
      */
@@ -1007,6 +1054,12 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Authenticated administrator: immutable package review candidates, including pending and prior active identity.
+     * @remarks `GET /agent-package-reviews` — access: `fleet:admin` (admin)
+     */
+    listAgentPackageReviews(params?: Record<string, never>): Promise<any>;
+
+    /**
      * Agent packages visible to the caller: shared + own user-scope (admins see all).
      * @remarks `GET /agent-packages` — access: `authed`
      */
@@ -1226,6 +1279,14 @@ export interface ManagementOps {
         agentId?: string;
         limit?: number;
         scope?: string;
+    }): Promise<any>;
+
+    /**
+     * Authenticated administrator: exact version/digest and expected binding revision CAS; preserve binding history.
+     * @remarks `POST /agent-package-bindings/rebind` — access: `fleet:admin` (admin)
+     */
+    rebindSessionAgentPackage(params: {
+        input?: any;
     }): Promise<any>;
 
     /**
@@ -1799,6 +1860,7 @@ export function createManagementOps(
     callOp: (name: string, params: Record<string, unknown>) => Promise<any>,
 ): ManagementOps {
     return {
+        activateAgentPackageVersion: (params: Record<string, unknown> = {}) => callOp("activateAgentPackageVersion", params),
         adoptLegacySystemGitHubCopilotKey: (params: Record<string, unknown> = {}) => callOp("adoptLegacySystemGitHubCopilotKey", params),
         assignSessionsToGroup: (params: Record<string, unknown> = {}) => callOp("assignSessionsToGroup", params),
         cancelPendingMessage: (params: Record<string, unknown> = {}) => callOp("cancelPendingMessage", params),
@@ -1815,6 +1877,7 @@ export function createManagementOps(
         createSession: (params: Record<string, unknown> = {}) => callOp("createSession", params),
         createSessionForAgent: (params: Record<string, unknown> = {}) => callOp("createSessionForAgent", params),
         createSessionGroup: (params: Record<string, unknown> = {}) => callOp("createSessionGroup", params),
+        decideAgentPackageReview: (params: Record<string, unknown> = {}) => callOp("decideAgentPackageReview", params),
         deleteAgentPackage: (params: Record<string, unknown> = {}) => callOp("deleteAgentPackage", params),
         deleteArtifact: (params: Record<string, unknown> = {}) => callOp("deleteArtifact", params),
         deleteFact: (params: Record<string, unknown> = {}) => callOp("deleteFact", params),
@@ -1830,7 +1893,9 @@ export function createManagementOps(
         factsCapabilities: (params: Record<string, unknown> = {}) => callOp("factsCapabilities", params),
         forcePurgeFacts: (params: Record<string, unknown> = {}) => callOp("forcePurgeFacts", params),
         getAgentPackage: (params: Record<string, unknown> = {}) => callOp("getAgentPackage", params),
+        getAgentPackageActivationAudit: (params: Record<string, unknown> = {}) => callOp("getAgentPackageActivationAudit", params),
         getAgentPackageFile: (params: Record<string, unknown> = {}) => callOp("getAgentPackageFile", params),
+        getAgentPackageReviewAudit: (params: Record<string, unknown> = {}) => callOp("getAgentPackageReviewAudit", params),
         getAgentPackageTree: (params: Record<string, unknown> = {}) => callOp("getAgentPackageTree", params),
         getArtifactMetadata: (params: Record<string, unknown> = {}) => callOp("getArtifactMetadata", params),
         getCanvasLive: (params: Record<string, unknown> = {}) => callOp("getCanvasLive", params),
@@ -1863,6 +1928,7 @@ export function createManagementOps(
         getProviderUsageSummary: (params: Record<string, unknown> = {}) => callOp("getProviderUsageSummary", params),
         getSession: (params: Record<string, unknown> = {}) => callOp("getSession", params),
         getSessionAccess: (params: Record<string, unknown> = {}) => callOp("getSessionAccess", params),
+        getSessionAgentPackageBinding: (params: Record<string, unknown> = {}) => callOp("getSessionAgentPackageBinding", params),
         getSessionCreationPolicy: (params: Record<string, unknown> = {}) => callOp("getSessionCreationPolicy", params),
         getSessionEvents: (params: Record<string, unknown> = {}) => callOp("getSessionEvents", params),
         getSessionEventsBefore: (params: Record<string, unknown> = {}) => callOp("getSessionEventsBefore", params),
@@ -1892,6 +1958,7 @@ export function createManagementOps(
         graphNeighbourhood: (params: Record<string, unknown> = {}) => callOp("graphNeighbourhood", params),
         graphStats: (params: Record<string, unknown> = {}) => callOp("graphStats", params),
         listAgentPackageEditors: (params: Record<string, unknown> = {}) => callOp("listAgentPackageEditors", params),
+        listAgentPackageReviews: (params: Record<string, unknown> = {}) => callOp("listAgentPackageReviews", params),
         listAgentPackages: (params: Record<string, unknown> = {}) => callOp("listAgentPackages", params),
         listAgentWorkerState: (params: Record<string, unknown> = {}) => callOp("listAgentWorkerState", params),
         listArtifacts: (params: Record<string, unknown> = {}) => callOp("listArtifacts", params),
@@ -1919,6 +1986,7 @@ export function createManagementOps(
         readArtifactBase64: (params: Record<string, unknown> = {}) => callOp("readArtifactBase64", params),
         readCanvasKv: (params: Record<string, unknown> = {}) => callOp("readCanvasKv", params),
         readFacts: (params: Record<string, unknown> = {}) => callOp("readFacts", params),
+        rebindSessionAgentPackage: (params: Record<string, unknown> = {}) => callOp("rebindSessionAgentPackage", params),
         regenerateSession: (params: Record<string, unknown> = {}) => callOp("regenerateSession", params),
         removeCanvasShareLink: (params: Record<string, unknown> = {}) => callOp("removeCanvasShareLink", params),
         removeProviderLimit: (params: Record<string, unknown> = {}) => callOp("removeProviderLimit", params),

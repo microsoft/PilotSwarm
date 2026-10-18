@@ -85,6 +85,83 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
         }),
     );
 
+    if (ctx.admin && ctx.role === "admin") {
+        server.registerTool("list_agent_package_reviews", {
+            title: "List Package Reviews [admin]",
+            description: "Authenticated administrator: exact executable-package candidates, digest, inspection, blockers and revisions. Approval is separate from activation.",
+            inputSchema: {},
+        }, withToolErrors(async () => jsonResult(await ctx.mgmt.listAgentPackageReviews(owner, ctx.admin))));
+        server.registerTool("get_agent_package_review_audit", {
+            title: "Package Review Audit [admin]",
+            description: "Authenticated administrator: retained package decision audit.",
+            inputSchema: { version_id: z.string().min(1) },
+        }, withToolErrors(async ({ version_id }) =>
+            jsonResult(await ctx.mgmt.getAgentPackageReviewAudit(version_id, owner, ctx.admin))));
+        server.registerTool("get_agent_package_activation_audit", {
+            title: "Package Activation Audit [admin]",
+            description: "Retained exact-version activation pointer history. Does not describe runtime fences.",
+            inputSchema: { package_id: z.string().min(1) },
+        }, withToolErrors(async ({ package_id }) =>
+            jsonResult(await ctx.mgmt.getAgentPackageActivationAudit(package_id, owner, ctx.admin))));
+        server.registerTool("get_session_agent_package_binding", {
+            title: "Session Package Binding [admin]",
+            description: "Read a durable exact version/digest binding and current ownership eligibility. This is not an execution grant.",
+            inputSchema: { session_id: z.string().min(1) },
+        }, withToolErrors(async ({ session_id }) =>
+            jsonResult(await ctx.mgmt.getSessionAgentPackageBinding(session_id, owner, ctx.admin))));
+        if (ctx.agentMgmt === "full") {
+            server.registerTool("decide_agent_package_review", {
+                title: "Decide Package Review [admin]",
+                description: "CAS immutable artifact-content acceptance/rejection/revocation with actor/reason audit. Approval accepts bytes only, NOT dependency closure or execution; activation remains separate.",
+                inputSchema: {
+                    package_id: z.string().min(1), version_id: z.string().min(1),
+                    sha256: z.string().regex(/^[a-f0-9]{64}$/), expected_revision: z.number().int().positive(),
+                    decision: z.enum(["approved", "rejected", "revoked"]), reason: z.string().min(1),
+                },
+            }, withToolErrors(async ({ package_id, version_id, sha256, expected_revision, decision, reason }) => {
+                await ctx.mgmt.decideAgentPackageReview({
+                    packageId: package_id, versionId: version_id, sha256,
+                    expectedRevision: expected_revision, decision, reason,
+                }, owner, ctx.admin);
+                return jsonResult({ recorded: true, approvalScope: "artifact-content", activationAllowed: false, runtimeFencing: "not-reported" });
+            }));
+            server.registerTool("activate_agent_package_version", {
+                title: "Activate Exact Package Version [admin]",
+                description: "CAS exact digest, review revision, active-pointer revision and prior pointer. Existing session pins do not move. Unverifiable executable targets remain denied.",
+                inputSchema: {
+                    package_id: z.string().min(1), version_id: z.string().min(1),
+                    sha256: z.string().regex(/^[a-f0-9]{64}$/),
+                    expected_review_revision: z.number().int().positive(),
+                    expected_activation_revision: z.number().int().positive(),
+                    expected_active_version_id: z.string().min(1).nullable(), reason: z.string().min(1),
+                },
+            }, withToolErrors(async ({ package_id, version_id, sha256, expected_review_revision,
+                expected_activation_revision, expected_active_version_id, reason }) => {
+                await ctx.mgmt.activateAgentPackageVersion({
+                    packageId: package_id, versionId: version_id, sha256,
+                    expectedReviewRevision: expected_review_revision, expectedActivationRevision: expected_activation_revision,
+                    expectedActiveVersionId: expected_active_version_id, reason,
+                }, owner, ctx.admin);
+                return jsonResult({ activated: true, executionAllowed: false, runtimeFencing: "not-reported" });
+            }));
+            server.registerTool("rebind_session_agent_package", {
+                title: "Rebind Exact Session Package Version [admin]",
+                description: "CAS a same-package/agent durable pin to exact version/digest with retained history. Invalidates registrations; the response does not assert cancellation or fencing completion.",
+                inputSchema: {
+                    session_id: z.string().min(1), package_id: z.string().min(1), version_id: z.string().min(1),
+                    sha256: z.string().regex(/^[a-f0-9]{64}$/), agent_name: z.string().min(1),
+                    expected_binding_revision: z.number().int().nonnegative().describe("Zero explicitly binds a previously unbound historical session"), reason: z.string().min(1),
+                },
+            }, withToolErrors(async ({ session_id, package_id, version_id, sha256, agent_name, expected_binding_revision, reason }) => {
+                await ctx.mgmt.rebindSessionAgentPackage({
+                    sessionId: session_id, packageId: package_id, versionId: version_id, sha256,
+                    agentName: agent_name, expectedBindingRevision: expected_binding_revision, reason,
+                }, owner, ctx.admin);
+                return jsonResult({ rebound: true, executionAllowed: false, runtimeFencing: "not-reported" });
+            }));
+        }
+    }
+
     if (ctx.agentMgmt !== "full") return;
 
     server.registerTool(

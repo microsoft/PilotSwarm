@@ -129,6 +129,13 @@ export class HttpApiTransport {
     // everywhere for backward compatibility; name-only falls back to the
     // registry's own-copy-then-shared walk.
     listAgentPackages() { return this.api.call("listAgentPackages"); }
+    listAgentPackageReviews() { return this.api.call("listAgentPackageReviews"); }
+    decideAgentPackageReview(input) { return this.api.call("decideAgentPackageReview", { input }); }
+    getAgentPackageReviewAudit(versionId) { return this.api.call("getAgentPackageReviewAudit", { versionId }); }
+    activateAgentPackageVersion(input) { return this.api.call("activateAgentPackageVersion", { input }); }
+    getAgentPackageActivationAudit(packageId) { return this.api.call("getAgentPackageActivationAudit", { packageId }); }
+    getSessionAgentPackageBinding(sessionId) { return this.api.call("getSessionAgentPackageBinding", { sessionId }); }
+    rebindSessionAgentPackage(input) { return this.api.call("rebindSessionAgentPackage", { input }); }
     getAgentPackage(name, selector) { return this.api.call("getAgentPackage", { name, ...selectorParams(selector) }); }
     getAgentPackageTree(name, semver, selector) { return this.api.call("getAgentPackageTree", { name, ...(semver ? { semver } : {}), ...selectorParams(selector) }); }
     getAgentPackageFile(name, semver, filePath, selector) { return this.api.call("getAgentPackageFile", { name, filePath, ...(semver ? { semver } : {}), ...selectorParams(selector) }); }

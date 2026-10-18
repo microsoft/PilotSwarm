@@ -2,6 +2,7 @@ import { normalizeSessionSortMode, normalizeSessionUsage } from "../../core/src/
 import { ChatCallLine } from "./chat-call-line.js";
 import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
+import { PackageReviewTabs } from "./package-review-tabs.js";
 import { NativeTaskCard } from "./native-task-card.js";
 import { WorkspacePane, WORKSPACE_CHANGED_EVENT, announceWorkspaceChange, downloadBase64, workspaceToolActivity } from "./workspace-pane.js";
 // createPortal is only invoked by browser-only surfaces (tooltips, toolbar
@@ -14647,7 +14648,7 @@ function AdminConsolePanel({ controller, mobile = false }) {
                 detail,
                 workspacePane);
         } else if (showPackages) {
-            body = tree;
+            body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree, detail);
         } else if (showWorkers) {
             body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree,
                 React.createElement(AdminWorkersPane, { controller, view }));
@@ -14817,12 +14818,7 @@ function AdminPackageDetailPane({ controller, view }) {
     const packages = view.packages || {};
     const detail = packages.detail;
     if (!packages.selectedName) {
-        return React.createElement("div", { className: "ps-admin-detail is-empty" },
-            React.createElement("h3", null, "Packages"),
-            React.createElement("p", { className: "ps-admin-console__hint" },
-                packages.empty
-                    ? "No packages yet. Add reusable skills, tools, MCP integrations, or authored agent workflows from a repo or folder — or use `pilotswarm agents push ./my-kit`."
-                    : "Select a package from the tree to see its detail, versions, and files."));
+        return React.createElement(PackageReviewTabs, { controller, view });
     }
     const confirmDelete = () => {
         const ok = window.confirm(

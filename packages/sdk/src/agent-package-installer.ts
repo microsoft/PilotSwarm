@@ -8,24 +8,31 @@
  * worker-module must never take the worker down or block other packages.
  *
  * Cache layout: <cacheDir>/<name>@<semver>.<sha12>/ with a
- * .pilotswarm-meta.json sidecar carrying the verified sha256. A directory
- * whose sidecar matches the registry sha is reused without downloading —
- * this is the "never re-pull the same package" guarantee.
+ * .pilotswarm-meta.json sidecar carrying diagnostic metadata only. Every
+ * refresh verifies the artifact and all materialized bytes; metadata is
+ * never executable approval or proof of cache integrity.
  */
 
 import * as fs from "fs";
 import * as path from "path";
-import { pathToFileURL } from "url";
 import type { ArtifactStore } from "./session-store.js";
 import type { AgentPackageInstallEntry, SessionCatalog } from "./cms.js";
-import { extractAgentPackageTarGz } from "./agent-package-format.js";
+import { extractAgentPackageTarGz, readAgentPackageTarGz } from "./agent-package-format.js";
 import { fetchAgentPackageTarGz } from "./agent-package-service.js";
+import {
+    denyPublishedPackageExecution,
+    inspectAgentPackageArtifact,
+    type AgentPackageInspection,
+} from "./agent-package-authorization.js";
+
+import type { PackageRuntimeAuthority } from "./package-runtime-authority.js";
+import { SupervisedPackageRuntime } from "./package-runtime-supervisor.js";
 
 const META_FILENAME = ".pilotswarm-meta.json";
-
 export interface InstalledAgentPackage {
     /** Registry row identity — stable across versions, unique across scopes/owners. */
     packageId: string;
+    versionId?: string;
     name: string;
     semver: string;
     sha256: string;
@@ -36,6 +43,8 @@ export interface InstalledAgentPackage {
     dir: string;
     /** Absolute path to tools/worker-module.js when the package ships tools. */
     workerModulePath: string | null;
+    inspection?: AgentPackageInspection;
+    runtime?: SupervisedPackageRuntime;
     status: "ok" | "error";
     error?: string;
 }
@@ -74,12 +83,30 @@ function cacheDirPackageName(dirName: string): string {
     return dirName.split("@")[0];
 }
 
-function readMetaSha(dir: string): string | null {
+function cacheMatchesArtifact(dir: string, targz: Buffer): boolean {
     try {
-        const meta = JSON.parse(fs.readFileSync(path.join(dir, META_FILENAME), "utf8"));
-        return typeof meta?.sha256 === "string" ? meta.sha256 : null;
+        if (!fs.lstatSync(dir).isDirectory() || fs.lstatSync(dir).isSymbolicLink()) return false;
+        const expected = new Map(readAgentPackageTarGz(targz).map((entry) => [entry.name, entry.body]));
+        const visit = (current: string, prefix: string): boolean => {
+            for (const name of fs.readdirSync(current)) {
+                if (!prefix && name === META_FILENAME) continue;
+                const rel = prefix ? `${prefix}/${name}` : name;
+                const file = path.join(current, name);
+                const stat = fs.lstatSync(file);
+                if (stat.isSymbolicLink()) return false;
+                if (stat.isDirectory()) {
+                    if (!visit(file, rel)) return false;
+                } else {
+                    const body = expected.get(rel);
+                    if (!stat.isFile() || !body || !fs.readFileSync(file).equals(body)) return false;
+                    expected.delete(rel);
+                }
+            }
+            return true;
+        };
+        return visit(dir, "") && expected.size === 0;
     } catch {
-        return null;
+        return false;
     }
 }
 
@@ -93,6 +120,7 @@ export async function installAgentPackages(opts: {
     catalog: SessionCatalog;
     artifactStore: ArtifactStore;
     cacheDir: string;
+    runtimeAuthority?: PackageRuntimeAuthority;
 }): Promise<AgentPackageInstallResult> {
     const epoch = await opts.catalog.agentRegistryEpoch();
     const manifest = await opts.catalog.getAgentPackagesInstallManifest();
@@ -103,6 +131,7 @@ export async function installAgentPackages(opts: {
         const dir = path.join(opts.cacheDir, cacheDirNameFor(entry));
         const installed: InstalledAgentPackage = {
             packageId: entry.packageId,
+            versionId: entry.versionId,
             name: entry.name,
             semver: entry.semver,
             sha256: entry.sha256,
@@ -114,10 +143,30 @@ export async function installAgentPackages(opts: {
             status: "ok",
         };
         try {
-            if (readMetaSha(dir) !== entry.sha256) {
-                const targz = await fetchAgentPackageTarGz(
-                    opts.artifactStore, entry.artifactFilename, entry.sha256,
-                );
+            if (entry.reviewDecision === "rejected" || entry.reviewDecision === "revoked") {
+                throw new Error(`AGENT_PACKAGE_EXECUTABLE_DENIED: candidate is ${entry.reviewDecision}`);
+            }
+            const targz = await fetchAgentPackageTarGz(
+                opts.artifactStore, entry.artifactFilename, entry.sha256,
+            );
+            installed.inspection = inspectAgentPackageArtifact(targz, entry.sha256);
+            if (installed.inspection.name !== entry.name || installed.inspection.semver !== entry.semver) {
+                throw new Error("AGENT_PACKAGE_EXECUTABLE_DENIED: artifact manifest identity mismatch");
+            }
+            if (opts.catalog.packageReviews?.inspectArtifact && entry.versionId && entry.reviewRevision != null) {
+                await opts.catalog.packageReviews.inspectArtifact({
+                    packageId: entry.packageId, versionId: entry.versionId, sha256: entry.sha256,
+                }, entry.reviewRevision, targz);
+            }
+            if (installed.inspection.executable) {
+                if (!opts.runtimeAuthority || !installed.inspection.execution || entry.reviewDecision !== "approved") {
+                    denyPublishedPackageExecution();
+                }
+                if (Object.keys(installed.inspection.execution.mcp).length) {
+                    throw new Error("AGENT_PACKAGE_EXECUTABLE_DENIED: automatic package MCP registration is unsupported; use the session-authorized supervised MCP API");
+                }
+            }
+            if (!cacheMatchesArtifact(dir, targz)) {
                 // Unpack to a sibling tmp dir, stamp the sidecar, then rename
                 // into place so a crash mid-unpack never yields a half dir
                 // that passes the sidecar check.
@@ -135,7 +184,7 @@ export async function installAgentPackages(opts: {
                         // Shared-cache race (local multi-worker): if a
                         // concurrent installer won and the dir now carries the
                         // right sha, that IS success — content is identical.
-                        if (readMetaSha(dir) === entry.sha256) {
+                        if (cacheMatchesArtifact(dir, targz)) {
                             fs.rmSync(tmp, { recursive: true, force: true });
                         } else {
                             throw raceError;
@@ -146,7 +195,7 @@ export async function installAgentPackages(opts: {
                     throw error;
                 }
             }
-            const workerModule = path.join(dir, "tools", "worker-module.js");
+            const workerModule = path.join(dir, installed.inspection.execution?.module ?? "tools/worker-module.js");
             installed.workerModulePath = fs.existsSync(workerModule) ? workerModule : null;
         } catch (error: any) {
             installed.status = "error";
@@ -180,31 +229,20 @@ export async function installAgentPackages(opts: {
 }
 
 /**
- * Import a package worker-module and return its tools.
- *
- * The import URL is cache-busted by the package sha, so a refreshed package
- * version gets a genuinely fresh module while an unchanged one reuses the
- * ESM cache. Module contract (same as the CLI --worker module):
- *   export default { createTools({ workerNodeId }) => Tool[] }  // or
- *   export default { tools: Tool[] }                            // or
- *   export const tools = [...]
+ * Authoritative inspection and fresh byte verification are required even when
+ * callers construct an installed object or retain warm metadata. Package code
+ * is imported only by the supervisor's execution child, never this loader.
  */
 export async function loadAgentPackageTools(
     pkg: InstalledAgentPackage,
-    context: { workerNodeId?: string },
+    context: { workerNodeId?: string; runtimeAuthority?: PackageRuntimeAuthority; onRuntime?: (runtime: SupervisedPackageRuntime) => void },
 ): Promise<any[]> {
     if (!pkg.workerModulePath) return [];
-    const url = `${pathToFileURL(pkg.workerModulePath).href}?v=${pkg.sha256.slice(0, 12)}`;
-    const mod: any = await import(url);
-    const surface = mod?.default ?? mod;
-    let tools: any[] = [];
-    if (typeof surface?.createTools === "function") {
-        tools = await surface.createTools({ workerNodeId: context.workerNodeId });
-    } else if (Array.isArray(surface?.tools)) {
-        tools = surface.tools;
-    } else if (Array.isArray(mod?.tools)) {
-        tools = mod.tools;
-    }
-    if (!Array.isArray(tools)) return [];
-    return tools.filter((t) => t && typeof (t as any).name === "string");
+    if (!context.runtimeAuthority || !pkg.inspection?.execution || !pkg.versionId) denyPublishedPackageExecution();
+    const { runtime, tools } = await SupervisedPackageRuntime.start(
+        context.runtimeAuthority, { packageId: pkg.packageId, versionId: pkg.versionId, sha256: pkg.sha256 },
+        pkg.dir, pkg.inspection.execution, context.workerNodeId ?? "unknown-worker", context.onRuntime,
+    );
+    pkg.runtime = runtime;
+    return tools;
 }
