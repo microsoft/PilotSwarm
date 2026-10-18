@@ -318,20 +318,21 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Create a session. Owner is the authenticated principal; visibility defaults to the deployment default. workspace { root, folder? } sets its working folder.
+     * Create a session. Owner is the authenticated principal; visibility defaults to the deployment default. cronPrecheck sets an optional named cron gate; workspace { root, folder? } sets its working folder.
      * @remarks `POST /sessions` — access: `session:create`
      */
     createSession(params: {
         model?: any;
         reasoningEffort?: any;
         contextTier?: any;
+        cronPrecheck?: any;
         groupId?: any;
         visibility?: any;
         workspace?: any;
     }): Promise<any>;
 
     /**
-     * Create a session bound to a named agent. workspace { root, folder? } sets its working folder.
+     * Create a session bound to a named agent. cronPrecheck sets an optional named cron gate; workspace { root, folder? } sets its working folder.
      * @remarks `POST /sessions/for-agent` — access: `session:create`
      */
     createSessionForAgent(params: {
@@ -339,6 +340,7 @@ export interface ManagementOps {
         model?: any;
         reasoningEffort?: any;
         contextTier?: any;
+        cronPrecheck?: any;
         title?: any;
         splash?: any;
         splashMobile?: any;

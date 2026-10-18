@@ -1720,11 +1720,11 @@ export function* processTimer(
                         intervalSeconds: activeCron.intervalSeconds,
                         consecutiveSkips: activeCron.precheckSkips ?? 0,
                         agent: {
-                            boundAgentName: runtime.input.config.boundAgentName,
-                            boundAgentPackageId: runtime.input.config.boundAgentPackageId,
-                            boundAgentSource: runtime.input.config.boundAgentSource,
-                            agentIdentity: runtime.input.config.agentIdentity,
-                            toolNames: runtime.input.config.toolNames,
+                            boundAgentName: state.config.boundAgentName,
+                            boundAgentPackageId: state.config.boundAgentPackageId,
+                            boundAgentSource: state.config.boundAgentSource,
+                            agentIdentity: state.config.agentIdentity,
+                            toolNames: state.config.toolNames,
                         },
                     });
                 } catch (err: any) {

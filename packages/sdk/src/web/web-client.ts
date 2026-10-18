@@ -59,6 +59,7 @@ export class WebPilotSwarmClient {
         model?: string;
         reasoningEffort?: string;
         contextTier?: string;
+        cronPrecheck?: string;
         groupId?: string | null;
         onUserInputRequest?: UserInputHandler;
     } & Record<string, unknown>): Promise<WebPilotSwarmSession> {
@@ -71,6 +72,7 @@ export class WebPilotSwarmClient {
             model: config?.model,
             reasoningEffort: config?.reasoningEffort,
             contextTier: config?.contextTier,
+            ...(config?.cronPrecheck !== undefined ? { cronPrecheck: config.cronPrecheck } : {}),
             groupId: config?.groupId,
             ...(config?.workspace != null ? { workspace: config.workspace } : {}),
         });
@@ -81,6 +83,7 @@ export class WebPilotSwarmClient {
         model?: string;
         reasoningEffort?: string;
         contextTier?: string;
+        cronPrecheck?: string;
         title?: string;
         splash?: string;
         splashMobile?: string;
@@ -95,6 +98,7 @@ export class WebPilotSwarmClient {
             model: opts?.model,
             reasoningEffort: opts?.reasoningEffort,
             contextTier: opts?.contextTier,
+            ...(opts?.cronPrecheck !== undefined ? { cronPrecheck: opts.cronPrecheck } : {}),
             title: opts?.title,
             splash: opts?.splash,
             splashMobile: opts?.splashMobile,

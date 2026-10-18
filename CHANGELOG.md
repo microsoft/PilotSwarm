@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+**Security gate (not deployment-ready).** Package-owned cron prechecks depend on
+the separate executable-package approval and worker-fencing prerequisite.
+Current-owner/bound-copy checks now run before every callback, including
+no-tools callbacks; denied admissions cannot record idle skips. Cron dispatch
+uses resolved startup metadata and tools rather than the original input.
+Both Web creation operations now carry and persist `cronPrecheck`, matching the
+direct client.
+
 **Cron prechecks skip empty polling cycles.** A cron precheck is named code
 that answers whether a scheduled `cron` wake-up has work. An agent package
 exports prechecks from `tools/worker-module.js` (`createCronPrechecks`), and

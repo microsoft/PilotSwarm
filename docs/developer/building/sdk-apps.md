@@ -255,6 +255,13 @@ For remote mode:
 
 ## Cron Prechecks
 
+**Security review gate:** package-owned prechecks are not deployment-ready.
+They depend on the separate executable-package authorization prerequisite:
+administrator approval of exact executable content before loading, immutable
+session bindings, per-invocation authorization and worker fencing. Passing the
+cron tests alone does not satisfy that prerequisite. Approved JavaScript still
+runs in a trusted worker process, not a sandbox.
+
 An agent that polls on a `cron` schedule pays for a full model turn on every
 wake-up, including the many that only find nothing to do. A cron precheck is
 code that runs first and answers whether the cycle has work. Prechecks are
@@ -301,7 +308,10 @@ worker.registerCronPrechecks([{
 
    Only cron schedules this agent arms with a matching reason get the
    precheck; its other cron uses and interactive messages are unaffected.
-3. **The session default.** `client.createSession({ ..., cronPrecheck: "job-queue" })`.
+3. **The session default.** `client.createSession({ ..., cronPrecheck: "job-queue" })`
+   or `client.createSessionForAgent(name, { cronPrecheck: "job-queue" })`.
+   Direct and Web clients persist the same option. Invalid names are rejected
+   with `INVALID_CRON_PRECHECK` before creating a session.
 
 A worker-registered name wins over a same-named package precheck, as with
 tools.
@@ -321,6 +331,12 @@ same schedule; the model sees nothing for that cycle.
   compare its decisions with the turns that ran before relying on it.
 - **Fail open.** An unregistered name, a thrown, timed-out or malformed
   answer, or an activity failure runs the model turn as before.
+- **Admission is not optional.** Before entering a callback, the activity
+  checks current effective ownership and the bound agent copy, even when the
+  callback uses no tools. A package callback requires a resolvable session
+  owner and explicit package binding. Denial throws before entering code or
+  recording an idle skip; the ordinary session path still performs its own
+  authorization. These checks do not replace content approval or fencing.
 - **Only an empty wake-up is eligible.** A wake-up that carries child updates,
   a held note, carried steers or stashed prompts runs the model without
   asking. User messages are never affected.

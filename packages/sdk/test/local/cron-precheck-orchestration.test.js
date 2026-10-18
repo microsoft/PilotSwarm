@@ -17,7 +17,7 @@ vi.mock("../../src/session-proxy.js", () => ({
 
 const SCHEDULE = { intervalSeconds: 300, reason: "check the work queue", precheck: "queue" };
 
-function harness(overrides = {}) {
+function harness(overrides = {}, resolvedAgent = null) {
     const calls = [];
     const turns = [];
     const prechecks = [];
@@ -61,7 +61,7 @@ function harness(overrides = {}) {
                 return { type: "completed", content: "cycle done" };
             case "manager.listChildSessions": return "[]";
             case "manager.getWorkerSessionPolicy": return { policy: null, allowedAgentNames: [] };
-            case "manager.resolveAgentConfig": return null;
+            case "manager.resolveAgentConfig": return resolvedAgent;
             case "manager.getOrchestrationStats": return { historySizeBytes: 0 };
             default: return undefined;
         }
@@ -219,5 +219,29 @@ describe("1.0.82 cron precheck", () => {
         expect(h.prechecks[0]).toMatchObject({ precheck: "queue", packageId: "pkg-1" });
         expect(h.turns).toHaveLength(0);
         expect(buildContinueInput(h.runtime).cronSchedule).toEqual({ ...SCHEDULE, precheckPackageId: "pkg-1", precheckSkips: 1 });
+    });
+
+    it("agentId-only startup dispatches resolved provenance and tools and retains them across continue-as-new", () => {
+        const h = harness({
+            agentId: "poller",
+            iteration: 0,
+            isSystem: false,
+            config: { toolNames: ["caller_tool"] },
+            cronSchedule: { ...SCHEDULE, precheckPackageId: "pkg-shared" },
+        }, { name: "poller", packageId: "pkg-shared", tools: ["queue_tool"] });
+        h.fire({ skip: true, outcome: "skip" });
+        const expectedAgent = {
+            boundAgentName: "poller",
+            boundAgentPackageId: "pkg-shared",
+            toolNames: ["queue_tool", "caller_tool"],
+        };
+        expect(h.prechecks[0].agent).toMatchObject(expectedAgent);
+        expect(h.runtime.input.config.boundAgentPackageId).toBeUndefined();
+        const next = buildContinueInput(h.runtime);
+        expect(next.config).toMatchObject(expectedAgent);
+        const resumed = harness({ ...next, iteration: 1 });
+        resumed.fire({ skip: true, outcome: "skip" });
+        expect(resumed.prechecks[0].agent).toEqual(h.prechecks[0].agent);
+        expect(resumed.prechecks[0].packageId).toBe("pkg-shared");
     });
 });

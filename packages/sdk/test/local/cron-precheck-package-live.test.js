@@ -99,7 +99,7 @@ describe("package cron precheck (live)", () => {
                 respond,
                 worker: { agentPackages: { cacheDir: path.join(env.baseDir, "agent-packages-cache"), refreshIntervalMs: 0 } },
             }, async ({ client, model }) => {
-                const session = await client.createSessionForAgent(AGENT, { title: "precheck-package" });
+                const session = await client.createSessionForAgent(AGENT, { title: "precheck-package", owner: OWNER });
                 await session.send(KICKOFF);
                 const [started] = await waitForEventCount(catalog, session.sessionId, "session.cron_started", 1, 60_000);
                 expect(started.data).toMatchObject({ reason: REASON, precheck: "queue-gate" });

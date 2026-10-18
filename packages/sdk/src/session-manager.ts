@@ -1224,18 +1224,36 @@ export class SessionManager {
         return packageId ? [...(this.packageCronPrechecks.get(packageId)?.values() ?? [])] : this.cronPrechecks;
     }
 
-    /** Resolve current grants without creating or resuming a model session. */
-    async getCronPrecheckMcpServers(input: CronPrecheckInput): Promise<Record<string, MCPServerConfig>> {
+    /** Admission is mandatory even for callbacks that never invoke a tool. */
+    async authorizeCronPrecheck(input: CronPrecheckInput): Promise<void> {
+        await this.resolveCronPrecheckBinding(input);
+    }
+
+    private async resolveCronPrecheckBinding(input: CronPrecheckInput) {
         const config = input.agent ?? {};
+        if (input.packageId && config.boundAgentPackageId !== input.packageId) {
+            throw new BoundAgentPackageUnavailableError(input.packageId, "Cron precheck package is no longer bound to this session");
+        }
         const owner = this.sessionCatalog
             ? await resolveEffectiveSpawnOwner(id => this.sessionCatalog!.getSession(id), input.sessionId)
             : null;
+        const packageId = input.packageId ?? config.boundAgentPackageId;
+        if (packageId && !owner) {
+            throw new BoundAgentPackageUnavailableError(packageId,
+                "Cron precheck package requires a current, resolvable session owner");
+        }
         const ownerKey = owner && owner.provider !== SYSTEM_USER_PRINCIPAL.provider
             ? agentOwnerKey(owner) : null;
         const copy = resolveBoundAgentCopy(this.workerDefaults, config, ownerKey);
-        if (input.packageId && copy?.packageId !== input.packageId) {
-            throw new Error("Cron precheck package is no longer bound to this session");
+        if (config.boundAgentName && !copy) {
+            throw new BoundAgentPackageUnavailableError(input.packageId ?? config.boundAgentPackageId ?? config.boundAgentName);
         }
+        return { config, owner, copy };
+    }
+
+    /** Re-resolve current grants for every tool call, without model hydration. */
+    async getCronPrecheckMcpServers(input: CronPrecheckInput): Promise<Record<string, MCPServerConfig>> {
+        const { config, owner, copy } = await this.resolveCronPrecheckBinding(input);
         const originalMcp = this._boundMcpServers(config, copy);
         const selections = this.sessionCatalog?.getSessionCapabilities
             ? (await this.sessionCatalog.getSessionCapabilities(input.sessionId)).selections : [];

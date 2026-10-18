@@ -333,6 +333,7 @@ export class PilotSwarmClient {
         model?: string;
         reasoningEffort?: ManagedSessionConfig["reasoningEffort"];
         contextTier?: ManagedSessionConfig["contextTier"];
+        cronPrecheck?: string;
         onUserInputRequest?: UserInputHandler;
         toolNames?: string[];
         title?: string;
@@ -357,6 +358,7 @@ export class PilotSwarmClient {
             model: opts?.model,
             reasoningEffort: opts?.reasoningEffort,
             contextTier: opts?.contextTier,
+            cronPrecheck: opts?.cronPrecheck,
             toolNames: opts?.toolNames,
             onUserInputRequest: opts?.onUserInputRequest,
             agentId: agentName,

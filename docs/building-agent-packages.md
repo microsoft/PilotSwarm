@@ -253,6 +253,12 @@ export default {
 
 ### Cron prechecks
 
+**Not yet deployment-ready:** package-owned prechecks depend on the separate
+executable-package authorization prerequisite. Administrator approval of exact
+content before loading and current session permission to invoke it are separate
+requirements; neither one replaces the other. This also applies to package
+tools and executable MCP integrations.
+
 A package whose agent polls on a `cron` schedule can skip empty cycles without
 a model call. Export named cron prechecks beside the tools, and bind them to the
 agent's cron reason in its frontmatter (`cronPrechecks`, §3):
@@ -283,6 +289,10 @@ outside quotes; `#` inside a quoted reason remains part of the reason.
 
 - Each worker loads prechecks with the package; no deployment code changes.
   Only sessions bound to this package's agents can use them.
+- Every callback is subject to current-owner and bound-copy checks, including
+  callbacks that never call MCP. Missing ownership or a removed/inaccessible
+  binding cannot produce an idle-skip result. Exact version/digest approval
+  and distributed revocation fencing remain prerequisite work.
 - `run` continues with the normal model turn. `skip` re-arms the schedule
   without one. A thrown, timed-out or malformed answer runs the model turn,
   and a malformed or duplicate export quarantines the package.
