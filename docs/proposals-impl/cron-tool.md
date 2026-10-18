@@ -51,12 +51,21 @@ The integrated candidate passed the root full build and:
   including one local-Git-version-dependent UID test. They are **not** claimed
   as Linux acceptance.
 
-The requested Linux completed-candidate run and external legacy-worker fencing
-proof remain separate gates. The earlier Linux run failed the passwordless
-broker-role fixture under SCRAM; passing other cases did not make that run pass.
-Both branches now generate and forward the same synthetic broker-role password
-and cover observed cleanup after broker initialization failure. No deployment
-or exact Claude Opus 4.8 completed-candidate review is claimed.
+The integrated code at `9184f58` also passed the
+[actual Linux workflow](https://github.com/seanzqliang/PilotSwarm/actions/runs/39097488723):
+root build, pidfd/Python preflight, policy/shell checks and **41 runtime cases,
+zero failures/skips**, including the cron activity paths. The prerequisite at
+`b358ba1` independently passed its
+[37-case Linux runtime matrix](https://github.com/seanzqliang/PilotSwarm/actions/runs/39097369867).
+These overlap local tests; their counts are not additive.
+
+The earlier Linux run failed the passwordless broker-role fixture under SCRAM;
+passing other cases did not make that run pass. Both branches now generate and
+forward matching synthetic credentials and verify cleanup after failed broker
+initialization. Hosted Ubuntu is not certification of the actual worker image.
+Image prerequisites, trusted external legacy/remote-worker fencing proof,
+acceptance reconciliation and exact Claude Opus 4.8 review remain gates.
+No deployment or completed-candidate security approval is claimed.
 
 ## Problem
 
