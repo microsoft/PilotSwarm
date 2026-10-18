@@ -102,7 +102,7 @@ async function realRuntime() {
     return runtime;
 }
 
-describeOrSkip("CATALOG JOIN: owner, grant, revoke and persistence against real rows", async (t) => {
+describeOrSkip("CATALOG JOIN: owner, grant, revoke and mid-drain against REAL catalog rows", async (t) => {
     const runtime = await realRuntime();
     let sessionId;
     let catalog;
@@ -121,10 +121,10 @@ describeOrSkip("CATALOG JOIN: owner, grant, revoke and persistence against real 
     // a fabricated row.
     // R34-1: `createSession` does NOT exist on PilotSwarmManagementClient. It
     // lives on the CATALOG (cms.ts), which is what the existing database
-    // suites use via their own helper. An earlier draft of this file called
-    // the management client and would have thrown a TypeError during setup,
-    // before a single case ran — caught in independent review, before any
-    // database existed to run it against.
+    // suites use via their own helper. Two earlier drafts of this file got
+    // this wrong: one called a nonexistent method on the management client,
+    // the other used the catalog's PRIVATE constructor. Both were caught in
+    // independent review, before any database existed to run them against.
     // N1: PgSessionCatalog's CONSTRUCTOR IS PRIVATE. `new PgSessionCatalog(...)`
     // does not work, so my first correction swapped one unusable API for
     // another. The real entry point is the static factory, which builds the
@@ -201,7 +201,10 @@ describeOrSkip("CATALOG JOIN: owner, grant, revoke and persistence against real 
             // proved only that a later request was denied - not that a drain
             // already in progress is stopped. Flagged in review; fixed rather
             // than relabelled.
-            const first = await fetch(`${baseUrl}${pagePath(sessionId)}?page=true&limit=2`);
+            // No `page` parameter: this route IS the paged op, and the
+            // protocol accepts only afterSeq/beforeSeq/limit/eventTypes.
+            // `page=true` is the MCP tool's own flag and was ignored here.
+            const first = await fetch(`${baseUrl}${pagePath(sessionId)}?limit=2`);
             assert.equal(first.status, 200, "control: the drain starts readable");
             const firstBody = await first.json();
             // N2: the receipt crosses the Web API as the MANAGEMENT CLIENT's
@@ -218,10 +221,18 @@ describeOrSkip("CATALOG JOIN: owner, grant, revoke and persistence against real 
 
             await runtime.transport.mgmt.revokeSessionShare(sessionId, READER);
 
-            // Continue from the server's own cursor — the exact request a
-            // mid-drain client would make next.
+            // DIRECTION MATTERS, and I had it wrong. A request with no cursor
+            // is LATEST mode (session-events-page.ts:48-49), whose
+            // continuation is BACKWARD. Continuing with afterSeq would have
+            // been a forward request against a backward cursor - an incoherent
+            // drain that happened to still be denied, so it would have "passed"
+            // while testing nothing real.
+            //
+            // Follow the receipt's OWN direction instead of assuming one.
+            assert.equal(receipt.nextDirection, "backward",
+                `control: a cursorless first page is LATEST and must continue BACKWARD; receipt=${JSON.stringify(receipt)}`);
             const after = await fetch(
-                `${baseUrl}${pagePath(sessionId)}?page=true&limit=2&afterSeq=${receipt.nextCursor}`);
+                `${baseUrl}${pagePath(sessionId)}?limit=2&beforeSeq=${receipt.nextCursor}`);
             const body = await after.json();
             assert.equal(after.status, 404,
                 "a drain in progress must STOP when the share is revoked, not continue from its cursor");
