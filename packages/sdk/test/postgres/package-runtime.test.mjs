@@ -175,6 +175,45 @@ test("standalone PostgreSQL: private executable packages need independent approv
     assert.deepEqual(f.events(), before);
 });
 
+test("standalone PostgreSQL: legacy pin cannot bypass exact administrator activation or import executable content", async t => {
+    for (const scope of ["shared", "user"]) {
+        await t.test(scope, async t => {
+            const f = await fixture(t, { scope });
+            const c = await f.publish();
+            const owner = { provider: "entra", subject: "publisher" };
+            const selector = { scope, owner };
+            const pin = isAdmin => f.catalog.pinAgentPackageVersion("runtime-kit", "1.0.0", owner, isAdmin, selector);
+            const snapshot = async () => ({
+                pointer: (await f.sql("SELECT active_version_id,activation_revision FROM @s.agent_packages")).rows,
+                audit: await f.catalog.packageReviews.activationAudit(admin, c.packageId),
+            });
+            const before = await snapshot();
+            await assert.rejects(pin(false), /executable.*activation/i);
+            await f.decide(c);
+            for (const isAdmin of [false, true]) {
+                await assert.rejects(pin(isAdmin), /executable.*activation/i);
+                assert.deepEqual(await snapshot(), before);
+            }
+            assert.deepEqual(await f.catalog.getAgentPackagesInstallManifest(), []);
+            await assert.rejects(f.start(c), /not explicitly active or pinned/);
+            assert.deepEqual(f.events(), []);
+            await f.activate(c);
+            const active = await snapshot();
+            assert.equal(active.pointer[0].active_version_id, c.versionId);
+            assert.equal(active.audit.length, 1);
+            await f.bind();
+            const { runtime } = await f.start(c);
+            await runtime.invoke("session-1", "ping", {});
+            assert.deepEqual(f.events().map(e => e.split(":")[0]), ["import", "factory", "handler"]);
+            const v2 = await f.publish("v2", "2.0.0"); await f.decide(v2);
+            await assert.rejects(f.catalog.pinAgentPackageVersion("runtime-kit", "2.0.0", owner, false, selector),
+                /executable.*activation/i);
+            assert.deepEqual(await snapshot(), active);
+            assert.equal((await f.catalog.packageReviews.getSessionBinding("session-1")).versionId, c.versionId);
+        });
+    }
+});
+
 test("standalone PostgreSQL: a caller's exit-observed boolean cannot fence still-live recorded processes", async t => {
     const f = await fixture(t);
     const c = await f.publish(); await f.decide(c); await f.activate(c); await f.bind();
@@ -799,7 +838,7 @@ test("standalone PostgreSQL: legacy mixed fleet blocks activation and remains bl
     await f.catalog.workerHeartbeat({ workerNodeId: "legacy-worker", info: {} });
     await assert.rejects(f.activate(c), /eligible|unsupported|approval|executable|runtime/i);
     assert.equal((await f.authority.fencingStatus(c)).outstanding, 1);
-    for (const version of ["0085", "0084", "0085", "0086"]) {
+    for (const version of ["0085", "0084", "0085", "0086", "0087"]) {
         await f.pool.query(CMS_MIGRATIONS(f.schema).find(m => m.version === version).sql);
     }
     assert.equal((await f.sql("SELECT @s.cms_package_executable_eligible('pkg','v1',$1) AS allowed", [c.sha256])).rows[0].allowed, false);
@@ -827,7 +866,7 @@ test("standalone PostgreSQL: ordered migration reapplication retains real eligib
     const f = await fixture(t);
     const candidate = await f.publish(); await f.decide(candidate);
     const migrations = CMS_MIGRATIONS(f.schema);
-    for (const version of ["0085", "0084", "0085"]) {
+    for (const version of ["0085", "0084", "0085", "0086", "0087"]) {
         await f.pool.query(migrations.find(migration => migration.version === version).sql);
     }
     assert.equal((await f.sql("SELECT @s.cms_package_executable_eligible('pkg','v1',$1) AS allowed", [candidate.sha256])).rows[0].allowed, true);
@@ -867,23 +906,45 @@ async function cronActivity(f, candidate, runtime) {
         handlers.get("runCronPrecheck")({ traceInfo() {} }, { ...input, ...overrides }) };
 }
 
-test("standalone PostgreSQL: binding writer row locks cannot invert authoritative admission barrier order", async t => {
-    const f = await fixture(t);
-    const c = await f.publish(); await f.decide(c); await f.activate(c); await f.bind();
-    const writer = await f.pool.connect();
-    let timer;
-    try {
-        await writer.query("BEGIN");
-        await writer.query(`SELECT * FROM "${f.schema}".session_agent_package_bindings WHERE session_id='session-1' FOR UPDATE`);
-        const current = f.authority.context("session-1", c);
-        const outcome = await Promise.race([
-            current.then(() => "read-before-writer"),
-            new Promise(resolve => { timer = setTimeout(() => resolve("blocked"), 1200); }),
-        ]);
-        await writer.query("ROLLBACK");
-        await current;
-        assert.equal(outcome, "read-before-writer", "MVCC admission ordered before mutation must not wait on a writer entering its BEFORE trigger");
-    } finally { clearTimeout(timer); await writer.query("ROLLBACK"); writer.release(); }
+test("standalone PostgreSQL: metadata writer row locks cannot invert authoritative admission barrier order", async t => {
+    for (const table of ["session_agent_package_bindings", "sessions", "agent_packages", "session_owners", "users", "agent_package_versions", "agent_package_reviews"]) {
+        await t.test(table, async t => {
+            const f = await fixture(t);
+            const c = await f.publish(); await f.decide(c); await f.activate(c); await f.bind();
+            const writer = await f.pool.connect();
+            const reader = await f.pool.connect();
+            let mutation;
+            try {
+                await writer.query("BEGIN; SET LOCAL statement_timeout='5s'");
+                await writer.query(`SELECT * FROM "${f.schema}"."${table}" FOR UPDATE`);
+                await reader.query(`BEGIN; SELECT "${f.schema}".cms_package_runtime_barrier()`);
+                mutation = writer.query(`SELECT "${f.schema}".cms_package_runtime_barrier();
+                    UPDATE "${f.schema}".agent_packages SET enabled=FALSE WHERE package_id='pkg'`)
+                    .then(() => ({ ok: true }), error => ({ error }));
+                const readerPid = (await reader.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
+                await until(async () => (await f.pool.query(
+                    "SELECT 1 FROM pg_locks WHERE locktype='advisory' AND NOT granted AND $1=ANY(pg_blocking_pids(pid))",
+                    [readerPid])).rowCount > 0, "writer must wait for the admission barrier before its mutation");
+                const barrierPool = { connect: async () => ({
+                    query: (text, args) => /^(?:BEGIN|COMMIT|ROLLBACK)(?:;|$)/.test(text)
+                        ? Promise.resolve({ rows: [] }) : reader.query(text, args),
+                    release() {},
+                }) };
+                const authority = new PgPackageRuntimeAuthority(barrierPool, f.schema);
+                await reader.query("SET LOCAL statement_timeout='1s'");
+                assert.equal((await authority.context("session-1", c)).effectiveOwner.subject, "publisher");
+                await reader.query("COMMIT");
+                assert.deepEqual(await mutation, { ok: true });
+                await writer.query("COMMIT");
+                await assert.rejects(f.authority.context("session-1", c), /DENIED/);
+            } finally {
+                await reader.query("ROLLBACK");
+                if (mutation) await mutation;
+                await writer.query("ROLLBACK");
+                reader.release(); writer.release();
+            }
+        });
+    }
 });
 
 test("standalone PostgreSQL CRON: exact no-tool activity skips, denied child tool cannot fabricate skip, current root owner denies warm entry", async t => {
