@@ -33,8 +33,12 @@ import http from "node:http";
 import express from "express";
 import { PortalRuntime } from "../runtime.js";
 import { createApiRouter } from "../api/router.js";
+import { PgSessionCatalog } from "pilotswarm-sdk";
 
-const DB_URL = process.env.PS_TEST_DATABASE_URL || process.env.DATABASE_URL;
+// PS_TEST_DATABASE_URL ONLY. Accepting an ambient DATABASE_URL would let this
+// file run against whatever database happens to be configured — including a
+// real one — which is exactly the accident a test must not have.
+const DB_URL = process.env.PS_TEST_DATABASE_URL;
 const describeOrSkip = DB_URL ? test : test.skip;
 
 const OWNER = { provider: "test", subject: `owner-${process.pid}` };
@@ -77,8 +81,23 @@ async function serve(runtime, principal) {
  * default of "off" would make every case below pass vacuously.
  */
 async function realRuntime() {
-    const runtime = new PortalRuntime({ store: DB_URL, mode: "local" });
-    await runtime.start();
+    // WORKERS=0 is LOAD-BEARING, not tidiness.
+    //
+    // node-sdk-transport.js:593 reads `parseInt(process.env.WORKERS || "4")`
+    // and starts that many EMBEDDED WORKERS in local mode. This file creates
+    // three runtimes, so the default would start twelve workers against the
+    // test database — and if it held eligible queued work, they would execute
+    // it. A membership test must not run anyone's agent turns.
+    const prevWorkers = process.env.WORKERS;
+    process.env.WORKERS = "0";
+    let runtime;
+    try {
+        runtime = new PortalRuntime({ store: DB_URL, mode: "local" });
+        await runtime.start();
+    } finally {
+        if (prevWorkers === undefined) delete process.env.WORKERS;
+        else process.env.WORKERS = prevWorkers;
+    }
     runtime.authz = { ...runtime.authz, enforce: true, adminScope: "unrestricted", systemVisibility: "read" };
     return runtime;
 }
@@ -86,9 +105,11 @@ async function realRuntime() {
 describeOrSkip("CATALOG JOIN: owner, grant, revoke and persistence against real rows", async (t) => {
     const runtime = await realRuntime();
     let sessionId;
+    let catalog;
 
     t.after(async () => {
         try { if (sessionId) await runtime.transport.mgmt.revokeSessionShare(sessionId, READER); } catch { /* best effort */ }
+        try { await catalog?.close?.(); } catch { /* best effort */ }
         try { await runtime.stop?.(); } catch { /* best effort */ }
     });
 
@@ -98,8 +119,16 @@ describeOrSkip("CATALOG JOIN: owner, grant, revoke and persistence against real 
     // use — `catalog.createSession(id, { owner })`, as in
     // session-events-page-authz.test.js:131. Not a test-only helper, and not
     // a fabricated row.
+    // R34-1: `createSession` does NOT exist on PilotSwarmManagementClient. It
+    // lives on the CATALOG (cms.ts), which is what the existing database
+    // suites use via their own helper. An earlier draft of this file called
+    // the management client and would have thrown a TypeError during setup,
+    // before a single case ran — caught in independent review, before any
+    // database existed to run it against.
+    catalog = new PgSessionCatalog({ connectionString: DB_URL });
+    await catalog.initialize();
     sessionId = `catalog-join-${process.pid}-${Date.now()}`;
-    await runtime.transport.mgmt.createSession(sessionId, { title: "catalog-join", owner: OWNER });
+    await catalog.createSession(sessionId, { title: "catalog-join", owner: OWNER });
 
     await t.test("POSITIVE CONTROL: the owner is served their own session", async () => {
         // Load-bearing. A 404-only result set is indistinguishable from an
@@ -110,7 +139,7 @@ describeOrSkip("CATALOG JOIN: owner, grant, revoke and persistence against real 
             const res = await fetch(`${baseUrl}${pagePath(sessionId)}`);
             const body = await res.json();
             assert.equal(res.status, 200, `owner must be served — got ${res.status}: ${JSON.stringify(body).slice(0, 300)}`);
-            assert.ok(body.result?.events, "the owner must receive an events array");
+            assert.ok(Array.isArray(body.result?.events), "the owner must receive an events ARRAY, not merely something truthy");
         } finally { await close(); }
     });
 
@@ -131,7 +160,7 @@ describeOrSkip("CATALOG JOIN: owner, grant, revoke and persistence against real 
             const res = await fetch(`${baseUrl}${pagePath(sessionId)}`);
             const body = await res.json();
             assert.equal(res.status, 200, `a granted reader must be served — got ${res.status}: ${JSON.stringify(body).slice(0, 300)}`);
-            assert.ok(body.result?.events, "a granted reader must receive events");
+            assert.ok(Array.isArray(body.result?.events), "a granted reader must receive an events ARRAY");
         } finally { await close(); }
     });
 

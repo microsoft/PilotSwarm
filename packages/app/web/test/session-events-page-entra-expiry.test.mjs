@@ -146,6 +146,45 @@ function sign(privateKey, { issuer, audience, expiresIn = "5m", notBefore = "0s"
         .sign(privateKey);
 }
 
+/**
+ * EVERY negative case must prove its rejection came from the CHECK UNDER TEST
+ * and not from the harness.
+ *
+ * The review that caught this gave the exact counterexample: the mock's own
+ * failure message is "[test] unexpected network call to …", and `unexpected`
+ * CONTAINS the substring `exp`. A regex of /exp|expire/i therefore matched the
+ * harness's own error, so a transport mistake would have PASSED as proof of
+ * expiry enforcement. The same flaw let /iss|issuer/i match the word
+ * `missing`.
+ *
+ * Two defences, both required:
+ *   - `assertCleanTransport` proves the only URL fetched was this tenant's
+ *     key set, so no harness error is in play at all
+ *   - the callers below match jose's ACTUAL diagnostic text, anchored on the
+ *     quoted claim name, instead of loose substrings
+ */
+function assertCleanTransport(fetchCalls, tenantId, label) {
+    const expected = jwksUrlFor(tenantId);
+    // Assert WHERE we fetched, not HOW MANY TIMES.
+    //
+    // An earlier version demanded exactly one call. That over-constrained
+    // jose's internals rather than our contract: a RemoteJWKSet may RELOAD its
+    // key set (30s cooldown, 10min cache age, remote.js:70-74), for instance
+    // when a kid is not found in the cached set. A legitimate reload would
+    // then have failed the test for a reason that has nothing to do with the
+    // check under test — the precise class of wrong-reason failure this file
+    // exists to avoid.
+    //
+    // The security property is that NO OTHER URL was contacted, and that the
+    // key set really was served by the mock rather than the network.
+    assert.ok(fetchCalls.length > 0,
+        `${label}: the key set must have been fetched through the mock — zero fetches means jose did not use globalThis.fetch`);
+    const foreign = fetchCalls.filter((u) => u !== expected);
+    assert.deepEqual(foreign, [],
+        `${label}: every fetch must be this tenant's key set — any other URL means the harness failed, `
+        + `not the check under test; saw ${JSON.stringify(fetchCalls)}`);
+}
+
 // ── POSITIVE CONTROL ─────────────────────────────────────────────────────
 // Must come first in intent: every negative below is meaningless unless the
 // provider demonstrably ACCEPTS a good token through the same path.
@@ -165,8 +204,7 @@ test("REAL EXPIRY control: a valid token is ACCEPTED and yields a principal", as
         // Proves the mocked transport was actually used. If `jose` does not
         // fetch through globalThis.fetch, this fails loudly instead of the
         // file passing hollowly.
-        assert.ok(fetchCalls.includes(jwksUrlFor(tenantId)),
-            `the key set must have been fetched through the mock; saw ${JSON.stringify(fetchCalls)}`);
+        assertCleanTransport(fetchCalls, tenantId, "valid token control");
     });
 });
 
@@ -176,7 +214,7 @@ test("REAL EXPIRY: an EXPIRED token is rejected, and rejected for being expired"
     const tenantId = freshTenant();
     const { privateKey, jwk } = await makeKeys();
 
-    await withProvider(t, { tenantId, keys: [jwk] }, async ({ provider, errors }) => {
+    await withProvider(t, { tenantId, keys: [jwk] }, async ({ provider, errors, fetchCalls }) => {
         // Signed in the past and already expired.
         const token = await sign(privateKey, {
             issuer: issuerFor(tenantId), audience: CLIENT_ID, expiresIn: "-1m",
@@ -184,8 +222,12 @@ test("REAL EXPIRY: an EXPIRED token is rejected, and rejected for being expired"
         const principal = await provider.authenticateRequest(token);
 
         assert.equal(principal, null, "an expired token must not authenticate");
-        assert.match(errors.join(" "), /exp|expire/i,
-            `the rejection must be for EXPIRY, not some other failure; logged: ${errors.join(" ")}`);
+        assertCleanTransport(fetchCalls, tenantId, "expired");
+        // jose throws JWTExpired with '"exp" claim timestamp check failed'
+        // (lib/jwt_claims_set.js). Anchoring on the QUOTED claim name cannot
+        // be satisfied by the harness's own "unexpected network call" text.
+        assert.match(errors.join(" "), /"exp" claim/,
+            `the rejection must name the "exp" CLAIM; logged: ${errors.join(" ")}`);
     });
 });
 
@@ -193,15 +235,17 @@ test("REAL EXPIRY: a wrong-ISSUER token is rejected for the issuer, proving that
     const tenantId = freshTenant();
     const { privateKey, jwk } = await makeKeys();
 
-    await withProvider(t, { tenantId, keys: [jwk] }, async ({ provider, errors }) => {
+    await withProvider(t, { tenantId, keys: [jwk] }, async ({ provider, errors, fetchCalls }) => {
         const token = await sign(privateKey, {
             issuer: issuerFor(freshTenant()), audience: CLIENT_ID,
         });
         const principal = await provider.authenticateRequest(token);
 
         assert.equal(principal, null, "a token from another issuer must not authenticate");
-        assert.match(errors.join(" "), /iss|issuer/i,
-            `the rejection must name the ISSUER; logged: ${errors.join(" ")}`);
+        assertCleanTransport(fetchCalls, tenantId, "wrong issuer");
+        // Anchored on the quoted claim: /iss|issuer/i also matched "missing".
+        assert.match(errors.join(" "), /"iss" claim/,
+            `the rejection must name the "iss" CLAIM; logged: ${errors.join(" ")}`);
     });
 });
 
@@ -209,15 +253,16 @@ test("REAL EXPIRY: a wrong-AUDIENCE token is rejected for the audience, proving 
     const tenantId = freshTenant();
     const { privateKey, jwk } = await makeKeys();
 
-    await withProvider(t, { tenantId, keys: [jwk] }, async ({ provider, errors }) => {
+    await withProvider(t, { tenantId, keys: [jwk] }, async ({ provider, errors, fetchCalls }) => {
         const token = await sign(privateKey, {
             issuer: issuerFor(tenantId), audience: "99999999-9999-4999-8999-999999999999",
         });
         const principal = await provider.authenticateRequest(token);
 
         assert.equal(principal, null, "a token for another audience must not authenticate");
-        assert.match(errors.join(" "), /aud|audience/i,
-            `the rejection must name the AUDIENCE; logged: ${errors.join(" ")}`);
+        assertCleanTransport(fetchCalls, tenantId, "wrong audience");
+        assert.match(errors.join(" "), /"aud" claim/,
+            `the rejection must name the "aud" CLAIM; logged: ${errors.join(" ")}`);
     });
 });
 
@@ -225,7 +270,7 @@ test("REAL EXPIRY: a TAMPERED signature is rejected, so the key set is genuinely
     const tenantId = freshTenant();
     const { privateKey, jwk } = await makeKeys();
 
-    await withProvider(t, { tenantId, keys: [jwk] }, async ({ provider, errors }) => {
+    await withProvider(t, { tenantId, keys: [jwk] }, async ({ provider, errors, fetchCalls }) => {
         const good = await sign(privateKey, { issuer: issuerFor(tenantId), audience: CLIENT_ID });
         // Keep header and payload, corrupt only the signature segment.
         const [h, p, s] = good.split(".");
@@ -233,8 +278,11 @@ test("REAL EXPIRY: a TAMPERED signature is rejected, so the key set is genuinely
         const principal = await provider.authenticateRequest(`${h}.${p}.${flipped}`);
 
         assert.equal(principal, null, "a tampered token must not authenticate");
-        assert.match(errors.join(" "), /signature|verif/i,
-            `the rejection must concern the SIGNATURE; logged: ${errors.join(" ")}`);
+        assertCleanTransport(fetchCalls, tenantId, "tampered signature");
+        // jose: 'signature verification failed'. The full phrase, not a loose
+        // /verif/ which any verification-adjacent message would satisfy.
+        assert.match(errors.join(" "), /signature verification failed/i,
+            `the rejection must be a SIGNATURE verification failure; logged: ${errors.join(" ")}`);
     });
 });
 
@@ -243,11 +291,16 @@ test("REAL EXPIRY: a token signed by an UNRELATED key is rejected", async (t) =>
     const { jwk } = await makeKeys();              // published
     const { privateKey: foreign } = await makeKeys(); // never published
 
-    await withProvider(t, { tenantId, keys: [jwk] }, async ({ provider, errors }) => {
+    await withProvider(t, { tenantId, keys: [jwk] }, async ({ provider, errors, fetchCalls }) => {
         const token = await sign(foreign, { issuer: issuerFor(tenantId), audience: CLIENT_ID });
         const principal = await provider.authenticateRequest(token);
 
         assert.equal(principal, null, "a token signed by a key outside the published set must not authenticate");
-        assert.ok(errors.length > 0, "the rejection must be logged");
+        assertCleanTransport(fetchCalls, tenantId, "unrelated key");
+        // "the rejection must be logged" was too weak: a TRANSPORT failure
+        // also logs. The rejection must specifically be signature verification
+        // against the published key.
+        assert.match(errors.join(" "), /signature verification failed/i,
+            `the rejection must be a SIGNATURE verification failure, not a transport error; logged: ${errors.join(" ")}`);
     });
 });
