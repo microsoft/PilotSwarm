@@ -263,6 +263,8 @@ export async function evaluateCronPrecheck(params: {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let outcome: CronPrecheckOutcome;
     let detail: string | undefined;
+    let pendingMcpCalls = 0;
+    let mcpCallFailed = false;
     try {
         const answer = await Promise.race([
             Promise.resolve().then(() => registration.check({
@@ -273,8 +275,23 @@ export async function evaluateCronPrecheck(params: {
                 signal: controller.signal,
                 callMcpTool: (server, tool, args) => {
                     controller.signal.throwIfAborted();
-                    if (!params.callMcpTool) throw new Error("MCP access is unavailable for this cron precheck");
-                    return params.callMcpTool(controller.signal, server, tool, args);
+                    const callMcpTool = params.callMcpTool;
+                    if (!callMcpTool) {
+                        mcpCallFailed = true;
+                        throw new Error("MCP access is unavailable for this cron precheck");
+                    }
+                    pendingMcpCalls++;
+                    const call = Promise.resolve().then(() => {
+                        controller.signal.throwIfAborted();
+                        return callMcpTool(controller.signal, server, tool, args);
+                    });
+                    // Observe even an unawaited rejection; the decision below
+                    // fails open instead of trusting a swallowed tool failure.
+                    void call.then(
+                        () => { pendingMcpCalls--; },
+                        () => { pendingMcpCalls--; mcpCallFailed = true; },
+                    );
+                    return call;
                 },
             })),
             new Promise<"timeout">((resolve) => {
@@ -284,6 +301,11 @@ export async function evaluateCronPrecheck(params: {
         if (answer === "timeout") {
             controller.abort();
             outcome = "timeout";
+        } else if (pendingMcpCalls > 0 || mcpCallFailed) {
+            outcome = "error";
+            detail = pendingMcpCalls > 0
+                ? "Cron precheck returned before its MCP calls completed"
+                : "Cron precheck MCP call failed; run the normal cycle";
         } else if (answer && (answer.action === "run" || answer.action === "skip")) {
             outcome = answer.action;
             if (typeof answer.detail === "string" && answer.detail) detail = answer.detail.slice(0, CRON_PRECHECK_DETAIL_MAX_CHARS);

@@ -358,6 +358,8 @@ Stateful HTTP sessions also receive a bounded termination request, even after
 cancellation; server-side expiry applies if the server declines with HTTP 405.
 Await calls and validate results before returning `skip`; MCP error results
 throw and transport errors omit credentials from the recorded explanation.
+An MCP failure or an unfinished call prevents skipping even if the callback
+catches the error or returns without awaiting it.
 The helper does not initiate interactive OAuth or offer model sampling.
 Servers that need unavailable credentials fail open. Use deterministic,
 idempotent tools: durable activity retries may repeat a call, and an MCP tool

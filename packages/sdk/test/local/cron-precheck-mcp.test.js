@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { callCronPrecheckMcpTool } from "../../src/cron-precheck-mcp.ts";
 import { evaluateCronPrecheck } from "../../src/cron-precheck.ts";
 import { SessionManager, packageAgentKey } from "../../src/session-manager.ts";
+import { registerActivities } from "../../src/session-proxy.ts";
 import { startPrecheckMcpServer } from "../helpers/cron-precheck-mcp.mjs";
 
 const input = { sessionId: "s1", precheck: "queue", reason: "poll", intervalSeconds: 300 };
@@ -111,6 +112,31 @@ describe("non-LLM MCP precheck calls", () => {
                 await callMcpTool("queue", "queue_status");
                 return { action: "skip" };
             } }],
+        });
+        expect(result).toMatchObject({ outcome: "error", skip: false });
+    });
+
+    it("does not accept idle when the callback catches an MCP denial", async () => {
+        const { result } = await evaluateCronPrecheck({
+            input,
+            registrations: [{ name: "queue", check: async ({ callMcpTool }) => {
+                try { await callMcpTool("queue", "queue_status"); } catch {}
+                return { action: "skip" };
+            } }],
+        });
+        expect(result).toMatchObject({ outcome: "error", skip: false });
+    });
+
+    it("does not accept idle when the callback leaves an MCP call unfinished", async () => {
+        const { result } = await evaluateCronPrecheck({
+            input,
+            registrations: [{ name: "queue", check: ({ callMcpTool }) => {
+                void callMcpTool("queue", "queue_status");
+                return { action: "skip" };
+            } }],
+            callMcpTool: (signal) => new Promise((_resolve, reject) => {
+                signal.addEventListener("abort", () => reject(new Error("cancelled")), { once: true });
+            }),
         });
         expect(result).toMatchObject({ outcome: "error", skip: false });
     });
@@ -249,5 +275,40 @@ describe("precheck session MCP grants without model hydration", () => {
         catalog.getSession.mockResolvedValue({ owner });
         select([]);
         expect(await manager.getCronPrecheckMcpServers({ ...input, agent })).not.toHaveProperty("selected_queue");
+    });
+
+    it("actual dispatch denies a tool revoked after callback admission, even when the callback catches it", async () => {
+        const fixture = await startPrecheckMcpServer();
+        try {
+            const source = {
+                id: "selected", name: "extra", source: "published", revision: "v1", scope: "user", owner,
+                packageId: "selected", artifacts: [], tools: new Map(),
+                mcpServers: { selected_queue: fixture.config },
+            };
+            const { manager, catalog } = setup({ getCapabilitySources: () => [source] });
+            let callbacks = 0;
+            catalog.recordEvents = vi.fn(async () => {});
+            catalog.getSessionCapabilities.mockResolvedValue({
+                revision: 1, selections: [{ sourceId: "selected", tools: [], mcpServers: ["selected_queue"] }],
+            });
+            manager.setPackageCronPrechecks(new Map([["shared", new Map([["queue", {
+                name: "queue", check: async ({ callMcpTool }) => {
+                    callbacks++;
+                    catalog.getSessionCapabilities.mockResolvedValue({ revision: 2, selections: [] });
+                    try { await callMcpTool("selected_queue", "queue_status"); } catch {}
+                    return { action: "skip" };
+                },
+            }]])]]));
+            const handlers = new Map();
+            registerActivities({ registerActivity: (name, handler) => handlers.set(name, handler) },
+                manager, null, undefined, catalog);
+            const result = await handlers.get("runCronPrecheck")({ traceInfo() {} }, {
+                ...input, packageId: "shared", agent,
+            });
+            expect(callbacks).toBe(1);
+            expect(result).toMatchObject({ outcome: "error", skip: false });
+            expect(fixture.state.calls).toEqual([]);
+            expect(manager.getOrCreate).not.toHaveBeenCalled();
+        } finally { await fixture.close(); }
     });
 });

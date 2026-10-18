@@ -337,9 +337,10 @@ one-second deadline so cancellation cannot strand a session without attempting
 cleanup. Servers may decline termination with HTTP 405; their own expiry policy
 then applies. Other cleanup failures run the normal cycle rather than skip.
 
-Connection, protocol and MCP `isError` results throw, so the normal cycle
-runs unless the handler explicitly handles the error. Do not turn an unknown
-or failed response into `skip`. Use deterministic, preferably read-only tools;
+Connection, protocol and MCP `isError` results throw. Failed or unfinished
+MCP calls force the normal cycle, even if the handler catches an error and
+returns `skip`. Do not turn an unknown response into `skip`.
+Use deterministic, preferably read-only tools;
 activity retries can repeat calls. MCP tools that internally use an LLM may
 still incur backend model cost.
 
