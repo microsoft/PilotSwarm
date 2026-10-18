@@ -50,7 +50,10 @@ try {$p=[System.Diagnostics.Process]::GetProcessById(${pid})} catch [System.Argu
 try {
  $handle=$p.Handle
  if($p.HasExited){exit 0}
- if($p.StartTime.ToUniversalTime().ToString('o') -cne '${token.replace(/'/g, "''")}'){exit 0}
+ $start=$p.StartTime.ToUniversalTime()
+ # CIM records microseconds; Process.StartTime also exposes the final 100ns digit.
+ $start=[DateTime]::new($start.Ticks-($start.Ticks%10),[DateTimeKind]::Utc)
+ if($start.ToString('o') -cne '${token.replace(/'/g, "''")}'){exit 0}
  $p.Kill()
  if(-not $p.WaitForExit(3000)){throw 'Recorded process exit not observed'}
 } finally {$p.Dispose()}

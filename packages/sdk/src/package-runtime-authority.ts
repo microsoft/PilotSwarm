@@ -64,7 +64,7 @@ export class PgPackageRuntimeAuthority implements PackageRuntimeAuthority {
             JOIN ${this.s}.agent_package_versions v ON v.version_id=r.version_id
             WHERE r.package_id=$1 AND r.version_id=$2 AND r.sha256=$3
             AND v.sha256=$3 AND p.enabled AND ${this.s}.cms_package_executable_eligible($1,$2,$3)
-            FOR SHARE OF r,p,v`, [id.packageId, id.versionId, id.sha256]);
+            `, [id.packageId, id.versionId, id.sha256]);
         if (!rows[0]) denied("exact approved executable identity is unavailable");
         return rows[0];
     }
@@ -103,15 +103,17 @@ export class PgPackageRuntimeAuthority implements PackageRuntimeAuthority {
         return row;
     }
     private async current(client: PoolClient, sessionId: string, identity?: ExecutablePackageIdentity): Promise<PackageInvocationContext & { binding: any }> {
+        // The admission barrier orders committed metadata changes. Row SHARE
+        // locks invert that order against writers entering BEFORE triggers.
         const { rows } = await client.query(`SELECT ss.package_capability_epoch,root.package_owner_epoch,ss.creation_config,
             u.provider,u.subject FROM ${this.s}.sessions ss
             JOIN ${this.s}.sessions root ON root.session_id=COALESCE(ss.root_session_id,ss.session_id) AND root.deleted_at IS NULL
             JOIN ${this.s}.session_owners so ON so.session_id=root.session_id
             JOIN ${this.s}.users u USING(user_id)
-            WHERE ss.session_id=$1 AND ss.deleted_at IS NULL FOR SHARE OF ss,root,so,u`, [sessionId]);
+            WHERE ss.session_id=$1 AND ss.deleted_at IS NULL`, [sessionId]);
         const owner = rows[0];
         if (!owner) denied("current effective owner denied");
-        const pinned = (await client.query(`SELECT * FROM ${this.s}.session_agent_package_bindings WHERE session_id=$1 FOR SHARE`, [sessionId])).rows[0];
+        const pinned = (await client.query(`SELECT * FROM ${this.s}.session_agent_package_bindings WHERE session_id=$1`, [sessionId])).rows[0];
         if (!pinned && owner.creation_config?.boundAgentPackageId) denied("named executable session requires explicit durable agent pin");
         if (pinned && (owner.creation_config?.boundAgentName && owner.creation_config.boundAgentName !== pinned.agent_name
             || owner.creation_config?.boundAgentPackageId && owner.creation_config.boundAgentPackageId !== pinned.package_id)) {
@@ -120,10 +122,10 @@ export class PgPackageRuntimeAuthority implements PackageRuntimeAuthority {
         let binding = pinned;
         if (identity && pinned?.package_id !== identity.packageId) {
             binding = (await client.query(`SELECT * FROM ${this.s}.session_executable_package_grants
-                WHERE session_id=$1 AND package_id=$2 AND version_id=$3 AND sha256=$4 AND active FOR SHARE`,
+                WHERE session_id=$1 AND package_id=$2 AND version_id=$3 AND sha256=$4 AND active`,
             [sessionId, identity.packageId, identity.versionId, identity.sha256])).rows[0];
             if (!binding) denied("exact executable selection pin required");
-            const state = (await client.query(`SELECT state,revision FROM ${this.s}.session_capabilities WHERE session_id=$1 FOR SHARE`, [sessionId])).rows[0];
+            const state = (await client.query(`SELECT state,revision FROM ${this.s}.session_capabilities WHERE session_id=$1`, [sessionId])).rows[0];
             const selected = state?.state?.selections?.find((s: any) => s.sourceId === identity.packageId);
             if (!selected || selected.sourceRef !== binding.source_ref || Number(state.revision) !== Number(binding.capability_revision)) {
                 denied("current executable capability selection changed");
@@ -164,6 +166,9 @@ export class PgPackageRuntimeAuthority implements PackageRuntimeAuthority {
             const row = await this.live(client, reg);
             if (request) {
                 const now = await this.current(client, request.sessionId, reg), b = now.binding;
+                if (request.expectedSessionBindingRevision !== undefined
+                    && (b.selected || !Number.isSafeInteger(request.expectedSessionBindingRevision)
+                        || Number(b.revision) !== request.expectedSessionBindingRevision)) denied("stale immutable session binding revision");
                 if (b.package_id !== reg.packageId || b.version_id !== reg.versionId || b.sha256 !== reg.sha256
                     || now.agentName !== request.agentName || now.ownerEpoch !== request.expectedOwnerEpoch
                     || now.capabilityEpoch !== request.expectedCapabilityEpoch
@@ -278,7 +283,7 @@ export class PgPackageRuntimeAuthority implements PackageRuntimeAuthority {
             const processes = (await this.pool.query(`SELECT * FROM ${this.s}.package_runtime_processes
                 WHERE registration_id=$1 AND generation=$2 AND host_key=$3`, [row.registration_id, row.generation, host])).rows;
             const broker = processes.find(p => p.role === "broker");
-            if (!row.expired && (!broker || await runtimeProcessToken(broker.pid) === broker.start_token)) continue;
+            if (row.state === "active" && !row.expired && (!broker || await runtimeProcessToken(broker.pid) === broker.start_token)) continue;
             const reg = { packageId: row.package_id, versionId: row.version_id, sha256: row.sha256,
                 registrationId: row.registration_id, workerFence: row.generation, workerNodeId: row.worker_id,
                 reviewRevision: Number(row.review_revision), registryEpoch: Number(row.registry_epoch) };
@@ -297,7 +302,7 @@ export class PgPackageRuntimeAuthority implements PackageRuntimeAuthority {
         const owner = (await client.query(`SELECT u.provider,u.subject FROM ${this.s}.sessions ss
             JOIN ${this.s}.sessions root ON root.session_id=COALESCE(ss.root_session_id,ss.session_id)
             JOIN ${this.s}.session_owners so ON so.session_id=root.session_id JOIN ${this.s}.users u USING(user_id)
-            WHERE ss.session_id=$1 AND ss.deleted_at IS NULL AND root.deleted_at IS NULL FOR SHARE OF so,u`, [sessionId])).rows[0];
+            WHERE ss.session_id=$1 AND ss.deleted_at IS NULL AND root.deleted_at IS NULL`, [sessionId])).rows[0];
         const old = (await client.query(`UPDATE ${this.s}.session_executable_package_grants SET active=FALSE
             WHERE session_id=$1 AND active RETURNING *`, [sessionId])).rows;
         for (const grant of old) await client.query(`INSERT INTO ${this.s}.session_executable_package_grant_audit

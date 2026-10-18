@@ -32,11 +32,12 @@ async function fixture(t, { mcp = false, executable = true, callbacks = false, n
     const base = fs.mkdtempSync(path.resolve(".test-package-runtime-"));
     const runtimes = [];
     t.after(async () => {
-        await Promise.allSettled(runtimes.map(runtime => runtime.stop()));
-        await authority.recoverLocal();
-        await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
-        await pool.end();
-        await fs.promises.rm(base, { recursive: true, force: true, maxRetries: 30, retryDelay: 100 });
+        try {
+            await Promise.allSettled(runtimes.map(runtime => runtime.stop()));
+            await authority.recoverLocal();
+            await pool.query(`DROP SCHEMA IF EXISTS "${schema}" CASCADE`);
+            await fs.promises.rm(base, { recursive: true, force: true, maxRetries: 30, retryDelay: 100 });
+        } finally { await pool.end(); }
     });
     await pool.query(`CREATE SCHEMA "${schema}"`);
     for (const migration of CMS_MIGRATIONS(schema)) {
@@ -71,6 +72,7 @@ ${callbacks ? `export function createCallbacks() {
  mark("callback-factory");
  return [{name:"check",handler:async(args,context)=>{
   mark("callback");
+  if(args.action==="block"){for(;;){}}
   if(args.action==="caught"){try{await context.callTool("ping",{});}catch{}return {skip:true};}
   if(args.action==="unfinished"){void context.callTool("ping",{block:true}).catch(()=>{});return {skip:true};}
   if(args.action==="mcp"){try{await context.callMcp("demo","tools/call",{name:"echo",arguments:{}});}catch{}return {skip:true};}
@@ -117,8 +119,8 @@ createInterface({input:process.stdin}).on("line", line => {
             creationConfig: { boundAgentPackageId: "pkg", boundAgentName: "helper" } });
     };
     const start = async (candidate, worker = "worker-a") => {
-        const started = await SupervisedPackageRuntime.start(authority, candidate, candidate.dir, candidate.inspection.execution, worker);
-        runtimes.push(started.runtime);
+        const started = await SupervisedPackageRuntime.start(authority, candidate, candidate.dir, candidate.inspection.execution, worker,
+            runtime => runtimes.push(runtime));
         return started;
     };
     return { pool, schema, base, runtimes, catalog, authority, sql, publish, decide, activate, bind, start, events, mcpEvents, marker };
@@ -171,14 +173,24 @@ test("standalone PostgreSQL: private executable packages need independent approv
 test("standalone PostgreSQL: a caller's exit-observed boolean cannot fence still-live recorded processes", async t => {
     const f = await fixture(t);
     const c = await f.publish(); await f.decide(c); await f.activate(c); await f.bind();
-    const { runtime } = await f.start(c);
-    clearInterval(runtime.timer);
-    runtime.broker.send({ method: "lease", expiresAt: Date.now() + 10_000 });
-    await f.authority.requestFence(runtime.registration);
-    await assert.rejects(f.authority.acknowledgeFence(runtime.registration, true), /process has not exited/);
-    assert.equal((await f.authority.fencingStatus(c)).outstanding, 1);
-    await runtime.stop();
-    assert.equal((await f.authority.fencingStatus(c)).outstanding, 0);
+    const authority = new PgPackageRuntimeAuthority(f.pool, f.schema, 30_000);
+    const registration = await authority.register(c, "uncooperative-test-host");
+    const script = path.join(f.base, "recorded-live-process.mjs");
+    fs.writeFileSync(script, "setInterval(() => {}, 1000);");
+    const child = fork(script, [], { execArgv: [], stdio: "ignore" });
+    const exited = new Promise(resolve => child.once("exit", resolve));
+    try {
+        await authority.noteProcess(registration, child.pid, "execution");
+        await authority.requestFence(registration);
+        await assert.rejects(authority.acknowledgeFence(registration, true), /process has not exited/);
+        assert.equal((await authority.fencingStatus(c)).outstanding, 1);
+    } finally {
+        if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+        await exited;
+        await authority.requestFence(registration);
+        await authority.acknowledgeFence(registration, true);
+    }
+    assert.equal((await authority.fencingStatus(c)).outstanding, 0);
 });
 
 test("standalone PostgreSQL: accepted v2 activates only explicitly, existing v1 pins never substitute, rejected v3 and stale CAS retain v2", async t => {
@@ -376,7 +388,9 @@ test("standalone PostgreSQL: callbacks run for a current owner without tools; ca
     await f.decide(c); await f.activate(c); await f.bind();
     const { runtime } = await f.start(c);
     assert.deepEqual(f.events().map(e => e.split(":")[0]), ["import", "factory", "callback-factory"]);
-    assert.deepEqual(await runtime.invokeCallback("session-1", "check", {}), { skip: true });
+    await assert.rejects(runtime.invokeCallback("session-1", "check", {}, { bindingRevision: 0 }), /stale.*revision/);
+    assert.equal(f.events().filter(e => e.startsWith("callback:")).length, 0);
+    assert.deepEqual(await runtime.invokeCallback("session-1", "check", {}, { bindingRevision: 1 }), { skip: true });
     await assert.rejects(runtime.invokeCallback("session-1", "check", { action: "caught" }), /NESTED_CALL_FAILED_OR_UNFINISHED/);
     assert.equal(f.events().filter(e => e.startsWith("handler:")).length, 0);
     assert.equal(f.events().filter(e => e.startsWith("callback:")).length, 2);
@@ -386,6 +400,22 @@ test("standalone PostgreSQL: callbacks run for a current owner without tools; ca
     });
     await assert.rejects(runtime.invokeCallback("session-1", "check", {}), /DENIED|fenced/);
     assert.deepEqual(f.events(), beforeOwnerChange, "denial adds zero imports, factories, callbacks or handlers");
+});
+
+test("standalone PostgreSQL: caller cancellation kills a synchronous callback without recycling the worker", async t => {
+    const f = await fixture(t, { callbacks: true, noTools: true });
+    const c = await f.publish(); await f.decide(c); await f.activate(c); await f.bind();
+    const { runtime } = await f.start(c);
+    const controller = new AbortController();
+    const failed = assert.rejects(runtime.invokeCallback("session-1", "check", { action: "block" },
+        { signal: controller.signal, bindingRevision: 1 }), /stop|fenc|cancel|closed|exit/i);
+    await until(() => f.events().filter(e => e.startsWith("callback:")).length === 1, "actual synchronous callback entered");
+    controller.abort();
+    await failed;
+    await until(async () => (await f.authority.fencingStatus(c)).outstanding === 0, "cancellation observes child exits");
+    const before = f.events();
+    await assert.rejects(runtime.invokeCallback("session-1", "check", {}), /fenced/);
+    assert.deepEqual(f.events(), before);
 });
 
 test("standalone PostgreSQL: unfinished callback tool requests cannot authorize skip", async t => {
@@ -684,13 +714,28 @@ test("standalone PostgreSQL: broker crash recovery kills exact recorded children
     assert.ok(await blocked instanceof Error);
 });
 
+test("standalone PostgreSQL: broker initialization failure leaves no orphan process or fabricated fence", async t => {
+    const f = await fixture(t);
+    const c = await f.publish(); await f.decide(c); await f.activate(c); await f.bind();
+    const configuration = await f.authority.brokerConfiguration();
+    f.authority.brokerConfiguration = async () => ({ ...configuration,
+        connection: { ...configuration.connection, database: `${f.schema}_missing` } });
+    await assert.rejects(f.start(c), /database .* does not exist/);
+    assert.deepEqual(f.events(), [], "failed broker authority must import no package code");
+    const recorded = (await f.sql("SELECT * FROM @s.package_runtime_processes WHERE role='broker'")).rows;
+    assert.equal(recorded.length, 1, "parent records the idle broker before its independent authority connects");
+    assert.notEqual(await runtimeProcessToken(recorded[0].pid), recorded[0].start_token);
+    assert.equal((await f.authority.fencingStatus(c)).outstanding, 0);
+});
+
 test("standalone PostgreSQL: unavailable broker database authority kills code first but cannot fabricate fencing acknowledgement", async t => {
     const f = await fixture(t);
     const c = await f.publish(); await f.decide(c); await f.activate(c); await f.bind();
     const role = `${f.schema}_broker`;
-    await f.pool.query(`CREATE ROLE "${role}" LOGIN SUPERUSER`);
+    const password = randomUUID().replaceAll("-", "");
+    await f.pool.query(`CREATE ROLE "${role}" LOGIN SUPERUSER PASSWORD '${password}'`);
     const configuration = await f.authority.brokerConfiguration();
-    f.authority.brokerConfiguration = async () => ({ ...configuration, connection: { ...configuration.connection, user: role } });
+    f.authority.brokerConfiguration = async () => ({ ...configuration, connection: { ...configuration.connection, user: role, password } });
     let runtime;
     try {
         ({ runtime } = await f.start(c));
@@ -791,4 +836,23 @@ test("standalone PostgreSQL: ordered migration reapplication retains real eligib
             assert.equal(result.rows[0].available, false);
         } finally { other.release(); }
     } finally { await client.query("ROLLBACK"); client.release(); }
+});
+
+test("standalone PostgreSQL: binding writer row locks cannot invert authoritative admission barrier order", async t => {
+    const f = await fixture(t);
+    const c = await f.publish(); await f.decide(c); await f.activate(c); await f.bind();
+    const writer = await f.pool.connect();
+    let timer;
+    try {
+        await writer.query("BEGIN");
+        await writer.query(`SELECT * FROM "${f.schema}".session_agent_package_bindings WHERE session_id='session-1' FOR UPDATE`);
+        const current = f.authority.context("session-1", c);
+        const outcome = await Promise.race([
+            current.then(() => "read-before-writer"),
+            new Promise(resolve => { timer = setTimeout(() => resolve("blocked"), 1200); }),
+        ]);
+        await writer.query("ROLLBACK");
+        await current;
+        assert.equal(outcome, "read-before-writer", "MVCC admission ordered before mutation must not wait on a writer entering its BEFORE trigger");
+    } finally { clearTimeout(timer); await writer.query("ROLLBACK"); writer.release(); }
 });

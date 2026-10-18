@@ -54,4 +54,4 @@ jobs:
       - name: Install the review workflow's browser
         run: npx playwright install --with-deps msedge
       - name: Real PostgreSQL, supervised execution, recovery and browser acceptance
-        run: node --test --test-concurrency=1 packages/sdk/test/postgres/package-runtime.test.mjs
+        run: node --test --test-reporter=tap --test-timeout=120000 --test-concurrency=1 packages/sdk/test/postgres/package-runtime.test.mjs

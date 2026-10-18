@@ -106,6 +106,7 @@ export interface ExecutablePackageAdmissionRequest extends ExecutablePackageIden
     expectedRegistryEpoch: number;
     expectedOwnerEpoch: number;
     expectedCapabilityEpoch: number;
+    expectedSessionBindingRevision?: number;
     workerNodeId: string;
     workerFence: string;
 }

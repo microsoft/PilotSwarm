@@ -10,6 +10,10 @@ import type { ExecutablePackageIdentity, ExecutablePackageAdmissionRequest } fro
 import type { VerifiedPackageRuntime } from "./package-runtime-format.js";
 
 export interface PackageCallbackServices {
+    /** Cancellation stops the owned supervised generation, including synchronous code. */
+    signal?: AbortSignal;
+    /** Durable caller pin, checked atomically with handler admission. */
+    bindingRevision?: number;
     /** Trusted host router; published-package targets must retain their own exact admission wrappers. */
     callTool?: (name: string, args: unknown, context: { durableSessionId: string }) => Promise<unknown>;
     /** Trusted deployment MCP router; retain its current allowlist/capability admission checks. */
@@ -50,7 +54,9 @@ export class SupervisedPackageRuntime {
             await authority.acknowledgeFence(runtime.registration, true);
             throw error;
         }
-        runtime.broker = fork(fileURLToPath(new URL("./package-runtime-broker.js", import.meta.url)), [], {
+        const brokerEntry = new URL(import.meta.url.endsWith(".ts")
+            ? "../dist/package-runtime-broker.js" : "./package-runtime-broker.js", import.meta.url);
+        runtime.broker = fork(fileURLToPath(brokerEntry), [], {
             stdio: ["ignore", "pipe", "pipe", "ipc"], execArgv: [], env: runtime.env,
         });
         runtime.broker.stdout?.resume(); runtime.broker.stderr?.resume();
@@ -76,10 +82,18 @@ export class SupervisedPackageRuntime {
         try {
             onRuntime?.(runtime);
             await runtime.renew();
+            await authority.noteProcess(runtime.registration, runtime.broker.pid!, "broker");
             await runtime.request("initialize-broker", { configuration: await authority.brokerConfiguration(), registration: runtime.registration });
             const tools = await runtime.load();
             return { runtime, tools };
-        } catch (error) { await runtime.stop().catch(() => {}); throw error; }
+        } catch (error) {
+            try { await runtime.stop(); }
+            catch {
+                await authority.requestFence(runtime.registration);
+                await authority.recoverLocal();
+            }
+            throw error;
+        }
     }
 
     private async renew(): Promise<void> {
@@ -142,7 +156,7 @@ export class SupervisedPackageRuntime {
         }));
     }
     private async admit<T>(sessionId: string, operation: ExecutablePackageAdmissionRequest["operation"], target: string,
-        start: (signal: AbortSignal) => Promise<T>): Promise<T> {
+        start: (signal: AbortSignal) => Promise<T>, expectedSessionBindingRevision?: number): Promise<T> {
         if (this.closed) throw new Error("Package generation is fenced");
         const context = await this.authority.context(sessionId, this.identity);
         const reg = this.registration;
@@ -152,6 +166,7 @@ export class SupervisedPackageRuntime {
             expectedReviewRevision: reg.reviewRevision, expectedRegistryEpoch: reg.registryEpoch,
             registrationId: reg.registrationId, workerNodeId: reg.workerNodeId, workerFence: reg.workerFence,
             operation, target,
+            ...(expectedSessionBindingRevision !== undefined ? { expectedSessionBindingRevision } : {}),
         }, start);
     }
     invoke(sessionId: string, name: string, args: unknown): Promise<any> {
@@ -160,9 +175,13 @@ export class SupervisedPackageRuntime {
     }
     invokeCallback(sessionId: string, name: string, args: unknown, services: PackageCallbackServices = {}): Promise<any> {
         if (!this.verified.callbacks?.[name]) return Promise.reject(new Error("Exact callback declaration unavailable"));
+        if (services.signal?.aborted) return Promise.reject(new Error("Package callback cancelled"));
+        const cancel = () => { void this.stop().catch(() => {}); };
+        services.signal?.addEventListener("abort", cancel, { once: true });
         return this.admit(sessionId, "handler", name, signal => this.request("callback",
             { name, args, context: { durableSessionId: sessionId, workerNodeId: this.workerId } }, signal,
-            { sessionId, name, services, failed: false, pending: 0 }));
+            { sessionId, name, services, failed: false, pending: 0 }), services.bindingRevision)
+            .finally(() => services.signal?.removeEventListener("abort", cancel));
     }
     private async callbackCall(message: any): Promise<void> {
         const invocation = this.callbacks.get(message.invocationId);
