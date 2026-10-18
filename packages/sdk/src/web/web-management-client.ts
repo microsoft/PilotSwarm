@@ -453,6 +453,37 @@ export class WebPilotSwarmManagementClient {
         return this.ops.listAgentPackages();
     }
 
+    async listAgentPackageReviews(_owner: any, _isAdmin: boolean): Promise<any[]> {
+        return this.ops.listAgentPackageReviews();
+    }
+
+    async decideAgentPackageReview(input: any, _owner: any, _isAdmin: boolean): Promise<void> {
+        return this.ops.decideAgentPackageReview({ input });
+    }
+
+    async getAgentPackageReviewAudit(versionId: string, _owner: any, _isAdmin: boolean): Promise<any[]> {
+        return this.ops.getAgentPackageReviewAudit({ versionId });
+    }
+    async getAgentPackageRuntimeStatus(input: any, _owner: any, _isAdmin: boolean): Promise<any> {
+        return this.ops.getAgentPackageRuntimeStatus({ input });
+    }
+
+    async activateAgentPackageVersion(input: any, _owner: any, _isAdmin: boolean): Promise<void> {
+        return this.ops.activateAgentPackageVersion({ input });
+    }
+
+    async getAgentPackageActivationAudit(packageId: string, _owner: any, _isAdmin: boolean): Promise<any[]> {
+        return this.ops.getAgentPackageActivationAudit({ packageId });
+    }
+
+    async getSessionAgentPackageBinding(sessionId: string, _owner: any, _isAdmin: boolean): Promise<any> {
+        return this.ops.getSessionAgentPackageBinding({ sessionId });
+    }
+
+    async rebindSessionAgentPackage(input: any, _owner: any, _isAdmin: boolean): Promise<void> {
+        return this.ops.rebindSessionAgentPackage({ input });
+    }
+
     async getAgentPackage(name: string, _owner: any, _isAdmin: boolean, selector?: any): Promise<any> {
         return this.ops.getAgentPackage({ name, ...packageSelectorParams(selector) });
     }

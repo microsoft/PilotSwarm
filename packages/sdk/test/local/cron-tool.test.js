@@ -168,6 +168,8 @@ describe("cron tool plumbing", () => {
         const sources = {
             staticNames: [],
             packageId: "pkg-queue",
+            packageIdentity: { packageId: "pkg-queue", versionId: "v1", sha256: "a".repeat(64) },
+            packageBindingRevision: 1,
             packageNames: ["queue-gate"],
             bindings: [{ reasonPrefix: "Run the queue cycle", precheck: "queue-gate" }],
         };

@@ -6,7 +6,7 @@ import { mcpAllowlistAdmits, type McpAllowlistAgent } from "./mcp-loader.js";
 import { findReservedPackageToolName } from "./reserved-tool-names.js";
 
 export interface PackageRequest {
-    source_ref: string; tools?: string[]; mcp_servers?: string[];
+    source_ref: string; tools?: string[]; mcp_servers?: string[]; callbacks?: string[];
     action?: "add" | "remove"; expected_revision: number; request_id: string;
 }
 export interface CapabilityServices {
@@ -21,7 +21,7 @@ export const CAPABILITY_TOOL_SPECS = {
     search_capabilities: {
         description: "MANDATORY first tool when the user names or might be referring to an unattached capability, including natural phrases such as 'X exploration' or 'X review'. Search before web, repository, shell or delegation tools even when those tools could answer the request. Covers visible static and published skills, authored agent workflows, tools and MCP servers, plus curated shared skills. Use the user's named phrase and goal as the query. Returns metadata, ownership (static, owned, other_shared or curated) and exact references; it does not load instructions or grant tools. In Base V2, other_shared packages may be mentioned but must not be loaded or activated unless the session owner explicitly requests that capability. Static/package search is weighted keyword matching; curated search uses the configured hybrid index.",
         parameters: { type: "object", properties: { query: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 30 },
-            kinds: { type: "array", items: { type: "string", enum: ["skill", "agent", "tool", "mcp"] } },
+            kinds: { type: "array", items: { type: "string", enum: ["skill", "agent", "tool", "mcp", "callback"] } },
             sources: { type: "array", items: { type: "string", enum: ["static", "published", "curated"] } } }, required: ["query"] },
     },
     load_agent_guidelines: {
@@ -35,7 +35,7 @@ export const CAPABILITY_TOOL_SPECS = {
     use_package: {
         description: "Add or remove explicitly selected tools/MCP servers from an exact visible static or published source_ref returned by search_capabilities. In Base V2, do not activate other_shared packages unless the session owner explicitly requested that capability. Does not install packages, grant an agent identity, or load every export. Parent-session only. Selections persist for this durable session; changes refresh the same session at the next turn boundary and continue automatically. Finish native tasks first. Use list_session_capabilities for expected_revision; use a new request_id per logical change and reuse it on retry. Existing original/bound tools cannot be removed here.",
         parameters: { type: "object", properties: { source_ref: { type: "string" }, tools: { type: "array", items: { type: "string" } },
-            mcp_servers: { type: "array", items: { type: "string" } }, action: { type: "string", enum: ["add", "remove"] },
+            mcp_servers: { type: "array", items: { type: "string" } }, callbacks: { type: "array", items: { type: "string" } }, action: { type: "string", enum: ["add", "remove"] },
             expected_revision: { type: "integer", minimum: 0 }, request_id: { type: "string", minLength: 1, maxLength: 128 } },
             required: ["source_ref", "expected_revision", "request_id"] },
     },
@@ -47,11 +47,11 @@ export function validatePackageRequest(args: PackageRequest): void {
     if (!args || !Number.isSafeInteger(args.expected_revision) || args.expected_revision < 0
         || typeof args.request_id !== "string" || !args.request_id.trim() || args.request_id.length > 128
         || args.action !== undefined && !["add", "remove"].includes(args.action)) throw new Error("Invalid package request/revision");
-    for (const names of [args.tools ?? [], args.mcp_servers ?? []]) {
+    for (const names of [args.tools ?? [], args.mcp_servers ?? [], args.callbacks ?? []]) {
         if (!Array.isArray(names) || names.length > 64 || names.some(n => typeof n !== "string" || !n || n.length > 200)
             || new Set(names).size !== names.length) throw new Error("Invalid or duplicate tool/server names");
     }
-    if (!(args.tools?.length || args.mcp_servers?.length)) throw new Error("Select at least one tool or MCP server");
+    if (!(args.tools?.length || args.mcp_servers?.length || args.callbacks?.length)) throw new Error("Select at least one tool, MCP server or callback");
 }
 export function nextCapabilityState(state: CapabilityState, sourceId: string, args: PackageRequest): { state: CapabilityState; changed: boolean } {
     validatePackageRequest(args);
@@ -61,6 +61,7 @@ export function nextCapabilityState(state: CapabilityState, sourceId: string, ar
         action: args.action ?? "add",
         tools: [...(args.tools ?? [])].sort(),
         mcpServers: [...(args.mcp_servers ?? [])].sort(),
+        ...(args.callbacks ? { callbacks: [...args.callbacks].sort() } : {}),
     });
     const receipt = state.requests?.find(r => r.id === args.request_id);
     if (receipt) {
@@ -76,9 +77,10 @@ export function nextCapabilityState(state: CapabilityState, sourceId: string, ar
     // the selection is fully removed or explicitly re-added from a fresh ref.
     const selection = { sourceId,
         sourceRef: args.action === "remove" ? old.sourceRef ?? args.source_ref : args.source_ref,
-        tools: merge(old.tools, args.tools ?? []), mcpServers: merge(old.mcpServers, args.mcp_servers ?? []) };
+        tools: merge(old.tools, args.tools ?? []), mcpServers: merge(old.mcpServers, args.mcp_servers ?? []),
+        ...(old.callbacks || args.callbacks ? { callbacks: merge(old.callbacks ?? [], args.callbacks ?? []) } : {}) };
     const selections = state.selections.filter(s => s.sourceId !== sourceId);
-    if (selection.tools.length || selection.mcpServers.length) selections.push(selection);
+    if (selection.tools.length || selection.mcpServers.length || selection.callbacks?.length) selections.push(selection);
     if (selections.length > 32) throw new Error("At most 32 capability sources may be attached");
     selections.sort((a, b) => a.sourceId.localeCompare(b.sourceId));
     const changed = capabilityHash(selections) !== capabilityHash(state.selections);
@@ -108,6 +110,9 @@ export function bindCapabilities(sources: CapabilitySource[], owner: FeatureOwne
         }
         const selectedTools: Tool<any>[] = []; const selectedMcp: Record<string, any> = {};
         let problem = "";
+        for (const name of selection.callbacks ?? []) {
+            if (!source.artifacts.some(a => a.kind === "callback" && a.name === name)) { problem = "Selected callback unavailable"; break; }
+        }
         for (const name of selection.tools) {
             const tool = source.tools.get(name);
             if (!tool || tool.name !== name) { problem = "Selected tool unavailable"; break; }
@@ -130,7 +135,8 @@ export function bindCapabilities(sources: CapabilitySource[], owner: FeatureOwne
         for (const tool of selectedTools) { tools.push(tool); toolNames.add(tool.name); }
         Object.assign(mcpServers, selectedMcp); Object.keys(selectedMcp).forEach(n => mcpNames.add(n));
         bound.push({ sourceId: source.id, revision: source.revision,
-            tools: [...selection.tools].sort(), mcpServers: [...selection.mcpServers].sort() });
+            tools: [...selection.tools].sort(), mcpServers: [...selection.mcpServers].sort(),
+            ...(selection.callbacks ? { callbacks: [...selection.callbacks].sort() } : {}) });
     }
     return { tools, mcpServers, unavailable, fingerprint: capabilityHash(bound) };
 }

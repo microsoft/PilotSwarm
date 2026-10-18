@@ -7,8 +7,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { SessionManager, agentOwnerKey, packageAgentKey } from "../../dist/session-manager.js";
 import { resolveTopLevelAgentConfig } from "../../dist/orchestration/runtime.js";
 import { PilotSwarmClient } from "../../dist/client.js";
@@ -25,12 +24,13 @@ const tool = (name, result = name, description = name) => ({
 });
 const copy = (id, prompt, { owner = null, tools = ["catalog"], version = "1" } = {}) => ({
     prompt, toolNames: tools, kind: "app-agent", packageId: id,
+    packageVersionId: version, packageSha256: version.padStart(64, "0"),
     packageScope: owner ? "user" : "shared", packageOwner: owner,
     descriptor: { layerKind: "agent", layerId: id, name: "analyst", schemaVersion: "3", version, type: "app" },
 });
 
 function fixture(t, { owner = ALICE, hydrate = false } = {}) {
-    const home = mkdtempSync(join(tmpdir(), "ps-agent-binding-"));
+    const home = mkdtempSync(resolve(".test-agent-binding-"));
     const calls = [];
     const handles = [];
     const events = [];
@@ -44,6 +44,21 @@ function fixture(t, { owner = ALICE, hydrate = false } = {}) {
         hydrate: async id => { mkdirSync(join(home, id), { recursive: true }); },
     } : null;
     const manager = new SessionManager(undefined, persist, defaults, home);
+    const bindings = new Map();
+    const reviewCatalog = { getSessionBinding: async id => bindings.get(id) ?? null };
+    manager.setSessionCatalog({
+        getSession: async () => ({ owner }), recordEvents: async (_id, rows) => events.push(...rows),
+        packageReviews: reviewCatalog,
+    });
+    const getOrCreate = manager.getOrCreate.bind(manager);
+    manager.getOrCreate = async (id, config, options) => {
+        // Simulate the separate catalog creation transaction, not runtime auto-pinning.
+        if (!bindings.has(id)) bindings.set(id, config.boundAgentPackageId ? {
+            sessionId: id, packageId: config.boundAgentPackageId, versionId: "1",
+            sha256: "1".padStart(64, "0"), agentName: config.boundAgentName, owner, revision: 1, allowed: true,
+        } : null);
+        return getOrCreate(id, config, options);
+    };
     manager._sessionAgentOwnerKey = async () => agentOwnerKey(owner);
     manager.setFactStore({
         readFacts: async () => ({ count: 0, facts: [] }),
@@ -86,7 +101,7 @@ function fixture(t, { owner = ALICE, hydrate = false } = {}) {
         rmSync(home, { recursive: true, force: true });
     });
     publish();
-    return { manager, calls, handles, defaults, publish, events };
+    return { manager, calls, handles, defaults, publish, events, bindings, reviewCatalog };
 }
 const prompt = sdkConfig => sdkConfig.systemMessage.sections.last_instructions.action("");
 const declaration = (sdkConfig, name) => sdkConfig.tools.find(t => t.name === name);
@@ -111,6 +126,17 @@ for (const mode of ["create", "hydrate"]) {
     });
 }
 
+test("omitting the agent name cannot hydrate a durable package pin as an unbound session", async t => {
+    const h = fixture(t, { hydrate: true });
+    h.bindings.set("pinned", {
+        sessionId: "pinned", packageId: "shared-package", versionId: "1",
+        sha256: "1".padStart(64, "0"), agentName: "analyst", owner: ALICE, revision: 1, allowed: true,
+    });
+    await assert.rejects(h.manager.getOrCreate("pinned", {}, { turnIndex: 2 }),
+        { code: "BOUND_AGENT_PACKAGE_UNAVAILABLE" });
+    assert.equal(h.calls.length, 0, "no provider hydration or generic fallback");
+});
+
 test("private binding rechecks ownership on a different worker; never falls back to the shared copy", async t => {
     const alice = fixture(t);
     const config = { ...named, boundAgentPackageId: "private-package" };
@@ -120,6 +146,55 @@ test("private binding rechecks ownership on a different worker; never falls back
     const bob = fixture(t, { owner: BOB, hydrate: true });
     await assert.rejects(bob.manager.getOrCreate("child", config, { turnIndex: 2 }), { code: "BOUND_AGENT_PACKAGE_UNAVAILABLE" });
     assert.equal(bob.calls.length, 0);
+});
+
+for (const denial of ["revoked", "digest mismatch", "version mismatch", "missing binding", "missing provenance", "different package"]) {
+    test(`warm session ${denial} denies before another provider handle or handler is used`, async t => {
+        const h = fixture(t);
+        let calls = 0;
+        h.publish({ sharedTools: [{ ...tool("catalog"), handler: async () => ++calls }] });
+        await h.manager.getOrCreate("child", named, { turnIndex: 0 });
+        const saved = h.bindings.get("child");
+        if (denial === "revoked") saved.allowed = false;
+        if (denial === "digest mismatch") saved.sha256 = "f".repeat(64);
+        if (denial === "version mismatch") saved.versionId = "older";
+        if (denial === "missing binding") h.bindings.set("child", null);
+        if (denial === "different package") saved.packageId = "private-package";
+        if (denial === "missing provenance") {
+            delete h.defaults.agentPromptLookup.analyst.copies[0].packageVersionId;
+        }
+        await assert.rejects(h.manager.getOrCreate("child", named, { turnIndex: 1 }),
+            { code: "BOUND_AGENT_PACKAGE_UNAVAILABLE" });
+        assert.equal(h.manager.get("child"), null);
+        assert.equal(h.handles[0].disconnected, true);
+        assert.equal(h.calls.length, 1);
+        assert.equal(calls, 0);
+    });
+}
+
+test("another worker cannot hydrate a v1 pin from a v2-only registry", async t => {
+    const h = fixture(t, { hydrate: true });
+    h.bindings.set("child", { sessionId: "child", packageId: "shared-package", versionId: "1",
+        sha256: "1".padStart(64, "0"), agentName: "analyst", owner: ALICE, revision: 1, allowed: true });
+    h.publish({ shared: copy("shared-package", "VERSION TWO", { version: "2" }) });
+    await assert.rejects(h.manager.getOrCreate("child", named, { turnIndex: 2 }),
+        { code: "BOUND_AGENT_PACKAGE_UNAVAILABLE" });
+    assert.equal(h.calls.length, 0);
+});
+
+test("a new named root may obtain its catalog-authorized initial pin before provider creation", async t => {
+    const h = fixture(t);
+    let binds = 0;
+    h.reviewCatalog.bindNewSession = async (sessionId, packageId, agentName) => {
+        binds++;
+        assert.equal(h.calls.length, 0);
+        h.bindings.set(sessionId, { sessionId, packageId, agentName, versionId: "1",
+            sha256: "1".padStart(64, "0"), owner: ALICE, revision: 1, allowed: true });
+    };
+    await h.manager.getOrCreate("new-root", { boundAgentName: "analyst" }, { turnIndex: 0 });
+    assert.equal(binds, 1);
+    assert.equal(h.bindings.get("new-root").packageId, "private-package");
+    assert.match(await prompt(h.calls[0].config), /PRIVATE INSTRUCTIONS/);
 });
 
 test("same-package handler refresh updates a warm session, retaining explicit application tools and defaults", async t => {
@@ -138,7 +213,7 @@ test("same-package handler refresh updates a warm session, retaining explicit ap
     assert.equal(h.calls.length, 1);
 });
 
-test("refresh snapshots instructions until the next turn and rebinds declarations, descriptor and MCP together", async t => {
+test("version refresh denies a warm pin until explicit rebind; instructions, declarations, descriptor and MCP then move together", async t => {
     const h = fixture(t);
     const first = await h.manager.getOrCreate("child", named, { turnIndex: 0 });
     const originalSdk = h.calls[0].config;
@@ -149,6 +224,9 @@ test("refresh snapshots instructions until the next turn and rebinds declaration
     });
     assert.match(await prompt(originalSdk), /SHARED INSTRUCTIONS/, "reload does not change a running turn's instructions");
     assert.equal(await handler(first, "catalog")(), "shared-handler");
+    await assert.rejects(h.manager.getOrCreate("child", named, { turnIndex: 1 }), { code: "BOUND_AGENT_PACKAGE_UNAVAILABLE" });
+    assert.equal(h.calls.length, 1, "old pin cannot create/resume a new provider handle from current active content");
+    h.bindings.set("child", { ...h.bindings.get("child"), versionId: "2", sha256: "2".padStart(64, "0"), revision: 2 });
     const next = await h.manager.getOrCreate("child", named, { turnIndex: 1 });
     assert.notEqual(next, first);
     assert.equal(h.handles[0].disconnected, true);
@@ -271,6 +349,7 @@ test("prompt-layer telemetry records the same private copy as the actual compose
     h.manager.setSessionCatalog({
         getSession: async () => ({ owner: ALICE }),
         recordEvents: async (_id, events) => { h.events.push(...events); },
+        packageReviews: h.reviewCatalog,
     });
     await h.manager.getOrCreate("child", { ...named, boundAgentPackageId: "private-package" }, { turnIndex: 0 });
     assert.match(await prompt(h.calls[0].config), /PRIVATE INSTRUCTIONS/);
@@ -284,7 +363,8 @@ test("worker lookup records declared tools, including explicit empty defaults, f
     const worker = {
         _agentPromptLookup: lookup, _loadedSystemAgents: [],
         _rawLoadedAgents: [
-            { name: "with-tools", prompt: "WITH", tools: ["catalog"] },
+            { name: "with-tools", prompt: "WITH", tools: ["catalog"], packageId: "pkg",
+                packageVersionId: "v1", packageSha256: "a".repeat(64) },
             { name: "omitted", prompt: "OMITTED" },
             { name: "null", prompt: "NULL", tools: null },
             { name: "empty", prompt: "EMPTY", tools: [] },
@@ -292,6 +372,8 @@ test("worker lookup records declared tools, including explicit empty defaults, f
     };
     PilotSwarmWorker.prototype._finalizeAgentPromptLookup.call(worker);
     assert.deepEqual(lookup["with-tools"].toolNames, ["catalog"]);
+    assert.equal(lookup["with-tools"].packageVersionId, "v1");
+    assert.equal(lookup["with-tools"].packageSha256, "a".repeat(64));
     assert.deepEqual(lookup.omitted.toolNames, []);
     assert.deepEqual(lookup.null.toolNames, []);
     assert.deepEqual(lookup.empty.toolNames, []);
@@ -405,12 +487,12 @@ test("deployment pin cannot borrow a package tool or coexist with a package pin"
     assert.equal(h.calls.length, 0);
 });
 
-test("legacy unpinned names retain owner precedence and deployment source survives config serialization", async t => {
+test("legacy unpinned package names deny instead of silently adopting current content; deployment source survives serialization", async t => {
     const h = fixture(t);
     addDeployment(h);
-    const session = await h.manager.getOrCreate("legacy", { boundAgentName: "analyst", toolNames: ["catalog"] }, { turnIndex: 0 });
-    assert.match(await prompt(h.calls[0].config), /PRIVATE INSTRUCTIONS/);
-    assert.equal(await handler(session, "catalog")(), "private-handler");
+    await assert.rejects(h.manager.getOrCreate("legacy", { boundAgentName: "analyst", toolNames: ["catalog"] }, { turnIndex: 0 }),
+        { code: "BOUND_AGENT_PACKAGE_UNAVAILABLE" });
+    assert.equal(h.calls.length, 0);
     const { projectSerializableSessionConfig } = await import("../../dist/client.js");
     const restored = JSON.parse(JSON.stringify(projectSerializableSessionConfig(deploymentBinding)));
     assert.equal(restored.boundAgentSource, "deployment");

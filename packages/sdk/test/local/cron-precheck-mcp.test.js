@@ -6,7 +6,8 @@ import { SessionManager, packageAgentKey } from "../../src/session-manager.ts";
 import { registerActivities } from "../../src/session-proxy.ts";
 import { startPrecheckMcpServer } from "../helpers/cron-precheck-mcp.mjs";
 
-const input = { sessionId: "s1", precheck: "queue", reason: "poll", intervalSeconds: 300 };
+const input = { sessionId: "s1", precheck: "queue", reason: "poll", intervalSeconds: 300,
+    packageIdentity: { packageId: "shared", versionId: "v1", sha256: "a".repeat(64) }, packageBindingRevision: 1 };
 const agent = { boundAgentName: "poller", boundAgentPackageId: "shared" };
 const owner = { provider: "test", subject: "alice" };
 const serverConfig = { type: "http", url: "http://127.0.0.1:1/mcp", tools: ["queue_status"] };
@@ -45,6 +46,17 @@ describe("non-LLM MCP precheck calls", () => {
         await expect(callCronPrecheckMcpTool({ queue: serverConfig }, signal, "missing", "queue_status")).rejects.toThrow(/unauthorized/);
         await expect(callCronPrecheckMcpTool({}, signal, "toString", "queue_status")).rejects.toThrow(/unauthorized/);
         await expect(callCronPrecheckMcpTool({ queue: serverConfig }, signal, "queue", "delete_all")).rejects.toThrow(/not authorized/);
+    });
+
+    it("rejects raw package MCP markers before any legacy transport can start", async () => {
+        const signal = new AbortController().signal;
+        for (const config of [
+            { type: "pilotswarm-package", tools: ["*"] },
+            { ...serverConfig, packageRuntime: { packageId: "shared" } },
+        ]) {
+            await expect(callCronPrecheckMcpTool({ queue: config }, signal, "queue", "queue_status"))
+                .rejects.toThrow(/supervised authority/);
+        }
     });
 
     it("fails open for server tool errors, invalid results, denied tools and connection failures", async () => {
@@ -207,7 +219,8 @@ describe("non-LLM MCP precheck calls", () => {
 
 describe("precheck session MCP grants without model hydration", () => {
     function setup(extra = {}) {
-        const shared = { kind: "app-agent", prompt: "", namespace: "kit", packageId: "shared", packageScope: "shared" };
+        const shared = { kind: "app-agent", prompt: "", namespace: "kit", packageId: "shared", packageScope: "shared",
+            packageVersionId: "v1", packageSha256: "a".repeat(64) };
         const personal = { kind: "app-agent", prompt: "", packageId: "personal", packageScope: "user", packageOwner: owner };
         const defaults = {
             baseMcpServers: { base: serverConfig },
@@ -222,6 +235,10 @@ describe("precheck session MCP grants without model hydration", () => {
         const catalog = {
             getSession: vi.fn(async () => ({ owner })),
             getSessionCapabilities: vi.fn(async () => ({ revision: 0, selections: [] })),
+            packageReviews: { getSessionBinding: async () => ({
+                ...input.packageIdentity, agentName: "poller", revision: 1, allowed: true,
+            }) },
+            packageRuntime: { context: async () => ({}) },
         };
         manager.setSessionCatalog(catalog);
         vi.spyOn(manager, "getOrCreate").mockImplementation(() => { throw new Error("must not hydrate"); });

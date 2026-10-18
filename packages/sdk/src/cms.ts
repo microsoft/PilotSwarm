@@ -17,6 +17,9 @@ import { systemSessionProtectedError, type SessionOwnerInfo, type SessionSummary
 import type { MessageSender } from "./message-sender.js";
 import { TurnControlUnavailableError } from "./turn-control-contract.js";
 import type { TurnControlListenClient } from "./turn-control.js";
+import { PgAgentPackageReviewStore, type AgentPackageReviewCatalog } from "./agent-package-review-store.js";
+import { PgPackageRuntimeAuthority, type PackageRuntimeAuthority } from "./package-runtime-authority.js";
+import type { AgentPackageInspection, PackageReviewDecision } from "./agent-package-authorization.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -881,6 +884,9 @@ export interface AgentPackageInstallEntry {
      * would fight over the same directory.
      */
     packageId: string;
+    versionId?: string;
+    reviewDecision?: PackageReviewDecision;
+    reviewRevision?: number;
     name: string;
     scope: AgentPackageScope;
     owner: AgentPrincipal | null;
@@ -911,6 +917,8 @@ export interface PublishAgentPackageInput {
     manifest: Record<string, unknown>;
     createdBy: string | null;
     isAdmin: boolean;
+    /** Computed from the verified artifact by the publish service, never request metadata. */
+    inspection?: AgentPackageInspection;
 }
 
 export interface PublishAgentPackageResult {
@@ -966,6 +974,9 @@ export interface FleetDirectiveRow {
 }
 
 export interface SessionCatalog {
+    /** Optional for provider compatibility; missing support must deny review operations. */
+    packageReviews?: AgentPackageReviewCatalog;
+    packageRuntime?: PackageRuntimeAuthority;
     getSessionCapabilities?(sessionId: string): Promise<CapabilityState>;
     saveSessionCapabilities?(sessionId: string, expectedRevision: number, state: CapabilityState): Promise<boolean>;
     /**
@@ -1596,7 +1607,7 @@ function sqlForSchema(schema: string) {
             listAgentPackages:          `${s}.cms_list_agent_packages`,
             getAgentPackage:            `${s}.cms_get_agent_package`,
             resolveAgentPackageId:      `${s}.cms_resolve_agent_package_id`,
-            getAgentPackagesInstallManifest: `${s}.cms_get_agent_packages_install_manifest`,
+            getAgentPackagesInstallManifest: `${s}.cms_get_agent_packages_runtime_install_manifest`,
             setAgentPackageScope:       `${s}.cms_set_agent_package_scope`,
             setAgentPackageEnabled:     `${s}.cms_set_agent_package_enabled`,
             pinAgentPackageVersion:     `${s}.cms_pin_agent_package_version`,
@@ -1627,6 +1638,8 @@ export class PgSessionCatalog implements SessionCatalog {
     private sql: ReturnType<typeof sqlForSchema>;
     private _providers: ProviderStore;
     readonly features: FeatureStore;
+    readonly packageReviews: PgAgentPackageReviewStore;
+    readonly packageRuntime: PgPackageRuntimeAuthority;
     /** Connection settings of the pool, without pool-only fields: reused for the turn-control LISTEN client. */
     private listenConfig: Record<string, unknown> | null = null;
 
@@ -1635,6 +1648,8 @@ export class PgSessionCatalog implements SessionCatalog {
         this.sql = sqlForSchema(schema);
         this._providers = new ProviderStore(pool, schema);
         this.features = new FeatureStore(pool, schema);
+        this.packageRuntime = new PgPackageRuntimeAuthority(pool, schema);
+        this.packageReviews = new PgAgentPackageReviewStore(pool, schema, this.packageRuntime);
     }
 
     /**
@@ -1836,6 +1851,15 @@ export class PgSessionCatalog implements SessionCatalog {
                 }
             }
 
+            const boundPackageId = opts?.creationConfig?.boundAgentPackageId;
+            const boundAgentName = opts?.creationConfig?.boundAgentName;
+            if (typeof boundPackageId === "string" && boundPackageId
+                && typeof boundAgentName === "string" && boundAgentName) {
+                await client.query(
+                    `SELECT "${this.sql.schema}".cms_bind_new_session_agent_package($1,$2,$3)`,
+                    [sessionId, boundPackageId, boundAgentName],
+                );
+            }
             await client.query("COMMIT");
         } catch (err) {
             await client.query("ROLLBACK").catch(() => {});
@@ -2153,16 +2177,26 @@ export class PgSessionCatalog implements SessionCatalog {
         if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) throw new Error("Invalid expected capability revision");
         const normalized = normalizeCapabilityState(state);
         if (normalized.revision !== expectedRevision + 1) throw new Error("Capability state must advance exactly one revision");
-        const { rowCount } = await this.pool.query(`
-            INSERT INTO "${this.sql.schema}".session_capabilities(session_id, revision, state)
-            SELECT $1, $3, $4::jsonb WHERE $2::bigint = 0
-            ON CONFLICT(session_id) DO UPDATE SET revision = $3, state = $4::jsonb
-            WHERE session_capabilities.revision = $2`, [sessionId, expectedRevision, normalized.revision, JSON.stringify(normalized)]);
-        if (rowCount) return true;
-        if (expectedRevision === 0) return false;
-        const result = await this.pool.query(`UPDATE "${this.sql.schema}".session_capabilities SET revision=$3, state=$4::jsonb
-            WHERE session_id=$1 AND revision=$2`, [sessionId, expectedRevision, normalized.revision, JSON.stringify(normalized)]);
-        return result.rowCount === 1;
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN; SET LOCAL statement_timeout='2s'; SET LOCAL lock_timeout='1s'");
+            await client.query(`SELECT "${this.sql.schema}".cms_package_runtime_barrier()`);
+            const { rowCount } = await client.query(`
+                INSERT INTO "${this.sql.schema}".session_capabilities(session_id, revision, state)
+                SELECT $1, $3, $4::jsonb WHERE $2::bigint = 0
+                ON CONFLICT(session_id) DO UPDATE SET revision = $3, state = $4::jsonb
+                WHERE session_capabilities.revision = $2`, [sessionId, expectedRevision, normalized.revision, JSON.stringify(normalized)]);
+            let changed = Boolean(rowCount);
+            if (!changed && expectedRevision !== 0) {
+                const result = await client.query(`UPDATE "${this.sql.schema}".session_capabilities SET revision=$3, state=$4::jsonb
+                    WHERE session_id=$1 AND revision=$2`, [sessionId, expectedRevision, normalized.revision, JSON.stringify(normalized)]);
+                changed = result.rowCount === 1;
+            }
+            if (changed) await this.packageRuntime.syncSelectionGrants(client, sessionId, normalized);
+            await client.query("COMMIT");
+            return changed;
+        } catch (error) { await client.query("ROLLBACK").catch(() => {}); throw error; }
+        finally { client.release(); }
     }
 
     async getSessionCreationConfig(sessionId: string): Promise<Record<string, unknown> | null> {
@@ -3751,13 +3785,14 @@ export class PgSessionCatalog implements SessionCatalog {
         const packageId = randomUUID();
         const versionId = randomUUID();
         const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.sql.fn.publishAgentPackage}($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+            `SELECT * FROM "${this.sql.schema}".cms_publish_reviewed_agent_package($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
             [
                 packageId, versionId, input.name, input.scope,
                 input.owner?.provider ?? null, input.owner?.subject ?? null,
                 input.sourceId, input.semver, input.sha256, input.sizeBytes,
                 input.artifactFilename, input.commitSha,
                 JSON.stringify(input.manifest ?? {}), input.createdBy, input.isAdmin,
+                input.inspection ? JSON.stringify(input.inspection) : null,
             ],
         );
         const row = rows[0] ?? {};
@@ -3841,6 +3876,9 @@ export class PgSessionCatalog implements SessionCatalog {
         );
         return rows.map((row: any) => ({
             packageId: row.package_id,
+            versionId: row.version_id,
+            reviewDecision: row.review_decision ?? undefined,
+            reviewRevision: row.review_revision == null ? undefined : Number(row.review_revision),
             name: row.name,
             scope: row.scope === "user" ? "user" as const : "shared" as const,
             owner: rowToAgentPrincipal(row),

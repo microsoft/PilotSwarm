@@ -222,12 +222,13 @@ describe("1.0.82 cron precheck", () => {
     });
 
     it("agentId-only startup dispatches resolved provenance and tools and retains them across continue-as-new", () => {
+        const identity = { packageId: "pkg-shared", versionId: "v1", sha256: "a".repeat(64) };
         const h = harness({
             agentId: "poller",
             iteration: 0,
             isSystem: false,
             config: { toolNames: ["caller_tool"] },
-            cronSchedule: { ...SCHEDULE, precheckPackageId: "pkg-shared" },
+            cronSchedule: { ...SCHEDULE, precheckPackageId: "pkg-shared", precheckIdentity: identity, precheckBindingRevision: 7 },
         }, { name: "poller", packageId: "pkg-shared", tools: ["queue_tool"] });
         h.fire({ skip: true, outcome: "skip" });
         const expectedAgent = {
@@ -236,6 +237,7 @@ describe("1.0.82 cron precheck", () => {
             toolNames: ["queue_tool", "caller_tool"],
         };
         expect(h.prechecks[0].agent).toMatchObject(expectedAgent);
+        expect(h.prechecks[0]).toMatchObject({ packageIdentity: identity, packageBindingRevision: 7 });
         expect(h.runtime.input.config.boundAgentPackageId).toBeUndefined();
         const next = buildContinueInput(h.runtime);
         expect(next.config).toMatchObject(expectedAgent);
@@ -243,5 +245,19 @@ describe("1.0.82 cron precheck", () => {
         resumed.fire({ skip: true, outcome: "skip" });
         expect(resumed.prechecks[0].agent).toEqual(h.prechecks[0].agent);
         expect(resumed.prechecks[0].packageId).toBe("pkg-shared");
+        expect(resumed.prechecks[0]).toMatchObject({ packageIdentity: identity, packageBindingRevision: 7 });
+    });
+
+    it("schedule arming clones the full immutable identity and preserves it through continue-as-new", () => {
+        const h = harness({ cronSchedule: undefined });
+        const identity = { packageId: "pkg", versionId: "v1", sha256: "a".repeat(64) };
+        applyCronAction(h.runtime, { type: "cron", action: "set", intervalSeconds: 60, reason: "poll",
+            precheck: "queue", precheckPackageId: "pkg", precheckIdentity: identity, precheckBindingRevision: 3 });
+        identity.versionId = "substituted";
+        h.fire({ skip: true, outcome: "skip" });
+        expect(h.prechecks[0].packageIdentity.versionId).toBe("v1");
+        const next = buildContinueInput(h.runtime);
+        expect(next.cronSchedule.precheckIdentity).toEqual({ ...identity, versionId: "v1" });
+        expect(next.cronSchedule.precheckBindingRevision).toBe(3);
     });
 });

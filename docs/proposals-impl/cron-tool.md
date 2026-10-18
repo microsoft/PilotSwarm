@@ -2,7 +2,61 @@
 
 ## Status
 
-Implemented
+Implemented, unreleased. Published-package prechecks depend on the executable
+package security prerequisite; this proposal is not release or deployment
+authorization. The current API and examples are in
+[SDK apps](../developer/building/sdk-apps.md) and
+[building agent packages](../building-agent-packages.md).
+
+Package prechecks use manifest-declared generic supervised callbacks, not the
+unreleased legacy `createCronPrechecks`/`cronPrechecks` exports. Arming captures
+package/version/full-artifact SHA and binding revision; timers and
+continue-as-new retain that exact pin. Current-owner/binding/tool admission
+occurs in activities, never deterministic replay. Pending content imports
+nothing; denial, timeout, caught failed calls and unfinished calls cannot skip a
+model turn. Approved empty-queue callbacks skip without model hydration.
+Trusted `worker.registerCronPrechecks()` registration needs no new opt-in.
+
+### Integrated acceptance snapshot
+
+The integrated candidate passed the root full build and:
+
+* The five targeted cron Vitest files (`cron-precheck`, `cron-tool`,
+  `cron-precheck-orchestration`, `cron-precheck-mcp`, `cron-precheck-routing`):
+  **68 passed**, zero skips.
+* `node --test packages\app\web\test\agent-package-review-authz.test.mjs packages\app\mcp\test\unit\agent-package-reviews.unit.mjs packages\app\ui\core\test\package-review-tabs.test.mjs`:
+  **21 passed**, zero skips, covering authenticated fleet-admin authority,
+  discarded client actor/admin flags, review operations and tab ordering.
+* `node --test --test-reporter=tap --test-concurrency=1 packages\sdk\test\postgres\package-runtime.test.mjs`:
+  **41 passed**, zero skips, against a separate standalone PostgreSQL 17 cluster
+  using **SCRAM**, not PGlite or an operator database. This includes real process
+  counters, browser review/activation/revoke, multiple workers, failed startup,
+  authority outage, exact cron pins, actual current root-owner/config mutation,
+  timeout fencing and callback denial.
+* Real native worker/SDK/CLI tests in `cron-precheck-live.test.js` and
+  `cron-precheck-package-live.test.js`: **four passed**, zero skips, against
+  standalone SCRAM PostgreSQL. Both package variants proved pending
+  import/factory/callback counts zero; approval plus activation produced exactly
+  one import/tools factory/callback factory in the same non-parent PID. Two idle
+  callback cycles produced zero additional model requests. The packaged-MCP
+  variant had one supervised server start and at least two tool calls. Warm
+  revocation/refresh added zero new execution counter entries. Trusted static
+  registration, session defaults and shadow behavior remained operational.
+* From `packages\sdk`, Git Bash with Git's `usr/bin` first on `PATH`:
+  `node --test --test-concurrency=2 test/unit/*.test.mjs`:
+  **1,609 passed, nine skipped, zero failed**. Scratch lived inside the checkout;
+  the Git fixture now prevents ancestor-repository discovery itself, rather than
+  inheriting a ceiling its isolation function strips. The nine skips concern
+  Unix permissions/UIDs/sockets, Linux process/mount metadata and process groups,
+  including one local-Git-version-dependent UID test. They are **not** claimed
+  as Linux acceptance.
+
+The requested Linux completed-candidate run and external legacy-worker fencing
+proof remain separate gates. The earlier Linux run failed the passwordless
+broker-role fixture under SCRAM; passing other cases did not make that run pass.
+Both branches now generate and forward the same synthetic broker-role password
+and cover observed cleanup after broker initialization failure. No deployment
+or exact Claude Opus 4.8 completed-candidate review is claimed.
 
 ## Problem
 

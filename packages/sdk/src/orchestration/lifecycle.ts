@@ -271,6 +271,8 @@ export function applyCronAction(
         ...(typeof action.precheck === "string" && action.precheck ? { precheck: action.precheck } : {}),
         ...(typeof action.precheck === "string" && action.precheck && typeof action.precheckPackageId === "string" && action.precheckPackageId
             ? { precheckPackageId: action.precheckPackageId } : {}),
+        ...(action.precheck && action.precheckIdentity
+            ? { precheckIdentity: { ...action.precheckIdentity }, precheckBindingRevision: action.precheckBindingRevision } : {}),
     };
     runtime.ctx.traceInfo(`[orch] cron scheduled: every ${action.intervalSeconds}s (${action.reason})${runtime.state.cronSchedule.precheck ? ` precheck=${runtime.state.cronSchedule.precheck}` : ""}`);
 }

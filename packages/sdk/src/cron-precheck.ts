@@ -4,8 +4,8 @@
  *
  * A recurring agent that only polls ("is there a job? no, sleep") pays for a
  * full model turn on every empty cycle. Named prechecks come from worker code
- * (`PilotSwarmWorker.registerCronPrechecks`) or from an agent package, whose
- * `tools/worker-module.js` exports `createCronPrechecks()` beside its tools.
+ * (`PilotSwarmWorker.registerCronPrechecks`) or from an approved supervised
+ * callback declared in a published package manifest.
  * A schedule opts in by name: the agent definition binds a cron reason to a
  * precheck (`cronPrechecks` frontmatter), the agent calls
  * `cron(seconds, reason, precheck="<name>")`, or the session was created with
@@ -38,6 +38,8 @@ const CRON_PRECHECK_DETAIL_MAX_CHARS = 500;
 /** Wake-up facts and activity-scoped services; never serialized into history. */
 export interface CronPrecheckContext {
     sessionId: string;
+    /** Exact durable schedule pin for supervised package callbacks. */
+    packageBindingRevision?: number;
     /** The cron schedule's reason, exactly as the agent set it. */
     reason: string;
     intervalSeconds: number;
@@ -81,6 +83,8 @@ export interface CronPrecheckInput {
     precheck: string;
     /** Set when the precheck comes from the agent package the session is bound to. */
     packageId?: string;
+    packageIdentity?: import("./agent-package-authorization.js").ExecutablePackageIdentity;
+    packageBindingRevision?: number;
     reason: string;
     intervalSeconds: number;
     consecutiveSkips?: number;
@@ -168,12 +172,15 @@ export function validateCronPrecheckBindings(value: unknown): CronPrecheckBindin
 export interface CronPrecheckSources {
     staticNames: string[];
     packageId?: string;
+    packageIdentity?: import("./agent-package-authorization.js").ExecutablePackageIdentity;
+    packageBindingRevision?: number;
     packageNames?: string[];
     bindings?: CronPrecheckBinding[];
 }
 
 export type CronPrecheckChoice =
-    | { ok: true; precheck?: string; packageId?: string }
+    | { ok: true; precheck?: string; packageId?: string;
+        packageIdentity?: import("./agent-package-authorization.js").ExecutablePackageIdentity; packageBindingRevision?: number }
     | { ok: false; error: string };
 
 /**
@@ -190,9 +197,17 @@ export function chooseCronPrecheck(params: {
     sources?: CronPrecheckSources | null;
 }): CronPrecheckChoice {
     const sources = params.sources ?? { staticNames: [] };
-    const lookup = (name: string): { precheck: string; packageId?: string } | null => {
+    const identity = sources.packageIdentity;
+    const validPackagePin = identity?.packageId === sources.packageId
+        && typeof identity?.versionId === "string" && identity.versionId.length > 0
+        && typeof identity.sha256 === "string" && /^[a-f0-9]{64}$/.test(identity.sha256)
+        && Number.isSafeInteger(sources.packageBindingRevision) && sources.packageBindingRevision! > 0;
+    const packagePin = validPackagePin && identity
+        ? { packageIdentity: { ...identity }, packageBindingRevision: sources.packageBindingRevision } : {};
+    const lookup = (name: string): { precheck: string; packageId?: string;
+        packageIdentity?: import("./agent-package-authorization.js").ExecutablePackageIdentity; packageBindingRevision?: number } | null => {
         if (sources.staticNames.includes(name)) return { precheck: name };
-        if (sources.packageId && sources.packageNames?.includes(name)) return { precheck: name, packageId: sources.packageId };
+        if (validPackagePin && sources.packageId && sources.packageNames?.includes(name)) return { precheck: name, packageId: sources.packageId, ...packagePin };
         return null;
     };
     if (params.explicit !== undefined && params.explicit !== null && String(params.explicit).trim() !== "") {
@@ -211,10 +226,16 @@ export function chooseCronPrecheck(params: {
         ? params.reason === entry.reason
         : params.reason.startsWith(entry.reasonPrefix ?? "\u0000"));
     if (binding) {
+        if (sources.packageId && !sources.staticNames.includes(binding.precheck) && !validPackagePin) {
+            return { ok: false, error: "Error: package cron precheck requires an exact current content/binding pin; rebind before arming." };
+        }
         return { ok: true, ...(lookup(binding.precheck)
-            ?? { precheck: binding.precheck, ...(sources.packageId ? { packageId: sources.packageId } : {}) }) };
+            ?? { precheck: binding.precheck, ...(sources.packageId ? { packageId: sources.packageId, ...packagePin } : {}) }) };
     }
     const defaulted = normalizeCronPrecheckName(params.sessionDefault);
+    if (defaulted && sources.packageNames?.includes(defaulted) && !sources.staticNames.includes(defaulted) && !validPackagePin) {
+        return { ok: false, error: "Error: package cron precheck requires an exact current content/binding pin; rebind before arming." };
+    }
     if (defaulted) return { ok: true, ...(lookup(defaulted) ?? { precheck: defaulted }) };
     return { ok: true };
 }
@@ -269,6 +290,7 @@ export async function evaluateCronPrecheck(params: {
         const answer = await Promise.race([
             Promise.resolve().then(() => registration.check({
                 sessionId: input.sessionId,
+                ...(input.packageBindingRevision !== undefined ? { packageBindingRevision: input.packageBindingRevision } : {}),
                 reason: input.reason,
                 intervalSeconds: input.intervalSeconds,
                 consecutiveSkips,

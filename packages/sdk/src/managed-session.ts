@@ -1863,7 +1863,7 @@ export class ManagedSession {
                     sources: this.config.cronPrecheckSources,
                 });
                 if (!choice.ok) return choice.error;
-                const { precheck, packageId: precheckPackageId } = choice;
+                const { precheck, packageId: precheckPackageId, packageIdentity: precheckIdentity, packageBindingRevision: precheckBindingRevision } = choice;
 
                 turnState.queuedActions.push({
                     type: "cron",
@@ -1872,6 +1872,7 @@ export class ManagedSession {
                     reason,
                     ...(precheck ? { precheck } : {}),
                     ...(precheck && precheckPackageId ? { precheckPackageId } : {}),
+                    ...(precheck && precheckIdentity ? { precheckIdentity: { ...precheckIdentity }, precheckBindingRevision } : {}),
                 });
                 return JSON.stringify({ status: "scheduled", interval: intervalSeconds, reason, ...(precheck ? { precheck } : {}) });
             },

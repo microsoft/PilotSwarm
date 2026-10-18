@@ -1716,6 +1716,9 @@ export function* processTimer(
                         sessionId: runtime.input.sessionId,
                         precheck: activeCron.precheck,
                         ...(activeCron.precheckPackageId ? { packageId: activeCron.precheckPackageId } : {}),
+                        ...(activeCron.precheckIdentity ? {
+                            packageIdentity: activeCron.precheckIdentity, packageBindingRevision: activeCron.precheckBindingRevision,
+                        } : {}),
                         reason: activeCron.reason,
                         intervalSeconds: activeCron.intervalSeconds,
                         consecutiveSkips: activeCron.precheckSkips ?? 0,

@@ -137,6 +137,8 @@ export interface AgentCopyEntry {
     kind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent";
     descriptor?: import("./prompt-layers.js").PromptLayerDescriptor;
     packageId?: string;
+    packageVersionId?: string;
+    packageSha256?: string;
     packageScope?: "shared" | "user";
     packageOwner?: { provider: string; subject: string } | null;
 }
@@ -237,6 +239,7 @@ export function pickAgentCopyByPackageIdForOwner(
 /** Worker-level defaults — applied to every session. */
 export interface WorkerDefaults {
     getCapabilitySources?: () => CapabilitySource[];
+    resolvePackageMcp?: (sessionId: string, servers: Record<string, any>) => Promise<Record<string, any>>;
     /** Host-reserved fact key prefixes, see PilotSwarmWorkerOptions.reservedFactPrefixes. */
     reservedFactPrefixes?: string[];
     nativeSubagents?: "off" | "sync";
@@ -1248,6 +1251,18 @@ export class SessionManager {
         if (config.boundAgentName && !copy) {
             throw new BoundAgentPackageUnavailableError(input.packageId ?? config.boundAgentPackageId ?? config.boundAgentName);
         }
+        if (input.packageId) {
+            const pin = input.packageIdentity;
+            const live = await this.sessionCatalog?.packageReviews?.getSessionBinding(input.sessionId);
+            if (!pin || pin.packageId !== input.packageId || !live?.allowed
+                || live.packageId !== pin.packageId || live.versionId !== pin.versionId || live.sha256 !== pin.sha256
+                || live.agentName !== config.boundAgentName || live.revision !== input.packageBindingRevision
+                || copy?.packageVersionId !== pin.versionId || copy?.packageSha256 !== pin.sha256) {
+                throw new BoundAgentPackageUnavailableError(input.packageId, "Cron schedule's immutable package binding is denied or stale");
+            }
+            if (!this.sessionCatalog?.packageRuntime) throw new Error("Authoritative package runtime unavailable");
+            await this.sessionCatalog.packageRuntime.context(input.sessionId, pin);
+        }
         return { config, owner, copy };
     }
 
@@ -1273,7 +1288,12 @@ export class SessionManager {
         const attached = config.agentIdentity === "regen-distiller" || config.agentIdentity === "agent-tuner"
             ? {}
             : bindCapabilities(this.workerDefaults.getCapabilitySources?.() ?? [], owner, selections, originalTools, originalMcp, agent).mcpServers;
-        return { ...originalMcp, ...attached };
+        const servers = { ...originalMcp, ...attached };
+        if (Object.values(servers).some((server: any) => server?.packageRuntime)) {
+            if (!this.workerDefaults.resolvePackageMcp) throw new Error("Supervised package MCP unavailable");
+            return await this.workerDefaults.resolvePackageMcp(input.sessionId, servers) as Record<string, MCPServerConfig>;
+        }
+        return servers;
     }
 
     private _boundMcpServers(config: Pick<SerializableSessionConfig, "boundAgentName">, copy?: AgentCopyEntry): Record<string, MCPServerConfig> {
@@ -1984,7 +2004,34 @@ export class SessionManager {
         let boundAgentCopy: AgentCopyEntry | undefined;
         let resolvedTools: Tool<any>[];
         try {
+            let binding = await this.sessionCatalog?.packageReviews?.getSessionBinding(sessionId);
+            if (binding) {
+                if (!binding.allowed || binding.agentName !== effectiveSerializableConfig.boundAgentName
+                    || effectiveSerializableConfig.boundAgentSource === "deployment"
+                    || (effectiveSerializableConfig.boundAgentPackageId
+                        && effectiveSerializableConfig.boundAgentPackageId !== binding.packageId)) {
+                    throw new BoundAgentPackageUnavailableError(binding.packageId, "The durable package binding is denied or conflicts with session configuration.");
+                }
+                effectiveSerializableConfig = { ...effectiveSerializableConfig, boundAgentPackageId: binding.packageId };
+            }
             boundAgentCopy = resolveBoundAgentCopy(this.workerDefaults, effectiveSerializableConfig, sessionOwnerKey);
+            if (boundAgentCopy?.packageId) {
+                if (!binding && this.sessionCatalog?.packageReviews?.bindNewSession) {
+                    // New named roots may resolve their package after creation. SQL permits
+                    // this only for post-migration sessions; historical sessions require admin CAS.
+                    await this.sessionCatalog.packageReviews.bindNewSession(
+                        sessionId, boundAgentCopy.packageId, effectiveSerializableConfig.boundAgentName!,
+                    );
+                    binding = await this.sessionCatalog.packageReviews.getSessionBinding(sessionId);
+                }
+                if (!binding?.allowed || binding.packageId !== boundAgentCopy.packageId
+                    || binding.versionId !== boundAgentCopy.packageVersionId
+                    || binding.sha256 !== boundAgentCopy.packageSha256
+                    || binding.agentName !== effectiveSerializableConfig.boundAgentName) {
+                    throw new BoundAgentPackageUnavailableError(boundAgentCopy.packageId,
+                        "The exact bound package version/digest is unavailable, denied or changed; explicit rebind is required. No active-name fallback is permitted.");
+                }
+            }
             // Snapshot the selected prompt and descriptor. A registry refresh in the
             // middle of a turn must not change instructions while handlers still
             // belong to the previously selected version.
@@ -2442,11 +2489,18 @@ export class SessionManager {
         config.featureToolFingerprint = createHash("sha256")
             .update(JSON.stringify(featureTools.map(({ name, description, parameters }) => ({ name, description, parameters }))))
             .digest("hex");
+        const cronBinding = boundAgentCopy?.packageId
+            ? await this.sessionCatalog?.packageReviews?.getSessionBinding(sessionId) : null;
         config.cronPrecheckSources = {
             staticNames: this.cronPrechecks.map((registration) => registration.name),
             ...(boundAgentCopy?.packageId ? {
                 packageId: boundAgentCopy.packageId,
                 packageNames: [...(this.packageCronPrechecks.get(boundAgentCopy.packageId)?.keys() ?? [])],
+                ...(cronBinding?.allowed && cronBinding.versionId === boundAgentCopy.packageVersionId
+                    && cronBinding.sha256 === boundAgentCopy.packageSha256 ? {
+                        packageIdentity: { packageId: cronBinding.packageId, versionId: cronBinding.versionId, sha256: cronBinding.sha256 },
+                        packageBindingRevision: cronBinding.revision,
+                    } : {}),
             } : {}),
             ...(boundAgentCopy?.cronPrechecks?.length ? { bindings: boundAgentCopy.cronPrechecks.map((binding) => ({ ...binding })) } : {}),
         };
@@ -2505,6 +2559,14 @@ export class SessionManager {
             } };
         });
         Object.assign(effectiveMcpServers, attached.mcpServers);
+        if (Object.values(effectiveMcpServers).some((server: any) => server?.packageRuntime)) {
+            if (!this.workerDefaults.resolvePackageMcp) throw new Error("Supervised package MCP resolver unavailable");
+            const resolved = await this.workerDefaults.resolvePackageMcp(sessionId, effectiveMcpServers);
+            for (const name of Object.keys(effectiveMcpServers)) delete effectiveMcpServers[name];
+            Object.assign(effectiveMcpServers, resolved);
+            // Native inline agents lack a separately persisted package/agent pin.
+            config.nativeSubagents = "off";
+        }
         config.capabilityFingerprint = attached.fingerprint;
         config.capabilityServices = {
             search: async args => {

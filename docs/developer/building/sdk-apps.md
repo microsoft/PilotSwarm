@@ -269,10 +269,14 @@ named, and a schedule opts in by name.
 
 **Where a precheck comes from:**
 
-- **An agent package** (no deployment code): the package's
-  `tools/worker-module.js` exports `createCronPrechecks()` beside
-  `createTools()`. Workers load it with the package, and only sessions bound to
-  that package's agents can use it. See
+- **An agent package** (no deployment code): `plugin.json` declares
+  `cronPrechecks: {name: {callback: "declared_callback", timeoutMs: 10000}}`
+  and the callback's explicit agent/tool/MCP permissions. The canonical worker
+  module exports `createCallbacks` beside `createTools`; imports/factories and
+  handlers execute only in an approved supervised child. The unreleased
+  `createCronPrechecks` export API is intentionally rejected. Schedules pin the
+  full package/version/SHA and current binding revision across continue-as-new;
+  current owner and capability admission applies on every invocation. See
   [Building agent packages](../../building-agent-packages.md#cron-prechecks).
 - **Application worker code:**
 

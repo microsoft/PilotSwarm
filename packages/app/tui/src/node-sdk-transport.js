@@ -755,6 +755,37 @@ export class NodeSdkTransport {
         return this.mgmt.listAgentPackages(owner, Boolean(isAdmin));
     }
 
+    async listAgentPackageReviews(owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.listAgentPackageReviews(owner, isAdmin === true);
+    }
+
+    async decideAgentPackageReview(input, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.decideAgentPackageReview(input, owner, isAdmin === true);
+    }
+
+    async getAgentPackageReviewAudit(versionId, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.getAgentPackageReviewAudit(versionId, owner, isAdmin === true);
+    }
+    async getAgentPackageRuntimeStatus(input, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.getAgentPackageRuntimeStatus(input, owner, isAdmin === true);
+    }
+
+    async activateAgentPackageVersion(input, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.activateAgentPackageVersion(input, owner, isAdmin === true);
+    }
+
+    async getAgentPackageActivationAudit(packageId, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.getAgentPackageActivationAudit(packageId, owner, isAdmin === true);
+    }
+
+    async getSessionAgentPackageBinding(sessionId, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.getSessionAgentPackageBinding(sessionId, owner, isAdmin === true);
+    }
+
+    async rebindSessionAgentPackage(input, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.rebindSessionAgentPackage(input, owner, isAdmin === true);
+    }
+
     async getAgentPackage(name, owner, isAdmin, selector = null) {
         if (arguments.length <= 2) {
             selector = owner ?? null;

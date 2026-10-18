@@ -10,10 +10,19 @@ uses resolved startup metadata and tools rather than the original input.
 Both Web creation operations now carry and persist `cronPrecheck`, matching the
 direct client.
 
+**Unreleased package API migration.** Package `createCronPrechecks` and exported
+`cronPrechecks` are now rejected before import. Use manifest-declared generic
+callbacks instead. A package schedule persists package/version/full-artifact
+SHA and binding revision through continue-as-new; stale or missing pins cannot
+select a same-named replacement. Trusted deployment worker modules and
+`worker.registerCronPrechecks` retain their existing behavior.
+
 **Cron prechecks skip empty polling cycles.** A cron precheck is named code
 that answers whether a scheduled `cron` wake-up has work. An agent package
-exports prechecks from `tools/worker-module.js` (`createCronPrechecks`), and
-workers load them with the package, so no deployment code changes; only
+declares generic callbacks and named `cronPrechecks` metadata in `plugin.json`,
+with handlers exported by `createCallbacks` from `tools/worker-module.js`.
+After immutable admin approval and explicit activation, workers supervise
+that code in a child process, never import it in the worker parent; only
 sessions bound to that package's agents can use them. Applications can also
 register them in worker code (`worker.registerCronPrechecks`). A schedule opts
 in by name, first match wins: the agent calls

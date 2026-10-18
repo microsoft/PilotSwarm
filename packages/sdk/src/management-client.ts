@@ -5123,6 +5123,70 @@ export class PilotSwarmManagementClient {
         return this._catalog!.listAgentPackages(this._agentPackagePrincipal(owner, isAdmin), isAdmin);
     }
 
+    async listAgentPackageReviews(owner: AgentPrincipal | null, isAdmin: boolean) {
+        this._ensureStarted();
+        if (!this._catalog?.packageReviews) throw Object.assign(new Error("Package review catalog unavailable"), { code: "UNAVAILABLE" });
+        return this._catalog.packageReviews.list({ principal: owner, isAdmin });
+    }
+
+    async decideAgentPackageReview(
+        input: import("./agent-package-authorization.js").AgentPackageReviewMutation,
+        owner: AgentPrincipal | null, isAdmin: boolean,
+    ): Promise<void> {
+        this._ensureStarted();
+        if (!this._catalog?.packageReviews) throw Object.assign(new Error("Package review catalog unavailable"), { code: "UNAVAILABLE" });
+        return this._catalog.packageReviews.decide({ principal: owner, isAdmin }, input);
+    }
+
+    async getAgentPackageReviewAudit(versionId: string, owner: AgentPrincipal | null, isAdmin: boolean) {
+        this._ensureStarted();
+        if (!this._catalog?.packageReviews) throw Object.assign(new Error("Package review catalog unavailable"), { code: "UNAVAILABLE" });
+        return this._catalog.packageReviews.audit({ principal: owner, isAdmin }, versionId);
+    }
+    async getAgentPackageRuntimeStatus(input: import("./agent-package-authorization.js").ExecutablePackageIdentity,
+        owner: AgentPrincipal | null, isAdmin: boolean) {
+        this._ensureStarted();
+        if (isAdmin !== true || !owner?.provider || !owner.subject) throw Object.assign(new Error("Authenticated administrator required"), { code: "FORBIDDEN" });
+        if (!input || !input.packageId || !input.versionId || !/^[a-f0-9]{64}$/.test(input.sha256)) {
+            throw Object.assign(new Error("Exact package/version/digest required"), { code: "INVALID_REQUEST" });
+        }
+        if (!this._catalog?.packageRuntime) throw Object.assign(new Error("Package runtime authority unavailable"), { code: "UNAVAILABLE" });
+        return this._catalog.packageRuntime.fencingStatus(input);
+    }
+
+    async activateAgentPackageVersion(
+        input: import("./agent-package-authorization.js").AgentPackageActivationMutation,
+        owner: AgentPrincipal | null, isAdmin: boolean,
+    ): Promise<void> {
+        this._ensureStarted();
+        if (!this._catalog?.packageReviews) throw Object.assign(new Error("Package review catalog unavailable"), { code: "UNAVAILABLE" });
+        return this._catalog.packageReviews.activate({ principal: owner, isAdmin }, input);
+    }
+
+    async getAgentPackageActivationAudit(packageId: string, owner: AgentPrincipal | null, isAdmin: boolean) {
+        this._ensureStarted();
+        if (!this._catalog?.packageReviews) throw Object.assign(new Error("Package review catalog unavailable"), { code: "UNAVAILABLE" });
+        return this._catalog.packageReviews.activationAudit({ principal: owner, isAdmin }, packageId);
+    }
+
+    async getSessionAgentPackageBinding(sessionId: string, owner: AgentPrincipal | null, isAdmin: boolean) {
+        this._ensureStarted();
+        if (!owner?.provider || !owner?.subject || isAdmin !== true) {
+            throw Object.assign(new Error("Authenticated administrator required"), { code: "FORBIDDEN" });
+        }
+        if (!this._catalog?.packageReviews) throw Object.assign(new Error("Package review catalog unavailable"), { code: "UNAVAILABLE" });
+        return this._catalog.packageReviews.getSessionBinding(sessionId);
+    }
+
+    async rebindSessionAgentPackage(
+        input: import("./agent-package-authorization.js").SessionAgentPackageRebind,
+        owner: AgentPrincipal | null, isAdmin: boolean,
+    ): Promise<void> {
+        this._ensureStarted();
+        if (!this._catalog?.packageReviews) throw Object.assign(new Error("Package review catalog unavailable"), { code: "UNAVAILABLE" });
+        return this._catalog.packageReviews.rebind({ principal: owner, isAdmin }, input);
+    }
+
     async getAgentPackage(
         name: string,
         owner: AgentPrincipal | null,

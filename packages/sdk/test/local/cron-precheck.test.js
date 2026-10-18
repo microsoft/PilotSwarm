@@ -113,7 +113,9 @@ describe("cron precheck evaluation", () => {
 });
 
 describe("choosing a schedule's cron precheck", () => {
+    const pin = { packageIdentity: { packageId: "pkg-1", versionId: "v1", sha256: "a".repeat(64) }, packageBindingRevision: 1 };
     const sources = {
+        ...pin,
         staticNames: ["app-gate"],
         packageId: "pkg-1",
         packageNames: ["queue-gate", "app-gate"],
@@ -130,14 +132,14 @@ describe("choosing a schedule's cron precheck", () => {
     });
 
     it("binds by exact reason or reason prefix from the agent definition, with the package", () => {
-        expect(chooseCronPrecheck({ reason: "exact cycle", sources })).toEqual({ ok: true, precheck: "queue-gate", packageId: "pkg-1" });
+        expect(chooseCronPrecheck({ reason: "exact cycle", sources })).toEqual({ ok: true, precheck: "queue-gate", packageId: "pkg-1", ...pin });
         expect(chooseCronPrecheck({ reason: "exact cycle!", sources })).toEqual({ ok: true });
         expect(chooseCronPrecheck({ reason: "Run the queue cycle (scope=both)", sources }))
-            .toEqual({ ok: true, precheck: "queue-gate", packageId: "pkg-1" });
+            .toEqual({ ok: true, precheck: "queue-gate", packageId: "pkg-1", ...pin });
     });
 
     it("keeps an unavailable binding so the fire records it and runs the model", () => {
-        expect(chooseCronPrecheck({ reason: "Missing gate", sources })).toEqual({ ok: true, precheck: "not-exported", packageId: "pkg-1" });
+        expect(chooseCronPrecheck({ reason: "Missing gate", sources })).toEqual({ ok: true, precheck: "not-exported", packageId: "pkg-1", ...pin });
     });
 
     it("lets a worker-registered name win over the same package name", () => {
@@ -148,11 +150,21 @@ describe("choosing a schedule's cron precheck", () => {
         expect(chooseCronPrecheck({ explicit: "app-gate", reason: "exact cycle", sessionDefault: "queue-gate", sources }))
             .toEqual({ ok: true, precheck: "app-gate" });
         expect(chooseCronPrecheck({ reason: "exact cycle", sessionDefault: "app-gate", sources }))
-            .toEqual({ ok: true, precheck: "queue-gate", packageId: "pkg-1" });
+            .toEqual({ ok: true, precheck: "queue-gate", packageId: "pkg-1", ...pin });
         expect(chooseCronPrecheck({ reason: "plain", sessionDefault: "queue-gate", sources }))
-            .toEqual({ ok: true, precheck: "queue-gate", packageId: "pkg-1" });
+            .toEqual({ ok: true, precheck: "queue-gate", packageId: "pkg-1", ...pin });
         expect(chooseCronPrecheck({ reason: "plain", sessionDefault: "elsewhere", sources }))
             .toEqual({ ok: true, precheck: "elsewhere" });
+    });
+
+    it("will not arm an executable package name without a complete immutable binding pin", () => {
+        for (const bad of [{ packageIdentity: undefined }, { packageBindingRevision: undefined },
+            { packageIdentity: { ...pin.packageIdentity, sha256: "short" } }]) {
+            const invalid = { ...sources, ...bad };
+            expect(chooseCronPrecheck({ reason: "exact cycle", sources: invalid }).ok).toBe(false);
+            expect(chooseCronPrecheck({ explicit: "queue-gate", reason: "x", sources: invalid }).ok).toBe(false);
+            expect(chooseCronPrecheck({ explicit: "app-gate", reason: "x", sources: invalid })).toEqual({ ok: true, precheck: "app-gate" });
+        }
     });
 
     it("rejects an explicit name that is not available and lists what is", () => {
@@ -284,42 +296,21 @@ describe("cron precheck declarations in agent definitions and packages", () => {
         }
     });
 
-    it("loads and validates prechecks a package worker module exports", async () => {
-        const dir = tempDir();
-        try {
-            const write = (file, body) => {
-                const full = path.join(dir, file);
-                fs.writeFileSync(full, body);
-                return { workerModulePath: full, sha256: "a".repeat(64) };
-            };
-            const good = write("good.mjs",
-                "export default { createTools: () => [], createCronPrechecks: ({ workerNodeId }) => [{ name: ' queue-gate ', check: async () => ({ action: 'skip', detail: workerNodeId }) }] };\n");
-            const [precheck] = await loadAgentPackageCronPrechecks(good, { workerNodeId: "w1" });
-            expect(precheck.name).toBe("queue-gate");
-            expect(await precheck.check({})).toEqual({ action: "skip", detail: "w1" });
-
-            const none = write("none.mjs", "export default { createTools: () => [] };\n");
-            expect(await loadAgentPackageCronPrechecks(none, {})).toEqual([]);
-            expect(await loadAgentPackageCronPrechecks({ workerModulePath: null, sha256: "b".repeat(64) }, {})).toEqual([]);
-
-            const duplicate = write("duplicate.mjs",
-                "export default { cronPrechecks: [{ name: 'g', check: () => ({ action: 'run' }) }, { name: 'g', check: () => ({ action: 'run' }) }] };\n");
-            await expect(loadAgentPackageCronPrechecks(duplicate, {})).rejects.toThrow(/duplicate/);
-
-            const invalid = write("invalid.mjs", "export default { cronPrechecks: [{ name: 'g' }] };\n");
-            await expect(loadAgentPackageCronPrechecks(invalid, {})).rejects.toThrow(/check function/);
-            for (const [index, declaration] of [
-                "cronPrechecks: 'not-an-array'",
-                "cronPrechecks: null",
-                "createCronPrechecks: 'not-a-function'",
-                "createCronPrechecks: () => undefined",
-                "createCronPrechecks: () => null",
-            ].entries()) {
-                const malformed = write(`malformed-${index}.mjs`, `export default { ${declaration} };\n`);
-                await expect(loadAgentPackageCronPrechecks(malformed, {})).rejects.toThrow(/must/);
-            }
-        } finally {
-            fs.rmSync(dir, { recursive: true, force: true });
-        }
+    it("uses inspected metadata and a supervised callback proxy, never a parent import/factory", async () => {
+        const calls = [];
+        const signal = new AbortController().signal;
+        const pkg = {
+            workerModulePath: "nonexistent-do-not-import.mjs", versionId: "v1",
+            inspection: { execution: { cronPrechecks: { "queue-gate": { callback: "queue", shadow: true, timeoutMs: 123 } } } },
+            runtime: { invokeCallback: async (...args) => { calls.push(args); return { action: "skip" }; } },
+        };
+        const [precheck] = await loadAgentPackageCronPrechecks(pkg);
+        expect(precheck).toMatchObject({ name: "queue-gate", shadow: true, timeoutMs: 123 });
+        expect(await precheck.check({ sessionId: "s", reason: "poll", signal, intervalSeconds: 5, consecutiveSkips: 2 }))
+            .toEqual({ action: "skip" });
+        expect(calls[0].slice(0, 3)).toEqual(["s", "queue", { sessionId: "s", reason: "poll", intervalSeconds: 5, consecutiveSkips: 2 }]);
+        expect(calls[0][3].signal).toBe(signal);
+        await expect(loadAgentPackageCronPrechecks({ workerModulePath: "legacy.mjs" })).rejects.toThrow(/DENIED/);
+        expect(await loadAgentPackageCronPrechecks({ workerModulePath: null })).toEqual([]);
     });
 });

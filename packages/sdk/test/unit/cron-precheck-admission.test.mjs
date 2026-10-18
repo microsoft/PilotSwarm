@@ -7,6 +7,8 @@ const alice = { provider: "test", subject: "alice" };
 const bob = { provider: "test", subject: "bob" };
 const input = {
     sessionId: "s1", precheck: "queue", packageId: "pkg",
+    packageIdentity: { packageId: "pkg", versionId: "v1", sha256: "a".repeat(64) },
+    packageBindingRevision: 1,
     reason: "poll", intervalSeconds: 300,
     agent: { boundAgentName: "poller", boundAgentPackageId: "pkg" },
 };
@@ -14,6 +16,7 @@ const input = {
 function fixture({ scope = "shared", lookup = true, catalogAvailable = true } = {}) {
     const copy = {
         kind: "app-agent", prompt: "", packageId: "pkg",
+        packageVersionId: "v1", packageSha256: "a".repeat(64),
         packageScope: scope, ...(scope === "user" ? { packageOwner: alice } : {}),
     };
     const defaults = { agentPromptLookup: lookup ? { poller: copy } : {} };
@@ -26,6 +29,10 @@ function fixture({ scope = "shared", lookup = true, catalogAvailable = true } = 
         getSession: async () => currentRow ? { owner: currentOwner } : null,
         getSessionCapabilities: async () => ({ revision: 0, selections: [] }),
         recordEvents: async (_id, rows) => events.push(...rows),
+        packageReviews: { getSessionBinding: async () => ({
+            ...input.packageIdentity, agentName: "poller", revision: 1, allowed: true,
+        }) },
+        packageRuntime: { context: async () => ({}) },
     };
     if (catalogAvailable) manager.setSessionCatalog(catalog);
     manager.getOrCreate = () => { throw new Error("must not hydrate the model"); };

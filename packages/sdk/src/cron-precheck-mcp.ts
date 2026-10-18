@@ -24,6 +24,9 @@ export async function callCronPrecheckMcpTool(
         throw new Error("Cron precheck MCP server is unavailable or unauthorized");
     }
     const config = servers[server];
+    if ((config as any)?.packageRuntime || (config as any)?.type === "pilotswarm-package") {
+        throw new Error("Raw package MCP markers require supervised authority resolution");
+    }
     if (!Array.isArray(config.tools) || !config.tools.some(name => name === "*" || name === tool)) {
         throw new Error("Cron precheck MCP tool is not authorized");
     }

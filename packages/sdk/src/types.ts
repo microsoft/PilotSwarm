@@ -20,7 +20,7 @@ export interface CycleReport {
 export type TurnAction =
     | { type: "completed"; content: string; forceContinuePrompt?: string; events?: CapturedEvent[] }
     | { type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; material?: boolean; content?: string; events?: CapturedEvent[] }
-    | { type: "cron"; action: "set"; intervalSeconds: number; reason: string; precheck?: string; precheckPackageId?: string; events?: CapturedEvent[] }
+    | { type: "cron"; action: "set"; intervalSeconds: number; reason: string; precheck?: string; precheckPackageId?: string; precheckIdentity?: import("./agent-package-authorization.js").ExecutablePackageIdentity; precheckBindingRevision?: number; events?: CapturedEvent[] }
     | { type: "cron"; action: "cancel"; events?: CapturedEvent[] }
     | { type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] }
     | { type: "cron_at"; action: "cancel"; events?: CapturedEvent[] }
@@ -116,7 +116,7 @@ type TurnResultVariant =
     // failed, and the provider's `retryAfterMs`; the orchestration picks the
     // wait length, and `seconds` is only a fallback for older handlers.
     | ({ type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; material?: boolean; budget?: boolean; gate?: "budget" | "workspace"; code?: string; workerNodeId?: string; retryAfterMs?: number; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
-    | ({ type: "cron"; action: "set"; intervalSeconds: number; reason: string; precheck?: string; precheckPackageId?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "cron"; action: "set"; intervalSeconds: number; reason: string; precheck?: string; precheckPackageId?: string; precheckIdentity?: import("./agent-package-authorization.js").ExecutablePackageIdentity; precheckBindingRevision?: number; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron"; action: "cancel"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron_at"; action: "cancel"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
@@ -928,6 +928,8 @@ export interface CronSchedule {
     precheck?: string;
     /** 1.0.82: the agent package that exports `precheck`; absent for a worker-registered precheck. */
     precheckPackageId?: string;
+    precheckIdentity?: import("./agent-package-authorization.js").ExecutablePackageIdentity;
+    precheckBindingRevision?: number;
     /** 1.0.82: consecutive wake-ups the precheck skipped since this schedule's last model turn. */
     precheckSkips?: number;
 }

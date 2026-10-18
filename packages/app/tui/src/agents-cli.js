@@ -72,6 +72,14 @@ Usage:
   pilotswarm agents validate <dir>
   pilotswarm agents push <dir> [--shared|--user] [--json]
   pilotswarm agents list [--json]
+  pilotswarm agents reviews
+  pilotswarm agents review <package-id> <version-id> <sha256> <revision> <approved|rejected|revoked> <reason>
+  pilotswarm agents review-audit <version-id>
+  pilotswarm agents runtime-status <package-id> <version-id> <sha256>
+  pilotswarm agents activate <package-id> <version-id> <sha256> <review-revision> <activation-revision> <prior-version-id|none> <reason>
+  pilotswarm agents activation-audit <package-id>
+  pilotswarm agents binding <session-id>
+  pilotswarm agents rebind <session-id> <package-id> <version-id> <sha256> <agent-name> <binding-revision> <reason>
   pilotswarm agents show <name> [--json]
   pilotswarm agents pin <name>@<semver>
   pilotswarm agents promote <name> | demote <name>
@@ -290,6 +298,10 @@ export async function runAgentsCommand(argv) {
     const createdBy = `${os.userInfo().username}@cli`;
     const selector = flags.scope ? { scope: flags.scope } : null;
     try {
+        if (!web && ["reviews", "review", "review-audit", "runtime-status", "activate", "activation-audit", "binding", "rebind"].includes(command)) {
+            console.error("Package trust administration requires authenticated Web API mode (--api-url). A direct database connection is not an authenticated administrator identity.");
+            return 1;
+        }
         switch (command) {
             case "push": {
                 const dir = rest[0];
@@ -334,6 +346,55 @@ export async function runAgentsCommand(argv) {
                 if (flags.json) { console.log(JSON.stringify(packages, null, 2)); return 0; }
                 if (packages.length === 0) { console.log("no agent packages registered"); return 0; }
                 for (const pkg of packages) console.log(formatPackageLine(pkg));
+                return 0;
+            }
+            case "reviews": {
+                console.log(JSON.stringify(await ctx.client.listAgentPackageReviews(actor, isAdmin), null, 2));
+                return 0;
+            }
+            case "review": {
+                const [packageId, versionId, sha256, revision, decision, ...reason] = rest;
+                await ctx.client.decideAgentPackageReview({
+                    packageId, versionId, sha256, expectedRevision: Number(revision), decision,
+                    reason: reason.join(" "),
+                }, actor, isAdmin);
+                console.log("Immutable artifact-content review recorded. Dependency closure and executable admission are NOT approved; activation is separate.");
+                return 0;
+            }
+            case "review-audit": {
+                console.log(JSON.stringify(await ctx.client.getAgentPackageReviewAudit(rest[0], actor, isAdmin), null, 2));
+                return 0;
+            }
+            case "runtime-status": {
+                const [packageId, versionId, sha256] = rest;
+                console.log(JSON.stringify(await ctx.client.getAgentPackageRuntimeStatus({ packageId, versionId, sha256 }, actor, isAdmin), null, 2));
+                return 0;
+            }
+            case "activate": {
+                const [packageId, versionId, sha256, reviewRevision, activationRevision, priorVersionId, ...reason] = rest;
+                await ctx.client.activateAgentPackageVersion({
+                    packageId, versionId, sha256, expectedReviewRevision: Number(reviewRevision),
+                    expectedActivationRevision: Number(activationRevision),
+                    expectedActiveVersionId: priorVersionId === "none" ? null : priorVersionId, reason: reason.join(" "),
+                }, actor, isAdmin);
+                console.log("Active pointer changed atomically. Existing session bindings were not changed. No executable admission or distributed fencing is claimed.");
+                return 0;
+            }
+            case "activation-audit": {
+                console.log(JSON.stringify(await ctx.client.getAgentPackageActivationAudit(rest[0], actor, isAdmin), null, 2));
+                return 0;
+            }
+            case "binding": {
+                console.log(JSON.stringify(await ctx.client.getSessionAgentPackageBinding(rest[0], actor, isAdmin), null, 2));
+                return 0;
+            }
+            case "rebind": {
+                const [sessionId, packageId, versionId, sha256, agentName, revision, ...reason] = rest;
+                await ctx.client.rebindSessionAgentPackage({
+                    sessionId, packageId, versionId, sha256, agentName,
+                    expectedBindingRevision: Number(revision), reason: reason.join(" "),
+                }, actor, isAdmin);
+                console.log("Exact version binding changed and audited. No cancellation or distributed fencing is claimed.");
                 return 0;
             }
             case "show": {
