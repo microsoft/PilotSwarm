@@ -97,9 +97,16 @@ async function withProvider(t, { tenantId, keys }, fn) {
 
     // Any URL other than this tenant's key set is a genuine escape and must
     // fail the test, not be quietly tolerated.
-    globalThis.fetch = async (input) => {
+    globalThis.fetch = async (input, init) => {
         const url = typeof input === "string" ? input : input?.url ?? String(input);
+        const method = (init?.method ?? input?.method ?? "GET").toUpperCase();
         fetchCalls.push(url);
+        // Review noted the mock ignored the request method. jose fetches a
+        // JWKS with GET; silently accepting a POST would let the harness mask
+        // a transport change rather than surface it.
+        if (method !== "GET") {
+            throw new Error(`[test] JWKS must be fetched with GET, saw ${method}`);
+        }
         if (url !== jwksUrlFor(tenantId)) {
             throw new Error(`[test] unexpected network call to ${url} — only this tenant's JWKS may be fetched`);
         }

@@ -39,6 +39,38 @@ import { PgSessionCatalog } from "pilotswarm-sdk";
 // file run against whatever database happens to be configured — including a
 // real one — which is exactly the accident a test must not have.
 const DB_URL = process.env.PS_TEST_DATABASE_URL;
+
+/**
+ * A SKIP MUST NOT READ AS COVERAGE.
+ *
+ * Review found the real hazard: without PS_TEST_DATABASE_URL this file skips,
+ * `test:web` still exits zero, and the aggregate runner records the packages/app
+ * stage as PASS (scripts/run-tests.sh:688-691, which has no no-skips gate). So a
+ * CI run that simply forgot the variable looks identical to one where every
+ * catalog assertion passed.
+ *
+ * Two defences here, since a test file cannot fix the aggregate runner:
+ *   1. PS_REQUIRE_DB_COVERAGE=1 turns the skip into a FAILURE. A runner that
+ *      intends this coverage can demand it instead of hoping for it.
+ *   2. Otherwise the skip announces itself loudly on stderr, so "skipped" is
+ *      visible in the log rather than inferred from a silent green.
+ *
+ * The aggregate no-skips gate remains a REAL GAP. It lives in the runner
+ * script, which is outside this test-only change, and is recorded rather than
+ * quietly widened into scope.
+ */
+const REQUIRE_DB = process.env.PS_REQUIRE_DB_COVERAGE === "1";
+if (!DB_URL) {
+    const msg = "[catalog-join] PS_TEST_DATABASE_URL is not set: ZERO catalog assertions will run. "
+        + "A green result here is NOT evidence of catalog coverage.";
+    if (REQUIRE_DB) {
+        test("catalog coverage was REQUIRED but no database was provided", () => {
+            assert.fail(`${msg} PS_REQUIRE_DB_COVERAGE=1 was set, so this is a failure, not a skip.`);
+        });
+    } else {
+        console.error(msg);
+    }
+}
 const describeOrSkip = DB_URL ? test : test.skip;
 
 const OWNER = { provider: "test", subject: `owner-${process.pid}` };
@@ -102,7 +134,7 @@ async function realRuntime() {
     return runtime;
 }
 
-describeOrSkip("CATALOG JOIN: owner, grant, revoke and mid-drain against REAL catalog rows", async (t) => {
+describeOrSkip("CATALOG JOIN: owner, grant, resumed-then-revoked drain against REAL catalog rows", async (t) => {
     const runtime = await realRuntime();
     let sessionId;
     let catalog;
@@ -192,7 +224,7 @@ describeOrSkip("CATALOG JOIN: owner, grant, revoke and mid-drain against REAL ca
         }
     });
 
-    await t.test("REVOKE: revoking the real share refuses the next page mid-drain", async () => {
+    await t.test("REVOKE: a drain that RESUMED while granted is refused after revocation", async () => {
         const { baseUrl, close } = await serve(runtime, READER);
         try {
             // A GENUINE mid-drain: take page one, continue from the cursor the
@@ -216,10 +248,14 @@ describeOrSkip("CATALOG JOIN: owner, grant, revoke and mid-drain against REAL ca
             const receipt = firstBody.result?.receipt;
             assert.ok(Array.isArray(firstBody.result?.events) && firstBody.result.events.length > 0,
                 "control: page one must deliver real rows to continue from");
-            assert.ok(receipt?.hasMore === true && receipt?.nextCursor !== null,
+            // `!== null` ACCEPTS `undefined`. That is the same vacuous shape
+            // this branch has been bitten by repeatedly, and here it would let
+            // a route that emits no cursor at all pass the control. Require a
+            // real number.
+            assert.equal(receipt?.hasMore, true,
                 `control: the drain must be INCOMPLETE so continuing is meaningful; receipt=${JSON.stringify(receipt)}`);
-
-            await runtime.transport.mgmt.revokeSessionShare(sessionId, READER);
+            assert.equal(typeof receipt?.nextCursor, "number",
+                `control: the cursor must be a NUMBER, not merely non-null; receipt=${JSON.stringify(receipt)}`);
 
             // DIRECTION MATTERS, and I had it wrong. A request with no cursor
             // is LATEST mode (session-events-page.ts:48-49), whose
@@ -231,8 +267,28 @@ describeOrSkip("CATALOG JOIN: owner, grant, revoke and mid-drain against REAL ca
             // Follow the receipt's OWN direction instead of assuming one.
             assert.equal(receipt.nextDirection, "backward",
                 `control: a cursorless first page is LATEST and must continue BACKWARD; receipt=${JSON.stringify(receipt)}`);
-            const after = await fetch(
+
+            // AUTHORIZED CONTINUATION FIRST. Without this the case never shows
+            // the cursor actually resumes a drain: a route emitting a bogus or
+            // ignored cursor, still authorizing initial pages and returning 404
+            // after revocation, would pass while proving nothing. So continue
+            // ONCE while still permitted, and require real rows back.
+            const resumed = await fetch(
                 `${baseUrl}${pagePath(sessionId)}?limit=2&beforeSeq=${receipt.nextCursor}`);
+            assert.equal(resumed.status, 200, "control: the drain must RESUME while the share is still granted");
+            const resumedBody = await resumed.json();
+            const resumedSeqs = (resumedBody.result?.events ?? []).map((e) => e.seq);
+            assert.ok(resumedSeqs.length > 0,
+                `control: continuing from the cursor must return rows; got ${JSON.stringify(resumedBody.result?.receipt)}`);
+            const firstSeqs = (firstBody.result?.events ?? []).map((e) => e.seq);
+            assert.ok(resumedSeqs.every((q) => !firstSeqs.includes(q)),
+                `control: the continuation must return DIFFERENT rows, not repeat page one; page1=${JSON.stringify(firstSeqs)} page2=${JSON.stringify(resumedSeqs)}`);
+
+            await runtime.transport.mgmt.revokeSessionShare(sessionId, READER);
+
+            // Now the SAME continuation shape that just worked must stop.
+            const after = await fetch(
+                `${baseUrl}${pagePath(sessionId)}?limit=2&beforeSeq=${resumedBody.result.receipt.nextCursor ?? receipt.nextCursor}`);
             const body = await after.json();
             assert.equal(after.status, 404,
                 "a drain in progress must STOP when the share is revoked, not continue from its cursor");
