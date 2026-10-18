@@ -17,6 +17,7 @@ import { turnControlConvertMigration } from "./migrations/turn-control-0083.js";
 import { executablePackageReviewsMigration } from "./migrations/executable-package-reviews-0084.js";
 import { packageRuntimeMigration } from "./migrations/package-runtime-0085.js";
 import { packageRuntimeCompletionMigration } from "./migrations/package-runtime-0086.js";
+import { packageReviewRemediationMigration } from "./migrations/package-review-remediation-0087.js";
 
 /**
  * Return the ordered list of CMS migrations for a given schema.
@@ -414,6 +415,7 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0084", name: "executable_package_reviews", sql: executablePackageReviewsMigration(schema) },
         { version: "0085", name: "supervised_package_runtime", sql: packageRuntimeMigration(schema) },
         { version: "0086", name: "package_runtime_completion", sql: packageRuntimeCompletionMigration(schema) },
+        { version: "0087", name: "package_review_remediation", sql: packageReviewRemediationMigration(schema) },
     ];
 }
 

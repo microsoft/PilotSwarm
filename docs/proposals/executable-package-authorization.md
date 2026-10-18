@@ -228,14 +228,42 @@ status via `getAgentPackageRuntimeStatus`,
 `pilotswarm agents runtime-status <package> <version> <sha>` and
 `get_agent_package_runtime_status`.
 
-Migrations 0084–0086 are additive; histories are not dropped. 0086 adds exact
+Migrations 0084–0087 are additive; histories are not dropped. 0086 adds exact
 grants/audit, durable process identities, lifecycle triggers and the legacy-fleet
 gate. 0085 reapplication preserves that gate. Downgrading to old workers is unsafe
 until executables are disabled and their processes are actually fenced. Retain
 review/binding/grant/admission histories; never erase fencing rows as rollback.
 No operator environment, live database or deployment was modified for acceptance.
 
+Migration 0087 closes the legacy version-pin activation path: executable and
+uninspected targets are rejected even for administrators. They must use exact
+administrator activation with digest/revision/pointer CAS and transactional
+audit. Existing owner/editor pinning remains available for verified declarative
+versions. Content approval alone never authorizes legacy pinning of executable
+content.
+
+Named-binding eligibility now has a nonlocking read path throughout its SQL
+call chain. Runtime admission uses it under the authoritative barrier; binding
+mutations retain their row locks and share the same eligibility rules. A
+two-connection regression holds each relevant metadata row, makes a writer wait
+for the admission barrier, proves the earlier read completes without deadlock,
+then commits disablement and verifies the next admission is denied.
+
 ## Verified evidence and remaining gates
+
+The 0087 review remediation passed the full root build, **1,583 SDK unit tests**
+(nine explicit platform skips), and **47 standalone SCRAM PostgreSQL 18.4
+runtime tests** (38 top-level cases plus nine nested cases; zero failures/skips).
+The latter includes real supervised workers, MCP and browser acceptance.
+The targeted catalog/unit subset passed 23 tests and the targeted real-Postgres
+subset passed 13; these overlap the broader suites and are not additive.
+
+Before the fix, the legacy-pin regression reproduced a missing rejection after
+content approval. The controlled two-connection test reproduced deadlocks for
+session, package, owner, version and review rows; the old binding-row-only case
+still passed. After the fix all seven row cases pass and deny admission following
+committed disablement. Migration reapplication and declarative pin compatibility
+are covered. Linux results below predate 0087 and do not certify this follow-up.
 
 At `dbf5edf`, Windows local acceptance was **244 passing tests**:
 
