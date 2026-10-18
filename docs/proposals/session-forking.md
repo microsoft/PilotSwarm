@@ -73,7 +73,7 @@ Approved design · draft 3.5 · 18 October 2026 · **P0** forking · **P1** merg
 - **Name:** prefilled “&lt;source title> (fork)”; Bob typed his own here.
 - **Start from:** the latest reply. If a turn is running: fork now from the last finished reply, or wait for the turn to end.
 - **Model, reasoning and context window:** the source's by default. Change… runs the same three steps as New session: model, reasoning effort, context window. The picker offers only models the forker can use.
-- **A smaller window:** if the chosen window is smaller than the inherited context, the dialog says so and offers to regenerate the fork's context first.
+- **A smaller window:** if the chosen window is smaller than the inherited context, the dialog says so and offers to regenerate the fork's context first. With that choice, the regeneration runs before any queued message.
 - **Sub-agents:** **Not forked** (default): the fork starts as one session, and the source's sub-agents keep their facts and files. **Fork them too**: each sub-agent is copied after this session, at its own last finished turn, best effort. The choice goes into the fork's base prompt.
 - **Workspace:** a row in What gets copied. The forker's own folders; repo clones are cloned again at the same commit with every change. The source's folders are not shared.
 - **After Fork:** the dialog shows progress while the conversation is copied (09b), then opens the fork. The rest of the copy runs in the fork (U3).
@@ -89,7 +89,7 @@ Approved design · draft 3.5 · 18 October 2026 · **P0** forking · **P1** merg
 
 > **Why typing early works**
 >
-> The fork session starts as soon as its conversation is copied and waits for the rest. Sessions already queue messages durably, so an early message waits in that queue. If a later step fails, the same line says which one and offers to fork without it (for example, without the repo).
+> The fork session starts as soon as its conversation is copied and waits for the rest. Sessions already queue messages durably, so an early message waits in that queue. If a later step fails, the same line says which one and offers to fork without it (for example, without the repo). If the forker chose to regenerate the context first (U2), that regeneration is the last step: queued messages run after it.
 
 ## U4 · Inside the fork
 
@@ -687,7 +687,7 @@ Its sessions go, and with them their private facts, artifacts and canvases. The 
 
 | Management client | Returns | Web API | MCP | Access |
 |---|---|---|---|---|
-| `forkSession(sourceId, { requestKey, title?, model?, reasoningEffort?, contextTier?, subAgents?: "none" \| "fork", whenTurnRunning: "now" \| "wait" })` | { forkId, status } | `POST /sessions/:id/forks` | `fork_session` | session:read on a top-level source; owner only on a sub-agent |
+| `forkSession(sourceId, { requestKey, title?, model?, reasoningEffort?, contextTier?, regenerateFirst?, subAgents?: "none" \| "fork", whenTurnRunning: "now" \| "wait" })` | { forkId, status } | `POST /sessions/:id/forks` | `fork_session` | session:read on a top-level source; owner only on a sub-agent |
 | `getFork(forkId)` | status, progress, and the fork's session id once the CLI's fork returns; the dialog waits on it | `GET /forks/:forkId` | `get_fork` | the forker, admin |
 | `getForkInfo(sessionId)` | lineage, fork point, sub-agent choice, progress; the Stats tab and session details use it | `GET /sessions/:id/fork` | `get_fork_info (also an agent tool in forks)` | session:read |
 | `listForks(sessionId)` | forks of a session: who, when, turn | `GET /sessions/:id/forks` | `list_forks` | owner: all; others: their own |
@@ -736,7 +736,7 @@ Its sessions go, and with them their private facts, artifacts and canvases. The 
 | `kind` | `TEXT` | `top_level` or `sub_agent` (U7). |
 | `request_key` | `TEXT` | The client's idempotency key. |
 | `suffix` | `TEXT` | `_sess_<h>`, from the fork id. Empty for a sub-agent fork: it renames nothing. |
-| `options` | `JSONB` | Title, model, reasoning effort, context tier, sub-agents (`none` or `fork`), and what to do if a turn is running. |
+| `options` | `JSONB` | Title, model, reasoning effort, context tier, whether to regenerate the context first, sub-agents (`none` or `fork`), and what to do if a turn is running. |
 | `status` | `TEXT` | building · ready · failed · deleting · deleted |
 | `progress` | `JSONB` | Current step, done and total per step, last error. The dialog and the fork row read it. |
 | `workspace_base` | `JSONB` | Per repo: source path, fork path, branch, commit, change fingerprint, capture artifact. |
@@ -861,7 +861,7 @@ Its sessions go, and with them their private facts, artifacts and canvases. The 
   - Fork of a fork: suffix replaced
   - Graph writes in a fork return a clear error; graph reads see the live graph
   - Canvas copy keeps keys, writers and revisions; pending requests are not copied
-  - Fork dialog: a smaller context window offers regeneration first
+  - Fork dialog: a smaller context window offers regeneration first; with it, queued messages run after the regeneration
 - **P1 tests**
   - The merge set equals the changed map entries
   - Conflict when the source changed an item
@@ -921,4 +921,5 @@ Its sessions go, and with them their private facts, artifacts and canvases. The 
 - Grounded in PilotSwarm `main @ 1352a78f` (orchestration 1.0.81), Copilot SDK 1.0.13 and CLI 1.0.83. No code has been changed.
 - Related: issue \#24 (fork and selective merge), \#21 (collaborative sessions), \#22 (inbox), \#23 (message audience), \#27 (relay never inherited); the regeneration proposal (epoch rebirth) and the facts soft-delete proposal.
 - Reviewed and approved on 18 October 2026. The UI sketches (U1–U9) were reviewed as interactive mocks built on the portal's own DOM and CSS (App 0.8.3); this file keeps their descriptions. Nothing in them is built.
+- Clarified after approval, 18 October 2026: `forkSession` takes `regenerateFirst` to carry the U2 choice, and queued messages run after that regeneration (U2, U3, 13, 14, 15). This records how the approved behavior is carried; it does not change it.
 - Example ids, names and values are illustrative.
