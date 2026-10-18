@@ -31,7 +31,7 @@ Approved design · draft 3.5 · 18 October 2026 · **P0** forking · **P1** merg
 - **Watch it live** (Bob, Carol): They see the transcript, canvases and artifacts as the session works. Alice's session is unchanged.
 - **Forks at turn 42** (Bob): Alice's turn 43 is still running. Bob forks now, so the fork starts from turn 42, the last finished turn. He could also wait for turn 43 to end.
 - **Builds Bob's copy** (PilotSwarm): Bob keeps the default: sub-agents not forked. The fork orchestration copies the session with its facts and artifacts, re-clones the repo with its uncommitted changes, and writes the private map. The 2 sub-agents stay with Alice.
-- **Tries another theory** (Bob): “What if the DNS TTL caused the failover?” The model knows it is a fork of 7c1e9a42. Its tools read and write the fork's copies. It asks Alice's session before it touches PR 183.
+- **Tries another theory** (Bob): “What if the DNS TTL caused the failover?” The model knows it is a fork of 7c1e9a42. Its tools read and write the fork's copies. It asks Alice's session before it touches her pull request.
 - **Proposes a merge** (Bob): One findings digest, two fact changes, one artifact and the repo changes go to Alice for review.
 - **Accepts what helps** (Alice): She accepts 4 of 5 items. Her session reads the digest at its next turn and continues with the new finding.
 
@@ -283,7 +283,7 @@ message from you or the user. The original is not changed.
 | **Access** | | | | |
 | Owner, sharing, group placement | `catalog` | Not copied | the forker owns the fork; it starts private | `P0a` |
 | Tokens, cost and metrics | `catalog` | Not copied | start at zero; the dialog shows the inherited context size | `P0a` |
-| Credentials: personal model keys, relay bindings, Key Vault secrets | `provider store, vault` | Never | the forker's own credentials only | `P0a` |
+| Credentials: personal model keys, relay bindings, secret-store values | `provider store, vault` | Never | the forker's own credentials only | `P0a` |
 
 ## 05 · Names: copy or rename
 
@@ -490,7 +490,7 @@ You now run as Bob's fork 2b9d41c0.
 
 > **Never copied**
 >
-> Credentials, personal model keys, relay bindings, Key Vault secrets, and the source owner's home folder.
+> Credentials, personal model keys, relay bindings, secret-store values, and the source owner's home folder.
 
 ## 09 · How a fork is made
 
