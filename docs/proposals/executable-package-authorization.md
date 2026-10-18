@@ -276,6 +276,11 @@ than deleting rows to pretend fencing completed.
 
 The Linux workflow at `0854f97` predates these corrections and cannot validate
 the new code; its failed/hung run is not passing acceptance evidence.
+The corrected code at `b358ba1` subsequently passed the
+[Linux workflow](https://github.com/seanzqliang/PilotSwarm/actions/runs/39097369867):
+root build, pidfd/Python preflight, CI policy/shell checks and **37 standalone
+PostgreSQL/runtime/native-MCP/browser cases, zero skips**. The job exited normally.
+This is hosted Ubuntu evidence, not certification of a deployment image or AKS.
 
 Edge browser acceptance exercises the React review/activation/revoke/audit UI
 against authenticated fixture HTTP plus real SQL, not production Entra middleware.
@@ -287,8 +292,8 @@ PID; a no-tools callback can run while its denied tool has zero handlers; caught
 denied MCP has zero starts/calls; actual ordinary native MCP has one start and
 one call, with zero new model requests/MCP calls after warm revocation.
 
-Linux acceptance is tracked separately; Windows-only POSIX permission/MSYS/CRLF
-failures are not passes or a reason to hide skipped tests. The secret-free
-read-only workflow uses PostgreSQL 17, pidfd/Python and Edge. Its successful run,
-external legacy/remote fencing proof and exact Opus 4.8 review remain gates.
-This document does not grant permission to commit, push or deploy further work.
+The secret-free, read-only Linux workflow uses PostgreSQL 17, pidfd/Python and
+Edge. It also verified the policy/shell checks that exposed Windows-only POSIX
+permission/MSYS/CRLF failures; those Windows results were not counted as passes.
+Actual deployment-image prerequisites, external legacy/remote fencing proof and
+exact Opus 4.8 review remain gates. This document grants no deployment approval.
