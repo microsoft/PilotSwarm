@@ -129,6 +129,13 @@ describeOrSkip("CATALOG JOIN: owner, grant, revoke and persistence against real 
     await catalog.initialize();
     sessionId = `catalog-join-${process.pid}-${Date.now()}`;
     await catalog.createSession(sessionId, { title: "catalog-join", owner: OWNER });
+    // REAL events, so a drain has something to page through. Without these the
+    // revocation case could only use a hand-written cursor, which proves a
+    // later denied request but NOT that a drain in progress is stopped.
+    await catalog.recordEvents(sessionId, Array.from({ length: 6 }, (_, i) => ({
+        eventType: "assistant.message",
+        data: { content: `catalog-join event ${i + 1}` },
+    })));
 
     await t.test("POSITIVE CONTROL: the owner is served their own session", async () => {
         // Load-bearing. A 404-only result set is indistinguishable from an
@@ -164,9 +171,13 @@ describeOrSkip("CATALOG JOIN: owner, grant, revoke and persistence against real 
         } finally { await close(); }
     });
 
-    await t.test("PERSISTENCE: the grant survives a FRESH runtime, so it is a row and not in-process state", async () => {
-        // The distinction this whole file exists for. A grant cached in memory
-        // would satisfy the previous case and fail this one.
+    await t.test("VISIBILITY: the grant is visible to a FRESH runtime instance", async () => {
+        // SCOPED CLAIM, narrowed after review. This proves the grant is visible
+        // to a runtime instance that never saw it created - which rules out
+        // per-instance caching. It does NOT prove durable-storage independence:
+        // both instances share this process, and module-level state shared
+        // between them would also satisfy it. Durability across processes is a
+        // remaining gap, recorded rather than claimed.
         const fresh = await realRuntime();
         const { baseUrl, close } = await serve(fresh, READER);
         try {
@@ -181,19 +192,37 @@ describeOrSkip("CATALOG JOIN: owner, grant, revoke and persistence against real 
     await t.test("REVOKE: revoking the real share refuses the next page mid-drain", async () => {
         const { baseUrl, close } = await serve(runtime, READER);
         try {
-            const before = await fetch(`${baseUrl}${pagePath(sessionId)}`);
-            assert.equal(before.status, 200, "control: readable before revocation");
+            // A GENUINE mid-drain: take page one, continue from the cursor the
+            // SERVER issued, and revoke in between. An earlier version used a
+            // hand-written afterSeq=1 against a session with no events, which
+            // proved only that a later request was denied - not that a drain
+            // already in progress is stopped. Flagged in review; fixed rather
+            // than relabelled.
+            const first = await fetch(`${baseUrl}${pagePath(sessionId)}?page=true&limit=2`);
+            assert.equal(first.status, 200, "control: the drain starts readable");
+            const firstBody = await first.json();
+            const receipt = firstBody.result?.receipt;
+            assert.ok(Array.isArray(firstBody.result?.events) && firstBody.result.events.length > 0,
+                "control: page one must deliver real rows to continue from");
+            assert.ok(receipt?.has_more === true && receipt?.next_cursor !== null,
+                `control: the drain must be INCOMPLETE so continuing is meaningful; receipt=${JSON.stringify(receipt)}`);
 
             await runtime.transport.mgmt.revokeSessionShare(sessionId, READER);
 
-            const after = await fetch(`${baseUrl}${pagePath(sessionId)}?afterSeq=1`);
+            // Continue from the server's own cursor — the exact request a
+            // mid-drain client would make next.
+            const after = await fetch(
+                `${baseUrl}${pagePath(sessionId)}?page=true&limit=2&afterSeq=${receipt.next_cursor}`);
             const body = await after.json();
-            assert.equal(after.status, 404, "after revocation the same viewer must be refused");
-            assert.ok(!body.result?.events, "and must receive no events");
+            assert.equal(after.status, 404,
+                "a drain in progress must STOP when the share is revoked, not continue from its cursor");
+            assert.ok(!body.result?.events, "and must receive no further events");
         } finally { await close(); }
     });
 
-    await t.test("REVOKE PERSISTENCE: the revocation also survives a fresh runtime", async () => {
+    await t.test("VISIBILITY: the revocation is visible to a FRESH runtime instance", async () => {
+        // Same scoped claim as above: new-instance visibility, not proof of
+        // cross-process durability.
         const fresh = await realRuntime();
         const { baseUrl, close } = await serve(fresh, READER);
         try {
