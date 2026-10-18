@@ -42,6 +42,7 @@ export interface AgentPackageReviewCandidate extends ExecutablePackageIdentity {
     /** Content acceptance never certifies external executable dependencies. */
     approvalScope: "artifact-content";
     inspection: AgentPackageInspection | null;
+    runtimeFencing?: { denied: boolean; complete: boolean; outstanding: number };
 }
 
 export interface AgentPackageReviewMutation extends ExecutablePackageIdentity {
@@ -136,7 +137,7 @@ export function denyPublishedPackageExecution(): never {
 
 const DECLARATIVE_EXTENSIONS = /\.(?:md|txt|json|ya?ml|csv|tsv|svg|png|jpe?g|gif|webp|ico|pdf)$/i;
 const DECLARATIVE_METADATA = /(?:^|\/)(?:LICENSE(?:\.[a-z0-9-]+)?|NOTICE|COPYING|README|CHANGELOG|\.gitignore|\.gitattributes|\.editorconfig|\.npmignore)$/i;
-const EXECUTABLE_KEYS = /^(?:tools|workerModule|workerModules|prechecks?|handlers?|command|commands|scripts|mcpConfig|mcpServers)$/i;
+const EXECUTABLE_KEYS = /^(?:tools|workerModule|workerModules|callbacks?|prechecks?|handlers?|command|commands|scripts|mcpConfig|mcpServers)$/i;
 
 function executableDeclarations(value: unknown, at: string, reasons: Set<string>): void {
     if (!value || typeof value !== "object") return;

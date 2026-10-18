@@ -9,6 +9,7 @@ export interface VerifiedPackageRuntime {
     mcp: Record<string, { entry: string; args: string[]; env: Record<string, string> }>;
     files: string[];
     builtins: string[];
+    callbacks?: Record<string, { agents: string[]; tools: string[]; mcpServers: string[] }>;
 }
 
 const BUILTINS = new Set(["node:fs", "node:fs/promises", "node:path", "node:os", "node:crypto",
@@ -28,6 +29,7 @@ export function verifyPackageRuntime(artifact: Buffer, sha256: string): Verified
     const module = files.has("tools/worker-module.js") ? "tools/worker-module.js"
         : files.has("tools/worker-module.mjs") ? "tools/worker-module.mjs" : null;
     const code = [...files.keys()].filter(f => /\.(?:js|mjs)$/.test(f));
+    const entryExports = new Set<string>();
     for (const [name, source] of files) {
         if (name.split("/").some(part => part.toLowerCase() === "node_modules")
             || !(/\.(?:js|mjs|md|txt|json|ya?ml|csv|tsv|svg|png|jpe?g|gif|webp|ico|pdf)$/i.test(name)
@@ -66,10 +68,23 @@ export function verifyPackageRuntime(artifact: Buffer, sha256: string): Verified
                 if (names.some(value => /^(?:prechecks?|handlers?|commands?|scripts)$/i.test(value ?? ""))) {
                     throw new Error("Unsupported free-form callback export");
                 }
+                for (const value of names.filter(value => value !== undefined)) {
+                    if (!["createTools", "tools", "createCallbacks", "callbacks"].includes(value)) throw new Error("Unsupported worker module export");
+                    entryExports.add(value);
+                }
             }
+            if (name === module && node.type === "ExportAllDeclaration") throw new Error("Unsupported wildcard worker module exports");
             if (name === module && node.type === "ExportDefaultDeclaration" && node.declaration?.type === "ObjectExpression"
                 && node.declaration.properties.some((p: any) => /^(?:prechecks?|handlers?|commands?|scripts)$/i.test(p.key?.name ?? p.key?.value ?? ""))) {
                 throw new Error("Unsupported free-form callback export");
+            }
+            if (name === module && node.type === "ExportDefaultDeclaration") {
+                if (node.declaration?.type !== "ObjectExpression") throw new Error("Unsupported default worker module export");
+                for (const property of node.declaration.properties) {
+                    const key = property.key?.name ?? property.key?.value;
+                    if (property.computed || !["createTools", "tools", "createCallbacks", "callbacks"].includes(key)) throw new Error("Unsupported default worker module property");
+                    entryExports.add(key);
+                }
             }
             if (node.type === "ImportExpression" || node.type === "WithStatement"
                 || (node.type === "MemberExpression" && node.computed)
@@ -100,6 +115,7 @@ export function verifyPackageRuntime(artifact: Buffer, sha256: string): Verified
         const parsed = JSON.parse(files.get(".mcp.json")!);
         const servers = parsed.mcpServers ?? parsed;
         for (const [name, value] of Object.entries(servers)) {
+            if (["__proto__", "constructor", "prototype"].includes(name)) throw new Error("Unsupported MCP server name");
             const cfg = value as any;
             const [entry, ...args] = cfg.args ?? [];
             if (cfg.command !== "node" || typeof entry !== "string" || entry.startsWith("/")
@@ -116,10 +132,31 @@ export function verifyPackageRuntime(artifact: Buffer, sha256: string): Verified
         }
     }
     const plugin = JSON.parse(files.get("plugin.json") ?? "{}");
+    if ((entryExports.has("createCallbacks") || entryExports.has("callbacks")) && plugin.callbacks == null) {
+        throw new Error("Callback exports require explicit reviewed callback declarations");
+    }
+    let callbacks: VerifiedPackageRuntime["callbacks"];
+    if (plugin.callbacks != null) {
+        if (!module || typeof plugin.callbacks !== "object" || Array.isArray(plugin.callbacks)) throw new Error("Callbacks require a canonical supervised module");
+        callbacks = {};
+        for (const [name, value] of Object.entries(plugin.callbacks)) {
+            const cfg = value as any;
+            if (["__proto__", "constructor", "prototype"].includes(name)
+                || !/^[a-zA-Z_][a-zA-Z0-9_-]{0,127}$/.test(name) || !cfg || typeof cfg !== "object"
+                || Object.keys(cfg).some(key => !["agents", "tools", "mcpServers"].includes(key))
+                || !Array.isArray(cfg.agents) || !cfg.agents.length
+                || [cfg.agents, cfg.tools ?? [], cfg.mcpServers ?? []].some(names =>
+                    !Array.isArray(names) || names.some((v: unknown) => typeof v !== "string" || !/^[a-zA-Z_][a-zA-Z0-9_-]{0,127}$/.test(v)))) {
+                throw new Error(`Unsupported callback declaration: ${name}`);
+            }
+            callbacks![name] = { agents: cfg.agents, tools: cfg.tools ?? [], mcpServers: cfg.mcpServers ?? [] };
+        }
+    }
     if ((plugin.tools != null && plugin.tools !== module)
         || plugin.workerModule != null) throw new Error("Unsupported noncanonical worker module declaration");
     if (["handlers", "commands", "command", "scripts", "prechecks", "precheck", "workerModules"]
         .some(key => plugin[key] != null)) throw new Error("Unsupported free-form executable manifest declaration");
     if (!module && !Object.keys(mcp).length) throw new Error("No supported supervised executable entry point");
-    return { policy: 1, artifactSha256: sha256, module, mcp, files: code.sort(), builtins: [...builtins].sort() };
+    return { policy: 1, artifactSha256: sha256, module, mcp, files: code.sort(), builtins: [...builtins].sort(),
+        ...(callbacks ? { callbacks } : {}) };
 }

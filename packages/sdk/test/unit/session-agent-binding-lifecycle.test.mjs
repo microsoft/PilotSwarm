@@ -126,6 +126,17 @@ for (const mode of ["create", "hydrate"]) {
     });
 }
 
+test("omitting the agent name cannot hydrate a durable package pin as an unbound session", async t => {
+    const h = fixture(t, { hydrate: true });
+    h.bindings.set("pinned", {
+        sessionId: "pinned", packageId: "shared-package", versionId: "1",
+        sha256: "1".padStart(64, "0"), agentName: "analyst", owner: ALICE, revision: 1, allowed: true,
+    });
+    await assert.rejects(h.manager.getOrCreate("pinned", {}, { turnIndex: 2 }),
+        { code: "BOUND_AGENT_PACKAGE_UNAVAILABLE" });
+    assert.equal(h.calls.length, 0, "no provider hydration or generic fallback");
+});
+
 test("private binding rechecks ownership on a different worker; never falls back to the shared copy", async t => {
     const alice = fixture(t);
     const config = { ...named, boundAgentPackageId: "private-package" };

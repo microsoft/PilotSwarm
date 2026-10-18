@@ -7,8 +7,11 @@
 > They run only in supervised child processes; every tool invocation rechecks
 > authoritative current identity/owner/capability/registration state. Prefer
 > `tools/worker-module.mjs`; `.js` requires packaged `"type":"module"`.
-> Automatic package MCP registration and free-form handlers/prechecks remain
-> quarantined; a lower-level session-authorized supervised stdio MCP API is tested.
+> Automatic supported stdio MCP uses a session-specific supervised transport,
+> never raw package commands in the SDK. Explicitly declared callbacks execute
+> through JSON/reverse IPC; failed or unfinished nested calls cannot authorize skip.
+> Free-form handlers/prechecks and unverifiable executable/dependency shapes remain
+> rejected. See the runtime proposal for exact callback and host requirements.
 > Declarative prompts/skills retain their behavior. Historical unbound sessions
 > require explicit admin rebind. This prerequisite is **not release-ready**:
 > see the supported/unsupported shapes and remaining integration/review gates.

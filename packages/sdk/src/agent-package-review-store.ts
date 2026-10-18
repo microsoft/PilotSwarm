@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import type { PackageRuntimeAuthority } from "./package-runtime-authority.js";
 import { inspectAgentPackageArtifact } from "./agent-package-authorization.js";
 import type {
     AgentPackageReviewAudit,
@@ -34,7 +35,7 @@ export class AgentPackageReviewError extends Error {
 
 export class PgAgentPackageReviewStore implements AgentPackageReviewCatalog {
     private readonly schema: string;
-    constructor(private readonly pool: Pool, schema: string) {
+    constructor(private readonly pool: Pool, schema: string, private readonly runtime?: Pick<PackageRuntimeAuthority, "fencingStatus">) {
         this.schema = `"${schema.replace(/"/g, '""')}"`;
     }
 
@@ -56,7 +57,7 @@ export class PgAgentPackageReviewStore implements AgentPackageReviewCatalog {
             query_timeout: 6_000,
         };
         const { rows } = await this.pool.query(query);
-        return rows.map((r: any) => ({
+        const candidates: AgentPackageReviewCandidate[] = rows.map((r: any) => ({
             packageId: r.package_id, versionId: r.version_id, sha256: r.sha256,
             name: r.name, semver: r.semver, scope: r.scope, publisher: r.created_by ?? null,
             owner: r.owner_provider && r.owner_subject ? { provider: r.owner_provider, subject: r.owner_subject } : null,
@@ -65,6 +66,13 @@ export class PgAgentPackageReviewStore implements AgentPackageReviewCatalog {
             activationRevision: Number(r.activation_revision), activeVersionId: r.active_version_id ?? null,
             approvalScope: "artifact-content",
         }));
+        if (this.runtime && (await this.pool.query("SELECT to_regclass($1) IS NOT NULL AS supported",
+            [`${this.schema}.package_runtime_legacy_workers`])).rows[0]?.supported) {
+            for (const candidate of candidates) {
+                if (candidate.inspection?.executable) candidate.runtimeFencing = await this.runtime.fencingStatus(candidate);
+            }
+        }
+        return candidates;
     }
 
     async decide(actor: AgentPackageReviewActor, input: AgentPackageReviewMutation): Promise<void> {

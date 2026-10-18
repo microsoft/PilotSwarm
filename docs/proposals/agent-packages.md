@@ -4,7 +4,8 @@
 > [supervised runtime design and remaining acceptance gates](executable-package-authorization.md).
 > Supported module tools require immutable approval, verified closure, explicit
 > activation and fresh authoritative session admission in supervised children.
-> Automatic package MCP/free-form callbacks remain quarantined; enabled/private/shared
+> Supported MCP and declared callbacks use supervised session-bound execution;
+> free-form hooks remain rejected. Enabled/private/shared
 > is not executable approval. Approval alone does not grant session execution.
 > Declarative publication remains supported; named sessions retain exact version
 > pins, and historical unbound sessions require explicit admin rebind.
@@ -135,13 +136,13 @@ Migrations follow the 0029/0036 `steps` shape (next CMS version: 0038), all acce
 - **shared** — every user sees and can create sessions from its agents.
 - **user** — only the owner sees it in catalogs and pickers; only the owner's sessions resolve its agents.
 
-Any authenticated user, admin or not, uploads at either scope. **Promote** (user→shared) and **demote** (shared→user, by its owner) flip the scope column and bump the epoch; because agents resolve at turn time against the current catalog, running agents are never impacted by a scope flip. Update/delete/sync/pin: **creator or admin**; admins have full CRUD on everything. Baked app agents (from the image's plugin dirs) surface **read-only** in the admin tree and catalogs with a built-in badge — they are not registry rows.
+Any authenticated user, admin or not, uploads at either scope. **Promote** (user→shared) and **demote** (shared→user, by its owner) flip the scope column and bump the epoch. Executable registrations are fenced on scope changes; running package code is not grandfathered. Update/delete/sync/pin: **creator or admin**; admins have full CRUD on everything. Baked app agents (from the image's plugin dirs) surface **read-only** in the admin tree and catalogs with a built-in badge — they are not registry rows.
 
 This remains a **trusted-code system, not a sandbox**. The separate executable
 prerequisite supersedes the original in-worker loading design: approved supported
-modules run in supervised children behind current-session admission. Automatic
-published MCP registration remains denied; the lower-level supervised stdio API
-uses fixed verified configuration, not ambient `${VAR}` expansion. Private/shared
+modules and declared callbacks run in supervised children behind current-session
+admission. Automatic supported package MCP uses a session-bound supervised adapter,
+fixed verified configuration, and no ambient `${VAR}` expansion. Private/shared
 scope never substitutes for executable approval. See the prerequisite for exact
 supported shapes and remaining release gates.
 

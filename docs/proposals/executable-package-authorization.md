@@ -1,5 +1,271 @@
 # Executable published-package trust prerequisite
 
+## Current implementation after foundation `89d3269`
+
+The follow-up implements supervised callbacks, ordinary automatic package MCP,
+multi-package exact session grants, administrator-visible fencing, crash recovery
+and a fail-closed mixed-fleet activation gate. Changes are published for review in
+[PilotSwarm#185](https://github.com/microsoft/PilotSwarm/pull/185).
+This is not permission to deploy or a
+completed security approval. The exact requested Claude Opus 4.8
+completed-candidate security pass is unavailable and has **not** run.
+
+### Content, activation and session authority
+
+Approval accepts immutable canonical package/version/full-tar-SHA bytes.
+Dependency/configuration closure is inspected without imports; unverifiable
+executable shapes cannot activate. Approval is not activation or session consent.
+An approved-but-inactive, unpinned version cannot even register/import.
+Declarative-only publication retains its original behavior.
+
+New named sessions pin exact version/SHA/agent/owner. Generic `use_package`
+selections persist exact version/SHA/source-ref/owner/tool/MCP/callback grants in
+the **same PostgreSQL transaction as capability revision CAS**. A new grant must
+target an explicitly active version. Existing exact grants never resolve through
+the current active name. V2 approval/rejection leaves V1 active; V2 activation
+does not migrate existing bindings. Stale CAS, substituted digests and failed
+grant transactions cannot change capabilities or partially replace grants.
+
+Every handler/callback/MCP start/list/call obtains fresh central admission against
+live owner, visibility, enablement, content decision, session capability selection,
+agent access, registration generation and registry/owner/capability epochs.
+Creation-config/root changes also fence registrations. Named pins cannot be
+bypassed by asking `SessionManager` to hydrate the same session as a generic
+agent. Histories and exact pins are preserved when execution becomes denied.
+
+### Public runtime contracts for cron/activity integration
+
+* `worker.invokePackageCallback(identity, sessionId, name, args, services?)`
+  resolves **exact** `{packageId, versionId, sha256}` only, never a name/active
+  fallback.
+* `SupervisedPackageRuntime.invokeCallback(...)` provides the same contract to
+  SDK hosts. `PackageCallbackServices` supplies trusted deployment tool/MCP
+  routers; those routers must preserve their own current allowlist/capability
+  checks and published-target exact-identity wrappers.
+* Package `plugin.json` declares
+  `callbacks: {check: {agents:["helper"], tools:["ping"], mcpServers:["demo"]}}`.
+  The canonical module exports `createCallbacks` or `callbacks`, an array of
+  `{name, handler}` declarations. Factories run in the child, after tools are
+  loaded, under separate factory admission. The parent receives no functions.
+* A child callback receives JSON args/context and trusted reverse-IPC
+  `context.callTool(name,args)` / `context.callMcp(server,method,args)` bridges.
+  A no-tools agent may run an explicitly allowed callback but cannot thereby
+  acquire tools. Undeclared calls fail before dispatch.
+* The trusted parent latches failed, `isError:true`, and unfinished nested calls.
+  A callback cannot catch a denied MCP/tool call and convert it into `{skip:true}`.
+  The result rejects with
+  `code: "PACKAGE_CALLBACK_NESTED_CALL_FAILED_OR_UNFINISHED"`. Callers must treat
+  this as failure/defer, **never skip**. Unfinished calls cancel the generation.
+* `PackageRuntimeAuthority.withAdmission` remains the independent authoritative
+  admission contract; callback integrations should use the supervised callback
+  API rather than transporting package function objects into an activity.
+
+Callback agent declarations apply even to explicitly selected callbacks.
+Cross-published-package named-agent callback bindings are rejected; unbound or
+trusted deployment sessions must explicitly match the declared agent name.
+This branch intentionally does not implement cron scheduling or alter #180.
+
+### Ordinary MCP, not a raw-command fallback
+
+Supported package MCP is `node` plus an exact packaged ESM entry, fixed reviewed
+args/environment and verified static imports. Worker registration stores only an
+exact-identity **marker**. Raw package `.mcp.json` commands never reach native
+Copilot startup. Before SDK hydration, a trusted loopback HTTP MCP adapter binds
+an unguessable token to the exact durable session/package/server/generation.
+Every request reauthorizes. Server instances are distinct per session. Stable
+tokens preserve warm SDK sessions; a generation change cannot revive an old one.
+MCP executes in a broker-owned child, recorded while idle before code starts.
+
+Only initialize/ping/initialized notifications/tools-list/tools-call are supported.
+Remote package MCP, shell commands, npm/bare imports, vendored node_modules,
+dynamic executable/dependency loading, native/WASM payloads, arbitrary hooks,
+wildcard/unknown worker entry exports and undeclared callbacks are rejected.
+Native inline-agent package MCP is not supported; affected sessions disable native
+inline subagents rather than lending them a parent's durable identity. Known
+trusted deployment plugins remain unchanged.
+
+### Revocation, crash recovery and honest completion
+
+SQL decisions and lifecycle changes order with admissions through the same
+schema-scoped barrier. Revocation denies new admissions first, then responsive
+brokers kill owned package/MCP children, including synchronous infinite loops.
+Executable dispatch has a one-second deadline; trusted **idle preparation**
+has a separate bounded 30-second deadline and cannot import/execute package code.
+Previously admitted effects may occur until fencing completes and cannot be
+undone. This is runtime supervision of trusted JS, **not a sandbox**.
+
+Migration 0086 records host boot/PID-namespace identity and process start tokens.
+Recovery denies the generation, freezes/observes the recorded broker exit,
+then reads the final durable child inventory and terminates exact owned processes.
+Acknowledgement independently checks that recorded package processes have exited;
+a caller-supplied `true`, expired lease or changed heartbeat is not proof.
+Windows recovery retains a native process handle through identity checking/kill.
+Linux recovery uses pidfd via the trusted `/usr/bin/python3` helper
+(Python 3.9+, kernel pidfd support); missing support fails closed before package
+registration. Linux execution/recovery is **not validated by Windows evidence**.
+Executable supervision currently supports Windows/Linux only; other operating
+systems reject registration. Declarative-only packages do not require supervision.
+
+A surviving broker retries durable acknowledgement after database outages;
+package children die before retry. Windows/libuv may terminate the entire child
+job when a worker dies, so another worker's local recovery must observe and record
+those exits rather than inventing the missing broker acknowledgement.
+Unreachable hosts/PID namespaces remain incomplete: no local code can honestly
+prove their processes dead.
+
+`package_runtime_legacy_workers` blocks executable activation/admission while any
+pre-protocol worker remains unverified, including after migration reapplication.
+A protocol-1 heartbeat does not certify an older uncontrolled process dead.
+There is deliberately **no request-supplied "fenced" override**. Clearing an
+unknown legacy/other-host fence requires a trusted deployment-specific external
+fencing verifier/control-plane integration; none is configured or certified here.
+That operational prerequisite cannot be inferred from stale CMS worker records.
+
+### Administrator surfaces
+
+Review rows include live `runtimeFencing: {denied,complete,outstanding}`. The
+Pending Approval tab displays it and refreshes after decisions. Existing
+management/Web/CLI/MCP review surfaces carry the same status. For identities
+whose package was deleted, authenticated fleet administrators can use:
+
+* `getAgentPackageRuntimeStatus(identity)` (management/Web API);
+* `pilotswarm agents runtime-status <package> <version> <sha>`;
+* `get_agent_package_runtime_status` (MCP).
+
+Decision/activation mutation responses still do not claim execution permission or
+fencing completion; read current status. Client `isAdmin`/actor fields never become
+server authority. Cluster-scoped administrators cannot use global trust decisions.
+
+### Migration and rollback impact
+
+0086 is additive: exact grant/history tables, durable process identities,
+legacy-fleet gate and lifecycle triggers. 0085's eligibility bootstrap preserves
+0086's fleet gate on reapplication. No data/history is dropped. No operator/live
+database, deployment, environment inventory or other worktree was touched.
+Rollback to old workers is unsafe until executables are disabled and actual
+fencing verified; retain review/binding/grant/admission histories. Do not erase
+legacy fencing rows to bypass the activation gate.
+
+### Follow-up validation and remaining gates
+
+The final local verification matrix is:
+
+| Command | Result |
+|---|---|
+| `npm run build` (root workspace build) | Pass; Vite reports its large-chunk advisory, no build failures |
+| `npm run build --workspace=packages/sdk` | Pass |
+| `npm run build --workspace=pilotswarm` | Pass |
+| `node --test --test-concurrency=1 packages\sdk\test\postgres\package-runtime.test.mjs` | **34 pass, zero failures/skips**, standalone PostgreSQL 17.11 |
+| `node --test --test-reporter=spec` with the exact focused files below | **207 pass, zero failures/skips** |
+| From `packages\sdk`: `node ..\..\node_modules\vitest\vitest.mjs run test\local\agent-binding-refresh-runtime.test.js --reporter=verbose` | **3 pass, zero failures/skips** |
+| `git diff --check` | Pass |
+
+Exact focused Node selectors, supplied together to the command above:
+
+```text
+packages\sdk\test\unit\agent-package-authorization.test.mjs
+packages\sdk\test\unit\agent-package-review-catalog.test.mjs
+packages\sdk\test\unit\session-agent-binding-lifecycle.test.mjs
+packages\sdk\test\unit\package-tool-binding.test.mjs
+packages\sdk\test\unit\agent-package-format.test.mjs
+packages\sdk\test\unit\agent-package-extraction.test.mjs
+packages\sdk\test\unit\api-surface-contract.test.mjs
+packages\sdk\test\unit\web-client-op-coverage.test.mjs
+packages\sdk\test\unit\cms-migrations-shape.test.mjs
+packages\sdk\test\unit\pg-migrator.test.mjs
+packages\sdk\test\unit\package-runtime-format.test.mjs
+packages\app\web\test\agent-package-review-authz.test.mjs
+packages\app\ui\core\test\package-review-tabs.test.mjs
+packages\app\ui\core\test\agent-packages-admin.test.mjs
+packages\app\tui\test\package-transport-arity.test.mjs
+packages\app\mcp\test\unit\agent-package-reviews.unit.mjs
+```
+
+The standalone suite uses isolated local PostgreSQL 17.11, independent real
+connections and child processes, actual worker/Copilot SDK/CLI MCP startup,
+and a real Edge browser/React review UI against authenticated HTTP + real SQL.
+The browser fixture is not production Entra middleware; separate Web authorization
+tests exercise the production runtime's server-admin gate.
+Review decision CAS, additive migrations/reapplication, activation, immutable pins,
+multi-package grant rollback, concurrent admission/revoke, broker database outage
+and two independently blocked worker-host processes are **real PostgreSQL**
+acceptance, not mocked/PGlite/source-shape substitutes.
+
+Counter assertions through real loader/handler/startup paths:
+
+| Path | Observed/asserted counters |
+|---|---|
+| Pending or approved-but-inactive package | Zero imports, factories and handlers |
+| Approved/activated exact tool binding | One import, one factory, one handler; same child PID, different from parent |
+| No-tools callback, then caught denied tool | One import, one tool factory, one callback factory, two callbacks, **zero tool handlers** |
+| Owner change after callback | Zero additional imports/factories/callbacks/handlers |
+| Caught denied callback MCP call | One callback; **zero MCP starts/calls**; no fabricated skip |
+| Actual worker/native SDK ordinary MCP | One server start, one call; warm SDK handle reused; revoke adds **zero model requests or MCP calls** |
+| Two blocked supervised handlers, revoke | Exactly two handlers and imports; no third import/handler; both exits required for complete status |
+
+Earlier full runs exposed and fixed Windows browser-cleanup retries, the separation
+of trusted preparation from the executable dispatch deadline, and an unreachable-
+worker fixture that omitted the now-required explicit activation. These failures
+were investigated rather than dismissed; the final rerun is the acceptance result.
+The final disjoint total is **244 passing tests** (34 + 207 + 3). The standalone
+database has zero remaining fixture schemas, temporary broker roles or broker
+connections; process inspection found no surviving owned package, Copilot or
+browser processes. Only task-owned test artifacts are removed during cleanup.
+
+Remaining external/unsupported boundaries are explicit: the exact Opus 4.8 review,
+Linux/pidfd CI evidence, trusted external proof for unknown legacy/other-host
+workers, unsupported executable shapes and parent cron integration. No deployment,
+commit or push is authorized by this implementation report.
+
+### Exact follow-up changed-file inventory
+
+Relative to committed foundation `89d3269`; all remain uncommitted. The four
+files marked `NEW` are additions, not generated runtime/cache artifacts.
+
+```text
+docs\building-agent-packages.md
+docs\proposals\agent-packages.md
+docs\proposals\executable-package-authorization.md
+packages\app\mcp\src\tools\agent-packages.ts
+packages\app\mcp\test\unit\agent-package-reviews.unit.mjs
+packages\app\tui\src\agents-cli.js
+packages\app\tui\src\node-sdk-transport.js
+packages\app\ui\react\src\package-review-tabs.js
+packages\app\web\runtime.js
+packages\app\web\test\agent-package-review-authz.test.mjs
+packages\sdk\api\src\http-api-transport.js
+packages\sdk\api\src\protocol.js
+packages\sdk\src\agent-package-authorization.ts
+packages\sdk\src\agent-package-installer.ts
+packages\sdk\src\agent-package-review-store.ts
+packages\sdk\src\capability-catalog.ts
+packages\sdk\src\capability-runtime.ts
+packages\sdk\src\cms-migrations.ts
+packages\sdk\src\cms.ts
+packages\sdk\src\index.ts
+packages\sdk\src\management-client.ts
+packages\sdk\src\migrations\package-runtime-0085.ts
+packages\sdk\src\migrations\package-runtime-0086.ts NEW
+packages\sdk\src\package-runtime-authority.ts
+packages\sdk\src\package-runtime-broker.ts
+packages\sdk\src\package-runtime-child.ts
+packages\sdk\src\package-runtime-format.ts
+packages\sdk\src\package-runtime-mcp-child.ts NEW
+packages\sdk\src\package-runtime-mcp-gateway.ts NEW
+packages\sdk\src\package-runtime-process.ts NEW
+packages\sdk\src\package-runtime-supervisor.ts
+packages\sdk\src\session-manager.ts
+packages\sdk\src\web\generated-op-methods.ts
+packages\sdk\src\web\web-management-client.ts
+packages\sdk\src\worker.ts
+packages\sdk\test\postgres\package-runtime.test.mjs
+packages\sdk\test\unit\package-runtime-format.test.mjs
+packages\sdk\test\unit\session-agent-binding-lifecycle.test.mjs
+```
+
+<details>
+<summary>Historical foundation evidence at committed 89d3269 (superseded by the follow-up above)</summary>
+
 **Status: independently testable, bounded runtime tranche; NOT the completed
 platform prerequisite or release/security approval.** This implementation is
 being published for review; nothing has been deployed. It is general
@@ -352,3 +618,5 @@ packages\sdk\test\unit\agent-package-review-catalog.test.mjs
 packages\sdk\test\unit\package-runtime-format.test.mjs
 packages\sdk\test\unit\session-agent-binding-lifecycle.test.mjs
 ```
+
+</details>

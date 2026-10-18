@@ -75,6 +75,7 @@ Usage:
   pilotswarm agents reviews
   pilotswarm agents review <package-id> <version-id> <sha256> <revision> <approved|rejected|revoked> <reason>
   pilotswarm agents review-audit <version-id>
+  pilotswarm agents runtime-status <package-id> <version-id> <sha256>
   pilotswarm agents activate <package-id> <version-id> <sha256> <review-revision> <activation-revision> <prior-version-id|none> <reason>
   pilotswarm agents activation-audit <package-id>
   pilotswarm agents binding <session-id>
@@ -297,7 +298,7 @@ export async function runAgentsCommand(argv) {
     const createdBy = `${os.userInfo().username}@cli`;
     const selector = flags.scope ? { scope: flags.scope } : null;
     try {
-        if (!web && ["reviews", "review", "review-audit", "activate", "activation-audit", "binding", "rebind"].includes(command)) {
+        if (!web && ["reviews", "review", "review-audit", "runtime-status", "activate", "activation-audit", "binding", "rebind"].includes(command)) {
             console.error("Package trust administration requires authenticated Web API mode (--api-url). A direct database connection is not an authenticated administrator identity.");
             return 1;
         }
@@ -362,6 +363,11 @@ export async function runAgentsCommand(argv) {
             }
             case "review-audit": {
                 console.log(JSON.stringify(await ctx.client.getAgentPackageReviewAudit(rest[0], actor, isAdmin), null, 2));
+                return 0;
+            }
+            case "runtime-status": {
+                const [packageId, versionId, sha256] = rest;
+                console.log(JSON.stringify(await ctx.client.getAgentPackageRuntimeStatus({ packageId, versionId, sha256 }, actor, isAdmin), null, 2));
                 return 0;
             }
             case "activate": {

@@ -1648,8 +1648,8 @@ export class PgSessionCatalog implements SessionCatalog {
         this.sql = sqlForSchema(schema);
         this._providers = new ProviderStore(pool, schema);
         this.features = new FeatureStore(pool, schema);
-        this.packageReviews = new PgAgentPackageReviewStore(pool, schema);
         this.packageRuntime = new PgPackageRuntimeAuthority(pool, schema);
+        this.packageReviews = new PgAgentPackageReviewStore(pool, schema, this.packageRuntime);
     }
 
     /**
@@ -2177,16 +2177,26 @@ export class PgSessionCatalog implements SessionCatalog {
         if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) throw new Error("Invalid expected capability revision");
         const normalized = normalizeCapabilityState(state);
         if (normalized.revision !== expectedRevision + 1) throw new Error("Capability state must advance exactly one revision");
-        const { rowCount } = await this.pool.query(`
-            INSERT INTO "${this.sql.schema}".session_capabilities(session_id, revision, state)
-            SELECT $1, $3, $4::jsonb WHERE $2::bigint = 0
-            ON CONFLICT(session_id) DO UPDATE SET revision = $3, state = $4::jsonb
-            WHERE session_capabilities.revision = $2`, [sessionId, expectedRevision, normalized.revision, JSON.stringify(normalized)]);
-        if (rowCount) return true;
-        if (expectedRevision === 0) return false;
-        const result = await this.pool.query(`UPDATE "${this.sql.schema}".session_capabilities SET revision=$3, state=$4::jsonb
-            WHERE session_id=$1 AND revision=$2`, [sessionId, expectedRevision, normalized.revision, JSON.stringify(normalized)]);
-        return result.rowCount === 1;
+        const client = await this.pool.connect();
+        try {
+            await client.query("BEGIN; SET LOCAL statement_timeout='2s'; SET LOCAL lock_timeout='1s'");
+            await client.query(`SELECT "${this.sql.schema}".cms_package_runtime_barrier()`);
+            const { rowCount } = await client.query(`
+                INSERT INTO "${this.sql.schema}".session_capabilities(session_id, revision, state)
+                SELECT $1, $3, $4::jsonb WHERE $2::bigint = 0
+                ON CONFLICT(session_id) DO UPDATE SET revision = $3, state = $4::jsonb
+                WHERE session_capabilities.revision = $2`, [sessionId, expectedRevision, normalized.revision, JSON.stringify(normalized)]);
+            let changed = Boolean(rowCount);
+            if (!changed && expectedRevision !== 0) {
+                const result = await client.query(`UPDATE "${this.sql.schema}".session_capabilities SET revision=$3, state=$4::jsonb
+                    WHERE session_id=$1 AND revision=$2`, [sessionId, expectedRevision, normalized.revision, JSON.stringify(normalized)]);
+                changed = result.rowCount === 1;
+            }
+            if (changed) await this.packageRuntime.syncSelectionGrants(client, sessionId, normalized);
+            await client.query("COMMIT");
+            return changed;
+        } catch (error) { await client.query("ROLLBACK").catch(() => {}); throw error; }
+        finally { client.release(); }
     }
 
     async getSessionCreationConfig(sessionId: string): Promise<Record<string, unknown> | null> {

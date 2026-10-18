@@ -1,4 +1,6 @@
-import { fork, spawn, type ChildProcess } from "node:child_process";
+import { fork, type ChildProcess } from "node:child_process";
+import pg from "pg";
+import { PgPackageRuntimeAuthority, type PackageRegistration } from "./package-runtime-authority.js";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 
@@ -9,7 +11,10 @@ const children = new Set<ChildProcess>();
 const mcp = new Map<string, { child: ChildProcess; requests: Map<number, any>; next: number }>();
 let deadline = Date.now() + 1500;
 let stopping = false;
-const send = (message: unknown) => process.send?.(message);
+let authority: PgPackageRuntimeAuthority | undefined;
+let registration: PackageRegistration | undefined;
+let pool: pg.Pool | undefined;
+const send = (message: unknown) => { if (process.connected) process.send?.(message, () => {}); };
 const kill = async (child: ChildProcess): Promise<void> => {
     if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
     await new Promise<void>((done, reject) => {
@@ -23,7 +28,18 @@ async function stop(): Promise<void> {
     stopping = true;
     try {
         await Promise.all([...children].map(kill));
+        if (authority && registration) {
+            // An outage cannot turn missing acknowledgement into completion.
+            for (;;) {
+                try {
+                    await authority.requestFence(registration);
+                    await authority.acknowledgeFence(registration, true);
+                    break;
+                } catch { await new Promise(done => setTimeout(done, 500)); }
+            }
+        }
         send({ event: "fenced" });
+        await pool?.end();
         process.disconnect?.();
         process.exit(0);
     } catch (error) {
@@ -36,34 +52,50 @@ watch.unref();
 process.on("disconnect", () => { void stop(); });
 process.on("message", async (message: any) => {
     if (message?.method === "lease") { deadline = message.expiresAt; return; }
+    if (message?.method === "callback-result") { if (code?.connected && !stopping) code.send(message); return; }
     if (message?.method === "stop") { void stop(); return; }
     if (stopping || !message?.id) return;
     try {
         if (Date.now() > message.expiresAt) throw new Error("Admission dispatch expired");
-        if (message.method === "import") {
+        if (message.method === "initialize-broker") {
+            if (authority) throw new Error("Broker already initialized");
+            pool = new pg.Pool({ ...message.configuration.connection,
+                application_name: `pilotswarm-package-broker:${message.registration.registrationId}` });
+            pool.on("error", () => { /* Retry acknowledgement after authority connectivity returns. */ });
+            authority = new PgPackageRuntimeAuthority(pool, message.configuration.schema);
+            registration = message.registration;
+            await authority.noteProcess(registration!, process.pid, "broker");
+            send({ id: message.id, result: true });
+        } else if (message.method === "prepare-module") {
             if (code) throw new Error("A package generation imports once");
+            if (!authority || !registration) throw new Error("Broker recovery authority unavailable");
             code = fork(fileURLToPath(new URL("./package-runtime-child.js", import.meta.url)), [], {
                 stdio: ["ignore", "pipe", "pipe", "ipc"], execArgv: [], env: message.env,
             });
             children.add(code);
             code.stdout?.resume(); code.stderr?.resume();
             code.on("message", (reply: any) => {
+                if (reply?.event === "callback-call") { send(reply); return; }
                 if (typeof reply?.id === "string") send({ id: reply.id, result: reply.result, error: reply.error });
             });
             code.once("error", () => { void stop(); });
             code.once("exit", () => { children.delete(code!); if (!stopping) void stop(); });
+            await authority.noteProcess(registration, code.pid!, "module");
+            send({ id: message.id, result: true });
+        } else if (message.method === "import") {
+            if (!code?.connected) throw new Error("Package module process unavailable");
             code.send(message);
-        } else if (message.method === "factory" || message.method === "tool") {
+        } else if (["factory", "callback-factory", "callback", "tool"].includes(message.method)) {
             if (!code?.connected) throw new Error("Package generation is unavailable");
             code.send(message);
-        } else if (message.method === "mcp-start") {
-            if (mcp.has(message.name)) throw new Error("MCP server already started for this generation");
-            const child = spawn(process.execPath, [resolve(message.dir, message.config.entry), ...message.config.args], {
-                cwd: message.dir, env: { ...message.env, ...message.config.env }, stdio: ["pipe", "pipe", "pipe"],
+        } else if (message.method === "prepare-mcp") {
+            if (!authority || !registration || mcp.has(message.key)) throw new Error("MCP preparation unavailable or duplicate");
+            const child = fork(fileURLToPath(new URL("./package-runtime-mcp-child.js", import.meta.url)), [], {
+                cwd: message.dir, env: message.env, execArgv: [], stdio: ["pipe", "pipe", "pipe", "ipc"],
             });
             children.add(child);
             const state = { child, requests: new Map<number, any>(), next: 1 };
-            mcp.set(message.name, state);
+            mcp.set(message.key, state);
             let buffer = "";
             child.stderr?.resume();
             child.once("error", error => {
@@ -92,12 +124,19 @@ process.on("message", async (message: any) => {
                 for (const pending of state.requests.values()) pending.reject(new Error("Package MCP process exited"));
                 if (!stopping) void stop();
             });
+            await authority.noteProcess(registration, child.pid!, "mcp");
+            send({ id: message.id, result: true });
+        } else if (message.method === "mcp-start") {
+            const state = mcp.get(message.key);
+            if (!state || !state.child.connected) throw new Error("Prepared MCP process unavailable");
+            state.child.send({ method: "start", path: resolve(message.dir, message.config.entry),
+                args: message.config.args, env: message.config.env, expiresAt: message.expiresAt });
             const initialized = await rpc(state, "initialize", { protocolVersion: "2024-11-05",
                 capabilities: {}, clientInfo: { name: "pilotswarm-supervised", version: "1" } });
-            child.stdin!.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
+            state.child.stdin!.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
             send({ id: message.id, result: initialized });
         } else if (message.method === "mcp-call") {
-            const state = mcp.get(message.name);
+            const state = mcp.get(message.key);
             if (!state) throw new Error("Package MCP server is not started");
             if (!["tools/list", "tools/call"].includes(message.rpcMethod)) throw new Error("Unsupported MCP operation");
             const result = await rpc(state, message.rpcMethod, message.params);

@@ -23,9 +23,14 @@ FOR EACH ROW EXECUTE FUNCTION ${s}.cms_package_review_audit_append_only();
 CREATE OR REPLACE FUNCTION ${s}.cms_package_runtime_barrier() RETURNS VOID AS $$
 BEGIN PERFORM pg_advisory_xact_lock(hashtextextended('${schema.replace(/'/g, "''")}:package-runtime-admission',0)); END;
 $$ LANGUAGE plpgsql;
+DO $bootstrap$ BEGIN
+ IF to_regprocedure('${s.replace(/'/g, "''")}.cms_package_runtime_fleet_eligible()') IS NULL THEN
+  EXECUTE $definition$CREATE FUNCTION ${s}.cms_package_runtime_fleet_eligible() RETURNS BOOLEAN AS 'SELECT TRUE' LANGUAGE sql$definition$;
+ END IF;
+END $bootstrap$;
 CREATE OR REPLACE FUNCTION ${s}.cms_package_executable_eligible(p_package TEXT,p_version TEXT,p_sha TEXT)
 RETURNS BOOLEAN AS $$
-SELECT EXISTS(SELECT 1 FROM ${s}.agent_package_reviews r
+SELECT ${s}.cms_package_runtime_fleet_eligible() AND EXISTS(SELECT 1 FROM ${s}.agent_package_reviews r
  WHERE r.package_id=p_package AND r.version_id=p_version AND r.sha256=p_sha AND r.decision='approved'
  AND r.inspection->'execution'->>'policy'='1'
  AND r.inspection->'execution'->>'artifactSha256'=p_sha);

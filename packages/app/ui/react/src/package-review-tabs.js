@@ -82,7 +82,7 @@ export function PackageReviewTabs({ controller, view }) {
             const current = await controller.transport.getSessionAgentPackageBinding(sessionId.trim());
             const agentName = current?.agentName || window.prompt("Exact bound agent name for this historically unbound session:");
             if (!agentName?.trim()) return;
-            const reason = window.prompt(`Rebind ${sessionId} from ${current?.versionId || "unbound (explicit initial binding)"} to ${candidate.versionId}? Give the reason; running work is NOT cancelled.`);
+            const reason = window.prompt(`Rebind ${sessionId} from ${current?.versionId || "unbound (explicit initial binding)"} to ${candidate.versionId}? Give the reason; previous package generations will be fenced.`);
             if (!reason?.trim()) return;
             await controller.transport.rebindSessionAgentPackage({
                 sessionId: sessionId.trim(), packageId: candidate.packageId, versionId: candidate.versionId,
@@ -110,7 +110,7 @@ export function PackageReviewTabs({ controller, view }) {
         error ? React.createElement("p", { role: "alert" }, error) : null,
         effectiveTab === "reviews" && view.isAdmin ? React.createElement("div", { role: "tabpanel" },
             React.createElement("p", null,
-                "Approve artifact contents accepts these immutable bytes, not external dependencies or a session execution grant. Activation is separate and requires a verified supported runtime closure. Module tools use supervised children and fresh invocation admission. Automatic package MCP registration and free-form callbacks remain unsupported. Revocation denies first; this UI does not report process-fencing completion."),
+                "Content approval and activation are separate from session permission. Supported tools, declared callbacks and stdio MCP execute in supervised children with fresh admission. Revocation denies first; completion below requires observed process exits. Previously admitted external effects cannot be undone."),
             React.createElement("button", { type: "button", disabled: busy, onClick: refresh }, "Refresh reviews"),
             reviews.map((r) => React.createElement("article", { key: r.versionId },
                 React.createElement("h4", null, `${r.name}@${r.semver} · artifact content: ${r.decision}`),
@@ -119,6 +119,9 @@ export function PackageReviewTabs({ controller, view }) {
                 React.createElement("p", null, `SHA-256: ${r.sha256}`),
                 React.createElement("p", null, `Prior active: ${r.priorActiveVersionId || "none"}`),
                 React.createElement("p", null, `Current active: ${r.activeVersionId || "none"} · activation revision ${r.activationRevision}`),
+                React.createElement("p", { role: "status" }, r.runtimeFencing
+                    ? `Runtime: ${r.runtimeFencing.denied ? "admission denied" : "admission eligible"} · fencing ${r.runtimeFencing.complete ? "complete" : "not complete"} · outstanding ${r.runtimeFencing.outstanding}`
+                    : "Runtime fencing status unavailable; do not infer completion."),
                 React.createElement("pre", null, (r.inspection?.reasons || ["Legacy artifact: no verified inspection"]).join("\n")),
                 React.createElement("pre", null, (r.inspection?.approvalBlockers || ["Uninspected artifact"]).join("\n")),
                 React.createElement("ul", null, (r.inspection?.files || []).map((file) => React.createElement("li", { key: file.path },

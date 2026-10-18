@@ -464,6 +464,9 @@ export class WebPilotSwarmManagementClient {
     async getAgentPackageReviewAudit(versionId: string, _owner: any, _isAdmin: boolean): Promise<any[]> {
         return this.ops.getAgentPackageReviewAudit({ versionId });
     }
+    async getAgentPackageRuntimeStatus(input: any, _owner: any, _isAdmin: boolean): Promise<any> {
+        return this.ops.getAgentPackageRuntimeStatus({ input });
+    }
 
     async activateAgentPackageVersion(input: any, _owner: any, _isAdmin: boolean): Promise<void> {
         return this.ops.activateAgentPackageVersion({ input });

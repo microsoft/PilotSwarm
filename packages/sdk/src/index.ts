@@ -388,6 +388,8 @@ export { AgentPackageReviewError } from "./agent-package-review-store.js";
 export { PgPackageRuntimeAuthority } from "./package-runtime-authority.js";
 export type { PackageRuntimeAuthority, PackageRegistration, PackageInvocationContext } from "./package-runtime-authority.js";
 export { SupervisedPackageRuntime } from "./package-runtime-supervisor.js";
+export type { PackageCallbackServices } from "./package-runtime-supervisor.js";
+export { PackageMcpGateway } from "./package-runtime-mcp-gateway.js";
 export { verifyPackageRuntime, type VerifiedPackageRuntime } from "./package-runtime-format.js";
 export type { AgentPackageReviewCatalog, AgentPackageReviewActor } from "./agent-package-review-store.js";
 export {

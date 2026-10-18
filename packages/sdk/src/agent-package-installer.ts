@@ -162,9 +162,6 @@ export async function installAgentPackages(opts: {
                 if (!opts.runtimeAuthority || !installed.inspection.execution || entry.reviewDecision !== "approved") {
                     denyPublishedPackageExecution();
                 }
-                if (Object.keys(installed.inspection.execution.mcp).length) {
-                    throw new Error("AGENT_PACKAGE_EXECUTABLE_DENIED: automatic package MCP registration is unsupported; use the session-authorized supervised MCP API");
-                }
             }
             if (!cacheMatchesArtifact(dir, targz)) {
                 // Unpack to a sibling tmp dir, stamp the sidecar, then rename
@@ -237,7 +234,7 @@ export async function loadAgentPackageTools(
     pkg: InstalledAgentPackage,
     context: { workerNodeId?: string; runtimeAuthority?: PackageRuntimeAuthority; onRuntime?: (runtime: SupervisedPackageRuntime) => void },
 ): Promise<any[]> {
-    if (!pkg.workerModulePath) return [];
+    if (!pkg.workerModulePath && !pkg.inspection?.execution) return [];
     if (!context.runtimeAuthority || !pkg.inspection?.execution || !pkg.versionId) denyPublishedPackageExecution();
     const { runtime, tools } = await SupervisedPackageRuntime.start(
         context.runtimeAuthority, { packageId: pkg.packageId, versionId: pkg.versionId, sha256: pkg.sha256 },

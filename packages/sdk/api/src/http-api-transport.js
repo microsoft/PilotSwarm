@@ -132,6 +132,7 @@ export class HttpApiTransport {
     listAgentPackageReviews() { return this.api.call("listAgentPackageReviews"); }
     decideAgentPackageReview(input) { return this.api.call("decideAgentPackageReview", { input }); }
     getAgentPackageReviewAudit(versionId) { return this.api.call("getAgentPackageReviewAudit", { versionId }); }
+    getAgentPackageRuntimeStatus(input) { return this.api.call("getAgentPackageRuntimeStatus", { input }); }
     activateAgentPackageVersion(input) { return this.api.call("activateAgentPackageVersion", { input }); }
     getAgentPackageActivationAudit(packageId) { return this.api.call("getAgentPackageActivationAudit", { packageId }); }
     getSessionAgentPackageBinding(sessionId) { return this.api.call("getSessionAgentPackageBinding", { sessionId }); }

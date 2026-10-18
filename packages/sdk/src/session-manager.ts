@@ -234,6 +234,7 @@ export function pickAgentCopyByPackageIdForOwner(
 /** Worker-level defaults — applied to every session. */
 export interface WorkerDefaults {
     getCapabilitySources?: () => CapabilitySource[];
+    resolvePackageMcp?: (sessionId: string, servers: Record<string, any>) => Promise<Record<string, any>>;
     /** Host-reserved fact key prefixes, see PilotSwarmWorkerOptions.reservedFactPrefixes. */
     reservedFactPrefixes?: string[];
     nativeSubagents?: "off" | "sync";
@@ -1894,9 +1895,7 @@ export class SessionManager {
         let boundAgentCopy: AgentCopyEntry | undefined;
         let resolvedTools: Tool<any>[];
         try {
-            let binding = effectiveSerializableConfig.boundAgentName
-                ? await this.sessionCatalog?.packageReviews?.getSessionBinding(sessionId)
-                : null;
+            let binding = await this.sessionCatalog?.packageReviews?.getSessionBinding(sessionId);
             if (binding) {
                 if (!binding.allowed || binding.agentName !== effectiveSerializableConfig.boundAgentName
                     || effectiveSerializableConfig.boundAgentSource === "deployment"
@@ -2444,6 +2443,14 @@ export class SessionManager {
             } };
         });
         Object.assign(effectiveMcpServers, attached.mcpServers);
+        if (Object.values(effectiveMcpServers).some((server: any) => server?.packageRuntime)) {
+            if (!this.workerDefaults.resolvePackageMcp) throw new Error("Supervised package MCP resolver unavailable");
+            const resolved = await this.workerDefaults.resolvePackageMcp(sessionId, effectiveMcpServers);
+            for (const name of Object.keys(effectiveMcpServers)) delete effectiveMcpServers[name];
+            Object.assign(effectiveMcpServers, resolved);
+            // Native inline agents lack a separately persisted package/agent pin.
+            config.nativeSubagents = "off";
+        }
         config.capabilityFingerprint = attached.fingerprint;
         config.capabilityServices = {
             search: async args => {

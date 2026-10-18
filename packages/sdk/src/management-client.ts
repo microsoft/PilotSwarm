@@ -5143,6 +5143,16 @@ export class PilotSwarmManagementClient {
         if (!this._catalog?.packageReviews) throw Object.assign(new Error("Package review catalog unavailable"), { code: "UNAVAILABLE" });
         return this._catalog.packageReviews.audit({ principal: owner, isAdmin }, versionId);
     }
+    async getAgentPackageRuntimeStatus(input: import("./agent-package-authorization.js").ExecutablePackageIdentity,
+        owner: AgentPrincipal | null, isAdmin: boolean) {
+        this._ensureStarted();
+        if (isAdmin !== true || !owner?.provider || !owner.subject) throw Object.assign(new Error("Authenticated administrator required"), { code: "FORBIDDEN" });
+        if (!input || !input.packageId || !input.versionId || !/^[a-f0-9]{64}$/.test(input.sha256)) {
+            throw Object.assign(new Error("Exact package/version/digest required"), { code: "INVALID_REQUEST" });
+        }
+        if (!this._catalog?.packageRuntime) throw Object.assign(new Error("Package runtime authority unavailable"), { code: "UNAVAILABLE" });
+        return this._catalog.packageRuntime.fencingStatus(input);
+    }
 
     async activateAgentPackageVersion(
         input: import("./agent-package-authorization.js").AgentPackageActivationMutation,

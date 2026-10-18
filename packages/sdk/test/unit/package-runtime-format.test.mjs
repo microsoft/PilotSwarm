@@ -43,10 +43,22 @@ for (const [label, files, reason] of [
     ["unverified MCP runtime environment", { ".mcp.json": '{"demo":{"command":"node","args":["tools/worker-module.mjs"],"env":{"LD_PRELOAD":"outside"}}}' }, /Unsupported or unverifiable/],
     ["free-form callback", { "plugin.json": '{"name":"runtime-kit","version":"1.0.0","prechecks":[{"handler":"unknown"}]}' }, /Unsupported free-form/],
     ["free-form module callback export", { "tools/worker-module.mjs": 'export const prechecks=[()=>true];export const createTools=()=>[];' }, /Unsupported free-form callback export/],
+    ["undeclared callback export", { "tools/worker-module.mjs": "export const callbacks=[];" }, /explicit reviewed callback declarations/],
+    ["unknown runtime export", { "tools/worker-module.mjs": "export const executeAnything=()=>true;" }, /Unsupported worker module export/],
+    ["wildcard runtime export", { "tools/worker-module.mjs": 'export * from "./helper.mjs";', "tools/helper.mjs": "export const tools=[];" }, /wildcard worker module exports/],
+    ["prototype callback name", { "plugin.json": '{"name":"runtime-kit","version":"1.0.0","callbacks":{"__proto__":{"agents":["helper"]}}}' }, /Unsupported callback declaration/],
 ]) test(`runtime closure explicitly rejects ${label} without importing anything`, t => {
     const { inspection } = inspect(t, files);
     assert.equal(inspection.execution, undefined);
     assert.match(inspection.approvalBlockers.join("; "), reason);
+});
+
+test("reviewed callback declaration pins names, agent access and nested tool/MCP permissions without imports", t => {
+    const { inspection } = inspect(t, {
+        "plugin.json": '{"name":"runtime-kit","version":"1.0.0","callbacks":{"check":{"agents":["helper"],"tools":["ping"],"mcpServers":["demo"]}}}',
+        "tools/worker-module.mjs": "export const createCallbacks=()=>[{name:'check',handler:async args=>args}];",
+    });
+    assert.deepEqual(inspection.execution.callbacks, { check: { agents: ["helper"], tools: ["ping"], mcpServers: ["demo"] } });
 });
 
 test("packaged type:module gives .js a closed module interpretation rather than inheriting parent configuration", t => {

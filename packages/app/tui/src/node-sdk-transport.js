@@ -766,6 +766,9 @@ export class NodeSdkTransport {
     async getAgentPackageReviewAudit(versionId, owner = this.currentUser, isAdmin = false) {
         return this.mgmt.getAgentPackageReviewAudit(versionId, owner, isAdmin === true);
     }
+    async getAgentPackageRuntimeStatus(input, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.getAgentPackageRuntimeStatus(input, owner, isAdmin === true);
+    }
 
     async activateAgentPackageVersion(input, owner = this.currentUser, isAdmin = false) {
         return this.mgmt.activateAgentPackageVersion(input, owner, isAdmin === true);

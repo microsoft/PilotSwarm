@@ -97,6 +97,12 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
             inputSchema: { version_id: z.string().min(1) },
         }, withToolErrors(async ({ version_id }) =>
             jsonResult(await ctx.mgmt.getAgentPackageReviewAudit(version_id, owner, ctx.admin))));
+        server.registerTool("get_agent_package_runtime_status", {
+            title: "Package Runtime Fencing [admin]",
+            description: "Current exact-identity admission and observed-exit fencing status, including deleted packages. Lease expiry never proves completion.",
+            inputSchema: { package_id: z.string().min(1), version_id: z.string().min(1), sha256: z.string().regex(/^[a-f0-9]{64}$/) },
+        }, withToolErrors(async ({ package_id, version_id, sha256 }) => jsonResult(
+            await ctx.mgmt.getAgentPackageRuntimeStatus({ packageId: package_id, versionId: version_id, sha256 }, owner, ctx.admin))));
         server.registerTool("get_agent_package_activation_audit", {
             title: "Package Activation Audit [admin]",
             description: "Retained exact-version activation pointer history. Does not describe runtime fences.",

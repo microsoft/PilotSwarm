@@ -37,6 +37,16 @@ test("MCP review tools preserve exact immutable candidate CAS, without supplying
     assert.equal(calls.length, 1);
 });
 
+test("MCP runtime status preserves exact identity and never fabricates fencing completion", async t => {
+    const { client, calls } = await fixture(t);
+    await client.callTool({ name: "get_agent_package_runtime_status", arguments: {
+        package_id: "deleted-package", version_id: "old-version", sha256: "b".repeat(64),
+    } });
+    assert.deepEqual(calls, [{ method: "getAgentPackageRuntimeStatus", args: [{
+        packageId: "deleted-package", versionId: "old-version", sha256: "b".repeat(64),
+    }, null, true] }]);
+});
+
 for (const options of [{ role: "user", admin: false }, { role: "anonymous" }, { agentMgmt: "read" }, { agentMgmt: "off" }]) {
     test(`MCP review mutation not registered for ${JSON.stringify(options)}`, async (t) => {
         const { client } = await fixture(t, options);

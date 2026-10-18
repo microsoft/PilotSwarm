@@ -20,6 +20,7 @@ import { clipDescription, composeDeclaredSkillsPrompt, loadSkillsSync, type Skil
 import { resolveSystemAgentSessionPlans, startSystemAgents } from "./system-agents.js";
 import { firstRuntimeModel } from "./provider-catalog.js";
 import { loadMcpConfig, mcpAllowlistAdmits, type McpAllowlistAgent } from "./mcp-loader.js";
+import { PackageMcpGateway } from "./package-runtime-mcp-gateway.js";
 
 import { createModelProvidersReloader, type ModelProviderRegistry } from "./model-providers.js";
 import { createArtifactTools } from "./artifact-tools.js";
@@ -320,6 +321,7 @@ export class PilotSwarmWorker {
     private _agentPackagesTimer: ReturnType<typeof setInterval> | null = null;
     private _agentPackagesRefreshing = false;
     private _packageRuntimeInstances = new Set<SupervisedPackageRuntime>();
+    private _packageMcpGateway = new PackageMcpGateway();
     private _agentPackagesRefreshDone: Promise<void> | null = null;
     /** Tools contributed by installed packages, merged under static tools. */
     private _agentPackageTools = new Map<string, Tool<any>>();
@@ -423,6 +425,19 @@ export class PilotSwarmWorker {
                 // in place on reload): deployment + shared-package skills.
                 skills: this._loadableSkills,
                 getCapabilitySources: () => this._getCapabilitySources(),
+                resolvePackageMcp: async (sessionId, configs) => {
+                    const result: Record<string, any> = {};
+                    for (const [name, cfg] of Object.entries(configs)) {
+                        const marker = (cfg as any)?.packageRuntime;
+                        if (!marker) { result[name] = cfg; continue; }
+                        const runtime = [...this._packageRuntimeInstances].find(r =>
+                            r.identity.packageId === marker.packageId && r.identity.versionId === marker.versionId
+                            && r.identity.sha256 === marker.sha256);
+                        if (!runtime) throw new Error("Exact supervised package MCP generation unavailable");
+                        result[name] = await this._packageMcpGateway.configuration(runtime, sessionId, marker.name);
+                    }
+                    return result;
+                },
                 // Private, per-owner skills, also by reference. A session
                 // gets the ones its OWNER published, and nobody else's — see
                 // SessionManager._skillCatalogForSession (what load_skill
@@ -1062,6 +1077,7 @@ export class PilotSwarmWorker {
         this._stopRequested = true;
         await this._agentPackagesRefreshDone;
         await Promise.allSettled([...this._packageRuntimeInstances].map(runtime => runtime.stop()));
+        await this._packageMcpGateway.close();
         this._packageRuntimeInstances.clear();
         this._stopProviderPolling();
         if (this._evictionTimer) {
@@ -1330,6 +1346,15 @@ export class PilotSwarmWorker {
         ]);
     }
 
+    /** Exact identity only: no active-name resolution or fallback to another generation. */
+    async invokePackageCallback(identity: import("./agent-package-authorization.js").ExecutablePackageIdentity,
+        sessionId: string, name: string, args: unknown,
+        services: import("./package-runtime-supervisor.js").PackageCallbackServices = {}): Promise<unknown> {
+        const runtime = [...this._packageRuntimeInstances].find(r => r.identity.packageId === identity.packageId
+            && r.identity.versionId === identity.versionId && r.identity.sha256 === identity.sha256);
+        if (!runtime) throw new Error("Exact supervised package callback generation unavailable");
+        return runtime.invokeCallback(sessionId, name, args, services);
+    }
     async refreshAgentPackages(opts: { force?: boolean } = {}): Promise<void> {
         if (this._stopRequested || !this._agentPackagesCacheDir || !this._catalog || !this.artifactStore) return;
         if (this._agentPackagesRefreshing) return;
@@ -1337,11 +1362,13 @@ export class PilotSwarmWorker {
         let finished!: () => void;
         this._agentPackagesRefreshDone = new Promise(resolve => { finished = resolve; });
         try {
+            await this._catalog.packageRuntime?.recoverLocal?.();
             const currentEpoch = await this._catalog.agentRegistryEpoch();
             if (!opts.force && currentEpoch === this._agentPackagesEpoch) {
                 return;
             }
             await Promise.allSettled([...this._packageRuntimeInstances].map(runtime => runtime.stop()));
+            await this._packageMcpGateway.close();
             this._packageRuntimeInstances.clear();
 
             const result = await installAgentPackages({
@@ -1365,7 +1392,7 @@ export class PilotSwarmWorker {
             const packageTools = new Map<string, Tool<any>>();
             const packageToolsByPackage = new Map<string, Map<string, Tool<any>>>();
             for (const pkg of result.packages) {
-                if (pkg.status !== "ok" || !pkg.workerModulePath) continue;
+                if (pkg.status !== "ok" || (!pkg.workerModulePath && !pkg.inspection?.execution)) continue;
                 try {
                     const tools = await loadAgentPackageTools(pkg, {
                         workerNodeId: this.config.workerNodeId,
@@ -1550,7 +1577,7 @@ export class PilotSwarmWorker {
                 pool: this._workerPool,
                 phase: this._workerPhase,
                 owner: this.config.workerOwner ?? null,
-                info: this._buildRegistrarInfo(),
+                info: { ...this._buildRegistrarInfo(), packageRuntimeProtocol: 1 },
                 health: this._collectWorkerHealth(),
                 state: {
                     "feature-flags": { ...this._featureFlags?.state,
@@ -2236,8 +2263,16 @@ export class PilotSwarmWorker {
         // or not), and may not restrict entries itself — `allowedAgents` is a
         // deployment-catalog field. Deployment dirs load before package dirs,
         // so every deployment name is known when a package tries to shadow it.
-        const mcpConfig = loadMcpConfig(absDir);
         const mcpPackageProvenance = this._packageDirOwners.get(absDir);
+        const supervised = mcpPackageProvenance && [...this._packageRuntimeInstances].find(r =>
+            r.identity.packageId === mcpPackageProvenance.packageId && r.identity.sha256 === source.revision);
+        if (supervised?.verified.callbacks) for (const name of Object.keys(supervised.verified.callbacks)) {
+            source.artifacts.push({ kind: "callback", name, description: `Supervised callback exported by ${namespace}` });
+        }
+        const mcpConfig = supervised
+            ? Object.fromEntries(Object.keys(supervised.verified.mcp).map(name => [name,
+                { type: "pilotswarm-package", packageRuntime: { ...supervised.identity, name } }]))
+            : loadMcpConfig(absDir);
         for (const [name, cfg] of Object.entries(mcpConfig)) {
             if (mcpPackageProvenance) {
                 if (this._deploymentMcpNames.has(name)) {

@@ -954,6 +954,7 @@ export class PortalRuntime {
             case "listAgentPackageReviews":
             case "decideAgentPackageReview":
             case "getAgentPackageReviewAudit":
+            case "getAgentPackageRuntimeStatus":
             case "activateAgentPackageVersion":
             case "getAgentPackageActivationAudit":
             case "getSessionAgentPackageBinding":
@@ -964,6 +965,12 @@ export class PortalRuntime {
                     throw forbiddenError("Package reviews require an authenticated administrator.");
                 }
                 if (method === "listAgentPackageReviews") return this.transport.listAgentPackageReviews(owner, true);
+                if (method === "getAgentPackageRuntimeStatus") {
+                    const input = safeParams.input || {};
+                    return this.transport.getAgentPackageRuntimeStatus({
+                        packageId: input.packageId, versionId: input.versionId, sha256: input.sha256,
+                    }, owner, true);
+                }
                 if (method === "getAgentPackageReviewAudit") {
                     return this.transport.getAgentPackageReviewAudit(safeParams.versionId, owner, true);
                 }

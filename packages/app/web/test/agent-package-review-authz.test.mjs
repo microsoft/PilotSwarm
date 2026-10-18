@@ -10,6 +10,7 @@ function fixture() {
         listAgentPackageReviews: async (...args) => { calls.push(["list", ...args]); return []; },
         decideAgentPackageReview: async (...args) => { calls.push(["decide", ...args]); },
         getAgentPackageReviewAudit: async (...args) => { calls.push(["audit", ...args]); return []; },
+        getAgentPackageRuntimeStatus: async (...args) => { calls.push(["runtime", ...args]); return { denied: true, complete: false, outstanding: 2 }; },
         activateAgentPackageVersion: async (...args) => { calls.push(["activate", ...args]); },
         getAgentPackageActivationAudit: async (...args) => { calls.push(["activationAudit", ...args]); return []; },
         getSessionAgentPackageBinding: async (...args) => { calls.push(["binding", ...args]); return null; },
@@ -21,7 +22,7 @@ function fixture() {
 for (const role of ["user", "anonymous", null]) {
     test(`review surface rejects ${role} despite forged body isAdmin and ownership dark launch`, async () => {
         const { runtime, calls } = fixture();
-        for (const method of ["listAgentPackageReviews", "decideAgentPackageReview", "getAgentPackageReviewAudit",
+        for (const method of ["listAgentPackageReviews", "decideAgentPackageReview", "getAgentPackageReviewAudit", "getAgentPackageRuntimeStatus",
             "activateAgentPackageVersion", "getAgentPackageActivationAudit", "getSessionAgentPackageBinding", "rebindSessionAgentPackage"]) {
             await assert.rejects(runtime.call(method, {
                 isAdmin: true, owner: { provider: "entra", subject: "admin" },
@@ -60,13 +61,23 @@ test("admin role without authenticated principal cannot decide executable trust"
 test("cluster-scoped administrator cannot use global package review, activation or rebind authority", async () => {
     const { runtime, calls } = fixture();
     runtime.authz.adminScope = "cluster";
-    for (const method of ["listAgentPackageReviews", "decideAgentPackageReview", "getAgentPackageReviewAudit",
+    for (const method of ["listAgentPackageReviews", "decideAgentPackageReview", "getAgentPackageReviewAudit", "getAgentPackageRuntimeStatus",
         "activateAgentPackageVersion", "getAgentPackageActivationAudit", "getSessionAgentPackageBinding", "rebindSessionAgentPackage"]) {
         await assert.rejects(runtime.call(method, { input: { isAdmin: true } }, {
             principal: { provider: "entra", subject: "cluster-admin" }, authorization: { role: "admin" },
         }), /administrator/i);
     }
     assert.deepEqual(calls, []);
+});
+
+test("runtime fencing status forwards only exact identity and authenticated fleet-admin authority", async () => {
+    const { runtime, calls } = fixture();
+    const input = { packageId: "deleted-package", versionId: "old-version", sha256: "a".repeat(64) };
+    const result = await runtime.call("getAgentPackageRuntimeStatus", { input: { ...input, isAdmin: true, actor: "forged" } }, {
+        principal: { provider: "entra", subject: "real-admin" }, authorization: { role: "admin" },
+    });
+    assert.deepEqual(result, { denied: true, complete: false, outstanding: 2 });
+    assert.deepEqual(calls, [["runtime", input, { provider: "entra", subject: "real-admin", email: null, displayName: null }, true]]);
 });
 
 test("server admin identity is forwarded; client actor/admin flags are discarded and no fencing completion is claimed", async () => {
