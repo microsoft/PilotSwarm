@@ -613,6 +613,8 @@ describe("canvas app registry: CMS procedures", () => {
                     const connect = async () => {
                         const client = new pg.Client({ connectionString: env.store });
                         clients.push(client);
+                        // A connection error while idle is surfaced, never an unhandled event.
+                        client.on("error", (error) => { closeErrors.push(error); });
                         await client.connect();
                         return client;
                     };
