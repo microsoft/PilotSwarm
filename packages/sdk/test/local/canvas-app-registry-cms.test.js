@@ -583,46 +583,85 @@ describe("canvas app registry: CMS procedures", () => {
                 const target = { name, scope: "user" };
                 const pending = await publish(store, V.alice, name, "d".repeat(64), { version: "1.0.0", leavePending: true });
                 // Each operation runs through the PUBLIC CanvasAppStore, each on
-                // its own dedicated connection (a one-connection pool), so the
-                // barrier can follow each backend by its PID. Fresh connections
-                // carry no session lock_timeout from earlier work.
-                const lane = async () => {
-                    const pool = new pg.Pool({ connectionString: env.store, max: 1 });
-                    const client = await pool.connect();
-                    const pid = client.processID;
-                    client.release();
-                    return { pool, pid, store: new CanvasAppStore(pool, env.cmsSchema) };
-                };
-                const [laneA, laneB] = [await lane(), await lane()];
-                const holder = new pg.Client({ connectionString: env.store });
-                await holder.connect();
+                // its own dedicated connection (a one-connection pool that never
+                // retires its idle backend), so the barrier can follow each
+                // backend by its PID. Fresh connections carry no session
+                // lock_timeout from earlier work.
+                const lanes = [];
+                const clients = [];
+                const started = [];
+                const closeErrors = [];
+                let failure = null;
+                let results;
                 // Settle every operation immediately: no rejection can escape.
                 const settle = (promise) => promise.then((value) => ({ status: "fulfilled", value }), (reason) => ({ status: "rejected", reason }));
-                let results;
                 try {
+                    const lane = async () => {
+                        const entry = { pool: new pg.Pool({ connectionString: env.store, max: 1, idleTimeoutMillis: 0 }), pid: null, acquiredPid: null };
+                        lanes.push(entry);
+                        // An idle backend lost to the server is surfaced, never an unhandled event.
+                        entry.pool.on("error", (error) => { closeErrors.push(error); });
+                        entry.store = new CanvasAppStore(entry.pool, env.cmsSchema);
+                        const client = await entry.pool.connect();
+                        entry.pid = client.processID;
+                        client.release();
+                        entry.pool.on("acquire", (acquired) => { entry.acquiredPid = acquired.processID; });
+                        return entry;
+                    };
+                    const laneA = await lane();
+                    const laneB = await lane();
+                    const connect = async () => {
+                        const client = new pg.Client({ connectionString: env.store });
+                        clients.push(client);
+                        await client.connect();
+                        return client;
+                    };
+                    const holder = await connect();
+                    // pg_stat_activity is frozen for the rest of a transaction once
+                    // read, so the waits are observed from a separate autocommit
+                    // connection, never from the holder's open transaction.
+                    const observer = await connect();
                     await holder.query("BEGIN");
                     await holder.query(`SELECT 1 FROM "${env.cmsSchema}".canvas_apps WHERE app_id = $1 FOR UPDATE`, [pending.appId]);
-                    const waitingOnLock = async (pid) => {
+                    const waitingOnLock = async (lane) => {
                         for (let i = 0; i < 2000; i++) {
-                            const { rows } = await holder.query(`SELECT wait_event_type FROM pg_stat_activity WHERE pid = $1`, [pid]);
-                            if (rows[0]?.wait_event_type === "Lock") return;
+                            if (lane.acquiredPid !== null) {
+                                assertEqual(lane.acquiredPid, lane.pid, `${order}: the operation runs on the observed backend`);
+                                const { rows } = await observer.query(`SELECT wait_event_type FROM pg_stat_activity WHERE pid = $1`, [lane.pid]);
+                                if (rows[0]?.wait_event_type === "Lock") return;
+                            }
                             await new Promise((resolve) => setImmediate(resolve));
                         }
-                        throw new Error(`backend ${pid} never waited on the app lock`);
+                        throw new Error(`${order}: backend ${lane.pid} never waited on the app lock`);
                     };
-                    const run = (lane, op) => settle(op === "abort" ? lane.store.abort(pending.versionId) : lane.store.commit(pending.versionId, true));
+                    const run = (lane, op) => {
+                        const operation = settle(op === "abort" ? lane.store.abort(pending.versionId) : lane.store.commit(pending.versionId, true));
+                        started.push(operation);
+                        return operation;
+                    };
                     const [firstOp, secondOp] = order === "abort-first" ? ["abort", "commit"] : ["commit", "abort"];
                     const first = run(laneA, firstOp);
-                    await waitingOnLock(laneA.pid);
+                    await waitingOnLock(laneA);
                     const second = run(laneB, secondOp);
-                    await waitingOnLock(laneB.pid);
+                    await waitingOnLock(laneB);
                     await holder.query("COMMIT");
                     results = await Promise.all([first, second]);
+                } catch (error) {
+                    failure = error;
                 } finally {
-                    await holder.end().catch(() => {});
-                    await laneA.pool.end().catch(() => {});
-                    await laneB.pool.end().catch(() => {});
+                    // Ending the holder releases the lock if the barrier failed,
+                    // so every started operation can settle before its pool closes.
+                    for (const client of clients) {
+                        try { await client.end(); } catch (error) { closeErrors.push(error); }
+                    }
+                    await Promise.all(started);
+                    for (const entry of lanes) {
+                        try { await entry.pool.end(); } catch (error) { closeErrors.push(error); }
+                    }
                 }
+                if (failure && closeErrors.length) throw new AggregateError([failure, ...closeErrors], `${order}: the barrier failed and cleanup failed`);
+                if (failure) throw failure;
+                if (closeErrors.length) throw new AggregateError(closeErrors, `${order}: cleanup failed`);
                 const row = (await withPg(env, (client) => client.query(
                     `SELECT a.active_version_id, v.version_id, v.state FROM "${env.cmsSchema}".canvas_apps a LEFT JOIN "${env.cmsSchema}".canvas_app_versions v ON v.version_id = a.active_version_id WHERE a.app_id = $1`,
                     [pending.appId]))).rows[0];
@@ -631,13 +670,15 @@ describe("canvas app registry: CMS procedures", () => {
                     assertEqual(row.state, "ready", `${order}: the active version is ready`);
                 }
                 if (order === "abort-first") {
-                    assertEqual(results[0].status === "fulfilled" && results[0].value, true, "abort won");
+                    assertEqual(results[0].status, "fulfilled", `abort is not refused: ${results[0].reason?.message ?? ""}`);
+                    assertEqual(results[0].value, true, "abort won");
                     assertEqual(results[1].status, "rejected", "the commit after it is refused");
                     assertEqual(results[1].reason?.code, "NOT_FOUND");
                     assertEqual(row.active_version_id, null, "nothing is active");
                 } else {
                     assertEqual(results[0].status, "fulfilled", `commit won: ${results[0].reason?.message ?? ""}`);
-                    assertEqual(results[1].status === "fulfilled" && results[1].value, false, "abort after commit removes nothing");
+                    assertEqual(results[1].status, "fulfilled", `abort after commit is not refused: ${results[1].reason?.message ?? ""}`);
+                    assertEqual(results[1].value, false, "abort after commit removes nothing");
                     assertEqual(await activeVersion(store, V.alice, target), "1.0.0");
                 }
             }
