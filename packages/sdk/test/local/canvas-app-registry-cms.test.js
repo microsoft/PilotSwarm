@@ -114,7 +114,7 @@ describe("canvas app registry: CMS procedures", () => {
             assertEqual(first.status, "reserved");
             assertEqual(first.version, "1.0.0");
             assert(first.appCreated, "first publish creates the app");
-            assertEqual(first.artifactFilename, `${name}@1.0.0.sha-1.${first.versionId}.html`, "one object per reservation");
+            assertEqual(first.artifactFilename, `${first.versionId}.sha-1.html`, "one fixed-length object per reservation");
 
             const second = await publish(store, V.alice, name, "sha-2");
             assertEqual(second.version, "1.0.1", "auto patch bump of the latest");
@@ -663,71 +663,92 @@ describe("canvas app registry: CMS procedures", () => {
         }
     });
 
-    it("concurrent pruners take app locks in one order: no deadlock, nothing ready is claimed", { timeout: TIMEOUT }, async () => {
+    it("a pruner takes app locks in app-id order, not candidate order: it holds no later app while waiting on an earlier one", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
         const catalog = await createCatalog(env);
         await registerUsers(env);
         try {
             const store = catalog.canvasApps;
-            const a = `prA-${randomUUID().slice(0, 8)}`;
-            const b = `prB-${randomUUID().slice(0, 8)}`;
-            // Pending rows across two apps, created in the order A1, B1, A2.
-            const a1 = await publish(store, V.alice, a, "a".repeat(64), { version: "1.0.0", leavePending: true });
-            const b1 = await publish(store, V.alice, b, "b".repeat(64), { version: "1.0.0", leavePending: true });
-            const a2 = await publish(store, V.alice, a, "c".repeat(64), { version: "2.0.0", leavePending: true });
+            const x = await publish(store, V.alice, `prX-${randomUUID().slice(0, 8)}`, "a".repeat(64), { version: "1.0.0", leavePending: true });
+            const y = await publish(store, V.alice, `prY-${randomUUID().slice(0, 8)}`, "b".repeat(64), { version: "1.0.0", leavePending: true });
+            const [first, last] = [x, y].sort((p, q) => (p.appId < q.appId ? -1 : 1));
+            // Candidate order (created_at) is the REVERSE of app-id order:
+            // the app that sorts last has the older stale version.
             await withPg(env, (client) => client.query(
-                `UPDATE "${env.cmsSchema}".canvas_app_versions SET created_at = now() - INTERVAL '2 hours' + (CASE version_id WHEN $1 THEN 0 WHEN $2 THEN 1 ELSE 2 END) * INTERVAL '1 second' WHERE version_id IN ($1, $2, $3)`,
-                [a1.versionId, b1.versionId, a2.versionId]));
+                `UPDATE "${env.cmsSchema}".canvas_app_versions SET created_at = CASE version_id WHEN $1 THEN now() - INTERVAL '3 hours' ELSE now() - INTERVAL '2 hours' END WHERE version_id IN ($1, $2)`,
+                [last.versionId, first.versionId]));
             const cutoff = new Date(Date.now() - 60 * 60 * 1000);
             const holder = new pg.Client({ connectionString: env.store });
+            const probe = new pg.Client({ connectionString: env.store });
             await holder.connect();
-            let results;
+            await probe.connect();
+            let pruned;
             try {
-                const lockWaiters = async () => Number((await holder.query(
-                    `SELECT count(*)::int AS n FROM pg_stat_activity
-                      WHERE datname = current_database() AND wait_event_type = 'Lock'
-                        AND pid <> pg_backend_pid() AND position($1 in query) > 0`, [env.cmsSchema])).rows[0].n);
-                const waitForWaiters = async (n) => {
-                    for (let i = 0; i < 200; i++) {
-                        if (await lockWaiters() >= n) return;
-                        await new Promise((resolve) => setTimeout(resolve, 25));
-                    }
-                    throw new Error(`expected ${n} lock waiter(s)`);
-                };
-                // Hold the app that sorts last; pruner 1 takes the other app
-                // first and then waits for this one while holding it.
-                const last = [a1.appId, b1.appId].sort().at(-1);
+                // Hold the app that sorts FIRST, so the pruner must wait for it.
                 await holder.query("BEGIN");
-                await holder.query(`SELECT 1 FROM "${env.cmsSchema}".canvas_apps WHERE app_id = $1 FOR UPDATE`, [last]);
-                const p1 = store.prunePending(cutoff);
-                await waitForWaiters(1);
-                // The candidate snapshot changes: A1 tries to commit, a second pruner starts.
-                const commitA1 = store.commit(a1.versionId, true);
-                await waitForWaiters(2);
-                const p2 = store.prunePending(cutoff);
-                await waitForWaiters(3);
+                await holder.query(`SELECT 1 FROM "${env.cmsSchema}".canvas_apps WHERE app_id = $1 FOR UPDATE`, [first.appId]);
+                pruned = store.prunePending(cutoff);
+                // The pruner's own backend, waiting on a lock in this schema.
+                let waiting = false;
+                for (let i = 0; i < 200 && !waiting; i++) {
+                    const rows = (await probe.query(
+                        `SELECT pid FROM pg_stat_activity WHERE datname = current_database() AND wait_event_type = 'Lock'
+                            AND position($1 in query) > 0 AND position('cms_canvas_app_prune_pending' in query) > 0`, [env.cmsSchema])).rows;
+                    waiting = rows.length === 1;
+                    if (!waiting) await new Promise((resolve) => setTimeout(resolve, 25));
+                }
+                assert(waiting, "the pruner is waiting on the first app");
+                // While it waits, the LATER app is free: the pruner has not
+                // taken it first (candidate order would have).
+                await probe.query("BEGIN");
+                const free = await probe.query(`SELECT 1 FROM "${env.cmsSchema}".canvas_apps WHERE app_id = $1 FOR UPDATE NOWAIT`, [last.appId]).then(() => true, (error) => error.code);
+                await probe.query("ROLLBACK");
+                assertEqual(free, true, "the later app is not held by the waiting pruner (55P03 would mean candidate order)");
                 await holder.query("COMMIT");
-                results = await Promise.allSettled([p1, commitA1, p2]);
+                const claimed = await pruned;
+                assertEqual(claimed.filter((c) => c.versionId === first.versionId || c.versionId === last.versionId).length, 2, "both claimed once the lock is free");
             } finally {
                 await holder.end().catch(() => {});
+                await probe.end().catch(() => {});
             }
-            for (const [i, label] of [[0, "pruner 1"], [2, "pruner 2"]]) {
-                assertEqual(results[i].status, "fulfilled", `${label} settled: ${results[i].reason?.code ?? ""} ${results[i].reason?.message ?? ""}`);
-            }
-            const states = (await withPg(env, (client) => client.query(
-                `SELECT version_id, state FROM "${env.cmsSchema}".canvas_app_versions WHERE version_id IN ($1, $2, $3)`,
-                [a1.versionId, b1.versionId, a2.versionId]))).rows;
-            const stateOf = Object.fromEntries(states.map((r) => [r.version_id, r.state]));
-            if (results[1].status === "fulfilled") {
-                assertEqual(stateOf[a1.versionId], "ready", "a commit that won stays ready");
-                assert(!results[2].value.some((r) => r.versionId === a1.versionId), "and is never claimed");
-            } else {
-                assertEqual(results[1].reason?.code, "ABORTED", "a commit that lost to the claim is refused");
-                assertEqual(stateOf[a1.versionId], "cleanup");
-            }
-            assertEqual(stateOf[b1.versionId], "cleanup");
-            assertEqual(stateOf[a2.versionId], "cleanup");
-            assert(results[2].value.some((r) => r.versionId === b1.versionId) && results[2].value.some((r) => r.versionId === a2.versionId), "every claimed leftover stays listed for recovery");
+            // Two pruners at once settle (no 40P01) and claim nothing twice.
+            const z = await publish(store, V.alice, `prZ-${randomUUID().slice(0, 8)}`, "c".repeat(64), { version: "1.0.0", leavePending: true });
+            await withPg(env, (client) => client.query(`UPDATE "${env.cmsSchema}".canvas_app_versions SET created_at = now() - INTERVAL '2 hours' WHERE version_id = $1`, [z.versionId]));
+            const both = await Promise.allSettled([store.prunePending(cutoff), store.prunePending(cutoff)]);
+            for (const r of both) assertEqual(r.status, "fulfilled", `settled: ${r.reason?.code ?? ""} ${r.reason?.message ?? ""}`);
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    it("pending pruning claims at most 1,000 stale versions per call, even when one app owns more", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const catalog = await createCatalog(env);
+        await registerUsers(env);
+        try {
+            const store = catalog.canvasApps;
+            const name = `bulk-${randomUUID().slice(0, 8)}`;
+            const ready = await publish(store, V.alice, name, "f".repeat(64), { version: "0.1.0" });
+            await withPg(env, (client) => client.query(
+                `INSERT INTO "${env.cmsSchema}".canvas_app_versions
+                    (version_id, app_id, version, precedence_key, state, sha256, size_bytes, artifact_filename, created_at)
+                 SELECT gen_random_uuid()::text, $1, '1.0.' || g, "${env.cmsSchema}".cms_canvas_app_precedence_key('1.0.' || g),
+                        'pending', lpad(to_hex(g), 64, '0'), 100, 'stale-' || g || '.html', now() - INTERVAL '2 hours'
+                   FROM generate_series(1, 1001) g`, [ready.appId]));
+            const cutoff = new Date(Date.now() - 60 * 60 * 1000);
+            const counts = async () => Object.fromEntries((await withPg(env, (client) => client.query(
+                `SELECT state, count(*)::int AS n FROM "${env.cmsSchema}".canvas_app_versions WHERE app_id = $1 GROUP BY state`, [ready.appId]))).rows.map((r) => [r.state, r.n]));
+            const firstCall = await store.prunePending(cutoff);
+            assertEqual(firstCall.length, 1000);
+            const after1 = await counts();
+            assertEqual(after1.cleanup, 1000, "exactly 1,000 versions changed state");
+            assertEqual(after1.pending, 1, "the rest stays pending for the next call");
+            assertEqual(after1.ready, 1, "the ready version is untouched");
+            await store.prunePending(cutoff);
+            const after2 = await counts();
+            assertEqual(after2.cleanup, 1001, "the next call claims the remainder");
+            assertEqual(after2.pending, undefined);
+            assertEqual(after2.ready, 1);
         } finally {
             await catalog.close();
         }

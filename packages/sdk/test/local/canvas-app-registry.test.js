@@ -530,6 +530,25 @@ describe("canvas app registry: service", () => {
         }
     });
 
+    it("reservation object keys stay short and filesystem-safe for the longest accepted name and version", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const { catalog, deps } = await setup(env);
+        try {
+            const name = `car-long-${env.runId}-`.padEnd(64, "x").slice(0, 64);
+            const version = `1.0.0+${"x".repeat(116)}`;
+            const html = page(name);
+            const published = await publishCanvasAppHtml(deps, { html, name, viewer: V.alice, version });
+            assertEqual(published.status, "published");
+            const read = await readCanvasAppHtml(deps, { name }, V.alice, version);
+            assertEqual(read.html, html, "exact read-back");
+            const filename = read.resolved.artifactFilename;
+            assert(Buffer.byteLength(`${filename}.meta.json.tmp`) < 100, `the stored name is short: ${filename}`);
+            assert(!filename.includes(version) && filename.startsWith(read.resolved.versionId), "named after the reservation, not the version text");
+        } finally {
+            await catalog.close();
+        }
+    });
+
     it("a failed read-back removes the uploaded bytes, or keeps the pending row as the cleanup record until they are gone", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
         const { catalog, deps } = await setup(env);
