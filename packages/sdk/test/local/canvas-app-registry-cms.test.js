@@ -15,6 +15,7 @@ import { useSuiteEnv } from "../helpers/local-env.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
 import { compareSemver } from "../../src/agent-package-format.ts";
+import { CanvasAppStore } from "../../src/canvas-app-store.ts";
 
 const TIMEOUT = 120_000;
 const getEnv = useSuiteEnv(import.meta.url);
@@ -326,7 +327,16 @@ describe("canvas app registry: CMS procedures", () => {
             // longer move the pointer.
             const resumed = `ca-imp-resume-${env.runId}`;
             const r1 = await publish(store, V.alice, resumed, "sha-r1", { version: "1.0.0", mode: "import", leavePending: true });
-            await store.prunePending(new Date(Date.now() + 60_000));
+            // The pruner's protocol: claim (pending -> cleanup), delete the bytes
+            // (the service's step; there are none here), then abort the row.
+            const claimed = await store.prunePending(new Date(Date.now() + 60_000));
+            assert(claimed.some((c) => c.versionId === r1.versionId), "the interrupted import's version is claimed");
+            const stateOf = async (id) => (await withPg(env, (client) => client.query(`SELECT state FROM "${env.cmsSchema}".canvas_app_versions WHERE version_id = $1`, [id]))).rows[0]?.state ?? null;
+            assertEqual(await stateOf(r1.versionId), "cleanup");
+            assertEqual(await activeVersion(store, V.alice, { name: resumed }), null, "a claimed version is never active");
+            await expectCode(publish(store, V.alice, resumed, "sha-r1", { version: "1.0.0", mode: "import" }), "BUSY");
+            assertEqual(await store.abort(r1.versionId), true, "the pruner removes the claimed row once its bytes are gone");
+            assertEqual(await stateOf(r1.versionId), null);
             await publish(store, V.alice, resumed, "sha-r1", { version: "1.0.0", mode: "import" });
             await publish(store, V.alice, resumed, "sha-r2", { version: "2.0.0", mode: "import" });
             assertEqual(await activeVersion(store, V.alice, { name: resumed }), "2.0.0", "resumed first import activates its highest version");
@@ -572,35 +582,46 @@ describe("canvas app registry: CMS procedures", () => {
                 const name = `race-${order}-${randomUUID().slice(0, 8)}`;
                 const target = { name, scope: "user" };
                 const pending = await publish(store, V.alice, name, "d".repeat(64), { version: "1.0.0", leavePending: true });
-                // Barrier: hold the app row lock in a separate transaction,
-                // queue both operations behind it, then release.
+                // Each operation runs through the PUBLIC CanvasAppStore, each on
+                // its own dedicated connection (a one-connection pool), so the
+                // barrier can follow each backend by its PID. Fresh connections
+                // carry no session lock_timeout from earlier work.
+                const lane = async () => {
+                    const pool = new pg.Pool({ connectionString: env.store, max: 1 });
+                    const client = await pool.connect();
+                    const pid = client.processID;
+                    client.release();
+                    return { pool, pid, store: new CanvasAppStore(pool, env.cmsSchema) };
+                };
+                const [laneA, laneB] = [await lane(), await lane()];
                 const holder = new pg.Client({ connectionString: env.store });
                 await holder.connect();
+                // Settle every operation immediately: no rejection can escape.
+                const settle = (promise) => promise.then((value) => ({ status: "fulfilled", value }), (reason) => ({ status: "rejected", reason }));
                 let results;
                 try {
                     await holder.query("BEGIN");
                     await holder.query(`SELECT 1 FROM "${env.cmsSchema}".canvas_apps WHERE app_id = $1 FOR UPDATE`, [pending.appId]);
-                    // Each operation is queued only once the previous one is
-                    // observed waiting on that lock (no timing guesses).
-                    const lockWaiters = async () => Number((await holder.query(
-                        `SELECT count(*)::int AS n FROM pg_stat_activity
-                          WHERE datname = current_database() AND wait_event_type = 'Lock'
-                            AND pid <> pg_backend_pid() AND position($1 in query) > 0`, [env.cmsSchema])).rows[0].n);
-                    const waitForWaiters = async (n) => {
-                        for (let i = 0; i < 200; i++) {
-                            if (await lockWaiters() >= n) return;
-                            await new Promise((resolve) => setTimeout(resolve, 25));
+                    const waitingOnLock = async (pid) => {
+                        for (let i = 0; i < 2000; i++) {
+                            const { rows } = await holder.query(`SELECT wait_event_type FROM pg_stat_activity WHERE pid = $1`, [pid]);
+                            if (rows[0]?.wait_event_type === "Lock") return;
+                            await new Promise((resolve) => setImmediate(resolve));
                         }
-                        throw new Error(`expected ${n} lock waiter(s) on canvas_apps`);
+                        throw new Error(`backend ${pid} never waited on the app lock`);
                     };
-                    const first = order === "abort-first" ? store.abort(pending.versionId) : store.commit(pending.versionId, true);
-                    await waitForWaiters(1);
-                    const second = order === "abort-first" ? store.commit(pending.versionId, true) : store.abort(pending.versionId);
-                    await waitForWaiters(2);
+                    const run = (lane, op) => settle(op === "abort" ? lane.store.abort(pending.versionId) : lane.store.commit(pending.versionId, true));
+                    const [firstOp, secondOp] = order === "abort-first" ? ["abort", "commit"] : ["commit", "abort"];
+                    const first = run(laneA, firstOp);
+                    await waitingOnLock(laneA.pid);
+                    const second = run(laneB, secondOp);
+                    await waitingOnLock(laneB.pid);
                     await holder.query("COMMIT");
-                    results = await Promise.allSettled([first, second]);
+                    results = await Promise.all([first, second]);
                 } finally {
                     await holder.end().catch(() => {});
+                    await laneA.pool.end().catch(() => {});
+                    await laneB.pool.end().catch(() => {});
                 }
                 const row = (await withPg(env, (client) => client.query(
                     `SELECT a.active_version_id, v.version_id, v.state FROM "${env.cmsSchema}".canvas_apps a LEFT JOIN "${env.cmsSchema}".canvas_app_versions v ON v.version_id = a.active_version_id WHERE a.app_id = $1`,
@@ -615,7 +636,7 @@ describe("canvas app registry: CMS procedures", () => {
                     assertEqual(results[1].reason?.code, "NOT_FOUND");
                     assertEqual(row.active_version_id, null, "nothing is active");
                 } else {
-                    assertEqual(results[0].status, "fulfilled", "commit won");
+                    assertEqual(results[0].status, "fulfilled", `commit won: ${results[0].reason?.message ?? ""}`);
                     assertEqual(results[1].status === "fulfilled" && results[1].value, false, "abort after commit removes nothing");
                     assertEqual(await activeVersion(store, V.alice, target), "1.0.0");
                 }

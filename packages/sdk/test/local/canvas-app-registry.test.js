@@ -265,7 +265,7 @@ describe("canvas app registry: service", () => {
             const near = await exportCanvasApp(deps, { name }, V.alice);
             for (let i = 48; i < 52; i++) await publish(i);
             const refused = await expectCode(exportCanvasApp(deps, { name }, V.alice), "BAD_REQUEST");
-            assert(/an import would refuse/.test(refused.message), `refused for the expanded budget: ${refused.message}`);
+            assert(/more than the 41943040 an import accepts/.test(refused.message), `refused for the expanded budget: ${refused.message}`);
             // The near-limit export it did produce imports back, every version.
             await deleteCanvasApp(deps, { name }, V.alice);
             const imported = await importCanvasApp(deps, near.bytes, V.bob);
