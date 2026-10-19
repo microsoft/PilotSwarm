@@ -5567,7 +5567,7 @@ export class PilotSwarmManagementClient {
         const html = await deps.artifactStore.downloadArtifactText(sessionId, canvasArtifactFilename(slot));
         if (checkOnly) return checkCanvasAppPublish(html, latest.responseContract);
         const result = await publishCanvasAppHtml(deps, {
-            html, name: args?.name, scope: args?.scope === "shared" ? "shared" : "user",
+            html, name: String(args?.name ?? ""), scope: args?.scope === "shared" ? "shared" : "user",
             version: args?.version ?? null, description: args?.description ?? null, tags: args?.tags ?? null,
             responseContract: latest.responseContract, viewer: this._canvasViewer(owner, resourceAdmin),
             sourceSessionId: sessionId, sourceSlot: slot, createdBy: owner ? `${owner.provider}:${owner.subject}` : null,

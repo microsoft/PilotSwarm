@@ -6,17 +6,18 @@
 // canvasAppRegistry), so each write a click makes is proven at the API, and
 // the manifest check is proven to send checkOnly and nothing else.
 //
+// The phone case is canvas-apps-admin-phone.spec.mjs: a device emulation
+// must be set for the whole file (Playwright forbids it in a describe).
+//
 // Not covered here: the TUI (tui/test/admin-canvas-apps.test.mjs), the real
 // registry's authorization (SDK canvas-app-portal-ops.test.js), and the
 // Admin Console on a phone, which is desktop-only by design
 // (toolbar-groups-mobile.spec.mjs).
-import { createHash } from "node:crypto";
-import { test, expect, devices } from "@playwright/test";
+import { test, expect } from "@playwright/test";
 import { startStubServer, makeCanvasApp } from "./stub-server.mjs";
+import { drawOwnCanvas, publishFlow } from "./canvas-apps-fixtures.mjs";
 
 const OTHER = { provider: "none", subject: "bob" };
-const sessionId = "11111110-2222-3333-4444-555555555550";
-const sha256 = (text) => createHash("sha256").update(text, "utf8").digest("hex");
 
 function seed() {
     return [
@@ -209,42 +210,6 @@ test.describe("desktop: a long list scrolls in its section and keeps the selecti
     });
 });
 
-/** A drawn canvas the active session owns, served by route. */
-async function drawOwnCanvas(page, base) {
-    const html = "<!doctype html><!-- CANVAS-APP-MANIFEST {\"name\":\"Team-Board\",\"interface\":{\"keys\":[],\"requests\":[],\"events\":[]}} --><p>board</p>";
-    await page.route("**/api/v1/**", async (route) => {
-        const url = new URL(route.request().url());
-        if (url.pathname.endsWith("/events-before") && url.search.includes("session.canvas_updated")) {
-            return route.fulfill({ json: { ok: true, result: [{ seq: 1, eventType: "session.canvas_updated", data: { slot: 1, rev: 1, sizeBytes: Buffer.byteLength(html, "utf8"), name: "board", trust: "owner", pageSha256: sha256(html) } }] } });
-        }
-        if (url.pathname.endsWith("/artifacts/canvas.html/download")) return route.fulfill({ contentType: "text/html", body: html });
-        return route.fallback();
-    });
-    await page.goto(`${base}/?session=${sessionId}`);
-    const show = page.getByRole("button", { name: "Show canvas", exact: true });
-    await show.or(page.getByRole("button", { name: "Hide the canvas", exact: true })).first().waitFor();
-    if (await show.isVisible()) await show.click();
-}
-
-async function publishFlow(page, stub) {
-    const button = page.getByRole("button", { name: "Publish as app" }).first();
-    await expect(button).toBeVisible();
-    await button.click();
-    const dialog = page.locator("form.ps-canvas-publish");
-    await expect(dialog.locator(".ps-canvas-publish__check")).toContainText("Manifest check passed");
-    // The check is the only call so far, and it is checkOnly.
-    expect(stub.canvasAppCalls).toEqual([expect.objectContaining({ op: "publishCanvasApp", sessionId, slot: 1, checkOnly: true })]);
-    await expect(dialog.getByRole("textbox", { name: "Name" })).toHaveValue("team-board");
-    await expect(dialog.getByRole("textbox", { name: /Version/ })).toHaveValue("1.4.0");
-    await expect(dialog.getByRole("textbox", { name: /Tags/ })).toHaveValue("team, board");
-    await dialog.getByRole("radio", { name: /Shared/ }).check();
-    await dialog.getByRole("button", { name: "Publish", exact: true }).click();
-    await expect(dialog).toContainText("Published team-board@1.4.0 (shared)");
-    expect(stub.canvasAppCalls[1]).toMatchObject({ op: "publishCanvasApp", sessionId, slot: 1, name: "team-board", scope: "shared", version: "1.4.0", tags: ["team", "board"] });
-    expect(stub.canvasAppCalls[1].checkOnly).toBeUndefined();
-    return dialog;
-}
-
 test.describe("desktop: Publish as app", () => {
     let stub;
     test.beforeEach(async () => { stub = await startStubServer(0, { sessionCount: 1, canvasApps: [] }); });
@@ -253,22 +218,5 @@ test.describe("desktop: Publish as app", () => {
     test("the owner checks then publishes from the canvas toolbar", async ({ page }) => {
         await drawOwnCanvas(page, `http://127.0.0.1:${stub.port}`);
         await publishFlow(page, stub);
-    });
-});
-
-test.describe("phone: Publish as app", () => {
-    test.use({ ...devices["iPhone 14 Pro"] });
-    let stub;
-    test.beforeEach(async () => { stub = await startStubServer(0, { sessionCount: 1, canvasApps: [] }); });
-    test.afterEach(async () => { await new Promise((resolve) => stub.server.close(resolve)); });
-
-    test("the button is in the canvas strip and the dialog fits the screen", async ({ page }) => {
-        await drawOwnCanvas(page, `http://127.0.0.1:${stub.port}`);
-        const dialog = await publishFlow(page, stub);
-        const fit = await dialog.evaluate((el) => {
-            const r = el.getBoundingClientRect();
-            return r.left >= 0 && r.right <= window.innerWidth + 1;
-        });
-        expect(fit).toBe(true);
     });
 });
