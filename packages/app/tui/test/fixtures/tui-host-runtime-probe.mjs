@@ -95,6 +95,9 @@ mock.module("pilotswarm/ui-core", {
     namedExports: {
         appReducer() {},
         createInitialState: () => ({ ui: {}, sessions: {} }),
+        // The host reads and writes the per-viewer Admin tree state
+        // (tui/src/admin-tree-config.js).
+        normalizeStoredAdminCollapsed: (value) => (Array.isArray(value) ? value.filter((id) => typeof id === "string") : []),
         createStore: (_reducer, state) => ({
             getState: () => state,
             subscribe() {},
