@@ -19,7 +19,8 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { OPERATIONS } from "../../api/src/protocol.js";
 
-const read = (rel) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
+// Windows checkouts may convert line endings; the patterns below assume LF.
+const read = (rel) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8").replace(/\r\n/g, "\n");
 const DIRECT = read("../../src/management-client.ts");
 const WEB = read("../../src/web/web-management-client.ts");
 const HTTP = read("../../api/src/http-api-transport.js");

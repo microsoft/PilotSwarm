@@ -11,7 +11,8 @@ import { fileURLToPath } from "node:url";
 import { BASE_V2_PROMPT_VERSION, BASE_V2_PROMPT_SHA256 } from "../../dist/base-agent-policy.js";
 
 test("the base V2 prompt's bytes match its recorded version", () => {
-    const text = readFileSync(fileURLToPath(new URL("../../plugins/system/prompts/base-v2.md", import.meta.url)), "utf8").trim();
+    // The recorded hash is of LF text; a Windows checkout may use CRLF.
+    const text = readFileSync(fileURLToPath(new URL("../../plugins/system/prompts/base-v2.md", import.meta.url)), "utf8").replace(/\r\n/g, "\n").trim();
     const sha = createHash("sha256").update(text).digest("hex");
     assert.equal(sha, BASE_V2_PROMPT_SHA256,
         `base-v2.md changed: bump BASE_V2_PROMPT_VERSION (now ${BASE_V2_PROMPT_VERSION}) and set BASE_V2_PROMPT_SHA256 to ${sha}`);
