@@ -293,8 +293,10 @@ export function selectCanvasPublishDialog(state) {
 
 /**
  * Whether the canvas toolbar offers "Publish as app" (R25): to the active
- * session's owner only. With no sign-in (a local single-user portal) the
- * viewer owns the ownerless sessions it created.
+ * session's owner, signed in. A canvas app needs a signed-in owner (the
+ * registry refuses anything else with NO_OWNER), so a viewer without a
+ * principal (authentication disabled) is never offered it, whatever the
+ * session's owner.
  */
 export function selectCanvasPublishAvailable(state) {
     const sessionId = state?.sessions?.activeSessionId || null;
@@ -303,7 +305,6 @@ export function selectCanvasPublishAvailable(state) {
     if (!session || session.isGroup || session.isSystem) return false;
     const principal = state?.auth?.principal || null;
     const owner = session.owner || null;
-    if (!principal?.subject) return !owner?.subject;
-    return Boolean(owner?.subject) && owner.subject === principal.subject
-        && String(owner.provider || "") === String(principal.provider || "");
+    if (!principal?.provider || !principal?.subject || !owner?.provider || !owner?.subject) return false;
+    return owner.subject === principal.subject && String(owner.provider) === String(principal.provider);
 }

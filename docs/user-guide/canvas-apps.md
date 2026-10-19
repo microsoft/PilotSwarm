@@ -34,7 +34,8 @@ get yours unless you ask for the shared one.
 ## In the portal
 
 **Publish as app.** The canvas toolbar shows a **Publish as app** button to
-the session's owner. The dialog first checks the page (a manifest with an
+the session's owner, signed in. A portal with authentication disabled does
+not show it: a canvas app needs a signed-in owner. The dialog first checks the page (a manifest with an
 `interface` block, at most 900 KB) and fills in the name, description, tags
 and version from the manifest; nothing is written until you press
 **Publish**. Choose **Private** or **Shared**. A failed check says why, and

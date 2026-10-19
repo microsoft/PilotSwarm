@@ -316,6 +316,19 @@ export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 
 
         if (pathname.startsWith("/api/")) {
             if (registry && await registry.handle(req, res, pathname, url) !== false) return;
+            // With the registry on, the viewer is a signed-in person, the
+            // owner of the stub's sessions, as a real bootstrap reports one.
+            // Without it the stub is an authentication-disabled portal, where
+            // no canvas app can be published (an app needs a signed-in owner)
+            // and "Publish as app" is rightly not offered.
+            if (registry && /\/api\/v1\/bootstrap$/.test(pathname)) {
+                res.writeHead(200, { "content-type": "application/json" });
+                res.end(JSON.stringify({ ok: true, auth: {
+                    principal: { ...VIEWER, email: "test@example.com", displayName: "Test User", tenantId: null, groups: [] },
+                    authorization: { allowed: true, role: admin ? "admin" : "user", reason: "stub", matchedGroups: [] },
+                } }));
+                return;
+            }
             if (registry && /\/me\/profile\/settings$/.test(pathname) && req.method === "PATCH") {
                 let raw = "";
                 req.on("data", (chunk) => { raw += chunk; });

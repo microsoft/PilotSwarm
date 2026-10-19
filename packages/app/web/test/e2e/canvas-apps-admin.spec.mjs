@@ -92,9 +92,19 @@ test.describe("desktop: Admin → Canvas Apps", () => {
         const inner = page.frameLocator("iframe.ps-canvas-app-preview__frame").frameLocator("iframe");
         await expect(inner.locator("#hello")).toHaveText("Hello from notes");
         await expect(inner.locator("#hello")).toHaveAttribute("data-ran", "1");
-        // The wrapper document holds none of the page's bytes.
-        const wrapperHtml = await page.frameLocator("iframe.ps-canvas-app-preview__frame").locator("html").innerHTML();
+        // The wrapper holds none of the page's bytes, proven as in
+        // canvas-isolation.spec.mjs: its live markup up to the inner frame
+        // (whose srcdoc property reflects into the DOM) and its ORIGINAL
+        // source, as the portal created it.
+        const wrapper = await (await frame.elementHandle()).contentFrame();
+        expect(wrapper.childFrames()).toHaveLength(1);
+        const wrapperHtml = await wrapper.evaluate(() => document.documentElement.outerHTML.replace(/<iframe[\s\S]*$/i, ""));
         expect(wrapperHtml).not.toContain("Hello from notes");
+        expect(wrapperHtml).toContain("frame-src 'none'");
+        const source = await page.evaluate(async (url) => (await fetch(url)).text(), wrapper.url());
+        expect(source).not.toContain("Hello from notes");
+        expect(source).toContain("frame-src 'none'");
+        expect(source).toMatch(/setAttribute\('sandbox','allow-scripts'\)/);
     });
 
     test("actions reach the API for exactly this copy: disable, pin, share, delete", async ({ page }) => {

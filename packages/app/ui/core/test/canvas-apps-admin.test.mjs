@@ -385,15 +385,23 @@ test("an app without an interface or workspace has an empty card and no warning"
 test("Publish as app is offered to the session owner only", async () => {
     const { selectCanvasPublishAvailable } = await import("../src/index.js");
     const base = createInitialState();
-    const withSession = (owner, principal) => ({
+    const withSession = (owner, principal, role = null, extra = {}) => ({
         ...base,
-        auth: { principal, authorization: null },
-        sessions: { ...base.sessions, activeSessionId: "s1", byId: { s1: { sessionId: "s1", owner } } },
+        auth: { principal, authorization: role ? { allowed: true, role } : null },
+        sessions: { ...base.sessions, activeSessionId: "s1", byId: { s1: { sessionId: "s1", owner, ...extra } } },
     });
     const alice = { provider: "test", subject: "alice" };
     assert.equal(selectCanvasPublishAvailable(withSession(alice, alice)), true);
     assert.equal(selectCanvasPublishAvailable(withSession(alice, { provider: "test", subject: "bob" })), false);
-    assert.equal(selectCanvasPublishAvailable(withSession(null, null)), true);
+    assert.equal(selectCanvasPublishAvailable(withSession(alice, { provider: "other", subject: "alice" })), false);
+    // A signed-in admin is not the owner: not offered (R25 is the owner's).
+    assert.equal(selectCanvasPublishAvailable(withSession(alice, { provider: "test", subject: "bob" }, "admin")), false);
+    // No signed-in person (authentication disabled): a canvas app needs a
+    // signed-in owner (the registry answers NO_OWNER), so never offered.
+    assert.equal(selectCanvasPublishAvailable(withSession(null, null)), false);
     assert.equal(selectCanvasPublishAvailable(withSession(alice, null)), false);
+    assert.equal(selectCanvasPublishAvailable(withSession(alice, null, "anonymous")), false);
+    assert.equal(selectCanvasPublishAvailable(withSession(null, alice)), false);
+    assert.equal(selectCanvasPublishAvailable(withSession(alice, alice, null, { isSystem: true })), false);
     assert.equal(selectCanvasPublishAvailable({ ...base }), false);
 });
