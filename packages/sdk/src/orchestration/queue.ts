@@ -591,10 +591,11 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
 
             msg = typeof race.value === "string" ? JSON.parse(race.value) : race.value;
 
-        } else if (!state.regen && needsBlockingDequeue(runtime) && stash.length === 0) {
+        } else if (!state.regen && needsBlockingDequeue(runtime) && !stash.some((item) => item.kind !== "timer")) {
             // 1.0.82 (R10): once this pass has collected a message, the
             // 10 ms sweep below keeps collecting until the queue is empty, so
             // messages that arrived during one turn run together in the next.
+            // A fired timer alone still runs at once, at its scheduled time.
             if (i > 0) break;
             if (state.pendingInputQuestion) {
                 publishStatus(runtime, "input_required");

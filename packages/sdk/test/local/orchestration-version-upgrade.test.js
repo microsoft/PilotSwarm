@@ -254,17 +254,20 @@ describe("orchestration version upgrades", () => {
         cronSchedule: { intervalSeconds: 3600, reason: "hourly" },
     });
 
-    it("issue 192 positive control: on 1.0.81 an inherited [timer, timer, P1, P2] FIFO leaves P1 and P2 behind the hourly cron", async () => {
+    it("issue 192 positive control: on 1.0.81 an inherited [timer, timer, P1, P2] FIFO runs P1 alone and leaves P2 behind the hourly cron", async () => {
         const values = new Map();
         inheritedFifo(values);
         const turns = [];
         const ctx = createCtx(values, [], turns);
         const handler = await loadHandler("1.0.81");
         const result = driveUntilParked(handler(ctx, inheritedInput("fifo-1.0.81")), ctx);
-        expect(result.parkedOnTimerMs).toBe(3_600_000);
+        // Defect B: the timer item at the head stops the merge, so P1 runs alone.
         expect(turns).toHaveLength(1);
-        expect(turns[0][0]).toMatch(/Scheduled cron wake-up/);
-        expect(readFifo(values).filter((item) => item.kind === "prompt").map((item) => item.prompt)).toEqual(["P1", "P2"]);
+        expect(turns[0][0]).toMatch(/P1/);
+        expect(turns[0][0]).not.toMatch(/P2/);
+        // Defect A: the turn armed the hourly cron, and P2 waits behind it.
+        expect(result.parkedOnTimerMs).toBe(3_600_000);
+        expect(readFifo(values).filter((item) => item.kind === "prompt").map((item) => item.prompt)).toEqual(["P2"]);
     });
 
     it("R9: 1.0.82 drains an inherited 1.0.81 FIFO [timer, timer, P1, P2] in two turns, then waits on the cron", async () => {
