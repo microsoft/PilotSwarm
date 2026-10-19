@@ -2,7 +2,7 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import license from "rollup-plugin-license";
 import { fileURLToPath } from "node:url";
-import { canonicalRequestPath, createPortalPaths, isLegacyPortalPath, isPortalNavigationPath, renderPortalShell } from "./portal-paths.js";
+import { createPortalPaths, isLegacyPortalPath, isPortalNavigationPath, renderPortalShell } from "./portal-paths.js";
 
 // Third-party notices for everything the portal's browser bundle includes:
 // each package's name, version, license and full license text, written next
@@ -56,9 +56,9 @@ export default defineConfig(({ command }) => {
         configureServer(server) {
           server.middlewares.use((req, res, next) => {
             const rawUrl = req.url;
-            const pathname = canonicalRequestPath(rawUrl);
+            const pathname = paths.requestPath(rawUrl);
             const localPath = paths.localPath(rawUrl);
-            if (typeof rawUrl !== "string" || pathname === null || localPath === null) {
+            if (typeof rawUrl !== "string" || pathname === null || !paths.containsRequest(rawUrl)) {
               res.statusCode = pathname === null ? 400 : 404;
               res.end("Not found");
               return;
@@ -70,12 +70,12 @@ export default defineConfig(({ command }) => {
               res.end();
               return;
             }
-            if (isLegacyPortalPath(localPath)) {
+            if (localPath !== null && isLegacyPortalPath(localPath)) {
               res.statusCode = 404;
               res.end("Not found");
               return;
             }
-            if ((req.method === "GET" || req.method === "HEAD") && isPortalNavigationPath(localPath)) {
+            if (localPath !== null && (req.method === "GET" || req.method === "HEAD") && isPortalNavigationPath(localPath)) {
               req.url = `${paths.path("/index.html")}${rawUrl.slice(pathname.length)}`;
             }
             next();
