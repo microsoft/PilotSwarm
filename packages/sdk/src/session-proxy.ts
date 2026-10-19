@@ -10,7 +10,7 @@ import {
 import { extractCanvasAppManifest, canvasAppCard, normalizeCanvasResponseContract } from "./canvas-app-manifest.js";
 import { readCanvasKv, writeCanvasKv } from "./canvas-kv.js";
 import {
-    publishCanvasAppHtml, readCanvasAppHtml, deleteCanvasApp as deleteRegistryCanvasApp, classifyCanvasDraw, canvasBytesRefusal, viewerOwnsCanvasBytes, sha256Hex,
+    publishCanvasAppHtml, readCanvasAppHtml, deleteCanvasApp as deleteRegistryCanvasApp, classifyCanvasDraw, canvasBytesRefusal, viewerCanObtainCanvasBytes, sha256Hex,
     type CanvasDrawAttribution, type CanvasDrawClassification,
 } from "./canvas-app-registry.js";
 import { CanvasAppError } from "./canvas-app-store.js";
@@ -3633,7 +3633,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                                     { callerSessionId: input.sessionId, artifactSessionId: sourceSessionId, bytes: null });
                                 if (refusal) return { error: refusal };
                                 const textSha = nodeCrypto.createHash("sha256").update(text, "utf8").digest("hex");
-                                if (await registry.shaHidden(textSha, canvasViewer) && !(await viewerOwnsCanvasBytes(registry, textSha, canvasViewer))) {
+                                if (await registry.shaHidden(textSha, canvasViewer) && !(await viewerCanObtainCanvasBytes(registry, textSha, canvasViewer))) {
                                     return { error: `could not read artifact ${filename} from session ${sourceSessionId}: artifact not found` };
                                 }
                             }
@@ -4022,10 +4022,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         // as the session owner's app: that copy would then be
                         // drawn as the owner's own page, outside the
                         // cross-owner wrapper. Same byte guard as read_canvas.
-                        if (latest.data?.trust === "cross-owner") {
-                            const shown = typeof latest.data?.app?.name === "string" ? ` "${latest.data.app.name}"` : "";
-                            return { error: `slot ${slot} shows another user's canvas app${shown}; agents do not publish another user's page. Draw it with draw_canvas({fromApp}), or publish a page of your own.` };
-                        }
+                        // Contributors and admins may publish into an app they can
+                        // edit, so the slot's display trust is not the test
+                        // (review T01): the byte guard refuses only another
+                        // owner's page (exact bytes or shared workspace block)
+                        // the session owner may not edit.
                         const refusal = await canvasBytesRefusal({ store, resolveViewer: (id) => sessionManager.resolveCanvasAppViewer(id) },
                             { callerSessionId: input.sessionId, artifactSessionId: resolved.target, bytes: html });
                         if (refusal) return { error: refusal };

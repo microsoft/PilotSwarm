@@ -242,27 +242,50 @@ test("a page asks before it touches the session's files; the owner's click appro
     await expect(frame.locator("#out")).toHaveText("abc1234 first commit");
 });
 
+// Review S03/T04: an INFO-ONLY page (no watch, no click). It records every
+// workspace result it receives, so the test sees the staging NOT_READY and the
+// retried call, not just a prompt some other request could have opened.
+const APP_INFO_ONLY = `<!doctype html>
+<!-- CANVAS-APP-MANIFEST
+{ "manifestVersion": 1, "name": "ws-info", "workspace": { "read": ["work/**"] } }
+-->
+<html><body>
+<p id="info">…</p>
+<script>
+const codes = [];
+addEventListener("message", (e) => {
+  const m = e.data || {};
+  if (m.type === "canvas-ws-result") { codes.push(m.ok ? "ok" : m.code); document.body.dataset.codes = codes.join(","); }
+});
+${HELPER}
+CanvasWorkspace().info().then(() => { document.getElementById("info").textContent = "ok"; }, (e) => { document.getElementById("info").textContent = "error " + e.code; });
+</script>
+</body></html>`;
+
 test("an agent page that reads its workspace at boot, while still the staging frame, gets the approval prompt with no click (review S03)", async ({ page }) => {
-    const KEYS = { pageSha256: createHash("sha256").update(APP).digest("hex"), declarationSha256: "b".repeat(64), bindingsSha256: "c".repeat(64) };
+    const KEYS = { pageSha256: createHash("sha256").update(APP_INFO_ONLY).digest("hex"), declarationSha256: "b".repeat(64), bindingsSha256: "c".repeat(64) };
     let approved = false;
     const answers = (call) => (approved
         ? ANSWERS(call)
         : { status: 403, error: { code: "CANVAS_WS_CONSENT_REQUIRED", message: "the session owner must approve this page's workspace access first" } });
     answers.approval = () => ({
         sessionId, slot: 1, rev: 1, decision: null, trust: "agent", app: null, ...KEYS,
-        declaration: { read: ["work/**"], write: ["work/notes.md"], watch: true, commands: { history: { in: "work", run: ["git", "log", "-n", "{limit}"] } } },
+        declaration: { read: ["work/**"] },
         bindings: [{ name: "work", root: "a", folder: "proj" }],
     });
     answers.consent = (body) => { approved = body.decision === "granted"; return { ok: true, decision: body.decision }; };
     // A real agent-trust draw event with the served bytes' hash: the page is framed
     // directly (no wrapper), runs its boot info() in the staging frame, and is promoted.
-    const { calls, frame } = await drawApp(page, answers, APP, { trust: "agent", pageSha256: KEYS.pageSha256 });
-    await expect(page.locator(".ps-side-pane-layer:not(.is-parked) iframe.ps-html-preview-frame:not(.is-staging)")).toHaveCount(1);
+    const { calls, frame } = await drawApp(page, answers, APP_INFO_ONLY, { trust: "agent", pageSha256: KEYS.pageSha256 });
     const prompt = page.getByRole("alertdialog", { name: "Allow this page to use the session's files?" });
     await expect(prompt).toBeVisible();
-    expect(calls.filter((c) => c.call?.op === "info").length, "the boot read was retried after NOT_READY, not dropped").toBeGreaterThanOrEqual(1);
+    // The first answer the page saw was the staging NOT_READY; the helper retried
+    // on the live frame, which got CONSENT_REQUIRED and opened the prompt.
+    await expect(frame.locator("body")).toHaveAttribute("data-codes", /^NOT_READY(,NOT_READY)*,CANVAS_WS_CONSENT_REQUIRED$/);
+    const infos = calls.filter((c) => c.call?.op === "info");
+    expect(infos.length, "the info read reached the server at least twice: once from staging, once retried from the live frame").toBeGreaterThanOrEqual(2);
+    expect(calls.filter((c) => c.call && c.call.op !== "info"), "no other workspace operation was involved").toEqual([]);
     await prompt.getByRole("button", { name: "Allow", exact: true }).click();
     await expect(prompt).toBeHidden();
-    await frame.getByRole("button", { name: "Run history" }).click();
-    await expect(frame.locator("#out")).toHaveText("abc1234 first commit");
+    expect(calls.find((c) => c.consent).consent).toEqual({ slot: 1, rev: 1, ...KEYS, decision: "granted" });
 });

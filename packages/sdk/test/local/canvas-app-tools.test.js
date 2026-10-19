@@ -21,6 +21,7 @@ const getEnv = useSuiteEnv(import.meta.url);
 
 const ALICE = { provider: "test", subject: "cat-tools-alice", email: "alice@example.invalid", displayName: "Alice" };
 const BOB = { provider: "test", subject: "cat-tools-bob", email: "bob@example.invalid", displayName: "Bob" };
+const DEV = { provider: "test", subject: "cat-tools-dev", email: "dev@example.invalid", displayName: "Dev" };
 const DESCRIPTION = "Use when testing the canvas app registry tools end to end.";
 
 function page(title, extra = "", workspace = null) {
@@ -97,6 +98,8 @@ describe("canvas app registry: agent tools", () => {
                 { name: "manage_canvas_app", args: { action: "disable", name: shared } },
                 { name: "draw_canvas", args: { fromApp: { name: shared }, slot: 2 } },
                 { name: "manage_canvas_app", args: { action: "enable", name: shared } },
+                // Review T01: Dev becomes a contributor of the shared app.
+                { name: "manage_canvas_app", args: { action: "add_contributor", name: shared, user: { provider: DEV.provider, subject: DEV.subject } } },
             ]),
             // Bob: search, draw Alice's shared app, try her private one, copy her shared bytes inline, draw his own page.
             bob: toolTurn([
@@ -113,13 +116,27 @@ describe("canvas app registry: agent tools", () => {
                 { name: "publish_canvas_app", args: { name: `bob-copy3-${env.runId}`, description: DESCRIPTION, slot: 3 } },
             ]),
         };
+        // Dev (a contributor, review T01): draws Alice's shared app and publishes into it,
+        // first the unchanged page, then an edited page that keeps Alice's workspace block.
+        scripts.dev = toolTurn([
+            { name: "draw_canvas", args: { fromApp: { name: shared } } },
+            { name: "publish_canvas_app", args: { name: shared, scope: "shared", description: DESCRIPTION, slot: 1 } },
+            { name: "draw_canvas", args: { html: page(shared, "<p>edited by a contributor</p>", ws), slot: 2 } },
+            { name: "publish_canvas_app", args: { name: shared, scope: "shared", description: DESCRIPTION, slot: 2 } },
+        ]);
         const respond = (body, position) => {
-            const who = position.firstUserText.includes("bob") ? "bob" : "alice";
+            const who = position.firstUserText.includes("bob") ? "bob" : position.firstUserText.includes("dev") ? "dev" : "alice";
             const step = scripts[who][position.step];
             if (!step) return { content: "ok" };
             return typeof step === "function" ? step(body, position) : step;
         };
 
+        // A contributor must have signed in before they can be added.
+        {
+            const c = new pg.Client({ connectionString: env.store });
+            await c.connect();
+            try { await c.query(`SELECT "${env.cmsSchema}".cms_register_user($1, $2, $3, $4)`, [DEV.provider, DEV.subject, DEV.email, DEV.displayName]); } finally { await c.end(); }
+        }
         await withScriptedModel(env, { respond }, async ({ client, qualifiedModel }) => {
             const alice = await client.createSession({ model: qualifiedModel, owner: ALICE });
             const aliceResults = JSON.parse(await alice.sendAndWait("alice", TIMEOUT));
@@ -131,6 +148,7 @@ describe("canvas app registry: agent tools", () => {
             assert(card.app.card?.interface, "find by name returns the full card with its interface");
             assertEqual(JSON.parse(aliceResults[3]).scope, "shared");
             assert(String(aliceResults[8]).includes("APP_DISABLED"), `the owner cannot draw a disabled app: ${aliceResults[8]}`);
+            assert(JSON.parse(aliceResults[10]).contributors?.includes(`${DEV.provider}:${DEV.subject}`), `Dev is a contributor: ${aliceResults[10]}`);
 
             const aliceEvents = await canvasEvents(env, alice.sessionId);
             const ownRedraw = aliceEvents.at(-1);
@@ -165,9 +183,19 @@ describe("canvas app registry: agent tools", () => {
             assertEqual(bySlot(4).app, undefined, "the workspace rule never attributes an app");
             assertEqual(bySlot(5).trust, "agent", "Bob's own new page behaves as today");
 
+            const dev = await client.createSession({ model: qualifiedModel, owner: DEV });
+            const devResults = JSON.parse(await dev.sendAndWait("dev", TIMEOUT));
+            const devSame = JSON.parse(devResults[1]);
+            assert(!devSame.error, `a contributor publishes the shared app's own page without refusal: ${devResults[1]}`);
+            assertEqual(devSame.unchanged, true, "the same bytes are the existing version");
+            const devEdit = JSON.parse(devResults[3]);
+            assert(!devEdit.error, `a contributor publishes an edited page that keeps the workspace block: ${devResults[3]}`);
+            assertEqual(devEdit.published, true);
+            assertEqual(devEdit.scope, "shared");
+
             const rows = await loads(env);
             const forShared = rows.filter((r) => r.app_name === shared);
-            assertEqual(forShared.length, 2, `one load per fromApp draw (Alice's redraw and Bob's), inline draws none: ${JSON.stringify(forShared)}`);
+            assertEqual(forShared.length, 3, `one load per fromApp draw (Alice's redraw, Bob's and Dev's), inline draws none: ${JSON.stringify(forShared)}`);
             assert(forShared.some((r) => r.user_subject === BOB.subject && r.session_id === bob.sessionId), "Bob's load names Bob and his session");
         });
     });

@@ -21,6 +21,7 @@ import type { ArtifactStore } from "./session-store.js";
 import {
     CanvasAppError,
     CANVAS_APP_SPACE_PREFIX,
+    CANVAS_APP_VERSION_MAX_BYTES,
     looksLikeCanvasAppSpace,
     type CanvasAppScope,
     type CanvasAppStore,
@@ -92,13 +93,7 @@ export function isSemver(version: unknown): boolean {
     return typeof version === "string" && SEMVER_RE.test(version.trim());
 }
 
-/**
- * The longest version text a registry accepts, in bytes. An exported archive
- * names each version's page `versions/<version>.html` in a ustar member
- * whose last path part is at most 100 bytes (review S01), so 95 is the most
- * that always exports and imports again.
- */
-export const CANVAS_APP_VERSION_MAX_BYTES = 95;
+export { CANVAS_APP_VERSION_MAX_BYTES };
 
 function checkVersionLength(version: string, where: string): void {
     const size = Buffer.byteLength(version, "utf8");
@@ -346,6 +341,24 @@ export async function deleteCanvasApp(deps: CanvasAppRegistryDeps, target: Canva
                 failed++;
                 console.warn(`[canvas-apps] could not delete ${gone.artifactSessionId}/${filename}; the prune will retry: ${err?.message || err}`);
             }
+        }
+        // Anything else in the app's own space goes too: a late upload whose
+        // refused-commit cleanup failed leaves an object no version row names
+        // (review T02). The space is listed, as the pruner does for tombstones.
+        try {
+            for (const f of await deps.artifactStore.listArtifacts(gone.artifactSessionId)) {
+                const name = (f as any).filename ?? (f as any).name;
+                if (!name) continue;
+                try {
+                    if (await deps.artifactStore.deleteArtifact(gone.artifactSessionId, name)) files++;
+                } catch (err: any) {
+                    failed++;
+                    console.warn(`[canvas-apps] could not delete ${gone.artifactSessionId}/${name}; the prune will retry: ${err?.message || err}`);
+                }
+            }
+        } catch (err: any) {
+            failed++;
+            console.warn(`[canvas-apps] could not list ${gone.artifactSessionId}; the prune will retry: ${err?.message || err}`);
         }
         // The tombstone is the retry record: it is marked purged only when
         // every file is confirmed gone.
@@ -753,15 +766,15 @@ export interface CanvasBytesGuardDeps {
  * when the read may proceed.
  */
 /**
- * Does this viewer hold an exact copy of these bytes as their own app? Two
- * people may publish byte-identical private pages; the other person's
- * private copy must not hide the viewer's own (review S02). Same precedence
- * as classifyCanvasDraw: the viewer's own exact match wins.
+ * Can this viewer already obtain these exact bytes as a version it may see
+ * (its own app, a shared app, or any app for an unrestricted admin)? Another
+ * person's private copy of the same bytes must not hide them (review S02,
+ * T05). This only lifts a PRIVATE-only hit: a foreign shared app's exact
+ * bytes or workspace block is still refused (the read guard keeps the
+ * workspace rule; see canvasBytesRefusal).
  */
-export async function viewerOwnsCanvasBytes(store: CanvasAppStore, sha256: string, viewer: CanvasAppViewer): Promise<boolean> {
-    if (!viewer?.principal) return false;
-    const matches = await store.matchBySha(sha256, viewer);
-    return matches.some((m) => samePrincipal(m.owner, viewer.principal));
+export async function viewerCanObtainCanvasBytes(store: CanvasAppStore, sha256: string, viewer: CanvasAppViewer): Promise<boolean> {
+    return (await store.matchBySha(sha256, viewer)).length > 0;
 }
 
 export async function canvasBytesRefusal(
@@ -779,7 +792,7 @@ export async function canvasBytesRefusal(
         if (!input.sha256) return null;
         const viewer = input.callerSessionId ? await deps.resolveViewer(input.callerSessionId) : { principal: null, resourceAdmin: false };
         const owner = await deps.store.foreignBytes(String(input.sha256), null, viewer);
-        if (owner === "(private)" && await viewerOwnsCanvasBytes(deps.store, String(input.sha256), viewer)) return null;
+        if (owner === "(private)" && await viewerCanObtainCanvasBytes(deps.store, String(input.sha256), viewer)) return null;
         return owner === "(private)" ? "artifact not found" : null;
     }
     const text = Buffer.isBuffer(input.bytes) ? input.bytes.toString("utf8") : String(input.bytes);
@@ -789,7 +802,9 @@ export async function canvasBytesRefusal(
     const sha = sha256Hex(text);
     const owner = await deps.store.foreignBytes(sha, canvasAppWorkspaceKey(extraction.manifest), viewer);
     if (!owner) return null;
-    if (await viewerOwnsCanvasBytes(deps.store, sha, viewer)) return null;
+    // foreign_bytes reports a visible foreign shared app first; "(private)"
+    // means the only foreign hit is a private copy the viewer cannot see.
+    if (owner === "(private)" && await viewerCanObtainCanvasBytes(deps.store, sha, viewer)) return null;
     if (input.privateOnly && owner !== "(private)") return null;
     return owner === "(private)"
         ? "artifact not found"

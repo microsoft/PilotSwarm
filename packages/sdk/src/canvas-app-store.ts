@@ -249,6 +249,14 @@ function json(value: unknown): Record<string, unknown> {
     return {};
 }
 
+/**
+ * The longest version text the registry accepts, in bytes. An exported
+ * archive names each version's page `versions/<version>.html` in a ustar
+ * member whose last path part is at most 100 bytes, so 95 is the most that
+ * always exports and imports again (review S01, T03).
+ */
+export const CANVAS_APP_VERSION_MAX_BYTES = 95;
+
 export class CanvasAppStore {
     private readonly s: string;
     constructor(private readonly pool: Pool, schema: string) { this.s = `"${schema.replace(/"/g, '""')}"`; }
@@ -266,6 +274,14 @@ export class CanvasAppStore {
     }
 
     async reserve(input: CanvasAppReserveInput): Promise<CanvasAppReserveResult> {
+        // The same limit as the registry service, at the public store boundary:
+        // no path may create a version an export cannot name.
+        if (input.version != null) {
+            const size = Buffer.byteLength(String(input.version).trim(), "utf8");
+            if (size > CANVAS_APP_VERSION_MAX_BYTES) {
+                throw new CanvasAppError("BAD_VERSION", `version is ${size} bytes; a canvas app version is at most ${CANVAS_APP_VERSION_MAX_BYTES} bytes`);
+            }
+        }
         const rows = await this.call(
             `SELECT * FROM ${this.fn("reserve")}($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)`,
             [

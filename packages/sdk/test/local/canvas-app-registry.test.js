@@ -17,7 +17,7 @@ import { FilesystemArtifactStore, createFactStoreForUrl } from "../../src/index.
 import {
     publishCanvasAppHtml, readCanvasAppHtml, deleteCanvasApp, pruneCanvasAppArtifacts,
     exportCanvasApp, importCanvasApp, readCanvasAppArchive, canvasAppArtifactSessionId, migrateLegacyCanvasApps,
-    looksLikeCanvasAppSpace, sha256Hex, CANVAS_APP_PENDING_TTL_MS, canvasBytesRefusal, viewerOwnsCanvasBytes,
+    looksLikeCanvasAppSpace, sha256Hex, CANVAS_APP_PENDING_TTL_MS, canvasBytesRefusal, viewerCanObtainCanvasBytes, CANVAS_APP_VERSION_MAX_BYTES,
 } from "../../src/canvas-app-registry.ts";
 import { buildCanonicalTarGz } from "../../src/agent-package-format.ts";
 import { CanvasAppError } from "../../src/canvas-app-store.ts";
@@ -53,6 +53,17 @@ async function expectCode(promise, code) {
         return error;
     }
     throw new Error(`expected ${code}, but the call succeeded`);
+}
+
+async function registerUser(env, principal) {
+    const { default: pg } = await import("pg");
+    const client = new pg.Client({ connectionString: env.store });
+    await client.connect();
+    try {
+        await client.query(`SELECT "${env.cmsSchema}".cms_register_user($1, $2, $3, $4)`, [principal.provider, principal.subject, `${principal.subject}@example.invalid`, principal.subject]);
+    } finally {
+        await client.end();
+    }
 }
 
 async function setup(env) {
@@ -138,13 +149,13 @@ describe("canvas app registry: service", () => {
             await publishCanvasAppHtml(deps, { html, name: `${name}-b`, viewer: V.bob });
             const guard = { store: deps.store, resolveViewer: async (id) => ({ alice: V.alice, bob: V.bob, carol: CAROL })[id] };
             for (const who of ["alice", "bob"]) {
-                assert(await viewerOwnsCanvasBytes(deps.store, sha, V[who]), `${who} owns a copy`);
+                assert(await viewerCanObtainCanvasBytes(deps.store, sha, V[who]), `${who} can obtain a copy`);
                 assertEqual(await canvasBytesRefusal(guard, { callerSessionId: who, artifactSessionId: "s-" + who, bytes: html }), null, `${who} reads their own bytes`);
                 assertEqual(await canvasBytesRefusal(guard, { callerSessionId: who, artifactSessionId: "s-" + who, sha256: sha }), null, `${who}'s metadata read is not hidden`);
-                assertEqual(await deps.store.shaHidden(sha, V[who]) && !(await viewerOwnsCanvasBytes(deps.store, sha, V[who])), false, `fromArtifact of ${who}'s own bytes is allowed`);
+                assertEqual(await deps.store.shaHidden(sha, V[who]) && !(await viewerCanObtainCanvasBytes(deps.store, sha, V[who])), false, `fromArtifact of ${who}'s own bytes is allowed`);
             }
             // Negative control: Carol holds no copy, so both private copies stay hidden from her.
-            assert(!(await viewerOwnsCanvasBytes(deps.store, sha, CAROL)), "Carol owns no copy");
+            assert(!(await viewerCanObtainCanvasBytes(deps.store, sha, CAROL)), "Carol can obtain no copy");
             assertEqual(await canvasBytesRefusal(guard, { callerSessionId: "carol", artifactSessionId: "s-carol", bytes: html }), "artifact not found");
             assertEqual(await canvasBytesRefusal(guard, { callerSessionId: "carol", artifactSessionId: "s-carol", sha256: sha }), "artifact not found");
             assert(await deps.store.shaHidden(sha, CAROL), "hidden from Carol");
@@ -174,6 +185,79 @@ describe("canvas app registry: service", () => {
             const imported = await publishCanvasAppHtml(deps, { html, name, viewer: V.alice, mode: "import" });
             assertEqual(imported.status, "unchanged");
             assertEqual(imported.active, true, "still the active version");
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    it("a contributor's exact shared copy is not hidden by another owner's private duplicate, and a foreign shared workspace block is still refused (review T05)", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const { catalog, deps } = await setup(env);
+        const DEV = { principal: { provider: "test", subject: "car-dev" }, resourceAdmin: false };
+        const CAROL = { principal: { provider: "test", subject: "car-carol-t05" }, resourceAdmin: false };
+        try {
+            await registerUser(env, DEV.principal);
+            const name = `car-edit-${env.runId}`;
+            const html = page(name);
+            const sha = sha256Hex(html);
+            await publishCanvasAppHtml(deps, { html, name, viewer: V.alice, scope: "shared" });
+            await deps.store.grantEditor(name, DEV.principal, V.alice);
+            // Bob keeps a private, byte-identical duplicate.
+            await publishCanvasAppHtml(deps, { html, name: `${name}-dup`, viewer: V.bob });
+            const guard = { store: deps.store, resolveViewer: async (id) => ({ dev: DEV, carol: CAROL })[id] };
+            assert(await viewerCanObtainCanvasBytes(deps.store, sha, DEV), "Dev can see the shared exact version");
+            assertEqual(await canvasBytesRefusal(guard, { callerSessionId: "dev", artifactSessionId: "s-dev", bytes: html }), null, "Dev (contributor) reads the bytes");
+            assertEqual(await canvasBytesRefusal(guard, { callerSessionId: "dev", artifactSessionId: "s-dev", sha256: sha }), null, "Dev's metadata read is not hidden");
+            assertEqual(await deps.store.shaHidden(sha, DEV) && !(await viewerCanObtainCanvasBytes(deps.store, sha, DEV)), false, "fromArtifact of the shared bytes is allowed for Dev");
+            // Carol is no contributor: the shared app's bytes stay another user's page for her.
+            const carolRefusal = await canvasBytesRefusal(guard, { callerSessionId: "carol", artifactSessionId: "s-carol", bytes: html });
+            assert(String(carolRefusal).includes(name), `Carol is refused with the shared app's name: ${carolRefusal}`);
+            // A page of Carol's own that carries Alice's shared workspace block is still refused, even if Carol owns it.
+            const ws = { read: ["work/**"] };
+            const withWs = (title) => page(title).replace('"interface"', `"workspace":${JSON.stringify(ws)},"interface"`);
+            const aliceWs = withWs(`${name}-ws`);
+            await publishCanvasAppHtml(deps, { html: aliceWs, name: `${name}-ws`, viewer: V.alice, scope: "shared" });
+            const carolWs = withWs(`${name}-carol`);
+            await publishCanvasAppHtml(deps, { html: carolWs, name: `${name}-carol`, viewer: CAROL });
+            const wsRefusal = await canvasBytesRefusal(guard, { callerSessionId: "carol", artifactSessionId: "s-carol", bytes: carolWs });
+            assert(String(wsRefusal).includes(`${name}-ws`), `a foreign shared workspace block wins over Carol's own copy in the read guard: ${wsRefusal}`);
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    it("deleting an app removes every object in its space, including one no version row names (review T02)", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const { catalog, deps } = await setup(env);
+        try {
+            const name = `car-orphan-${env.runId}`;
+            await publishCanvasAppHtml(deps, { html: page(name), name, viewer: V.alice });
+            const { resolved } = await readCanvasAppHtml(deps, { name }, V.alice);
+            // A late upload whose refused-commit cleanup failed leaves an unnamed object.
+            await deps.artifactStore.uploadArtifact(resolved.artifactSessionId, "00000000-orphan.abcdefabcdef.html", "<p>orphan</p>", "text/html");
+            const del = await deleteCanvasApp(deps, { name }, V.alice);
+            assertEqual(del.pendingCleanup, false);
+            assert(del.files >= 2, `the version file and the orphan were deleted: ${del.files}`);
+            assertEqual((await deps.artifactStore.listArtifacts(resolved.artifactSessionId)).length, 0, "the space is empty");
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    it("the public store boundary refuses a version longer than the export limit (review T03)", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const { catalog, deps } = await setup(env);
+        try {
+            assertEqual(CANVAS_APP_VERSION_MAX_BYTES, 95);
+            const name = `car-store-long-${env.runId}`;
+            const html = page(name);
+            await expectCode(deps.store.reserve({
+                newAppId: crypto.randomUUID(), newVersionId: crypto.randomUUID(), artifactSessionId: canvasAppArtifactSessionId("x"),
+                name, scope: "user", viewer: V.alice, allowOwnerless: false, sha256: sha256Hex(html), sizeBytes: Buffer.byteLength(html),
+                version: `1.0.0+${"x".repeat(90)}`, card: {}, workspaceKey: null, description: null, tags: null,
+                sourceSessionId: null, sourceSlot: null, createdBy: null, mode: "publish",
+            }), "BAD_VERSION");
+            await expectCode(readCanvasAppHtml(deps, { name }, V.alice), "NOT_FOUND");
         } finally {
             await catalog.close();
         }
