@@ -74,13 +74,14 @@ export const CANVAS_DOCUMENT_UPGRADE_ERROR = "Update this canvas helper before u
  *    the page: the workspace one above, and the KV and action ones
  *    ({type:"canvas-kv-result"|"canvas-action-result", id, ok:false,
  *    code:CANVAS_DOCUMENT_UPGRADE_CODE, error:CANVAS_DOCUMENT_UPGRADE_ERROR}),
- *    each with exactly those five keys. Everything else is dropped, whatever
+ *    each with exactly those five own keys (an array or an object with a
+ *    symbol or non-enumerable key is not a diagnostic). Everything else is dropped, whatever
  *    its type, so no session content ever crosses the wrapper as a window
  *    message.
  */
 export function crossOwnerWrapperHtml({ workspaceResults = "relay" } = {}) {
     const exact = (type, code, error) => `(d.type===${JSON.stringify(type)}&&d.code===${JSON.stringify(code)}&&d.error===${JSON.stringify(error)})`;
-    const DIAGNOSTIC = (kinds) => `function diag(d){var k=Object.keys(d).sort().join(',');return k==='code,error,id,ok,type'&&d.ok===false&&(d.id===null||(Number.isSafeInteger(d.id)&&d.id>0))&&(${kinds.join("||")})}`;
+    const DIAGNOSTIC = (kinds) => `function diag(d){if(Reflect.ownKeys(d).length!==5)return false;var k=Object.keys(d).sort().join(',');return k==='code,error,id,ok,type'&&d.ok===false&&(d.id===null||(Number.isSafeInteger(d.id)&&d.id>0))&&(${kinds.join("||")})}`;
     const WS = exact("canvas-ws-result", CANVAS_WS_UPGRADE_CODE, CANVAS_WS_UPGRADE_ERROR);
     const DOWN_FILTER = workspaceResults === "ports-only"
         ? `${DIAGNOSTIC([WS, exact("canvas-kv-result", CANVAS_DOCUMENT_UPGRADE_CODE, CANVAS_DOCUMENT_UPGRADE_ERROR), exact("canvas-action-result", CANVAS_DOCUMENT_UPGRADE_CODE, CANVAS_DOCUMENT_UPGRADE_ERROR)])}function downOk(d){return diag(d)}`

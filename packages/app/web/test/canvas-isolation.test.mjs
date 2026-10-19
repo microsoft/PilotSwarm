@@ -287,10 +287,17 @@ test("ports-only (composed issue 184 host): no portal window message reaches the
         { ...actionUpgrade, type: "canvas-feed-v2" },
         { ...actionUpgrade, type: "canvas-document-v2" },
         { ...actionUpgrade, code: "CANVAS_ACTION_DENIED" },
+        // Five enumerable keys are not five own keys: an array carries a
+        // non-enumerable length (a sparse one, an arbitrary number), and a
+        // symbol or non-enumerable key is an extra own key too.
+        Object.assign([], kvUpgrade),
+        Object.assign(new Array(1_000_000), upgrade),
+        { ...actionUpgrade, [Symbol("extra")]: "leak" },
+        Object.defineProperty({ ...upgrade }, "hidden", { value: "leak", enumerable: false }),
     ];
     const ports = [];
     for (const message of dropped) {
-        const port = fakePort(String(message.type));
+        const port = fakePort(typeof message.type === "string" ? message.type : "untyped");
         ports.push(port);
         w.dispatch(w.parent, message, [port]);
     }
