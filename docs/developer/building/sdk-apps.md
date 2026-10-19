@@ -206,6 +206,22 @@ Then point the worker at `pluginDirs`.
 
 This keeps prompts versioned, reviewable, and easy to reuse across local and remote deployments.
 
+For **published** packages, declarative prompts/skills auto-activate and existing
+named sessions refresh without version pins or administrative rebinding. Code
+requires administrator approval of the whole immutable artifact and explicit
+activation; executable sessions retain exact package/version/digest pins.
+Transitions in either direction between declarative and executable content
+require an explicit administrator rebind. Unknown inspection fails closed.
+Use `getAgentPackageReviewStatus(packageId)` as the authenticated owner, package
+editor or administrator to inspect per-version decision, executable classification,
+reasons, digest and active state. Publish results also carry an additive `review`
+summary. These read-only snapshots do not grant execution permission, and content
+approval does not approve external tool backends.
+Web/portal/TUI creation resolves the package before persisting a new executable
+pin. Lower-level datastore callers creating package-named roots must pass
+`boundAgentPackageId` to `createSessionForAgent` (or a resolved creation config).
+An `agentId` alone cannot authorize executable content during runtime hydration.
+
 ### Programmatic / inline
 
 You can also pass config directly:
@@ -278,6 +294,10 @@ named, and a schedule opts in by name.
   full package/version/SHA and current binding revision across continue-as-new;
   current owner and capability admission applies on every invocation. See
   [Building agent packages](../../building-agent-packages.md#cron-prechecks).
+  Existing authorized executable V1 schedules continue on retained V1 after
+  executable V2 activation, not on a same-named V2 callback. Explicit rebind or
+  revocation invalidates the old schedule; retired registrations cannot arm new
+  package-owned schedules.
 - **Application worker code:**
 
 ```ts
@@ -341,6 +361,11 @@ same schedule; the model sees nothing for that cycle.
   owner and explicit package binding. Denial throws before entering code or
   recording an idle skip; the ordinary session path still performs its own
   authorization. These checks do not replace content approval or fencing.
+  Trusted static checks do not require an exact package binding for declarative
+  agents, including historical NULL-policy sessions; declarative republishing
+  needs no administrative action. If either the existing pin or active copy is
+  executable/unverified, ordinary exact-content root checks still apply.
+  Declarative/executable transitions require explicit rebind and schedule re-arm.
 - **Only an empty wake-up is eligible.** A wake-up that carries child updates,
   a held note, carried steers or stashed prompts runs the model without
   asking. User messages are never affected.

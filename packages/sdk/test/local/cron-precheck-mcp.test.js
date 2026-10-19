@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { fileURLToPath } from "node:url";
 import { callCronPrecheckMcpTool } from "../../src/cron-precheck-mcp.ts";
 import { evaluateCronPrecheck } from "../../src/cron-precheck.ts";
-import { SessionManager, packageAgentKey } from "../../src/session-manager.ts";
+import { SessionManager, packageAgentKey, packageContentKey } from "../../src/session-manager.ts";
 import { registerActivities } from "../../src/session-proxy.ts";
 import { startPrecheckMcpServer } from "../helpers/cron-precheck-mcp.mjs";
 
@@ -252,6 +252,28 @@ describe("precheck session MCP grants without model hydration", () => {
         expect(manager.getOrCreate).not.toHaveBeenCalled();
     });
 
+    it("retained executable v1 resolves its content-qualified MCP grant, never active v2 or raw aliases", async () => {
+        const { manager, catalog, defaults } = setup();
+        const old = { ...defaults.agentPromptLookup.poller.copies[0], packageExecutable: true, packageActive: false };
+        const active = { ...old, packageVersionId: "v2", packageSha256: "b".repeat(64), packageActive: true };
+        defaults.agentPromptLookup.poller = { ...active, copies: [active, old] };
+        const exact = { ...serverConfig, url: "http://localhost/approved-v1" };
+        defaults.agentMcpServers = {
+            [packageAgentKey(packageContentKey("shared", "v1", "a".repeat(64)), "poller")]: { queue: exact },
+            [packageAgentKey(packageContentKey("shared", "v2", "b".repeat(64)), "poller")]: { queue: serverConfig },
+            [packageAgentKey("shared", "poller")]: { wrong_raw_alias: serverConfig },
+        };
+        const servers = await manager.getCronPrecheckMcpServers({ ...input, packageId: "shared", agent });
+        expect(servers.queue).toEqual(exact);
+        expect(servers).not.toHaveProperty("wrong_raw_alias");
+        catalog.packageReviews.getSessionBinding = async () => ({
+            packageId: "shared", versionId: "v2", sha256: "b".repeat(64), executable: true,
+            agentName: "poller", revision: 2, allowed: true,
+        });
+        await expect(manager.getCronPrecheckMcpServers({ ...input, packageId: "shared", agent })).rejects.toThrow(/stale/);
+        expect(manager.getOrCreate).not.toHaveBeenCalled();
+    });
+
     it("rejects another user's private package and stale precheck provenance", async () => {
         const { manager, catalog } = setup();
         await expect(manager.getCronPrecheckMcpServers({ ...input, packageId: "personal", agent })).rejects.toThrow(/no longer bound/);
@@ -308,7 +330,7 @@ describe("precheck session MCP grants without model hydration", () => {
             catalog.getSessionCapabilities.mockResolvedValue({
                 revision: 1, selections: [{ sourceId: "selected", tools: [], mcpServers: ["selected_queue"] }],
             });
-            manager.setPackageCronPrechecks(new Map([["shared", new Map([["queue", {
+            manager.setPackageCronPrechecks(new Map([[packageContentKey("shared", "v1", "a".repeat(64)), new Map([["queue", {
                 name: "queue", check: async ({ callMcpTool }) => {
                     callbacks++;
                     catalog.getSessionCapabilities.mockResolvedValue({ revision: 2, selections: [] });

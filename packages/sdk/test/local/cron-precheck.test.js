@@ -158,7 +158,7 @@ describe("choosing a schedule's cron precheck", () => {
     });
 
     it("will not arm an executable package name without a complete immutable binding pin", () => {
-        for (const bad of [{ packageIdentity: undefined }, { packageBindingRevision: undefined },
+        for (const bad of [{ packageIdentity: undefined }, { packageBindingRevision: undefined }, { packageActive: false },
             { packageIdentity: { ...pin.packageIdentity, sha256: "short" } }]) {
             const invalid = { ...sources, ...bad };
             expect(chooseCronPrecheck({ reason: "exact cycle", sources: invalid }).ok).toBe(false);

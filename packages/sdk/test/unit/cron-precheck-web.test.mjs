@@ -50,9 +50,10 @@ for (const operation of ["createSession", "createSessionForAgent"]) {
             client,
             sessionHandles: new Map(),
             mgmt: { getSession: async () => null },
-            _authorizePackageAgentCreate: async (name, principal) => {
+            _authorizePackageAgentCreate: async (name, principal, _admin, includePackage) => {
                 assert.deepEqual(principal, { ...owner, email: null, displayName: null });
-                return name;
+                assert.equal(includePackage, true);
+                return { name, packageId: "resolved-package" };
             },
         });
         const runtime = new PortalRuntime({ store: "sqlite::memory:", mode: "local" });
@@ -61,12 +62,14 @@ for (const operation of ["createSession", "createSessionForAgent"]) {
         const result = await runtime.call(operation, {
             ...(operation === "createSessionForAgent" ? { agentName: "poller" } : {}),
             cronPrecheck: " queue.ready ",
+            boundAgentPackageId: "forged-package",
             owner: { provider: "forged", subject: "admin" },
         }, auth);
         assert.equal(rows.length, 1);
         assert.equal(rows[0].sessionId, result.sessionId);
         assert.equal(rows[0].creationConfig.cronPrecheck, "queue.ready");
         assert.deepEqual(rows[0].owner, { ...owner, email: null, displayName: null });
+        if (operation === "createSessionForAgent") assert.equal(rows[0].creationConfig.boundAgentPackageId, "resolved-package");
 
         const count = rows.length;
         for (const invalid of ["bad name", 12, {}, " ".repeat(3), "x".repeat(101)]) {
@@ -80,9 +83,10 @@ for (const operation of ["createSession", "createSessionForAgent"]) {
 
     test(`${operation}: direct creation persists the normalized precheck and leaves omitted defaults unset`, async () => {
         const { client, rows } = directClient();
-        await create(client, { cronPrecheck: " queue.ready " });
+        await create(client, { cronPrecheck: " queue.ready ", boundAgentPackageId: "resolved-package" });
         await create(client, {});
         assert.equal(rows[0].creationConfig.cronPrecheck, "queue.ready");
         assert.equal(rows[1].creationConfig.cronPrecheck, undefined);
+        if (operation === "createSessionForAgent") assert.equal(rows[0].creationConfig.boundAgentPackageId, "resolved-package");
     });
 }

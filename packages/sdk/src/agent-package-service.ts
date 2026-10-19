@@ -197,6 +197,7 @@ export async function publishPackedAgentPackage(
                     status: "noop",
                     packageId: existing.packageId,
                     versionId: existingVersion.versionId,
+                    review: await ctx.catalog.getAgentPackageVersionReview(existingVersion.versionId),
                     name, semver, sha256,
                     sizeBytes: targz.length,
                     artifactFilename: existingVersion.artifactFilename,

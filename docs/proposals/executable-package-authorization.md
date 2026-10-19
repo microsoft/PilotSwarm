@@ -5,7 +5,7 @@
 This document describes the current platform candidate: supervised tools,
 callbacks and MCP, authoritative admission, exact caller pins, cancellation and
 startup recovery, verified in-memory module loading, and additive CMS migrations
-0084–0088. Superseded foundation-only implementation inventories remain in Git,
+0084–0089. Superseded foundation-only implementation inventories remain in Git,
 not as current limitations here.
 
 Prerequisite PR #185 is **not a release/deployment authorization**. Executable
@@ -112,15 +112,118 @@ Publishing executable V2 does not activate it. Pending, rejected or merely
 approved V2 leaves V1 active. Explicit V2 activation affects new bindings only;
 an existing V1 session remains exactly V1 or is denied, never silently upgraded.
 An approved-but-inactive, unpinned version cannot even register/import.
-Rebinding is a separate explicit audited CAS operation, including an explicit
-initial bind for historical sessions that lack a pin.
+Rebinding executable content is a separate explicit audited CAS operation,
+including an explicit initial bind for historical executable sessions without a pin.
 
-Named bindings pin package/version/SHA/agent/owner. Generic `use_package`
+Executable named bindings pin package/version/SHA/agent/owner. Generic executable `use_package`
 selections persist exact version/SHA/source-ref/owner/tools/MCP/callback grants
 in the **same transaction as capability revision CAS**. New grants require an
 active version. Existing exact grants do not follow the current active name.
 Substituted identities, stale CAS and failed grant transactions cannot partially
 replace capabilities/grants.
+
+### Executable-only pin matrix (0089)
+
+Classification comes from the installed, safely inspected artifact and the exact
+review row: only `inspection.executable === false` is declarative (`not_required`).
+Missing/legacy/uninspected content is executable/unverified and fails closed.
+Approval is for the artifact's content, **not for external tool backends**.
+
+| Existing named binding | Currently active copy | Next resume/turn |
+|---|---|---|
+| None, historical NULL policy, or declarative | Declarative, including any republished version | Follow active instructions/declarations; no administrative action or binding row |
+| Stale declarative row (even no longer eligible) | Declarative | Ignore the non-enforcing row; follow active |
+| None or declarative | Executable, approved and activated | Deny `BOUND_AGENT_PACKAGE_UNAVAILABLE` until explicit administrative rebind |
+| Executable V1 | V2 pending/rejected/not activated | V1 stays exact while approved and currently authorized |
+| Executable V1 | Executable V2 activated | Continue exact V1 while approved/authorized; never silently adopt V2 |
+| Executable V1 | Declarative V3 active | Deny until explicit rebind, even if V1 is still approved |
+| No pin | Executable | Deny; a *new* named root receives its initial pin in the catalog creation transaction |
+
+Declarative-only sessions do not create or require binding rows; existing rows
+and audits are retained. Runtime hydration never creates a missing executable pin.
+Current owner/visibility/enablement checks still apply to agent resolution.
+Executable invocation authority, exact generic grants, registration generations
+and per-tool/callback/MCP admissions are not relaxed. The nonlocking binding read
+also denies an executable pin when the live active version is declarative, so a
+stale worker registry cannot continue invoking it before explicit rebind.
+For executable selections from a declarative root, authority verifies the live
+root through `cms_pkg_declarative_root`, ignores a verified non-enforcing
+declarative row, and still requires the target's exact durable selection grant,
+current owner, capability revision and per-invocation approval. No named root pin
+is manufactured. This required narrowing the old unconditional missing-root-pin
+guard; executable/unverifiable roots retain that guard. Executable-root eligibility
+is checked before calls into other selected packages too, so changing the root
+to declarative cannot bypass its rebind requirement through a foreign tool.
+Public Web/portal/TUI named creation resolves package provenance before the catalog
+transaction, including owner-private shadowing. Lower-level datastore SDK callers
+must supply `boundAgentPackageId` to `createSessionForAgent`, or a fully resolved
+creation config. An `agentId` alone is not an exact content pin and cannot authorize
+code on a later resume; runtime hydration cannot manufacture that permission.
+
+The new worker-only install procedure retains approved old executable artifacts
+referenced by exact bindings or active executable selection grants. Tool and MCP
+registries are qualified by package/version/full digest; agent resolution selects
+the exact retained copy only after checking the active copy and durable binding.
+An executable V2 that removes the old agent name does not invalidate an otherwise
+authorized exact V1 binding: resolution can select that retained identity, never
+a same-name substitute. The live declarative-transition/owner checks still run.
+Retired copies never appear as choices for new/custom-agent bindings, cannot
+replace current capability sources or session policy, and lose eligibility on
+revocation. Legacy active-only manifest procedures are unchanged.
+
+### Publisher-visible status and fast iteration
+
+Owners, package editors and authenticated administrators can read
+`AgentPackagePublisherStatus` through `getAgentPackageReviewStatus(packageId)`,
+Web `GET /api/v1/agent-package-review-status/:packageId`, generated Web operations,
+`pilotswarm agents review-status <package>` (authenticated Web API mode), and MCP
+`get_agent_package_review_status`. Package detail displays **Approval: not required
+| pending admin approval | approved (not active) | active | rejected | revoked**
+with version ID, full digest and inspection reasons. The server authenticates
+the principal and authorizes the exact manageable package; client owner/admin
+claims confer no access. Other callers receive `FORBIDDEN`, including for missing
+or inaccessible IDs/names. No other user's private package status is enumerated.
+Administrative list/decision/activation operations stay admin-only.
+
+Publish and identical-republish results retain `status: published | noop` and add
+`review: {decision, executable, active, versionId, sha256, packageId}` from the
+authoritative exact-version review. Status is an informational snapshot, not an
+execution grant or fencing acknowledgement. Notifications are future work.
+
+Keep declarative prompt/skill iteration fast: declarative versions auto-activate
+and existing sessions refresh without rebind. A mixed code-and-prompt artifact
+requires review for the **whole version**. Keep executable parts thin/stable or
+register trusted deployment-owned prechecks; do not label mixed artifacts
+declarative or bypass exact invocation authority.
+
+### Cron integration contract
+
+The prerequisite was developed independently of cron. Its integrated consumer
+does not require a binding row for static trusted prechecks or declarative-only named agents.
+Package-owned executable callbacks still require their persisted exact identity
+and current authoritative owner/binding/grant checks; both directions of a named
+agent's declarative/executable transition obey the matrix above.
+When creating an executable named root at arming, supply its resolved
+`boundAgentPackageId` (or full creation config) so the catalog creates the initial
+pin atomically; do not recreate the removed first-hydration auto-binding fallback.
+
+Install entries and agent copies now distinguish `active` / `packageActive`.
+Only active entries are candidates for *new package-owned* schedule arming; retained entries
+may service an already-persisted exact executable identity, never a same-name
+fallback. Qualified tool/MCP keys use
+`packageContentKey(packageId, versionId, sha256)` (MCP further uses
+`packageAgentKey(contentKey, agentName)`). Raw package-ID aliases describe only
+the active copy and must not be used to service an older executable schedule pin.
+Precheck-only resolution must also honor an allowed exact retained binding when
+the active executable version removes that agent name. Resolve from the live
+binding and exact copy registry without creating a model/SDK session.
+Static/deployment precheck behavior and interactive behavior remain unchanged.
+The integrated cron activity uses the shared session binding resolver before
+callback entry and on every MCP call. It preserves content-qualified callback
+registries, resolved-config dispatch and exact persisted identities across
+continue-as-new. See [cron implementation](../proposals-impl/cron-tool.md) for
+integration acceptance evidence; the independent prerequisite's earlier counts
+below are not a substitute for that validation.
 
 ## Current-session admission and ordering
 
@@ -170,10 +273,14 @@ PostgreSQL authority connection. Package code never receives that connection
 configuration. Processes are recorded while idle, before code starts, with
 registration/generation, host boot/PID-namespace, PID and OS start identity.
 The parent records the idle broker before its independent database connection
-initializes. A failed initialization cannot leave the broker absent from recovery
-inventory. Startup first attempts graceful shutdown; if that cannot observe
-completion, the healthy parent authority denies the generation and performs
-exact local process recovery. Fence-requested generations are recoverable even
+initializes. If a process-identity probe or initialization fails before any
+executable preparation command, cleanup kills that owned broker through its
+process handle and observes its exit before acknowledging. At this stage there
+can be no descendants; cleanup does not depend on rediscovering a PID whose
+identity probe failed. An unavailable authority still prevents acknowledgement.
+After executable preparation starts, startup failure uses ordinary broker
+shutdown and exact local recovery, never the descendant-free shortcut.
+Fence-requested generations are recoverable even
 before lease expiry; healthy active generations are not reclaimed merely
 because another worker starts.
 Windows termination compares the held process handle at the same microsecond
@@ -269,7 +376,7 @@ status via `getAgentPackageRuntimeStatus`,
 `pilotswarm agents runtime-status <package> <version> <sha>` and
 `get_agent_package_runtime_status`.
 
-Migrations 0084–0088 are additive; histories are not dropped. 0086 adds exact
+Migrations 0084–0089 are additive; histories are not dropped. 0086 adds exact
 grants/audit, durable process identities, lifecycle triggers and the legacy-fleet
 gate. 0085 reapplication preserves that gate. Downgrading to old workers is unsafe
 until executables are disabled and their processes are actually fenced. Retain
@@ -290,9 +397,88 @@ two-connection regression holds each relevant metadata row, makes a writer wait
 for the admission barrier, proves the earlier read completes without deadlock,
 then commits disablement and verifies the next admission is denied.
 
-## Current acceptance and remaining gates
+## Current acceptance (0089)
 
-The current reviewer follow-up adds verified-buffer execution for module/dependency/
+Validation uses the package-authorization worktree only. `npm run build` passed.
+The complete SDK unit command, from `packages/sdk` in Git Bash with Git's
+`usr/bin` first in `PATH`, is:
+
+```sh
+node --test --test-concurrency=2 --test-reporter=tap test/unit/*.test.mjs
+```
+
+Result: **1,597 passed, 9 explicitly skipped, 0 failed** (1,606 tests).
+The Windows skips remain unclaimed acceptance: Unix chmod, Linux process
+start-time/PID reuse, Unix UID/setpriv and different-UID Git behavior, Linux
+mountinfo, Unix sockets and Unix process-group cancellation.
+
+Publisher Web authorization, HTTP/provider-neutral clients, CLI/MCP read parity,
+React status labels/escaping and package-detail selection, plus named-agent
+creation compatibility: **55 passed, 0 skipped, 0 failed** using:
+
+```sh
+node --test --test-reporter=tap \
+  packages/app/web/test/agent-package-review-authz.test.mjs \
+  packages/app/tui/test/agents-cli-package-reads.test.mjs \
+  packages/app/tui/test/named-agent-worker-config.test.mjs \
+  packages/app/ui/core/test/package-review-tabs.test.mjs \
+  packages/app/ui/core/test/agent-packages-admin.test.mjs \
+  packages/app/mcp/test/package-review-status.test.mjs \
+  packages/sdk/test/unit/package-publisher-status.test.mjs
+```
+
+The last file also runs in the complete SDK suite; these counts must not be
+summed as independent tests.
+
+Standalone PostgreSQL: **84 passed, 0 skipped, 0 failed**, with real multi-connection
+authority, supervised processes, native MCP and browser workflow cases. The
+task-owned PostgreSQL 18.4 instance listened only on `127.0.0.1:55537`, used a
+generated random password and SCRAM-SHA-256 for every host rule, and supplied
+`PACKAGE_TEST_PG_URL`/`PS_TEST_DATABASE_URL` only to test children. No operator
+database was used. Command from the worktree root:
+
+```sh
+node --test --test-reporter=tap --test-timeout=120000 packages/sdk/test/postgres/package-runtime.test.mjs
+```
+
+The suite covers every pin transition, historical NULL-policy declarative
+sessions, stale declarative bindings, current root eligibility before foreign
+executable grants, exact retained V1 prompts/tools/MCP when V2 removes the old
+agent name, publisher owner/editor/admin authorization and publish/noop summaries,
+failed-start zero-import fencing, migration reapplication through 0089 and
+nonlocking admission/barrier order. Replacement diffs in `0089_diff.md` were
+mechanically compared with real `pg_get_functiondef` output.
+
+Native SDK/CLI refresh integration: **4 passed, 0 skipped, 0 failed**, including
+declarative republish without rebind and executable denial before model work
+until explicit rebind. From `packages/sdk` on the same isolated database:
+
+```sh
+node ../../node_modules/vitest/vitest.mjs run test/local/agent-binding-refresh-runtime.test.js
+```
+
+The server was stopped after validation; task-owned databases, tools, marker
+directories and logs are cleaned up. These results do not qualify Linux.
+
+Earlier failures were investigated and fixed, not waived: current manifest
+consumers required the full migration chain; active-only compatibility MCP
+aliases were restored without using them for retired exact pins; the SQL guard
+needed to recognize existing `SELECT * FROM schema.procedure(...)` calls; and
+new manager fixtures needed the actual supervised MCP resolver and fact store.
+A parallel Windows run exposed a five-second CIM identity-query failure and a
+failed-start broker that held the runner open. Before any executable preparation,
+cleanup now observes that owned broker's exit without depending on PID recovery.
+Fault-injected identity and broker-authentication startup tests verify zero
+imports/factories/handlers and recorded fencing. Heavy SDK and PostgreSQL suites
+are subsequently sequenced, not run concurrently; assertions/timeouts are not
+weakened. Executable preparation/outage fencing still uses the ordinary path.
+
+Linux final-candidate acceptance, operational legacy-worker fencing proof and
+the exact Claude Opus 4.8 review remain external gates.
+
+## Historical acceptance (through 0088; not acceptance evidence for 0089)
+
+The previous reviewer follow-up added verified-buffer execution for module/dependency/
 MCP entry imports, presence-sensitive factories, and stored-procedure-only CMS
 access. Its acceptance commands are:
 

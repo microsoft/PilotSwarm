@@ -93,12 +93,22 @@ export class PgPackageRuntimeAuthority implements PackageRuntimeAuthority {
         const { rows } = await packageRuntimeQuery(client, this.s, "owner", [sessionId]);
         const owner = rows[0];
         if (!owner) denied("current effective owner denied");
-        const pinned = (await packageRuntimeQuery(client, this.s, "binding", [sessionId])).rows[0];
-        if (!pinned && owner.creation_config?.boundAgentPackageId) denied("named executable session requires explicit durable agent pin");
+        const storedPin = (await packageRuntimeQuery(client, this.s, "binding", [sessionId])).rows[0];
+        const eligibility = storedPin
+            ? (await client.query(`SELECT ${this.s}.cms_get_session_agent_package_binding($1) AS binding`, [sessionId])).rows[0]?.binding
+            : null;
+        const declarativeRoot = (!storedPin || eligibility?.executable === false)
+            && (owner.creation_config?.boundAgentPackageId
+                ? (await packageRuntimeQuery(client, this.s, "declarative_root", [sessionId])).rows[0] === true
+                : eligibility?.executable === false);
+        const pinned = declarativeRoot ? undefined : storedPin;
+        if (owner.creation_config?.boundAgentPackageId && !declarativeRoot
+            && (!pinned || eligibility?.executable === false)) denied("named executable session requires explicit durable agent pin");
         if (pinned && (owner.creation_config?.boundAgentName && owner.creation_config.boundAgentName !== pinned.agent_name
             || owner.creation_config?.boundAgentPackageId && owner.creation_config.boundAgentPackageId !== pinned.package_id)) {
             denied("current agent configuration conflicts with immutable named-agent pin");
         }
+        if (pinned && !eligibility?.allowed) denied("current bound-agent eligibility denied");
         let binding = pinned;
         if (identity && pinned?.package_id !== identity.packageId) {
             binding = (await packageRuntimeQuery(client, this.s, "grant",
@@ -112,8 +122,7 @@ export class PgPackageRuntimeAuthority implements PackageRuntimeAuthority {
             binding = { ...binding, agent_name: pinned?.agent_name ?? owner.creation_config?.boundAgentName ?? "pilotswarm",
                 agent_package_id: pinned?.package_id ?? null, selected: true };
         } else {
-            const allowed = await client.query(`SELECT ${this.s}.cms_get_session_agent_package_binding($1) AS binding`, [sessionId]);
-            if (!allowed.rows[0]?.binding?.allowed) denied("current bound-agent eligibility denied");
+            if (!pinned) denied("current bound-agent eligibility denied");
         }
         if (!binding || binding.owner_provider !== owner.provider || binding.owner_subject !== owner.subject) denied("current owner or pin denied");
         const access = await packageRuntimeQuery(client, this.s, "access", [binding.package_id, owner.provider, owner.subject]);

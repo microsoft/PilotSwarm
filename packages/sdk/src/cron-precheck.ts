@@ -172,6 +172,7 @@ export function validateCronPrecheckBindings(value: unknown): CronPrecheckBindin
 export interface CronPrecheckSources {
     staticNames: string[];
     packageId?: string;
+    packageActive?: boolean;
     packageIdentity?: import("./agent-package-authorization.js").ExecutablePackageIdentity;
     packageBindingRevision?: number;
     packageNames?: string[];
@@ -198,7 +199,7 @@ export function chooseCronPrecheck(params: {
 }): CronPrecheckChoice {
     const sources = params.sources ?? { staticNames: [] };
     const identity = sources.packageIdentity;
-    const validPackagePin = identity?.packageId === sources.packageId
+    const validPackagePin = sources.packageActive !== false && identity?.packageId === sources.packageId
         && typeof identity?.versionId === "string" && identity.versionId.length > 0
         && typeof identity.sha256 === "string" && /^[a-f0-9]{64}$/.test(identity.sha256)
         && Number.isSafeInteger(sources.packageBindingRevision) && sources.packageBindingRevision! > 0;

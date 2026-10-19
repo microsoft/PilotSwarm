@@ -5,6 +5,7 @@
 import { describe, expect, it } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import pg from "pg";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { createCatalog, waitForEventCount } from "../helpers/cms-helpers.js";
 import { scriptTurns } from "../helpers/scripted-model.mjs";
@@ -76,6 +77,61 @@ createInterface({input:process.stdin}).on("line",line=>{
 }
 
 describe("approved supervised package cron (real worker)", () => {
+    it("a historical declarative agent uses a static precheck with no package binding or administrative rebind", { timeout: 240_000 }, async () => {
+        const env = await getEnv();
+        const agent = "prompt-only-poller";
+        const dir = path.join(env.baseDir, "prompt-only-kit");
+        fs.mkdirSync(path.join(dir, "agents"), { recursive: true });
+        fs.writeFileSync(path.join(dir, "plugin.json"), JSON.stringify({ name: "prompt-only-kit", version: "1.0.0" }));
+        fs.writeFileSync(path.join(dir, "agents", `${agent}.agent.md`), [
+            "---", `name: ${agent}`, "description: Declarative queue poller", "schemaVersion: 2", "version: 1.0.0",
+            "tools: []", "cronPrechecks:", '  - reasonPrefix: "Run the fixture queue cycle"', "    precheck: trusted-queue",
+            "---", "Poll the fixture queue.",
+        ].join("\n"));
+        const catalog = await createCatalog(env);
+        const artifactStore = new FilesystemArtifactStore(path.join(path.dirname(env.sessionStateDir), "artifacts"));
+        try {
+            const published = await publishAgentPackageDir({ catalog, artifactStore }, {
+                dir, scope: "shared", owner: OWNER, createdBy: "fixture@test", isAdmin: false,
+            });
+            expect(published.review).toMatchObject({ decision: "not_required", executable: false, active: true });
+            await withScriptedModel(env, {
+                respond: scriptTurns([
+                    [{ tools: [{ name: "cron", args: { seconds: 15, reason: REASON } }] }, { content: "armed" }],
+                    [{ content: "cycle ran" }],
+                ]),
+                worker: { artifactStore, agentPackages: { cacheDir: path.join(env.baseDir, "prompt-cache"), refreshIntervalMs: 0 } },
+            }, async ({ client, worker, model }) => {
+                let hasWork = false;
+                worker.registerCronPrechecks([{ name: "trusted-queue", check: () => ({ action: hasWork ? "run" : "skip" }) }]);
+                await worker.refreshAgentPackages({ force: true });
+                client.config.allowedAgentNames = [...worker.allowedAgentNames];
+                const session = await client.createSessionForAgent(agent, { owner: OWNER, boundAgentPackageId: published.packageId });
+                expect(await catalog.packageReviews.getSessionBinding(session.sessionId)).toBeNull();
+                const sql = new pg.Client({ connectionString: env.store });
+                await sql.connect();
+                try {
+                    await sql.query(`UPDATE "${env.cmsSchema}".sessions SET package_binding_policy_version=NULL WHERE session_id=$1`, [session.sessionId]);
+                } finally { await sql.end(); }
+                await session.send(KICKOFF);
+                const [started] = await waitForEventCount(catalog, session.sessionId, "session.cron_started", 1, 60_000);
+                expect(started.data).toMatchObject({ reason: REASON, precheck: "trusted-queue" });
+                const armedRequests = model.sessionRequests(KICKOFF).length;
+                const idle = await waitForEventCount(catalog, session.sessionId, "session.cron_precheck", 2, 75_000);
+                expect(idle.slice(0, 2).every(event => event.data.skipped === true)).toBe(true);
+                expect(model.sessionRequests(KICKOFF).length).toBe(armedRequests);
+                expect(await catalog.packageReviews.getSessionBinding(session.sessionId)).toBeNull();
+                hasWork = true;
+                await waitForEventCount(catalog, session.sessionId, "session.cron_precheck", 3, 45_000);
+                const deadline = Date.now() + 45_000;
+                while (model.sessionRequests(KICKOFF).length === armedRequests && Date.now() < deadline) {
+                    await new Promise(resolve => setTimeout(resolve, 250));
+                }
+                expect(model.sessionRequests(KICKOFF).length).toBeGreaterThan(armedRequests);
+            });
+        } finally { await catalog.close?.(); }
+    });
+
     it.each([false, true])("MCP=%s: pending executes nothing, approved idle cycles make zero new model requests", { timeout: 240_000 }, async mcp => {
         const env = await getEnv();
         const statePath = path.join(env.baseDir, `queue-${mcp}.json`);
@@ -114,7 +170,9 @@ describe("approved supervised package cron (real worker)", () => {
                 // The local harness forwards this discovery snapshot at startup;
                 // refresh it after the deliberately post-start admin activation.
                 client.config.allowedAgentNames = [...worker.allowedAgentNames];
-                const session = await client.createSessionForAgent(AGENT, { title: "supervised-cron", owner: OWNER });
+                const session = await client.createSessionForAgent(AGENT, {
+                    title: "supervised-cron", owner: OWNER, boundAgentPackageId: published.packageId,
+                });
                 await session.send(KICKOFF);
                 const [started] = await waitForEventCount(catalog, session.sessionId, "session.cron_started", 1, 60_000);
                 expect(started.data).toMatchObject({ reason: REASON, precheck: "queue-gate" });

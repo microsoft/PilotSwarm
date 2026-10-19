@@ -12,9 +12,9 @@ const systemPrompt = body => body.messages.filter(m => m.role === "system").map(
 const toolNames = body => body.tools.map(t => t.function?.name);
 const facts = { readFacts: async () => ({ count: 0, facts: [] }), storeFact: async () => ({ stored: true }), deleteFact: async () => ({ deleted: true }) };
 
-function fixtureBinding(manager, sessionId, packageId) {
+function fixtureBinding(manager, sessionId, packageId, executable = false) {
     let binding = { sessionId, packageId, agentName: "analyst", versionId: "1", sha256: "1".repeat(64),
-        owner: { provider: "fixture", subject: "owner" }, revision: 1, allowed: true };
+        owner: { provider: "fixture", subject: "owner" }, revision: 1, allowed: true, executable };
     manager.setSessionCatalog({
         getSession: async () => ({ owner: binding.owner }), recordEvents: async () => {},
         packageReviews: { getSessionBinding: async () => binding },
@@ -23,7 +23,7 @@ function fixtureBinding(manager, sessionId, packageId) {
 }
 
 describe("named-agent binding refresh (real Copilot SDK/CLI, scripted local inference)", () => {
-    it("refreshes trusted fixture handlers, denies a changed content pin, then resumes only after explicit rebind", { timeout: 60_000 }, async () => {
+    it.each([false, true])("refreshes declarations and trusted fixture handlers; executable=%s requires explicit exact-content rebind", { timeout: 60_000 }, async executable => {
         const home = mkdtempSync(resolve(".test-agent-refresh-runtime-"));
         let phase = 0;
         const executed = [];
@@ -38,7 +38,7 @@ describe("named-agent binding refresh (real Copilot SDK/CLI, scripted local infe
             modelProviders: registry, agentPromptLookup: lookup, turnTimeoutMs: 20_000,
         }, join(home, "session-state"));
         manager.setFactStore(facts);
-        const rebind = fixtureBinding(manager, sessionId, "shared-package");
+        const rebind = fixtureBinding(manager, sessionId, "shared-package", executable);
         const config = {
             model: `fixture:${MODEL}`, workingDirectory: home,
             boundAgentName: "analyst", boundAgentPackageId: "shared-package",
@@ -47,7 +47,7 @@ describe("named-agent binding refresh (real Copilot SDK/CLI, scripted local infe
         function publish(version, name, prompt) {
             const identity = version < 2 ? "1" : String(version);
             lookup.analyst = { prompt, kind: "app-agent", packageId: "shared-package", packageScope: "shared", toolNames: [name],
-                packageVersionId: identity, packageSha256: identity.repeat(64) };
+                packageVersionId: identity, packageSha256: identity.repeat(64), packageExecutable: executable };
             const tool = {
                 name, description: "Inspect the fixture catalog", parameters: { type: "object", properties: {} },
                 handler: async () => { executed.push(version); return `HANDLER_${version}`; },
@@ -75,9 +75,11 @@ describe("named-agent binding refresh (real Copilot SDK/CLI, scripted local infe
             phase = 2;
             const changedStart = server.requests.length;
             publish(2, "search_catalog", "AGENT_VERSION_UPDATED");
-            await expect(manager.getOrCreate(sessionId, config, { turnIndex: 2 })).rejects.toMatchObject({ code: "BOUND_AGENT_PACKAGE_UNAVAILABLE" });
-            expect(server.requests.length).toBe(changedStart);
-            rebind(2);
+            if (executable) {
+                await expect(manager.getOrCreate(sessionId, config, { turnIndex: 2 })).rejects.toMatchObject({ code: "BOUND_AGENT_PACKAGE_UNAVAILABLE" });
+                expect(server.requests.length).toBe(changedStart);
+                rebind(2);
+            }
             managed = await manager.getOrCreate(sessionId, config, { turnIndex: 2 });
             expect(managed.getCopilotSession()).not.toBe(firstHandle);
             expect((await managed.runTurn("Use the current catalog search capability.")).content).toBe("TURN_2_COMPLETE");
@@ -97,7 +99,7 @@ describe("named-agent binding refresh (real Copilot SDK/CLI, scripted local infe
 
             phase = 3;
             publish(3, "search_catalog", "AGENT_VERSION_REENABLED");
-            rebind(3);
+            if (executable) rebind(3);
             managed = await manager.getOrCreate(sessionId, config, { turnIndex: 4 });
             expect((await managed.runTurn("Use the restored search capability.")).content).toBe("TURN_3_COMPLETE");
             expect(executed).toEqual([0, 1, 2, 3]);
@@ -124,6 +126,7 @@ describe("queued named startup across package republish (real Copilot SDK/CLI)",
         const lookup = { analyst: {
             prompt: "QUEUED_DEFINITION", kind: "app-agent", packageId: "pkg-startup", packageScope: "shared",
             packageVersionId: "1", packageSha256: "1".repeat(64),
+            packageExecutable: false,
             toolNames: ["load_v1"], initialRequiredTool: "load_v1",
         } };
         const queuedStartup = lookup.analyst.initialRequiredTool;
@@ -133,7 +136,7 @@ describe("queued named startup across package republish (real Copilot SDK/CLI)",
         const manager = new SessionManager(undefined, null, { modelProviders: registry,
             agentPromptLookup: lookup, turnTimeoutMs: 10_000 }, join(home, "sessions"));
         manager.setFactStore(facts);
-        const rebind = fixtureBinding(manager, sessionId, "pkg-startup");
+        fixtureBinding(manager, sessionId, "pkg-startup");
         // The package changes after the durable opening message was enqueued,
         // before any worker creates the child SDK session.
         lookup.analyst = { ...lookup.analyst, prompt: "REPUBLISHED_DEFINITION",
@@ -147,10 +150,6 @@ describe("queued named startup across package republish (real Copilot SDK/CLI)",
             byPackage: new Map([["pkg-startup", new Map(exports.map(tool => [tool.name, tool]))]]), staticNames: new Set(),
         });
         try {
-            await expect(manager.getOrCreate(sessionId, config, { turnIndex: 0 })).rejects.toMatchObject({ code: "BOUND_AGENT_PACKAGE_UNAVAILABLE" });
-            expect(server.requests).toHaveLength(0);
-            expect(called).toEqual([]);
-            rebind(2);
             const session = await manager.getOrCreate(sessionId, config, { turnIndex: 0 });
             const result = await session.runTurn("Carry out the queued named-agent assignment", { requiredTool: queuedStartup });
             if (preserved) {

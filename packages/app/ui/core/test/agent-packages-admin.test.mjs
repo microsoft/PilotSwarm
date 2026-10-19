@@ -463,6 +463,7 @@ test("package detail VM: versions and fleet adoption", () => {
     const view = selectAdminConsole(store.getState());
     assert.equal(view.section, "packages", "selecting a package switches the section");
     const detail = view.packages.detail;
+    assert.equal(detail.packageId, "p1", "publisher status uses exact selected identity, never a same-name package");
     assert.equal(detail.activeSemver, "1.4.0");
     assert.equal(detail.activeSha12, "a1b2c3d4e5f6");
     assert.equal(detail.versions.length, 2);

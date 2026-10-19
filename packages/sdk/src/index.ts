@@ -377,6 +377,8 @@ export type {
     AgentPackageInspection,
     PackageReviewDecision,
     AgentPackageReviewCandidate,
+    AgentPackagePublisherStatus,
+    AgentPackageVersionReview,
     AgentPackageReviewMutation,
     AgentPackageActivationMutation,
     SessionAgentPackageBinding,

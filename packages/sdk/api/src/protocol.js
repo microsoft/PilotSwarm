@@ -215,6 +215,7 @@ export const OPERATIONS = [
     // Fixed segments (sources / upload / worker-state) are registered BEFORE
     // the :name routes — Express matches in table order.
     { name: "listAgentPackages", access: "authed", method: "GET", path: "/agent-packages", summary: "Agent packages visible to the caller: shared + own user-scope (admins see all)." },
+    { name: "getAgentPackageReviewStatus", access: "authed", method: "GET", path: "/agent-package-review-status/:packageId", params: { packageId: path("packageId") }, summary: "Owner, editor or authenticated administrator: per-version artifact approval and activation status." },
     { name: "listAgentPackageReviews", access: "fleet:admin", admin: true, method: "GET", path: "/agent-package-reviews", summary: "Authenticated administrator: immutable package review candidates, including pending and prior active identity." },
     { name: "decideAgentPackageReview", access: "fleet:admin", admin: true, method: "POST", path: "/agent-package-reviews/decision", params: { input: body() }, summary: "Authenticated administrator: CAS exact package/version/digest/revision; append audit. Does not activate code." },
     { name: "getAgentPackageReviewAudit", access: "fleet:admin", admin: true, method: "GET", path: "/agent-package-reviews/:versionId/audit", params: { versionId: path("versionId") }, summary: "Authenticated administrator: append-only package decision history." },

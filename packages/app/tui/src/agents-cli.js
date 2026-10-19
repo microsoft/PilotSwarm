@@ -73,6 +73,7 @@ Usage:
   pilotswarm agents push <dir> [--shared|--user] [--json]
   pilotswarm agents list [--json]
   pilotswarm agents reviews
+  pilotswarm agents review-status <package>
   pilotswarm agents review <package-id> <version-id> <sha256> <revision> <approved|rejected|revoked> <reason>
   pilotswarm agents review-audit <version-id>
   pilotswarm agents runtime-status <package-id> <version-id> <sha256>
@@ -298,7 +299,7 @@ export async function runAgentsCommand(argv) {
     const createdBy = `${os.userInfo().username}@cli`;
     const selector = flags.scope ? { scope: flags.scope } : null;
     try {
-        if (!web && ["reviews", "review", "review-audit", "runtime-status", "activate", "activation-audit", "binding", "rebind"].includes(command)) {
+        if (!web && ["review-status", "reviews", "review", "review-audit", "runtime-status", "activate", "activation-audit", "binding", "rebind"].includes(command)) {
             console.error("Package trust administration requires authenticated Web API mode (--api-url). A direct database connection is not an authenticated administrator identity.");
             return 1;
         }
@@ -365,6 +366,9 @@ export async function runAgentsCommand(argv) {
                 console.log(JSON.stringify(await ctx.client.getAgentPackageReviewAudit(rest[0], actor, isAdmin), null, 2));
                 return 0;
             }
+            case "review-status":
+                console.log(JSON.stringify(await reviewStatusForCli(ctx, rest[0]), null, 2));
+                return 0;
             case "runtime-status": {
                 const [packageId, versionId, sha256] = rest;
                 console.log(JSON.stringify(await ctx.client.getAgentPackageRuntimeStatus({ packageId, versionId, sha256 }, actor, isAdmin), null, 2));
@@ -524,6 +528,11 @@ export async function runAgentsCommand(argv) {
     } finally {
         await ctx.close();
     }
+}
+
+export async function reviewStatusForCli(ctx, packageId) {
+    if (!packageId) throw new Error("review-status requires a package ID or name");
+    return ctx.client.getAgentPackageReviewStatus(packageId);
 }
 
 export async function directTree(ctx, name, semver, actor, isAdmin) {

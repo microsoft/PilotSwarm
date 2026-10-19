@@ -4927,6 +4927,7 @@ export function selectAdminConsole(state) {
         const canManage = permissionSource ? ownsPackage(permissionSource) : false;
         const canEdit = permissionSource ? canEditPackage(permissionSource) : false;
         packageDetail = {
+            packageId: detail?.packageId || summary?.packageId || null,
             name: pkgState.selectedName,
             loading: Boolean(pkgState.detailLoading),
             error: pkgState.detailError || null,

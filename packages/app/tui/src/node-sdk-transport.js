@@ -706,6 +706,7 @@ export class NodeSdkTransport {
                         startedBy: Array.isArray(agent.startedBy) && agent.startedBy.length ? agent.startedBy : undefined,
                         supportsDirectStart: typeof agent.supportsDirectStart === "boolean" ? agent.supportsDirectStart : undefined,
                         source: "package",
+                        packageId: pkg.packageId,
                         packageName: pkg.name,
                         // Friendly section header. plugin.json "title" when the
                         // author set one; the DNS-label name otherwise.
@@ -728,12 +729,14 @@ export class NodeSdkTransport {
      * Enforce user-scope visibility at create time and admit package agents
      * into the client's live allowlist. Baked agents pass through untouched.
      */
-    async _authorizePackageAgentCreate(agentName, owner, isAdmin) {
+    async _authorizePackageAgentCreate(agentName, owner, isAdmin, includeSelection = false) {
         const normalized = normalizeAgentName(agentName);
         const baked = this.creatableAgents.find((agent) => normalizeAgentName(agent.name) === normalized);
-        if (baked) return baked.name;
         const registry = await this._listRegistryCreatableAgents(owner, isAdmin);
-        const match = registry.find((entry) => normalizeAgentName(entry.name) === normalized);
+        const matches = registry.filter((entry) => normalizeAgentName(entry.name) === normalized)
+            .sort((a, b) => a.packageName < b.packageName ? -1 : a.packageName > b.packageName ? 1 : 0);
+        const match = matches.find(entry => entry.scope === "user" && entry.mine)
+            ?? baked ?? matches.find(entry => entry.scope === "shared");
         if (!match) {
             // Either the agent doesn't exist or it is a user-scope package the
             // caller can't see — same answer either way (no existence oracle).
@@ -746,7 +749,10 @@ export class NodeSdkTransport {
         if (this.allowedAgentNames.length > 0 && !this.allowedAgentNames.includes(match.name)) {
             this.allowedAgentNames.push(match.name);
         }
-        return match.name;
+        if (match.source === "package" && !match.packageId) {
+            throw Object.assign(new Error("Package creation provenance unavailable"), { code: "UNAVAILABLE" });
+        }
+        return includeSelection ? { name: match.name, packageId: match.packageId } : match.name;
     }
 
     // ── Agent packages: registry CRUD (portal ops surface) ──────
@@ -757,6 +763,9 @@ export class NodeSdkTransport {
 
     async listAgentPackageReviews(owner = this.currentUser, isAdmin = false) {
         return this.mgmt.listAgentPackageReviews(owner, isAdmin === true);
+    }
+    async getAgentPackageReviewStatus(packageId, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.getAgentPackageReviewStatus(packageId, owner, isAdmin === true);
     }
 
     async decideAgentPackageReview(input, owner = this.currentUser, isAdmin = false) {
@@ -1427,8 +1436,9 @@ export class NodeSdkTransport {
         // resolve the union, enforce user-scope ownership, then delegate the
         // CANONICAL catalog name (the client's allowlist and the CMS row use
         // exact names; only the worker resolver is fuzzy).
-        const canonicalName = await this._authorizePackageAgentCreate(agentName, owner ?? null, isAdmin ?? false);
-        const session = await this.client.createSessionForAgent(canonicalName, {
+        const selected = await this._authorizePackageAgentCreate(agentName, owner ?? null, isAdmin ?? false, true);
+        const session = await this.client.createSessionForAgent(selected.name, {
+            ...(selected.packageId ? { boundAgentPackageId: selected.packageId } : {}),
             ...(model ? { model } : {}),
             ...(reasoningEffort ? { reasoningEffort } : {}),
             ...(contextTier ? { contextTier } : {}),

@@ -5129,6 +5129,12 @@ export class PilotSwarmManagementClient {
         return this._catalog.packageReviews.list({ principal: owner, isAdmin });
     }
 
+    async getAgentPackageReviewStatus(packageId: string, owner: AgentPrincipal | null, isAdmin: boolean) {
+        this._ensureStarted();
+        if (!this._catalog?.packageReviews) throw Object.assign(new Error("Package review catalog unavailable"), { code: "UNAVAILABLE" });
+        return this._catalog.packageReviews.publisherStatus({ principal: owner, isAdmin }, packageId);
+    }
+
     async decideAgentPackageReview(
         input: import("./agent-package-authorization.js").AgentPackageReviewMutation,
         owner: AgentPrincipal | null, isAdmin: boolean,

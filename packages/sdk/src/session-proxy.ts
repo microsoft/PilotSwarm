@@ -135,8 +135,8 @@ export async function resolveAgentDefinitionForCaller(opts: {
     getCallerOwnerKey: () => Promise<string | null>;
 }): Promise<ResolvedAgentDefinition | null> {
     const agents: Array<any> = [
-        ...(opts.userAgents ?? []).map(a => ({ ...a, system: false, creatable: true })),
-        ...(opts.systemAgents ?? []).map(a => ({ ...a, creatable: false })),
+        ...(opts.userAgents ?? []).filter(a => a.packageActive !== false).map(a => ({ ...a, system: false, creatable: true })),
+        ...(opts.systemAgents ?? []).filter(a => a.packageActive !== false).map(a => ({ ...a, creatable: false })),
     ];
     const normalize = (value?: string) => (value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
 
@@ -993,14 +993,14 @@ const WORKSPACE_WAIT_FALLBACK_SECONDS = 30;
 export function resolveBoundAgentBackfill(
     runConfig: SerializableSessionConfig,
     catalogAgentId: string | null | undefined,
-    userAgents?: Array<{ name?: string; id?: string }>,
+    userAgents?: Array<{ name?: string; id?: string; packageActive?: boolean }>,
 ): string | undefined {
     if (runConfig.boundAgentName) return undefined;
     const kind = runConfig.promptLayering?.kind;
     if (kind && kind !== "app-agent") return undefined;
     const wanted = String(catalogAgentId ?? "").trim();
     if (!wanted) return undefined;
-    const match = (userAgents ?? []).find((a) => a.name === wanted || a.id === wanted);
+    const match = (userAgents ?? []).find((a) => a.packageActive !== false && (a.name === wanted || a.id === wanted));
     return match?.name || undefined;
 }
 
@@ -6178,7 +6178,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     ): Promise<CronPrecheckResult> => {
         await sessionManager.authorizeCronPrecheck(input);
         const { result, event } = await evaluateCronPrecheck({
-            registrations: sessionManager.getCronPrechecksFor(input.packageId),
+            registrations: sessionManager.getCronPrechecksFor(input.packageId, input.packageIdentity),
             input,
             callMcpTool: async (signal, server, tool, args) => {
                 const servers = await sessionManager.getCronPrecheckMcpServers(input);

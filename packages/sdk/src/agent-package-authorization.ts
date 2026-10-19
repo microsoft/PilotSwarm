@@ -59,12 +59,27 @@ export interface AgentPackageActivationMutation extends ExecutablePackageIdentit
 }
 
 export interface SessionAgentPackageBinding extends ExecutablePackageIdentity {
+    /** False only for an exactly inspected declarative artifact; absent is unverified. */
+    executable?: boolean;
     sessionId: string;
     agentName: string;
     revision: number;
     owner: { provider: string; subject: string };
     /** Current metadata eligibility only; NOT an invocation grant or fence. */
     allowed: boolean;
+}
+
+export interface AgentPackageVersionReview extends ExecutablePackageIdentity {
+    decision: PackageReviewDecision;
+    executable: boolean;
+    active: boolean;
+}
+
+export interface AgentPackagePublisherStatus {
+    packageId: string;
+    name: string;
+    activeVersionId: string | null;
+    versions: Array<AgentPackageVersionReview & { semver: string; reasons: string[] }>;
 }
 
 export interface SessionAgentPackageRebind extends ExecutablePackageIdentity {

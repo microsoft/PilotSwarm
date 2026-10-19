@@ -17,7 +17,65 @@ nothing; denial, timeout, caught failed calls and unfinished calls cannot skip a
 model turn. Approved empty-queue callbacks skip without model hydration.
 Trusted `worker.registerCronPrechecks()` registration needs no new opt-in.
 
-### Integrated acceptance snapshot
+### Executable-only pin integration
+
+Prompt-only agents, including historical NULL-policy sessions, may use trusted
+static prechecks without a durable package binding or administrative rebind.
+Declarative republishing follows the active copy as before; stale declarative
+binding rows do not enforce a pin. No precheck opt-in still means no extra activity.
+
+Package-owned executable callbacks require explicit matching package provenance,
+a resolvable current owner, an approved exact version/digest and the schedule's
+durable binding revision. Callback/tool/MCP registries are content-qualified.
+Admission and every MCP call use the same current binding/copy resolver as normal
+session hydration. An already-armed V1 schedule can continue on an approved,
+authorized retained V1 after executable V2 activation, even if V2 removed its
+agent name; it never silently calls V2. Retired registrations cannot arm new
+package-owned schedules. Revocation or explicit rebind denies the old schedule
+before callback entry. Declarative-to-executable and executable-to-declarative
+transitions require explicit administrative rebind and deliberate schedule re-arm.
+Static callbacks do not bypass executable-root admission.
+
+Authenticated Web/TUI creation resolves package provenance server-side; lower-level
+SDK callers creating package-named roots supply `boundAgentPackageId`. Both paths
+continue forwarding `cronPrecheck`. Per-call authorization stays in activities,
+not orchestration replay; resolved `state.config` drives resumed dispatch and the
+persisted immutable identity survives continue-as-new.
+
+### Executable-only integration acceptance
+
+The local merged candidate passed the root `npm run build`, full SDK units
+under Git Bash (`usr/bin` first, concurrency two): **1,632 passed, nine skipped,
+zero failed**, and **61 approval/status surface tests**, zero skips/failures.
+The nine Windows skips remain explicit POSIX/Linux/process-platform limitations,
+not Linux evidence. The final private/shared admission and authenticated creation
+fixtures also passed their focused **20-case** rerun.
+
+The isolated localhost PostgreSQL 18.4 preflight verified SCRAM on every host
+authentication rule and passed all **seven cron activity cases**, including
+historical declarative/no-binding static checks, both code transitions,
+retained V1 after V2 activation, stale rebind, revocation and zero new callback
+entry after denial. These overlap the complete runtime suite, not additive counts.
+The complete `package-runtime.test.mjs` suite then passed **91 cases, zero
+failures/skips**, with TAP reporting and a 120-second per-test timeout on that
+task-owned SCRAM server.
+The seven native cron suites plus the normal agent-binding refresh regression
+suite passed **78 tests across eight files, zero failures/skips**. This includes
+the real-worker historical declarative/static fixture: no binding row or rebind,
+two idle cycles with zero additional model requests, then a normal work cycle.
+The first native run exposed a missing package-ID field in the new owned-MCP
+fixture (73/74); correcting the fixture to exercise owned rather than static
+admission passed its focused 25-case suite and the complete 78-case rerun.
+The final SDK-unit rerun confirmed the same 1,632/9/0 result. Indexed repository
+privacy validation reported zero findings. Task-owned scratch and `.test-*`
+directories were removed; PostgreSQL port 55547 was verified closed and no
+remaining test/runtime process named this worktree in its command line.
+No operator database, deployment, commit or push is part of this validation.
+
+### Earlier integrated acceptance snapshot
+
+The counts and Linux runs below describe earlier candidates, not validation of
+the subsequent executable-only pin integration.
 
 The integrated candidate passed the root full build and:
 

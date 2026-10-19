@@ -887,6 +887,8 @@ export interface AgentPackageInstallEntry {
     versionId?: string;
     reviewDecision?: PackageReviewDecision;
     reviewRevision?: number;
+    /** Inactive versions are retained solely for existing exact executable grants. */
+    active?: boolean;
     name: string;
     scope: AgentPackageScope;
     owner: AgentPrincipal | null;
@@ -925,6 +927,7 @@ export interface PublishAgentPackageResult {
     status: "published" | "noop";
     packageId: string;
     versionId: string;
+    review: import("./agent-package-authorization.js").AgentPackageVersionReview;
 }
 
 // ─── Worker registry (migration 0040) ────────────────────────────
@@ -1104,6 +1107,8 @@ export interface SessionCatalog {
 
     /** Atomic publish — see cms_publish_agent_package. Throws AGENT_PACKAGE_* errors. */
     publishAgentPackage(input: PublishAgentPackageInput): Promise<PublishAgentPackageResult>;
+    /** Trusted catalog read for an already-authorized publish/no-op result. */
+    getAgentPackageVersionReview(versionId: string): Promise<import("./agent-package-authorization.js").AgentPackageVersionReview>;
     listAgentPackages(viewer: AgentPrincipal | null, isAdmin: boolean): Promise<AgentPackageSummary[]>;
     /**
      * One package. `selector` picks WHICH copy of the name (own / shared /
@@ -1518,6 +1523,7 @@ function sqlForSchema(schema: string) {
     return {
         schema,
         fn: {
+            getAgentPackageVersionReview: `${s}.cms_get_agent_package_version_review`,
             packageCapabilitiesCas:    `${s}.cms_pkg_capabilities_cas`,
             packageCapabilitiesUpdate: `${s}.cms_pkg_capabilities_update`,
             liveAvailable:             `${s}.cms_live_available`,
@@ -1609,7 +1615,7 @@ function sqlForSchema(schema: string) {
             listAgentPackages:          `${s}.cms_list_agent_packages`,
             getAgentPackage:            `${s}.cms_get_agent_package`,
             resolveAgentPackageId:      `${s}.cms_resolve_agent_package_id`,
-            getAgentPackagesInstallManifest: `${s}.cms_get_agent_packages_runtime_install_manifest`,
+            getAgentPackagesInstallManifest: `${s}.cms_get_agent_packages_pinned_runtime_install_manifest`,
             setAgentPackageScope:       `${s}.cms_set_agent_package_scope`,
             setAgentPackageEnabled:     `${s}.cms_set_agent_package_enabled`,
             pinAgentPackageVersion:     `${s}.cms_pin_agent_package_version`,
@@ -3799,7 +3805,14 @@ export class PgSessionCatalog implements SessionCatalog {
             status: row.status === "noop" ? "noop" : "published",
             packageId: String(row.package_id ?? packageId),
             versionId: String(row.version_id ?? versionId),
+            review: await this.getAgentPackageVersionReview(String(row.version_id ?? versionId)),
         };
+    }
+
+    async getAgentPackageVersionReview(versionId: string): Promise<import("./agent-package-authorization.js").AgentPackageVersionReview> {
+        const { rows } = await this.pool.query(`SELECT ${this.sql.fn.getAgentPackageVersionReview}($1) AS review`, [versionId]);
+        if (!rows[0]?.review) throw new Error("AGENT_PACKAGE_REVIEW_NOT_FOUND: published version is unavailable");
+        return rows[0].review;
     }
 
     async listAgentPackages(viewer: AgentPrincipal | null, isAdmin: boolean): Promise<AgentPackageSummary[]> {
@@ -3878,6 +3891,7 @@ export class PgSessionCatalog implements SessionCatalog {
             versionId: row.version_id,
             reviewDecision: row.review_decision ?? undefined,
             reviewRevision: row.review_revision == null ? undefined : Number(row.review_revision),
+            active: row.active !== false,
             name: row.name,
             scope: row.scope === "user" ? "user" as const : "shared" as const,
             owner: rowToAgentPrincipal(row),

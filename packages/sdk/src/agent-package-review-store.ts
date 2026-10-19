@@ -9,6 +9,7 @@ import type {
     AgentPackageActivationMutation,
     SessionAgentPackageBinding,
     SessionAgentPackageRebind,
+    AgentPackagePublisherStatus,
 } from "./agent-package-authorization.js";
 
 /** Server-resolved identity only. A request body must never supply this value. */
@@ -18,6 +19,7 @@ export interface AgentPackageReviewActor {
 }
 
 export interface AgentPackageReviewCatalog {
+    publisherStatus(actor: AgentPackageReviewActor, packageId: string): Promise<AgentPackagePublisherStatus>;
     list(actor: AgentPackageReviewActor): Promise<AgentPackageReviewCandidate[]>;
     decide(actor: AgentPackageReviewActor, input: AgentPackageReviewMutation): Promise<void>;
     audit(actor: AgentPackageReviewActor, versionId: string): Promise<AgentPackageReviewAudit[]>;
@@ -43,6 +45,27 @@ export class PgAgentPackageReviewStore implements AgentPackageReviewCatalog {
     private requireAdmin(actor: AgentPackageReviewActor): void {
         if (actor?.isAdmin !== true || !actor.principal?.provider || !actor.principal?.subject) {
             throw new AgentPackageReviewError("FORBIDDEN", "Authenticated administrator required");
+        }
+
+    }
+
+    async publisherStatus(actor: AgentPackageReviewActor, packageId: string): Promise<AgentPackagePublisherStatus> {
+        if (!actor.principal?.provider || !actor.principal.subject) {
+        throw new AgentPackageReviewError("FORBIDDEN", "Authenticated package manager required");
+        }
+        try {
+        const query = {
+            text: `SELECT ${this.schema}.cms_get_agent_package_review_status($1,$2,$3,$4) AS status`,
+            values: [packageId, actor.principal.provider, actor.principal.subject, actor.isAdmin === true],
+            query_timeout: 6_000,
+        };
+        const { rows } = await this.pool.query(query);
+        return rows[0].status;
+        } catch (error: any) {
+        if (/^AGENT_PACKAGE_REVIEW_FORBIDDEN:/.test(error?.message ?? "")) {
+            throw new AgentPackageReviewError("FORBIDDEN", "Package manager access required");
+        }
+        throw error;
         }
     }
 

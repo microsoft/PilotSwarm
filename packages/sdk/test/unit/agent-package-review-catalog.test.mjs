@@ -437,6 +437,11 @@ test("entire CMS migration chain upgrades legacy executable versions without gra
     [sha2, JSON.stringify(inspection)]);
     await assert.rejects(catalog.packageReviews.bindNewSession("historical", "safe-pkg", "safe-kit:helper"), /historical session/);
     await rollback;
+    for (const migration of migrations.filter(m => m.version > "0084")) {
+        for (const sql of migration.steps ?? [migration.sql]) await db.exec(sql);
+    }
+    await catalog.packageReviews.bindNewSession("historical", "safe-pkg", "safe-kit:helper");
+    assert.equal(await catalog.packageReviews.getSessionBinding("historical"), null, "0089 restores historical declarative refresh without pins");
     const cacheDir = fs.mkdtempSync(path.resolve(".test-legacy-cache-"));
     t.after(() => fs.rmSync(cacheDir, { recursive: true, force: true }));
     const installed = await installAgentPackages({ catalog, cacheDir, artifactStore: {
@@ -449,14 +454,14 @@ test("entire CMS migration chain upgrades legacy executable versions without gra
     assert.equal(legacyInstall.status, "ok", legacyInstall.error);
     await catalog.createSession("legacy-data-new-session", { owner: { provider: "entra", subject: "publisher" },
         creationConfig: { boundAgentName: "review-kit:helper", boundAgentPackageId: "legacy-data" } });
-    assert.equal((await catalog.packageReviews.getSessionBinding("legacy-data-new-session")).allowed, true);
+    assert.equal(await catalog.packageReviews.getSessionBinding("legacy-data-new-session"), null);
     const owner = { provider: "entra", subject: "publisher" };
     await catalog.createSession("new-bound", { owner,
         creationConfig: { boundAgentName: "safe-kit:helper", boundAgentPackageId: "safe-pkg" } });
-    assert.equal((await catalog.packageReviews.getSessionBinding("new-bound")).versionId, "safe-v1");
+    assert.equal(await catalog.packageReviews.getSessionBinding("new-bound"), null);
     await catalog.createSession("new-root", { owner, agentId: "safe-kit:helper" });
     await catalog.packageReviews.bindNewSession("new-root", "safe-pkg", "safe-kit:helper");
-    assert.equal((await catalog.packageReviews.getSessionBinding("new-root")).allowed, true);
+    assert.equal(await catalog.packageReviews.getSessionBinding("new-root"), null);
     await assert.rejects(catalog.createSession("denied-create", { owner,
         creationConfig: { boundAgentName: "legacy-kit:helper", boundAgentPackageId: "legacy-pkg" } }), /REVIEW_BLOCKED/);
     assert.equal((await db.query("SELECT count(*) AS n FROM full_catalog.sessions WHERE session_id='denied-create'")).rows[0].n, 0);
