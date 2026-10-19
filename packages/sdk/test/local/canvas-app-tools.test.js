@@ -131,13 +131,14 @@ describe("canvas app registry: agent tools", () => {
             return typeof step === "function" ? step(body, position) : step;
         };
 
-        // A contributor must have signed in before they can be added.
-        {
-            const c = new pg.Client({ connectionString: env.store });
-            await c.connect();
-            try { await c.query(`SELECT "${env.cmsSchema}".cms_register_user($1, $2, $3, $4)`, [DEV.provider, DEV.subject, DEV.email, DEV.displayName]); } finally { await c.end(); }
-        }
         await withScriptedModel(env, { respond }, async ({ client, qualifiedModel }) => {
+            // A contributor must have signed in before they can be added. The CMS schema exists
+            // only once the worker has started (inside withScriptedModel), so register Dev here.
+            {
+                const c = new pg.Client({ connectionString: env.store });
+                await c.connect();
+                try { await c.query(`SELECT "${env.cmsSchema}".cms_register_user($1, $2, $3, $4)`, [DEV.provider, DEV.subject, DEV.email, DEV.displayName]); } finally { await c.end(); }
+            }
             const alice = await client.createSession({ model: qualifiedModel, owner: ALICE });
             const aliceResults = JSON.parse(await alice.sendAndWait("alice", TIMEOUT));
             const published = JSON.parse(aliceResults[1]);
