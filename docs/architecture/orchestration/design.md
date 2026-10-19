@@ -11,15 +11,20 @@ It does **not** own tool implementations or Copilot SDK session state. Those
 live in worker activities and the session manager.
 
 Primary source: [`packages/sdk/src/orchestration/`](../../../packages/sdk/src/orchestration).
-The current latest version is `1.0.81`. Frozen prior versions live as siblings
+The current latest version is `1.0.82`. Frozen prior versions live as siblings
 (single files `packages/sdk/src/orchestration_1_0_47.ts` … `_1_0_51.ts`, then
-directories `orchestration_1_0_52/` … `orchestration_1_0_80/`) and run
+directories `orchestration_1_0_52/` … `orchestration_1_0_81/`) and run
 unchanged for any in-flight execution that started against them.
 
 In 1.0.81, Stop and Steer are handled inside the worker's turn activity through
 the session catalog. The orchestration yields that activity directly; it no
 longer races `runTurn` against `stopTurn.<n>`. Version 1.0.80 and older keep
 their original Stop path.
+
+In 1.0.82, queued work no longer waits behind a timer (issue 192): `drain` runs
+queued prompts and answers at once whatever timer is armed, and `decide` merges
+every queued prompt past timer items into one turn. The KV FIFO compacts
+instead of dropping items. Version 1.0.81 and older keep the old queue.
 
 ---
 
@@ -208,8 +213,9 @@ picks one of the dequeue modes below:
 |---|---|---|
 | **legacy carry-forward** | `state.legacyPendingMessage !== undefined` | replay one already-dequeued message from a pre-v1.0.32 input |
 | **carried guidance** | carry exists and there is no unanswered question, pending shutdown, or gate wait | pending work takes priority; otherwise a non-blocking dequeue selects a queued message or an internal carried-only wake |
+| **queued work** (1.0.82) | the FIFO or the stash holds a prompt or an answer while a timer is armed or a digest window is open; or it holds a timer item while the armed timer is idle, cron, cron_at or an ungated wait; never during a graceful shutdown | release the armed timer as a new message would (a cron or wait keeps its remaining time; a cron_at keeps its next fire; an agent wait ends; input-grace ends, the question stays open; a gate is asked again by the turn; a due timer becomes a timer item), then `race(dequeueEvent, scheduleTimer(10ms))` |
 | **active-timer race** | `activeTimer` set, OR pending child digest waiting to ripen | `race(dequeueEvent, scheduleTimer(remainingMs))`. Timer-side wins push a `{kind:"timer", timer, firedAtMs}` into the stash |
-| **blocking dequeue** | nothing else to do (no timer, no FIFO, no pending prompt/tool actions) | `dequeueEvent` blocks; only allowed on the first drain iteration |
+| **blocking dequeue** | nothing else to do (no timer, no FIFO, no pending prompt/tool actions) and nothing collected yet in this pass | `dequeueEvent` blocks; only allowed on the first drain iteration. In 1.0.82 a pass that has collected a message takes the non-blocking dequeue instead, so every message already queued is collected |
 | **non-blocking dequeue** | otherwise | `race(dequeueEvent, scheduleTimer(NON_BLOCKING_TIMER_MS=10ms))`; timer-side breaks the loop |
 
 Each dequeued message is routed by shape:
@@ -224,16 +230,24 @@ Each dequeued message is routed by shape:
 | else | log and skip |
 
 After the loop, any items still in the stash are appended to the FIFO via
-`appendToFifo`.
+`appendToFifo`. In 1.0.82 a stashed timer item whose kind (type, and gate for
+waits) is already queued is not added: one fire runs the schedule once.
 
 ### KV FIFO buckets
 
 `FIFO_BUCKET_COUNT = 20` keys (`fifo.0` … `fifo.19`), each capped at
 `MAX_BUCKET_BYTES = 14 KB`. Items are appended to the highest non-empty bucket;
 when serialized size would exceed the cap, a new bucket is allocated.
-`popFifoItem` pulls from the lowest non-empty bucket; `popFirstFifoItemMatching`
-takes the first match (used to prioritize interactive prompts/answers ahead of
-queued timer fires).
+`popFifoItem` pulls from the lowest non-empty bucket; `popNextDispatchFifoItem`
+takes the first prompt or answer anywhere (interactive work goes ahead of
+queued timer fires) and reports how many items preceded it.
+
+In 1.0.82, when an append reaches a full last bucket, the FIFO is compacted:
+every item is re-packed from bucket 0, in order. Only when all 20 buckets are
+full after compaction does an item not fit; the stash then records a
+`session.fifo_overflow` event with the lost items' client message ids and
+does not mark those ids as seen, so a resend runs. 1.0.81 and older dropped
+such items with an info line.
 
 ### Prompt timer-interrupt augmentation
 
@@ -273,12 +287,13 @@ function* decide(runtime) {
     }
 
     // Priority 3 — FIFO item (interactive prompt/answer prioritized over timers).
-    const item = popNextDispatchFifoItem(runtime);
-    if (item) {
-        switch (item.kind) {
+    const picked = popNextDispatchFifoItem(runtime);  // { item, before }
+    if (picked) {
+        switch (picked.item.kind) {
             case "prompt":      // (with predispatch sweep + prompt batching)
             case "answer":      yield* processAnswer(runtime, item); break;
-            case "timer":       yield* processTimer(runtime, item);  break;
+            case "timer":       // 1.0.82: other queued items of this kind are removed
+                                yield* processTimer(runtime, item);  break;
             case "agents-done": queueFollowup(runtime, item.summary); break;
         }
         return true;
@@ -299,11 +314,18 @@ function* decide(runtime) {
 
 When a `prompt` FIFO item with `clientMessageIds` is popped, decide first runs
 `sweepMessagesBeforePromptDispatch` (a 100ms tombstone sweep). If still alive,
-it greedily peeks subsequent FIFO items and merges any that are also `prompt`
-into one combined turn (joined with `\n\n`, ids concatenated, bootstrap
-kept equal on both sides, requiredTool first-wins). Bootstrap and ordinary
-prompts do not merge. Non-prompt items are pushed back. This
-collapses rapid-fire user messages into a single LLM turn.
+it merges the prompts queued after it into one combined turn (joined with
+`\n\n`, ids concatenated, bootstrap kept equal on both sides, requiredTool
+first-wins). Bootstrap and ordinary prompts do not merge. This collapses
+rapid-fire user messages into a single LLM turn.
+
+In 1.0.82 (`collectMergeablePrompts`) the merge reads the FIFO in place, from
+the position the dispatched prompt held: timer items are stepped over and
+stay where they are; an answer or another item kind ends the merge, and so
+do a bootstrap mismatch and a carried-steers wake; there is no size limit;
+only the merged and the cancelled prompts are removed. Up to 1.0.81 the merge
+popped the FIFO head to peek and put a non-prompt back at the head, so a timer
+item at the head stopped every merge and never ran while prompts were queued.
 
 A carried-only wake is separate from ordinary and bootstrap prompts. It never
 merges with another FIFO prompt. Guidance still rides with an ordinary prompt
@@ -722,8 +744,8 @@ src/orchestration_1_0_53/     │ frozen — replay only (directory form)
 src/orchestration_1_0_54/     │
 src/orchestration_1_0_55/     │
 ...                          │
-src/orchestration_1_0_80/     ┘
-src/orchestration/            ← current latest (1.0.81)
+src/orchestration_1_0_81/     ┘
+src/orchestration/            ← current latest (1.0.82)
 ```
 
 All registered versions are listed in
