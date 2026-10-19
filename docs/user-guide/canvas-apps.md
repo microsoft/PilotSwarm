@@ -31,6 +31,43 @@ Ask in plain words. The agent uses `publish_canvas_app`, `find_canvas_app`,
 If you have a private app and there is a shared app with the same name, you
 get yours unless you ask for the shared one.
 
+## In the portal
+
+**Publish as app.** The canvas toolbar shows a **Publish as app** button to
+the session's owner. The dialog first checks the page (a manifest with an
+`interface` block, at most 900 KB) and fills in the name, description, tags
+and version from the manifest; nothing is written until you press
+**Publish**. Choose **Private** or **Shared**. A failed check says why, and
+**Publish** stays off.
+
+**Admin Console → Canvas Apps** lists the apps you can see in three groups:
+**Shared**, **Private** (yours) and, for unrestricted admins, **Other users**.
+Select an app to see:
+
+- its name, active version, scope, owner, enabled state and tags;
+- the description;
+- the interface card: the actions and their fields, the KV keys, the
+  requests and what each expects back, the events, and a warning when the app
+  asks for workspace access;
+- every version, with **Pin** and **Preview**;
+- the owner and contributors;
+- the latest loads and the total for the last 30 days (owner and admins);
+- a sandboxed **Preview** (no session, no KV, no workspace);
+- **Share** / **Make private**, **Enable** / **Disable**, **Download** (the
+  active page as `.html`), **Export** (`.tar.gz`) and **Delete**, as your
+  rights allow.
+
+**+ Add canvas app** uploads an `.html` page or imports a `.tar.gz` export.
+
+The **Packages** and **Canvas Apps** sections and their groups collapse. A
+collapsed one shows its count, each section's list scrolls on its own, and
+the group that holds the selected app opens. With the tree focused, `↑`/`↓`
+(or `j`/`k`) move, `Enter` or `Space` opens or closes a section or group,
+`←` collapses and `→` expands. What you collapse is saved for you only.
+
+The TUI's Admin Console (`Shift+A`, then `c`) has the same tree, keys and
+detail, read-only: Preview, the actions and Add canvas app are portal-only.
+
 ## From the command line
 
 `pilotswarm apps` talks to a deployment's Web API with your own sign-in.
@@ -41,6 +78,8 @@ pilotswarm apps list
 pilotswarm apps search "sign off a release"
 pilotswarm apps show release-signoff
 pilotswarm apps push board.html --name release-signoff --description "Use when several approvers sign off a release train together."
+pilotswarm apps publish <session-id> --slot 2 --check   # check a session's canvas; writes nothing
+pilotswarm apps publish <session-id> --slot 2 --name release-signoff
 pilotswarm apps pull release-signoff --version 1.2.0 -o board.html
 pilotswarm apps describe release-signoff --tags release,approval   # description and tags only; no new version
 pilotswarm apps share release-signoff          # unshare to make it private again
@@ -57,7 +96,11 @@ CI, set `PILOTSWARM_API_TOKEN` instead of `auth login`.
 The same operations are in the SDK (`PilotSwarmManagementClient`, direct or
 with `apiUrl`), the Web API (`/api/v1`, see the
 [API reference](../api/reference.md#canvas-apps)) and the MCP server
-(`list_canvas_apps`, `publish_canvas_app_html`, `export_canvas_app`, …).
+(`list_canvas_apps`, `publish_canvas_app_html`, `publish_session_canvas_app`,
+`export_canvas_app`, …). `publishCanvasApp` with `checkOnly: true` (CLI
+`--check`, MCP `check_only`) runs the publish checks on a session's canvas
+and returns the result with the manifest's fields; it writes no app, version
+or stored page.
 
 ## Export and import
 

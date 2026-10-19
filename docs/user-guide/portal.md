@@ -572,6 +572,12 @@ the TUI. Or vice versa.
    provider name, defaults, session routing, and usage history stay intact.
 10. **Providers & Budgets** shows user spend by provider and model. Admins also
    see system spend as a separate, uncapped breakdown.
+11. **Admin → Canvas Apps** lists the canvas apps you can see (Shared,
+   Private, and Other users for unrestricted admins), with each app's
+   interface, versions, contributors, loads, a sandboxed preview and its
+   actions. **Packages** and **Canvas Apps** collapse and scroll; with the
+   tree focused, `↑`/`↓` move, `Enter`/`Space` toggle, `←`/`→` collapse and
+   expand. See [Canvas apps](canvas-apps.md#in-the-portal).
 
 **What just happened:**
 
@@ -652,6 +658,8 @@ as your app's portal.
 | Filter sessions | Filter input in Sessions pane header |
 | Toggle session summary | Click **Summary** / **Chat** in the top toolbar; Summary is read-only and hides the prompt box |
 | Open Admin Console | Admin / settings menu → Model Providers |
+| Publish a canvas as an app | **Publish as app** in the canvas toolbar (session owner) |
+| Manage canvas apps | Admin Console → **Canvas Apps** |
 
 Many of the TUI keys (`j`/`k` to navigate, `r` to refresh,
 etc.) work inside the portal too when no input is focused.

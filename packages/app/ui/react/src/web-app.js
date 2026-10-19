@@ -1,5 +1,5 @@
 import { normalizeSessionSortMode, normalizeSessionUsage } from "../../core/src/session-sort.js";
-import { canvasKey as canvasStateKey, canvasEntryNeedsLegacyLabel, canvasLegacyLabelKey } from "../../core/src/state.js";
+import { canvasKey as canvasStateKey, canvasEntryNeedsLegacyLabel, canvasLegacyLabelKey, normalizeStoredAdminCollapsed } from "../../core/src/state.js";
 import { ChatCallLine } from "./chat-call-line.js";
 import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
@@ -41,6 +41,8 @@ import {
     selectActivityPane,
     selectWorkerDetailsPane,
     selectAdminConsole,
+    selectCanvasPublishDialog,
+    selectCanvasPublishAvailable,
     selectArtifactPickerModal,
     selectArtifactUploadModal,
     selectLiveActivityLines,
@@ -377,6 +379,11 @@ function normalizeProfileSettings(settings) {
     if (hasOwn(candidate, "collapsedSessionIds")) {
         normalized.collapsedSessionIds = normalizeStoredCollapsedSessionIdsToArray(candidate.collapsedSessionIds);
     }
+    // Admin Console Packages / Canvas Apps tree (issue 181 R24): one key,
+    // per viewer (the profile is the signed-in user's own).
+    if (hasOwn(candidate, "adminCollapsed")) {
+        normalized.adminCollapsed = normalizeStoredAdminCollapsed(candidate.adminCollapsed);
+    }
     if (hasOwn(candidate, "activeSessionId")) {
         const id = candidate.activeSessionId == null ? null : String(candidate.activeSessionId).trim();
         normalized.activeSessionId = id || null;
@@ -474,6 +481,7 @@ function profileViewState(root) {
         ownerFilter: root.sessions.ownerFilter, pinnedIds: root.sessions.pinnedIds,
         manualOrder: root.sessions.manualOrder, sessionSortMode: root.sessions.sortMode, sessionUsedAt: root.sessions.usedAt, collapsedSessionIds: root.sessions.collapsedIds,
         activeSessionId: root.sessions.activeSessionId, canvasPrefs: root.canvas?.prefs,
+        adminCollapsed: root.admin?.tree?.collapsed,
     };
 }
 
@@ -499,6 +507,7 @@ function profileSettingsFromViewState(state, preservedOtherTouchScale = null, pr
         sessionUsedAt: state.sessionUsedAt,
         collapsedSessionIds: state.collapsedSessionIds,
         activeSessionId: state.activeSessionId,
+        ...(Array.isArray(state.adminCollapsed) ? { adminCollapsed: state.adminCollapsed } : {}),
         // rightPaneMode describes the DESKTOP right column; a phone has no
         // such column (its canvas surface is a nav tab), so a phone must not
         // write its own value — it preserves the last-known stored one, or a
@@ -565,6 +574,7 @@ function buildDefaultProfileSettingsFromState(state, preservedOtherTouchScale = 
         sessionUsedAt: state?.sessions?.usedAt,
         collapsedSessionIds: state?.sessions?.collapsedIds,
         activeSessionId: state?.sessions?.activeSessionId,
+        adminCollapsed: state?.admin?.tree?.collapsed ?? [],
         ...(isNarrowViewport()
             ? (preservedRightPaneMode === "canvas" || preservedRightPaneMode === "panes"
                 ? { rightPaneMode: preservedRightPaneMode }
@@ -621,6 +631,11 @@ function materializeProfileSettings(remoteSettings, defaults) {
             : {}),
         ...(hasOwn(normalizedRemote, "activeSessionId")
             ? { activeSessionId: normalizedRemote.activeSessionId }
+            : {}),
+        // Same no-defaults rule: a poll must not reopen a group the person
+        // just closed before the save lands.
+        ...(hasOwn(normalizedRemote, "adminCollapsed")
+            ? { adminCollapsed: normalizedRemote.adminCollapsed }
             : {}),
         // Apply only the slot this device owns. The other is preserved by the
         // save path (see profileSettingsFromViewState), not applied here — it
@@ -7984,6 +7999,14 @@ function SessionCanvasMark({ mark }) {
 }
 
 /** Chain-link glyph for the canvas share button. */
+/** "Publish as app": a box with an arrow out of it. */
+function PublishAppGlyph() {
+    const stroke = { fill: "none", stroke: "currentColor", strokeWidth: 1.7, strokeLinecap: "round", strokeLinejoin: "round" };
+    return React.createElement("svg", { viewBox: "0 0 20 20", width: 14, height: 14, "aria-hidden": "true" },
+        React.createElement("path", { d: "M10 12.5V3.5M6.5 7L10 3.5 13.5 7", ...stroke }),
+        React.createElement("path", { d: "M4 11v4.5h12V11", ...stroke }));
+}
+
 function CanvasLinkGlyph() {
     const stroke = { fill: "none", stroke: "currentColor", strokeWidth: 1.7, strokeLinecap: "round", strokeLinejoin: "round" };
     return React.createElement("svg", { viewBox: "0 0 20 20", width: 14, height: 14, "aria-hidden": "true" },
@@ -9115,6 +9138,17 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
 
     const zenOn = useControllerSelector(controller, (s) => s?.ui?.canvasZen === true);
     const [shareOpen, setShareOpen] = React.useState(false);
+    // "Publish as app" (issue 181 R25): the session owner only.
+    const canPublish = useControllerSelector(controller, selectCanvasPublishAvailable);
+    const publishButton = (className) => (onCanvas && view.exists && canPublish
+        ? React.createElement("button", {
+            type: "button",
+            className,
+            onClick: () => controller.openCanvasPublishDialog(view.sessionId, view.slot),
+            title: "Publish as app \u2014 save this canvas as a reusable app",
+            "aria-label": "Publish as app",
+        }, React.createElement(PublishAppGlyph))
+        : null);
     const [toolbarSlot, setToolbarSlot] = React.useState(null);
     React.useEffect(() => {
         if (!maximized) { setToolbarSlot(null); return undefined; }
@@ -9153,6 +9187,7 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
                 React.createElement("span", { className: "ps-artifact-pane-type", title: onCanvas ? (view.note || undefined) : undefined },
                     onCanvas ? (view.exists ? `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}` : "") : "Workspace"),
                 onCanvas ? React.createElement(CanvasSlotControls, { controller, view, compact: true }) : null,
+                publishButton("ps-canvas-max-btn"),
                 onCanvas && view.exists
                     ? React.createElement("button", {
                         type: "button",
@@ -9179,6 +9214,7 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
                 : null,
             onCanvas ? React.createElement(CanvasSlotControls, { controller, view, compact: true }) : null,
             onCanvas && view.exists ? React.createElement(HtmlZoomControl, { zoom, setZoom }) : null,
+            publishButton("ps-artifact-pane-btn"),
             React.createElement("button", {
                 type: "button",
                 className: `ps-artifact-pane-btn${zenOn ? " is-active" : ""}`,
@@ -9210,6 +9246,7 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
                 onCanvas ? React.createElement(CanvasSlotControls, { controller, view }) : null),
             React.createElement("span", { className: "ps-artifact-pane-actions" },
                 onCanvas && view.exists ? React.createElement(HtmlZoomControl, { zoom, setZoom }) : null,
+                publishButton("ps-artifact-pane-btn"),
                 onCanvas && view.exists
                     ? React.createElement("button", {
                         type: "button",
@@ -9285,7 +9322,9 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
                 slot: view.slot,
                 onClose: () => setShareOpen(false),
             })
-            : null);
+            : null,
+        // One mounted pane is visible at a time (phone layer or desktop column).
+        visible ? React.createElement(CanvasPublishDialog, { controller }) : null);
 }
 
 function InspectorTabs({ activeTab, controller }) {
@@ -14911,6 +14950,8 @@ function AdminConsolePanel({ controller, mobile = false }) {
     const featureRole = useControllerSelector(controller, state => state.auth?.authorization?.role);
     const packages = view.packages || {};
     const showPackages = view.section === "packages";
+    const showCanvasApps = view.section === "canvasApps";
+    const canvasApps = view.canvasApps || {};
     const showWorkers = view.section === "workers";
     const showFeatures = view.section === "features";
     const featureSection = React.createElement(FeatureFlagsPanel, { controller, features,
@@ -15018,9 +15059,12 @@ function AdminConsolePanel({ controller, mobile = false }) {
     const workspacePane = showPackages && packages.selectedName
         ? React.createElement(AdminPackageWorkspacePane, { controller, view, layout: wsLayout, onLayout: updateWsLayout })
         : null;
+    const appDetail = React.createElement(AdminCanvasAppDetailPane, { controller, view });
     const dialog = packages.addDialog?.open
         ? React.createElement(AdminAddPackageDialog, { controller, dialog: packages.addDialog })
-        : null;
+        : canvasApps.addDialog?.open
+            ? React.createElement(AdminAddCanvasAppDialog, { controller, dialog: canvasApps.addDialog })
+            : null;
     const createProviderDialog = providerSheet
         ? React.createElement(CreateProviderSheet, {
             types: view.modelProviders?.providerTypes || [],
@@ -15060,6 +15104,15 @@ function AdminConsolePanel({ controller, mobile = false }) {
                 workspacePane);
         } else if (showPackages) {
             body = tree;
+        } else if (showCanvasApps && canvasApps.detail) {
+            body = React.createElement("div", { className: "ps-admin-mobile-stack" },
+                React.createElement("button", {
+                    type: "button", className: "ps-mini-button ps-admin-back",
+                    onClick: () => controller.selectAdminCanvasApp(null),
+                }, "← All canvas apps"),
+                appDetail);
+        } else if (showCanvasApps) {
+            body = tree;
         } else if (showWorkers) {
             body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree,
                 React.createElement(AdminWorkersPane, { controller, view }));
@@ -15093,7 +15146,7 @@ function AdminConsolePanel({ controller, mobile = false }) {
                     "aria-label": "Resize settings column",
                 })),
             React.createElement("div", { className: "ps-admin-main" },
-                showPackages ? detail : showWorkers ? React.createElement(AdminWorkersPane, { controller, view }) : showFeatures ? featureSection : providerSection),
+                showPackages ? detail : showCanvasApps ? appDetail : showWorkers ? React.createElement(AdminWorkersPane, { controller, view }) : showFeatures ? featureSection : providerSection),
             workspacePane),
         dialog,
         createProviderDialog);
@@ -15162,67 +15215,183 @@ function AdminWorkersPane({ controller, view }) {
                         React.createElement("td", null, row.sdkVersion ?? "—")))))));
 }
 
+// Settings tree (issue 181 R24). Packages and Canvas Apps and their groups
+// collapse; a collapsed one shows its count; each section's rows scroll in
+// their own box and keep the cursor row in view. With the tree focused:
+// Up/Down (or j/k) move, Enter or Space toggles a section or group and
+// selects an item, Left collapses, Right expands. The collapsed state is the
+// viewer's own (saved in their profile). The TUI follows the same rules.
+const ADMIN_TREE_SCROLL_SECTIONS = new Set(["agents", "canvasApps"]);
+
+function adminTreeRowClick(controller, row) {
+    if (row.kind === "package") {
+        // The selector says WHICH copy this row is — one name can be a
+        // shared package and a user copy at once (scope shadowing).
+        return () => {
+            controller.setAdminTreeCursor(row.id);
+            controller.selectAdminPackage(row.name, {
+                scope: row.scope === "shared" ? "shared" : "user",
+                ...(row.scope !== "shared" && row.owner?.provider && row.owner?.subject
+                    ? { owner: { provider: row.owner.provider, subject: row.owner.subject } }
+                    : {}),
+            });
+        };
+    }
+    if (row.kind === "canvasApp") {
+        return () => {
+            controller.setAdminTreeCursor(row.id);
+            controller.selectAdminCanvasApp(row.selector);
+        };
+    }
+    if (row.kind === "group") return () => controller.toggleAdminTreeNode(row.id);
+    return () => {
+        if (row.id === "providers" || row.id === "myProviders") {
+            controller.setAdminSection("providers");
+            controller.setAdminModelProviderPage("mine");
+        } else if (row.id === "sharedProviders") {
+            controller.setAdminSection("providers");
+            controller.setAdminModelProviderPage("shared");
+        } else if (row.id === "features") {
+            controller.setAdminSection("features");
+        } else if (row.id === "agents") {
+            controller.setAdminTreeCursor(row.id);
+            controller.setAdminSection("packages");
+        } else if (row.id === "canvasApps") {
+            controller.setAdminTreeCursor(row.id);
+            controller.setAdminSection("canvasApps");
+        } else {
+            controller.setAdminSection("workers");
+        }
+    };
+}
+
+function AdminTreeRow({ controller, row }) {
+    const isItem = row.kind === "package" || row.kind === "canvasApp";
+    const disabled = isItem && row.enabled === false;
+    const caret = row.collapsible
+        ? React.createElement("span", {
+            className: "ps-admin-tree__caret",
+            role: "button",
+            "aria-hidden": "true",
+            onClick: (event) => { event.stopPropagation(); controller.toggleAdminTreeNode(row.id); },
+        }, row.collapsed ? "\u25b8" : "\u25be")
+        : null;
+    let badge = null;
+    if (row.kind === "package") {
+        // A user-scope package shows WHOSE it is, using the same owner-initials
+        // chip the session rows use. Shared packages keep the scope badge.
+        badge = row.ownerBadge
+            ? React.createElement(OwnerAvatar, { badge: row.ownerBadge })
+            : React.createElement("span", { className: "ps-scope-badge is-shared", title: "shared with the whole deployment" }, "S");
+    } else if (row.kind === "canvasApp") {
+        badge = row.scope === "shared"
+            ? React.createElement("span", { className: "ps-scope-badge is-shared", title: "shared with the whole deployment" }, "S")
+            : React.createElement("span", { className: "ps-scope-badge is-user", title: `private to ${row.ownerLabel}` }, "P");
+    }
+    // A section shows its count only when collapsed; a group always does.
+    const count = row.kind === "group" || (row.collapsible && row.collapsed)
+        ? React.createElement("span", { className: "ps-admin-tree__count" }, String(row.count ?? 0))
+        : null;
+    const version = (row.kind === "package" && row.semver) || (row.kind === "canvasApp" && row.version)
+        ? React.createElement("span", { className: "ps-admin-tree__ver" }, row.kind === "package" ? row.semver : row.version)
+        : null;
+    return React.createElement("button", {
+        type: "button",
+        "data-tree-id": row.id,
+        // The tree, not each row, takes the keyboard: one tab stop.
+        tabIndex: -1,
+        "aria-expanded": row.collapsible ? !row.collapsed : undefined,
+        "aria-current": isItem && row.selected ? "true" : undefined,
+        className: [
+            "ps-admin-tree__row",
+            `depth-${row.depth}`,
+            row.kind === "group" ? "is-group" : "",
+            row.collapsible ? "is-collapsible" : "",
+            row.selected ? "is-selected" : "",
+            row.cursor ? "is-cursor" : "",
+            disabled ? "is-disabled" : "",
+        ].filter(Boolean).join(" "),
+        title: row.kind === "canvasApp" && row.scope !== "shared" && row.ownerLabel ? `${row.label} · ${row.ownerLabel}` : undefined,
+        onClick: adminTreeRowClick(controller, row),
+    },
+        caret,
+        badge,
+        React.createElement("span", { className: "ps-admin-tree__name" }, row.label),
+        row.kind === "canvasApp" && row.parentId === "capps:others" && row.ownerLabel
+            ? React.createElement("span", { className: "ps-admin-tree__owner" }, row.ownerLabel)
+            : null,
+        version,
+        count);
+}
+
 function AdminSettingsTree({ controller, view }) {
     const packages = view.packages || {};
-    return React.createElement("nav", { className: "ps-admin-tree" },
-        React.createElement("div", { className: "ps-admin-tree__label" }, "Settings"),
-        (view.settingsTree || []).map((row) => {
-            if (row.kind === "group") {
-                return React.createElement("div", { key: row.id, className: "ps-admin-tree__group" },
-                    `${row.label}`, React.createElement("span", { className: "ps-admin-tree__count" }, String(row.count ?? 0)));
+    const apps = view.canvasApps || {};
+    const navRef = React.useRef(null);
+    const rows = view.settingsTree || [];
+    // Keep the cursor (or the selected row) in view inside its scroll box.
+    const focusId = view.treeCursor || rows.find((row) => row.selected)?.id || null;
+    React.useEffect(() => {
+        if (!focusId || !navRef.current) return;
+        const el = [...navRef.current.querySelectorAll("[data-tree-id]")].find((node) => node.dataset.treeId === focusId);
+        el?.scrollIntoView?.({ block: "nearest" });
+    }, [focusId, rows.length]);
+    const onKeyDown = (event) => {
+        if (event.altKey || event.ctrlKey || event.metaKey) return;
+        const tag = String(event.target?.tagName || "").toLowerCase();
+        if (tag === "input" || tag === "textarea" || tag === "select") return;
+        let handled = true;
+        switch (event.key) {
+            case "ArrowDown": case "j": void controller.moveAdminTreeCursor(1); break;
+            case "ArrowUp": case "k": void controller.moveAdminTreeCursor(-1); break;
+            case "Enter": case " ": void controller.activateAdminTreeNode(); break;
+            case "ArrowLeft": controller.collapseAdminTreeNode(); break;
+            case "ArrowRight": controller.expandAdminTreeNode(); break;
+            default: handled = false;
+        }
+        if (handled) event.preventDefault();
+    };
+    // Group each scrolling section's children into their own box.
+    const blocks = [];
+    for (let i = 0; i < rows.length; i++) {
+        const row = rows[i];
+        blocks.push(React.createElement(AdminTreeRow, { key: row.id, controller, row }));
+        if (row.depth === 0 && ADMIN_TREE_SCROLL_SECTIONS.has(row.id)) {
+            const children = [];
+            while (i + 1 < rows.length && rows[i + 1].depth > 0) {
+                i += 1;
+                children.push(React.createElement(AdminTreeRow, { key: rows[i].id, controller, row: rows[i] }));
             }
-            const onClick = row.kind === "package"
-                // The selector says WHICH copy this row is — one name can be a
-                // shared package and a user copy at once (scope shadowing).
-                ? () => controller.selectAdminPackage(row.name, {
-                    scope: row.scope === "shared" ? "shared" : "user",
-                    ...(row.scope !== "shared" && row.owner?.provider && row.owner?.subject
-                        ? { owner: { provider: row.owner.provider, subject: row.owner.subject } }
-                        : {}),
-                })
-                : () => {
-                    if (row.id === "providers" || row.id === "myProviders") {
-                        controller.setAdminSection("providers");
-                        controller.setAdminModelProviderPage("mine");
-                    } else if (row.id === "sharedProviders") {
-                        controller.setAdminSection("providers");
-                        controller.setAdminModelProviderPage("shared");
-                    } else if (row.id === "features") {
-                        controller.setAdminSection("features");
-                    } else {
-                        controller.setAdminSection(row.id === "agents" ? "packages" : "workers");
-                    }
-                };
-            return React.createElement("button", {
-                key: row.id,
-                type: "button",
-                className: `ps-admin-tree__row depth-${row.depth}${row.selected ? " is-selected" : ""}${row.kind === "package" && !row.enabled ? " is-disabled" : ""}`,
-                onClick,
-            },
-                // A user-scope package shows WHOSE it is, using the same
-                // owner-initials chip the session rows use, so "[ad]" means
-                // the same thing on both sides of the app. Shared packages
-                // belong to the deployment, so they keep the scope badge.
-                row.kind === "package"
-                    ? (row.ownerBadge
-                        ? React.createElement(OwnerAvatar, { badge: row.ownerBadge })
-                        : React.createElement("span", {
-                            className: "ps-scope-badge is-shared",
-                            title: "shared with the whole deployment",
-                        }, "S"))
-                    : null,
-                React.createElement("span", { className: "ps-admin-tree__name" }, row.label),
-                row.kind === "package" && row.semver
-                    ? React.createElement("span", { className: "ps-admin-tree__ver" }, row.semver)
-                    : null);
-        }),
+            if (children.length) {
+                blocks.push(React.createElement("div", { key: `${row.id}:scroll`, className: "ps-admin-tree__scroll", "data-tree-section": row.id }, children));
+            }
+        }
+    }
+    return React.createElement("nav", {
+        ref: navRef,
+        className: "ps-admin-tree",
+        tabIndex: 0,
+        "aria-label": "Settings",
+        // The tree answers its own keys; the app's shortcuts stay out of it.
+        "data-own-keys": "true",
+        onKeyDown,
+    },
+        React.createElement("div", { className: "ps-admin-tree__label" }, "Settings"),
+        blocks,
         packages.loading ? React.createElement("div", { className: "ps-admin-tree__hint" }, "Loading packages…") : null,
         packages.error ? React.createElement("div", { className: "ps-admin-tree__hint is-error" }, packages.error) : null,
+        apps.loading ? React.createElement("div", { className: "ps-admin-tree__hint" }, "Loading canvas apps…") : null,
+        apps.error ? React.createElement("div", { className: "ps-admin-tree__hint is-error" }, apps.error) : null,
         view.section === "packages" ? React.createElement("button", {
             type: "button",
             className: "ps-admin-tree__add",
             onClick: () => controller.openAdminAddPackage(),
-        }, "+ Add package") : null);
+        }, "+ Add package") : null,
+        view.section === "canvasApps" ? React.createElement("button", {
+            type: "button",
+            className: "ps-admin-tree__add",
+            onClick: () => controller.openAdminAddCanvasApp("html"),
+        }, "+ Add canvas app") : null);
 }
 
 function AdminPackageDetailPane({ controller, view }) {
@@ -15767,6 +15936,347 @@ function AdminAddPackageDialog({ controller, dialog }) {
                             : dialog.updateName ? "Import & update" : "Import & publish"))));
 }
 
+// ── Canvas Apps (Admin → Canvas Apps, issue 181 R23/R29) ─────────────────
+
+/**
+ * A canvas app page in a sandboxed frame. Every preview goes through the
+ * cross-owner isolation wrapper (strict CSP, opaque origin, no request/reply
+ * channel), whoever owns the app: a preview never runs with a session.
+ */
+function CanvasAppPreviewFrame({ html, sha256, title }) {
+    const [url, setUrl] = React.useState(null);
+    const [error, setError] = React.useState(null);
+    const frameRef = React.useRef(null);
+    const innerRef = React.useRef(null);
+    React.useEffect(() => {
+        let cancelled = false;
+        let created = null;
+        setUrl(null);
+        setError(null);
+        innerRef.current = null;
+        (async () => {
+            const bytes = new TextEncoder().encode(String(html ?? ""));
+            try {
+                await assertPageBytes(bytes.buffer, sha256 || null);
+            } catch {
+                throw new Error("the page's bytes do not match the version's recorded sha256");
+            }
+            innerRef.current = buildIsolatedInnerHtml(String(html ?? ""));
+            created = createIsolationWrapperUrl();
+            if (cancelled) URL.revokeObjectURL(created);
+            else setUrl(created);
+        })().catch((err) => { if (!cancelled) setError(err?.message || String(err)); });
+        return () => {
+            cancelled = true;
+            if (created) URL.revokeObjectURL(created);
+        };
+    }, [html, sha256]);
+    React.useEffect(() => {
+        const onMessage = (event) => {
+            const frame = frameRef.current;
+            if (!frame || event.source !== frame.contentWindow) return;
+            // No ports, no KV, no actions, no workspace: close anything offered.
+            for (const port of event.ports || []) { try { port.close(); } catch { /* closed */ } }
+            if (event.data?.type === "pse-wrapper-ready" && typeof innerRef.current === "string") {
+                try { event.source.postMessage({ type: "pse-wrapper-load", html: innerRef.current }, "*"); } catch { /* mid-teardown */ }
+            }
+        };
+        window.addEventListener("message", onMessage);
+        return () => window.removeEventListener("message", onMessage);
+    }, []);
+    if (error) return React.createElement("p", { className: "ps-admin-console__error", role: "alert" }, `Could not show the page: ${error}`);
+    if (!url) return React.createElement("p", { className: "ps-admin-console__hint" }, "Loading the page…");
+    return React.createElement("iframe", {
+        ref: frameRef,
+        className: "ps-canvas-app-preview__frame",
+        src: url,
+        title: title || "Canvas app preview",
+        sandbox: "allow-scripts",
+        referrerPolicy: "no-referrer",
+    });
+}
+
+function AdminCanvasAppInterfaceCard({ card }) {
+    const section = (label, items) => (items.length
+        ? React.createElement("div", { className: "ps-canvas-app-card__section" },
+            React.createElement("div", { className: "ps-admin-detail__label" }, label),
+            React.createElement("ul", null, items))
+        : null);
+    return React.createElement("div", { className: "ps-canvas-app-card" },
+        card.workspaceWarning
+            ? React.createElement("div", { className: "ps-canvas-app-card__warning", role: "note" },
+                React.createElement("b", null, "Workspace access. "), card.workspaceWarning)
+            : null,
+        card.empty
+            ? React.createElement("p", { className: "ps-admin-console__hint" }, "This version declares no actions, keys, requests or events.")
+            : null,
+        section("Actions", card.actions.map((action) => React.createElement("li", { key: action.name },
+            React.createElement("code", null, action.name),
+            action.fields.length
+                ? React.createElement("span", null, ` ${action.fields.map((f) => `${f.name}${f.optional ? "?" : ""}: ${f.type}`).join(", ")}`)
+                : React.createElement("span", null, " (no fields)")))),
+        section("KV keys", card.keys.map((key) => React.createElement("li", { key: key.key },
+            React.createElement("code", null, key.key),
+            key.writer ? React.createElement("span", { className: "ps-canvas-app-card__muted" }, ` written by ${key.writer}`) : null,
+            key.shape ? React.createElement("span", { className: "ps-canvas-app-card__muted" }, ` · ${key.shape}`) : null,
+            key.note ? React.createElement("span", null, ` — ${key.note}`) : null))),
+        section("Requests", card.requests.map((req) => React.createElement("li", { key: req.op },
+            React.createElement("code", null, req.op),
+            req.args ? React.createElement("span", { className: "ps-canvas-app-card__muted" }, ` args ${req.args}`) : null,
+            React.createElement("span", null, ` → expects back ${req.result || "nothing"}`),
+            req.note ? React.createElement("span", null, ` — ${req.note}`) : null))),
+        section("Events", card.events.map((evt) => React.createElement("li", { key: evt.key },
+            React.createElement("code", null, evt.key),
+            evt.shape ? React.createElement("span", { className: "ps-canvas-app-card__muted" }, ` · ${evt.shape}`) : null,
+            evt.note ? React.createElement("span", null, ` — ${evt.note}`) : null))),
+        card.notes ? React.createElement("p", { className: "ps-admin-detail__desc" }, card.notes) : null);
+}
+
+function AdminCanvasAppDetailPane({ controller, view }) {
+    const apps = view.canvasApps || {};
+    const detail = apps.detail;
+    if (!detail) {
+        return React.createElement("div", { className: "ps-admin-detail is-empty" },
+            React.createElement("h3", null, "Canvas Apps"),
+            React.createElement("p", { className: "ps-admin-console__hint" },
+                apps.empty
+                    ? "No canvas apps yet. Publish one from a canvas (the \u201cPublish as app\u201d button), add an .html page or import an export here, or use `pilotswarm apps push`."
+                    : "Select an app from the tree to see its detail, interface, versions and use."));
+    }
+    const pending = detail.actionPending;
+    const act = (kind, arg) => () => controller.runAdminCanvasAppAction(kind, arg);
+    const confirmDelete = () => {
+        if (window.confirm(`Delete ${detail.name}? Every version and its stored pages are removed. Canvases already drawn keep working.`)) {
+            controller.runAdminCanvasAppAction("delete");
+        }
+    };
+    const paragraphs = String(detail.description || "").split(/\n\s*\n/).map((text) => text.trim()).filter(Boolean);
+    return React.createElement("div", { className: "ps-admin-detail ps-canvas-app-detail" },
+        detail.error ? React.createElement("div", { className: "ps-admin-console__error", role: "alert" }, `Canvas app load failed: ${detail.error}`) : null,
+        detail.loading ? React.createElement("p", { className: "ps-admin-console__hint" }, "Loading canvas app…") : null,
+        React.createElement("div", { className: "ps-admin-detail__head" },
+            React.createElement("h3", null, detail.name),
+            detail.version ? React.createElement("span", { className: "ps-admin-tree__ver" }, detail.version) : null,
+            React.createElement("span", { className: `ps-scope-badge is-${detail.scope}` }, detail.scopeLabel),
+            !detail.enabled ? React.createElement("span", { className: "ps-scope-badge is-off" }, "disabled") : null),
+        React.createElement("dl", { className: "ps-admin-detail__meta" },
+            React.createElement("dt", null, "Owner"),
+            React.createElement("dd", null, detail.ownerLabel || "—"),
+            React.createElement("dt", null, "Status"),
+            React.createElement("dd", null, detail.enabled ? "Enabled" : "Disabled"),
+            detail.tags.length ? [
+                React.createElement("dt", { key: "tk" }, "Tags"),
+                React.createElement("dd", { key: "tv" }, React.createElement("span", { className: "ps-admin-detail__chips" },
+                    detail.tags.map((tag) => React.createElement("span", { key: tag, className: "ps-agent-chip" }, tag)))),
+            ] : null,
+            React.createElement("dt", null, "Updated"),
+            React.createElement("dd", null, detail.updatedText)),
+        paragraphs.length
+            ? React.createElement("div", { className: "ps-canvas-app-detail__desc" },
+                paragraphs.map((text, index) => React.createElement("p", { key: index }, text)))
+            : null,
+        React.createElement("div", { className: "ps-admin-detail__label" }, "Interface"),
+        React.createElement(AdminCanvasAppInterfaceCard, { card: detail.interfaceCard }),
+        detail.versions.length
+            ? React.createElement("div", null,
+                React.createElement("div", { className: "ps-admin-detail__label" }, "Versions"),
+                React.createElement("div", { className: "ps-admin-versions" },
+                    detail.versions.map((version) => React.createElement("div", {
+                        key: version.version,
+                        className: `ps-admin-version${version.active ? " is-active" : ""}`,
+                    },
+                        React.createElement("b", null, version.version),
+                        React.createElement("span", null, version.sha12),
+                        React.createElement("span", null, `${version.sizeText} · ${version.dateText}`),
+                        React.createElement("button", { type: "button", className: "ps-mini-button", onClick: () => controller.previewAdminCanvasApp(version.version) }, "Preview"),
+                        version.active
+                            ? React.createElement("span", { className: "is-ok" }, "\u25cf active")
+                            : (detail.canEdit
+                                ? React.createElement("button", { type: "button", className: "ps-mini-button", onClick: act("pin", version.version), disabled: Boolean(pending) }, "Pin")
+                                : null)))))
+            : null,
+        React.createElement("div", { className: "ps-admin-detail__label" }, "Contributors"),
+        detail.contributors.length
+            ? React.createElement("ul", { className: "ps-canvas-app-detail__people" },
+                detail.contributors.map((person) => React.createElement("li", { key: `${person.role}:${person.subject}` },
+                    person.label, React.createElement("span", { className: "ps-canvas-app-card__muted" }, ` · ${person.role}`))))
+            : React.createElement("p", { className: "ps-admin-console__hint" }, "No contributors."),
+        detail.loads.visible
+            ? React.createElement("div", null,
+                React.createElement("div", { className: "ps-admin-detail__label" },
+                    "Latest loads",
+                    detail.loads.total30dText ? React.createElement("span", { className: "ps-canvas-app-card__muted" }, ` · ${detail.loads.total30dText}`) : null),
+                detail.loads.error ? React.createElement("p", { className: "ps-admin-console__error" }, detail.loads.error) : null,
+                detail.loads.rows.length
+                    ? React.createElement("table", { className: "ps-canvas-app-detail__loads" },
+                        React.createElement("tbody", null, detail.loads.rows.map((load) => React.createElement("tr", { key: load.id },
+                            React.createElement("td", null, load.whenText),
+                            React.createElement("td", null, load.userLabel),
+                            React.createElement("td", null, load.version)))))
+                    : React.createElement("p", { className: "ps-admin-console__hint" }, detail.loads.loading ? "Loading…" : "Not loaded on a canvas yet."))
+            : null,
+        React.createElement("div", { className: "ps-admin-detail__actions" },
+            React.createElement("button", { type: "button", className: "ps-primary-button", onClick: () => controller.previewAdminCanvasApp(), disabled: detail.preview.loading }, "Preview"),
+            detail.canManage
+                ? React.createElement("button", { type: "button", className: "ps-mini-button", onClick: act(detail.scope === "shared" ? "private" : "share"), disabled: Boolean(pending),
+                    title: detail.scope === "shared" ? "Making it private removes its contributors" : "Everyone can find and use a shared app" },
+                    detail.scope === "shared" ? "Make private" : "Share")
+                : null,
+            detail.canEdit
+                ? React.createElement("button", { type: "button", className: "ps-mini-button", onClick: act(detail.enabled ? "disable" : "enable"), disabled: Boolean(pending) },
+                    detail.enabled ? "Disable" : "Enable")
+                : null,
+            React.createElement("button", { type: "button", className: "ps-mini-button", onClick: act("download"), disabled: Boolean(pending), title: "Download the active version's page as .html" }, "Download"),
+            React.createElement("button", { type: "button", className: "ps-mini-button", onClick: act("export"), disabled: Boolean(pending), title: "Export every version as a .tar.gz another deployment can import" }, "Export"),
+            detail.canManage
+                ? React.createElement("button", { type: "button", className: "ps-mini-button is-danger", onClick: confirmDelete, disabled: Boolean(pending) }, "Delete")
+                : null),
+        !detail.canEdit
+            ? React.createElement("p", { className: "ps-admin-console__hint" }, "Read-only: only the owner, a contributor or an admin can change this app.")
+            : null,
+        detail.notice ? React.createElement("p", { className: "ps-admin-console__hint is-ok", role: "status" }, detail.notice) : null,
+        detail.actionError ? React.createElement("div", { className: "ps-admin-console__error", role: "alert" }, detail.actionError) : null,
+        detail.preview.open
+            ? React.createElement("div", { className: "ps-canvas-app-preview" },
+                React.createElement("div", { className: "ps-canvas-app-preview__bar" },
+                    React.createElement("span", null, `Preview${detail.preview.version ? ` · ${detail.preview.version}` : ""} (sandboxed; no session)`),
+                    React.createElement("button", { type: "button", className: "ps-mini-button", onClick: () => controller.closeAdminCanvasAppPreview(), "aria-label": "Close preview" }, "\u2715")),
+                detail.preview.error
+                    ? React.createElement("p", { className: "ps-admin-console__error", role: "alert" }, detail.preview.error)
+                    : detail.preview.loading || detail.preview.html === null
+                        ? React.createElement("p", { className: "ps-admin-console__hint" }, "Loading the page…")
+                        : React.createElement(CanvasAppPreviewFrame, { html: detail.preview.html, sha256: detail.preview.sha256, title: `${detail.name} preview` }))
+            : null);
+}
+
+function readFileAs(file, mode) {
+    return new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onerror = () => reject(new Error(`could not read ${file.name}`));
+        reader.onload = () => resolve(mode === "text" ? String(reader.result) : (String(reader.result).split(",", 2)[1] || ""));
+        if (mode === "text") reader.readAsText(file);
+        else reader.readAsDataURL(file);
+    });
+}
+
+function slugFromFileName(name) {
+    return String(name || "").replace(/\.(html?|tar\.gz|tgz)$/i, "").toLowerCase().replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 64);
+}
+
+function AdminAddCanvasAppDialog({ controller, dialog }) {
+    const [reading, setReading] = React.useState(false);
+    const setField = (field) => (event) => controller.setAdminAddCanvasAppField(field, event.target.value);
+    const isArchive = dialog.kind === "archive";
+    const onFile = (event) => {
+        const file = event.target.files?.[0];
+        if (!file) return;
+        const limit = isArchive ? 20 * 1024 * 1024 : 900 * 1024;
+        if (file.size > limit) {
+            controller.failAdminAddCanvasApp(isArchive ? "The archive is over 20 MB." : "The page is over 900 KB, the canvas cap.");
+            return;
+        }
+        setReading(true);
+        readFileAs(file, isArchive ? "base64" : "text")
+            .then((content) => {
+                controller.setAdminAddCanvasAppField("fileName", file.name);
+                controller.setAdminAddCanvasAppField("content", content);
+                if (!isArchive && !dialog.name) controller.setAdminAddCanvasAppField("name", slugFromFileName(file.name));
+            })
+            .catch((error) => controller.failAdminAddCanvasApp(error?.message || "Could not read the file."))
+            .finally(() => setReading(false));
+    };
+    const onSubmit = (event) => {
+        event.preventDefault();
+        if (reading || dialog.submitting) return;
+        controller.submitAdminAddCanvasApp().catch(() => {});
+    };
+    const close = () => controller.closeAdminAddCanvasApp();
+    return React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
+        React.createElement("form", { className: "ps-modal ps-admin-add ps-canvas-app-add", onClick: (event) => event.stopPropagation(), autoComplete: "off", onSubmit },
+            React.createElement("div", { className: "ps-modal-header" },
+                React.createElement("span", null, "Add canvas app"),
+                React.createElement("button", { type: "button", className: "ps-mini-button", onClick: close, "aria-label": "Close" }, "\u2715")),
+            React.createElement("div", { className: "ps-admin-add__body" },
+                React.createElement("div", { className: "ps-admin-add__tabs" },
+                    [["html", "Upload .html"], ["archive", "Import .tar.gz"]].map(([kind, label]) => React.createElement("button", {
+                        key: kind,
+                        type: "button",
+                        className: `ps-admin-add__tab${dialog.kind === kind ? " is-on" : ""}`,
+                        onClick: () => { if (dialog.kind !== kind) { controller.closeAdminAddCanvasApp(); controller.openAdminAddCanvasApp(kind); } },
+                    }, label))),
+                React.createElement("label", { className: "ps-admin-add__field" },
+                    isArchive ? "An app export (.tar.gz) from `pilotswarm apps export` or the Export button" : "A page with a CANVAS-APP-MANIFEST and an interface block (\u2264 900 KB)",
+                    React.createElement("input", { key: dialog.kind, type: "file", accept: isArchive ? ".gz,.tgz,application/gzip" : ".html,.htm,text/html", onChange: onFile })),
+                dialog.fileName ? React.createElement("p", { className: "ps-admin-console__hint" }, `Chosen: ${dialog.fileName}`) : null,
+                !isArchive ? [
+                    React.createElement("label", { key: "n", className: "ps-admin-add__field" }, "Name",
+                        React.createElement("input", { value: dialog.name, onChange: setField("name"), placeholder: "release-signoff", spellCheck: false })),
+                    React.createElement("label", { key: "d", className: "ps-admin-add__field" }, "Description (when to use it)",
+                        React.createElement("textarea", { value: dialog.description, onChange: setField("description"), rows: 2 })),
+                    React.createElement("label", { key: "t", className: "ps-admin-add__field" }, "Tags (comma-separated)",
+                        React.createElement("input", { value: dialog.tags, onChange: setField("tags") })),
+                    React.createElement("label", { key: "v", className: "ps-admin-add__field" }, "Version (default: the manifest's, else the next patch)",
+                        React.createElement("input", { value: dialog.version, onChange: setField("version"), placeholder: "1.0.0" })),
+                ] : null,
+                React.createElement("div", { className: "ps-admin-add__scope" },
+                    React.createElement("label", null,
+                        React.createElement("input", { type: "radio", name: "capp-scope", checked: dialog.scope === "user", onChange: () => controller.setAdminAddCanvasAppField("scope", "user") }),
+                        " Private \u2014 only you see it"),
+                    React.createElement("label", null,
+                        React.createElement("input", { type: "radio", name: "capp-scope", checked: dialog.scope === "shared", onChange: () => controller.setAdminAddCanvasAppField("scope", "shared") }),
+                        " Shared \u2014 everyone can use it")),
+                dialog.error ? React.createElement("pre", { className: "ps-admin-add__error", role: "alert" }, dialog.error) : null),
+            React.createElement("div", { className: "ps-modal-footer" },
+                React.createElement("button", { type: "button", className: "ps-mini-button", onClick: close, disabled: dialog.submitting }, "Cancel"),
+                React.createElement("button", { type: "submit", className: "ps-primary-button", disabled: !dialog.canSubmit || reading },
+                    reading ? "Reading…" : dialog.submitting ? (isArchive ? "Importing…" : "Publishing…") : (isArchive ? "Import" : "Publish")))));
+}
+
+/** "Publish as app" on the canvas toolbar (issue 181 R25). */
+function CanvasPublishDialog({ controller }) {
+    const dialog = useControllerSelector(controller, selectCanvasPublishDialog, shallowEqualObject);
+    if (!dialog.open) return null;
+    const setField = (field) => (event) => controller.setCanvasPublishField(field, event.target.value);
+    const close = () => controller.closeCanvasPublishDialog();
+    const onSubmit = (event) => {
+        event.preventDefault();
+        if (dialog.result) { close(); return; }
+        controller.submitCanvasPublish().catch(() => {});
+    };
+    return createPortal(React.createElement("div", { className: "ps-modal-backdrop", onClick: close },
+        React.createElement("form", { className: "ps-modal ps-admin-add ps-canvas-publish", onClick: (event) => event.stopPropagation(), autoComplete: "off", onSubmit, "aria-label": "Publish as app" },
+            React.createElement("div", { className: "ps-modal-header" },
+                React.createElement("span", null, `Publish as app \u00b7 slot ${dialog.slot}`),
+                React.createElement("button", { type: "button", className: "ps-mini-button", onClick: close, "aria-label": "Close" }, "\u2715")),
+            React.createElement("div", { className: "ps-admin-add__body" },
+                React.createElement("div", { className: `ps-canvas-publish__check${dialog.check ? (dialog.check.ok ? " is-ok" : " is-error") : ""}`, role: "status" },
+                    dialog.checking ? "Checking the manifest\u2026" : dialog.check ? dialog.check.text : null,
+                    dialog.check?.workspace ? React.createElement("div", { className: "ps-canvas-app-card__muted" }, "This app asks for workspace access; each canvas owner approves it before it runs.") : null),
+                React.createElement("label", { className: "ps-admin-add__field" }, "Name",
+                    React.createElement("input", { value: dialog.name, onChange: setField("name"), placeholder: "release-signoff", spellCheck: false, autoFocus: true })),
+                React.createElement("label", { className: "ps-admin-add__field" }, "Description (when to use it)",
+                    React.createElement("textarea", { value: dialog.description, onChange: setField("description"), rows: 2 })),
+                React.createElement("label", { className: "ps-admin-add__field" }, "Tags (comma-separated)",
+                    React.createElement("input", { value: dialog.tags, onChange: setField("tags") })),
+                React.createElement("label", { className: "ps-admin-add__field" }, "Version",
+                    React.createElement("input", { value: dialog.version, onChange: setField("version"), placeholder: "default: the next patch" })),
+                React.createElement("div", { className: "ps-admin-add__scope" },
+                    React.createElement("label", null,
+                        React.createElement("input", { type: "radio", name: "publish-scope", checked: dialog.scope === "user", onChange: () => controller.setCanvasPublishField("scope", "user") }),
+                        " Private \u2014 only you see it"),
+                    React.createElement("label", null,
+                        React.createElement("input", { type: "radio", name: "publish-scope", checked: dialog.scope === "shared", onChange: () => controller.setCanvasPublishField("scope", "shared") }),
+                        " Shared \u2014 everyone can use it")),
+                dialog.error ? React.createElement("pre", { className: "ps-admin-add__error", role: "alert" }, dialog.error) : null,
+                dialog.result ? React.createElement("p", { className: "ps-admin-console__hint is-ok", role: "status" }, dialog.result.text) : null),
+            React.createElement("div", { className: "ps-modal-footer" },
+                React.createElement("button", { type: "button", className: "ps-mini-button", onClick: close, disabled: dialog.submitting }, dialog.result ? "Close" : "Cancel"),
+                dialog.result
+                    ? null
+                    : React.createElement("button", { type: "submit", className: "ps-primary-button", disabled: !dialog.canSubmit },
+                        dialog.submitting ? "Publishing\u2026" : "Publish")))), document.body);
+}
+
 function adminDefaultModel(defaultView) {
     return defaultView?.configured?.model || "";
 }
@@ -16187,6 +16697,8 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         // identity across renders (a fresh array would break memoization).
         // Conversion to a sorted array happens inside `normalizeProfileSettings`.
         collapsedSessionIds: rootState.sessions.collapsedIds,
+        // Live reference: the reducer replaces the array only when it changes.
+        adminCollapsed: rootState.admin?.tree?.collapsed,
         activeSessionId: rootState.sessions.activeSessionId || null,
         revealedCreatedSessionId: rootState.ui.revealedCreatedSessionId || null,
         promptRows: getStatePromptRows(rootState),
@@ -16527,7 +17039,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                 });
         }, 400);
         return undefined;
-    }, [controller, state.moa, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.sidePaneTab, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.sessionSortMode, state.sessionUsedAt, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale]);
+    }, [controller, state.moa, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.sidePaneTab, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.sessionSortMode, state.sessionUsedAt, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale, state.adminCollapsed]);
 
     React.useEffect(() => {
         applyDocumentTheme(state.themeId);

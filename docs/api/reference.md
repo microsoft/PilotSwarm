@@ -338,7 +338,7 @@ may not see answers `NOT_FOUND`; a visible app the caller may not change answers
 | searchCanvasApps | `GET /api/v1/canvas-apps/search` | `query`, `limit` | Ranked search over name, tags and description. |
 | getCanvasApp | `GET /api/v1/canvas-apps/:name` | copy selector | Card, versions, owner, `canEdit`, `canManage`. |
 | getCanvasAppHtml | `GET /api/v1/canvas-apps/:name/html` | `version`, copy selector | `{ html, sha256, version, … }` as JSON; never `text/html`. |
-| publishCanvasApp | `POST /api/v1/management/sessions/:sessionId/canvas-apps/publish` | `slot`, `name`, `description`, `tags`, `scope`, `version` | Session write. Publishes the slot's canvas; private unless `scope` is `shared`. |
+| publishCanvasApp | `POST /api/v1/management/sessions/:sessionId/canvas-apps/publish` | `slot`, `name`, `description`, `tags`, `scope`, `version`, `checkOnly` | Session write. Publishes the slot's canvas; private unless `scope` is `shared`. With `checkOnly: true`, returns the publish-check result and the manifest's name, version, description and tags, and writes nothing. |
 | uploadCanvasApp | `POST /api/v1/canvas-apps/upload` | `html`, `name`, `description`, `tags`, `scope`, `version` | Publishes a raw page (≤ 900 KB). |
 | setCanvasAppScope | `PUT /api/v1/canvas-apps/:name/scope` | `targetScope`, copy selector | Owner or admin. |
 | setCanvasAppEnabled | `PUT /api/v1/canvas-apps/:name/enabled` | `enabled`, copy selector | Owner, contributor or admin. |

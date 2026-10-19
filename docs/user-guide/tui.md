@@ -485,6 +485,10 @@ or `./run.sh`.
 8. Select your personal provider and press `Shift+U`. Type the replacement
    credential (input is masked), then press `Enter` to update it. `Esc`
    cancels. The provider name, defaults, routing, and usage history remain.
+9. Press `c` for **Canvas Apps** (or `a` for **Packages**). `j`/`k` move
+   through the tree, `Enter`/`Space` open or close a group, `←`/`→` collapse
+   and expand. The app detail is read-only here; Preview, the actions and
+   **Add canvas app** are in the portal.
 
 **What just happened:**
 

@@ -71,6 +71,31 @@ export function registerCanvasAppTools(server: McpServer, ctx: ServerContext) {
         },
     }, withToolErrors(async (a) => jsonResult(await op("uploadCanvasApp", a))));
 
+    server.registerTool("publish_session_canvas_app", {
+        title: "Publish Session Canvas As App",
+        description: "Publish the canvas drawn on a session slot as a version of an app (you need write access to the session). Private unless scope is shared. With check_only: true, run the publish checks on the slot's page and return the result with the manifest's name, version, description and tags; nothing is written.",
+        inputSchema: {
+            session_id: z.string().min(1), slot: z.number().int().min(1).max(5).optional(),
+            name: z.string().optional().describe("App name; required unless check_only"),
+            description: z.string().optional().describe("One sentence saying WHEN to use the app"),
+            tags: z.array(z.string()).optional(), scope: z.enum(["shared", "user"]).optional(),
+            version: z.string().optional().describe("SemVer; default the manifest's, else the next patch"),
+            check_only: z.boolean().optional().describe("Check the page and return the result; write nothing"),
+        },
+    }, withToolErrors(async (a) => {
+        if (!a.check_only && !a.name) throw new Error("name is required unless check_only is true");
+        return jsonResult(await op("publishCanvasApp", {
+            sessionId: a.session_id,
+            ...(a.slot ? { slot: a.slot } : {}),
+            ...(a.name ? { name: a.name } : {}),
+            ...(a.description !== undefined ? { description: a.description } : {}),
+            ...(a.tags ? { tags: a.tags } : {}),
+            ...(a.scope ? { scope: a.scope } : {}),
+            ...(a.version ? { version: a.version } : {}),
+            ...(a.check_only ? { checkOnly: true } : {}),
+        }));
+    }));
+
     server.registerTool("set_canvas_app_scope", {
         title: "Share or Unshare Canvas App",
         description: "Make an app shared (everyone) or private. Owner or admin. Making it private removes its contributors.",

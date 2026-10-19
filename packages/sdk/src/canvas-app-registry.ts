@@ -150,6 +150,45 @@ export function checkCanvasAppPage(html: string, responseContract?: unknown): Ca
     };
 }
 
+/**
+ * The publish dialog's manifest check (R25): the same R6 checks as a publish,
+ * reported as a result instead of thrown, plus the manifest fields a dialog
+ * prefills. Writes nothing.
+ */
+export interface CanvasAppPublishCheck {
+    checkOnly: true;
+    ok: boolean;
+    code: string | null;
+    error: string | null;
+    sizeBytes: number;
+    sha256: string | null;
+    manifest: { name: string | null; version: string | null; description: string | null; tags: string[] } | null;
+    interface: Record<string, unknown> | null;
+    workspace: boolean;
+}
+
+export function checkCanvasAppPublish(html: string, responseContract?: unknown): CanvasAppPublishCheck {
+    const sizeBytes = Buffer.byteLength(String(html ?? ""), "utf8");
+    try {
+        const page = checkCanvasAppPage(html, responseContract);
+        const m = page.manifest;
+        return {
+            checkOnly: true, ok: true, code: null, error: null, sizeBytes: page.sizeBytes, sha256: page.sha256,
+            manifest: {
+                name: typeof m.name === "string" && m.name.trim() ? m.name.trim() : null,
+                version: typeof m.version === "string" && m.version.trim() ? m.version.trim() : null,
+                description: typeof m.description === "string" && m.description.trim() ? m.description.trim() : null,
+                tags: normalizeTags(m.tags) ?? [],
+            },
+            interface: (page.card.interface as Record<string, unknown> | undefined) ?? null,
+            workspace: Boolean(page.workspaceKey),
+        };
+    } catch (err: any) {
+        if (!(err instanceof CanvasAppError)) throw err;
+        return { checkOnly: true, ok: false, code: err.code, error: err.message, sizeBytes, sha256: null, manifest: null, interface: null, workspace: false };
+    }
+}
+
 export interface CanvasAppRegistryDeps {
     store: CanvasAppStore;
     artifactStore: ArtifactStore;

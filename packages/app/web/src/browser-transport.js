@@ -104,6 +104,28 @@ export class BrowserPortalTransport extends HttpApiTransport {
         return this.getResourceTokenImpl(ADO_RESOURCE_ID);
     }
 
+    /**
+     * Save a canvas app page (.html) or export (.tar.gz) the Admin Console
+     * fetched through the Web API. Saved as a download, never opened: the
+     * bytes are another person's page.
+     */
+    async saveCanvasAppDownload(filename, content, { contentType = "application/octet-stream", base64 = false } = {}) {
+        const body = base64
+            ? Uint8Array.from(atob(String(content || "")), (ch) => ch.charCodeAt(0))
+            : String(content ?? "");
+        const blob = new Blob([body], { type: contentType });
+        const blobUrl = URL.createObjectURL(blob);
+        const anchor = document.createElement("a");
+        anchor.href = blobUrl;
+        anchor.download = String(filename || "canvas-app");
+        anchor.style.display = "none";
+        document.body.appendChild(anchor);
+        anchor.click();
+        anchor.remove();
+        window.setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+        return { filename: anchor.download };
+    }
+
     async uploadArtifactFromFile(sessionId, file, filenameOverride = null) {
         if (!file || typeof file.name !== "string") {
             throw new Error("A browser File is required for upload");

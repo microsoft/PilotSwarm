@@ -189,11 +189,111 @@ function rpc(method, SESSIONS, PROFILE_SETTINGS = {}) {
     }
 }
 
+/**
+ * A small in-memory canvas app registry (issue 181 PR 2): enough of the
+ * /api/v1/canvas-apps surface for the Admin Console and "Publish as app"
+ * tests. Every write is RECORDED in `calls` so a test can prove what reached
+ * the API, and a checkOnly publish writes nothing here either.
+ */
+function canvasAppRegistry(seed, viewer) {
+    const apps = seed.map((app) => ({ ...app }));
+    const calls = [];
+    const json = (res, result, status = 200) => {
+        res.writeHead(status, { "content-type": "application/json" });
+        res.end(JSON.stringify(status === 200 ? { ok: true, result } : { ok: false, error: result }));
+    };
+    const find = (name, scope) => apps.find((a) => a.name === name && (!scope || a.scope === scope));
+    const readBody = (req) => new Promise((resolve) => {
+        let raw = "";
+        req.on("data", (chunk) => { raw += chunk; });
+        req.on("end", () => { try { resolve(JSON.parse(raw || "{}")); } catch { resolve({}); } });
+    });
+    const handle = async (req, res, pathname, url) => {
+        const publish = /\/management\/sessions\/([^/]+)\/canvas-apps\/publish$/.exec(pathname);
+        if (publish && req.method === "POST") {
+            const body = await readBody(req);
+            calls.push({ op: "publishCanvasApp", sessionId: publish[1], ...body });
+            if (body.checkOnly) {
+                return json(res, { checkOnly: true, ok: true, code: null, error: null, sizeBytes: 1234, sha256: "a".repeat(64), manifest: { name: "Team-Board", version: "1.4.0", description: "Use when a team tracks its board.", tags: ["team", "board"] }, interface: { keys: [] }, workspace: false });
+            }
+            apps.push({ ...makeCanvasApp(body.name, body.scope === "shared" ? "shared" : "user", viewer), version: body.version || "1.0.0" });
+            return json(res, { status: "published", appId: `id-${body.name}`, appCreated: true, versionId: "v1", version: body.version || "1.0.0", sha256: "a".repeat(64), scope: body.scope === "shared" ? "shared" : "user", active: true, card: {} });
+        }
+        if (!/\/canvas-apps(\/|$)/.test(pathname)) return false;
+        const rest = pathname.replace(/^.*\/canvas-apps\/?/, "");
+        if (rest === "" && req.method === "GET") return json(res, apps);
+        if (rest === "upload" && req.method === "POST") {
+            const body = await readBody(req);
+            calls.push({ op: "uploadCanvasApp", ...body });
+            apps.push(makeCanvasApp(body.name, body.scope === "shared" ? "shared" : "user", viewer));
+            return json(res, { status: "published", version: body.version || "1.0.0", scope: body.scope || "user" });
+        }
+        if (rest === "import" && req.method === "POST") {
+            const body = await readBody(req);
+            calls.push({ op: "importCanvasApp", ...body });
+            return json(res, { name: "imported-app", scope: body.scope || "user", versions: [{ version: "1.0.0", status: "imported" }] });
+        }
+        const [rawName, sub] = rest.split("/");
+        const name = decodeURIComponent(rawName || "");
+        const scope = url.searchParams.get("scope");
+        if (req.method === "GET") {
+            const app = find(name, scope);
+            if (!app) return json(res, { code: "NOT_FOUND", message: "no such app" }, 404);
+            if (!sub) return json(res, { ...app, versions: [
+                { versionId: `v-${app.name}`, version: app.version, sha256: "a".repeat(64), sizeBytes: 2048, card: app.card, createdBy: "none:test", createdAt: "2026-10-01T00:00:00Z" },
+                { versionId: `v0-${app.name}`, version: "0.9.0", sha256: "b".repeat(64), sizeBytes: 1024, card: {}, createdBy: "none:test", createdAt: "2026-09-01T00:00:00Z" },
+            ] });
+            if (sub === "editors") return json(res, app.scope === "shared" ? [{ provider: "none", subject: "dev", email: "dev@example.com", displayName: "Dev Person", grantedAt: "2026-10-01T00:00:00Z" }] : []);
+            if (sub === "loads") return json(res, { rows: [{ loadId: "l1", appName: app.name, version: app.version, sessionId: "s1", user: { provider: "none", subject: "test" }, userEmail: "test@example.com", userDisplayName: "Test User", loadedAt: "2026-10-03T10:00:00Z" }], total30d: 1234, nextCursor: null });
+            if (sub === "html") {
+                const html = `<!doctype html><html><body><h1 id="hello">Hello from ${app.name}</h1><script>document.getElementById('hello').dataset.ran='1'</script></body></html>`;
+                return json(res, { name: app.name, version: app.version, sha256: null, html });
+            }
+            if (sub === "export") return json(res, { filename: `${app.name}.canvas-app.tar.gz`, sha256: "c".repeat(64), sizeBytes: 3, contentBase64: "AAAA" });
+        }
+        if (req.method === "PUT") {
+            const body = await readBody(req);
+            const op = { scope: "setCanvasAppScope", enabled: "setCanvasAppEnabled", active: "pinCanvasAppVersion", metadata: "setCanvasAppMetadata" }[sub];
+            calls.push({ op, name, ...body });
+            const app = find(name, body.scope);
+            if (app && sub === "enabled") app.enabled = Boolean(body.enabled);
+            if (app && sub === "scope") { app.scope = body.targetScope; }
+            return json(res, { ok: true });
+        }
+        if (req.method === "DELETE") {
+            calls.push({ op: "deleteCanvasApp", name, scope });
+            const index = apps.findIndex((a) => a.name === name && (!scope || a.scope === scope));
+            if (index >= 0) apps.splice(index, 1);
+            return json(res, { deleted: true, files: 1, pendingCleanup: false });
+        }
+        return json(res, { code: "NOT_FOUND", message: "no such route" }, 404);
+    };
+    return { apps, calls, handle };
+}
+
+export function makeCanvasApp(name, scope = "user", owner = { provider: "none", subject: "test" }, extra = {}) {
+    return {
+        appId: `id-${scope}-${owner?.subject ?? ""}-${name}`, name, scope, owner,
+        ownerEmail: owner ? `${owner.subject}@example.com` : null,
+        ownerDisplayName: owner?.subject === "test" ? "Test User" : (owner?.subject ?? null),
+        description: `Use when the team runs ${name}.\n\nIt keeps one row per item.`,
+        tags: ["team"], enabled: true, createdBy: null,
+        createdAt: "2026-10-01T00:00:00Z", updatedAt: "2026-10-02T00:00:00Z",
+        activeVersionId: `v-${name}`, version: "1.0.0", sha256: "a".repeat(64), sizeBytes: 2048,
+        card: {
+            interface: { keys: [{ key: "app/item/<id>", writer: "page", note: "one row per item" }], requests: [{ op: "summarize", result: { text: "string" } }], events: [{ key: "evt/<n>", note: "status" }] },
+            responseContract: { actions: { vote: { item: "string", weight: "number?" } } },
+            workspace: { read: ["**/*.md"], write: ["notes/*.md"], watch: false, commands: { status: {} } },
+        },
+        canEdit: true, canManage: owner?.subject === "test", shadowed: false, ...extra,
+    };
+}
+
 // `canvases` attaches session_canvases summaries to list rows, as the real
 // sessions list does (sessionIndex -> [{ slot, name, latestRev, sizeBytes }]):
 // the portal then knows a canvas revision before it reads that revision's
 // draw event, which is the cold-open path.
-export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 0, systemEvery = 0, assistantMarkdown = null, groups = [], themeId = null, groupMembers = {}, admin = false, parents = {}, canvases = {}, canvasLegacyMode = false } = {}) {
+export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 0, systemEvery = 0, assistantMarkdown = null, groups = [], themeId = null, groupMembers = {}, admin = false, parents = {}, canvases = {}, canvasLegacyMode = false, canvasApps = null } = {}) {
     assertFreshBundle();
     const SESSIONS = makeSessions(Math.max(1, sessionCount), groupMembers, parents)
         .map((row, i) => (Array.isArray(canvases[i]) && canvases[i].length ? { ...row, canvases: canvases[i] } : row));
@@ -205,11 +305,32 @@ export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 
     const placements = [];
     // Rename calls, [{ sessionId, title }], for the same reason.
     const renames = [];
-    const server = http.createServer((req, res) => {
+    const VIEWER = { provider: "none", subject: "test" };
+    const registry = canvasApps ? canvasAppRegistry(canvasApps, VIEWER) : null;
+    // With the registry on, profile settings are kept and served back so a
+    // test can prove a per-viewer setting survives a reload.
+    let savedProfileSettings = themeId ? { themeId } : {};
+    const server = http.createServer(async (req, res) => {
         const url = new URL(req.url, "http://localhost");
         const pathname = url.pathname;
 
         if (pathname.startsWith("/api/")) {
+            if (registry && await registry.handle(req, res, pathname, url) !== false) return;
+            if (registry && /\/me\/profile\/settings$/.test(pathname) && req.method === "PATCH") {
+                let raw = "";
+                req.on("data", (chunk) => { raw += chunk; });
+                req.on("end", () => {
+                    try { savedProfileSettings = JSON.parse(raw || "{}").settings || {}; } catch { /* keep the previous */ }
+                    res.writeHead(200, { "content-type": "application/json" });
+                    res.end(JSON.stringify({ ok: true, result: { ok: true } }));
+                });
+                return;
+            }
+            if (registry && /\/me\/profile$/.test(pathname)) {
+                res.writeHead(200, { "content-type": "application/json" });
+                res.end(JSON.stringify({ ok: true, result: { ...VIEWER, email: "test@example.com", displayName: "Test User", isAdmin: admin, profileSettings: savedProfileSettings } }));
+                return;
+            }
             // Session groups: list them, and RECORD placement calls so a test
             // can prove a drag reached the API with the right group id.
             if (/\/management\/session-groups$/.test(pathname) && req.method === "GET") {
@@ -331,6 +452,8 @@ export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 
                 port: server.address().port,
                 placements,
                 renames,
+                canvasAppCalls: registry ? registry.calls : [],
+                savedProfileSettings: () => savedProfileSettings,
                 setGroups: (next) => { liveGroups = next; },
                 groupFetches: () => groupFetches,
             });

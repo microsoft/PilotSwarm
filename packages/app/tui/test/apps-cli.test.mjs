@@ -73,6 +73,30 @@ test("push publishes private unless --shared", async () => {
     }
 });
 
+test("publish --check calls publishCanvasApp with checkOnly and nothing else", async () => {
+    const answer = { checkOnly: true, ok: true, code: null, error: null, sizeBytes: 120, manifest: { name: "board", version: "1.2.0", description: "Use when a team signs off a train.", tags: ["review"] }, workspace: true };
+    const check = await run(["publish", "s-1", "--slot", "2", "--check"], { publishCanvasApp: answer });
+    assert.equal(check.code, 0);
+    // One call, and it is the check: no publish, upload or other write op.
+    assert.deepEqual(check.calls, [{ op: "publishCanvasApp", args: { sessionId: "s-1", slot: 2, checkOnly: true } }]);
+    assert.match(check.out, /check passed/);
+    assert.match(check.out, /name: board/);
+    assert.match(check.out, /workspace/);
+    const failed = await run(["publish", "s-1", "--check"], { publishCanvasApp: { checkOnly: true, ok: false, code: "BAD_REQUEST", error: "the manifest has no `interface` block." } });
+    assert.equal(failed.code, 2);
+    assert.match(failed.out, /check failed: the manifest has no `interface` block/);
+});
+
+test("publish needs --name unless --check, and publishes private unless --shared", async () => {
+    await assert.rejects(() => run(["publish", "s-1"]), /usage: pilotswarm apps publish/);
+    const answer = (args) => ({ status: "published", version: "1.0.0", scope: args.scope ?? "user" });
+    const priv = await run(["publish", "s-1", "--name", "board"], { publishCanvasApp: answer });
+    assert.deepEqual(priv.calls, [{ op: "publishCanvasApp", args: { sessionId: "s-1", name: "board" } }]);
+    assert.match(priv.out, /published board@1\.0\.0 \(private\)/);
+    const shared = await run(["publish", "s-1", "--slot", "3", "--name", "board", "--shared"], { publishCanvasApp: answer });
+    assert.deepEqual(shared.calls[0].args, { sessionId: "s-1", slot: 3, name: "board", scope: "shared" });
+});
+
 test("share and unshare move between scopes", async () => {
     const share = await run(["share", "board"]);
     assert.deepEqual(share.calls[0], { op: "setCanvasAppScope", args: { name: "board", scope: "user", targetScope: "shared" } });

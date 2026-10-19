@@ -213,4 +213,47 @@ describe("canvas app registry over the Web API", () => {
         expect((await mgmt.publishCanvasApp({ sessionId, name: nameFor("alice"), description: DESCRIPTION }, PEOPLE.alice, false)).status).toBe("published");
         expect((await mgmt.publishCanvasApp({ sessionId, name: nameFor("ada"), description: DESCRIPTION }, PEOPLE.ada, true)).status).toBe("published");
     });
+
+    it("checkOnly returns the publish check and writes nothing, directly and over the wire", async () => {
+        const sessionId = randomUUID();
+        await catalog.createSession(sessionId, { model: "m", owner: PEOPLE.alice });
+        const name = `api-check-${randomUUID().slice(0, 8)}`;
+        const html = page(name);
+        await mgmt._artifactStore.uploadArtifact(sessionId, canvasArtifactFilename(1), html, "text/html");
+        await catalog.recordEvents(sessionId, [{ eventType: "session.canvas_updated", data: { rev: 1, slot: 1, sizeBytes: html.length, trust: "owner" } }], "test");
+        const broken = "<!doctype html><html><body>no manifest</body></html>";
+        await mgmt._artifactStore.uploadArtifact(sessionId, canvasArtifactFilename(2), broken, "text/html");
+        await catalog.recordEvents(sessionId, [{ eventType: "session.canvas_updated", data: { rev: 1, slot: 2, sizeBytes: broken.length, trust: "owner" } }], "test");
+
+        const files = () => {
+            const out = [];
+            const walk = (dir) => { for (const e of fs.readdirSync(dir, { withFileTypes: true })) (e.isDirectory() ? walk(path.join(dir, e.name)) : out.push(path.join(dir, e.name))); };
+            walk(artifactDir);
+            return out.sort();
+        };
+        const snapshot = async () => ({
+            apps: (await pool.query(`SELECT count(*)::int AS n FROM "${schema}".canvas_apps`)).rows[0].n,
+            versions: (await pool.query(`SELECT count(*)::int AS n FROM "${schema}".canvas_app_versions`)).rows[0].n,
+            published: (await catalog.getSessionEvents(sessionId)).filter((e) => e.eventType === "session.canvas_app_published").length,
+            files: files(),
+        });
+        const before = await snapshot();
+
+        const direct = plain(await mgmt.publishCanvasApp({ sessionId, checkOnly: true }, PEOPLE.alice, false));
+        expect(direct).toMatchObject({ checkOnly: true, ok: true, code: null, manifest: { name, description: DESCRIPTION }, workspace: false });
+        expect(direct.interface).toMatchObject({ keys: [expect.objectContaining({ key: "app/x" })] });
+        const wire = await clients.alice.call("publishCanvasApp", { sessionId, checkOnly: true });
+        expect(wire).toEqual(direct);
+        // A failing page is a result, not an error, and writes nothing either.
+        const failed = await clients.alice.call("publishCanvasApp", { sessionId, slot: 2, checkOnly: true });
+        expect(failed).toMatchObject({ checkOnly: true, ok: false, code: "BAD_REQUEST", manifest: null });
+        expect(failed.error).toMatch(/CANVAS-APP-MANIFEST/);
+        const empty = await clients.alice.call("publishCanvasApp", { sessionId, slot: 3, checkOnly: true });
+        expect(empty).toMatchObject({ ok: false, error: "no canvas has been drawn on slot 3" });
+        // The session write rule still applies to the check.
+        await expect(clients.bob.call("publishCanvasApp", { sessionId, checkOnly: true })).rejects.toMatchObject({ status: 404 });
+
+        expect(await snapshot()).toEqual(before);
+        await expect(mgmt.getCanvasApp({ name }, PEOPLE.alice, false)).rejects.toMatchObject({ code: "NOT_FOUND" });
+    });
 });

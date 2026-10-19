@@ -58,6 +58,14 @@ import {
     selectVisibleSessionRows,
 } from "./selectors.js";
 import { findArtifactEntry } from "./state.js";
+import {
+    adminTreeAncestors,
+    adminTreeNavigableIds,
+    expandAdminTreeIds,
+    isAdminTreeCollapsible,
+    toggleAdminTreeId,
+} from "./admin-tree.js";
+import { canvasAppSelector, canvasAppTargetArgs } from "./admin-canvas-apps.js";
 import { getTheme, listThemes } from "./themes/index.js";
 
 function preserveNativeTaskProgress(history, current, sessionId) {
@@ -3444,6 +3452,7 @@ export class PilotSwarmUiController {
         if (this.getState().admin?.section === "features") void this.refreshFeatureFlags();
         void this.refreshAdminModelProviders().catch(() => {});
         void this.refreshAdminAgentPackages().catch(() => {});
+        void this.refreshAdminCanvasApps().catch(() => {});
     }
 
     /** Close the Admin Console and return to the standard workspace. */
@@ -3923,6 +3932,10 @@ export class PilotSwarmUiController {
             const pkgs = this.getState().admin?.packages;
             if (!pkgs?.fetchedAt) void this.refreshAdminAgentPackages().catch(() => {});
         }
+        if (section === "canvasApps") {
+            const apps = this.getState().admin?.canvasApps;
+            if (!apps?.fetchedAt) void this.refreshAdminCanvasApps().catch(() => {});
+        }
         if (section === "workers") {
             // Always refetch on entry: liveness is heartbeat recency, so rows
             // fetched minutes ago render as a dead fleet ("0 live").
@@ -4257,6 +4270,7 @@ export class PilotSwarmUiController {
     async selectAdminPackage(name, selector = null) {
         this.dispatch({ type: "admin/packages/select", name, selector });
         if (!name) return;
+        this.revealAdminTreeSelection();
         // Selection token minted by the reducer just now; every response from
         // this selection carries it so a slow response for another COPY of
         // the same name (scope shadowing) can never land on this one.
@@ -4332,6 +4346,376 @@ export class PilotSwarmUiController {
         const next = rows[Math.min(rows.length - 1, Math.max(0, (index < 0 ? (delta > 0 ? -1 : 0) : index) + delta))];
         if (next && (next.name !== pkgs.selectedName || keyOf(next) !== selectedKey)) {
             await this.selectAdminPackage(next.name, packageRowSelector(next));
+        }
+    }
+
+    // ── Settings tree: collapse, cursor, keys (issue 181 R24) ─────
+    //
+    // Both hosts send the same intents: move (j/k, Up/Down), toggle
+    // (Enter/Space), collapse (Left) and expand (Right). The collapsed ids
+    // are per viewer: the portal saves them in the profile, the TUI in its
+    // config file.
+
+    setAdminTreeCollapsed(collapsed) {
+        this.dispatch({ type: "admin/tree/setCollapsed", collapsed });
+    }
+
+    setAdminTreeCursor(id) {
+        this.dispatch({ type: "admin/tree/setCursor", cursor: id || null });
+    }
+
+    _adminTreeRow(id) {
+        const view = selectAdminConsole(this.getState());
+        const rowId = id || view.treeCursor;
+        return { view, row: view.settingsTreeAll.find((row) => row.id === rowId) || null };
+    }
+
+    /** Open the section and group that hold the selected row, and put the cursor on it. */
+    revealAdminTreeSelection() {
+        const view = selectAdminConsole(this.getState());
+        const row = view.settingsTreeAll.find((r) => r.selected && (r.kind === "package" || r.kind === "canvasApp"));
+        if (!row) return;
+        const collapsed = this.getState().admin?.tree?.collapsed || [];
+        const next = expandAdminTreeIds(collapsed, adminTreeAncestors(view.settingsTreeAll, row.id));
+        if (next.length !== collapsed.length) this.setAdminTreeCollapsed(next);
+        this.setAdminTreeCursor(row.id);
+    }
+
+    toggleAdminTreeNode(id = null) {
+        const { row } = this._adminTreeRow(id);
+        if (!row || !isAdminTreeCollapsible(row)) return false;
+        this.setAdminTreeCollapsed(toggleAdminTreeId(this.getState().admin?.tree?.collapsed, row.id));
+        this.setAdminTreeCursor(row.id);
+        return true;
+    }
+
+    /** Left: close an open section or group; on a closed one or an item, move to its parent. */
+    collapseAdminTreeNode(id = null) {
+        const { view, row } = this._adminTreeRow(id);
+        if (!row) return;
+        const collapsed = this.getState().admin?.tree?.collapsed || [];
+        if (isAdminTreeCollapsible(row) && !collapsed.includes(row.id)) {
+            this.setAdminTreeCollapsed([...collapsed, row.id]);
+            this.setAdminTreeCursor(row.id);
+            return;
+        }
+        if (row.parentId && view.settingsTree.some((r) => r.id === row.parentId && r.navigable)) {
+            this.setAdminTreeCursor(row.parentId);
+        }
+    }
+
+    /** Right: open a closed section or group. */
+    expandAdminTreeNode(id = null) {
+        const { row } = this._adminTreeRow(id);
+        if (!row || !isAdminTreeCollapsible(row)) return;
+        const collapsed = this.getState().admin?.tree?.collapsed || [];
+        if (collapsed.includes(row.id)) this.setAdminTreeCollapsed(collapsed.filter((entry) => entry !== row.id));
+        this.setAdminTreeCursor(row.id);
+    }
+
+    /** Enter/Space: toggle a section or group; select an item. */
+    async activateAdminTreeNode(id = null) {
+        const { row } = this._adminTreeRow(id);
+        if (!row) return;
+        if (isAdminTreeCollapsible(row)) {
+            this.toggleAdminTreeNode(row.id);
+            return;
+        }
+        await this.selectAdminTreeItem(row);
+    }
+
+    async selectAdminTreeItem(row) {
+        if (row?.kind === "package") {
+            this.setAdminTreeCursor(row.id);
+            await this.selectAdminPackage(row.name, packageRowSelector(row));
+        } else if (row?.kind === "canvasApp") {
+            this.setAdminTreeCursor(row.id);
+            await this.selectAdminCanvasApp(row.selector || canvasAppSelector(row));
+        }
+    }
+
+    /** j/k: move the cursor over the visible Packages and Canvas Apps rows; landing on an item selects it. */
+    async moveAdminTreeCursor(delta) {
+        const view = selectAdminConsole(this.getState());
+        const ids = adminTreeNavigableIds(view.settingsTree);
+        if (!ids.length) return;
+        const index = ids.indexOf(view.treeCursor);
+        const nextIndex = index < 0 ? (delta > 0 ? 0 : ids.length - 1) : Math.max(0, Math.min(ids.length - 1, index + delta));
+        const nextId = ids[nextIndex];
+        if (!nextId || nextId === view.treeCursor) return;
+        this.setAdminTreeCursor(nextId);
+        const row = view.settingsTree.find((r) => r.id === nextId);
+        if (row?.kind === "package" || row?.kind === "canvasApp") await this.selectAdminTreeItem(row);
+        else if (row?.id === "agents" || row?.parentId === "agents") this.dispatch({ type: "admin/section", section: "packages" });
+        else if (row?.id === "canvasApps" || row?.parentId === "canvasApps") {
+            this.dispatch({ type: "admin/section", section: "canvasApps" });
+        }
+    }
+
+    // ── Canvas Apps (Admin → Canvas Apps, issue 181 R23/R29) ──────
+
+    async refreshAdminCanvasApps() {
+        if (typeof this.transport.listCanvasApps !== "function") {
+            this.dispatch({ type: "admin/canvasApps/loadFailed", error: "Canvas apps are not available on this deployment." });
+            return;
+        }
+        this.dispatch({ type: "admin/canvasApps/loading" });
+        try {
+            const list = await this.transport.listCanvasApps({});
+            this.dispatch({ type: "admin/canvasApps/loaded", list });
+        } catch (error) {
+            this.dispatch({ type: "admin/canvasApps/loadFailed", error: error?.message || String(error) });
+        }
+    }
+
+    /** Select one app copy: loads its detail, contributors and latest loads. */
+    async selectAdminCanvasApp(selected) {
+        this.dispatch({ type: "admin/canvasApps/select", selected });
+        if (!selected?.name) return;
+        this.revealAdminTreeSelection();
+        const apps = this.getState().admin?.canvasApps;
+        const seq = apps?.selectionSeq ?? 0;
+        const target = canvasAppTargetArgs(apps?.selected);
+        const work = [
+            (async () => {
+                try {
+                    const detail = await this.transport.getCanvasApp(target);
+                    this.dispatch({ type: "admin/canvasApps/detail/loaded", seq, detail });
+                } catch (error) {
+                    this.dispatch({ type: "admin/canvasApps/detail/loadFailed", seq, error: error?.message || String(error) });
+                }
+            })(),
+            this.refreshAdminCanvasAppLoads(seq, target),
+        ];
+        // Contributors belong to the shared copy only.
+        if (target.scope === "shared" && typeof this.transport.listCanvasAppEditors === "function") {
+            work.push((async () => {
+                try {
+                    const editors = await this.transport.listCanvasAppEditors({ name: target.name });
+                    this.dispatch({ type: "admin/canvasApps/editors/loaded", seq, editors });
+                } catch {
+                    this.dispatch({ type: "admin/canvasApps/editors/loaded", seq, editors: [] });
+                }
+            })());
+        }
+        await Promise.all(work);
+    }
+
+    async refreshAdminCanvasAppLoads(seq = null, target = null) {
+        const apps = this.getState().admin?.canvasApps;
+        const useSeq = seq ?? apps?.selectionSeq ?? 0;
+        const useTarget = target ?? canvasAppTargetArgs(apps?.selected);
+        if (!useTarget.name || typeof this.transport.getCanvasAppLoads !== "function") return;
+        this.dispatch({ type: "admin/canvasApps/loads/loading", seq: useSeq });
+        try {
+            const page = await this.transport.getCanvasAppLoads({ ...useTarget, limit: 20 });
+            this.dispatch({ type: "admin/canvasApps/loads/loaded", seq: useSeq, page });
+        } catch (error) {
+            const code = error?.code || error?.body?.error?.code;
+            // Loads are for the owner and admins; anyone else is refused.
+            const hidden = code === "FORBIDDEN" || code === "NOT_FOUND" || error?.status === 403;
+            this.dispatch({ type: "admin/canvasApps/loads/failed", seq: useSeq, hidden, error: hidden ? null : (error?.message || String(error)) });
+        }
+    }
+
+    /** Load one version's page for the sandboxed preview (the active one by default). */
+    async previewAdminCanvasApp(version = null) {
+        const apps = this.getState().admin?.canvasApps;
+        const target = canvasAppTargetArgs(apps?.selected);
+        if (!target.name) return;
+        const seq = apps?.selectionSeq ?? 0;
+        this.dispatch({ type: "admin/canvasApps/preview/loading", seq, version });
+        try {
+            const page = await this.transport.getCanvasAppHtml({ ...target, ...(version ? { version } : {}) });
+            this.dispatch({ type: "admin/canvasApps/preview/loaded", seq, page });
+        } catch (error) {
+            this.dispatch({ type: "admin/canvasApps/preview/failed", seq, error: error?.message || String(error) });
+        }
+    }
+
+    closeAdminCanvasAppPreview() {
+        this.dispatch({ type: "admin/canvasApps/preview/close" });
+    }
+
+    /**
+     * Canvas app actions: share | private | enable | disable | pin (arg =
+     * version) | delete | download (arg = version) | export. Download and
+     * export hand the bytes to the host's save (the portal's browser save).
+     */
+    async runAdminCanvasAppAction(kind, arg = null) {
+        const apps = this.getState().admin?.canvasApps;
+        const selected = apps?.selected;
+        const target = canvasAppTargetArgs(selected);
+        if (!target.name) return;
+        this.dispatch({ type: "admin/canvasApps/action/pending", action: kind });
+        let notice = null;
+        let reselect = selected;
+        try {
+            switch (kind) {
+                case "share":
+                case "private": {
+                    const targetScope = kind === "share" ? "shared" : "user";
+                    await this.transport.setCanvasAppScope({ ...target, targetScope });
+                    reselect = targetScope === "shared"
+                        ? { name: selected.name, scope: "shared", ownerProvider: null, ownerSubject: null }
+                        : { name: selected.name, scope: "user", ownerProvider: apps.detail?.owner?.provider ?? selected.ownerProvider ?? null, ownerSubject: apps.detail?.owner?.subject ?? selected.ownerSubject ?? null };
+                    notice = kind === "share" ? "The app is now shared." : "The app is now private; its contributors were removed.";
+                    break;
+                }
+                case "enable":
+                case "disable":
+                    await this.transport.setCanvasAppEnabled({ ...target, enabled: kind === "enable" });
+                    break;
+                case "pin":
+                    await this.transport.pinCanvasAppVersion({ ...target, version: String(arg ?? "") });
+                    notice = `Version ${arg} is now active.`;
+                    break;
+                case "delete":
+                    await this.transport.deleteCanvasApp(target);
+                    reselect = null;
+                    notice = `Deleted ${target.name}. Canvases already drawn keep working.`;
+                    break;
+                case "download": {
+                    const page = await this.transport.getCanvasAppHtml({ ...target, ...(arg ? { version: String(arg) } : {}) });
+                    if (typeof this.transport.saveCanvasAppDownload !== "function") throw new Error("Download is not available here.");
+                    await this.transport.saveCanvasAppDownload(`${target.name}@${page.version}.html`, page.html, { contentType: "text/html" });
+                    this.dispatch({ type: "admin/canvasApps/action/done" });
+                    return;
+                }
+                case "export": {
+                    const archive = await this.transport.exportCanvasApp(target);
+                    if (typeof this.transport.saveCanvasAppDownload !== "function") throw new Error("Export is not available here.");
+                    await this.transport.saveCanvasAppDownload(archive.filename, archive.contentBase64, { contentType: "application/gzip", base64: true });
+                    this.dispatch({ type: "admin/canvasApps/action/done" });
+                    return;
+                }
+                default:
+                    throw new Error(`unknown canvas app action: ${kind}`);
+            }
+            await this.refreshAdminCanvasApps();
+            if (reselect) await this.selectAdminCanvasApp(reselect);
+            else this.dispatch({ type: "admin/canvasApps/select", selected: null });
+            this.dispatch({ type: "admin/canvasApps/action/done", notice });
+        } catch (error) {
+            this.dispatch({ type: "admin/canvasApps/action/failed", error: error?.message || String(error) });
+        }
+    }
+
+    openAdminAddCanvasApp(kind = "html") {
+        this.dispatch({ type: "admin/canvasApps/addDialog/open", kind });
+    }
+
+    closeAdminAddCanvasApp() {
+        this.dispatch({ type: "admin/canvasApps/addDialog/close" });
+    }
+
+    setAdminAddCanvasAppField(field, value) {
+        this.dispatch({ type: "admin/canvasApps/addDialog/setField", field, value });
+    }
+
+    failAdminAddCanvasApp(message) {
+        this.dispatch({ type: "admin/canvasApps/addDialog/failed", error: message });
+    }
+
+    /** Upload the chosen .html as a version, or import the chosen .tar.gz. */
+    async submitAdminAddCanvasApp() {
+        const dialog = this.getState().admin?.canvasApps?.addDialog;
+        if (!dialog?.open || dialog.submitting) return;
+        if (!dialog.content) {
+            this.failAdminAddCanvasApp(dialog.kind === "archive" ? "Choose a .tar.gz export to import." : "Choose an .html file to upload.");
+            return;
+        }
+        const scope = dialog.scope === "shared" ? "shared" : "user";
+        this.dispatch({ type: "admin/canvasApps/addDialog/submitting" });
+        try {
+            let name;
+            if (dialog.kind === "archive") {
+                const result = await this.transport.importCanvasApp({ contentBase64: dialog.content, scope });
+                name = result?.name;
+                const failed = (result?.versions || []).filter((v) => v.status === "failed");
+                if (failed.length) {
+                    throw new Error(`${failed.length} version${failed.length === 1 ? "" : "s"} failed to import: ${failed.map((v) => `${v.version}${v.code ? ` (${v.code})` : ""}`).join(", ")}`);
+                }
+            } else {
+                name = String(dialog.name || "").trim().toLowerCase();
+                if (!name) throw new Error("Give the app a name.");
+                const tags = String(dialog.tags || "").split(",").map((t) => t.trim()).filter(Boolean);
+                const result = await this.transport.uploadCanvasApp({
+                    html: dialog.content,
+                    name,
+                    scope,
+                    ...(String(dialog.description || "").trim() ? { description: String(dialog.description).trim() } : {}),
+                    ...(tags.length ? { tags } : {}),
+                    ...(String(dialog.version || "").trim() ? { version: String(dialog.version).trim() } : {}),
+                });
+                name = result?.name || name;
+            }
+            this.dispatch({ type: "admin/canvasApps/addDialog/close" });
+            await this.refreshAdminCanvasApps();
+            if (name) {
+                const owner = this.getState().admin?.profile;
+                await this.selectAdminCanvasApp({
+                    name, scope,
+                    ownerProvider: scope === "user" ? (owner?.provider ?? null) : null,
+                    ownerSubject: scope === "user" ? (owner?.subject ?? null) : null,
+                });
+            }
+        } catch (error) {
+            this.failAdminAddCanvasApp(error?.message || String(error));
+        }
+    }
+
+    // ── "Publish as app" on the canvas toolbar (issue 181 R25) ────
+
+    /** Open the dialog and run the manifest check on the slot's page (writes nothing). */
+    async openCanvasPublishDialog(sessionId, slot = 1) {
+        if (!sessionId) return;
+        const slotNumber = Number.isInteger(slot) && slot >= 1 ? slot : 1;
+        this.dispatch({ type: "canvasPublish/open", sessionId, slot: slotNumber });
+        if (typeof this.transport.publishCanvasApp !== "function") {
+            this.dispatch({ type: "canvasPublish/checkFailed", sessionId, slot: slotNumber, error: "Publishing apps is not available on this deployment." });
+            return;
+        }
+        try {
+            const check = await this.transport.publishCanvasApp({ sessionId, slot: slotNumber, checkOnly: true });
+            this.dispatch({ type: "canvasPublish/checked", sessionId, slot: slotNumber, check });
+        } catch (error) {
+            this.dispatch({ type: "canvasPublish/checkFailed", sessionId, slot: slotNumber, error: error?.message || String(error) });
+        }
+    }
+
+    setCanvasPublishField(field, value) {
+        this.dispatch({ type: "canvasPublish/setField", field, value });
+    }
+
+    closeCanvasPublishDialog() {
+        this.dispatch({ type: "canvasPublish/close" });
+    }
+
+    async submitCanvasPublish() {
+        const dialog = this.getState().canvasPublish;
+        if (!dialog?.open || dialog.submitting || dialog.checking) return;
+        const name = String(dialog.name || "").trim().toLowerCase();
+        if (!name) {
+            this.dispatch({ type: "canvasPublish/failed", error: "Give the app a name." });
+            return;
+        }
+        const tags = String(dialog.tags || "").split(",").map((t) => t.trim()).filter(Boolean);
+        this.dispatch({ type: "canvasPublish/submitting" });
+        try {
+            const result = await this.transport.publishCanvasApp({
+                sessionId: dialog.sessionId,
+                slot: dialog.slot,
+                name,
+                scope: dialog.scope === "shared" ? "shared" : "user",
+                ...(String(dialog.description || "").trim() ? { description: String(dialog.description).trim() } : {}),
+                ...(tags.length ? { tags } : {}),
+                ...(String(dialog.version || "").trim() ? { version: String(dialog.version).trim() } : {}),
+            });
+            this.dispatch({ type: "canvasPublish/done", result: { ...result, name } });
+            if (this.getState().admin?.canvasApps?.fetchedAt) void this.refreshAdminCanvasApps().catch(() => {});
+        } catch (error) {
+            this.dispatch({ type: "canvasPublish/failed", error: error?.message || String(error) });
         }
     }
 
@@ -12224,6 +12608,27 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.ADMIN_SHOW_WORKERS:
                 this.setAdminSection("workers");
+                return;
+            case UI_COMMANDS.ADMIN_SHOW_CANVAS_APPS:
+                this.setAdminSection("canvasApps");
+                return;
+            case UI_COMMANDS.ADMIN_CANVAS_APPS_REFRESH:
+                await this.refreshAdminCanvasApps();
+                return;
+            case UI_COMMANDS.ADMIN_TREE_NEXT:
+                await this.moveAdminTreeCursor(1);
+                return;
+            case UI_COMMANDS.ADMIN_TREE_PREV:
+                await this.moveAdminTreeCursor(-1);
+                return;
+            case UI_COMMANDS.ADMIN_TREE_TOGGLE:
+                await this.activateAdminTreeNode();
+                return;
+            case UI_COMMANDS.ADMIN_TREE_COLLAPSE:
+                this.collapseAdminTreeNode();
+                return;
+            case UI_COMMANDS.ADMIN_TREE_EXPAND:
+                this.expandAdminTreeNode();
                 return;
             case UI_COMMANDS.ADMIN_WORKERS_REFRESH:
                 await this.refreshAdminWorkers();

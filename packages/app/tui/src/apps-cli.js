@@ -8,6 +8,7 @@
  *
  *   pilotswarm apps list | search <words> | show <name>
  *   pilotswarm apps push <file.html> --name <name> [--shared] [--version <v>] [--description <text>]
+ *   pilotswarm apps publish <session-id> [--slot <n>] --name <name> [--shared] … | --check
  *   pilotswarm apps pull <name> [--version <v>] [--output <file>]
  *   pilotswarm apps export <name> [--output <file>] | import <file> [--shared]
  *   pilotswarm apps describe <name> [--description <text>] [--tags a,b]
@@ -32,6 +33,10 @@ Usage:
   pilotswarm apps search <words> [--json]
   pilotswarm apps show <name> [--shared|--user] [--json]
   pilotswarm apps push <file.html> --name <name> [--shared] [--version <v>] [--description <text>] [--tags a,b]
+  pilotswarm apps publish <session-id> [--slot <n>] --name <name> [--shared] [--version <v>] [--description <text>] [--tags a,b]
+                                                       publish the canvas drawn on a session slot (you need write access)
+  pilotswarm apps publish <session-id> [--slot <n>] --check
+                                                       run the publish checks on that page; nothing is written
   pilotswarm apps pull <name> [--version <v>] [--output <file>] [--shared|--user]
   pilotswarm apps export <name> [--output <file>] [--shared|--user]
   pilotswarm apps import <file.tar.gz> [--shared]
@@ -67,6 +72,8 @@ export function parseAppsArgs(argv) {
         else if (arg === "--json") flags.json = true;
         else if (arg === "--yes" || arg === "-y") flags.yes = true;
         else if (arg === "--apply") flags.apply = true;
+        else if (arg === "--check") flags.check = true;
+        else if (arg === "--slot") flags.slot = Number(argv[++i]);
         else if (arg === "--api-url") flags.apiUrl = argv[++i];
         else if (arg === "--name") flags.name = argv[++i];
         else if (arg === "--version") flags.version = argv[++i];
@@ -155,6 +162,32 @@ export async function runAppsCommand(argv, deps = {}) {
                 const html = fs.readFileSync(path.resolve(file), "utf8");
                 const result = await client.uploadCanvasApp({
                     html, name, ...(flags.scope ? { scope: flags.scope } : {}),
+                    ...(flags.version ? { version: flags.version } : {}),
+                    ...(flags.description ? { description: flags.description } : {}),
+                    ...(flags.tags ? { tags: flags.tags } : {}),
+                });
+                print(result, (r) => `${r.status === "published" ? "published" : "unchanged"} ${name}@${r.version} (${r.scope === "shared" ? "shared" : "private"})`);
+                return 0;
+            }
+            case "publish": {
+                const sessionId = needName(rest[0], "publish <session-id> [--slot <n>] --name <name> | --check");
+                const slot = Number.isInteger(flags.slot) && flags.slot >= 1 ? { slot: flags.slot } : {};
+                if (flags.check) {
+                    const check = await client.publishCanvasApp({ sessionId, ...slot, checkOnly: true });
+                    print(check, (c) => c.ok
+                        ? [`check passed (${c.sizeBytes} bytes)`,
+                            c.manifest?.name ? `name: ${c.manifest.name}` : null,
+                            c.manifest?.version ? `version: ${c.manifest.version}` : null,
+                            c.manifest?.description ? `description: ${c.manifest.description}` : null,
+                            c.manifest?.tags?.length ? `tags: ${c.manifest.tags.join(", ")}` : null,
+                            c.workspace ? "asks for workspace access" : null].filter(Boolean).join("\n")
+                        : `check failed: ${c.error}`);
+                    return check.ok ? 0 : 2;
+                }
+                const name = needName(flags.name, "publish <session-id> [--slot <n>] --name <name>");
+                const result = await client.publishCanvasApp({
+                    sessionId, ...slot, name,
+                    ...(flags.scope ? { scope: flags.scope } : {}),
                     ...(flags.version ? { version: flags.version } : {}),
                     ...(flags.description ? { description: flags.description } : {}),
                     ...(flags.tags ? { tags: flags.tags } : {}),

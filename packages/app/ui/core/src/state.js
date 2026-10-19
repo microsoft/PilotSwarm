@@ -129,6 +129,25 @@ export function normalizeStoredSessionOrder(value) {
     return out;
 }
 
+/**
+ * Collapsed Admin Console tree nodes (issue 181 R24): a short list of node
+ * ids ("agents", "group:shared", "canvasApps", "capps:mine", …). Unknown ids
+ * are kept — a newer build may know them — but the list is capped.
+ */
+export const ADMIN_COLLAPSED_MAX = 64;
+export function normalizeStoredAdminCollapsed(value) {
+    if (!Array.isArray(value)) return [];
+    const out = [];
+    for (const entry of value) {
+        if (typeof entry !== "string") continue;
+        const id = entry.trim();
+        if (!id || id.length > 200 || out.includes(id)) continue;
+        out.push(id);
+        if (out.length >= ADMIN_COLLAPSED_MAX) break;
+    }
+    return out;
+}
+
 export function normalizeStoredCollapsedSessionIds(value) {
     if (!Array.isArray(value)) return new Set();
     const out = new Set();
@@ -366,7 +385,7 @@ export const BUDGET_PERIODS = Object.freeze(["day", "week", "month"]);
 export const BUDGET_SERIES_RANGES = Object.freeze([14, 30, 90]);
 export const BUDGET_SERIES_DAYS = 14;
 
-export function createInitialState({ mode = "local", branding = null, docs = null, themeId = null, sessionOwnerFilter = null, layoutAdjustments = null, pinnedSessionIds = null, collapsedSessionIds = null, activeSessionId = null, sessionOrder = null, rightPaneMode = null, desktopPanes: storedDesktopPanes = null, canvasPrefs = null } = {}) {
+export function createInitialState({ mode = "local", branding = null, docs = null, themeId = null, sessionOwnerFilter = null, layoutAdjustments = null, pinnedSessionIds = null, collapsedSessionIds = null, activeSessionId = null, sessionOrder = null, rightPaneMode = null, desktopPanes: storedDesktopPanes = null, canvasPrefs = null, adminCollapsed = null } = {}) {
     const desktopPanes = normalizeStoredDesktopPanes(
         storedDesktopPanes,
         normalizeStoredRightPaneMode(rightPaneMode),
@@ -742,6 +761,22 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // stale waiting line unmarked.
             pausedError: null,
         },
+        // "Publish as app" dialog on the canvas toolbar (issue 181 R25).
+        canvasPublish: {
+            open: false,
+            sessionId: null,
+            slot: 1,
+            name: "",
+            description: "",
+            tags: "",
+            version: "",
+            scope: "user",
+            checking: false,
+            check: null,
+            submitting: false,
+            error: null,
+            result: null,
+        },
         admin: {
             // Whether the Admin Console is taking over the workspace and
             // hiding the session/chat panes. Persisted only in-memory.
@@ -852,6 +887,43 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
                     error: null,
                 },
             },
+            // Canvas app registry (issue 181 R23/R29): the list, the selected
+            // app's detail, contributors, loads and preview page.
+            canvasApps: {
+                loading: false,
+                error: null,
+                list: [],
+                fetchedAt: 0,
+                // { name, scope, ownerProvider, ownerSubject } — WHICH copy of
+                // the name (a private and a shared app may share it).
+                selected: null,
+                selectionSeq: 0,
+                detail: null,
+                detailLoading: false,
+                detailError: null,
+                editors: [],
+                loads: { rows: [], total30d: null, loading: false, error: null },
+                preview: { html: null, version: null, sha256: null, loading: false, error: null },
+                action: { pending: null, error: null, notice: null },
+                addDialog: {
+                    open: false,
+                    // "html" uploads one page; "archive" imports an export.
+                    kind: "html",
+                    scope: "user",
+                    fileName: "",
+                    content: "",
+                    name: "",
+                    description: "",
+                    tags: "",
+                    version: "",
+                    submitting: false,
+                    error: null,
+                },
+            },
+            // Packages / Canvas Apps tree (R24): collapsed node ids are kept
+            // per viewer (portal profile, TUI config); the cursor is the row
+            // the keyboard acts on.
+            tree: { collapsed: normalizeStoredAdminCollapsed(adminCollapsed), cursor: null },
             workers: {
                 loading: false,
                 error: null,

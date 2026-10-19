@@ -36,6 +36,7 @@ import {
     selectHelpModal,
     selectConfirmModal,
     selectVisibleSessionRows,
+    windowAdminTreeRows,
 } from "pilotswarm/ui-core";
 import { useUiPlatform } from "./platform.js";
 import { useControllerSelector } from "./use-controller-state.js";
@@ -1939,30 +1940,58 @@ function formatAdminPrincipalLabelTui(principal) {
     return [provider, subject].filter(Boolean).join(":") || "user";
 }
 
-function buildAdminPackagesLines(view) {
-    // TUI parity for Admin → Packages: the same selector view-model the web
-    // workspace renders, as text — settings tree, selected package detail,
-    // files, and a preview head. Keys: a/g switch sections, j/k select,
-    // r refresh (wired via the ADMIN_* commands).
+/**
+ * The settings tree as text (issue 181 R24, same rules as the portal):
+ * sections and groups collapse (▸ closed, ▾ open) and a closed one shows its
+ * count; the list is windowed around the cursor row (`›` marks the cursor,
+ * green the selection) so it scrolls and keeps that row in view.
+ */
+function buildAdminTreeLines(view, maxRows = 18) {
     const lines = [];
-    const packages = view.packages || {};
+    const rows = view.settingsTree || [];
+    const cursorId = view.treeCursor || rows.find((row) => row.selected)?.id || null;
+    const overflow = rows.length > maxRows;
+    const win = windowAdminTreeRows(rows, cursorId, overflow ? Math.max(1, maxRows - 2) : maxRows);
     lines.push([{ text: "Settings", color: "cyan", bold: true }]);
-    for (const row of view.settingsTree || []) {
+    if (win.above > 0) lines.push([{ text: `  ↑ ${win.above} more`, color: "gray" }]);
+    for (const row of win.rows) {
         const indent = "  ".repeat(row.depth || 0);
-        if (row.kind === "group") {
-            lines.push([{ text: `${indent}${row.label} (${row.count ?? 0})`, color: "gray" }]);
+        const cursor = row.id === cursorId;
+        const marker = cursor ? "› " : "  ";
+        const caret = row.collapsible ? (row.collapsed ? "▸ " : "▾ ") : "";
+        const isItem = row.kind === "package" || row.kind === "canvasApp";
+        const count = row.kind === "group" || (row.collapsible && row.collapsed) ? ` (${row.count ?? 0})` : "";
+        if (!isItem) {
+            lines.push([
+                { text: `${indent}${marker}`, color: cursor ? "green" : "gray", bold: cursor },
+                { text: `${caret}${row.label}${count}`, color: row.kind === "group" ? "gray" : (row.selected ? "white" : "white"), bold: row.selected || cursor },
+            ]);
             continue;
         }
-        const marker = row.selected ? "› " : "  ";
-        const badge = row.kind === "package" ? `[${row.scope === "shared" ? "S" : "U"}] ` : "";
-        const version = row.kind === "package" && row.semver ? `  ${row.semver}` : "";
+        const badge = row.kind === "package"
+            ? `[${row.scope === "shared" ? "S" : "U"}] `
+            : `[${row.scope === "shared" ? "S" : "P"}] `;
+        const version = row.kind === "package" ? (row.semver ? `  ${row.semver}` : "") : (row.version ? `  ${row.version}` : "");
+        const owner = row.kind === "canvasApp" && row.parentId === "capps:others" && row.ownerLabel ? `  · ${row.ownerLabel}` : "";
         lines.push([
-            { text: `${indent}${marker}`, color: row.selected ? "green" : "gray", bold: row.selected },
-            { text: `${badge}${row.label}${version}${row.kind === "package" && !row.enabled ? "  [disabled]" : ""}`,
-              color: row.selected ? "white" : (row.kind === "package" && !row.enabled ? "gray" : "white"),
+            { text: `${indent}${marker}`, color: row.selected ? "green" : "gray", bold: row.selected || cursor },
+            { text: `${badge}${row.label}${version}${owner}${row.enabled === false ? "  [disabled]" : ""}`,
+              color: row.selected ? "green" : (row.enabled === false ? "gray" : "white"),
               bold: row.selected },
         ]);
     }
+    if (win.below > 0) lines.push([{ text: `  ↓ ${win.below} more`, color: "gray" }]);
+    return lines;
+}
+
+function buildAdminPackagesLines(view, { treeRows = 18 } = {}) {
+    // TUI parity for Admin → Packages: the same selector view-model the web
+    // workspace renders, as text — settings tree, selected package detail,
+    // files, and a preview head. Keys: a/c switch sections, j/k move,
+    // Enter/Space toggle, ←/→ collapse/expand, r refresh.
+    const lines = [];
+    const packages = view.packages || {};
+    lines.push(...buildAdminTreeLines(view, treeRows));
     if (packages.loading) lines.push([{ text: "  loading packages...", color: "gray" }]);
     if (packages.error) lines.push([{ text: `  ! ${packages.error}`, color: "red" }]);
     lines.push([{ text: "", color: "gray" }]);
@@ -2052,12 +2081,7 @@ function buildAdminPackagesLines(view) {
     }
     lines.push([{ text: "", color: "gray" }]);
     lines.push([{ text: "Actions", color: "cyan", bold: true }]);
-    lines.push([
-        { text: " j/k ", color: "green", bold: true }, { text: "select  ", color: "gray" },
-        { text: "r ", color: "cyan", bold: true }, { text: "refresh  ", color: "gray" },
-        { text: "m ", color: "yellow", bold: true }, { text: "Model Providers  ", color: "gray" },
-        { text: "Esc ", color: "red", bold: true }, { text: "close", color: "gray" },
-    ]);
+    lines.push(...adminTreeKeyLines());
     return lines;
 }
 
@@ -2197,7 +2221,105 @@ function buildAdminModelProviderLines(view) {
     return lines;
 }
 
-function buildAdminConsoleLines(view) {
+function adminTreeKeyLines() {
+    return [
+        [
+            { text: " j/k ", color: "green", bold: true }, { text: "move  ", color: "gray" },
+            { text: "Enter/Space ", color: "green", bold: true }, { text: "open/close  ", color: "gray" },
+            { text: "←/→ ", color: "green", bold: true }, { text: "collapse/expand  ", color: "gray" },
+            { text: "r ", color: "cyan", bold: true }, { text: "refresh", color: "gray" },
+        ],
+        [
+            { text: " a ", color: "yellow", bold: true }, { text: "Packages  ", color: "gray" },
+            { text: "c ", color: "yellow", bold: true }, { text: "Canvas Apps  ", color: "gray" },
+            { text: "m ", color: "yellow", bold: true }, { text: "Model Providers  ", color: "gray" },
+            { text: "Esc ", color: "red", bold: true }, { text: "close", color: "gray" },
+        ],
+    ];
+}
+
+/**
+ * Admin → Canvas Apps (issue 181 R23/R29) as text. Read-only: Preview, the
+ * actions and Add canvas app are portal-only (as for Packages); the tree's
+ * collapse, scroll and keys match the portal.
+ */
+function buildAdminCanvasAppsLines(view, { treeRows = 18 } = {}) {
+    const lines = [];
+    const apps = view.canvasApps || {};
+    lines.push(...buildAdminTreeLines(view, treeRows));
+    if (apps.loading) lines.push([{ text: "  loading canvas apps...", color: "gray" }]);
+    if (apps.error) lines.push([{ text: `  ! ${apps.error}`, color: "red" }]);
+    lines.push([{ text: "", color: "gray" }]);
+    const d = apps.detail;
+    if (d) {
+        lines.push([
+            { text: d.name, color: "white", bold: true },
+            { text: d.version ? `  ${d.version}` : "", color: "white" },
+            { text: `  ${d.scopeLabel}`, color: d.scope === "shared" ? "cyan" : "yellow" },
+            { text: d.enabled ? "" : "  disabled", color: "red" },
+        ]);
+        if (d.loading) lines.push([{ text: "loading canvas app...", color: "gray" }]);
+        if (d.error) lines.push([{ text: `! ${d.error}`, color: "red", bold: true }]);
+        lines.push([{ text: "Owner   ", color: "gray" }, { text: d.ownerLabel || "—", color: "white" }]);
+        if (d.tags.length) lines.push([{ text: "Tags    ", color: "gray" }, { text: d.tags.join(", "), color: "white" }]);
+        for (const para of String(d.description || "").split("\n").filter((t) => t.trim()).slice(0, 6)) {
+            lines.push([{ text: para.slice(0, 120), color: "gray" }]);
+        }
+        const card = d.interfaceCard;
+        lines.push([{ text: "Interface", color: "cyan", bold: true }]);
+        if (card.workspaceWarning) lines.push([{ text: `  ! ${card.workspaceWarning}`, color: "yellow" }]);
+        if (card.empty) lines.push([{ text: "  no actions, keys, requests or events", color: "gray" }]);
+        for (const a of card.actions) {
+            lines.push([{ text: "  action  ", color: "gray" }, { text: a.name, color: "white" },
+                { text: a.fields.length ? `  ${a.fields.map((f) => `${f.name}${f.optional ? "?" : ""}: ${f.type}`).join(", ")}` : "", color: "gray" }]);
+        }
+        for (const k of card.keys) {
+            lines.push([{ text: "  key     ", color: "gray" }, { text: k.key, color: "white" },
+                { text: `${k.writer ? `  by ${k.writer}` : ""}${k.note ? `  — ${k.note}` : ""}`.slice(0, 100), color: "gray" }]);
+        }
+        for (const r of card.requests) {
+            lines.push([{ text: "  request ", color: "gray" }, { text: r.op, color: "white" },
+                { text: `  → ${r.result || "nothing"}`.slice(0, 100), color: "gray" }]);
+        }
+        for (const e of card.events) {
+            lines.push([{ text: "  event   ", color: "gray" }, { text: e.key, color: "white" },
+                { text: e.note ? `  — ${e.note}`.slice(0, 100) : "", color: "gray" }]);
+        }
+        if (d.versions.length) {
+            lines.push([{ text: "Versions", color: "cyan", bold: true }]);
+            for (const v of d.versions.slice(0, 6)) {
+                lines.push([
+                    { text: v.active ? " ● " : "   ", color: "green" },
+                    { text: `${v.version}  ${v.sha12}  ${v.sizeText}  ${v.dateText}`, color: v.active ? "white" : "gray" },
+                ]);
+            }
+            if (d.versions.length > 6) lines.push([{ text: `   … ${d.versions.length - 6} more`, color: "gray" }]);
+        }
+        lines.push([{ text: "Contributors", color: "cyan", bold: true }]);
+        lines.push([{ text: `  ${d.contributors.map((c) => `${c.label} (${c.role})`).join(", ") || "none"}`, color: "gray" }]);
+        if (d.loads.visible) {
+            lines.push([{ text: "Loads", color: "cyan", bold: true },
+                { text: d.loads.total30dText ? `  ${d.loads.total30dText}` : "", color: "gray" }]);
+            if (d.loads.error) lines.push([{ text: `  ! ${d.loads.error}`, color: "red" }]);
+            for (const l of d.loads.rows.slice(0, 5)) {
+                lines.push([{ text: `  ${l.whenText}  ${l.userLabel}  ${l.version}`, color: "gray" }]);
+            }
+            if (!d.loads.rows.length && !d.loads.loading) lines.push([{ text: "  not loaded on a canvas yet", color: "gray" }]);
+        }
+        lines.push([{ text: "Preview, share, enable, download, export and delete are in the portal.", color: "gray" }]);
+    } else {
+        lines.push([{ text: apps.empty
+            ? "No canvas apps yet — publish one from a canvas in the portal, or `pilotswarm apps push`."
+            : "Select an app (j/k) to see its detail.", color: "gray" }]);
+    }
+    lines.push([{ text: "", color: "gray" }]);
+    lines.push([{ text: "Actions", color: "cyan", bold: true }]);
+    lines.push(...adminTreeKeyLines());
+    return lines;
+}
+
+/** @internal Exported for the TUI render tests. */
+export function buildAdminConsoleLines(view, { treeRows = 18 } = {}) {
     const lines = [];
     if (view.isAdmin && view.adminPolicyLabel) lines.push([{ text: view.adminPolicyLabel, color: "gray" }]);
     lines.push([
@@ -2218,7 +2340,12 @@ function buildAdminConsoleLines(view) {
     }
 
     if (view.section === "packages") {
-        lines.push(...buildAdminPackagesLines(view));
+        lines.push(...buildAdminPackagesLines(view, { treeRows }));
+        return lines;
+    }
+
+    if (view.section === "canvasApps") {
+        lines.push(...buildAdminCanvasAppsLines(view, { treeRows }));
         return lines;
     }
 
@@ -2278,7 +2405,9 @@ function buildAdminConsoleLines(view) {
 function AdminConsolePanel({ controller, width, height, frame }) {
     const platform = useUiPlatform();
     const view = useControllerSelector(controller, selectAdminConsole, shallowEqualObject);
-    const lines = React.useMemo(() => buildAdminConsoleLines(view), [view]);
+    // The tree gets about half the panel; it scrolls around the cursor.
+    const treeRows = Math.max(6, Math.floor(((Number(height) || 40) - 8) / 2));
+    const lines = React.useMemo(() => buildAdminConsoleLines(view, { treeRows }), [view, treeRows]);
     return React.createElement(platform.Panel, {
         title: "Admin Console",
         color: "cyan",
