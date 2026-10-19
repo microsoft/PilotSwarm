@@ -528,6 +528,19 @@ function assertNotCanvasDocument(filename) {
     }
 }
 
+/**
+ * Canvas app storage spaces (issue 181) are not sessions: the artifact
+ * methods report them as missing. A module function, not a method, so the
+ * artifact methods keep working when called with another `this` (tests
+ * borrow them with Function.prototype.call on a stub transport).
+ */
+async function refuseCanvasAppStorage(transport, sessionId) {
+    const mgmt = transport?.mgmt;
+    if (typeof mgmt?.isCanvasAppStorage === "function" && await mgmt.isCanvasAppStorage(sessionId)) {
+        throw Object.assign(new Error(`Session ${String(sessionId).slice(0, 8)} was not found.`), { code: "NOT_FOUND", status: 404 });
+    }
+}
+
 export class NodeSdkTransport {
     constructor({ store, mode, currentUser, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser } = {}) {
         this.store = store;
@@ -1771,14 +1784,8 @@ export class NodeSdkTransport {
      * Canvas app byte spaces (issue 181) are reached only through the registry
      * operations; generic artifact routes answer as if they did not exist.
      */
-    async _refuseCanvasAppStorage(sessionId) {
-        if (typeof this.mgmt?.isCanvasAppStorage === "function" && await this.mgmt.isCanvasAppStorage(sessionId)) {
-            throw Object.assign(new Error(`Session ${String(sessionId).slice(0, 8)} was not found.`), { code: "NOT_FOUND", status: 404 });
-        }
-    }
-
     async listArtifacts(sessionId) {
-        await this._refuseCanvasAppStorage(sessionId);
+        await refuseCanvasAppStorage(this, sessionId);
         if (!this.artifactStore || !sessionId) return [];
         const artifacts = await this.artifactStore.listArtifacts(sessionId);
         return Array.isArray(artifacts)
@@ -1787,7 +1794,7 @@ export class NodeSdkTransport {
     }
 
     async getArtifactMetadata(sessionId, filename) {
-        await this._refuseCanvasAppStorage(sessionId);
+        await refuseCanvasAppStorage(this, sessionId);
         if (!this.artifactStore || !sessionId || !filename) return null;
         if (typeof this.artifactStore.statArtifact === "function") {
             return this.artifactStore.statArtifact(sessionId, filename);
@@ -1797,8 +1804,8 @@ export class NodeSdkTransport {
     }
 
     async copyArtifact(fromSessionId, fromFilename, toSessionId, toFilename) {
-        await this._refuseCanvasAppStorage(fromSessionId);
-        await this._refuseCanvasAppStorage(toSessionId);
+        await refuseCanvasAppStorage(this, fromSessionId);
+        await refuseCanvasAppStorage(this, toSessionId);
         // An omitted or empty destination name is the source name (the store's rule).
         assertNotCanvasDocument(toFilename || fromFilename);
         if (!this.artifactStore) {
@@ -1808,7 +1815,7 @@ export class NodeSdkTransport {
     }
 
     async setArtifactPinned(sessionId, filename, pinned) {
-        await this._refuseCanvasAppStorage(sessionId);
+        await refuseCanvasAppStorage(this, sessionId);
         if (!this.artifactStore) {
             throw new Error("Artifact store is not available for this transport.");
         }
@@ -1817,7 +1824,7 @@ export class NodeSdkTransport {
 
     /** Base64 inline read for the MCP surface — JSON-safe, size-guarded. */
     async readArtifactBase64(sessionId, filename, maxBytes) {
-        await this._refuseCanvasAppStorage(sessionId);
+        await refuseCanvasAppStorage(this, sessionId);
         if (!this.artifactStore) {
             throw new Error("Artifact store is not available for this transport.");
         }
@@ -1833,7 +1840,7 @@ export class NodeSdkTransport {
     }
 
     async deleteArtifact(sessionId, filename) {
-        await this._refuseCanvasAppStorage(sessionId);
+        await refuseCanvasAppStorage(this, sessionId);
         if (!this.artifactStore) {
             throw new Error("Artifact store is not available for this transport.");
         }
@@ -1841,7 +1848,7 @@ export class NodeSdkTransport {
     }
 
     async downloadArtifact(sessionId, filename) {
-        await this._refuseCanvasAppStorage(sessionId);
+        await refuseCanvasAppStorage(this, sessionId);
         if (!this.artifactStore) {
             throw new Error("Artifact store is not available for this transport.");
         }
@@ -1849,7 +1856,7 @@ export class NodeSdkTransport {
     }
 
     async downloadArtifactBinary(sessionId, filename) {
-        await this._refuseCanvasAppStorage(sessionId);
+        await refuseCanvasAppStorage(this, sessionId);
         if (!this.artifactStore) {
             throw new Error("Artifact store is not available for this transport.");
         }
@@ -1899,7 +1906,7 @@ export class NodeSdkTransport {
     }
 
     async uploadArtifactFromPath(sessionId, filePath) {
-        await this._refuseCanvasAppStorage(sessionId);
+        await refuseCanvasAppStorage(this, sessionId);
         if (!this.artifactStore) {
             throw new Error("Artifact store is not available for this transport.");
         }
@@ -1987,7 +1994,7 @@ export class NodeSdkTransport {
     }
 
     async uploadArtifactContent(sessionId, filename, content, contentType = guessArtifactContentType(filename), contentEncoding = null) {
-        await this._refuseCanvasAppStorage(sessionId);
+        await refuseCanvasAppStorage(this, sessionId);
         assertNotCanvasDocument(filename);
         if (!this.artifactStore) {
             throw new Error("Artifact store is not available for this transport.");
