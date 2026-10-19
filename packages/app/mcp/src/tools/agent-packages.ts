@@ -85,6 +85,13 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
         }),
     );
 
+    server.registerTool("get_agent_package_review_status", {
+        title: "Package Approval Status",
+        description: "Owner, package editor or administrator: per-version artifact approval, reasons and activation. Read-only; content approval does not approve external tool backends.",
+        inputSchema: { package_id: z.string().min(1).describe("Package ID or manageable package name") },
+    }, withToolErrors(async ({ package_id }) => jsonResult(
+        await ctx.mgmt.getAgentPackageReviewStatus(package_id, owner, ctx.admin && ctx.role === "admin"))));
+
     if (ctx.admin && ctx.role === "admin") {
         server.registerTool("list_agent_package_reviews", {
             title: "List Package Reviews [admin]",

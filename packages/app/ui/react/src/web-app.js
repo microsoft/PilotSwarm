@@ -3,6 +3,7 @@ import { ChatCallLine } from "./chat-call-line.js";
 import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
 import { PackageReviewTabs } from "./package-review-tabs.js";
+import { PackagePublisherStatus } from "./package-publisher-status.js";
 import { NativeTaskCard } from "./native-task-card.js";
 import { WorkspacePane, WORKSPACE_CHANGED_EVENT, announceWorkspaceChange, downloadBase64, workspaceToolActivity } from "./workspace-pane.js";
 // createPortal is only invoked by browser-only surfaces (tooltips, toolbar
@@ -14854,6 +14855,9 @@ function AdminPackageDetailPane({ controller, view }) {
             React.createElement("span", { className: `ps-scope-badge is-${detail.scope}` }, detail.scope),
             !detail.enabled ? React.createElement("span", { className: "ps-scope-badge is-off" }, "disabled") : null),
         detail.description ? React.createElement("p", { className: "ps-admin-detail__desc" }, detail.description) : null,
+        (detail.canEdit || detail.canManage) && detail.packageId
+            ? React.createElement(PackagePublisherStatus, { key: detail.packageId, transport: controller.transport, packageId: detail.packageId })
+            : null,
         React.createElement("dl", { className: "ps-admin-detail__meta" },
             React.createElement("dt", null, "Version"),
             React.createElement("dd", null, detail.activeSemver

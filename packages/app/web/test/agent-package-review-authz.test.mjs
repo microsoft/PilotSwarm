@@ -7,6 +7,7 @@ function fixture() {
     const runtime = new PortalRuntime({ store: "sqlite::memory:", mode: "local" });
     runtime.start = async () => {};
     runtime.transport = {
+        getAgentPackageReviewStatus: async (...args) => { calls.push(["status", ...args]); return { versions: [] }; },
         listAgentPackageReviews: async (...args) => { calls.push(["list", ...args]); return []; },
         decideAgentPackageReview: async (...args) => { calls.push(["decide", ...args]); },
         getAgentPackageReviewAudit: async (...args) => { calls.push(["audit", ...args]); return []; },
@@ -18,6 +19,19 @@ function fixture() {
     };
     return { runtime, calls };
 }
+
+test("publisher status uses the authenticated principal, not client owner/admin claims, including scoped administrators", async () => {
+    for (const [role, scope, expectedAdmin] of [["user", "unrestricted", false], ["admin", "unrestricted", true], ["admin", "cluster", false]]) {
+        const { runtime, calls } = fixture();
+        runtime.authz.adminScope = scope;
+        await runtime.call("getAgentPackageReviewStatus", { packageId: "pkg", owner: { provider: "fake", subject: "owner" }, isAdmin: true },
+            { principal: { provider: "entra", subject: "publisher" }, authorization: { role } });
+        assert.deepEqual(calls, [["status", "pkg", { provider: "entra", subject: "publisher", email: null, displayName: null }, expectedAdmin]]);
+    }
+    const { runtime, calls } = fixture();
+    await assert.rejects(runtime.call("getAgentPackageReviewStatus", { packageId: "pkg", isAdmin: true }, { authorization: { role: "admin" } }), /authenticated/i);
+    assert.deepEqual(calls, []);
+});
 
 for (const role of ["user", "anonymous", null]) {
     test(`review surface rejects ${role} despite forged body isAdmin and ownership dark launch`, async () => {

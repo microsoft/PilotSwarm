@@ -81,21 +81,40 @@ export class SupervisedPackageRuntime {
         runtime.broker.on("error", error => { runtime.rejectPending(error); void runtime.stop().catch(() => {}); });
         runtime.timer = setInterval(() => { void runtime.renew(); }, 100);
         runtime.timer.unref();
+        let executionPreparationStarted = false;
         try {
             onRuntime?.(runtime);
             await runtime.renew();
             await authority.noteProcess(runtime.registration, runtime.broker.pid!, "broker");
             await runtime.request("initialize-broker", { configuration: await authority.brokerConfiguration(), registration: runtime.registration });
+            executionPreparationStarted = true;
             const tools = await runtime.load();
             return { runtime, tools };
         } catch (error) {
-            try { await runtime.stop(); }
+            try {
+                if (!executionPreparationStarted) await runtime.stopBeforeExecution();
+                else await runtime.stop();
+            }
             catch {
                 await authority.requestFence(runtime.registration);
                 await authority.recoverLocal();
             }
             throw error;
         }
+    }
+
+    private async stopBeforeExecution(): Promise<void> {
+        this.closed = true;
+        clearInterval(this.timer);
+        this.rejectPending(new Error("Package startup failed before executable preparation"));
+        // No prepare command has been sent: the trusted broker has no descendants.
+        // Its owned process handle remains usable even when identity probes fail.
+        if (this.broker.exitCode === null && this.broker.signalCode === null) this.broker.kill("SIGKILL");
+        await Promise.race([this.exit, new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error("Package startup fencing incomplete: broker exit not observed")), 4000).unref())]);
+        this.fenceObserved = true;
+        await this.authority.requestFence(this.registration);
+        await this.authority.acknowledgeFence(this.registration, true);
     }
 
     private async renew(): Promise<void> {

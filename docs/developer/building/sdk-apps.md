@@ -206,6 +206,22 @@ Then point the worker at `pluginDirs`.
 
 This keeps prompts versioned, reviewable, and easy to reuse across local and remote deployments.
 
+For **published** packages, declarative prompts/skills auto-activate and existing
+named sessions refresh without version pins or administrative rebinding. Code
+requires administrator approval of the whole immutable artifact and explicit
+activation; executable sessions retain exact package/version/digest pins.
+Transitions in either direction between declarative and executable content
+require an explicit administrator rebind. Unknown inspection fails closed.
+Use `getAgentPackageReviewStatus(packageId)` as the authenticated owner, package
+editor or administrator to inspect per-version decision, executable classification,
+reasons, digest and active state. Publish results also carry an additive `review`
+summary. These read-only snapshots do not grant execution permission, and content
+approval does not approve external tool backends.
+Web/portal/TUI creation resolves the package before persisting a new executable
+pin. Lower-level datastore callers creating package-named roots must pass
+`boundAgentPackageId` to `createSessionForAgent` (or a resolved creation config).
+An `agentId` alone cannot authorize executable content during runtime hydration.
+
 ### Programmatic / inline
 
 You can also pass config directly:

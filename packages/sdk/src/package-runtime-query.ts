@@ -1,6 +1,6 @@
 import type { Pool, PoolClient } from "pg";
 
-/** Row transport only; all CMS table access lives in migration 0088 procedures. */
+/** Row transport only; all CMS table access lives in stored procedures. */
 export async function packageRuntimeQuery(
     connection: Pick<Pool, "query"> | Pick<PoolClient, "query">, schema: string, operation: string, values: unknown[] = [], queryTimeout?: number,
 ): Promise<{ rows: any[]; rowCount: number }> {

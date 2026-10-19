@@ -262,12 +262,14 @@ export default {
   `package.json` with `"type":"module"` (include it when using manifest staging).
 - The file must be valid **ES module** syntax; it is compile-checked (never
   executed) at validation.
-- A named agent must declare the tool's `name` in its frontmatter `tools:`
-  list and hold an exact durable package pin. Executable `use_package` selection
-  from another package or a generic agent is not supported in this tranche;
-  those invocations are denied. In the historical declarative workflow no agent file is
-  required for a tools-only package. Session and deployment restrictions still
-  apply, and loading a skill alone does not attach tools.
+- Agent declarations and current session permissions narrow available tools.
+  Executable named-agent roots require exact durable bindings. Generic agents
+  and declarative named roots can use tools from another executable package
+  through exact durable `use_package` selection grants; a declarative root does
+  not need a named-agent pin. Both root eligibility and target approval/current
+  grants are rechecked before invocation. No agent file is required for a
+  tools-only package. Session and deployment restrictions still apply, and
+  loading a skill alone does not attach tools.
 
 ## 6. MCP servers — `.mcp.json` + `mcp-servers/`
 
@@ -413,8 +415,31 @@ running sessions are never affected by scope changes.
 ## 10. What happens after publish
 
 - Every worker notices the registry change on its next poll (~20 s) and
-  installs the new version **without restarting** — watch fleet adoption on
-  the package detail page ("N/N workers current").
+  installs the **active** version without a whole-worker restart — watch fleet
+  adoption on the package detail page ("N/N workers current"). Declarative
+  versions auto-activate; code-bearing versions remain pending administrator
+  content approval and separate activation. A mixed code/prompt package requires
+  approval for its whole immutable version, not just its executable files.
+- Prompt-only agent sessions follow declarative republishes on resume, including
+  historical sessions: no exact pin or administrator rebind is required. If either
+  their prior binding or active copy is executable/unverified, exact-content rules
+  apply. Declarative-to-executable and executable-to-declarative transitions
+  require explicit administrator rebind. Existing approved executable V1 pins
+  remain V1 when executable V2 activates, never silently adopt V2.
+- Owners, package editors and administrators can inspect the package detail's
+  **Approval** status, version ID, full digest and reasons, or run
+  `pilotswarm agents review-status <package> --api-url <portal-url>` with their
+  own authenticated credential. MCP exposes `get_agent_package_review_status`;
+  management/Web clients expose `getAgentPackageReviewStatus`. Labels distinguish
+  not required, pending admin approval, approved (not active), active, rejected
+  and revoked. Publish/republish JSON adds `review` with decision, executable,
+  active, versionId and sha256; `status: published | noop` is unchanged.
+  These are read-only snapshots, not execution grants. Notifications are future
+  work. Content approval does not approve external tool backends.
+- Keep fast-changing prompts declarative; keep approved executable components
+  thin/stable or use deployment-registered trusted prechecks. Unknown inspection
+  is not a declarative exemption. Disabling, deleting or revoking executable
+  content still denies new admissions immediately and requires truthful fencing.
 - A broken package (bad import, runtime throw at load) is **quarantined
   alone**: its capabilities become unavailable, the error lands in the fleet view, and
   every other package keeps working.

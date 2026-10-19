@@ -21,6 +21,174 @@ const url = process.env.PACKAGE_TEST_PG_URL ?? "postgresql://package_test@127.0.
 if (!["127.0.0.1", "localhost", "[::1]"].includes(new URL(url).hostname)) throw new Error("Standalone acceptance requires an isolated LOCAL PostgreSQL server");
 const admin = { principal: { provider: "entra", subject: "admin" }, isAdmin: true };
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+test("declarative creation, historical NULL policy, republish and stale declarative bindings need no enforcing pin", async t => {
+    const f = await fixture(t, { executable: false });
+    const first = await f.publish();
+    await f.bind();
+    assert.equal(await f.catalog.packageReviews.getSessionBinding("session-1"), null);
+    await f.sql("UPDATE @s.sessions SET package_binding_policy_version=NULL WHERE session_id='session-1'");
+    await f.catalog.packageReviews.bindNewSession("session-1", "pkg", "helper");
+    assert.equal(await f.catalog.packageReviews.getSessionBinding("session-1"), null);
+    await f.catalog.packageReviews.rebind(admin, { ...first, sessionId: "session-1", agentName: "helper", expectedBindingRevision: 0, reason: "synthetic historical declarative pin" });
+    assert.equal((await f.catalog.packageReviews.getSessionBinding("session-1")).executable, false);
+    const second = await f.publish("v2", "2.0.0", false);
+    await f.catalog.packageReviews.bindNewSession("session-1", "pkg", "helper");
+    const stale = await f.catalog.packageReviews.getSessionBinding("session-1");
+    assert.equal(stale.versionId, first.versionId, "declarative-only refresh does not need to rewrite stale rows");
+    assert.equal(stale.executable, false);
+    assert.deepEqual(await f.catalog.getAgentPackageVersionReview(second.versionId), { ...secondIdentity(second), decision: "not_required", executable: false, active: true });
+    await f.sql("UPDATE @s.session_agent_package_bindings SET sha256=$1 WHERE session_id='session-1'", ["f".repeat(64)]);
+    const unverifiable = await f.catalog.packageReviews.getSessionBinding("session-1");
+    assert.equal(unverifiable.executable, true, "a mismatched digest cannot inherit another artifact's declarative classification");
+    assert.equal(unverifiable.allowed, false);
+});
+
+function secondIdentity(candidate) {
+    return { packageId: candidate.packageId, versionId: candidate.versionId, sha256: candidate.sha256 };
+}
+
+for (const failure of ["identity", "broker-auth"]) {
+    test(`failed ${failure} startup observes owned broker exit before acknowledging, without importing or depending on recovery`, async t => {
+        const f = await fixture(t);
+        const candidate = await f.publish(); await f.decide(candidate); await f.activate(candidate); await f.bind();
+        const recover = f.authority.recoverLocal.bind(f.authority);
+        const noteProcess = f.authority.noteProcess.bind(f.authority);
+        const configuration = f.authority.brokerConfiguration.bind(f.authority);
+        let recoveryCalls = 0;
+        let broker;
+        f.authority.recoverLocal = async () => {
+            if (++recoveryCalls > 1) throw new Error("synthetic unavailable recovery identity probe");
+            await recover();
+        };
+        if (failure === "identity") f.authority.noteProcess = async () => { throw new Error("synthetic process-identity failure"); };
+        else f.authority.brokerConfiguration = async () => {
+            const config = await configuration();
+            return { ...config, connection: { ...config.connection, password: randomUUID() } };
+        };
+        try {
+            await assert.rejects(SupervisedPackageRuntime.start(f.authority, candidate, candidate.dir, candidate.inspection.execution, "failed-start",
+                runtime => { f.runtimes.push(runtime); broker = runtime.broker; }),
+            failure === "identity" ? /synthetic process-identity failure/ : /password authentication failed/);
+        } finally {
+            f.authority.recoverLocal = recover; f.authority.noteProcess = noteProcess; f.authority.brokerConfiguration = configuration;
+        }
+        assert.ok(broker.exitCode !== null || broker.signalCode !== null, "owned broker exit is observed, not inferred from a lease");
+        assert.equal(recoveryCalls, 1, "failed startup cleanup must not rely on rediscovering a process whose identity probe failed");
+        assert.equal((await f.sql("SELECT state FROM @s.package_runtime_registrations")).rows[0].state, "fenced");
+        assert.equal(f.events().length, 0, "preparation failure cannot import or run a factory/handler");
+    });
+}
+
+test("historical declarative to executable denies until explicit exact-content rebind", async t => {
+    const f = await fixture(t, { executable: false });
+    await f.publish(); await f.bind();
+    await f.sql("UPDATE @s.sessions SET package_binding_policy_version=NULL WHERE session_id='session-1'");
+    const code = await f.publish("v2", "2.0.0", true);
+    await f.decide(code); await f.activate(code, "v1", 2);
+    assert.equal(await f.catalog.packageReviews.getSessionBinding("session-1"), null);
+    await assert.rejects(f.catalog.packageReviews.bindNewSession("session-1", "pkg", "helper"), /historical.*explicit.*rebind/);
+    assert.equal(f.events().length, 0);
+    await f.catalog.packageReviews.rebind(admin, { ...secondIdentity(code), sessionId: "session-1", agentName: "helper", expectedBindingRevision: 0, reason: "explicit code adoption" });
+    assert.equal((await f.catalog.packageReviews.getSessionBinding("session-1")).executable, true);
+    const { tools } = await f.start(code);
+    assert.ok((await tools[0].handler({}, { durableSessionId: "session-1" })).pid > 0);
+});
+
+test("executable to declarative retains executable provenance until explicit rebind", async t => {
+    const f = await fixture(t);
+    const code = await f.publish(); await f.decide(code); await f.activate(code); await f.bind();
+    const declarative = await f.publish("v2", "2.0.0", false);
+    await f.catalog.packageReviews.bindNewSession("session-1", "pkg", "helper");
+    let binding = await f.catalog.packageReviews.getSessionBinding("session-1");
+    assert.equal(binding.versionId, code.versionId); assert.equal(binding.executable, true);
+    assert.equal(binding.allowed, false, "declarative activation denies the old executable pin even before registry refresh");
+    const { tools } = await f.start(code);
+    const approvedImports = f.events();
+    await assert.rejects(tools[0].handler({}, { durableSessionId: "session-1" }), /eligibility denied/);
+    assert.deepEqual(f.events(), approvedImports, "a stale executable registry cannot invoke approved old code after declarative activation");
+    await f.catalog.packageReviews.rebind(admin, { ...secondIdentity(declarative), sessionId: "session-1", agentName: "helper", expectedBindingRevision: binding.revision, reason: "explicit removal of code" });
+    binding = await f.catalog.packageReviews.getSessionBinding("session-1");
+    assert.equal(binding.versionId, declarative.versionId); assert.equal(binding.executable, false);
+    assert.deepEqual(f.events(), approvedImports);
+});
+
+for (const scope of ["user", "shared"]) {
+    test(`publisher status ${scope}: owner/editor/admin only; exact pending/approved/active/rejected/revoked versions`, async t => {
+        const f = await fixture(t, { scope });
+        const first = await f.publish();
+        const principal = { provider: "entra", subject: scope === "user" ? "publisher" : "editor" };
+        if (scope === "shared") await f.catalog.grantAgentPackageEditor("runtime-kit", principal, admin.principal, true);
+        const actor = { principal, isAdmin: false };
+        const read = () => f.catalog.packageReviews.publisherStatus(actor, first.packageId);
+        let status = await read();
+        assert.equal(status.activeVersionId, null);
+        assert.equal(status.versions[0].decision, "pending");
+        assert.equal(status.versions[0].executable, true);
+        assert.equal(status.versions[0].sha256, first.sha256);
+        assert.equal(status.versions[0].active, false);
+        assert.ok(status.versions[0].reasons.length);
+        assert.deepEqual(await f.catalog.packageReviews.publisherStatus(admin, "runtime-kit"), status);
+        for (const value of [first.packageId, "runtime-kit", "missing"]) {
+            await assert.rejects(f.catalog.packageReviews.publisherStatus({ principal: { provider: "entra", subject: "stranger" }, isAdmin: false }, value), { code: "FORBIDDEN" });
+        }
+        await assert.rejects(f.catalog.packageReviews.publisherStatus({ isAdmin: true }, first.packageId), { code: "FORBIDDEN" });
+        await f.decide(first);
+        assert.equal((await read()).versions[0].active, false);
+        await f.activate(first);
+        assert.equal((await read()).versions[0].active, true);
+        const second = await f.publish("v2", "2.0.0");
+        await f.decide(second, "rejected");
+        status = await read();
+        assert.equal(status.activeVersionId, first.versionId);
+        assert.equal(status.versions.find(v => v.versionId === second.versionId).decision, "rejected");
+        await f.decide(first, "revoked", 2);
+        assert.equal((await read()).versions.find(v => v.versionId === first.versionId).decision, "revoked");
+        assert.equal(f.events().length, 0, "read-only status never imports publisher code");
+    });
+}
+
+for (const executable of [false, true]) {
+    test(`new named SDK root pins at catalog creation iff executable=${executable}`, async t => {
+        const f = await fixture(t, { executable });
+        const candidate = await f.publish();
+        if (executable) { await f.decide(candidate); await f.activate(candidate); }
+        const { PilotSwarmClient } = await import("../../dist/client.js");
+        const client = new PilotSwarmClient({ store: "sqlite::memory:", allowedAgentNames: ["helper"] });
+        client._catalog = f.catalog;
+        client._resolveCreationModel = async () => null;
+        const session = await client.createSessionForAgent("helper", { owner: { provider: "entra", subject: "publisher" }, boundAgentPackageId: "pkg" });
+        const binding = await f.catalog.packageReviews.getSessionBinding(session.sessionId);
+        if (executable) {
+            assert.equal(binding.versionId, candidate.versionId);
+            assert.equal(binding.sha256, candidate.sha256);
+            assert.equal(binding.executable, true);
+            assert.equal(binding.allowed, true);
+        } else assert.equal(binding, null);
+        assert.equal(f.events().length, 0, "creation never imports package code or requests inference");
+    });
+
+    test(`publication and identical republish expose authoritative review for executable=${executable}`, async t => {
+        const f = await fixture(t, { executable });
+        const { publishAgentPackageDir } = await import("../../dist/agent-package-service.js");
+        const candidate = await f.publish();
+        const dir = path.join(f.base, "publication");
+        fs.cpSync(candidate.dir, dir, { recursive: true });
+        if (executable) fs.renameSync(path.join(dir, "tools", "worker-module.mjs"), path.join(dir, "tools", "worker-module.js"));
+        const plugin = JSON.parse(fs.readFileSync(path.join(dir, "plugin.json")));
+        plugin.version = "2.0.0";
+        fs.writeFileSync(path.join(dir, "plugin.json"), JSON.stringify(plugin));
+        const context = { catalog: f.catalog, artifactStore: { uploadArtifactFromFile: async () => {}, deleteArtifact: async () => {} } };
+        const options = { dir, scope: "shared", owner: { provider: "entra", subject: "publisher" }, isAdmin: true };
+        const result = await publishAgentPackageDir(context, options);
+        assert.equal(result.status, "published");
+        assert.deepEqual(result.review, { packageId: result.packageId, versionId: result.versionId, sha256: result.sha256,
+            decision: executable ? "pending" : "not_required", executable, active: !executable });
+        const noop = await publishAgentPackageDir(context, options);
+        assert.equal(noop.status, "noop");
+        assert.deepEqual(noop.review, result.review);
+    });
+}
 async function until(predicate, message) {
     for (let i = 0; i < 200; i++) { if (await predicate()) return; await sleep(50); }
     assert.fail(message);
@@ -99,11 +267,11 @@ createInterface({input:process.stdin}).on("line", line => {
                 command: "node", args: ["mcp-servers/demo.mjs"],
             } } }));
         }
-        prepare?.(dir, { marker, mcpMarker });
+        const manifest = { agents: [{ name: "helper", tools: noTools ? [] : ["ping"], mcpServers: mcp && !noMcp ? ["demo"] : [] }] };
+        prepare?.(dir, { marker, mcpMarker, manifest });
         const packed = packAgentPackage(dir);
         const inspection = inspectAgentPackageArtifact(packed.targz, packed.sha256);
         if (code || mcp) assert.ok(inspection.execution, inspection.approvalBlockers.join("; "));
-        const manifest = { agents: [{ name: "helper", tools: noTools ? [] : ["ping"], mcpServers: mcp && !noMcp ? ["demo"] : [] }] };
         await sql(`SELECT * FROM @s.cms_publish_reviewed_agent_package(
             $8,$1,$9,$10,'entra','publisher',NULL,$2,$3,$4,$5,NULL,$6,'publisher',FALSE,$7)`,
         [versionId, semver, packed.sha256, packed.rawBytes, `${versionId}.tar.gz`, JSON.stringify(manifest), JSON.stringify(inspection), packageId, name, scope]);
@@ -511,6 +679,80 @@ test("standalone PostgreSQL: REAL worker cold/forced-warm loader imports only in
     assert.equal((await f.sql("SELECT count(*)::INTEGER AS n FROM @s.package_runtime_registrations WHERE state<>'fenced'")).rows[0].n, 0);
 });
 
+for (const removedName of [false, true]) {
+test(`REAL worker retains approved executable v1 after v2 activation${removedName ? " removes the agent name" : ""}, isolates tools/MCP and denies revoked old content`, async t => {
+    const f = await fixture(t, { mcp: true, prepare(dir, { manifest }) {
+        if (!removedName || path.basename(dir) !== "v2") return;
+        const source = path.join(dir, "agents", "helper.agent.md");
+        fs.writeFileSync(path.join(dir, "agents", "replacement.agent.md"), fs.readFileSync(source, "utf8").replace("name: helper", "name: replacement"));
+        fs.unlinkSync(source);
+        manifest.agents[0].name = "replacement";
+    } });
+    const first = await f.publish(); await f.decide(first); await f.activate(first); await f.bind();
+    const second = await f.publish("v2", "2.0.0");
+    assert.deepEqual((await f.catalog.getAgentPackagesInstallManifest()).map(v => v.versionId), ["v1"]);
+    await f.decide(second); await f.activate(second, "v1", 2);
+    const entries = await f.catalog.getAgentPackagesInstallManifest();
+    assert.deepEqual(entries.map(v => [v.versionId, v.active]), [["v2", true], ["v1", false]]);
+    const { PilotSwarmWorker } = await import("../../dist/worker.js");
+    const { SessionManager, packageContentKey, packageAgentKey, pickAgentCopyByPackageIdForOwner } = await import("../../dist/session-manager.js");
+    const worker = new PilotSwarmWorker({ store: "sqlite::memory:", workerNodeId: "versioned-worker", pluginDirs: [],
+        sessionStateDir: path.join(f.base, "versioned-sessions"),
+        modelProvidersPath: path.resolve("packages", "sdk", "test", "fixtures", "model-providers.test.json"),
+        agentPackages: { cacheDir: path.join(f.base, "versioned-cache") } });
+    worker._catalog = new PgSessionCatalog(new pg.Pool({ connectionString: url, max: 4 }), f.schema);
+    worker.artifactStore = { downloadArtifact: async (_session, filename) => ({ body: filename === "v1.tar.gz" ? first.targz : second.targz }) };
+    let manager;
+    let providerCreations = 0;
+    try {
+        await worker.refreshAgentPackages({ force: true });
+        assert.equal(worker._agentPackagesInstalled["runtime-kit"].semver, "2.0.0", "retained content cannot overwrite active fleet adoption state");
+        const pin = await f.catalog.packageReviews.getSessionBinding("session-1");
+        const lookup = worker._agentPromptLookup.helper;
+        assert.equal(pickAgentCopyByPackageIdForOwner(lookup, "pkg", null)?.packageVersionId, removedName ? undefined : "v2");
+        assert.equal(pickAgentCopyByPackageIdForOwner(lookup, "pkg", null, pin).packageVersionId, "v1");
+        const oldKey = packageContentKey("pkg", "v1", first.sha256);
+        const newKey = packageContentKey("pkg", "v2", second.sha256);
+        const oldTool = worker._agentPackageToolsByPackage.get(oldKey).get("ping");
+        const newTool = worker._agentPackageToolsByPackage.get(newKey).get("ping");
+        const oldResult = await oldTool.handler({}, { durableSessionId: "session-1" });
+        await f.catalog.createSession("session-2", { owner: { provider: "entra", subject: "publisher" },
+            creationConfig: { boundAgentPackageId: "pkg", boundAgentName: removedName ? "replacement" : "helper" } });
+        const newResult = await newTool.handler({}, { durableSessionId: "session-2" });
+        assert.notEqual(oldResult.pid, newResult.pid);
+        await assert.rejects(newTool.handler({}, { durableSessionId: "session-1" }), /DENIED|denied/);
+        assert.equal(worker._agentMcpServers[packageAgentKey(oldKey, "helper")].demo.packageRuntime.versionId, "v1");
+        assert.equal(worker._agentMcpServers[packageAgentKey(newKey, removedName ? "replacement" : "helper")].demo.packageRuntime.versionId, "v2");
+        assert.equal(worker._loadedAgents.filter(a => a.name === "helper").length, removedName ? 0 : 1, "retired versions are not new/custom agent choices");
+        manager = new SessionManager(undefined, undefined, { agentPromptLookup: worker._agentPromptLookup,
+            agentMcpServers: worker._agentMcpServers,
+            resolvePackageMcp: worker.sessionManager.workerDefaults.resolvePackageMcp }, path.join(f.base, "manager-state"));
+        manager.setSessionCatalog(f.catalog);
+        manager.setFactStore({ readFacts: async () => ({ count: 0, facts: [] }),
+            storeFact: async () => ({ stored: true }), deleteFact: async () => ({ deleted: true }) });
+        manager.setToolRegistry(new Map([["ping", newTool]]), { byPackage: worker._agentPackageToolsByPackage, staticNames: new Set() });
+        manager.ensureClient = async () => ({ createSession: async config => {
+            providerCreations++; fs.mkdirSync(path.join(f.base, "manager-state", config.sessionId), { recursive: true });
+            return { disconnect: async () => {} };
+        } });
+        const config = { boundAgentName: "helper", boundAgentPackageId: "pkg", toolNames: ["ping"] };
+        await manager.getOrCreate("session-1", config, { turnIndex: 0 });
+        assert.equal(manager.sessionAgentCopies.get("session-1").packageVersionId, "v1");
+        assert.equal(providerCreations, 1);
+        await f.decide(first, "revoked", 2);
+        await worker.refreshAgentPackages({ force: true });
+        assert.equal(worker._agentPackageToolsByPackage.has(oldKey), false);
+        assert.equal((await f.catalog.packageReviews.getSessionBinding("session-1")).allowed, false);
+        await assert.rejects(oldTool.handler({}, { durableSessionId: "session-1" }), /DENIED|denied|fenced/);
+        await assert.rejects(manager.getOrCreate("session-1", config, { turnIndex: 1 }), { code: "BOUND_AGENT_PACKAGE_UNAVAILABLE" });
+        assert.equal(providerCreations, 1, "revocation denies before a new provider session is created");
+    } finally {
+        if (manager) for (const id of [...manager.sessions.keys()]) await manager.dropWarmSession(id);
+        await worker.stop();
+    }
+});
+}
+
 test("standalone PostgreSQL: automatic MCP installation retains only supervised configuration and starts no raw executable", async t => {
     const f = await fixture(t, { mcp: true });
     const candidate = await f.publish(); await f.decide(candidate); await f.activate(candidate);
@@ -811,6 +1053,40 @@ test("standalone PostgreSQL: one session holds TWO exact package grants without 
     assert.equal(f.events().filter(e => e.startsWith("handler:")).length, 3);
 });
 
+for (const staleBinding of [false, true]) {
+    test(`declarative root with ${staleBinding ? "stale declarative" : "no"} binding uses only exact executable grants and denies both executable transitions`, async t => {
+        const f = await fixture(t);
+        const code = await f.publish(); await f.decide(code); await f.activate(code);
+        const root = await f.publish("root-v1", "1.0.0", false, "root-package", "declarative-root");
+        await f.catalog.createSession("session-1", { owner: { provider: "entra", subject: "publisher" },
+            creationConfig: { boundAgentPackageId: root.packageId, boundAgentName: "helper" } });
+        if (staleBinding) {
+            await f.catalog.packageReviews.rebind(admin, { ...secondIdentity(root), sessionId: "session-1", agentName: "helper",
+                expectedBindingRevision: 0, reason: "synthetic historical declarative binding" });
+        }
+        await f.publish("root-v2", "2.0.0", false, root.packageId, "declarative-root");
+        const selections = [{ sourceId: code.packageId, sourceRef: capabilityRef(code.packageId, code.sha256, "source", code.packageId),
+            tools: ["ping"], mcpServers: [] }];
+        await f.catalog.saveSessionCapabilities("session-1", 0, { revision: 1, selections });
+        const { runtime } = await f.start(code);
+        assert.ok((await runtime.invoke("session-1", "ping", {})).pid > 0);
+        let binding = await f.catalog.packageReviews.getSessionBinding("session-1");
+        assert.equal(binding?.versionId ?? null, staleBinding ? root.versionId : null, "executable selection does not manufacture a named-agent pin");
+        const executableRoot = await f.publish("root-v3", "3.0.0", true, root.packageId, "declarative-root");
+        await f.decide(executableRoot);
+        const state = (await f.sql("SELECT active_version_id,activation_revision FROM @s.agent_packages WHERE package_id=$1", [root.packageId])).rows[0];
+        await f.activate(executableRoot, state.active_version_id, Number(state.activation_revision));
+        await assert.rejects(runtime.invoke("session-1", "ping", {}), /explicit durable agent pin/);
+        assert.equal(f.events().filter(line => line.startsWith("handler:")).length, 1);
+        await f.catalog.packageReviews.rebind(admin, { ...secondIdentity(executableRoot), sessionId: "session-1", agentName: "helper",
+            expectedBindingRevision: binding?.revision ?? 0, reason: "explicit executable-root adoption" });
+        assert.ok((await runtime.invoke("session-1", "ping", {})).pid > 0);
+        await f.publish("root-v4", "4.0.0", false, root.packageId, "declarative-root");
+        await assert.rejects(runtime.invoke("session-1", "ping", {}), /bound-agent eligibility denied/);
+        assert.equal(f.events().filter(line => line.startsWith("handler:")).length, 2, "root denial applies before calls into a different selected package");
+    });
+}
+
 test("standalone PostgreSQL: TWO actual worker host processes fence their independently blocked package children on revoke", async t => {
     const f = await fixture(t);
     const c = await f.publish(); await f.decide(c); await f.activate(c); await f.bind();
@@ -937,7 +1213,7 @@ test("standalone PostgreSQL: legacy mixed fleet blocks activation and remains bl
     await f.catalog.workerHeartbeat({ workerNodeId: "legacy-worker", info: {} });
     await assert.rejects(f.activate(c), /eligible|unsupported|approval|executable|runtime/i);
     assert.equal((await f.authority.fencingStatus(c)).outstanding, 1);
-    for (const version of ["0085", "0084", "0085", "0086", "0087", "0088", "0088"]) {
+    for (const version of ["0085", "0084", "0085", "0086", "0087", "0088", "0089", "0089"]) {
         await f.pool.query(CMS_MIGRATIONS(f.schema).find(m => m.version === version).sql);
     }
     assert.equal((await f.sql("SELECT @s.cms_package_executable_eligible('pkg','v1',$1) AS allowed", [c.sha256])).rows[0].allowed, false);
@@ -965,7 +1241,7 @@ test("standalone PostgreSQL: ordered migration reapplication retains real eligib
     const f = await fixture(t);
     const candidate = await f.publish(); await f.decide(candidate);
     const migrations = CMS_MIGRATIONS(f.schema);
-    for (const version of ["0085", "0084", "0085", "0086", "0087", "0088", "0088"]) {
+    for (const version of ["0085", "0084", "0085", "0086", "0087", "0088", "0089", "0089"]) {
         await f.pool.query(migrations.find(migration => migration.version === version).sql);
     }
     assert.equal((await f.sql("SELECT @s.cms_package_executable_eligible('pkg','v1',$1) AS allowed", [candidate.sha256])).rows[0].allowed, true);

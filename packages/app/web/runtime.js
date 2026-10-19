@@ -951,6 +951,9 @@ export class PortalRuntime {
             // authenticated principal, `resourceAdmin` the resolved role.
             case "listAgentPackages":
                 return this.transport.listAgentPackages(owner, resourceAdmin);
+            case "getAgentPackageReviewStatus":
+                if (!owner) throw forbiddenError("Authenticated package manager required.");
+                return this.transport.getAgentPackageReviewStatus(safeParams.packageId, owner, resourceAdmin && role === "admin");
             case "listAgentPackageReviews":
             case "decideAgentPackageReview":
             case "getAgentPackageReviewAudit":

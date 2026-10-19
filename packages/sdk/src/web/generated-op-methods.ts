@@ -43,6 +43,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getAgentPackageActivationAudit",
     "getAgentPackageFile",
     "getAgentPackageReviewAudit",
+    "getAgentPackageReviewStatus",
     "getAgentPackageRuntimeStatus",
     "getAgentPackageTree",
     "getArtifactMetadata",
@@ -537,6 +538,14 @@ export interface ManagementOps {
      */
     getAgentPackageReviewAudit(params: {
         versionId: string;
+    }): Promise<any>;
+
+    /**
+     * Owner, editor or authenticated administrator: per-version artifact approval and activation status.
+     * @remarks `GET /agent-package-review-status/:packageId` — access: `authed`
+     */
+    getAgentPackageReviewStatus(params: {
+        packageId: string;
     }): Promise<any>;
 
     /**
@@ -1905,6 +1914,7 @@ export function createManagementOps(
         getAgentPackageActivationAudit: (params: Record<string, unknown> = {}) => callOp("getAgentPackageActivationAudit", params),
         getAgentPackageFile: (params: Record<string, unknown> = {}) => callOp("getAgentPackageFile", params),
         getAgentPackageReviewAudit: (params: Record<string, unknown> = {}) => callOp("getAgentPackageReviewAudit", params),
+        getAgentPackageReviewStatus: (params: Record<string, unknown> = {}) => callOp("getAgentPackageReviewStatus", params),
         getAgentPackageRuntimeStatus: (params: Record<string, unknown> = {}) => callOp("getAgentPackageRuntimeStatus", params),
         getAgentPackageTree: (params: Record<string, unknown> = {}) => callOp("getAgentPackageTree", params),
         getArtifactMetadata: (params: Record<string, unknown> = {}) => callOp("getArtifactMetadata", params),

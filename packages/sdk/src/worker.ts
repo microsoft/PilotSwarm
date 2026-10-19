@@ -2,7 +2,7 @@ import { capabilityHash, type CapabilitySource } from "./capability-catalog.js";
 import { AGENT_HANDOFF_CAPABILITY, TURN_CONTROL_CAPABILITY, WORKSPACE_CAPABILITY } from "./activity-routing.js";
 import { resolveNativeSubagents } from "./native-subagents.js";
 import { FeatureFlagCache } from "./feature-flag-cache.js";
-import { SessionManager, packageAgentKey, agentOwnerKey, type AgentPromptEntry } from "./session-manager.js";
+import { SessionManager, packageAgentKey, packageContentKey, agentOwnerKey, type AgentPromptEntry } from "./session-manager.js";
 import { loadAdminScope, ADMIN_SCOPE_POLICY_VERSION } from "../api/src/admin-scope.js";
 import { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
 import { FilesystemArtifactStore, FilesystemSessionStore, type ArtifactStore, type SessionStateStore } from "./session-store.js";
@@ -313,7 +313,7 @@ export class PilotSwarmWorker {
      * agent packages. Empty for plugin dirs the deployment configured itself.
      */
     private _capabilitySources: CapabilitySource[] = [];
-    private _packageDirOwners = new Map<string, { packageId: string; versionId?: string; revision: string; scope: "shared" | "user"; owner: { provider: string; subject: string } | null }>();
+    private _packageDirOwners = new Map<string, { packageId: string; versionId?: string; revision: string; executable: boolean; active: boolean; scope: "shared" | "user"; owner: { provider: string; subject: string } | null }>();
     /** Agent-package dynamic install state (docs/proposals/agent-packages.md). */
     private _agentPackagesCacheDir: string | null = null;
     private _agentPackagesRefreshMs = 20_000;
@@ -1417,10 +1417,13 @@ export class PilotSwarmWorker {
                     }
                     const ownMap = new Map<string, Tool<any>>();
                     for (const tool of tools) {
-                        packageTools.set((tool as any).name, tool);
+                        if (pkg.active !== false) packageTools.set((tool as any).name, tool);
                         ownMap.set((tool as any).name, tool);
                     }
-                    if (ownMap.size > 0) packageToolsByPackage.set(pkg.packageId, ownMap);
+                    if (ownMap.size > 0) {
+                        if (pkg.versionId) packageToolsByPackage.set(packageContentKey(pkg.packageId, pkg.versionId, pkg.sha256), ownMap);
+                        if (pkg.active !== false) packageToolsByPackage.set(pkg.packageId, ownMap);
+                    }
                 } catch (error: any) {
                     await pkg.runtime?.stop().catch(() => {});
                     pkg.status = "error";
@@ -1445,7 +1448,7 @@ export class PilotSwarmWorker {
             this._packageDirOwners = new Map(
                 result.packages
                     .filter((p) => p.status === "ok")
-                    .map((p) => [path.resolve(p.dir), { packageId: p.packageId, versionId: p.versionId, revision: p.sha256, scope: p.scope, owner: p.owner }]),
+                    .map((p) => [path.resolve(p.dir), { packageId: p.packageId, versionId: p.versionId, revision: p.sha256, executable: p.inspection?.executable !== false, active: p.active !== false, scope: p.scope, owner: p.owner }]),
             );
 
             // Synchronous swap — no await between reset and reload, so no
@@ -1463,10 +1466,11 @@ export class PilotSwarmWorker {
             // to one row hid exactly the collision an operator needs to see —
             // duplicated names get a qualified key instead.
             const installedNameCounts = new Map<string, number>();
-            for (const p of result.packages) {
+            const activePackages = result.packages.filter(p => p.active !== false);
+            for (const p of activePackages) {
                 installedNameCounts.set(p.name, (installedNameCounts.get(p.name) ?? 0) + 1);
             }
-            this._agentPackagesInstalled = Object.fromEntries(result.packages.map((p) => [
+            this._agentPackagesInstalled = Object.fromEntries(activePackages.map((p) => [
                 (installedNameCounts.get(p.name) ?? 0) > 1
                     ? `${p.name}#${p.scope}${p.scope === "user" && p.owner ? `:${p.owner.subject.slice(0, 8)}` : ""}`
                     : p.name,
@@ -1689,13 +1693,13 @@ export class PilotSwarmWorker {
         // workerDefaults.customAgents — reassigning would strand it on the
         // constructor-time snapshot after an agent-package refresh.
         this._loadedAgents.length = 0;
-        this._loadedAgents.push(...this._rawLoadedAgents.map((agent) => {
+        this._loadedAgents.push(...this._rawLoadedAgents.filter(agent => (agent as any).packageActive !== false).map((agent) => {
             // Replace the frontmatter's named MCP references with the
             // resolved server map (and drop the inherit flag) so the SDK's
             // CustomAgentConfig.mcpServers receives real server configs.
             const { mcpServers: _refs, inheritDefaultMcpServers: _inherit, ...rest } = agent;
             const mcpKey = (agent as any).packageId
-                ? packageAgentKey((agent as any).packageId, agent.name)
+                ? packageAgentKey(packageContentKey((agent as any).packageId, (agent as any).packageVersionId, (agent as any).packageSha256), agent.name)
                 : agent.namespace ? `${agent.namespace}:${agent.name}` : agent.name;
             return {
                 ...rest,
@@ -1817,11 +1821,11 @@ export class PilotSwarmWorker {
         // `agent` is the agent whose references are being resolved; null for
         // the base map, which carries no agent identity and therefore never
         // receives a restricted server.
-        const resolveRefs = (owner: string, refs: string[] | undefined, into: Record<string, any>, agent: McpAllowlistAgent | null = null) => {
+        const resolveRefs = (owner: string, refs: string[] | undefined, into: Record<string, any>, agent: McpAllowlistAgent | null = null, contentKey?: string) => {
             for (const ref of refs ?? []) {
                 if (typeof ref !== "string" || !ref) continue;
                 const packageServers = agent?.packageId
-                    ? this._agentPackageMcpServersByPackage.get(agent.packageId)
+                    ? this._agentPackageMcpServersByPackage.get(contentKey ?? agent.packageId)
                     : undefined;
                 const server = packageServers && Object.hasOwn(packageServers, ref)
                     ? packageServers[ref]
@@ -1872,15 +1876,17 @@ export class PilotSwarmWorker {
             if (agent.inheritDefaultMcpServers === true) {
                 Object.assign(resolved, defaults);
             }
+            const packageId = (agent as any).packageId;
+            const contentKey = packageId ? packageContentKey(packageId, (agent as any).packageVersionId, (agent as any).packageSha256) : undefined;
             resolveRefs(`Agent "${agent.name}"`, agent.mcpServers, resolved, {
                 name: agent.name,
                 namespace: agent.namespace ?? null,
                 packageId: (agent as any).packageId ?? null,
                 packageScope: (agent as any).packageScope ?? null,
-            });
-            const packageId = (agent as any).packageId;
+            }, contentKey);
             const keys = packageId
-                ? [packageAgentKey(packageId, agent.name)]
+                ? [packageAgentKey(contentKey!, agent.name),
+                    ...((agent as any).packageActive !== false ? [packageAgentKey(packageId, agent.name)] : [])]
                 : [...new Set([agent.name, ...(agent.namespace ? [`${agent.namespace}:${agent.name}`] : [])])];
             for (const key of keys) {
                 if (!packageId && assignedStaticKeys.has(key)) continue;
@@ -1898,13 +1904,13 @@ export class PilotSwarmWorker {
      * The package a loaded skill belongs to, or null for a deployment skill.
      * Matched by directory prefix against the installed package dirs.
      */
-    private _skillPackageOwner(skill: Skill): { scope: "shared" | "user"; owner: { provider: string; subject: string } | null } | null {
+    private _skillPackageOwner(skill: Skill): { scope: "shared" | "user"; active: boolean; owner: { provider: string; subject: string } | null } | null {
         if (!skill.dir) return null;
         // Resolve the skill dir once; the map keys are already resolved.
         const skillDir = path.resolve(skill.dir);
         for (const [dir, prov] of this._packageDirOwners) {
             if (skillDir === dir || skillDir.startsWith(dir + path.sep)) {
-                return { scope: prov.scope, owner: prov.owner };
+                return { scope: prov.scope, active: prov.active, owner: prov.owner };
             }
         }
         return null;
@@ -1939,6 +1945,7 @@ export class PilotSwarmWorker {
         for (const skill of this._loadedSkillsAll) {
             if (!skill?.name) continue;
             const prov = this._skillPackageOwner(skill);
+            if (prov?.active === false) continue;
             if (prov && prov.scope === "user") {
                 // Private to its owner: never in the fleet-wide catalog, but
                 // loadable by that person's own sessions. session-manager
@@ -1991,6 +1998,7 @@ export class PilotSwarmWorker {
                 const skillDir = skill.dir ? path.resolve(skill.dir) : null;
                 const isOwn = Boolean(ownDir && skillDir && skillDir.startsWith(ownDir + path.sep));
                 if (isOwn) { ownSkills.push(skill); continue; }
+                if (prov?.active === false) continue;
                 if (!prov || prov.scope !== "user") { pool.push(skill); continue; }
                 // Foreign user-scope skill: include only if same owner (another
                 // copy the same person owns); otherwise exclude.
@@ -2038,7 +2046,7 @@ export class PilotSwarmWorker {
         }
         const rank = (agent: any) => agent.packageId == null ? 0 : (agent.packageScope !== "user" ? 1 : 2);
         for (const [name, agents] of byName) {
-            const winner = [...agents].sort((a, b) => rank(a) - rank(b))[0];
+            const winner = [...agents].sort((a, b) => Number(a.packageActive === false) - Number(b.packageActive === false) || rank(a) - rank(b))[0];
             const copyOf = (agent: any) => ({
                 prompt: agent.prompt,
                 ...(agent.baseV2Prompt ? { baseV2Prompt: agent.baseV2Prompt } : {}),
@@ -2050,6 +2058,8 @@ export class PilotSwarmWorker {
                     packageId: agent.packageId,
                     packageVersionId: agent.packageVersionId,
                     packageSha256: agent.packageSha256,
+                    packageExecutable: agent.packageExecutable,
+                    packageActive: agent.packageActive,
                     packageScope: agent.packageScope ?? "shared",
                     packageOwner: agent.packageOwner ?? null,
                 } : {}),
@@ -2185,6 +2195,7 @@ export class PilotSwarmWorker {
         if (fs.existsSync(agentsDir)) {
             const agents = loadAgentFiles(agentsDir);
             for (const agent of agents) {
+                if (provenance?.active === false && (agent.name === "default" || agent.system)) continue;
                 agent.namespace = namespace;
                 if (agent.name !== "default" && !agent.system) source.artifacts.push({ kind: "agent", name: agent.name,
                     description: agent.description ?? "", body: agent.prompt, skills: agent.skills, tools: agent.tools ?? undefined,
@@ -2244,6 +2255,8 @@ export class PilotSwarmWorker {
                         (agent as any).packageId = provenance.packageId;
                         (agent as any).packageVersionId = provenance.versionId;
                         (agent as any).packageSha256 = provenance.revision;
+                        (agent as any).packageExecutable = provenance.executable;
+                        (agent as any).packageActive = provenance.active;
                         (agent as any).packageDir = absDir;
                     }
                     if (provenance && provenance.scope === "user" && provenance.owner) {
@@ -2292,13 +2305,18 @@ export class PilotSwarmWorker {
             }
             source.mcpServers[name] = structuredClone(cfg);
             source.artifacts.push({ kind: "mcp", name, description: `MCP server exported by ${namespace}` });
-            this._loadedMcpServers[name] = cfg;
+            if (mcpPackageProvenance?.active !== false) this._loadedMcpServers[name] = cfg;
         }
         if (mcpPackageProvenance && Object.keys(source.mcpServers).length > 0) {
-            this._agentPackageMcpServersByPackage.set(mcpPackageProvenance.packageId, source.mcpServers);
+            this._agentPackageMcpServersByPackage.set(
+                packageContentKey(mcpPackageProvenance.packageId, mcpPackageProvenance.versionId!, mcpPackageProvenance.revision), source.mcpServers);
+            if (mcpPackageProvenance.active !== false) {
+                this._agentPackageMcpServersByPackage.set(mcpPackageProvenance.packageId, source.mcpServers);
+            }
         }
 
         if (!source.revision) source.revision = capabilityHash({ artifacts: source.artifacts, mcp: source.mcpServers });
+        if (provenance?.active === false) return;
         this._capabilitySources.push(source);
 
         // Session policy — last one wins

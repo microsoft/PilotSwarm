@@ -316,6 +316,8 @@ export class PilotSwarmClient {
      * @throws If the agent is not found, is a system agent, or policy rejects it.
      */
     async createSessionForAgent(agentName: string, opts?: {
+        /** Exact package provenance resolved before creation; CMS pins executable content atomically. */
+        boundAgentPackageId?: string;
         model?: string;
         reasoningEffort?: ManagedSessionConfig["reasoningEffort"];
         contextTier?: ManagedSessionConfig["contextTier"];
@@ -347,6 +349,7 @@ export class PilotSwarmClient {
             onUserInputRequest: opts?.onUserInputRequest,
             agentId: agentName,
             boundAgentName: agentName,
+            ...(opts?.boundAgentPackageId ? { boundAgentPackageId: opts.boundAgentPackageId } : {}),
             promptLayering: { kind: "app-agent" },
             owner: opts?.owner ?? null,
             groupId: opts?.groupId ?? null,

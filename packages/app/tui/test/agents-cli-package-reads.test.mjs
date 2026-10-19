@@ -21,11 +21,45 @@ import assert from "node:assert/strict";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { NodeSdkTransport } from "../src/node-sdk-transport.js";
 
 import {
     directTree, directFile, collectUploadFiles, buildUploadPayload,
-    packageFileForCli, reservedAgentNamesForCli,
+    packageFileForCli, reservedAgentNamesForCli, reviewStatusForCli,
 } from "../src/agents-cli.js";
+
+for (const selected of ["deployment", "shared", "private"]) {
+    test(`named-root ${selected} creation resolves provenance before persisting executable pins`, async () => {
+        const owner = { provider: "test", subject: "publisher" };
+        const calls = [];
+        const transport = Object.create(NodeSdkTransport.prototype);
+        Object.assign(transport, {
+            creatableAgents: selected === "shared" ? [] : [{ name: "helper" }],
+            allowedAgentNames: ["some-baked-agent"], sessionHandles: new Map(),
+            mgmt: {
+                listAgentPackages: async () => selected === "deployment" ? [] : [
+                    { packageId: "shared-pkg", name: "shared-kit", scope: "shared", enabled: true, active: { manifest: { agents: [{ name: "helper" }] } } },
+                    ...(selected === "private" ? [{ packageId: "private-pkg", name: "private-kit", scope: "user", owner, enabled: true, active: { manifest: { agents: [{ name: "helper" }] } } }] : []),
+                ],
+                getSession: async () => null,
+            },
+            client: { createSessionForAgent: async (...args) => { calls.push(args); return { sessionId: "created" }; } },
+        });
+        await transport.createSessionForAgent("helper", { owner, isAdmin: false });
+        assert.equal(calls[0][0], "helper");
+        assert.equal(calls[0][1].boundAgentPackageId,
+            selected === "deployment" ? undefined : selected === "private" ? "private-pkg" : "shared-pkg");
+    });
+}
+
+test("review-status CLI read forwards only package identity to authenticated Web management", async () => {
+    const calls = [];
+    const status = { packageId: "pkg", versions: [] };
+    const ctx = { client: { getAgentPackageReviewStatus: async (...args) => { calls.push(args); return status; } } };
+    assert.equal(await reviewStatusForCli(ctx, "pkg"), status);
+    assert.deepEqual(calls, [["pkg"]]);
+    await assert.rejects(reviewStatusForCli(ctx), /requires a package/);
+});
 
 /** ctx stub: direct reads must route through the management client. */
 function directCtxFor() {

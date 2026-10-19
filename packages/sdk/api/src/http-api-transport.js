@@ -130,6 +130,7 @@ export class HttpApiTransport {
     // registry's own-copy-then-shared walk.
     listAgentPackages() { return this.api.call("listAgentPackages"); }
     listAgentPackageReviews() { return this.api.call("listAgentPackageReviews"); }
+    getAgentPackageReviewStatus(packageId) { return this.api.call("getAgentPackageReviewStatus", { packageId }); }
     decideAgentPackageReview(input) { return this.api.call("decideAgentPackageReview", { input }); }
     getAgentPackageReviewAudit(versionId) { return this.api.call("getAgentPackageReviewAudit", { versionId }); }
     getAgentPackageRuntimeStatus(input) { return this.api.call("getAgentPackageRuntimeStatus", { input }); }

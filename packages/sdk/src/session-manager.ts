@@ -134,6 +134,9 @@ export interface AgentCopyEntry {
     packageId?: string;
     packageVersionId?: string;
     packageSha256?: string;
+    packageExecutable?: boolean;
+    /** False marks an approved version retained solely for existing exact pins. */
+    packageActive?: boolean;
     packageScope?: "shared" | "user";
     packageOwner?: { provider: string; subject: string } | null;
 }
@@ -170,6 +173,16 @@ export function packageAgentKey(packageId: string, agentName: string): string {
     return `pkg\u0001${packageId}\u0001${agentName}`;
 }
 
+export function packageContentKey(packageId: string, versionId: string, sha256: string): string {
+    return `${packageId}\u0001${versionId}\u0001${sha256}`;
+}
+
+function packageRegistryKey(copy: AgentCopyEntry): string {
+    return copy.packageActive !== undefined && copy.packageVersionId && copy.packageSha256
+        ? packageContentKey(copy.packageId!, copy.packageVersionId, copy.packageSha256)
+        : copy.packageId!;
+}
+
 /** Owner key used to match a session owner against a package copy's owner. */
 export function agentOwnerKey(owner?: { provider?: string | null; subject?: string | null } | null): string | null {
     return owner?.provider && owner?.subject ? `${owner.provider}\u0001${owner.subject}` : null;
@@ -178,9 +191,9 @@ export function agentOwnerKey(owner?: { provider?: string | null; subject?: stri
 /**
  * Which copy of an agent name does THIS session get?
  *
- * Runs per turn, so enabling/disabling a copy re-resolves exactly like a
- * republish does — live sessions follow the registry's current answer, they
- * are not pinned to a copy.
+ * Selects the current active copy per turn. Declarative sessions follow that
+ * copy; executable sessions subsequently select an authorized retained exact
+ * version rather than adopting an activated replacement.
  *
  * FAIL CLOSED, matching resolveAgentDefinitionForCaller: a user-scope copy is
  * PRIVATE to its owner, and the worker holds every tenant's copies at once.
@@ -197,7 +210,7 @@ export function pickAgentCopyForOwner(
     ownerKey: string | null,
 ): AgentCopyEntry | undefined {
     if (!entry) return undefined;
-    const copies = entry.copies?.length ? entry.copies : [entry];
+    const copies = (entry.copies?.length ? entry.copies : [entry]).filter(copy => copy.packageActive !== false);
     if (ownerKey) {
         const own = copies.find(
             (copy) => copy.packageScope === "user" && agentOwnerKey(copy.packageOwner) === ownerKey,
@@ -215,15 +228,19 @@ export function pickAgentCopyForOwner(
         ?? undefined;
 }
 
-/** Resolve an already-authorized exact package copy while rechecking owner visibility. */
+/** Resolve an active (or explicitly exact retained) copy while rechecking owner visibility. */
 export function pickAgentCopyByPackageIdForOwner(
     entry: AgentPromptEntry | undefined,
     packageId: string,
     ownerKey: string | null,
+    identity?: { versionId: string; sha256: string },
 ): AgentCopyEntry | undefined {
     if (!entry || !packageId) return undefined;
     const copies = entry.copies?.length ? entry.copies : [entry];
-    const copy = copies.find((candidate) => candidate.packageId === packageId);
+    const copy = copies.find((candidate) => candidate.packageId === packageId
+        && (identity
+            ? candidate.packageVersionId === identity.versionId && candidate.packageSha256 === identity.sha256
+            : candidate.packageActive !== false));
     if (!copy) return undefined;
     if (copy.packageScope !== "user") return copy;
     return agentOwnerKey(copy.packageOwner) === ownerKey && ownerKey !== null
@@ -1896,7 +1913,7 @@ export class SessionManager {
         let resolvedTools: Tool<any>[];
         try {
             let binding = await this.sessionCatalog?.packageReviews?.getSessionBinding(sessionId);
-            if (binding) {
+            if (binding && binding.executable !== false) {
                 if (!binding.allowed || binding.agentName !== effectiveSerializableConfig.boundAgentName
                     || effectiveSerializableConfig.boundAgentSource === "deployment"
                     || (effectiveSerializableConfig.boundAgentPackageId
@@ -1905,17 +1922,28 @@ export class SessionManager {
                 }
                 effectiveSerializableConfig = { ...effectiveSerializableConfig, boundAgentPackageId: binding.packageId };
             }
-            boundAgentCopy = resolveBoundAgentCopy(this.workerDefaults, effectiveSerializableConfig, sessionOwnerKey);
-            if (boundAgentCopy?.packageId) {
-                if (!binding && this.sessionCatalog?.packageReviews?.bindNewSession) {
-                    // New named roots may resolve their package after creation. SQL permits
-                    // this only for post-migration sessions; historical sessions require admin CAS.
-                    await this.sessionCatalog.packageReviews.bindNewSession(
-                        sessionId, boundAgentCopy.packageId, effectiveSerializableConfig.boundAgentName!,
-                    );
-                    binding = await this.sessionCatalog.packageReviews.getSessionBinding(sessionId);
-                }
-                if (!binding?.allowed || binding.packageId !== boundAgentCopy.packageId
+            try {
+                boundAgentCopy = resolveBoundAgentCopy(this.workerDefaults, effectiveSerializableConfig, sessionOwnerKey);
+            } catch (error) {
+                if (!(error instanceof BoundAgentPackageUnavailableError) || !binding?.allowed
+                    || binding.executable === false || !effectiveSerializableConfig.boundAgentName) throw error;
+                boundAgentCopy = pickAgentCopyByPackageIdForOwner(
+                    this.workerDefaults.agentPromptLookup?.[effectiveSerializableConfig.boundAgentName],
+                    binding.packageId, sessionOwnerKey, binding,
+                );
+                if (!boundAgentCopy) throw error;
+            }
+            if (binding && binding.executable !== false && boundAgentCopy?.packageExecutable !== false
+                && effectiveSerializableConfig.boundAgentName) {
+                boundAgentCopy = pickAgentCopyByPackageIdForOwner(
+                    this.workerDefaults.agentPromptLookup?.[effectiveSerializableConfig.boundAgentName],
+                    binding.packageId, sessionOwnerKey, binding,
+                ) ?? boundAgentCopy;
+            }
+            if (boundAgentCopy?.packageId && (boundAgentCopy.packageExecutable !== false
+                || binding && binding.executable !== false)) {
+                if (!binding?.allowed || binding.executable === false || boundAgentCopy.packageExecutable === false
+                    || binding.packageId !== boundAgentCopy.packageId
                     || binding.versionId !== boundAgentCopy.packageVersionId
                     || binding.sha256 !== boundAgentCopy.packageSha256
                     || binding.agentName !== effectiveSerializableConfig.boundAgentName) {
@@ -1961,7 +1989,7 @@ export class SessionManager {
             resolvedTools = this._resolveTools(
                 { tools: this.sessionApplicationTools.get(sessionId) },
                 effectiveSerializableConfig,
-                boundAgentCopy?.packageId,
+                boundAgentCopy?.packageId ? packageRegistryKey(boundAgentCopy) : undefined,
             );
         } catch (error) {
             // Failed authorization/removal must not leave a reusable handle with
@@ -1975,7 +2003,7 @@ export class SessionManager {
         const boundAgentMcpServers = !effectiveSerializableConfig.boundAgentName || !boundAgentCopy
             ? undefined
             : boundAgentCopy.packageId
-                ? this.workerDefaults.agentMcpServers?.[packageAgentKey(boundAgentCopy.packageId, effectiveSerializableConfig.boundAgentName)]
+                ? this.workerDefaults.agentMcpServers?.[packageAgentKey(packageRegistryKey(boundAgentCopy), effectiveSerializableConfig.boundAgentName)]
                 : this.workerDefaults.agentMcpServers?.[effectiveSerializableConfig.boundAgentName];
         const effectiveMcpServers = {
             ...(this.workerDefaults.baseMcpServers ?? {}),
@@ -3538,8 +3566,8 @@ export class SessionManager {
      * Resolve tools from per-session config + worker-level registry.
      * Per-session tools take precedence over registry tools with the same name.
      *
-     * `preferredPackageId` is the package copy this session's bound agent
-     * resolved to. On a tool-name collision between two enabled packages
+     * `preferredPackageKey` identifies the selected package/content registry.
+     * On a tool-name collision between two versions or enabled packages
      * (scope shadowing publishes the same tool name twice), the session gets
      * ITS copy's handler instead of whichever package loaded last. Deployment
      * (static) tools still win every collision.
@@ -3547,11 +3575,11 @@ export class SessionManager {
     private _resolveTools(
         storedConfig: ManagedSessionConfig | undefined,
         serializableConfig: SerializableSessionConfig,
-        preferredPackageId?: string | null,
+        preferredPackageKey?: string | null,
     ): Tool<any>[] {
         const registryTools: Tool<any>[] = [];
-        const packageTools = preferredPackageId
-            ? this.packageToolRegistry?.get(preferredPackageId)
+        const packageTools = preferredPackageKey
+            ? this.packageToolRegistry?.get(preferredPackageKey)
             : undefined;
         if (serializableConfig.toolNames?.length) {
             for (const name of serializableConfig.toolNames) {
@@ -3561,7 +3589,7 @@ export class SessionManager {
                 const packageTool = packageTools?.get(name);
                 if (!staticTool && !packageTool && this.packageToolNames.has(name)) {
                     if (serializableConfig.detachedPackageToolPolicy === "drop") continue;
-                    if (serializableConfig.detachedPackageToolPolicy === "reject" || preferredPackageId) {
+                    if (serializableConfig.detachedPackageToolPolicy === "reject" || preferredPackageKey) {
                         throw new PackageToolBindingError(name);
                     }
                 }
@@ -3577,7 +3605,7 @@ export class SessionManager {
             // copy, never a stale object retained by the caller across a reload.
             if (packageTools?.has(name) && serializableConfig.toolNames?.includes(name)) return true;
             if (serializableConfig.detachedPackageToolPolicy === "drop") return false;
-            if (serializableConfig.detachedPackageToolPolicy === "reject" || preferredPackageId) {
+            if (serializableConfig.detachedPackageToolPolicy === "reject" || preferredPackageKey) {
                 throw new PackageToolBindingError(name);
             }
             return true;

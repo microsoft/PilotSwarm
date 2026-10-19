@@ -107,6 +107,64 @@ const prompt = sdkConfig => sdkConfig.systemMessage.sections.last_instructions.a
 const declaration = (sdkConfig, name) => sdkConfig.tools.find(t => t.name === name);
 const handler = (managed, name) => managed.config.tools.find(t => t.name === name)?.handler;
 
+for (const row of [
+    { title: "unbound declarative follows active v2", pin: null, executable: false, allow: true },
+    { title: "stale denied declarative pin follows active v2", pin: false, executable: false, allow: true, allowed: false },
+    { title: "unbound executable requires explicit rebind", pin: null, executable: true, allow: false },
+    { title: "declarative to executable requires explicit rebind", pin: false, executable: true, allow: false },
+    { title: "executable to declarative requires explicit rebind", pin: true, executable: false, allow: false },
+    { title: "executable cannot silently follow activated v2", pin: true, executable: true, allow: false },
+    { title: "uninspected content cannot use declarative exemption", pin: null, executable: undefined, allow: false },
+]) {
+    test(`executable-only pin matrix: ${row.title}`, async t => {
+        const h = fixture(t, { hydrate: true });
+        h.bindings.set("matrix", row.pin === null ? null : {
+            sessionId: "matrix", packageId: "shared-package", versionId: "1", sha256: "1".padStart(64, "0"),
+            agentName: "analyst", owner: ALICE, revision: 1, allowed: row.allowed ?? true, executable: row.pin,
+        });
+        h.publish({ shared: { ...copy("shared-package", "ACTIVE VERSION TWO", { version: "2" }), packageExecutable: row.executable }, privateCopy: null });
+        if (row.allow) {
+            await h.manager.getOrCreate("matrix", named, { turnIndex: 2 });
+            assert.match(await prompt(h.calls.at(-1).config), /ACTIVE VERSION TWO/);
+        } else {
+            await assert.rejects(h.manager.getOrCreate("matrix", named, { turnIndex: 2 }), { code: "BOUND_AGENT_PACKAGE_UNAVAILABLE" });
+            assert.equal(h.calls.length, 0, "denial precedes any provider session or model request");
+            if (typeof row.executable === "boolean") {
+                h.bindings.set("matrix", {
+                    sessionId: "matrix", packageId: "shared-package", versionId: "2", sha256: "2".padStart(64, "0"),
+                    agentName: "analyst", owner: ALICE, revision: 2, allowed: true, executable: row.executable,
+                });
+                await h.manager.getOrCreate("matrix", named, { turnIndex: 3 });
+                assert.match(await prompt(h.calls.at(-1).config), /ACTIVE VERSION TWO/, "explicit catalog rebind permits the new identity");
+            }
+        }
+    });
+}
+
+for (const removedName of [false, true]) {
+    test(`approved executable v1 remains exact after v2 activation${removedName ? " removes its name" : ""}; retired copies cannot be chosen for new bindings`, async t => {
+        const h = fixture(t, { hydrate: true });
+        const old = { ...copy("shared-package", "PINNED OLD PROMPT"), packageExecutable: true, packageActive: false };
+        const active = { ...copy("shared-package", "NEW ACTIVE PROMPT", { version: "2" }), packageExecutable: true, packageActive: true };
+        h.publish({ shared: active, privateCopy: null });
+        h.defaults.agentPromptLookup.analyst.copies = removedName ? [old] : [active, old];
+        const key = value => `shared-package\u0001${value}\u0001${value.padStart(64, "0")}`;
+        const oldTool = tool("catalog", "PINNED OLD HANDLER");
+        const newTool = tool("catalog", "NEW ACTIVE HANDLER");
+        h.manager.setToolRegistry(new Map([["catalog", newTool]]), {
+            byPackage: new Map([[key("1"), new Map([["catalog", oldTool]])], [key("2"), new Map([["catalog", newTool]])]]),
+            staticNames: new Set(),
+        });
+        h.bindings.set("existing", { sessionId: "existing", packageId: "shared-package", versionId: "1", sha256: "1".padStart(64, "0"),
+            agentName: "analyst", owner: ALICE, revision: 1, allowed: true, executable: true });
+        const session = await h.manager.getOrCreate("existing", named, { turnIndex: 2 });
+        assert.match(await prompt(h.calls.at(-1).config), /PINNED OLD PROMPT/);
+        assert.equal(await handler(session, "catalog")(), "PINNED OLD HANDLER");
+        h.bindings.get("existing").allowed = false;
+        await assert.rejects(h.manager.getOrCreate("existing", named, { turnIndex: 3 }), { code: "BOUND_AGENT_PACKAGE_UNAVAILABLE" });
+    });
+}
+
 for (const mode of ["create", "hydrate"]) {
     test(`${mode}: explicit shared package supplies the actual prompt, descriptor, handler and MCP despite private shadow`, async t => {
         const h = fixture(t, { hydrate: mode === "hydrate" });
@@ -182,7 +240,7 @@ test("another worker cannot hydrate a v1 pin from a v2-only registry", async t =
     assert.equal(h.calls.length, 0);
 });
 
-test("a new named root may obtain its catalog-authorized initial pin before provider creation", async t => {
+test("a new named root obtains its initial pin at the catalog creation boundary before provider creation", async t => {
     const h = fixture(t);
     let binds = 0;
     h.reviewCatalog.bindNewSession = async (sessionId, packageId, agentName) => {
@@ -191,6 +249,7 @@ test("a new named root may obtain its catalog-authorized initial pin before prov
         h.bindings.set(sessionId, { sessionId, packageId, agentName, versionId: "1",
             sha256: "1".padStart(64, "0"), owner: ALICE, revision: 1, allowed: true });
     };
+    await h.reviewCatalog.bindNewSession("new-root", "private-package", "analyst");
     await h.manager.getOrCreate("new-root", { boundAgentName: "analyst" }, { turnIndex: 0 });
     assert.equal(binds, 1);
     assert.equal(h.bindings.get("new-root").packageId, "private-package");

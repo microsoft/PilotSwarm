@@ -33,6 +33,7 @@ export interface InstalledAgentPackage {
     /** Registry row identity — stable across versions, unique across scopes/owners. */
     packageId: string;
     versionId?: string;
+    active?: boolean;
     name: string;
     semver: string;
     sha256: string;
@@ -111,7 +112,7 @@ function cacheMatchesArtifact(dir: string, targz: Buffer): boolean {
 }
 
 /**
- * Materialize every enabled package's active version into cacheDir.
+ * Materialize enabled active versions and exact retained executable grants into cacheDir.
  * Reads the epoch FIRST so a mutation that lands mid-install makes the next
  * poll see a newer epoch and re-converge (never lost, at worst one interval
  * late).
@@ -132,6 +133,7 @@ export async function installAgentPackages(opts: {
         const installed: InstalledAgentPackage = {
             packageId: entry.packageId,
             versionId: entry.versionId,
+            active: entry.active !== false,
             name: entry.name,
             semver: entry.semver,
             sha256: entry.sha256,
