@@ -270,11 +270,18 @@ export interface DurableSessionRuntime {
     state: DurableSessionState;
     options: DurableSessionOptions;
     /**
-     * 1.0.82: set by drain when it releases a timer for queued work, read and
-     * cleared after the next decide. Lives for one loop pass of one execution;
-     * continue-as-new never carries it.
+     * 1.0.82: set by drain when it releases a timer for queued work, settled
+     * after decide (and before a regeneration stage) by
+     * settleQueuedWorkAfterDecide. Lives within one execution; continue-as-new
+     * never carries it.
      */
     releasedForQueuedWork?: ReleasedTimerRecord;
+    /**
+     * 1.0.82: how many turns processPrompt has started in this execution,
+     * whatever their outcome (completed, gate-refused, error, thrown). The
+     * settlement uses it to tell "a turn was attempted" from "no turn ran".
+     */
+    turnsStarted?: number;
 }
 
 // ─── Constants ──────────────────────────────────────────────

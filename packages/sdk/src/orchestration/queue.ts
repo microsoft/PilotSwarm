@@ -453,28 +453,54 @@ function* releaseTimerForQueuedWork(runtime: DurableSessionRuntime, stash: any[]
     ctx.traceInfo(`[drain] queued ${interactive ? "prompts" : "timer items"} released the ${timer.type} timer, ${Math.round(remainingMs / 1000)}s remained`);
 }
 
+/** Turns processPrompt has started in this execution (see DurableSessionRuntime.turnsStarted). */
+export function turnsStarted(runtime: DurableSessionRuntime): number {
+    return runtime.turnsStarted ?? 0;
+}
+
+/** Timer items whose only effect is on the hold window or an agent wait; they run no turn. */
+const HOLD_TIMER_TYPES = new Set(["idle", "input-grace", "agent-poll"]);
+
 /**
- * 1.0.82 (issue 192): called by the run loop after every decide.
+ * 1.0.82 (issue 192): called by the run loop after every decide, and before
+ * each regeneration stage (which bypasses decide).
  *
- * When a turn ran, queued idle and input-grace items are stale: the turn
- * restarted the hold window, and running them would release the worker or
- * replace the timer the turn just armed. They are removed.
+ * When a turn was attempted (whatever its outcome), the turn path owns the
+ * timers: the record is dropped, and queued idle and input-grace items are
+ * removed, because the turn restarted the hold window and running them would
+ * release the worker or replace the timer the turn armed.
  *
- * When no turn ran (the queued prompt was cancelled, or the timer item ran no
- * turn) and nothing armed a newer timer, the timer that drain released for the
- * queued work is armed again exactly as it was, and what the release saved is
- * undone, so a schedule, a wait or a gate retry is never stranded.
+ * When no turn was attempted:
+ * - if work that will run a turn next is now pending (a follow-up the agent
+ *   wait does not hold, or queued tool actions), the record is kept, so that
+ *   work runs at once and its turn re-arms the timer as usual;
+ * - otherwise, unless something armed a newer timer, the released timer is
+ *   armed again exactly as it was and what the release saved is undone, so a
+ *   schedule, a wait or a gate retry is never stranded (a cancelled prompt, a
+ *   timer item that ran no turn).
  */
-export function settleQueuedWorkAfterDecide(runtime: DurableSessionRuntime, iterationBeforeDecide: number): void {
+export function settleQueuedWorkAfterDecide(runtime: DurableSessionRuntime, turnsBefore: number): void {
     const { ctx, state } = runtime;
     const released = runtime.releasedForQueuedWork;
-    runtime.releasedForQueuedWork = undefined;
-    if (state.iteration !== iterationBeforeDecide) {
+    if (turnsStarted(runtime) !== turnsBefore) {
+        runtime.releasedForQueuedWork = undefined;
         removeQueuedTimerItemsOfKind(runtime, "idle|");
         removeQueuedTimerItemsOfKind(runtime, "input-grace|");
         return;
     }
-    if (!released || state.activeTimer) return;
+    if (!released) return;
+    if (state.activeTimer) {
+        // Something armed a newer timer without a turn; it stands.
+        runtime.releasedForQueuedWork = undefined;
+        return;
+    }
+    const waitingAfterRestore = state.waitingForAgentIds
+        ?? (released.timer.type === "agent-poll" ? released.waitingForAgentIds : null);
+    if (state.pendingToolActions.length > 0 || (state.pendingPrompt && !waitingAfterRestore)) {
+        ctx.traceInfo(`[orch] queued work left a follow-up to run; the ${released.timer.type} timer stays released for it`);
+        return;
+    }
+    runtime.releasedForQueuedWork = undefined;
     state.activeTimer = released.timer;
     if (released.savedInterruptedWait && state.interruptedWaitTimer === released.savedInterruptedWait) {
         state.interruptedWaitTimer = released.priorInterruptedWait;
@@ -1182,6 +1208,14 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
             case "timer": {
                 const kind = timerItemKind(item);
                 if (kind) removeQueuedTimerItemsOfKind(runtime, kind);
+                // 1.0.82: an idle, input-grace or agent-poll item that runs
+                // while a live timer is released for it is stale: it would
+                // release the worker or arm its own timer in place of the live
+                // one. The live timer is armed again after decide.
+                if (runtime.releasedForQueuedWork && HOLD_TIMER_TYPES.has(item.timer?.type)) {
+                    ctx.traceInfo(`[decide] a queued ${item.timer.type} item is stale while the ${runtime.releasedForQueuedWork.timer.type} timer is live; dropped it`);
+                    break;
+                }
                 yield* processTimer(runtime, item);
                 break;
             }

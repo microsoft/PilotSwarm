@@ -159,11 +159,11 @@ function* runLoop(runtime) {
         yield* drain(runtime);                   // queue + timer fires → KV FIFO
         if (state.orchestrationResult !== null) return state.orchestrationResult;
 
-        const iterationBeforeDecide = state.iteration;
+        const turnsBefore = turnsStarted(runtime);
         const didWork = yield* decide(runtime);  // pop one unit, dispatch
         if (state.orchestrationResult !== null) return state.orchestrationResult;
         // 1.0.82: re-arm a timer released for work that ran no turn
-        settleQueuedWorkAfterDecide(runtime, iterationBeforeDecide);
+        settleQueuedWorkAfterDecide(runtime, turnsBefore);
 
         if (didWork)                  continue;
         if (state.activeTimer)        continue;  // drain will race the timer next iteration
@@ -239,16 +239,24 @@ waits) is already queued is not added: one fire runs the schedule once.
 ### Settling a released timer (1.0.82)
 
 A timer that `drain` releases for queued work, or that a newly arrived prompt
-releases, is recorded on the runtime (`releasedForQueuedWork`) for one loop
-pass. After `decide`, the run loop calls `settleQueuedWorkAfterDecide`:
+releases, is recorded on the runtime (`releasedForQueuedWork`). After every
+`decide`, and before every regeneration stage (which bypasses `decide`), the
+run loop calls `settleQueuedWorkAfterDecide`. "A turn was attempted" means
+`processPrompt` started one (`runtime.turnsStarted` moved), whatever its
+outcome: completed, gate-refused, a returned error or a thrown failure.
 
 | After decide | What happens |
 |---|---|
-| a turn ran (`state.iteration` moved) | queued `idle` and `input-grace` items are removed: the turn restarted the hold window, so they would only release the worker or replace the timer the turn armed. The turn's own continuation re-arms the released timer as before |
-| no turn ran (the prompt was cancelled, or the timer item ran no turn) and nothing armed a newer timer | the released timer is armed again exactly as it was; the remaining time the release saved, and an agent wait it ended, are restored |
-| no turn ran but decide armed a newer timer | the newer timer stays |
+| a turn was attempted | the record is dropped: the turn path owns the timers (its continuation re-arms the released timer as before; a terminal error parks for outside input). Queued `idle` and `input-grace` items are removed: the turn restarted the hold window, so they would only release the worker or replace the timer the turn armed |
+| no turn, and decide armed a newer timer | the newer timer stays; the record is dropped |
+| no turn, and a follow-up (not held by an agent wait) or queued tool actions are now pending | the record is kept, so that work runs next instead of waiting behind the old timer; its turn settles the record |
+| no turn otherwise (the prompt was cancelled, or the timer item ran no turn) | the released timer is armed again exactly as it was; the remaining time the release saved, and an agent wait it ended, are restored |
 
-The record lives in one execution only; continue-as-new never carries it.
+While a record exists, `decide` drops a queued `idle`, `input-grace` or
+`agent-poll` item instead of running it: the live timer was released for it,
+and running it would release the worker or arm its own timer in place of the
+live one. The record lives in one execution only; continue-as-new never
+carries it.
 
 ### KV FIFO buckets
 

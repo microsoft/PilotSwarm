@@ -363,6 +363,10 @@ export function* processPrompt(
     attachments?: PromptAttachmentRef[],
 ): Generator<any, void, any> {
     const { ctx, state } = runtime;
+    // 1.0.82 (issue 192): count every turn attempt, whatever its outcome, so
+    // settleQueuedWorkAfterDecide never re-arms a timer behind an attempt the
+    // turn path already handled (a gate refusal, an error, a thrown failure).
+    runtime.turnsStarted = (runtime.turnsStarted ?? 0) + 1;
     // A provider-budget refusal stashes the whole pending turn contract, not
     // just its text. Any wake or interrupt that finally reaches the model must
     // enforce the same requiredTool as the refused attempt.

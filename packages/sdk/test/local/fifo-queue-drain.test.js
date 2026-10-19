@@ -9,7 +9,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { createRuntime, runLoop } from "../../src/orchestration/runtime.ts";
-import { appendToFifo, decide, drain, settleQueuedWorkAfterDecide } from "../../src/orchestration/queue.ts";
+import { appendToFifo, decide, drain, settleQueuedWorkAfterDecide, turnsStarted } from "../../src/orchestration/queue.ts";
 import { FIFO_BUCKET_COUNT, MAX_BUCKET_BYTES, NON_BLOCKING_TIMER_MS } from "../../src/orchestration/state.ts";
 
 vi.mock("../../src/session-proxy.js", () => ({
@@ -121,9 +121,9 @@ function harness(overrides = {}) {
     // One pass of the run loop: drain, decide, then settle what drain released.
     const step = () => {
         drive(drain(runtime));
-        const iterationBefore = runtime.state.iteration;
+        const before = turnsStarted(runtime);
         const didWork = drive(decide(runtime));
-        settleQueuedWorkAfterDecide(runtime, iterationBefore);
+        settleQueuedWorkAfterDecide(runtime, before);
         return didWork;
     };
     // The real run loop, until the session parks: on a race whose only exit
