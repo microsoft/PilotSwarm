@@ -686,8 +686,43 @@ run_app_tests() {
         return 0
     fi
     echo "🧪 Running packages/app tests (tui + web + ui)..."
-    (cd "$REPO_ROOT" && npm test --prefix packages/app) \
-        || { echo "❌ packages/app tests failed"; exit 1; }
+    # A skip must not read as coverage. node --test exits 0 when a case skips,
+    # so passing on the exit code alone cannot tell "every assertion ran" from
+    # "the suite quietly ran nothing" - e.g. a database-backed file that skips
+    # because PS_TEST_DATABASE_URL was forgotten. When coverage is REQUIRED we
+    # capture the run and refuse a phase that skipped (issue 148).
+    if [ "${PS_REQUIRE_DB_COVERAGE:-}" = "1" ]; then
+        local app_log
+        app_log="$(mktemp)" || { echo "❌ packages/app tests: no temp file"; exit 1; }
+        # The app scripts use node --test's DEFAULT reporter, which prints no
+        # "# skipped N" line at all - a guard reading that output would see
+        # nothing and pass vacuously. Force TAP, which reports the counters.
+        # `cmd | tee` reports tee's status, so the npm exit must be read
+        # explicitly rather than relying on the caller's pipefail setting.
+        local app_status=0
+        (cd "$REPO_ROOT" \
+            && NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--test-reporter=tap" \
+               npm test --prefix packages/app) > "$app_log" 2>&1 || app_status=$?
+        cat "$app_log"
+        if [ "$app_status" -ne 0 ]; then
+            rm -f "$app_log"
+            echo "❌ packages/app tests failed"
+            exit 1
+        fi
+        local skipped todo
+        skipped="$(awk '/^# skipped /{total += $3} END{print total + 0}' "$app_log")"
+        todo="$(awk '/^# todo /{total += $3} END{print total + 0}' "$app_log")"
+        rm -f "$app_log"
+        if [ "$skipped" != "0" ] || [ "$todo" != "0" ]; then
+            echo "❌ packages/app tests: PS_REQUIRE_DB_COVERAGE=1 but the run reported" \
+                 "$skipped skipped and $todo todo case(s). A skip is not coverage."
+            record_run_phase "packages/app tests" "FAIL"
+            exit 1
+        fi
+    else
+        (cd "$REPO_ROOT" && npm test --prefix packages/app) \
+            || { echo "❌ packages/app tests failed"; exit 1; }
+    fi
     record_run_phase "packages/app tests" "PASS"
 }
 
