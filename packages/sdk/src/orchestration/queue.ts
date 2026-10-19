@@ -997,9 +997,11 @@ function* processAnswer(runtime: DurableSessionRuntime, answerItem: any): Genera
  * The prompts that merge into the turn of `first`, in arrival order, removed
  * from the FIFO. Scans from position `start` (the items before it were queued
  * ahead of `first` and are all non-interactive) without moving anything:
- * timer items are stepped over and stay; an answer or another item kind ends
- * the scan; so does a carried-steers wake, whose marker must stay the whole
- * prompt. Cancelled prompts on the way are dropped and recorded, as before.
+ * timer items and agents-done items (an older version's queued follow-up)
+ * are stepped over and stay, as dispatch already runs prompts ahead of them;
+ * an answer or any other item kind ends the scan; so does a carried-steers
+ * wake, whose marker must stay the whole prompt. Cancelled prompts on the way
+ * are dropped and recorded, as before.
  *
  * Never merge an agent's bootstrap kickoff with a person's words (1.0.70).
  * Bootstrap is what the record keys on: the normal path does not record a
@@ -1028,7 +1030,7 @@ function* collectMergeablePrompts(
     let stepped = 0;
     for (let k = start; k < flat.length; k++) {
         const { bucket, index, item: peek } = flat[k];
-        if (peek?.kind === "timer") { stepped++; continue; }
+        if (peek?.kind === "timer" || peek?.kind === "agents-done") { stepped++; continue; }
         if (peek?.kind !== "prompt") break;
         const peekIds = validClientMessageIds(peek.clientMessageIds);
         if (promptIdsIntersectCancellation(runtime, peekIds)) {
@@ -1051,7 +1053,7 @@ function* collectMergeablePrompts(
         });
     }
     if (taken.length > 0 && stepped > 0) {
-        ctx.traceInfo(`[decide] merged ${taken.length} queued prompt(s) past ${stepped} timer item(s)`);
+        ctx.traceInfo(`[decide] merged ${taken.length} queued prompt(s) past ${stepped} queued timer or follow-up item(s)`);
     }
     return taken;
 }

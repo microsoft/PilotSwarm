@@ -337,10 +337,11 @@ first-wins). Bootstrap and ordinary prompts do not merge. This collapses
 rapid-fire user messages into a single LLM turn.
 
 In 1.0.82 (`collectMergeablePrompts`) the merge reads the FIFO in place, from
-the position the dispatched prompt held: timer items are stepped over and
-stay where they are; an answer or another item kind ends the merge, and so
-do a bootstrap mismatch and a carried-steers wake; there is no size limit;
-only the merged and the cancelled prompts are removed. Up to 1.0.81 the merge
+the position the dispatched prompt held: timer items (and `agents-done` items
+left by older versions) are stepped over and stay where they are; an answer
+or another item kind ends the merge, and so do a bootstrap mismatch and a
+carried-steers wake; there is no size limit; only the merged and the
+cancelled prompts are removed. Up to 1.0.81 the merge
 popped the FIFO head to peek and put a non-prompt back at the head, so a timer
 item at the head stopped every merge and never ran while prompts were queued.
 
