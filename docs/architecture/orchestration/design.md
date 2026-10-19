@@ -159,8 +159,11 @@ function* runLoop(runtime) {
         yield* drain(runtime);                   // queue + timer fires → KV FIFO
         if (state.orchestrationResult !== null) return state.orchestrationResult;
 
+        const iterationBeforeDecide = state.iteration;
         const didWork = yield* decide(runtime);  // pop one unit, dispatch
         if (state.orchestrationResult !== null) return state.orchestrationResult;
+        // 1.0.82: re-arm a timer released for work that ran no turn
+        settleQueuedWorkAfterDecide(runtime, iterationBeforeDecide);
 
         if (didWork)                  continue;
         if (state.activeTimer)        continue;  // drain will race the timer next iteration
@@ -212,8 +215,8 @@ picks one of the dequeue modes below:
 | Mode | When | Behavior |
 |---|---|---|
 | **legacy carry-forward** | `state.legacyPendingMessage !== undefined` | replay one already-dequeued message from a pre-v1.0.32 input |
-| **carried guidance** | carry exists and there is no unanswered question, pending shutdown, or gate wait | pending work takes priority; otherwise a non-blocking dequeue selects a queued message or an internal carried-only wake |
-| **queued work** (1.0.82) | the FIFO or the stash holds a prompt or an answer while a timer is armed or a digest window is open; or it holds a timer item while the armed timer is idle, cron, cron_at or an ungated wait; never during a graceful shutdown | release the armed timer as a new message would (a cron or wait keeps its remaining time; a cron_at keeps its next fire; an agent wait ends; input-grace ends, the question stays open; a gate is asked again by the turn; a due timer becomes a timer item), then `race(dequeueEvent, scheduleTimer(10ms))` |
+| **queued work** (1.0.82) | the FIFO or the stash holds a prompt or an answer while a timer is armed or a digest window is open; or it holds a timer item while the armed timer is idle, cron, cron_at or an ungated wait; never during a graceful shutdown | release the armed timer as a new message would (a cron or wait keeps its remaining time; a cron_at keeps its next fire; an agent wait ends, even when its poll is due; input-grace ends, the question stays open; a gate is asked again by the turn; a due cron, cron_at or plain wait becomes a timer item), then `race(dequeueEvent, scheduleTimer(10ms))`. Checked before carried guidance, so queued work that carries steers keeps its timer's time |
+| **carried guidance** | carry exists and there is no unanswered question, pending shutdown, or gate wait | a pending prompt or queued tool actions take priority; otherwise a non-blocking dequeue collects queued messages (1.0.82: until the queue is empty) and, only when nothing else is queued, an internal carried-only wake |
 | **active-timer race** | `activeTimer` set, OR pending child digest waiting to ripen | `race(dequeueEvent, scheduleTimer(remainingMs))`. Timer-side wins push a `{kind:"timer", timer, firedAtMs}` into the stash |
 | **blocking dequeue** | nothing else to do (no timer, no FIFO, no pending prompt/tool actions) and nothing collected yet in this pass | `dequeueEvent` blocks; only allowed on the first drain iteration. In 1.0.82 a pass that has collected a message takes the non-blocking dequeue instead, so every message already queued is collected |
 | **non-blocking dequeue** | otherwise | `race(dequeueEvent, scheduleTimer(NON_BLOCKING_TIMER_MS=10ms))`; timer-side breaks the loop |
@@ -232,6 +235,20 @@ Each dequeued message is routed by shape:
 After the loop, any items still in the stash are appended to the FIFO via
 `appendToFifo`. In 1.0.82 a stashed timer item whose kind (type, and gate for
 waits) is already queued is not added: one fire runs the schedule once.
+
+### Settling a released timer (1.0.82)
+
+A timer that `drain` releases for queued work, or that a newly arrived prompt
+releases, is recorded on the runtime (`releasedForQueuedWork`) for one loop
+pass. After `decide`, the run loop calls `settleQueuedWorkAfterDecide`:
+
+| After decide | What happens |
+|---|---|
+| a turn ran (`state.iteration` moved) | queued `idle` and `input-grace` items are removed: the turn restarted the hold window, so they would only release the worker or replace the timer the turn armed. The turn's own continuation re-arms the released timer as before |
+| no turn ran (the prompt was cancelled, or the timer item ran no turn) and nothing armed a newer timer | the released timer is armed again exactly as it was; the remaining time the release saved, and an agent wait it ended, are restored |
+| no turn ran but decide armed a newer timer | the newer timer stays |
+
+The record lives in one execution only; continue-as-new never carries it.
 
 ### KV FIFO buckets
 

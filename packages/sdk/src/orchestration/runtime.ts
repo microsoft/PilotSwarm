@@ -8,7 +8,7 @@ import { advanceRegenPipeline,
     readCounter,
     versionedContinueAsNew,
 } from "./lifecycle.js";
-import { decide, drain } from "./queue.js";
+import { decide, drain, settleQueuedWorkAfterDecide } from "./queue.js";
 import {
     HISTORY_SIZE_CHECK_INTERVAL_ITERATIONS,
     MAX_HISTORY_SIZE_BEFORE_CONTINUE_AS_NEW_BYTES,
@@ -283,8 +283,12 @@ export function* runLoop(runtime: DurableSessionRuntime): Generator<any, string,
             continue;
         }
 
+        const iterationBeforeDecide = state.iteration;
         const didWork = yield* decide(runtime);
         if (state.orchestrationResult !== null) return state.orchestrationResult;
+        // 1.0.82 (issue 192): a timer released for queued work is armed again
+        // when no turn ran; stale hold-window items go when one did.
+        settleQueuedWorkAfterDecide(runtime, iterationBeforeDecide);
 
         if (didWork) continue;
         if (state.activeTimer) continue;        // drain will race the timer next iteration

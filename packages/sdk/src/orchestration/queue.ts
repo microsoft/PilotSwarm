@@ -37,6 +37,7 @@ import {
     type ActiveTimer,
     type DurableSessionRuntime,
     type PendingChildDigest,
+    type ReleasedTimerRecord,
 } from "./state.js";
 import { handleTurnResult, processPrompt, processTimer } from "./turn.js";
 import { validClientMessageIds , noteMessageSender, applySenderAttribution, maybeQueueSharedPreamble } from "./utils.js";
@@ -257,7 +258,8 @@ function* appendPromptStashToFifo(runtime: DurableSessionRuntime, stash: any[]):
     const lostIds = lostItems.flatMap((item) => validClientMessageIds(item?.clientMessageIds));
     const message = `[fifo] FIFO full: ${lostItems.length} item(s) not stored` +
         (lostIds.length > 0 ? ` (clientMessageIds=${lostIds.join(",")})` : "");
-    if (typeof ctx.traceWarn === "function") ctx.traceWarn(message);
+    // R8: an item that is really lost is an error, not a warning.
+    if (typeof ctx.traceError === "function") ctx.traceError(message);
     else ctx.traceInfo(message);
     yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
         eventType: "session.fifo_overflow",
@@ -392,7 +394,13 @@ function shouldRunQueuedWorkNow(runtime: DurableSessionRuntime, stash: any[]): b
  * wait keeps its remaining time and is re-armed after the turn; a cron_at keeps
  * its next fire; idle is armed again after the turn; an agent wait ends; a gate
  * is asked again by the turn. New in 1.0.82: input-grace ends early, and the
- * question stays open. A timer that is already due becomes a timer item.
+ * question stays open.
+ *
+ * A due cron, cron_at or plain wait is a fire the session still owes, so it
+ * becomes a timer item that runs after the waiting work. Any other released
+ * timer is recorded, and armed again as it was if no turn runs
+ * (settleQueuedWorkAfterDecide): the queued prompt can be cancelled, or the
+ * queued timer item can be one that runs no turn.
  */
 function* releaseTimerForQueuedWork(runtime: DurableSessionRuntime, stash: any[]): Generator<any, void, any> {
     const { ctx, state } = runtime;
@@ -400,18 +408,25 @@ function* releaseTimerForQueuedWork(runtime: DurableSessionRuntime, stash: any[]
     if (!timer) return;
     const now: number = yield ctx.utcNow();
     const remainingMs = Math.max(0, timer.deadlineMs - now);
+    const interactive = stash.some(isInteractiveFifoItem) || fifoHasInteractiveItems(runtime);
     state.activeTimer = null;
     // A wait with under half a second left would be saved as 0 s and never
     // resumed (schedulePostTurnContinuation needs remainingSec > 0), so it
-    // counts as due: its completion is queued like any fired timer.
+    // counts as due.
     const due = remainingMs === 0 || (timer.type === "wait" && Math.round(remainingMs / 1000) === 0);
-    if (due) {
+    const owedFire = timer.type === "cron" || timer.type === "cron_at" || (timer.type === "wait" && !timerGate(timer));
+    if (due && owedFire) {
         stash.push({ kind: "timer", timer: { ...timer }, firedAtMs: now });
         ctx.traceInfo(`[drain] ${timer.type} timer was due; queued it after the waiting work`);
         return;
     }
-    const interactive = stash.some(isInteractiveFifoItem) || fifoHasInteractiveItems(runtime);
-    if (timer.type === "wait") {
+    const released: ReleasedTimerRecord = {
+        timer: { ...timer },
+        priorInterruptedWait: state.interruptedWaitTimer,
+        priorInterruptedCron: state.interruptedCronTimer,
+        waitingForAgentIds: state.waitingForAgentIds,
+    };
+    if (!due && timer.type === "wait") {
         state.interruptedWaitTimer = {
             remainingSec: Math.round(remainingMs / 1000),
             reason: timer.reason,
@@ -421,17 +436,56 @@ function* releaseTimerForQueuedWork(runtime: DurableSessionRuntime, stash: any[]
             budget: timer.budget === true,
             ...(timerGate(timer) ? { gate: timerGate(timer) } : {}),
         };
-    } else if (timer.type === "cron") {
+        released.savedInterruptedWait = state.interruptedWaitTimer;
+    } else if (!due && timer.type === "cron") {
         state.interruptedCronTimer = {
             remainingMs,
             reason: timer.reason,
             originalDurationMs: timer.originalDurationMs,
             ...(timer.shouldRehydrate ? { shouldRehydrate: true } : {}),
         };
-    } else if (timer.type === "agent-poll") {
-        state.waitingForAgentIds = null;
+        released.savedInterruptedCron = state.interruptedCronTimer;
     }
+    // Queued work ends an agent wait whether or not its poll is already due;
+    // a due poll is not queued, so it cannot revive the wait after the turn.
+    if (timer.type === "agent-poll") state.waitingForAgentIds = null;
+    runtime.releasedForQueuedWork = released;
     ctx.traceInfo(`[drain] queued ${interactive ? "prompts" : "timer items"} released the ${timer.type} timer, ${Math.round(remainingMs / 1000)}s remained`);
+}
+
+/**
+ * 1.0.82 (issue 192): called by the run loop after every decide.
+ *
+ * When a turn ran, queued idle and input-grace items are stale: the turn
+ * restarted the hold window, and running them would release the worker or
+ * replace the timer the turn just armed. They are removed.
+ *
+ * When no turn ran (the queued prompt was cancelled, or the timer item ran no
+ * turn) and nothing armed a newer timer, the timer that drain released for the
+ * queued work is armed again exactly as it was, and what the release saved is
+ * undone, so a schedule, a wait or a gate retry is never stranded.
+ */
+export function settleQueuedWorkAfterDecide(runtime: DurableSessionRuntime, iterationBeforeDecide: number): void {
+    const { ctx, state } = runtime;
+    const released = runtime.releasedForQueuedWork;
+    runtime.releasedForQueuedWork = undefined;
+    if (state.iteration !== iterationBeforeDecide) {
+        removeQueuedTimerItemsOfKind(runtime, "idle|");
+        removeQueuedTimerItemsOfKind(runtime, "input-grace|");
+        return;
+    }
+    if (!released || state.activeTimer) return;
+    state.activeTimer = released.timer;
+    if (released.savedInterruptedWait && state.interruptedWaitTimer === released.savedInterruptedWait) {
+        state.interruptedWaitTimer = released.priorInterruptedWait;
+    }
+    if (released.savedInterruptedCron && state.interruptedCronTimer === released.savedInterruptedCron) {
+        state.interruptedCronTimer = released.priorInterruptedCron;
+    }
+    if (released.timer.type === "agent-poll" && !state.waitingForAgentIds && released.waitingForAgentIds) {
+        state.waitingForAgentIds = released.waitingForAgentIds;
+    }
+    ctx.traceInfo(`[orch] no turn ran for the queued work; the ${released.timer.type} timer is armed again`);
 }
 
 export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any> {
@@ -461,6 +515,19 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             if (race.index === 1) break;
             msg = typeof race.value === "string" ? JSON.parse(race.value) : race.value;
 
+        } else if (shouldRunQueuedWorkNow(runtime, stash)) {
+            // 1.0.82 (R3, R4): queued work goes now; the armed timer is
+            // released as a new message would release it. This comes before
+            // the carried-steers branch, so queued work that carries steers
+            // also keeps its timer's time (issue 192 review).
+            yield* releaseTimerForQueuedWork(runtime, stash);
+            const raced: any = yield ctx.race(
+                ctx.dequeueEvent("messages"),
+                ctx.scheduleTimer(NON_BLOCKING_TIMER_MS),
+            );
+            if (raced.index === 1) break;
+            msg = typeof raced.value === "string" ? JSON.parse(raced.value) : raced.value;
+
         } else if (state.carriedSteers.length > 0 && !state.pendingInputQuestion && !state.pendingShutdown && !timerGate(state.activeTimer)) {
             // A follow-up held by an agent wait is pending work that decide
             // will not dispatch. End the wait as a new message would, and let
@@ -471,27 +538,21 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 state.waitingForAgentIds = null;
                 if (state.activeTimer?.type === "agent-poll") state.activeTimer = null;
             }
-            // Give already-pending user work priority. Otherwise the carry
-            // enters the same timer-interrupt path as a newly arrived message.
-            if (stash.length > 0 || state.pendingPrompt || state.pendingToolActions.length > 0 || hasFifoItems(runtime)) break;
+            // Give already-pending work priority. Otherwise the carry enters
+            // the same timer-interrupt path as a newly arrived message.
+            if (state.pendingPrompt || state.pendingToolActions.length > 0) break;
             const raced: any = yield ctx.race(
                 ctx.dequeueEvent("messages"),
                 ctx.scheduleTimer(NON_BLOCKING_TIMER_MS),
             );
-            msg = raced.index === 1
-                ? { prompt: CARRIED_STEERS_WAKE_PROMPT, bootstrap: true, carriedSteersWake: true }
-                : typeof raced.value === "string" ? JSON.parse(raced.value) : raced.value;
-
-        } else if (shouldRunQueuedWorkNow(runtime, stash)) {
-            // 1.0.82 (R3, R4): queued work goes now; the armed timer is
-            // released as a new message would release it.
-            yield* releaseTimerForQueuedWork(runtime, stash);
-            const raced: any = yield ctx.race(
-                ctx.dequeueEvent("messages"),
-                ctx.scheduleTimer(NON_BLOCKING_TIMER_MS),
-            );
-            if (raced.index === 1) break;
-            msg = typeof raced.value === "string" ? JSON.parse(raced.value) : raced.value;
+            if (raced.index === 1) {
+                // 1.0.82 (R10): queued or collected work carries the steers;
+                // the wake marker is only for a session with nothing else.
+                if (stash.length > 0 || hasFifoItems(runtime)) break;
+                msg = { prompt: CARRIED_STEERS_WAKE_PROMPT, bootstrap: true, carriedSteersWake: true };
+            } else {
+                msg = typeof raced.value === "string" ? JSON.parse(raced.value) : raced.value;
+            }
 
         } else if (state.activeTimer || (state.pendingChildDigest && !state.pendingChildDigest.ready)) {
             const now: number = yield ctx.utcNow();
@@ -649,6 +710,13 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
 
             let userPrompt = msg.prompt;
             state.blockedError = undefined;
+            // 1.0.82: remember the timer this message releases, so that it is
+            // armed again if the message is cancelled before its turn runs
+            // (settleQueuedWorkAfterDecide).
+            const releasing = runtime.releasedForQueuedWork ? null : state.activeTimer;
+            const priorInterruptedWait = state.interruptedWaitTimer;
+            const priorInterruptedCron = state.interruptedCronTimer;
+            const priorWaitingForAgentIds = state.waitingForAgentIds;
 
             if (state.activeTimer?.type === "wait") {
                 const now: number = yield ctx.utcNow();
@@ -739,6 +807,18 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 // workspace is still unavailable, that turn holds again.
                 ctx.traceInfo(`[drain] user prompt interrupted a workspace wait; the next turn attempts the workspace`);
                 state.activeTimer = null;
+            }
+            if (releasing && !state.activeTimer) {
+                runtime.releasedForQueuedWork = {
+                    timer: { ...releasing },
+                    priorInterruptedWait,
+                    priorInterruptedCron,
+                    waitingForAgentIds: priorWaitingForAgentIds,
+                    ...(state.interruptedWaitTimer !== priorInterruptedWait && state.interruptedWaitTimer
+                        ? { savedInterruptedWait: state.interruptedWaitTimer } : {}),
+                    ...(state.interruptedCronTimer !== priorInterruptedCron && state.interruptedCronTimer
+                        ? { savedInterruptedCron: state.interruptedCronTimer } : {}),
+                };
             }
 
             if (state.pendingChildDigest?.updates.length) {

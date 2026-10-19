@@ -246,6 +246,20 @@ export interface DurableSessionOptions {
 }
 
 /** Single object passed through every orchestration helper. */
+/**
+ * 1.0.82: a timer that drain released for queued work, with what it changed,
+ * so that it can be armed again when no turn runs (a cancelled prompt, a stale
+ * timer item). See settleQueuedWorkAfterDecide in queue.ts.
+ */
+export interface ReleasedTimerRecord {
+    timer: ActiveTimer;
+    priorInterruptedWait: InterruptedWaitTimer | null;
+    priorInterruptedCron: InterruptedCronTimer | null;
+    savedInterruptedWait?: InterruptedWaitTimer;
+    savedInterruptedCron?: InterruptedCronTimer;
+    waitingForAgentIds: string[] | null;
+}
+
 export interface DurableSessionRuntime {
     ctx: any;
     input: OrchestrationInput;
@@ -255,6 +269,12 @@ export interface DurableSessionRuntime {
     session: any;
     state: DurableSessionState;
     options: DurableSessionOptions;
+    /**
+     * 1.0.82: set by drain when it releases a timer for queued work, read and
+     * cleared after the next decide. Lives for one loop pass of one execution;
+     * continue-as-new never carries it.
+     */
+    releasedForQueuedWork?: ReleasedTimerRecord;
 }
 
 // ─── Constants ──────────────────────────────────────────────
