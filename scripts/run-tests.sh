@@ -704,11 +704,20 @@ run_app_tests() {
         # number, so appending ours to an inherited reporter aborts the run
         # with ERR_INVALID_ARG_VALUE. Replace rather than append, and pair ours
         # with an explicit destination so the counts are ours alone.
-        local app_node_options
-        app_node_options="$(printf '%s' "${NODE_OPTIONS:-}" \
-            | tr ' ' '\n' \
-            | grep -vE '^--test-reporter(-destination)?(=|$)' \
-            | tr '\n' ' ')"
+        # Filtered in pure bash. A grep pipeline cannot be used here: when
+        # NODE_OPTIONS is empty or holds only reporter flags, every line is
+        # filtered out, grep exits 1, and under this script's `set -euo
+        # pipefail` the command substitution kills the whole run silently -
+        # taking packages/app, horizon-store, external and the SDK Vitest
+        # phases with it.
+        local app_node_options="" app_opt
+        for app_opt in ${NODE_OPTIONS:-}; do
+            case "$app_opt" in
+                --test-reporter|--test-reporter=*) ;;
+                --test-reporter-destination|--test-reporter-destination=*) ;;
+                *) app_node_options="${app_node_options}${app_opt} " ;;
+            esac
+        done
         local app_status=0
         (cd "$REPO_ROOT" \
             && NODE_OPTIONS="${app_node_options}--test-reporter=tap --test-reporter-destination=stdout" \
