@@ -237,6 +237,81 @@ test("with request ports (issue 184), the only canvas-ws* window message the pag
     assert.equal(legacy.inner().received.length, 1);
 });
 
+test("ports-only (composed issue 184 host): no portal window message reaches the page but the exact upgrade diagnostic", () => {
+    const w = bootWrapper(crossOwnerWrapperHtml({ workspaceResults: "ports-only" }));
+    w.dispatch(w.parent, { type: "pse-wrapper-load", html: "<p>app</p>" });
+    const inner = w.inner();
+    inner.fireLoad();
+    const upgrade = { type: "canvas-ws-result", id: 7, ok: false, code: CANVAS_WS_UPGRADE_CODE, error: CANVAS_WS_UPGRADE_ERROR };
+    const upgradeNoId = { ...upgrade, id: null };
+    // Every content-bearing message the host posts today (web-app.js, App.jsx),
+    // diagnostic look-alikes, and types nobody has invented yet: all dropped,
+    // and every port that came with them closed.
+    const dropped = [
+        { type: "canvas-kv-ready", id: 1, ok: true, keys: ["app/x"] },
+        { type: "canvas-kv-result", id: 2, ok: true, entry: { key: "app/x", v: "secret" } },
+        { type: "canvas-kv-change", key: "app/x", rev: 3, op: "put", v: "secret", by: "dev:alice" },
+        { type: "canvas-ws-result", id: 4, ok: true, result: { text: "secret" } },
+        { type: "canvas-ws-result", id: 5, ok: false, code: "CANVAS_WS_DENIED", error: "may not read work/.env" },
+        { type: "canvas-ws-change", reason: "approved" },
+        { type: "canvas-data", data: { secret: 1 }, dataRev: 2 },
+        { type: "canvas-patch", patch: { secret: 2 }, dataRev: 3 },
+        { type: "canvas-action-result", id: 6, ok: true },
+        { type: "canvas-feed-v2", seq: 1, data: { secret: 3 } },
+        { type: "moa-theme", theme: "dark" },
+        { type: 42 },
+        { noType: true },
+        { ...upgrade, extra: "leak" },
+        { ...upgrade, error: "Update this canvas workspace helper: work/.env" },
+        { ...upgrade, ok: true },
+        { ...upgrade, id: 0 },
+        { ...upgrade, id: "7" },
+        { ...upgrade, type: "canvas-kv-result" },
+    ];
+    const ports = [];
+    for (const message of dropped) {
+        const port = fakePort(String(message.type));
+        ports.push(port);
+        w.dispatch(w.parent, message, [port]);
+    }
+    w.dispatch(w.parent, upgrade);
+    w.dispatch(w.parent, upgradeNoId);
+    assert.deepEqual(inner.received, [upgrade, upgradeNoId], "only the exact diagnostic, nothing else");
+    assert.ok(ports.every((p) => p.closed), "every port the portal sent is closed");
+    // The page's own requests still reach the portal with their exact ports.
+    const reqPort = fakePort("kv-v2");
+    const request = { type: "canvas-kv-v2", version: 2, documentToken: "t", id: 9, op: "get", key: "app/x" };
+    w.dispatch(inner.contentWindow, request, [reqPort]);
+    assert.deepEqual(w.toParent.at(-1), request);
+    assert.deepEqual(w.transfers.at(-1), [reqPort]);
+    assert.equal(reqPort.closed, false);
+    // After the page was replaced, not even the diagnostic gets through.
+    inner.fireLoad();
+    assert.deepEqual(w.toParent.at(-1), { type: "pse-wrapper-left" });
+    const late = fakePort("late");
+    w.dispatch(w.parent, upgrade, [late]);
+    assert.equal(inner.received.length, 2);
+    assert.equal(late.closed, true);
+});
+
+test("the three wrapper modes differ only in what the portal may post down", () => {
+    const relay = bootWrapper(crossOwnerWrapperHtml());
+    const upgradeOnly = bootWrapper(crossOwnerWrapperHtml({ workspaceResults: "upgrade-only" }));
+    const portsOnly = bootWrapper(crossOwnerWrapperHtml({ workspaceResults: "ports-only" }));
+    assert.equal(crossOwnerWrapperHtml(), CROSS_OWNER_WRAPPER_HTML);
+    const tick = { type: "canvas-data", data: { a: 1 }, dataRev: 1 };
+    const wsReply = { type: "canvas-ws-result", id: 1, ok: true, result: {} };
+    const received = [];
+    for (const w of [relay, upgradeOnly, portsOnly]) {
+        w.dispatch(w.parent, { type: "pse-wrapper-load", html: "<p>app</p>" });
+        w.inner().fireLoad();
+        w.dispatch(w.parent, tick);
+        w.dispatch(w.parent, wsReply);
+        received.push(w.inner().received.map((m) => m.type));
+    }
+    assert.deepEqual(received, [["canvas-data", "canvas-ws-result"], ["canvas-data"], []]);
+});
+
 test("a trusted bootstrap goes after the policy and before the page", () => {
     const html = buildIsolatedInnerHtml("<!doctype html><head><script>page()</script></head>", { bootstrap: "<script>bootstrap()</script>" });
     assert.ok(html.indexOf("Content-Security-Policy") < html.indexOf("bootstrap()"));

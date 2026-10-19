@@ -61,12 +61,20 @@ export const CANVAS_WS_UPGRADE_ERROR = "Update this canvas workspace helper befo
  *    other canvas-ws* message is dropped. Other types (KV ticks, actions)
  *    pass unchanged, and requests from the page to the portal are never
  *    filtered: they keep their exact ports.
+ *  - "ports-only" (the composed issue 184 host, where replies, KV changes,
+ *    workspace notices and ticks travel only on the page's own ports): of
+ *    all window messages from the portal, only that same exact diagnostic
+ *    reaches the page. Everything else is dropped, whatever its type, so no
+ *    session content ever crosses the wrapper as a window message.
  */
 export function crossOwnerWrapperHtml({ workspaceResults = "relay" } = {}) {
-    const WS_FILTER = workspaceResults === "upgrade-only"
-        ? `function wsOk(d){var k=Object.keys(d).sort().join(',');return d.type==='canvas-ws-result'&&k==='code,error,id,ok,type'&&d.ok===false&&d.code===${JSON.stringify(CANVAS_WS_UPGRADE_CODE)}&&d.error===${JSON.stringify(CANVAS_WS_UPGRADE_ERROR)}&&(d.id===null||(Number.isSafeInteger(d.id)&&d.id>0))}`
-        : "function wsOk(){return true}";
-    return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${CROSS_OWNER_WRAPPER_CSP}"><style>html,body{margin:0;height:100%;background:transparent;overflow:hidden}iframe{border:0;width:100%;height:100%;display:block}</style></head><body><script>(function(){var inner=null,dead=false,loads=0;function own(d){return typeof d.type==='string'&&d.type.indexOf('pse-wrapper')===0}${WS_FILTER}function shut(ps){for(var i=0;ps&&i<ps.length;i++){try{ps[i].close()}catch(x){}}}addEventListener('message',function(e){var d=e.data,ps=e.ports;if(dead||!d||typeof d!=='object'){shut(ps);return;}if(e.source===parent&&d.type==='pse-wrapper-load'){shut(ps);if(inner)return;inner=document.createElement('iframe');inner.setAttribute('sandbox','allow-scripts');inner.setAttribute('allow','autoplay *');inner.setAttribute('referrerpolicy','no-referrer');inner.addEventListener('load',function(){loads+=1;if(loads>1){dead=true;try{inner.remove()}catch(x){}inner=null;try{parent.postMessage({type:'pse-wrapper-left'},'*')}catch(x){}}});inner.srcdoc=String(d.html||'');document.body.appendChild(inner);return;}if(inner&&e.source===inner.contentWindow){if(own(d)){shut(ps);return;}try{parent.postMessage(d,'*',ps?Array.prototype.slice.call(ps):[])}catch(x){shut(ps)}return;}if(inner&&e.source===parent&&!own(d)){shut(ps);if(typeof d.type==='string'&&d.type.indexOf('canvas-ws')===0&&!wsOk(d))return;try{inner.contentWindow.postMessage(d,'*')}catch(x){}return;}shut(ps);});parent.postMessage({type:'pse-wrapper-ready'},'*');})();</script></body></html>`;
+    const DIAGNOSTIC = `function diag(d){var k=Object.keys(d).sort().join(',');return d.type==='canvas-ws-result'&&k==='code,error,id,ok,type'&&d.ok===false&&d.code===${JSON.stringify(CANVAS_WS_UPGRADE_CODE)}&&d.error===${JSON.stringify(CANVAS_WS_UPGRADE_ERROR)}&&(d.id===null||(Number.isSafeInteger(d.id)&&d.id>0))}`;
+    const DOWN_FILTER = workspaceResults === "ports-only"
+        ? `${DIAGNOSTIC}function downOk(d){return diag(d)}`
+        : workspaceResults === "upgrade-only"
+            ? `${DIAGNOSTIC}function downOk(d){return !(typeof d.type==='string'&&d.type.indexOf('canvas-ws')===0)||diag(d)}`
+            : "function downOk(){return true}";
+    return `<!doctype html><html><head><meta http-equiv="Content-Security-Policy" content="${CROSS_OWNER_WRAPPER_CSP}"><style>html,body{margin:0;height:100%;background:transparent;overflow:hidden}iframe{border:0;width:100%;height:100%;display:block}</style></head><body><script>(function(){var inner=null,dead=false,loads=0;function own(d){return typeof d.type==='string'&&d.type.indexOf('pse-wrapper')===0}${DOWN_FILTER}function shut(ps){for(var i=0;ps&&i<ps.length;i++){try{ps[i].close()}catch(x){}}}addEventListener('message',function(e){var d=e.data,ps=e.ports;if(dead||!d||typeof d!=='object'){shut(ps);return;}if(e.source===parent&&d.type==='pse-wrapper-load'){shut(ps);if(inner)return;inner=document.createElement('iframe');inner.setAttribute('sandbox','allow-scripts');inner.setAttribute('allow','autoplay *');inner.setAttribute('referrerpolicy','no-referrer');inner.addEventListener('load',function(){loads+=1;if(loads>1){dead=true;try{inner.remove()}catch(x){}inner=null;try{parent.postMessage({type:'pse-wrapper-left'},'*')}catch(x){}}});inner.srcdoc=String(d.html||'');document.body.appendChild(inner);return;}if(inner&&e.source===inner.contentWindow){if(own(d)){shut(ps);return;}try{parent.postMessage(d,'*',ps?Array.prototype.slice.call(ps):[])}catch(x){shut(ps)}return;}if(inner&&e.source===parent&&!own(d)){shut(ps);if(!downOk(d))return;try{inner.contentWindow.postMessage(d,'*')}catch(x){}return;}shut(ps);});parent.postMessage({type:'pse-wrapper-ready'},'*');})();</script></body></html>`;
 }
 
 export const CROSS_OWNER_WRAPPER_HTML = crossOwnerWrapperHtml();
