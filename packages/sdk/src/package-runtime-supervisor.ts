@@ -1,6 +1,7 @@
 import { fork, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import type { PackageSourceSnapshot } from "./package-runtime-snapshot.js";
 import { resolve } from "node:path";
 import fs from "node:fs";
 import { createHash } from "node:crypto";
@@ -36,6 +37,7 @@ export class SupervisedPackageRuntime {
     private exit!: Promise<void>;
     private pending = new Map<string, { resolve: (value: any) => void; reject: (error: Error) => void }>();
     private readonly mcp = new Map<string, string>();
+    private snapshot!: PackageSourceSnapshot;
     private readonly env = Object.fromEntries(["SystemRoot", "TEMP", "TMP"].flatMap(key =>
         process.env[key] ? [[key, process.env[key]!]] : []));
 
@@ -48,7 +50,7 @@ export class SupervisedPackageRuntime {
         const runtime = new SupervisedPackageRuntime(authority, identity, dir, verified, workerId);
         await authority.recoverLocal();
         runtime.registration = await authority.register(identity, workerId);
-        try { runtime.verifyMaterialization(); }
+        try { runtime.snapshot = runtime.verifyMaterialization(); }
         catch (error) {
             await authority.requestFence(runtime.registration);
             await authority.acknowledgeFence(runtime.registration, true);
@@ -142,7 +144,7 @@ export class SupervisedPackageRuntime {
         const module = this.verified.module;
         await this.request("prepare-module", { env: this.env });
         await this.authority.withLoadAdmission(this.registration, "import", signal =>
-            this.request("import", { path: resolve(this.dir, module), env: this.env }, signal));
+            this.request("import", { path: resolve(this.dir, module), env: this.env, snapshot: this.snapshot }, signal));
         const declarations = await this.authority.withLoadAdmission(this.registration, "factory", signal =>
             this.request("factory", { context: { workerNodeId: this.workerId } }, signal));
         if (this.verified.callbacks) await this.authority.withLoadAdmission(this.registration, "factory", signal =>
@@ -222,7 +224,6 @@ export class SupervisedPackageRuntime {
         return this.admit(sessionId, "mcp-tool", name, async () => {});
     }
     async startMcp(sessionId: string, name: string): Promise<void> {
-        this.verifyMaterialization();
         const config = this.verified.mcp[name];
         if (!config) throw new Error("MCP server is not in the verified artifact configuration");
         const key = JSON.stringify([sessionId, name]);
@@ -230,7 +231,7 @@ export class SupervisedPackageRuntime {
         await this.admit(sessionId, "mcp-start", name, async () => {});
         await this.request("prepare-mcp", { key, env: this.env, dir: this.dir });
         await this.admit(sessionId, "mcp-start", name, signal =>
-            this.request("mcp-start", { key, name, config, dir: this.dir }, signal));
+            this.request("mcp-start", { key, name, config, dir: this.dir, snapshot: this.snapshot }, signal));
         this.mcp.set(key, sessionId);
     }
     async callMcp(sessionId: string, name: string, method: "tools/list" | "tools/call", params: unknown): Promise<any> {
@@ -243,12 +244,14 @@ export class SupervisedPackageRuntime {
         for (const pending of this.pending.values()) pending.reject(error);
         this.pending.clear();
     }
-    private verifyMaterialization(): void {
+    private verifyMaterialization(): PackageSourceSnapshot {
         const inspection = this.registration.inspection;
         if (!inspection || !isDeepStrictEqual(inspection.execution, this.verified)) {
             throw new Error("Runtime descriptor differs from authoritative immutable review");
         }
         const expected = new Map(inspection.files.map(file => [file.path, file]));
+        const sources: Record<string, string> = Object.create(null);
+        let sourceBytes = 0;
         const visit = (dir: string, prefix = ""): void => {
             if (!fs.lstatSync(dir).isDirectory() || fs.lstatSync(dir).isSymbolicLink()) throw new Error("Unverifiable runtime directory");
             for (const name of fs.readdirSync(dir)) {
@@ -265,12 +268,18 @@ export class SupervisedPackageRuntime {
                         || createHash("sha256").update(bytes).digest("hex") !== expectedFile.sha256) {
                         throw new Error(`Runtime artifact mismatch: ${rel}`);
                     }
+                    if (/\.(?:js|mjs)$/.test(rel) || name === "package.json") {
+                        sourceBytes += bytes.length;
+                        if (sourceBytes > 16 * 1024 * 1024) throw new Error("Verified executable source snapshot exceeds 16 MiB");
+                        sources[pathToFileURL(full).href] = bytes.toString("base64");
+                    }
                     expected.delete(rel);
                 }
             }
         };
         visit(this.dir);
         if (expected.size) throw new Error("Runtime artifact contents are incomplete");
+        return { sources, builtins: [...this.verified.builtins] };
     }
     stop(): Promise<void> {
         if (this.stopping) return this.stopping;

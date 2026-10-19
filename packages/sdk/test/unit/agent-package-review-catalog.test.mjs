@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { PGlite } from "@electric-sql/pglite";
 import { executablePackageReviewsMigration } from "../../dist/migrations/executable-package-reviews-0084.js";
+import { packageRuntimeProceduresMigration } from "../../dist/migrations/package-runtime-procedures-0088.js";
 import { PgAgentPackageReviewStore } from "../../dist/agent-package-review-store.js";
 import { CMS_MIGRATIONS } from "../../dist/cms-migrations.js";
 import { PgSessionCatalog } from "../../dist/cms.js";
@@ -59,6 +60,11 @@ async function fixture(t) {
         INSERT INTO authz.users VALUES('owner','entra','publisher'),('other','entra','other-owner');
     `);
     await db.exec(executablePackageReviewsMigration("authz"));
+    // Keep this pre-runtime catalog fixture small while using the real provider procedures.
+    for (const [statement] of packageRuntimeProceduresMigration("authz").matchAll(
+        /CREATE OR REPLACE FUNCTION "authz"\.cms_pkg_(?:reviews|review_audit|activation_audit|runtime_supported)\([\s\S]*?\$procedure\$;/g)) {
+        await db.exec(statement);
+    }
     const publish = async (versionId, digest, executable, semver = "1.0.0", packageId = "pkg-1", scope = "shared", ownerSubject = "publisher", uninspected = false) => {
         const inspection = { format: 1, sha256: digest, name: "review-kit", semver,
             executable, reasons: executable ? ["worker module"] : [],

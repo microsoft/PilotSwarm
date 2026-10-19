@@ -44,6 +44,8 @@ export function gitEnv(extra = {}) {
         ...env,
         GIT_CONFIG_GLOBAL: "/dev/null",
         GIT_CONFIG_NOSYSTEM: "1",
+        // Project-owned temporary directories must not discover the surrounding worktree.
+        GIT_CEILING_DIRECTORIES: os.tmpdir(),
         GIT_AUTHOR_NAME: "fixture",
         GIT_AUTHOR_EMAIL: "fixture@example.invalid",
         GIT_COMMITTER_NAME: "fixture",

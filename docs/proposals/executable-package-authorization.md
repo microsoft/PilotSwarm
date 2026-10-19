@@ -2,28 +2,23 @@
 
 ## Status and scope
 
-This document describes the implemented platform candidate through `dbf5edf`
-and the Linux acceptance workflow added in `0854f97`, plus the uncommitted
-admission lock-order, exact caller-pin, cancellation and startup-recovery
-strengthening below, not the superseded
-foundation-only design at `89d3269`. Historical implementation inventories and
-claims that callbacks or automatic MCP are unimplemented have been removed.
-The relevant history remains in Git.
+This document describes the current platform candidate: supervised tools,
+callbacks and MCP, authoritative admission, exact caller pins, cancellation and
+startup recovery, verified in-memory module loading, and additive CMS migrations
+0084–0088. Superseded foundation-only implementation inventories remain in Git,
+not as current limitations here.
 
 Prerequisite PR #185 is **not a release/deployment authorization**. Executable
 tools, generic callbacks and ordinary package MCP can execute in supervised
 children after approval, activation and current-session admission. This is not
 a permanently quarantined, approval-always-fails foundation.
 
-External gates remain: Linux acceptance evidence, trustworthy control-plane
+External gates remain: Linux acceptance of the final candidate, trustworthy control-plane
 fencing proof for unknown legacy/other-host workers, and the requested exact
 Claude Opus 4.8 completed-candidate review. That model is unavailable here; no
-replacement review is represented as its pass. The initial Linux run is
-<https://github.com/seanzqliang/PilotSwarm/actions/runs/39093805760>;
-that run failed the broker database-outage fixture under SCRAM and retained
-an orphan broker after initialization failed. Its other passing cases do not
-make the matrix successful. The corrected fixture and startup recovery require
-a fresh Linux run; starting a workflow is **not** evidence that it passed.
+replacement review is represented as its pass. Local acceptance does not
+establish Linux or operational legacy-worker fencing qualification. Starting a
+workflow is **not** evidence that it passed.
 
 This is a general executable-package workflow, not cron-specific. Declarative
 prompt/agent/skill packages retain their existing publication behavior. Known
@@ -53,6 +48,52 @@ immutable inspection. `.pilotswarm-meta.json` is diagnostic only. A retained
 sidecar cannot authorize a changed cache. Imports and factories execute only in
 the package child; the parent receives JSON declarations and proxy functions,
 never package function objects.
+
+### Verified executable bytes, not a disk check/use assumption
+
+At generation creation the trusted supervisor reads each artifact file once
+into a Buffer, hashes that same Buffer against immutable inspection, and retains
+verified `.js`, `.mjs` and `package.json` bytes (aggregate source limit 16 MiB).
+Module and MCP children receive this bounded snapshot over IPC. Before importing,
+their trusted bootstrap installs synchronous `node:module.registerHooks`.
+Both resolve and load require an exact snapshot file URL; there is **no disk
+fallback**, even for another file within the package directory. Only the
+already-policy-permitted `node:` builtins delegate to Node. Actual file URLs are
+preserved for `import.meta.url`. Unsupported Node runtimes without synchronous
+hooks (Node <22.15; supported deployment/CI uses Node 24) fail closed. MCP entry
+imports use the generation's same retained snapshot, not a fresh disk import.
+
+Cache writers can include another UID with filesystem permission, concurrent
+extraction/refresh, or another approved same-UID package process. Disk entry,
+relative dependency or MCP entry replacement **after the verified read cannot
+substitute executed module source**. Mutation before/during capture either
+produces exactly the approved hashed bytes or denies that generation; links,
+missing files and mismatches still deny. Snapshot bytes never replace approval,
+activation, session ownership, binding/grant, generation or per-operation admission.
+An integrity denial requests fencing and acknowledges only according to the
+existing observed-exit protocol, without fallback version or successful skip.
+
+This is not a sandbox. Already-approved running code can perform whatever
+effects its UID permits, read mutable data with an approved filesystem builtin,
+or interfere with same-UID memory/processes where the OS permits. The snapshot
+does not defend against in-memory tampering by a same-UID process or undo
+previously admitted effects. It specifically closes filesystem substitution
+between source verification and Node module loading. The trusted SDK bootstrap,
+Node installation and supervisor memory/IPC remain trust anchors; replacing
+those is outside the package-cache substitution guarantee.
+
+Named or default-object `createTools`/`createCallbacks` exports must be functions
+when present, including when their value is explicitly `undefined` or `null`.
+Present `tools`/`callbacks` exports and factory results must be arrays. Malformed
+factory exports never fall back to a valid static array; static-only and
+factory-only declarations remain supported.
+
+Migration 0088 adds thin table-access procedures for authority/review reads,
+registration/process/fencing writes, grants and capability CAS. TypeScript
+retains the same barrier-first transaction boundary and row mapping; metadata
+reads remain nonlocking. Applied migrations 0084–0087 are unchanged. Their
+companion diff documents and `0088_diff.md` describe upgrade/mixed-fleet and
+no-destructive-down requirements.
 
 ## Review, activation and version pins
 
@@ -228,7 +269,7 @@ status via `getAgentPackageRuntimeStatus`,
 `pilotswarm agents runtime-status <package> <version> <sha>` and
 `get_agent_package_runtime_status`.
 
-Migrations 0084–0087 are additive; histories are not dropped. 0086 adds exact
+Migrations 0084–0088 are additive; histories are not dropped. 0086 adds exact
 grants/audit, durable process identities, lifecycle triggers and the legacy-fleet
 gate. 0085 reapplication preserves that gate. Downgrading to old workers is unsafe
 until executables are disabled and their processes are actually fenced. Retain
@@ -249,7 +290,44 @@ two-connection regression holds each relevant metadata row, makes a writer wait
 for the admission barrier, proves the earlier read completes without deadlock,
 then commits disablement and verifies the next admission is denied.
 
-## Verified evidence and remaining gates
+## Current acceptance and remaining gates
+
+The current reviewer follow-up adds verified-buffer execution for module/dependency/
+MCP entry imports, presence-sensitive factories, and stored-procedure-only CMS
+access. Its acceptance commands are:
+
+```text
+npm run build
+# From packages\sdk, with Git usr\bin first on PATH and project-owned TEMP/TMP:
+node --test --test-concurrency=2 --test-reporter=tap test/unit/*.test.mjs
+# Against a task-owned LOCAL SCRAM cluster; never source an operator database URL:
+PACKAGE_TEST_PG_URL=<owned-local-url> node --test --test-reporter=tap --test-timeout=120000 packages/sdk/test/postgres/package-runtime.test.mjs
+```
+
+Post-verification replacement barriers target the module entry, relative dependency
+and MCP entry before actual supervised import. Approved import/factory/callback/
+handler counters must advance exactly once and substituted-code counters remain
+zero. Malformed factories must reject startup with zero callback/tool invocation
+and observed instance fencing. The suite also reapplies 0088 twice, retains the
+0087 metadata-writer ordering cases, and checks audit identity/date transport.
+Source guards and SQL-shape tests supplement, not replace, standalone PostgreSQL.
+
+Current Windows evidence after the reviewer fixes: root `npm run build` passed;
+the complete SDK unit suite passed **1,586 tests, nine explicit skips, zero
+failures** (1,595 tests total, Git Bash PATH, concurrency two); the complete
+standalone **SCRAM PostgreSQL 18.4** suite passed **69 tests, zero skips/failures**,
+including real supervised processes, native MCP and Edge browser acceptance.
+All migrations ran on the task-owned localhost-only server, with real
+multi-connection races and recovery rather than mocked SQL. The 22 added runtime
+cases include three post-check source substitutions, 14 invalid-factory cases,
+four static/default-factory positives and one bigint/date transport case.
+The server was stopped after acceptance; no operator database or deployment was used.
+
+The final candidate still requires Linux acceptance after these changes, exact
+Opus 4.8 review and operational legacy/remote-worker fencing proof. Historical
+results below must not be reported as this candidate's qualification.
+
+## Historical acceptance appendix (not final-candidate qualification)
 
 The 0087 review remediation passed the full root build, **1,583 SDK unit tests**
 (nine explicit platform skips), and **47 standalone SCRAM PostgreSQL 18.4
@@ -294,8 +372,9 @@ The focused startup/outage command is:
 node --test --test-reporter=tap --test-timeout=120000 --test-name-pattern="broker initialization failure|unavailable broker database authority" packages\sdk\test\postgres\package-runtime.test.mjs
 ```
 
-`PS_TEST_DATABASE_URL` selects a separate task-owned local cluster initialized
-with SCRAM, not trust authentication or an operator database. A direct probe
+That earlier fixture used `PS_TEST_DATABASE_URL`; the current suite uses
+`PACKAGE_TEST_PG_URL` for a separate task-owned local SCRAM cluster, not trust
+authentication or an operator database. A direct probe
 confirmed the old passwordless-role/inherited-root-password combination fails
 with SQLSTATE `28P01`. The fixture now creates a generated synthetic role password
 and forwards that same password. Failed starts are captured for teardown; pool

@@ -26,7 +26,7 @@ async function until(predicate, message) {
     assert.fail(message);
 }
 
-async function fixture(t, { mcp = false, executable = true, callbacks = false, noTools = false, noMcp = false, scope = "shared" } = {}) {
+async function fixture(t, { mcp = false, executable = true, callbacks = false, noTools = false, noMcp = false, scope = "shared", prepare } = {}) {
     const pool = new pg.Pool({ connectionString: url, max: 8 });
     const schema = `runtime_${randomUUID().replaceAll("-", "")}`;
     const base = fs.mkdtempSync(path.resolve(".test-package-runtime-"));
@@ -99,6 +99,7 @@ createInterface({input:process.stdin}).on("line", line => {
                 command: "node", args: ["mcp-servers/demo.mjs"],
             } } }));
         }
+        prepare?.(dir, { marker, mcpMarker });
         const packed = packAgentPackage(dir);
         const inspection = inspectAgentPackageArtifact(packed.targz, packed.sha256);
         if (code || mcp) assert.ok(inspection.execution, inspection.approvalBlockers.join("; "));
@@ -118,13 +119,116 @@ createInterface({input:process.stdin}).on("line", line => {
         await catalog.createSession(id, { owner: { provider: "entra", subject: "publisher" },
             creationConfig: { boundAgentPackageId: "pkg", boundAgentName: "helper" } });
     };
-    const start = async (candidate, worker = "worker-a") => {
+    const start = async (candidate, worker = "worker-a", afterSnapshot) => {
         const started = await SupervisedPackageRuntime.start(authority, candidate, candidate.dir, candidate.inspection.execution, worker,
-            runtime => runtimes.push(runtime));
+            runtime => { runtimes.push(runtime); afterSnapshot?.(runtime); });
         return started;
     };
-    return { pool, schema, base, runtimes, catalog, authority, sql, publish, decide, activate, bind, start, events, mcpEvents, marker };
+    return { pool, schema, base, runtimes, catalog, authority, sql, publish, decide, activate, bind, start, events, mcpEvents, marker, mcpMarker };
 }
+
+for (const replaced of ["entry", "dependency", "mcp"]) {
+    test(`verified byte snapshot defeats ${replaced} replacement after materialization check before child import`, async t => {
+        const f = await fixture(t, { callbacks: true, mcp: replaced === "mcp", prepare(dir, { marker }) {
+            if (replaced !== "dependency") return;
+            const entry = path.join(dir, "tools", "worker-module.mjs");
+            fs.writeFileSync(entry, `import "./dependency.mjs";\n${fs.readFileSync(entry, "utf8")}`);
+            fs.writeFileSync(path.join(dir, "tools", "dependency.mjs"),
+                `import fs from "node:fs";fs.appendFileSync(${JSON.stringify(marker)},"approved-dependency:"+process.pid+"\\n");`);
+        } });
+        const candidate = await f.publish();
+        await f.decide(candidate); await f.activate(candidate); await f.bind();
+        const target = path.join(candidate.dir, replaced === "mcp" ? "mcp-servers" : "tools",
+            replaced === "mcp" ? "demo.mjs" : replaced === "dependency" ? "dependency.mjs" : "worker-module.mjs");
+        let barrierReached = false;
+        const { runtime, tools } = await f.start(candidate, "replacement-worker", () => {
+            barrierReached = true;
+            fs.writeFileSync(target, `import fs from "node:fs";fs.appendFileSync(${JSON.stringify(f.marker)},"SUBSTITUTED:"+process.pid+"\\n");`);
+        });
+        assert.equal(barrierReached, true, "replacement barrier follows the existing materialization verification");
+        assert.equal((await tools[0].handler({}, { durableSessionId: "session-1" })).pid > 0, true);
+        assert.deepEqual(await runtime.invokeCallback("session-1", "check", {}), { skip: true });
+        if (replaced === "mcp") {
+            await runtime.startMcp("session-1", "demo");
+            assert.equal(f.mcpEvents().filter(line => line.startsWith("start:")).length, 1);
+        }
+        assert.equal(f.events().filter(line => line.startsWith("SUBSTITUTED:")).length, 0);
+        for (const event of ["import", "factory", "callback-factory", "handler", "callback"]) {
+            assert.equal(f.events().filter(line => line.startsWith(`${event}:`)).length, 1, event);
+        }
+        if (replaced === "dependency") assert.equal(f.events().filter(line => line.startsWith("approved-dependency:")).length, 1);
+    });
+}
+
+for (const kind of ["callbacks", "tools"]) {
+    for (const invalid of ["null", "undefined", "42", "default-null", "default-undefined", "static-invalid", "factory-result-invalid"]) {
+        test(`supervised loader rejects ${kind} ${invalid} rather than using static fallback`, async t => {
+            const factory = kind === "callbacks" ? "createCallbacks" : "createTools";
+            const f = await fixture(t, { callbacks: true, prepare(dir, { marker }) {
+                const file = path.join(dir, "tools", "worker-module.mjs");
+                const source = fs.readFileSync(file, "utf8");
+                const renamed = source.replace(`export function ${factory}()`, `function declarations()`);
+                const staticDeclaration = invalid === "static-invalid" ? `export const ${kind}=null;`
+                    : `export const ${kind}=declarations();`;
+                const factoryDeclaration = invalid === "static-invalid" ? ""
+                    : invalid.startsWith("default-") ? `export default {${factory}:${invalid.slice(8)}};`
+                    : invalid === "factory-result-invalid" ? `export function ${factory}(){return {};}`
+                    : `export const ${factory}=${invalid};`;
+                fs.writeFileSync(file, `${renamed}\n${staticDeclaration}\n${factoryDeclaration}\n`);
+            } });
+            const candidate = await f.publish();
+            await f.decide(candidate); await f.activate(candidate); await f.bind();
+            await assert.rejects(f.start(candidate), /Invalid .*|expected array/);
+            assert.equal(f.events().filter(line => line.startsWith("callback:") || line.startsWith("handler:")).length, 0);
+            assert.equal((await f.authority.fencingStatus(candidate)).outstanding, 0);
+            assert.deepEqual((await f.sql("SELECT state FROM @s.package_runtime_registrations")).rows, [{ state: "fenced" }]);
+            await assert.rejects(f.runtimes[0].invokeCallback("session-1", "check", {}), /fenced/i);
+        });
+    }
+    test(`supervised loader preserves ${kind} static-only declarations`, async t => {
+        const factory = kind === "callbacks" ? "createCallbacks" : "createTools";
+        const f = await fixture(t, { callbacks: true, prepare(dir) {
+            const file = path.join(dir, "tools", "worker-module.mjs");
+            const source = fs.readFileSync(file, "utf8").replace(`export function ${factory}()`, "function declarations()");
+            fs.writeFileSync(file, `${source}\nexport const ${kind}=declarations();`);
+        } });
+        const candidate = await f.publish();
+        await f.decide(candidate); await f.activate(candidate); await f.bind();
+        const { runtime, tools } = await f.start(candidate);
+        assert.equal((await tools[0].handler({}, { durableSessionId: "session-1" })).pid > 0, true);
+        assert.deepEqual(await runtime.invokeCallback("session-1", "check", {}), { skip: true });
+    });
+    test(`supervised loader preserves ${kind} default-object factory-only declarations`, async t => {
+        const factory = kind === "callbacks" ? "createCallbacks" : "createTools";
+        const f = await fixture(t, { callbacks: true, prepare(dir) {
+            const file = path.join(dir, "tools", "worker-module.mjs");
+            const source = fs.readFileSync(file, "utf8").replace(`export function ${factory}()`, "function declarations()");
+            fs.writeFileSync(file, `${source}\nexport default {${factory}:declarations};`);
+        } });
+        const candidate = await f.publish();
+        await f.decide(candidate); await f.activate(candidate); await f.bind();
+        const { runtime, tools } = await f.start(candidate);
+        assert.equal((await tools[0].handler({}, { durableSessionId: "session-1" })).pid > 0, true);
+        assert.deepEqual(await runtime.invokeCallback("session-1", "check", {}), { skip: true });
+    });
+}
+
+test("stored-procedure transport preserves audit bigint identities and provider Date values", async t => {
+    const f = await fixture(t);
+    const candidate = await f.publish();
+    for (const table of ["agent_package_review_audit", "agent_package_activation_audit"]) {
+        await f.sql(`SELECT setval(pg_get_serial_sequence('@s.${table}','audit_id'),9007199254740993,FALSE)`);
+    }
+    await f.decide(candidate);
+    await f.activate(candidate);
+    for (const rows of [await f.catalog.packageReviews.audit(admin, candidate.versionId),
+        await f.catalog.packageReviews.activationAudit(admin, candidate.packageId)]) {
+        const row = rows[0];
+        assert.equal(row.auditId ?? row.audit_id, "9007199254740993");
+        assert.ok(row.at instanceof Date);
+        assert.ok(Number.isFinite(row.at.getTime()));
+    }
+});
 
 test("standalone PostgreSQL: full migrations, explicit approval/activation, child-only import/factory and exact session tools", async t => {
     const f = await fixture(t);
@@ -833,7 +937,7 @@ test("standalone PostgreSQL: legacy mixed fleet blocks activation and remains bl
     await f.catalog.workerHeartbeat({ workerNodeId: "legacy-worker", info: {} });
     await assert.rejects(f.activate(c), /eligible|unsupported|approval|executable|runtime/i);
     assert.equal((await f.authority.fencingStatus(c)).outstanding, 1);
-    for (const version of ["0085", "0084", "0085", "0086", "0087"]) {
+    for (const version of ["0085", "0084", "0085", "0086", "0087", "0088", "0088"]) {
         await f.pool.query(CMS_MIGRATIONS(f.schema).find(m => m.version === version).sql);
     }
     assert.equal((await f.sql("SELECT @s.cms_package_executable_eligible('pkg','v1',$1) AS allowed", [c.sha256])).rows[0].allowed, false);
@@ -861,7 +965,7 @@ test("standalone PostgreSQL: ordered migration reapplication retains real eligib
     const f = await fixture(t);
     const candidate = await f.publish(); await f.decide(candidate);
     const migrations = CMS_MIGRATIONS(f.schema);
-    for (const version of ["0085", "0084", "0085", "0086", "0087"]) {
+    for (const version of ["0085", "0084", "0085", "0086", "0087", "0088", "0088"]) {
         await f.pool.query(migrations.find(migration => migration.version === version).sql);
     }
     assert.equal((await f.sql("SELECT @s.cms_package_executable_eligible('pkg','v1',$1) AS allowed", [candidate.sha256])).rows[0].allowed, true);

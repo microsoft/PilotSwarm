@@ -1,4 +1,17 @@
 import { pathToFileURL } from "node:url";
+import { installPackageSourceSnapshot } from "./package-runtime-snapshot.js";
+
+function declarationsFor(surface: any, factoryName: string, staticName: string, context: unknown): unknown {
+    const owners = [surface, surface?.default].filter(owner => owner && (typeof owner === "object" || typeof owner === "function"));
+    for (const owner of owners) {
+        if (Object.hasOwn(owner, factoryName) && typeof owner[factoryName] !== "function") {
+            throw new Error(`Invalid ${factoryName}: present factory must be a function`);
+        }
+        if (Object.hasOwn(owner, staticName) && !Array.isArray(owner[staticName])) throw new Error(`Invalid ${staticName}: expected array`);
+    }
+    const factoryOwner = owners.find(owner => Object.hasOwn(owner, factoryName));
+    return factoryOwner ? factoryOwner[factoryName](context) : owners.find(owner => Object.hasOwn(owner, staticName))?.[staticName] ?? [];
+}
 
 let module: any;
 let tools = new Map<string, any>();
@@ -21,12 +34,12 @@ process.on("message", async (message: any) => {
         if (Date.now() > message.expiresAt) throw new Error("Admission expired before executable dispatch");
         let result: unknown;
         if (message.method === "import") {
+            installPackageSourceSnapshot(message.snapshot);
+            if (Date.now() > message.expiresAt) throw new Error("Admission expired during source snapshot preparation");
             module = await import(pathToFileURL(message.path).href);
             result = { imported: true };
         } else if (message.method === "factory") {
-            const factory = module?.createTools ?? module?.default?.createTools;
-            const declarations = typeof factory === "function" ? await factory(message.context)
-                : module?.default?.tools ?? module?.tools ?? [];
+            const declarations = await declarationsFor(module, "createTools", "tools", message.context);
             if (!Array.isArray(declarations) || declarations.length > 256) throw new Error("Invalid tool declaration list");
             const serialized = declarations.map((tool: any) => {
                 if (!tool || !/^[a-zA-Z_][a-zA-Z0-9_-]{0,127}$/.test(tool.name)
@@ -43,9 +56,7 @@ process.on("message", async (message: any) => {
             });
             result = serialized;
         } else if (message.method === "callback-factory") {
-            const factory = module?.createCallbacks ?? module?.default?.createCallbacks;
-            const declarations = typeof factory === "function" ? await factory(message.context)
-                : module?.callbacks ?? module?.default?.callbacks ?? [];
+            const declarations = await declarationsFor(module, "createCallbacks", "callbacks", message.context);
             if (!Array.isArray(declarations) || declarations.length > 256) throw new Error("Invalid callback declarations");
             for (const declaration of declarations) {
                 if (!declaration || !Object.hasOwn(message.allowed, declaration.name)

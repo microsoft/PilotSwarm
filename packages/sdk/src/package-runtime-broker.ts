@@ -130,7 +130,7 @@ process.on("message", async (message: any) => {
             const state = mcp.get(message.key);
             if (!state || !state.child.connected) throw new Error("Prepared MCP process unavailable");
             state.child.send({ method: "start", path: resolve(message.dir, message.config.entry),
-                args: message.config.args, env: message.config.env, expiresAt: message.expiresAt });
+                args: message.config.args, env: message.config.env, snapshot: message.snapshot, expiresAt: message.expiresAt });
             const initialized = await rpc(state, "initialize", { protocolVersion: "2024-11-05",
                 capabilities: {}, clientInfo: { name: "pilotswarm-supervised", version: "1" } });
             state.child.stdin!.write(JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }) + "\n");
