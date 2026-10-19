@@ -7,7 +7,9 @@
  * artifact "session" id derived from its app id:
  *
  *   publish  check page → sha256 → reserve (SQL picks the version, inserts a
- *            pending row) → upload <name>@<version>.<sha12>.html → commit
+ *            pending row) → upload <version_id>.<sha12>.html → commit
+ *            (the object is named after the reservation, never reused, so a
+ *            stale cleanup cannot delete a later version's bytes)
  *   delete   SQL deletes rows + writes a tombstone → delete bytes → purged
  *   prune    stale pending rows and unfinished tombstones → delete bytes
  *

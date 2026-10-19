@@ -385,3 +385,26 @@ test("Files preview of a canvas file, full screen, uses the wrapper too", async 
     expect(hits, `requests that escaped: ${hits.join(", ")}`).toEqual([]);
     await expectSentinelsOnlyInner(page);
 });
+
+// Review S04 and G1: the share viewer replays its live state once the wrapped
+// page has loaded, and a document with no recognised trust is wrapped.
+const STATE_PAGE = `<!doctype html><html><body><p id="state">none</p><script>
+addEventListener("message", (e) => { if (e.data && e.data.type === "canvas-data") document.getElementById("state").textContent = JSON.stringify(e.data.data); });
+</script></body></html>`;
+
+for (const trust of ["cross-owner", undefined]) {
+    test(`share viewer: a wrapped page (trust ${trust ?? "missing"}) receives the live state that existed before it loaded, with no further update`, async ({ page }) => {
+        await page.route("**/api/canvas-share/**", async (route) => {
+            const url = new URL(route.request().url());
+            if (url.pathname.endsWith("/doc")) return route.fulfill({ json: { html: STATE_PAGE, ...(trust ? { trust } : {}) } });
+            if (url.pathname.endsWith("/live")) return route.fulfill({ json: { live: { seq: 4, payload: { rows: 3 }, docRev: 1 } } });
+            return route.fulfill({ json: { entries: [] } });
+        });
+        await page.goto(`http://127.0.0.1:${stub.port}/?canvasShare=tok-state`);
+        const outer = page.frameLocator("iframe.ps-share-view-frame");
+        // Wrapped (fail closed for a missing trust): the page is the wrapper's inner frame.
+        await expect(outer.frameLocator("iframe").locator("#state")).toHaveText('{"rows":3}', { timeout: 15_000 });
+        const wrapper = page.frames().find((fr) => fr.url().startsWith("blob:") && fr.childFrames().length === 1);
+        expect(wrapper, "the share frame is the wrapper").toBeTruthy();
+    });
+}

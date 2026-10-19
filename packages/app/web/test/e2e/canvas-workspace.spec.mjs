@@ -8,6 +8,7 @@
 //   a download the page asks for is saved by the portal
 //   a page that watches hears about changes made in the Workspace tab
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, expect } from "@playwright/test";
@@ -58,12 +59,14 @@ if (location.hash !== "#quiet") setTimeout(() => ws.download("work/notes.md").th
 </script>
 </body></html>`;
 
-async function drawApp(page, answers, html = APP) {
+// `eventData`: extra draw-event fields, e.g. a real `trust` and `pageSha256`.
+// Without them the portal fails closed and frames the page in the cross-owner wrapper.
+async function drawApp(page, answers, html = APP, eventData = {}) {
     const calls = [];
     await page.route("**/api/v1/**", async (route) => {
         const url = new URL(route.request().url());
         if (url.pathname.endsWith("/events-before") && url.search.includes("session.canvas_updated")) {
-            return route.fulfill({ json: { ok: true, result: [{ seq: 1, eventType: "session.canvas_updated", data: { slot: 1, rev: 1, sizeBytes: html.length, name: "ws-test" } }] } });
+            return route.fulfill({ json: { ok: true, result: [{ seq: 1, eventType: "session.canvas_updated", data: { slot: 1, rev: 1, sizeBytes: html.length, name: "ws-test", ...eventData } }] } });
         }
         if (url.pathname.includes("/artifacts/") && url.pathname.includes("canvas.html")) {
             return route.fulfill({ contentType: "text/html", body: html });
@@ -235,6 +238,31 @@ test("a page asks before it touches the session's files; the owner's click appro
     await prompt.getByRole("button", { name: "Allow", exact: true }).click();
     await expect(prompt).toBeHidden();
     expect(calls.find((c) => c.consent).consent).toEqual({ slot: 1, rev: 1, ...KEYS, decision: "granted" });
+    await frame.getByRole("button", { name: "Run history" }).click();
+    await expect(frame.locator("#out")).toHaveText("abc1234 first commit");
+});
+
+test("an agent page that reads its workspace at boot, while still the staging frame, gets the approval prompt with no click (review S03)", async ({ page }) => {
+    const KEYS = { pageSha256: createHash("sha256").update(APP).digest("hex"), declarationSha256: "b".repeat(64), bindingsSha256: "c".repeat(64) };
+    let approved = false;
+    const answers = (call) => (approved
+        ? ANSWERS(call)
+        : { status: 403, error: { code: "CANVAS_WS_CONSENT_REQUIRED", message: "the session owner must approve this page's workspace access first" } });
+    answers.approval = () => ({
+        sessionId, slot: 1, rev: 1, decision: null, trust: "agent", app: null, ...KEYS,
+        declaration: { read: ["work/**"], write: ["work/notes.md"], watch: true, commands: { history: { in: "work", run: ["git", "log", "-n", "{limit}"] } } },
+        bindings: [{ name: "work", root: "a", folder: "proj" }],
+    });
+    answers.consent = (body) => { approved = body.decision === "granted"; return { ok: true, decision: body.decision }; };
+    // A real agent-trust draw event with the served bytes' hash: the page is framed
+    // directly (no wrapper), runs its boot info() in the staging frame, and is promoted.
+    const { calls, frame } = await drawApp(page, answers, APP, { trust: "agent", pageSha256: KEYS.pageSha256 });
+    await expect(page.locator(".ps-side-pane-layer:not(.is-parked) iframe.ps-html-preview-frame:not(.is-staging)")).toHaveCount(1);
+    const prompt = page.getByRole("alertdialog", { name: "Allow this page to use the session's files?" });
+    await expect(prompt).toBeVisible();
+    expect(calls.filter((c) => c.call?.op === "info").length, "the boot read was retried after NOT_READY, not dropped").toBeGreaterThanOrEqual(1);
+    await prompt.getByRole("button", { name: "Allow", exact: true }).click();
+    await expect(prompt).toBeHidden();
     await frame.getByRole("button", { name: "Run history" }).click();
     await expect(frame.locator("#out")).toHaveText("abc1234 first commit");
 });
