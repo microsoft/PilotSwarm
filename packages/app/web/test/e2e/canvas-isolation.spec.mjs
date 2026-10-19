@@ -122,11 +122,18 @@ async function countProbe(context) {
     return hits;
 }
 
-/** The fake server's answers for one drawn canvas; `pageSha256` defaults to the served bytes. */
-async function drawCanvas(page, { html, trust, pageSha256 = sha256(html) }) {
+/**
+ * The fake server's answers for one drawn canvas; `pageSha256` defaults to the served bytes.
+ * `data`: an optional tick state already recorded for the slot (a session.canvas_data event),
+ * which the portal replays to the page on a cold load.
+ */
+async function drawCanvas(page, { html, trust, pageSha256 = sha256(html), data = null }) {
     const calls = [];
     await page.route("**/api/v1/**", async (route) => {
         const url = new URL(route.request().url());
+        if (data && url.pathname.endsWith("/events-before") && url.search.includes("session.canvas_data")) {
+            return route.fulfill({ json: { ok: true, result: [{ seq: 2, eventType: "session.canvas_data", data: { slot: 1, dataRev: 3, payload: data } }] } });
+        }
         if (url.pathname.endsWith("/events-before") && url.search.includes("session.canvas_updated")) {
             return route.fulfill({ json: { ok: true, result: [{ seq: 1, eventType: "session.canvas_updated", data: { slot: 1, rev: 1, sizeBytes: Buffer.byteLength(html, "utf8"), name: "iso", trust, pageSha256, ...(trust === "cross-owner" ? { app: { name: "bobs-board", version: "1.0.0" } } : {}) } }] } });
         }
@@ -408,3 +415,8 @@ for (const trust of ["cross-owner", undefined]) {
         expect(wrapper, "the share frame is the wrapper").toBeTruthy();
     });
 }
+
+test("session canvas: another user's app receives the tick state recorded before it loaded, with no further update (review S04)", async ({ page }) => {
+    const { outer } = await drawCanvas(page, { html: STATE_PAGE, trust: "cross-owner", data: { rows: 7 } });
+    await expect(outer.frameLocator("iframe").locator("#state")).toHaveText('{"rows":7}', { timeout: 15_000 });
+});
