@@ -17,7 +17,7 @@ import { fileURLToPath } from "node:url";
 
 import {
     CROSS_OWNER_APP_CSP, CROSS_OWNER_WRAPPER_CSP, CROSS_OWNER_WRAPPER_HTML, crossOwnerWrapperHtml,
-    CANVAS_WS_UPGRADE_CODE, CANVAS_WS_UPGRADE_ERROR,
+    CANVAS_WS_UPGRADE_CODE, CANVAS_WS_UPGRADE_ERROR, CANVAS_DOCUMENT_UPGRADE_CODE, CANVAS_DOCUMENT_UPGRADE_ERROR,
     assertPageBytes, buildIsolatedInnerHtml, injectAfterDoctype, isCanvasSlotFilename, isWrapperControlMessage, sha256HexOfBytes,
 } from "../../ui/react/src/canvas-isolation.js";
 import { createHash } from "node:crypto";
@@ -237,13 +237,18 @@ test("with request ports (issue 184), the only canvas-ws* window message the pag
     assert.equal(legacy.inner().received.length, 1);
 });
 
-test("ports-only (composed issue 184 host): no portal window message reaches the page but the exact upgrade diagnostic", () => {
+test("ports-only (composed issue 184 host): no portal window message reaches the page but the three exact upgrade diagnostics", () => {
     const w = bootWrapper(crossOwnerWrapperHtml({ workspaceResults: "ports-only" }));
     w.dispatch(w.parent, { type: "pse-wrapper-load", html: "<p>app</p>" });
     const inner = w.inner();
     inner.fireLoad();
     const upgrade = { type: "canvas-ws-result", id: 7, ok: false, code: CANVAS_WS_UPGRADE_CODE, error: CANVAS_WS_UPGRADE_ERROR };
     const upgradeNoId = { ...upgrade, id: null };
+    // The exact constants issue 184's canvas-document-channels.js sends.
+    assert.equal(CANVAS_DOCUMENT_UPGRADE_CODE, "CANVAS_DOCUMENT_UPGRADE_REQUIRED");
+    assert.equal(CANVAS_DOCUMENT_UPGRADE_ERROR, "Update this canvas helper before using session features.");
+    const kvUpgrade = { type: "canvas-kv-result", id: 8, ok: false, code: CANVAS_DOCUMENT_UPGRADE_CODE, error: CANVAS_DOCUMENT_UPGRADE_ERROR };
+    const actionUpgrade = { ...kvUpgrade, type: "canvas-action-result", id: null };
     // Every content-bearing message the host posts today (web-app.js, App.jsx),
     // diagnostic look-alikes, and types nobody has invented yet: all dropped,
     // and every port that came with them closed.
@@ -267,6 +272,21 @@ test("ports-only (composed issue 184 host): no portal window message reaches the
         { ...upgrade, id: 0 },
         { ...upgrade, id: "7" },
         { ...upgrade, type: "canvas-kv-result" },
+        { ...upgrade, id: -3 },
+        { ...upgrade, id: 1.5 },
+        { ...upgrade, id: Infinity },
+        { ...upgrade, id: NaN },
+        { ...upgrade, id: 2 ** 53 },
+        { ...kvUpgrade, extra: "leak" },
+        { ...kvUpgrade, code: CANVAS_WS_UPGRADE_CODE },
+        { ...kvUpgrade, error: "Update this canvas helper: app/secret" },
+        { ...kvUpgrade, ok: true },
+        { ...kvUpgrade, id: "8" },
+        { ...kvUpgrade, id: 0 },
+        { ...kvUpgrade, type: "canvas-kv-change" },
+        { ...actionUpgrade, type: "canvas-feed-v2" },
+        { ...actionUpgrade, type: "canvas-document-v2" },
+        { ...actionUpgrade, code: "CANVAS_ACTION_DENIED" },
     ];
     const ports = [];
     for (const message of dropped) {
@@ -274,10 +294,12 @@ test("ports-only (composed issue 184 host): no portal window message reaches the
         ports.push(port);
         w.dispatch(w.parent, message, [port]);
     }
-    w.dispatch(w.parent, upgrade);
-    w.dispatch(w.parent, upgradeNoId);
-    assert.deepEqual(inner.received, [upgrade, upgradeNoId], "only the exact diagnostic, nothing else");
+    const allowed = [upgrade, upgradeNoId, kvUpgrade, actionUpgrade];
+    const allowedPorts = allowed.map((m) => fakePort(`allowed-${m.type}`));
+    allowed.forEach((m, i) => w.dispatch(w.parent, m, [allowedPorts[i]]));
+    assert.deepEqual(inner.received, allowed, "only the three exact diagnostics, nothing else");
     assert.ok(ports.every((p) => p.closed), "every port the portal sent is closed");
+    assert.ok(allowedPorts.every((p) => p.closed), "ports are closed even when the diagnostic itself is forwarded");
     // The page's own requests still reach the portal with their exact ports.
     const reqPort = fakePort("kv-v2");
     const request = { type: "canvas-kv-v2", version: 2, documentToken: "t", id: 9, op: "get", key: "app/x" };
@@ -290,7 +312,7 @@ test("ports-only (composed issue 184 host): no portal window message reaches the
     assert.deepEqual(w.toParent.at(-1), { type: "pse-wrapper-left" });
     const late = fakePort("late");
     w.dispatch(w.parent, upgrade, [late]);
-    assert.equal(inner.received.length, 2);
+    assert.equal(inner.received.length, allowed.length);
     assert.equal(late.closed, true);
 });
 
