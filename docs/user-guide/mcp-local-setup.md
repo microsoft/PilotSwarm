@@ -173,6 +173,8 @@ from a forward page and re-read. Do not use `wait` with `page`.
 > busier and as you poll more often. The page receipt never claims otherwise:
 > `completeness` stays `read-view`, which is a point-in-time view, not a
 > gap-free guarantee.
+>
+> Tracked as issue #189, which covers reading in commit order.
 
 **Keeping a live tail.** `next_cursor` is for walking *history*; it is null
 once `has_more` is false. To follow a session as it runs, keep your own

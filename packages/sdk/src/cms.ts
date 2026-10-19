@@ -75,6 +75,7 @@ export type SessionEventPageMode = "latest" | "forward" | "backward";
  *                        with `beforeSeq`, or by reading the history from its
  *                        start. Note `afterSeq = 0` will not do it (see the
  *                        mode note above: zero is a latest page).
+ *                        Tracked as issue 189.
  * - `scan`             — assembled across multiple requests; membership is
  *                        not frozen.
  *
