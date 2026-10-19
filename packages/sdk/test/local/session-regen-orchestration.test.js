@@ -342,6 +342,30 @@ describe("session regeneration orchestration", () => {
         expect(retry.state.continueAsNew).toBeTruthy();
     });
 
+    // Issue 192 re-review F2: a prompt that arrives during a pending
+    // regeneration releases the armed wait; when it is cancelled and the
+    // pipeline then fails, the wait must still be armed (regeneration stages
+    // bypass decide, so they settle the release themselves).
+    it("a prompt cancelled during a regeneration that then fails leaves the wait armed", async () => {
+        const h = createHarness({
+            failDistill: true,
+            inputOverrides: {
+                iteration: 8,
+                activeTimerState: { type: "wait", remainingMs: 600_000, originalDurationMs: 600_000, reason: "sleep" },
+            },
+            messages: [
+                { atMs: 0, payload: regenCmd({ args: { source: "operator", distill_mode: "deterministic" } }) },
+                { atMs: 1, payload: { prompt: "P", clientMessageIds: ["p"] } },
+                { atMs: 2, payload: { cancelPending: ["p"] } },
+            ],
+        });
+        const r = await h.run();
+        expect(eventsOfType(h.state, "session.regenerate_failed")).toHaveLength(1);
+        expect(r.blocked).not.toBe(true);
+        expect(r.runTurnCall?.prompt).toMatch(/600 second wait is now complete/);
+        expect(h.state.nowMs).toBeGreaterThanOrEqual(600_000);
+    });
+
     it("llm mode (default): spawn → poll → collect → flip, distiller provenance on the boundary", async () => {
         const h = createHarness({
             distillerPlan: ["running", "completed"],

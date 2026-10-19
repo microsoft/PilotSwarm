@@ -8,7 +8,7 @@
  * timer's remaining time) is a wait; the 10 ms sweep is not.
  */
 import { describe, expect, it, vi } from "vitest";
-import { createRuntime } from "../../src/orchestration/runtime.ts";
+import { createRuntime, runLoop } from "../../src/orchestration/runtime.ts";
 import { appendToFifo, decide, drain, settleQueuedWorkAfterDecide } from "../../src/orchestration/queue.ts";
 import { FIFO_BUCKET_COUNT, MAX_BUCKET_BYTES, NON_BLOCKING_TIMER_MS } from "../../src/orchestration/state.ts";
 
@@ -69,7 +69,9 @@ function harness(overrides = {}) {
             case "session.runTurn": {
                 turns.push(effect.args);
                 if (!results.length) throw new Error("unexpected turn");
-                return results.shift();
+                const result = results.shift();
+                if (result instanceof Error) throw result;
+                return result;
             }
             case "manager.listChildSessions": return "[]";
             case "manager.getWorkerSessionPolicy": return { policy: null, allowedAgentNames: [] };
@@ -124,7 +126,28 @@ function harness(overrides = {}) {
         settleQueuedWorkAfterDecide(runtime, iterationBefore);
         return didWork;
     };
-    const h = { runtime, kv, clock, calls, turns, results, messages, errors, drive, races, events, fifo, arm, step };
+    // The real run loop, until the session parks: on a race whose only exit
+    // is a timer of a second or more (an armed timer), on a blocking dequeue,
+    // or on a continue-as-new.
+    const runUntilParked = () => {
+        const gen = runLoop(runtime);
+        let value;
+        let failure;
+        for (let n = 0; n < 4000; n++) {
+            const next = failure ? gen.throw(failure) : gen.next(value);
+            failure = undefined;
+            if (next.done) return { parked: "done", value: next.value };
+            const effect = next.value;
+            if (effect?.effect === "race" && effect.left?.effect === "dequeue" && !messages.length && effect.right?.ms >= 1000) {
+                return { parked: "timer", ms: effect.right.ms };
+            }
+            if (effect?.effect === "dequeue" && !messages.length) return { parked: "blocking" };
+            if (effect?.effect === "can") return { parked: "can", input: effect.input };
+            try { value = resolve(effect); } catch (error) { failure = error; }
+        }
+        throw new Error("run loop did not park");
+    };
+    const h = { runtime, kv, clock, calls, turns, results, messages, errors, drive, races, events, fifo, arm, step, runUntilParked };
     return h;
 }
 
@@ -472,5 +495,70 @@ describe("issue 192 review B: remaining time and timer items behind holds", () =
         expect(h.turns).toHaveLength(1);
         expect(h.runtime.state.waitingForAgentIds).toBeNull();
         expect(h.runtime.state.activeTimer?.type).not.toBe("agent-poll");
+    });
+});
+
+describe("issue 192 re-review: the real run loop never strands a released timer", () => {
+    const graceItem = () => ({ kind: "timer", timer: { type: "input-grace", deadlineMs: 1, originalDurationMs: 60_000, reason: "input grace" }, firedAtMs: 1 });
+
+    it("a queued prompt cancelled before its turn: the loop parks on the cron, with its time", () => {
+        const h = harness({ cronSchedule: { intervalSeconds: 3600, reason: "hourly" } });
+        h.arm("cron", 600_000);
+        appendToFifo(h.runtime, [prompt("P", { clientMessageIds: ["p"] })]);
+        h.messages.push({ cancelPending: ["p"] });
+        const r = h.runUntilParked();
+        expect(h.turns).toHaveLength(0);
+        expect(r.parked).toBe("timer");
+        expect(r.ms).toBeGreaterThan(590_000);
+        expect(r.ms).toBeLessThanOrEqual(600_000);
+    });
+
+    for (const [type, extra] of [["wait", {}], ["cron", { cronSchedule: { intervalSeconds: 3600, reason: "hourly" } }]]) {
+        it(`a stale input-grace item under a live ${type}: no idle timer replaces it, and the loop parks on the ${type}`, () => {
+            const h = harness(extra);
+            h.arm(type, 600_000);
+            appendToFifo(h.runtime, [graceItem()]);
+            const r = h.runUntilParked();
+            expect(h.turns).toHaveLength(0);
+            expect(r.parked).toBe("timer");
+            expect(r.ms).toBeGreaterThan(590_000);
+            expect(r.ms).toBeLessThanOrEqual(600_000);
+            expect(h.runtime.state.activeTimer?.type).toBe(type);
+            expect(h.fifo()).toEqual([]);
+        });
+    }
+
+    it("a stale idle item under a live wait does not release the worker", () => {
+        const h = harness();
+        h.arm("wait", 600_000);
+        appendToFifo(h.runtime, [idleItem()]);
+        const r = h.runUntilParked();
+        expect(r.parked).toBe("timer");
+        expect(h.events().filter(e => e.eventType === "session.affinity_released")).toEqual([]);
+    });
+
+    it("an agents-done follow-up runs before the cron's deadline, and the cron keeps its time", () => {
+        const h = harness({ cronSchedule: { intervalSeconds: 3600, reason: "hourly" } });
+        h.arm("cron", 600_000);
+        const start = h.clock.now;
+        appendToFifo(h.runtime, [{ kind: "agents-done", summary: "all agents finished" }]);
+        h.results.push({ type: "completed", content: "noted" });
+        const r = h.runUntilParked();
+        expect(h.turns).toHaveLength(1);
+        expect(h.turns[0][0]).toMatch(/all agents finished/);
+        expect(h.clock.now - start).toBeLessThan(1_000);
+        expect(r.parked).toBe("timer");
+        expect(r.ms).toBeGreaterThan(590_000);
+        expect(r.ms).toBeLessThanOrEqual(600_000);
+    });
+
+    it("a thrown authentication failure parks for outside input: the released wait is not re-armed", () => {
+        const h = harness();
+        h.arm("wait", 600_000);
+        appendToFifo(h.runtime, [prompt("P")]);
+        h.results.push(new Error("401 Unauthorized: bad credentials"));
+        const r = h.runUntilParked();
+        expect(h.turns).toHaveLength(1);
+        expect(r.parked).toBe("blocking");
     });
 });
