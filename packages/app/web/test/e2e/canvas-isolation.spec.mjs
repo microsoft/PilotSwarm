@@ -283,16 +283,24 @@ test("a link the page asks for by itself is ignored; a real click asks the perso
     page.on("dialog", (dialog) => { dialogs.push(dialog.message()); dialog.dismiss(); });
     const { outer } = await drawCanvas(page, { html: hostilePage({ auto: false }), trust: "cross-owner" });
     const inner = outer.frameLocator("iframe");
-    // No click here: the link gate accepts a real user gesture, so this case
-    // must start without one. Wait until the portal has none (the "Show
-    // canvas" click above gave it one) before the page asks by itself.
+    // No click here: the link gate accepts a real user gesture, so the page's
+    // own request must arrive without one. In Chromium, Playwright evaluates
+    // with a user gesture (Runtime.callFunctionOn userGesture: true), so
+    // neither the check nor the post may go through evaluate at that moment.
+    // The portal records its OWN activation when the message arrives, and the
+    // page posts from its own timer, well after the last automation gesture
+    // (Chrome's transient activation lasts 5 s); nothing touches any frame
+    // while the post is pending.
     await expectRanAndTried(inner, { tried: false, click: false });
-    await expect.poll(() => page.evaluate(() => navigator.userActivation.isActive), { timeout: 15_000, message: "no user activation is left" }).toBe(false);
-    // Count what actually reaches the portal window, so "ignored" means
-    // delivered and refused, not lost on the way.
-    await page.evaluate(() => { window.__forged = 0; addEventListener("message", (e) => { if (e.data && e.data.type === "canvas-open-link") window.__forged += 1; }); });
-    await inner.locator("body").evaluate(() => parent.postMessage({ type: "canvas-open-link", href: "https://probe.example/forged" }, "*"));
-    await expect.poll(() => page.evaluate(() => window.__forged)).toBe(1);
+    await page.evaluate(() => {
+        window.__forged = [];
+        addEventListener("message", (e) => { if (e.data && e.data.type === "canvas-open-link") window.__forged.push({ active: navigator.userActivation.isActive }); });
+    });
+    await inner.locator("body").evaluate(() => { setTimeout(() => parent.postMessage({ type: "canvas-open-link", href: "https://probe.example/forged" }, "*"), 8000); });
+    await page.waitForTimeout(9500);
+    // Delivered once, so "ignored" means delivered and refused, not lost on
+    // the way; and the portal had no user activation when it arrived.
+    expect(await page.evaluate(() => window.__forged), "one forged request, received with no user activation").toEqual([{ active: false }]);
     await page.waitForTimeout(500);
     expect(dialogs).toEqual([]);
     expect(context.pages(), "nothing was opened").toHaveLength(1);
