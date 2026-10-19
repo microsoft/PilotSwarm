@@ -61,57 +61,80 @@ function writeFifoBucket(ctx: any, index: number, items: any[]): void {
     }
 }
 
-/**
- * Put an item back at the HEAD of the FIFO.
- *
- * decide() peeks by popping. When the popped item turns out not to be
- * mergeable it has to go back — and appending it put it BEHIND everything
- * still queued: a FIFO of [kickoff, "do X", "cancel X"] dispatched the
- * kickoff and left ["cancel X", "do X"], so the next turn read the two in
- * the wrong order. The item was just popped from the head of the first
- * non-empty bucket, so the head of that bucket is exactly where it belongs.
- * If it no longer fits there (it always should — the bucket only shrank),
- * fall back to append rather than lose it.
- */
-export function prependToFifo(runtime: DurableSessionRuntime, item: any): void {
-    const { ctx } = runtime;
-    let headIdx = 0;
-    for (let i = 0; i < FIFO_BUCKET_COUNT; i++) {
-        if (readFifoBucket(ctx, i).length > 0) { headIdx = i; break; }
-    }
-    const bucket = readFifoBucket(ctx, headIdx);
-    bucket.unshift(item);
-    if (JSON.stringify(bucket).length <= MAX_BUCKET_BYTES) {
-        writeFifoBucket(ctx, headIdx, bucket);
-        return;
-    }
-    ctx.traceWarn?.(`[fifo] prepend did not fit bucket ${headIdx}; appending instead`);
-    appendToFifo(runtime, [item]);
+function fitsInBucket(bucket: any[]): boolean {
+    return JSON.stringify(bucket).length <= MAX_BUCKET_BYTES;
 }
 
-export function appendToFifo(runtime: DurableSessionRuntime, newItems: any[]): void {
-    const { ctx } = runtime;
-    let writeBucketIdx = 0;
+function lastNonEmptyFifoBucket(ctx: any): number {
     for (let i = FIFO_BUCKET_COUNT - 1; i >= 0; i--) {
-        if (readFifoBucket(ctx, i).length > 0) { writeBucketIdx = i; break; }
+        if (readFifoBucket(ctx, i).length > 0) return i;
     }
-    for (const item of newItems) {
-        const bucket = readFifoBucket(ctx, writeBucketIdx);
-        bucket.push(item);
-        const serialized = JSON.stringify(bucket);
-        if (serialized.length > MAX_BUCKET_BYTES) {
-            bucket.pop();
-            writeFifoBucket(ctx, writeBucketIdx, bucket);
-            writeBucketIdx++;
-            if (writeBucketIdx >= FIFO_BUCKET_COUNT) {
-                ctx.traceInfo(`[fifo] overflow — ${newItems.length} item(s) may rely on carry-forward`);
-                return;
-            }
-            writeFifoBucket(ctx, writeBucketIdx, [item]);
-        } else {
-            writeFifoBucket(ctx, writeBucketIdx, bucket);
+    return 0;
+}
+
+/**
+ * 1.0.82 (issue 192): re-pack every queued item from bucket 0, in order.
+ *
+ * Appends go after the last non-empty bucket and pops come from the first,
+ * so while the FIFO is never empty the write position only moves forward.
+ * Before 1.0.82 an append that reached a full last bucket was dropped, even
+ * with every earlier bucket empty. Packing greedily from bucket 0 never needs
+ * more buckets than the items already used, and it keeps their order.
+ */
+function compactFifo(runtime: DurableSessionRuntime): void {
+    const { ctx } = runtime;
+    const before: any[][] = [];
+    for (let i = 0; i < FIFO_BUCKET_COUNT; i++) before.push(readFifoBucket(ctx, i));
+    const packed: any[][] = [];
+    let current: any[] = [];
+    for (const item of before.flat()) {
+        current.push(item);
+        if (current.length > 1 && !fitsInBucket(current)) {
+            current.pop();
+            packed.push(current);
+            current = [item];
         }
     }
+    if (current.length > 0) packed.push(current);
+    for (let i = 0; i < FIFO_BUCKET_COUNT; i++) {
+        const next = packed[i] ?? [];
+        if (JSON.stringify(next) !== JSON.stringify(before[i])) writeFifoBucket(ctx, i, next);
+    }
+    ctx.traceInfo(`[fifo] compacted ${before.flat().length} item(s) into ${packed.length} bucket(s) from bucket 0`);
+}
+
+/**
+ * Append items in order. Returns the items that did not fit: empty unless all
+ * FIFO_BUCKET_COUNT buckets are full even after compaction (1.0.82). An item
+ * larger than a bucket still gets a bucket of its own, as before.
+ */
+export function appendToFifo(runtime: DurableSessionRuntime, newItems: any[]): any[] {
+    const { ctx } = runtime;
+    let writeBucketIdx = lastNonEmptyFifoBucket(ctx);
+    let compacted = false;
+    for (let n = 0; n < newItems.length; n++) {
+        const item = newItems[n];
+        const bucket = readFifoBucket(ctx, writeBucketIdx);
+        bucket.push(item);
+        if (bucket.length === 1 || fitsInBucket(bucket)) {
+            writeFifoBucket(ctx, writeBucketIdx, bucket);
+            continue;
+        }
+        if (writeBucketIdx + 1 < FIFO_BUCKET_COUNT) {
+            writeBucketIdx++;
+            writeFifoBucket(ctx, writeBucketIdx, [item]);
+            continue;
+        }
+        if (!compacted) {
+            compacted = true;
+            compactFifo(runtime);
+            writeBucketIdx = lastNonEmptyFifoBucket(ctx);
+            n--;
+            continue;
+        }
+        return newItems.slice(n);
+    }
+    return [];
 }
 
 function popFifoItem(runtime: DurableSessionRuntime): any | null {
@@ -127,30 +150,71 @@ function popFifoItem(runtime: DurableSessionRuntime): any | null {
     return null;
 }
 
-function popFirstFifoItemMatching(runtime: DurableSessionRuntime, predicate: (item: any) => boolean): any | null {
+function isInteractiveFifoItem(item: any): boolean {
+    return item?.kind === "prompt" || item?.kind === "answer";
+}
+
+/**
+ * Pop the next item to dispatch: the first prompt or answer anywhere in the
+ * FIFO, else the head. `before` is how many queued items preceded it; they
+ * are all non-interactive, and the merge scan starts right after them.
+ */
+function popNextDispatchFifoItem(runtime: DurableSessionRuntime): { item: any; before: number } | null {
     const { ctx } = runtime;
+    let before = 0;
     for (let i = 0; i < FIFO_BUCKET_COUNT; i++) {
         const items = readFifoBucket(ctx, i);
-        const index = items.findIndex(predicate);
+        const index = items.findIndex(isInteractiveFifoItem);
         if (index >= 0) {
             const [item] = items.splice(index, 1);
             writeFifoBucket(ctx, i, items);
-            return item;
+            if (before + index > 0) ctx.traceInfo(`[fifo] dispatching interactive ${item.kind} before queued timers`);
+            return { item, before: before + index };
         }
+        before += items.length;
     }
-    return null;
+    const head = popFifoItem(runtime);
+    return head ? { item: head, before: 0 } : null;
 }
 
-function popNextDispatchFifoItem(runtime: DurableSessionRuntime): any | null {
-    const interactive = popFirstFifoItemMatching(
-        runtime,
-        (item) => item?.kind === "prompt" || item?.kind === "answer",
-    );
-    if (interactive) {
-        runtime.ctx.traceInfo(`[fifo] dispatching interactive ${interactive.kind} before queued timers`);
-        return interactive;
+/** Timer items of one kind are interchangeable: one fire runs the schedule once. */
+function timerItemKind(item: any): string | null {
+    if (item?.kind !== "timer" || !item.timer) return null;
+    return `${item.timer.type}|${timerGate(item.timer) ?? ""}`;
+}
+
+/** 1.0.82 (R5): running a timer item removes the other queued items of its kind. */
+function removeQueuedTimerItemsOfKind(runtime: DurableSessionRuntime, kind: string): number {
+    const { ctx } = runtime;
+    let removed = 0;
+    for (let i = 0; i < FIFO_BUCKET_COUNT; i++) {
+        const items = readFifoBucket(ctx, i);
+        const kept = items.filter((item) => timerItemKind(item) !== kind);
+        if (kept.length !== items.length) {
+            removed += items.length - kept.length;
+            writeFifoBucket(ctx, i, kept);
+        }
     }
-    return popFifoItem(runtime);
+    if (removed > 0) ctx.traceInfo(`[fifo] coalesced ${removed} queued ${kind.split("|")[0]} timer item(s) into the one now running`);
+    return removed;
+}
+
+function queuedTimerItemKinds(runtime: DurableSessionRuntime): Set<string> {
+    const kinds = new Set<string>();
+    for (let i = 0; i < FIFO_BUCKET_COUNT; i++) {
+        for (const item of readFifoBucket(runtime.ctx, i)) {
+            const kind = timerItemKind(item);
+            if (kind) kinds.add(kind);
+        }
+    }
+    return kinds;
+}
+
+function fifoHasInteractiveItems(runtime: DurableSessionRuntime): boolean {
+    for (let i = 0; i < FIFO_BUCKET_COUNT; i++) {
+        if (readFifoBucket(runtime.ctx, i).some(isInteractiveFifoItem)) return true;
+    }
+    return false;
 }
 
 function hasFifoItems(runtime: DurableSessionRuntime): boolean {
@@ -161,13 +225,48 @@ function hasFifoItems(runtime: DurableSessionRuntime): boolean {
     return false;
 }
 
-function appendPromptStashToFifo(runtime: DurableSessionRuntime, stash: any[]): void {
-    appendToFifo(runtime, stash);
-    for (const item of stash) {
-        if (item?.kind !== "prompt") continue;
-        const ids = validClientMessageIds(item.clientMessageIds);
-        touchRecentClientMessageIds(runtime.state, ids);
+/**
+ * Move a drain stash into the FIFO.
+ *
+ * 1.0.82: a timer item whose kind is already queued is not added (R5); a
+ * single fire runs the schedule once. Items that do not fit even after
+ * compaction are reported, with their client message ids, instead of being
+ * dropped with an info line; their ids are not marked as seen, so a resend
+ * runs (R8).
+ */
+function* appendPromptStashToFifo(runtime: DurableSessionRuntime, stash: any[]): Generator<any, void, any> {
+    const { ctx, state } = runtime;
+    const kinds = queuedTimerItemKinds(runtime);
+    const items = stash.filter((item) => {
+        const kind = timerItemKind(item);
+        if (!kind) return true;
+        if (kinds.has(kind)) {
+            ctx.traceInfo(`[fifo] a ${item.timer.type} timer item is already queued; not queueing another`);
+            return false;
+        }
+        kinds.add(kind);
+        return true;
+    });
+    const lost = new Set(appendToFifo(runtime, items));
+    for (const item of items) {
+        if (item?.kind !== "prompt" || lost.has(item)) continue;
+        touchRecentClientMessageIds(state, validClientMessageIds(item.clientMessageIds));
     }
+    if (lost.size === 0) return;
+    const lostItems = items.filter((item) => lost.has(item));
+    const lostIds = lostItems.flatMap((item) => validClientMessageIds(item?.clientMessageIds));
+    const message = `[fifo] FIFO full: ${lostItems.length} item(s) not stored` +
+        (lostIds.length > 0 ? ` (clientMessageIds=${lostIds.join(",")})` : "");
+    if (typeof ctx.traceWarn === "function") ctx.traceWarn(message);
+    else ctx.traceInfo(message);
+    yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+        eventType: "session.fifo_overflow",
+        data: {
+            lostCount: lostItems.length,
+            clientMessageIds: lostIds,
+            kinds: lostItems.map((item) => item?.kind ?? "unknown"),
+        },
+    }]);
 }
 
 function duplicateClientMessageIds(
@@ -264,6 +363,77 @@ function needsBlockingDequeue(runtime: DurableSessionRuntime): boolean {
     );
 }
 
+/**
+ * 1.0.82 (issue 192, R3): queued work runs at once instead of waiting for the
+ * armed timer, the next message or the digest window to close.
+ *
+ * A queued prompt or answer never waits for a timer: a person's message goes
+ * right after the previous turn, in the order it arrived. A queued timer item
+ * (a fired cron, wait or idle timer) runs at once under idle, cron, cron_at or
+ * an ungated wait; behind a gate, input-grace or an agent wait it waits as
+ * before. With no timer armed and only a digest window open, timer items keep
+ * the window's deadline. Nothing changes during a graceful shutdown.
+ */
+function shouldRunQueuedWorkNow(runtime: DurableSessionRuntime, stash: any[]): boolean {
+    const { state } = runtime;
+    if (state.pendingShutdown) return false;
+    const timer = state.activeTimer;
+    const digestOpen = Boolean(state.pendingChildDigest && !state.pendingChildDigest.ready);
+    if (!timer && !digestOpen) return false;
+    if (stash.some(isInteractiveFifoItem) || fifoHasInteractiveItems(runtime)) return true;
+    if (!timer || (stash.length === 0 && !hasFifoItems(runtime))) return false;
+    return timer.type === "idle" || timer.type === "cron" || timer.type === "cron_at"
+        || (timer.type === "wait" && !timerGate(timer));
+}
+
+/**
+ * Release the armed timer for queued work, exactly as a newly arrived message
+ * releases it in drain below, but without adding text to any prompt: a cron or
+ * wait keeps its remaining time and is re-armed after the turn; a cron_at keeps
+ * its next fire; idle is armed again after the turn; an agent wait ends; a gate
+ * is asked again by the turn. New in 1.0.82: input-grace ends early, and the
+ * question stays open. A timer that is already due becomes a timer item.
+ */
+function* releaseTimerForQueuedWork(runtime: DurableSessionRuntime, stash: any[]): Generator<any, void, any> {
+    const { ctx, state } = runtime;
+    const timer = state.activeTimer;
+    if (!timer) return;
+    const now: number = yield ctx.utcNow();
+    const remainingMs = Math.max(0, timer.deadlineMs - now);
+    state.activeTimer = null;
+    // A wait with under half a second left would be saved as 0 s and never
+    // resumed (schedulePostTurnContinuation needs remainingSec > 0), so it
+    // counts as due: its completion is queued like any fired timer.
+    const due = remainingMs === 0 || (timer.type === "wait" && Math.round(remainingMs / 1000) === 0);
+    if (due) {
+        stash.push({ kind: "timer", timer: { ...timer }, firedAtMs: now });
+        ctx.traceInfo(`[drain] ${timer.type} timer was due; queued it after the waiting work`);
+        return;
+    }
+    const interactive = stash.some(isInteractiveFifoItem) || fifoHasInteractiveItems(runtime);
+    if (timer.type === "wait") {
+        state.interruptedWaitTimer = {
+            remainingSec: Math.round(remainingMs / 1000),
+            reason: timer.reason,
+            shouldRehydrate: timer.shouldRehydrate ?? false,
+            waitPlan: timer.waitPlan,
+            interruptKind: interactive ? "user" : "child",
+            budget: timer.budget === true,
+            ...(timerGate(timer) ? { gate: timerGate(timer) } : {}),
+        };
+    } else if (timer.type === "cron") {
+        state.interruptedCronTimer = {
+            remainingMs,
+            reason: timer.reason,
+            originalDurationMs: timer.originalDurationMs,
+            ...(timer.shouldRehydrate ? { shouldRehydrate: true } : {}),
+        };
+    } else if (timer.type === "agent-poll") {
+        state.waitingForAgentIds = null;
+    }
+    ctx.traceInfo(`[drain] queued ${interactive ? "prompts" : "timer items"} released the ${timer.type} timer, ${Math.round(remainingMs / 1000)}s remained`);
+}
+
 export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any> {
     const { ctx, state } = runtime;
     const stash: any[] = [];
@@ -312,6 +482,17 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 ? { prompt: CARRIED_STEERS_WAKE_PROMPT, bootstrap: true, carriedSteersWake: true }
                 : typeof raced.value === "string" ? JSON.parse(raced.value) : raced.value;
 
+        } else if (shouldRunQueuedWorkNow(runtime, stash)) {
+            // 1.0.82 (R3, R4): queued work goes now; the armed timer is
+            // released as a new message would release it.
+            yield* releaseTimerForQueuedWork(runtime, stash);
+            const raced: any = yield ctx.race(
+                ctx.dequeueEvent("messages"),
+                ctx.scheduleTimer(NON_BLOCKING_TIMER_MS),
+            );
+            if (raced.index === 1) break;
+            msg = typeof raced.value === "string" ? JSON.parse(raced.value) : raced.value;
+
         } else if (state.activeTimer || (state.pendingChildDigest && !state.pendingChildDigest.ready)) {
             const now: number = yield ctx.utcNow();
             const candidate = nextTimerCandidate(state.activeTimer, state.pendingChildDigest, now, {
@@ -349,7 +530,10 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
 
             msg = typeof race.value === "string" ? JSON.parse(race.value) : race.value;
 
-        } else if (!state.regen && needsBlockingDequeue(runtime)) {
+        } else if (!state.regen && needsBlockingDequeue(runtime) && stash.length === 0) {
+            // 1.0.82 (R10): once this pass has collected a message, the
+            // 10 ms sweep below keeps collecting until the queue is empty, so
+            // messages that arrived during one turn run together in the next.
             if (i > 0) break;
             if (state.pendingInputQuestion) {
                 publishStatus(runtime, "input_required");
@@ -401,7 +585,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
         }
 
         if (msg.type === "cmd") {
-            if (stash.length > 0) { appendPromptStashToFifo(runtime, stash); stash.length = 0; }
+            if (stash.length > 0) { yield* appendPromptStashToFifo(runtime, stash); stash.length = 0; }
             yield* handleCommand(runtime, msg as CommandMessage);
             if (state.orchestrationResult !== null) return;
             // Session regeneration: a pending pipeline is advanced by the run
@@ -590,7 +774,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
         ctx.traceInfo(`[drain] skipping unknown: ${JSON.stringify(msg).slice(0, 120)}`);
     }
 
-    if (stash.length > 0) appendPromptStashToFifo(runtime, stash);
+    if (stash.length > 0) yield* appendPromptStashToFifo(runtime, stash);
 }
 
 // ─── Pre-dispatch sweep: grab any pending cancel tombstone ──
@@ -630,7 +814,7 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
         }
 
         if (msg.type === "cmd") {
-            if (stash.length > 0) { appendPromptStashToFifo(runtime, stash); stash.length = 0; }
+            if (stash.length > 0) { yield* appendPromptStashToFifo(runtime, stash); stash.length = 0; }
             yield* handleCommand(runtime, msg as CommandMessage);
             if (state.orchestrationResult !== null) return;
             // Session regeneration: a pending pipeline is advanced by the run
@@ -700,7 +884,7 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
         ctx.traceInfo(`[predispatch] skipping unknown: ${JSON.stringify(msg).slice(0, 120)}`);
     }
 
-    if (stash.length > 0) appendPromptStashToFifo(runtime, stash);
+    if (stash.length > 0) yield* appendPromptStashToFifo(runtime, stash);
 }
 
 // ─── decide: pop and process one item from FIFO ─────────────
@@ -727,6 +911,69 @@ function* processAnswer(runtime: DurableSessionRuntime, answerItem: any): Genera
         : String(answerItem.answer);
     maybeQueueSharedPreamble(runtime);
     yield* processPrompt(runtime, answerPrompt, false, undefined, undefined, undefined, sender);
+}
+
+/**
+ * The prompts that merge into the turn of `first`, in arrival order, removed
+ * from the FIFO. Scans from position `start` (the items before it were queued
+ * ahead of `first` and are all non-interactive) without moving anything:
+ * timer items are stepped over and stay; an answer or another item kind ends
+ * the scan; so does a carried-steers wake, whose marker must stay the whole
+ * prompt. Cancelled prompts on the way are dropped and recorded, as before.
+ *
+ * Never merge an agent's bootstrap kickoff with a person's words (1.0.70).
+ * Bootstrap is what the record keys on: the normal path does not record a
+ * bootstrap prompt as a user.message, and the budget stash stamps one as
+ * machine-authored, so a merged prompt hid the person's message. A kickoff
+ * and a person's prompt run as two turns, in order.
+ *
+ * Before 1.0.82 the merge popped the FIFO head to peek and put a non-mergeable
+ * item back at the head. A timer item at the head therefore stopped every
+ * merge and never moved: one prompt per wake (issue 192). Reading in place
+ * removes the put-back, so nothing can be reordered or dropped by it.
+ */
+function* collectMergeablePrompts(
+    runtime: DurableSessionRuntime,
+    first: any,
+    start: number,
+): Generator<any, any[], any> {
+    const { ctx } = runtime;
+    const buckets: any[][] = [];
+    for (let i = 0; i < FIFO_BUCKET_COUNT; i++) buckets.push(readFifoBucket(ctx, i));
+    const flat: Array<{ bucket: number; index: number; item: any }> = [];
+    buckets.forEach((items, bucket) => items.forEach((item, index) => flat.push({ bucket, index, item })));
+
+    const taken: any[] = [];
+    const removed = new Set<string>();
+    let stepped = 0;
+    for (let k = start; k < flat.length; k++) {
+        const { bucket, index, item: peek } = flat[k];
+        if (peek?.kind === "timer") { stepped++; continue; }
+        if (peek?.kind !== "prompt") break;
+        const peekIds = validClientMessageIds(peek.clientMessageIds);
+        if (promptIdsIntersectCancellation(runtime, peekIds)) {
+            ctx.traceInfo(`[decide] dropping merged FIFO prompt cancelled by tombstone (ids=${peekIds.join(",")})`);
+            removed.add(`${bucket}:${index}`);
+            yield* dropCancelledPrompt(runtime, peekIds, "decide-merge");
+            continue;
+        }
+        if (first.carriedSteersWake === true || peek.carriedSteersWake === true
+            || Boolean(peek.bootstrap) !== Boolean(first.bootstrap)) {
+            break;
+        }
+        removed.add(`${bucket}:${index}`);
+        taken.push(peek);
+    }
+    if (removed.size > 0) {
+        buckets.forEach((items, bucket) => {
+            const kept = items.filter((_, index) => !removed.has(`${bucket}:${index}`));
+            if (kept.length !== items.length) writeFifoBucket(ctx, bucket, kept);
+        });
+    }
+    if (taken.length > 0 && stepped > 0) {
+        ctx.traceInfo(`[decide] merged ${taken.length} queued prompt(s) past ${stepped} timer item(s)`);
+    }
+    return taken;
 }
 
 export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean, any> {
@@ -773,8 +1020,9 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
     }
 
     // Priority 3: FIFO — next item in arrival order, with prompt batching.
-    const item = popNextDispatchFifoItem(runtime);
-    if (item) {
+    const picked = popNextDispatchFifoItem(runtime);
+    if (picked) {
+        const item = picked.item;
         switch (item.kind) {
             case "prompt": {
                 const ids: string[] = Array.isArray(item.clientMessageIds) ? item.clientMessageIds : [];
@@ -797,55 +1045,26 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
                 let mergedPrompt = item.carriedSteersWake === true
                     ? String(item.prompt || "")
                     : applySenderAttribution(runtime, firstSender, String(item.prompt || ""));
-                let mergedBootstrap = item.bootstrap ?? false;
+                const mergedBootstrap = item.bootstrap ?? false;
                 let mergedRequiredTool = item.requiredTool;
                 const mergedClientMessageIds: string[] = [...ids];
                 const mergedAttachments = sanitizePromptAttachmentRefs(item.attachments);
                 let turnSender = firstSender;
                 let mixedSenders = false;
-                while (true) {
-                    const peek = popFifoItem(runtime);
-                    if (!peek) break;
-                    if (peek.kind !== "prompt") {
-                        prependToFifo(runtime, peek);
-                        break;
-                    }
+                // 1.0.82 (R1, R2, R7): scan forward from where the dispatched
+                // prompt stood, reading without moving anything. Timer items
+                // are stepped over and stay where they are; an answer or any
+                // other item kind stops the merge; so do a kickoff next to a
+                // person's words and a carried-steers wake. There is no size
+                // limit. Only the merged and cancelled prompts are removed.
+                const merged = yield* collectMergeablePrompts(runtime, item, picked.before);
+                for (const peek of merged) {
                     const peekIds: string[] = Array.isArray(peek.clientMessageIds) ? peek.clientMessageIds : [];
-                    if (promptIdsIntersectCancellation(runtime, peekIds)) {
-                        ctx.traceInfo(`[decide] dropping merged FIFO prompt cancelled by tombstone (ids=${peekIds.join(",")})`);
-                        yield* dropCancelledPrompt(runtime, peekIds, "decide-merge");
-                        continue;
-                    }
-                    // Never merge an agent's bootstrap kickoff with a person's
-                    // words. The merged prompt used to inherit `bootstrap` from
-                    // EITHER side, and bootstrap is what the record keys on: the
-                    // normal path refuses to record a bootstrap prompt as a
-                    // user.message at all, and the budget stash stamps one as
-                    // machine-authored and the portal folds it away. Both
-                    // outcomes hid the person's message. So a kickoff and a
-                    // person's prompt run as two turns; the person's is
-                    // recorded, attributed and visible as its own.
-                    //
-                    // Put back at the HEAD. An earlier version appended it,
-                    // reasoning that a bootstrap is only ever the first item of
-                    // a fresh session — true, and beside the point: with
-                    // [kickoff, B, C] queued, appending B left [C, B], and the
-                    // person's own two messages ran in the wrong order.
-                    // A carried-steers wake is a turn of its own: its marker
-                    // must stay the whole prompt.
-                    if (item.carriedSteersWake === true || peek.carriedSteersWake === true
-                        || Boolean(peek.bootstrap) !== Boolean(mergedBootstrap)) {
-                        prependToFifo(runtime, peek);
-                        break;
-                    }
                     const peekSender = noteMessageSender(runtime, peek.sender);
                     if (messageSenderKey(peekSender ?? null) !== messageSenderKey(turnSender ?? null)) {
                         mixedSenders = true;
                     }
                     mergedPrompt = `${mergedPrompt}\n\n${applySenderAttribution(runtime, peekSender, String(peek.prompt || ""))}`;
-                    // Same on both sides by construction now; kept as a plain
-                    // carry rather than an OR so the intent reads.
-                    mergedBootstrap = mergedBootstrap && (peek.bootstrap ?? false);
                     if (!mergedRequiredTool && peek.requiredTool) mergedRequiredTool = peek.requiredTool;
                     for (const id of peekIds) mergedClientMessageIds.push(id);
                     // Merged messages pool their image attachments in arrival
@@ -877,9 +1096,12 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
             case "answer":
                 yield* processAnswer(runtime, item);
                 break;
-            case "timer":
+            case "timer": {
+                const kind = timerItemKind(item);
+                if (kind) removeQueuedTimerItemsOfKind(runtime, kind);
                 yield* processTimer(runtime, item);
                 break;
+            }
             case "agents-done":
                 queueFollowup(runtime, item.summary);
                 break;
