@@ -366,6 +366,34 @@ describe("session regeneration orchestration", () => {
         expect(h.state.nowMs).toBeGreaterThanOrEqual(600_000);
     });
 
+    // Issue 192 round 3: a successful flip during an agent wait must not
+    // carry the wait without its poll, or the new execution holds its own
+    // grounding prompt and continues as new without running it.
+    it("a flip during an agent wait ends the wait, and the next execution runs the grounding turn", async () => {
+        const waitInput = {
+            iteration: 8,
+            subAgents: [{ orchId: "agent-1", sessionId: "child-session-1", task: "watch", status: "running" }],
+            waitingForAgentIds: ["agent-1"],
+            activeTimerState: { type: "agent-poll", remainingMs: 30_000, originalDurationMs: 30_000, reason: "waiting for 1 agent(s)", agentIds: ["agent-1"] },
+        };
+        const h = createHarness({
+            inputOverrides: waitInput,
+            messages: [
+                { atMs: 0, payload: regenCmd({ args: { source: "operator", distill_mode: "deterministic" } }) },
+                { atMs: 1, payload: { prompt: "P", clientMessageIds: ["p"] } },
+                { atMs: 2, payload: { cancelPending: ["p"] } },
+            ],
+        });
+        await h.run();
+        const flip = h.state.continueAsNew?.input;
+        expect(flip?.transcriptEpoch, "the flip must continue-as-new").toBe(1);
+        expect(flip.waitingForAgentIds ?? null).toBeNull();
+
+        const next = createHarness({ inputOverrides: { ...flip } });
+        await next.run({ resumeWith: { type: "completed", content: "grounded." } });
+        expect(next.state.runTurnCall, "the grounding turn dispatched").toBeTruthy();
+    });
+
     it("llm mode (default): spawn → poll → collect → flip, distiller provenance on the boundary", async () => {
         const h = createHarness({
             distillerPlan: ["running", "completed"],

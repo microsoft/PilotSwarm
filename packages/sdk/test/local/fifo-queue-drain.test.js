@@ -27,6 +27,7 @@ function harness(overrides = {}) {
     const kv = new Map();
     const errors = [];
     const clock = { now: 1_750_000_000_000 };
+    const child = { status: "running" };
     let guid = 0;
     const ctx = {
         traceInfo() {},
@@ -74,6 +75,7 @@ function harness(overrides = {}) {
                 return result;
             }
             case "manager.listChildSessions": return "[]";
+            case "manager.getSessionStatus": return JSON.stringify({ status: child.status });
             case "manager.getWorkerSessionPolicy": return { policy: null, allowedAgentNames: [] };
             case "manager.resolveAgentConfig": return null;
             case "manager.getOrchestrationStats": return { historySizeBytes: 0 };
@@ -147,7 +149,7 @@ function harness(overrides = {}) {
         }
         throw new Error("run loop did not park");
     };
-    const h = { runtime, kv, clock, calls, turns, results, messages, errors, drive, races, events, fifo, arm, step, runUntilParked };
+    const h = { runtime, kv, clock, calls, turns, results, messages, errors, drive, races, events, fifo, arm, step, runUntilParked, child };
     return h;
 }
 
@@ -452,9 +454,10 @@ describe("issue 192 review B: remaining time and timer items behind holds", () =
         expect(h.fifo().filter(x => x.kind === "prompt").map(x => x.prompt)).toEqual(["U", "S1", "S2"]);
         expect(h.runtime.state.interruptedCronTimer?.remainingMs).toBe(600_000);
         h.results.push({ type: "completed", content: "RECEIVED: U,S1,S2" });
-        const iterationBefore = h.runtime.state.iteration;
+        const turnsBefore = turnsStarted(h.runtime);
         h.drive(decide(h.runtime));
-        settleQueuedWorkAfterDecide(h.runtime, iterationBefore);
+        expect(turnsStarted(h.runtime)).toBe(turnsBefore + 1);
+        settleQueuedWorkAfterDecide(h.runtime, turnsBefore);
         expect(h.turns).toHaveLength(1);
         expect(h.turns[0][0]).toMatch(/U[\s\S]*S1[\s\S]*S2/);
     });
@@ -560,5 +563,39 @@ describe("issue 192 re-review: the real run loop never strands a released timer"
         const r = h.runUntilParked();
         expect(h.turns).toHaveLength(1);
         expect(r.parked).toBe("blocking");
+    });
+});
+
+describe("issue 192 round 3: a live agent wait keeps its poll", () => {
+    const pollItem = () => ({ kind: "timer", timer: { type: "agent-poll", deadlineMs: 1, originalDurationMs: 30_000, reason: "waiting for 1 agent(s)", agentIds: ["agent-1"] }, firedAtMs: 1 });
+    const inherited = () => harness({
+        subAgents: [{ orchId: "agent-1", sessionId: "child-session-1", task: "watch", status: "running" }],
+        waitingForAgentIds: ["agent-1"],
+        prompt: "confirmation held by the agent wait",
+    });
+
+    it("a queued poll under a released idle timer still polls a running child and arms the next poll", () => {
+        const h = inherited();
+        h.arm("idle", 600_000);
+        appendToFifo(h.runtime, [pollItem()]);
+        const r = h.runUntilParked();
+        expect(h.turns).toHaveLength(0);
+        expect(h.calls.some(c => c.effect === "manager.getSessionStatus")).toBe(true);
+        expect(r.parked).toBe("timer");
+        expect(r.ms).toBe(30_000);
+        expect(h.runtime.state.activeTimer?.type).toBe("agent-poll");
+        expect(h.runtime.state.waitingForAgentIds).toEqual(["agent-1"]);
+    });
+
+    it("a queued poll under a released idle timer resolves the wait for a finished child whose notice was missed, and the follow-up runs", () => {
+        const h = inherited();
+        h.child.status = "completed";
+        h.arm("idle", 600_000);
+        appendToFifo(h.runtime, [pollItem()]);
+        h.results.push({ type: "completed", content: "done" });
+        h.runUntilParked();
+        expect(h.runtime.state.waitingForAgentIds).toBeNull();
+        expect(h.turns).toHaveLength(1);
+        expect(h.turns[0][0]).toMatch(/confirmation held by the agent wait/);
     });
 });
