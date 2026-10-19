@@ -699,9 +699,19 @@ run_app_tests() {
         # nothing and pass vacuously. Force TAP, which reports the counters.
         # `cmd | tee` reports tee's status, so the npm exit must be read
         # explicitly rather than relying on the caller's pipefail setting.
+        # Any reporter already in NODE_OPTIONS is dropped first. Node requires
+        # --test-reporter and --test-reporter-destination to be equal in
+        # number, so appending ours to an inherited reporter aborts the run
+        # with ERR_INVALID_ARG_VALUE. Replace rather than append, and pair ours
+        # with an explicit destination so the counts are ours alone.
+        local app_node_options
+        app_node_options="$(printf '%s' "${NODE_OPTIONS:-}" \
+            | tr ' ' '\n' \
+            | grep -vE '^--test-reporter(-destination)?(=|$)' \
+            | tr '\n' ' ')"
         local app_status=0
         (cd "$REPO_ROOT" \
-            && NODE_OPTIONS="${NODE_OPTIONS:+$NODE_OPTIONS }--test-reporter=tap" \
+            && NODE_OPTIONS="${app_node_options}--test-reporter=tap --test-reporter-destination=stdout" \
                npm test --prefix packages/app) > "$app_log" 2>&1 || app_status=$?
         cat "$app_log"
         if [ "$app_status" -ne 0 ]; then
