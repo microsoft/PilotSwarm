@@ -90,6 +90,21 @@ export function isSemver(version: unknown): boolean {
     return typeof version === "string" && SEMVER_RE.test(version.trim());
 }
 
+/**
+ * The longest version text a registry accepts, in bytes. An exported archive
+ * names each version's page `versions/<version>.html` in a ustar member
+ * whose last path part is at most 100 bytes (review S01), so 95 is the most
+ * that always exports and imports again.
+ */
+export const CANVAS_APP_VERSION_MAX_BYTES = 95;
+
+function checkVersionLength(version: string, where: string): void {
+    const size = Buffer.byteLength(version, "utf8");
+    if (size > CANVAS_APP_VERSION_MAX_BYTES) {
+        throw new CanvasAppError("BAD_VERSION", `${where} "${version.slice(0, 40)}…" is ${size} bytes; a canvas app version is at most ${CANVAS_APP_VERSION_MAX_BYTES} bytes`);
+    }
+}
+
 export interface CanvasAppPageCheck {
     html: string;
     sha256: string;
@@ -213,6 +228,7 @@ export async function publishCanvasAppHtml(deps: CanvasAppRegistryDeps, input: P
     const requested = input.version != null && String(input.version).trim() !== ""
         ? String(input.version).trim()
         : (isSemver(page.manifest.version) ? String(page.manifest.version).trim() : null);
+    if (requested !== null) checkVersionLength(requested, input.version != null && String(input.version).trim() !== "" ? "version" : "the manifest's version");
     const newAppId = randomUUID();
     const reserved = await deps.store.reserve({
         newAppId,
@@ -239,14 +255,22 @@ export async function publishCanvasAppHtml(deps: CanvasAppRegistryDeps, input: P
         version: reserved.version, sha256: page.sha256, scope, card: page.card,
     };
     const target: CanvasAppTarget = { name, scope, owner: scope === "user" ? input.viewer.principal : null };
+    // The same bytes are already a version: report THAT version as stored
+    // (its card and whether it is the active one), not this call's input
+    // (review S06).
+    const existing = async () => {
+        const detail = await deps.store.get(target, input.viewer);
+        const row = detail.versions.find((v) => v.versionId === reserved.versionId);
+        return { card: row?.card ?? base.card, active: detail.activeVersionId === reserved.versionId };
+    };
     if (reserved.status === "noop") {
-        return { ...base, status: "unchanged", active: mode === "publish" };
+        return { ...base, status: "unchanged", ...(await existing()) };
     }
     if (reserved.status === "in-progress") {
         // Another publish of the same bytes holds the reservation.
         const ready = await waitForReady(deps.store, input.viewer, target, reserved.versionId);
         if (!ready) throw new CanvasAppError("BAD_REQUEST", "another publish of the same page is still in progress; try again");
-        return { ...base, status: "unchanged", active: false };
+        return { ...base, status: "unchanged", ...(await existing()) };
     }
     try {
         await deps.artifactStore.uploadArtifact(reserved.artifactSessionId, reserved.artifactFilename, page.html, "text/html", { pinned: true } as any);
@@ -463,6 +487,9 @@ export function readCanvasAppArchive(bytes: Buffer): { manifest: CanvasAppArchiv
     const pages = new Map<string, string>();
     for (const v of raw.versions) {
         if (!isSemver(v?.version)) throw new CanvasAppError("BAD_REQUEST", `INVALID_ARCHIVE: "${v?.version}" is not SemVer`);
+        if (Buffer.byteLength(String(v.version), "utf8") > CANVAS_APP_VERSION_MAX_BYTES) {
+            throw new CanvasAppError("BAD_REQUEST", `INVALID_ARCHIVE: a version is longer than ${CANVAS_APP_VERSION_MAX_BYTES} bytes`);
+        }
         const member = `versions/${v.version}.html`;
         if (expected.has(member)) throw new CanvasAppError("BAD_REQUEST", `INVALID_ARCHIVE: version ${v.version} listed twice`);
         expected.add(member);
@@ -581,7 +608,8 @@ export async function migrateLegacyCanvasApps(
         let page: CanvasAppPageCheck;
         try { page = checkCanvasAppPage(html, card?.responseContract); } catch (err: any) { skip(`the page fails the publish checks (${err?.message}); fact kept`); continue; }
         const owner = await deps.sessionOwner(String(src.sessionId)).catch(() => null);
-        const version = isSemver(page.manifest.version) ? String(page.manifest.version).trim() : "1.0.0";
+        const manifestVersion = isSemver(page.manifest.version) ? String(page.manifest.version).trim() : null;
+        const version = manifestVersion && Buffer.byteLength(manifestVersion, "utf8") <= CANVAS_APP_VERSION_MAX_BYTES ? manifestVersion : "1.0.0";
         // A shared app with this name and other bytes already exists: keep the fact.
         try {
             const existing = await deps.store.getVersion({ name, scope: "shared" }, viewer, null);
@@ -722,6 +750,18 @@ export interface CanvasBytesGuardDeps {
  * each exact program, whoever wrote it. Returns a refusal message, or null
  * when the read may proceed.
  */
+/**
+ * Does this viewer hold an exact copy of these bytes as their own app? Two
+ * people may publish byte-identical private pages; the other person's
+ * private copy must not hide the viewer's own (review S02). Same precedence
+ * as classifyCanvasDraw: the viewer's own exact match wins.
+ */
+export async function viewerOwnsCanvasBytes(store: CanvasAppStore, sha256: string, viewer: CanvasAppViewer): Promise<boolean> {
+    if (!viewer?.principal) return false;
+    const matches = await store.matchBySha(sha256, viewer);
+    return matches.some((m) => samePrincipal(m.owner, viewer.principal));
+}
+
 export async function canvasBytesRefusal(
     deps: CanvasBytesGuardDeps,
     input: {
@@ -737,14 +777,17 @@ export async function canvasBytesRefusal(
         if (!input.sha256) return null;
         const viewer = input.callerSessionId ? await deps.resolveViewer(input.callerSessionId) : { principal: null, resourceAdmin: false };
         const owner = await deps.store.foreignBytes(String(input.sha256), null, viewer);
+        if (owner === "(private)" && await viewerOwnsCanvasBytes(deps.store, String(input.sha256), viewer)) return null;
         return owner === "(private)" ? "artifact not found" : null;
     }
     const text = Buffer.isBuffer(input.bytes) ? input.bytes.toString("utf8") : String(input.bytes);
     if (!text.includes("CANVAS-APP-MANIFEST") && !text.includes("<")) return null;
     const viewer = input.callerSessionId ? await deps.resolveViewer(input.callerSessionId) : { principal: null, resourceAdmin: false };
     const extraction = extractCanvasAppManifest(text);
-    const owner = await deps.store.foreignBytes(sha256Hex(text), canvasAppWorkspaceKey(extraction.manifest), viewer);
+    const sha = sha256Hex(text);
+    const owner = await deps.store.foreignBytes(sha, canvasAppWorkspaceKey(extraction.manifest), viewer);
     if (!owner) return null;
+    if (await viewerOwnsCanvasBytes(deps.store, sha, viewer)) return null;
     if (input.privateOnly && owner !== "(private)") return null;
     return owner === "(private)"
         ? "artifact not found"

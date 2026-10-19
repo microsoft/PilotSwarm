@@ -1757,13 +1757,16 @@ export class PortalRuntime {
             // Canvas app registry (issue 181): the trust of the current revision,
             // from its draw event. App pages (owner or cross-owner) are served
             // as JSON for the viewer to frame, never as text/html (R21).
-            let trust = "agent";
+            // Fail closed, like the session canvas: only an event that says
+            // "owner" or "agent" frames the page directly; a missing or
+            // unknown trust is another user's page.
+            let trust = "cross-owner";
             try {
                 const events = await this.transport.getSessionEventsBefore?.(scope.sessionId, Number.MAX_SAFE_INTEGER, 30, ["session.canvas_updated"]);
                 const latest = (events || [])
                     .filter((e) => (Number(e?.data?.slot) || 1) === Number(scope.slot))
                     .sort((a, b) => (Number(b?.data?.rev) || 0) - (Number(a?.data?.rev) || 0))[0];
-                if (latest?.data?.trust === "owner" || latest?.data?.trust === "cross-owner") trust = latest.data.trust;
+                if (latest?.data?.trust === "owner" || latest?.data?.trust === "agent") trust = latest.data.trust;
                 // No draw event for this slot in the window read: its page
                 // cannot be classified here, so it is isolated.
                 if (!latest) trust = "cross-owner";

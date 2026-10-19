@@ -7,8 +7,8 @@ workbench. Apps you want to use again live in the **canvas app registry**.
 - Each app belongs to a user, its **owner**.
 - An app is **private** (its owner and unrestricted admins) or **shared**
   (everyone in the deployment). Publishing is private unless you ask to share.
-- Each app has **versions** (SemVer). One version is active; you can pin
-  another.
+- Each app has **versions** (SemVer, at most 95 bytes so every version
+  fits in an exported archive). One version is active; you can pin another.
 - A shared app can have **contributors**, who may publish new versions.
 - An app does not depend on the session it was published from.
 
@@ -42,6 +42,7 @@ pilotswarm apps search "sign off a release"
 pilotswarm apps show release-signoff
 pilotswarm apps push board.html --name release-signoff --description "Use when several approvers sign off a release train together."
 pilotswarm apps pull release-signoff --version 1.2.0 -o board.html
+pilotswarm apps describe release-signoff --tags release,approval   # description and tags only; no new version
 pilotswarm apps share release-signoff          # unshare to make it private again
 pilotswarm apps pin release-signoff@1.1.0
 pilotswarm apps editors add release-signoff entra:<object-id>

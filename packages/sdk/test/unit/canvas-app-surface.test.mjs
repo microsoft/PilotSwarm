@@ -51,6 +51,18 @@ test("the MCP tools and the CLI call only canvas app operations, and never the a
     const cliOps = [...CLI.matchAll(/client\.([A-Za-z]+)\(/g)].map((m) => m[1]).filter((n) => n !== "start" && n !== "stop");
     assert.ok(cliOps.length >= 15);
     for (const name of cliOps) assert.ok(names.has(name), `CLI calls ${name}`);
+    // Every registry operation a person can do from a terminal has a CLI command
+    // (review S07). Not here: the session-slot publish (an agent's) and the approval ops.
+    const CLI_REQUIRED = [
+        "listCanvasApps", "searchCanvasApps", "getCanvasApp", "getCanvasAppHtml", "uploadCanvasApp",
+        "setCanvasAppScope", "setCanvasAppEnabled", "setCanvasAppMetadata", "pinCanvasAppVersion", "deleteCanvasApp",
+        "grantCanvasAppEditor", "revokeCanvasAppEditor", "listCanvasAppEditors", "exportCanvasApp", "importCanvasApp",
+        "getCanvasAppLoads", "pruneCanvasApps", "migrateLegacyCanvasApps",
+    ];
+    for (const name of CLI_REQUIRED) {
+        assert.ok(names.has(name), `${name} is a canvas app operation`);
+        assert.ok(cliOps.includes(name), `the CLI exposes ${name}`);
+    }
     for (const name of APPROVAL_OPS) {
         assert.ok(!mcpOps.includes(name) && !cliOps.includes(name), `${name} is portal-only`);
         assert.doesNotMatch(MCP, new RegExp(name));

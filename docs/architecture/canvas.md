@@ -215,18 +215,23 @@ Every draw is classified for the canvas's owner and the result rides the
 draw event: `owner` (the owner's app, by `fromApp` or exact bytes),
 `cross-owner` (another user's app, by `fromApp`, exact bytes, or the same
 workspace block), or `agent` (anything else). A draw that cannot be
-classified is recorded as `cross-owner`. A `cross-owner` page is framed by
+classified is recorded as `cross-owner`, and a frame or share link that
+finds no recognised trust on the draw event treats the page as
+`cross-owner` too. A `cross-owner` page is framed by
 the portal through one isolation contract (`ui/react/src/canvas-isolation.js`):
 a portal-authored wrapper document holds no app bytes, sets the page as its
 inner frame's `srcdoc`, carries the app policy plus `frame-src 'none'`, relays
 only between the portal and that one inner frame, and stops for good if the
-inner frame loads twice. The session canvas, the share viewer and the Files
+inner frame loads twice. Once its page has loaded, the wrapper tells the
+portal, which replays the current tick state to it. The session canvas, the share viewer and the Files
 preview of canvas files all use it, and a frame's bytes must match the
 `pageSha256` its draw event recorded. Its owner is named; actions
 and `canvas_kv` values from it reach the agent with a `page` label. The
 artifact and canvas read tools do not hand an agent another owner's app
 bytes the registry identifies (defense in depth only: a near-copy is not
-recognized).
+recognized), and `publish_canvas_app` does not publish them as the session
+owner's app. Bytes the viewer also holds as their own app are never
+withheld because someone else holds an identical copy.
 
 ### Workspace approval
 

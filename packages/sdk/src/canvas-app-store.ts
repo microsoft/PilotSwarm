@@ -72,6 +72,19 @@ export function mapCanvasAppError(err: unknown): never {
             throw new CanvasAppError(raw as CanvasAppErrorCode, m[2]);
         }
     }
+    // Two concurrent scope changes can both pass a procedure's name check;
+    // the unique index then refuses the second one. That is the same
+    // conflict the procedure reports as NAME_TAKEN, not a server error.
+    const pg = err as { code?: unknown; constraint?: unknown };
+    if (pg?.code === "23505") {
+        const constraint = String(pg.constraint ?? "");
+        if (constraint === "canvas_apps_shared_name_uniq") {
+            throw new CanvasAppError("NAME_TAKEN", "a shared canvas app with that name already exists");
+        }
+        if (constraint === "canvas_apps_user_name_uniq") {
+            throw new CanvasAppError("NAME_TAKEN", "the owner already has a private canvas app with that name");
+        }
+    }
     throw err;
 }
 

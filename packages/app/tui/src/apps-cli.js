@@ -10,6 +10,7 @@
  *   pilotswarm apps push <file.html> --name <name> [--shared] [--version <v>] [--description <text>]
  *   pilotswarm apps pull <name> [--version <v>] [--output <file>]
  *   pilotswarm apps export <name> [--output <file>] | import <file> [--shared]
+ *   pilotswarm apps describe <name> [--description <text>] [--tags a,b]
  *   pilotswarm apps share <name> | unshare <name> | enable <name> | disable <name>
  *   pilotswarm apps pin <name>@<version> | rm <name> --yes
  *   pilotswarm apps editors <name> [add|remove <provider>:<subject>]
@@ -33,6 +34,8 @@ Usage:
   pilotswarm apps pull <name> [--version <v>] [--output <file>] [--shared|--user]
   pilotswarm apps export <name> [--output <file>] [--shared|--user]
   pilotswarm apps import <file.tar.gz> [--shared]
+  pilotswarm apps describe <name> [--description <text>] [--tags a,b] [--shared|--user]
+                                                       change only the description and tags; no new version
   pilotswarm apps share <name> | unshare <name>
   pilotswarm apps enable <name> | disable <name> [--shared|--user]
   pilotswarm apps pin <name>@<version> [--shared|--user]
@@ -177,6 +180,17 @@ export async function runAppsCommand(argv, deps = {}) {
                 const result = await client.importCanvasApp({ contentBase64, ...(flags.scope ? { scope: flags.scope } : {}) });
                 print(result, (r) => [`${r.name} (${r.scope === "shared" ? "shared" : "private"})`, ...r.versions.map((v) => `  ${v.version}: ${v.status}${v.code ? ` (${v.code})` : ""}`)].join("\n"));
                 return result.versions.some((v) => v.status === "failed") ? 2 : 0;
+            }
+            case "describe": {
+                const name = needName(rest[0], "describe <name> --description <text> | --tags a,b");
+                if (!flags.description && !flags.tags) throw new Error("usage: pilotswarm apps describe <name> [--description <text>] [--tags a,b]");
+                await client.setCanvasAppMetadata({
+                    name, ...sel,
+                    ...(flags.description ? { description: flags.description } : {}),
+                    ...(flags.tags ? { tags: flags.tags } : {}),
+                });
+                out(`${name}: ${[flags.description ? "description" : null, flags.tags ? "tags" : null].filter(Boolean).join(" and ")} updated`);
+                return 0;
             }
             case "share":
             case "unshare": {

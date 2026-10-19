@@ -10,7 +10,7 @@ import {
 import { extractCanvasAppManifest, canvasAppCard, normalizeCanvasResponseContract } from "./canvas-app-manifest.js";
 import { readCanvasKv, writeCanvasKv } from "./canvas-kv.js";
 import {
-    publishCanvasAppHtml, readCanvasAppHtml, deleteCanvasApp as deleteRegistryCanvasApp, classifyCanvasDraw, canvasBytesRefusal, sha256Hex,
+    publishCanvasAppHtml, readCanvasAppHtml, deleteCanvasApp as deleteRegistryCanvasApp, classifyCanvasDraw, canvasBytesRefusal, viewerOwnsCanvasBytes, sha256Hex,
     type CanvasDrawAttribution, type CanvasDrawClassification,
 } from "./canvas-app-registry.js";
 import { CanvasAppError } from "./canvas-app-store.js";
@@ -3632,7 +3632,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                                 const refusal = await canvasBytesRefusal({ store: registry, resolveViewer: (id) => sessionManager.resolveCanvasAppViewer(id) },
                                     { callerSessionId: input.sessionId, artifactSessionId: sourceSessionId, bytes: null });
                                 if (refusal) return { error: refusal };
-                                if (await registry.shaHidden(nodeCrypto.createHash("sha256").update(text, "utf8").digest("hex"), canvasViewer)) {
+                                const textSha = nodeCrypto.createHash("sha256").update(text, "utf8").digest("hex");
+                                if (await registry.shaHidden(textSha, canvasViewer) && !(await viewerOwnsCanvasBytes(registry, textSha, canvasViewer))) {
                                     return { error: `could not read artifact ${filename} from session ${sourceSessionId}: artifact not found` };
                                 }
                             }
@@ -4017,6 +4018,17 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         const latest = await latestCanvasEventData(catalog!, resolved.target, slot);
                         if (latest.rev === 0) return { error: `no canvas has been drawn on slot ${slot}` };
                         const html = await artifactStore.downloadArtifactText(resolved.target, canvasArtifactFilename(slot));
+                        // Another user's page on this slot is not republished
+                        // as the session owner's app: that copy would then be
+                        // drawn as the owner's own page, outside the
+                        // cross-owner wrapper. Same byte guard as read_canvas.
+                        if (latest.data?.trust === "cross-owner") {
+                            const shown = typeof latest.data?.app?.name === "string" ? ` "${latest.data.app.name}"` : "";
+                            return { error: `slot ${slot} shows another user's canvas app${shown}; agents do not publish another user's page. Draw it with draw_canvas({fromApp}), or publish a page of your own.` };
+                        }
+                        const refusal = await canvasBytesRefusal({ store, resolveViewer: (id) => sessionManager.resolveCanvasAppViewer(id) },
+                            { callerSessionId: input.sessionId, artifactSessionId: resolved.target, bytes: html });
+                        if (refusal) return { error: refusal };
                         const viewer = await sessionManager.resolveCanvasAppViewer(input.sessionId);
                         const result = await publishCanvasAppHtml({ store, artifactStore }, {
                             html, name: String(args.name ?? ""), scope: args.scope === "shared" ? "shared" : "user",

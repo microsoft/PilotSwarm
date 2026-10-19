@@ -802,7 +802,9 @@ function CanvasShareView({ token }) {
             // page set as the inner frame's srcdoc, no navigation.
             const doc = await response.json();
             const html = String(doc?.html ?? "");
-            if (doc?.trust === "cross-owner") {
+            // Fail closed: only a page the server classified as the owner's
+            // or the agent's is framed directly.
+            if (doc?.trust !== "owner" && doc?.trust !== "agent") {
                 const url = createIsolationWrapperUrl();
                 isolatedHtmlRef.current.set(url, buildIsolatedInnerHtml(html));
                 next = { url, isolated: true };
@@ -923,6 +925,13 @@ function CanvasShareView({ token }) {
                 if (typeof html === "string") {
                     try { asker.postMessage({ type: "pse-wrapper-load", html }, "*"); } catch { /* frame mid-teardown */ }
                 }
+                return;
+            }
+            if (payload.type === "pse-wrapper-inner-loaded") {
+                // The app page inside the wrapper has loaded: replay the live
+                // state, which the outer frame's load may have posted before
+                // the page existed (review S04).
+                postState();
                 return;
             }
             if (payload.type === "pse-wrapper-left") {

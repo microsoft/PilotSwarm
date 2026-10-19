@@ -184,6 +184,18 @@ test("share door: bytes that are not the page the draw event classified are serv
     assert.equal((await runtime.getCanvasShareDoc("tok")).trust, "cross-owner", "swapped bytes are isolated");
 });
 
+test("share door fails closed: a draw event with a missing or unknown trust is served as another user's page (review G1)", async () => {
+    const page = "<!doctype html><p>page</p>";
+    for (const [trust, expected] of [[undefined, "cross-owner"], ["", "cross-owner"], ["mystery", "cross-owner"], ["agent", "agent"], ["owner", "owner"], ["cross-owner", "cross-owner"]]) {
+        const runtime = runtimeWith({
+            resolveCanvasShareTokenHash: async () => ({ sessionId: "s1", slot: 1 }),
+            downloadArtifactBinary: async () => ({ body: Buffer.from(page) }),
+            getSessionEventsBefore: async () => [{ data: { slot: 1, rev: 2, ...(trust === undefined ? {} : { trust }) } }],
+        });
+        assert.equal((await runtime.getCanvasShareDoc("tok")).trust, expected, `event trust ${JSON.stringify(trust)}`);
+    }
+});
+
 test("a slot with no draw event in the window read is isolated on the share link and labelled unknown for actions", async () => {
     const sent = [];
     const runtime = runtimeWith({

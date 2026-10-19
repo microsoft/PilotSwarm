@@ -8246,6 +8246,10 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
     // the wrapper's ready message; and each frame's revision, sent with every
     // canvas-ws call so the server can refuse a stale page.
     const wrapperHtmlRef = React.useRef(new Map());
+    // The latest tick state, for replaying it to a wrapped app page once
+    // that page has loaded (review S04).
+    const tickStateRef = React.useRef({ dataRev: 0, dataPayload: null });
+    tickStateRef.current = { dataRev, dataPayload };
     const frameRevRef = React.useRef({ live: 0, staging: 0 });
     // The workspace approval prompt: { rev, approval?, busy, error }. Shown to
     // the session owner when a page's first workspace call is refused for want
@@ -8326,6 +8330,17 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
                 const el = fromLive ? frameEl : stagingIframeElRef.current;
                 if (el) el.dataset.leftPage = "1";
                 if (fromLive) setLeftPage(true);
+                return;
+            }
+            if (payload.type === "pse-wrapper-inner-loaded") {
+                // The wrapped app page has loaded. The state posted when the
+                // wrapper frame was promoted may have arrived before the page
+                // existed, so replay the whole current state to the live frame
+                // (a page with no listener ignores it).
+                const { dataRev: rev, dataPayload: state } = tickStateRef.current;
+                if (fromLive && rev && state !== null) {
+                    try { event.source.postMessage({ type: "canvas-data", data: state, dataRev: rev }, "*"); } catch { /* frame mid-teardown */ }
+                }
                 return;
             }
             if (payload.type === "pse-wrapper-ready") {
@@ -8434,6 +8449,14 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
                     const message = String(error?.message || error || "failed");
                     if (error?.code === "CANVAS_WS_UNDECLARED" && /manifest is broken/i.test(message)) {
                         setBrokenManifest(message.replace(/^.*?manifest is broken[^:]*:\s*/i, ""));
+                    }
+                    // A page that reads its workspace while it is still the
+                    // staging frame cannot be shown the approval prompt yet:
+                    // answer NOT_READY, which the page's helper retries on the
+                    // live frame, where the prompt is shown (review S03).
+                    if (error?.code === "CANVAS_WS_CONSENT_REQUIRED" && !fromLive && !/declined/i.test(message)) {
+                        post({ type: "canvas-ws-result", id, ok: false, error: "the canvas is still loading; retry in a moment", code: "NOT_READY" });
+                        return;
                     }
                     if (error?.code === "CANVAS_WS_CONSENT_REQUIRED" && fromLive && !/declined/i.test(message)) {
                         const askedRev = frameRevRef.current.live;

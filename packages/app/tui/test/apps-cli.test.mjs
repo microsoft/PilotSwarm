@@ -80,6 +80,14 @@ test("share and unshare move between scopes", async () => {
     assert.deepEqual(unshare.calls[0], { op: "setCanvasAppScope", args: { name: "board", scope: "shared", targetScope: "user" } });
 });
 
+test("describe changes only the description and tags of the selected copy (review S07)", async () => {
+    await assert.rejects(run(["describe", "board"]), /describe <name>/);
+    const both = await run(["describe", "board", "--description", "Use when the team plans the week together.", "--tags", "Plan, Week", "--shared"]);
+    assert.deepEqual(both.calls, [{ op: "setCanvasAppMetadata", args: { name: "board", scope: "shared", description: "Use when the team plans the week together.", tags: ["Plan", "Week"] } }]);
+    const tagsOnly = await run(["describe", "board", "--tags", "a"]);
+    assert.deepEqual(tagsOnly.calls, [{ op: "setCanvasAppMetadata", args: { name: "board", tags: ["a"] } }], "no page, no version, no description");
+});
+
 test("pin needs name@version", async () => {
     await assert.rejects(run(["pin", "board"]), /name>@<version/);
     const good = await run(["pin", "board@1.2.0", "--shared"]);

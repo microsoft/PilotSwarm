@@ -107,6 +107,10 @@ describe("canvas app registry: agent tools", () => {
                 { name: "draw_canvas", args: { html: page(shared, "<p>one byte more</p>", ws), slot: 4 } },
                 { name: "draw_canvas", args: { html: page(`bob-own-${env.runId}`), slot: 5 } },
                 { name: "manage_canvas_app", args: { action: "delete", name: shared, scope: "shared", confirm: true } },
+                // Review G3: another user's page on a slot is not republished as Bob's own app,
+                // neither the fromApp draw (slot 1) nor an inline copy of the same bytes (slot 3).
+                { name: "publish_canvas_app", args: { name: `bob-copy-${env.runId}`, description: DESCRIPTION, slot: 1 } },
+                { name: "publish_canvas_app", args: { name: `bob-copy3-${env.runId}`, description: DESCRIPTION, slot: 3 } },
             ]),
         };
         const respond = (body, position) => {
@@ -143,6 +147,14 @@ describe("canvas app registry: agent tools", () => {
             assert(!found.apps.some((a) => a.name === secret), "Bob does not find Alice's private app");
             assert(String(bobResults[2]).includes("NOT_FOUND"), `private app is NOT_FOUND to Bob: ${bobResults[2]}`);
             assert(String(bobResults[6]).includes("FORBIDDEN"), `Bob cannot delete Alice's shared app: ${bobResults[6]}`);
+            assert(String(bobResults[7]).includes("another user"), `Bob's agent does not publish Alice's app from the slot: ${bobResults[7]}`);
+            assert(String(bobResults[8]).includes("another user"), `nor an inline copy of her bytes: ${bobResults[8]}`);
+            const copies = await (async () => {
+                const c = new pg.Client({ connectionString: env.store });
+                await c.connect();
+                try { return (await c.query(`SELECT name FROM "${env.cmsSchema}".canvas_apps WHERE name LIKE 'bob-copy%'`)).rows; } finally { await c.end(); }
+            })();
+            assertEqual(copies.length, 0, "no copy was published");
 
             const bobEvents = await canvasEvents(env, bob.sessionId);
             const bySlot = (slot) => bobEvents.filter((e) => e.slot === slot).at(-1);

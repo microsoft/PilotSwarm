@@ -17,7 +17,7 @@ import { FilesystemArtifactStore, createFactStoreForUrl } from "../../src/index.
 import {
     publishCanvasAppHtml, readCanvasAppHtml, deleteCanvasApp, pruneCanvasAppArtifacts,
     exportCanvasApp, importCanvasApp, readCanvasAppArchive, canvasAppArtifactSessionId, migrateLegacyCanvasApps,
-    looksLikeCanvasAppSpace, sha256Hex, CANVAS_APP_PENDING_TTL_MS,
+    looksLikeCanvasAppSpace, sha256Hex, CANVAS_APP_PENDING_TTL_MS, canvasBytesRefusal, viewerOwnsCanvasBytes,
 } from "../../src/canvas-app-registry.ts";
 import { buildCanonicalTarGz } from "../../src/agent-package-format.ts";
 import { CanvasAppError } from "../../src/canvas-app-store.ts";
@@ -121,6 +121,59 @@ describe("canvas app registry: service", () => {
             assertEqual(del.files, 1);
             await expectCode(readCanvasAppHtml(deps, { name }, V.alice), "NOT_FOUND");
             assertEqual((await readCanvasAppHtml(deps, { name }, V.bob)).html, html, "Bob's copy is intact");
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    it("the byte guards never hide a viewer's own copy behind another owner's identical private bytes (review S02)", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const { catalog, deps } = await setup(env);
+        const CAROL = { principal: { provider: "test", subject: "car-carol" }, resourceAdmin: false };
+        try {
+            const name = `car-own-${env.runId}`;
+            const html = page(name);
+            const sha = sha256Hex(html);
+            await publishCanvasAppHtml(deps, { html, name, viewer: V.alice });
+            await publishCanvasAppHtml(deps, { html, name: `${name}-b`, viewer: V.bob });
+            const guard = { store: deps.store, resolveViewer: async (id) => ({ alice: V.alice, bob: V.bob, carol: CAROL })[id] };
+            for (const who of ["alice", "bob"]) {
+                assert(await viewerOwnsCanvasBytes(deps.store, sha, V[who]), `${who} owns a copy`);
+                assertEqual(await canvasBytesRefusal(guard, { callerSessionId: who, artifactSessionId: "s-" + who, bytes: html }), null, `${who} reads their own bytes`);
+                assertEqual(await canvasBytesRefusal(guard, { callerSessionId: who, artifactSessionId: "s-" + who, sha256: sha }), null, `${who}'s metadata read is not hidden`);
+                assertEqual(await deps.store.shaHidden(sha, V[who]) && !(await viewerOwnsCanvasBytes(deps.store, sha, V[who])), false, `fromArtifact of ${who}'s own bytes is allowed`);
+            }
+            // Negative control: Carol holds no copy, so both private copies stay hidden from her.
+            assert(!(await viewerOwnsCanvasBytes(deps.store, sha, CAROL)), "Carol owns no copy");
+            assertEqual(await canvasBytesRefusal(guard, { callerSessionId: "carol", artifactSessionId: "s-carol", bytes: html }), "artifact not found");
+            assertEqual(await canvasBytesRefusal(guard, { callerSessionId: "carol", artifactSessionId: "s-carol", sha256: sha }), "artifact not found");
+            assert(await deps.store.shaHidden(sha, CAROL), "hidden from Carol");
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    it("republishing the same bytes reports the stored version's card and active state, not the caller's input (review S06)", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const { catalog, deps } = await setup(env);
+        try {
+            const name = `car-same-${env.runId}`;
+            const html = page(name);
+            const A = { actions: { pick: { row: "number" } } };
+            const B = { actions: { drop: { row: "number" } } };
+            const first = await publishCanvasAppHtml(deps, { html, name, viewer: V.alice, responseContract: A });
+            assertEqual(first.status, "published");
+            const second = await publishCanvasAppHtml(deps, { html, name, viewer: V.alice, responseContract: B });
+            assertEqual(second.status, "unchanged");
+            assertEqual(second.versionId, first.versionId, "the same version");
+            assertEqual(JSON.stringify(second.card.responseContract), JSON.stringify(A), "the stored card, not the caller's contract B");
+            const detail = await deps.store.get({ name }, V.alice);
+            assertEqual(JSON.stringify(detail.versions.find((v) => v.versionId === first.versionId).card), JSON.stringify(second.card), "matches a later get");
+            assertEqual(second.active, detail.activeVersionId === first.versionId, "active is the stored state");
+            // An import of known bytes does not reactivate; it reports the stored state too.
+            const imported = await publishCanvasAppHtml(deps, { html, name, viewer: V.alice, mode: "import" });
+            assertEqual(imported.status, "unchanged");
+            assertEqual(imported.active, true, "still the active version");
         } finally {
             await catalog.close();
         }
@@ -530,13 +583,17 @@ describe("canvas app registry: service", () => {
         }
     });
 
-    it("reservation object keys stay short and filesystem-safe for the longest accepted name and version", { timeout: TIMEOUT }, async () => {
+    it("reservation object keys stay short, and the longest accepted version exports and imports (review S01)", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
         const { catalog, deps } = await setup(env);
         try {
             const name = `car-long-${env.runId}-`.padEnd(64, "x").slice(0, 64);
-            const version = `1.0.0+${"x".repeat(116)}`;
+            // Review S01: 95 bytes is the longest version an exported archive can name
+            // (ustar member versions/<version>.html, last part <= 100 bytes).
+            const version = `1.0.0+${"x".repeat(89)}`;
+            assertEqual(Buffer.byteLength(version), 95);
             const html = page(name);
+            await expectCode(publishCanvasAppHtml(deps, { html, name, viewer: V.alice, version: `${version}x` }), "BAD_VERSION");
             const published = await publishCanvasAppHtml(deps, { html, name, viewer: V.alice, version });
             assertEqual(published.status, "published");
             const read = await readCanvasAppHtml(deps, { name }, V.alice, version);
@@ -544,6 +601,11 @@ describe("canvas app registry: service", () => {
             const filename = read.resolved.artifactFilename;
             assert(Buffer.byteLength(`${filename}.meta.json.tmp`) < 100, `the stored name is short: ${filename}`);
             assert(!filename.includes(version) && filename.startsWith(read.resolved.versionId), "named after the reservation, not the version text");
+            // The longest version exports and imports again.
+            const archive = await exportCanvasApp(deps, { name }, V.alice);
+            const imported = await importCanvasApp(deps, archive.bytes, V.bob);
+            assert(imported, "imported");
+            assertEqual((await readCanvasAppHtml(deps, { name }, V.bob, version)).html, html, "the 95-byte version round-trips through export and import");
         } finally {
             await catalog.close();
         }

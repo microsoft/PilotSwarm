@@ -87,7 +87,7 @@ test("relay: page <-> portal only; a page cannot forge wrapper-protocol messages
     w.dispatch(inner.contentWindow, { type: "canvas-kv", op: "list" });
     w.dispatch(inner.contentWindow, { type: "pse-wrapper-left" });
     w.dispatch(inner.contentWindow, { type: "pse-wrapper-ready" });
-    assert.deepEqual(w.toParent.slice(1), [{ type: "canvas-kv", op: "list" }], "forged wrapper messages from the page are dropped");
+    assert.deepEqual(w.toParent.slice(1), [{ type: "pse-wrapper-inner-loaded" }, { type: "canvas-kv", op: "list" }], "forged wrapper messages from the page are dropped");
     w.dispatch(w.parent, { type: "canvas-data", data: { a: 1 } });
     w.dispatch(w.parent, { type: "pse-wrapper-load", html: "<p>again</p>" });
     w.dispatch({}, { type: "canvas-data", data: { stranger: true } });
@@ -132,7 +132,7 @@ test("every surface that frames an untrusted page uses the one contract, never a
     assert.match(WEB_APP, /sandbox: isolated \? "allow-scripts" :/);
     // Share viewer: another user's app goes through the wrapper; relay is anchored.
     const share = APP.slice(APP.indexOf("function CanvasShareView"), APP.indexOf("export default function App"));
-    assert.match(share, /doc\?\.trust === "cross-owner"[\s\S]*?createIsolationWrapperUrl\(\)[\s\S]*?buildIsolatedInnerHtml\(html\)/);
+    assert.match(share, /doc\?\.trust !== "owner" && doc\?\.trust !== "agent"[\s\S]*?createIsolationWrapperUrl\(\)[\s\S]*?buildIsolatedInnerHtml\(html\)/, "the share viewer wraps every page not classified owner or agent (fail closed)");
     assert.match(share, /payload\.type === "pse-wrapper-left"/);
     assert.match(share, /if \(el\.dataset\.loaded\) \{ el\.dataset\.leftPage = "1"/, "a second load is a page that left");
     assert.match(share, /const frame = currentFrame\(\);[\s\S]*?postMessage\(\{ type: "canvas-kv-change"/, "KV changes go to the frame current at delivery time");
@@ -441,4 +441,25 @@ test("without crypto.subtle both canvas fetch paths still check the page bytes a
 test("a native digest failure is not hidden by the fallback", async () => {
     const failing = { digest: () => Promise.reject(new Error("native digest failed")) };
     await assert.rejects(sha256HexOfBytes(new Uint8Array([1]).buffer, failing), /native digest failed/);
+});
+
+test("the wrapper tells the portal once when its app page has loaded, so the portal can replay state (review S04)", () => {
+    const w = bootWrapper();
+    w.dispatch(w.parent, { type: "pse-wrapper-load", html: "<p>app</p>" });
+    const inner = w.inner();
+    assert.deepEqual(w.toParent, [{ type: "pse-wrapper-ready" }], "nothing before the page loads");
+    inner.fireLoad();
+    assert.deepEqual(w.toParent, [{ type: "pse-wrapper-ready" }, { type: "pse-wrapper-inner-loaded" }]);
+    w.dispatch(inner.contentWindow, { type: "pse-wrapper-inner-loaded" });
+    assert.equal(w.toParent.filter((m) => m.type === "pse-wrapper-inner-loaded").length, 1, "the page cannot forge it");
+    const WEB_APP = read("../../ui/react/src/web-app.js");
+    const APP = read("../src/App.jsx");
+    assert.match(WEB_APP, /payload\.type === "pse-wrapper-inner-loaded"[\s\S]{0,600}?fromLive && rev && state !== null[\s\S]{0,200}?type: "canvas-data", data: state, dataRev: rev/, "the session canvas replays its full state to the live frame");
+    assert.match(APP, /payload\.type === "pse-wrapper-inner-loaded"[\s\S]{0,300}?postState\(\)/, "the share view replays its live state");
+});
+
+test("a workspace call refused for consent from the staging frame answers NOT_READY, so the helper retries on the live frame (review S03)", () => {
+    const WEB_APP = read("../../ui/react/src/web-app.js");
+    assert.match(WEB_APP, /error\?\.code === "CANVAS_WS_CONSENT_REQUIRED" && !fromLive && !\/declined\/i\.test\(message\)\) \{\s*post\(\{ type: "canvas-ws-result", id, ok: false, error: "the canvas is still loading; retry in a moment", code: "NOT_READY" \}\);\s*return;/);
+    assert.match(WEB_APP, /error\?\.code === "CANVAS_WS_CONSENT_REQUIRED" && fromLive && !\/declined\/i\.test\(message\)/, "the live frame still opens the prompt");
 });
