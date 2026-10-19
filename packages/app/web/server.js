@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { WS_PATH } from "pilotswarm-sdk/api";
 import { buildSessionCatalogPgClientConfig } from "pilotswarm-sdk";
 import { getPortalAssetFile, getPortalBasePath, getPortalConfig, parsePortalLinkOrigins } from "./config.js";
-import { canonicalRequestPath, createPortalPaths, isLegacyPortalPath, isPortalNavigationPath, renderPortalShell } from "./portal-paths.js";
+import { createPortalPaths, isLegacyPortalPath, isPortalNavigationPath, renderPortalShell } from "./portal-paths.js";
 import { authenticateRequest, getAuthConfig } from "./auth.js";
 import { getPublicAuthContext } from "./auth/authz/engine.js";
 import { PortalRuntime } from "./runtime.js";
@@ -113,11 +113,11 @@ export function buildListenConnection(storageOptions, env = process.env) {
 
 export function installPortalBoundary(hostApp, paths) {
     hostApp.use((req, res, next) => {
-        if (canonicalRequestPath(req.url) === null) {
+        if (paths.requestPath(req.url) === null) {
             res.status(400).type("text/plain").send("Noncanonical portal path");
             return;
         }
-        if (!paths.contains(req.url)) {
+        if (!paths.containsRequest(req.url)) {
             res.status(404).type("text/plain").send("Not found");
             return;
         }

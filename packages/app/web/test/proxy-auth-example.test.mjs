@@ -95,6 +95,26 @@ async function fixture(t, options) {
 }
 
 for (const basePath of ["/", "/portal", "/tools/agents"]) {
+    test(`demo forwards encoded API parameters without weakening request guards under ${basePath}`, async (t) => {
+        const f = await fixture(t, { basePath });
+        const session = await login(f);
+        const target = `${f.proxy.paths.mountPath}/api/v1/graph/namespaces/corpus%2Facme`;
+        for (const method of ["GET", "DELETE"]) {
+            const response = await request(f.origin, target, { method, headers: { cookie: session.cookie, origin: f.origin } });
+            assert.equal(response.status, 200);
+            assert.equal(f.calls.at(-1).url, target, "encoded bytes reach the upstream unchanged");
+            assert.equal(f.calls.at(-1).principal, "demo-alice");
+        }
+        const calls = f.calls.length;
+        assert.equal((await request(f.origin, target, { method: "DELETE", headers: { cookie: session.cookie } })).status, 403);
+        for (const suffix of [
+            "/a%2fb", "/api/v1/graph/namespaces/%2e%2e", "/api/v1/graph/namespaces/..%2F..",
+            "/api/v1/graph/namespaces/corpus%252Facme", "/api/v1/graph/namespaces/corpus%5Cacme",
+        ]) assert.equal((await request(f.origin, `${f.proxy.paths.mountPath}${suffix}`, { headers: { cookie: session.cookie } })).status, 400, suffix);
+        assert.equal(f.calls.length, calls);
+        assert.equal(await upgradeStatus(f, session, target), 400, "socket upgrade paths retain strict canonicalization");
+    });
+
     test(`signed demo HTTP and both sockets work beneath ${basePath}`, { timeout: 15_000 }, async (t) => {
         const f = await fixture(t, { basePath });
         const session = await login(f);

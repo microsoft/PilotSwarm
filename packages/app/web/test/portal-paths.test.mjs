@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
     canonicalRequestPath, composePortalAuthConfig, composePortalBranding, createPortalPaths, getBrowserPortalPaths,
-    isLegacyPortalPath, isPortalNavigationPath, normalizePortalBasePath, renderPortalShell,
+    isLegacyPortalPath, isPortalNavigationPath, normalizePortalBasePath, renderPortalShell, safePortalReturnUrl,
 } from "../portal-paths.js";
 
 test("base configuration has one canonical root, mount and slash-terminated entry", () => {
@@ -71,6 +71,37 @@ test("Unicode lookalikes are data, never normalized separators or dot segments",
     }
     assert.equal(paths.path("/reports/caf%C3%A9?opaque=%2f#section"), "/portal/reports/caf%C3%A9?opaque=%2f#section");
     assert.equal(canonicalRequestPath("/portal/100%25.txt"), "/portal/100%25.txt");
+});
+
+test("encoded slashes are API parameter data, never navigation or nested-escape aliases", () => {
+    for (const base of ["/", "/portal", "/tools/agents"]) {
+        const paths = createPortalPaths(base);
+        for (const parameter of ["corpus%2Facme", "corpus%2facme", "corpus%2Facme%2Fdocs"]) {
+            const target = `${paths.mountPath}/api/v1/graph/namespaces/${parameter}`;
+            assert.equal(paths.requestPath(target), target);
+            assert.equal(paths.containsRequest(target), true);
+            assert.equal(canonicalRequestPath(target), null);
+            assert.equal(paths.contains(target), false);
+            assert.equal(paths.localPath(target), null);
+            assert.equal(paths.redirect(target), null);
+            assert.equal(isPortalNavigationPath(target), false);
+            assert.equal(safePortalReturnUrl(target, paths), paths.entryPath);
+            assert.throws(() => paths.path(`/api/v1/graph/namespaces/${parameter}`), /canonical/u);
+        }
+        for (const parameter of [
+            "%2e%2e", "..%2F..", "corpus%2F..", ".%2Facme", "corpus%2F%2Facme",
+            "%2Facme", "corpus%2F", "corpus%5Cacme", "corpus%00acme", "corpus%0Aacme",
+            "corpus%252Facme", "corpus%25%32%46acme", "corpus%2F%252e%252e",
+            "corpus%252F%252e%252e", "corpus%2Facme%2541", "%zz", "%ff",
+        ]) assert.equal(paths.requestPath(`${paths.mountPath}/api/v1/graph/namespaces/${parameter}`), null, parameter);
+        for (const suffix of ["/a%2fb", "/apish/a%2fb", "/api%2Fv1/a%2fb", "/%61pi/a%2fb", "/API/a%2fb"]) {
+            assert.equal(paths.requestPath(`${paths.mountPath}${suffix}`), null, suffix);
+        }
+        if (paths.mountPath) {
+            assert.equal(paths.requestPath("/api/v1/graph/namespaces/corpus%2Facme"), null);
+            assert.equal(paths.requestPath(`${paths.mountPath}ish/api/v1/graph/namespaces/corpus%2Facme`), null);
+        }
+    }
 });
 
 test("only navigation-shaped paths can fall through to the portal shell", () => {

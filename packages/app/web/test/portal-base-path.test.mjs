@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import express from "express";
 import { WebSocket } from "ws";
 import { createPortalPaths } from "../portal-paths.js";
+import { buildOperationRequest } from "../../../sdk/api/src/protocol.js";
 
 const savedEnv = new Map();
 let installPortalBoundary, installPortalStatic, installPortalDiscoveryRoutes, installJsonBodyLimits;
@@ -47,7 +48,7 @@ after(async () => {
     if (distDir) await rm(distDir, { recursive: true });
 });
 
-async function harness(t, base, { bodyOnly = false } = {}) {
+async function harness(t, base, { bodyOnly = false, role = "user" } = {}) {
     process.env.PORTAL_BASE_PATH = base;
     const paths = createPortalPaths(base);
     const host = express();
@@ -74,7 +75,7 @@ async function harness(t, base, { bodyOnly = false } = {}) {
             // This fixture checks router dispatch, not Entra token verification.
             requireAuth(req, _res, next) {
                 req.auth = { principal: { provider: "none", subject: "fixture" },
-                    authorization: { allowed: true, role: "user", matchedGroups: [] } };
+                    authorization: { allowed: true, role, matchedGroups: [] } };
                 next();
             },
         }));
@@ -130,6 +131,41 @@ function rawRequest(server, target, { upgrade = false } = {}) {
 }
 
 for (const base of ["/", "/portal", "/tools/agents"]) {
+    test(`graph namespace slash parameters reach the real API router under ${base}`, async (t) => {
+        const { paths, origin, server, calls } = await harness(t, base, { role: "admin" });
+        for (const name of ["getGraphNamespace", "deleteGraphNamespace"]) {
+            const operation = buildOperationRequest(name, { namespace: "corpus/acme" });
+            assert.match(operation.path, /corpus%2Facme$/u);
+            const response = await fetch(`${origin}${paths.mountPath}${operation.path}`, { method: operation.method });
+            assert.equal(response.status, 200, name);
+            await response.arrayBuffer();
+            assert.deepEqual(calls.at(-1), { name, params: { namespace: "corpus/acme" } });
+        }
+        assert.equal(calls.length, 2, "only the fixture runtime receives the operations; no live graph is modified");
+        for (const parameter of [
+            "%2e%2e", "..%2F..", "corpus%2F..", "corpus%2F%2Facme", "corpus%5Cacme",
+            "corpus%00acme", "corpus%252Facme", "corpus%2F%252e%252e",
+        ]) {
+            assert.equal((await rawRequest(server, `${paths.mountPath}/api/v1/graph/namespaces/${parameter}`)).status, 400, parameter);
+        }
+        const unsafeId = await fetch(`${origin}${paths.mountPath}/api/v1/sessions/part%2Fpart`);
+        assert.equal(unsafeId.status, 400, "the API router still rejects slashes in session IDs");
+        await unsafeId.arrayBuffer();
+        assert.equal(calls.length, 2, "invalid paths never reach runtime dispatch");
+    });
+
+    test(`encoded graph parameters do not bypass namespace-delete authorization under ${base}`, async (t) => {
+        const { paths, origin, calls } = await harness(t, base);
+        const target = `${origin}${paths.mountPath}/api/v1/graph/namespaces/corpus%2Facme`;
+        const read = await fetch(target);
+        assert.equal(read.status, 200);
+        await read.arrayBuffer();
+        const denied = await fetch(target, { method: "DELETE" });
+        assert.equal(denied.status, 403);
+        await denied.arrayBuffer();
+        assert.deepEqual(calls, [{ name: "getGraphNamespace", params: { namespace: "corpus/acme" } }]);
+    });
+
     test(`actual discovery routes and async Entra composition under ${base}`, async (t) => {
         const { paths, origin, calls } = await harness(t, base);
         const headers = { "x-forwarded-host": "PORTAL.example.invalid", "x-forwarded-proto": "https" };

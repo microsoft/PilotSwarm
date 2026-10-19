@@ -205,14 +205,14 @@ export async function createProxyAuthExample({
     }
 
     async function handle(req, res) {
-        checkRequest(req, origin);
+        checkRequest(req, origin, { paths });
         const pathname = req.url.split("?", 1)[0];
         if (pathname === `${AUTH_PATH}/signed-out` || (pathname === "/" && paths.mountPath)) {
             if (!["GET", "HEAD"].includes(req.method)) throw new RequestError(405, "Method not supported.");
             return page(res, "PilotSwarm proxy-auth demo", `<a href="${AUTH_PATH}/login">Sign in to the demo</a> <a href="${paths.entryPath}">Open portal</a>`);
         }
         if (pathname.startsWith(`${AUTH_PATH}/`)) return authPage(req, res, pathname);
-        if (!paths.contains(req.url)) throw new RequestError(404, "Not found.");
+        if (!paths.containsRequest(req.url)) throw new RequestError(404, "Not found.");
         if (!ready) throw new RequestError(503, "The demo portal is not ready.");
         const current = findSession(req);
         if (!current) {

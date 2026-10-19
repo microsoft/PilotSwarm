@@ -14,7 +14,7 @@ export function normalizePortalBasePath(value = "/") {
     return base;
 }
 
-function canonicalSegment(segment) {
+function canonicalSegment(segment, allowEncodedSlash = false) {
     let decoded;
     try {
         decoded = decodeURIComponent(segment);
@@ -25,7 +25,10 @@ function canonicalSegment(segment) {
     // Inspect nested escapes without using their decoded value for routing.
     // Each pass shrinks the input; cap nesting rather than normalizing aliases.
     for (let depth = 0; depth < 8; depth++) {
-        if (decoded === "." || decoded === ".." || /[/\\]/u.test(decoded) || CONTROL.test(decoded)) return false;
+        if (decoded === "." || decoded === ".." || decoded.includes("\\") || CONTROL.test(decoded)) return false;
+        if (decoded.includes("/") && (!allowEncodedSlash || depth !== 0
+            || decoded.split("/").some((part) => !part || part === "." || part === "..")
+            || /%[0-9a-f]{2}/iu.test(decoded))) return false;
         const next = decoded.replace(/%([0-9a-f]{2})/giu, (_match, hex) => String.fromCharCode(Number.parseInt(hex, 16)));
         if (next === decoded) return true;
         decoded = next;
@@ -35,10 +38,15 @@ function canonicalSegment(segment) {
 
 /** Inspect the original request target before any URL or router normalization. */
 export function canonicalRequestPath(rawUrl) {
+    return inspectRequestPath(rawUrl);
+}
+
+function inspectRequestPath(rawUrl, apiPrefix) {
     if (typeof rawUrl !== "string" || !rawUrl.startsWith("/") || CONTROL.test(rawUrl)) return null;
     const pathname = rawUrl.split("?", 1)[0];
     if (pathname.includes("#") || pathname.includes("\\") || pathname.includes("//") || pathname.includes(" ")) return null;
-    if (!pathname.split("/").every(canonicalSegment)) return null;
+    const allowEncodedSlash = apiPrefix !== undefined && pathname.startsWith(apiPrefix);
+    if (!pathname.split("/").every((segment) => canonicalSegment(segment, allowEncodedSlash))) return null;
     return pathname;
 }
 
@@ -47,9 +55,22 @@ export function createPortalPaths(value = "/") {
     const mountPath = basePath === "/" ? "" : basePath;
     const entryPath = `${mountPath}/`;
 
-    function contains(rawUrl) {
-        const pathname = canonicalRequestPath(rawUrl);
+    function withinMount(pathname) {
         return pathname !== null && (!mountPath || pathname === mountPath || pathname.startsWith(entryPath));
+    }
+
+    function contains(rawUrl) {
+        return withinMount(canonicalRequestPath(rawUrl));
+    }
+
+    // API parameters are decoded by the router, not normalized into path separators.
+    // Navigation, redirects and return targets keep the stricter validator.
+    function requestPath(rawUrl) {
+        return inspectRequestPath(rawUrl, `${mountPath}/api/`);
+    }
+
+    function containsRequest(rawUrl) {
+        return withinMount(requestPath(rawUrl));
     }
 
     function localPath(rawUrl) {
@@ -70,7 +91,7 @@ export function createPortalPaths(value = "/") {
         return `${entryPath}${rawUrl.slice(pathname.length)}`;
     }
 
-    return Object.freeze({ basePath, mountPath, entryPath, contains, localPath, path, redirect });
+    return Object.freeze({ basePath, mountPath, entryPath, contains, localPath, path, redirect, requestPath, containsRequest });
 }
 
 export function isLegacyPortalPath(rawUrl) {

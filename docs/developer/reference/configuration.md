@@ -198,6 +198,12 @@ invalid. Requests must remain within the exact boundary: `/tools/agents2`
 is not this portal. An unrelated root landing page stays with the front proxy.
 Do not derive the base from forwarded headers or the current deep-link path.
 
+**A base path is not a browser security boundary.** Only host trusted
+applications on the same origin as the portal. A sibling application can
+access same-origin storage and make authenticated portal requests; a cookie
+Path is not an isolation boundary. Use a separate origin for an untrusted
+application, not another path on the portal's origin.
+
 Register the canonical prefixed entry as the Entra SPA callback. A root
 callback is composed with the configured prefix; an explicitly non-root
 callback is retained. Root hosting keeps its existing callback unchanged.

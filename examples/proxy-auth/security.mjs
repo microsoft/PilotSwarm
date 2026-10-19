@@ -43,9 +43,10 @@ export function rawHeader(req, name) {
     return values[0];
 }
 
-export function checkRequest(req, origin, { upgrade = false } = {}) {
+export function checkRequest(req, origin, { upgrade = false, paths = createPortalPaths() } = {}) {
     if (rawHeader(req, "host") !== origin.host) throw new RequestError(421, "Unexpected Host.");
-    if (canonicalRequestPath(req.url) === null) throw new RequestError(400, "Non-canonical request target.");
+    const pathname = upgrade ? canonicalRequestPath(req.url) : paths.requestPath(req.url);
+    if (pathname === null) throw new RequestError(400, "Non-canonical request target.");
     if (!["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"].includes(req.method)) {
         throw new RequestError(405, "Method not supported.");
     }
