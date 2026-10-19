@@ -311,7 +311,7 @@ complete retained history?*
 | `null` | This **is** the complete retained history. | Nothing. |
 | `max_events` | The cap cut it. | Re-request with `to_seq: next_to_seq`. |
 | `range_bound` | Your own `from_seq`/`to_seq` defined the edges. | Widen the range if you wanted more. |
-| `byte_budget` | The assembled transcript exceeded the response ceiling and rows were dropped. | Narrow `event_types`, or request a smaller window. |
+| `byte_budget` | The assembled transcript exceeded the response ceiling, so rows were dropped — or, when a single event is itself larger than the ceiling, that row was delivered **without its payload**. | Narrow `event_types`, or request a smaller window. For one oversized event, read it with `get_session_events`, which can return it on a page of its own. |
 | `drain_incomplete` | The walk stopped without reaching the oldest row for another reason — see `stop_reason`. | Treat the result as partial; do not infer completeness. |
 
 `null` is a positive claim and is emitted only when the drain actually reached

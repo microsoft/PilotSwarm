@@ -456,6 +456,12 @@ export function summarizeTranscriptRedactions(events: Array<Record<string, any>>
     let echo = 0;
     let unavailable = 0;
     for (const event of events) {
+        // A row THIS READER stripped for size is not a write-time omission, and
+        // must not be reported as one. Its data is null, so the classifier would
+        // otherwise call it `absent` and it would surface as payload_unavailable
+        // — telling the caller the payload was never stored when in fact we
+        // declined to send it. The byte cut is reported by truncated_reason.
+        if (event.payloadOmitted) continue;
         const kind = classifyStoredOmission(event);
         if (kind === "sdk_echo") {
             echo++;
@@ -1987,6 +1993,27 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                     reachedOldest = false;
                     built = build();
                 }
+                // LAST ROW LARGER THAN THE CEILING. Dropping rows cannot help once
+                // one remains, and refusing here would be a dead end rather than a
+                // limit: a session whose NEWEST event is large — a big final tool
+                // result is the ordinary case — could never be transcribed at all,
+                // while the paged reader handled it fine.
+                //
+                // So do what the paged reader already does for an oversized record:
+                // deliver it WITHOUT its payload rather than not at all. The caller
+                // still learns the event happened, when, and of what type, and
+                // truncated_reason already says byte_budget. summarizeTranscriptRedactions
+                // skips payload-omitted rows, so this is not misreported as a
+                // write-time omission.
+                if (built.bytes > PAGE_BYTES_MAX && events.length === 1 && !events[0]!.payloadOmitted) {
+                    const only = events[0]!;
+                    const size = Buffer.byteLength(JSON.stringify(only.data ?? null), "utf8");
+                    events = [{ ...only, data: null, payloadOmitted: { kind: "byte_budget", encodedBytes: size } }];
+                    truncatedReason = "byte_budget";
+                    reachedOldest = false;
+                    built = build();
+                }
+
                 if (built.bytes > PAGE_BYTES_MAX) {
                     return {
                         content: [{

@@ -264,6 +264,42 @@ async function run() {
             missing.isError === true && /not found/.test(textOf(missing)), textOf(missing).slice(0, 100));
     }
 
+    // ── 9. a single event larger than the ceiling is a LIMIT, not a dead end ──
+    //
+    // A session whose newest event is huge - a big final tool result is the
+    // ordinary case - must still be transcribable. Dropping rows cannot help
+    // once one remains, so the row is delivered WITHOUT its payload, exactly as
+    // the paged reader does. Refusing instead would make such a session
+    // permanently untranscribable while the paged reader handled it fine.
+    {
+        const huge = "x".repeat(1024 * 1024 + 4096);
+        const all = [ev(1000, huge)];
+        const handler = captureSessionTool("get_session_transcript", makeServerContext({ mgmt: sessionMgmt(all) }));
+        const res = await handler({ session_id: SESSION });
+        const body = res.isError ? null : bodyOf(res);
+        record("an oversized single event is delivered, not refused",
+            body !== null && body.count === 1,
+            res.isError ? `refused: ${textOf(res).slice(0, 140)}` : `count=${body?.count}`);
+        record("the oversized row is delivered with its payload omitted for size",
+            body !== null && body.events?.[0]?.payloadOmitted?.kind === "byte_budget"
+            && body.events?.[0]?.data === null,
+            body ? JSON.stringify(body.events?.[0]?.payloadOmitted) : "n/a");
+        record("a byte cut is reported as truncated_reason byte_budget",
+            body !== null && body.receipt.truncated_reason === "byte_budget",
+            body ? `${body.receipt.truncated_reason}` : "n/a");
+        // The anti-misreport assertion. The stripped row has data === null, so a
+        // naive redaction pass would classify it 'absent' and report
+        // payload_unavailable - telling the caller the payload was never stored
+        // when in truth we declined to send it.
+        record("a reader-side byte cut is NOT reported as a write-time redaction",
+            body !== null && body.redactions.payload_unavailable === 0
+            && body.redactions.by_seq.length === 0,
+            body ? JSON.stringify(body.redactions) : "n/a");
+        record("the response respects the ceiling after the cut",
+            body !== null && Buffer.byteLength(textOf(res), "utf8") <= 1024 * 1024,
+            `bytes=${Buffer.byteLength(textOf(res), "utf8")}`);
+    }
+
     const failed = results.filter((r) => !r.ok).length;
     console.log(failed === 0 ? "\nall passed" : `\n${failed} failed`);
     process.exit(failed === 0 ? 0 : 1);
