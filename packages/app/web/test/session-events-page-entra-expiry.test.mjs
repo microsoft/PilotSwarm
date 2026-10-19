@@ -262,7 +262,7 @@ test("REAL EXPIRY: a wrong-AUDIENCE token is rejected for the audience, proving 
 
     await withProvider(t, { tenantId, keys: [jwk] }, async ({ provider, errors, fetchCalls }) => {
         const token = await sign(privateKey, {
-            issuer: issuerFor(tenantId), audience: "99999999-9999-4999-8999-999999999999",
+            issuer: issuerFor(tenantId), audience: "99999999-8888-7777-6666-555555555555",
         });
         const principal = await provider.authenticateRequest(token);
 
