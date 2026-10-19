@@ -458,8 +458,20 @@ export function turnsStarted(runtime: DurableSessionRuntime): number {
     return runtime.turnsStarted ?? 0;
 }
 
-/** Timer items whose only effect is on the hold window or an agent wait; they run no turn. */
-const HOLD_TIMER_TYPES = new Set(["idle", "input-grace", "agent-poll"]);
+/** Timer items whose only effect is on the hold window; they run no turn. */
+const HOLD_TIMER_TYPES = new Set(["idle", "input-grace"]);
+
+/**
+ * 1.0.82: whether a queued timer item is stale while a live timer is released
+ * for it. Idle and input-grace items only act on the hold window, which the
+ * live timer owns. An agent-poll item is stale only when no agent wait is
+ * live: while one is, the poll is what resolves it or arms its next poll.
+ */
+function isStaleWhileReleased(runtime: DurableSessionRuntime, item: any): boolean {
+    const type = item?.timer?.type;
+    if (HOLD_TIMER_TYPES.has(type)) return true;
+    return type === "agent-poll" && !runtime.state.waitingForAgentIds;
+}
 
 /**
  * 1.0.82 (issue 192): called by the run loop after every decide, and before
@@ -1208,11 +1220,12 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
             case "timer": {
                 const kind = timerItemKind(item);
                 if (kind) removeQueuedTimerItemsOfKind(runtime, kind);
-                // 1.0.82: an idle, input-grace or agent-poll item that runs
-                // while a live timer is released for it is stale: it would
-                // release the worker or arm its own timer in place of the live
-                // one. The live timer is armed again after decide.
-                if (runtime.releasedForQueuedWork && HOLD_TIMER_TYPES.has(item.timer?.type)) {
+                // 1.0.82: an idle or input-grace item, or an agent-poll item
+                // with no live agent wait, that runs while a live timer is
+                // released for it is stale: it would release the worker or arm
+                // its own timer in place of the live one. The live timer is
+                // armed again after decide.
+                if (runtime.releasedForQueuedWork && isStaleWhileReleased(runtime, item)) {
                     ctx.traceInfo(`[decide] a queued ${item.timer.type} item is stale while the ${runtime.releasedForQueuedWork.timer.type} timer is live; dropped it`);
                     break;
                 }

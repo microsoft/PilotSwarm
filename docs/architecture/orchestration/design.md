@@ -252,11 +252,17 @@ outcome: completed, gate-refused, a returned error or a thrown failure.
 | no turn, and a follow-up (not held by an agent wait) or queued tool actions are now pending | the record is kept, so that work runs next instead of waiting behind the old timer; its turn settles the record |
 | no turn otherwise (the prompt was cancelled, or the timer item ran no turn) | the released timer is armed again exactly as it was; the remaining time the release saved, and an agent wait it ended, are restored |
 
-While a record exists, `decide` drops a queued `idle`, `input-grace` or
-`agent-poll` item instead of running it: the live timer was released for it,
-and running it would release the worker or arm its own timer in place of the
-live one. The record lives in one execution only; continue-as-new never
-carries it.
+While a record exists, `decide` drops a queued `idle` or `input-grace` item,
+and an `agent-poll` item when no agent wait is live, instead of running it:
+the live timer was released for it, and running it would release the worker
+or arm its own timer in place of the live one. While an agent wait is live, a
+queued poll still runs: it is what resolves the wait or arms its next poll.
+The record lives in one execution only; continue-as-new never carries it.
+
+In 1.0.82 a model switch or a regeneration flip that clears an `agent-poll`
+timer also ends the agent wait (outside a graceful shutdown). Before, the
+wait ids rode the continue-as-new without a poll, so the new execution held
+its own continue or grounding prompt and continued as new without running it.
 
 ### KV FIFO buckets
 

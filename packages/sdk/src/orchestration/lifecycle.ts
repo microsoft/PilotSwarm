@@ -1129,9 +1129,20 @@ function* captureModelSwitchInterruptedTimer(runtime: DurableSessionRuntime, new
             runtime.state.activeTimer = null;
             return;
         }
+        case "agent-poll":
+            runtime.ctx.traceInfo(`[orch-cmd] ${notePrefix}; clearing active ${timer.type} timer`);
+            runtime.state.activeTimer = null;
+            // 1.0.82: the agent wait ends with its poll. Kept, it held the
+            // continue or grounding prompt with nothing left to settle the
+            // wait, and each execution continued as new without running it.
+            // A graceful shutdown keeps its wait.
+            if (!runtime.state.pendingShutdown && runtime.state.waitingForAgentIds) {
+                runtime.ctx.traceInfo(`[orch-cmd] ${notePrefix}; ending the agent wait so the next turn runs`);
+                runtime.state.waitingForAgentIds = null;
+            }
+            return;
         case "cron_at":
         case "idle":
-        case "agent-poll":
         case "input-grace":
         case "workspace_retry":
             runtime.ctx.traceInfo(`[orch-cmd] ${notePrefix}; clearing active ${timer.type} timer`);
