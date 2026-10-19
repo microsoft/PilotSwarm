@@ -277,11 +277,26 @@ and hands back one chronological transcript.
 }
 ```
 
+> **Two points refine the original design, and both change what you get.**
+> They are called out here, in the tool's own description, and in the pull
+> request, because each one would otherwise be a surprise discovered at the
+> worst moment.
+>
+> 1. **The drain runs backward**, so a capped drain returns the *newest*
+>    events, not the first ones.
+> 2. **`truncated_reason` has two values beyond the original three**
+>    (`byte_budget`, `drain_incomplete`), because reporting `null` for a cut
+>    that actually happened would be a false completeness claim.
+>
+> Both are explained immediately below.
+
 **It drains backward, and that is not an implementation detail you can
 ignore.** A forward read cannot reach the oldest retained row at all:
 `after_seq = 0` does not mean "from the beginning", it falls through to the
-latest-page branch (the latest-page trap in step 5). Backward paging has no
-such boundary, so the tool starts at the newest end and works down.
+latest-page branch (the latest-page trap in step 5). The guard is in the
+stored procedures themselves — `p_after_seq > 0` — so this is a property of
+the data layer, not a choice this tool could make differently. Backward paging
+has no such boundary, so the tool starts at the newest end and works down.
 
 The visible consequence: **when a session is longer than `max_events` you get
 the most recent ones, not the first ones.** For diagnostics that is usually
@@ -302,6 +317,14 @@ complete retained history?*
 `null` is a positive claim and is emitted only when the drain actually reached
 the oldest retained row with no range bound in play. Every other outcome names
 a cause, so a transcript is never quietly short.
+
+The last two rows — `byte_budget` and `drain_incomplete` — are the second
+refinement flagged above. The original design listed only `max_events`,
+`range_bound` and `null`, but the code can genuinely produce both of these
+outcomes, and the only alternative to naming them is to report `null` for a
+transcript that was in fact cut. `byte_budget` deliberately reuses the word
+`get_session_events` page mode already emits for the same event, rather than
+introducing a second vocabulary for one concept.
 
 `next_to_seq` is exclusive of everything already delivered, so continuing with
 `to_seq: next_to_seq` neither repeats nor skips a row.
