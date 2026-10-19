@@ -1518,6 +1518,8 @@ function sqlForSchema(schema: string) {
     return {
         schema,
         fn: {
+            packageCapabilitiesCas:    `${s}.cms_pkg_capabilities_cas`,
+            packageCapabilitiesUpdate: `${s}.cms_pkg_capabilities_update`,
             liveAvailable:             `${s}.cms_live_available`,
             publishLive:               `${s}.cms_publish_live`,
             getLive:                   `${s}.cms_get_live`,
@@ -2181,15 +2183,12 @@ export class PgSessionCatalog implements SessionCatalog {
         try {
             await client.query("BEGIN; SET LOCAL statement_timeout='2s'; SET LOCAL lock_timeout='1s'");
             await client.query(`SELECT "${this.sql.schema}".cms_package_runtime_barrier()`);
-            const { rowCount } = await client.query(`
-                INSERT INTO "${this.sql.schema}".session_capabilities(session_id, revision, state)
-                SELECT $1, $3, $4::jsonb WHERE $2::bigint = 0
-                ON CONFLICT(session_id) DO UPDATE SET revision = $3, state = $4::jsonb
-                WHERE session_capabilities.revision = $2`, [sessionId, expectedRevision, normalized.revision, JSON.stringify(normalized)]);
+            const { rowCount } = await client.query(`SELECT * FROM ${this.sql.fn.packageCapabilitiesCas}($1,$2,$3,$4)`,
+                [sessionId, expectedRevision, normalized.revision, JSON.stringify(normalized)]);
             let changed = Boolean(rowCount);
             if (!changed && expectedRevision !== 0) {
-                const result = await client.query(`UPDATE "${this.sql.schema}".session_capabilities SET revision=$3, state=$4::jsonb
-                    WHERE session_id=$1 AND revision=$2`, [sessionId, expectedRevision, normalized.revision, JSON.stringify(normalized)]);
+                const result = await client.query(`SELECT * FROM ${this.sql.fn.packageCapabilitiesUpdate}($1,$2,$3,$4)`,
+                    [sessionId, expectedRevision, normalized.revision, JSON.stringify(normalized)]);
                 changed = result.rowCount === 1;
             }
             if (changed) await this.packageRuntime.syncSelectionGrants(client, sessionId, normalized);

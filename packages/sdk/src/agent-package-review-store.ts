@@ -1,4 +1,5 @@
 import type { Pool } from "pg";
+import { packageRuntimeQuery } from "./package-runtime-query.js";
 import type { PackageRuntimeAuthority } from "./package-runtime-authority.js";
 import { inspectAgentPackageArtifact } from "./agent-package-authorization.js";
 import type {
@@ -47,16 +48,7 @@ export class PgAgentPackageReviewStore implements AgentPackageReviewCatalog {
 
     async list(actor: AgentPackageReviewActor): Promise<AgentPackageReviewCandidate[]> {
         this.requireAdmin(actor);
-        const query = {
-            text: `SELECT r.*, p.name, p.scope, p.owner_provider, p.owner_subject,
-                p.active_version_id, p.activation_revision, v.semver, v.created_by
-                FROM ${this.schema}.agent_package_reviews r
-                JOIN ${this.schema}.agent_package_versions v USING(version_id)
-                JOIN ${this.schema}.agent_packages p ON p.package_id = r.package_id
-                ORDER BY v.created_at DESC, r.version_id`,
-            query_timeout: 6_000,
-        };
-        const { rows } = await this.pool.query(query);
+        const { rows } = await packageRuntimeQuery(this.pool, this.schema, "reviews", [], 6_000);
         const candidates: AgentPackageReviewCandidate[] = rows.map((r: any) => ({
             packageId: r.package_id, versionId: r.version_id, sha256: r.sha256,
             name: r.name, semver: r.semver, scope: r.scope, publisher: r.created_by ?? null,
@@ -66,8 +58,7 @@ export class PgAgentPackageReviewStore implements AgentPackageReviewCatalog {
             activationRevision: Number(r.activation_revision), activeVersionId: r.active_version_id ?? null,
             approvalScope: "artifact-content",
         }));
-        if (this.runtime && (await this.pool.query("SELECT to_regclass($1) IS NOT NULL AS supported",
-            [`${this.schema}.package_runtime_legacy_workers`])).rows[0]?.supported) {
+        if (this.runtime && (await packageRuntimeQuery(this.pool, this.schema, "runtime_supported")).rows[0]?.supported) {
             for (const candidate of candidates) {
                 if (candidate.inspection?.executable) candidate.runtimeFencing = await this.runtime.fencingStatus(candidate);
             }
@@ -104,9 +95,8 @@ export class PgAgentPackageReviewStore implements AgentPackageReviewCatalog {
 
     async activationAudit(actor: AgentPackageReviewActor, packageId: string): Promise<Record<string, unknown>[]> {
         this.requireAdmin(actor);
-        const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.schema}.agent_package_activation_audit WHERE package_id=$1 ORDER BY audit_id`, [packageId]);
-        return rows;
+        const { rows } = await packageRuntimeQuery(this.pool, this.schema, "activation_audit", [packageId]);
+        return rows.map(row => ({ ...row, at: new Date(row.at) }));
     }
 
     async getSessionBinding(sessionId: string): Promise<SessionAgentPackageBinding | null> {
@@ -164,11 +154,7 @@ export class PgAgentPackageReviewStore implements AgentPackageReviewCatalog {
 
     async audit(actor: AgentPackageReviewActor, versionId: string): Promise<AgentPackageReviewAudit[]> {
         this.requireAdmin(actor);
-        const query = {
-            text: `SELECT * FROM ${this.schema}.agent_package_review_audit WHERE version_id = $1 ORDER BY audit_id`,
-            values: [versionId], query_timeout: 6_000,
-        };
-        const { rows } = await this.pool.query(query);
+        const { rows } = await packageRuntimeQuery(this.pool, this.schema, "review_audit", [versionId], 6_000);
         return rows.map((r: any) => ({
             auditId: String(r.audit_id), packageId: r.package_id, versionId: r.version_id, sha256: r.sha256,
             actor: { provider: r.actor_provider, subject: r.actor_subject }, at: new Date(r.at),
