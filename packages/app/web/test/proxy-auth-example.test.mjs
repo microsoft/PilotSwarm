@@ -137,6 +137,20 @@ for (const basePath of ["/", "/portal", "/tools/agents"]) {
     });
 }
 
+test("demo forms preserve same-origin Origin while other replies retain no-referrer", async (t) => {
+    const f = await fixture(t);
+    const signIn = await form(f);
+    assert.equal(signIn.response.headers["referrer-policy"], "same-origin");
+    const signed = await post(f, "login", signIn, { persona: "alice" });
+    assert.equal(signed.status, 303);
+    assert.equal(signed.headers["referrer-policy"], "no-referrer");
+    const signOut = await form(f, "logout", cookie(signed));
+    assert.equal(signOut.response.headers["referrer-policy"], "same-origin");
+    const jwks = await request(f.origin, "/example-auth/jwks");
+    assert.equal(jwks.status, 200);
+    assert.equal(jwks.headers["referrer-policy"], "no-referrer");
+});
+
 test("demo opt-in, loopback, bounds and cookie attributes are explicit", async () => {
     await assert.rejects(createProxyAuthExample(), /demo: true/u);
     for (const publicOrigin of ["http://localhost:3001", "http://0.0.0.0:3001", "https://example.invalid:3001", "http://127.0.0.1:3001/path"]) {

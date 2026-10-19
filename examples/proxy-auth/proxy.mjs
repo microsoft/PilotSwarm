@@ -30,6 +30,7 @@ function reply(res, status, body, headers = {}) {
 function page(res, title, content) {
     reply(res, 200, `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escapeHtml(title)}</title><body><h1>${escapeHtml(title)}</h1><p>Local persona demo only. Anyone on this machine can select a demo user. This is not a production identity service.</p>${content}</body></html>`, {
         "content-type": "text/html; charset=utf-8",
+        "referrer-policy": "same-origin",
         "content-security-policy": "default-src 'none'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
     });
 }
