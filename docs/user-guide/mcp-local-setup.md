@@ -79,6 +79,11 @@ one (`/…/pilotswarm/packages/app/mcp/dist/bin/pilotswarm-mcp.js`).
 - **Artifacts**: list/get/upload/delete session files.
 - **Knowledge**: facts CRUD, hybrid `search_facts`, `similar_facts`,
   graph search/neighbourhood/upserts, namespaces, embedder lifecycle.
+- **Session history**: `get_session_events` (one page at a time, with a
+  continuation receipt — use it to follow a live session or to decide page by
+  page) and `get_session_transcript` (walks the cursors for you and returns one
+  chronological transcript with a drain receipt, an explicit `truncated_reason`
+  and a redaction report).
 - **Observability & debugging**: `debug_session` (the agent-tuner's read-only
   evidence bundle — events, metrics, retrieval/graph usage, orchestration
   stats, execution history — in one call), `get_session_metrics`,
@@ -253,6 +258,70 @@ rather than stalling you. A byte cut does NOT by itself mean `has_more`: a
 final oversized record is fully dispatched, so a drain can end with
 `truncated_reason` set and `has_more` false. Follow `has_more`, not
 `truncated_reason`, to decide whether to continue.
+
+### 7. Or let the server do the paging: `get_session_transcript`
+
+Steps 5 and 6 walk the cursor yourself, which is what you want when you are
+following a live session or deciding page by page whether to keep going. When
+you just want the history, `get_session_transcript` performs the whole walk
+and hands back one chronological transcript.
+
+```jsonc
+{
+  "session_id": "…",
+  "format": "text",        // or "json" (default)
+  "max_events": 5000,      // default; ceiling 50000
+  "event_types": ["assistant.message"],  // optional slice
+  "from_seq": 1200,        // optional, inclusive
+  "to_seq": 1800           // optional, inclusive
+}
+```
+
+**It drains backward, and that is not an implementation detail you can
+ignore.** A forward read cannot reach the oldest retained row at all:
+`after_seq = 0` does not mean "from the beginning", it falls through to the
+latest-page branch (the latest-page trap in step 5). Backward paging has no
+such boundary, so the tool starts at the newest end and works down.
+
+The visible consequence: **when a session is longer than `max_events` you get
+the most recent ones, not the first ones.** For diagnostics that is usually
+what you want — the end of a run is where the failure is — but if you wanted
+the beginning, say so with `from_seq`/`to_seq`.
+
+`truncated_reason` answers one question: *is this less than the session's
+complete retained history?*
+
+| Value | Meaning | What to do |
+|---|---|---|
+| `null` | This **is** the complete retained history. | Nothing. |
+| `max_events` | The cap cut it. | Re-request with `to_seq: next_to_seq`. |
+| `range_bound` | Your own `from_seq`/`to_seq` defined the edges. | Widen the range if you wanted more. |
+| `byte_budget` | The assembled transcript exceeded the response ceiling and rows were dropped. | Narrow `event_types`, or request a smaller window. |
+| `drain_incomplete` | The walk stopped without reaching the oldest row for another reason — see `stop_reason`. | Treat the result as partial; do not infer completeness. |
+
+`null` is a positive claim and is emitted only when the drain actually reached
+the oldest retained row with no range bound in play. Every other outcome names
+a cause, so a transcript is never quietly short.
+
+`next_to_seq` is exclusive of everything already delivered, so continuing with
+`to_seq: next_to_seq` neither repeats nor skips a row.
+
+**`redactions` is a report, not an assurance.** It counts two write-time
+omissions observed in the rows you received:
+
+- `system_prompt_echo` — the Copilot SDK's full system prompt was summarized
+  before storage, so the complete text was never in the CMS to begin with.
+- `payload_unavailable` — no payload was stored for that row, reason unknown.
+
+Zero counts mean *nothing was omitted in these rows*. They do **not** mean the
+history was scanned and found clean: PilotSwarm performs no general
+secret-scrubbing of event payloads. Read the next section before drawing any
+conclusion from these numbers.
+
+Two notes on scope. `get_session_transcript` has no long-poll and no live
+follow — it is a point-in-time read, and the live-follow limit described above
+applies to it too. And a transcript filtered by `event_types` is a **slice**:
+the absence of a type says nothing about whether it occurred.
 
 ### What the omissions list is, and is not
 
