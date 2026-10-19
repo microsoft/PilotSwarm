@@ -67,6 +67,14 @@ export type SessionEventPageMode = "latest" | "forward" | "backward";
  *                        within the requested range.
  * - `read-view`        — consistent within one read view; later-committing
  *                        rows may still appear below the observed bound.
+ *                        It does NOT promise that a forward reader has seen
+ *                        every event: a row that commits after a newer one was
+ *                        already read becomes visible BELOW a cursor already
+ *                        advanced past it, and forward reads never return it.
+ *                        The row is retained — recover it by paging backward
+ *                        with `beforeSeq`, or by reading the history from its
+ *                        start. Note `afterSeq = 0` will not do it (see the
+ *                        mode note above: zero is a latest page).
  * - `scan`             — assembled across multiple requests; membership is
  *                        not frozen.
  *

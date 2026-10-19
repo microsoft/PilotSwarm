@@ -155,6 +155,25 @@ with `before_seq: <next_cursor>` while `has_more` is true.
 **Following forward (a running session).** Take `after_seq: <next_cursor>`
 from a forward page and re-read. Do not use `wait` with `page`.
 
+> **A forward reader can permanently miss an event.** An event takes its
+> sequence number when it is written, but becomes visible only when its
+> transaction commits, and two writers on one session can commit out of that
+> order. If a slower write takes `100` and a faster one takes `101` and commits
+> first, a read at that moment returns only `101`. Once you advance past it,
+> `100` becomes visible *below* your cursor and a forward read never returns
+> it.
+>
+> **Nothing is lost.** The event is retained; only forward following skipped
+> it. To recover, page backward with `before_seq`, or read the history from its
+> start — re-issuing `after_seq: 0` will *not* do it, because that is a latest
+> page (see above), not "from the beginning".
+>
+> This needs concurrent writers on one session and a read landing between the
+> two commits, so it is uncommon — but it gets more likely as a session gets
+> busier and as you poll more often. The page receipt never claims otherwise:
+> `completeness` stays `read-view`, which is a point-in-time view, not a
+> gap-free guarantee.
+
 **Keeping a live tail.** `next_cursor` is for walking *history*; it is null
 once `has_more` is false. To follow a session as it runs, keep your own
 high-water mark from **`range.to_seq`** of the newest page you received, and
@@ -162,6 +181,12 @@ high-water mark from **`range.to_seq`** of the newest page you received, and
 not that your position was lost. Re-read with `after_seq: <your high-water
 mark>`. A latest page starts a tail; its `next_direction` is backward and
 leads into history, not forward into new events.
+
+A live tail follows forward, so it carries the same limit as **Following
+forward** above: an event that commits after a newer one has already been read
+stays below your high-water mark and the tail will not return it. It is
+retained — recover it by paging backward with `before_seq`, or by reading the
+history from its start.
 
 **Invalid input is refused, not reinterpreted.** A non-integer `limit`, or a
 fractional or negative cursor, returns an error rather than being coerced into
