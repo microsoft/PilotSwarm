@@ -18,9 +18,9 @@ import { fileURLToPath } from "node:url";
 import {
     CROSS_OWNER_APP_CSP, CROSS_OWNER_WRAPPER_CSP, CROSS_OWNER_WRAPPER_HTML, crossOwnerWrapperHtml,
     CANVAS_WS_UPGRADE_CODE, CANVAS_WS_UPGRADE_ERROR, CANVAS_DOCUMENT_UPGRADE_CODE, CANVAS_DOCUMENT_UPGRADE_ERROR,
-    assertPageBytes, buildIsolatedInnerHtml, injectAfterDoctype, isCanvasSlotFilename, isWrapperControlMessage, sha256HexOfBytes,
+    assertPageBytes, buildIsolatedInnerHtml, injectAfterDoctype, isCanvasSlotFilename, isWrapperControlMessage, sha256HexJs, sha256HexOfBytes,
 } from "../../ui/react/src/canvas-isolation.js";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes, randomInt } from "node:crypto";
 
 const read = (rel) => fs.readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
 
@@ -346,4 +346,99 @@ test("a trusted bootstrap goes after the policy and before the page", () => {
     assert.ok(html.indexOf("Content-Security-Policy") < html.indexOf("bootstrap()"));
     assert.ok(html.indexOf("bootstrap()") < html.indexOf("page()"));
     assert.ok(!buildIsolatedInnerHtml("<p>x</p>").includes("bootstrap"), "nothing is injected without one");
+});
+
+// A portal served over http on a host other than localhost is not a secure
+// context, so the browser gives it no crypto.subtle. Before the fallback, every
+// canvas whose draw event carried a page hash failed to load there.
+async function withoutSubtle(fn) {
+    const original = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+    Object.defineProperty(globalThis, "crypto", { value: { getRandomValues: (a) => a }, configurable: true, writable: true });
+    try {
+        assert.equal(globalThis.crypto.subtle, undefined);
+        return await fn();
+    } finally {
+        Object.defineProperty(globalThis, "crypto", original);
+    }
+}
+
+const nodeSha = (bytes) => createHash("sha256").update(bytes).digest("hex");
+
+test("the JS SHA-256 matches the FIPS 180-4 vectors", () => {
+    const enc = new TextEncoder();
+    assert.equal(sha256HexJs(enc.encode("")), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+    assert.equal(sha256HexJs(enc.encode("abc")), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    assert.equal(sha256HexJs(enc.encode("abcdbcdecdefdefgefghfghighijhijkijkljklmklmnlmnomnopnopq")),
+        "248d6a61d20638b8e5c026930c3e6039a33ce45964ff2167f6ecedd419db06c1");
+    assert.equal(sha256HexJs(new Uint8Array(1_000_000).fill(0x61)), "cdc76e5c9914fb9281a1c7e284d73e67f1809a48a497200e046d39ccc7112cd0");
+});
+
+test("the JS SHA-256 equals node:crypto and native WebCrypto at every padding boundary, the 900 KB cap and random inputs", async () => {
+    const lengths = [0, 1, 55, 56, 57, 63, 64, 65, 119, 120, 121, 127, 128, 129, 1000, 65_537, 900_000];
+    for (const length of lengths) {
+        const bytes = Uint8Array.from({ length }, (_, i) => (i * 167 + 13) & 0xff);
+        const want = nodeSha(bytes);
+        assert.equal(sha256HexJs(bytes.buffer), want, `JS from an ArrayBuffer, ${length} bytes`);
+        assert.equal(sha256HexJs(bytes), want, `JS from a Uint8Array, ${length} bytes`);
+        const native = await sha256HexOfBytes(bytes.buffer);
+        assert.match(native, /^[0-9a-f]{64}$/);
+        assert.equal(native, want, `native WebCrypto, ${length} bytes`);
+    }
+    let seed = 0x181;
+    const next = () => (seed = (Math.imul(seed, 1103515245) + 12345) >>> 0);
+    for (let n = 0; n < 40; n++) {
+        const bytes = Uint8Array.from({ length: next() % 4097 }, () => next() >>> 24);
+        assert.equal(sha256HexJs(bytes), nodeSha(bytes), `seeded input ${n}, ${bytes.length} bytes`);
+    }
+    for (let n = 0; n < 20; n++) {
+        const bytes = randomBytes(randomInt(0, 4097));
+        assert.equal(sha256HexJs(bytes), nodeSha(bytes), `random input of ${bytes.length} bytes: ${bytes.toString("hex").slice(0, 64)}…`);
+    }
+    const backing = Uint8Array.from({ length: 100 }, (_, i) => i);
+    assert.equal(sha256HexJs(new DataView(backing.buffer, 7, 70)), nodeSha(backing.subarray(7, 77)), "a view hashes only its own bytes");
+});
+
+// The two canvas fetch paths, taken from web-app.js as written and run against
+// a stub transport: the owner/agent path and the cross-owner wrapper path.
+function canvasFetchPaths(body) {
+    const source = read("../../ui/react/src/web-app.js");
+    const fn = (name) => {
+        const start = source.indexOf(`function ${name}(`);
+        assert.ok(start >= 0, name);
+        return source.slice(start, source.indexOf("\n}\n", start) + 2);
+    };
+    const make = new Function("assertPageBytes", "createIsolationWrapperUrl", "buildIsolatedInnerHtml", "CANVAS_LINK_GUARD",
+        `${fn("fetchArtifactHtmlObjectUrl")}
+${fn("fetchCrossOwnerCanvas")}
+return { fetchArtifactHtmlObjectUrl, fetchCrossOwnerCanvas };`);
+    const paths = make(assertPageBytes, () => "blob:wrapper", buildIsolatedInnerHtml, "<script>guard()</script>");
+    const controller = { transport: { api: { downloadArtifactResponse: async () => new Response(body) } } };
+    return {
+        own: (sha) => paths.fetchArtifactHtmlObjectUrl(controller, "s1", "canvas.html", false, true, sha),
+        crossOwner: (sha) => paths.fetchCrossOwnerCanvas(controller, "s1", "canvas.html", false, sha),
+    };
+}
+
+test("without crypto.subtle both canvas fetch paths still check the page bytes and stay fail-closed", async () => {
+    const page = "<!doctype html><p>rev 3</p>";
+    const sha = nodeSha(page);
+    const wrong = nodeSha("<!doctype html><p>rev 4</p>");
+    await withoutSubtle(async () => {
+        assert.equal(await sha256HexOfBytes(new TextEncoder().encode(page).buffer), sha, "falls back to JS");
+        await assertPageBytes(new TextEncoder().encode(page).buffer, sha);
+        await assert.rejects(assertPageBytes(new TextEncoder().encode(page).buffer, wrong), /being redrawn/);
+        const { own, crossOwner } = canvasFetchPaths(page);
+        assert.match(await own(sha), /^blob:/, "own/agent path: the right bytes load");
+        const cross = await crossOwner(sha);
+        assert.equal(cross.url, "blob:wrapper", "cross-owner path: the right bytes load");
+        assert.match(cross.html, /<p>rev 3<\/p>/);
+        await assert.rejects(own(wrong), /being redrawn/, "own/agent path: wrong bytes are refused");
+        await assert.rejects(crossOwner(wrong), /being redrawn/, "cross-owner path: wrong bytes are refused");
+    });
+    assert.equal(typeof globalThis.crypto.subtle?.digest, "function", "crypto is restored");
+});
+
+test("a native digest failure is not hidden by the fallback", async () => {
+    const failing = { digest: () => Promise.reject(new Error("native digest failed")) };
+    await assert.rejects(sha256HexOfBytes(new Uint8Array([1]).buffer, failing), /native digest failed/);
 });
