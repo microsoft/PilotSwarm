@@ -9,7 +9,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { createRuntime } from "../../src/orchestration/runtime.ts";
-import { appendToFifo, decide, drain } from "../../src/orchestration/queue.ts";
+import { appendToFifo, decide, drain, settleQueuedWorkAfterDecide } from "../../src/orchestration/queue.ts";
 import { FIFO_BUCKET_COUNT, MAX_BUCKET_BYTES, NON_BLOCKING_TIMER_MS } from "../../src/orchestration/state.ts";
 
 vi.mock("../../src/session-proxy.js", () => ({
@@ -25,11 +25,13 @@ function harness(overrides = {}) {
     const results = [];
     const messages = [];
     const kv = new Map();
+    const errors = [];
     const clock = { now: 1_750_000_000_000 };
     let guid = 0;
     const ctx = {
         traceInfo() {},
         traceWarn() {},
+        traceError: message => errors.push(message),
         setCustomStatus() {},
         getValue: key => kv.get(key) ?? null,
         setValue: (key, value) => kv.set(key, value),
@@ -114,11 +116,22 @@ function harness(overrides = {}) {
             ...extra,
         };
     };
-    return { runtime, kv, clock, calls, turns, results, messages, drive, races, events, fifo, arm };
+    // One pass of the run loop: drain, decide, then settle what drain released.
+    const step = () => {
+        drive(drain(runtime));
+        const iterationBefore = runtime.state.iteration;
+        const didWork = drive(decide(runtime));
+        settleQueuedWorkAfterDecide(runtime, iterationBefore);
+        return didWork;
+    };
+    const h = { runtime, kv, clock, calls, turns, results, messages, errors, drive, races, events, fifo, arm, step };
+    return h;
 }
 
 const prompt = (text, extra = {}) => ({ kind: "prompt", prompt: text, bootstrap: false, ...extra });
 const cronItem = () => ({ kind: "timer", timer: { type: "cron", deadlineMs: 1, originalDurationMs: HOUR_MS, reason: "hourly" }, firedAtMs: 1 });
+const idleItem = () => ({ kind: "timer", timer: { type: "idle", deadlineMs: 1, originalDurationMs: 1_800_000, reason: "idle timeout" }, firedAtMs: 1 });
+const steer = (seq, text = `guidance ${seq}`) => ({ seq, text });
 
 describe("issue 192: queued work does not wait behind an armed timer", () => {
     it("R3, R4: a cron armed for an hour does not hold a queued prompt, and keeps its remaining time", () => {
@@ -262,5 +275,146 @@ describe("issue 192: nothing is dropped silently", () => {
         expect(overflow).toHaveLength(1);
         expect(overflow[0].data.clientMessageIds).toEqual(["late-1"]);
         expect(h.runtime.state.recentClientMessageIds).not.toContain("late-1");
+        expect(h.errors.some(m => m.includes("late-1"))).toBe(true);
+
+        // Room frees up; the same message sent again is accepted, not suppressed.
+        h.kv.delete("fifo.0");
+        h.messages.push({ prompt: `late ${"w".repeat(800)}`, clientMessageIds: ["late-1"] });
+        h.drive(drain(h.runtime));
+        expect(h.events().filter(e => e.eventType === "session.message_duplicate_suppressed")).toEqual([]);
+        expect(h.fifo().filter(x => x.clientMessageIds?.includes("late-1"))).toHaveLength(1);
+        expect(h.runtime.state.recentClientMessageIds).toContain("late-1");
+    });
+});
+
+describe("issue 192 review: a released timer is never stranded", () => {
+    it("a queued prompt cancelled before its turn leaves the cron armed as it was", () => {
+        const h = harness({ cronSchedule: { intervalSeconds: 3600, reason: "hourly" } });
+        h.arm("cron", 600_000);
+        const deadline = h.runtime.state.activeTimer.deadlineMs;
+        appendToFifo(h.runtime, [prompt("P", { clientMessageIds: ["p"] })]);
+        h.messages.push({ cancelPending: ["p"] });
+        h.step();
+        expect(h.turns).toHaveLength(0);
+        expect(h.runtime.state.activeTimer).toMatchObject({ type: "cron", deadlineMs: deadline });
+        expect(h.runtime.state.interruptedCronTimer).toBeNull();
+        expect(h.fifo()).toEqual([]);
+    });
+
+    it("a new prompt cancelled in the same pass leaves the wait armed as it was", () => {
+        const h = harness();
+        h.arm("wait", 600_000);
+        const deadline = h.runtime.state.activeTimer.deadlineMs;
+        h.messages.push({ prompt: "P", clientMessageIds: ["p"] }, { cancelPending: ["p"] });
+        h.step();
+        expect(h.turns).toHaveLength(0);
+        expect(h.runtime.state.activeTimer).toMatchObject({ type: "wait", deadlineMs: deadline });
+        expect(h.runtime.state.interruptedWaitTimer).toBeNull();
+    });
+
+    it("a workspace retry released for a cancelled prompt is armed again", () => {
+        const h = harness();
+        h.arm("workspace_retry", 600_000, { gate: "workspace" });
+        appendToFifo(h.runtime, [prompt("P", { clientMessageIds: ["p"] })]);
+        h.messages.push({ cancelPending: ["p"] });
+        h.step();
+        expect(h.turns).toHaveLength(0);
+        expect(h.runtime.state.activeTimer?.type).toBe("workspace_retry");
+    });
+
+    it("a queued timer item that runs no turn leaves the wait armed as it was", () => {
+        // The cron was cancelled after its fire was queued: the stale fire runs no turn.
+        const h = harness();
+        h.arm("wait", 600_000);
+        const deadline = h.runtime.state.activeTimer.deadlineMs;
+        appendToFifo(h.runtime, [cronItem()]);
+        h.step();
+        expect(h.turns).toHaveLength(0);
+        expect(h.runtime.state.activeTimer).toMatchObject({ type: "wait", deadlineMs: deadline });
+        expect(h.runtime.state.interruptedWaitTimer).toBeNull();
+        expect(h.fifo()).toEqual([]);
+    });
+
+    it("a turn removes a stale idle item, so it cannot release the worker or replace the next timer", () => {
+        const h = harness();
+        appendToFifo(h.runtime, [idleItem(), prompt("P")]);
+        h.results.push({ type: "completed", content: "RECEIVED: P" });
+        h.step();
+        expect(h.turns).toHaveLength(1);
+        expect(h.fifo()).toEqual([]);
+        expect(h.events().filter(e => e.eventType === "session.affinity_released")).toEqual([]);
+    });
+
+    it("an idle timer that is already due is not queued behind a prompt", () => {
+        const h = harness();
+        h.arm("idle", 0);
+        appendToFifo(h.runtime, [prompt("P")]);
+        h.drive(drain(h.runtime));
+        expect(h.fifo().map(x => x.kind)).toEqual(["prompt"]);
+    });
+
+    it("an agent poll that is already due still ends the agent wait, and is not queued", () => {
+        const h = harness({ waitingForAgentIds: ["child-1"] });
+        h.arm("agent-poll", 0, { agentIds: ["child-1"] });
+        appendToFifo(h.runtime, [prompt("P")]);
+        h.drive(drain(h.runtime));
+        expect(h.runtime.state.waitingForAgentIds).toBeNull();
+        expect(h.fifo().map(x => x.kind)).toEqual(["prompt"]);
+    });
+
+    it("an agent wait released for a cancelled prompt comes back", () => {
+        const h = harness({ waitingForAgentIds: ["child-1"] });
+        h.arm("agent-poll", 20_000, { agentIds: ["child-1"] });
+        appendToFifo(h.runtime, [prompt("P", { clientMessageIds: ["p"] })]);
+        h.messages.push({ cancelPending: ["p"] });
+        h.step();
+        expect(h.turns).toHaveLength(0);
+        expect(h.runtime.state.waitingForAgentIds).toEqual(["child-1"]);
+        expect(h.runtime.state.activeTimer?.type).toBe("agent-poll");
+    });
+});
+
+describe("issue 192 review: carried steers take the same path", () => {
+    it("queued work that carries steers keeps the cron's remaining time", () => {
+        const h = harness({ cronSchedule: { intervalSeconds: 3600, reason: "hourly" }, carriedSteers: [steer(1)] });
+        h.arm("cron", 600_000);
+        appendToFifo(h.runtime, [prompt("P")]);
+        h.drive(drain(h.runtime));
+        expect(h.runtime.state.activeTimer).toBeNull();
+        expect(h.runtime.state.interruptedCronTimer?.remainingMs).toBe(600_000);
+    });
+
+    it("R10: with carried steers, three id-less prompts that arrived during a turn are all collected", () => {
+        const h = harness({ carriedSteers: [steer(1)] });
+        h.messages.push({ prompt: "P1" }, { prompt: "P2" }, { prompt: "P3" });
+        h.drive(drain(h.runtime));
+        expect(h.fifo().map(x => x.prompt)).toEqual(["P1", "P2", "P3"]);
+    });
+
+    it("with carried steers and nothing else queued, the wake marker still runs", () => {
+        const h = harness({ carriedSteers: [steer(1)] });
+        h.drive(drain(h.runtime));
+        expect(h.fifo()).toHaveLength(1);
+        expect(h.fifo()[0].carriedSteersWake).toBe(true);
+    });
+});
+
+describe("issue 192 review: backlog size and lost items", () => {
+    it("R7: 100 K characters of queued prompts run as one turn, in order, with nothing cut", () => {
+        const h = harness();
+        const texts = Array.from({ length: 20 }, (_, i) => `M${String(i).padStart(2, "0")} ${"x".repeat(5_100)}`);
+        appendToFifo(h.runtime, texts.map(t => prompt(t)));
+        h.results.push({ type: "completed", content: "done" });
+        h.drive(decide(h.runtime));
+        expect(h.turns).toHaveLength(1);
+        const sent = h.turns[0][0];
+        expect(sent.length).toBeGreaterThanOrEqual(100_000);
+        let at = -1;
+        for (const t of texts) {
+            const found = sent.indexOf(t);
+            expect(found).toBeGreaterThan(at);
+            at = found;
+        }
+        expect(h.fifo()).toEqual([]);
     });
 });
