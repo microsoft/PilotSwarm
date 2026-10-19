@@ -418,3 +418,59 @@ describe("issue 192 review: backlog size and lost items", () => {
         expect(h.fifo()).toEqual([]);
     });
 });
+
+describe("issue 192 review B: remaining time and timer items behind holds", () => {
+    it("carried steers with a queued timer item and waiting messages: the messages are collected and the cron keeps its time", () => {
+        const h = harness({ cronSchedule: { intervalSeconds: 3600, reason: "hourly" }, carriedSteers: [steer(1)] });
+        h.arm("cron", 600_000);
+        appendToFifo(h.runtime, [cronItem()]);
+        h.messages.push({ prompt: "U" }, { prompt: "S1" }, { prompt: "S2" });
+        h.drive(drain(h.runtime));
+        expect(h.fifo().filter(x => x.kind === "prompt").map(x => x.prompt)).toEqual(["U", "S1", "S2"]);
+        expect(h.runtime.state.interruptedCronTimer?.remainingMs).toBe(600_000);
+        h.results.push({ type: "completed", content: "RECEIVED: U,S1,S2" });
+        const iterationBefore = h.runtime.state.iteration;
+        h.drive(decide(h.runtime));
+        settleQueuedWorkAfterDecide(h.runtime, iterationBefore);
+        expect(h.turns).toHaveLength(1);
+        expect(h.turns[0][0]).toMatch(/U[\s\S]*S1[\s\S]*S2/);
+    });
+
+    it("R4: a cron with 90 s left is armed again with 90 s after the queued prompt's turn, not a full hour", () => {
+        const h = harness({ cronSchedule: { intervalSeconds: 3600, reason: "hourly" } });
+        h.arm("cron", 90_000);
+        appendToFifo(h.runtime, [prompt("P")]);
+        h.results.push({ type: "completed", content: "RECEIVED: P" });
+        h.step();
+        expect(h.turns).toHaveLength(1);
+        expect(h.runtime.state.activeTimer?.type).toBe("cron");
+        const left = h.runtime.state.activeTimer.deadlineMs - h.clock.now;
+        expect(left).toBeGreaterThan(0);
+        expect(left).toBeLessThanOrEqual(90_000);
+    });
+
+    for (const [type, extra, state] of [
+        ["agent-poll", { agentIds: ["child-1"] }, { waitingForAgentIds: ["child-1"] }],
+        ["input-grace", {}, { pendingInputQuestion: { question: "which?", iteration: 3 } }],
+        ["wait", { gate: "budget", budget: true }, {}],
+    ]) {
+        it(`R3: a queued timer item still waits behind ${type}${extra.gate ? ` (${extra.gate} gate)` : ""}`, () => {
+            const h = harness(state);
+            h.arm(type, HOUR_MS, extra);
+            appendToFifo(h.runtime, [cronItem()]);
+            h.drive(drain(h.runtime));
+            expect(h.races()).toContain(HOUR_MS);
+        });
+    }
+
+    it("R4: a queued prompt ends an agent wait, and after its turn no agent poll is armed again", () => {
+        const h = harness({ waitingForAgentIds: ["child-1"] });
+        h.arm("agent-poll", 20_000, { agentIds: ["child-1"] });
+        appendToFifo(h.runtime, [prompt("P")]);
+        h.results.push({ type: "completed", content: "RECEIVED: P" });
+        h.step();
+        expect(h.turns).toHaveLength(1);
+        expect(h.runtime.state.waitingForAgentIds).toBeNull();
+        expect(h.runtime.state.activeTimer?.type).not.toBe("agent-poll");
+    });
+});

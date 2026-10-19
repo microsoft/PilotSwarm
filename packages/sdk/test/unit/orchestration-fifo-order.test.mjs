@@ -1,17 +1,20 @@
 /**
  * The FIFO keeps a person's messages in the order they were sent.
  *
- * decide() merges consecutive prompts into one turn by POPPING the next item
- * and peeking at it. When the popped item turns out not to be mergeable — a
- * person's message behind an agent's bootstrap kickoff, or a non-prompt item
- * — it has to go back. It used to go back by APPENDING, which put it behind
- * everything still queued:
+ * decide() merges the prompts queued after the dispatched one into the same
+ * turn. Since 1.0.82 (issue 192) it reads the FIFO in place: it steps over
+ * timer items, stops at an answer, a kickoff next to a person's words or a
+ * carried-steers wake, and removes only what it merged. Nothing is popped
+ * and put back, so nothing can be reordered.
+ *
+ * Before 1.0.82 the merge popped the next item to peek at it and had to put
+ * a non-mergeable item back. Putting it back by APPENDING (1.0.69 and older)
+ * reordered a person's messages:
  *
  *     [KICKOFF, "do X", "cancel X"]  →  dispatch KICKOFF  →  ["cancel X", "do X"]
  *
- * and the next turn read the person's two messages in the wrong order. This
- * is the first test of decide()'s queue handling in the repo; everything
- * before it tested turn.ts by regex.
+ * and putting it back at the HEAD (1.0.70 to 1.0.81) left a timer item at
+ * the head that stopped every merge (issue 192).
  *
  * Drives the real generator one step against a fake durable context (a Map
  * for the KV store) — the merge is synchronous before the first yield — and
@@ -120,9 +123,8 @@ test("a kickoff runs alone, and the person's messages behind it keep their order
         prompt("C: actually, cancel X", { clientMessageIds: ["c"] }),
     ]);
     runMergeStep(runtime);
-    // The kickoff dispatched by itself. B was popped, found unmergeable, and
-    // must have gone back to the HEAD — so the next turn reads "do X" and
-    // THEN "cancel X", as they were sent.
+    // The kickoff dispatched by itself. The merge stopped at B without moving
+    // it, so the next turn reads "do X" and THEN "cancel X", as they were sent.
     assert.deepEqual(readFifo(kv), ["B: do X", "C: actually, cancel X"]);
 });
 
@@ -152,6 +154,19 @@ test("prompts behind a timer item merge into one turn, and the timer item stays"
     ]);
     runMergeStep(runtime);
     assert.deepEqual(readItems(kv).map((x) => x.kind), ["timer"]);
+});
+
+// Issue 192 review B: an agents-done item (an older version's queued
+// follow-up) does not split a person's prompts either; it stays in place.
+test("an agents-done item between prompts is stepped over and stays", () => {
+    const { runtime, kv } = makeRuntime();
+    appendToFifo(runtime, [
+        prompt("P1"),
+        { kind: "agents-done", summary: "all agents finished" },
+        prompt("P2", { clientMessageIds: ["p2"] }),
+    ]);
+    runMergeStep(runtime);
+    assert.deepEqual(readItems(kv).map((x) => x.kind), ["agents-done"]);
 });
 
 test("timer items between prompts are stepped over and keep their order", () => {
