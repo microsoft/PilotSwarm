@@ -2312,13 +2312,6 @@ function canvasAppDetailLines(apps) {
 }
 
 /**
- * Admin → Canvas Apps in the TUI: the tree, then the keys (always on screen),
- * then the detail in its own window. With `detailRows` set, the detail shows
- * that many lines from `view.canvasApps.detailOffset`, with a position line;
- * Ctrl+D/PgDn and Ctrl+U/PgUp page it, so a long card never hides the
- * versions, contributors or loads. `bounds` receives { maxOffset, page }.
- */
-/**
  * Break one line of runs into the screen rows the TUI Panel will draw: the
  * Panel's own word wrap (tui/src/platform.js computeWrappedSlices), so the
  * detail window counts exactly the rows that appear.
@@ -2377,17 +2370,42 @@ function panelRows(lines, cols) {
     return lines.reduce((n, line) => n + wrapRunsLine(line, cols).length, 0);
 }
 
+/** One line of runs cut to `cols` characters (an ellipsis marks the cut), so it takes exactly one Panel row. */
+function clipRunsLine(line, cols) {
+    if (!Number.isFinite(cols) || cols < 2) return line;
+    const total = line.reduce((n, run) => n + String(run?.text ?? "").length, 0);
+    if (total <= cols) return line;
+    const out = [];
+    let left = cols - 1;
+    for (const run of line) {
+        if (left <= 0) break;
+        const text = String(run?.text ?? "");
+        out.push({ ...run, text: text.slice(0, left) });
+        left -= Math.min(left, text.length);
+    }
+    out.push({ text: "…", color: "gray" });
+    return out;
+}
+
+const CANVAS_APPS_MINIMAL_KEYS = [[
+    { text: " ^D/^U ", color: "green", bold: true }, { text: "page  ", color: "gray" },
+    { text: "j/k ", color: "green", bold: true }, { text: "move  ", color: "gray" },
+    { text: "Esc", color: "red", bold: true },
+]];
+
 /**
- * Admin → Canvas Apps in the TUI: the tree, then the keys (always on screen),
- * then the detail in its own window. Without a finite `bodyRows` everything is
- * returned. With one, everything is fitted into exactly that many Panel rows
- * at `cols`: the tree shrinks first (to 4 rows), then the blank line goes, then
- * the keys collapse to one line, so the detail window is real rows the Panel
- * draws. The window starts at `view.canvasApps.detailOffset` under a measured
- * position line; Ctrl+D/PgDn and Ctrl+U/PgUp page it. `bounds` receives
+ * Admin → Canvas Apps in the TUI: header, tree, keys, then the detail in its
+ * own window. Without a finite `bodyRows` everything is returned. With one,
+ * the whole section is fitted into exactly that many Panel rows at `cols`,
+ * counted with the Panel's own wrap: tree labels are cut to one row (the
+ * detail shows the full name); then the tree shrinks, the blank line goes,
+ * the keys compact, the header drops its policy and principal lines, the tree
+ * shrinks to the cursor row, and the keys shrink to "^D/^U page". A paged
+ * detail window is offered only when its measured position line AND at
+ * least one detail row fit; no row is ever invented. `bounds` receives
  * { maxOffset, page }.
  */
-function buildAdminCanvasAppsLines(view, { treeRows = 18, bodyRows = Infinity, cols = Infinity, bounds = null } = {}) {
+function buildAdminCanvasAppsLines(view, { treeRows = 18, bodyRows = Infinity, cols = Infinity, bounds = null, header = [], compactHeader = null } = {}) {
     const apps = view.canvasApps || {};
     const status = [];
     if (apps.loading) status.push([{ text: "  loading canvas apps...", color: "gray" }]);
@@ -2396,29 +2414,38 @@ function buildAdminCanvasAppsLines(view, { treeRows = 18, bodyRows = Infinity, c
     const detail = canvasAppDetailLines(apps).flatMap((line) => wrapRunsLine(line, cols));
     const fullKeys = [[{ text: "Actions", color: "cyan", bold: true }], ...adminTreeKeyLines({ detailPaging: true })];
     const blank = [[{ text: "", color: "gray" }]];
-    const assemble = (tr, keys, gap) => [...buildAdminTreeLines(view, tr), ...status, ...keys, ...gap];
     if (!Number.isFinite(bodyRows)) {
         if (bounds) { bounds.maxOffset = 0; bounds.page = 10; }
-        return [...assemble(treeRows, fullKeys, blank), ...detail];
+        return [...header, ...buildAdminTreeLines(view, treeRows), ...status, ...fullKeys, ...blank, ...detail];
     }
-    const want = Math.min(detail.length, 4);
-    let tr = Math.max(4, treeRows);
-    let keys = fullKeys;
-    let gap = blank;
-    let head = assemble(tr, keys, gap);
+    const clip = (lines) => lines.map((line) => clipRunsLine(line, cols));
+    const position = (offset, shown) => [[{ text: `lines ${offset + 1}–${offset + shown} of ${detail.length} · ^D/^U page`, color: "gray" }]];
+    const positionRows = panelRows(position(detail.length, detail.length), cols);
+    const need = detail.length <= 1 ? detail.length : positionRows + 1;
+    const want = Math.min(detail.length, positionRows + 3);
+    const st = { head: header, tr: Math.max(4, treeRows), keys: fullKeys, gap: blank };
+    const assemble = () => [...st.head, ...clip(buildAdminTreeLines(view, st.tr)), ...clip(status), ...st.keys, ...st.gap];
+    let head = assemble();
     const room = () => bodyRows - panelRows(head, cols);
-    while (room() < want && tr > 4) { tr -= 1; head = assemble(tr, keys, gap); }
-    if (room() < want) { gap = []; head = assemble(tr, keys, gap); }
-    if (room() < want) { keys = CANVAS_APPS_COMPACT_KEYS; head = assemble(tr, keys, gap); }
+    const shrink = (until, step) => { while (room() < until && step()) head = assemble(); };
+    shrink(want, () => (st.tr > 4 ? (st.tr -= 1, true) : false));
+    shrink(want, () => (st.gap.length ? (st.gap = [], true) : false));
+    shrink(want, () => (st.keys === fullKeys ? (st.keys = CANVAS_APPS_COMPACT_KEYS, true) : false));
+    shrink(need, () => (compactHeader && st.head !== compactHeader ? (st.head = compactHeader, true) : false));
+    shrink(need, () => (st.tr > 1 ? (st.tr -= 1, true) : false));
+    shrink(need, () => (st.keys !== CANVAS_APPS_MINIMAL_KEYS ? (st.keys = CANVAS_APPS_MINIMAL_KEYS, true) : false));
     const budget = Math.max(0, room());
     if (detail.length <= budget) {
         if (bounds) { bounds.maxOffset = 0; bounds.page = Math.max(1, budget); }
         return [...head, ...detail];
     }
-    // Paging: one measured position line, then the detail rows that fit.
-    const position = (offset, shown) => [[{ text: `lines ${offset + 1}–${offset + shown} of ${detail.length} · ^D/^U page`, color: "gray" }]];
-    const positionRows = panelRows(position(detail.length, detail.length), cols);
-    const window = Math.max(1, budget - positionRows);
+    if (budget < positionRows + 1) {
+        // No row is free for the detail: say so (if a row is left) rather than
+        // render a window the Panel would clip.
+        if (bounds) { bounds.maxOffset = 0; bounds.page = 1; }
+        return budget >= 1 ? [...head, clipRunsLine([{ text: "detail needs more rows — enlarge the terminal", color: "yellow" }], cols)] : head;
+    }
+    const window = budget - positionRows;
     const maxOffset = Math.max(0, detail.length - window);
     const offset = Math.min(Math.max(0, Number(apps.detailOffset) || 0), maxOffset);
     const shown = detail.slice(offset, offset + window);
@@ -2459,9 +2486,12 @@ export function buildAdminConsoleLines(view, { treeRows = 18, height = null, wid
         const panelWidth = Number(width) > 0 ? Math.max(8, Number(width)) : null;
         const panelHeight = Number(height) > 0 ? Math.max(4, Number(height)) : null;
         const cols = panelWidth ? Math.max(1, panelWidth - 4) : Infinity;
-        const bodyRows = panelHeight ? Math.max(1, panelHeight - 2 - panelRows(lines, cols)) : Infinity;
-        lines.push(...buildAdminCanvasAppsLines(view, { treeRows, bodyRows, cols, bounds }));
-        return lines;
+        const bodyRows = panelHeight ? Math.max(1, panelHeight - 2) : Infinity;
+        // The header goes in with the section, so it can compact to the
+        // signed-in line when the panel is short of rows.
+        const signedIn = lines.find((line) => line[0]?.text === "Signed in as ");
+        const compactHeader = signedIn ? [clipRunsLine(signedIn, cols)] : [];
+        return buildAdminCanvasAppsLines(view, { treeRows, bodyRows, cols, bounds, header: [...lines], compactHeader });
     }
 
     if (view.section === "workers") {

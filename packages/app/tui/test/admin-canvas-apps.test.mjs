@@ -122,7 +122,7 @@ test("Ctrl+D/PgDn and Ctrl+U/PgUp page the Canvas Apps detail (review r1 P4)", (
     assert.match(source, /adminSection === "canvasApps" && \(isCtrlU \|\| key\.pageUp\)\) \{\s*controller\.handleCommand\(UI_COMMANDS\.ADMIN_CANVAS_APP_DETAIL_PAGE_UP\)/);
 });
 
-async function bigAppConsole() {
+async function bigAppConsole({ longNames = false } = {}) {
     const s = store();
     const big = app("board", "shared", "alice", {
         description: Array.from({ length: 4 }, (_, i) => `Paragraph ${i} explains when to use the board in a long and wordy sentence that wraps.`).join("\n\n"),
@@ -138,7 +138,8 @@ async function bigAppConsole() {
     const versions = Array.from({ length: 9 }, (_, i) => ({ versionId: `v-${i}`, version: `1.${i}.0`, sha256: String(i).repeat(64), sizeBytes: 100 + i, card: big.card, createdAt: "2026-10-01T00:00:00Z" }));
     big.activeVersionId = "v-8";
     // Enough apps that the tree overflows and shows both "more" markers.
-    const extra = Array.from({ length: 30 }, (_, i) => app(`zz-${String(i).padStart(2, "0")}`, "user", "alice"));
+    // longNames: valid 64-character slugs (the registry maximum), so neighbouring tree rows would wrap (review r3 R2).
+    const extra = Array.from({ length: 30 }, (_, i) => app(longNames ? `${"a".repeat(62)}${String(i).padStart(2, "0")}` : `zz-${String(i).padStart(2, "0")}`, "user", "alice"));
     const transport = {
         listCanvasApps: async () => [big, ...extra],
         getCanvasApp: async () => ({ ...big, versions }),
@@ -162,8 +163,13 @@ function panelDraws(lines, width, height) {
  * (its own wrap at width - 4, clipped at height - 2), that every page fits, the keys and the measured
  * position line are on screen, and every detail row 1..N is drawn on some page (review r2 Q2).
  */
-async function pageThrough(width, height, treeRows) {
-    const { s, controller, versions } = await bigAppConsole();
+async function pageThrough(width, height, treeRows, { longNames = false, selectLong = false } = {}) {
+    const { s, controller, versions } = await bigAppConsole({ longNames });
+    if (selectLong) {
+        // Select a middle long-named app so its neighbours are long-named too; the detail is still the long card.
+        controller.setAdminSection("canvasApps");
+        controller.setAdminTreeCursor(`capp:user:test:alice:${"a".repeat(62)}15`);
+    }
     const cols = width - 4;
     const byIndex = new Map();
     let total = null;
@@ -229,6 +235,27 @@ for (const [columns, rows] of [[80, 24], [40, 24], [120, 40]]) {
 test("a wrapped position line is counted: a 30-column Panel wraps it, and every page still fits (review r2 Q2)", async () => {
     const { maxPositionRows } = await pageThrough(30, 24, 6);
     assert.ok(maxPositionRows >= 2, `the position line wrapped (${maxPositionRows} rows) and was budgeted`);
+});
+
+test("terminal 40x24 with neighbouring valid 64-character names: the visible rows hold the position line and detail, and paging reaches all of it (review r3 R2)", async () => {
+    const panel = adminPanelFor(40, 24);
+    assert.equal(panel.width, 40);
+    assert.equal(panel.height, 18);
+    const { pages } = await pageThrough(panel.width, panel.height, panel.treeRows, { longNames: true, selectLong: true });
+    assert.ok(pages >= 1);
+});
+
+test("when no Panel row is free for the detail, no detail window is offered (review r3 R2)", async () => {
+    const { s } = await bigAppConsole({ longNames: true });
+    // An 8-row Panel (6-row body) cannot hold the compact header, the smallest tree (4 rows), the
+    // shortest keys, a position line and a detail row. (The TUI itself never lays out below 18 rows.)
+    const bounds = { maxOffset: 9, page: 9 };
+    const lines = buildAdminConsoleLines(selectAdminConsole(s.getState()), { treeRows: 6, height: 8, width: 40, bounds });
+    const drawn = panelDraws(lines, 40, 8);
+    assert.ok(drawn.total <= 6, `${drawn.total} rows for a 6-row body`);
+    assert.doesNotMatch(drawn.shown.join("\n"), /^lines \d+/m, "no position line");
+    assert.equal(bounds.maxOffset, 0, "no paging bounds are reported");
+    assert.match(drawn.shown.join("\n"), /\^D\/\^U/, "the paging key hint is still drawn");
 });
 
 test("a failed contributors read is shown, not presented as none (review r1 P8)", async () => {

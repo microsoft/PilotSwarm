@@ -187,3 +187,36 @@ test("an account switch after queueing still drops the old account's queued writ
     assert.equal(reported(rb), "skipped");
     assert.deepEqual(sent.map((x) => x.settings.n), ["A"], "only A, sent while Alice was signed in");
 });
+
+// ── Review r3 R1: a pre-auth write belongs to the FIRST account resolved, not to whoever is signed in at its turn ──
+
+async function preAuthThenMaybeSwitch(switchToBob) {
+    const gate = deferred();
+    const { store, controller, sent } = controllerHarness({ firstGate: gate });
+    const q = createProfileSaveQueue();
+    // A and B are queued while the account is unknown.
+    const a = saveControllerProfileDocument(q, controller, { n: "A" });
+    const b = saveControllerProfileDocument(q, controller, { n: "B" });
+    // Alice resolves; A is sent and stays in flight.
+    store.dispatch({ type: "auth/context", principal: ALICE, authorization: null });
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(sent.map((x) => `${x.who}:${x.settings.n}`), ["alice:A"]);
+    // Same controller, no unmount: the account switches to Bob before B's turn (or does not).
+    if (switchToBob) store.dispatch({ type: "auth/context", principal: BOB, authorization: null });
+    gate.resolve();
+    return { ra: await a, rb: await b, sent };
+}
+
+test("R1: queued before auth, Alice resolves, A in flight, same-controller switch to Bob: B is dropped and never sent to Bob", async () => {
+    const { ra, rb, sent } = await preAuthThenMaybeSwitch(true);
+    assert.equal(reported(ra), "saved");
+    assert.deepEqual(rb, { skipped: "account-changed" });
+    assert.equal(reported(rb), "skipped");
+    assert.deepEqual(sent.map((x) => `${x.who}:${x.settings.n}`), ["alice:A"], "B never reached Bob's profile");
+});
+
+test("R1 control: the same sequence without the switch sends B for Alice", async () => {
+    const { ra, rb, sent } = await preAuthThenMaybeSwitch(false);
+    assert.deepEqual([reported(ra), reported(rb)], ["saved", "saved"]);
+    assert.deepEqual(sent.map((x) => `${x.who}:${x.settings.n}`), ["alice:A", "alice:B"]);
+});
