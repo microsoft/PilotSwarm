@@ -1272,8 +1272,11 @@ describe("issue 192 stress finding: a child status lookup never delays collected
             deferredChildProbes: [{ sessionId: "child-0", updateType: "wait" }],
         });
         expect(lifecycle.continueInput(h.runtime).deferredChildProbes).toEqual([{ sessionId: "child-0", updateType: "wait" }]);
+        h.child.status = "waiting";
         h.childList.push({ ...kids(1)[0], status: "waiting" });
-        h.messages.push({ prompt: "next question", clientMessageIds: ["n-1"] });
+        // The user work they were put off behind is still queued: the FIFO is
+        // KV and survives continue-as-new.
+        appendToFifo(h.runtime, [prompt("next question", { clientMessageIds: ["n-1"] })]);
         h.results.push({ type: "completed", content: "ok" });
         h.step();
         expect(h.turns).toHaveLength(1);
@@ -1394,6 +1397,47 @@ describe("issue 192 stress finding review: deferred child lookups never leave a 
         expect(firstLongRace === -1 || firstLookup < firstLongRace).toBe(true);
         expect(h.runtime.state.pendingChildDigest?.ready).toBe(true);
         expect(h.runtime.state.deferredChildProbes).toEqual([]);
+    });
+
+    for (const [mode, result] of [["done", "done"], ["cancel", "cancelled"], ["delete", "deleted"]]) {
+        it(`F5: lookups that finish a pending ${mode} end the run at once; drain does not wait for another message`, () => {
+            const h = harness({
+                subAgents: kids(1, "waiting"),
+                deferredChildProbes: [{ sessionId: "child-0", updateType: "wait" }],
+                waitingForAgentIds: ["agent-0"],
+                pendingShutdown: {
+                    mode, reason: "review fixture", commandId: `${mode}-1`,
+                    startedAtMs: 1_750_000_000_000, deadlineAtMs: 1_750_000_000_000 + 30_000, targetAgentIds: ["agent-0"],
+                },
+            });
+            h.arm("agent-poll", 30_000, { agentIds: ["agent-0"] });
+            h.child.status = "completed";
+            const r = h.runUntilParked();
+            expect(r).toEqual({ parked: "done", value: result });
+            expect(h.calls.filter(c => c.effect === "dequeue")).toEqual([]);
+            expect(h.turns).toHaveLength(0);
+        });
+    }
+
+    it("F5: prompt, deferred update, then a done command and the prompt's tombstone in the pre-dispatch sweep: the run ends once the child is done", () => {
+        const h = harness({ subAgents: kids(1) });
+        h.child.status = "waiting";
+        // Shutdown lists the children: this one is still waiting, so the
+        // parent waits for it.
+        h.childList.push({ ...kids(1)[0], status: "waiting" });
+        appendToFifo(h.runtime, [prompt("queued question", { clientMessageIds: ["q-1"] })]);
+        h.messages.push(
+            update("child-0", "wait", "waiting for CI"),
+            { type: "cmd", cmd: "done", id: "done-1", args: { reason: "Finished" } },
+            { cancelPending: ["q-1"] },
+        );
+        h.drive(decide(h.runtime));
+        expect(h.turns).toHaveLength(0);
+        expect(h.runtime.state.pendingShutdown?.mode).toBe("done");
+        h.child.status = "completed";
+        const r = h.runUntilParked();
+        expect(r.parked).toBe("done");
+        expect(h.turns).toHaveLength(0);
     });
 
     it("deferred lookups coalesce per child: the latest update type wins, an expected first report stays marked, a lookup done at once replaces them", () => {
