@@ -284,11 +284,21 @@ An item larger than a bucket is stored in a bucket of its own, but the runtime
 fails the whole orchestration on a KV value above duroxide's
 `MAX_KV_VALUE_BYTES` (64 KiB), and the Web API accepts prompts up to 2 MB. In
 1.0.81 and older one prompt or answer over 64 KiB therefore failed the session
-for good. In 1.0.82 `appendToFifo` does not store an item whose bucket value
-would exceed `MAX_FIFO_ITEM_BYTES` (60 KiB, in UTF-8 bytes); it is reported in
-the same `session.fifo_overflow` event, which names each lost item's reason
-(`too-large` or `full`), with an error trace. The session keeps running, and a
-timer that the item's arrival released is armed again because no turn ran.
+for good. In 1.0.82 no item whose bucket value would exceed
+`MAX_FIFO_ITEM_BYTES` (60 KiB, in UTF-8 bytes) is written:
+
+| Item | What happens |
+|---|---|
+| A prompt or answer that is too large as sent | Refused when it arrives, before anything changes: no timer is released, no child digest is taken, and its client message id is not pending, so a resend that fits runs. Reported in `session.fifo_overflow` (reason `too-large`) with an error trace. |
+| A prompt that fits, but not with drain's timer note | Queued without the note; the released timer keeps its saved time. |
+| A prompt that fits, but not with the buffered child digest | Queued without the digest; the digest stays buffered for a later turn. |
+| A fired timer item (a wait's copy of the turn's text, an input question) | Never refused: a compact copy without the unused text is queued. Timer items that fit are queued unchanged. |
+| Any item when all 20 buckets are full | Reported as before (R8), reason `full`. |
+
+The event names each lost item's reason, and a refused item's client message
+id is not marked as seen. The session keeps running. Items that fit take
+exactly the same path as before. Other KV values the orchestration writes (the
+latest response, command responses) are not covered by this cap.
 
 ### Prompt timer-interrupt augmentation
 

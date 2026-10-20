@@ -75,6 +75,34 @@ export function isFifoItemTooLarge(item: any): boolean {
     return Buffer.byteLength(JSON.stringify([item]), "utf8") > MAX_FIFO_ITEM_BYTES;
 }
 
+/** A queued timer's reason is display text; this much of it is kept in a compact timer item. */
+const COMPACT_TIMER_REASON_CHARS = 2_000;
+
+/**
+ * 1.0.82 (defect E): the fields a queued timer item needs to run. A fired
+ * timer is copied from the armed one, which may carry the whole turn's text
+ * (a wait's `content`) or an input question and its choices; running the
+ * item reads none of them. A timer item is the only copy of a fire the
+ * session owes, so it is never refused: when it is too large, this compact
+ * copy is stored instead. Timer items that fit are stored unchanged.
+ */
+function compactTimerItem(item: any): any {
+    const timer = item?.timer ?? {};
+    return {
+        kind: "timer",
+        timer: {
+            type: timer.type,
+            deadlineMs: timer.deadlineMs,
+            originalDurationMs: timer.originalDurationMs,
+            reason: typeof timer.reason === "string" ? timer.reason.slice(0, COMPACT_TIMER_REASON_CHARS) : timer.reason,
+            ...(timer.shouldRehydrate ? { shouldRehydrate: true } : {}),
+            ...(timer.gate ? { gate: timer.gate } : {}),
+            ...(timer.budget ? { budget: true } : {}),
+        },
+        firedAtMs: item?.firedAtMs,
+    };
+}
+
 function lastNonEmptyFifoBucket(ctx: any): number {
     for (let i = FIFO_BUCKET_COUNT - 1; i >= 0; i--) {
         if (readFifoBucket(ctx, i).length > 0) return i;
@@ -126,7 +154,11 @@ export function appendToFifo(runtime: DurableSessionRuntime, newItems: any[]): a
     let compacted = false;
     const notStored: any[] = [];
     for (let n = 0; n < newItems.length; n++) {
-        const item = newItems[n];
+        let item = newItems[n];
+        if (item?.kind === "timer" && isFifoItemTooLarge(item)) {
+            item = compactTimerItem(item);
+            ctx.traceInfo(`[fifo] a ${item.timer.type} timer item was too large to queue; queued its compact form`);
+        }
         if (isFifoItemTooLarge(item)) {
             notStored.push(item);
             continue;
@@ -243,36 +275,14 @@ function hasFifoItems(runtime: DurableSessionRuntime): boolean {
 }
 
 /**
- * Move a drain stash into the FIFO.
- *
- * 1.0.82: a timer item whose kind is already queued is not added (R5); a
- * single fire runs the schedule once. Items that do not fit even after
- * compaction are reported, with their client message ids, instead of being
- * dropped with an info line; their ids are not marked as seen, so a resend
- * runs (R8).
+ * 1.0.82 (R8, defect E): report items that were not stored, with an error
+ * trace and one session.fifo_overflow event naming each item's reason
+ * (`too-large` or `full`). Their ids are not marked as seen, so a resend runs.
  */
-function* appendPromptStashToFifo(runtime: DurableSessionRuntime, stash: any[]): Generator<any, void, any> {
-    const { ctx, state } = runtime;
-    const kinds = queuedTimerItemKinds(runtime);
-    const items = stash.filter((item) => {
-        const kind = timerItemKind(item);
-        if (!kind) return true;
-        if (kinds.has(kind)) {
-            ctx.traceInfo(`[fifo] a ${item.timer.type} timer item is already queued; not queueing another`);
-            return false;
-        }
-        kinds.add(kind);
-        return true;
-    });
-    const lost = new Set(appendToFifo(runtime, items));
-    for (const item of items) {
-        if (item?.kind !== "prompt" || lost.has(item)) continue;
-        touchRecentClientMessageIds(state, validClientMessageIds(item.clientMessageIds));
-    }
-    if (lost.size === 0) return;
-    const lostItems = items.filter((item) => lost.has(item));
+function* reportUnstoredItems(runtime: DurableSessionRuntime, lostItems: any[], reasons: string[]): Generator<any, void, any> {
+    const { ctx } = runtime;
+    if (lostItems.length === 0) return;
     const lostIds = lostItems.flatMap((item) => validClientMessageIds(item?.clientMessageIds));
-    const reasons = lostItems.map((item) => (isFifoItemTooLarge(item) ? "too-large" : "full"));
     const tooLarge = reasons.filter((reason) => reason === "too-large").length;
     const message = `[fifo] ${lostItems.length} item(s) not stored: ` +
         [
@@ -293,6 +303,40 @@ function* appendPromptStashToFifo(runtime: DurableSessionRuntime, stash: any[]):
             maxItemBytes: MAX_FIFO_ITEM_BYTES,
         },
     }]);
+}
+
+/**
+ * Move a drain stash into the FIFO. Returns the client message ids of the
+ * items that were not stored, so a caller can forget them as pending.
+ *
+ * 1.0.82: a timer item whose kind is already queued is not added (R5); a
+ * single fire runs the schedule once. Items that do not fit even after
+ * compaction are reported, with their client message ids, instead of being
+ * dropped with an info line; their ids are not marked as seen, so a resend
+ * runs (R8).
+ */
+function* appendPromptStashToFifo(runtime: DurableSessionRuntime, stash: any[]): Generator<any, string[], any> {
+    const { ctx, state } = runtime;
+    const kinds = queuedTimerItemKinds(runtime);
+    const items = stash.filter((item) => {
+        const kind = timerItemKind(item);
+        if (!kind) return true;
+        if (kinds.has(kind)) {
+            ctx.traceInfo(`[fifo] a ${item.timer.type} timer item is already queued; not queueing another`);
+            return false;
+        }
+        kinds.add(kind);
+        return true;
+    });
+    const lost = new Set(appendToFifo(runtime, items));
+    for (const item of items) {
+        if (item?.kind !== "prompt" || lost.has(item)) continue;
+        touchRecentClientMessageIds(state, validClientMessageIds(item.clientMessageIds));
+    }
+    if (lost.size === 0) return [];
+    const lostItems = items.filter((item) => lost.has(item));
+    yield* reportUnstoredItems(runtime, lostItems, lostItems.map((item) => (isFifoItemTooLarge(item) ? "too-large" : "full")));
+    return lostItems.flatMap((item) => validClientMessageIds(item?.clientMessageIds));
 }
 
 function duplicateClientMessageIds(
@@ -709,7 +753,13 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
         }
 
         if (msg.type === "cmd") {
-            if (stash.length > 0) { yield* appendPromptStashToFifo(runtime, stash); stash.length = 0; }
+            if (stash.length > 0) {
+                // 1.0.82 (R8): an id that was not stored is not pending, so a
+                // resend later in this pass is not taken for a duplicate.
+                const lostIds: string[] = yield* appendPromptStashToFifo(runtime, stash);
+                for (const id of lostIds) pendingClientMessageIds.delete(id);
+                stash.length = 0;
+            }
             yield* handleCommand(runtime, msg as CommandMessage);
             if (state.orchestrationResult !== null) return;
             // Session regeneration: a pending pipeline is advanced by the run
@@ -746,12 +796,21 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
         }
 
         if (msg.answer !== undefined) {
+            const answerItem = { kind: "answer", expectedQuestion: msg.expectedQuestion !== undefined ? msg.expectedQuestion : state.pendingInputQuestion ? { question: state.pendingInputQuestion.question, iteration: state.pendingInputQuestion.iteration ?? state.iteration } : null, answer: msg.answer, wasFreeform: msg.wasFreeform, ...(msg.sender && typeof msg.sender === "object" ? { sender: msg.sender } : {}) };
+            // 1.0.82 (defect E): an answer too large to queue is refused
+            // before anything changes: the question stays open and its hold
+            // timer keeps running.
+            if (isFifoItemTooLarge(answerItem)) {
+                yield* reportUnstoredItems(runtime, [answerItem], ["too-large"]);
+                continue;
+            }
             const interruptsInputHold = Boolean(state.pendingInputQuestion)
                 && (state.activeTimer?.type === "input-grace" || state.activeTimer?.type === "idle");
             if (interruptsInputHold) {
                 ctx.traceInfo(`[drain] answer interrupted ${state.activeTimer!.type} timer`);
-                // 1.0.82: an answer that runs no turn (too large to store)
-                // gets its hold timer back after decide, as a prompt does.
+                // 1.0.82: an answer that runs no turn (not stored because the
+                // FIFO is full) gets its hold timer back after decide, as a
+                // prompt does.
                 if (!runtime.releasedForQueuedWork) {
                     runtime.releasedForQueuedWork = {
                         timer: { ...state.activeTimer! },
@@ -762,7 +821,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 }
                 state.activeTimer = null;
             }
-            stash.push({ kind: "answer", expectedQuestion: msg.expectedQuestion !== undefined ? msg.expectedQuestion : state.pendingInputQuestion ? { question: state.pendingInputQuestion.question, iteration: state.pendingInputQuestion.iteration ?? state.iteration } : null, answer: msg.answer, wasFreeform: msg.wasFreeform, ...(msg.sender && typeof msg.sender === "object" ? { sender: msg.sender } : {}) });
+            stash.push(answerItem);
             if (interruptsInputHold) break;
             continue;
         }
@@ -780,6 +839,28 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 yield* recordDuplicatePrompt(runtime, incomingClientMessageIds, duplicateIds, "drain");
                 continue;
             }
+
+            // The item as it is queued; drain may add a timer note and the
+            // buffered child digest to its prompt below.
+            const incomingAttachments = sanitizePromptAttachmentRefs(msg.attachments);
+            const baseItem = {
+                kind: "prompt",
+                prompt: msg.prompt,
+                bootstrap: Boolean(msg.bootstrap),
+                ...(msg.carriedSteersWake === true ? { carriedSteersWake: true } : {}),
+                ...(msg.requiredTool ? { requiredTool: msg.requiredTool } : {}),
+                ...(incomingClientMessageIds.length > 0 ? { clientMessageIds: incomingClientMessageIds } : {}),
+                ...(msg.sender && typeof msg.sender === "object" ? { sender: msg.sender } : {}),
+                ...(incomingAttachments.length > 0 ? { attachments: incomingAttachments } : {}),
+            };
+            // 1.0.82 (defect E): a prompt too large to queue is refused before
+            // anything changes: no timer is released, no child digest is
+            // taken, and its id is not pending, so a resend that fits runs.
+            if (isFifoItemTooLarge(baseItem)) {
+                yield* reportUnstoredItems(runtime, [baseItem], ["too-large"]);
+                continue;
+            }
+            const rehydrationMessageBefore = state.pendingRehydrationMessage;
 
             let userPrompt = msg.prompt;
             state.blockedError = undefined;
@@ -894,7 +975,18 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 };
             }
 
+            // 1.0.82 (defect E): a timer note must not push a prompt that fits
+            // over the item cap. Without the note the prompt is queued as
+            // sent; the released timer keeps its saved time either way.
+            if (userPrompt !== msg.prompt && isFifoItemTooLarge({ ...baseItem, prompt: userPrompt })) {
+                ctx.traceInfo(`[drain] the timer note would make the prompt too large to queue; queued it without the note`);
+                userPrompt = msg.prompt;
+                state.pendingRehydrationMessage = rehydrationMessageBefore;
+            }
+
             if (state.pendingChildDigest?.updates.length) {
+                const digestBefore = state.pendingChildDigest;
+                let withDigest: string;
                 if (msg.carriedSteersWake === true) {
                     // The wake marker is itself a [SYSTEM: ...] text; merging
                     // the digest into it would dissolve the marker. Merge the
@@ -903,23 +995,21 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                         runtime,
                         userPrompt.slice(CARRIED_STEERS_WAKE_PROMPT.length).trim() || undefined,
                     );
-                    userPrompt = notes ? `${CARRIED_STEERS_WAKE_PROMPT}\n\n${notes}` : CARRIED_STEERS_WAKE_PROMPT;
+                    withDigest = notes ? `${CARRIED_STEERS_WAKE_PROMPT}\n\n${notes}` : CARRIED_STEERS_WAKE_PROMPT;
                 } else {
-                    userPrompt = flushPendingChildDigestIntoPrompt(runtime, userPrompt);
+                    withDigest = flushPendingChildDigestIntoPrompt(runtime, userPrompt) ?? userPrompt;
+                }
+                if (isFifoItemTooLarge({ ...baseItem, prompt: withDigest })) {
+                    // 1.0.82 (defect E): the digest stays buffered for a later
+                    // turn rather than making this prompt too large to queue.
+                    ctx.traceInfo(`[drain] the child digest would make the prompt too large to queue; kept the digest buffered`);
+                    state.pendingChildDigest = digestBefore;
+                } else {
+                    userPrompt = withDigest;
                 }
             }
 
-            const incomingAttachments = sanitizePromptAttachmentRefs(msg.attachments);
-            stash.push({
-                kind: "prompt",
-                prompt: userPrompt,
-                bootstrap: Boolean(msg.bootstrap),
-                ...(msg.carriedSteersWake === true ? { carriedSteersWake: true } : {}),
-                ...(msg.requiredTool ? { requiredTool: msg.requiredTool } : {}),
-                ...(incomingClientMessageIds.length > 0 ? { clientMessageIds: incomingClientMessageIds } : {}),
-                ...(msg.sender && typeof msg.sender === "object" ? { sender: msg.sender } : {}),
-                ...(incomingAttachments.length > 0 ? { attachments: incomingAttachments } : {}),
-            });
+            stash.push({ ...baseItem, prompt: userPrompt });
             for (const id of incomingClientMessageIds) pendingClientMessageIds.add(id);
             continue;
         }
@@ -967,7 +1057,13 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
         }
 
         if (msg.type === "cmd") {
-            if (stash.length > 0) { yield* appendPromptStashToFifo(runtime, stash); stash.length = 0; }
+            if (stash.length > 0) {
+                // 1.0.82 (R8): an id that was not stored is not pending, so a
+                // resend later in this pass is not taken for a duplicate.
+                const lostIds: string[] = yield* appendPromptStashToFifo(runtime, stash);
+                for (const id of lostIds) pendingClientMessageIds.delete(id);
+                stash.length = 0;
+            }
             yield* handleCommand(runtime, msg as CommandMessage);
             if (state.orchestrationResult !== null) return;
             // Session regeneration: a pending pipeline is advanced by the run
@@ -1004,7 +1100,13 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
         }
 
         if (msg.answer !== undefined) {
-            stash.push({ kind: "answer", expectedQuestion: msg.expectedQuestion !== undefined ? msg.expectedQuestion : state.pendingInputQuestion ? { question: state.pendingInputQuestion.question, iteration: state.pendingInputQuestion.iteration ?? state.iteration } : null, answer: msg.answer, wasFreeform: msg.wasFreeform, ...(msg.sender && typeof msg.sender === "object" ? { sender: msg.sender } : {}) });
+            const answerItem = { kind: "answer", expectedQuestion: msg.expectedQuestion !== undefined ? msg.expectedQuestion : state.pendingInputQuestion ? { question: state.pendingInputQuestion.question, iteration: state.pendingInputQuestion.iteration ?? state.iteration } : null, answer: msg.answer, wasFreeform: msg.wasFreeform, ...(msg.sender && typeof msg.sender === "object" ? { sender: msg.sender } : {}) };
+            // 1.0.82 (defect E): refused at arrival, as in drain.
+            if (isFifoItemTooLarge(answerItem)) {
+                yield* reportUnstoredItems(runtime, [answerItem], ["too-large"]);
+                continue;
+            }
+            stash.push(answerItem);
             continue;
         }
 
@@ -1021,7 +1123,7 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
                 continue;
             }
             const sweepAttachments = sanitizePromptAttachmentRefs(msg.attachments);
-            stash.push({
+            const sweepItem = {
                 kind: "prompt",
                 prompt: msg.prompt,
                 bootstrap: Boolean(msg.bootstrap),
@@ -1029,7 +1131,14 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
                 ...(incomingClientMessageIds.length > 0 ? { clientMessageIds: incomingClientMessageIds } : {}),
                 ...(msg.sender && typeof msg.sender === "object" ? { sender: msg.sender } : {}),
                 ...(sweepAttachments.length > 0 ? { attachments: sweepAttachments } : {}),
-            });
+            };
+            // 1.0.82 (defect E): refused at arrival, as in drain, so its id is
+            // never pending and a resend that fits runs.
+            if (isFifoItemTooLarge(sweepItem)) {
+                yield* reportUnstoredItems(runtime, [sweepItem], ["too-large"]);
+                continue;
+            }
+            stash.push(sweepItem);
             for (const id of incomingClientMessageIds) pendingClientMessageIds.add(id);
             continue;
         }
