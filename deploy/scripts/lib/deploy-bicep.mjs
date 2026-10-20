@@ -111,6 +111,13 @@ async function deployOne({ moduleName, service, envName, env, region, stagingDir
 
   if (moduleName === "horizondb") prepareHorizonDbEnvForRender(env);
   if (moduleName === "base-infra") {
+    const foundryAuthMode = String(env.FOUNDRY_AUTH_MODE ?? "key").trim().toLowerCase();
+    if (!["key", "entra"].includes(foundryAuthMode)) {
+      throw new Error(
+        `FOUNDRY_AUTH_MODE must be 'key' or 'entra'; received '${env.FOUNDRY_AUTH_MODE}'.`,
+      );
+    }
+    env.FOUNDRY_AUTH_MODE = foundryAuthMode;
     env.FOUNDRY_LOCATION ??= "";
   }
 

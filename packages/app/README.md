@@ -85,6 +85,15 @@ is what makes the MCP servers below work without any further setup.
 Useful TUI flags: `-m, --model <name>` (initial model), `-p, --plugin <dir>`
 (plugin directory), `-e, --env <file>` (env file), `-h, --help`.
 
+Programmatic launchers can import `startTuiApp` from `pilotswarm` and pass
+`logFile: applicationLogPath` alongside their existing configuration. The host
+creates missing parent directories and truncates that file on startup, routing
+console, stderr, warnings, and native tracing to it. Explicit invalid paths or
+initialization failures reject startup; omitting the option preserves the
+best-effort `/tmp/duroxide-tui.log` default. See
+[Programmatic TUI Hosts](https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/cli-apps.md#programmatic-tui-hosts)
+for the public API example and lifecycle contract.
+
 ---
 
 ## Connect your AI assistant (MCP)
