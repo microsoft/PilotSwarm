@@ -474,29 +474,36 @@ export function bufferChildUpdate(
 /**
  * 1.0.82 (issue 192, defect E review): give back a digest that a prompt took
  * and that was never queued (the FIFO was full, or the prompt was cancelled
- * in the same pass). Updates buffered since are kept: per child, the newer
- * entry wins unless the given-back one is a lifecycle update and the newer
- * one is not, as in bufferChildUpdate.
+ * in the same pass), merged with the pending one. Per child, the newer entry
+ * wins unless the older one is a lifecycle update and the newer one is not,
+ * as in bufferChildUpdate. `chronology` orders entries by when they arrived
+ * (higher is newer); entries it ranks equal count the pending one as newer.
+ * The merged updates are kept in that order.
  */
 export function restorePendingChildDigest(
     runtime: DurableSessionRuntime,
     digest: PendingChildDigest,
+    chronology: (entry: PendingChildDigest["updates"][number]) => number = () => 0,
 ): void {
     const current = runtime.state.pendingChildDigest;
     if (!current) {
         runtime.state.pendingChildDigest = digest;
         return;
     }
-    const updates = [...digest.updates];
-    for (const entry of current.updates) {
-        const index = updates.findIndex((given) => given.sessionId === entry.sessionId);
-        if (index < 0) updates.push(entry);
-        else if (childUpdateRank(entry.updateType) >= childUpdateRank(updates[index].updateType)) updates[index] = entry;
+    const byChild = new Map<string, PendingChildDigest["updates"][number]>();
+    for (const entry of [...digest.updates, ...current.updates]) {
+        const held = byChild.get(entry.sessionId);
+        if (!held) {
+            byChild.set(entry.sessionId, entry);
+            continue;
+        }
+        const [older, newer] = chronology(entry) >= chronology(held) ? [held, entry] : [entry, held];
+        byChild.set(entry.sessionId, childUpdateRank(newer.updateType) >= childUpdateRank(older.updateType) ? newer : older);
     }
     runtime.state.pendingChildDigest = {
         startedAtMs: Math.min(digest.startedAtMs, current.startedAtMs),
         ...(digest.ready || current.ready ? { ready: true } : {}),
-        updates,
+        updates: [...byChild.values()].sort((a, b) => chronology(a) - chronology(b)),
     };
 }
 

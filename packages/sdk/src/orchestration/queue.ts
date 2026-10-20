@@ -367,14 +367,19 @@ interface CarriedWork {
     rehydrationMessage?: string;
 }
 
-function giveBackCarriedWork(runtime: DurableSessionRuntime, carriedByItem: Map<any, CarriedWork>, items: any[]): void {
+function giveBackCarriedWork(
+    runtime: DurableSessionRuntime,
+    carriedByItem: Map<any, CarriedWork>,
+    items: any[],
+    chronology: (entry: PendingChildDigest["updates"][number]) => number,
+): void {
     const { ctx, state } = runtime;
     for (const item of items) {
         const carried = carriedByItem.get(item);
         if (!carried) continue;
         carriedByItem.delete(item);
         if (carried.digest) {
-            restorePendingChildDigest(runtime, carried.digest);
+            restorePendingChildDigest(runtime, carried.digest, chronology);
             ctx.traceInfo(`[drain] a prompt that was not queued gave back the child digest it carried (${carried.digest.updates.length} update(s))`);
         }
         if (carried.rehydrationMessage !== undefined && state.pendingRehydrationMessage === undefined) {
@@ -647,8 +652,14 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
     // 1.0.82 (defect E): a prompt or answer refused on arrival collected
     // nothing, but the pass goes on sweeping for the messages behind it.
     let refusedThisPass = false;
-    // 1.0.82 (defect E review): the owed work each stashed prompt carries.
+    // 1.0.82 (defect E review): the owed work each stashed prompt carries,
+    // and for each child update, the n-th digest a prompt took it in this
+    // pass. An update no prompt has taken is newer than every taken one, so
+    // giving back several digests keeps each child's newest update.
     const carriedByItem = new Map<any, CarriedWork>();
+    const digestTakenAt = new WeakMap<object, number>();
+    let digestsTaken = 0;
+    const updateChronology = (entry: object) => digestTakenAt.get(entry) ?? Number.MAX_SAFE_INTEGER;
 
     for (let i = 0; i < MAX_DRAIN_PER_TURN; i++) {
         let msg: any = null;
@@ -797,7 +808,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 if (ids.some((id) => cancelledThisDrain.has(id))) {
                     ctx.traceInfo(`[drain] dropping stashed prompt cancelled by tombstone (ids=${ids.join(",")})`);
                     yield* dropCancelledPrompt(runtime, ids, "drain-stash");
-                    giveBackCarriedWork(runtime, carriedByItem, [item]);
+                    giveBackCarriedWork(runtime, carriedByItem, [item], updateChronology);
                     stash.splice(s, 1);
                 }
             }
@@ -810,7 +821,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 // resend later in this pass is not taken for a duplicate; the
                 // owed work a refused prompt carried is given back.
                 const lostItems: any[] = yield* appendPromptStashToFifo(runtime, stash);
-                giveBackCarriedWork(runtime, carriedByItem, lostItems);
+                giveBackCarriedWork(runtime, carriedByItem, lostItems, updateChronology);
                 for (const item of lostItems) {
                     for (const id of validClientMessageIds(item?.clientMessageIds)) pendingClientMessageIds.delete(id);
                 }
@@ -1067,6 +1078,8 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 } else {
                     userPrompt = withDigest;
                     carriedDigest = digestBefore;
+                    digestsTaken += 1;
+                    for (const entry of digestBefore.updates) digestTakenAt.set(entry, digestsTaken);
                 }
             }
 
@@ -1091,7 +1104,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
 
     if (stash.length > 0) {
         const lostItems: any[] = yield* appendPromptStashToFifo(runtime, stash);
-        giveBackCarriedWork(runtime, carriedByItem, lostItems);
+        giveBackCarriedWork(runtime, carriedByItem, lostItems, updateChronology);
     }
 }
 
