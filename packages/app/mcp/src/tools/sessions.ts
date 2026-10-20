@@ -397,13 +397,25 @@ export async function drainTranscriptBackward(
             break;
         }
 
-        if (collected.length >= maxEvents) { stopReason = "max_events"; break; }
-
+        // A DEFINITIVE "no more history" OUTRANKS the cap, and the order here is
+        // load-bearing. Checking the cap first made a session of exactly
+        // max_events rows report `max_events` with reached_oldest_retained
+        // false and a continuation cursor — telling the caller history remained
+        // when the provider had just said it did not, and sending them on a
+        // round trip that returns nothing. The claim was conservative rather
+        // than data-losing, but it was false, and `truncated_reason` is the one
+        // field a caller reads to learn whether they have the whole thing.
+        //
+        // Breaking with `exhausted` here does NOT suppress a genuine cap cut:
+        // the overshoot trim below re-asserts `max_events` and clears
+        // `reachedOldest` whenever rows are actually dropped.
         if (receipt.hasMore === false) {
             stopReason = "exhausted";
             reachedOldest = true;
             break;
         }
+
+        if (collected.length >= maxEvents) { stopReason = "max_events"; break; }
     }
 
     // Enforce the requested window. A page may legitimately straddle from_seq.
@@ -456,12 +468,32 @@ export function summarizeTranscriptRedactions(events: Array<Record<string, any>>
     let echo = 0;
     let unavailable = 0;
     for (const event of events) {
-        // A row THIS READER stripped for size is not a write-time omission, and
-        // must not be reported as one. Its data is null, so the classifier would
-        // otherwise call it `absent` and it would surface as payload_unavailable
-        // — telling the caller the payload was never stored when in fact we
-        // declined to send it. The byte cut is reported by truncated_reason.
-        if (event.payloadOmitted) continue;
+        // A row THIS READER stripped for size carries BOTH possibilities, and
+        // conflating them was wrong in two opposite directions.
+        //
+        // Its `data` is null, so running the classifier on it would report
+        // `payload_unavailable` — telling the caller the payload was never
+        // stored when in truth we declined to send it. But skipping the row
+        // outright, as this did, ERASES a genuine write-time omission: the
+        // writer preserves other fields alongside its summary marker
+        // (`...(data ?? {})` in session-proxy.ts), so a row can carry the SDK
+        // echo marker AND a large auxiliary field, and be stripped for size.
+        // That row really did have its system prompt omitted at write time, and
+        // reporting zero was a false clean bill.
+        //
+        // So: trust only the classification captured BEFORE the strip, and
+        // never re-classify the replacement payload.
+        if (event.payloadOmitted) {
+            const prior = event.storedOmission as OmissionKind | null | undefined;
+            if (prior === "sdk_echo") {
+                echo++;
+                bySeq.push({ seq: event.seq, kind: "system_prompt_echo" });
+            } else if (prior === "absent") {
+                unavailable++;
+                bySeq.push({ seq: event.seq, kind: "payload_unavailable" });
+            }
+            continue;
+        }
         const kind = classifyStoredOmission(event);
         if (kind === "sdk_echo") {
             echo++;
@@ -1898,6 +1930,24 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                         };
                     }
                 }
+                // `to_seq` is INCLUSIVE and the drain converts it with to_seq + 1,
+                // so the largest safe integer would produce an unsafe cursor and
+                // fail later in the management layer with a confusing beforeSeq
+                // error. Refuse it here, where the message can name the real
+                // problem, rather than accepting an input we cannot honour.
+                if (to_seq !== undefined && to_seq >= Number.MAX_SAFE_INTEGER) {
+                    return {
+                        content: [{
+                            type: "text" as const,
+                            text: JSON.stringify({
+                                error: "to_seq is too large",
+                                received: String(to_seq),
+                                remedy: `to_seq must be below ${Number.MAX_SAFE_INTEGER}; omit it to start at the newest event`,
+                            }, null, 2),
+                        }],
+                        isError: true,
+                    };
+                }
                 if (from_seq !== undefined && to_seq !== undefined && from_seq > to_seq) {
                     return {
                         content: [{
@@ -2002,13 +2052,18 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                 // So do what the paged reader already does for an oversized record:
                 // deliver it WITHOUT its payload rather than not at all. The caller
                 // still learns the event happened, when, and of what type, and
-                // truncated_reason already says byte_budget. summarizeTranscriptRedactions
-                // skips payload-omitted rows, so this is not misreported as a
-                // write-time omission.
+                // truncated_reason already says byte_budget.
+                //
+                // `storedOmission` carries the row's WRITE-TIME classification
+                // across the strip. Without it the omission report loses a real
+                // sdk_echo whenever the same row is also too large to send —
+                // and the replacement `data: null` would otherwise be
+                // misclassified as a write-time absence.
                 if (built.bytes > PAGE_BYTES_MAX && events.length === 1 && !events[0]!.payloadOmitted) {
                     const only = events[0]!;
                     const size = Buffer.byteLength(JSON.stringify(only.data ?? null), "utf8");
-                    events = [{ ...only, data: null, payloadOmitted: { kind: "byte_budget", encodedBytes: size } }];
+                    const storedOmission = classifyStoredOmission(only);
+                    events = [{ ...only, data: null, storedOmission, payloadOmitted: { kind: "byte_budget", encodedBytes: size } }];
                     truncatedReason = "byte_budget";
                     reachedOldest = false;
                     built = build();

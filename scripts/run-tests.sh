@@ -710,14 +710,28 @@ run_app_tests() {
         # pipefail` the command substitution kills the whole run silently -
         # taking packages/app, horizon-store, external and the SDK Vitest
         # phases with it.
-        local app_node_options="" app_opt
+        # Node accepts BOTH `--test-reporter=tap` and `--test-reporter tap`, so
+        # dropping only the flag leaves its value behind as a bare word: an
+        # inherited `--test-reporter spec` became `spec --test-reporter=tap ...`,
+        # which node rejects, and the required-coverage phase could not start.
+        # Consume the value with the flag.
+        #
+        # noglob is load-bearing too: the unquoted expansion that splits the
+        # option string would otherwise let a token containing * or ? expand
+        # against the working directory and silently rewrite an option.
+        local app_node_options="" app_opt app_skip_next=0
+        local app_had_noglob=0
+        case "$-" in *f*) app_had_noglob=1 ;; esac
+        set -f
         for app_opt in ${NODE_OPTIONS:-}; do
+            if [ "$app_skip_next" = "1" ]; then app_skip_next=0; continue; fi
             case "$app_opt" in
-                --test-reporter|--test-reporter=*) ;;
-                --test-reporter-destination|--test-reporter-destination=*) ;;
+                --test-reporter|--test-reporter-destination) app_skip_next=1 ;;
+                --test-reporter=*|--test-reporter-destination=*) ;;
                 *) app_node_options="${app_node_options}${app_opt} " ;;
             esac
         done
+        [ "$app_had_noglob" = "1" ] || set +f
         local app_status=0
         (cd "$REPO_ROOT" \
             && NODE_OPTIONS="${app_node_options}--test-reporter=tap --test-reporter-destination=stdout" \

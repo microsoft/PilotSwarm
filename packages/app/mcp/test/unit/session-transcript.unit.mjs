@@ -139,13 +139,62 @@ async function run() {
 
         // Continuation must be gapless: next_to_seq is exclusive of everything
         // already delivered, so resuming there must not repeat or skip a row.
+        // ASSERT THE EXACT SET, not just its tail and the absence of overlap.
+        // The weaker form accepted a second page of [205] alone — so a
+        // regression that silently dropped 202-204 would have passed while
+        // losing three rows out of the middle of the history.
         const next = body.receipt.next_to_seq;
         const body2 = bodyOf(await handler({ session_id: SESSION, max_events: 4, to_seq: next }));
         const seqs2 = body2.events.map((e) => e.seq);
         const overlap = seqs2.filter((s) => seqs.includes(s));
-        record("continuation from next_to_seq is gapless and non-overlapping",
-            next === 205 && overlap.length === 0 && seqs2[seqs2.length - 1] === 205,
-            `next=${next} seqs2=${JSON.stringify(seqs2)} overlap=${JSON.stringify(overlap)}`);
+        record("continuation from next_to_seq returns the EXACT expected rows",
+            next === 205 && JSON.stringify(seqs2) === JSON.stringify([202, 203, 204, 205]),
+            `next=${next} seqs2=${JSON.stringify(seqs2)} expected=[202,203,204,205]`);
+        record("continuation does not overlap the first page",
+            overlap.length === 0, `overlap=${JSON.stringify(overlap)}`);
+
+        // Drain the WHOLE fixture through successive continuations and compare
+        // the union against the known sequences. A partition claim is only
+        // worth anything if it is checked over the entire history.
+        {
+            const drained = [...seqs];
+            let cursor = body.receipt.next_to_seq, guard = 10;
+            while (cursor !== null && guard-- > 0) {
+                const page = bodyOf(await handler({ session_id: SESSION, max_events: 4, to_seq: cursor }));
+                drained.push(...page.events.map((e) => e.seq));
+                cursor = page.receipt.next_to_seq;
+            }
+            const sorted = [...drained].sort((x, y) => x - y);
+            const expected = all.map((e) => e.seq);
+            record("successive continuations PARTITION the whole session",
+                JSON.stringify(sorted) === JSON.stringify(expected)
+                && new Set(drained).size === drained.length,
+                `drained=${JSON.stringify(sorted)} expected=${JSON.stringify(expected)}`);
+        }
+
+        // EXACT-CAP TERMINAL CASE. A session of exactly max_events rows is
+        // complete, not truncated: the provider says no more history on the
+        // same page that fills the cap. Reporting max_events here would claim
+        // a cut that did not happen and hand back a cursor that returns
+        // nothing.
+        {
+            const four = [ev(240, "a"), ev(241, "b"), ev(242, "c"), ev(243, "d")];
+            const h4 = captureSessionTool("get_session_transcript", makeServerContext({ mgmt: sessionMgmt(four) }));
+            const b4 = bodyOf(await h4({ session_id: SESSION, max_events: 4 }));
+            record("a session of EXACTLY max_events rows reports completeness, not a cut",
+                b4.receipt.truncated_reason === null
+                && b4.receipt.reached_oldest_retained === true
+                && b4.receipt.next_to_seq === null
+                && b4.count === 4,
+                `reason=${JSON.stringify(b4.receipt.truncated_reason)} oldest=${b4.receipt.reached_oldest_retained} next=${b4.receipt.next_to_seq} count=${b4.count}`);
+
+            const b1 = bodyOf(await h4({ session_id: SESSION, max_events: 1 }));
+            record("a genuine cap cut is still reported as max_events",
+                b1.receipt.truncated_reason === "max_events"
+                && b1.receipt.reached_oldest_retained === false
+                && b1.receipt.next_to_seq === 242,
+                `reason=${b1.receipt.truncated_reason} oldest=${b1.receipt.reached_oldest_retained} next=${b1.receipt.next_to_seq}`);
+        }
     }
 
     // ── 3. range bound ───────────────────────────────────────────────────
@@ -298,6 +347,85 @@ async function run() {
         record("the response respects the ceiling after the cut",
             body !== null && Buffer.byteLength(textOf(res), "utf8") <= 1024 * 1024,
             `bytes=${Buffer.byteLength(textOf(res), "utf8")}`);
+    }
+
+    // ── 10. a row that is BOTH write-time omitted AND too large to send ──
+    //
+    // The writer keeps other fields beside its summary marker
+    // (`...(data ?? {})` in session-proxy.ts), so a row can carry the SDK echo
+    // marker AND a large auxiliary field. Stripping it for size must not erase
+    // the write-time omission: that row really did have its system prompt
+    // omitted before storage, and reporting zero would be a false clean bill.
+    {
+        const bigEcho = {
+            seq: 1100,
+            sessionId: SESSION,
+            eventType: "assistant.message",
+            data: { content: `${SDK_ECHO_MARKER} Full content omitted from CMS (9 chars). Snippet: x]`, aux: "y".repeat(1024 * 1024 + 4096) },
+            createdAt: new Date(0),
+        };
+        const handler = captureSessionTool("get_session_transcript", makeServerContext({ mgmt: sessionMgmt([bigEcho]) }));
+        const res = await handler({ session_id: SESSION });
+        const body = res.isError ? null : bodyOf(res);
+        record("an oversized row is still delivered, with its payload omitted",
+            body !== null && body.events?.[0]?.payloadOmitted?.kind === "byte_budget" && body.events?.[0]?.data === null,
+            res.isError ? `refused: ${textOf(res).slice(0, 140)}` : JSON.stringify(body?.events?.[0]?.payloadOmitted));
+        record("a write-time echo is NOT erased by a reader-side byte cut",
+            body !== null && body.redactions?.system_prompt_echo === 1
+            && body.redactions?.by_seq?.some((r) => r.seq === 1100 && r.kind === "system_prompt_echo"),
+            body ? JSON.stringify(body.redactions) : "n/a");
+        record("the byte cut is still NOT reported as payload_unavailable",
+            body !== null && body.redactions?.payload_unavailable === 0,
+            body ? JSON.stringify(body.redactions) : "n/a");
+
+        // NEGATIVE CONTROL: oversized but with no write-time omission at all.
+        // Without this, a detector that simply always reported one echo would
+        // pass the case above.
+        const bigClean = {
+            seq: 1101, sessionId: SESSION, eventType: "assistant.message",
+            data: { content: "ordinary", aux: "y".repeat(1024 * 1024 + 4096) }, createdAt: new Date(0),
+        };
+        const h2 = captureSessionTool("get_session_transcript", makeServerContext({ mgmt: sessionMgmt([bigClean]) }));
+        const r2 = await h2({ session_id: SESSION });
+        const b2 = r2.isError ? null : bodyOf(r2);
+        record("NEGATIVE CONTROL: an oversized CLEAN row reports zero redactions",
+            b2 !== null && b2.redactions?.system_prompt_echo === 0 && b2.redactions?.payload_unavailable === 0,
+            b2 ? JSON.stringify(b2.redactions) : `refused: ${textOf(r2).slice(0, 140)}`);
+    }
+
+    // ── 11. MULTI-ROW byte pressure: the halving loop, never previously run ──
+    //
+    // Every earlier oversized fixture had exactly one row, so the trim loop was
+    // never entered. Here each row fits on its own but the set does not: the
+    // response must keep the NEWEST suffix, report byte_budget, stop claiming
+    // it reached the oldest, and hand back an exact continuation bound.
+    {
+        const chunk = "z".repeat(300 * 1024);
+        const many = [ev(1200, chunk), ev(1201, chunk), ev(1202, chunk), ev(1203, chunk), ev(1204, chunk)];
+        const handler = captureSessionTool("get_session_transcript", makeServerContext({ mgmt: sessionMgmt(many) }));
+        const res = await handler({ session_id: SESSION });
+        const body = res.isError ? null : bodyOf(res);
+        const seqs = body?.events?.map((e) => e.seq) ?? [];
+        const bytes = Buffer.byteLength(textOf(res), "utf8");
+        record("multi-row byte pressure returns a response within the ceiling",
+            body !== null && bytes <= 1024 * 1024, `isError=${res.isError} bytes=${bytes}`);
+        record("the byte trim keeps the NEWEST rows, not the oldest",
+            seqs.length > 0 && seqs.length < many.length && seqs[seqs.length - 1] === 1204,
+            `seqs=${JSON.stringify(seqs)} of ${JSON.stringify(many.map((e) => e.seq))}`);
+        record("a multi-row byte cut reports byte_budget and drops the oldest claim",
+            body?.receipt?.truncated_reason === "byte_budget" && body?.receipt?.reached_oldest_retained === false,
+            `reason=${body?.receipt?.truncated_reason} oldest=${body?.receipt?.reached_oldest_retained}`);
+        record("a byte-cut transcript still offers an exact continuation bound",
+            body?.receipt?.next_to_seq === (seqs[0] - 1),
+            `next_to_seq=${body?.receipt?.next_to_seq} lowest_delivered=${seqs[0]}`);
+    }
+
+    // ── 12. an inclusive to_seq we cannot honour is refused HERE ─────────
+    {
+        const handler = captureSessionTool("get_session_transcript", makeServerContext({ mgmt: sessionMgmt([ev(1300, "x")]) }));
+        const res = await handler({ session_id: SESSION, to_seq: Number.MAX_SAFE_INTEGER });
+        record("to_seq at the safe-integer boundary is refused with a named reason",
+            res.isError === true && /to_seq is too large/.test(textOf(res)), textOf(res).slice(0, 140));
     }
 
     const failed = results.filter((r) => !r.ok).length;
