@@ -911,14 +911,16 @@ describe("issue 192 defect E review: refusing an item never loses other owed wor
         const infos = [];
         h.runtime.ctx.traceInfo = (message) => infos.push(message);
         // A due wait under queued work becomes a timer item (R4); it carries
-        // the turn's 62 KB text.
-        h.arm("wait", 0, { content: "c".repeat(62_000), reason: "a long answer then a wait" });
+        // the turn's 62 KB text. Its compact copy keeps 2,000 characters of
+        // the reason, more than the room left in a full FIFO.
+        const longReason = "r".repeat(2_000);
+        h.arm("wait", 0, { content: "c".repeat(62_000), reason: longReason });
         h.drive(drain(h.runtime));
         const overflow = h.events().filter(e => e.eventType === "session.fifo_overflow");
         expect(overflow.map(e => [e.data.kinds, e.data.reasons])).toEqual([[["timer"], ["full"]]]);
         expect(infos.some(m => m.includes("queued its compact form"))).toBe(false);
 
-        const timer = { kind: "timer", timer: { type: "wait", deadlineMs: 1, originalDurationMs: 60_000, reason: "r", content: "c".repeat(62_000) }, firedAtMs: 1 };
+        const timer = { kind: "timer", timer: { type: "wait", deadlineMs: 1, originalDurationMs: 60_000, reason: longReason, content: "c".repeat(62_000) }, firedAtMs: 1 };
         const reasons = [];
         expect(appendToFifo(h.runtime, [timer], reasons)).toEqual([timer]);
         expect(reasons).toEqual(["full"]);
