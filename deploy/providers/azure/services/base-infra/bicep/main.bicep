@@ -94,7 +94,7 @@ param userPoolMinCount int = 1
 @description('Add the `repocache` node pool: one node, no autoscaling, tainted so only the session-workspaces repo pod (the repo-cache service) runs there. Follows WORKSPACES_ENABLED. Turning it off later does not delete the pool; delete it with `az aks nodepool delete`.')
 param repoCachePoolEnabled bool = false
 
-@description('Whether to provision an Azure AI Foundry (Cognitive Services AIServices) account in this stamp. When true, foundry.bicep + auto-secrets.bicep run; the Foundry primary key lands in KV as `azure-oai-key` and FOUNDRY_ENDPOINT is emitted as a deployment output. When false, no Foundry resource is provisioned and the worker catalog substitutes `__FOUNDRY_ENDPOINT__` to empty (Foundry providers in the catalog become non-loadable; non-Foundry providers — github-copilot, anthropic — keep working).')
+@description('Whether to provision an Azure AI Foundry (Cognitive Services AIServices) account in this stamp. When true, foundry.bicep emits FOUNDRY_ENDPOINT and configures the selected Entra or key-auth path. When false, no Foundry resource is provisioned and Foundry catalog providers remain non-loadable.')
 param foundryEnabled bool = false
 
 @description('SKU for the Foundry account. S0 is the only generally-available paid SKU. Ignored when foundryEnabled=false.')
@@ -105,6 +105,13 @@ param foundrySku string = 'S0'
 
 @description('Array of Foundry model deployments to provision. Each entry: { name, model: { format, name, version }, sku: { name, capacity } }. Threaded by the deploy orchestrator from a per-stamp JSON file (deploy/envs/local/<env>/foundry-deployments.json) via `--parameters foundryDeployments=@<file>`. Empty array → account is provisioned with no deployments, useful for incremental opt-in. Ignored when foundryEnabled=false.')
 param foundryDeployments array = []
+
+@description('Foundry data-plane auth mode. `entra` uses the worker workload identity and disables local auth; `key` retains the legacy account-key path.')
+@allowed([
+  'key'
+  'entra'
+])
+param foundryAuthMode string = 'key'
 
 @description('Optional Azure region for the Foundry account, decoupled from the stamp region. Empty keeps the account co-located with the stamp.')
 param foundryLocation string = ''
@@ -550,6 +557,8 @@ module Foundry './foundry.bicep' = if (foundryEnabled) {
     sku: foundrySku
     deployments: foundryDeployments
     keyVaultName: KeyVault.outputs.keyVaultName
+    authMode: foundryAuthMode
+    workloadIdentityPrincipalId: Uami.outputs.csiIdentityPrincipalId
   }
 }
 
@@ -568,8 +577,8 @@ module Foundry './foundry.bicep' = if (foundryEnabled) {
 // What does run here: when foundryEnabled=false, write the
 // SEED_SECRETS_UNSET_SENTINEL placeholder for `azure-oai-key` so the
 // stamp-invariant worker SPC mount succeeds. When foundryEnabled=true,
-// foundry.bicep itself writes the real key1 (co-located with the account
-// resource), so this sentinel module is skipped.
+// foundry.bicep writes either the real key (key mode) or the same sentinel
+// (Entra mode), so this sentinel module is skipped.
 //
 // Human-provided secrets (github-token, anthropic-api-key) are still
 // seeded into Key Vault by the `seed-secrets` step in deploy.mjs, sourced
