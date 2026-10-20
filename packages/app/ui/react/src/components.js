@@ -2366,30 +2366,64 @@ function wrapRunsLine(line, cols) {
     });
 }
 
-function buildAdminCanvasAppsLines(view, { treeRows = 18, detailRows = Infinity, cols = Infinity, bounds = null } = {}) {
-    const lines = [];
+const CANVAS_APPS_COMPACT_KEYS = [[
+    { text: " j/k ←/→ Enter ^D/^U ", color: "green", bold: true }, { text: "move/fold/open/page  ", color: "gray" },
+    { text: "r ", color: "cyan", bold: true }, { text: "refresh  ", color: "gray" },
+    { text: "Esc ", color: "red", bold: true }, { text: "close", color: "gray" },
+]];
+
+/** Screen rows a list of lines takes in a Panel `cols` wide (the Panel's own word wrap). */
+function panelRows(lines, cols) {
+    return lines.reduce((n, line) => n + wrapRunsLine(line, cols).length, 0);
+}
+
+/**
+ * Admin → Canvas Apps in the TUI: the tree, then the keys (always on screen),
+ * then the detail in its own window. Without a finite `bodyRows` everything is
+ * returned. With one, everything is fitted into exactly that many Panel rows
+ * at `cols`: the tree shrinks first (to 4 rows), then the blank line goes, then
+ * the keys collapse to one line, so the detail window is real rows the Panel
+ * draws. The window starts at `view.canvasApps.detailOffset` under a measured
+ * position line; Ctrl+D/PgDn and Ctrl+U/PgUp page it. `bounds` receives
+ * { maxOffset, page }.
+ */
+function buildAdminCanvasAppsLines(view, { treeRows = 18, bodyRows = Infinity, cols = Infinity, bounds = null } = {}) {
     const apps = view.canvasApps || {};
-    lines.push(...buildAdminTreeLines(view, treeRows));
-    if (apps.loading) lines.push([{ text: "  loading canvas apps...", color: "gray" }]);
-    if (apps.error) lines.push([{ text: `  ! ${apps.error}`, color: "red" }]);
-    lines.push([{ text: "Actions", color: "cyan", bold: true }]);
-    lines.push(...adminTreeKeyLines({ detailPaging: true }));
-    lines.push([{ text: "", color: "gray" }]);
+    const status = [];
+    if (apps.loading) status.push([{ text: "  loading canvas apps...", color: "gray" }]);
+    if (apps.error) status.push([{ text: `  ! ${apps.error}`, color: "red" }]);
     // Pre-wrapped to the panel width, so the window counts real screen rows.
     const detail = canvasAppDetailLines(apps).flatMap((line) => wrapRunsLine(line, cols));
-    const room = Number.isFinite(detailRows) ? Math.max(2, Math.floor(detailRows)) - 1 : Infinity;
-    if (detail.length <= room + 1 || !Number.isFinite(room)) {
-        if (bounds) { bounds.maxOffset = 0; bounds.page = Number.isFinite(room) ? Math.max(1, room) : 10; }
-        lines.push(...detail);
-        return lines;
+    const fullKeys = [[{ text: "Actions", color: "cyan", bold: true }], ...adminTreeKeyLines({ detailPaging: true })];
+    const blank = [[{ text: "", color: "gray" }]];
+    const assemble = (tr, keys, gap) => [...buildAdminTreeLines(view, tr), ...status, ...keys, ...gap];
+    if (!Number.isFinite(bodyRows)) {
+        if (bounds) { bounds.maxOffset = 0; bounds.page = 10; }
+        return [...assemble(treeRows, fullKeys, blank), ...detail];
     }
-    const maxOffset = Math.max(0, detail.length - room);
+    const want = Math.min(detail.length, 4);
+    let tr = Math.max(4, treeRows);
+    let keys = fullKeys;
+    let gap = blank;
+    let head = assemble(tr, keys, gap);
+    const room = () => bodyRows - panelRows(head, cols);
+    while (room() < want && tr > 4) { tr -= 1; head = assemble(tr, keys, gap); }
+    if (room() < want) { gap = []; head = assemble(tr, keys, gap); }
+    if (room() < want) { keys = CANVAS_APPS_COMPACT_KEYS; head = assemble(tr, keys, gap); }
+    const budget = Math.max(0, room());
+    if (detail.length <= budget) {
+        if (bounds) { bounds.maxOffset = 0; bounds.page = Math.max(1, budget); }
+        return [...head, ...detail];
+    }
+    // Paging: one measured position line, then the detail rows that fit.
+    const position = (offset, shown) => [[{ text: `lines ${offset + 1}–${offset + shown} of ${detail.length} · ^D/^U page`, color: "gray" }]];
+    const positionRows = panelRows(position(detail.length, detail.length), cols);
+    const window = Math.max(1, budget - positionRows);
+    const maxOffset = Math.max(0, detail.length - window);
     const offset = Math.min(Math.max(0, Number(apps.detailOffset) || 0), maxOffset);
-    if (bounds) { bounds.maxOffset = maxOffset; bounds.page = Math.max(1, room - 1); }
-    const shown = detail.slice(offset, offset + room);
-    lines.push([{ text: `Detail · lines ${offset + 1}–${offset + shown.length} of ${detail.length} · Ctrl+D/PgDn more · Ctrl+U/PgUp back`, color: "gray" }]);
-    lines.push(...shown);
-    return lines;
+    const shown = detail.slice(offset, offset + window);
+    if (bounds) { bounds.maxOffset = maxOffset; bounds.page = Math.max(1, window - 1); }
+    return [...head, ...position(offset, shown.length), ...shown];
 }
 
 
@@ -2420,16 +2454,13 @@ export function buildAdminConsoleLines(view, { treeRows = 18, height = null, wid
     }
 
     if (view.section === "canvasApps") {
-        // The Panel shows height - 2 lines; the detail window gets what the
-        // header, tree and keys leave.
-        const cols = Number.isFinite(Number(width)) && Number(width) > 0 ? Math.max(20, Number(width) - 4) : Infinity;
-        // Everything above the detail (its one "select an app" line excluded), in screen rows.
-        const head = [...lines, ...buildAdminCanvasAppsLines({ ...view, canvasApps: { ...view.canvasApps, detail: null, empty: false } }, { treeRows })].slice(0, -1);
-        const headRows = head.reduce((n, line) => n + wrapRunsLine(line, cols).length, 0);
-        const detailRows = Number.isFinite(Number(height)) && Number(height) > 0
-            ? Math.max(3, Number(height) - 2 - headRows)
-            : Infinity;
-        lines.push(...buildAdminCanvasAppsLines(view, { treeRows, detailRows, cols, bounds }));
+        // Fit into the Panel's real body: height - 2 rows at width - 4 columns
+        // (tui/src/platform.js Panel), after the header above.
+        const panelWidth = Number(width) > 0 ? Math.max(8, Number(width)) : null;
+        const panelHeight = Number(height) > 0 ? Math.max(4, Number(height)) : null;
+        const cols = panelWidth ? Math.max(1, panelWidth - 4) : Infinity;
+        const bodyRows = panelHeight ? Math.max(1, panelHeight - 2 - panelRows(lines, cols)) : Infinity;
+        lines.push(...buildAdminCanvasAppsLines(view, { treeRows, bodyRows, cols, bounds }));
         return lines;
     }
 

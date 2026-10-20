@@ -10,7 +10,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { appReducer, createInitialState, createStore, selectAdminConsole, PilotSwarmUiController } from "pilotswarm/ui-core";
+import { appReducer, computeLegacyLayout, createInitialState, createStore, selectAdminConsole, PilotSwarmUiController } from "pilotswarm/ui-core";
 import { buildAdminConsoleLines } from "../../ui/react/src/components.js";
 import { adminCollapsedConfigPatch, adminTreeViewerKey, readAdminCollapsedForViewer } from "../src/admin-tree-config.js";
 import { __testing as panelWrap } from "../src/platform.js";
@@ -122,7 +122,7 @@ test("Ctrl+D/PgDn and Ctrl+U/PgUp page the Canvas Apps detail (review r1 P4)", (
     assert.match(source, /adminSection === "canvasApps" && \(isCtrlU \|\| key\.pageUp\)\) \{\s*controller\.handleCommand\(UI_COMMANDS\.ADMIN_CANVAS_APP_DETAIL_PAGE_UP\)/);
 });
 
-test("at a finite height the Panel draws every row, and paging reaches every version, contributor and load (review r1 P4)", async () => {
+async function bigAppConsole() {
     const s = store();
     const big = app("board", "shared", "alice", {
         description: Array.from({ length: 4 }, (_, i) => `Paragraph ${i} explains when to use the board in a long and wordy sentence that wraps.`).join("\n\n"),
@@ -137,8 +137,10 @@ test("at a finite height the Panel draws every row, and paging reaches every ver
     };
     const versions = Array.from({ length: 9 }, (_, i) => ({ versionId: `v-${i}`, version: `1.${i}.0`, sha256: String(i).repeat(64), sizeBytes: 100 + i, card: big.card, createdAt: "2026-10-01T00:00:00Z" }));
     big.activeVersionId = "v-8";
+    // Enough apps that the tree overflows and shows both "more" markers.
+    const extra = Array.from({ length: 30 }, (_, i) => app(`zz-${String(i).padStart(2, "0")}`, "user", "alice"));
     const transport = {
-        listCanvasApps: async () => [big],
+        listCanvasApps: async () => [big, ...extra],
         getCanvasApp: async () => ({ ...big, versions }),
         listCanvasAppEditors: async () => [{ provider: "test", subject: "carol", displayName: "Carol" }],
         getCanvasAppLoads: async () => ({ rows: Array.from({ length: 5 }, (_, i) => ({ loadId: `l${i}`, version: "1.8.0", user: { provider: "test", subject: "bob" }, userDisplayName: `Loader ${i}`, loadedAt: "2026-10-03T10:00:00Z" })), total30d: 5 }),
@@ -146,39 +148,87 @@ test("at a finite height the Panel draws every row, and paging reaches every ver
     const controller = new PilotSwarmUiController({ store: s, transport });
     await controller.refreshAdminCanvasApps();
     await controller.selectAdminCanvasApp({ name: "board", scope: "shared" });
-    const width = 80;
-    const height = 30;
-    const rowsDrawn = (lines) => lines.reduce((n, line) => n + panelWrap.wrapRunsLine(line, width - 4).length, 0);
-    const seen = new Set();
+    return { s, controller, versions };
+}
+
+// What the TUI Panel actually draws: its own word wrap at width - 4, clipped to height - 2 rows (tui/src/platform.js).
+function panelDraws(lines, width, height) {
+    const rows = lines.flatMap((line) => panelWrap.wrapRunsLine(line, Math.max(1, width - 4)).map((r) => (r.runs ? r.runs.map((x) => x.text).join("") : String(r.text ?? ""))));
+    return { total: rows.length, shown: rows.slice(0, Math.max(1, height - 2)) };
+}
+
+/**
+ * Page through the Canvas Apps detail at one Panel size and prove, from what the Panel actually draws
+ * (its own wrap at width - 4, clipped at height - 2), that every page fits, the keys and the measured
+ * position line are on screen, and every detail row 1..N is drawn on some page (review r2 Q2).
+ */
+async function pageThrough(width, height, treeRows) {
+    const { s, controller, versions } = await bigAppConsole();
+    const cols = width - 4;
+    const byIndex = new Map();
+    let total = null;
     let pages = 0;
+    let maxPositionRows = 0;
     for (;;) {
         const bounds = { maxOffset: 0, page: 10 };
-        const lines = buildAdminConsoleLines(selectAdminConsole(s.getState()), { treeRows: 10, height, width, bounds });
-        assert.ok(rowsDrawn(lines) <= height - 2, `page ${pages}: ${rowsDrawn(lines)} rows for a ${height - 2}-row panel`);
-        const out = text(lines);
-        assert.match(out, /\^D\/\^U page detail/, "the keys stay on screen");
-        assert.match(out, /Detail · lines \d+–\d+ of \d+/);
-        for (const line of out.split("\n")) seen.add(line.trim());
+        const lines = buildAdminConsoleLines(selectAdminConsole(s.getState()), { treeRows, height, width, bounds });
+        const drawn = panelDraws(lines, width, height);
+        assert.ok(drawn.total <= height - 2, `${width}x${height} page ${pages}: ${drawn.total} rows for a ${height - 2}-row Panel body`);
+        assert.equal(drawn.shown.length, drawn.total, "nothing is clipped");
+        assert.match(drawn.shown.join("\n"), /\^D\/\^U/, "the paging keys are on screen");
+        const positionLine = lines.find((line) => /^lines \d+–\d+ of \d+ · \^D\/\^U page$/.test(line.map((r) => r.text).join("")));
+        assert.ok(positionLine, "a position line is rendered");
+        const positionText = positionLine.map((r) => r.text).join("");
+        const [, from, to, of] = /^lines (\d+)–(\d+) of (\d+)/.exec(positionText).map(Number);
+        const positionRows = panelWrap.wrapRunsLine(positionLine, cols).length;
+        maxPositionRows = Math.max(maxPositionRows, positionRows);
+        const at = drawn.shown.findIndex((row) => row.startsWith("lines "));
+        assert.ok(at >= 0, "the position line is on screen");
+        const detailRows = drawn.shown.slice(at + positionRows);
+        assert.equal(detailRows.length, to - from + 1, `the ${to - from + 1} detail rows the position line names are all drawn (position line ${positionRows} row(s))`);
+        detailRows.forEach((row, i) => byIndex.set(from + i, row));
+        total = of;
         controller.setAdminCanvasAppDetailBounds(bounds.maxOffset, bounds.page);
         const before = s.getState().admin.canvasApps.detailOffset;
         controller.scrollAdminCanvasAppDetail(1);
         if (s.getState().admin.canvasApps.detailOffset === before) break;
         pages += 1;
-        assert.ok(pages < 20, "paging terminates");
+        assert.ok(pages < 200, "paging terminates");
     }
-    assert.ok(pages >= 1, "the long card needed paging");
-    const all = [...seen].join("\n");
-    for (const v of versions) assert.match(all, new RegExp(`${v.version.replace(/\./g, "\\.")} {2}`), `version ${v.version} reachable`);
-    assert.match(all, /Carol \(contributor\)/);
+    for (let i = 1; i <= total; i += 1) assert.ok(byIndex.has(i), `${width}x${height}: detail row ${i} of ${total} is drawn on some page`);
+    const all = [...byIndex.values()].join("\n");
+    for (const v of versions) assert.match(all, new RegExp(v.version.replace(/\./g, "\\.")), `version ${v.version} reachable`);
+    assert.match(all, /Carol/);
     assert.match(all, /Loader 4/);
-    assert.match(all, /key {5}app\/key-13/);
-    // Paging back returns to the top; the offset never goes below 0.
-    for (let i = 0; i < 30; i += 1) controller.scrollAdminCanvasAppDetail(-1);
+    assert.match(all, /app\/key-13/);
+    for (let i = 0; i < 200; i += 1) controller.scrollAdminCanvasAppDetail(-1);
     assert.equal(s.getState().admin.canvasApps.detailOffset, 0);
-    // Selecting another app starts its detail at the top.
     controller.scrollAdminCanvasAppDetail(1);
     await controller.selectAdminCanvasApp({ name: "board", scope: "shared" });
-    assert.equal(s.getState().admin.canvasApps.detailOffset, 0);
+    assert.equal(s.getState().admin.canvasApps.detailOffset, 0, "another selection starts at the top");
+    return { pages, maxPositionRows };
+}
+
+// The Panel size a TERMINAL of this size gives the Admin Console (TuiApp: width = layout.totalWidth,
+// height = max(10, layout.bodyHeight); treeRows as AdminConsolePanel computes it).
+function adminPanelFor(columns, rows) {
+    const layout = computeLegacyLayout({ width: columns, height: rows }, 0, 1);
+    const height = Math.max(10, layout.bodyHeight);
+    return { width: layout.totalWidth, height, treeRows: Math.max(6, Math.floor((height - 8) / 2)) };
+}
+
+// Terminal 80x24 (review r2 Q2's case), the narrowest terminal the TUI lays out (40 columns), and a tall one.
+for (const [columns, rows] of [[80, 24], [40, 24], [120, 40]]) {
+    test(`terminal ${columns}x${rows}: every detail row is drawn on some page, nothing is clipped (review r1 P4, r2 Q2)`, async () => {
+        const panel = adminPanelFor(columns, rows);
+        const { pages } = await pageThrough(panel.width, panel.height, panel.treeRows);
+        assert.ok(pages >= 1, "the long card needed paging");
+    });
+}
+
+test("a wrapped position line is counted: a 30-column Panel wraps it, and every page still fits (review r2 Q2)", async () => {
+    const { maxPositionRows } = await pageThrough(30, 24, 6);
+    assert.ok(maxPositionRows >= 2, `the position line wrapped (${maxPositionRows} rows) and was budgeted`);
 });
 
 test("a failed contributors read is shown, not presented as none (review r1 P8)", async () => {

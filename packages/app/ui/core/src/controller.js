@@ -4645,7 +4645,8 @@ export class PilotSwarmUiController {
             // The refresh itself clears a selection whose copy is gone (after
             // share, private or delete); anything else means someone moved on.
             const now = this.getState().admin?.canvasApps;
-            const clearedByRefresh = now?.selected == null && (now?.selectionSeq ?? 0) === seq + 1;
+            const clearedByRefresh = now?.selected == null && (now?.selectionSeq ?? 0) === seq + 1
+                && now?.selectionClearedByRefresh === true;
             if ((now?.actionSeq ?? 0) !== actionSeq || ((now?.selectionSeq ?? 0) !== seq && !clearedByRefresh)) return;
             if (reselect) {
                 const reselecting = this.selectAdminCanvasApp(reselect);

@@ -1,6 +1,6 @@
 import { normalizeSessionSortMode, normalizeSessionUsage } from "../../core/src/session-sort.js";
 import { canvasKey as canvasStateKey, canvasEntryNeedsLegacyLabel, canvasLegacyLabelKey, normalizeStoredAdminCollapsed } from "../../core/src/state.js";
-import { createProfileSaveQueue, profileOwnerKey } from "../../core/src/profile-save-queue.js";
+import { createProfileSaveQueue, isSkippedProfileSave, saveControllerProfileDocument } from "../../core/src/profile-save-queue.js";
 import { ChatCallLine } from "./chat-call-line.js";
 import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
@@ -681,19 +681,12 @@ function materializeProfileSettings(remoteSettings, defaults) {
 
 const profileSaveQueue = createProfileSaveQueue();
 async function saveProfileSettings(controller, settings) {
-    if (typeof controller?.transport?.setCurrentUserProfileSettings !== "function") return null;
-    // Whole-document writes must arrive in edit order (a slow earlier request
-    // must never land after a newer layout and erase it), and only for the
-    // account that made them: after a same-tab account switch the transport
-    // answers with the new account's token.
-    const ownerNow = () => profileOwnerKey(controller.getState?.()?.auth?.principal);
-    return profileSaveQueue.save(controller, {
-        owner: ownerNow(),
-        currentOwner: ownerNow,
-        send: () => controller.transport.setCurrentUserProfileSettings({
-            settings: normalizeProfileSettings(settings),
-        }),
-    });
+    // Whole-document writes arrive in edit order (a slow earlier request must
+    // never land after a newer layout and erase it), only for the account that
+    // made them (after a same-tab account switch the transport answers with
+    // the new account's token). A write queued before that account is known
+    // waits in the queue and is sent for it.
+    return saveControllerProfileDocument(profileSaveQueue, controller, normalizeProfileSettings(settings));
 }
 
 function getVisibleInspectorTabs(controller) {
@@ -17037,7 +17030,16 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
             const moaRevision = controller.getState().ui.moaRevision;
             controller.dispatch({ type: "ui/moaSaveStatus", status: "saving" });
             saveProfileSettings(controller, settings)
-                .then(() => controller.dispatch({ type: "ui/moaSaveStatus", status: "saved", revision: moaRevision }))
+                .then((result) => {
+                    // A dropped write (the account changed or the workspace
+                    // unmounted) was NOT persisted: never report it saved.
+                    // It is not replayed either; it belonged to the old account.
+                    if (isSkippedProfileSave(result)) {
+                        controller.dispatch({ type: "ui/moaSaveStatus", status: "skipped" });
+                        return;
+                    }
+                    controller.dispatch({ type: "ui/moaSaveStatus", status: "saved", revision: moaRevision });
+                })
                 .catch(() => {
                     lastProfileSettingsJsonRef.current = null;
                     controller.dispatch({ type: "ui/moaSaveStatus", status: "error" });

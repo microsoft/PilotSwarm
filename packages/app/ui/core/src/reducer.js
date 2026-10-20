@@ -1046,6 +1046,7 @@ function baseReducer(state, action) {
                 auth: {
                     principal: action.principal ?? null,
                     authorization: action.authorization ?? null,
+                    resolved: true,
                 },
             };
         }
@@ -3131,6 +3132,10 @@ function baseReducer(state, action) {
                     ? {
                         selected: null,
                         selectionSeq: (previous.selectionSeq ?? 0) + 1,
+                        // This clear is the list's (the copy is gone), not
+                        // the person's: an action that moved the copy may
+                        // follow it (see runAdminCanvasAppAction).
+                        selectionClearedByRefresh: true,
                         detail: null, detailLoading: false, detailError: null, editors: [], editorsError: null,
                         loads: { rows: [], total30d: null, loading: false, error: null },
                         preview: { html: null, version: null, sha256: null, loading: false, error: null },
@@ -3158,6 +3163,7 @@ function baseReducer(state, action) {
                         ...state.admin.canvasApps,
                         selected: sel,
                         selectionSeq: (state.admin.canvasApps.selectionSeq ?? 0) + 1,
+                        selectionClearedByRefresh: false,
                         detail: null,
                         detailLoading: Boolean(sel),
                         detailError: null,

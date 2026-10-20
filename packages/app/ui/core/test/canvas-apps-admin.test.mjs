@@ -545,3 +545,35 @@ test("previews: the latest request wins, and a closed preview stays closed (revi
     assert.equal(preview.open, false, "the closed preview did not reopen");
     assert.equal(preview.html, null);
 });
+
+test("an explicit clear during an action's list refresh stays cleared (review r2 Q3)", async () => {
+    const refresh = gate();
+    let lists = 0;
+    const { controller, store } = makeController(ALICE, {
+        listCanvasApps: async () => { lists += 1; if (lists === 2) await refresh.promise; return LIST; },
+    });
+    await controller.refreshAdminCanvasApps();
+    await controller.selectAdminCanvasApp({ name: "notes", scope: "user", ownerProvider: "test", ownerSubject: "alice" });
+    const disabling = controller.runAdminCanvasAppAction("disable");
+    // The mutation has returned; the action now waits on its list refresh. The person goes Back.
+    await new Promise((r) => setImmediate(r));
+    await controller.selectAdminCanvasApp(null);
+    refresh.open();
+    await disabling;
+    assert.equal(store.getState().admin.canvasApps.selected, null, "Back is not undone by the late action");
+    assert.equal(store.getState().admin.canvasApps.action.notice, null);
+});
+
+test("a scope change still follows the moved copy when the refresh itself clears the selection (P2/P5 kept)", async () => {
+    let list = [app("poll", "shared", { provider: "test", subject: "bob" }, { canManage: true, canEdit: true })];
+    const { controller, store } = makeController(ALICE, {
+        listCanvasApps: async () => list,
+        getCanvasApp: async (args) => ({ ...list.find((a) => a.name === args.name), versions: [] }),
+        setCanvasAppScope: async () => { list = [{ ...list[0], scope: "user" }]; return { ok: true }; },
+    });
+    await controller.refreshAdminCanvasApps();
+    await controller.selectAdminCanvasApp({ name: "poll", scope: "shared" });
+    await controller.runAdminCanvasAppAction("private");
+    assert.deepEqual(store.getState().admin.canvasApps.selected, { name: "poll", scope: "user", ownerProvider: "test", ownerSubject: "bob" });
+    assert.match(store.getState().admin.canvasApps.action.notice, /now private/);
+});

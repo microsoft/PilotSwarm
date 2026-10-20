@@ -409,6 +409,10 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
         auth: {
             principal: null,
             authorization: null,
+            // False until the transport has said who is signed in (or that
+            // nobody is): a null principal before then is "unknown", not
+            // "anonymous". Profile writes wait for it.
+            resolved: false,
         },
         ui: {
             focusRegion: FOCUS_REGIONS.SESSIONS,
@@ -898,6 +902,9 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
                 // the name (a private and a shared app may share it).
                 selected: null,
                 selectionSeq: 0,
+                // True only when the last selection change was the list
+                // refresh dropping a copy that no longer exists.
+                selectionClearedByRefresh: false,
                 detail: null,
                 detailLoading: false,
                 detailError: null,
