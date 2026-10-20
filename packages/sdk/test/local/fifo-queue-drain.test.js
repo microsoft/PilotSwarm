@@ -943,6 +943,122 @@ describe("issue 192 defect E review: refusing an item never loses other owed wor
         expect(pendingFor(h)).toEqual([["child-a", "completed", "NEWESTRESULT"]]);
     });
 
+    it("a restored digest taken again keeps its age: the newer update still held elsewhere wins when both are refused", () => {
+        const h = withChild({ observedAtMs: 1_750_000_000_000 });
+        fillFifo(h);
+        h.messages.push(late("p1"), childUpdate("completed", "NEWRESULT"), late("p2"), { cancelPending: ["p1"] }, late("p3"));
+        h.drive(drain(h.runtime));
+        expect(pendingFor(h)).toEqual([["child-a", "completed", "NEWRESULT"]]);
+        for (let i = 0; i < 6; i++) h.results.push({ type: "completed", content: "ok" });
+        h.runUntilParked();
+        expect(h.turns.filter(t => String(t[0]).includes("NEWRESULT"))).toHaveLength(1);
+        expect(h.turns.filter(t => String(t[0]).includes("OLDRESULT"))).toHaveLength(0);
+    });
+
+    it("a restored digest taken again keeps its age when the carriers are cancelled one by one", () => {
+        const h = withChild();
+        h.messages.push(
+            { prompt: "p1", clientMessageIds: ["p1"] },
+            childUpdate("completed", "NEWRESULT"),
+            { prompt: "p2", clientMessageIds: ["p2"] },
+            { cancelPending: ["p1"] },
+            { prompt: "p3", clientMessageIds: ["p3"] },
+            { cancelPending: ["p2"] },
+            { cancelPending: ["p3"] },
+        );
+        h.drive(drain(h.runtime));
+        expect(h.fifo()).toEqual([]);
+        expect(pendingFor(h)).toEqual([["child-a", "completed", "NEWRESULT"]]);
+    });
+
+    it("taking a restored digest again and again never makes its update newer", () => {
+        const h = withChild();
+        h.messages.push(
+            { prompt: "p1", clientMessageIds: ["p1"] },
+            childUpdate("completed", "NEWRESULT"),
+            { prompt: "p2", clientMessageIds: ["p2"] },
+            { cancelPending: ["p1"] },
+            { prompt: "p3", clientMessageIds: ["p3"] },
+            { cancelPending: ["p3"] },
+            { prompt: "p4", clientMessageIds: ["p4"] },
+            { cancelPending: ["p4"] },
+            { prompt: "p5", clientMessageIds: ["p5"] },
+            { cancelPending: ["p2"] },
+            { cancelPending: ["p5"] },
+        );
+        h.drive(drain(h.runtime));
+        expect(pendingFor(h)).toEqual([["child-a", "completed", "NEWRESULT"]]);
+    });
+
+    it("across retakes, a completion is still not replaced by the child's later progress note", () => {
+        const h = withChild();
+        h.messages.push(
+            { prompt: "p1", clientMessageIds: ["p1"] },
+            childUpdate("progress", "NOTE"),
+            { prompt: "p2", clientMessageIds: ["p2"] },
+            { cancelPending: ["p1"] },
+            { prompt: "p3", clientMessageIds: ["p3"] },
+            { cancelPending: ["p2"] },
+            { cancelPending: ["p3"] },
+        );
+        h.drive(drain(h.runtime));
+        expect(pendingFor(h)).toEqual([["child-a", "completed", "OLDRESULT"]]);
+    });
+
+    it("carriers cancelled newer first give back the newer update", () => {
+        const h = withChild();
+        h.messages.push(
+            { prompt: "p1", clientMessageIds: ["p1"] },
+            childUpdate("completed", "NEWRESULT"),
+            { prompt: "p2", clientMessageIds: ["p2"] },
+            { cancelPending: ["p2"] },
+            { cancelPending: ["p1"] },
+        );
+        h.drive(drain(h.runtime));
+        expect(pendingFor(h)).toEqual([["child-a", "completed", "NEWRESULT"]]);
+    });
+
+    it("a prompt that took the rehydration note and is refused because the FIFO is full gives the note back", () => {
+        const h = harness({ rehydrationMessage: "REHYDRATED-NOTE" });
+        // Queued work that does not release a budget-gated wait: timer items.
+        for (let b = 0; b < FIFO_BUCKET_COUNT; b++) {
+            const bucket = [];
+            for (let i = 0; ; i++) {
+                const item = { kind: "timer", timer: { type: "cron", deadlineMs: 1, originalDurationMs: HOUR_MS, reason: `fill ${b}-${i} ${"r".repeat(150)}` }, firedAtMs: 1 };
+                if (JSON.stringify([...bucket, item]).length > MAX_BUCKET_BYTES) break;
+                bucket.push(item);
+            }
+            h.kv.set(`fifo.${b}`, JSON.stringify(bucket));
+        }
+        h.arm("wait", 600_000, { shouldRehydrate: true, budget: true });
+        h.messages.push(late("p1"));
+        h.drive(drain(h.runtime));
+        expect(h.events().filter(e => e.eventType === "session.fifo_overflow").map(e => [e.data.clientMessageIds, e.data.reasons]))
+            .toEqual([[["p1"], ["full"]]]);
+        expect(h.runtime.state.pendingRehydrationMessage).toBe("REHYDRATED-NOTE");
+    });
+
+    it("a prompt that took the rehydration note and is cancelled in the same pass gives the note back", () => {
+        const h = harness({ rehydrationMessage: "REHYDRATED-NOTE" });
+        h.arm("wait", 600_000, { shouldRehydrate: true });
+        h.messages.push({ prompt: "p1", clientMessageIds: ["p1"] }, { cancelPending: ["p1"] });
+        h.drive(drain(h.runtime));
+        expect(h.fifo()).toEqual([]);
+        expect(h.runtime.state.pendingRehydrationMessage).toBe("REHYDRATED-NOTE");
+    });
+
+    it("the pre-dispatch sweep refuses a too-large answer on arrival", () => {
+        const h = harness();
+        appendToFifo(h.runtime, [prompt("first", { clientMessageIds: ["f-1"] })]);
+        h.messages.push({ answer: big("ANS", 70_000) });
+        h.results.push({ type: "completed", content: "ok" });
+        h.drive(decide(h.runtime));
+        expect(h.events().filter(e => e.eventType === "session.fifo_overflow").map(e => [e.data.kinds, e.data.reasons]))
+            .toEqual([[["answer"], ["too-large"]]]);
+        expect(h.fifo().some(x => x.kind === "answer")).toBe(false);
+        expect(h.turns.map(t => String(t[0])).join("\n")).not.toContain("@@mark ANS");
+    });
+
     it("a given-back completion is not replaced by the child's later progress note", () => {
         const h = withChild();
         fillFifo(h);
