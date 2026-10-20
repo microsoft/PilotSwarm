@@ -11,6 +11,7 @@ import { createRequire } from "node:module";
 import { describe, expect, it, vi } from "vitest";
 import { createRuntime, runLoop } from "../../src/orchestration/runtime.ts";
 import { appendToFifo, decide, drain, settleQueuedWorkAfterDecide, turnsStarted } from "../../src/orchestration/queue.ts";
+import * as lifecycle from "../../src/orchestration/lifecycle.ts";
 import { FIFO_BUCKET_COUNT, MAX_BUCKET_BYTES, MAX_FIFO_ITEM_BYTES, NON_BLOCKING_TIMER_MS } from "../../src/orchestration/state.ts";
 
 // The real runtime fails the whole orchestration on a KV value above this many
@@ -164,6 +165,20 @@ function harness(overrides = {}) {
 }
 
 const prompt = (text, extra = {}) => ({ kind: "prompt", prompt: text, bootstrap: false, ...extra });
+// Fill all FIFO buckets with tightly packed small prompts; the first may carry
+// a client message id, so dispatching it runs the pre-dispatch sweep.
+const fillFifo = (h, { headId } = {}) => {
+    for (let b = 0; b < FIFO_BUCKET_COUNT; b++) {
+        const bucket = [];
+        for (let i = 0; ; i++) {
+            const extra = headId && b === 0 && i === 0 ? { clientMessageIds: [headId] } : {};
+            const item = prompt(`b${String(b).padStart(2, "0")}-${String(i).padStart(3, "0")} ${"q".repeat(200)}`, extra);
+            if (JSON.stringify([...bucket, item]).length > MAX_BUCKET_BYTES) break;
+            bucket.push(item);
+        }
+        h.kv.set(`fifo.${b}`, JSON.stringify(bucket));
+    }
+};
 const cronItem = () => ({ kind: "timer", timer: { type: "cron", deadlineMs: 1, originalDurationMs: HOUR_MS, reason: "hourly" }, firedAtMs: 1 });
 const idleItem = () => ({ kind: "timer", timer: { type: "idle", deadlineMs: 1, originalDurationMs: 1_800_000, reason: "idle timeout" }, firedAtMs: 1 });
 const steer = (seq, text = `guidance ${seq}`) => ({ seq, text });
@@ -821,6 +836,121 @@ describe("issue 192 defect E review: refusing an item never loses other owed wor
         h.drive(decide(h.runtime));
         expect(h.runtime.state.activeTimer?.type).toBe("idle");
         expect(h.runtime.state.pendingInputQuestion?.question).toBe(question);
+    });
+
+    it("a full-FIFO refusal gives back the child digest the prompt carried; it is delivered exactly once", () => {
+        const h = harness({ pendingChildDigest: { ...digest(1, "DIGESTMARK"), ready: true } });
+        fillFifo(h);
+        h.messages.push({ prompt: `late ${"w".repeat(800)}`, clientMessageIds: ["late-1"] });
+        h.drive(drain(h.runtime));
+        const overflow = h.events().filter(e => e.eventType === "session.fifo_overflow");
+        expect(overflow.map(e => [e.data.clientMessageIds, e.data.reasons])).toEqual([[["late-1"], ["full"]]]);
+        expect(h.runtime.state.pendingChildDigest?.updates.map(u => u.sessionId)).toEqual(["child-0"]);
+        // Once the queued prompts have run, the digest runs, once.
+        for (let i = 0; i < 6; i++) h.results.push({ type: "completed", content: "ok" });
+        h.runUntilParked();
+        expect(h.turns.filter(t => String(t[0]).includes("DIGESTMARK 0"))).toHaveLength(1);
+    });
+
+    it("a full-FIFO refusal at a command boundary gives back the child digest too", () => {
+        const h = harness({ pendingChildDigest: digest(1, "DIGESTMARK") });
+        fillFifo(h);
+        h.messages.push(
+            { prompt: `late ${"w".repeat(800)}`, clientMessageIds: ["late-1"] },
+            { type: "cmd", cmd: "get_info", id: "info-1" },
+        );
+        h.drive(drain(h.runtime));
+        expect(h.events().filter(e => e.eventType === "session.fifo_overflow").map(e => e.data.reasons)).toEqual([["full"]]);
+        expect(h.runtime.state.pendingChildDigest?.updates.map(u => u.sessionId)).toEqual(["child-0"]);
+    });
+
+    it("a stashed prompt cancelled in the same pass gives back the child digest it carried", () => {
+        const h = harness({ pendingChildDigest: digest(1, "DIGESTMARK") });
+        h.messages.push({ prompt: "soon cancelled", clientMessageIds: ["c-1"] }, { cancelPending: ["c-1"] });
+        h.drive(drain(h.runtime));
+        expect(h.fifo()).toEqual([]);
+        expect(h.runtime.state.pendingChildDigest?.updates.map(u => u.sessionId)).toEqual(["child-0"]);
+    });
+
+    it("a given-back digest keeps newer updates; a child's completion is not replaced by its later note", () => {
+        const h = harness();
+        h.runtime.state.pendingChildDigest = {
+            startedAtMs: 2_000,
+            updates: [
+                { sessionId: "a", updateType: "progress", content: "a later note", observedAtMs: 2_000 },
+                { sessionId: "b", updateType: "completed", content: "b done", observedAtMs: 2_100 },
+            ],
+        };
+        lifecycle.restorePendingChildDigest(h.runtime, {
+            startedAtMs: 1_000,
+            updates: [
+                { sessionId: "a", updateType: "completed", content: "a done", observedAtMs: 1_000 },
+                { sessionId: "c", updateType: "progress", content: "c note", observedAtMs: 1_100 },
+            ],
+        });
+        const restored = h.runtime.state.pendingChildDigest;
+        expect(restored.startedAtMs).toBe(1_000);
+        expect(restored.updates.map(u => [u.sessionId, u.updateType])).toEqual([["a", "completed"], ["c", "progress"], ["b", "completed"]]);
+    });
+
+    it("a digest kept back from a prompt it would make too large is delivered exactly once, in a later turn", () => {
+        const h = harness({ pendingChildDigest: { ...digest(3, `DIGESTMARK ${"x".repeat(200)}`), ready: true } });
+        const text = big("EDGE", MAX_FIFO_ITEM_BYTES - 300);
+        h.messages.push({ prompt: text, clientMessageIds: ["edge-1"] });
+        for (let i = 0; i < 4; i++) h.results.push({ type: "completed", content: "ok" });
+        h.runUntilParked();
+        const withDigest = h.turns.filter(t => String(t[0]).includes("DIGESTMARK"));
+        expect(withDigest).toHaveLength(1);
+        expect(String(withDigest[0][0])).not.toContain("@@mark EDGE");
+        expect(h.turns.filter(t => String(t[0]).includes("@@mark EDGE"))).toHaveLength(1);
+    });
+
+    it("a timer that fits only compacted, refused because the FIFO is full, is reported as full", () => {
+        const h = harness();
+        fillFifo(h);
+        const infos = [];
+        h.runtime.ctx.traceInfo = (message) => infos.push(message);
+        // A due wait under queued work becomes a timer item (R4); it carries
+        // the turn's 62 KB text.
+        h.arm("wait", 0, { content: "c".repeat(62_000), reason: "a long answer then a wait" });
+        h.drive(drain(h.runtime));
+        const overflow = h.events().filter(e => e.eventType === "session.fifo_overflow");
+        expect(overflow.map(e => [e.data.kinds, e.data.reasons])).toEqual([[["timer"], ["full"]]]);
+        expect(infos.some(m => m.includes("queued its compact form"))).toBe(false);
+
+        const timer = { kind: "timer", timer: { type: "wait", deadlineMs: 1, originalDurationMs: 60_000, reason: "r", content: "c".repeat(62_000) }, firedAtMs: 1 };
+        const reasons = [];
+        expect(appendToFifo(h.runtime, [timer], reasons)).toEqual([timer]);
+        expect(reasons).toEqual(["full"]);
+    });
+
+    it("the pre-dispatch sweep refuses a too-large prompt on arrival and queues a same-id resend", () => {
+        const h = harness();
+        appendToFifo(h.runtime, [prompt("first", { clientMessageIds: ["f-1"] })]);
+        h.messages.push({ prompt: big("BIG", 70_000), clientMessageIds: ["p"] }, { prompt: "smaller resend", clientMessageIds: ["p"] });
+        h.results.push({ type: "completed", content: "ok" });
+        h.drive(decide(h.runtime));
+        const overflow = h.events().filter(e => e.eventType === "session.fifo_overflow");
+        expect(overflow.map(e => [e.data.clientMessageIds, e.data.reasons])).toEqual([[["p"], ["too-large"]]]);
+        expect(h.events().filter(e => e.eventType === "session.message_duplicate_suppressed")).toEqual([]);
+        const ran = h.turns.map(t => String(t[0])).join("\n");
+        expect(ran.includes("smaller resend") || h.fifo().some(x => x.prompt === "smaller resend")).toBe(true);
+        expect(ran).not.toContain("@@mark BIG");
+    });
+
+    it("the pre-dispatch sweep forgets a full-FIFO refusal at a command boundary, so a resend is not suppressed", () => {
+        const h = harness();
+        fillFifo(h, { headId: "head-1" });
+        h.messages.push(
+            { prompt: `late ${"w".repeat(800)}`, clientMessageIds: ["p"] },
+            { type: "cmd", cmd: "get_info", id: "info-1" },
+            { prompt: `late ${"w".repeat(800)}`, clientMessageIds: ["p"] },
+        );
+        h.results.push({ type: "completed", content: "ok" });
+        h.drive(decide(h.runtime));
+        expect(h.events().filter(e => e.eventType === "session.message_duplicate_suppressed")).toEqual([]);
+        expect(h.events().filter(e => e.eventType === "session.fifo_overflow").map(e => [e.data.clientMessageIds, e.data.reasons]))
+            .toEqual([[["p"], ["full"]], [["p"], ["full"]]]);
     });
 
     it("the item cap is exact, in UTF-8 bytes of the stored bucket", () => {
