@@ -258,6 +258,28 @@ test("when no Panel row is free for the detail, no detail window is offered (rev
     assert.match(drawn.shown.join("\n"), /\^D\/\^U/, "the paging key hint is still drawn");
 });
 
+test("terminal 40x24, long names, and a profile-load error that wraps: when the header compacts the error stays, with the cursor and ^D/^U, within the body (delta check D1)", async () => {
+    const panel = adminPanelFor(40, 24);
+    const { s, controller } = await bigAppConsole({ longNames: true });
+    controller.setAdminSection("canvasApps");
+    const cursorId = `capp:user:test:alice:${"a".repeat(62)}15`;
+    controller.setAdminTreeCursor(cursorId);
+    const error = "Profile request failed while loading your current settings";
+    s.dispatch({ type: "admin/profile/loadFailed", error });
+    const view = selectAdminConsole(s.getState());
+    assert.equal(view.loadError, error);
+    const lines = buildAdminConsoleLines(view, { treeRows: panel.treeRows, height: panel.height, width: panel.width, bounds: {} });
+    const drawn = panelDraws(lines, panel.width, panel.height);
+    assert.ok(drawn.total <= panel.height - 2, `${drawn.total} rows for a ${panel.height - 2}-row body`);
+    const shown = drawn.shown.join("\n");
+    // The full header would not fit with the tree, keys and detail: it has compacted.
+    assert.doesNotMatch(shown, /^Principal /m, "the header compacted");
+    assert.match(shown, /^Signed in as /m);
+    assert.match(shown, /^! Profile request failed/m, "the profile-load error is still drawn");
+    assert.match(shown, /›/, "the cursor row is drawn");
+    assert.match(shown, /\^D\/\^U/, "the paging keys are drawn");
+});
+
 test("a failed contributors read is shown, not presented as none (review r1 P8)", async () => {
     const s = store();
     const controller = new PilotSwarmUiController({ store: s, transport: {

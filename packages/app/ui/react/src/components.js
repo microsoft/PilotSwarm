@@ -2488,9 +2488,14 @@ export function buildAdminConsoleLines(view, { treeRows = 18, height = null, wid
         const cols = panelWidth ? Math.max(1, panelWidth - 4) : Infinity;
         const bodyRows = panelHeight ? Math.max(1, panelHeight - 2) : Infinity;
         // The header goes in with the section, so it can compact to the
-        // signed-in line when the panel is short of rows.
+        // signed-in line when the panel is short of rows. A profile-load
+        // error is never dropped: it stays, cut to one row, and the fitting
+        // counts it, so the tree and keys shrink first.
         const signedIn = lines.find((line) => line[0]?.text === "Signed in as ");
-        const compactHeader = signedIn ? [clipRunsLine(signedIn, cols)] : [];
+        const compactHeader = [
+            ...(signedIn ? [clipRunsLine(signedIn, cols)] : []),
+            ...(view.loadError ? [clipRunsLine([{ text: `! ${view.loadError}`, color: "red", bold: true }], cols)] : []),
+        ];
         return buildAdminCanvasAppsLines(view, { treeRows, bodyRows, cols, bounds, header: [...lines], compactHeader });
     }
 
