@@ -18,9 +18,16 @@ export async function drawOwnCanvas(page, base) {
         return route.fallback();
     });
     await page.goto(`${base}/?session=${sessionId}`);
+    // Wait until the deep-linked session is the active one. The canvas toggle
+    // is on screen while the app is still starting, and a session change
+    // resets the phone's canvas pane by design (web-app.js: the canvas
+    // remounts fresh per session), so a click before then is undone.
+    await expect(page.locator(`.ps-session-list-button[data-session-id="${sessionId}"][aria-selected="true"]`)).toHaveCount(1, { timeout: 30_000 });
     const show = page.getByRole("button", { name: "Show canvas", exact: true });
-    await show.or(page.getByRole("button", { name: "Hide the canvas", exact: true })).first().waitFor();
+    const hide = page.getByRole("button", { name: "Hide the canvas", exact: true });
+    await show.or(hide).first().waitFor();
     if (await show.isVisible()) await show.click();
+    await expect(hide.first()).toBeVisible();
 }
 
 export async function publishFlow(page, stub) {
