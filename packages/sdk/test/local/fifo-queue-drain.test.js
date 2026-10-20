@@ -650,6 +650,10 @@ describe("issue 192 defect E: one item larger than a KV value never fails the se
         h.drive(drain(h.runtime));
         expect(h.fifo().map(x => x.prompt)).toEqual([text]);
         expect(h.events().filter(e => e.eventType === "session.fifo_overflow")).toEqual([]);
+        h.results.push({ type: "completed", content: "RECEIVED: NEAR" });
+        h.drive(decide(h.runtime));
+        expect(h.turns).toHaveLength(1);
+        expect(h.turns[0][0]).toContain(text);
     });
 
     it("the real loop keeps the session running: the too-large prompt is reported and the next one runs", () => {
@@ -681,9 +685,119 @@ describe("issue 192 defect E: one item larger than a KV value never fails the se
         h.arm("wait", 600_000);
         const deadline = h.runtime.state.activeTimer.deadlineMs;
         h.messages.push({ prompt: big("BIG", 70_000), clientMessageIds: ["big-1"] });
-        h.step();
+        h.drive(drain(h.runtime));
+        // Refused on arrival: the wait was never released.
+        expect(h.runtime.state.activeTimer).toMatchObject({ type: "wait", deadlineMs: deadline });
+        expect(h.runtime.state.interruptedWaitTimer).toBeNull();
+        h.drive(decide(h.runtime));
         expect(h.turns).toHaveLength(0);
         expect(h.runtime.state.activeTimer).toMatchObject({ type: "wait", deadlineMs: deadline });
         expect(h.runtime.state.interruptedWaitTimer).toBeNull();
+    });
+});
+
+describe("issue 192 defect E review: refusing an item never loses other owed work", () => {
+    const big = (mark, chars, fill = "x") => `@@mark ${mark}\n${fill.repeat(chars)}`;
+    const digest = (n = 1, text = "child finished") => ({
+        startedAtMs: 1_750_000_000_000 - 1_000,
+        updates: Array.from({ length: n }, (_, i) => ({
+            sessionId: `child-${i}`, updateType: "completed", content: `${text} ${i}`, observedAtMs: 1_750_000_000_000 - 1_000,
+        })),
+    });
+
+    it("a refused prompt does not take the buffered child digest", () => {
+        const h = harness({ pendingChildDigest: digest(2) });
+        h.messages.push({ prompt: big("BIG", 70_000), clientMessageIds: ["big-1"] });
+        h.drive(drain(h.runtime));
+        expect(h.fifo()).toEqual([]);
+        expect(h.runtime.state.pendingChildDigest?.updates).toHaveLength(2);
+    });
+
+    it("a prompt that fits only without the digest is queued without it, and the digest stays buffered", () => {
+        const h = harness({ pendingChildDigest: digest(3, "x".repeat(200)) });
+        // Fits alone, but not with the digest's text appended.
+        const text = big("EDGE", MAX_FIFO_ITEM_BYTES - 300);
+        h.messages.push({ prompt: text, clientMessageIds: ["edge-1"] });
+        h.drive(drain(h.runtime));
+        expect(h.fifo().map(x => x.prompt)).toEqual([text]);
+        expect(h.runtime.state.pendingChildDigest?.updates).toHaveLength(3);
+        expect(h.events().filter(e => e.eventType === "session.fifo_overflow")).toEqual([]);
+    });
+
+    it("a prompt that fits only without the timer note is queued without it; the wait keeps its time", () => {
+        const h = harness();
+        h.arm("wait", 600_000, { reason: "r".repeat(1_000) });
+        const text = big("EDGE", MAX_FIFO_ITEM_BYTES - 300);
+        h.messages.push({ prompt: text, clientMessageIds: ["edge-1"] });
+        h.drive(drain(h.runtime));
+        expect(h.fifo().map(x => x.prompt)).toEqual([text]);
+        expect(h.runtime.state.interruptedWaitTimer?.remainingSec).toBe(600);
+    });
+
+    it("a resend that fits, in the same pass as a refused original, is queued (not taken for a duplicate)", () => {
+        const h = harness();
+        h.messages.push({ prompt: big("BIG", 70_000), clientMessageIds: ["p"] }, { prompt: "smaller resend", clientMessageIds: ["p"] });
+        h.drive(drain(h.runtime));
+        expect(h.fifo().map(x => x.prompt)).toEqual(["smaller resend"]);
+        expect(h.events().filter(e => e.eventType === "session.message_duplicate_suppressed")).toEqual([]);
+    });
+
+    it("after a full-FIFO refusal at a command boundary, a resend in the same pass is not taken for a duplicate", () => {
+        const h = harness();
+        for (let b = 0; b < FIFO_BUCKET_COUNT; b++) {
+            const bucket = [];
+            for (let i = 0; ; i++) {
+                const item = prompt(`b${String(b).padStart(2, "0")}-${String(i).padStart(3, "0")} ${"q".repeat(200)}`);
+                if (JSON.stringify([...bucket, item]).length > MAX_BUCKET_BYTES) break;
+                bucket.push(item);
+            }
+            h.kv.set(`fifo.${b}`, JSON.stringify(bucket));
+        }
+        h.messages.push(
+            { prompt: `late ${"w".repeat(800)}`, clientMessageIds: ["p"] },
+            { type: "cmd", cmd: "get_info", id: "info-1" },
+            { prompt: `late ${"w".repeat(800)}`, clientMessageIds: ["p"] },
+        );
+        h.drive(drain(h.runtime));
+        expect(h.events().filter(e => e.eventType === "session.message_duplicate_suppressed")).toEqual([]);
+        expect(h.events().filter(e => e.eventType === "session.fifo_overflow").map(e => e.data.clientMessageIds)).toEqual([["p"], ["p"]]);
+    });
+
+    it("a fired wait whose timer carries a 62 KB response still runs its continuation", () => {
+        const h = harness();
+        h.arm("wait", 0, { content: "c".repeat(62_000), reason: "a long answer then a wait" });
+        h.drive(drain(h.runtime));
+        const items = h.fifo();
+        expect(items.map(x => x.kind)).toEqual(["timer"]);
+        expect(items[0].timer.content).toBeUndefined();
+        expect(h.events().filter(e => e.eventType === "session.fifo_overflow")).toEqual([]);
+        h.results.push({ type: "completed", content: "continued" });
+        h.drive(decide(h.runtime));
+        expect(h.events().filter(e => e.eventType === "session.wait_completed")).toHaveLength(1);
+        expect(h.turns).toHaveLength(1);
+        expect(h.turns[0][0]).toMatch(/wait is now complete/);
+    });
+
+    it("a fired input-grace timer with a large question still moves the session to its hold window", () => {
+        const question = "q".repeat(62_000);
+        const h = harness({ pendingInputQuestion: { question, iteration: 3 } });
+        h.arm("input-grace", 0, { question, choices: ["a", "b"] });
+        h.drive(drain(h.runtime));
+        expect(h.fifo().map(x => x.kind)).toEqual(["timer"]);
+        h.drive(decide(h.runtime));
+        expect(h.runtime.state.activeTimer?.type).toBe("idle");
+        expect(h.runtime.state.pendingInputQuestion?.question).toBe(question);
+    });
+
+    it("the item cap is exact, in UTF-8 bytes of the stored bucket", () => {
+        const h = harness();
+        const shape = (text) => ({ kind: "prompt", prompt: text, bootstrap: false, clientMessageIds: ["x"] });
+        const overhead = Buffer.byteLength(JSON.stringify([shape("")]), "utf8");
+        const exact = shape("y".repeat(MAX_FIFO_ITEM_BYTES - overhead));
+        const over = shape("y".repeat(MAX_FIFO_ITEM_BYTES - overhead + 1));
+        expect(Buffer.byteLength(JSON.stringify([exact]), "utf8")).toBe(MAX_FIFO_ITEM_BYTES);
+        expect(appendToFifo(h.runtime, [exact])).toEqual([]);
+        expect(appendToFifo(h.runtime, [over])).toEqual([over]);
+        expect(h.fifo()).toHaveLength(1);
     });
 });
