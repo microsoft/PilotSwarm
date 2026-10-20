@@ -672,7 +672,7 @@ export function buildContinueInput(
         ...(state.workspaceRetryScheduleMs?.length ? { workspaceRetryScheduleMs: [...state.workspaceRetryScheduleMs] } : {}),
         ...(state.interruptedCronTimer ? { interruptedCronTimer: state.interruptedCronTimer } : {}),
         ...(state.pendingChildDigest ? { pendingChildDigest: state.pendingChildDigest } : {}),
-        ...(state.deferredChildProbes.length > 0
+        ...(state.deferredChildProbes?.length
             ? { deferredChildProbes: state.deferredChildProbes.map((entry) => ({ ...entry })) } : {}),
         ...(state.pendingShutdown ? { pendingShutdown: state.pendingShutdown } : {}),
         // Multi-writer attribution posture (security model): carried so a

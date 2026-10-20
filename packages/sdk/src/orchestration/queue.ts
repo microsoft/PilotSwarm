@@ -1134,7 +1134,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
     // 1.0.82 (issue 192): lookups put off behind user work are settled after
     // its turn. When no such work is left (it was cancelled or refused), no
     // turn is coming to settle them: do them now.
-    if (state.deferredChildProbes.length > 0 && !fifoHasInteractiveItems(runtime)) {
+    if ((state.deferredChildProbes?.length ?? 0) > 0 && !fifoHasInteractiveItems(runtime)) {
         yield* lookUpDeferredChildStatuses(runtime);
     }
 }

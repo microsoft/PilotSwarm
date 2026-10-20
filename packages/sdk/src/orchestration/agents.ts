@@ -314,16 +314,17 @@ export function deferChildStatusLookup(
     expectingReport: boolean,
 ): void {
     const { state } = runtime;
-    const prior = state.deferredChildProbes.find((entry) => entry.sessionId === sessionId);
+    const current = state.deferredChildProbes ?? [];
+    const prior = current.find((entry) => entry.sessionId === sessionId);
     state.deferredChildProbes = [
-        ...state.deferredChildProbes.filter((entry) => entry.sessionId !== sessionId),
+        ...current.filter((entry) => entry.sessionId !== sessionId),
         { sessionId, updateType, ...(expectingReport || prior?.expectingReport ? { expectingReport: true } : {}) },
     ];
 }
 
 /** A lookup done at once supersedes one put off for the same child. */
 export function forgetDeferredChildStatusLookup(runtime: DurableSessionRuntime, sessionId: string): void {
-    if (runtime.state.deferredChildProbes.some((entry) => entry.sessionId === sessionId)) {
+    if (runtime.state.deferredChildProbes?.some((entry) => entry.sessionId === sessionId)) {
         runtime.state.deferredChildProbes = runtime.state.deferredChildProbes.filter((entry) => entry.sessionId !== sessionId);
     }
 }
@@ -355,7 +356,7 @@ export function settleDeferredChildStatusLookups(
     listing: Array<{ sessionId: string; status?: string; result?: unknown; resultSource?: string }> | null,
 ): boolean {
     const { state } = runtime;
-    if (state.deferredChildProbes.length === 0) return false;
+    if (!state.deferredChildProbes?.length) return false;
     const deferred = state.deferredChildProbes;
     state.deferredChildProbes = [];
     let expectingReport = false;
@@ -377,7 +378,7 @@ export function settleDeferredChildStatusLookups(
  */
 export function* lookUpDeferredChildStatuses(runtime: DurableSessionRuntime): Generator<any, void, any> {
     const { state } = runtime;
-    if (state.deferredChildProbes.length === 0) return;
+    if (!state.deferredChildProbes?.length) return;
     const deferred = state.deferredChildProbes;
     state.deferredChildProbes = [];
     let expectingReport = false;
