@@ -318,6 +318,13 @@ a server with **any** name the deployment catalog already uses — restricted
 or not (`reserved_mcp_server_name` at publish; workers drop such a
 definition at load). Pick your own server names.
 
+Optional activation through `use_package` applies these same rules to the
+session's resolved agent copy. A qualified session binding is a lookup key,
+not the authored agent name: the selected copy supplies its leaf name, raw
+plugin namespace, and package provenance. Loading another agent's instructions
+does not change that identity. Later turns and worker restarts revalidate the
+saved capability source reference without rewriting it or granting new access.
+
 ## 7. Versioning and immutability
 
 - **`name@version` is immutable.** Re-publishing the same version with
