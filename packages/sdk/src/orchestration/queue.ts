@@ -680,6 +680,9 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
         if ((state.deferredChildProbes?.length ?? 0) > 0
             && !stash.some(isInteractiveFifoItem) && !fifoHasInteractiveItems(runtime)) {
             yield* lookUpDeferredChildStatuses(runtime);
+            // The lookups can settle an agent wait that a pending shutdown is
+            // waiting on, which ends the session (review F5).
+            if (state.orchestrationResult !== null) return;
         }
 
         if (state.legacyPendingMessage !== undefined) {
