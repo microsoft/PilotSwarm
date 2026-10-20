@@ -667,32 +667,66 @@ describe("issue 192 defect E: one item larger than a KV value never fails the se
         expect(r.parked).toBe("blocking");
     });
 
-    it("a too-large answer is reported, the question stays open and the hold timer comes back", () => {
+    it("a too-large answer is reported; drain keeps waiting on the hold timer with no time lost", () => {
         const h = harness({ pendingInputQuestion: { question: "which?", iteration: 3 } });
         h.arm("input-grace", 60_000);
         const deadline = h.runtime.state.activeTimer.deadlineMs;
         h.messages.push({ answer: big("ANS", 70_000), expectedQuestion: { question: "which?", iteration: 3 } });
-        h.step();
-        expect(h.turns).toHaveLength(0);
-        expect(h.fifo()).toEqual([]);
+        h.drive(drain(h.runtime));
+        // Refused on arrival: the hold timer was never released. Drain waits
+        // on it again for its whole remaining time, and the timer fires at
+        // its own deadline (this fixture lets the time pass).
+        expect(h.races()).toEqual([60_000, 60_000]);
+        expect(h.fifo().map(x => [x.kind, x.timer?.type, x.timer?.deadlineMs])).toEqual([["timer", "input-grace", deadline]]);
         expect(h.events().filter(e => e.eventType === "session.fifo_overflow")[0]?.data.reasons).toEqual(["too-large"]);
         expect(h.runtime.state.pendingInputQuestion?.question).toBe("which?");
-        expect(h.runtime.state.activeTimer).toMatchObject({ type: "input-grace", deadlineMs: deadline });
     });
 
-    it("a too-large prompt that interrupted a wait leaves the wait armed as it was", () => {
+    it("after a too-large answer, a fitting answer still answers the open question", () => {
+        const h = harness({ pendingInputQuestion: { question: "which?", iteration: 3 } });
+        h.arm("input-grace", 60_000);
+        h.messages.push(
+            { answer: big("ANS", 70_000), expectedQuestion: { question: "which?", iteration: 3 } },
+            { answer: "this one", expectedQuestion: { question: "which?", iteration: 3 } },
+        );
+        h.results.push({ type: "completed", content: "answered" });
+        h.step();
+        expect(h.turns).toHaveLength(1);
+        expect(h.turns[0][0]).toContain(`The user responded: "this one"`);
+        expect(h.turns[0][0]).not.toContain("@@mark ANS");
+        expect(h.events().filter(e => e.eventType === "session.fifo_overflow")).toHaveLength(1);
+    });
+
+    it("a too-large prompt that arrives during a wait leaves the wait armed: it fires at its own deadline", () => {
         const h = harness();
         h.arm("wait", 600_000);
         const deadline = h.runtime.state.activeTimer.deadlineMs;
         h.messages.push({ prompt: big("BIG", 70_000), clientMessageIds: ["big-1"] });
         h.drive(drain(h.runtime));
-        // Refused on arrival: the wait was never released.
-        expect(h.runtime.state.activeTimer).toMatchObject({ type: "wait", deadlineMs: deadline });
+        // Refused on arrival: the wait was never interrupted. Drain waits on
+        // it again for its whole remaining time; the fired wait runs at once,
+        // with no extra sweep.
+        expect(h.races()).toEqual([600_000, 600_000]);
         expect(h.runtime.state.interruptedWaitTimer).toBeNull();
+        expect(h.fifo().map(x => [x.kind, x.timer?.type, x.timer?.deadlineMs])).toEqual([["timer", "wait", deadline]]);
+        h.results.push({ type: "completed", content: "continued" });
         h.drive(decide(h.runtime));
-        expect(h.turns).toHaveLength(0);
-        expect(h.runtime.state.activeTimer).toMatchObject({ type: "wait", deadlineMs: deadline });
-        expect(h.runtime.state.interruptedWaitTimer).toBeNull();
+        expect(h.turns).toHaveLength(1);
+        expect(h.turns[0][0]).toMatch(/wait is now complete/);
+        expect(h.turns[0][0]).not.toContain("@@mark BIG");
+    });
+
+    it("a refused prompt does not end the pass: the messages behind it are collected in the same pass", () => {
+        const h = harness();
+        h.messages.push(
+            { prompt: big("BIG", 70_000), clientMessageIds: ["big-1"] },
+            { prompt: "second", clientMessageIds: ["s-1"] },
+            { prompt: "third", clientMessageIds: ["t-1"] },
+        );
+        h.drive(drain(h.runtime));
+        expect(h.fifo().map(x => x.prompt)).toEqual(["second", "third"]);
+        // One blocking dequeue, then the 10 ms sweep collects the rest.
+        expect(h.calls.filter(c => c.effect === "dequeue")).toHaveLength(1);
     });
 });
 
