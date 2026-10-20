@@ -7,10 +7,15 @@
  * only when a timer wins a race. A race whose timer side is long (the armed
  * timer's remaining time) is a wait; the 10 ms sweep is not.
  */
+import { createRequire } from "node:module";
 import { describe, expect, it, vi } from "vitest";
 import { createRuntime, runLoop } from "../../src/orchestration/runtime.ts";
 import { appendToFifo, decide, drain, settleQueuedWorkAfterDecide, turnsStarted } from "../../src/orchestration/queue.ts";
-import { FIFO_BUCKET_COUNT, MAX_BUCKET_BYTES, NON_BLOCKING_TIMER_MS } from "../../src/orchestration/state.ts";
+import { FIFO_BUCKET_COUNT, MAX_BUCKET_BYTES, MAX_FIFO_ITEM_BYTES, NON_BLOCKING_TIMER_MS } from "../../src/orchestration/state.ts";
+
+// The real runtime fails the whole orchestration on a KV value above this many
+// UTF-8 bytes; the fake context below enforces the same limit.
+const { MAX_KV_VALUE_BYTES } = createRequire(import.meta.url)("duroxide");
 
 vi.mock("../../src/session-proxy.js", () => ({
     createSessionProxy: (ctx, sessionId, affinity, config, contract) => ctx.proxy("session", contract),
@@ -35,7 +40,12 @@ function harness(overrides = {}) {
         traceError: message => errors.push(message),
         setCustomStatus() {},
         getValue: key => kv.get(key) ?? null,
-        setValue: (key, value) => kv.set(key, value),
+        setValue: (key, value) => {
+            if (Buffer.byteLength(value, "utf8") > MAX_KV_VALUE_BYTES) {
+                throw new Error(`KV value exceeds size limit (${Buffer.byteLength(value, "utf8")} > ${MAX_KV_VALUE_BYTES} bytes)`);
+            }
+            kv.set(key, value);
+        },
         clearValue: key => kv.delete(key),
         utcNow: () => ({ effect: "now" }),
         newGuid: () => ({ effect: "guid" }),
@@ -299,6 +309,7 @@ describe("issue 192: nothing is dropped silently", () => {
         const overflow = h.events().filter(e => e.eventType === "session.fifo_overflow");
         expect(overflow).toHaveLength(1);
         expect(overflow[0].data.clientMessageIds).toEqual(["late-1"]);
+        expect(overflow[0].data.reasons).toEqual(["full"]);
         expect(h.runtime.state.recentClientMessageIds).not.toContain("late-1");
         expect(h.errors.some(m => m.includes("late-1"))).toBe(true);
 
@@ -597,5 +608,82 @@ describe("issue 192 round 3: a live agent wait keeps its poll", () => {
         expect(h.runtime.state.waitingForAgentIds).toBeNull();
         expect(h.turns).toHaveLength(1);
         expect(h.turns[0][0]).toMatch(/confirmation held by the agent wait/);
+    });
+});
+
+describe("issue 192 defect E: one item larger than a KV value never fails the session", () => {
+    const big = (mark, chars, fill = "x") => `@@mark ${mark}\n${fill.repeat(chars)}`;
+
+    it("the queue's item cap is below the runtime's KV value limit", () => {
+        expect(MAX_KV_VALUE_BYTES).toBeGreaterThan(0);
+        expect(MAX_FIFO_ITEM_BYTES).toBeGreaterThan(MAX_BUCKET_BYTES);
+        expect(MAX_FIFO_ITEM_BYTES).toBeLessThan(MAX_KV_VALUE_BYTES);
+    });
+
+    it("a 70 KB prompt is reported, not stored; the prompt after it is queued and its id is seen", () => {
+        const h = harness();
+        h.messages.push({ prompt: big("BIG", 70_000), clientMessageIds: ["big-1"] }, { prompt: "after", clientMessageIds: ["after-1"] });
+        h.drive(drain(h.runtime));
+        expect(h.fifo().map(x => x.prompt)).toEqual(["after"]);
+        const overflow = h.events().filter(e => e.eventType === "session.fifo_overflow");
+        expect(overflow).toHaveLength(1);
+        expect(overflow[0].data.clientMessageIds).toEqual(["big-1"]);
+        expect(overflow[0].data.reasons).toEqual(["too-large"]);
+        expect(h.errors.some(m => m.includes("big-1"))).toBe(true);
+        expect(h.runtime.state.recentClientMessageIds).not.toContain("big-1");
+        expect(h.runtime.state.recentClientMessageIds).toContain("after-1");
+    });
+
+    it("the size is measured in UTF-8 bytes: 30,000 three-byte characters are too large", () => {
+        const h = harness();
+        h.messages.push({ prompt: big("EURO", 30_000, "\u20ac"), clientMessageIds: ["euro-1"] });
+        h.drive(drain(h.runtime));
+        expect(h.fifo()).toEqual([]);
+        const overflow = h.events().filter(e => e.eventType === "session.fifo_overflow");
+        expect(overflow[0]?.data.reasons).toEqual(["too-large"]);
+    });
+
+    it("an item just under the cap is stored and delivered whole", () => {
+        const h = harness();
+        const text = big("NEAR", MAX_FIFO_ITEM_BYTES - 500);
+        h.messages.push({ prompt: text, clientMessageIds: ["near-1"] });
+        h.drive(drain(h.runtime));
+        expect(h.fifo().map(x => x.prompt)).toEqual([text]);
+        expect(h.events().filter(e => e.eventType === "session.fifo_overflow")).toEqual([]);
+    });
+
+    it("the real loop keeps the session running: the too-large prompt is reported and the next one runs", () => {
+        const h = harness();
+        h.messages.push({ prompt: big("BIG", 70_000), clientMessageIds: ["big-1"] }, { prompt: "after", clientMessageIds: ["after-1"] });
+        h.results.push({ type: "completed", content: "RECEIVED: after" });
+        const r = h.runUntilParked();
+        expect(h.turns).toHaveLength(1);
+        expect(h.turns[0][0]).toMatch(/after/);
+        expect(h.turns[0][0]).not.toMatch(/BIG/);
+        expect(r.parked).toBe("blocking");
+    });
+
+    it("a too-large answer is reported, the question stays open and the hold timer comes back", () => {
+        const h = harness({ pendingInputQuestion: { question: "which?", iteration: 3 } });
+        h.arm("input-grace", 60_000);
+        const deadline = h.runtime.state.activeTimer.deadlineMs;
+        h.messages.push({ answer: big("ANS", 70_000), expectedQuestion: { question: "which?", iteration: 3 } });
+        h.step();
+        expect(h.turns).toHaveLength(0);
+        expect(h.fifo()).toEqual([]);
+        expect(h.events().filter(e => e.eventType === "session.fifo_overflow")[0]?.data.reasons).toEqual(["too-large"]);
+        expect(h.runtime.state.pendingInputQuestion?.question).toBe("which?");
+        expect(h.runtime.state.activeTimer).toMatchObject({ type: "input-grace", deadlineMs: deadline });
+    });
+
+    it("a too-large prompt that interrupted a wait leaves the wait armed as it was", () => {
+        const h = harness();
+        h.arm("wait", 600_000);
+        const deadline = h.runtime.state.activeTimer.deadlineMs;
+        h.messages.push({ prompt: big("BIG", 70_000), clientMessageIds: ["big-1"] });
+        h.step();
+        expect(h.turns).toHaveLength(0);
+        expect(h.runtime.state.activeTimer).toMatchObject({ type: "wait", deadlineMs: deadline });
+        expect(h.runtime.state.interruptedWaitTimer).toBeNull();
     });
 });
