@@ -289,7 +289,7 @@ for good. In 1.0.82 no item whose bucket value would exceed
 
 | Item | What happens |
 |---|---|
-| A prompt or answer that is too large as sent | Refused when it arrives, before anything changes: no timer is released, no child digest is taken, and its client message id is not pending, so a resend that fits runs. Reported in `session.fifo_overflow` (reason `too-large`) with an error trace. |
+| A prompt or answer that is too large as sent | Refused when it arrives, before anything changes: no timer is released, no child digest is taken, and its client message id is not pending, so a resend that fits runs. An armed timer keeps running to its own deadline, and the pass goes on collecting the messages behind the refused one. Reported in `session.fifo_overflow` (reason `too-large`) with an error trace. |
 | A prompt that fits, but not with drain's timer note | Queued without the note; the released timer keeps its saved time. |
 | A prompt that fits, but not with the buffered child digest | Queued without the digest; the digest stays buffered for a later turn. |
 | A fired timer item (a wait's copy of the turn's text, an input question) | Never refused: a compact copy without the unused text is queued. Timer items that fit are queued unchanged. |

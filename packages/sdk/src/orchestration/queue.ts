@@ -600,6 +600,9 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
     const seenChildUpdates = new Set<string>();
     const cancelledThisDrain = new Set<string>();
     const pendingClientMessageIds = new Set<string>();
+    // 1.0.82 (defect E): a prompt or answer refused on arrival collected
+    // nothing, but the pass goes on sweeping for the messages behind it.
+    let refusedThisPass = false;
 
     for (let i = 0; i < MAX_DRAIN_PER_TURN; i++) {
         let msg: any = null;
@@ -697,11 +700,13 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
 
             msg = typeof race.value === "string" ? JSON.parse(race.value) : race.value;
 
-        } else if (!state.regen && needsBlockingDequeue(runtime) && !stash.some((item) => item.kind !== "timer")) {
+        } else if (!state.regen && needsBlockingDequeue(runtime) && !stash.some((item) => item.kind !== "timer")
+            && !(refusedThisPass && stash.length === 0)) {
             // 1.0.82 (R10): once this pass has collected a message, the
             // 10 ms sweep below keeps collecting until the queue is empty, so
             // messages that arrived during one turn run together in the next.
             // A fired timer alone still runs at once, at its scheduled time.
+            // A refusal with nothing collected yet also sweeps (defect E).
             if (i > 0) break;
             if (state.pendingInputQuestion) {
                 publishStatus(runtime, "input_required");
@@ -802,6 +807,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             // timer keeps running.
             if (isFifoItemTooLarge(answerItem)) {
                 yield* reportUnstoredItems(runtime, [answerItem], ["too-large"]);
+                refusedThisPass = true;
                 continue;
             }
             const interruptsInputHold = Boolean(state.pendingInputQuestion)
@@ -858,6 +864,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             // taken, and its id is not pending, so a resend that fits runs.
             if (isFifoItemTooLarge(baseItem)) {
                 yield* reportUnstoredItems(runtime, [baseItem], ["too-large"]);
+                refusedThisPass = true;
                 continue;
             }
             const rehydrationMessageBefore = state.pendingRehydrationMessage;
