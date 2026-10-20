@@ -184,14 +184,14 @@ test("FOUNDRY_AUTH_MODE=entra rewrites Foundry providers to foundry-wif", () => 
   }
 });
 
-test("Foundry auth defaults to Entra when FOUNDRY_AUTH_MODE is unset", () => {
+test("Foundry auth defaults to key when FOUNDRY_AUTH_MODE is unset", () => {
   const providers = stagedFoundryProviders(
     workerBaseEnv({ FOUNDRY_ENABLED: "true" }),
   );
   assert.ok(providers.length > 0);
   for (const provider of providers) {
-    assert.equal(provider.type, "foundry-wif");
-    assert.ok(!("apiKey" in provider));
+    assert.equal(provider.type, "openai");
+    assert.equal(provider.apiKey, "env:AZURE_OAI_KEY");
   }
 });
 
@@ -215,6 +215,15 @@ test("Foundry-disabled stamps preserve the key-auth catalog shape", () => {
     assert.equal(provider.type, "openai");
     assert.equal(provider.apiKey, "env:AZURE_OAI_KEY");
   }
+});
+
+test("Foundry-enabled staging rejects an unsupported auth mode", () => {
+  assert.throws(
+    () => stagedFoundryProviders(
+      workerBaseEnv({ FOUNDRY_ENABLED: "true", FOUNDRY_AUTH_MODE: "invalid" }),
+    ),
+    /FOUNDRY_AUTH_MODE must be 'key' or 'entra'/,
+  );
 });
 
 test("Foundry-enabled staging fails when the Bicep endpoint is unavailable", () => {
@@ -247,13 +256,26 @@ test("Foundry deployment wiring configures workload identity auth", () => {
   const foundry = readFileSync(join(bicepRoot, "foundry.bicep"), "utf8");
   const main = readFileSync(join(bicepRoot, "main.bicep"), "utf8");
   const params = readFileSync(join(bicepRoot, "base-infra.params.template.json"), "utf8");
+  const deploy = readFileSync(
+    join(REPO_ROOT, "deploy", "scripts", "lib", "deploy-bicep.mjs"),
+    "utf8",
+  );
+  const templateEnv = readFileSync(
+    join(REPO_ROOT, "deploy", "providers", "azure", "envs", "template.env"),
+    "utf8",
+  );
   assert.match(foundry, /disableLocalAuth:\s*authMode == 'entra'/);
   assert.match(foundry, /Cognitive Services OpenAI User/);
   assert.match(foundry, /workloadIdentityPrincipalId/);
   assert.match(foundry, /authMode == 'entra' \? keyVaultUnsetSentinel : account\.listKeys\(\)\.key1/);
   assert.match(main, /authMode: foundryAuthMode/);
+  assert.match(main, /param foundryAuthMode string = 'key'/);
+  assert.match(foundry, /param authMode string = 'key'/);
   assert.match(main, /workloadIdentityPrincipalId: Uami\.outputs\.csiIdentityPrincipalId/);
   assert.match(params, /"foundryAuthMode"[\s\S]*"\$\{FOUNDRY_AUTH_MODE\}"/);
+  assert.match(deploy, /FOUNDRY_AUTH_MODE \?\? "key"/);
+  assert.match(deploy, /FOUNDRY_AUTH_MODE must be 'key' or 'entra'/);
+  assert.match(templateEnv, /^FOUNDRY_AUTH_MODE=key$/m);
 });
 
 test("Foundry location can be overridden independently from the stamp region", () => {

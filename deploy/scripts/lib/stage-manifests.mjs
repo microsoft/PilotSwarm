@@ -146,8 +146,15 @@ const FOUNDRY_KEY_SENTINEL = "env:AZURE_OAI_KEY";
 const FOUNDRY_CATALOG_SERVICES = new Set(["worker", "portal"]);
 
 function applyFoundryAuthModeTransform({ service, stagedServiceRoot, env }) {
-  if (String(env.FOUNDRY_AUTH_MODE ?? "").toLowerCase() === "key") return;
   if (String(env.FOUNDRY_ENABLED ?? "").toLowerCase() !== "true") return;
+  const authMode = String(env.FOUNDRY_AUTH_MODE ?? "key").trim().toLowerCase();
+  if (!["key", "entra"].includes(authMode)) {
+    throw new Error(
+      `[stage-manifests] FOUNDRY_AUTH_MODE must be 'key' or 'entra'; ` +
+        `received '${env.FOUNDRY_AUTH_MODE}'.`,
+    );
+  }
+  if (authMode === "key") return;
   if (!FOUNDRY_CATALOG_SERVICES.has(service)) return;
 
   const abs = join(stagedServiceRoot, "base", "model_providers.json");

@@ -17,10 +17,9 @@
 // valid (provisions an account with no deployments) so a stamp can opt
 // into Foundry incrementally.
 //
-// `entra` auth is the default: local auth is disabled, the worker UAMI gets
-// the Foundry data-plane role, and the staged catalog uses `foundry-wif`.
-// `key` remains an explicit compatibility mode for subscriptions that permit
-// local auth.
+// `key` is the compatibility default. `entra` is an explicit opt-in that
+// disables local auth, grants the worker UAMI the Foundry data-plane role,
+// and selects the staged catalog's `foundry-wif` provider.
 // ==============================================================================
 
 @description('Azure region. Foundry resources are zonal-ish (data-plane lands in this region).')
@@ -46,7 +45,7 @@ param keyVaultName string
   'key'
   'entra'
 ])
-param authMode string = 'entra'
+param authMode string = 'key'
 
 @description('Principal object ID of the worker workload identity. Granted Cognitive Services OpenAI User in `entra` mode.')
 param workloadIdentityPrincipalId string = ''

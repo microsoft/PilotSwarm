@@ -111,7 +111,7 @@ param foundryDeployments array = []
   'key'
   'entra'
 ])
-param foundryAuthMode string = 'entra'
+param foundryAuthMode string = 'key'
 
 @description('Optional Azure region for the Foundry account, decoupled from the stamp region. Empty keeps the account co-located with the stamp.')
 param foundryLocation string = ''

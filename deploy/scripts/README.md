@@ -525,7 +525,7 @@ The base catalog supplies three classes of providers:
 |---|---|---|
 | `ghcp` (GitHub Copilot) | `GITHUB_TOKEN` (KV → SPC, optional, sentinel-tolerant; per-user PAT via Admin overrides) | Static endpoint `https://api.githubcopilot.com` |
 | `anthropic` (direct) | `ANTHROPIC_API_KEY` (KV → SPC, optional, sentinel-tolerant) | Static endpoint `https://api.anthropic.com` |
-| `azure-foundry`, `azure-foundry-router` | Workload identity by default; `AZURE_OAI_KEY` in explicit key mode | `__FOUNDRY_ENDPOINT__` placeholder, substituted at staging from the `FOUNDRY_ENDPOINT` Bicep output |
+| `azure-foundry`, `azure-foundry-router` | `AZURE_OAI_KEY` by default; workload identity when `FOUNDRY_AUTH_MODE=entra` | `__FOUNDRY_ENDPOINT__` placeholder, substituted at staging from the `FOUNDRY_ENDPOINT` Bicep output |
 
 Foundry is **opt-in per stamp**. When `FOUNDRY_ENABLED=false`:
 - `foundry.bicep` is skipped and no Foundry account is created.
@@ -546,12 +546,11 @@ Foundry is **opt-in per stamp**. When `FOUNDRY_ENABLED=false`:
 2. Run `--steps bicep` for `base-infra`. `foundry.bicep` provisions one
    `Microsoft.CognitiveServices/accounts` (kind=AIServices) per stamp,
    declares each entry as a child `accounts/deployments` resource, and
-   defaults to Entra authentication, disables local auth, grants the worker
-   workload identity the Cognitive Services OpenAI User role, and writes the
-   standard unset sentinel to `azure-oai-key`. Set
-   `FOUNDRY_AUTH_MODE=key` only for a legacy stamp that requires account-key
-   authentication. The endpoint is surfaced to the env map as
-   `FOUNDRY_ENDPOINT`. Set `FOUNDRY_LOCATION`
+   defaults to account-key authentication and writes that key to
+   `azure-oai-key`. Set `FOUNDRY_AUTH_MODE=entra` to disable local auth,
+   grant the worker workload identity the Cognitive Services OpenAI User
+   role, and write the standard unset sentinel instead. The endpoint is
+   surfaced to the env map as `FOUNDRY_ENDPOINT`. Set `FOUNDRY_LOCATION`
    when model availability requires the Foundry account to use a different
    Azure region from the rest of the stamp.
 3. Re-run `--steps manifests`. The placeholder
