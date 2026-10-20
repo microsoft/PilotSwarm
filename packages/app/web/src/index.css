@@ -6449,6 +6449,10 @@ body.is-resizing-pane-y iframe {
     overflow: hidden auto;
     overscroll-behavior: contain;
 }
+/* Rows keep their natural height so a long list scrolls. A row clips its own
+   overflow, which makes its automatic minimum height 0, so in this column it
+   would otherwise shrink to fit the box instead. */
+.ps-admin-tree__scroll > * { flex: none; }
 .ps-admin-tree__owner {
     color: var(--ps-muted);
     font-size: 11px;

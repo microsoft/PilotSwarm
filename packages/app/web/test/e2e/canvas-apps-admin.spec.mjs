@@ -191,6 +191,14 @@ test.describe("desktop: Admin → Canvas Apps", () => {
     });
 });
 
+// A row inside a scroll box keeps the height of a row outside it (within 1px):
+// a squashed row would make a list "fit" that should scroll (UX r3, U1-2).
+async function rowHeights(page, insideId) {
+    const outside = await row(page, "canvasApps").boundingBox();
+    const inside = await row(page, insideId).boundingBox();
+    return { outside: outside.height, inside: inside.height };
+}
+
 test.describe("desktop: a long list scrolls in its section and keeps the selection in view", () => {
     let stub;
     test.beforeAll(async () => {
@@ -205,6 +213,8 @@ test.describe("desktop: a long list scrolls in its section and keeps the selecti
         const sizes = await box.evaluate((el) => ({ client: el.clientHeight, scroll: el.scrollHeight, overflow: getComputedStyle(el).overflowY }));
         expect(sizes.scroll).toBeGreaterThan(sizes.client);
         expect(sizes.overflow).toBe("auto");
+        const heights = await rowHeights(page, "capp:user:none:test:app-00");
+        expect(Math.abs(heights.inside - heights.outside), `rows keep their natural height: ${JSON.stringify(heights)}`).toBeLessThanOrEqual(1);
         // Workers (the next section) stays on screen below the long list.
         await expect(row(page, "workers")).toBeInViewport();
         await page.locator("nav.ps-admin-tree").focus();
@@ -217,6 +227,24 @@ test.describe("desktop: a long list scrolls in its section and keeps the selecti
             return b.top >= a.top - 1 && b.bottom <= a.bottom + 1;
         });
         expect(inView).toBe(true);
+    });
+});
+
+test.describe("desktop: 25 apps overflow the section because rows keep their natural height", () => {
+    let stub;
+    test.beforeAll(async () => {
+        const apps = Array.from({ length: 25 }, (_, i) => makeCanvasApp(`app-${String(i).padStart(2, "0")}`, "user"));
+        stub = await startStubServer(0, { sessionCount: 1, admin: true, canvasApps: apps });
+    });
+    test.afterAll(async () => { await new Promise((resolve) => stub.server.close(resolve)); });
+
+    test("25 private apps scroll at 1440x900; squashed rows would have fitted", async ({ page }) => {
+        await openCanvasApps(page, `http://127.0.0.1:${stub.port}`);
+        const heights = await rowHeights(page, "capp:user:none:test:app-12");
+        expect(Math.abs(heights.inside - heights.outside), `rows keep their natural height: ${JSON.stringify(heights)}`).toBeLessThanOrEqual(1);
+        const box = page.locator('.ps-admin-tree__scroll[data-tree-section="canvasApps"]');
+        const sizes = await box.evaluate((el) => ({ client: el.clientHeight, scroll: el.scrollHeight }));
+        expect(sizes.scroll, `25 rows overflow the box: ${JSON.stringify(sizes)}`).toBeGreaterThan(sizes.client);
     });
 });
 
