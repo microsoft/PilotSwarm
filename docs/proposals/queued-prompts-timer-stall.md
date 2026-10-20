@@ -16,7 +16,7 @@ Approved design · revision 2 · 19 October 2026 · Grounded in PilotSwarm `main
 4. **Defect D, new in revision 2.** With an empty FIFO, `drain` stops after one message. Prompts from other sessions then run one per turn.
 5. **Fix.** User prompts never wait for a timer and run in the order received. One turn takes the whole backlog, schedules keep their time, and nothing is dropped silently. Sections 05 to 09 show each change.
 
-> **Status.** Approved on 19 October 2026, with R10 in this change. Implementation follows this design.
+> **Status.** Approved on 19 October 2026, with R10 in this change. Implemented in orchestration 1.0.82. Section 13 lists what changed during implementation, including defect E.
 
 ## 02 · Problem
 
@@ -166,6 +166,7 @@ changed, at the blocking branch (R10):
 2. **Store what fits.** Items are stored in order until the space runs out.
 3. **Report the rest.** An error trace and a `session.fifo_overflow` event list their client message ids.
 4. **Accept a resend.** Their ids are not marked as seen, so a resend with the same id runs.
+5. **Say why.** Each lost item has a reason in the event: `full`, or `too-large` for one item over the item cap (section 13, defect E).
 
 ## 09 · Rollout to live sessions
 
@@ -186,6 +187,7 @@ changed, at the blocking branch (R10):
 | Upgrade: `orchestration-version-upgrade.test.js` | A 1.0.81 input with FIFO `[timer, timer, P1, P2]` drains on the new version. | R9 |
 | Full suite | The final head against a `main` baseline in the same workspace. | all |
 | Deployed | A real model turn on the deployed build. A cron session with a sub-agent that sends messages. A user prompt sent during `wait_for_agents`. | R1 R3 R10 |
+| Deployed stress | A scripted-model harness drives every valid combination of armed timer, message source, arrival, size and session shape, first against `main` (positive control), then against the fix for several hours. It checks loss, duplicates, order, one turn per backlog, waits behind timers, schedule drift, and the upgrade of live 1.0.81 sessions. | R1 to R10, defect E |
 | Browser and UX | None: no UI change. | - |
 
 ## 11 · Out of scope
@@ -204,12 +206,28 @@ changed, at the blocking branch (R10):
 | 2 | Merge limit for one turn. | No limit (R7). |
 | 3 | Queued prompts while `wait_for_agents` runs. | They run at once. User prompts go right after the previous turn, in the order received (R3, R4). |
 | 4 | R10, new in revision 2: fix defect D in this change, or in a separate issue? | In this change. |
+| 5 | Defect E, found in the deployed stress run: one queued item over 64 KiB fails the session. Fix it how? | A guard in this change: refuse and report the item. Carrying large bodies by reference (CMS bodies, queue references) is a follow-up issue. |
 
-*Decided in review on 19 October 2026: 1 to 3 in comments on revision 1, 4 at approval of revision 2.*
+*Decided in review on 19 October 2026: 1 to 3 in comments on revision 1, 4 at approval of revision 2. 5 decided on 20 October 2026.*
+
+## 13 · Changes during implementation
+
+*Found by tests, cross-model review and the deployed stress run.*
+
+| Change | Why |
+|---|---|
+| A timer released for queued work is armed again, as it was, when no turn runs (the queued prompt was cancelled, or the queued item runs no turn). | Otherwise the session lost its wait, cron or hold window. |
+| An answer that ends an input-grace or idle hold is handled like a prompt that releases a timer. | Same reason, for answers. |
+| A queued agent-poll item is stale only when no agent wait is live; a model switch ends a live agent wait. | A stale poll ran in place of the live wait, or a wait outlived its turn. |
+| A pass that has collected a message keeps sweeping until the queue is empty (R10), but a fired timer alone still runs at its time. | A timer fire must not wait for unrelated traffic. |
+| **Defect E.** duroxide fails the orchestration on a KV value over `MAX_KV_VALUE_BYTES` (64 KiB), and the Web API accepts 2 MB. One prompt or answer over 64 KiB therefore failed the session for good, in 1.0.81 too. 1.0.82 writes no FIFO item over 60 KiB. A prompt or answer that is too large is refused on arrival, before anything changes, and reported as `too-large`; the session keeps running and a resend that fits runs. A timer note or the child-update digest that would push a prompt over the cap stays out of it. A fired timer item that is too large is queued in a compact form. | Decision 5. The design notes have the full table. |
+| A prompt that took the child-update digest or the rehydration note and is then not queued (the queue is full, or it is cancelled in the same pass) gives them back. | Otherwise those notices were lost with it. |
+
+Not changed here, and in the follow-up issue: other KV values (the latest response, command responses), the number of command-response keys, an answer to a question near 60 KiB, and a digest inside a queued prompt that is cancelled later.
 
 ---
 
 - Source: microsoft/PilotSwarm issue 192 and main @ a44357e. Line numbers are at that commit.
-- Proposal, not implemented. The analysis comes from reading the code; nothing was run.
+- The analysis in sections 01 to 12 comes from reading the code at `a44357e`. Section 13 records what implementation, review and testing changed.
 - The diagrams are illustrations drawn from the code, not measurements.
 - Revision 1 had three open decisions; review settled them (section 12). Revision 2 added defect D and R10.
