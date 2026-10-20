@@ -66,6 +66,8 @@ const EXPECTED_ALWAYS_ON_TOOL_NAMES = [
     "list_sessions",
     "complete_agent",
     "cancel_agent",
+    // Stops a child's current turn and keeps the child (session turn control).
+    "stop_agent_turn",
     "delete_agent",
     "store_fact",
     // Bulk ingestion sits beside store_fact for every session — large fact

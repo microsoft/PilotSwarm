@@ -1,4 +1,4 @@
-import { HANDOFF_ACTIVITY_NAMES, routeHandoffActivity, routedActivityName, registerHandoffActivity, routeWorkspaceActivity, type ActivityRoutingContract } from "./activity-routing.js";
+import { HANDOFF_ACTIVITY_NAMES, TURN_CONTROL_ACTIVITY_NAMES, routeHandoffActivity, routedActivityName, registerHandoffActivity, registerTurnControlActivity, routeTurnControlActivity, routeWorkspaceActivity, type ActivityRoutingContract } from "./activity-routing.js";
 import nodeCrypto from "node:crypto";
 import { createCopilotClient } from "./copilot-client.js";
 import {
@@ -28,7 +28,7 @@ import { loadAdminScope } from "../api/src/admin-scope.js";
 import { parseAgentFqn } from "./agent-fqn.js";
 import { decideSessionControl } from "./agent-manager-tools.js";
 import type { StorageConfig } from "./storage-config.js";
-import { SESSION_STATE_MISSING_PREFIX, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type ManagedSessionConfig, type SerializableSessionConfig, type TurnResult, type OrchestrationInput } from "./types.js";
+import { SESSION_STATE_MISSING_PREFIX, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type ManagedSessionConfig, type SerializableSessionConfig, type TurnResult, type OrchestrationInput, type LateSteer, type TurnEndKind, type TurnStartRecord } from "./types.js";
 import type { ArtifactStore } from "./session-store.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { systemChildAgentUUID } from "./agent-loader.js";
@@ -63,8 +63,12 @@ import os from "node:os";
 import fs from "node:fs";
 import path from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { attemptStoreRecovery, runTurnCommit, runTurnPreamble, type TurnLifecycleContext } from "./session-lifecycle.js";
-import { supportsVersionedSnapshots, writeTurnSentinel } from "./snapshot-protocol.js";
+import { attemptStoreRecovery, runTurnCommit, runTurnPreamble, savedControlCursor, type TurnLifecycleContext } from "./session-lifecycle.js";
+import { readTurnCommitFile, supportsVersionedSnapshots, writeTurnSentinel } from "./snapshot-protocol.js";
+import { LiveTurnControl } from "./turn-control.js";
+import { CARRIED_STEERS_WAKE_PROMPT } from "./turn-control-contract.js";
+import { parentControlRequestId, steerChildTurn, stopChildTurn, type MessageAgentDelivery } from "./parent-turn-control.js";
+import { faultPoint, faultPointAsync } from "./fault-injection.js";
 import { LatestValuePublisher, type LiveTurnPayload } from "./live-turn.js";
 import { STREAMING_EVENT_TYPES, keepOrchestrationTurnEvents, turnResultSizeWarning } from "./turn-result-events.js";
 import { MODEL_EVENT_TYPES_RECORDED_WHEN_LOGGING, modelEventLoggingEnabled } from "./model-event-logging.js";
@@ -288,6 +292,27 @@ export async function resolveAgentDefinitionForRequiredToolForCaller(opts: {
 // live in canvas-support.ts, shared with the app catalog. Re-exported so
 // existing importers keep their path.
 export { CANVAS_ARTIFACT_FILENAME, canvasArtifactFilename } from "./canvas-support.js";
+
+/**
+ * Session turn control: fold carried steers (in place of the carried-steers
+ * wake prompt, or before the prompt) and steers accepted before turn start
+ * (after the prompt) into a turn prompt. A trailing system-context block
+ * stays last. The turn's own prompt and its in-attempt recovery re-runs use
+ * the same fold, so a re-run from the start still holds every steer that
+ * turn end will label delivered or ran.
+ */
+function foldTurnControlText(prompt: string, carriedText: string, steerText: string): string {
+    if (!carriedText && !steerText) return prompt;
+    const split = splitSystemContextBlock(prompt);
+    let body = split.prompt;
+    if (carriedText) {
+        body = body.includes(CARRIED_STEERS_WAKE_PROMPT)
+            ? body.replace(CARRIED_STEERS_WAKE_PROMPT, carriedText)
+            : `${carriedText}\n\n${body}`;
+    }
+    if (steerText) body = `${body}\n\n${steerText}`;
+    return appendSystemContextBlock(body, split.note);
+}
 
 const SESSION_RECOVERY_NOTICE =
     "[SYSTEM: The runtime recovered this session after the live Copilot session was lost on a worker. " +
@@ -697,14 +722,18 @@ export function createSessionProxy(
             prompt: string,
             bootstrap?: boolean,
             turnIndex?: number,
-            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[]; sender?: unknown; snapshot?: { expectedVersion?: number; turnKey: string }; attachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; transcriptEpoch?: number; epochStart?: boolean; stashedPrompts?: string[]; stashedAttachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; workspaceRevision?: number; workspaceNotice?: string },
+            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[]; sender?: unknown; snapshot?: { expectedVersion?: number; turnKey: string }; attachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; transcriptEpoch?: number; epochStart?: boolean; stashedPrompts?: string[]; stashedAttachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; workspaceRevision?: number; workspaceNotice?: string; carriedSteers?: import("./types.js").LateSteer[] },
         ) {
+            const turnControl = routingContract === "turn-control-v1";
             const task = ctx.scheduleActivityOnSession(
                 // The epoch-start turn is a distinct activity name (runTurn2):
                 // with an explicit contract since 1.0.67. New handoffs ALSO
                 // require a capability tag: activity names alone do not stop
                 // old workers from dequeuing work they cannot execute.
-                routedActivityName(turnMeta?.epochStart ? "runTurn2" : "runTurn", routingContract),
+                // Session turn control (1.0.81): runTurnV4 / runTurnEpochV4.
+                turnControl
+                    ? TURN_CONTROL_ACTIVITY_NAMES[turnMeta?.epochStart ? "runTurn2" : "runTurn"]
+                    : routedActivityName(turnMeta?.epochStart ? "runTurn2" : "runTurn", routingContract),
                 {
                     sessionId,
                     prompt,
@@ -749,9 +778,17 @@ export function createSessionProxy(
                         : {}),
                     ...(turnMeta?.workspaceRevision ? { workspaceRevision: turnMeta.workspaceRevision } : {}),
                     ...(turnMeta?.workspaceNotice ? { workspaceNotice: turnMeta.workspaceNotice } : {}),
+                    // 1.0.81: steers carried from an earlier turn, folded by the worker.
+                    ...(turnControl && turnMeta?.carriedSteers && turnMeta.carriedSteers.length > 0
+                        ? { carriedSteers: turnMeta.carriedSteers }
+                        : {}),
                 },
                 affinityKey,
             );
+            // Session turn control (1.0.81): every turn goes only to workers
+            // that listen for controls. Those workers also declare the
+            // handoff and workspace tags.
+            if (turnControl) return routeTurnControlActivity(task);
             // Session workspaces (1.0.80): the turn of a session that has, or
             // had, a workspace goes only to workers that know workspaces. An
             // older worker would run it in its own folder.
@@ -1082,13 +1119,17 @@ export function createSessionManagerProxy(
             return ctx.scheduleActivity("deleteSession", { sessionId, reason });
         },
         /** Update a session's CMS state (e.g. "rejected" for policy violations). */
-        updateCmsState(sessionId: string, state: string, lastError?: string | null, waitReason?: string | null) {
-            const payload: { sessionId: string; state: string; lastError?: string | null; waitReason?: string | null } = {
+        updateCmsState(sessionId: string, state: string, lastError?: string | null, waitReason?: string | null, opts?: { closeControls?: boolean }) {
+            const payload: { sessionId: string; state: string; lastError?: string | null; waitReason?: string | null; closeControls?: true } = {
                 sessionId,
                 state,
             };
             if (lastError !== undefined) payload.lastError = lastError;
             if (waitReason !== undefined) payload.waitReason = waitReason;
+            // 1.0.81 give-up paths: close the session's open controls and
+            // unclosed carried steers. Absent otherwise, so older payloads
+            // replay unchanged.
+            if (opts?.closeControls === true) payload.closeControls = true;
             return ctx.scheduleActivity("updateCmsState", payload);
         },
         /** Persist this session's model metadata in CMS. */
@@ -1394,7 +1435,8 @@ export function registerActivities(
     };
 
     // ── runTurn ──────────────────────────────────────────────
-    const runTurnHandler = async (
+    const runTurnImpl = async (
+        turnControlPath: boolean,
         activityCtx: any,
         input: {
             sessionId: string;
@@ -1421,6 +1463,8 @@ export function registerActivities(
             workspaceNotice?: string;
             /** 1.0.80: image refs held with the stashed prompts; sent to the model, not re-recorded. */
             stashedAttachments?: PromptAttachmentRef[];
+            /** 1.0.81 (runTurnV4): steers carried from an earlier turn. Used from phase A4 on. */
+            carriedSteers?: import("./types.js").LateSteer[];
         },
     ): Promise<TurnResult> => {
         // Attachment count is traced unconditionally: a 2026-07-21 incident
@@ -1579,6 +1623,87 @@ export function registerActivities(
         let cancelPoll: ReturnType<typeof setInterval> | null = null;
         let finalTurnResult: TurnResult | null = null;
 
+        // ── Session turn control (runTurnV4, design 4.7) ───────────────
+        // Present only on the V4 names and with a catalog. T3 turn start
+        // replaces setActiveTurnIndex; the live loop applies controls during
+        // the model run; T7 saves the cursor; T8 turn end gives every open
+        // control one outcome and closes the carried steers folded in.
+        const tc = turnControlPath && catalog
+            ? {
+                turn: input.turnIndex ?? 0,
+                carried: (Array.isArray(input.carriedSteers) ? input.carriedSteers : [])
+                    .filter((c): c is LateSteer => !!c && Number.isFinite(Number(c.seq)) && typeof c.text === "string"),
+                live: null as LiveTurnControl | null,
+                /** T6 writeback answer: true/false, or undefined when the best-effort write failed (P15). */
+                hasControls: undefined as boolean | undefined,
+                /** The turn ended at T3 because a Stop was open or recorded: no model run. */
+                earlyStop: false,
+                /** Cursor known at T3 (saved cursor plus folded steers). */
+                startCursor: 0,
+                /** The carried steers were folded into a prompt that reached the model run, or a stopped turn took them (P12, D6). */
+                carriedTaken: false,
+                /** T3 ran in this attempt. */
+                started: false,
+                /** Text folded into the prompt at T3; a recovery re-run folds it again. */
+                carriedText: "",
+                foldedSteerText: "",
+            }
+            : null;
+        const sessionDirOf = () => path.join(sessionManager.getSessionStateDir(), input.sessionId);
+        // T8. Runs after the save; idempotent; retried in place, then fails
+        // the activity so the turn retries (design 4.7: not best-effort).
+        const turnEndWithRetry = async (kind: TurnEndKind, cursor: number, carried: number[]) => {
+            let lastErr: unknown;
+            for (let attempt = 1; attempt <= 3; attempt += 1) {
+                try {
+                    // Test-only probe: a turn end that never succeeds (design 5.1, double fault).
+                    await faultPointAsync("turn.control.before-end", { sessionId: input.sessionId });
+                    return await catalog!.turnEnd(input.sessionId, tc!.turn, cursor, kind, carried);
+                } catch (err) {
+                    lastErr = err;
+                    activityCtx.traceInfo(`[turn-control] turnEnd attempt ${attempt} failed session=${input.sessionId}: ${String((err as Error)?.message ?? err)}`);
+                    if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 500 * attempt));
+                }
+            }
+            throw lastErr;
+        };
+        const finishTurnControl = async (result: TurnResult, cursor: number, opts: { alwaysEnd?: boolean } = {}): Promise<TurnResult> => {
+            if (!tc || result.type === "cancelled") return result;
+            // A turn that never reached T3 (an error before it) leaves the
+            // turn's controls alone, unless an earlier attempt saved it.
+            if (!tc.started && !opts.alwaysEnd) return result;
+            const carriedSeqs = tc.carriedTaken ? tc.carried.map((c) => Number(c.seq)) : [];
+            const shouldEnd = opts.alwaysEnd || tc.earlyStop || tc.hasControls !== false || carriedSeqs.length > 0;
+            let out: TurnResult = result;
+            if (shouldEnd) {
+                if (activityCtx.isCancelled?.()) throw new Error("runTurn cancelled before turn end");
+                const kind: TurnEndKind = result.type === "stopped" ? "stopped" : result.type === "error" ? "error" : "other";
+                let end = await turnEndWithRetry(kind, cursor, carriedSeqs);
+                await faultPointAsync("turn.control.after-end", { sessionId: input.sessionId });
+                if (end.stopped && kind !== "stopped" && carriedSeqs.length > 0) {
+                    // An error turned stopped by an open Stop consumed its carried steers (D6).
+                    end = await turnEndWithRetry("stopped", cursor, carriedSeqs);
+                }
+                if (end.stopped) {
+                    out = {
+                        type: "stopped",
+                        reason: (result.type === "stopped" ? (result as any).reason : undefined) ?? "Stopped by user",
+                        ...((result as any).events ? { events: (result as any).events } : {}),
+                        ...((result as any).snapshotVersion != null ? { snapshotVersion: (result as any).snapshotVersion } : {}),
+                        ...((result as any).workspaceAttached ? { workspaceAttached: true } : {}),
+                    } as TurnResult;
+                } else if (end.late.length > 0) {
+                    out = { ...result, lateSteers: end.late } as TurnResult;
+                }
+                // Queued messages that delivered converted steers replaced (migration 0083).
+                if (end.replaced?.length) out = { ...out, replacedClientMessageIds: end.replaced } as TurnResult;
+            }
+            if (tc.carriedTaken && tc.carried.length > 0 && out.type !== "error") {
+                out = { ...out, carriedSteersConsumed: true } as TurnResult;
+            }
+            return out;
+        };
+
         try {
             finalTurnResult = await sessionManager.withRunTurnLock(input.sessionId, "runTurn", async () => {
         // ── Session lifecycle protocol preamble (proposal §3.3) ─────────
@@ -1609,6 +1734,11 @@ export function registerActivities(
         let lifecycleBaseVersion = 0;
         let lifecycleRehydrated = false;
         let lifecyclePreambleFresh = false;
+        let lifecycleUncommittedDiscard = false;
+        let lifecyclePreambleLossy = false;
+        // The conversation was recreated by the lossy replay: it is not a
+        // fresh chain for the next turn's witness (TurnSentinel.freshChain).
+        let lossyReplayed = false;
         // Protocol-native persistence stats: the legacy dehydrate/hydrate
         // activities no longer run, so the preamble/commit paths feed the
         // same CMS summary + events the Stats pane reads. Best-effort only.
@@ -1639,15 +1769,24 @@ export function registerActivities(
                 await recordLifecycleHydration(pre.version);
                 // Session workspaces: a committed turn got past the
                 // workspace check (a refusal returns before the commit).
-                return {
+                const stored: TurnResult = {
                     ...(pre.result as TurnResult),
                     snapshotVersion: pre.version,
                     ...(runConfig.workspace ? { workspaceAttached: true } : {}),
                 };
+                if (tc) {
+                    // An earlier attempt with this same input saved the turn:
+                    // no model run, only T8 with the saved cursor.
+                    tc.carriedTaken = tc.carried.length > 0;
+                    return await finishTurnControl(stored, savedControlCursor(pre.result, tc.turn), { alwaysEnd: true });
+                }
+                return stored;
             }
             lifecycleBaseVersion = pre.baseVersion;
             lifecycleRehydrated = pre.kind === "hydrated";
             lifecyclePreambleFresh = pre.kind === "fresh";
+            lifecycleUncommittedDiscard = pre.kind === "fresh" && pre.uncommittedDiscard;
+            lifecyclePreambleLossy = pre.kind === "fresh" && pre.lossy;
             if (lifecycleRehydrated) {
                 await recordLifecycleHydration(pre.baseVersion);
             }
@@ -2067,7 +2206,18 @@ export function registerActivities(
         // grounding turn recovers via already-committed above; a non-empty
         // chain resumes — an unconditional reset would erase a committed
         // grounding turn on activity retry.
-        const epochCreate = input.epochStart === true && (!lifecycle || lifecyclePreambleFresh);
+        //
+        // An empty chain after turn 0 is no loss when an earlier turn on this
+        // worker left a conversation that was created fresh and never saved
+        // (a stopped turn; the preamble's uncommittedDiscard): this turn
+        // starts a fresh conversation the same way, quietly. Without that
+        // local evidence (a store that lost saved turns, an attempt of this
+        // same turn, or another worker) the lossy replay below still runs.
+        const emptyByDesign = lifecycleUncommittedDiscard && !input.epochStart && (input.turnIndex ?? 0) > 0;
+        if (emptyByDesign) {
+            trace(`session=${input.sessionId} turn ${input.turnIndex}: the discarded conversation never saved a turn; starting a fresh conversation`);
+        }
+        const epochCreate = (input.epochStart === true && (!lifecycle || lifecyclePreambleFresh)) || emptyByDesign;
         try {
             session = await sessionManager.getOrCreate(input.sessionId, runConfig, {
                 turnIndex: input.turnIndex,
@@ -2120,6 +2270,7 @@ export function registerActivities(
                     `session=${input.sessionId} missing resumable state before turn ${input.turnIndex ?? "unknown"}; ` +
                     "starting lossy fresh-session replay",
                 );
+                lossyReplayed = true;
                 await recordLossyHandoffEvent(
                     catalog,
                     input.sessionId,
@@ -2180,6 +2331,9 @@ export function registerActivities(
             writeTurnSentinel(
                 path.join(sessionManager.getSessionStateDir(), input.sessionId),
                 input.snapshot!.turnKey,
+                // This turn's conversation was created fresh with nothing
+                // saved; an unsaved end keeps that true for the next turn.
+                { freshChain: lifecyclePreambleFresh && !lifecyclePreambleLossy && !lossyReplayed },
             );
             if (lifecycleRehydrated) {
                 effectivePrompt = mergePromptSections([REHYDRATED_SESSION_NOTICE, effectivePrompt]) || effectivePrompt;
@@ -2275,6 +2429,35 @@ export function registerActivities(
                 throw new Error(`agent "${targetOrchId}" is a worker-managed system agent and is not a controllable spawned sub-agent`);
             }
             return child;
+        };
+
+        /**
+         * Parent controls of a child's running turn: this agent is the
+         * control's sender, and sessions.steering resolves for this
+         * session's owner, as the Web API resolves it for a person.
+         */
+        const parentControlCaller = async (): Promise<import("./types.js").TurnControlCaller> => {
+            const owner = catalog
+                ? await resolveEffectiveSpawnOwner((id) => catalog!.getSession(id), input.sessionId).catch(() => null)
+                : null;
+            return {
+                sender: {
+                    kind: "agent",
+                    sessionId: input.sessionId,
+                    display: catalogSessionRow?.title || runConfig.agentIdentity || "Parent agent",
+                },
+                viewer: { principal: owner ? { provider: owner.provider, subject: owner.subject } : null, isAdmin: false },
+            };
+        };
+        const withManagementClient = async <T>(fn: (client: PilotSwarmManagementClient) => Promise<T>): Promise<T> => {
+            if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmManagementClient");
+            const client = new PilotSwarmManagementClient(internalClientConfig());
+            try {
+                await client.start();
+                return await fn(client);
+            } finally {
+                await client.stop().catch(() => {});
+            }
         };
 
         /**
@@ -3033,7 +3216,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     return `[SYSTEM: regenerate_agent failed: ${err?.message || String(err)}]`;
                 }
             },
-            messageAgent: async (args: { agent_id: string; message: string; contract_patch?: Record<string, unknown> }) => {
+            messageAgent: async (
+                args: { agent_id: string; message: string; contract_patch?: Record<string, unknown>; deliver?: MessageAgentDelivery },
+                call?: { toolCallId?: string },
+            ) => {
                 try {
                     const child = await resolveManagedChild(args.agent_id);
                     if (catalog && args.contract_patch) {
@@ -3051,12 +3237,26 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                             );
                         }
                     }
-                    const sdkClient = await getInlineClient();
-                    await sdkClient._getDuroxideClient().enqueueEvent(
-                        child.orchId,
-                        "messages",
-                        JSON.stringify({ prompt: args.message }),
-                    );
+                    const queue = async () => {
+                        const sdkClient = await getInlineClient();
+                        await sdkClient._getDuroxideClient().enqueueEvent(
+                            child.orchId,
+                            "messages",
+                            JSON.stringify({ prompt: args.message }),
+                        );
+                    };
+                    if (args.deliver === "now") {
+                        const caller = await parentControlCaller();
+                        return await withManagementClient((client) => steerChildTurn(client, {
+                            childSessionId: child.sessionId,
+                            agentLabel: child.orchId,
+                            text: args.message,
+                            requestId: parentControlRequestId("steer", input.sessionId, call?.toolCallId || randomUUID()),
+                            caller,
+                            queue,
+                        }));
+                    }
+                    await queue();
                     return `[SYSTEM: Message sent to sub-agent ${child.orchId}: "${args.message.slice(0, 200)}". ` +
                         `Continue your work in this SAME turn. If you are waiting on the child, call wait_for_agents explicitly rather than stopping here.]`;
                 } catch (err: any) {
@@ -3298,6 +3498,21 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         `Use check_agents or wait_for_agents to observe final termination.${args.reason ? ` Reason: ${args.reason}` : ""}]`;
                 } catch (err: any) {
                     return `[SYSTEM: cancel_agent failed: ${err?.message || String(err)}]`;
+                }
+            },
+            stopAgentTurn: async (args: { agent_id: string; reason?: string }, call?: { toolCallId?: string }) => {
+                try {
+                    const child = await resolveManagedChild(args.agent_id);
+                    const caller = await parentControlCaller();
+                    return await withManagementClient((client) => stopChildTurn(client, {
+                        childSessionId: child.sessionId,
+                        agentLabel: child.orchId,
+                        reason: args.reason?.trim() || "Stopped by parent agent",
+                        requestId: parentControlRequestId("stop", input.sessionId, call?.toolCallId || randomUUID()),
+                        caller,
+                    }));
+                } catch (err: any) {
+                    return `[SYSTEM: stop_agent_turn failed: ${err?.message || String(err)}]`;
                 }
             },
             deleteAgent: async (args: { agent_id: string; reason?: string }) => {
@@ -3776,6 +3991,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         cancelPoll = setInterval(() => {
             if (activityCtx.isCancelled()) {
                 cancelled = true;
+                traceWarn(`[runTurn] activity cancelled for ${input.sessionId} turn ${input.turnIndex ?? 0} (its lock was lost); aborting the turn`);
+                faultPoint("turn.control.cancel-observed");
                 session?.abort?.();
                 if (cancelPoll) clearInterval(cancelPoll);
             }
@@ -3942,30 +4159,34 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 : input.prompt;
             const isTimerPrompt = /^The \d+ second wait is now complete\./i.test(promptForRecord);
             const isRetryAttempt = (input.retryCount ?? 0) > 0;
+            // 1.0.81: a turn that only runs carried steers records nothing new;
+            // the steers are already in the transcript.
+            const isCarriedWake = promptForRecord === CARRIED_STEERS_WAKE_PROMPT;
+            // v1.0.47: when the orchestration tagged the turn with one or
+            // more clientMessageIds (the UI-generated identities of the
+            // contributing local outbox items), persist them on the durable
+            // user.message event so the client can ack/cancel by exact id
+            // rather than text match.
+            const incomingClientMessageIds: string[] = Array.isArray((input as any).clientMessageIds)
+                ? ((input as any).clientMessageIds as unknown[]).filter((id) => typeof id === "string" && id) as string[]
+                : [];
+            // The turn's prompt records: its system note, then its prompt.
+            // V3 writes them best-effort below. Turn control (V4, migration
+            // 0083) writes them in turn start's transaction, so a prompt is
+            // recorded before its turn can accept any control. There, a
+            // prompt with client message ids also goes to turn start on a
+            // retry: it is recorded only when no prompt record holds its ids,
+            // which repairs a turn whose earlier attempt never recorded it.
+            // A record without ids is recorded on the turn's first start only.
+            const promptRecords: TurnStartRecord[] = [];
             if (catalog && input.config.turnSystemPrompt && !isRetryAttempt) {
-                const persistedSystemPrompt = decorateRehydrationSystemPrompt(
-                    input.config.turnSystemPrompt,
-                    workerNodeId,
-                );
-                trackEventWrite(cmsRetryBestEffort(
-                    `runTurn.recordEvent system-prompt session=${input.sessionId}`,
-                    () => catalog!.recordEvents(input.sessionId, [{
-                        eventType: "system.message",
-                        data: { content: persistedSystemPrompt },
-                    }], workerNodeId),
-                    (msg) => activityCtx.traceInfo(msg),
-                ));
+                promptRecords.push({
+                    eventType: "system.message",
+                    data: { content: decorateRehydrationSystemPrompt(input.config.turnSystemPrompt, workerNodeId) },
+                });
             }
-            if (catalog && !isTimerPrompt && !input.bootstrap && !isRetryAttempt && promptForRecord) {
-                const promptEventType = isInternalSystemPrompt(promptForRecord) ? "system.message" : "user.message";
-                // v1.0.47: when the orchestration tagged the turn with one or
-                // more clientMessageIds (the UI-generated identities of the
-                // contributing local outbox items), persist them on the
-                // durable user.message event so the client can ack/cancel by
-                // exact id rather than text match.
-                const incomingClientMessageIds: string[] = Array.isArray((input as any).clientMessageIds)
-                    ? ((input as any).clientMessageIds as unknown[]).filter((id) => typeof id === "string" && id) as string[]
-                    : [];
+            if (catalog && !isTimerPrompt && !input.bootstrap && !isCarriedWake && promptForRecord
+                && (!isRetryAttempt || (tc && incomingClientMessageIds.length > 0))) {
                 const eventData: Record<string, unknown> = { content: promptForRecord };
                 if (incomingClientMessageIds.length > 0) {
                     eventData.clientMessageIds = incomingClientMessageIds;
@@ -3983,15 +4204,19 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 if (eventAttachments.length > 0) {
                     eventData.attachments = eventAttachments;
                 }
-                const capturedPromptEventType = promptEventType;
-                trackEventWrite(cmsRetryBestEffort(
-                    `runTurn.recordEvent ${capturedPromptEventType} session=${input.sessionId}`,
-                    () => catalog!.recordEvents(input.sessionId, [{
-                        eventType: capturedPromptEventType,
-                        data: eventData,
-                    }], workerNodeId),
-                    (msg) => activityCtx.traceInfo(msg),
-                ));
+                promptRecords.push({
+                    eventType: isInternalSystemPrompt(promptForRecord) ? "system.message" : "user.message",
+                    data: eventData,
+                });
+            }
+            if (!tc) {
+                for (const record of promptRecords) {
+                    trackEventWrite(cmsRetryBestEffort(
+                        `runTurn.recordEvent ${record.eventType} session=${input.sessionId}`,
+                        () => catalog!.recordEvents(input.sessionId, [record], workerNodeId),
+                        (msg) => activityCtx.traceInfo(msg),
+                    ));
+                }
             }
 
             // Mark session as "running" in CMS before the turn, and publish the
@@ -4006,11 +4231,78 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     }),
                     (msg) => activityCtx.traceInfo(msg),
                 );
-                await cmsRetryBestEffort(
-                    `runTurn.preTurn setActiveTurnIndex session=${input.sessionId} turn=${input.turnIndex ?? 0}`,
-                    () => catalog!.setActiveTurnIndex(input.sessionId, input.turnIndex ?? 0),
+                if (!tc) {
+                    await cmsRetryBestEffort(
+                        `runTurn.preTurn setActiveTurnIndex session=${input.sessionId} turn=${input.turnIndex ?? 0}`,
+                        () => catalog!.setActiveTurnIndex(input.sessionId, input.turnIndex ?? 0),
+                        (msg) => activityCtx.traceInfo(msg),
+                    );
+                }
+            }
+
+            // ── Turn control T3: turn start (replaces setActiveTurnIndex) ──
+            // Not best-effort: without it no control could reach this turn,
+            // so a failure throws and the turn retries (plan P21).
+            if (tc) {
+                const started = await cmsRetryCritical(
+                    `runTurn.preTurn turnStart session=${input.sessionId} turn=${tc.turn}`,
+                    () => catalog!.turnStart(input.sessionId, tc.turn, promptRecords, workerNodeId),
                     (msg) => activityCtx.traceInfo(msg),
                 );
+                tc.started = true;
+                await faultPointAsync("turn.control.after-start", { sessionId: input.sessionId });
+                if ("stale" in started) {
+                    throw new Error(`runTurn: a newer turn of session ${input.sessionId} already started; turn ${tc.turn} is stale`);
+                }
+                let start = 0;
+                if (lifecycle && (started.stopped || started.controls.length > 0)) {
+                    // The saved cursor is read only when needed. A session
+                    // without a store saves nothing (D4): cursor 0.
+                    start = savedControlCursor(readTurnCommitFile(sessionDirOf())?.result, tc.turn);
+                }
+                const open = started.controls.filter((c) => c.seq > start);
+                const openStop = open.find((c) => c.kind === "stop");
+                if (started.stopped || openStop) {
+                    // A Stop reached this turn before the model ran: end it
+                    // without a model run. Carried steers are taken by the
+                    // stopped turn (D6).
+                    tc.earlyStop = true;
+                    tc.startCursor = start;
+                    tc.carriedTaken = tc.carried.length > 0;
+                    await Promise.allSettled(pendingEventWrites.splice(0));
+                    activityCtx.traceInfo(`[turn-control] session=${input.sessionId} turn=${tc.turn} stopped at turn start`);
+                    return { type: "stopped", reason: openStop?.text || "Stopped by user" } as TurnResult;
+                }
+                // Fold carried steers (before the prompt; they replace the
+                // carried-steers wake prompt) and steers accepted for this
+                // turn before it started (after the prompt). Never recorded again.
+                if (tc.carried.length > 0) {
+                    tc.carriedText = tc.carried.map((c) => c.text).join("\n\n");
+                    tc.carriedTaken = true;
+                }
+                const openSteers = open.filter((c) => c.kind === "steer");
+                if (openSteers.length > 0) {
+                    tc.foldedSteerText = openSteers.map((c) => c.text).join("\n\n");
+                    start = Math.max(start, ...openSteers.map((c) => c.seq));
+                }
+                effectivePrompt = foldTurnControlText(effectivePrompt, tc.carriedText, tc.foldedSteerText);
+                tc.startCursor = start;
+                tc.live = new LiveTurnControl({
+                    sessionId: input.sessionId,
+                    turn: tc.turn,
+                    start,
+                    abort: (reason) => sessionManager.abortWarmSessionTurn(input.sessionId, {
+                        reason,
+                        ...(input.turnIndex != null ? { expectedTurnIndex: input.turnIndex } : {}),
+                        // A Stop also ends the commands this turn started.
+                        cancelTurnTasks: true,
+                    }),
+                    record: async (eventType, data) => {
+                        await catalog!.recordEvents(input.sessionId, [{ eventType, data }], workerNodeId);
+                    },
+                    trace: (message) => activityCtx.traceInfo(message),
+                });
+                void sessionManager.getTurnControlHub?.()?.register(tc.live);
             }
 
             activityCtx.traceInfo(`[runTurn] invoking ManagedSession.runTurn for ${input.sessionId}`);
@@ -4192,9 +4484,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     turnIndex: input.turnIndex,
                     controlToolBridge,
                     ...(turnAttachmentBlobs.length > 0 ? { attachments: turnAttachmentBlobs } : {}),
+                    ...(tc?.live ? { turnControl: tc.live } : {}),
                 });
             };
 
+            if (tc) await faultPointAsync("turn.control.before-send", { sessionId: input.sessionId });
             let result = await runTurnWithPrompt(session, effectivePrompt);
 
             if (result.type === "error" && isLiveSessionLostErrorMessage((result as any).message)) {
@@ -4239,7 +4533,13 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     return await failForMissingState(fatalMessage);
                 }
 
-                const recoveredPrompt = mergePromptSections([SESSION_RECOVERY_NOTICE, input.prompt]) || input.prompt;
+                // Turn control: the re-run starts from the folded turn prompt,
+                // so the carried and turn-start steers reach the model again.
+                const recoveryBase = tc ? foldTurnControlText(input.prompt, tc.carriedText, tc.foldedSteerText) : input.prompt;
+                const recoveredPrompt = mergePromptSections([SESSION_RECOVERY_NOTICE, recoveryBase]) || recoveryBase;
+                // Turn control: the lost conversation took any steers applied
+                // to it; count from the start again so turn end carries them.
+                tc?.live?.conversationLost();
                 result = await runTurnWithPrompt(session, recoveredPrompt);
 
                 if (result.type === "error" && isLiveSessionLostErrorMessage((result as any).message)) {
@@ -4305,7 +4605,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     return { type: "error", message: fatalMessage } as TurnResult;
                 }
 
-                const recoveredPrompt = mergePromptSections([CORRUPTED_TRANSCRIPT_REPLAY_NOTICE, input.prompt]) || input.prompt;
+                const recoveryBase = tc ? foldTurnControlText(input.prompt, tc.carriedText, tc.foldedSteerText) : input.prompt;
+                const recoveredPrompt = mergePromptSections([CORRUPTED_TRANSCRIPT_REPLAY_NOTICE, recoveryBase]) || recoveryBase;
+                // Turn control: the lost conversation took any steers applied
+                // to it; count from the start again so turn end carries them.
+                tc?.live?.conversationLost();
                 result = await runTurnWithPrompt(session, recoveredPrompt);
             }
 
@@ -4361,7 +4665,12 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 // long enough to deliver the final latest-value snapshot.
             }
 
+            if (tc?.live) {
+                tc.live.retire();
+                sessionManager.getTurnControlHub?.()?.unregister(tc.live);
+            }
             if (cancelled) return { type: "cancelled" };
+            if (tc) await faultPointAsync("turn.control.before-writeback", { sessionId: input.sessionId });
 
             // ── Activity-level writeback: sync turn result → CMS ──
             // This lets listSessions() read entirely from CMS without
@@ -4403,7 +4712,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     updates.lastError = null;
                 }
                 const turnEndedAt = new Date();
-                await cmsRetryBestEffort(
+                const writebackHasControls = await cmsRetryBestEffort(
                     `runTurn.postTurn completeTurnWriteback state=${updates.state} session=${input.sessionId}`,
                     () => catalog!.completeTurnWriteback({
                         sessionId: input.sessionId,
@@ -4441,6 +4750,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     }),
                     (msg) => activityCtx.traceInfo(msg),
                 );
+                if (tc) {
+                    // P15: false skips T8; true or a failed write (undefined) runs it.
+                    tc.hasControls = writebackHasControls;
+                    await faultPointAsync("turn.control.after-writeback", { sessionId: input.sessionId });
+                }
 
                 // ── settle the provider budget ───────────────────────
                 //
@@ -4513,8 +4827,15 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         const lifecycleSessionDir = lifecycle
             ? path.join(sessionManager.getSessionStateDir(), input.sessionId)
             : null;
+        // Turn control: the cursor the conversation provably holds.
+        const liveCursor = tc ? Math.max(tc.startCursor, tc.live?.cursor ?? 0) : 0;
         if (lifecycle && lifecycleSessionDir && fs.existsSync(path.join(lifecycleSessionDir, "workspace.yaml"))) {
-            const committed = await runTurnCommit(lifecycle, lifecycleBaseVersion, bodyResult);
+            // T7: the save carries the cursor only when it is not 0.
+            const toSave: TurnResult = tc && liveCursor > 0 && bodyResult.type !== "stopped"
+                ? { ...bodyResult, controlCursor: { turn: tc.turn, cursor: liveCursor } } as TurnResult
+                : bodyResult;
+            const committed = await runTurnCommit(lifecycle, lifecycleBaseVersion, toSave);
+            if (tc) await faultPointAsync("turn.control.after-commit", { sessionId: input.sessionId });
             if (!committed.published && catalog) {
                 // Store-wins: the snapshot was NOT advanced — a user stop, or a
                 // discarded/foreign turn superseded this one at the store. The
@@ -4566,15 +4887,19 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     `[runTurn] session=${input.sessionId} racing attempt committed v${committed.version} first; ` +
                     `adopting its stored result`,
                 );
-                return {
+                const adopted: TurnResult = {
                     ...keepOrchestrationTurnEvents(committed.storedResult as TurnResult),
                     snapshotVersion: committed.version,
                     ...((runConfig as ManagedSessionConfig).workspaceAttach ? { workspaceAttached: true } : {}),
                 };
+                // The winner's result and cursor; T8 writes the same outcomes.
+                return tc ? await finishTurnControl(adopted, savedControlCursor(committed.storedResult, tc.turn), { alwaysEnd: true }) : adopted;
             }
-            return { ...bodyResult, snapshotVersion: committed.version };
+            const saved: TurnResult = { ...toSave, snapshotVersion: committed.version } as TurnResult;
+            // Not published (stopped or superseded): nothing of this turn survives.
+            return tc ? await finishTurnControl(saved, committed.published ? liveCursor : 0) : saved;
         }
-        return bodyResult;
+        return tc ? await finishTurnControl(bodyResult, liveCursor) : bodyResult;
             }, { trace });
             if (!finalTurnResult) {
                 throw new Error("runTurn completed without a turn result");
@@ -4617,6 +4942,12 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             turnSpan.setStatus({ code: SpanStatusCode.ERROR, message: err?.message || String(err) });
             throw err;
         } finally {
+            if (tc?.live) {
+                tc.live.retire();
+                sessionManager.getTurnControlHub?.()?.unregister(tc.live);
+            }
+            // Observation probe for multi-worker tests: this attempt's body is over.
+            if (tc) faultPoint("turn.control.activity-end");
             if (turnTelemetry.modelSummary) {
                 turnSpan.setAttribute("pilotswarm.model_summary", turnTelemetry.modelSummary);
             }
@@ -4646,10 +4977,15 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             }
         }
     };
+    const runTurnHandler = (activityCtx: any, input: Parameters<typeof runTurnImpl>[2]) => runTurnImpl(false, activityCtx, input);
+    const runTurnV4Handler = (activityCtx: any, input: Parameters<typeof runTurnImpl>[2]) => runTurnImpl(true, activityCtx, input);
     registerHandoffActivity(runtime, "runTurn", runTurnHandler);
     // Keep the historical epoch activity for replay. 1.0.75 uses a renamed,
     // capability-tagged alias; the tag filter performs actual worker routing.
     registerHandoffActivity(runtime, "runTurn2", runTurnHandler);
+    // Session turn control (1.0.81): the V4 names run the turn-control path.
+    registerTurnControlActivity(runtime, "runTurn", runTurnV4Handler);
+    registerTurnControlActivity(runtime, "runTurn2", runTurnV4Handler);
 
     // ── abortTurn ────────────────────────────────────────────
     // Stop-turn fast-path interrupt. Routed on the session affinity key so it
@@ -5051,8 +5387,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         const trimmed = String(content).trim();
                         // Canvas actions are wire-format JSON, not prose —
                         // titling a session "canvas-action action send data"
-                        // is how one leaked into a session list.
-                        if (trimmed && !trimmed.startsWith("[canvas-action] ")) {
+                        // is how one leaked into a session list. Runtime
+                        // notices ("[SYSTEM: ...]") are not the user's words.
+                        if (trimmed && !trimmed.startsWith("[canvas-action] ") && !/^\[SYSTEM:/i.test(trimmed)) {
                             lines.push(`User: ${trimmed.slice(0, 200)}`);
                             userMessages.push(trimmed);
                         }
@@ -5130,7 +5467,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             // Use a one-shot CopilotSession to generate the title.
             // Prefer the default provider from the registry (works without GitHub token).
             const defaultProvider = sessionManager.resolveDefaultProvider();
-            const sdk = createCopilotClient({ ...(githubToken ? { gitHubToken: githubToken } : {}) }, defaultProvider?.sdkProvider);
+            const sdk = createCopilotClient({ ...(githubToken ? { gitHubToken: githubToken } : {}) }, defaultProvider?.sdkProvider, defaultProvider?.toolCatalog);
             try {
                 await sdk.start();
                 // Resolve the default model + provider from the registry
@@ -5722,12 +6059,13 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     if (catalog) {
         runtime.registerActivity("updateCmsState", async (
             activityCtx: any,
-            input: { sessionId: string; state: string; lastError?: string | null; waitReason?: string | null },
-        ): Promise<void> => {
-            activityCtx.traceInfo(`[updateCmsState] session=${input.sessionId} state=${input.state}`);
-            const updates: { state: string; lastError?: string | null; waitReason?: string | null } = {
+            input: { sessionId: string; state: string; lastError?: string | null; waitReason?: string | null; closeControls?: boolean },
+        ): Promise<{ replacedClientMessageIds: string[] } | void> => {
+            activityCtx.traceInfo(`[updateCmsState] session=${input.sessionId} state=${input.state}${input.closeControls ? " closeControls" : ""}`);
+            const updates: { state: string; lastError?: string | null; waitReason?: string | null; closeControls?: boolean } = {
                 state: input.state,
             };
+            if (input.closeControls === true) updates.closeControls = true;
             if (Object.prototype.hasOwnProperty.call(input, "lastError")) updates.lastError = input.lastError ?? null;
             if (Object.prototype.hasOwnProperty.call(input, "waitReason")) updates.waitReason = input.waitReason ?? null;
             await cmsRetryCritical(
@@ -5735,6 +6073,16 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 () => catalog.updateSession(input.sessionId, { ...updates }),
                 (msg) => activityCtx.traceInfo(msg),
             );
+            if (input.closeControls !== true) return;
+            // A give-up: the turn's result never reached the orchestration. A
+            // turn end that ran in an attempt may already have delivered
+            // converted steers; their queued messages must not run as well.
+            const replacedClientMessageIds = await cmsRetryCritical(
+                `updateCmsState turnReplaced session=${input.sessionId}`,
+                () => catalog.turnReplaced(input.sessionId),
+                (msg) => activityCtx.traceInfo(msg),
+            );
+            return { replacedClientMessageIds };
         });
 
         runtime.registerActivity("updateSessionModel", async (

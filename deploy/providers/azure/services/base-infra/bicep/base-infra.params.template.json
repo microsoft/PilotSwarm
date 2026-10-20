@@ -59,6 +59,9 @@
     "foundryAuthMode": {
       "value": "${FOUNDRY_AUTH_MODE}"
     },
+    "foundryLocation": {
+      "value": "${FOUNDRY_LOCATION}"
+    },
     "vpnGatewayEnabled": {
       "value": ${VPN_GATEWAY_ENABLED}
     },

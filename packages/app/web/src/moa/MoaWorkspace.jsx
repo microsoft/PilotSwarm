@@ -86,6 +86,11 @@ function linkSessionOutbox(parent, child, sessionId) {
         else setChildItems(targetSessionId, items);
     };
     child.setSessionOutboxItems = mirroredSet;
+    // The panel loaded its history before it held these items: a receipt in
+    // that history must still clear the parent's queued item.
+    for (const event of child.getState().history.bySessionId.get(sessionId)?.events || []) {
+        child.reconcileOutboxAgainstEvent(sessionId, event, { exact: true });
+    }
     let linked = true;
     return () => {
         if (!linked) return;
@@ -471,6 +476,8 @@ function LivePanel({ node, panels, panelKey, mobile = false, visible = true, foc
                     if (!current) { reportGone(); return; }
                     if (current.sessionId !== node.sessionId) throw new Error("Unexpected session response.");
                     child.dispatch({ type: "sessions/merged", session: current });
+                    // The viewer's steering decision, on the controller's 30 s cadence.
+                    void child.refreshSteeringFeature();
                     await child.syncSessionEvents(node.sessionId);
                 } catch (e) {
                     if (sessionUnavailable(e)) { reportGone(); return; }

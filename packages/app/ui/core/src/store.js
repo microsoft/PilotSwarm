@@ -12,7 +12,15 @@ export function createStore(reducer, initialState) {
                 return action;
             }
             state = nextState;
-            for (const listener of listeners) listener(state, action);
+            // One failing listener must not starve the rest (outbox
+            // reconciliation, renderers); its error is still reported.
+            for (const listener of listeners) {
+                try {
+                    listener(state, action);
+                } catch (error) {
+                    console.error("[store] listener failed", error);
+                }
+            }
             return action;
         },
         subscribe(listener) {

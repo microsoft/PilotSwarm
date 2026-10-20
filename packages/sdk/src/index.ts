@@ -178,7 +178,44 @@ export type {
     WorkspaceDefaultsContext,
     WorkspaceReleaseReason,
     WorkspaceReleaseRequest,
+    // Session turn control (Stop and Steer through the CMS)
+    StopTurnResult,
+    StopTurnOptions,
+    SteerTurnOptions,
+    SteerTurnResult,
+    TurnControlCaller,
+    TurnControlKind,
+    TurnControl,
+    TurnControlOutcome,
+    TurnControlRefusal,
+    TurnControlAddResult,
+    TurnStartResult,
+    TurnLookInput,
+    TurnLookRow,
+    TurnEndKind,
+    TurnEndResult,
+    TurnStartRecord,
+    LateSteer,
+    CarriedSteersCloseReason,
+    UserSteerEventData,
+    UserStopEventData,
+    ControlOutcomeEventData,
+    SteerConfirmedEventData,
+    CarriedSteersClosedEventData,
 } from "./types.js";
+export {
+    TURN_CONTROL_EVENT_TYPES,
+    TURN_CONTROL_CHANNEL,
+    TURN_CONTROL_MAX_OPEN,
+    TURN_CONTROL_LOOK_INTERVAL_MS,
+    TURN_CONTROL_OUTCOME_POLL_MS,
+    TURN_CONTROL_STOP_TIMEOUT_MS,
+    STEERING_FEATURE_KEY,
+    CARRIED_STEERS_WAKE_PROMPT,
+    acceptsTurnControl,
+    TurnControlUnavailableError,
+} from "./turn-control-contract.js";
+export { TURN_CONTROL_CAPABILITY } from "./activity-routing.js";
 export {
     IMAGE_ATTACHMENT_CONTENT_TYPES,
     ATTACHMENT_MAX_BYTES,
@@ -264,7 +301,7 @@ export {
     decodeReasoningEffortFromBaseUrl,
     encodeReasoningEffortInBaseUrl,
 } from "./model-providers.js";
-export type { ModelEntry, ModelDescriptor, ModelProviderConfig, ModelProvidersFile, ProviderType, ResolvedProvider, ReasoningEffort, ContextTier } from "./model-providers.js";
+export type { ModelEntry, ModelDescriptor, ModelProviderConfig, ModelProvidersFile, ProviderType, ResolvedProvider, ReasoningEffort, ContextTier, ToolCatalogCapability } from "./model-providers.js";
 export { composeSystemPrompt, extractPromptContent, mergePromptSections } from "./prompt-layering.js";
 export type { PromptLayeringKind } from "./prompt-layering.js";
 export {

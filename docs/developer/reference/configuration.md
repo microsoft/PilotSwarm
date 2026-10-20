@@ -657,6 +657,52 @@ catalog is checked when it loads. A `wireApi` other than `"completions"` or
 fails the load with an error that names the `provider:model`. A hot reload
 that fails this way keeps the previous catalog.
 
+### Tool Catalog Overflow (`toolCatalog`)
+
+Overflow dispatch is **off by default**. A cluster operator can opt a model
+entry into typed dispatch after validating that endpoint's protocol and schema
+support. This is independent of model routing and deployment naming:
+
+```json
+{
+  "name": "gpt-5.4",
+  "wireApi": "completions",
+  "toolCatalog": {
+    "maxDeclarations": 128,
+    "overflowStrategy": "typed-dispatch"
+  }
+}
+```
+
+Omit `toolCatalog` to disable dispatch. The checked-in example explicitly opts
+one sample model in; it does not change a deployment's private runtime catalog.
+This capability belongs on a model in the provider-type catalog, not in an
+environment flag, session prompt, or hard-coded model allowlist. Shared and
+personal instances inherit the type's model settings. Use separate catalog
+types when endpoints need different validated policies.
+
+Only `openai`, `openai-proxy`, `azure`, and `foundry-wif` Chat Completions paths
+support this strategy. Native GitHub/Anthropic paths and models resolving to Responses
+reject the opt-in at catalog load. `maxDeclarations` must be a positive safe
+integer and `overflowStrategy` must be `typed-dispatch`; invalid objects and
+unknown keys fail the catalog load. No provider-level default is inferred.
+
+The adapter checks the selected model and endpoint for each session request.
+It groups eligible function tools only when the outgoing declarations, including
+runtime-added tools, exceed the configured limit. At or below the limit there
+is no grouping or response buffering. Canonical tool names, arguments and call
+IDs are restored before ordinary permissions, hooks, telemetry and handlers.
+Strict or unsupported schemas are retained directly; if the catalog cannot
+fit safely, the request fails before transport rather than dropping tools.
+
+Grouping adds no model call or agent hop, but it does not reduce the schema's
+token footprint and streamed tool-call fragments wait until complete. Enable
+only after provider acceptance/quality validation. Model switches and cold
+resume re-resolve the policy; a missing session/model match leaves dispatch off.
+Reload/rebuild the registry after changing the catalog, using the deployment's
+existing reload or rollout path. No new database migration or runtime provider
+row rewrite is required by this field.
+
 ### GPT-6 Astra through GitHub Copilot
 
 The shared `github-copilot` type includes `gpt-6-astra`. Existing personal and

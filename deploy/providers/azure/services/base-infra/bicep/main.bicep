@@ -113,6 +113,9 @@ param foundryDeployments array = []
 ])
 param foundryAuthMode string = 'entra'
 
+@description('Optional Azure region for the Foundry account, decoupled from the stamp region. Empty keeps the account co-located with the stamp.')
+param foundryLocation string = ''
+
 // ----- VPN P2S ingress (additive, optional) ---------------------------------
 // All defaults preserve byte-equivalent param shape for non-VPN stamps.
 
@@ -549,7 +552,7 @@ module KeyVault './keyvault.bicep' = {
 module Foundry './foundry.bicep' = if (foundryEnabled) {
   name: '${resourceNamePrefix}-foundry-${dTime}'
   params: {
-    location: location
+    location: empty(foundryLocation) ? location : toLower(foundryLocation)
     accountName: foundryAccountName
     sku: foundrySku
     deployments: foundryDeployments

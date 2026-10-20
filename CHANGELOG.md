@@ -1,5 +1,92 @@
 # Changelog
 
+## 0.8.4 — 2026-10-17
+
+**Application-owned TUI diagnostic logs.** Programmatic launchers can pass
+`logFile` to `startTuiApp` to route console, stderr, warnings and native
+duroxide tracing to an application-owned path. The host creates missing parent
+directories and truncates only the selected file at startup. Explicit invalid
+paths or initialization failures reject startup without a shared-log fallback;
+omitting the option preserves the existing best-effort default. Host logging
+hooks are restored on shutdown and startup failure. See
+[Programmatic TUI Hosts](docs/developer/building/cli-apps.md#programmatic-tui-hosts).
+
+**Opt-in tool-catalog overflow dispatch.** Models using supported Chat
+Completions providers can explicitly configure `toolCatalog` to fit large
+logical tool catalogs within an endpoint's function-declaration limit. Typed
+dispatch preserves each original tool's argument schema and restores canonical
+names, arguments and call IDs before ordinary permissions, hooks and handlers.
+The capability remains off unless configured per model; unsupported or unsafe
+catalogs fail rather than silently dropping tools. See
+[Tool Catalog Overflow](docs/developer/reference/configuration.md#tool-catalog-overflow-toolcatalog)
+for provider restrictions and endpoint validation requirements.
+
+## 0.8.3 — 2026-10-14
+
+**Stop and Steer a running turn.** A turn of orchestration 1.0.81 or later
+listens for controls through the session catalog. Stop ends the turn and
+reports `stopped`, or `too_late` when the model run had already finished.
+Steer (new, behind the `sessions.steering` feature, off by default) adds
+guidance. The model receives it at its next model call; a steer that arrives
+as the turn ends runs with the next turn. Every control is a session event
+with one outcome, shown in the portal and TUI transcripts.
+
+- Management client and Web API: `steerSessionTurn`
+  (`POST /management/sessions/:id/steer`, `session:write`); `stopSessionTurn`
+  takes `requestId` and reports `too_late`; the detailed session view gains
+  `activeTurnIndex`, `turnHigh` and `acceptsTurnControl`. The Web API stamps
+  the caller from the authenticated request.
+- MCP: new `steer_session_turn` tool; `stop_turn` takes `request_id` and sets
+  `stopped` from the outcome.
+- Portal: Steer button beside Stop, outcome badges, notices with Retry, and
+  stable `data-testid` selectors. TUI: `Ctrl+T` steers from the prompt pane.
+- Sessions on orchestration 1.0.80 and older keep the earlier Stop.
+- Agents: `message_agent` takes `deliver: "now"` to steer a sub-agent's
+  running turn (queued for its next turn when it cannot be steered), and the
+  new `stop_agent_turn` stops a sub-agent's current turn without ending it.
+  The child's transcript names the parent agent on those items.
+- A sent message no longer stays shown as queued. The portal and TUI clear a
+  queued item from its receipt also when the receipt was already loaded, came
+  in a MoA panel's history or arrived during a reconnect gap; a queued item
+  still waiting after 10 s gets one exact re-read; a resend the server
+  suppressed as a duplicate re-checks; one failing store listener no longer
+  stops the others. The retry of a failed turn keeps the prompt's client
+  message ids, sender and images (orchestration 1.0.81). A second submit during an image upload
+  no longer sends the message twice, and the portal's Send button shows the
+  upload as busy ("Uploading…"; a spinner on phones).
+- **Steer now and Cancel on queued messages.** Each queued message shows
+  **Steer now** and **Cancel** in the portal (chat view, Master of Agents and
+  phones); in the TUI, select it with `↑`, then `Ctrl+T` steers now and `d`
+  cancels. Steer now sends the message as a steer that replaces it
+  (`steerSessionTurn` `replacesClientMessageId`, MCP
+  `replaces_client_message_id`, refusal `already_received`): when the model
+  reads it, the queued message is dropped; otherwise it stays queued and runs
+  as usual, so its text runs once. Migration 0083: the turn's prompt is
+  recorded in the turn-start transaction, and the 0082 two-argument
+  `cms_turn_start` is dropped (stop 0082 workers before migrating). A steer
+  reads **Delivered** as soon as the model has read it, also if the turn is
+  then stopped.
+
+**Azure AI Foundry with no key.** New provider type `foundry-wif` for
+Foundry's OpenAI-compatible `/openai/v1` endpoint. The worker gets an Entra
+token through `DefaultAzureCredential`; nothing is stored. Its identity needs
+the **Cognitive Services OpenAI User** role on the Foundry account. Models
+under it accept `wireApi`. See the
+[configuration reference](docs/developer/reference/configuration.md).
+
+**Canvas git checks on Windows.** A workspace on a `subst` drive no longer
+fails the canvas git checks. Git for Windows reports the backing path while
+Node keeps the drive letter; the check now compares the folders themselves.
+
+**Azure deployment.**
+
+- Worker and portal images are built from the checked-in source, not
+  installed from npm.
+- New optional `FOUNDRY_LOCATION`: put the Foundry account in another Azure
+  region when the stamp's region lacks the model deployments.
+- New optional `NPM_REGISTRY`: the package registry used by image builds.
+- Local deployment caches stay out of image builds.
+
 ## 0.8.2 — 2026-10-04
 
 **Upgrade note: roll every worker and portal together.** This release moves

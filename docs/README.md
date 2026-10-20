@@ -68,3 +68,4 @@ Building **on** PilotSwarm, deploying it, and contributing **to** it.
 [bugreports](./bugreports/) · [_archive](./_archive/) — retired point-in-time docs.
 
 - [Session workspaces](./proposals/session-workspaces.md) — proposed: an agent works in a git checkout on a separate repo pod, as on a dev box, across worker moves, with repo-native agents and a test plan.
+- [Session forking and merge-back](./proposals/session-forking.md) — approved: anyone who can watch a session forks it into their own copy with the same model context; sub-agents are optional; merge-back (P1) proposes results to the source owner.
