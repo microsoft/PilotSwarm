@@ -280,6 +280,16 @@ full after compaction does an item not fit; the stash then records a
 does not mark those ids as seen, so a resend runs. 1.0.81 and older dropped
 such items with an info line.
 
+An item larger than a bucket is stored in a bucket of its own, but the runtime
+fails the whole orchestration on a KV value above duroxide's
+`MAX_KV_VALUE_BYTES` (64 KiB), and the Web API accepts prompts up to 2 MB. In
+1.0.81 and older one prompt or answer over 64 KiB therefore failed the session
+for good. In 1.0.82 `appendToFifo` does not store an item whose bucket value
+would exceed `MAX_FIFO_ITEM_BYTES` (60 KiB, in UTF-8 bytes); it is reported in
+the same `session.fifo_overflow` event, which names each lost item's reason
+(`too-large` or `full`), with an error trace. The session keeps running, and a
+timer that the item's arrival released is armed again because no turn ran.
+
 ### Prompt timer-interrupt augmentation
 
 When a user prompt arrives while `activeTimer` is set, drain captures the

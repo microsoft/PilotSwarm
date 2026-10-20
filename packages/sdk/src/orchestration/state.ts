@@ -418,6 +418,15 @@ export const REPEAT_SUMMARIZE_DELAY = 300_000;
 
 export const FIFO_BUCKET_COUNT = 20;
 export const MAX_BUCKET_BYTES = 14 * 1024;
+/**
+ * 1.0.82 (issue 192, defect E): the largest item the FIFO stores, in UTF-8
+ * bytes of its bucket value. The runtime fails the whole orchestration on a
+ * KV value above duroxide's MAX_KV_VALUE_BYTES (64 KiB), and an item larger
+ * than MAX_BUCKET_BYTES is stored in a bucket of its own. An item above this
+ * cap is not stored; it is reported like an overflow (R8). Kept below the
+ * runtime limit with room to spare; a test checks the two against each other.
+ */
+export const MAX_FIFO_ITEM_BYTES = 60 * 1024;
 export const MAX_DRAIN_PER_TURN = 50;
 export const MAX_PREDISPATCH_SWEEP = 50;
 export const MAX_ITERATIONS_PER_EXECUTION = 10;

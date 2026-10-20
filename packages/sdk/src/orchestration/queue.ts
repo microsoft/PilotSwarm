@@ -27,6 +27,7 @@ import {
     childUpdateBatchMs,
     FIFO_BUCKET_COUNT,
     MAX_BUCKET_BYTES,
+    MAX_FIFO_ITEM_BYTES,
     MAX_DRAIN_PER_TURN,
     MAX_PREDISPATCH_SWEEP,
     NON_BLOCKING_TIMER_MS,
@@ -64,6 +65,14 @@ function writeFifoBucket(ctx: any, index: number, items: any[]): void {
 
 function fitsInBucket(bucket: any[]): boolean {
     return JSON.stringify(bucket).length <= MAX_BUCKET_BYTES;
+}
+
+/**
+ * 1.0.82 (defect E): an item too large to store even in a bucket of its own.
+ * Measured in UTF-8 bytes, as the runtime measures KV values.
+ */
+export function isFifoItemTooLarge(item: any): boolean {
+    return Buffer.byteLength(JSON.stringify([item]), "utf8") > MAX_FIFO_ITEM_BYTES;
 }
 
 function lastNonEmptyFifoBucket(ctx: any): number {
@@ -105,16 +114,23 @@ function compactFifo(runtime: DurableSessionRuntime): void {
 }
 
 /**
- * Append items in order. Returns the items that did not fit: empty unless all
- * FIFO_BUCKET_COUNT buckets are full even after compaction (1.0.82). An item
- * larger than a bucket still gets a bucket of its own, as before.
+ * Append items in order. Returns the items that were not stored, in order:
+ * empty unless an item is too large for any bucket (defect E: the runtime
+ * would fail the orchestration on the write) or all FIFO_BUCKET_COUNT buckets
+ * are full even after compaction (1.0.82). An item larger than a bucket but
+ * within MAX_FIFO_ITEM_BYTES still gets a bucket of its own, as before.
  */
 export function appendToFifo(runtime: DurableSessionRuntime, newItems: any[]): any[] {
     const { ctx } = runtime;
     let writeBucketIdx = lastNonEmptyFifoBucket(ctx);
     let compacted = false;
+    const notStored: any[] = [];
     for (let n = 0; n < newItems.length; n++) {
         const item = newItems[n];
+        if (isFifoItemTooLarge(item)) {
+            notStored.push(item);
+            continue;
+        }
         const bucket = readFifoBucket(ctx, writeBucketIdx);
         bucket.push(item);
         if (bucket.length === 1 || fitsInBucket(bucket)) {
@@ -133,9 +149,9 @@ export function appendToFifo(runtime: DurableSessionRuntime, newItems: any[]): a
             n--;
             continue;
         }
-        return newItems.slice(n);
+        return [...notStored, ...newItems.slice(n)];
     }
-    return [];
+    return notStored;
 }
 
 function popFifoItem(runtime: DurableSessionRuntime): any | null {
@@ -256,7 +272,13 @@ function* appendPromptStashToFifo(runtime: DurableSessionRuntime, stash: any[]):
     if (lost.size === 0) return;
     const lostItems = items.filter((item) => lost.has(item));
     const lostIds = lostItems.flatMap((item) => validClientMessageIds(item?.clientMessageIds));
-    const message = `[fifo] FIFO full: ${lostItems.length} item(s) not stored` +
+    const reasons = lostItems.map((item) => (isFifoItemTooLarge(item) ? "too-large" : "full"));
+    const tooLarge = reasons.filter((reason) => reason === "too-large").length;
+    const message = `[fifo] ${lostItems.length} item(s) not stored: ` +
+        [
+            tooLarge > 0 ? `${tooLarge} over the ${MAX_FIFO_ITEM_BYTES}-byte item limit` : "",
+            tooLarge < lostItems.length ? `${lostItems.length - tooLarge} because the FIFO is full` : "",
+        ].filter(Boolean).join(", ") +
         (lostIds.length > 0 ? ` (clientMessageIds=${lostIds.join(",")})` : "");
     // R8: an item that is really lost is an error, not a warning.
     if (typeof ctx.traceError === "function") ctx.traceError(message);
@@ -267,6 +289,8 @@ function* appendPromptStashToFifo(runtime: DurableSessionRuntime, stash: any[]):
             lostCount: lostItems.length,
             clientMessageIds: lostIds,
             kinds: lostItems.map((item) => item?.kind ?? "unknown"),
+            reasons,
+            maxItemBytes: MAX_FIFO_ITEM_BYTES,
         },
     }]);
 }
@@ -726,6 +750,16 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 && (state.activeTimer?.type === "input-grace" || state.activeTimer?.type === "idle");
             if (interruptsInputHold) {
                 ctx.traceInfo(`[drain] answer interrupted ${state.activeTimer!.type} timer`);
+                // 1.0.82: an answer that runs no turn (too large to store)
+                // gets its hold timer back after decide, as a prompt does.
+                if (!runtime.releasedForQueuedWork) {
+                    runtime.releasedForQueuedWork = {
+                        timer: { ...state.activeTimer! },
+                        priorInterruptedWait: state.interruptedWaitTimer,
+                        priorInterruptedCron: state.interruptedCronTimer,
+                        waitingForAgentIds: state.waitingForAgentIds,
+                    };
+                }
                 state.activeTimer = null;
             }
             stash.push({ kind: "answer", expectedQuestion: msg.expectedQuestion !== undefined ? msg.expectedQuestion : state.pendingInputQuestion ? { question: state.pendingInputQuestion.question, iteration: state.pendingInputQuestion.iteration ?? state.iteration } : null, answer: msg.answer, wasFreeform: msg.wasFreeform, ...(msg.sender && typeof msg.sender === "object" ? { sender: msg.sender } : {}) });
