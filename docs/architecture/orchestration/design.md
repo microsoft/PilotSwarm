@@ -600,14 +600,20 @@ updates the local `subAgents` entry and the agent's `getSessionStatus`), then
 In 1.0.82 an update that arrives while user work waits to run (a prompt or
 answer collected in the same drain pass, or queued in the FIFO, and also in the
 pre-dispatch sweep) is applied from its own fields at once, but its status
-lookup is put off (`state.deferredChildProbes`, one entry per child, carried
-across continue-as-new). The listing of children that every turn already takes
-(`refreshTrackedSubAgents`) settles them with the same rules as a lookup, before
-the turn result is handled. If the user work goes away in the same pass
-(cancelled or refused), the lookups run at the end of the pass. A live agent
-wait or a pending shutdown still looks up at once. In the issue 192 stress run,
-10 updates behind a collected prompt cost 10 lookup activities, 4.3 s, before
-its turn.
+lookup is put off (`state.deferredChildProbes`, one entry per child, latest
+update type, carried across continue-as-new):
+
+| Situation | What happens |
+|---|---|
+| Until the lookup is settled | The child keeps the status its update gives: `completed`, `failed` or `cancelled` from those types, and `waiting` for a `wait` update, so a digest or a `wait_for_agents` never reads a stale `completed`. |
+| The next turn | The listing of children every turn already takes (`refreshTrackedSubAgents`) settles the lookups with the same rules as a lookup, before the turn result is handled. No extra activity. |
+| The listing fails | The lookups are done one by one after that turn. |
+| The user work goes away (cancelled in the pass or at dispatch, or refused) | The lookups are done at once, before drain can wait for anything. |
+| An agent wait is live, a `wait_for_agents` action is queued, or a shutdown is pending | The update is looked up at once, as before. |
+
+In the issue 192 stress run, 10 updates behind a collected prompt cost 10 lookup
+activities, 4.3 s, before its turn. Updates dequeued before the prompt in the
+same pass are still looked up at once, as in 1.0.81.
 
 `pendingChildDigest` batches updates for 30s before dispatching them as a
 single system turn. This prevents N children producing N parent turns.

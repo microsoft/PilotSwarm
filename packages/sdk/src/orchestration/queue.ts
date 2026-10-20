@@ -4,6 +4,7 @@ import { messageSenderKey } from "../message-sender.js";
 import { CARRIED_STEERS_WAKE_PROMPT } from "../turn-control-contract.js";
 import {
     applyChildUpdate,
+    childStatusNeededNow,
     deferChildStatusLookup,
     forgetDeferredChildStatusLookup,
     lookUpDeferredChildStatuses,
@@ -672,6 +673,15 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
     for (let i = 0; i < MAX_DRAIN_PER_TURN; i++) {
         let msg: any = null;
 
+        // 1.0.82 (issue 192 review F4): lookups put off behind user work that
+        // is gone (cancelled in this pass or at dispatch, or refused) are
+        // done before this pass can wait for anything, so a digest or an
+        // agent wait sees the real statuses at once.
+        if ((state.deferredChildProbes?.length ?? 0) > 0
+            && !stash.some(isInteractiveFifoItem) && !fifoHasInteractiveItems(runtime)) {
+            yield* lookUpDeferredChildStatuses(runtime);
+        }
+
         if (state.legacyPendingMessage !== undefined) {
             msg = state.legacyPendingMessage;
             state.legacyPendingMessage = undefined;
@@ -859,9 +869,9 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 // this pass, or queued in the FIFO, is recorded at once and its
                 // status lookup is settled after that work's turn: one lookup
                 // activity per update delayed the turn by seconds in a busy
-                // coordinator. A live agent wait or a shutdown still needs the
-                // lookup now.
-                const lookupStatus = Boolean(state.waitingForAgentIds) || Boolean(state.pendingShutdown)
+                // coordinator. A live or queued agent wait, or a shutdown,
+                // still needs the lookup now.
+                const lookupStatus = childStatusNeededNow(runtime)
                     || !(stash.some(isInteractiveFifoItem) || fifoHasInteractiveItems(runtime));
                 const tracked = yield* applyChildUpdate(runtime, childUpdate, { lookupStatus });
                 if (tracked && !lookupStatus) {
@@ -1207,8 +1217,8 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
                 // 1.0.82 (issue 192): this sweep runs right before a prompt is
                 // dispatched, so its updates are recorded at once and their
                 // status lookups are settled after the prompt's turn, unless
-                // a live agent wait or a shutdown needs them now.
-                const lookupStatus = Boolean(state.waitingForAgentIds) || Boolean(state.pendingShutdown);
+                // a live or queued agent wait, or a shutdown, needs them now.
+                const lookupStatus = childStatusNeededNow(runtime);
                 const tracked = yield* applyChildUpdate(runtime, childUpdate, { lookupStatus });
                 if (tracked && !lookupStatus) {
                     deferChildStatusLookup(runtime, childUpdate.sessionId, childUpdate.updateType, wasExpectingReport);

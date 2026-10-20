@@ -16,6 +16,7 @@ import {
     handleSubAgentAction,
     isSubAgentTerminalStatus,
     maybeResolveAgentWaitCompletion,
+    lookUpDeferredChildStatuses,
     refreshTrackedSubAgents,
     settleDeferredChildStatusLookups,
 } from "./agents.js";
@@ -745,8 +746,10 @@ export function* processPrompt(
     const childListing = yield* refreshTrackedSubAgents(runtime);
     // 1.0.82 (issue 192): child status lookups put off behind the user work
     // this turn ran are settled from the same listing, before the result is
-    // handled (wait_for_agents reads these statuses).
-    settleDeferredChildStatusLookups(runtime, childListing);
+    // handled (wait_for_agents reads these statuses). If the listing failed,
+    // they are looked up one by one now, after the turn (review F1).
+    if (childListing) settleDeferredChildStatusLookups(runtime, childListing);
+    else yield* lookUpDeferredChildStatuses(runtime, { resolveAgentWait: false });
 
     if ("queuedActions" in result && Array.isArray((result as any).queuedActions) && (result as any).queuedActions.length > 0) {
         state.pendingToolActions.push(...(result as any).queuedActions);

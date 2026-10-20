@@ -292,7 +292,14 @@ export function* applyChildUpdate(
         agent.status = "failed";
     }
 
-    if (options.lookupStatus === false) return true;
+    if (options.lookupStatus === false) {
+        // Until the lookup is settled, say what the update itself says: a
+        // child that sends "wait" is waiting, even if its last turn left it
+        // "completed". A stale terminal status here would be read as done by
+        // wait_for_agents and shown in a digest (issue 192 review F2, F3).
+        if (update.updateType === "wait") agent.status = "waiting";
+        return true;
+    }
 
     try {
         const rawStatus: string = yield runtime.manager.getSessionStatus(agent.sessionId);
@@ -348,7 +355,8 @@ export function markDigestReadyIfAllAgentsSettled(runtime: DurableSessionRuntime
 /**
  * 1.0.82 (issue 192): settle the status lookups put off behind user work from
  * a listing of the children (the one a turn takes anyway), with the same rules
- * as a lookup. A child missing from the listing keeps what its update said.
+ * as a lookup. A child missing from the listing was dropped by the refresh
+ * that took it, so there is nothing left to settle for it.
  * Returns true when one of them was a first report the parent was expecting.
  */
 export function settleDeferredChildStatusLookups(
@@ -376,7 +384,10 @@ export function settleDeferredChildStatusLookups(
  * they waited behind is gone), do the lookups put off behind it now, one per
  * child, as they would have been done when the updates arrived.
  */
-export function* lookUpDeferredChildStatuses(runtime: DurableSessionRuntime): Generator<any, void, any> {
+export function* lookUpDeferredChildStatuses(
+    runtime: DurableSessionRuntime,
+    options: { resolveAgentWait?: boolean } = {},
+): Generator<any, void, any> {
     const { state } = runtime;
     if (!state.deferredChildProbes?.length) return;
     const deferred = state.deferredChildProbes;
@@ -392,7 +403,20 @@ export function* lookUpDeferredChildStatuses(runtime: DurableSessionRuntime): Ge
         } catch {}
     }
     if (expectingReport) markDigestReadyIfAllAgentsSettled(runtime);
-    if (state.waitingForAgentIds) yield* maybeResolveAgentWaitCompletion(runtime);
+    if (options.resolveAgentWait !== false && state.waitingForAgentIds) yield* maybeResolveAgentWaitCompletion(runtime);
+}
+
+/**
+ * 1.0.82 (issue 192): a child update needs its status looked up at once, not
+ * put off, while something reads the statuses before the next turn could
+ * settle them: a live agent wait, a queued wait_for_agents action (decide runs
+ * queued actions before queued prompts), or a pending shutdown.
+ */
+export function childStatusNeededNow(runtime: DurableSessionRuntime): boolean {
+    const { state } = runtime;
+    return Boolean(state.waitingForAgentIds)
+        || Boolean(state.pendingShutdown)
+        || Boolean(state.pendingToolActions?.some((action: any) => action?.type === "wait_for_agents"));
 }
 
 /** One child in a listing of a parent's children (manager.listChildSessions). */
