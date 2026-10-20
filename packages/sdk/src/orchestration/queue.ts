@@ -4,9 +4,12 @@ import { messageSenderKey } from "../message-sender.js";
 import { CARRIED_STEERS_WAKE_PROMPT } from "../turn-control-contract.js";
 import {
     applyChildUpdate,
+    deferChildStatusLookup,
+    forgetDeferredChildStatusLookup,
+    lookUpDeferredChildStatuses,
+    markDigestReadyIfAllAgentsSettled,
     maybeResolveAgentWaitCompletion,
     parseChildUpdate,
-    isAgentWaitSettledStatus,
 } from "./agents.js";
 import {
     bufferChildUpdate,
@@ -852,7 +855,20 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 const wasExpectingReport = state.subAgents.find(
                     (agent) => agent.sessionId === childUpdate.sessionId,
                 )?.expectsReport === true;
-                const tracked = yield* applyChildUpdate(runtime, childUpdate);
+                // 1.0.82 (issue 192): an update behind user work collected in
+                // this pass, or queued in the FIFO, is recorded at once and its
+                // status lookup is settled after that work's turn: one lookup
+                // activity per update delayed the turn by seconds in a busy
+                // coordinator. A live agent wait or a shutdown still needs the
+                // lookup now.
+                const lookupStatus = Boolean(state.waitingForAgentIds) || Boolean(state.pendingShutdown)
+                    || !(stash.some(isInteractiveFifoItem) || fifoHasInteractiveItems(runtime));
+                const tracked = yield* applyChildUpdate(runtime, childUpdate, { lookupStatus });
+                if (tracked && !lookupStatus) {
+                    deferChildStatusLookup(runtime, childUpdate.sessionId, childUpdate.updateType, wasExpectingReport);
+                } else if (tracked) {
+                    forgetDeferredChildStatusLookup(runtime, childUpdate.sessionId);
+                }
                 if (tracked && !state.pendingShutdown) {
                     const childObservedAt: number = yield ctx.utcNow();
                     bufferChildUpdate(runtime, childUpdate, childObservedAt);
@@ -1115,6 +1131,12 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
         const lostItems: any[] = yield* appendPromptStashToFifo(runtime, stash);
         giveBackCarriedWork(runtime, carriedByItem, lostItems, updateChronology);
     }
+    // 1.0.82 (issue 192): lookups put off behind user work are settled after
+    // its turn. When no such work is left (it was cancelled or refused), no
+    // turn is coming to settle them: do them now.
+    if (state.deferredChildProbes.length > 0 && !fifoHasInteractiveItems(runtime)) {
+        yield* lookUpDeferredChildStatuses(runtime);
+    }
 }
 
 // ─── Pre-dispatch sweep: grab any pending cancel tombstone ──
@@ -1182,7 +1204,17 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
                 const wasExpectingReport = state.subAgents.find(
                     (agent) => agent.sessionId === childUpdate.sessionId,
                 )?.expectsReport === true;
-                const tracked = yield* applyChildUpdate(runtime, childUpdate);
+                // 1.0.82 (issue 192): this sweep runs right before a prompt is
+                // dispatched, so its updates are recorded at once and their
+                // status lookups are settled after the prompt's turn, unless
+                // a live agent wait or a shutdown needs them now.
+                const lookupStatus = Boolean(state.waitingForAgentIds) || Boolean(state.pendingShutdown);
+                const tracked = yield* applyChildUpdate(runtime, childUpdate, { lookupStatus });
+                if (tracked && !lookupStatus) {
+                    deferChildStatusLookup(runtime, childUpdate.sessionId, childUpdate.updateType, wasExpectingReport);
+                } else if (tracked) {
+                    forgetDeferredChildStatusLookup(runtime, childUpdate.sessionId);
+                }
                 if (tracked && !state.pendingShutdown) {
                     const childObservedAt: number = yield ctx.utcNow();
                     bufferChildUpdate(runtime, childUpdate, childObservedAt);
@@ -1503,21 +1535,6 @@ import {
     clearPendingChildDigest,
 } from "./lifecycle.js";
 
-/**
- * All-quiet fast path: a freshly buffered child update revealed that EVERY
- * tracked sub-agent is settled (terminal, idle, or blocked on input) — nothing
- * will ever act again unprompted. Deliver the digest immediately instead of
- * waiting out the remainder of the batch window so the parent looks at its
- * children NOW rather than after a human pokes it.
- */
-function markDigestReadyIfAllAgentsSettled(runtime: DurableSessionRuntime): void {
-    const { state } = runtime;
-    if (state.waitingForAgentIds) return; // wait resolution handles this case
-    if (!state.pendingChildDigest || state.pendingChildDigest.updates.length === 0) return;
-    if (state.subAgents.length === 0) return;
-    if (!state.subAgents.every((agent) => isAgentWaitSettledStatus(agent.status))) return;
-    state.pendingChildDigest.ready = true;
-}
 
 
 function* processPendingChildDigest(runtime: DurableSessionRuntime): Generator<any, void, any> {

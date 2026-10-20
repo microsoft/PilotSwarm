@@ -218,9 +218,57 @@ export function buildSubAgentSystemMessage(options: {
 
 // ─── Child agent tracking ───────────────────────────────────
 
+/**
+ * Refine a tracked sub-agent from a read of the child session's live status:
+ * a status lookup, or the child's entry in a listing of the children.
+ * `updateType` is the type of the child update that asked for the read.
+ */
+export function applyChildStatusRead(
+    agent: SubAgentEntry,
+    parsed: { status?: string; result?: unknown; resultSource?: string },
+    updateType: string,
+): void {
+    if (parsed.status === "failed") {
+        agent.status = "failed";
+    } else if (parsed.status === "completed") {
+        agent.status = "completed";
+    } else if (parsed.status === "cancelled") {
+        agent.status = "cancelled";
+    } else if (parsed.status === "waiting" && updateType !== "completed") {
+        // A "completed" update means the child turn ended with a final
+        // answer; a concurrent "waiting" probe at that moment is almost
+        // always the auto-resumed remainder of a wait timer the parent's
+        // own message interrupted. Downgrading on it deadlocks
+        // wait_for_agents: the idle child may never speak again, and the
+        // fallback poll cannot re-derive "completed" from an idle probe.
+        // Deliberate continuation waits arrive as updateType "wait" and
+        // still downgrade here.
+        agent.status = "waiting";
+    } else if (parsed.status === "idle" && !isSubAgentTerminalStatus(agent.status) && updateType !== "completed") {
+        // Quiescent child: answered and parked. Not terminal (it can be
+        // re-tasked), but it satisfies a parent wait.
+        agent.status = "idle";
+    } else if (parsed.status === "input_required" && !isSubAgentTerminalStatus(agent.status)) {
+        // Blocked asking for input — it will never act unprompted; the
+        // parent must be told so it can answer or re-task.
+        agent.status = "input_required";
+    }
+    agent.result = getChildResultFromStatus(parsed as { result?: unknown; resultSource?: string }, agent.result)?.slice(0, 2000);
+}
+
+/**
+ * Apply a child update to the tracked sub-agent. Returns false for an
+ * untracked child.
+ *
+ * With `lookupStatus: false` (1.0.82, issue 192) the update is applied from
+ * its own fields and the live status lookup is left to the caller to settle
+ * later (state.deferredChildProbes), so queued user work is not delayed by
+ * one lookup activity per update.
+ */
 export function* applyChildUpdate(
     runtime: DurableSessionRuntime,
     update: { sessionId: string; updateType: string; content: string },
+    options: { lookupStatus?: boolean } = {},
 ): Generator<any, boolean, any> {
     runtime.ctx.traceInfo(`[orch] child update from=${update.sessionId} type=${update.updateType}`);
     const agent = runtime.state.subAgents.find(a => a.sessionId === update.sessionId);
@@ -244,60 +292,132 @@ export function* applyChildUpdate(
         agent.status = "failed";
     }
 
+    if (options.lookupStatus === false) return true;
+
     try {
         const rawStatus: string = yield runtime.manager.getSessionStatus(agent.sessionId);
-        const parsed = JSON.parse(rawStatus);
-        if (parsed.status === "failed") {
-            agent.status = "failed";
-        } else if (parsed.status === "completed") {
-            agent.status = "completed";
-        } else if (parsed.status === "cancelled") {
-            agent.status = "cancelled";
-        } else if (parsed.status === "waiting" && update.updateType !== "completed") {
-            // A "completed" update means the child turn ended with a final
-            // answer; a concurrent "waiting" probe at that moment is almost
-            // always the auto-resumed remainder of a wait timer the parent's
-            // own message interrupted. Downgrading on it deadlocks
-            // wait_for_agents: the idle child may never speak again, and the
-            // fallback poll cannot re-derive "completed" from an idle probe.
-            // Deliberate continuation waits arrive as updateType "wait" and
-            // still downgrade here.
-            agent.status = "waiting";
-        } else if (parsed.status === "idle" && !isSubAgentTerminalStatus(agent.status) && update.updateType !== "completed") {
-            // Quiescent child: answered and parked. Not terminal (it can be
-            // re-tasked), but it satisfies a parent wait.
-            agent.status = "idle";
-        } else if (parsed.status === "input_required" && !isSubAgentTerminalStatus(agent.status)) {
-            // Blocked asking for input — it will never act unprompted; the
-            // parent must be told so it can answer or re-task.
-            agent.status = "input_required";
-        }
-        agent.result = getChildResultFromStatus(parsed, agent.result)?.slice(0, 2000);
+        applyChildStatusRead(agent, JSON.parse(rawStatus), update.updateType);
     } catch {}
 
     return true;
 }
 
+/**
+ * 1.0.82 (issue 192): record a child status lookup put off behind queued user
+ * work. One entry per child: the latest update type wins, and a first report
+ * the parent was expecting stays marked.
+ */
+export function deferChildStatusLookup(
+    runtime: DurableSessionRuntime,
+    sessionId: string,
+    updateType: string,
+    expectingReport: boolean,
+): void {
+    const { state } = runtime;
+    const prior = state.deferredChildProbes.find((entry) => entry.sessionId === sessionId);
+    state.deferredChildProbes = [
+        ...state.deferredChildProbes.filter((entry) => entry.sessionId !== sessionId),
+        { sessionId, updateType, ...(expectingReport || prior?.expectingReport ? { expectingReport: true } : {}) },
+    ];
+}
+
+/** A lookup done at once supersedes one put off for the same child. */
+export function forgetDeferredChildStatusLookup(runtime: DurableSessionRuntime, sessionId: string): void {
+    if (runtime.state.deferredChildProbes.some((entry) => entry.sessionId === sessionId)) {
+        runtime.state.deferredChildProbes = runtime.state.deferredChildProbes.filter((entry) => entry.sessionId !== sessionId);
+    }
+}
+
+/**
+ * All-quiet fast path: a freshly buffered child update revealed that EVERY
+ * tracked sub-agent is settled (terminal, idle, or blocked on input) — nothing
+ * will ever act again unprompted. Deliver the digest immediately instead of
+ * waiting out the remainder of the batch window so the parent looks at its
+ * children NOW rather than after a human pokes it.
+ */
+export function markDigestReadyIfAllAgentsSettled(runtime: DurableSessionRuntime): void {
+    const { state } = runtime;
+    if (state.waitingForAgentIds) return; // wait resolution handles this case
+    if (!state.pendingChildDigest || state.pendingChildDigest.updates.length === 0) return;
+    if (state.subAgents.length === 0) return;
+    if (!state.subAgents.every((agent) => isAgentWaitSettledStatus(agent.status))) return;
+    state.pendingChildDigest.ready = true;
+}
+
+/**
+ * 1.0.82 (issue 192): settle the status lookups put off behind user work from
+ * a listing of the children (the one a turn takes anyway), with the same rules
+ * as a lookup. A child missing from the listing keeps what its update said.
+ * Returns true when one of them was a first report the parent was expecting.
+ */
+export function settleDeferredChildStatusLookups(
+    runtime: DurableSessionRuntime,
+    listing: Array<{ sessionId: string; status?: string; result?: unknown; resultSource?: string }> | null,
+): boolean {
+    const { state } = runtime;
+    if (state.deferredChildProbes.length === 0) return false;
+    const deferred = state.deferredChildProbes;
+    state.deferredChildProbes = [];
+    let expectingReport = false;
+    for (const entry of deferred) {
+        if (entry.expectingReport) expectingReport = true;
+        const agent = state.subAgents.find((candidate) => candidate.sessionId === entry.sessionId);
+        const read = listing?.find((child) => child.sessionId === entry.sessionId);
+        if (agent && read) applyChildStatusRead(agent, read, entry.updateType);
+    }
+    runtime.ctx.traceInfo(`[orch] settled ${deferred.length} child status lookup(s) put off behind user work`);
+    if (expectingReport) markDigestReadyIfAllAgentsSettled(runtime);
+    return expectingReport;
+}
+
+/**
+ * 1.0.82 (issue 192): when no turn is coming to settle them (the user work
+ * they waited behind is gone), do the lookups put off behind it now, one per
+ * child, as they would have been done when the updates arrived.
+ */
+export function* lookUpDeferredChildStatuses(runtime: DurableSessionRuntime): Generator<any, void, any> {
+    const { state } = runtime;
+    if (state.deferredChildProbes.length === 0) return;
+    const deferred = state.deferredChildProbes;
+    state.deferredChildProbes = [];
+    let expectingReport = false;
+    for (const entry of deferred) {
+        if (entry.expectingReport) expectingReport = true;
+        const agent = state.subAgents.find((candidate) => candidate.sessionId === entry.sessionId);
+        if (!agent) continue;
+        try {
+            const rawStatus: string = yield runtime.manager.getSessionStatus(agent.sessionId);
+            applyChildStatusRead(agent, JSON.parse(rawStatus), entry.updateType);
+        } catch {}
+    }
+    if (expectingReport) markDigestReadyIfAllAgentsSettled(runtime);
+    if (state.waitingForAgentIds) yield* maybeResolveAgentWaitCompletion(runtime);
+}
+
+/** One child in a listing of a parent's children (manager.listChildSessions). */
+export interface ChildListingEntry {
+    orchId: string;
+    sessionId: string;
+    title?: string;
+    status?: string;
+    iterations?: number;
+    parentSessionId?: string;
+    isSystem?: boolean;
+    agentId?: string;
+    result?: string;
+    resultSource?: string;
+    error?: string;
+}
+
+/** Refresh the tracked sub-agents from a listing of the children; returns the listing, or null when it failed. */
 export function* refreshTrackedSubAgents(
     runtime: DurableSessionRuntime,
     options: { preserveTerminalTaskStatus?: boolean } = {},
-): Generator<any, void, any> {
+): Generator<any, ChildListingEntry[] | null, any> {
     const preserveTerminalTaskStatus = options.preserveTerminalTaskStatus !== false;
     try {
         const rawChildren: string = yield runtime.manager.listChildSessions(runtime.input.sessionId);
-        const directChildren = JSON.parse(rawChildren) as Array<{
-            orchId: string;
-            sessionId: string;
-            title?: string;
-            status?: string;
-            iterations?: number;
-            parentSessionId?: string;
-            isSystem?: boolean;
-            agentId?: string;
-            result?: string;
-            resultSource?: string;
-            error?: string;
-        }>;
+        const directChildren = JSON.parse(rawChildren) as ChildListingEntry[];
 
         runtime.state.subAgents = directChildren
             .filter(child => !child.isSystem)
@@ -333,8 +453,10 @@ export function* refreshTrackedSubAgents(
                     contract,
                 } satisfies SubAgentEntry;
             });
+        return directChildren;
     } catch (err: any) {
         runtime.ctx.traceInfo(`[orch] refreshTrackedSubAgents failed (non-fatal): ${err.message ?? err}`);
+        return null;
     }
 }
 

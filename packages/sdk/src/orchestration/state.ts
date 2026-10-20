@@ -34,6 +34,7 @@ export interface ActiveTimer {
 export type ShutdownMode = NonNullable<OrchestrationInput["pendingShutdown"]>["mode"];
 export type PendingShutdownState = NonNullable<OrchestrationInput["pendingShutdown"]>;
 export type PendingChildDigest = NonNullable<OrchestrationInput["pendingChildDigest"]>;
+export type DeferredChildProbe = NonNullable<OrchestrationInput["deferredChildProbes"]>[number];
 export type PendingInputQuestion = NonNullable<OrchestrationInput["pendingInputQuestion"]>;
 export type CronSchedule = NonNullable<OrchestrationInput["cronSchedule"]>;
 export type CronAtSchedule = NonNullable<OrchestrationInput["cronAtSchedule"]>;
@@ -179,6 +180,8 @@ export interface DurableSessionState {
     /** Test only: the retry schedule in milliseconds, replacing WORKSPACE_RETRY_SCHEDULE_SECONDS. */
     workspaceRetryScheduleMs?: number[];
     pendingChildDigest: PendingChildDigest | null;
+    /** 1.0.82: child status lookups put off behind queued user work (see OrchestrationInput). */
+    deferredChildProbes: DeferredChildProbe[];
     pendingShutdown: PendingShutdownState | null;
 
     lastResponseVersion: number;
@@ -562,6 +565,11 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
             ? [...input.workspaceRetryScheduleMs]
             : undefined,
         pendingChildDigest: clonePendingChildDigest(input.pendingChildDigest),
+        deferredChildProbes: Array.isArray(input.deferredChildProbes)
+            ? input.deferredChildProbes
+                .filter((entry) => entry && typeof entry.sessionId === "string" && typeof entry.updateType === "string")
+                .map((entry) => ({ ...entry }))
+            : [],
         pendingShutdown: clonePendingShutdown(input.pendingShutdown),
 
         lastResponseVersion: 0,

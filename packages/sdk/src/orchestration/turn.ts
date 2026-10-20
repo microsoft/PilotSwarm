@@ -17,6 +17,7 @@ import {
     isSubAgentTerminalStatus,
     maybeResolveAgentWaitCompletion,
     refreshTrackedSubAgents,
+    settleDeferredChildStatusLookups,
 } from "./agents.js";
 import {
     applyAgentWorkspaceExtrasChange,
@@ -741,7 +742,11 @@ export function* processPrompt(
         state.workspaceHeldNote = undefined;
     }
     yield* maybeSummarize(runtime);
-    yield* refreshTrackedSubAgents(runtime);
+    const childListing = yield* refreshTrackedSubAgents(runtime);
+    // 1.0.82 (issue 192): child status lookups put off behind the user work
+    // this turn ran are settled from the same listing, before the result is
+    // handled (wait_for_agents reads these statuses).
+    settleDeferredChildStatusLookups(runtime, childListing);
 
     if ("queuedActions" in result && Array.isArray((result as any).queuedActions) && (result as any).queuedActions.length > 0) {
         state.pendingToolActions.push(...(result as any).queuedActions);

@@ -597,6 +597,18 @@ parent's `messages` queue. drain parses this, calls `applyChildUpdate` (which
 updates the local `subAgents` entry and the agent's `getSessionStatus`), then
 `bufferChildUpdate` (which adds it to `pendingChildDigest`).
 
+In 1.0.82 an update that arrives while user work waits to run (a prompt or
+answer collected in the same drain pass, or queued in the FIFO, and also in the
+pre-dispatch sweep) is applied from its own fields at once, but its status
+lookup is put off (`state.deferredChildProbes`, one entry per child, carried
+across continue-as-new). The listing of children that every turn already takes
+(`refreshTrackedSubAgents`) settles them with the same rules as a lookup, before
+the turn result is handled. If the user work goes away in the same pass
+(cancelled or refused), the lookups run at the end of the pass. A live agent
+wait or a pending shutdown still looks up at once. In the issue 192 stress run,
+10 updates behind a collected prompt cost 10 lookup activities, 4.3 s, before
+its turn.
+
 `pendingChildDigest` batches updates for 30s before dispatching them as a
 single system turn. This prevents N children producing N parent turns.
 
