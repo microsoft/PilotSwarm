@@ -84,8 +84,11 @@ const COMPACT_TIMER_REASON_CHARS = 2_000;
  * timer is copied from the armed one, which may carry the whole turn's text
  * (a wait's `content`) or an input question and its choices; running the
  * item reads none of them. A timer item is the only copy of a fire the
- * session owes, so it is never refused: when it is too large, this compact
- * copy is stored instead. Timer items that fit are stored unchanged.
+ * session owes, so it is not refused for its size: when it is too large,
+ * this compact copy is stored instead. The compact copy of a valid timer is
+ * a few kilobytes at most; it is refused as too large only if it is not.
+ * Like any item, it can still be refused because the FIFO is full (R8).
+ * Timer items that fit are stored unchanged.
  */
 function compactTimerItem(item: any): any {
     const timer = item?.timer ?? {};
@@ -653,9 +656,11 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
     // nothing, but the pass goes on sweeping for the messages behind it.
     let refusedThisPass = false;
     // 1.0.82 (defect E review): the owed work each stashed prompt carries,
-    // and for each child update, the n-th digest a prompt took it in this
-    // pass. An update no prompt has taken is newer than every taken one, so
-    // giving back several digests keeps each child's newest update.
+    // and for each child update, the n-th digest a prompt first took it in
+    // this pass. Every take clears the pending digest, so that order is the
+    // updates' arrival order, and an update no prompt has taken is newer
+    // than every taken one: giving back several digests keeps each child's
+    // newest update.
     const carriedByItem = new Map<any, CarriedWork>();
     const digestTakenAt = new WeakMap<object, number>();
     let digestsTaken = 0;
@@ -1078,8 +1083,12 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 } else {
                     userPrompt = withDigest;
                     carriedDigest = digestBefore;
+                    // An entry keeps the number of the first take: a restored
+                    // digest taken again is no newer than it was.
                     digestsTaken += 1;
-                    for (const entry of digestBefore.updates) digestTakenAt.set(entry, digestsTaken);
+                    for (const entry of digestBefore.updates) {
+                        if (!digestTakenAt.has(entry)) digestTakenAt.set(entry, digestsTaken);
+                    }
                 }
             }
 

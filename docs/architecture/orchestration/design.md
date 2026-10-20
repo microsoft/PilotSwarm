@@ -294,7 +294,7 @@ for good. In 1.0.82 no item whose bucket value would exceed
 | A prompt that fits, but not with the buffered child digest | Queued without the digest; the digest stays buffered for a later turn. |
 | A fired timer item (a wait's copy of the turn's text, an input question) | Never refused for size: a compact copy without the unused text is queued. Timer items that fit are queued unchanged. |
 | Any item when all 20 buckets are full | Reported as before (R8), reason `full`. A compact timer copy that fits the item cap but finds no room is also `full`. |
-| A prompt that took the child digest or the rehydration note, then is not queued (the FIFO is full, or a tombstone cancels it in the same pass) | The digest and the note are given back. A given-back digest is merged with updates buffered since (per child the newer entry wins, but a completion is not replaced by a later note) and runs once, later. |
+| A prompt that took the child digest or the rehydration note, then is not queued (the FIFO is full, or a tombstone cancels it in the same pass) | The digest and the note are given back. A given-back digest is merged with the pending one by arrival order (per child the newer entry wins, but a completion is not replaced by a later note; a restored digest that another prompt takes again keeps its age) and runs once, later. If the given-back digest was ready, the merged one is ready: owed updates run as soon as the queue allows. |
 
 The event names each lost item's reason, and a refused item's client message
 id is not marked as seen. The session keeps running. Items that fit take
