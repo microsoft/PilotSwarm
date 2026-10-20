@@ -34,6 +34,8 @@ function harness(overrides = {}) {
     const errors = [];
     const clock = { now: 1_750_000_000_000 };
     const child = { status: "running" };
+    // What a listing of the children returns (manager.listChildSessions).
+    const childList = [];
     let guid = 0;
     const ctx = {
         traceInfo() {},
@@ -85,7 +87,7 @@ function harness(overrides = {}) {
                 if (result instanceof Error) throw result;
                 return result;
             }
-            case "manager.listChildSessions": return "[]";
+            case "manager.listChildSessions": return JSON.stringify(childList);
             case "manager.getSessionStatus": return JSON.stringify({ status: child.status });
             case "manager.getWorkerSessionPolicy": return { policy: null, allowedAgentNames: [] };
             case "manager.resolveAgentConfig": return null;
@@ -160,7 +162,7 @@ function harness(overrides = {}) {
         }
         throw new Error("run loop did not park");
     };
-    const h = { runtime, kv, clock, calls, turns, results, messages, errors, drive, races, events, fifo, arm, step, runUntilParked, child };
+    const h = { runtime, kv, clock, calls, turns, results, messages, errors, drive, races, events, fifo, arm, step, runUntilParked, child, childList };
     return h;
 }
 
@@ -1139,5 +1141,139 @@ describe("issue 192 defect E review: refusing an item never loses other owed wor
         expect(appendToFifo(h.runtime, [exact])).toEqual([]);
         expect(appendToFifo(h.runtime, [over])).toEqual([over]);
         expect(h.fifo()).toHaveLength(1);
+    });
+});
+
+describe("issue 192 stress finding: a child status lookup never delays collected user work", () => {
+    const kids = (n, status = "running") => Array.from({ length: n }, (_, i) => ({
+        orchId: `agent-${i}`, sessionId: `child-${i}`, task: "work", status,
+    }));
+    const update = (sessionId, type, text = "") => ({ prompt: `[CHILD_UPDATE from=${sessionId} type=${type} iter=1]\n${text}` });
+    const lookups = (calls) => calls.filter(c => c.effect === "manager.getSessionStatus").length;
+    const beforeFirstTurn = (h) => {
+        const first = h.calls.findIndex(c => c.effect === "session.runTurn");
+        return h.calls.slice(0, first < 0 ? h.calls.length : first);
+    };
+
+    it("child updates behind a collected prompt add no status lookup before its turn; the turn's listing settles them", () => {
+        const h = harness({ subAgents: kids(5) });
+        h.childList.push(...kids(5, "idle"));
+        h.messages.push(
+            { prompt: "user question", clientMessageIds: ["u-1"] },
+            ...kids(5).map((k, i) => update(k.sessionId, "completed", `RESULT ${i}`)),
+        );
+        h.results.push({ type: "completed", content: "answered" });
+        h.step();
+        expect(h.turns).toHaveLength(1);
+        expect(h.turns[0][0]).toContain("user question");
+        expect(lookups(beforeFirstTurn(h))).toBe(0);
+        expect(lookups(h.calls)).toBe(0);
+        // Recorded at once: tracked, buffered for the parent, and the lookups
+        // owed are settled from the listing taken after the turn.
+        expect(h.runtime.state.subAgents.map(a => a.status)).toEqual(Array(5).fill("completed"));
+        expect(h.runtime.state.pendingChildDigest?.updates.map(u => u.sessionId)).toEqual(kids(5).map(k => k.sessionId));
+        expect(h.runtime.state.deferredChildProbes).toEqual([]);
+    });
+
+    it("a wait update behind a prompt: after the prompt's turn the child is waiting, not left completed", () => {
+        const h = harness({ subAgents: kids(1, "completed") });
+        h.child.status = "waiting";
+        h.childList.push({ ...kids(1)[0], status: "waiting" });
+        h.messages.push({ prompt: "user question", clientMessageIds: ["u-1"] }, update("child-0", "wait", "waiting for CI"));
+        h.results.push({ type: "completed", content: "answered" });
+        h.step();
+        expect(lookups(beforeFirstTurn(h))).toBe(0);
+        expect(h.runtime.state.subAgents[0].status).toBe("waiting");
+        expect(h.runtime.state.deferredChildProbes).toEqual([]);
+    });
+
+    it("a queued prompt in the FIFO counts as user work: updates behind it add no lookup before its turn", () => {
+        const h = harness({ subAgents: kids(3) });
+        h.childList.push(...kids(3, "running"));
+        appendToFifo(h.runtime, [prompt("queued question")]);
+        h.messages.push(...kids(3).map((k, i) => update(k.sessionId, "completed", `R${i}`)));
+        h.results.push({ type: "completed", content: "ok" });
+        h.step();
+        expect(h.turns).toHaveLength(1);
+        expect(lookups(beforeFirstTurn(h))).toBe(0);
+        expect(h.runtime.state.deferredChildProbes).toEqual([]);
+    });
+
+    it("the pre-dispatch sweep adds no lookup before the prompt it is dispatching", () => {
+        const h = harness({ subAgents: kids(3) });
+        h.childList.push(...kids(3, "running"));
+        appendToFifo(h.runtime, [prompt("queued question", { clientMessageIds: ["q-1"] })]);
+        h.messages.push(...kids(3).map((k, i) => update(k.sessionId, "completed", `R${i}`)));
+        h.results.push({ type: "completed", content: "ok" });
+        h.drive(decide(h.runtime));
+        expect(h.turns).toHaveLength(1);
+        expect(lookups(beforeFirstTurn(h))).toBe(0);
+        expect(h.runtime.state.subAgents.map(a => a.status)).toEqual(Array(3).fill("completed"));
+        expect(h.runtime.state.deferredChildProbes).toEqual([]);
+    });
+
+    it("an update with no user work queued is still looked up at once", () => {
+        const h = harness({ subAgents: kids(2) });
+        h.child.status = "idle";
+        h.messages.push(update("child-0", "wait", "parked"));
+        h.drive(drain(h.runtime));
+        expect(lookups(h.calls)).toBe(1);
+        expect(h.runtime.state.subAgents[0].status).toBe("idle");
+        expect(h.runtime.state.deferredChildProbes).toEqual([]);
+    });
+
+    it("with a live agent wait, an update behind collected user work is looked up at once (the wait needs it)", () => {
+        const h = harness({
+            subAgents: kids(1),
+            waitingForAgentIds: ["agent-0"],
+            pendingInputQuestion: { question: "which?", iteration: 3 },
+        });
+        h.child.status = "completed";
+        h.messages.push({ answer: "this one", expectedQuestion: { question: "which?", iteration: 3 } }, update("child-0", "completed", "done"));
+        h.drive(drain(h.runtime));
+        expect(lookups(h.calls)).toBe(1);
+        expect(h.runtime.state.waitingForAgentIds).toBeNull();
+        expect(h.runtime.state.deferredChildProbes).toEqual([]);
+    });
+
+    it("a prompt cancelled in the same pass: the lookups it deferred run at the end of the pass", () => {
+        const h = harness({ subAgents: kids(1) });
+        h.child.status = "idle";
+        h.messages.push({ prompt: "soon cancelled", clientMessageIds: ["c-1"] }, update("child-0", "wait", "parked"), { cancelPending: ["c-1"] });
+        h.drive(drain(h.runtime));
+        expect(h.fifo()).toEqual([]);
+        expect(lookups(h.calls)).toBe(1);
+        expect(h.runtime.state.subAgents[0].status).toBe("idle");
+        expect(h.runtime.state.deferredChildProbes).toEqual([]);
+    });
+
+    it("a first report behind a prompt still marks the digest ready once every child is settled", () => {
+        const h = harness({ subAgents: kids(2).map(k => ({ ...k, expectsReport: true })) });
+        h.childList.push(...kids(2, "idle"));
+        h.messages.push(
+            { prompt: "user question", clientMessageIds: ["u-1"] },
+            update("child-0", "completed", "first"),
+            update("child-1", "completed", "second"),
+        );
+        h.results.push({ type: "completed", content: "answered" });
+        h.step();
+        expect(lookups(beforeFirstTurn(h))).toBe(0);
+        expect(h.runtime.state.pendingChildDigest?.ready).toBe(true);
+    });
+
+    it("lookups owed are carried across continue-as-new and settled by the next turn's listing", () => {
+        const h = harness({
+            subAgents: kids(1, "completed"),
+            deferredChildProbes: [{ sessionId: "child-0", updateType: "wait" }],
+        });
+        expect(lifecycle.continueInput(h.runtime).deferredChildProbes).toEqual([{ sessionId: "child-0", updateType: "wait" }]);
+        h.childList.push({ ...kids(1)[0], status: "waiting" });
+        h.messages.push({ prompt: "next question", clientMessageIds: ["n-1"] });
+        h.results.push({ type: "completed", content: "ok" });
+        h.step();
+        expect(h.turns).toHaveLength(1);
+        expect(h.runtime.state.subAgents[0].status).toBe("waiting");
+        expect(h.runtime.state.deferredChildProbes).toEqual([]);
+        expect(lifecycle.continueInput(h.runtime).deferredChildProbes).toBeUndefined();
     });
 });
