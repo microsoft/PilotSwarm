@@ -893,6 +893,64 @@ describe("issue 192 defect E review: refusing an item never loses other owed wor
         expect(restored.updates.map(u => [u.sessionId, u.updateType])).toEqual([["a", "completed"], ["c", "progress"], ["b", "completed"]]);
     });
 
+    // A coordinator with one tracked child and an older pending update from it.
+    const withChild = (oldEntry = {}) => harness({
+        subAgents: [{ orchId: "agent-a", sessionId: "child-a", task: "watch", status: "running" }],
+        pendingChildDigest: {
+            startedAtMs: 1_750_000_000_000 - 1_000,
+            ready: true,
+            updates: [{ sessionId: "child-a", updateType: "completed", content: "OLDRESULT", observedAtMs: 1_750_000_000_000 - 1_000, ...oldEntry }],
+        },
+    });
+    const childUpdate = (type, text) => ({ prompt: `[CHILD_UPDATE from=child-a type=${type}]\n${text}` });
+    const late = (id) => ({ prompt: `${id} ${"w".repeat(800)}`, clientMessageIds: [id] });
+    const pendingFor = (h) => h.runtime.state.pendingChildDigest?.updates.map(u => [u.sessionId, u.updateType, u.content]);
+
+    it("two refused carriers of one child's updates give back the newer update, even with equal timestamps", () => {
+        // Same millisecond as the update that arrives in the pass: only the
+        // arrival order can tell them apart.
+        const h = withChild({ observedAtMs: 1_750_000_000_000 });
+        fillFifo(h);
+        h.messages.push(late("p1"), childUpdate("completed", "NEWRESULT"), late("p2"));
+        h.drive(drain(h.runtime));
+        expect(h.events().filter(e => e.eventType === "session.fifo_overflow").map(e => e.data.reasons)).toEqual([["full", "full"]]);
+        expect(pendingFor(h)).toEqual([["child-a", "completed", "NEWRESULT"]]);
+        for (let i = 0; i < 6; i++) h.results.push({ type: "completed", content: "ok" });
+        h.runUntilParked();
+        expect(h.turns.filter(t => String(t[0]).includes("NEWRESULT"))).toHaveLength(1);
+        expect(h.turns.filter(t => String(t[0]).includes("OLDRESULT"))).toHaveLength(0);
+    });
+
+    it("carriers cancelled one by one, older first, give back the newer update", () => {
+        const h = withChild();
+        h.messages.push(
+            { prompt: "p1", clientMessageIds: ["p1"] },
+            childUpdate("completed", "NEWRESULT"),
+            { prompt: "p2", clientMessageIds: ["p2"] },
+            { cancelPending: ["p1"] },
+            { cancelPending: ["p2"] },
+        );
+        h.drive(drain(h.runtime));
+        expect(h.fifo()).toEqual([]);
+        expect(pendingFor(h)).toEqual([["child-a", "completed", "NEWRESULT"]]);
+    });
+
+    it("an update buffered after both carriers stays the newest when they are given back", () => {
+        const h = withChild();
+        fillFifo(h);
+        h.messages.push(late("p1"), childUpdate("completed", "MIDRESULT"), late("p2"), childUpdate("completed", "NEWESTRESULT"));
+        h.drive(drain(h.runtime));
+        expect(pendingFor(h)).toEqual([["child-a", "completed", "NEWESTRESULT"]]);
+    });
+
+    it("a given-back completion is not replaced by the child's later progress note", () => {
+        const h = withChild();
+        fillFifo(h);
+        h.messages.push(late("p1"), childUpdate("progress", "NOTE"), late("p2"));
+        h.drive(drain(h.runtime));
+        expect(pendingFor(h)).toEqual([["child-a", "completed", "OLDRESULT"]]);
+    });
+
     it("a digest kept back from a prompt it would make too large is delivered exactly once, in a later turn", () => {
         const h = harness({ pendingChildDigest: { ...digest(3, `DIGESTMARK ${"x".repeat(200)}`), ready: true } });
         const text = big("EDGE", MAX_FIFO_ITEM_BYTES - 300);
