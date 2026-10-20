@@ -4493,8 +4493,9 @@ export class PilotSwarmUiController {
                 try {
                     const editors = await this.transport.listCanvasAppEditors({ name: target.name });
                     this.dispatch({ type: "admin/canvasApps/editors/loaded", seq, editors });
-                } catch {
-                    this.dispatch({ type: "admin/canvasApps/editors/loaded", seq, editors: [] });
+                } catch (error) {
+                    // A failed read is not "no contributors": say it failed.
+                    this.dispatch({ type: "admin/canvasApps/editors/failed", seq, error: error?.message || String(error) });
                 }
             })());
         }
@@ -4524,13 +4525,29 @@ export class PilotSwarmUiController {
         const target = canvasAppTargetArgs(apps?.selected);
         if (!target.name) return;
         const seq = apps?.selectionSeq ?? 0;
-        this.dispatch({ type: "admin/canvasApps/preview/loading", seq, version });
+        // Every preview request (and every close) is a new generation: a
+        // late answer for an earlier version, or for a closed preview, is dropped.
+        const previewSeq = (apps?.previewSeq ?? 0) + 1;
+        this.dispatch({ type: "admin/canvasApps/preview/loading", seq, previewSeq, version });
         try {
             const page = await this.transport.getCanvasAppHtml({ ...target, ...(version ? { version } : {}) });
-            this.dispatch({ type: "admin/canvasApps/preview/loaded", seq, page });
+            this.dispatch({ type: "admin/canvasApps/preview/loaded", seq, previewSeq, page });
         } catch (error) {
-            this.dispatch({ type: "admin/canvasApps/preview/failed", seq, error: error?.message || String(error) });
+            this.dispatch({ type: "admin/canvasApps/preview/failed", seq, previewSeq, error: error?.message || String(error) });
         }
+    }
+
+    /**
+     * The TUI's Canvas Apps detail window: the renderer reports how far it
+     * can scroll and one page; the keys page within those bounds.
+     */
+    setAdminCanvasAppDetailBounds(maxOffset, page) {
+        this.dispatch({ type: "admin/canvasApps/detailBounds", maxOffset, page });
+    }
+
+    scrollAdminCanvasAppDetail(pages) {
+        const page = this.getState().admin?.canvasApps?.detailPage ?? 10;
+        this.dispatch({ type: "admin/canvasApps/detailScroll", delta: Math.trunc(Number(pages) || 0) * page });
     }
 
     closeAdminCanvasAppPreview() {
@@ -4547,7 +4564,16 @@ export class PilotSwarmUiController {
         const selected = apps?.selected;
         const target = canvasAppTargetArgs(selected);
         if (!target.name) return;
-        this.dispatch({ type: "admin/canvasApps/action/pending", action: kind });
+        // The action belongs to this selection and this generation. If the
+        // person selects another app (or starts another action) before it
+        // finishes, its completion must not move or annotate the new selection.
+        const seq = apps?.selectionSeq ?? 0;
+        const actionSeq = (apps?.actionSeq ?? 0) + 1;
+        const stillOwned = () => {
+            const now = this.getState().admin?.canvasApps;
+            return (now?.selectionSeq ?? 0) === seq && (now?.actionSeq ?? 0) === actionSeq;
+        };
+        this.dispatch({ type: "admin/canvasApps/action/pending", action: kind, seq, actionSeq });
         let notice = null;
         let reselect = selected;
         try {
@@ -4555,10 +4581,28 @@ export class PilotSwarmUiController {
                 case "share":
                 case "private": {
                     const targetScope = kind === "share" ? "shared" : "user";
+                    let owner = null;
+                    if (targetScope === "user") {
+                        // A shared selector carries no owner. Making it private
+                        // keeps the app's owner, so take that owner from the
+                        // loaded detail or the list row of THIS copy, never the
+                        // caller: an admin must land on Bob's app, not on a
+                        // same-named private copy of their own.
+                        const summary = selected.scope === "shared"
+                            ? (apps.list || []).find((app) => app.scope === "shared" && app.name === selected.name)
+                            : null;
+                        const known = (selected.scope === "user" && selected.ownerProvider && selected.ownerSubject)
+                            ? { provider: selected.ownerProvider, subject: selected.ownerSubject }
+                            : (apps.detail?.owner ?? summary?.owner ?? null);
+                        if (!known?.provider || !known?.subject) {
+                            throw new Error("The app's owner is not known yet; wait for its detail to load, then try again.");
+                        }
+                        owner = known;
+                    }
                     await this.transport.setCanvasAppScope({ ...target, targetScope });
                     reselect = targetScope === "shared"
                         ? { name: selected.name, scope: "shared", ownerProvider: null, ownerSubject: null }
-                        : { name: selected.name, scope: "user", ownerProvider: apps.detail?.owner?.provider ?? selected.ownerProvider ?? null, ownerSubject: apps.detail?.owner?.subject ?? selected.ownerSubject ?? null };
+                        : { name: selected.name, scope: "user", ownerProvider: owner.provider, ownerSubject: owner.subject };
                     notice = kind === "share" ? "The app is now shared." : "The app is now private; its contributors were removed.";
                     break;
                 }
@@ -4579,25 +4623,42 @@ export class PilotSwarmUiController {
                     const page = await this.transport.getCanvasAppHtml({ ...target, ...(arg ? { version: String(arg) } : {}) });
                     if (typeof this.transport.saveCanvasAppDownload !== "function") throw new Error("Download is not available here.");
                     await this.transport.saveCanvasAppDownload(`${target.name}@${page.version}.html`, page.html, { contentType: "text/html" });
-                    this.dispatch({ type: "admin/canvasApps/action/done" });
+                    this.dispatch({ type: "admin/canvasApps/action/done", seq, actionSeq });
                     return;
                 }
                 case "export": {
                     const archive = await this.transport.exportCanvasApp(target);
                     if (typeof this.transport.saveCanvasAppDownload !== "function") throw new Error("Export is not available here.");
                     await this.transport.saveCanvasAppDownload(archive.filename, archive.contentBase64, { contentType: "application/gzip", base64: true });
-                    this.dispatch({ type: "admin/canvasApps/action/done" });
+                    this.dispatch({ type: "admin/canvasApps/action/done", seq, actionSeq });
                     return;
                 }
                 default:
                     throw new Error(`unknown canvas app action: ${kind}`);
             }
+            if (!stillOwned()) {
+                // Someone moved on: refresh the list, but their selection stays theirs.
+                await this.refreshAdminCanvasApps();
+                return;
+            }
             await this.refreshAdminCanvasApps();
-            if (reselect) await this.selectAdminCanvasApp(reselect);
-            else this.dispatch({ type: "admin/canvasApps/select", selected: null });
-            this.dispatch({ type: "admin/canvasApps/action/done", notice });
+            // The refresh itself clears a selection whose copy is gone (after
+            // share, private or delete); anything else means someone moved on.
+            const now = this.getState().admin?.canvasApps;
+            const clearedByRefresh = now?.selected == null && (now?.selectionSeq ?? 0) === seq + 1;
+            if ((now?.actionSeq ?? 0) !== actionSeq || ((now?.selectionSeq ?? 0) !== seq && !clearedByRefresh)) return;
+            if (reselect) {
+                const reselecting = this.selectAdminCanvasApp(reselect);
+                const reselectSeq = this.getState().admin?.canvasApps?.selectionSeq ?? 0;
+                await reselecting;
+                this.dispatch({ type: "admin/canvasApps/action/done", seq: reselectSeq, actionSeq, notice });
+            } else {
+                this.dispatch({ type: "admin/canvasApps/select", selected: null });
+                const clearedSeq = this.getState().admin?.canvasApps?.selectionSeq ?? 0;
+                this.dispatch({ type: "admin/canvasApps/action/done", seq: clearedSeq, actionSeq, notice });
+            }
         } catch (error) {
-            this.dispatch({ type: "admin/canvasApps/action/failed", error: error?.message || String(error) });
+            this.dispatch({ type: "admin/canvasApps/action/failed", seq, actionSeq, error: error?.message || String(error) });
         }
     }
 
@@ -12629,6 +12690,12 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.ADMIN_TREE_EXPAND:
                 this.expandAdminTreeNode();
+                return;
+            case UI_COMMANDS.ADMIN_CANVAS_APP_DETAIL_PAGE_DOWN:
+                this.scrollAdminCanvasAppDetail(1);
+                return;
+            case UI_COMMANDS.ADMIN_CANVAS_APP_DETAIL_PAGE_UP:
+                this.scrollAdminCanvasAppDetail(-1);
                 return;
             case UI_COMMANDS.ADMIN_WORKERS_REFRESH:
                 await this.refreshAdminWorkers();

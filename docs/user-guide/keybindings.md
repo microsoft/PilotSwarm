@@ -167,6 +167,7 @@ The Admin Console takes over the workspace until you press `Esc` to close it. Wh
 | `j` / `k` | Move the selected personal provider or system agent; in Packages and Canvas Apps, move through the tree (an item opens when the cursor lands on it) |
 | `Enter` / `Space` | Packages and Canvas Apps: open or close the section or group under the cursor |
 | `←` / `→` | Packages and Canvas Apps: collapse (or move to the parent) / expand |
+| `Ctrl+D` / `PgDn`, `Ctrl+U` / `PgUp` | Canvas Apps: page the selected app's detail down / up (it has its own window under the tree) |
 | `t` | Toggle system-session use for the selected admin-owned personal provider |
 | `o` | Cycle the selected system-agent override; automatic clears it to inherit |
 | `r` | Refresh providers and defaults (or the active Packages, Canvas Apps or Workers section) |
@@ -177,7 +178,10 @@ list scrolls to keep the cursor in view, and the collapsed state is saved for
 the signed-in person in the TUI config file (the portal keeps it in that
 person's profile). The portal's settings tree answers the same keys while it
 has focus. The canvas app detail is read-only in the TUI; Preview, the
-actions and **Add canvas app** are in the portal.
+actions and **Add canvas app** are in the portal. In the TUI the keys stay
+under the tree and the detail gets its own window: a position line shows
+which lines are on screen, and `Ctrl+D`/`PgDn` and `Ctrl+U`/`PgUp` page it.
+The portal's detail pane scrolls like any page.
 
 While the provider-creation wizard is open the console behaves like a modal:
 

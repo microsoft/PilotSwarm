@@ -13,6 +13,7 @@ import { fileURLToPath } from "node:url";
 import { appReducer, createInitialState, createStore, selectAdminConsole, PilotSwarmUiController } from "pilotswarm/ui-core";
 import { buildAdminConsoleLines } from "../../ui/react/src/components.js";
 import { adminCollapsedConfigPatch, adminTreeViewerKey, readAdminCollapsedForViewer } from "../src/admin-tree-config.js";
+import { __testing as panelWrap } from "../src/platform.js";
 
 const source = readFileSync(fileURLToPath(new URL("../src/app.js", import.meta.url)), "utf8");
 const ALICE = { provider: "test", subject: "alice", email: "alice@test", displayName: "Alice", isAdmin: true };
@@ -114,4 +115,82 @@ test("the TUI config keeps one collapsed list per viewer: Alice's change does no
     assert.equal(adminTreeViewerKey(null), "local");
     assert.equal(adminTreeViewerKey(BOB), "test:bob");
     assert.deepEqual(readAdminCollapsedForViewer({ adminCollapsed: ["not", "a", "map"] }, ALICE), []);
+});
+
+test("Ctrl+D/PgDn and Ctrl+U/PgUp page the Canvas Apps detail (review r1 P4)", () => {
+    assert.match(source, /adminSection === "canvasApps" && \(isCtrlD \|\| key\.pageDown\)\) \{\s*controller\.handleCommand\(UI_COMMANDS\.ADMIN_CANVAS_APP_DETAIL_PAGE_DOWN\)/);
+    assert.match(source, /adminSection === "canvasApps" && \(isCtrlU \|\| key\.pageUp\)\) \{\s*controller\.handleCommand\(UI_COMMANDS\.ADMIN_CANVAS_APP_DETAIL_PAGE_UP\)/);
+});
+
+test("at a finite height the Panel draws every row, and paging reaches every version, contributor and load (review r1 P4)", async () => {
+    const s = store();
+    const big = app("board", "shared", "alice", {
+        description: Array.from({ length: 4 }, (_, i) => `Paragraph ${i} explains when to use the board in a long and wordy sentence that wraps.`).join("\n\n"),
+    });
+    big.card = {
+        ...big.card,
+        interface: {
+            keys: Array.from({ length: 14 }, (_, i) => ({ key: `app/key-${i}`, writer: "page", note: `key number ${i} with a note` })),
+            requests: Array.from({ length: 6 }, (_, i) => ({ op: `op-${i}`, result: { text: "string" } })),
+            events: [{ key: "evt/tally", note: "posted on recount" }],
+        },
+    };
+    const versions = Array.from({ length: 9 }, (_, i) => ({ versionId: `v-${i}`, version: `1.${i}.0`, sha256: String(i).repeat(64), sizeBytes: 100 + i, card: big.card, createdAt: "2026-10-01T00:00:00Z" }));
+    big.activeVersionId = "v-8";
+    const transport = {
+        listCanvasApps: async () => [big],
+        getCanvasApp: async () => ({ ...big, versions }),
+        listCanvasAppEditors: async () => [{ provider: "test", subject: "carol", displayName: "Carol" }],
+        getCanvasAppLoads: async () => ({ rows: Array.from({ length: 5 }, (_, i) => ({ loadId: `l${i}`, version: "1.8.0", user: { provider: "test", subject: "bob" }, userDisplayName: `Loader ${i}`, loadedAt: "2026-10-03T10:00:00Z" })), total30d: 5 }),
+    };
+    const controller = new PilotSwarmUiController({ store: s, transport });
+    await controller.refreshAdminCanvasApps();
+    await controller.selectAdminCanvasApp({ name: "board", scope: "shared" });
+    const width = 80;
+    const height = 30;
+    const rowsDrawn = (lines) => lines.reduce((n, line) => n + panelWrap.wrapRunsLine(line, width - 4).length, 0);
+    const seen = new Set();
+    let pages = 0;
+    for (;;) {
+        const bounds = { maxOffset: 0, page: 10 };
+        const lines = buildAdminConsoleLines(selectAdminConsole(s.getState()), { treeRows: 10, height, width, bounds });
+        assert.ok(rowsDrawn(lines) <= height - 2, `page ${pages}: ${rowsDrawn(lines)} rows for a ${height - 2}-row panel`);
+        const out = text(lines);
+        assert.match(out, /\^D\/\^U page detail/, "the keys stay on screen");
+        assert.match(out, /Detail · lines \d+–\d+ of \d+/);
+        for (const line of out.split("\n")) seen.add(line.trim());
+        controller.setAdminCanvasAppDetailBounds(bounds.maxOffset, bounds.page);
+        const before = s.getState().admin.canvasApps.detailOffset;
+        controller.scrollAdminCanvasAppDetail(1);
+        if (s.getState().admin.canvasApps.detailOffset === before) break;
+        pages += 1;
+        assert.ok(pages < 20, "paging terminates");
+    }
+    assert.ok(pages >= 1, "the long card needed paging");
+    const all = [...seen].join("\n");
+    for (const v of versions) assert.match(all, new RegExp(`${v.version.replace(/\./g, "\\.")} {2}`), `version ${v.version} reachable`);
+    assert.match(all, /Carol \(contributor\)/);
+    assert.match(all, /Loader 4/);
+    assert.match(all, /key {5}app\/key-13/);
+    // Paging back returns to the top; the offset never goes below 0.
+    for (let i = 0; i < 30; i += 1) controller.scrollAdminCanvasAppDetail(-1);
+    assert.equal(s.getState().admin.canvasApps.detailOffset, 0);
+    // Selecting another app starts its detail at the top.
+    controller.scrollAdminCanvasAppDetail(1);
+    await controller.selectAdminCanvasApp({ name: "board", scope: "shared" });
+    assert.equal(s.getState().admin.canvasApps.detailOffset, 0);
+});
+
+test("a failed contributors read is shown, not presented as none (review r1 P8)", async () => {
+    const s = store();
+    const controller = new PilotSwarmUiController({ store: s, transport: {
+        listCanvasApps: async () => [app("board", "shared", "alice")],
+        getCanvasApp: async () => ({ ...app("board", "shared", "alice"), versions: [] }),
+        listCanvasAppEditors: async () => { throw new Error("upstream timeout"); },
+        getCanvasAppLoads: async () => ({ rows: [], total30d: 0 }),
+    } });
+    await controller.refreshAdminCanvasApps();
+    await controller.selectAdminCanvasApp({ name: "board", scope: "shared" });
+    const out = text(buildAdminConsoleLines(selectAdminConsole(s.getState()), { treeRows: 30 }));
+    assert.match(out, /! Could not load the contributors: upstream timeout/);
 });

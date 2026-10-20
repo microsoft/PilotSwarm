@@ -37,6 +37,7 @@ Usage:
                                                        publish the canvas drawn on a session slot (you need write access)
   pilotswarm apps publish <session-id> [--slot <n>] --check
                                                        run the publish checks on that page; nothing is written
+                                                       (--slot is a canvas slot, 1-5, default 1; anything else is refused)
   pilotswarm apps pull <name> [--version <v>] [--output <file>] [--shared|--user]
   pilotswarm apps export <name> [--output <file>] [--shared|--user]
   pilotswarm apps import <file.tar.gz> [--shared]
@@ -73,7 +74,7 @@ export function parseAppsArgs(argv) {
         else if (arg === "--yes" || arg === "-y") flags.yes = true;
         else if (arg === "--apply") flags.apply = true;
         else if (arg === "--check") flags.check = true;
-        else if (arg === "--slot") flags.slot = Number(argv[++i]);
+        else if (arg === "--slot") flags.slot = argv[++i] ?? "";
         else if (arg === "--api-url") flags.apiUrl = argv[++i];
         else if (arg === "--name") flags.name = argv[++i];
         else if (arg === "--version") flags.version = argv[++i];
@@ -134,6 +135,17 @@ export async function runAppsCommand(argv, deps = {}) {
         if (!name) throw new Error(`usage: pilotswarm apps ${usage}`);
         return name;
     };
+    // An absent --slot means slot 1 (the default); a supplied value must be a
+    // canvas slot, 1-5. It is checked before connecting, so a bad value never
+    // checks or publishes some other slot.
+    let slot = {};
+    if (flags.slot !== undefined) {
+        const n = /^\s*\d+\s*$/.test(String(flags.slot)) ? Number(flags.slot) : NaN;
+        if (!Number.isInteger(n) || n < 1 || n > 5) {
+            throw new Error(`--slot must be a canvas slot from 1 to 5 (got ${JSON.stringify(String(flags.slot))})`);
+        }
+        slot = { slot: n };
+    }
     const { client, close } = await connect(flags, deps);
     try {
         switch (command) {
@@ -171,7 +183,6 @@ export async function runAppsCommand(argv, deps = {}) {
             }
             case "publish": {
                 const sessionId = needName(rest[0], "publish <session-id> [--slot <n>] --name <name> | --check");
-                const slot = Number.isInteger(flags.slot) && flags.slot >= 1 ? { slot: flags.slot } : {};
                 if (flags.check) {
                     const check = await client.publishCanvasApp({ sessionId, ...slot, checkOnly: true });
                     print(check, (c) => c.ok

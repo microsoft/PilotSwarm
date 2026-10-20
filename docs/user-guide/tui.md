@@ -487,8 +487,9 @@ or `./run.sh`.
    cancels. The provider name, defaults, routing, and usage history remain.
 9. Press `c` for **Canvas Apps** (or `a` for **Packages**). `j`/`k` move
    through the tree, `Enter`/`Space` open or close a group, `←`/`→` collapse
-   and expand. The app detail is read-only here; Preview, the actions and
-   **Add canvas app** are in the portal.
+   and expand. The app detail is read-only here, in its own window under
+   the keys: `Ctrl+D`/`PgDn` and `Ctrl+U`/`PgUp` page it. Preview, the
+   actions and **Add canvas app** are in the portal.
 
 **What just happened:**
 

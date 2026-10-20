@@ -30,10 +30,17 @@ function personLabel(displayName, email, principal) {
     return displayName || email || principal?.subject || "unknown";
 }
 
-/** The stable id of one app copy in the settings tree. */
+/**
+ * The stable id of one app copy in the settings tree. A private copy is named
+ * by its owner's provider AND subject (two providers may issue the same
+ * subject), each URI-encoded so a ":" in either cannot collide.
+ */
 export function canvasAppRowId(app) {
     const scope = app?.scope === "shared" ? "shared" : "user";
-    return `capp:${scope}:${scope === "shared" ? "" : (app?.owner?.subject ?? app?.ownerSubject ?? "")}:${app?.name ?? ""}`;
+    if (scope === "shared") return `capp:shared::${app?.name ?? ""}`;
+    const provider = encodeURIComponent(String(app?.owner?.provider ?? app?.ownerProvider ?? ""));
+    const subject = encodeURIComponent(String(app?.owner?.subject ?? app?.ownerSubject ?? ""));
+    return `capp:user:${provider}:${subject}:${app?.name ?? ""}`;
 }
 
 /** The selector-friendly target of one app copy. */
@@ -203,6 +210,8 @@ export function buildCanvasAppsView(admin, { section, isMine, passesOwnerFilter,
                 ...(source?.owner ? [{ role: "owner", label: personLabel(source.ownerDisplayName, source.ownerEmail, source.owner), subject: source.owner.subject }] : []),
                 ...editors.map((e) => ({ role: "contributor", label: personLabel(e.displayName, e.email, e), subject: e.subject, provider: e.provider })),
             ],
+            // A failed contributors read: the list above is NOT complete.
+            contributorsError: apps.editorsError ? `Could not load the contributors: ${apps.editorsError}` : null,
             loads: {
                 loading: Boolean(loads.loading),
                 // Only the owner and admins may read loads; others see none.
@@ -240,6 +249,8 @@ export function buildCanvasAppsView(admin, { section, isMine, passesOwnerFilter,
         empty: list.length === 0 && !apps.loading,
         total: shared.length + mine.length + others.length,
         detail,
+        // The TUI's detail window (the portal's detail pane scrolls natively).
+        detailOffset: Math.max(0, Number(apps.detailOffset) || 0),
         addDialog: {
             open: Boolean(dialog.open),
             kind: dialog.kind === "archive" ? "archive" : "html",

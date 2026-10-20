@@ -14,6 +14,7 @@ export * from "./store.js";
 export * from "./selectors.js";
 export * from "./admin-tree.js";
 export * from "./admin-canvas-apps.js";
+export * from "./profile-save-queue.js";
 export * from "./steer-hold.js";
 export * from "./controller.js";
 export { isThemeLight } from "./themes/helpers.js";

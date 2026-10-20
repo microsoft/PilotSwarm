@@ -515,6 +515,16 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                     controller.handleCommand(UI_COMMANDS.ADMIN_TREE_EXPAND).catch(() => {});
                     return;
                 }
+                // Canvas Apps: the detail has its own window under the tree;
+                // the TUI's page keys page it (the portal's pane scrolls natively).
+                if (adminSection === "canvasApps" && (isCtrlD || key.pageDown)) {
+                    controller.handleCommand(UI_COMMANDS.ADMIN_CANVAS_APP_DETAIL_PAGE_DOWN).catch(() => {});
+                    return;
+                }
+                if (adminSection === "canvasApps" && (isCtrlU || key.pageUp)) {
+                    controller.handleCommand(UI_COMMANDS.ADMIN_CANVAS_APP_DETAIL_PAGE_UP).catch(() => {});
+                    return;
+                }
                 if (plainShortcut && input === "r") {
                     controller.handleCommand(adminSection === "canvasApps"
                         ? UI_COMMANDS.ADMIN_CANVAS_APPS_REFRESH

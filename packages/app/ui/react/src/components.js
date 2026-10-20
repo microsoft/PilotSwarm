@@ -2221,12 +2221,13 @@ function buildAdminModelProviderLines(view) {
     return lines;
 }
 
-function adminTreeKeyLines() {
+function adminTreeKeyLines({ detailPaging = false } = {}) {
     return [
         [
             { text: " j/k ", color: "green", bold: true }, { text: "move  ", color: "gray" },
             { text: "Enter/Space ", color: "green", bold: true }, { text: "open/close  ", color: "gray" },
             { text: "←/→ ", color: "green", bold: true }, { text: "collapse/expand  ", color: "gray" },
+            ...(detailPaging ? [{ text: "^D/^U ", color: "green", bold: true }, { text: "page detail  ", color: "gray" }] : []),
             { text: "r ", color: "cyan", bold: true }, { text: "refresh", color: "gray" },
         ],
         [
@@ -2243,13 +2244,8 @@ function adminTreeKeyLines() {
  * actions and Add canvas app are portal-only (as for Packages); the tree's
  * collapse, scroll and keys match the portal.
  */
-function buildAdminCanvasAppsLines(view, { treeRows = 18 } = {}) {
+function canvasAppDetailLines(apps) {
     const lines = [];
-    const apps = view.canvasApps || {};
-    lines.push(...buildAdminTreeLines(view, treeRows));
-    if (apps.loading) lines.push([{ text: "  loading canvas apps...", color: "gray" }]);
-    if (apps.error) lines.push([{ text: `  ! ${apps.error}`, color: "red" }]);
-    lines.push([{ text: "", color: "gray" }]);
     const d = apps.detail;
     if (d) {
         lines.push([
@@ -2287,15 +2283,15 @@ function buildAdminCanvasAppsLines(view, { treeRows = 18 } = {}) {
         }
         if (d.versions.length) {
             lines.push([{ text: "Versions", color: "cyan", bold: true }]);
-            for (const v of d.versions.slice(0, 6)) {
+            for (const v of d.versions) {
                 lines.push([
                     { text: v.active ? " ● " : "   ", color: "green" },
                     { text: `${v.version}  ${v.sha12}  ${v.sizeText}  ${v.dateText}`, color: v.active ? "white" : "gray" },
                 ]);
             }
-            if (d.versions.length > 6) lines.push([{ text: `   … ${d.versions.length - 6} more`, color: "gray" }]);
         }
         lines.push([{ text: "Contributors", color: "cyan", bold: true }]);
+        if (d.contributorsError) lines.push([{ text: `  ! ${d.contributorsError}`, color: "red" }]);
         lines.push([{ text: `  ${d.contributors.map((c) => `${c.label} (${c.role})`).join(", ") || "none"}`, color: "gray" }]);
         if (d.loads.visible) {
             lines.push([{ text: "Loads", color: "cyan", bold: true },
@@ -2312,14 +2308,93 @@ function buildAdminCanvasAppsLines(view, { treeRows = 18 } = {}) {
             ? "No canvas apps yet — publish one from a canvas in the portal, or `pilotswarm apps push`."
             : "Select an app (j/k) to see its detail.", color: "gray" }]);
     }
-    lines.push([{ text: "", color: "gray" }]);
-    lines.push([{ text: "Actions", color: "cyan", bold: true }]);
-    lines.push(...adminTreeKeyLines());
     return lines;
 }
 
+/**
+ * Admin → Canvas Apps in the TUI: the tree, then the keys (always on screen),
+ * then the detail in its own window. With `detailRows` set, the detail shows
+ * that many lines from `view.canvasApps.detailOffset`, with a position line;
+ * Ctrl+D/PgDn and Ctrl+U/PgUp page it, so a long card never hides the
+ * versions, contributors or loads. `bounds` receives { maxOffset, page }.
+ */
+/**
+ * Break one line of runs into the screen rows the TUI Panel will draw: the
+ * Panel's own word wrap (tui/src/platform.js computeWrappedSlices), so the
+ * detail window counts exactly the rows that appear.
+ */
+function panelWrapSlices(text, width) {
+    if (!text) return [{ start: 0, end: 0 }];
+    const slices = [];
+    let start = 0;
+    while (start < text.length) {
+        const maxEnd = Math.min(start + width, text.length);
+        let end = maxEnd;
+        if (maxEnd < text.length) {
+            let wrapPoint = -1;
+            if (/\s/u.test(text[maxEnd] || "") && maxEnd > start && /\S/u.test(text[maxEnd - 1] || "")) wrapPoint = maxEnd;
+            else {
+                for (let index = Math.min(maxEnd - 1, text.length - 1); index > start; index -= 1) {
+                    if (/\s/u.test(text[index] || "") && /\S/u.test(text[index - 1] || "")) { wrapPoint = index; break; }
+                }
+            }
+            if (wrapPoint > start) end = wrapPoint;
+        }
+        if (end <= start) end = maxEnd;
+        slices.push({ start, end });
+        start = end;
+        while (start < text.length && /\s/u.test(text[start] || "")) start += 1;
+    }
+    return slices;
+}
+
+function wrapRunsLine(line, cols) {
+    if (!Number.isFinite(cols) || cols < 1) return [line];
+    const text = line.map((run) => String(run?.text ?? "")).join("");
+    if (text.length <= cols) return [line];
+    return panelWrapSlices(text, cols).map(({ start, end }) => {
+        const out = [];
+        let cursor = 0;
+        for (const run of line) {
+            const t = String(run?.text ?? "");
+            const a = Math.max(start, cursor);
+            const b = Math.min(end, cursor + t.length);
+            if (a < b) out.push({ ...run, text: t.slice(a - cursor, b - cursor) });
+            cursor += t.length;
+        }
+        return out.length ? out : [{ text: "", color: "gray" }];
+    });
+}
+
+function buildAdminCanvasAppsLines(view, { treeRows = 18, detailRows = Infinity, cols = Infinity, bounds = null } = {}) {
+    const lines = [];
+    const apps = view.canvasApps || {};
+    lines.push(...buildAdminTreeLines(view, treeRows));
+    if (apps.loading) lines.push([{ text: "  loading canvas apps...", color: "gray" }]);
+    if (apps.error) lines.push([{ text: `  ! ${apps.error}`, color: "red" }]);
+    lines.push([{ text: "Actions", color: "cyan", bold: true }]);
+    lines.push(...adminTreeKeyLines({ detailPaging: true }));
+    lines.push([{ text: "", color: "gray" }]);
+    // Pre-wrapped to the panel width, so the window counts real screen rows.
+    const detail = canvasAppDetailLines(apps).flatMap((line) => wrapRunsLine(line, cols));
+    const room = Number.isFinite(detailRows) ? Math.max(2, Math.floor(detailRows)) - 1 : Infinity;
+    if (detail.length <= room + 1 || !Number.isFinite(room)) {
+        if (bounds) { bounds.maxOffset = 0; bounds.page = Number.isFinite(room) ? Math.max(1, room) : 10; }
+        lines.push(...detail);
+        return lines;
+    }
+    const maxOffset = Math.max(0, detail.length - room);
+    const offset = Math.min(Math.max(0, Number(apps.detailOffset) || 0), maxOffset);
+    if (bounds) { bounds.maxOffset = maxOffset; bounds.page = Math.max(1, room - 1); }
+    const shown = detail.slice(offset, offset + room);
+    lines.push([{ text: `Detail · lines ${offset + 1}–${offset + shown.length} of ${detail.length} · Ctrl+D/PgDn more · Ctrl+U/PgUp back`, color: "gray" }]);
+    lines.push(...shown);
+    return lines;
+}
+
+
 /** @internal Exported for the TUI render tests. */
-export function buildAdminConsoleLines(view, { treeRows = 18 } = {}) {
+export function buildAdminConsoleLines(view, { treeRows = 18, height = null, width = null, bounds = null } = {}) {
     const lines = [];
     if (view.isAdmin && view.adminPolicyLabel) lines.push([{ text: view.adminPolicyLabel, color: "gray" }]);
     lines.push([
@@ -2345,7 +2420,16 @@ export function buildAdminConsoleLines(view, { treeRows = 18 } = {}) {
     }
 
     if (view.section === "canvasApps") {
-        lines.push(...buildAdminCanvasAppsLines(view, { treeRows }));
+        // The Panel shows height - 2 lines; the detail window gets what the
+        // header, tree and keys leave.
+        const cols = Number.isFinite(Number(width)) && Number(width) > 0 ? Math.max(20, Number(width) - 4) : Infinity;
+        // Everything above the detail (its one "select an app" line excluded), in screen rows.
+        const head = [...lines, ...buildAdminCanvasAppsLines({ ...view, canvasApps: { ...view.canvasApps, detail: null, empty: false } }, { treeRows })].slice(0, -1);
+        const headRows = head.reduce((n, line) => n + wrapRunsLine(line, cols).length, 0);
+        const detailRows = Number.isFinite(Number(height)) && Number(height) > 0
+            ? Math.max(3, Number(height) - 2 - headRows)
+            : Infinity;
+        lines.push(...buildAdminCanvasAppsLines(view, { treeRows, detailRows, cols, bounds }));
         return lines;
     }
 
@@ -2407,7 +2491,15 @@ function AdminConsolePanel({ controller, width, height, frame }) {
     const view = useControllerSelector(controller, selectAdminConsole, shallowEqualObject);
     // The tree gets about half the panel; it scrolls around the cursor.
     const treeRows = Math.max(6, Math.floor(((Number(height) || 40) - 8) / 2));
-    const lines = React.useMemo(() => buildAdminConsoleLines(view, { treeRows }), [view, treeRows]);
+    const { lines, bounds } = React.useMemo(() => {
+        const out = { maxOffset: 0, page: 10 };
+        return { lines: buildAdminConsoleLines(view, { treeRows, height, width, bounds: out }), bounds: out };
+    }, [view, treeRows, height, width]);
+    // Tell the controller how far the Canvas Apps detail can page.
+    React.useEffect(() => {
+        if (view.section !== "canvasApps" || typeof controller.setAdminCanvasAppDetailBounds !== "function") return;
+        controller.setAdminCanvasAppDetailBounds(bounds.maxOffset, bounds.page);
+    }, [controller, view.section, bounds.maxOffset, bounds.page]);
     return React.createElement(platform.Panel, {
         title: "Admin Console",
         color: "cyan",

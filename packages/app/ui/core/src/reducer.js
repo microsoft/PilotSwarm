@@ -49,6 +49,17 @@ function canvasAppResponseIsStale(apps, action) {
     return typeof action.seq !== "number" || (apps.selectionSeq ?? 0) !== action.seq;
 }
 
+/** A preview answer for an earlier request (another version, or a closed preview). */
+function canvasAppPreviewIsStale(apps, action) {
+    return typeof action.previewSeq === "number" && (apps.previewSeq ?? 0) !== action.previewSeq;
+}
+
+/** An action's completion after the person moved on (another selection or a newer action). */
+function canvasAppActionIsStale(apps, action) {
+    if (typeof action.actionSeq === "number" && (apps.actionSeq ?? 0) !== action.actionSeq) return true;
+    return typeof action.seq === "number" && (apps.selectionSeq ?? 0) !== action.seq;
+}
+
 function withCanvasApps(state, patch) {
     return { ...state, admin: { ...state.admin, canvasApps: { ...state.admin.canvasApps, ...patch } } };
 }
@@ -3120,7 +3131,7 @@ function baseReducer(state, action) {
                     ? {
                         selected: null,
                         selectionSeq: (previous.selectionSeq ?? 0) + 1,
-                        detail: null, detailLoading: false, detailError: null, editors: [],
+                        detail: null, detailLoading: false, detailError: null, editors: [], editorsError: null,
                         loads: { rows: [], total30d: null, loading: false, error: null },
                         preview: { html: null, version: null, sha256: null, loading: false, error: null },
                     }
@@ -3151,9 +3162,11 @@ function baseReducer(state, action) {
                         detailLoading: Boolean(sel),
                         detailError: null,
                         editors: [],
+                        editorsError: null,
                         loads: { rows: [], total30d: null, loading: false, error: null },
                         preview: { html: null, version: null, sha256: null, loading: false, error: null },
                         action: { pending: null, error: null, notice: null },
+                        detailOffset: 0,
                     },
                 },
             };
@@ -3166,7 +3179,10 @@ function baseReducer(state, action) {
             return withCanvasApps(state, { detail: null, detailLoading: false, detailError: action.error || "Failed to load canvas app" });
         case "admin/canvasApps/editors/loaded":
             if (canvasAppResponseIsStale(state.admin.canvasApps, action)) return state;
-            return withCanvasApps(state, { editors: Array.isArray(action.editors) ? action.editors : [] });
+            return withCanvasApps(state, { editors: Array.isArray(action.editors) ? action.editors : [], editorsError: null });
+        case "admin/canvasApps/editors/failed":
+            if (canvasAppResponseIsStale(state.admin.canvasApps, action)) return state;
+            return withCanvasApps(state, { editors: [], editorsError: action.error || "Failed to load contributors" });
         case "admin/canvasApps/loads/loading":
             if (canvasAppResponseIsStale(state.admin.canvasApps, action)) return state;
             return withCanvasApps(state, { loads: { ...state.admin.canvasApps.loads, loading: true, error: null } });
@@ -3185,24 +3201,49 @@ function baseReducer(state, action) {
             // Loads are the owner's and admins' to read; anyone else gets
             // FORBIDDEN. That is not an error worth showing in red.
             return withCanvasApps(state, { loads: { rows: [], total30d: null, loading: false, error: action.error || null, hidden: Boolean(action.hidden) } });
+        case "admin/canvasApps/detailBounds": {
+            const apps = state.admin.canvasApps;
+            const maxOffset = Math.max(0, Math.floor(Number(action.maxOffset) || 0));
+            const page = Math.max(1, Math.floor(Number(action.page) || 1));
+            const offset = Math.min(apps.detailOffset ?? 0, maxOffset);
+            if (apps.detailMaxOffset === maxOffset && apps.detailPage === page && apps.detailOffset === offset) return state;
+            return withCanvasApps(state, { detailMaxOffset: maxOffset, detailPage: page, detailOffset: offset });
+        }
+        case "admin/canvasApps/detailScroll": {
+            const apps = state.admin.canvasApps;
+            const next = Math.max(0, Math.min(apps.detailMaxOffset ?? 0, (apps.detailOffset ?? 0) + Math.trunc(Number(action.delta) || 0)));
+            return next === apps.detailOffset ? state : withCanvasApps(state, { detailOffset: next });
+        }
         case "admin/canvasApps/preview/loading":
             if (canvasAppResponseIsStale(state.admin.canvasApps, action)) return state;
-            return withCanvasApps(state, { preview: { html: null, version: action.version || null, sha256: null, loading: true, error: null } });
+            return withCanvasApps(state, {
+                previewSeq: typeof action.previewSeq === "number" ? action.previewSeq : (state.admin.canvasApps.previewSeq ?? 0) + 1,
+                preview: { html: null, version: action.version || null, sha256: null, loading: true, error: null },
+            });
         case "admin/canvasApps/preview/loaded":
-            if (canvasAppResponseIsStale(state.admin.canvasApps, action)) return state;
+            if (canvasAppResponseIsStale(state.admin.canvasApps, action) || canvasAppPreviewIsStale(state.admin.canvasApps, action)) return state;
             return withCanvasApps(state, {
                 preview: { html: String(action.page?.html ?? ""), version: action.page?.version || null, sha256: action.page?.sha256 || null, loading: false, error: null },
             });
         case "admin/canvasApps/preview/failed":
-            if (canvasAppResponseIsStale(state.admin.canvasApps, action)) return state;
+            if (canvasAppResponseIsStale(state.admin.canvasApps, action) || canvasAppPreviewIsStale(state.admin.canvasApps, action)) return state;
             return withCanvasApps(state, { preview: { html: null, version: null, sha256: null, loading: false, error: action.error || "Failed to load the page" } });
         case "admin/canvasApps/preview/close":
-            return withCanvasApps(state, { preview: { html: null, version: null, sha256: null, loading: false, error: null } });
+            // Closing is a new generation too: a request still in flight must not reopen it.
+            return withCanvasApps(state, {
+                previewSeq: (state.admin.canvasApps.previewSeq ?? 0) + 1,
+                preview: { html: null, version: null, sha256: null, loading: false, error: null },
+            });
         case "admin/canvasApps/action/pending":
-            return withCanvasApps(state, { action: { pending: action.action, error: null, notice: null } });
+            return withCanvasApps(state, {
+                actionSeq: typeof action.actionSeq === "number" ? action.actionSeq : (state.admin.canvasApps.actionSeq ?? 0) + 1,
+                action: { pending: action.action, error: null, notice: null },
+            });
         case "admin/canvasApps/action/done":
+            if (canvasAppActionIsStale(state.admin.canvasApps, action)) return state;
             return withCanvasApps(state, { action: { pending: null, error: null, notice: action.notice || null } });
         case "admin/canvasApps/action/failed":
+            if (canvasAppActionIsStale(state.admin.canvasApps, action)) return state;
             return withCanvasApps(state, { action: { pending: null, error: action.error || "Action failed", notice: null } });
         case "admin/canvasApps/addDialog/open":
             return {

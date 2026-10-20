@@ -68,6 +68,8 @@ the group that holds the selected app opens. With the tree focused, `↑`/`↓`
 
 The TUI's Admin Console (`Shift+A`, then `c`) has the same tree, keys and
 detail, read-only: Preview, the actions and Add canvas app are portal-only.
+Its detail has its own window under the tree; `Ctrl+D`/`PgDn` and
+`Ctrl+U`/`PgUp` page it.
 
 ## From the command line
 

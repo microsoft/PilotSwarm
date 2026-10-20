@@ -97,6 +97,29 @@ test("publish needs --name unless --check, and publishes private unless --shared
     assert.deepEqual(shared.calls[0].args, { sessionId: "s-1", slot: 3, name: "board", scope: "shared" });
 });
 
+test("publish rejects a supplied --slot outside 1-5 before any request (review r1 P7)", async () => {
+    for (const bad of ["0", "-1", "1.5", "6", "abc", ""]) {
+        for (const extra of [["--check"], ["--name", "board"]]) {
+            const { client, calls } = stubClient();
+            await assert.rejects(
+                () => runAppsCommand(["publish", "s-1", "--slot", bad, ...extra], { client, out: () => {}, err: () => {} }),
+                /--slot must be a canvas slot from 1 to 5/,
+                `--slot ${JSON.stringify(bad)} ${extra.join(" ")}`,
+            );
+            assert.deepEqual(calls, [], `no request for --slot ${JSON.stringify(bad)}`);
+        }
+    }
+    // A trailing --slot with no value is invalid too, not slot 1.
+    const { client, calls } = stubClient();
+    await assert.rejects(() => runAppsCommand(["publish", "s-1", "--check", "--slot"], { client, out: () => {}, err: () => {} }), /--slot must be/);
+    assert.deepEqual(calls, []);
+    // Absent: the default slot (nothing sent); 5 is the last slot.
+    const absent = await run(["publish", "s-1", "--check"], { publishCanvasApp: { checkOnly: true, ok: true, sizeBytes: 1, manifest: {} } });
+    assert.deepEqual(absent.calls[0].args, { sessionId: "s-1", checkOnly: true });
+    const five = await run(["publish", "s-1", "--slot", "5", "--check"], { publishCanvasApp: { checkOnly: true, ok: true, sizeBytes: 1, manifest: {} } });
+    assert.deepEqual(five.calls[0].args, { sessionId: "s-1", slot: 5, checkOnly: true });
+});
+
 test("share and unshare move between scopes", async () => {
     const share = await run(["share", "board"]);
     assert.deepEqual(share.calls[0], { op: "setCanvasAppScope", args: { name: "board", scope: "user", targetScope: "shared" } });

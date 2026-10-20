@@ -190,8 +190,8 @@ test("selecting an app in a collapsed group opens its group and section", async 
     await controller.selectAdminCanvasApp({ name: "notes", scope: "user", ownerProvider: "test", ownerSubject: "alice" });
     assert.deepEqual(store.getState().admin.tree.collapsed, ["group:shared"]);
     const view = selectAdminConsole(store.getState());
-    assert.equal(view.treeCursor, "capp:user:alice:notes");
-    assert.equal(tree(store).find((r) => r.id === "capp:user:alice:notes").selected, true);
+    assert.equal(view.treeCursor, "capp:user:test:alice:notes");
+    assert.equal(tree(store).find((r) => r.id === "capp:user:test:alice:notes").selected, true);
 });
 
 test("the detail page: header, description, interface card with workspace warning, versions, contributors, loads", async () => {
@@ -404,4 +404,144 @@ test("Publish as app is offered to the session owner only", async () => {
     assert.equal(selectCanvasPublishAvailable(withSession(null, alice)), false);
     assert.equal(selectCanvasPublishAvailable(withSession(alice, alice, null, { isSystem: true })), false);
     assert.equal(selectCanvasPublishAvailable({ ...base }), false);
+});
+
+// ── Review r1 (GPT-6.1 Sol) findings P2, P3, P5, P6 ─────────────
+
+function gate() {
+    let open;
+    const promise = new Promise((resolve) => { open = resolve; });
+    return { promise, open };
+}
+
+test("Make private keeps the app's owner even while its detail is still loading (review r1 P2)", async () => {
+    // Bob's shared poll; the admin (Alice) also has a private copy named poll.
+    const bobPoll = app("poll", "shared", { provider: "test", subject: "bob" }, { canManage: true, canEdit: true });
+    const alicePoll = app("poll", "user", { provider: "test", subject: "alice" });
+    let list = [bobPoll, alicePoll];
+    const detailGate = gate();
+    const { controller, store, calls } = makeController(ALICE, {
+        listCanvasApps: async () => list,
+        getCanvasApp: async (args) => { calls.push({ op: "getCanvasApp", args }); if (args.scope === "shared") await detailGate.promise; return { ...list.find((a) => a.scope === args.scope && (!args.ownerSubject || a.owner.subject === args.ownerSubject)), versions: [] }; },
+        setCanvasAppScope: async (args) => {
+            calls.push({ op: "setCanvasAppScope", args });
+            list = [alicePoll, { ...bobPoll, scope: "user" }];
+            return { ok: true };
+        },
+    });
+    await controller.refreshAdminCanvasApps();
+    const selecting = controller.selectAdminCanvasApp({ name: "poll", scope: "shared" });
+    assert.equal(store.getState().admin.canvasApps.detailLoading, true, "the detail is still loading");
+    await controller.runAdminCanvasAppAction("private");
+    assert.deepEqual(calls.find((c) => c.op === "setCanvasAppScope").args, { name: "poll", scope: "shared", targetScope: "user" });
+    assert.deepEqual(store.getState().admin.canvasApps.selected, { name: "poll", scope: "user", ownerProvider: "test", ownerSubject: "bob" },
+        "the selection follows Bob's app, not Alice's same-named copy");
+    assert.deepEqual(calls.filter((c) => c.op === "getCanvasApp").at(-1).args, { name: "poll", scope: "user", ownerProvider: "test", ownerSubject: "bob" });
+    detailGate.open();
+    await selecting;
+});
+
+test("Make private is refused, with no request, when the owner is not known yet (review r1 P2)", async () => {
+    const ownerless = { ...app("poll", "shared", { provider: "test", subject: "bob" }), owner: null };
+    const detailGate = gate();
+    const { controller, store, calls } = makeController(ALICE, {
+        listCanvasApps: async () => [ownerless],
+        getCanvasApp: async () => { await detailGate.promise; return { ...ownerless, versions: [] }; },
+    });
+    await controller.refreshAdminCanvasApps();
+    const selecting = controller.selectAdminCanvasApp({ name: "poll", scope: "shared" });
+    await controller.runAdminCanvasAppAction("private");
+    assert.equal(calls.some((c) => c.op === "setCanvasAppScope"), false);
+    assert.match(store.getState().admin.canvasApps.action.error, /owner is not known yet/);
+    detailGate.open();
+    await selecting;
+});
+
+test("two private copies with the same name and subject from different providers are separate rows (review r1 P3)", async () => {
+    const a = app("notes", "user", { provider: "github", subject: "same" });
+    const b = app("notes", "user", { provider: "entra", subject: "same" });
+    const { controller, store } = makeController(ALICE, {
+        listCanvasApps: async () => [a, b],
+        getCanvasApp: async (args) => ({ ...[a, b].find((x) => x.owner.provider === args.ownerProvider), versions: [] }),
+    });
+    await controller.refreshAdminCanvasApps();
+    const rows = tree(store).filter((r) => r.kind === "canvasApp");
+    assert.equal(rows.length, 2);
+    assert.equal(new Set(rows.map((r) => r.id)).size, 2, "distinct ids");
+    // Keyboard: each copy is reachable and selects itself.
+    controller.setAdminSection("canvasApps");
+    controller.setAdminTreeCursor("capps:others");
+    const picked = [];
+    for (let i = 0; i < 2; i += 1) {
+        await controller.moveAdminTreeCursor(1);
+        picked.push(store.getState().admin.canvasApps.selected.ownerProvider);
+        assert.equal(tree(store).filter((r) => r.selected).length, 1);
+    }
+    assert.deepEqual(picked.sort(), ["entra", "github"]);
+});
+
+test("an action that finishes after another app is selected leaves that selection alone (review r1 P5)", async () => {
+    const slow = gate();
+    const { controller, store } = makeController(ALICE, {
+        setCanvasAppEnabled: async () => { await slow.promise; return { ok: true }; },
+    });
+    await controller.refreshAdminCanvasApps();
+    await controller.selectAdminCanvasApp({ name: "notes", scope: "user", ownerProvider: "test", ownerSubject: "alice" });
+    const disabling = controller.runAdminCanvasAppAction("disable");
+    await controller.selectAdminCanvasApp({ name: "board", scope: "shared" });
+    slow.open();
+    await disabling;
+    assert.deepEqual(store.getState().admin.canvasApps.selected, { name: "board", scope: "shared", ownerProvider: null, ownerSubject: null });
+    assert.deepEqual(store.getState().admin.canvasApps.action, { pending: null, error: null, notice: null });
+});
+
+test("a delete or a failure that finishes late cannot clear or annotate a newer selection (review r1 P5)", async () => {
+    const slowDelete = gate();
+    const slowFail = gate();
+    const { controller, store } = makeController(ALICE, {
+        deleteCanvasApp: async () => { await slowDelete.promise; return { deleted: true }; },
+        pinCanvasAppVersion: async () => { await slowFail.promise; throw new Error("late failure"); },
+    });
+    await controller.refreshAdminCanvasApps();
+    await controller.selectAdminCanvasApp({ name: "notes", scope: "user", ownerProvider: "test", ownerSubject: "alice" });
+    const deleting = controller.runAdminCanvasAppAction("delete");
+    await controller.selectAdminCanvasApp({ name: "board", scope: "shared" });
+    const pinning = controller.runAdminCanvasAppAction("pin", "0.9.0");
+    slowDelete.open();
+    await deleting;
+    assert.equal(store.getState().admin.canvasApps.selected?.name, "board", "the late delete did not clear board");
+    assert.equal(store.getState().admin.canvasApps.action.pending, "pin", "board's own action is still pending");
+    await controller.selectAdminCanvasApp({ name: "poll", scope: "shared" });
+    slowFail.open();
+    await pinning;
+    assert.equal(store.getState().admin.canvasApps.action.error, null, "board's late failure is not shown on poll");
+});
+
+test("previews: the latest request wins, and a closed preview stays closed (review r1 P6)", async () => {
+    const v1 = gate();
+    const closing = gate();
+    let call = 0;
+    const { controller, store } = makeController(ALICE, {
+        getCanvasAppHtml: async (args) => {
+            call += 1;
+            if (args.version === "0.9.0") { await v1.promise; return { version: "0.9.0", sha256: "b".repeat(64), html: "<p>v0.9</p>" }; }
+            if (call === 3) { await closing.promise; return { version: "1.0.0", sha256: "a".repeat(64), html: "<p>late</p>" }; }
+            return { version: "1.0.0", sha256: "a".repeat(64), html: "<p>v1.0</p>" };
+        },
+    });
+    await controller.refreshAdminCanvasApps();
+    await controller.selectAdminCanvasApp({ name: "board", scope: "shared" });
+    const old = controller.previewAdminCanvasApp("0.9.0");
+    await controller.previewAdminCanvasApp("1.0.0");
+    v1.open();
+    await old;
+    let preview = selectAdminConsole(store.getState()).canvasApps.detail.preview;
+    assert.equal(preview.html, "<p>v1.0</p>", "the late 0.9.0 answer did not overwrite 1.0.0");
+    const third = controller.previewAdminCanvasApp();
+    controller.closeAdminCanvasAppPreview();
+    closing.open();
+    await third;
+    preview = selectAdminConsole(store.getState()).canvasApps.detail.preview;
+    assert.equal(preview.open, false, "the closed preview did not reopen");
+    assert.equal(preview.html, null);
 });

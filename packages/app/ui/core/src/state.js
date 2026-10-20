@@ -902,9 +902,19 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
                 detailLoading: false,
                 detailError: null,
                 editors: [],
+                editorsError: null,
                 loads: { rows: [], total30d: null, loading: false, error: null },
                 preview: { html: null, version: null, sha256: null, loading: false, error: null },
+                // Generations for previews and actions: a late answer for an
+                // earlier request is dropped (see the reducer).
+                previewSeq: 0,
                 action: { pending: null, error: null, notice: null },
+                actionSeq: 0,
+                // The TUI's detail window: first shown line, and the bounds
+                // its renderer reports (last useful offset, one page).
+                detailOffset: 0,
+                detailMaxOffset: 0,
+                detailPage: 10,
                 addDialog: {
                     open: false,
                     // "html" uploads one page; "archive" imports an export.

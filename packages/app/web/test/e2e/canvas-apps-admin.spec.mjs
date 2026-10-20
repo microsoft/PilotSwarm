@@ -55,7 +55,7 @@ test.describe("desktop: Admin → Canvas Apps", () => {
         await expect(row(page, "capps:shared")).toContainText("2");
         await expect(row(page, "capps:mine")).toContainText("Private");
         await expect(row(page, "capps:others")).toContainText("Other users");
-        await expect(row(page, "capp:user:bob:bobs-draft")).toContainText("bob");
+        await expect(row(page, "capp:user:none:bob:bobs-draft")).toContainText("bob");
     });
 
     test("the detail page shows the header, description, interface card, versions, contributors and loads", async ({ page }) => {
@@ -84,7 +84,7 @@ test.describe("desktop: Admin → Canvas Apps", () => {
 
     test("Preview runs the page in a sandboxed, isolated frame", async ({ page }) => {
         await openCanvasApps(page, base);
-        await row(page, "capp:user:test:notes").click();
+        await row(page, "capp:user:none:test:notes").click();
         await page.locator(".ps-canvas-app-detail").getByRole("button", { name: "Preview", exact: true }).first().click();
         const frame = page.locator("iframe.ps-canvas-app-preview__frame");
         await expect(frame).toHaveAttribute("sandbox", "allow-scripts");
@@ -109,7 +109,7 @@ test.describe("desktop: Admin → Canvas Apps", () => {
 
     test("actions reach the API for exactly this copy: disable, pin, share, delete", async ({ page }) => {
         await openCanvasApps(page, base);
-        await row(page, "capp:user:test:notes").click();
+        await row(page, "capp:user:none:test:notes").click();
         const detail = page.locator(".ps-canvas-app-detail");
         await detail.getByRole("button", { name: "Disable" }).click();
         await expect.poll(() => stub.canvasAppCalls.find((c) => c.op === "setCanvasAppEnabled")).toMatchObject({ name: "notes", enabled: false, scope: "user", ownerProvider: "none", ownerSubject: "test" });
@@ -187,7 +187,7 @@ test.describe("desktop: Admin → Canvas Apps", () => {
         await dialog.getByRole("button", { name: "Publish" }).click();
         await expect(page.locator(".ps-canvas-app-detail h3")).toHaveText("fresh");
         await expect(row(page, "capps:mine")).toHaveAttribute("aria-expanded", "true");
-        await expect(row(page, "capp:user:test:fresh")).toHaveClass(/is-selected/);
+        await expect(row(page, "capp:user:none:test:fresh")).toHaveClass(/is-selected/);
     });
 });
 
@@ -211,7 +211,7 @@ test.describe("desktop: a long list scrolls in its section and keeps the selecti
         for (let i = 0; i < 64; i += 1) await page.keyboard.press("j");
         await expect(page.locator(".ps-canvas-app-detail h3")).toHaveText("app-59");
         const inView = await box.evaluate((el) => {
-            const target = el.querySelector('[data-tree-id="capp:user:test:app-59"]');
+            const target = el.querySelector('[data-tree-id="capp:user:none:test:app-59"]');
             const a = el.getBoundingClientRect();
             const b = target.getBoundingClientRect();
             return b.top >= a.top - 1 && b.bottom <= a.bottom + 1;

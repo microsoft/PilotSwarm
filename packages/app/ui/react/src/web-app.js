@@ -1,5 +1,6 @@
 import { normalizeSessionSortMode, normalizeSessionUsage } from "../../core/src/session-sort.js";
 import { canvasKey as canvasStateKey, canvasEntryNeedsLegacyLabel, canvasLegacyLabelKey, normalizeStoredAdminCollapsed } from "../../core/src/state.js";
+import { createProfileSaveQueue, profileOwnerKey } from "../../core/src/profile-save-queue.js";
 import { ChatCallLine } from "./chat-call-line.js";
 import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
@@ -678,18 +679,21 @@ function materializeProfileSettings(remoteSettings, defaults) {
     });
 }
 
-const profileSaveQueues = new WeakMap();
+const profileSaveQueue = createProfileSaveQueue();
 async function saveProfileSettings(controller, settings) {
     if (typeof controller?.transport?.setCurrentUserProfileSettings !== "function") return null;
-    // Whole-document writes must arrive in edit order. A slow earlier request
-    // must never land after a newer layout and erase it.
-    const previous = profileSaveQueues.get(controller) || Promise.resolve();
-    const next = previous.catch(() => {}).then(() => controller.transport.setCurrentUserProfileSettings({
-        settings: normalizeProfileSettings(settings),
-    }));
-    profileSaveQueues.set(controller, next);
-    try { return await next; }
-    finally { if (profileSaveQueues.get(controller) === next) profileSaveQueues.delete(controller); }
+    // Whole-document writes must arrive in edit order (a slow earlier request
+    // must never land after a newer layout and erase it), and only for the
+    // account that made them: after a same-tab account switch the transport
+    // answers with the new account's token.
+    const ownerNow = () => profileOwnerKey(controller.getState?.()?.auth?.principal);
+    return profileSaveQueue.save(controller, {
+        owner: ownerNow(),
+        currentOwner: ownerNow,
+        send: () => controller.transport.setCurrentUserProfileSettings({
+            settings: normalizeProfileSettings(settings),
+        }),
+    });
 }
 
 function getVisibleInspectorTabs(controller) {
@@ -16096,6 +16100,7 @@ function AdminCanvasAppDetailPane({ controller, view }) {
                                 : null)))))
             : null,
         React.createElement("div", { className: "ps-admin-detail__label" }, "Contributors"),
+        detail.contributorsError ? React.createElement("p", { className: "ps-admin-console__error", role: "alert" }, detail.contributorsError) : null,
         detail.contributors.length
             ? React.createElement("ul", { className: "ps-canvas-app-detail__people" },
                 detail.contributors.map((person) => React.createElement("li", { key: `${person.role}:${person.subject}` },
@@ -16118,7 +16123,7 @@ function AdminCanvasAppDetailPane({ controller, view }) {
         React.createElement("div", { className: "ps-admin-detail__actions" },
             React.createElement("button", { type: "button", className: "ps-primary-button", onClick: () => controller.previewAdminCanvasApp(), disabled: detail.preview.loading }, "Preview"),
             detail.canManage
-                ? React.createElement("button", { type: "button", className: "ps-mini-button", onClick: act(detail.scope === "shared" ? "private" : "share"), disabled: Boolean(pending),
+                ? React.createElement("button", { type: "button", className: "ps-mini-button", onClick: act(detail.scope === "shared" ? "private" : "share"), disabled: Boolean(pending) || detail.loading,
                     title: detail.scope === "shared" ? "Making it private removes its contributors" : "Everyone can find and use a shared app" },
                     detail.scope === "shared" ? "Make private" : "Share")
                 : null,
@@ -17001,6 +17006,9 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
 
         return () => {
             active = false;
+            // Writes queued while this workspace was mounted belong to its
+            // account; none may go out after it unmounts (e.g. a sign-out).
+            profileSaveQueue.invalidate(controller);
             if (profileSettingsSaveTimerRef.current) {
                 clearTimeout(profileSettingsSaveTimerRef.current);
                 profileSettingsSaveTimerRef.current = null;
