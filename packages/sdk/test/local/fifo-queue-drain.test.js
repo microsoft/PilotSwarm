@@ -94,6 +94,7 @@ function harness(overrides = {}) {
                 if (listing.fails) throw new Error("listing failed");
                 return JSON.stringify(childList);
             case "manager.getSessionStatus": return JSON.stringify({ status: child.status });
+            case "manager.getDescendantSessionIds": return childList.map(c => c.sessionId);
             case "manager.getWorkerSessionPolicy": return { policy: null, allowedAgentNames: [] };
             case "manager.resolveAgentConfig": return null;
             case "manager.getOrchestrationStats": return { historySizeBytes: 0 };
