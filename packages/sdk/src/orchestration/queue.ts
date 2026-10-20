@@ -17,6 +17,7 @@ import {
     publishStatus,
     queueFollowup,
     dropCancelledPrompt,
+    restorePendingChildDigest,
     wrapWithResumeContext,
 } from "./lifecycle.js";
 import { shouldWakeParentForChildDigest } from "../child-notifications.js";
@@ -141,47 +142,62 @@ function compactFifo(runtime: DurableSessionRuntime): void {
     ctx.traceInfo(`[fifo] compacted ${before.flat().length} item(s) into ${packed.length} bucket(s) from bucket 0`);
 }
 
+/** Why an item was not stored: over the item cap, or no room even after compaction. */
+export type FifoRefusalReason = "too-large" | "full";
+
+/** The form an item is stored in: a timer item too large to queue is stored compact (defect E). */
+function fifoStoredForm(item: any): any {
+    return item?.kind === "timer" && isFifoItemTooLarge(item) ? compactTimerItem(item) : item;
+}
+
 /**
- * Append items in order. Returns the items that were not stored, in order:
- * empty unless an item is too large for any bucket (defect E: the runtime
- * would fail the orchestration on the write) or all FIFO_BUCKET_COUNT buckets
- * are full even after compaction (1.0.82). An item larger than a bucket but
- * within MAX_FIFO_ITEM_BYTES still gets a bucket of its own, as before.
+ * Append items in order. Returns the items that were not stored, in order,
+ * as passed in: empty unless an item is too large for any bucket (defect E:
+ * the runtime would fail the orchestration on the write) or all
+ * FIFO_BUCKET_COUNT buckets are full even after compaction (1.0.82). When
+ * `reasons` is given, it receives each returned item's reason, in the same
+ * order. An item larger than a bucket but within MAX_FIFO_ITEM_BYTES still
+ * gets a bucket of its own, as before.
  */
-export function appendToFifo(runtime: DurableSessionRuntime, newItems: any[]): any[] {
+export function appendToFifo(runtime: DurableSessionRuntime, newItems: any[], reasons?: FifoRefusalReason[]): any[] {
     const { ctx } = runtime;
     let writeBucketIdx = lastNonEmptyFifoBucket(ctx);
     let compacted = false;
     const notStored: any[] = [];
+    const refuse = (original: any, reason: FifoRefusalReason) => {
+        notStored.push(original);
+        reasons?.push(reason);
+    };
     for (let n = 0; n < newItems.length; n++) {
-        let item = newItems[n];
-        if (item?.kind === "timer" && isFifoItemTooLarge(item)) {
-            item = compactTimerItem(item);
-            ctx.traceInfo(`[fifo] a ${item.timer.type} timer item was too large to queue; queued its compact form`);
-        }
+        const original = newItems[n];
+        const item = fifoStoredForm(original);
         if (isFifoItemTooLarge(item)) {
-            notStored.push(item);
+            refuse(original, "too-large");
             continue;
         }
         const bucket = readFifoBucket(ctx, writeBucketIdx);
         bucket.push(item);
+        let stored = false;
         if (bucket.length === 1 || fitsInBucket(bucket)) {
             writeFifoBucket(ctx, writeBucketIdx, bucket);
-            continue;
-        }
-        if (writeBucketIdx + 1 < FIFO_BUCKET_COUNT) {
+            stored = true;
+        } else if (writeBucketIdx + 1 < FIFO_BUCKET_COUNT) {
             writeBucketIdx++;
             writeFifoBucket(ctx, writeBucketIdx, [item]);
-            continue;
-        }
-        if (!compacted) {
+            stored = true;
+        } else if (!compacted) {
             compacted = true;
             compactFifo(runtime);
             writeBucketIdx = lastNonEmptyFifoBucket(ctx);
             n--;
             continue;
         }
-        return [...notStored, ...newItems.slice(n)];
+        if (stored) {
+            if (item !== original) ctx.traceInfo(`[fifo] a ${item.timer.type} timer item was too large to queue; queued its compact form`);
+            continue;
+        }
+        for (const rest of newItems.slice(n)) refuse(rest, isFifoItemTooLarge(fifoStoredForm(rest)) ? "too-large" : "full");
+        return notStored;
     }
     return notStored;
 }
@@ -306,8 +322,9 @@ function* reportUnstoredItems(runtime: DurableSessionRuntime, lostItems: any[], 
 }
 
 /**
- * Move a drain stash into the FIFO. Returns the client message ids of the
- * items that were not stored, so a caller can forget them as pending.
+ * Move a drain stash into the FIFO. Returns the stash items that were not
+ * stored, so a caller can forget their ids as pending and give back the
+ * owed work they carried.
  *
  * 1.0.82: a timer item whose kind is already queued is not added (R5); a
  * single fire runs the schedule once. Items that do not fit even after
@@ -315,7 +332,7 @@ function* reportUnstoredItems(runtime: DurableSessionRuntime, lostItems: any[], 
  * dropped with an info line; their ids are not marked as seen, so a resend
  * runs (R8).
  */
-function* appendPromptStashToFifo(runtime: DurableSessionRuntime, stash: any[]): Generator<any, string[], any> {
+function* appendPromptStashToFifo(runtime: DurableSessionRuntime, stash: any[]): Generator<any, any[], any> {
     const { ctx, state } = runtime;
     const kinds = queuedTimerItemKinds(runtime);
     const items = stash.filter((item) => {
@@ -328,15 +345,42 @@ function* appendPromptStashToFifo(runtime: DurableSessionRuntime, stash: any[]):
         kinds.add(kind);
         return true;
     });
-    const lost = new Set(appendToFifo(runtime, items));
+    const reasons: FifoRefusalReason[] = [];
+    const lostItems = appendToFifo(runtime, items, reasons);
+    const lost = new Set(lostItems);
     for (const item of items) {
         if (item?.kind !== "prompt" || lost.has(item)) continue;
         touchRecentClientMessageIds(state, validClientMessageIds(item.clientMessageIds));
     }
-    if (lost.size === 0) return [];
-    const lostItems = items.filter((item) => lost.has(item));
-    yield* reportUnstoredItems(runtime, lostItems, lostItems.map((item) => (isFifoItemTooLarge(item) ? "too-large" : "full")));
-    return lostItems.flatMap((item) => validClientMessageIds(item?.clientMessageIds));
+    if (lostItems.length === 0) return [];
+    yield* reportUnstoredItems(runtime, lostItems, reasons);
+    return lostItems;
+}
+
+/**
+ * 1.0.82 (issue 192, defect E review): owed work that a stashed prompt took
+ * into its text. When the prompt is not queued after all (the FIFO is full,
+ * or it is cancelled in the same pass), the work is given back.
+ */
+interface CarriedWork {
+    digest?: PendingChildDigest;
+    rehydrationMessage?: string;
+}
+
+function giveBackCarriedWork(runtime: DurableSessionRuntime, carriedByItem: Map<any, CarriedWork>, items: any[]): void {
+    const { ctx, state } = runtime;
+    for (const item of items) {
+        const carried = carriedByItem.get(item);
+        if (!carried) continue;
+        carriedByItem.delete(item);
+        if (carried.digest) {
+            restorePendingChildDigest(runtime, carried.digest);
+            ctx.traceInfo(`[drain] a prompt that was not queued gave back the child digest it carried (${carried.digest.updates.length} update(s))`);
+        }
+        if (carried.rehydrationMessage !== undefined && state.pendingRehydrationMessage === undefined) {
+            state.pendingRehydrationMessage = carried.rehydrationMessage;
+        }
+    }
 }
 
 function duplicateClientMessageIds(
@@ -603,6 +647,8 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
     // 1.0.82 (defect E): a prompt or answer refused on arrival collected
     // nothing, but the pass goes on sweeping for the messages behind it.
     let refusedThisPass = false;
+    // 1.0.82 (defect E review): the owed work each stashed prompt carries.
+    const carriedByItem = new Map<any, CarriedWork>();
 
     for (let i = 0; i < MAX_DRAIN_PER_TURN; i++) {
         let msg: any = null;
@@ -751,6 +797,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 if (ids.some((id) => cancelledThisDrain.has(id))) {
                     ctx.traceInfo(`[drain] dropping stashed prompt cancelled by tombstone (ids=${ids.join(",")})`);
                     yield* dropCancelledPrompt(runtime, ids, "drain-stash");
+                    giveBackCarriedWork(runtime, carriedByItem, [item]);
                     stash.splice(s, 1);
                 }
             }
@@ -760,9 +807,14 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
         if (msg.type === "cmd") {
             if (stash.length > 0) {
                 // 1.0.82 (R8): an id that was not stored is not pending, so a
-                // resend later in this pass is not taken for a duplicate.
-                const lostIds: string[] = yield* appendPromptStashToFifo(runtime, stash);
-                for (const id of lostIds) pendingClientMessageIds.delete(id);
+                // resend later in this pass is not taken for a duplicate; the
+                // owed work a refused prompt carried is given back.
+                const lostItems: any[] = yield* appendPromptStashToFifo(runtime, stash);
+                giveBackCarriedWork(runtime, carriedByItem, lostItems);
+                for (const item of lostItems) {
+                    for (const id of validClientMessageIds(item?.clientMessageIds)) pendingClientMessageIds.delete(id);
+                }
+                carriedByItem.clear();
                 stash.length = 0;
             }
             yield* handleCommand(runtime, msg as CommandMessage);
@@ -991,6 +1043,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 state.pendingRehydrationMessage = rehydrationMessageBefore;
             }
 
+            let carriedDigest: PendingChildDigest | undefined;
             if (state.pendingChildDigest?.updates.length) {
                 const digestBefore = state.pendingChildDigest;
                 let withDigest: string;
@@ -1013,10 +1066,22 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                     state.pendingChildDigest = digestBefore;
                 } else {
                     userPrompt = withDigest;
+                    carriedDigest = digestBefore;
                 }
             }
 
-            stash.push({ ...baseItem, prompt: userPrompt });
+            const stashedPrompt = { ...baseItem, prompt: userPrompt };
+            stash.push(stashedPrompt);
+            // 1.0.82 (defect E review): remember the owed work this prompt
+            // took, so a refusal or a same-pass cancel gives it back.
+            const carriedRehydration = typeof rehydrationMessageBefore === "string"
+                && state.pendingRehydrationMessage === undefined ? rehydrationMessageBefore : undefined;
+            if (carriedDigest || carriedRehydration !== undefined) {
+                carriedByItem.set(stashedPrompt, {
+                    ...(carriedDigest ? { digest: carriedDigest } : {}),
+                    ...(carriedRehydration !== undefined ? { rehydrationMessage: carriedRehydration } : {}),
+                });
+            }
             for (const id of incomingClientMessageIds) pendingClientMessageIds.add(id);
             continue;
         }
@@ -1024,7 +1089,10 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
         ctx.traceInfo(`[drain] skipping unknown: ${JSON.stringify(msg).slice(0, 120)}`);
     }
 
-    if (stash.length > 0) yield* appendPromptStashToFifo(runtime, stash);
+    if (stash.length > 0) {
+        const lostItems: any[] = yield* appendPromptStashToFifo(runtime, stash);
+        giveBackCarriedWork(runtime, carriedByItem, lostItems);
+    }
 }
 
 // ─── Pre-dispatch sweep: grab any pending cancel tombstone ──
@@ -1067,8 +1135,10 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
             if (stash.length > 0) {
                 // 1.0.82 (R8): an id that was not stored is not pending, so a
                 // resend later in this pass is not taken for a duplicate.
-                const lostIds: string[] = yield* appendPromptStashToFifo(runtime, stash);
-                for (const id of lostIds) pendingClientMessageIds.delete(id);
+                const lostItems: any[] = yield* appendPromptStashToFifo(runtime, stash);
+                for (const item of lostItems) {
+                    for (const id of validClientMessageIds(item?.clientMessageIds)) pendingClientMessageIds.delete(id);
+                }
                 stash.length = 0;
             }
             yield* handleCommand(runtime, msg as CommandMessage);

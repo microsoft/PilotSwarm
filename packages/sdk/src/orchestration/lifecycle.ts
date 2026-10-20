@@ -36,6 +36,7 @@ import {
     addCancelledMessageIds,
     touchRecentClientMessageIds,
     type DurableSessionRuntime,
+    type PendingChildDigest,
 } from "./state.js";
 import {
     appendSystemContext,
@@ -468,6 +469,35 @@ export function bufferChildUpdate(
     } else {
         runtime.state.pendingChildDigest.updates.push(nextEntry);
     }
+}
+
+/**
+ * 1.0.82 (issue 192, defect E review): give back a digest that a prompt took
+ * and that was never queued (the FIFO was full, or the prompt was cancelled
+ * in the same pass). Updates buffered since are kept: per child, the newer
+ * entry wins unless the given-back one is a lifecycle update and the newer
+ * one is not, as in bufferChildUpdate.
+ */
+export function restorePendingChildDigest(
+    runtime: DurableSessionRuntime,
+    digest: PendingChildDigest,
+): void {
+    const current = runtime.state.pendingChildDigest;
+    if (!current) {
+        runtime.state.pendingChildDigest = digest;
+        return;
+    }
+    const updates = [...digest.updates];
+    for (const entry of current.updates) {
+        const index = updates.findIndex((given) => given.sessionId === entry.sessionId);
+        if (index < 0) updates.push(entry);
+        else if (childUpdateRank(entry.updateType) >= childUpdateRank(updates[index].updateType)) updates[index] = entry;
+    }
+    runtime.state.pendingChildDigest = {
+        startedAtMs: Math.min(digest.startedAtMs, current.startedAtMs),
+        ...(digest.ready || current.ready ? { ready: true } : {}),
+        updates,
+    };
 }
 
 function childUpdateRank(updateType: string): number {
