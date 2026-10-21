@@ -19,7 +19,10 @@ export function runtimeHostKey(): Promise<string> {
             return `${hostname()}:${stdout.trim()}`;
         }
         throw new Error("Package process recovery requires Linux or Windows process identity support");
-    })();
+    })().catch(error => {
+        host = undefined;
+        throw error;
+    });
 }
 /** A recycled PID must never authorize killing the unrelated replacement. */
 export async function runtimeProcessToken(pid: number): Promise<string | null> {
