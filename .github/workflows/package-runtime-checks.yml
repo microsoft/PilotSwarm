@@ -7,6 +7,7 @@ on:
       - 'packages/sdk/test/postgres/**'
       - 'packages/app/ui/react/src/package-review-tabs.js'
       - 'packages/app/web/test/e2e/package-reviewer.spec.mjs'
+      - 'packages/sdk/test/unit/package-runtime-host-key.test.mjs'
       - 'packages/sdk/package.json'
       - 'package-lock.json'
   push:
@@ -16,6 +17,7 @@ on:
       - 'packages/sdk/test/postgres/**'
       - 'packages/app/ui/react/src/package-review-tabs.js'
       - 'packages/app/web/test/e2e/package-reviewer.spec.mjs'
+      - 'packages/sdk/test/unit/package-runtime-host-key.test.mjs'
       - 'packages/sdk/package.json'
       - 'package-lock.json'
   workflow_dispatch:
@@ -55,6 +57,8 @@ jobs:
       - run: npm run build
       - name: CI policy and shell integration
         run: node --test .github/scripts/test/*.test.mjs .github/scripts/integration/*.test.mjs
+      - name: Process identity recovery regressions
+        run: node --test packages/sdk/test/unit/package-runtime-host-key.test.mjs
       - name: Install the review workflow's browser
         run: npx playwright install --with-deps msedge
       - name: Advisory review report browser regressions

@@ -32,7 +32,11 @@ export async function runtimeProcessToken(pid: number): Promise<string | null> {
             const stat = await fs.readFile(`/proc/${pid}/stat`, "utf8");
             const fields = stat.slice(stat.lastIndexOf(")") + 2).split(" ");
             return fields[0] === "Z" ? null : fields[19];
-        } catch (error: any) { if (error.code === "ENOENT") return null; throw error; }
+        } catch (error: any) {
+            // procfs can open stat before the process exits, then fail the read with ESRCH.
+            if (error.code === "ENOENT" || error.code === "ESRCH") return null;
+            throw error;
+        }
     }
     if (platform() === "win32") {
         const { stdout } = await exec(powershell, ["-NoProfile", "-NonInteractive", "-Command",
@@ -76,7 +80,7 @@ except ProcessLookupError:
 try:
     try:
         stat = open("/proc/%d/stat" % pid).read()
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         stat = None
     if stat is not None:
         fields = stat[stat.rfind(")") + 2:].split()
