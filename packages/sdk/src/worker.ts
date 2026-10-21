@@ -2,7 +2,7 @@ import { capabilityHash, type CapabilitySource } from "./capability-catalog.js";
 import { AGENT_HANDOFF_CAPABILITY, TURN_CONTROL_CAPABILITY, WORKSPACE_CAPABILITY } from "./activity-routing.js";
 import { resolveNativeSubagents } from "./native-subagents.js";
 import { FeatureFlagCache } from "./feature-flag-cache.js";
-import { SessionManager, packageAgentKey, agentOwnerKey, type AgentPromptEntry } from "./session-manager.js";
+import { SessionManager, packageAgentKey, agentOwnerKey, type AgentCopyEntry, type AgentPromptEntry } from "./session-manager.js";
 import { loadAdminScope, ADMIN_SCOPE_POLICY_VERSION } from "../api/src/admin-scope.js";
 import { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
 import { FilesystemArtifactStore, FilesystemSessionStore, type ArtifactStore, type SessionStateStore } from "./session-store.js";
@@ -2018,13 +2018,14 @@ export class PilotSwarmWorker {
         const rank = (agent: any) => agent.packageId == null ? 0 : (agent.packageScope !== "user" ? 1 : 2);
         for (const [name, agents] of byName) {
             const winner = [...agents].sort((a, b) => rank(a) - rank(b))[0];
-            const copyOf = (agent: any) => ({
+            const copyOf = (agent: any): AgentCopyEntry => ({
                 prompt: agent.prompt,
                 ...(agent.baseV2Prompt ? { baseV2Prompt: agent.baseV2Prompt } : {}),
                 toolNames: [...(agent.tools ?? [])],
                 nativeTaskTools: agent.nativeTaskTools,
                 kind: agent.promptLayerKind ?? "app-agent",
                 descriptor: agent.layerDescriptor,
+                namespace: agent.namespace ?? null,
                 ...(agent.packageId ? {
                     packageId: agent.packageId,
                     packageScope: agent.packageScope ?? "shared",

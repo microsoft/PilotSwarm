@@ -1,5 +1,22 @@
 # Changelog
 
+## 0.8.5 — 2026-10-20
+
+**Restricted MCP activation for named agents.** Optional MCP admission now uses
+the selected agent copy's authored name, raw namespace and verified package
+provenance, rather than treating its qualified durable binding as a leaf name.
+Both documented deployment ACL forms work for namespaced agents; shared/private
+package ownership rules, default exclusions and direct authored grants remain
+unchanged. Saved source IDs, revisions and references stay intact across session
+continuation and worker restart. See
+[restricted deployment MCP servers](docs/building-agent-packages.md).
+
+**Configurable Foundry deployment authentication.** Azure stamps can opt into
+`FOUNDRY_AUTH_MODE=entra` to disable account-key authentication, grant the worker
+workload identity access, and stage Foundry providers without API keys. Account-key
+authentication remains the compatibility default. See the
+[deployment reference](deploy/scripts/README.md).
+
 ## 0.8.4 — 2026-10-17
 
 **Application-owned TUI diagnostic logs.** Programmatic launchers can pass
