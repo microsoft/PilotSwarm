@@ -106,7 +106,10 @@ working while the canvas app transition is on:
 
 An old app's page qualifies only while its card in the old catalog is
 unchanged since before the registry was installed. An edited copy is a new
-page and follows the registry's rules. If the old catalog cannot be read,
+page and follows the registry's rules. Any write to an old app's card, even
+one that keeps the same page, ends its exemption; each worker and portal
+re-reads the old catalog at most once a minute, so the change takes effect
+within about a minute. If the old catalog cannot be read,
 old pages ask for approval again until it can (see
 [security and sharing](./security-and-sharing.md#canvas-apps)).
 `pilotswarm apps label <sessionId> [--slot n]` shows how a session's canvas

@@ -232,6 +232,24 @@ test("an old card overwritten after the deploy stops exempting once the TTL pass
     assert.equal(await catalog.isExemptSha256(SHA_B), false, "and the new source was written after the deploy");
 });
 
+test("an old card re-written after the deploy with the SAME page stops exempting once the TTL passes (step 3 ON-8)", async () => {
+    // The deployed check's ON-8: an admin edits only the card's description; the source sha is unchanged. The write moves
+    // the card's updated_at past the cutoff, so the page is no longer an old app's page, once this process re-reads.
+    const facts = fakeFacts([card("board", SHA_A, BEFORE)]);
+    let now = 0;
+    const catalog = catalogOf(facts, { ttlMs: 60_000, now: () => now });
+    assert.equal(await catalog.isExemptSha256(SHA_A), true);
+    const reads = facts.calls.length;
+    facts.rows = [card("board", SHA_A, AFTER, { description: "Use when board (edited after the registry)." })];
+    now = 59_999;
+    assert.equal(await catalog.isExemptSha256(SHA_A), true, "within the TTL the earlier enumeration is reused (the documented minute)");
+    assert.equal(facts.calls.length, reads, "no re-read within the TTL");
+    now = 60_000;
+    assert.equal(await catalog.isExemptSha256(SHA_A), false, "after the TTL the re-written card no longer exempts its unchanged page");
+    assert.ok(facts.calls.length > reads, "the catalog was re-read");
+    assert.equal((await catalog.get("board")).exempt, false, "and find-by-name no longer marks it exempt");
+});
+
 test("a failed refresh after the TTL exempts nothing, even what the expired snapshot held (review F2)", async () => {
     const facts = fakeFacts([card("old", SHA_A, BEFORE)]);
     let now = 0;
