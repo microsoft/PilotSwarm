@@ -24,8 +24,11 @@ globalThis.fileRequests = [];
 globalThis.failNext = params.get("fail") === "1";
 globalThis.staleNext = params.get("stale") === "1";
 const perFile = params.get("legacy") !== "1";
+const longPatch = params.get("long") === "1";
+const patchFor = (path) => "--- a/" + path + "\\n+++ b/" + path + "\\n@@ -1,1 +1,1 @@\\n-old " + path + "\\n+new " + path
+    + (longPatch ? Array.from({ length: 300 }, (_, i) => "\\n+line " + i + " " + "x".repeat(400)).join("") : "");
 const change = (path, withPatch) => ({ path, status: "modified", group: "executable", additions: 1, deletions: 1,
-    ...(withPatch ? { diff: "--- a/" + path + "\\n+++ b/" + path + "\\n@@ -1,1 +1,1 @@\\n-old " + path + "\\n+new " + path } : { diff: null, patchOmitted: true }) });
+    ...(withPatch ? { diff: patchFor(path) } : { diff: null, patchOmitted: true }) });
 const transport = {
     listAgentPackageReviews: async () => [candidate],
     getAgentPackageReviewDiff: async (input) => {
@@ -56,9 +59,10 @@ createRoot(document.getElementById("root")).render(
     script = bundle.outputFiles[0].text;
 });
 
-async function open(page, query = "") {
+async function open(page, query = "", { styled = false } = {}) {
     await page.route("http://review.local/**", (route) => route.fulfill({ contentType: "text/html", body: '<div id="root"></div>' }));
     await page.goto(`http://review.local/${query}`);
+    if (styled) await page.addStyleTag({ path: fileURLToPath(new URL("../../src/index.css", import.meta.url)) });
     await page.addScriptTag({ content: script });
     await page.getByRole("tab", { name: "Pending Approval" }).click();
     await page.getByRole("button", { name: "Review diff", exact: true }).click();
@@ -108,4 +112,35 @@ test("a server without per-file loading still shows full patches", async ({ page
     await expect(patch(page)).toContainText("+new tools/module-00.mjs");
     await fileRow(page, "tools/module-03.mjs").click();
     await expect(patch(page)).toContainText("+new tools/module-03.mjs");
+});
+
+test("an open diff replaces the review list, and Back returns to the review it came from", async ({ page }) => {
+    await open(page);
+    await expect(page.getByRole("tablist", { name: "Package catalogs" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Refresh reviews" })).toHaveCount(0);
+    const back = page.getByRole("button", { name: "← Back to Pending Approval" });
+    await expect(back).toBeFocused();
+    await back.click();
+    await expect(page.getByRole("navigation", { name: "Changed files" })).toHaveCount(0);
+    await expect(page.getByRole("tab", { name: "Pending Approval" })).toHaveAttribute("aria-selected", "true");
+    await expect(page.getByRole("button", { name: "Review diff", exact: true })).toBeFocused();
+    await page.getByRole("button", { name: "Review diff", exact: true }).click();
+    await page.getByRole("button", { name: "Close diff", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Refresh reviews" })).toBeVisible();
+});
+
+test("a long, wide patch scrolls inside its pane and never covers the controls below", async ({ page }) => {
+    await page.setViewportSize({ width: 1400, height: 900 });
+    await open(page, "?long=1", { styled: true });
+    await expect(patch(page)).toContainText("+line 299");
+    const box = async (selector) => page.locator(selector).first().boundingBox();
+    const body = await box(".ps-review-diff__body");
+    const file = await box(".ps-review-diff__file");
+    const actions = await page.getByRole("button", { name: "Approve this digest", exact: true }).boundingBox();
+    expect(file.y + file.height).toBeLessThanOrEqual(body.y + body.height + 1);
+    expect(file.x + file.width).toBeLessThanOrEqual(body.x + body.width + 1);
+    expect(actions.y).toBeGreaterThanOrEqual(body.y + body.height);
+    const scroll = await page.locator(".ps-review-diff__file").evaluate((el) =>
+        ({ vertical: el.scrollHeight > el.clientHeight, horizontal: el.scrollWidth > el.clientWidth }));
+    expect(scroll).toEqual({ vertical: true, horizontal: true });
 });

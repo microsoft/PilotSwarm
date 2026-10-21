@@ -6565,9 +6565,17 @@ body.is-resizing-pane-y iframe {
    review risk), the selected file's patch on the right. */
 .ps-review-diff { border: 1px solid var(--ps-border); border-radius: 6px; padding: 10px 12px; margin: 10px 0; }
 .ps-review-diff > p, .ps-review-diff > pre { overflow-wrap: anywhere; }
+/* An open diff replaces the catalog page; the bar returns to it. */
+.ps-review-page__bar {
+  position: sticky; top: 0; z-index: 2; display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+  margin: -14px -18px 0; padding: 8px 18px; background: var(--ps-surface); border-bottom: 1px solid var(--ps-border);
+}
+.ps-review-page__bar > span { color: var(--ps-muted); overflow-wrap: anywhere; }
+/* Both panes have a definite height and scroll inside it, so a long patch
+   can never spill over the content below. */
 .ps-review-diff__body {
-  display: grid; grid-template-columns: minmax(220px, 320px) minmax(0, 1fr); gap: 10px;
-  min-height: 240px; max-height: 70vh; margin: 10px 0;
+  display: grid; grid-template-columns: minmax(220px, 320px) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr);
+  gap: 10px; height: clamp(320px, calc(100vh - 220px), 1100px); margin: 10px 0;
 }
 .ps-review-diff__files { overflow: auto; border: 1px solid var(--ps-border); border-radius: 6px; padding: 4px 0; }
 .ps-review-diff__group-label {
@@ -6592,15 +6600,16 @@ body.is-resizing-pane-y iframe {
 .ps-review-diff__file { min-width: 0; overflow: auto; border: 1px solid var(--ps-border); border-radius: 6px; padding: 8px 10px; }
 .ps-review-diff__file > header { display: flex; align-items: baseline; gap: 10px; }
 .ps-review-diff__file > header h5 { margin: 0; font-family: var(--ps-mono); overflow-wrap: anywhere; }
-.ps-review-diff__patch { margin: 8px 0 0; font-family: var(--ps-mono); font-size: var(--ps-font-size-dense); line-height: 1.4; white-space: pre; }
+.ps-review-diff__patch { margin: 8px 0 0; font-family: var(--ps-mono); font-size: var(--ps-font-size-dense); line-height: 1.4; white-space: pre; min-width: max-content; }
 .ps-review-diff__patch span { display: block; padding: 0 6px; }
 .ps-review-diff__patch .is-add { background: rgba(46, 160, 67, 0.15); }
 .ps-review-diff__patch .is-del { background: rgba(248, 81, 73, 0.15); }
 .ps-review-diff__patch .is-hunk { color: var(--ps-muted); background: rgba(56, 139, 253, 0.1); }
 .ps-review-diff__patch .is-meta { color: var(--ps-muted); }
 @media (max-width: 900px) {
-  .ps-review-diff__body { grid-template-columns: 1fr; max-height: none; }
+  .ps-review-diff__body { grid-template-columns: 1fr; grid-template-rows: none; height: auto; }
   .ps-review-diff__files { max-height: 40vh; }
+  .ps-review-diff__file { max-height: 70vh; }
 }
 .ps-admin-detail.is-empty h3 { margin-top: 0; }
 .ps-admin-detail__head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
