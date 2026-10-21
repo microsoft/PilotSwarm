@@ -7,6 +7,8 @@ package security prerequisite; this proposal is not release or deployment
 authorization. The current API and examples are in
 [SDK apps](../developer/building/sdk-apps.md) and
 [building agent packages](../building-agent-packages.md).
+The proposed review and precheck-selection workflow is in
+[package review setup for executable prechecks](#proposed-package-review-setup-for-executable-prechecks).
 
 Package prechecks use manifest-declared generic supervised callbacks, not the
 unreleased legacy `createCronPrechecks`/`cronPrechecks` exports. Arming captures
@@ -124,6 +126,246 @@ initialization. Hosted Ubuntu is not certification of the actual worker image.
 Image prerequisites, trusted external legacy/remote-worker fencing proof,
 acceptance reconciliation and exact Claude Opus 4.8 review remain gates.
 No deployment or completed-candidate security approval is claimed.
+
+## Proposed: package review setup for executable prechecks
+
+Status: **proposed, not implemented**. This section adds review usability
+around the existing package-approval controls. It does not change any
+security rule above.
+
+### Why this is needed
+
+A package-owned precheck is executable code, so it goes through the shared
+executable-package review: admin approval of the exact full-artifact digest,
+then per-invocation session authorization. That control is required because
+many users publish arbitrary agents to a shared cluster. Its cost is review
+latency: every new executable version waits for an administrator. Without a
+fast, precise review path, prechecks become impractical, and authors will
+fall back to idle LLM polling.
+
+Goal: an administrator can review a typical precheck update in minutes, and
+a session owner can choose exactly which approved precheck a cron schedule
+uses.
+
+### What stays unchanged
+
+- Approval is bound to package ID, version ID and the full canonical tar
+  SHA-256. Activation, rebind, session pins and per-invocation admission stay
+  separate controls.
+- Every changed executable version needs approval, including a prompt-only
+  change inside a mixed package. Approval is never reused across digests
+  (see decisions).
+- Only deterministic inspection and an authenticated administrator decide.
+  No diff, summary or assistant output is an approval or a security proof.
+- Remote MCP and backend implementations remain outside package approval.
+
+### Main components
+
+| # | Component | Surface | Authority |
+|---|---|---|---|
+| 1 | Review diff API | Management/Web/MCP: `getAgentPackageReviewDiff` | Fleet admin; digest-bound |
+| 2 | Change classification | Produced by the trusted inspector | Deterministic; not LLM |
+| 3 | Review panel | Settings → Packages → Pending Approval | Admin decides |
+| 4 | `package-reviewer` assistant | Admin-launched system agent session | Advisory only |
+| 5 | Session `PRECHECK` selector | Session details, next to `CRON` | Session owner or fleet admin; server-validated |
+| 6 | Review and broken-precheck notifications | Existing review status, plus notifications | Informational |
+
+#### 1. Review diff API
+
+`getAgentPackageReviewDiff({candidate, baseline?})`:
+
+- `candidate` is `{packageId, versionId, sha256}` from the pending review row.
+- `baseline` defaults to the newest **approved** executable version of the same
+  package. If none exists, it falls back to the active version, and otherwise
+  to "new package" (full file listing).
+- Both artifacts are fetched from the artifact store and verified against
+  their recorded digests (`fetchAgentPackageTarGz`). Catalog metadata comes
+  from CMS. A digest mismatch fails the request; it never shows a stale diff.
+- The API reuses the canonical-entry comparison behind `diff_agent_versions`
+  (`diffPackageTrees`). Unlike that owner-scoped, semver-based tool, it
+  addresses versions by exact digest and lets an administrator read another
+  user's pending private version.
+- Each response echoes both digests and the review revision. Any decision
+  submitted from that view must carry the same values, so a republish or
+  concurrent decision is rejected as stale.
+
+#### 2. Change classification
+
+The inspector already parses the archive without importing code. It
+classifies every changed path into one of these groups:
+
+- **Executable code:** `.js`/`.mjs` modules, callback/tool factories,
+  packaged MCP entries.
+- **Dependencies and runtime config:** `package.json`, imports, MCP
+  command/args/environment.
+- **Capabilities:** declared tools, MCP servers, callbacks and grants.
+- **Cron precheck policy:** declared prechecks, reason bindings, intervals,
+  shadow mode and max-skip settings.
+- **Declarative:** agents, prompts, skills and Markdown.
+- **Flagged:** binary, oversized, unsupported or unparseable content. These are
+  shown as content hashes, not diffed.
+
+The panel shows executable, dependency, capability and precheck-policy
+changes first. A version with no executable changes still requires a
+decision; the panel just makes that review short.
+
+#### 3. Review panel (Pending Approval tab)
+
+The existing tab already supports approve/reject/revoke, activation, rebind,
+the file viewer and audit. Additions:
+
+- A header with publisher, candidate and baseline digests, review revision and
+  inspection reasons.
+- Change summary counts per classification group.
+- Side-by-side file diff, grouped and ordered by risk.
+- An optional advisory review guide (component 4), clearly labeled as not an
+  approval.
+- Decisions remain: **Approve exact digest**, **Reject** (reason required) and
+  **Revoke**, plus the existing separate activation step. Each is a CAS on
+  candidate digest and review revision, audited with actor, reason and the
+  baseline digest that was shown.
+
+#### 4. Review assistant: new `package-reviewer` agent
+
+Recommendation: add a new system agent, `package-reviewer`, rather than
+extending `agent-manager`.
+
+| Option | Pros | Cons |
+|---|---|---|
+| New `package-reviewer` (recommended) | Separation of duties: the author/publisher agent never reviews its own output. Least-privilege, read-only tool set. A dedicated adversarial-review prompt. Admin-only launch. | One more agent definition to maintain. |
+| Extend `agent-manager` | Reuses existing package read/diff tools. No new agent. | It can stage, publish and enable packages, so it would hold both write and review authority. Self-review is possible. Larger prompt and tool surface for every authoring session. |
+
+The new agent can reuse the existing read-tool implementations. Its tool set:
+
+- Read-only: `get_agent_package_review_diff`, `read_agent_package_file`
+  (exact digest), inspection results, review history and audit.
+- No tools that stage, publish, enable, activate, approve, rebind, run a
+  package or call package MCP.
+
+Contract:
+
+- Launched by a fleet administrator from the review panel for one candidate
+  and baseline digest pair. The report is stored keyed by both digests and is
+  shown only while they still match the pending candidate.
+- Treats all package content as untrusted data, including instructions
+  embedded in code, comments or prompts that try to influence the review.
+- Never executes or imports package code.
+- Report structure: verified facts (taken from inspector and diff output),
+  then analysis and a step-by-step review guide (what changed, why it matters,
+  what to check), then open risks. It does not output an approve/reject
+  verdict.
+
+The assistant comes after components 1–3. Reviews must work without it.
+
+#### 5. Session `PRECHECK` selector
+
+A `PRECHECK` field sits next to `CRON` in the session details panel.
+
+Rules:
+
+- **Enabled** only when the session has an active **interval** cron schedule.
+  Hidden or disabled when cron is off, and for wall-clock `cron_at` schedules,
+  which do not run prechecks.
+- **Options:** `None`, plus prechecks declared by the session's exact bound
+  agent identity:
+  - Trusted deployment prechecks registered for that agent.
+  - Package-owned prechecks from the session's pinned package version and
+    digest, listed only when that exact content is approved and the session is
+    currently authorized to use it.
+  - Prechecks from other agents or unapproved versions are never listed.
+- **Scope:** the choice applies to the current schedule only. It becomes the
+  highest-precedence selection: operator choice (including explicit `None`),
+  then the model's `cron(precheck=...)` name, then the agent reason binding,
+  then the session default. It survives model re-arms and continue-as-new.
+  Cancelling the schedule clears it.
+- **Who can change it:** the session owner, or an authenticated fleet
+  administrator acting on any session. An administrator's change is audited
+  with actor, session, before/after precheck and reason. Options are always
+  computed from the session's own bound agent and authorization, never the
+  administrator's.
+- **Enforcement:** the request carries the schedule revision. The server
+  re-validates the caller, agent identity, approval and binding, then delivers the
+  change to the orchestration as a command. The schedule captures the exact
+  package, version, digest and binding pin as today. A stale schedule revision
+  or a no-longer-eligible precheck is rejected; it is never silently replaced.
+- User messages and other pending work still bypass the precheck, as today.
+
+#### 6. Review and broken-precheck notifications
+
+**Review notifications.** Review status is already visible to owners and
+editors. Add a notification on approve/reject/revoke that includes the reason,
+and an "approved, not active" reminder, so publishers do not have to poll.
+
+**Broken-precheck notifications.** A broken precheck does not stop work: the
+existing fail-open path runs a normal model turn, so the impact is token cost
+on cycles with no work, not missed work. Therefore:
+
+- **No automatic rollback, revoke or disable.** The schedule keeps running and
+  the approved version stays in place.
+- **Explicit notification so the fix lands quickly.** Outcomes `error`,
+  `timeout`, `invalid` and `unregistered` count as broken. `max_skips` is a
+  deliberate forced turn and is not broken. Revocation or binding denial keeps
+  its existing explicit-denial behavior and is not part of this alert.
+- **Recipients:** only the package owner (to publish a fix) and the session
+  owner (who pays the token cost). Package editors and fleet administrators
+  are not notified.
+- **Content:** package, version, digest, precheck name, session, outcome,
+  first/last seen, consecutive count and a sanitized error summary. It never
+  includes package secrets or raw tool output.
+- **Deduplication:** one notification per schedule, digest and outcome when
+  the failure starts, plus a periodic reminder while it continues (proposed
+  daily). A recovery notice is sent after the next successful `run` or `skip`.
+- The session details panel also shows the broken state next to `PRECHECK`.
+
+The fix is a new package version through the normal review; the
+grouped diff keeps that review short.
+
+### Execution plan
+
+| Phase | Deliverables | Exit tests |
+|---|---|---|
+| 1. Diff and classification | `getAgentPackageReviewDiff` across management, Web, MCP and CLI. Classification in the inspector. Digest/revision echo. | Admin-only authorization. Private-package access for admins only. Digest-mismatch denial. Baseline selection (approved / active / new). Classification fixtures for every group. Stale-decision CAS. |
+| 2. Review panel | Pending Approval header, summary, grouped diff and decisions bound to the shown digests. | UI tests: ordering, flagged content, stale-view rejection. Audit records the baseline digest. |
+| 3. Session selector | `PRECHECK` field, options API and orchestration command. Precedence and lifecycle. | Disabled without interval cron. Filtering by exact agent identity and approved pin. Stale revision rejected. Survives re-arm and continue-as-new. Cleared on cancel. Owner and fleet admin can change it; other users are denied. Admin changes are audited, and options come from the session's binding, not the admin's. Native idle-skip and work-cycle tests. |
+| 4. Notifications | Approve/reject/revoke and approved-not-active notifications. Broken-precheck alert, reminder and recovery notice. | Review notices go only to owner and editors. Broken alerts reach only the package owner and session owner. No private-package leakage or secrets. Dedup per schedule/digest/outcome. No rollback or disable on failure; the fail-open model turn still runs. `max_skips` and denial do not alert. |
+| 5. `package-reviewer` agent | Agent definition, read-only tool set, digest-keyed report storage, panel launch. | Tool allowlist test (no write or execute tools). Prompt-injection fixtures. Report hidden after republish. Reviews still work with the agent disabled. |
+| 6. Acceptance | Extend the existing review and cron suites. Linux workflow. | No reduction in existing approval, admission or fencing coverage. |
+
+Phases 1–4 are the minimum useful set; broken-precheck alerts are required
+because failures are not rolled back. Phase 5 can ship later.
+
+### Negative impacts and costs
+
+- **Review latency remains.** Even a fast review is an admin round trip for
+  every executable version. Prechecks cannot be hot-fixed without an
+  administrator.
+- **Mixed packages pay for prompt edits.** Under full-artifact approval, a
+  prompt-only change in a package that also ships code needs a new decision.
+- **Broken prechecks cost tokens until fixed.** With no automatic rollback,
+  idle cycles fall back to model turns until a fixed version is approved and
+  the schedule picks it up.
+- **Only fleet administrators review,** so they can become a bottleneck.
+- **Re-arm after updates.** A new approved version does not move existing
+  schedules; owners must rebind and re-arm, or select the precheck again.
+- **Assistant cost and trust.** The assistant consumes model tokens per
+  review, and its analysis can be wrong or manipulated. It is advisory only.
+- **No coverage of remote services.** Approving a package does not review the
+  remote MCP server or backend it calls.
+- **More surface to maintain.** New API, UI panels, an orchestration command,
+  an agent and tests.
+
+### Decisions
+
+1. **No approval reuse.** The absolute rule ships first: every full-artifact
+   digest needs its own decision, even when executable bytes are unchanged.
+   Reuse may be considered later as an optimization.
+2. **Reviewers are fleet administrators only** for now. Delegated reviewers
+   are not in scope.
+3. **Broken prechecks are not rolled back.** The cost is extra tokens on idle
+   cycles, not lost work. An explicit notification drives a fast fix
+   (component 6).
+4. **Administrators can change the `PRECHECK` selection** on any session, in
+   addition to the session owner, with audit.
 
 ## Problem
 
