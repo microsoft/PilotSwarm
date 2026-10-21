@@ -1231,7 +1231,7 @@ test("standalone PostgreSQL: legacy mixed fleet blocks activation and remains bl
     await f.catalog.workerHeartbeat({ workerNodeId: "legacy-worker", info: {} });
     await assert.rejects(f.activate(c), /eligible|unsupported|approval|executable|runtime/i);
     assert.equal((await f.authority.fencingStatus(c)).outstanding, 1);
-    for (const version of ["0085", "0084", "0085", "0086", "0087", "0088", "0089", "0090", "0090"]) {
+    for (const version of ["0085", "0084", "0085", "0086", "0087", "0088", "0089", "0090", "0090", "0091", "0091"]) {
         await f.pool.query(CMS_MIGRATIONS(f.schema).find(m => m.version === version).sql);
     }
     assert.equal((await f.sql("SELECT @s.cms_package_executable_eligible('pkg','v1',$1) AS allowed", [c.sha256])).rows[0].allowed, false);
@@ -1259,7 +1259,7 @@ test("standalone PostgreSQL: ordered migration reapplication retains real eligib
     const f = await fixture(t);
     const candidate = await f.publish(); await f.decide(candidate);
     const migrations = CMS_MIGRATIONS(f.schema);
-    for (const version of ["0085", "0084", "0085", "0086", "0087", "0088", "0089", "0090", "0090"]) {
+    for (const version of ["0085", "0084", "0085", "0086", "0087", "0088", "0089", "0090", "0090", "0091", "0091"]) {
         await f.pool.query(migrations.find(migration => migration.version === version).sql);
     }
     assert.equal((await f.sql("SELECT @s.cms_package_executable_eligible('pkg','v1',$1) AS allowed", [candidate.sha256])).rows[0].allowed, true);
@@ -1400,6 +1400,46 @@ test("standalone PostgreSQL CRON: historical declarative roots use static checks
         expectedBindingRevision: 1, reason: "explicit code removal" });
     assert.equal((await call()).outcome, "run");
     assert.equal(f.events().length, 0, "static checks never import package code");
+});
+
+test("0091 review reports: admin-only, bound to the exact pending candidate and baseline, never a verdict, hidden once decided", async t => {
+    const f = await fixture(t);
+    const store = f.catalog.packageReviewReports;
+    const v1 = await f.publish("v1", "1.0.0"); await f.decide(v1);
+    const v2 = await f.publish("v2", "2.0.0");
+    assert.equal((await f.sql("SELECT decision FROM @s.agent_package_reviews WHERE version_id='v2'")).rows[0].decision, "pending");
+    const target = { packageId: "pkg", versionId: "v2", sha256: v2.sha256, baseline: { versionId: "v1", sha256: v1.sha256 } };
+    const content = { facts: ["agents/helper.agent.md changed"], analysis: "a", guide: [{ step: "s", detail: "d", paths: [] }], risks: [] };
+
+    assert.equal(await store.get(admin, target), null);
+    await assert.rejects(store.put({ ...admin, isAdmin: false }, { ...target, sessionId: "s", content }), { code: "FORBIDDEN" });
+    await assert.rejects(store.get({ principal: admin.principal, isAdmin: false }, target), { code: "FORBIDDEN" });
+    await assert.rejects(f.sql(`SELECT @s.cms_put_agent_package_review_report('pkg','v2',$1,'v1',$2,'s','{}'::JSONB,'entra','x',FALSE)`,
+        [v2.sha256, v1.sha256]), /FORBIDDEN/);
+    await assert.rejects(store.put(admin, { ...target, baseline: { versionId: "v1", sha256: "f".repeat(64) }, sessionId: "s", content }), { code: "CONFLICT" });
+    await assert.rejects(store.put(admin, { ...target, sha256: v1.sha256, sessionId: "s", content }), { code: "CONFLICT" });
+    await assert.rejects(store.put(admin, { ...target, versionId: "v1", sha256: v1.sha256, baseline: null, sessionId: "s", content }),
+        { code: "CONFLICT" }, "an approved version is not a review candidate");
+    await assert.rejects(f.sql(`SELECT @s.cms_put_agent_package_review_report('pkg','v2',$1,'v1',$2,'s','{"verdict":"approve"}'::JSONB,'entra','x',TRUE)`,
+        [v2.sha256, v1.sha256]), /check constraint/, "the table itself refuses a verdict");
+
+    const { reportId } = await store.put(admin, { ...target, sessionId: "rev-1", content });
+    const saved = await store.get(admin, target);
+    assert.equal(saved.reportId, reportId);
+    assert.deepEqual(saved.baseline, target.baseline);
+    assert.equal(saved.sessionId, "rev-1");
+    assert.deepEqual(saved.author, admin.principal);
+    assert.deepEqual(saved.content, { ...content, guide: [{ step: "s", detail: "d" }] }, "normalized: an empty path list is dropped");
+    assert.equal(await store.get(admin, { ...target, baseline: null }), null, "a report against another baseline is not shown");
+    const newer = await store.put(admin, { ...target, sessionId: "rev-2", content: { ...content, analysis: "b" } });
+    assert.equal((await store.get(admin, target)).reportId, newer.reportId, "the newest report wins; older rows remain");
+    assert.equal((await f.sql("SELECT count(*)::INTEGER AS n FROM @s.agent_package_review_reports")).rows[0].n, 2);
+
+    await f.decide(v2);
+    assert.equal(await store.get(admin, target), null, "a decided candidate shows no advisory report");
+    await assert.rejects(store.put(admin, { ...target, sessionId: "s", content }), { code: "CONFLICT" });
+    assert.equal((await f.sql("SELECT decision FROM @s.agent_package_reviews WHERE version_id='v2'")).rows[0].decision, "approved",
+        "reports never change the review decision");
 });
 
 test("0090 notifications: review notices reach the package owner and editors, with live approved-not-active state", async t => {

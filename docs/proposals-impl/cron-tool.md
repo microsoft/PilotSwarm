@@ -130,8 +130,10 @@ No deployment or completed-candidate security approval is claimed.
 ## Package review setup for executable prechecks
 
 Status: **phases 1–4 implemented, unreleased** (review diff, review panel,
-session `PRECHECK` selector, notifications). Phase 5, the `package-reviewer`
-agent, ships in a separate agent-layer PR. Phase 6 is the acceptance run. See
+session `PRECHECK` selector, notifications), in this PR. **Phase 5, the
+`package-reviewer` agent, is implemented in a separate agent-layer PR stacked
+on it** (see [phase 5 notes](#implementation-notes-phase-5-package-reviewer)).
+Phase 6 is the acceptance run. See
 [implementation notes](#implementation-notes-phases-14) for where the code
 differs from the design text below. This section adds review usability
 around the existing package-approval controls. It does not change any
@@ -260,6 +262,8 @@ Contract:
   verdict.
 
 The assistant comes after components 1–3. Reviews must work without it.
+The implemented tool set differs slightly; see the
+[phase 5 notes](#implementation-notes-phase-5-package-reviewer).
 
 #### 5. Session `PRECHECK` selector
 
@@ -428,6 +432,41 @@ What shipped, and where it differs from the design text above:
   - Trusted worker prechecks have no package owner, so only the session owner
     is notified.
   - There is no retention job yet; notification rows accumulate.
+
+### Implementation notes (phase 5, package-reviewer)
+
+Separate agent-layer PR, stacked on phases 1–4. Advisory only: nothing in it
+approves, rejects, revokes or activates, and the review panel works without
+it.
+
+- **Agent.** `agent-packages/package-reviewer` (declarative, no code) is
+  published like any agent package. A fleet administrator starts it from the
+  review panel with **Ask package-reviewer**; the opening prompt names the
+  exact candidate and baseline digests on screen.
+- **Hard tool allowlist.** A session whose bound agent identity is
+  `package-reviewer` is created with the Copilot SDK `availableTools` set to
+  exactly five tools, and with no app or system tools, MCP servers, skill
+  directories, custom agents or workspace tools. Sub-agent spawn and
+  inter-session messaging are refused. Naming an agent `package-reviewer` only
+  ever narrows its tools.
+- **Tools.** `list_agent_package_reviews` (pending only),
+  `get_agent_package_review_diff` (large patches are left out and named, to
+  read by file), `read_agent_package_review_file` (candidate or baseline,
+  sliced; binary returns only a digest), `read_agent_package_review_audit`
+  and `submit_package_review_report`. Every call re-checks that the session
+  owner is an unrestricted fleet administrator, never the system principal;
+  otherwise it fails closed. All package content is labelled untrusted.
+- **Report storage (migration 0091).** Insert-only table
+  `agent_package_review_reports`, written and read only through admin-only
+  `cms_*` procedures. A report binds the exact candidate digest, the baseline
+  the diff policy selects (or none), the reviewer session and author. Content
+  is a closed shape (facts, analysis, guide, risks); a verdict-like key is
+  refused by both the store and a table constraint.
+- **Visibility.** The panel shows the newest report only while the candidate
+  is still pending with that digest and the baseline still matches; after a
+  decision or a baseline change it is hidden. A report load failure never
+  blocks the diff or the decision buttons.
+- **Not done.** Report access from MCP and the CLI. No report retention job.
 
 ## Problem
 

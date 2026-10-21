@@ -27,6 +27,7 @@ import { evaluateRoleObservation } from "../api/src/session-authz.js";
 import { loadAdminScope } from "../api/src/admin-scope.js";
 import { parseAgentFqn } from "./agent-fqn.js";
 import { decideSessionControl } from "./agent-manager-tools.js";
+import { holdsPackageReviewerBundle } from "./package-reviewer-tools.js";
 import type { StorageConfig } from "./storage-config.js";
 import { SESSION_STATE_MISSING_PREFIX, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type ManagedSessionConfig, type SerializableSessionConfig, type TurnResult, type OrchestrationInput, type LateSteer, type TurnEndKind, type TurnStartRecord } from "./types.js";
 import type { ArtifactStore } from "./session-store.js";
@@ -3377,6 +3378,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             sendSessionMessage: async (args: { session_id: string; subject: string; body: string; reason?: string; expects_response?: boolean; expires_at?: string }) => {
                 try {
                     if (isReadOnlyTuner()) return `[SYSTEM: send_session_message is disabled for read-only agent-tuner sessions.]`;
+                    if (holdsPackageReviewerBundle(runConfig.agentIdentity)) return `[SYSTEM: send_session_message is disabled for package-reviewer sessions.]`;
                     const targetSessionId = String(args.session_id || "").replace(/^session-/, "");
                     if (!targetSessionId) return `[SYSTEM: send_session_message failed: session_id is required.]`;
                     if (targetSessionId === input.sessionId) return `[SYSTEM: send_session_message failed: target session is this session.]`;
@@ -3406,6 +3408,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             replySessionMessage: async (args: { request_id: string; session_id: string; body: string; verdict?: string }) => {
                 try {
                     if (isReadOnlyTuner()) return `[SYSTEM: reply_session_message is disabled for read-only agent-tuner sessions.]`;
+                    if (holdsPackageReviewerBundle(runConfig.agentIdentity)) return `[SYSTEM: reply_session_message is disabled for package-reviewer sessions.]`;
                     const targetSessionId = String(args.session_id || "").replace(/^session-/, "");
                     if (!targetSessionId || !args.request_id || !args.body?.trim()) return `[SYSTEM: reply_session_message failed: request_id, session_id, and body are required.]`;
                     if (!catalog) return `[SYSTEM: reply_session_message failed: CMS catalog is unavailable.]`;

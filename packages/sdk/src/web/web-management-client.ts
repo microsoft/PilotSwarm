@@ -496,6 +496,10 @@ export class WebPilotSwarmManagementClient {
     async getAgentPackageReviewDiff(input: any, _owner: any, _isAdmin: boolean): Promise<any> {
         return this.ops.getAgentPackageReviewDiff({ input });
     }
+
+    async getAgentPackageReviewReport(input: any, _owner: any, _isAdmin: boolean): Promise<any> {
+        return this.ops.getAgentPackageReviewReport({ input });
+    }
     async getAgentPackageRuntimeStatus(input: any, _owner: any, _isAdmin: boolean): Promise<any> {
         return this.ops.getAgentPackageRuntimeStatus({ input });
     }

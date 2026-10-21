@@ -20,6 +20,7 @@ import type { TurnControlListenClient } from "./turn-control.js";
 import { PgAgentPackageReviewStore, type AgentPackageReviewCatalog } from "./agent-package-review-store.js";
 import { PgPackageRuntimeAuthority, type PackageRuntimeAuthority } from "./package-runtime-authority.js";
 import { PgNotificationStore, type NotificationCatalog } from "./notification-store.js";
+import { PgPackageReviewReportStore, type PackageReviewReportCatalog } from "./package-review-report-store.js";
 import type { AgentPackageInspection, PackageReviewDecision } from "./agent-package-authorization.js";
 
 // ─── Types ───────────────────────────────────────────────────────
@@ -983,6 +984,8 @@ export interface SessionCatalog {
     packageRuntime?: PackageRuntimeAuthority;
     /** Per-user notifications (migration 0090); optional so test doubles need not implement it. */
     readonly notifications?: NotificationCatalog;
+    /** Advisory package-reviewer reports (migration 0091); optional so test doubles need not implement it. */
+    readonly packageReviewReports?: PackageReviewReportCatalog;
     getSessionCapabilities?(sessionId: string): Promise<CapabilityState>;
     saveSessionCapabilities?(sessionId: string, expectedRevision: number, state: CapabilityState): Promise<boolean>;
     /**
@@ -1652,6 +1655,7 @@ export class PgSessionCatalog implements SessionCatalog {
     readonly packageReviews: PgAgentPackageReviewStore;
     readonly packageRuntime: PgPackageRuntimeAuthority;
     readonly notifications: PgNotificationStore;
+    readonly packageReviewReports: PgPackageReviewReportStore;
     /** Connection settings of the pool, without pool-only fields: reused for the turn-control LISTEN client. */
     private listenConfig: Record<string, unknown> | null = null;
 
@@ -1663,6 +1667,7 @@ export class PgSessionCatalog implements SessionCatalog {
         this.packageRuntime = new PgPackageRuntimeAuthority(pool, schema);
         this.packageReviews = new PgAgentPackageReviewStore(pool, schema, this.packageRuntime);
         this.notifications = new PgNotificationStore(pool, schema);
+        this.packageReviewReports = new PgPackageReviewReportStore(pool, schema);
     }
 
     /**

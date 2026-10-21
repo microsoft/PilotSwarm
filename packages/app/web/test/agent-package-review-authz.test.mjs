@@ -12,6 +12,7 @@ function fixture() {
         decideAgentPackageReview: async (...args) => { calls.push(["decide", ...args]); },
         getAgentPackageReviewAudit: async (...args) => { calls.push(["audit", ...args]); return []; },
         getAgentPackageReviewDiff: async (...args) => { calls.push(["diff", ...args]); return { changes: [] }; },
+        getAgentPackageReviewReport: async (...args) => { calls.push(["report", ...args]); return { report: null }; },
         getAgentPackageRuntimeStatus: async (...args) => { calls.push(["runtime", ...args]); return { denied: true, complete: false, outstanding: 2 }; },
         activateAgentPackageVersion: async (...args) => { calls.push(["activate", ...args]); },
         getAgentPackageActivationAudit: async (...args) => { calls.push(["activationAudit", ...args]); return []; },
@@ -37,7 +38,7 @@ test("publisher status uses the authenticated principal, not client owner/admin 
 for (const role of ["user", "anonymous", null]) {
     test(`review surface rejects ${role} despite forged body isAdmin and ownership dark launch`, async () => {
         const { runtime, calls } = fixture();
-        for (const method of ["listAgentPackageReviews", "decideAgentPackageReview", "getAgentPackageReviewAudit", "getAgentPackageReviewDiff", "getAgentPackageRuntimeStatus",
+        for (const method of ["listAgentPackageReviews", "decideAgentPackageReview", "getAgentPackageReviewAudit", "getAgentPackageReviewDiff", "getAgentPackageReviewReport", "getAgentPackageRuntimeStatus",
             "activateAgentPackageVersion", "getAgentPackageActivationAudit", "getSessionAgentPackageBinding", "rebindSessionAgentPackage"]) {
             await assert.rejects(runtime.call(method, {
                 isAdmin: true, owner: { provider: "entra", subject: "admin" },
@@ -76,13 +77,23 @@ test("admin role without authenticated principal cannot decide executable trust"
 test("cluster-scoped administrator cannot use global package review, activation or rebind authority", async () => {
     const { runtime, calls } = fixture();
     runtime.authz.adminScope = "cluster";
-    for (const method of ["listAgentPackageReviews", "decideAgentPackageReview", "getAgentPackageReviewAudit", "getAgentPackageReviewDiff", "getAgentPackageRuntimeStatus",
+    for (const method of ["listAgentPackageReviews", "decideAgentPackageReview", "getAgentPackageReviewAudit", "getAgentPackageReviewDiff", "getAgentPackageReviewReport", "getAgentPackageRuntimeStatus",
         "activateAgentPackageVersion", "getAgentPackageActivationAudit", "getSessionAgentPackageBinding", "rebindSessionAgentPackage"]) {
         await assert.rejects(runtime.call(method, { input: { isAdmin: true } }, {
             principal: { provider: "entra", subject: "cluster-admin" }, authorization: { role: "admin" },
         }), /administrator/i);
     }
     assert.deepEqual(calls, []);
+});
+
+test("advisory review report forwards only the exact target and authenticated fleet-admin authority", async () => {
+    const { runtime, calls } = fixture();
+    const input = { packageId: "pkg", versionId: "v2", sha256: "a".repeat(64), baselineVersionId: null };
+    const result = await runtime.call("getAgentPackageReviewReport", { input: { ...input, isAdmin: true, actor: "forged" } }, {
+        principal: { provider: "entra", subject: "real-admin" }, authorization: { role: "admin" },
+    });
+    assert.deepEqual(result, { report: null });
+    assert.deepEqual(calls, [["report", input, { provider: "entra", subject: "real-admin", email: null, displayName: null }, true]]);
 });
 
 test("runtime fencing status forwards only exact identity and authenticated fleet-admin authority", async () => {

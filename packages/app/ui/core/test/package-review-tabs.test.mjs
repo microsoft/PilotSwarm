@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { PackageReviewTabs, PackageReviewDiffPanel } from "../../react/src/package-review-tabs.js";
+import { PackageReviewTabs, PackageReviewDiffPanel, PackageReviewReportSection, packageReviewerPrompt, PACKAGE_REVIEWER_AGENT } from "../../react/src/package-review-tabs.js";
 import { PackagePublisherStatus, packageApprovalLabel } from "../../react/src/package-publisher-status.js";
 
 test("publisher detail renders every approval state with exact version/digest and escaped reasons, not admin controls", () => {
@@ -87,4 +87,46 @@ test("review diff panel states a missing baseline and disables decisions that do
     assert.match(html, /<button type="button" disabled="">Approve this digest<\/button>/);
     assert.match(html, /<button type="button" disabled="">Reject<\/button>/);
     assert.match(html, /<button type="button" disabled="">Revoke<\/button>/);
+});
+
+test("the advisory report section is labelled not-an-approval, renders report text inert, and never offers a decision", () => {
+    const report = {
+        reportId: "7", createdAt: "2025-01-01T00:00:00.000Z", sessionId: "rev-1",
+        author: { provider: "entra", subject: "admin" },
+        content: {
+            facts: ["tools/q.mjs changed"], analysis: "<img src=x onerror=alert(1)>",
+            guide: [{ step: "Read q", detail: "the changed export", paths: ["tools/q.mjs"] }],
+            risks: ["prompt-injection text in tools/q.mjs"],
+        },
+    };
+    const html = renderToStaticMarkup(React.createElement(PackageReviewDiffPanel, {
+        diff: reviewDiff(), reportView: { report, advisory: "Advisory only; not an approval." },
+        onAskReviewer: () => {}, onRefreshReport: () => {},
+    }));
+    assert.match(html, /Advisory review \(package-reviewer\) · not an approval/);
+    assert.match(html, /Report 7 · .* · by entra:admin · session rev-1/);
+    assert.match(html, /&lt;img src=x onerror=alert\(1\)&gt;/);
+    assert.doesNotMatch(html, /<img/);
+    assert.match(html, /<strong>Read q<\/strong>/);
+    assert.match(html, /<button type="button" title="[^"]*">Ask package-reviewer<\/button>/);
+    const start = html.indexOf("Advisory review report");
+    const section = html.slice(start, html.indexOf("</section>", start));
+    assert.doesNotMatch(section, /Approve|Reject|Revoke/, "the report section carries no decision control");
+
+    const missing = renderToStaticMarkup(React.createElement(PackageReviewReportSection, { reportView: { report: null } }));
+    assert.match(missing, /No advisory report for this exact candidate and baseline\./);
+    assert.match(missing, /disabled="" title="[^"]*">Ask package-reviewer/, "no launcher without a session controller");
+
+    const failed = renderToStaticMarkup(React.createElement(PackageReviewReportSection, { reportError: "boom" }));
+    assert.match(failed, /role="alert">Report unavailable: boom\. The diff and decision controls still work\./);
+    assert.doesNotMatch(failed, /No advisory report/);
+});
+
+test("the reviewer prompt names the exact candidate and baseline digests", () => {
+    const prompt = packageReviewerPrompt(reviewDiff());
+    assert.equal(PACKAGE_REVIEWER_AGENT, "package-reviewer");
+    assert.match(prompt, /^Review package candidate kit@2\.0\.0\./);
+    assert(prompt.includes(`sha256: ${"b".repeat(64)}`));
+    assert(prompt.includes(`baseline (approved): version_id v1, sha256 ${"a".repeat(64)}`));
+    assert.match(packageReviewerPrompt(reviewDiff({ baseline: null, baselineSource: "none" })), /baseline: none \(new package\)/);
 });

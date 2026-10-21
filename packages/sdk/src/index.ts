@@ -398,6 +398,22 @@ export type { AgentPackageReviewCatalog, AgentPackageReviewActor } from "./agent
 export { NotificationError } from "./notification-store.js";
 export type { NotificationCatalog, UserNotification, UserNotificationKind } from "./notification-store.js";
 export {
+    PackageReviewReportError,
+    PACKAGE_REVIEW_REPORT_ADVISORY,
+    normalizePackageReviewReportContent,
+} from "./package-review-report-store.js";
+export type {
+    AgentPackageReviewReportView,
+    PackageReviewReport,
+    PackageReviewReportCatalog,
+    PackageReviewReportContent,
+} from "./package-review-report-store.js";
+export {
+    PACKAGE_REVIEWER_AGENT_ID,
+    PACKAGE_REVIEWER_TOOL_NAMES,
+    holdsPackageReviewerBundle,
+} from "./package-reviewer-tools.js";
+export {
     agentPackagesArtifactSessionId,
     agentPackageArtifactFilename,
     agentPackageTarSha256,

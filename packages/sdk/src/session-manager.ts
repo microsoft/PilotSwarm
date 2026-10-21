@@ -26,6 +26,7 @@ import { createFactTools } from "./facts-tools.js";
 import { createToolFactsAccessor } from "./tool-facts-accessor.js";
 import { createGraphTools } from "./graph-tools.js";
 import { createInspectTools, NO_VIEWER, type InspectViewer } from "./inspect-tools.js";
+import { createPackageReviewerTools, holdsPackageReviewerBundle, PACKAGE_REVIEWER_TOOL_NAMES } from "./package-reviewer-tools.js";
 import { createProviderTools, holdsProviderTools } from "./provider-tools.js";
 import { attachWorkloadIdentity } from "./wif-credentials.js";
 import { pinToolsNeverDefer } from "./tool-pinning.js";
@@ -1322,6 +1323,7 @@ export class SessionManager {
     /** Re-resolve current grants for every tool call, without model hydration. */
     async getCronPrecheckMcpServers(input: CronPrecheckInput): Promise<Record<string, MCPServerConfig>> {
         const { config, owner, copy } = await this.resolveCronPrecheckBinding(input);
+        if (holdsPackageReviewerBundle(config.agentIdentity)) return {};
         const originalMcp = this._boundMcpServers(config, copy);
         const selections = this.sessionCatalog?.getSessionCapabilities
             ? (await this.sessionCatalog.getSessionCapabilities(input.sessionId)).selections : [];
@@ -2335,6 +2337,11 @@ export class SessionManager {
         // whole purpose is to change agents — so the strip applies only to the
         // legacy id, and dies with it.
         const isTunerSession = effectiveSerializableConfig.agentIdentity === "agent-tuner";
+        // The package reviewer is an allowlisted session: it declares ONLY the
+        // reviewer bundle, and gets no workspace, capability, MCP, native,
+        // skill or custom-agent surface. The identity only narrows; every
+        // reviewer tool still requires the owner to be a fleet administrator.
+        const isReviewerSession = holdsPackageReviewerBundle(effectiveSerializableConfig.agentIdentity);
         const mutatingSystemToolNames = new Set(["send_session_message", "reply_session_message", "draw_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "use_package", "load_agent",
     "update_canvas"]);
         const userTools = config.tools ?? [];
@@ -2353,7 +2360,7 @@ export class SessionManager {
         // get_session_workspace, load_agent) are declared only for a session
         // that has a workspace or default folders, or whose agent lists
         // set_session_workspace in its tools. Everything else is unchanged.
-        const workspaceTools = !isTunerSession && !config.workspaceToolsBlocked && (Boolean(config.workspace)
+        const workspaceTools = !isTunerSession && !isReviewerSession && !config.workspaceToolsBlocked && (Boolean(config.workspace)
             // Section 4.11: a session that has only the deployment's default folders has folders too.
             || Boolean(config.workspaceAttach)
             || (effectiveSerializableConfig.toolNames ?? []).includes("set_session_workspace")
@@ -2478,6 +2485,14 @@ export class SessionManager {
                 ])],
             })
             : [];
+        const reviewerTools = isReviewerSession && this.sessionCatalog
+            ? createPackageReviewerTools({
+                catalog: this.sessionCatalog,
+                artifactStore: this.artifactStore ?? null,
+                resolveViewer: () => this._resolveInspectViewer(sessionId),
+                sessionId,
+            })
+            : [];
         // Provider budgets. Declared by managed-session for the two Token
         // Manager identities; the real handlers need a catalog, which only
         // this class has, so they are attached here — a declared tool with no
@@ -2540,11 +2555,11 @@ export class SessionManager {
         config.nativeFeatureAllowed = () => nativeOwnerKnown
             && (this.featureFlags?.resolve("copilot.native_tasks", nativeOwner, { fallback: false }).enabled ?? false);
         const nativeEnabled = this.workerDefaults.nativeSubagents === "sync" && config.nativeFeatureAllowed()
-            && !catalogRow?.isSystem && !isServiceSession && !isTunerSession
+            && !catalogRow?.isSystem && !isServiceSession && !isTunerSession && !isReviewerSession
             && config.promptLayering?.kind !== "pilotswarm-system-agent";
         config.nativeSubagents = nativeEnabled ? "sync" : "off";
         config.baseAgentPolicy = resolveBaseAgentPolicy(this.featureFlags, nativeOwnerKnown ? nativeOwner : null, nativeEnabled);
-        const unlessService = <T,>(tools: T[]): T[] => (isServiceSession ? [] : tools);
+        const unlessService = <T,>(tools: T[]): T[] => (isServiceSession || isReviewerSession ? [] : tools);
         const SYSTEM_TOOL_NAMES = new Set([
             ...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools,
         ].map((t: any) => t.name).concat(FEATURE_OPERATION_SPECS.map(spec => spec.name)));
@@ -2567,7 +2582,10 @@ export class SessionManager {
         const desiredCapabilities = this.sessionCatalog?.getSessionCapabilities
             ? await readState()
             : { revision: 0, selections: [] };
-        const attached = isServiceSession || isTunerSession ? { tools: [], mcpServers: {}, unavailable: [], fingerprint: "" }
+        if (isReviewerSession) {
+            for (const name of Object.keys(effectiveMcpServers)) delete effectiveMcpServers[name];
+        }
+        const attached = isServiceSession || isTunerSession || isReviewerSession ? { tools: [], mcpServers: {}, unavailable: [], fingerprint: "" }
             : bindCapabilities(getSources(), capabilityOwner, desiredCapabilities.selections, originalTools, originalMcp, capabilityAgent);
         const attachedTools = attached.tools.map(tool => {
             const selected = desiredCapabilities.selections.find(sel => sel.tools.includes(tool.name)
@@ -2631,7 +2649,7 @@ export class SessionManager {
             },
             // Section 4.12: agents and skills loaded by path, saved with the session.
             saveWorkspaceLoad: async (change) => {
-                if (isServiceSession || isTunerSession) throw new Error("Loading agents and skills is unavailable in this restricted session");
+                if (isServiceSession || isTunerSession || isReviewerSession) throw new Error("Loading agents and skills is unavailable in this restricted session");
                 if (!this.sessionCatalog?.saveSessionCapabilities) throw new Error("Durable capability storage is unavailable");
                 for (let attempt = 0; attempt < 3; attempt += 1) {
                     const state = await readState();
@@ -2641,7 +2659,7 @@ export class SessionManager {
                 throw new Error("Capability revision conflict; try again");
             },
             use: async args => {
-                if (isServiceSession || isTunerSession) throw new Error("Package activation is unavailable in this restricted session");
+                if (isServiceSession || isTunerSession || isReviewerSession) throw new Error("Package activation is unavailable in this restricted session");
                 if (catalogRow?.parentSessionId) throw new Error("Package activation is available only to the parent session");
                 if (!this.sessionCatalog?.saveSessionCapabilities) throw new Error("Durable capability storage is unavailable");
                 validatePackageRequest(args);
@@ -2664,7 +2682,7 @@ export class SessionManager {
                 return { changed: next.changed, revision: next.state.revision };
             },
         };
-        const persistentSessionTools = [
+        const persistentSessionTools = isReviewerSession ? [...reviewerTools] : [
             ...userTools.filter((t: any) => !SYSTEM_TOOL_NAMES.has(t.name)),
             ...attachedTools,
             ...unlessService(factTools),
@@ -2719,7 +2737,7 @@ export class SessionManager {
         ])];
         // A child of a system session can be non-system yet retain the system
         // principal; use the same filtered owner as the V2 index and catalog.
-        const sdkSkillDirectories = config.baseAgentPolicy?.version === "v2"
+        const sdkSkillDirectories = isReviewerSession ? [] : config.baseAgentPolicy?.version === "v2"
             ? this.workerDefaults.getBaseV2SkillDirectories?.(v2Owner) ?? []
             : this.workerDefaults.skillDirectories ?? [];
         // Session workspaces (section 4.6): the repo agents and skills the
@@ -2765,7 +2783,7 @@ export class SessionManager {
         const adoptedSkillDirectories = repoAdoption?.linkSkills && repoAdoption.skills.length > 0
             ? [linkSkillFolders(path.join(os.tmpdir(), "pilotswarm-skills", sessionId), repoAdoption.skills)]
             : repoAdoption?.skillDirectories ?? [];
-        const sessionSkillDirectories = [...sdkSkillDirectories, ...adoptedSkillDirectories];
+        const sessionSkillDirectories = isReviewerSession ? [] : [...sdkSkillDirectories, ...adoptedSkillDirectories];
         const v2InventoryFingerprint = v2Inventory ? capabilityHash(v2Inventory) : undefined;
         const bindingFingerprint = bindingFingerprintDigest(buildBindingFingerprintInput({
             capabilityFingerprint: config.capabilityFingerprint,
@@ -2868,6 +2886,9 @@ export class SessionManager {
             // Native workers are explicitly scoped: built-ins inherit external
             // tools, and loaded PilotSwarm agents expect durable child contracts.
             excludedTools,
+            // Reviewer sessions: the SDK enables ONLY the named tools, so no
+            // built-in shell, file, web or MCP tool can reach the model.
+            ...(isReviewerSession ? { availableTools: [...PACKAGE_REVIEWER_TOOL_NAMES] } : {}),
             ...(nativeEnabled ? {
                 customAgents: repoAdoption?.customAgents.length
                     ? [...nativeSubagentDefinitions(sdkModelName, nativeTaskAccess), ...repoAdoption.customAgents]
@@ -2880,7 +2901,7 @@ export class SessionManager {
             // Pass loaded skills and agents from worker defaults; MCP servers
             // are the bound agent's own resolved map (see above).
             ...(sessionSkillDirectories.length && { skillDirectories: sessionSkillDirectories }),
-            ...(!nativeEnabled && this.workerDefaults.customAgents?.length && { customAgents: this.workerDefaults.customAgents }),
+            ...(!nativeEnabled && !isReviewerSession && this.workerDefaults.customAgents?.length && { customAgents: this.workerDefaults.customAgents }),
             ...(Object.keys(effectiveMcpServers).length > 0 && { mcpServers: effectiveMcpServers }),
         };
 

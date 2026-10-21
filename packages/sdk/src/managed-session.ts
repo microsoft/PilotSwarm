@@ -8,6 +8,7 @@ import { normalizeCanvasResponseContract as normalizeCanvasContractShared } from
 // One list gates BOTH halves of every manager tool: the declaration in the
 // manager bundle and the per-turn handler below.
 import { holdsManagerBundle } from "./agent-manager-tools.js";
+import { holdsPackageReviewerBundle } from "./package-reviewer-tools.js";
 // Same arrangement for the provider budget tools: holdsProviderTools() gates
 // the declarations in systemToolDefs() and the handlers in runTurn().
 import { holdsProviderTools, providerToolDefs, providerToolsUnavailable } from "./provider-tools.js";
@@ -2920,7 +2921,10 @@ export class ManagedSession {
         // side effects, but hard exclusion beats instructions — defense in
         // depth on top of the pager's CMS-column call-time gate. Generalize to
         // a config.serviceKind check if a second service kind ever appears.
-        const isServiceSession = this.config.agentIdentity === "regen-distiller";
+        // The package reviewer is restricted the same way: its toolset is
+        // exactly its reviewer bundle (session-manager declares nothing else).
+        const isReviewerSession = holdsPackageReviewerBundle(this.config.agentIdentity);
+        const isServiceSession = this.config.agentIdentity === "regen-distiller" || isReviewerSession;
         // The manager tools are DECLARED only in the manager bundle, but a
         // registered handler is a capability even when the model cannot see
         // the schema. Gate both halves on the same list so there is no tool
@@ -3163,7 +3167,7 @@ export class ManagedSession {
             return `Extra folders changed.\n${lines.join("\n")}\n`
                 + "[SYSTEM: The new folders are ready now; use their full paths. The working directory is unchanged. Continue your task.]";
         };
-        const workspaceToolsForTurn: Tool<any>[] = this.config.workspaceTools ? [
+        const workspaceToolsForTurn: Tool<any>[] = this.config.workspaceTools && !isReviewerSession ? [
             // Section 4.12: an agent from a file. The CLI takes its agents when
             // a session starts or resumes, so the turn ends and the next one
             // has it.

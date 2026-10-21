@@ -170,13 +170,12 @@ import {
     readAgentPackageVersionEntries,
     resolveAgentPackageVersion,
 } from "./agent-package-service.js";
-import { readAgentPackageTarGz } from "./agent-package-format.js";
 import {
-    buildAgentPackageReviewDiff,
     reviewBaselineAuditNote,
-    selectReviewBaseline,
     type AgentPackageReviewDiff,
 } from "./agent-package-review-diff.js";
+import { loadAgentPackageReviewDiff, resolveAgentPackageReviewTarget } from "./agent-package-review-loader.js";
+import { PACKAGE_REVIEW_REPORT_ADVISORY, type AgentPackageReviewReportView } from "./package-review-report-store.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -5281,55 +5280,34 @@ export class PilotSwarmManagementClient {
         owner: AgentPrincipal | null, isAdmin: boolean,
     ): Promise<AgentPackageReviewDiff> {
         this._ensureStarted();
-        if (isAdmin !== true || !owner?.provider || !owner.subject) {
-            throw Object.assign(new Error("Authenticated administrator required"), { code: "FORBIDDEN" });
-        }
-        if (!input || typeof input.packageId !== "string" || typeof input.versionId !== "string"
-            || typeof input.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(input.sha256)) {
-            throw Object.assign(new Error("Exact candidate package/version/digest required"), { code: "INVALID_REQUEST" });
-        }
-        if (!this._catalog?.packageReviews) throw Object.assign(new Error("Package review catalog unavailable"), { code: "UNAVAILABLE" });
-        const actor = { principal: owner, isAdmin: true };
-        const candidate = (await this._catalog.packageReviews.list(actor)).find((row) =>
-            row.packageId === input.packageId && row.versionId === input.versionId && row.sha256 === input.sha256);
-        if (!candidate) {
-            throw Object.assign(new Error("Candidate not found for this exact package/version/digest; refresh the review list"), { code: "CONFLICT" });
-        }
-        const status = await this._catalog.packageReviews.publisherStatus(actor, candidate.packageId);
-        const refs = status.versions.map((version) => ({
-            packageId: version.packageId, versionId: version.versionId, sha256: version.sha256,
-            semver: version.semver, decision: version.decision, active: version.active,
-        }));
-        const { baseline, source } = selectReviewBaseline(refs, candidate.versionId, input.baselineVersionId ?? null);
-        const detail = await this._catalog.getAgentPackage(candidate.name, owner, true,
-            this._agentPackageSelector({ scope: candidate.scope, owner: candidate.owner }, true));
-        const row = (ref: { versionId: string; sha256: string }) => {
-            const version = detail?.versions.find((item) => item.versionId === ref.versionId);
-            if (!version || version.sha256 !== ref.sha256) {
-                throw Object.assign(new Error(`Version ${ref.versionId} digest does not match the review record`), { code: "CONFLICT" });
-            }
-            return version;
-        };
-        const artifacts = this._requireAgentPackageArtifacts();
-        const read = async (ref: { versionId: string; sha256: string }) => {
-            const version = row(ref);
-            return readAgentPackageTarGz(await fetchAgentPackageTarGz(artifacts, version.artifactFilename, version.sha256));
-        };
-        const candidateEntries = await read(candidate);
-        const baselineEntries = baseline ? await read(baseline) : [];
-        const candidateRef = refs.find((ref) => ref.versionId === candidate.versionId);
-        return buildAgentPackageReviewDiff({
-            candidate: {
-                packageId: candidate.packageId, versionId: candidate.versionId, sha256: candidate.sha256,
-                semver: candidate.semver, decision: candidate.decision, active: candidateRef?.active === true,
-                revision: candidate.revision, name: candidate.name, scope: candidate.scope, publisher: candidate.publisher,
-            },
-            baseline,
-            baselineSource: source,
-            candidateEntries,
-            baselineEntries,
-            inspectionReasons: candidate.inspection?.reasons ?? ["Legacy artifact: no verified inspection"],
+        return loadAgentPackageReviewDiff(this._catalog!, this._artifactStore, owner, isAdmin, input);
+    }
+
+    /**
+     * Authenticated administrator: the package-reviewer's advisory report for
+     * an exact pending candidate. Returned only while the candidate is still
+     * pending with the same digest and the stored baseline equals the baseline
+     * the review policy selects now, so a republish or a new approval hides a
+     * stale report. The report is never an approval.
+     */
+    async getAgentPackageReviewReport(
+        input: { packageId: string; versionId: string; sha256: string; baselineVersionId?: string | null },
+        owner: AgentPrincipal | null, isAdmin: boolean,
+    ): Promise<AgentPackageReviewReportView> {
+        this._ensureStarted();
+        const target = await resolveAgentPackageReviewTarget(this._catalog!, owner, isAdmin, input);
+        if (!this._catalog?.packageReviewReports) throw Object.assign(new Error("Package review report store unavailable"), { code: "UNAVAILABLE" });
+        const report = await this._catalog.packageReviewReports.get({ principal: owner, isAdmin: true }, {
+            packageId: target.candidate.packageId, versionId: target.candidate.versionId, sha256: target.candidate.sha256,
+            baseline: target.baseline ? { versionId: target.baseline.versionId, sha256: target.baseline.sha256 } : null,
         });
+        return {
+            candidate: { packageId: target.candidate.packageId, versionId: target.candidate.versionId, sha256: target.candidate.sha256 },
+            baseline: target.baseline ? { versionId: target.baseline.versionId, sha256: target.baseline.sha256 } : null,
+            baselineSource: target.baselineSource,
+            report,
+            advisory: PACKAGE_REVIEW_REPORT_ADVISORY,
+        };
     }
     async getAgentPackageRuntimeStatus(input: import("./agent-package-authorization.js").ExecutablePackageIdentity,
         owner: AgentPrincipal | null, isAdmin: boolean) {

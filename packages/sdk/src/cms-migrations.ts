@@ -21,6 +21,7 @@ import { packageReviewRemediationMigration } from "./migrations/package-review-r
 import { packageRuntimeProceduresMigration } from "./migrations/package-runtime-procedures-0088.js";
 import { packagePublisherStatusMigration } from "./migrations/package-publisher-status-0089.js";
 import { userNotificationsMigration } from "./migrations/user-notifications-0090.js";
+import { packageReviewReportsMigration } from "./migrations/package-review-reports-0091.js";
 
 /**
  * Return the ordered list of CMS migrations for a given schema.
@@ -422,6 +423,7 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0088", name: "package_runtime_procedures", sql: packageRuntimeProceduresMigration(schema) },
         { version: "0089", name: "package_publisher_status", sql: packagePublisherStatusMigration(schema) },
         { version: "0090", name: "user_notifications", sql: userNotificationsMigration(schema) },
+        { version: "0091", name: "package_review_reports", sql: packageReviewReportsMigration(schema) },
     ];
 }
 

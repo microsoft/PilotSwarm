@@ -44,6 +44,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getAgentPackageFile",
     "getAgentPackageReviewAudit",
     "getAgentPackageReviewDiff",
+    "getAgentPackageReviewReport",
     "getAgentPackageReviewStatus",
     "getAgentPackageRuntimeStatus",
     "getAgentPackageTree",
@@ -551,6 +552,14 @@ export interface ManagementOps {
      * @remarks `POST /agent-package-reviews/diff` — access: `fleet:admin` (admin)
      */
     getAgentPackageReviewDiff(params: {
+        input?: any;
+    }): Promise<any>;
+
+    /**
+     * Authenticated administrator: the package-reviewer agent's newest advisory report for this exact pending candidate and its current review baseline, or null. Advisory only; never an approval.
+     * @remarks `POST /agent-package-reviews/report` — access: `fleet:admin` (admin)
+     */
+    getAgentPackageReviewReport(params: {
         input?: any;
     }): Promise<any>;
 
@@ -1958,6 +1967,7 @@ export function createManagementOps(
         getAgentPackageFile: (params: Record<string, unknown> = {}) => callOp("getAgentPackageFile", params),
         getAgentPackageReviewAudit: (params: Record<string, unknown> = {}) => callOp("getAgentPackageReviewAudit", params),
         getAgentPackageReviewDiff: (params: Record<string, unknown> = {}) => callOp("getAgentPackageReviewDiff", params),
+        getAgentPackageReviewReport: (params: Record<string, unknown> = {}) => callOp("getAgentPackageReviewReport", params),
         getAgentPackageReviewStatus: (params: Record<string, unknown> = {}) => callOp("getAgentPackageReviewStatus", params),
         getAgentPackageRuntimeStatus: (params: Record<string, unknown> = {}) => callOp("getAgentPackageRuntimeStatus", params),
         getAgentPackageTree: (params: Record<string, unknown> = {}) => callOp("getAgentPackageTree", params),
