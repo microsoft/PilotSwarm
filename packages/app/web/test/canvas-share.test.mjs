@@ -255,3 +255,25 @@ test("link management ops are session:share — hard-enforced even during the au
             `${name} must ride the hard-enforced class: a non-owner minting a public token during dark launch would pre-plant a durable, account-free capability`);
     }
 });
+
+// The canvas app transition (issue 181): the share door serves an old app's
+// page, or one drawn before the registry, as on main, bound to the exact
+// bytes served; anything else keeps the registry's rule.
+test("transition: the share door serves a legacy page as on main only for the bytes the portal judged", async () => {
+    const body = Buffer.from("<html>old board</html>", "utf8");
+    const sha = createHash("sha256").update(body).digest("hex");
+    let label = { rev: 4, legacy: true, pageSha256: sha };
+    const runtime = runtimeWith({
+        resolveCanvasShareTokenHash: async () => ({ sessionId: "sess-1", slot: 1 }),
+        downloadArtifactBinary: async () => ({ body, contentType: "text/html" }),
+        getSessionEventsBefore: async () => [{ data: { slot: 1, rev: 4, trust: "cross-owner", legacy: true, pageSha256: sha } }],
+        getCanvasRevisionLabel: async () => label,
+    });
+    assert.equal((await runtime.getCanvasShareDoc("tok")).trust, "legacy");
+    label = { rev: 4, legacy: true, pageSha256: "f".repeat(64) };
+    assert.equal((await runtime.getCanvasShareDoc("tok")).trust, "cross-owner", "other bytes than the ones judged");
+    label = { rev: 4, legacy: false };
+    assert.equal((await runtime.getCanvasShareDoc("tok")).trust, "cross-owner", "the card changed, or the switch is off");
+    // The server serves "legacy" (like "agent") as the page itself, sandboxed.
+    assert.match(SERVER, /if \(doc\.trust === "owner" \|\| doc\.trust === "cross-owner"\) \{/);
+});

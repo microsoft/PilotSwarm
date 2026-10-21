@@ -462,6 +462,10 @@ export class WebPilotSwarmManagementClient {
 
     // ── Canvas app registry (issue 181): same signature as the direct client;
     // the server derives the caller, so owner/resourceAdmin are ignored here.
+    async getCanvasRevisionLabel(args: any = {}, _owner?: any, _resourceAdmin?: boolean): Promise<any> {
+        return (this.ops as any).getCanvasRevisionLabel(args ?? {});
+    }
+
     async getCanvasWorkspaceApproval(args: any = {}, _owner?: any, _resourceAdmin?: boolean): Promise<any> {
         return (this.ops as any).getCanvasWorkspaceApproval(args ?? {});
     }

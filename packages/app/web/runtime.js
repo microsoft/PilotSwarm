@@ -1,5 +1,6 @@
 import { NodeSdkTransport } from "pilotswarm/host";
 import { adminCanAccessResource, adminCapabilities, ADMIN_SCOPE_POLICY_VERSION } from "pilotswarm-sdk/api";
+import { canvasPageLabelFor } from "pilotswarm-sdk";
 import { projectFleetAccounting, projectUserAccounting, projectAgentWorkerState, projectWorker } from "pilotswarm-sdk/api";
 import {
     loadAuthzConfig,
@@ -646,6 +647,11 @@ export class PortalRuntime {
             sessionCreationPolicy: typeof this.transport.getSessionCreationPolicy === "function"
                 ? this.transport.getSessionCreationPolicy()
                 : null,
+            // The canvas app transition (issue 181): this portal's own switch.
+            // Clients honour a page's legacy flag only while it is true.
+            canvasLegacyMode: typeof this.transport.getCanvasLegacyMode === "function"
+                ? this.transport.getCanvasLegacyMode() === true
+                : false,
             // Ownership/visibility posture (security model) so clients (portal,
             // MCP, TUI) can explain why a session isn't listed or a send was
             // refused, and default the share UI correctly.
@@ -1017,6 +1023,7 @@ export class PortalRuntime {
             // the authenticated principal, `resourceAdmin` the unrestricted
             // admin flag. publishCanvasApp's session write is checked by its
             // access class before dispatch.
+            case "getCanvasRevisionLabel":
             case "getCanvasWorkspaceApproval":
             case "listCanvasApps":
             case "searchCanvasApps":
@@ -1775,7 +1782,15 @@ export class PortalRuntime {
                 // ones the event classified are framed as another user's page.
                 const recorded = latest?.data?.pageSha256;
                 const { createHash } = await import("node:crypto");
-                if (typeof recorded === "string" && createHash("sha256").update(body).digest("hex") !== recorded) trust = "cross-owner";
+                const bodySha = createHash("sha256").update(body).digest("hex");
+                if (typeof recorded === "string" && bodySha !== recorded) trust = "cross-owner";
+                // The canvas app transition: an old app's page, or a revision
+                // drawn before the registry, is served as on main, judged now
+                // by this portal and bound to the exact bytes served.
+                if (trust !== "owner" && trust !== "agent" && typeof this.transport.getCanvasRevisionLabel === "function") {
+                    const label = await this.transport.getCanvasRevisionLabel({ sessionId: scope.sessionId, slot: scope.slot }).catch(() => null);
+                    if (label?.legacy === true && label.pageSha256 === bodySha) trust = "legacy";
+                }
             } catch { /* unknown trust: served as an app page, the stricter path */ trust = "cross-owner"; }
             return { ...scope, html, trust };
         } catch {
@@ -1801,15 +1816,20 @@ export class PortalRuntime {
             // be attributed, so it is labelled unknown (never another slot's app).
             label = { trust: "unknown" };
         } else {
+            // One read of the slot's latest draw and this portal's transition
+            // decision about it (getCanvasRevisionLabel): owner and agent
+            // pages, and a page judged legacy now, pass unchanged; another
+            // user's app is labelled with its name; anything this portal
+            // cannot confirm (no event, a failed read, no or unknown trust)
+            // is labelled unknown.
             try {
-                const events = await this.transport.getSessionEventsBefore?.(sessionId, Number.MAX_SAFE_INTEGER, 30, ["session.canvas_updated"]);
-                let latest = null;
-                for (const e of events || []) {
-                    if ((Number(e?.data?.slot) || 1) !== slot) continue;
-                    if (!latest || (Number(e?.data?.rev) || 0) > (Number(latest?.data?.rev) || 0)) latest = e;
-                }
-                if (!latest) label = { trust: "unknown" };
-                else if (latest.data?.trust === "cross-owner") label = { trust: "cross-owner", ...(latest.data.app?.name ? { app: String(latest.data.app.name) } : {}) };
+                if (typeof this.transport.getCanvasRevisionLabel !== "function") throw new Error("no label operation");
+                const read = await this.transport.getCanvasRevisionLabel({ sessionId, slot });
+                // The exemption counts only when that same answer names the
+                // revision and the exact page it judged; otherwise fail closed.
+                const rev = Number(read?.rev) || 0;
+                const legacy = read?.legacy === true && rev > 0 && typeof read?.pageSha256 === "string" && /^[0-9a-f]{64}$/.test(read.pageSha256);
+                label = canvasPageLabelFor({ found: rev > 0, trust: read?.trust, app: read?.app, legacy });
             } catch {
                 label = { trust: "unknown" };
             }

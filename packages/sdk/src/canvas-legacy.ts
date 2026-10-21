@@ -147,6 +147,9 @@ interface Snapshot {
  * - The exempt set comes from a complete enumeration of apps/<valid name>
  *   keys, at most once per TTL: a prefix whose read comes back full is split
  *   on the next name character, so newer facts cannot push old cards out.
+ *   An enumeration that reaches its read budget is incomplete: it exempts
+ *   only the qualifying cards it read, so writing many apps/* facts cannot
+ *   strip an old app's exemption, and an unread card is never exempt.
  * - Exemptions are served only from a snapshot taken within the TTL. A
  *   failed refresh, or an unknown install time, exempts nothing.
  */
@@ -176,7 +179,13 @@ export class CanvasLegacyCatalog {
         return canvasLegacyCardFromFact(fact, await this.installedAtOrNull());
     }
 
-    /** The source sha256s that keep the old rules now; empty when that cannot be established. */
+    /**
+     * The source sha256s that keep the old rules now. A sha that cannot be
+     * established is not in the set: a failed or stale refresh exempts
+     * nothing, and a partial enumeration exempts only the qualifying cards it
+     * read (each a real row at its exact key, judged by its own updated_at),
+     * never one it did not reach.
+     */
     async exemptSha256s(): Promise<Set<string>> {
         const snap = await this.freshSnapshot();
         return new Set((snap?.cards ?? []).filter((card) => card.exempt && card.source).map((card) => card.source!.sha256));
@@ -258,6 +267,118 @@ export class CanvasLegacyCatalog {
             return null;
         }
     }
+}
+
+/** Trust values a draw event records since the registry (anything else, or none, is not one). */
+const RECORDED_TRUST = new Set(["owner", "agent", "cross-owner"]);
+
+export interface CanvasRevisionLegacyInput {
+    /** This process's own transition switch. */
+    mode: boolean;
+    /** This process's old catalog (null: nothing qualifies as an old app's page). */
+    catalog: Pick<CanvasLegacyCatalog, "isExemptSha256"> | null;
+    /** The slot's latest draw event: its revision and data. */
+    eventRev: number;
+    data: Record<string, unknown> | null | undefined;
+    /** The slot's minted revision (a redraw in flight is ahead of its event); null when it cannot be read. */
+    mintedRev: number | null;
+    /** sha256 of the page bytes about to be used for this revision. */
+    pageSha256: string;
+}
+
+/**
+ * Is this revision of a canvas handled exactly as on main during the
+ * transition? Decided by the process that uses it, each time it uses it:
+ *
+ * - the switch is on here; and either
+ * - (a) an old app's page: the draw event says `legacy: true`, its recorded
+ *   page sha256 is the page being used, and that sha256 is in the old
+ *   catalog's set NOW (a card changed since the draw no longer exempts it;
+ *   an unreadable catalog exempts nothing); or
+ * - (b) drawn before the registry: the event records no trust, no redraw is
+ *   in flight (minted revision = event revision), and the bytes used are the
+ *   ones the event recorded, when it recorded any.
+ *
+ * The event's `trust` is never rewritten, so with the switch off every page
+ * gets the registry's rules again.
+ */
+export async function canvasRevisionIsLegacy(input: CanvasRevisionLegacyInput): Promise<boolean> {
+    if (!input.mode) return false;
+    const rev = Number(input.eventRev) || 0;
+    if (rev <= 0) return false;
+    const data: Record<string, unknown> = input.data ?? {};
+    const page = String(input.pageSha256 ?? "").toLowerCase();
+    if (!SHA256_RE.test(page)) return false;
+    const recorded = typeof data.pageSha256 === "string" ? data.pageSha256.toLowerCase() : null;
+    if (recorded !== null && recorded !== page) return false;
+    const trust = data.trust;
+    if (trust === undefined || trust === null) {
+        return input.mintedRev !== null && input.mintedRev !== undefined && Number(input.mintedRev) === rev;
+    }
+    if (typeof trust !== "string" || !RECORDED_TRUST.has(trust)) return false;
+    if (data.legacy !== true || recorded === null || !input.catalog) return false;
+    try {
+        return await input.catalog.isExemptSha256(page);
+    } catch {
+        return false;
+    }
+}
+
+/** The label on values and actions from a canvas page that is not shown to be the owner's or an agent's own. */
+export type CanvasPageLabel = { trust: "cross-owner"; app?: string } | { trust: "unknown" } | null;
+
+/**
+ * The label decision from what is known about the slot's latest draw:
+ * - nothing known (no draw event read, or the read failed): `unknown`;
+ * - a verified transition decision (canvasRevisionIsLegacy): no label;
+ * - recorded `owner` or `agent`: no label;
+ * - recorded `cross-owner`: labelled with the app's name;
+ * - anything else (no trust, an unknown trust string): `unknown`.
+ */
+export function canvasPageLabelFor(input: { found: boolean; trust?: unknown; app?: unknown; legacy?: boolean }): CanvasPageLabel {
+    if (!input.found) return { trust: "unknown" };
+    if (input.legacy === true) return null;
+    if (input.trust === "owner" || input.trust === "agent") return null;
+    if (input.trust === "cross-owner") {
+        return { trust: "cross-owner", ...(typeof input.app === "string" && input.app ? { app: input.app } : {}) };
+    }
+    return { trust: "unknown" };
+}
+
+/**
+ * The label for a slot, judged now, every read bound to one draw event: the
+ * latest event; when it is not the owner's or an agent's, the stored page's
+ * sha256 and the minted revision for the transition decision. Any failed
+ * read fails closed (labelled, never exempted).
+ */
+export async function canvasPageLabel(input: {
+    mode: boolean;
+    catalog: Pick<CanvasLegacyCatalog, "isExemptSha256"> | null;
+    readLatest: () => Promise<{ rev: number; data?: Record<string, unknown> }>;
+    readPageSha256: () => Promise<string>;
+    readMintedRev: (eventRev: number) => Promise<number | null>;
+}): Promise<CanvasPageLabel> {
+    let latest: { rev: number; data?: Record<string, unknown> };
+    try {
+        latest = await input.readLatest();
+    } catch {
+        return { trust: "unknown" };
+    }
+    const rev = Number(latest?.rev) || 0;
+    if (rev <= 0) return { trust: "unknown" };
+    const data: Record<string, unknown> = latest.data ?? {};
+    const app = (data.app as any)?.name;
+    let legacy = false;
+    if (input.mode && data.trust !== "owner" && data.trust !== "agent") {
+        try {
+            const pageSha256 = await input.readPageSha256();
+            const mintedRev = await input.readMintedRev(rev);
+            legacy = await canvasRevisionIsLegacy({ mode: true, catalog: input.catalog, eventRev: rev, data, mintedRev, pageSha256 });
+        } catch {
+            legacy = false;
+        }
+    }
+    return canvasPageLabelFor({ found: true, trust: data.trust, app, legacy });
 }
 
 /**

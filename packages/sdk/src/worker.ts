@@ -23,7 +23,7 @@ import { loadMcpConfig, mcpAllowlistAdmits, type McpAllowlistAgent } from "./mcp
 
 import { createModelProvidersReloader, type ModelProviderRegistry } from "./model-providers.js";
 import { canvasBytesRefusal } from "./canvas-app-registry.js";
-import { canvasLegacyModeFromEnv } from "./canvas-legacy.js";
+import { canvasLegacyCatalogFor, canvasLegacyModeFromEnv } from "./canvas-legacy.js";
 import { createArtifactTools } from "./artifact-tools.js";
 import { createDistillerTools } from "./distiller-tools.js";
 import { isEnhancedFactStore, PgFactStore, type FactStore } from "./facts-store.js";
@@ -982,11 +982,16 @@ export class PilotSwarmWorker {
                 canvasBytesGuard: async (input: { callerSessionId: string | null | undefined; artifactSessionId: string; bytes?: Buffer | string | null; sha256?: string | null; privateOnly?: boolean }) => {
                     const store = (this._catalog as any)?.canvasApps;
                     if (!store) return null;
+                    // The canvas app transition: an old app's page is read as on main.
+                    const legacy = this.config.canvasLegacyMode
+                        ? canvasLegacyCatalogFor(this.factStore, () => store.installedAt())
+                        : null;
                     return canvasBytesRefusal({
                         store,
                         resolveViewer: async (sessionId: string) => this.sessionManager
                             ? this.sessionManager.resolveCanvasAppViewer(sessionId)
                             : { principal: null, resourceAdmin: false },
+                        ...(legacy ? { isLegacySha256: (sha256: string) => legacy.isExemptSha256(sha256) } : {}),
                     }, input);
                 },
             });

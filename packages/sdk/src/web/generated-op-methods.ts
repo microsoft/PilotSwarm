@@ -47,6 +47,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getCanvasAppHtml",
     "getCanvasAppLoads",
     "getCanvasLive",
+    "getCanvasRevisionLabel",
     "getCanvasShareLink",
     "getCanvasWorkspaceApproval",
     "getChildOutcome",
@@ -608,6 +609,15 @@ export interface ManagementOps {
      */
     getCanvasLive(params: {
         sessionId: string;
+    }): Promise<any>;
+
+    /**
+     * The canvas app transition (issue 181): whether the canvas now on a slot is handled as on main — an old app's page still in the old catalog, or a revision drawn before the registry with no redraw in flight — while this deployment's PILOTSWARM_CANVAS_LEGACY_MODE is on. { rev, trust, app?, legacy, pageSha256? } from one read of the slot's latest draw: its recorded trust and app, and the decision; pageSha256 names the bytes judged.
+     * @remarks `GET /management/sessions/:sessionId/canvas-label` — access: `session:read`
+     */
+    getCanvasRevisionLabel(params: {
+        sessionId: string;
+        slot?: number;
     }): Promise<any>;
 
     /**
@@ -2084,6 +2094,7 @@ export function createManagementOps(
         getCanvasAppHtml: (params: Record<string, unknown> = {}) => callOp("getCanvasAppHtml", params),
         getCanvasAppLoads: (params: Record<string, unknown> = {}) => callOp("getCanvasAppLoads", params),
         getCanvasLive: (params: Record<string, unknown> = {}) => callOp("getCanvasLive", params),
+        getCanvasRevisionLabel: (params: Record<string, unknown> = {}) => callOp("getCanvasRevisionLabel", params),
         getCanvasShareLink: (params: Record<string, unknown> = {}) => callOp("getCanvasShareLink", params),
         getCanvasWorkspaceApproval: (params: Record<string, unknown> = {}) => callOp("getCanvasWorkspaceApproval", params),
         getChildOutcome: (params: Record<string, unknown> = {}) => callOp("getChildOutcome", params),

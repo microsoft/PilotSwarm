@@ -565,6 +565,8 @@ export class NodeSdkTransport {
             : {};
         this.client = null;
         this.artifactStore = createArtifactStore();
+        /** The canvas app transition (issue 181), read once; the portal's bootstrap reports it. */
+        this.canvasLegacyMode = canvasLegacyModeFromEnv();
         this.mgmt = new PilotSwarmManagementClient({
             store,
             ...(useManagedIdentity !== undefined ? { useManagedIdentity } : {}),
@@ -580,7 +582,7 @@ export class NodeSdkTransport {
             // canvas-ws commands: off unless PORTAL_CANVAS_COMMANDS_RUNNER is set.
             canvasCommands: canvasCommandsConfigFromEnv(),
             // The canvas app transition (issue 181): this process's own switch.
-            canvasLegacyMode: canvasLegacyModeFromEnv(),
+            canvasLegacyMode: this.canvasLegacyMode,
         });
         this.sessionHandles = new Map();
         this.workers = [];
@@ -785,6 +787,14 @@ export class NodeSdkTransport {
     // it never assumes admin rights. The portal passes the signed-in
     // principal and its resource-admin flag explicitly; a caller that does
     // not is the session owner or nobody.
+    getCanvasLegacyMode() {
+        return this.canvasLegacyMode === true;
+    }
+
+    async getCanvasRevisionLabel(args = {}, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.getCanvasRevisionLabel(args ?? {}, owner, isAdmin === true);
+    }
+
     async getCanvasWorkspaceApproval(args = {}, owner = this.currentUser, isAdmin = false) {
         return this.mgmt.getCanvasWorkspaceApproval(args ?? {}, owner, isAdmin === true);
     }

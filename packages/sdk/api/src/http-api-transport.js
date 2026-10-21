@@ -129,6 +129,9 @@ export class HttpApiTransport {
     // everywhere for backward compatibility; name-only falls back to the
     // registry's own-copy-then-shared walk.
     // Canvas app registry (issue 181): one args object; the server derives the caller.
+    /** The deployment's canvas app transition switch (issue 181); absent or anything else is off. */
+    getCanvasLegacyMode() { return this.bootstrap?.canvasLegacyMode === true; }
+    getCanvasRevisionLabel(args = {}) { return this.api.call("getCanvasRevisionLabel", args ?? {}); }
     getCanvasWorkspaceApproval(args = {}) { return this.api.call("getCanvasWorkspaceApproval", args ?? {}); }
     setCanvasWorkspaceConsent(args = {}) { return this.api.call("setCanvasWorkspaceConsent", args ?? {}); }
     listCanvasApps(args = {}) { return this.api.call("listCanvasApps", args ?? {}); }

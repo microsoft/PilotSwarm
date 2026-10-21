@@ -75,7 +75,8 @@ beforeAll(async () => {
     await catalog.initialize();
     artifactDir = fs.mkdtempSync(path.join(os.tmpdir(), "canvas-ws-approval-"));
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "canvas-ws-root-"));
-    mgmt = new PilotSwarmManagementClient({ store: "sqlite::memory:", workspaceFiles: { roots: [{ name: "a", path: root }], requireMarker: false } });
+    // The registry's rules; the canvas app transition has its own case below.
+    mgmt = new PilotSwarmManagementClient({ store: "sqlite::memory:", workspaceFiles: { roots: [{ name: "a", path: root }], requireMarker: false }, canvasLegacyMode: false });
     mgmt._catalog = catalog;
     mgmt._artifactStore = new FilesystemArtifactStore(artifactDir);
     mgmt._started = true;
@@ -247,6 +248,31 @@ describe("canvas workspace approval", () => {
         assertEqual(approval.pageSha256, sha(html), "the hash comes from the stored page");
         await grant(sessionId, 1);
         await mgmt.canvasWorkspace(sessionId, 1, { op: "info", rev: 1 });
+    });
+
+    it("transition on: a page drawn before the registry runs with no approval, unless a redraw is in flight", async () => {
+        const sessionId = randomUUID();
+        await catalog.createSession(sessionId, { model: "m", owner: ALICE });
+        const html = page("pre-registry");
+        await mgmt._artifactStore.uploadArtifact(sessionId, canvasArtifactFilename(1), html, "text/html");
+        await catalog.recordEvents(sessionId, [{ eventType: "session.canvas_updated", data: { rev: 1, slot: 1, sizeBytes: html.length, workspace: READ_WORK } }], "test");
+        mgmt.config.canvasLegacyMode = true;
+        try {
+            await mgmt.canvasWorkspace(sessionId, 1, { op: "info", rev: 1 });
+            const approval = await mgmt.getCanvasWorkspaceApproval({ sessionId, slot: 1 }, ALICE, false);
+            assertEqual(approval.legacy, true);
+            assertEqual(approval.decision, null, "nothing was recorded");
+            const label = await mgmt.getCanvasRevisionLabel({ sessionId, slot: 1 });
+            assertEqual(label.legacy, true);
+            assertEqual(label.pageSha256, sha(html));
+            // A redraw has minted revision 2 but not recorded its event yet.
+            await catalog.mintCanvasRev(sessionId, 1, 1);
+            await expectWsCode(mgmt.canvasWorkspace(sessionId, 1, { op: "info", rev: 1 }), "CANVAS_WS_CONSENT_REQUIRED");
+            assertEqual((await mgmt.getCanvasRevisionLabel({ sessionId, slot: 1 })).legacy, false);
+        } finally {
+            mgmt.config.canvasLegacyMode = false;
+        }
+        await expectWsCode(mgmt.canvasWorkspace(sessionId, 1, { op: "info", rev: 1 }), "CANVAS_WS_CONSENT_REQUIRED");
     });
 
     it("a page with no workspace block is not affected", async () => {

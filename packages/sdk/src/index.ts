@@ -277,8 +277,11 @@ export {
     canvasLegacyCatalogFor,
     canvasLegacyCardFromFact,
     mergeLegacyCanvasAppHits,
+    canvasRevisionIsLegacy,
+    canvasPageLabel,
+    canvasPageLabelFor,
 } from "./canvas-legacy.js";
-export type { CanvasLegacyCard, CanvasLegacySource, CanvasLegacyCatalogDeps, CanvasRegistryPresence } from "./canvas-legacy.js";
+export type { CanvasLegacyCard, CanvasLegacySource, CanvasLegacyCatalogDeps, CanvasRegistryPresence, CanvasRevisionLegacyInput, CanvasPageLabel } from "./canvas-legacy.js";
 export type { CanvasAppScope, CanvasAppPrincipal, CanvasAppViewer, CanvasAppTarget, CanvasAppErrorCode, CanvasAppSummary, CanvasAppDetail, CanvasAppVersionRow, CanvasAppSearchHit, CanvasAppResolvedVersion, CanvasAppShaMatch, CanvasAppReserveInput, CanvasAppReserveResult, CanvasAppLoadRow, CanvasAppLoadPage, CanvasAppEditorInfo, CanvasWorkspaceGrantKey } from "./canvas-app-store.js";
 export type { McpAllowlistAgent } from "./mcp-loader.js";
 export type { Skill } from "./skills.js";

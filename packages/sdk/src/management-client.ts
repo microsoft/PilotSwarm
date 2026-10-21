@@ -77,8 +77,8 @@ import {
 } from "./canvas-workspace.js";
 import { extractCanvasAppManifest } from "./canvas-app-manifest.js";
 import { workspaceGit } from "./workspace-git.js";
-import { canvasArtifactFilename, latestCanvasEventData } from "./canvas-support.js";
-import { canvasLegacyModeFromEnv } from "./canvas-legacy.js";
+import { canvasArtifactFilename, latestCanvasEventData, mintedCanvasRevStrict } from "./canvas-support.js";
+import { canvasLegacyCatalogFor, canvasLegacyModeFromEnv, canvasRevisionIsLegacy, type CanvasLegacyCatalog } from "./canvas-legacy.js";
 import type {
     SessionCatalog, SessionRow, TopEventEmitterRow, AgentPackageSelector, AgentPrincipal,
     AgentPackageScope, AgentPackageSummary, AgentPackageDetail, AgentPackageEditorInfo, AgentWorkerStateRow, WorkerRow,
@@ -833,6 +833,12 @@ export interface CanvasWorkspaceApproval {
     decision: "granted" | "denied" | null;
     /** Who the page belongs to: "owner", "agent" or "cross-owner" (wording only; every program asks). */
     trust: string;
+    /**
+     * The canvas app transition (issue 181): this page is handled as on main
+     * (an old app's page, or one drawn before the registry), so its program
+     * runs without an approval while the transition is on.
+     */
+    legacy: boolean;
     app: { name: string; version: string; versionId: string | null } | null;
     pageSha256: string;
     declarationSha256: string;
@@ -854,6 +860,8 @@ interface CanvasWorkspaceProgram {
     declarationSha256?: string;
     bindingsSha256?: string;
     bindings?: CanvasWorkspaceBinding[];
+    /** Handled as on main during the canvas app transition (canvasRevisionIsLegacy, checked now). */
+    legacy?: boolean;
 }
 
 /** The grant key for a program: an ownerless session's grants sit under the empty owner. */
@@ -2517,7 +2525,8 @@ export class PilotSwarmManagementClient {
             }
         }
         const keys = canvasWorkspaceApprovalKeys(found.declaration, folders);
-        return { rev: latest.rev, declaration: found.declaration, folders, pageSha256, trust, app, owner, ...keys };
+        const legacy = await this._canvasRevisionIsLegacy(sessionId, slot, latest, pageSha256);
+        return { rev: latest.rev, declaration: found.declaration, folders, pageSha256, trust, app, owner, legacy, ...keys };
     }
 
     private async _assertCanvasWorkspaceGrant(sessionId: string, slot: number, program: CanvasWorkspaceProgram, call: Record<string, any>): Promise<void> {
@@ -2526,6 +2535,9 @@ export class PilotSwarmManagementClient {
         if (!Number.isInteger(rev) || rev !== program.rev) {
             throw canvasWsError(X.STALE, `this call is for revision ${Number.isInteger(rev) ? rev : "(none)"}, but the canvas shows revision ${program.rev}`);
         }
+        // The canvas app transition: an old app's page, or one drawn before the
+        // registry, runs as on main (checked now, by this process's own switch).
+        if (program.legacy === true) return;
         const store = this._catalog?.canvasApps;
         if (!store) throw canvasWsError(X.CONSENT_REQUIRED, "workspace approvals need the canvas app registry (CMS migration 0084), so this page has no workspace access");
         const decision = await store.getWorkspaceGrant(canvasGrantKey(sessionId, slot, program));
@@ -2576,7 +2588,7 @@ export class PilotSwarmManagementClient {
         const decision = store ? await store.getWorkspaceGrant(canvasGrantKey(sessionId, slot, program)) : null;
         return {
             sessionId, slot, rev: program.rev, decision,
-            trust: program.trust!, app: program.app ?? null, pageSha256: program.pageSha256!,
+            trust: program.trust!, legacy: program.legacy === true, app: program.app ?? null, pageSha256: program.pageSha256!,
             declarationSha256: program.declarationSha256!, bindingsSha256: program.bindingsSha256!,
             declaration: {
                 read: program.declaration.read, write: program.declaration.write, watch: program.declaration.watch,
@@ -4000,6 +4012,69 @@ export class PilotSwarmManagementClient {
     /** The canvas app transition for this process (config, else PILOTSWARM_CANVAS_LEGACY_MODE). */
     private _canvasLegacyMode(): boolean {
         return this.config.canvasLegacyMode ?? canvasLegacyModeFromEnv();
+    }
+
+    /** This process's old app catalog while the transition is on; null when off. */
+    private _canvasLegacyCatalog(): CanvasLegacyCatalog | null {
+        if (!this._canvasLegacyMode()) return null;
+        return canvasLegacyCatalogFor(this._factStore, async () => {
+            const registry = this._catalog?.canvasApps;
+            return registry ? registry.installedAt() : null;
+        });
+    }
+
+    /** One revision, judged now by this process (see canvasRevisionIsLegacy). */
+    private async _canvasRevisionIsLegacy(
+        sessionId: string, slot: number, latest: { rev: number; data?: Record<string, any> }, pageSha256: string,
+    ): Promise<boolean> {
+        if (!this._canvasLegacyMode() || !this._catalog) return false;
+        const mintedRev = await mintedCanvasRevStrict(this._catalog, sessionId, slot, latest.rev);
+        return canvasRevisionIsLegacy({
+            mode: true, catalog: this._canvasLegacyCatalog(), eventRev: latest.rev, data: latest.data ?? {}, mintedRev, pageSha256,
+        });
+    }
+
+    /**
+     * The canvas app transition (issue 181): is the canvas now on this slot
+     * handled as on main? `legacy: true` only while this process's switch is
+     * on, for an old app's page still in the old catalog, or a revision drawn
+     * before the registry with no redraw in flight; `pageSha256` then names
+     * the bytes judged, and a client frames only those bytes that way.
+     * `trust` and `app` are what that same draw event recorded (readable from
+     * the session's events anyway), so a caller can decide from one read.
+     * `session:read` access class.
+     */
+    async getCanvasRevisionLabel(
+        args: { sessionId: string; slot?: number },
+        _owner?: AgentPrincipal | null,
+        _resourceAdmin?: boolean,
+    ): Promise<{ sessionId: string; slot: number; rev: number; trust: string | null; app?: string; legacy: boolean; pageSha256?: string }> {
+        this._ensureStarted();
+        const sessionId = String(args?.sessionId ?? "");
+        const slot = normalizeShareSlot(args?.slot);
+        // One read of the slot's latest draw: everything below is about it.
+        const latest = await latestCanvasEventData(this._catalog, sessionId, slot);
+        const data: Record<string, any> = latest.data ?? {};
+        const base = {
+            sessionId, slot, rev: latest.rev,
+            trust: typeof data.trust === "string" ? data.trust : null,
+            ...(typeof data.app?.name === "string" && data.app.name ? { app: String(data.app.name) } : {}),
+        };
+        // An owner or agent page needs no transition decision unless its draw
+        // flagged it as an old app's page; then the label reports the same
+        // decision the workspace approval makes.
+        const ownOrAgent = data.trust === "owner" || data.trust === "agent";
+        if (latest.rev === 0 || !this._canvasLegacyMode() || !this._artifactStore || (ownOrAgent && data.legacy !== true)) {
+            return { ...base, legacy: false };
+        }
+        let pageSha256: string;
+        try {
+            pageSha256 = sha256Hex(await this._artifactStore.downloadArtifactText(sessionId, canvasArtifactFilename(slot)));
+        } catch {
+            return { ...base, legacy: false };
+        }
+        const legacy = await this._canvasRevisionIsLegacy(sessionId, slot, latest, pageSha256);
+        return legacy ? { ...base, legacy, pageSha256 } : { ...base, legacy: false };
     }
 
     private _requireFactStore(): FactStore {

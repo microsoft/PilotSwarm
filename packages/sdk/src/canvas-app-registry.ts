@@ -750,6 +750,21 @@ export interface CanvasBytesGuardDeps {
     store: CanvasAppStore;
     /** The calling session's owner as a registry viewer. */
     resolveViewer: (sessionId: string) => Promise<CanvasAppViewer>;
+    /**
+     * The canvas app transition (issue 181): an old app's page, by sha256,
+     * checked now. Given only while the transition is on; those bytes are
+     * never refused, as on main.
+     */
+    isLegacySha256?: (sha256: string) => Promise<boolean>;
+}
+
+async function legacyBytes(deps: CanvasBytesGuardDeps, sha256: string): Promise<boolean> {
+    if (!deps.isLegacySha256) return false;
+    try {
+        return await deps.isLegacySha256(sha256);
+    } catch {
+        return false;
+    }
 }
 
 /**
@@ -790,6 +805,7 @@ export async function canvasBytesRefusal(
     }
     if (input.bytes == null) {
         if (!input.sha256) return null;
+        if (await legacyBytes(deps, String(input.sha256).toLowerCase())) return null;
         const viewer = input.callerSessionId ? await deps.resolveViewer(input.callerSessionId) : { principal: null, resourceAdmin: false };
         const owner = await deps.store.foreignBytes(String(input.sha256), null, viewer);
         if (owner === "(private)" && await viewerCanObtainCanvasBytes(deps.store, String(input.sha256), viewer)) return null;
@@ -798,8 +814,9 @@ export async function canvasBytesRefusal(
     const text = Buffer.isBuffer(input.bytes) ? input.bytes.toString("utf8") : String(input.bytes);
     if (!text.includes("CANVAS-APP-MANIFEST") && !text.includes("<")) return null;
     const viewer = input.callerSessionId ? await deps.resolveViewer(input.callerSessionId) : { principal: null, resourceAdmin: false };
-    const extraction = extractCanvasAppManifest(text);
     const sha = sha256Hex(text);
+    if (await legacyBytes(deps, sha)) return null;
+    const extraction = extractCanvasAppManifest(text);
     const owner = await deps.store.foreignBytes(sha, canvasAppWorkspaceKey(extraction.manifest), viewer);
     if (!owner) return null;
     // foreign_bytes reports a visible foreign shared app first; "(private)"

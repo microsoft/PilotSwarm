@@ -6,8 +6,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
     canvasLegacyModeFromEnv, CANVAS_LEGACY_MODE_ENV, CANVAS_LEGACY_CUTOFF_MARGIN_MS,
-    CanvasLegacyCatalog, canvasLegacyCatalogFor, canvasLegacyCardFromFact, mergeLegacyCanvasAppHits,
+    CanvasLegacyCatalog, canvasLegacyCatalogFor, canvasLegacyCardFromFact, mergeLegacyCanvasAppHits, canvasRevisionIsLegacy,
+    canvasPageLabel, canvasPageLabelFor,
 } from "../../dist/canvas-legacy.js";
+import { mintedCanvasRevStrict } from "../../dist/canvas-support.js";
 import { CanvasAppError, canvasRegistryPresence } from "../../dist/canvas-app-store.js";
 import * as sdk from "../../dist/index.js";
 
@@ -283,4 +285,87 @@ test("cards outside apps/ or with an unreadable value are ignored", () => {
     assert.equal(canvasLegacyCardFromFact({ key: "apps/x", value: [1], updatedAt: BEFORE }, INSTALLED), null);
     assert.equal(canvasLegacyCardFromFact({ key: "apps/x", value: { source: { sessionId: "s", filename: "f", sha256: SHA_A } }, updatedAt: null }, INSTALLED).exempt, false, "no timestamp: no exemption");
     assert.equal(canvasLegacyCardFromFact({ key: "apps/x", value: { source: { sessionId: "s", filename: "f", sha256: SHA_A } }, updatedAt: BEFORE }, null).exempt, false, "no install time: no exemption");
+});
+
+test("canvasRevisionIsLegacy: (a) an old app's page while its card qualifies now; (b) a revision drawn before the registry; never with the switch off", async () => {
+    const page = SHA_A;
+    let inSet = true;
+    const catalog = { isExemptSha256: async (sha) => inSet && sha === SHA_A };
+    const judge = (over) => canvasRevisionIsLegacy({ mode: true, catalog, eventRev: 7, mintedRev: 7, pageSha256: page, data: {}, ...over });
+    // (b) drawn before the registry: no trust recorded.
+    assert.equal(await judge({ data: {} }), true);
+    assert.equal(await judge({ data: { pageSha256: SHA_A } }), true, "bytes equal to the recorded ones");
+    assert.equal(await judge({ data: { pageSha256: SHA_B } }), false, "other bytes than the event recorded");
+    assert.equal(await judge({ mintedRev: 8 }), false, "a redraw is in flight");
+    assert.equal(await judge({ data: { trust: "something-else" } }), false, "an unknown trust is not 'no trust'");
+    // (a) an old app's page.
+    const a = { trust: "cross-owner", legacy: true, pageSha256: SHA_A };
+    assert.equal(await judge({ data: a }), true);
+    assert.equal(await judge({ data: a, mintedRev: 8 }), true, "bound by the page hash, not the minted revision");
+    assert.equal(await judge({ data: { ...a, pageSha256: undefined } }), false, "no recorded page hash");
+    assert.equal(await judge({ data: { ...a, legacy: undefined } }), false, "no flag: a new-format page");
+    assert.equal(await judge({ data: a, catalog: null }), false, "no old catalog here");
+    inSet = false;
+    assert.equal(await judge({ data: a }), false, "the card changed since the draw: re-checked now");
+    inSet = true;
+    assert.equal(await judge({ data: a, catalog: { isExemptSha256: async () => { throw new Error("down"); } } }), false, "a failed read exempts nothing");
+    // The switch off, or no revision, or a malformed hash: never.
+    assert.equal(await judge({ mode: false }), false);
+    assert.equal(await judge({ mode: false, data: a }), false, "a recorded flag is ignored when off");
+    assert.equal(await judge({ eventRev: 0 }), false);
+    assert.equal(await judge({ mintedRev: null }), false, "a minted revision that could not be read (review L2-F2)");
+    assert.equal(await judge({ pageSha256: "nope" }), false);
+    assert.equal(sdk.canvasRevisionIsLegacy, canvasRevisionIsLegacy);
+});
+
+test("mintedCanvasRevStrict: the table row; a known-absent row is the event's revision; a failed read is null (review L2-F2)", async () => {
+    assert.equal(await mintedCanvasRevStrict({ getSessionCanvases: async () => [{ slot: 1, latestRev: 8 }] }, "s", 1, 7), 8, "a redraw is minted");
+    assert.equal(await mintedCanvasRevStrict({ getSessionCanvases: async () => [{ slot: 2, latestRev: 8 }] }, "s", 1, 7), 7, "no row for this slot: drawn before the table");
+    assert.equal(await mintedCanvasRevStrict({ getSessionCanvases: async () => { throw new Error("db down"); } }, "s", 1, 7), null, "a failed read never falls back to the event");
+    assert.equal(await mintedCanvasRevStrict({}, "s", 1, 7), null, "no table on this catalog");
+    assert.equal(await mintedCanvasRevStrict(null, "s", 1, 7), null);
+});
+
+test("canvasPageLabelFor: only owner, agent or a verified legacy decision go unlabelled (review L2-F4)", () => {
+    assert.deepEqual(canvasPageLabelFor({ found: false }), { trust: "unknown" });
+    assert.equal(canvasPageLabelFor({ found: true, trust: "owner" }), null);
+    assert.equal(canvasPageLabelFor({ found: true, trust: "agent" }), null);
+    assert.deepEqual(canvasPageLabelFor({ found: true, trust: "cross-owner", app: "bobs" }), { trust: "cross-owner", app: "bobs" });
+    assert.deepEqual(canvasPageLabelFor({ found: true, trust: "cross-owner" }), { trust: "cross-owner" });
+    assert.equal(canvasPageLabelFor({ found: true, trust: "cross-owner", legacy: true }), null);
+    assert.deepEqual(canvasPageLabelFor({ found: true }), { trust: "unknown" }, "no trust recorded");
+    assert.deepEqual(canvasPageLabelFor({ found: true, trust: "mystery" }), { trust: "unknown" });
+    assert.equal(canvasPageLabelFor({ found: true, legacy: true }), null);
+});
+
+test("canvasPageLabel: every read bound to one draw event; any failure is labelled, never exempted (review L2-F3/F4)", async () => {
+    const catalog = { isExemptSha256: async (sha) => sha === SHA_A };
+    const run = (over) => canvasPageLabel({
+        mode: true, catalog,
+        readLatest: async () => ({ rev: 4, data: { trust: "cross-owner", legacy: true, pageSha256: SHA_A, app: { name: "old-board" } } }),
+        readPageSha256: async () => SHA_A,
+        readMintedRev: async () => 4,
+        ...over,
+    });
+    assert.equal(await run({}), null, "an old app's page, the bytes stored are the ones recorded and in the set");
+    assert.deepEqual(await run({ readPageSha256: async () => SHA_B }), { trust: "cross-owner", app: "old-board" },
+        "upload-before-event: the stored page is already another page; the event's flag does not exempt it");
+    assert.deepEqual(await run({ readPageSha256: async () => { throw new Error("blob down"); } }), { trust: "cross-owner", app: "old-board" }, "page unreadable");
+    assert.deepEqual(await run({ mode: false }), { trust: "cross-owner", app: "old-board" }, "switch off");
+    assert.deepEqual(await run({ readLatest: async () => { throw new Error("db down"); } }), { trust: "unknown" }, "event read failed");
+    assert.deepEqual(await run({ readLatest: async () => ({ rev: 0 }) }), { trust: "unknown" }, "no draw event found");
+    assert.deepEqual(await run({ readLatest: async () => ({ rev: 4, data: { trust: "mystery" } }) }), { trust: "unknown" });
+    // (b) drawn before the registry.
+    const pre = { readLatest: async () => ({ rev: 4, data: {} }) };
+    assert.equal(await run(pre), null, "no trust, no redraw in flight, switch on: as on main");
+    assert.deepEqual(await run({ ...pre, readMintedRev: async () => 5 }), { trust: "unknown" }, "a redraw is in flight");
+    assert.deepEqual(await run({ ...pre, readMintedRev: async () => null }), { trust: "unknown" }, "the minted revision cannot be read");
+    assert.deepEqual(await run({ ...pre, mode: false }), { trust: "unknown" }, "switch off: labelled unknown");
+    // Owner and agent pages need no further reads.
+    let reads = 0;
+    const counted = { readPageSha256: async () => { reads++; return SHA_A; }, readMintedRev: async () => { reads++; return 4; } };
+    assert.equal(await run({ ...counted, readLatest: async () => ({ rev: 4, data: { trust: "owner" } }) }), null);
+    assert.equal(reads, 0);
+    assert.equal(sdk.canvasPageLabel, canvasPageLabel);
+    assert.equal(sdk.canvasPageLabelFor, canvasPageLabelFor);
 });

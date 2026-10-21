@@ -252,6 +252,8 @@ export async function startServer(opts = {}) {
                 return;
             }
             res.set("Cache-Control", "no-store, max-age=0");
+            // "agent" and "legacy" (the canvas app transition) are served as on
+            // main: the page itself, sandboxed by its CSP.
             if (doc.trust === "owner" || doc.trust === "cross-owner") {
                 // A registry app page: JSON for the share viewer to frame.
                 res.json({ html: doc.html, trust: doc.trust });

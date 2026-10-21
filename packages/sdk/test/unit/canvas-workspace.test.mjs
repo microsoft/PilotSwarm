@@ -10,7 +10,7 @@
  *     settings off
  *   - the call itself, on a fake catalog and real folders
  */
-import { describe, it, before, after } from "node:test";
+import { describe, it, before, after, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -328,6 +328,11 @@ describe("the canvasWorkspace call", () => {
     let rev;
     let legacyEvent = false;
     let grantAnswer = "granted";
+    // The canvas app transition (issue 181): extra draw-event fields (trust,
+    // legacy flag) and the minted revision when a redraw is in flight.
+    let eventExtra = {};
+    let mintedRev = null;
+    let canvasesFail = false;
     let eventPageSha = null;
     const grantKeys = [];
     let eventWorkspace;
@@ -370,10 +375,12 @@ describe("the canvasWorkspace call", () => {
             workspaceFiles: { roots: [{ name: "a", path: path.join(base, "a") }] },
             canvasCommands: { runner: "local", allow: ["git"] },
             artifactStore: { downloadArtifactText: async (sessionId, filename) => { assert.equal(filename, "canvas.html"); return html; } },
+            // The registry's rules; the transition has its own tests below.
+            canvasLegacyMode: false,
         });
         client._started = true;
         client._catalog = {
-            getSessionCanvases: async () => [{ slot: 1, latestRev: rev }],
+            getSessionCanvases: async () => { if (canvasesFail) throw new Error("session_canvases unreadable"); return [{ slot: 1, latestRev: mintedRev ?? rev }]; },
             // The draw event: new draws carry the page's checked block;
             // canvases drawn before that carry none (legacy: the page is read).
             getSessionEventsBefore: async () => (rev > 0 ? [{
@@ -384,6 +391,7 @@ describe("the canvasWorkspace call", () => {
                     rev,
                     ...(legacyEvent ? {} : { workspace: eventWorkspace !== undefined ? eventWorkspace : (extractCanvasAppManifest(html).manifest?.workspace ?? null) }),
                     ...(eventPageSha ? { pageSha256: eventPageSha } : {}),
+                    ...eventExtra,
                 },
             }] : []),
             getSession: async () => ({ owner: { provider: "dev", subject: "alice", email: "alice@example.test", displayName: "Alice" } }),
@@ -552,6 +560,179 @@ describe("the canvasWorkspace call", () => {
             html = manifest(DECLARED);
             rev = 32;
         }
+    });
+
+    describe("the canvas app transition (PILOTSWARM_CANVAS_LEGACY_MODE)", () => {
+        const INSTALLED = new Date("2026-10-20T08:00:00Z");
+        const sha = () => crypto.createHash("sha256").update(html).digest("hex");
+        const oldCard = (pageSha, updatedAt) => ({
+            key: "apps/old-board", shared: true, deletedAt: null, updatedAt,
+            value: { name: "old-board", source: { sessionId: "s-old", filename: "app-old-board.html", sha256: pageSha } },
+        });
+        // A fresh facts store object is a fresh old catalog (one per store).
+        const factsWith = (rows, fail = false) => ({
+            async readFacts(query) {
+                if (fail) throw new Error("facts store down");
+                let out = rows;
+                if (query.scopeKeys) out = out.filter((r) => query.scopeKeys.includes(`shared:${r.key}`));
+                if (query.keyPattern) out = out.filter((r) => r.key.startsWith(query.keyPattern.slice(0, -1)));
+                return { count: out.length, facts: out };
+            },
+        });
+        const setMode = (on) => { client.config.canvasLegacyMode = on; };
+        let granted;
+        beforeEach(() => {
+            granted = grantAnswer;
+            grantAnswer = null;
+            client._catalog.canvasApps.installedAt = async () => INSTALLED;
+        });
+        afterEach(() => {
+            grantAnswer = granted;
+            eventExtra = {};
+            mintedRev = null;
+            canvasesFail = false;
+            eventPageSha = null;
+            client._factStore = null;
+            setMode(false);
+            delete client._catalog.canvasApps.installedAt;
+        });
+
+        it("drawn before the registry (no trust): runs with no approval while on, and the approval says legacy", async () => {
+            setMode(true);
+            grantKeys.length = 0;
+            assert.equal((await call({ op: "info" })).watch, true);
+            assert.equal(grantKeys.length, 0, "no grant was even looked up");
+            const approval = await client.getCanvasWorkspaceApproval({ sessionId: "s1", slot: 1 }, { provider: "dev", subject: "alice" }, false);
+            assert.equal(approval.legacy, true);
+            const label = await client.getCanvasRevisionLabel({ sessionId: "s1", slot: 1 });
+            assert.deepEqual(label, { sessionId: "s1", slot: 1, rev, trust: null, legacy: true, pageSha256: sha() });
+            // The rev check still applies.
+            await rejectsWith(client.canvasWorkspace("s1", 1, { op: "info" }), X.STALE);
+            // Off: the registry's rules.
+            setMode(false);
+            await rejectsWith(call({ op: "info" }), X.CONSENT_REQUIRED);
+            assert.deepEqual(await client.getCanvasRevisionLabel({ sessionId: "s1", slot: 1 }), { sessionId: "s1", slot: 1, rev, trust: null, legacy: false });
+        });
+
+        it("drawn before the registry, but a redraw is in flight (minted revision ahead): approval needed", async () => {
+            setMode(true);
+            mintedRev = rev + 1;
+            await rejectsWith(call({ op: "info" }), X.CONSENT_REQUIRED);
+            assert.equal((await client.getCanvasRevisionLabel({ sessionId: "s1", slot: 1 })).legacy, false);
+        });
+
+        it("drawn before the registry, and the minted revision cannot be read while the event can: approval needed (review L2-F2)", async () => {
+            setMode(true);
+            mintedRev = rev + 1;
+            canvasesFail = true;
+            await rejectsWith(call({ op: "info" }), X.CONSENT_REQUIRED);
+            assert.equal((await client.getCanvasRevisionLabel({ sessionId: "s1", slot: 1 })).legacy, false);
+        });
+
+        it("the label operation reports the draw's own trust and app with the decision (one read)", async () => {
+            setMode(true);
+            eventPageSha = sha();
+            eventExtra = { trust: "cross-owner", app: { name: "bobs-board" } };
+            assert.deepEqual(await client.getCanvasRevisionLabel({ sessionId: "s1", slot: 1 }),
+                { sessionId: "s1", slot: 1, rev, trust: "cross-owner", app: "bobs-board", legacy: false });
+            eventExtra = { trust: "owner" };
+            assert.deepEqual(await client.getCanvasRevisionLabel({ sessionId: "s1", slot: 1 }), { sessionId: "s1", slot: 1, rev, trust: "owner", legacy: false });
+        });
+
+        it("a flagged owner or agent page: the label operation and the approval make the same decision (review L2-R1)", async () => {
+            setMode(true);
+            eventPageSha = sha();
+            client._factStore = factsWith([oldCard(sha(), new Date("2026-09-18T12:00:00Z"))]);
+            for (const trust of ["owner", "agent"]) {
+                eventExtra = { trust, legacy: true };
+                const label = await client.getCanvasRevisionLabel({ sessionId: "s1", slot: 1 });
+                assert.deepEqual(label, { sessionId: "s1", slot: 1, rev, trust, legacy: true, pageSha256: sha() }, trust);
+                assert.equal((await client.getCanvasWorkspaceApproval({ sessionId: "s1", slot: 1 }, { provider: "dev", subject: "alice" }, false)).legacy, true, trust);
+            }
+            // The card stops qualifying: both say false.
+            client._factStore = factsWith([oldCard(sha(), new Date("2026-10-21T08:00:00Z"))]);
+            assert.equal((await client.getCanvasRevisionLabel({ sessionId: "s1", slot: 1 })).legacy, false);
+            assert.equal((await client.getCanvasWorkspaceApproval({ sessionId: "s1", slot: 1 }, { provider: "dev", subject: "alice" }, false)).legacy, false);
+            // Other bytes stored than the draw recorded: false.
+            client._factStore = factsWith([oldCard(sha(), new Date("2026-09-18T12:00:00Z"))]);
+            eventPageSha = "b".repeat(64);
+            assert.equal((await client.getCanvasRevisionLabel({ sessionId: "s1", slot: 1 })).legacy, false);
+            // The switch off: false.
+            eventPageSha = sha();
+            setMode(false);
+            assert.equal((await client.getCanvasRevisionLabel({ sessionId: "s1", slot: 1 })).legacy, false);
+            // An unflagged owner page: false, with no page read.
+            setMode(true);
+            eventExtra = { trust: "owner" };
+            assert.deepEqual(await client.getCanvasRevisionLabel({ sessionId: "s1", slot: 1 }), { sessionId: "s1", slot: 1, rev, trust: "owner", legacy: false });
+        });
+
+        it("an old app's page: runs with no approval only while its card is in the old catalog now", async () => {
+            setMode(true);
+            eventPageSha = sha();
+            eventExtra = { trust: "cross-owner", legacy: true };
+            client._factStore = factsWith([oldCard(sha(), new Date("2026-09-18T12:00:00Z"))]);
+            assert.equal((await call({ op: "info" })).watch, true);
+            assert.equal((await client.getCanvasRevisionLabel({ sessionId: "s1", slot: 1 })).legacy, true);
+            // The card was overwritten after the draw: past the cutoff, no longer exempt.
+            client._factStore = factsWith([oldCard(sha(), new Date("2026-10-21T08:00:00Z"))]);
+            await rejectsWith(call({ op: "info" }), X.CONSENT_REQUIRED);
+            assert.equal((await client.getCanvasRevisionLabel({ sessionId: "s1", slot: 1 })).legacy, false);
+            // The old catalog cannot be read: not exempt (fail closed).
+            client._factStore = factsWith([oldCard(sha(), new Date("2026-09-18T12:00:00Z"))], true);
+            await rejectsWith(call({ op: "info" }), X.CONSENT_REQUIRED);
+            // A card 4 minutes before the install is inside the margin; 6 minutes is not.
+            client._factStore = factsWith([oldCard(sha(), new Date(INSTALLED.getTime() - 4 * 60_000))]);
+            await rejectsWith(call({ op: "info" }), X.CONSENT_REQUIRED);
+            client._factStore = factsWith([oldCard(sha(), new Date(INSTALLED.getTime() - 6 * 60_000))]);
+            assert.equal((await call({ op: "info" })).watch, true);
+        });
+
+        it("a partial enumeration (read cap reached) keeps the old card it read exempt, never one it did not reach (coordinator ruling on L2-F1)", async () => {
+            setMode(true);
+            eventPageSha = sha();
+            eventExtra = { trust: "cross-owner", legacy: true };
+            // Every prefix read comes back full (1,000 rows that are not app
+            // cards), so the walk reaches its 200-read cap. The root read also
+            // returns `found`; `unreached` is never returned.
+            const capped = (cards) => ({
+                calls: 0,
+                async readFacts(query) {
+                    this.calls++;
+                    if (query.scopeKeys) {
+                        const hit = cards.filter((c) => query.scopeKeys.includes(`shared:${c.key}`));
+                        return { count: hit.length, facts: hit };
+                    }
+                    const prefix = query.keyPattern.slice(0, -1);
+                    const filler = Array.from({ length: 1000 }, (_, i) => ({ key: `${prefix}/x${i}`, shared: true, deletedAt: null, updatedAt: new Date("2026-10-21T08:00:00Z"), value: {} }));
+                    const facts = prefix === "apps/" ? [...cards.filter((c) => c.reachable), ...filler].slice(0, 1000) : filler;
+                    return { count: facts.length, facts };
+                },
+            });
+            const found = { ...oldCard(sha(), new Date("2026-09-18T12:00:00Z")), reachable: true };
+            const store = capped([found]);
+            client._factStore = store;
+            assert.equal((await call({ op: "info" })).watch, true, "the card it read keeps its exemption");
+            assert.ok(store.calls >= 200, `the walk reached its cap (${store.calls} reads)`);
+            const unreached = { ...oldCard(sha(), new Date("2026-09-18T12:00:00Z")), key: "apps/zz-unreached", reachable: false };
+            client._factStore = capped([unreached]);
+            await rejectsWith(call({ op: "info" }), X.CONSENT_REQUIRED);
+        });
+
+        it("off: an event that already says legacy is ignored; a new-format page always asks", async () => {
+            eventPageSha = sha();
+            eventExtra = { trust: "cross-owner", legacy: true };
+            client._factStore = factsWith([oldCard(sha(), new Date("2026-09-18T12:00:00Z"))]);
+            setMode(false);
+            await rejectsWith(call({ op: "info" }), X.CONSENT_REQUIRED);
+            assert.equal((await client.getCanvasRevisionLabel({ sessionId: "s1", slot: 1 })).legacy, false);
+            // On, but a page without the flag (new format, or a card added after the deploy): asks.
+            setMode(true);
+            eventExtra = { trust: "cross-owner" };
+            await rejectsWith(call({ op: "info" }), X.CONSENT_REQUIRED);
+            eventExtra = { trust: "agent" };
+            await rejectsWith(call({ op: "info" }), X.CONSENT_REQUIRED);
+        });
     });
 
     it("canvas calls never go through a link, even one inside the folder", async () => {

@@ -371,13 +371,25 @@ CLI command offers them.
 
 | Operation | Route | Parameters | Summary |
 |---|---|---|---|
-| getCanvasWorkspaceApproval | `GET /api/v1/management/sessions/:sessionId/canvas-workspace/approval` | `slot` | `{ rev, decision, trust, app, pageSha256, declarationSha256, bindingsSha256, declaration: { read, write, watch, commands: { <name>: { in, run } } }, bindings: [{ name, root, folder }] }`. |
+| getCanvasWorkspaceApproval | `GET /api/v1/management/sessions/:sessionId/canvas-workspace/approval` | `slot` | `{ rev, decision, trust, legacy, app, pageSha256, declarationSha256, bindingsSha256, declaration: { read, write, watch, commands: { <name>: { in, run } } }, bindings: [{ name, root, folder }] }`. `legacy: true`: the transition below exempts this page. |
 | setCanvasWorkspaceConsent | `POST /api/v1/management/sessions/:sessionId/canvas-workspace/consent` | `slot`, `rev`, `pageSha256`, `declarationSha256`, `bindingsSha256`, `decision` (`granted`\|`denied`) | Records the decision for exactly the program quoted; audited. |
 
 canvas-ws errors added: `CANVAS_WS_CONSENT_REQUIRED` (403: not approved, or
 declined) and `CANVAS_WS_STALE` (409: the call or approval names a revision,
 page, declaration or folders the slot no longer shows). Every canvas-ws call
 carries the frame's `rev`.
+
+#### The canvas app transition
+
+While the deployment's `PILOTSWARM_CANVAS_LEGACY_MODE` is on (the default),
+an old app's page and a canvas drawn before the registry are handled as
+before the registry: no approval, no labels, framed directly. The bootstrap
+reports the portal's switch as `canvasLegacyMode`. See
+[the canvas architecture](../architecture/canvas.md).
+
+| Operation | Route | Parameters | Summary |
+|---|---|---|---|
+| getCanvasRevisionLabel | `GET /api/v1/management/sessions/:sessionId/canvas-label` | `slot` | `{ sessionId, slot, rev, trust, app?, legacy, pageSha256? }`: the latest draw's recorded trust and app, and the transition decision, from one read, judged now (`session:read`). `pageSha256` names the bytes judged; frame only those bytes that way. Also the MCP tool `get_canvas_label` and `pilotswarm apps label <sessionId> [--slot n]`. |
 
 ### Current user
 

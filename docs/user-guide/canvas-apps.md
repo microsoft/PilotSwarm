@@ -101,8 +101,16 @@ working while the canvas app transition is on:
 
 | `PILOTSWARM_CANVAS_LEGACY_MODE` | What the old catalog does |
 |---|---|
-| `on` (default) | `find_canvas_app` returns old apps next to registry apps, marked `legacy: true`, with their `key` and `source`; an agent draws one with `draw_canvas({fromArtifact: source})`. `find_canvas_app({name})` falls back to the old card. A registry app of the same name wins. Agents write and delete `apps/*` facts as before. |
-| `off` | Only the registry is searched. `apps/*` facts are read-only. |
+| `on` (default) | `find_canvas_app` returns old apps next to registry apps, marked `legacy: true`, with their `key` and `source`; an agent draws one with `draw_canvas({fromArtifact: source})`. `find_canvas_app({name})` falls back to the old card. A registry app of the same name wins. Agents write and delete `apps/*` facts as before. An old app's page, and a canvas drawn before the registry, work as before: no workspace approval, no labels, framed directly, readable by agents. |
+| `off` | Only the registry is searched. `apps/*` facts are read-only. Every page follows the registry's rules. |
+
+An old app's page qualifies only while its card in the old catalog is
+unchanged since before the registry was installed. An edited copy is a new
+page and follows the registry's rules. If the old catalog cannot be read,
+old pages ask for approval again until it can (see
+[security and sharing](./security-and-sharing.md#canvas-apps)).
+`pilotswarm apps label <sessionId> [--slot n]` shows how a session's canvas
+is handled.
 
 Workers and the portal read the variable separately; set the same value on
 both. To move an app into the new format, draw it, then publish it: the

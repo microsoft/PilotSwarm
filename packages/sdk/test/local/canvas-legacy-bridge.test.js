@@ -19,7 +19,7 @@ import { createHash } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
 import { withScriptedModel } from "../helpers/scripted-workers.js";
-import { CanvasLegacyCatalog, CANVAS_LEGACY_CUTOFF_MARGIN_MS } from "../../src/index.ts";
+import { CanvasLegacyCatalog, CANVAS_LEGACY_CUTOFF_MARGIN_MS, canvasLegacyCatalogFor, PilotSwarmManagementClient } from "../../src/index.ts";
 
 const TIMEOUT = 240_000;
 const getEnv = useSuiteEnv(import.meta.url);
@@ -178,6 +178,157 @@ describe("canvas app transition: the old catalog next to the registry", () => {
             assertEqual(JSON.parse(results[4]).app.scope, "user");
             assert(String(results[5]).includes("legacy canvas app catalog"), `apps/* is not writable: ${results[5]}`);
             assert(String(results[6]).includes("legacy canvas app catalog"), `nor deletable: ${results[6]}`);
+        });
+    });
+});
+
+/**
+ * L2: the server-side decisions about an old app's page, each made when the
+ * page is used. The worker's old catalog is created here first (one per fact
+ * store, first creation wins) with no cache and an install time after the
+ * cards, so a card change shows on the next use.
+ */
+function pagesTurns(scripts) {
+    // The prompt that opened the turn (lastUserText) can carry injected
+    // notes, so each script is picked by a unique token the prompt includes;
+    // no token is a substring of another. A prompt that matches no script
+    // fails the turn loudly instead of answering "ok".
+    return (body, position) => {
+        const matches = Object.keys(scripts).filter((token) => position.lastUserText.includes(token));
+        if (matches.length !== 1) {
+            throw new Error(`no single script for this turn (matched ${JSON.stringify(matches)}): ${JSON.stringify(position.lastUserText.slice(0, 200))}`);
+        }
+        const step = scripts[matches[0]][position.step];
+        if (!step) return { content: "ok" };
+        return typeof step === "function" ? step(body, position) : step;
+    };
+}
+
+async function latestCanvasDraw(mgmt, sessionId) {
+    const events = await mgmt.getSessionEventsBefore(sessionId, Number.MAX_SAFE_INTEGER, 30, ["session.canvas_updated"]);
+    return [...events].sort((a, b) => Number(b.data?.rev) - Number(a.data?.rev))[0]?.data ?? {};
+}
+
+async function legacyScene(env, worker, name) {
+    const factStore = worker.factStore;
+    const installedAt = new Date(Date.now() + 3_600_000);
+    canvasLegacyCatalogFor(factStore, async () => installedAt, { ttlMs: 0 });
+    const card = await seedLegacyCard(factStore, worker.artifactStore, name);
+    return { factStore, card, installedAt };
+}
+
+describe("canvas app transition: server decisions about an old app's page (L2)", () => {
+    it("on: the old page is read and unlabelled while its card qualifies; once the card changes it is withheld and labelled", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const name = `old-page-${env.runId}`;
+        let card;
+        const scripts = {};
+        const respond = pagesTurns(scripts);
+        await withScriptedModel(env, { respond, worker: { canvasLegacyMode: true } }, async ({ client, qualifiedModel, worker }) => {
+            const scene = await legacyScene(env, worker, name);
+            card = scene.card;
+            // Alice also publishes the old page's exact bytes as a shared registry app:
+            // to Bob those bytes are another user's app, unless the old card exempts them.
+            scripts["L2-ALICE"] = toolTurn([
+                { name: "draw_canvas", args: { html: card.html } },
+                { name: "publish_canvas_app", args: { name: `${name}-v2`, description: DESCRIPTION, scope: "shared" } },
+            ]);
+            const from = { sessionId: card.sourceSession, filename: card.filename };
+            scripts["L2-BOB-1"] = toolTurn([
+                { name: "draw_canvas", args: { fromArtifact: from } },
+                { name: "read_canvas", args: {} },
+                { name: "canvas_kv", args: { op: "put", key: "app/x", value: 1 } },
+                { name: "canvas_kv", args: { op: "get", key: "app/x" } },
+                { name: "read_artifact", args: from },
+            ]);
+            scripts["L2-BOB-2"] = toolTurn([
+                { name: "read_canvas", args: {} },
+                { name: "canvas_kv", args: { op: "get", key: "app/x" } },
+                { name: "read_artifact", args: from },
+            ]);
+            const alice = await client.createSession({ model: qualifiedModel, owner: ALICE });
+            const aliceResults = JSON.parse(await alice.sendAndWait("L2-ALICE", TIMEOUT));
+            assert(!JSON.parse(aliceResults[1]).error, `Alice publishes the bytes: ${aliceResults[1]}`);
+
+            // The portal side judges with its own switch and its own old catalog.
+            const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema, canvasLegacyMode: true });
+            await mgmt.start();
+            try {
+                // The portal reads the same artifacts the worker wrote.
+                mgmt._artifactStore = worker.artifactStore;
+                canvasLegacyCatalogFor(mgmt._factStore, async () => scene.installedAt, { ttlMs: 0 });
+                const bob = await client.createSession({ model: qualifiedModel, owner: BOB });
+                const first = JSON.parse(await bob.sendAndWait("L2-BOB-1", TIMEOUT));
+                const draw = await latestCanvasDraw(mgmt, bob.sessionId);
+                assertEqual(draw.trust, "cross-owner", "the true trust: Alice's registry app has these bytes");
+                assertEqual(draw.legacy, true, "flagged as an old app's page");
+                const read1 = JSON.parse(first[1]);
+                assert(!read1.withheld && String(read1.content ?? "").includes(name), `the old page is read as on main: ${first[1]}`);
+                assertEqual(JSON.parse(first[2]).ok, true, `the agent writes the old page's KV: ${first[2]}`);
+                const get1 = JSON.parse(first[3]);
+                assert(get1.found === true && get1.key === "app/x" && get1.v === 1, `the value is read back: ${first[3]}`);
+                assertEqual(get1.page, undefined, "no page label on the old page's values");
+                const art1 = JSON.parse(first[4]);
+                assert(art1.success === true && art1.content === card.html && art1.sha256 === card.sha256, `its artifact is read in full: ${String(first[4]).slice(0, 200)}`);
+                const label1 = await mgmt.getCanvasRevisionLabel({ sessionId: bob.sessionId, slot: 1 });
+                assertEqual(label1.legacy, true, "the portal judges it legacy now");
+                assertEqual(label1.pageSha256, card.sha256);
+
+                // The old card changes: it now names other bytes.
+                await scene.factStore.storeFact({ key: `apps/${name}`, shared: true, value: { name, source: { sessionId: card.sourceSession, filename: card.filename, sha256: "e".repeat(64) } } });
+                const second = JSON.parse(await bob.sendAndWait("L2-BOB-2", TIMEOUT));
+                const read2 = JSON.parse(second[0]);
+                assertEqual(read2.withheld, true, `withheld once the card changed: ${second[0]}`);
+                const get2 = JSON.parse(second[1]);
+                assert(get2.found === true && get2.v === 1, `the same value is read: ${second[1]}`);
+                assertEqual(get2.page?.trust, "cross-owner", "and now labelled");
+                assertEqual(JSON.parse(second[2]).error, "CANVAS_APP_BYTES", `the artifact is refused: ${String(second[2]).slice(0, 200)}`);
+                assertEqual((await mgmt.getCanvasRevisionLabel({ sessionId: bob.sessionId, slot: 1 })).legacy, false, "the portal no longer judges it legacy");
+            } finally {
+                await mgmt.stop().catch(() => {});
+            }
+        });
+    });
+
+    it("off: the same old page is withheld and labelled, and its draw carries no legacy flag", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const name = `old-page-off-${env.runId}`;
+        const scripts = {};
+        const respond = pagesTurns(scripts);
+        await withScriptedModel(env, { respond, worker: { canvasLegacyMode: false } }, async ({ client, qualifiedModel, worker }) => {
+            const { card } = await legacyScene(env, worker, name);
+            scripts["L2-ALICE"] = toolTurn([
+                { name: "draw_canvas", args: { html: card.html } },
+                { name: "publish_canvas_app", args: { name: `${name}-v2`, description: DESCRIPTION, scope: "shared" } },
+            ]);
+            const from = { sessionId: card.sourceSession, filename: card.filename };
+            scripts["L2-BOB-OFF"] = toolTurn([
+                { name: "draw_canvas", args: { fromArtifact: from } },
+                { name: "read_canvas", args: {} },
+                { name: "canvas_kv", args: { op: "put", key: "app/x", value: 1 } },
+                { name: "canvas_kv", args: { op: "get", key: "app/x" } },
+            ]);
+            const alice = await client.createSession({ model: qualifiedModel, owner: ALICE });
+            const aliceResults = JSON.parse(await alice.sendAndWait("L2-ALICE", TIMEOUT));
+            assert(!JSON.parse(aliceResults[1]).error, `Alice publishes the bytes: ${aliceResults[1]}`);
+            const bob = await client.createSession({ model: qualifiedModel, owner: BOB });
+            const results = JSON.parse(await bob.sendAndWait("L2-BOB-OFF", TIMEOUT));
+            assertEqual(JSON.parse(results[1]).withheld, true, `withheld: ${results[1]}`);
+            assertEqual(JSON.parse(results[2]).ok, true, `the agent writes the KV: ${results[2]}`);
+            const get = JSON.parse(results[3]);
+            assert(get.found === true && get.key === "app/x" && get.v === 1, `the value is read back: ${results[3]}`);
+            assertEqual(get.page?.trust, "cross-owner", "labelled");
+            const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema, canvasLegacyMode: false });
+            await mgmt.start();
+            try {
+                mgmt._artifactStore = worker.artifactStore;
+                const draw = await latestCanvasDraw(mgmt, bob.sessionId);
+                assertEqual(draw.trust, "cross-owner");
+                assertEqual(draw.legacy, undefined, "no legacy flag when the worker's switch is off");
+                assertEqual((await mgmt.getCanvasRevisionLabel({ sessionId: bob.sessionId, slot: 1 })).legacy, false);
+            } finally {
+                await mgmt.stop().catch(() => {});
+            }
         });
     });
 });

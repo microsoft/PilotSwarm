@@ -1,7 +1,7 @@
 ---
 name: pilotswarm-portal-builder
 description: "Use when creating or updating a browser portal on top of PilotSwarm. Covers portal branding, plugin.json.portal, named-agent exposure, auth add-ons, and remote deployment wiring."
-version: 1.1.0
+version: 1.2.0
 ---
 
 # PilotSwarm Portal Builder
@@ -94,8 +94,13 @@ Do not guess these answers when they materially affect the scaffold. If the user
 - Validate a portal rollout with `GET /api/v1/health` and
   `GET /api/v1/auth/config`.
 - Canvas apps live in the deployment's registry (`/api/v1/canvas-apps`):
-  private by default, versioned, shareable. A portal that moves from the old
-  `apps/<name>` fact catalog runs the one-time admin migration
+  private by default, versioned, shareable. During the transition
+  (`PILOTSWARM_CANVAS_LEGACY_MODE`, on by default; the bootstrap reports it as
+  `canvasLegacyMode`) the old `apps/<name>` fact catalog keeps working: a page
+  whose draw event says `legacy: true`, or a revision drawn before the
+  registry that `getCanvasRevisionLabel` confirms, is framed directly with
+  the exact bytes judged, and the server asks no approval for it. After the
+  transition an admin runs the one-time migration
   (`pilotswarm apps migrate-legacy`, see `docs/user-guide/canvas-apps.md`).
   A canvas page with a `workspace` block waits for the session owner's
   approval in the portal; a custom UX that renders canvases must show that

@@ -209,3 +209,66 @@ test("a legacy entry whose bytes cannot be read is hidden from metadata and list
         fs.rmSync(dir, { recursive: true, force: true });
     }
 });
+
+// The canvas app transition (issue 181): an old app's exact page is read as on
+// main, decided by the old catalog when the read happens.
+test("canvasBytesRefusal: an old app's exact bytes are never refused while the transition says so; otherwise the registry's rule", async () => {
+    const { canvasBytesRefusal } = await import("../../dist/canvas-app-registry.js");
+    const { createHash } = await import("node:crypto");
+    const sha = createHash("sha256").update(FOREIGN, "utf8").digest("hex");
+    const store = {
+        isSpace: async () => false,
+        foreignBytes: async () => "bobs-app",
+        matchBySha: async () => [],
+    };
+    const resolveViewer = async () => ({ principal: { provider: "dev", subject: "alice" }, resourceAdmin: false });
+    const input = { callerSessionId: "alice-session", artifactSessionId: "bob-session", bytes: FOREIGN };
+    // Off (no check given): the registry's rule.
+    assert.match(String(await canvasBytesRefusal({ store, resolveViewer }, input)), /bobs-app/);
+    // On, and the old catalog has these bytes now.
+    let inSet = true;
+    const asked = [];
+    const isLegacySha256 = async (s) => { asked.push(s); return inSet; };
+    assert.equal(await canvasBytesRefusal({ store, resolveViewer, isLegacySha256 }, input), null);
+    assert.equal(await canvasBytesRefusal({ store, resolveViewer, isLegacySha256 }, { ...input, bytes: null, sha256: sha.toUpperCase() }), null, "metadata reads too");
+    assert.deepEqual(asked, [sha, sha]);
+    // The card changed since (or the catalog cannot be read): refused again.
+    inSet = false;
+    assert.match(String(await canvasBytesRefusal({ store, resolveViewer, isLegacySha256 }, input)), /bobs-app/);
+    const failing = async () => { throw new Error("facts store down"); };
+    assert.match(String(await canvasBytesRefusal({ store, resolveViewer, isLegacySha256: failing }, input)), /bobs-app/);
+    // An app's own storage space is never an old app's page.
+    const space = { ...store, isSpace: async () => true };
+    assert.match(String(await canvasBytesRefusal({ store: space, resolveViewer, isLegacySha256: async () => true }, { ...input, artifactSessionId: "d8927a3e-1021-8000-8000-000000000000" })), /canvas app storage/);
+});
+
+test("a partial enumeration (read cap reached): the old card it read keeps its bytes readable; an unreached card's bytes are refused", async () => {
+    const { canvasBytesRefusal } = await import("../../dist/canvas-app-registry.js");
+    const { CanvasLegacyCatalog } = await import("../../dist/canvas-legacy.js");
+    const { createHash } = await import("node:crypto");
+    const sha = createHash("sha256").update(FOREIGN, "utf8").digest("hex");
+    const card = (key) => ({ key, shared: true, deletedAt: null, updatedAt: new Date("2026-09-18T12:00:00Z"),
+        value: { name: key.slice(5), source: { sessionId: "s-old", filename: "app.html", sha256: sha } } });
+    const capped = (rootCards) => ({
+        reads: 0,
+        async readFacts(query) {
+            this.reads++;
+            if (query.scopeKeys) return { count: 0, facts: [] };
+            const prefix = query.keyPattern.slice(0, -1);
+            const filler = Array.from({ length: 1000 }, (_, i) => ({ key: `${prefix}/x${i}`, shared: true, deletedAt: null, updatedAt: new Date(), value: {} }));
+            const facts = prefix === "apps/" ? [...rootCards, ...filler].slice(0, 1000) : filler;
+            return { count: facts.length, facts };
+        },
+    });
+    const store = { isSpace: async () => false, foreignBytes: async () => "bobs-app", matchBySha: async () => [] };
+    const resolveViewer = async () => ({ principal: { provider: "dev", subject: "alice" }, resourceAdmin: false });
+    const input = { callerSessionId: "alice-session", artifactSessionId: "bob-session", bytes: FOREIGN };
+    const installedAt = async () => new Date("2026-10-20T08:00:00Z");
+    const facts = capped([card("apps/old-board")]);
+    const reachable = new CanvasLegacyCatalog({ factStore: facts, installedAt });
+    assert.equal(await canvasBytesRefusal({ store, resolveViewer, isLegacySha256: (s) => reachable.isExemptSha256(s) }, input), null);
+    assert.equal(await reachable.isComplete(), false, "the walk reached its cap");
+    assert.ok(facts.reads >= 200);
+    const unreachedCatalog = new CanvasLegacyCatalog({ factStore: capped([]), installedAt });
+    assert.match(String(await canvasBytesRefusal({ store, resolveViewer, isLegacySha256: (s) => unreachedCatalog.isExemptSha256(s) }, input)), /bobs-app/);
+});

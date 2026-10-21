@@ -17,6 +17,7 @@
  *   pilotswarm apps loads <name> [--limit <n>]  [--since/--until <iso>] [--cursor <at>/<id>]
  *   pilotswarm apps prune
  *   pilotswarm apps migrate-legacy [--apply]
+ *   pilotswarm apps label <sessionId> [--slot <n>]
  */
 
 import * as fs from "node:fs";
@@ -45,6 +46,8 @@ Usage:
   pilotswarm apps rm <name> --yes [--shared|--user]
   pilotswarm apps prune [--json]                       unrestricted admin: expired loads, abandoned uploads, deleted apps' bytes
   pilotswarm apps migrate-legacy [--apply] [--json]
+  pilotswarm apps label <sessionId> [--slot <n>] [--json]
+                                                       whether that canvas is handled as on main during the transition
 
 Connection (web API only):
   --api-url <url>   defaults to PILOTSWARM_API_URL
@@ -70,6 +73,7 @@ export function parseAppsArgs(argv) {
         else if (arg === "--description") flags.description = argv[++i];
         else if (arg === "--tags") flags.tags = String(argv[++i] ?? "").split(",").map((t) => t.trim()).filter(Boolean);
         else if (arg === "--limit") flags.limit = Number(argv[++i]);
+        else if (arg === "--slot") flags.slot = Number(argv[++i]);
         else if (arg === "--since") flags.since = argv[++i];
         else if (arg === "--until") flags.until = argv[++i];
         else if (arg === "--cursor") flags.cursor = argv[++i];
@@ -257,6 +261,12 @@ export async function runAppsCommand(argv, deps = {}) {
                 const result = await client.pruneCanvasApps({});
                 print(result, (r) => `${r.loadsRemoved ?? 0} load rows, ${r.pendingRemoved ?? 0} abandoned uploads, ${r.spacesPurged ?? 0} deleted apps' bytes removed${r.failures ? `; ${r.failures} storage failures will be retried` : ""}`);
                 return result?.failures ? 2 : 0;
+            }
+            case "label": {
+                const sessionId = needName(rest[0], "label <sessionId>");
+                const label = await client.getCanvasRevisionLabel({ sessionId, ...(flags.slot ? { slot: flags.slot } : {}) });
+                print(label, (l) => `${sessionId} slot ${l.slot}: revision ${l.rev}, ${l.legacy ? "handled as before the registry (transition)" : "registry rules"}`);
+                return 0;
             }
             case "migrate-legacy": {
                 const result = await client.migrateLegacyCanvasApps({ dryRun: !flags.apply });

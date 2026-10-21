@@ -227,14 +227,39 @@ app cannot load other pages into its frame, and a page that replaces itself
 gets nothing more from the session. A link it shows opens only after you
 click it and confirm. Canvas files (`canvas.html` … `canvas5.html`)
 previewed in the Files tab always use this wrapper, whoever's page is in them. Its canvas actions and KV values
-reach the agent labelled as that app's data, not as instructions. The
+reach the agent labelled as that app's data, not as instructions. So do
+those of a page whose origin cannot be confirmed (labelled `unknown`). The
 artifact tools do not hand an agent the bytes of another owner's app that
 the registry recognizes.
 
 A canvas drawn before the app registry has no recorded owner, so the
-portal shows it the same sealed way until the agent draws it again. When
-the portal cannot confirm whose page a canvas is within a few seconds, it
-shows the page sealed too, and says so.
+portal shows it the same sealed way until the agent draws it again, unless
+the transition below is on. When the portal cannot confirm whose page a
+canvas is within a few seconds, it shows the page sealed too, and says so.
+
+**The transition (`PILOTSWARM_CANVAS_LEGACY_MODE`, on by default).** While
+it is on, two kinds of page are handled exactly as before the registry: no
+workspace approval, framed directly (canvas, share link, Files preview), no
+label on their actions and KV values, and their bytes readable by agents.
+
+- **An old app's page:** the exact bytes of an app from the old catalog
+  (`apps/<name>` facts) whose card was last written at least 5 minutes
+  before the registry was installed. The exemption follows those bytes,
+  even when someone later publishes the same bytes as a registry app.
+- **A canvas drawn before the registry,** while it is not being redrawn.
+
+Each decision is made when the page is used, by the process that uses it
+(the worker for agent reads and KV labels, the portal for approvals,
+action labels and share links), with that process's own switch. So a card
+changed after a page was drawn stops exempting that page, and a worker and
+portal that disagree apply the stricter rules. An edited copy of an old
+app is a new page: it follows the registry's rules.
+
+Known effect: if the old catalog cannot be read (for example while the
+facts store is unavailable), nothing is exempt, so old pages ask for
+approval and are labelled again until it can be read. A catalog too large
+to read in full keeps exempting the old cards it did read, and never one it
+did not.
 
 What remains:
 

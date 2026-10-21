@@ -151,7 +151,7 @@ test("a canvas is framed only with the bytes its draw event classified", async (
     assert.match(WEB_APP, /fetchCrossOwnerCanvas\(controller, sessionId, filename, panelKeys, pageSha256\)/);
     assert.match(WEB_APP, /fetchArtifactHtmlObjectUrl\(controller, sessionId, filename, panelKeys, true, pageSha256\)/);
     const RUNTIME = read("../runtime.js");
-    assert.match(RUNTIME, /createHash\("sha256"\)\.update\(body\)\.digest\("hex"\) !== recorded\) trust = "cross-owner"/, "the share door isolates bytes the event did not classify");
+    assert.match(RUNTIME, /const bodySha = createHash\("sha256"\)\.update\(body\)\.digest\("hex"\);\s*if \(typeof recorded === "string" && bodySha !== recorded\) trust = "cross-owner"/, "the share door isolates bytes the event did not classify");
 });
 
 function fakePort(name) {

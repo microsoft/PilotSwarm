@@ -146,6 +146,12 @@ export function registerCanvasAppTools(server: McpServer, ctx: ServerContext) {
         inputSchema: {},
     }, withToolErrors(async () => jsonResult(await op("pruneCanvasApps", {}))));
 
+    server.registerTool("get_canvas_label", {
+        title: "Get Canvas Transition Label",
+        description: "The canvas app transition (issue 181): whether the canvas now on a session's slot is handled as on main (an old app's page, or one drawn before the registry) while the deployment's transition is on. Read only.",
+        inputSchema: { session_id: z.string().min(1), slot: z.number().int().min(1).max(5).optional() },
+    }, withToolErrors(async (a) => jsonResult(await op("getCanvasRevisionLabel", { sessionId: a.session_id, ...(a.slot ? { slot: a.slot } : {}) }))));
+
     server.registerTool("migrate_legacy_canvas_apps", {
         title: "Migrate Legacy Canvas Apps",
         description: "One-time import of the legacy apps/* facts into the registry as shared apps. Unrestricted admin. Dry run unless dry_run is false; safe to run again.",

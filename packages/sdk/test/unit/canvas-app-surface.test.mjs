@@ -29,7 +29,7 @@ const RUNTIME = read("../../../app/web/runtime.js");
 const MCP = read("../../../app/mcp/src/tools/canvas-apps.ts");
 const CLI = read("../../../app/tui/src/apps-cli.js");
 
-const CANVAS_OPS = OPERATIONS.filter((op) => /CanvasApp|CanvasWorkspaceApproval|CanvasWorkspaceConsent/.test(op.name));
+const CANVAS_OPS = OPERATIONS.filter((op) => /CanvasApp|CanvasWorkspaceApproval|CanvasWorkspaceConsent|CanvasRevisionLabel/.test(op.name));
 const APPROVAL_OPS = ["getCanvasWorkspaceApproval", "setCanvasWorkspaceConsent"];
 
 test("every canvas app operation is on every client and transport, with an access class and a runtime case", () => {
@@ -83,6 +83,7 @@ test("the registry's core files stay cloud-neutral", () => {
         "../../src/canvas-app-registry.ts",
         "../../src/canvas-app-store.ts",
         "../../src/canvas-workspace.ts",
+        "../../src/canvas-legacy.ts",
         "../../src/migrations/canvas-app-registry-0084.ts",
     ];
     for (const rel of files) {

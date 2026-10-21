@@ -207,6 +207,53 @@ unrecognized value is `off`.
 | `find_canvas_app({query})` | registry apps, then old `apps/*` cards from main's own search, in their old shape (`legacy: true`, `key`, `source`); a registry app of the same name wins unless it is not found for the user (a disabled one still wins); a failed old-catalog search is reported as `legacyError` | registry only |
 | `find_canvas_app({name})` | the registry app, else the old card at exactly `apps/<name>` | the registry app |
 | Agent and management writes to `apps/*` | allowed, as before | refused |
+| A legacy page (below): workspace calls | no approval | the owner approves the exact program |
+| A legacy page: agent byte reads (`read_artifact`, copy, `read_canvas`, publish from a slot, private-bytes `fromArtifact`) | allowed | refused when they are another owner's app |
+| `page` label on KV values and actions | none for owner, agent or a legacy page; `cross-owner` (with the app) for another user's app; `unknown` when the page's origin cannot be confirmed | the same, without the legacy case |
+| A legacy page: share link | the page itself (text/html, CSP sandbox), as on main | by trust |
+| `getCanvasRevisionLabel` | `{rev, trust, app?, legacy, pageSha256?}` from one read of the latest draw, judged now | the same with `legacy: false` |
+| Bootstrap `canvasLegacyMode` | `true` | `false` |
+
+**A legacy page** (`canvasRevisionIsLegacy`), judged by the process that
+uses it, when it uses it, with its own switch:
+
+- (a) an old app's page: the draw event says `legacy: true` (the worker
+  adds it next to the true `trust` when the page's sha256 is in the set),
+  its recorded `pageSha256` is the page being used, and that sha256 is in
+  the set now; or
+- (b) a revision drawn before the registry: the event records no `trust`,
+  the minted revision equals the event's (no redraw in flight), and the
+  bytes used are the recorded ones when the event recorded any.
+
+The draw-time flag alone never exempts anything server-side: the worker's
+byte guard and KV label, and the portal's approval, action label and share
+link, each re-check the set when the page is used. The event's `trust` is
+never rewritten, so with the switch off every page follows the registry's
+rules again; a worker or portal whose own switch is off ignores the flag,
+so a mismatch applies the stricter rules. While on, an old app's exact
+bytes are exempt even when the same bytes are also another user's registry
+app (the exemption is per sha256). A sha that cannot be established is
+not in the set: a failed refresh (or an unknown install time)
+exempts nothing, so old pages ask for approval and are labelled until a
+good read (a facts-store outage brings the prompts back). A partial
+enumeration (the read budget below reached) exempts only the qualifying
+cards it read, never one it did not reach: a card read is a real row at its
+exact key, judged by its own `updated_at`, so writing many `apps/*` facts
+cannot strip an old app's exemption.
+
+Labels decide from one draw event at a time: the worker's KV label reads
+the latest event, hashes the stored page and reads the minted revision
+(`canvasPageLabel`); the portal's action label uses one
+`getCanvasRevisionLabel` answer (`canvasPageLabelFor`). Only `owner`,
+`agent` or a verified legacy decision go unlabelled; a failed read, no
+event, no trust (when case (b) does not hold) or an unknown trust string
+is labelled `unknown`. Case (b) needs the minted revision from
+`session_canvases` itself (`mintedCanvasRevStrict`): a failed read is
+"cannot tell", never the event's revision. Case (b) is a format rule, not a
+clock: every PR 195 draw records `trust`, but during a rolling deploy a
+worker still on the previous release draws without it. Such a worker is
+compatibility-trusted during the rollout: its draws count as case (b)
+while the switch is on.
 
 A card counts as an old app (`CanvasLegacyCatalog.isExemptSha256`) only if
 all of these hold:
@@ -227,8 +274,8 @@ The set is enumerated at most once a minute per process, completely: a key
 prefix whose read returns a full page (1,000 facts) is split on the next
 name character, so newer facts cannot push an old card out. One
 enumeration makes at most 200 reads; past that it is incomplete and
-exempts only what it found. An unknown install time, or a failed refresh
-after the minute, exempts nothing. Searches run main's search on every
+exempts only the qualifying cards it read. An unknown install time, or a
+failed refresh after the minute, exempts nothing. Searches run main's search on every
 call; find by name reads the one exact key.
 
 The card is derived from the document's `CANVAS-APP-MANIFEST`, never from
