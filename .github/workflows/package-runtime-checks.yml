@@ -8,8 +8,8 @@ on:
       - 'packages/app/ui/react/src/package-review-tabs.js'
       - 'packages/app/web/test/e2e/package-reviewer.spec.mjs'
       - 'packages/sdk/test/unit/package-runtime-host-key.test.mjs'
-      - 'packages/app/ui/react/src/package-review-tabs.js'
       - 'packages/app/web/test/e2e/package-review-diff.spec.mjs'
+      - 'packages/app/web/test/e2e/package-review-guide-canvas.spec.mjs'
       - 'packages/sdk/package.json'
       - 'package-lock.json'
   push:
@@ -20,8 +20,8 @@ on:
       - 'packages/app/ui/react/src/package-review-tabs.js'
       - 'packages/app/web/test/e2e/package-reviewer.spec.mjs'
       - 'packages/sdk/test/unit/package-runtime-host-key.test.mjs'
-      - 'packages/app/ui/react/src/package-review-tabs.js'
       - 'packages/app/web/test/e2e/package-review-diff.spec.mjs'
+      - 'packages/app/web/test/e2e/package-review-guide-canvas.spec.mjs'
       - 'packages/sdk/package.json'
       - 'package-lock.json'
   workflow_dispatch:
@@ -69,5 +69,7 @@ jobs:
         run: npx playwright test --config packages/app/web/playwright.config.mjs package-reviewer.spec.mjs
       - name: Review diff browser regressions
         run: npx playwright test --config packages/app/web/playwright.config.mjs package-review-diff.spec.mjs
+      - name: Guided review canvas browser regressions
+        run: npx playwright test --config packages/app/web/playwright.config.mjs package-review-guide-canvas.spec.mjs
       - name: Real PostgreSQL, supervised execution, recovery and browser acceptance
         run: node --test --test-reporter=tap --test-timeout=120000 --test-concurrency=1 packages/sdk/test/postgres/package-runtime.test.mjs

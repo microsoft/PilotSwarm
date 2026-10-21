@@ -23,6 +23,8 @@ import { packAgentPackage } from "../../dist/agent-package-format.js";
 import { PilotSwarmManagementClient } from "../../dist/management-client.js";
 import { SessionManager } from "../../dist/session-manager.js";
 import { loadAgentFiles } from "../../dist/agent-loader.js";
+import { buildPackageReviewGuideData, renderPackageReviewGuideHtml } from "../../dist/package-review-guide-canvas.js";
+import { ManagedSession } from "../../dist/managed-session.js";
 
 const ADMIN = { provider: "entra", subject: "admin", isAdmin: true, adminScope: "unrestricted", isSystemPrincipal: false };
 
@@ -35,7 +37,7 @@ function pack(root, version, files) {
     return packAgentPackage(dir);
 }
 
-function fixture(t, { viewer = ADMIN, bigFile = false, extraFiles = {} } = {}) {
+function fixture(t, { viewer = ADMIN, bigFile = false, extraFiles = {}, drawCanvas } = {}) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "package-reviewer-"));
     t.after(() => fs.rmSync(root, { recursive: true, force: true }));
     const agent = "---\nname: helper\ntools: [ping]\n---\nHelp.";
@@ -79,7 +81,7 @@ function fixture(t, { viewer = ADMIN, bigFile = false, extraFiles = {} } = {}) {
         }),
     };
     const artifactStore = { downloadArtifact: async (_sid, name) => ({ body: blobs.get(name) }) };
-    const tools = createPackageReviewerTools({ catalog, artifactStore, resolveViewer: () => viewer, sessionId: "rev-session" });
+    const tools = createPackageReviewerTools({ catalog, artifactStore, resolveViewer: () => viewer, sessionId: "rev-session", drawCanvas });
     const byName = Object.fromEntries(tools.map((tool) => [tool.name, tool]));
     return { tools, byName, catalog, calls, puts, v1, v2, versions, blobs };
 }
@@ -113,6 +115,7 @@ for (const [label, viewer] of [
             read_agent_package_review_file: { ...exact(v2), path: "tools/q.mjs" },
             read_agent_package_review_audit: { version_id: "v2" },
             submit_package_review_report: { ...exact(v2), baseline_version_id: null, baseline_sha256: null, ...report },
+            show_package_review_guide: exact(v2),
         };
         for (const name of PACKAGE_REVIEWER_TOOL_NAMES) {
             const result = await byName[name].handler(args[name]);
@@ -370,4 +373,110 @@ test("the shipped package-reviewer agent declares exactly the bundle and keeps i
     assert.equal(new Set(box.map((l) => [...l].length)).size, 1, "splash warning box is ragged");
     const manifest = JSON.parse(fs.readFileSync(path.join(pkgDir, "plugin.json"), "utf8"));
     assert.ok(fs.readFileSync(path.join(pkgDir, "CHANGELOG.md"), "utf8").includes(`## ${manifest.version}`));
+});
+
+const HOSTILE = '</script><script>globalThis.pwned = 1</script><img src=x onerror=alert(1)>';
+
+function savedReport(v1, v2, content = report) {
+    return { reportId: "rep-9", packageId: "pkg", versionId: "v2", sha256: v2.sha256,
+        baseline: { versionId: "v1", sha256: v1.sha256 }, sessionId: "rev-session",
+        author: { provider: "entra", subject: "admin" }, createdAt: new Date("2026-01-02T03:04:05Z"), content };
+}
+
+test("the guided review canvas needs a saved report for the exact candidate and current baseline", async (t) => {
+    const draws = [];
+    const { byName, catalog, v1, v2 } = fixture(t, { drawCanvas: async (input) => { draws.push(input); return { rev: 3 }; } });
+    const gets = [];
+    catalog.packageReviewReports.get = async (actor, input) => { gets.push({ actor, input }); return null; };
+    const show = byName.show_package_review_guide;
+    assert.match((await show.handler(exact(v2))).error, /submit_package_review_report first/);
+    assert.equal(draws.length, 0);
+    assert.deepEqual(gets[0].input, { packageId: "pkg", versionId: "v2", sha256: v2.sha256, baseline: { versionId: "v1", sha256: v1.sha256 } });
+    assert.match((await show.handler({ ...exact(v2), sha256: "f".repeat(64) })).error, /show_package_review_guide/);
+
+    catalog.packageReviewReports.get = async () => savedReport(v1, v2);
+    const drawn = await show.handler(exact(v2));
+    assert.equal(drawn.drawn, true);
+    assert.equal(drawn.reportId, "rep-9");
+    assert.equal(drawn.rev, 3);
+    assert.match(drawn.note, /not an approval/);
+    assert.equal(draws.length, 1);
+    assert.deepEqual(Object.keys(draws[0]).sort(), ["html", "note"], "only a document and a caption are drawn");
+    assert.match(draws[0].note, /Guided review · kit@2\.0\.0 · report rep-9/);
+    assert.match(draws[0].html, /^<!doctype html>/);
+    assert.match(draws[0].html, /ADVISORY · NOT AN APPROVAL/);
+});
+
+test("without a canvas the guide tool says so, and a draw failure is reported", async (t) => {
+    const { byName, catalog, v1, v2 } = fixture(t);
+    catalog.packageReviewReports.get = async () => savedReport(v1, v2);
+    assert.match((await byName.show_package_review_guide.handler(exact(v2))).error, /canvas is unavailable/);
+    const failing = fixture(t, { drawCanvas: async () => ({ error: "the canvas is available only in a top-level session" }) });
+    failing.catalog.packageReviewReports.get = async () => savedReport(failing.v1, failing.v2);
+    assert.match((await failing.byName.show_package_review_guide.handler(exact(failing.v2))).error, /top-level session/);
+});
+
+test("the guide page embeds package-derived text as inert data: no markup, script or controls", (t) => {
+    const { v1, v2 } = fixture(t);
+    const content = {
+        facts: [HOSTILE], analysis: HOSTILE, risks: [HOSTILE],
+        guide: [{ step: HOSTILE, detail: "check", paths: ["tools/q.mjs", "agents/unchanged.md"] }],
+    };
+    const diff = {
+        candidate: { packageId: "pkg", versionId: "v2", sha256: v2.sha256, semver: "2.0.0", name: HOSTILE, revision: 1, scope: "shared", publisher: null },
+        baseline: { packageId: "pkg", versionId: "v1", sha256: v1.sha256, semver: "1.0.0" },
+        baselineSource: "approved",
+        changes: [{ path: "tools/q.mjs", status: "modified", group: "executable", additions: 1, deletions: 1,
+            diff: `--- a/tools/q.mjs\n+++ b/tools/q.mjs\n@@ -1 +1 @@\n-old\n+${HOSTILE}` }],
+    };
+    const html = renderPackageReviewGuideHtml({ diff, report: savedReport(v1, v2, content) });
+    assert.equal(html.match(/<script/g).length, 2, "only the data block and the platform script");
+    assert.equal(html.match(/<\/script>/g).length, 2);
+    assert.ok(!html.includes("<img"), "no package-derived markup");
+    assert.ok(!/canvas-action|postMessage|<form|<input|fetch\(/.test(html), "the page takes no actions");
+    const json = html.slice(html.indexOf('id="guide-data">') + 'id="guide-data">'.length, html.indexOf("</script>"));
+    const data = JSON.parse(json);
+    assert.equal(data.analysis, HOSTILE, "text round-trips unchanged");
+    assert.equal(data.steps[0].files[0].patch.at(-1), `+${HOSTILE}`);
+    assert.deepEqual(data.steps[0].files[1], { path: "agents/unchanged.md", unchanged: true });
+    assert.deepEqual(data.report, { reportId: "rep-9", createdAt: "2026-01-02T03:04:05.000Z", author: "entra:admin", sessionId: "rev-session" });
+});
+
+test("the guide page bounds embedded patches and keeps hashes for flagged files", (t) => {
+    const { v1, v2 } = fixture(t);
+    const long = Array.from({ length: 1000 }, (_, i) => `+line ${i}`).join("\n");
+    const data = buildPackageReviewGuideData({
+        diff: {
+            candidate: { packageId: "pkg", versionId: "v2", sha256: v2.sha256, semver: "2.0.0", name: "kit" },
+            baseline: null, baselineSource: "none",
+            changes: [
+                { path: "a.mjs", status: "added", group: "executable", diff: long },
+                { path: "b.bin", status: "added", group: "executable", diff: null, flagged: "binary", newSha256: "9".repeat(64) },
+            ],
+        },
+        report: savedReport(v1, v2, { facts: [], analysis: "", risks: [], guide: [{ step: "s", detail: "d", paths: ["a.mjs", "b.bin", "a.mjs"] }] }),
+    });
+    const [a, b, again] = data.steps[0].files;
+    assert.equal(a.patch.length, 400);
+    assert.equal(a.hiddenLines, 600);
+    assert.equal(again, a, "a file named twice is embedded once");
+    assert.equal(b.patch, null);
+    assert.match(b.note, new RegExp(`binary.*new ${"9".repeat(64)}`));
+    assert.equal(data.baseline, null);
+});
+
+test("a host-drawn canvas passes only html and a caption, and only during a live turn", async () => {
+    const session = Object.create(ManagedSession.prototype);
+    assert.match((await session.drawCanvasForCurrentTurn({ html: "<p>x</p>", note: "n" })).error, /no turn/);
+    const calls = [];
+    session.activeTurnState = { pendingActions: [] };
+    session.activeTurnBridge = {};
+    assert.match((await session.drawCanvasForCurrentTurn({ html: "<p>x</p>", note: "n" })).error, /top-level session/);
+    session.activeTurnBridge = { drawCanvas: async (args) => { calls.push(args); return { rev: 7 }; } };
+    assert.deepEqual(await session.drawCanvasForCurrentTurn({ html: "<p>x</p>", note: "n", responseContract: { actions: {} }, session_id: "other" }), { rev: 7 });
+    assert.deepEqual(calls, [{ html: "<p>x</p>", note: "n" }]);
+    assert.match((await session.drawCanvasForCurrentTurn({ html: "", note: "n" })).error, /html is required/);
+    session.activeTurnState = { pendingActions: [{ type: "wait" }] };
+    assert.match((await session.drawCanvasForCurrentTurn({ html: "<p>x</p>", note: "n" })).error, /already ended/);
+    assert.equal(calls.length, 1);
 });

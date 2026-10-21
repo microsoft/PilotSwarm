@@ -467,7 +467,7 @@ it.
   exact candidate and baseline digests on screen.
 - **Hard tool allowlist.** A session whose bound agent identity is
   `package-reviewer` is created with the Copilot SDK `availableTools` set to
-  exactly five tools, and with no app or system tools, MCP servers, skill
+  exactly six tools, and with no app or system tools, MCP servers, skill
   directories, custom agents or workspace tools. Sub-agent spawn and
   inter-session messaging are refused. Naming an agent `package-reviewer` only
   ever narrows its tools. File hooks, discovered skills and filesystem custom
@@ -478,7 +478,7 @@ it.
   read by file, with a 96 KiB UTF-8 limit including response metadata),
   `read_agent_package_review_file` (candidate or baseline,
   sliced; binary returns only a digest), `read_agent_package_review_audit`
-  and `submit_package_review_report`. Every call re-checks that the session
+  `submit_package_review_report` and `show_package_review_guide`. Every call re-checks that the session
   owner is an unrestricted fleet administrator, never the system principal;
   anonymous no-auth operators are refused too. Otherwise it fails closed.
   Reviewer calls bypass the inspect-viewer cache,
@@ -490,6 +490,14 @@ it.
   the diff policy selects (or none), the reviewer session and author. Content
   is a closed shape (facts, analysis, guide, risks); a verdict-like key is
   refused by both the store and a table constraint.
+- **Guided review canvas.** `show_package_review_guide` draws the SAVED report
+  on the reviewer session's canvas: an overview, one page per guide step with
+  the diff of the paths it names, and the open risks. The platform renders a
+  fixed template from the stored report and its own verified diff; package-
+  derived text is embedded as escaped JSON and reaches the page only through
+  `textContent`. The draw passes html and a caption only, with no response
+  contract, artifact source or other session, so the page takes no actions and
+  has no approval control. The reviewer holds no general canvas tool.
 - **Visibility.** The panel shows the newest report only while the candidate
   is still pending with that digest and the baseline still matches; after a
   decision or a baseline change it is hidden. A report load failure never

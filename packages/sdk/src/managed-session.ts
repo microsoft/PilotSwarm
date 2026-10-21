@@ -1643,11 +1643,34 @@ export class ManagedSession {
             waitThreshold: this.config.waitThreshold ?? 30,
         };
         this.activeTurnState = turnState;
+        this.activeTurnBridge = opts?.controlToolBridge ?? null;
         try {
             return await this._runTurnWithState(prompt, turnState, opts);
         } finally {
-            if (this.activeTurnState === turnState) this.activeTurnState = null;
+            if (this.activeTurnState === turnState) {
+                this.activeTurnState = null;
+                this.activeTurnBridge = null;
+            }
         }
+    }
+
+    /**
+     * Draw a finished document on this session's canvas from a host-built
+     * tool during the running turn. Only html and a caption pass through: no
+     * response contract, artifact source, slot or other session, so the page
+     * accepts no actions. Root sessions only, like draw_canvas.
+     */
+    async drawCanvasForCurrentTurn(input: { html: string; note: string }): Promise<{ rev?: number; error?: string }> {
+        const turnState = this.activeTurnState;
+        const bridge = this.activeTurnBridge as any;
+        if (!turnState) return { error: "no turn is running" };
+        if (hasTerminalTurnBoundary(turnState)) return { error: "the turn has already ended" };
+        if (typeof bridge?.drawCanvas !== "function") return { error: "the canvas is available only in a top-level session" };
+        if (typeof input?.html !== "string" || !input.html) return { error: "html is required" };
+        if (Buffer.byteLength(input.html, "utf8") > 900_000) return { error: "the canvas document is over 900 KB" };
+        const result = await bridge.drawCanvas({ html: input.html, note: String(input.note ?? "") });
+        if (result?.error) return { error: String(result.error) };
+        return { ...(result?.rev !== undefined ? { rev: result.rev } : {}) };
     }
 
     private async _runTurnWithState(prompt: string, turnState: TurnState, opts?: TurnOptions): Promise<TurnResult> {
@@ -4150,6 +4173,8 @@ export class ManagedSession {
 
     /** Session workspaces: the running turn's state, read by the native deny hook. */
     private activeTurnState: TurnState | null = null;
+    /** The running turn's control bridge; read by drawCanvasForCurrentTurn. */
+    private activeTurnBridge: unknown = null;
 
     /**
      * Session workspaces: where a change stands in the running turn.

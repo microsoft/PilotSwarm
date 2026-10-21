@@ -2489,6 +2489,8 @@ export class SessionManager {
                 artifactStore: this.artifactStore ?? null,
                 resolveViewer: () => this._resolveInspectViewer(sessionId, true),
                 sessionId,
+                drawCanvas: async (input) => this.sessions.get(sessionId)?.drawCanvasForCurrentTurn(input)
+                    ?? { error: "the session is not running" },
             })
             : [];
         // Provider budgets. Declared by managed-session for the two Token
