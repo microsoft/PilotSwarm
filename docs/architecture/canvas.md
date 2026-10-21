@@ -189,7 +189,10 @@ system or ownerless session cannot publish. The same operations are on
 `pilotswarm apps` CLI and the portal. Export writes a deterministic
 `.tar.gz` of every version and the card, with no owner or ids; import
 checks the whole archive first. The legacy `apps/<name>` facts migrate once
-with `migrateLegacyCanvasApps` (an admin action): each migrated fact is
+with `migrateLegacyCanvasApps` (an admin action, applied only with the
+transition below switched off: while the management client's switch is on,
+`dryRun: false` is refused with `CANVAS_LEGACY_MODE_ON` (409) before
+anything is read, and a dry run reports `applyBlocked`): each migrated fact is
 removed only at the revision that was migrated (an atomic compare-and-delete
 on its etag; a fact replaced meanwhile stays), and a skipped one stays. An
 existing shared app is extended only by the same bytes.

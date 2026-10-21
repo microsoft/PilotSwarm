@@ -117,6 +117,21 @@ test("migrate-legacy is a dry run unless --apply", async () => {
     assert.equal(apply.calls[0].args.dryRun, false);
 });
 
+test("migrate-legacy while the transition is on: the dry run says --apply is blocked; --apply fails with the server's refusal", async () => {
+    const message = "the canvas app transition (PILOTSWARM_CANVAS_LEGACY_MODE) is on: switch it off before applying the migration; a dry run still works";
+    const dry = await run(["migrate-legacy"], {
+        migrateLegacyCanvasApps: { dryRun: true, migrated: 1, skipped: 0, lines: [{ name: "board", outcome: "migrate", version: "1.0.0", owner: null }], applyBlocked: { code: "CANVAS_LEGACY_MODE_ON", message } },
+    });
+    assert.equal(dry.code, 0);
+    assert.match(dry.out, /dry run: 1 to migrate/);
+    assert.match(dry.out, /--apply is blocked: .*switch it off before applying/);
+    const refused = Object.assign(new Error(message), { code: "CANVAS_LEGACY_MODE_ON", status: 409 });
+    await assert.rejects(run(["migrate-legacy", "--apply"], { migrateLegacyCanvasApps: () => { throw refused; } }), (err) => err.code === "CANVAS_LEGACY_MODE_ON");
+    // Switched off: no blocked line.
+    const off = await run(["migrate-legacy"], { migrateLegacyCanvasApps: { dryRun: true, migrated: 0, skipped: 0, lines: [] } });
+    assert.doesNotMatch(off.out, /blocked/);
+});
+
 test("import exits 2 when any version failed", async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "apps-cli-"));
     try {

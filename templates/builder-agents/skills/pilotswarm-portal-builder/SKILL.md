@@ -96,12 +96,15 @@ Do not guess these answers when they materially affect the scaffold. If the user
 - Canvas apps live in the deployment's registry (`/api/v1/canvas-apps`):
   private by default, versioned, shareable. During the transition
   (`PILOTSWARM_CANVAS_LEGACY_MODE`, on by default; the bootstrap reports it as
-  `canvasLegacyMode`) the old `apps/<name>` fact catalog keeps working: a page
-  whose draw event says `legacy: true`, or a revision drawn before the
-  registry that `getCanvasRevisionLabel` confirms, is framed directly with
-  the exact bytes judged, and the server asks no approval for it. After the
+  `canvasLegacyMode`) the old `apps/<name>` fact catalog keeps working. A
+  page whose draw event says `legacy: true`, or a revision drawn before the
+  registry, is framed directly only after a current `getCanvasRevisionLabel`
+  answer for that exact revision says `legacy` and names the bytes; frame
+  only those bytes (never the flag alone), and the server asks no approval
+  for it. Owner and agent pages need no label. After the
   transition an admin runs the one-time migration
-  (`pilotswarm apps migrate-legacy`, see `docs/user-guide/canvas-apps.md`).
+  (`pilotswarm apps migrate-legacy`, see `docs/user-guide/canvas-apps.md`);
+  applying it needs the switch off (`CANVAS_LEGACY_MODE_ON`, 409, while on).
   A canvas page with a `workspace` block waits for the session owner's
   approval in the portal; a custom UX that renders canvases must show that
   prompt from `getCanvasWorkspaceApproval` and send the decision with

@@ -45,6 +45,9 @@ export const CANVAS_APP_ERROR_CODES = [
     // An abandoned upload of the same bytes is being cleaned up / this
     // publish outlived the pending TTL and was claimed: publish again.
     "BUSY", "ABORTED",
+    // The canvas app transition (issue 181) is on: the one-time legacy
+    // migration is applied only after it is switched off.
+    "CANVAS_LEGACY_MODE_ON",
 ] as const;
 export type CanvasAppErrorCode = (typeof CANVAS_APP_ERROR_CODES)[number];
 
@@ -52,7 +55,7 @@ const STATUS: Record<CanvasAppErrorCode, number> = {
     NOT_FOUND: 404, VERSION_NOT_FOUND: 404, USER_NOT_FOUND: 404,
     FORBIDDEN: 403, NAME_TAKEN: 409, VERSION_EXISTS: 409, NO_OWNER: 400,
     APP_DISABLED: 409, BAD_VERSION: 400, BAD_SCOPE: 400, BAD_REQUEST: 400,
-    BUSY: 409, ABORTED: 409,
+    BUSY: 409, ABORTED: 409, CANVAS_LEGACY_MODE_ON: 409,
 };
 
 export class CanvasAppError extends Error {

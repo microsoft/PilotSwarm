@@ -154,7 +154,7 @@ export function registerCanvasAppTools(server: McpServer, ctx: ServerContext) {
 
     server.registerTool("migrate_legacy_canvas_apps", {
         title: "Migrate Legacy Canvas Apps",
-        description: "One-time import of the legacy apps/* facts into the registry as shared apps. Unrestricted admin. Dry run unless dry_run is false; safe to run again.",
+        description: "One-time import of the legacy apps/* facts into the registry as shared apps. Unrestricted admin. Dry run unless dry_run is false; safe to run again. While the canvas app transition (PILOTSWARM_CANVAS_LEGACY_MODE) is on, applying it is refused (CANVAS_LEGACY_MODE_ON) and a dry run says so in applyBlocked.",
         inputSchema: { dry_run: z.boolean().optional() },
     }, withToolErrors(async (a) => jsonResult(await op("migrateLegacyCanvasApps", { dryRun: a.dry_run !== false }))));
 }

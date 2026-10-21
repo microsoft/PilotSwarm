@@ -120,7 +120,13 @@ admin removes it.
 ## Moving the old app catalog
 
 After the transition, an admin moves the remaining old apps into the
-registry once.
+registry once. Applying it needs the transition switched off
+(`PILOTSWARM_CANVAS_LEGACY_MODE=off` on the portal or management client that
+runs it): it removes the old `apps/<name>` facts, which would end the old
+apps' exemption while the transition promises nothing changes. While the
+switch is on, `--apply` (and `dryRun: false`) is refused with
+`CANVAS_LEGACY_MODE_ON` (409); a dry run still works and ends with
+`--apply is blocked: …` (`applyBlocked` in JSON).
 
 ```
 pilotswarm auth login --api-url https://<portal-host>

@@ -273,6 +273,8 @@ export async function runAppsCommand(argv, deps = {}) {
                 print(result, (r) => [
                     ...r.lines.map((l) => `${l.name.padEnd(20)} -> ${l.outcome === "skipped" ? `skipped        ${l.reason}` : `shared ${String(l.version).padEnd(7)} owner ${l.owner ? `${l.owner.provider}:${l.owner.subject}` : "(none)"}  ${l.outcome === "migrated" ? "migrated" : "ok"}`}`),
                     r.dryRun ? `dry run: ${r.migrated} to migrate, ${r.skipped} skipped — run again with --apply` : `${r.migrated} migrated, ${r.skipped} skipped`,
+                    // The canvas app transition is on: --apply is refused until it is off.
+                    ...(r.applyBlocked ? [`--apply is blocked: ${r.applyBlocked.message}`] : []),
                 ].join("\n"));
                 return 0;
             }

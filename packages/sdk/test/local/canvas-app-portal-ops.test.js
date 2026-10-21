@@ -172,6 +172,19 @@ describe("canvas app registry over the Web API", () => {
         await expect(clients.cara.call("pruneCanvasApps")).rejects.toMatchObject({ status: 403 });
         expect(await clients.ada.call("pruneCanvasApps")).toMatchObject({ loadsRemoved: expect.any(Number) });
         await expect(clients.cara.call("migrateLegacyCanvasApps", { dryRun: true })).rejects.toMatchObject({ status: 403 });
+        // The canvas app transition: while the portal's switch is on, an
+        // unrestricted admin's apply is refused over the wire (409) before
+        // anything is read; switched off, it gets past the guard (this
+        // fixture has no facts store, so it then stops at 503).
+        const savedMode = mgmt.config.canvasLegacyMode;
+        try {
+            mgmt.config.canvasLegacyMode = true;
+            await expect(clients.ada.call("migrateLegacyCanvasApps", { dryRun: false })).rejects.toMatchObject({ status: 409, code: "CANVAS_LEGACY_MODE_ON" });
+            mgmt.config.canvasLegacyMode = false;
+            await expect(clients.ada.call("migrateLegacyCanvasApps", { dryRun: false })).rejects.toMatchObject({ status: 503, code: "UNAVAILABLE" });
+        } finally {
+            mgmt.config.canvasLegacyMode = savedMode;
+        }
 
         await clients.bob.call("deleteCanvasApp", { name });
         await expect(clients.bob.call("getCanvasApp", { name, scope: "user" })).rejects.toMatchObject({ status: 404, code: "NOT_FOUND" });

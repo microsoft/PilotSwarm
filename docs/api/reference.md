@@ -350,7 +350,7 @@ may not see answers `NOT_FOUND`; a visible app the caller may not change answers
 | listCanvasAppEditors | `GET /api/v1/canvas-apps/:name/editors` | — | Contributors of the shared copy. |
 | exportCanvasApp | `GET /api/v1/canvas-apps/:name/export` | copy selector | `{ filename, sha256, sizeBytes, contentBase64 }`: a deterministic `.tar.gz` with no owner, scope or user/session ids. |
 | importCanvasApp | `POST /api/v1/canvas-apps/import` | `contentBase64`, `scope` | Archive ≤ 20 MB; checked whole before any write; `VERSION_EXISTS` fails only that version. |
-| migrateLegacyCanvasApps | `POST /api/v1/canvas-apps/migrate-legacy` | `dryRun` | **[admin]** unrestricted; dry run unless `dryRun` is `false`. |
+| migrateLegacyCanvasApps | `POST /api/v1/canvas-apps/migrate-legacy` | `dryRun` | **[admin]** unrestricted; dry run unless `dryRun` is `false`. While the canvas app transition (`PILOTSWARM_CANVAS_LEGACY_MODE`) is on, `dryRun: false` is refused with `CANVAS_LEGACY_MODE_ON` (409) and a dry run returns `applyBlocked`. |
 | getCanvasAppLoads | `GET /api/v1/canvas-apps/:name/loads` | `limit`, `cursorAt`, `cursorId`, `since`, `until`, copy selector | Owner or unrestricted admin. `{ rows, nextCursor, total30d }`. |
 | pruneCanvasApps | `POST /api/v1/canvas-apps/prune` | — | **[admin]** unrestricted; expired loads, abandoned versions, deleted apps' bytes. |
 
@@ -358,7 +358,9 @@ Errors (`error.code`): `NOT_FOUND`, `FORBIDDEN`, `NAME_TAKEN`, `NO_OWNER`,
 `VERSION_EXISTS`, `VERSION_NOT_FOUND`, `APP_DISABLED`, `BAD_VERSION`,
 `BAD_SCOPE`, `BAD_REQUEST`, `USER_NOT_FOUND`, `BUSY` (an abandoned upload of
 the same page is being cleaned up; try again), `ABORTED` (the publish outlived
-the pending window and was cleaned up; publish again).
+the pending window and was cleaned up; publish again), `CANVAS_LEGACY_MODE_ON`
+(409: `migrateLegacyCanvasApps` with `dryRun: false` while the canvas app
+transition is on; switch `PILOTSWARM_CANVAS_LEGACY_MODE` off first).
 
 #### Workspace approval
 

@@ -5668,20 +5668,34 @@ export class PilotSwarmManagementClient {
         });
     }
 
-    /** One-time import of legacy apps/* facts (unrestricted admin; dry run unless dryRun === false). */
+    /**
+     * One-time import of legacy apps/* facts (unrestricted admin; dry run
+     * unless dryRun === false). While this process's canvas app transition
+     * (PILOTSWARM_CANVAS_LEGACY_MODE) is on, applying it is refused
+     * (CANVAS_LEGACY_MODE_ON, 409): it removes the apps/* facts, and so ends
+     * the old apps' exemption while the transition promises none changes. A
+     * dry run still works and says the apply is blocked (`applyBlocked`).
+     */
     async migrateLegacyCanvasApps(args: { dryRun?: boolean }, owner: AgentPrincipal | null, resourceAdmin: boolean) {
         // Authorization before availability: a non-admin learns nothing about the deployment.
         if (!resourceAdmin) throw new CanvasAppError("FORBIDDEN", "migrating legacy canvas apps needs an unrestricted admin");
+        const dryRun = args?.dryRun !== false;
+        const legacyModeOn = this._canvasLegacyMode();
+        const blockedMessage = "the canvas app transition (PILOTSWARM_CANVAS_LEGACY_MODE) is on: switch it off before applying the migration; a dry run still works";
+        if (!dryRun && legacyModeOn) throw new CanvasAppError("CANVAS_LEGACY_MODE_ON", blockedMessage);
         const deps = this._canvasAppDeps();
         if (!this._factStore) throw Object.assign(new Error("the legacy migration needs the facts store"), { code: "UNAVAILABLE", status: 503 });
-        return migrateLegacyCanvasApps({
+        const result = await migrateLegacyCanvasApps({
             ...deps,
             factStore: this._factStore,
             sessionOwner: async (id) => {
                 const row = await this._catalog!.getSession(id).catch(() => null);
                 return row?.owner?.provider && row?.owner?.subject ? { provider: row.owner.provider, subject: row.owner.subject } : null;
             },
-        }, this._canvasViewer(owner, resourceAdmin), { dryRun: args?.dryRun !== false });
+        }, this._canvasViewer(owner, resourceAdmin), { dryRun });
+        return legacyModeOn
+            ? { ...result, applyBlocked: { code: "CANVAS_LEGACY_MODE_ON" as const, message: blockedMessage } }
+            : result;
     }
 
     async getCanvasAppLoads(

@@ -1287,7 +1287,7 @@ export interface ManagementOps {
     listWorkers(params?: Record<string, never>): Promise<any>;
 
     /**
-     * One-time import of legacy apps/* facts as shared apps. Unrestricted admin. Dry run unless dryRun is false; safe to run again.
+     * One-time import of legacy apps/* facts as shared apps. Unrestricted admin. Dry run unless dryRun is false; safe to run again. Refused with CANVAS_LEGACY_MODE_ON (409) while the canvas app transition is on; a dry run then reports applyBlocked.
      * @remarks `POST /canvas-apps/migrate-legacy` — access: `fleet:admin`
      */
     migrateLegacyCanvasApps(params: {
