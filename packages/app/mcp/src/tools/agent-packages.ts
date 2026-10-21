@@ -85,6 +85,129 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
         }),
     );
 
+    server.registerTool("get_agent_package_review_status", {
+        title: "Package Approval Status",
+        description: "Owner, package editor or administrator: per-version artifact approval, reasons and activation. Read-only; content approval does not approve external tool backends.",
+        inputSchema: { package_id: z.string().min(1).describe("Package ID or manageable package name") },
+    }, withToolErrors(async ({ package_id }) => jsonResult(
+        await ctx.mgmt.getAgentPackageReviewStatus(package_id, owner, ctx.admin && ctx.role === "admin"))));
+
+    if (ctx.admin && ctx.role === "admin") {
+        server.registerTool("list_agent_package_reviews", {
+            title: "List Package Reviews [admin]",
+            description: "Authenticated administrator: exact executable-package candidates, digest, inspection, blockers and revisions. Approval is separate from activation.",
+            inputSchema: {},
+        }, withToolErrors(async () => jsonResult(await ctx.mgmt.listAgentPackageReviews(owner, ctx.admin))));
+        server.registerTool("get_agent_package_review_audit", {
+            title: "Package Review Audit [admin]",
+            description: "Authenticated administrator: retained package decision audit.",
+            inputSchema: { version_id: z.string().min(1) },
+        }, withToolErrors(async ({ version_id }) =>
+            jsonResult(await ctx.mgmt.getAgentPackageReviewAudit(version_id, owner, ctx.admin))));
+        server.registerTool("get_agent_package_review_diff", {
+            title: "Package Review Diff [admin]",
+            description: "Authenticated administrator: risk-classified diff (executable, dependency, capability, precheck-policy, declarative; flagged content shown as hashes) of an exact candidate digest against a same-package baseline. Review aid only; not an approval or security proof. For a large review set files_only and read each file with get_agent_package_review_file_diff.",
+            inputSchema: {
+                package_id: z.string().min(1), version_id: z.string().min(1),
+                sha256: z.string().regex(/^[a-f0-9]{64}$/),
+                baseline_version_id: z.string().min(1).optional().describe("Explicit baseline; defaults to newest approved, then active, then none"),
+                files_only: z.boolean().optional().describe("List changed files with +/- line counts but no patch text"),
+            },
+        }, withToolErrors(async ({ package_id, version_id, sha256, baseline_version_id, files_only }) => jsonResult(
+            await ctx.mgmt.getAgentPackageReviewDiff({
+                packageId: package_id, versionId: version_id, sha256, baselineVersionId: baseline_version_id ?? null,
+                ...(files_only === true ? { patches: false } : {}),
+            }, owner, ctx.admin))));
+        server.registerTool("get_agent_package_review_file_diff", {
+            title: "Package Review File Diff [admin]",
+            description: "Authenticated administrator: one changed file's classified patch for the same exact candidate and baseline as get_agent_package_review_diff.",
+            inputSchema: {
+                package_id: z.string().min(1), version_id: z.string().min(1),
+                sha256: z.string().regex(/^[a-f0-9]{64}$/),
+                path: z.string().min(1).max(1024).describe("Changed file path as listed by get_agent_package_review_diff"),
+                baseline_version_id: z.string().min(1).optional(),
+            },
+        }, withToolErrors(async ({ package_id, version_id, sha256, path, baseline_version_id }) => jsonResult(
+            await ctx.mgmt.getAgentPackageReviewFileDiff({
+                packageId: package_id, versionId: version_id, sha256, baselineVersionId: baseline_version_id ?? null, path,
+            }, owner, ctx.admin))));
+        server.registerTool("get_agent_package_runtime_status", {
+            title: "Package Runtime Fencing [admin]",
+            description: "Current exact-identity admission and observed-exit fencing status, including deleted packages. Lease expiry never proves completion.",
+            inputSchema: { package_id: z.string().min(1), version_id: z.string().min(1), sha256: z.string().regex(/^[a-f0-9]{64}$/) },
+        }, withToolErrors(async ({ package_id, version_id, sha256 }) => jsonResult(
+            await ctx.mgmt.getAgentPackageRuntimeStatus({ packageId: package_id, versionId: version_id, sha256 }, owner, ctx.admin))));
+        server.registerTool("get_agent_package_activation_audit", {
+            title: "Package Activation Audit [admin]",
+            description: "Retained exact-version activation pointer history. Does not describe runtime fences.",
+            inputSchema: { package_id: z.string().min(1) },
+        }, withToolErrors(async ({ package_id }) =>
+            jsonResult(await ctx.mgmt.getAgentPackageActivationAudit(package_id, owner, ctx.admin))));
+        server.registerTool("get_session_agent_package_binding", {
+            title: "Session Package Binding [admin]",
+            description: "Read a durable exact version/digest binding and current ownership eligibility. This is not an execution grant.",
+            inputSchema: { session_id: z.string().min(1) },
+        }, withToolErrors(async ({ session_id }) =>
+            jsonResult(await ctx.mgmt.getSessionAgentPackageBinding(session_id, owner, ctx.admin))));
+        if (ctx.agentMgmt === "full") {
+            server.registerTool("decide_agent_package_review", {
+                title: "Decide Package Review [admin]",
+                description: "CAS immutable artifact-content acceptance/rejection/revocation with actor/reason audit. Approval accepts bytes only, NOT dependency closure or execution; activation remains separate.",
+                inputSchema: {
+                    package_id: z.string().min(1), version_id: z.string().min(1),
+                    sha256: z.string().regex(/^[a-f0-9]{64}$/), expected_revision: z.number().int().positive(),
+                    decision: z.enum(["approved", "rejected", "revoked"]), reason: z.string().min(1),
+                    baseline_version_id: z.string().min(1).optional().describe("Baseline shown by get_agent_package_review_diff; recorded in the audit"),
+                    baseline_sha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+                },
+            }, withToolErrors(async ({ package_id, version_id, sha256, expected_revision, decision, reason, baseline_version_id, baseline_sha256 }) => {
+                if (Boolean(baseline_version_id) !== Boolean(baseline_sha256)) {
+                    throw Object.assign(new Error("baseline_version_id and baseline_sha256 must be given together"), { code: "INVALID_REQUEST" });
+                }
+                await ctx.mgmt.decideAgentPackageReview({
+                    packageId: package_id, versionId: version_id, sha256,
+                    expectedRevision: expected_revision, decision, reason,
+                    ...(baseline_version_id ? { baseline: { versionId: baseline_version_id, sha256: baseline_sha256! } } : {}),
+                }, owner, ctx.admin);
+                return jsonResult({ recorded: true, approvalScope: "artifact-content", activationAllowed: false, runtimeFencing: "not-reported" });
+            }));
+            server.registerTool("activate_agent_package_version", {
+                title: "Activate Exact Package Version [admin]",
+                description: "CAS exact digest, review revision, active-pointer revision and prior pointer. Existing session pins do not move. Unverifiable executable targets remain denied.",
+                inputSchema: {
+                    package_id: z.string().min(1), version_id: z.string().min(1),
+                    sha256: z.string().regex(/^[a-f0-9]{64}$/),
+                    expected_review_revision: z.number().int().positive(),
+                    expected_activation_revision: z.number().int().positive(),
+                    expected_active_version_id: z.string().min(1).nullable(), reason: z.string().min(1),
+                },
+            }, withToolErrors(async ({ package_id, version_id, sha256, expected_review_revision,
+                expected_activation_revision, expected_active_version_id, reason }) => {
+                await ctx.mgmt.activateAgentPackageVersion({
+                    packageId: package_id, versionId: version_id, sha256,
+                    expectedReviewRevision: expected_review_revision, expectedActivationRevision: expected_activation_revision,
+                    expectedActiveVersionId: expected_active_version_id, reason,
+                }, owner, ctx.admin);
+                return jsonResult({ activated: true, executionAllowed: false, runtimeFencing: "not-reported" });
+            }));
+            server.registerTool("rebind_session_agent_package", {
+                title: "Rebind Exact Session Package Version [admin]",
+                description: "CAS a same-package/agent durable pin to exact version/digest with retained history. Invalidates registrations; the response does not assert cancellation or fencing completion.",
+                inputSchema: {
+                    session_id: z.string().min(1), package_id: z.string().min(1), version_id: z.string().min(1),
+                    sha256: z.string().regex(/^[a-f0-9]{64}$/), agent_name: z.string().min(1),
+                    expected_binding_revision: z.number().int().nonnegative().describe("Zero explicitly binds a previously unbound historical session"), reason: z.string().min(1),
+                },
+            }, withToolErrors(async ({ session_id, package_id, version_id, sha256, agent_name, expected_binding_revision, reason }) => {
+                await ctx.mgmt.rebindSessionAgentPackage({
+                    sessionId: session_id, packageId: package_id, versionId: version_id, sha256,
+                    agentName: agent_name, expectedBindingRevision: expected_binding_revision, reason,
+                }, owner, ctx.admin);
+                return jsonResult({ rebound: true, executionAllowed: false, runtimeFencing: "not-reported" });
+            }));
+        }
+    }
+
     if (ctx.agentMgmt !== "full") return;
 
     server.registerTool(

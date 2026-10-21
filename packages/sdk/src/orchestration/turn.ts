@@ -39,6 +39,7 @@ import {
     writeLatestResponse,
 } from "./lifecycle.js";
 import { describeCronAt } from "../cron-at.js";
+import { CRON_PRECHECK_BROKEN_OUTCOMES } from "../cron-precheck.js";
 import { shouldWakeParentForChildUpdate } from "../child-notifications.js";
 import {
     BUDGET_TIMER_WAKE_PROMPT,
@@ -732,7 +733,12 @@ export function* processPrompt(
     // blaming "a worker restart" that never happened. Deterministic on any
     // session whose first turn was refused.
     const gateRefused = result.type === "wait" && timerGate(result as any) !== undefined;
-    if (!gateRefused) state.iteration++;
+    if (!gateRefused) {
+        state.iteration++;
+        if (state.cronSchedule?.precheckSkips) {
+            state.cronSchedule = { ...state.cronSchedule, precheckSkips: 0 };
+        }
+    }
     // A turn that ran (any result but a gate refusal) delivered the pending
     // workspace notes; a refused one did not, so they wait for the next. For
     // a session with a workspace, only a turn that got past the workspace
@@ -863,7 +869,11 @@ function* schedulePostTurnContinuation(runtime: DurableSessionRuntime): Generato
         }
         yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
             eventType: "session.cron_started",
-            data: { intervalSeconds: activeCron.intervalSeconds, reason: activeCron.reason },
+            data: {
+                intervalSeconds: activeCron.intervalSeconds,
+                reason: activeCron.reason,
+                ...(activeCron.precheck ? { precheck: activeCron.precheck } : {}),
+            },
         }]);
         const cronStartedAt: number = yield ctx.utcNow();
         ctx.traceInfo(`[orch] cron timer: ${activeCron.intervalSeconds}s (${activeCron.reason})`);
@@ -1645,6 +1655,25 @@ export function* handleTurnResult(
 
 // ─── processTimer: handle fired timers by type ──────────────
 
+/**
+ * 1.0.83: whether an interval cron wake-up would reach the model with only
+ * its own schedule prompt. Anything else carried into the turn (a child
+ * digest, a held note, stashed or carried prompts) needs the model, so the
+ * cron precheck is not consulted.
+ */
+function cronWakeCarriesNothingElse(runtime: DurableSessionRuntime): boolean {
+    const { state } = runtime;
+    return !(state.pendingChildDigest && state.pendingChildDigest.updates.length > 0)
+        && !state.pendingPrompt
+        && !state.pendingSystemPrompt
+        && !state.runtimeModelNotice
+        && !(state.budgetStash && state.budgetStash.length > 0)
+        && state.carriedSteers.length === 0
+        && state.pendingToolActions.length === 0
+        && !state.workspaceNotice
+        && !state.workspaceHeldNote;
+}
+
 export function* processTimer(
     runtime: DurableSessionRuntime,
     timerItem: any,
@@ -1694,6 +1723,61 @@ export function* processTimer(
                 eventType: "session.cron_fired",
                 data: {},
             }]);
+            // 1.0.83: a schedule that names a worker-registered precheck asks
+            // it first, so an empty cycle does not call the model. Only a
+            // wake-up that carries nothing else is eligible, and only a
+            // `skip` answer skips. A schedule without one is unchanged.
+            if (activeCron.precheck && cronWakeCarriesNothingElse(runtime)) {
+                let precheck: any = null;
+                try {
+                    precheck = yield runtime.manager.runCronPrecheck({
+                        sessionId: runtime.input.sessionId,
+                        precheck: activeCron.precheck,
+                        ...(activeCron.precheckPackageId ? { packageId: activeCron.precheckPackageId } : {}),
+                        ...(activeCron.precheckIdentity ? {
+                            packageIdentity: activeCron.precheckIdentity, packageBindingRevision: activeCron.precheckBindingRevision,
+                        } : {}),
+                        reason: activeCron.reason,
+                        intervalSeconds: activeCron.intervalSeconds,
+                        consecutiveSkips: activeCron.precheckSkips ?? 0,
+                        ...(activeCron.precheckHealth ? { previouslyBroken: true } : {}),
+                        agent: {
+                            boundAgentName: state.config.boundAgentName,
+                            boundAgentPackageId: state.config.boundAgentPackageId,
+                            boundAgentSource: state.config.boundAgentSource,
+                            agentIdentity: state.config.agentIdentity,
+                            toolNames: state.config.toolNames,
+                        },
+                    });
+                } catch (err: any) {
+                    ctx.traceInfo(`[orch] cron precheck failed (${err?.message ?? err}); running the cycle`);
+                }
+                // Broken answers (not skips, max_skips or denial) feed the
+                // health streak; the activity notifies owners. No rollback.
+                // Only a real run/skip answer ends the streak: max_skips does
+                // not call the precheck, so it proves nothing either way.
+                const outcome = typeof precheck?.outcome === "string" ? precheck.outcome : null;
+                let health = activeCron.precheckHealth;
+                if (outcome && CRON_PRECHECK_BROKEN_OUTCOMES.has(outcome)) {
+                    const at: number = yield ctx.utcNow();
+                    health = { outcome, since: health?.since ?? at, count: (health?.count ?? 0) + 1 };
+                } else if (outcome === "run" || outcome === "skip") {
+                    health = undefined;
+                }
+                const healthChanged = health !== activeCron.precheckHealth;
+                if (precheck?.skip === true) {
+                    const skips = (activeCron.precheckSkips ?? 0) + 1;
+                    const { precheckHealth: _old, ...base } = activeCron;
+                    state.cronSchedule = { ...base, precheckSkips: skips, ...(health ? { precheckHealth: health } : {}) };
+                    ctx.traceInfo(`[orch] cron precheck ${activeCron.precheck} skipped the cycle (${skips} in a row)`);
+                    yield* schedulePostTurnContinuation(runtime);
+                    return;
+                }
+                if (activeCron.precheckSkips || healthChanged) {
+                    const { precheckHealth: _old, ...base } = activeCron;
+                    state.cronSchedule = { ...base, precheckSkips: 0, ...(health ? { precheckHealth: health } : {}) };
+                }
+            }
             const cycleReportGuidance = "If this cycle finds material changes or blockers that should wake your parent, call report_cycle(status='material' or status='blocked', summary='...') before finishing. If nothing material changed, do NOT call report_cycle at all — just end the turn silently. Do not emit report_cycle(status='quiet') on an uneventful cycle, and never write a tool call as text.";
             const cronPrompt = `[SYSTEM: Scheduled cron wake-up for: "${activeCron.reason}". Resume your recurring task. ${cycleReportGuidance}]`;
             if (timer.shouldRehydrate) {

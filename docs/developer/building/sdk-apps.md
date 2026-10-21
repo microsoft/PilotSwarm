@@ -206,6 +206,22 @@ Then point the worker at `pluginDirs`.
 
 This keeps prompts versioned, reviewable, and easy to reuse across local and remote deployments.
 
+For **published** packages, declarative prompts/skills auto-activate and existing
+named sessions refresh without version pins or administrative rebinding. Code
+requires administrator approval of the whole immutable artifact and explicit
+activation; executable sessions retain exact package/version/digest pins.
+Transitions in either direction between declarative and executable content
+require an explicit administrator rebind. Unknown inspection fails closed.
+Use `getAgentPackageReviewStatus(packageId)` as the authenticated owner, package
+editor or administrator to inspect per-version decision, executable classification,
+reasons, digest and active state. Publish results also carry an additive `review`
+summary. These read-only snapshots do not grant execution permission, and content
+approval does not approve external tool backends.
+Web/portal/TUI creation resolves the package before persisting a new executable
+pin. Lower-level datastore callers creating package-named roots must pass
+`boundAgentPackageId` to `createSessionForAgent` (or a resolved creation config).
+An `agentId` alone cannot authorize executable content during runtime hydration.
+
 ### Programmatic / inline
 
 You can also pass config directly:
@@ -252,6 +268,150 @@ For remote mode:
 - the worker environment still needs the tools and plugin files
 - the client does not execute tools
 - blob storage is recommended if you want reliable dehydration across nodes
+
+## Cron Prechecks
+
+**Security review gate:** package-owned prechecks are not deployment-ready.
+They depend on the separate executable-package authorization prerequisite:
+administrator approval of exact executable content before loading, immutable
+session bindings, per-invocation authorization and worker fencing. Passing the
+cron tests alone does not satisfy that prerequisite. Approved JavaScript still
+runs in a trusted worker process, not a sandbox.
+
+An agent that polls on a `cron` schedule pays for a full model turn on every
+wake-up, including the many that only find nothing to do. A cron precheck is
+code that runs first and answers whether the cycle has work. Prechecks are
+named, and a schedule opts in by name.
+
+**Where a precheck comes from:**
+
+- **An agent package** (no deployment code): `plugin.json` declares
+  `cronPrechecks: {name: {callback: "declared_callback", timeoutMs: 10000}}`
+  and the callback's explicit agent/tool/MCP permissions. The canonical worker
+  module exports `createCallbacks` beside `createTools`; imports/factories and
+  handlers execute only in an approved supervised child. The unreleased
+  `createCronPrechecks` export API is intentionally rejected. Schedules pin the
+  full package/version/SHA and current binding revision across continue-as-new;
+  current owner and capability admission applies on every invocation. See
+  [Building agent packages](../../building-agent-packages.md#cron-prechecks).
+  Existing authorized executable V1 schedules continue on retained V1 after
+  executable V2 activation, not on a same-named V2 callback. Explicit rebind or
+  revocation invalidates the old schedule; retired registrations cannot arm new
+  package-owned schedules.
+- **Application worker code:**
+
+```ts
+worker.registerCronPrechecks([{
+  name: "job-queue",
+  timeoutMs: 10_000,          // optional, at most 60s
+  maxConsecutiveSkips: 12,    // optional: run the model at least every 13th cycle
+  shadow: false,              // optional: true records decisions without skipping
+  check: async ({ sessionId, reason, consecutiveSkips, signal }) => {
+    const pending = await countEligibleJobs({ signal });
+    return pending > 0
+      ? { action: "run", detail: `${pending} jobs` }
+      : { action: "skip", detail: "queue empty" };
+  },
+}]);
+```
+
+**How a schedule opts in**, first match wins:
+
+1. **The cron call names it.** The agent calls
+   `cron(seconds=300, reason="poll the job queue", precheck="job-queue")`.
+   The cron tool rejects a name that is not available to the session.
+2. **The agent definition binds the reason** (recommended for recurring
+   agents: deterministic, no reliance on the model). In the `.agent.md`
+   frontmatter:
+
+   ```yaml
+   cronPrechecks:
+     - reasonPrefix: "poll the job queue"   # or reason: for an exact match
+       precheck: job-queue
+   ```
+
+   Only cron schedules this agent arms with a matching reason get the
+   precheck; its other cron uses and interactive messages are unaffected.
+3. **The session default.** `client.createSession({ ..., cronPrecheck: "job-queue" })`
+   or `client.createSessionForAgent(name, { cronPrecheck: "job-queue" })`.
+   Direct and Web clients persist the same option. Invalid names are rejected
+   with `INVALID_CRON_PRECHECK` before creating a session.
+
+A worker-registered name wins over a same-named package precheck, as with
+tools.
+
+**Operator selection.** The session owner, or a fleet administrator, can set
+the precheck of the session's active interval schedule from the session
+details `PRECHECK` field, MCP `set_session_cron_precheck`, or
+`setSessionCronPrecheck(sessionId, { precheck, expectedRevision, reason })`.
+`precheck: null` selects **None**. The choice overrides all three sources
+above, survives model re-arms and continue-as-new, and is cleared when the
+schedule is cancelled. Only options resolved for the session's own bound agent
+are accepted, the schedule revision must match (`CONFLICT` otherwise), and the
+change is recorded as a `session.cron_precheck_changed` event with the actor.
+
+A schedule without a precheck behaves exactly as before: no check and no
+extra activity. Calling `cron` again replaces the schedule, including its
+precheck.
+
+When an interval `cron` schedule with a precheck fires (orchestration 1.0.83
+and later), the orchestration runs the precheck in an activity before any
+hydration or model call. A `skip` answer records the decision and re-arms the
+same schedule; the model sees nothing for that cycle.
+
+- **Observable.** Every decision is recorded as a `session.cron_precheck`
+  event (`precheck`, `outcome`, `skipped`, `shadow`, `consecutiveSkips`,
+  `durationMs`, `detail`). Register a new precheck with `shadow: true` to
+  compare its decisions with the turns that ran before relying on it.
+- **Fail open.** An unregistered name, a thrown, timed-out or malformed
+  answer, or an activity failure runs the model turn as before.
+- **Broken prechecks notify, never roll back.** `error`, `timeout`, `invalid`
+  and `unregistered` answers notify the session owner and, for a package
+  precheck, the package owner, with a daily reminder while it persists and a
+  recovery notice after the next real `run`/`skip`. Notices carry a fixed
+  summary, never the `detail` text. `max_skips` and authorization denial do
+  not notify.
+- **Admission is not optional.** Before entering a callback, the activity
+  checks current effective ownership and the bound agent copy, even when the
+  callback uses no tools. A package callback requires a resolvable session
+  owner and explicit package binding. Denial throws before entering code or
+  recording an idle skip; the ordinary session path still performs its own
+  authorization. These checks do not replace content approval or fencing.
+  Trusted static checks do not require an exact package binding for declarative
+  agents, including historical NULL-policy sessions; declarative republishing
+  needs no administrative action. If either the existing pin or active copy is
+  executable/unverified, ordinary exact-content root checks still apply.
+  Declarative/executable transitions require explicit rebind and schedule re-arm.
+- **Only an empty wake-up is eligible.** A wake-up that carries child updates,
+  a held note, carried steers or stashed prompts runs the model without
+  asking. User messages are never affected.
+- **Keep it read-only and bounded.** The check runs on whichever worker takes
+  the activity, so register the same prechecks on every worker. It should
+  answer from authoritative state; return `run` when unsure.
+- If the agent's turn renews a lease or heartbeat, set `maxConsecutiveSkips`
+  so the model still runs often enough, or renew it in the check.
+
+**Direct MCP checks.** The callback also receives
+`callMcpTool(server, tool, arguments)`. It invokes an MCP tool directly, without
+creating a Copilot session or loading model context. It resolves only the
+session's current base/bound-agent grants and authorized persisted capability
+selections, not the entire deployment catalog. Bound package ownership,
+`allowedAgents` and the server's `tools` allowlist remain in force.
+HTTP/SSE use configured headers; stdio uses configured command/args/env/cwd.
+Each call has a fresh connection closed on completion or precheck cancellation.
+Stateful HTTP sessions also receive a bounded termination request, even after
+cancellation; server-side expiry applies if the server declines with HTTP 405.
+Await calls and validate results before returning `skip`; MCP error results
+throw and transport errors omit credentials from the recorded explanation.
+An MCP failure or an unfinished call prevents skipping even if the callback
+catches the error or returns without awaiting it.
+The helper does not initiate interactive OAuth or offer model sampling.
+Servers that need unavailable credentials fail open. Use deterministic,
+idempotent tools: durable activity retries may repeat a call, and an MCP tool
+that itself invokes a model still has backend model cost. Package authors need
+no MCP SDK dependency; see the [package example](../../building-agent-packages.md#calling-mcp-without-a-model).
+
+`cron_at` wall-clock schedules are not prechecked.
 
 ## Layered-App Checklist
 

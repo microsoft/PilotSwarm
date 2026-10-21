@@ -23,6 +23,7 @@ import type {
     SessionWorkspace,
 } from "./types.js";
 import { validateWorkspaceText } from "./workspace-check.js";
+import { normalizeCronPrecheckName } from "./cron-precheck.js";
 import type { SessionCatalog, SessionEvent, SessionVisibility, SessionRow } from "./cms.js";
 import type { MessageSender } from "./message-sender.js";
 import { normalizeMessageSender } from "./message-sender.js";
@@ -103,6 +104,7 @@ export function projectSerializableSessionConfig(
         systemMessage: fullConfig?.systemMessage,
         workingDirectory: fullConfig?.workingDirectory,
         waitThreshold: fullConfig?.waitThreshold ?? fallbackWaitThreshold,
+        ...(fullConfig?.cronPrecheck ? { cronPrecheck: fullConfig.cronPrecheck } : {}),
         boundAgentName: fullConfig?.boundAgentName,
         boundAgentPackageId: fullConfig?.boundAgentPackageId,
         boundAgentSource: fullConfig?.boundAgentSource,
@@ -223,6 +225,17 @@ export class PilotSwarmClient {
             workspace = checked.workspace;
         }
 
+        // Cron prechecks: a name only. Whether it is registered is the
+        // worker's concern; an unregistered default never skips (fail open).
+        let cronPrecheck: string | undefined;
+        if (config?.cronPrecheck !== undefined && config?.cronPrecheck !== null && config?.cronPrecheck !== "") {
+            const named = normalizeCronPrecheckName(config.cronPrecheck);
+            if (!named) {
+                throw Object.assign(new Error(`INVALID_CRON_PRECHECK: "${String(config.cronPrecheck)}" is not a valid cron precheck name`), { code: "INVALID_CRON_PRECHECK", status: 400 });
+            }
+            cronPrecheck = named;
+        }
+
         const sessionId = config?.sessionId ?? crypto.randomUUID();
         const resolved = await this._resolveCreationModel(config ?? {}, false);
         const { workspace: _rawWorkspace, ...configWithoutWorkspace } = config ?? {};
@@ -254,6 +267,7 @@ export class PilotSwarmClient {
                 workingDirectory: resolvedConfig.workingDirectory,
                 hooks: resolvedConfig.hooks,
                 waitThreshold: resolvedConfig.waitThreshold ?? this.config.waitThreshold,
+                ...(cronPrecheck ? { cronPrecheck } : {}),
                 toolNames: resolvedConfig.toolNames,
                 ...(workspace ? { workspace } : {}),
             };
@@ -316,9 +330,12 @@ export class PilotSwarmClient {
      * @throws If the agent is not found, is a system agent, or policy rejects it.
      */
     async createSessionForAgent(agentName: string, opts?: {
+        /** Exact package provenance resolved before creation; CMS pins executable content atomically. */
+        boundAgentPackageId?: string;
         model?: string;
         reasoningEffort?: ManagedSessionConfig["reasoningEffort"];
         contextTier?: ManagedSessionConfig["contextTier"];
+        cronPrecheck?: string;
         onUserInputRequest?: UserInputHandler;
         toolNames?: string[];
         title?: string;
@@ -343,10 +360,12 @@ export class PilotSwarmClient {
             model: opts?.model,
             reasoningEffort: opts?.reasoningEffort,
             contextTier: opts?.contextTier,
+            cronPrecheck: opts?.cronPrecheck,
             toolNames: opts?.toolNames,
             onUserInputRequest: opts?.onUserInputRequest,
             agentId: agentName,
             boundAgentName: agentName,
+            ...(opts?.boundAgentPackageId ? { boundAgentPackageId: opts.boundAgentPackageId } : {}),
             promptLayering: { kind: "app-agent" },
             owner: opts?.owner ?? null,
             groupId: opts?.groupId ?? null,

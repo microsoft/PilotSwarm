@@ -1,0 +1,67 @@
+name: Package runtime acceptance
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/package-runtime-checks.yml'
+      - 'packages/sdk/src/**'
+      - 'packages/sdk/test/postgres/**'
+      - 'packages/sdk/test/unit/package-runtime-host-key.test.mjs'
+      - 'packages/app/ui/react/src/package-review-tabs.js'
+      - 'packages/app/web/test/e2e/package-review-diff.spec.mjs'
+      - 'packages/sdk/package.json'
+      - 'package-lock.json'
+  push:
+    paths:
+      - '.github/workflows/package-runtime-checks.yml'
+      - 'packages/sdk/src/**'
+      - 'packages/sdk/test/postgres/**'
+      - 'packages/sdk/test/unit/package-runtime-host-key.test.mjs'
+      - 'packages/app/ui/react/src/package-review-tabs.js'
+      - 'packages/app/web/test/e2e/package-review-diff.spec.mjs'
+      - 'packages/sdk/package.json'
+      - 'package-lock.json'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: package-runtime-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  linux:
+    name: Supervised package authority and fencing (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: --health-cmd="pg_isready -U postgres" --health-interval=5s --health-timeout=5s --health-retries=10
+    env:
+      PACKAGE_TEST_PG_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Verify Linux process-identity support
+        run: python3 -c "import os, signal; assert hasattr(signal, 'pidfd_send_signal'); fd = os.pidfd_open(os.getpid()); os.close(fd)"
+      - run: npm ci
+      - run: npm run build
+      - name: CI policy and shell integration
+        run: node --test .github/scripts/test/*.test.mjs .github/scripts/integration/*.test.mjs
+      - name: Process identity recovery regressions
+        run: node --test packages/sdk/test/unit/package-runtime-host-key.test.mjs
+      - name: Install the review workflow's browser
+        run: npx playwright install --with-deps msedge
+      - name: Review diff browser regressions
+        run: npx playwright test --config packages/app/web/playwright.config.mjs package-review-diff.spec.mjs
+      - name: Real PostgreSQL, supervised execution, recovery and browser acceptance
+        run: node --test --test-reporter=tap --test-timeout=120000 --test-concurrency=1 packages/sdk/test/postgres/package-runtime.test.mjs

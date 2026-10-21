@@ -706,6 +706,7 @@ export class NodeSdkTransport {
                         startedBy: Array.isArray(agent.startedBy) && agent.startedBy.length ? agent.startedBy : undefined,
                         supportsDirectStart: typeof agent.supportsDirectStart === "boolean" ? agent.supportsDirectStart : undefined,
                         source: "package",
+                        packageId: pkg.packageId,
                         packageName: pkg.name,
                         // Friendly section header. plugin.json "title" when the
                         // author set one; the DNS-label name otherwise.
@@ -728,12 +729,14 @@ export class NodeSdkTransport {
      * Enforce user-scope visibility at create time and admit package agents
      * into the client's live allowlist. Baked agents pass through untouched.
      */
-    async _authorizePackageAgentCreate(agentName, owner, isAdmin) {
+    async _authorizePackageAgentCreate(agentName, owner, isAdmin, includeSelection = false) {
         const normalized = normalizeAgentName(agentName);
         const baked = this.creatableAgents.find((agent) => normalizeAgentName(agent.name) === normalized);
-        if (baked) return baked.name;
         const registry = await this._listRegistryCreatableAgents(owner, isAdmin);
-        const match = registry.find((entry) => normalizeAgentName(entry.name) === normalized);
+        const matches = registry.filter((entry) => normalizeAgentName(entry.name) === normalized)
+            .sort((a, b) => a.packageName < b.packageName ? -1 : a.packageName > b.packageName ? 1 : 0);
+        const match = matches.find(entry => entry.scope === "user" && entry.mine)
+            ?? baked ?? matches.find(entry => entry.scope === "shared");
         if (!match) {
             // Either the agent doesn't exist or it is a user-scope package the
             // caller can't see — same answer either way (no existence oracle).
@@ -746,13 +749,64 @@ export class NodeSdkTransport {
         if (this.allowedAgentNames.length > 0 && !this.allowedAgentNames.includes(match.name)) {
             this.allowedAgentNames.push(match.name);
         }
-        return match.name;
+        if (match.source === "package" && !match.packageId) {
+            throw Object.assign(new Error("Package creation provenance unavailable"), { code: "UNAVAILABLE" });
+        }
+        return includeSelection ? { name: match.name, packageId: match.packageId } : match.name;
     }
 
     // ── Agent packages: registry CRUD (portal ops surface) ──────
 
     async listAgentPackages(owner = this.currentUser, isAdmin = true) {
         return this.mgmt.listAgentPackages(owner, Boolean(isAdmin));
+    }
+
+    async listAgentPackageReviews(owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.listAgentPackageReviews(owner, isAdmin === true);
+    }
+    async getAgentPackageReviewStatus(packageId, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.getAgentPackageReviewStatus(packageId, owner, isAdmin === true);
+    }
+
+    async listMyNotifications(options = {}, owner = this.currentUser) {
+        return this.mgmt.listMyNotifications(options, owner);
+    }
+
+    async markNotificationsRead(ids = null, owner = this.currentUser) {
+        return this.mgmt.markNotificationsRead(ids, owner);
+    }
+
+    async decideAgentPackageReview(input, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.decideAgentPackageReview(input, owner, isAdmin === true);
+    }
+
+    async getAgentPackageReviewAudit(versionId, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.getAgentPackageReviewAudit(versionId, owner, isAdmin === true);
+    }
+    async getAgentPackageReviewDiff(input, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.getAgentPackageReviewDiff(input, owner, isAdmin === true);
+    }
+    async getAgentPackageReviewFileDiff(input, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.getAgentPackageReviewFileDiff(input, owner, isAdmin === true);
+    }
+    async getAgentPackageRuntimeStatus(input, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.getAgentPackageRuntimeStatus(input, owner, isAdmin === true);
+    }
+
+    async activateAgentPackageVersion(input, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.activateAgentPackageVersion(input, owner, isAdmin === true);
+    }
+
+    async getAgentPackageActivationAudit(packageId, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.getAgentPackageActivationAudit(packageId, owner, isAdmin === true);
+    }
+
+    async getSessionAgentPackageBinding(sessionId, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.getSessionAgentPackageBinding(sessionId, owner, isAdmin === true);
+    }
+
+    async rebindSessionAgentPackage(input, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.rebindSessionAgentPackage(input, owner, isAdmin === true);
     }
 
     async getAgentPackage(name, owner, isAdmin, selector = null) {
@@ -1124,6 +1178,19 @@ export class NodeSdkTransport {
         return this.mgmt.retrySessionWorkspace(sessionId, options);
     }
 
+    /** The web runtime stamps `input.actor`; a local TUI falls back to the OS user. */
+    async setSessionCronPrecheck(sessionId, input = {}, options = {}) {
+        let actor = typeof input?.actor === "string" ? input.actor.trim() : "";
+        if (!actor) {
+            try { actor = os.userInfo().username; } catch { actor = ""; }
+        }
+        return this.mgmt.setSessionCronPrecheck(
+            sessionId,
+            { precheck: input?.precheck, expectedRevision: input?.expectedRevision, reason: input?.reason, actor: actor || "local-operator" },
+            options,
+        );
+    }
+
     async listSessionWorkspaceFolders(sessionId) {
         return this.mgmt.listSessionWorkspaceFolders(sessionId);
     }
@@ -1370,11 +1437,12 @@ export class NodeSdkTransport {
         return model || null;
     }
 
-    async createSession({ model, reasoningEffort, contextTier, owner, groupId, visibility, workspace } = {}) {
+    async createSession({ model, reasoningEffort, contextTier, cronPrecheck, owner, groupId, visibility, workspace } = {}) {
         const session = await this.client.createSession({
             ...(model ? { model } : {}),
             ...(reasoningEffort ? { reasoningEffort } : {}),
             ...(contextTier ? { contextTier } : {}),
+            ...(cronPrecheck !== undefined ? { cronPrecheck } : {}),
             ...(owner ? { owner } : {}),
             ...(groupId ? { groupId } : {}),
             ...(visibility ? { visibility } : {}),
@@ -1390,16 +1458,18 @@ export class NodeSdkTransport {
         };
     }
 
-    async createSessionForAgent(agentName, { model, reasoningEffort, contextTier, title, splash, splashMobile, initialPrompt, owner, isAdmin, groupId, visibility, workspace } = {}) {
+    async createSessionForAgent(agentName, { model, reasoningEffort, contextTier, cronPrecheck, title, splash, splashMobile, initialPrompt, owner, isAdmin, groupId, visibility, workspace } = {}) {
         // Registry (package) agents are not in the static baked allowlist —
         // resolve the union, enforce user-scope ownership, then delegate the
         // CANONICAL catalog name (the client's allowlist and the CMS row use
         // exact names; only the worker resolver is fuzzy).
-        const canonicalName = await this._authorizePackageAgentCreate(agentName, owner ?? null, isAdmin ?? false);
-        const session = await this.client.createSessionForAgent(canonicalName, {
+        const selected = await this._authorizePackageAgentCreate(agentName, owner ?? null, isAdmin ?? false, true);
+        const session = await this.client.createSessionForAgent(selected.name, {
+            ...(selected.packageId ? { boundAgentPackageId: selected.packageId } : {}),
             ...(model ? { model } : {}),
             ...(reasoningEffort ? { reasoningEffort } : {}),
             ...(contextTier ? { contextTier } : {}),
+            ...(cronPrecheck !== undefined ? { cronPrecheck } : {}),
             ...(title ? { title } : {}),
             ...(splash ? { splash } : {}),
             ...(splashMobile ? { splashMobile } : {}),

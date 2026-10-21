@@ -182,6 +182,31 @@ test("runtime errors map to the structured envelope with sensible statuses", asy
     }
 });
 
+test("a blocked package activation tells the administrator why, on both API paths", async () => {
+    const blocked = () => Object.assign(
+        new Error("executable dependency closure is not verified; content acceptance is not execution approval"),
+        { code: "PRECONDITION_FAILED" },
+    );
+    const { baseUrl, close } = await createHarness({ role: "admin", callImpl: () => { throw blocked(); } });
+    try {
+        const res = await fetch(`${baseUrl}/api/v1/agent-package-reviews/activation`, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ input: {} }),
+        });
+        assert.equal(res.status, 412);
+        assert.deepEqual((await res.json()).error, {
+            code: "PRECONDITION_FAILED",
+            message: "executable dependency closure is not verified; content acceptance is not execution approval",
+        });
+    } finally {
+        await close();
+    }
+    const legacy = createJsonRpcError(blocked());
+    assert.equal(legacy.status, 412);
+    assert.match(legacy.body.error.message, /dependency closure is not verified/);
+});
+
 test("legacy RPC errors preserve client codes and redact unexpected faults", () => {
     const forbidden = createJsonRpcError(Object.assign(new Error("not yours"), { code: "FORBIDDEN" }));
     assert.equal(forbidden.status, 403);

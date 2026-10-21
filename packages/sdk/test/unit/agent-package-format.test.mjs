@@ -511,6 +511,36 @@ test("tools/ without worker-module.js is rejected", async () => {
     assert.deepEqual(errorCodes(result), ["missing_worker_module"]);
 });
 
+test("the documented .mjs worker module is a valid entry point; a .js and .mjs pair is ambiguous", async () => {
+    const dir = writeValidPackage(tmpdir());
+    fs.mkdirSync(path.join(dir, "tools"));
+    fs.writeFileSync(path.join(dir, "tools", "worker-module.mjs"),
+        'import dep from "left-pad";\nexport function createTools() { return []; }\n');
+    const ok = await validateAgentPackageDir(dir);
+    assert.deepEqual(ok.errors, [], "a canonical .mjs entry needs no packaged type:module");
+    assert.equal(ok.manifest.hasTools, true);
+    assert.ok(ok.warnings.some((w) => w.code === "bare_imports" && w.file === "tools/worker-module.mjs"),
+        "the .mjs entry gets the same bare-import heads-up");
+
+    fs.writeFileSync(path.join(dir, "tools", "worker-module.js"), "export function createTools() { return []; }\n");
+    const both = await validateAgentPackageDir(dir, { skipSyntaxCheck: true });
+    assert.deepEqual(errorCodes(both), ["ambiguous_worker_module"]);
+});
+
+test("manifest layout keeps a .mjs tool module's extension, so its module semantics do not change", () => {
+    const dir = writeManifestLayoutPackage(tmpdir());
+    fs.renameSync(path.join(dir, "src", "worker-tools.js"), path.join(dir, "src", "worker-tools.mjs"));
+    const plugin = JSON.parse(fs.readFileSync(path.join(dir, "plugin.json"), "utf8"));
+    fs.writeFileSync(path.join(dir, "plugin.json"), JSON.stringify({ ...plugin, tools: "src/worker-tools.mjs" }));
+    const staged = stageAgentPackageDir(dir);
+    try {
+        assert.equal(staged.staged, true, JSON.stringify(staged.issues));
+        assert.ok(fs.existsSync(path.join(staged.dir, "tools", "worker-module.mjs")));
+        assert.equal(fs.existsSync(path.join(staged.dir, "tools", "worker-module.js")), false);
+        assert.equal(JSON.parse(fs.readFileSync(path.join(staged.dir, "plugin.json"), "utf8")).tools, "tools/worker-module.mjs");
+    } finally { staged.cleanup(); }
+});
+
 test("worker-module syntax errors are caught by the compile-only check", async () => {
     const dir = writeValidPackage(tmpdir());
     fs.mkdirSync(path.join(dir, "tools"));

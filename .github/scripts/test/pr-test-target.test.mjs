@@ -155,7 +155,7 @@ test('GitHub API errors never echo response bodies or credentials', async () => 
 });
 
 test('workflow uses main controls, a pinned separate candidate and an isolated status reporter', () => {
-  const workflow = readFileSync(new URL('../../workflows/tests.yml', import.meta.url), 'utf8');
+  const workflow = readFileSync(new URL('../../workflows/tests.yml', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   const resolver = workflow.split('\n  resolve:\n')[1].split('\n  tests:\n')[0];
   const tests = workflow.split('\n  tests:\n')[1].split('\n  report:\n')[0];
   const report = workflow.split('\n  report:\n')[1];
@@ -180,7 +180,7 @@ test('workflow uses main controls, a pinned separate candidate and an isolated s
 });
 
 test('composite action executes candidate tests with candidate identity and main control paths', t => {
-  const text = readFileSync(new URL('../../actions/provider-tests/action.yml', import.meta.url), 'utf8');
+  const text = readFileSync(new URL('../../actions/provider-tests/action.yml', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   assert.match(text, /working-directory:\s+default: "\."/);
   for (const script of ['prepare-ci-tests', 'azure-ci-database', 'ci-health', 'run-all-providers']) {
     assert(text.includes(`/scripts/${script}.mjs`) || text.includes(`$CI_CONTROL_SCRIPTS/${script}.mjs`));
@@ -195,7 +195,7 @@ test('composite action executes candidate tests with candidate identity and main
   const candidate = join(root, 'candidate');
   mkdirSync(join(candidate, 'scripts'), { recursive: true });
   writeFileSync(join(candidate, 'scripts/run-tests.sh'),
-    '#!/usr/bin/env bash\nprintf "%s\\n" "$PWD" "$GITHUB_SHA" "$@" > "$CAPTURE"\n', { mode: 0o755 });
+    `#!/usr/bin/env bash\nprintf "%s\\n" "${process.platform === 'win32' ? '$(pwd -W)' : '$PWD'}" "$GITHUB_SHA" "$@" > "$CAPTURE"\n`, { mode: 0o755 });
   const capture = join(root, 'capture');
   const result = spawnSync('bash', ['-e', '-o', 'pipefail', '-c', script], {
     cwd: candidate, encoding: 'utf8', env: { ...process.env, GITHUB_SHA: workflowSha, TEST_SOURCE_SHA: candidateSha,

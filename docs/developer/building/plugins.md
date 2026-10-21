@@ -171,6 +171,7 @@ Agents are defined as Markdown files with YAML frontmatter. The frontmatter decl
 | `splash` | string | No | Blessed markup banner shown in the TUI when the session is selected. |
 | `initialPrompt` | string | No | First prompt sent when a system agent is created. |
 | `initialRequiredTool` | string | No | Schema-v3 contract requiring this declared tool to execute during the initial turn. PilotSwarm corrects once, then fails closed. |
+| `cronPrechecks` | list | No | Cron reason bindings: `- reasonPrefix: "<text>"` (or `reason:` for an exact match) with `precheck: <name>`. A matching `cron` schedule this agent arms asks that registered cron precheck before each wake-up. See [Cron Prechecks](./sdk-apps.md#cron-prechecks). |
 
 ### Example Agent File
 

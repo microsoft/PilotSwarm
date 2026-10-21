@@ -3,7 +3,7 @@ import type { Tool } from "@github/copilot-sdk";
 import type { FeatureOwner } from "./feature-flags.js";
 import type { FactStore, EnhancedFactStore, FactRecord } from "./facts-store.js";
 
-export type CapabilityKind = "skill" | "agent" | "tool" | "mcp";
+export type CapabilityKind = "skill" | "agent" | "tool" | "mcp" | "callback";
 export interface CapabilityArtifact {
     kind: CapabilityKind; name: string; description: string; body?: string;
     /** Opaque identity within one source revision. Never displayed as a path. */
@@ -16,7 +16,7 @@ export interface CapabilitySource {
     artifacts: CapabilityArtifact[]; tools: Map<string, Tool<any>>;
     mcpServers: Record<string, any>;
 }
-export interface CapabilitySelection { sourceId: string; sourceRef?: string; tools: string[]; mcpServers: string[] }
+export interface CapabilitySelection { sourceId: string; sourceRef?: string; tools: string[]; mcpServers: string[]; callbacks?: string[] }
 export interface CapabilityState {
     revision: number; selections: CapabilitySelection[];
     requests?: Array<{ id: string; hash: string }>;
@@ -72,7 +72,8 @@ export function normalizeCapabilityState(value: unknown): CapabilityState {
             return [...names].sort();
         };
         return { sourceId: selection.sourceId, ...(selection.sourceRef ? { sourceRef: selection.sourceRef } : {}),
-            tools: clean(selection.tools), mcpServers: clean(selection.mcpServers) };
+            tools: clean(selection.tools), mcpServers: clean(selection.mcpServers),
+            ...(selection.callbacks ? { callbacks: clean(selection.callbacks) } : {}) };
     });
     const requests = state.requests?.map(receipt => {
         if (!receipt || typeof receipt.id !== "string" || !receipt.id || receipt.id.length > 128
@@ -120,7 +121,7 @@ export function capabilityRef(s: string, r: string, k: Ref["k"], n = ""): string
 export function parseCapabilityRef(ref: unknown): Ref {
     if (typeof ref !== "string" || ref.length > 4096 || !/^cap1\.[A-Za-z0-9_-]+$/.test(ref)) throw new Error("Invalid capability reference");
     let v: any; try { v = JSON.parse(Buffer.from(ref.slice(5), "base64url").toString()); } catch { throw new Error("Invalid capability reference"); }
-    if (!v || !["skill", "agent", "tool", "mcp", "source"].includes(v.k) || ![v.s, v.r, v.n].every(x => typeof x === "string")) throw new Error("Invalid capability reference");
+    if (!v || !["skill", "agent", "tool", "mcp", "callback", "source"].includes(v.k) || ![v.s, v.r, v.n].every(x => typeof x === "string")) throw new Error("Invalid capability reference");
     return v;
 }
 export function resolveCapabilitySource(sources: CapabilitySource[], owner: FeatureOwner | null, ref: string): { source: CapabilitySource; ref: Ref } {

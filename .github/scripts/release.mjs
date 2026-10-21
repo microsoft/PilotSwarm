@@ -14,7 +14,7 @@ export function validatePackageLicenses(root = process.cwd()) {
   return license;
 }
 export function validatePackedLicense(tarball, license) {
-  const files = run('tar', ['-tzf', tarball]).split('\n');
+  const files = run('tar', ['-tzf', tarball]).split(/\r?\n/);
   if (files.filter(file => file === 'package/LICENSE').length !== 1 ||
       run('tar', ['-xOzf', tarball, 'package/LICENSE']) !== license.trim()) {
     throw new Error(`${tarball} must contain the complete canonical package/LICENSE.`);

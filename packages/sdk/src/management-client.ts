@@ -170,6 +170,16 @@ import {
     readAgentPackageVersionEntries,
     resolveAgentPackageVersion,
 } from "./agent-package-service.js";
+import { readAgentPackageTarGz } from "./agent-package-format.js";
+import {
+    buildAgentPackageReviewDiff,
+    buildAgentPackageReviewFileChange,
+    REVIEW_DIFF_ADVISORY,
+    reviewBaselineAuditNote,
+    selectReviewBaseline,
+    type AgentPackageReviewDiff,
+    type AgentPackageReviewFileDiff,
+} from "./agent-package-review-diff.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -219,6 +229,27 @@ function normalizeDefaultTuple(tuple: DefaultTuple | null | undefined): DefaultT
 
 function isTerminalOrchestrationStatus(status?: string | null): boolean {
     return status === "Completed" || status === "Failed" || status === "Terminated";
+}
+
+/** Interval-cron precheck fields from the orchestration status, shape-checked. */
+/** @internal Exported for tests: shape-checked PRECHECK fields of the session view. */
+export function cronPrecheckStatusFields(customStatus: any, interval: boolean): Partial<PilotSwarmSessionView> {
+    if (!interval || !customStatus) return {};
+    const options = Array.isArray(customStatus.cronPrecheckOptions)
+        ? customStatus.cronPrecheckOptions
+            .filter((option: any) => typeof option?.name === "string" && (option.kind === "worker" || option.kind === "package"))
+            .map((option: any) => ({ name: option.name, kind: option.kind }))
+        : undefined;
+    const health = customStatus.cronPrecheckHealth;
+    return {
+        ...(typeof customStatus.cronPrecheck === "string" ? { cronPrecheck: customStatus.cronPrecheck } : {}),
+        ...(customStatus.cronPrecheckSource === "agent" || customStatus.cronPrecheckSource === "operator"
+            ? { cronPrecheckSource: customStatus.cronPrecheckSource } : {}),
+        ...(Number.isSafeInteger(customStatus.cronRevision) ? { cronRevision: customStatus.cronRevision } : {}),
+        ...(options ? { cronPrecheckOptions: options } : {}),
+        ...(health && typeof health.outcome === "string" && Number.isFinite(health.since) && Number.isSafeInteger(health.count)
+            ? { cronPrecheckHealth: { outcome: health.outcome, since: health.since, count: health.count } } : {}),
+    };
 }
 
 function cloneContextUsage(contextUsage?: SessionContextUsage): SessionContextUsage | undefined {
@@ -480,6 +511,12 @@ export interface PilotSwarmSessionView {
     cronTimezone?: string;
     cronMaxFires?: number;
     cronFiresCompleted?: number;
+    /** Interval cron: selected precheck, its source, CAS revision, selectable options and broken-outcome streak. */
+    cronPrecheck?: string;
+    cronPrecheckSource?: "agent" | "operator";
+    cronRevision?: number;
+    cronPrecheckOptions?: Array<{ name: string; kind: "worker" | "package" }>;
+    cronPrecheckHealth?: { outcome: string; since: number; count: number };
     pendingQuestion?: { question: string; choices?: string[]; allowFreeform?: boolean; iteration?: number };
     result?: string;
     contextUsage?: SessionContextUsage;
@@ -1410,6 +1447,7 @@ export class PilotSwarmManagementClient {
             cronTimezone,
             cronMaxFires,
             cronFiresCompleted,
+            ...cronPrecheckStatusFields(customStatus, cronActive && cronKind === "interval"),
             cronReason: cronActive && typeof normalizedCustomStatus.cronReason === "string"
                 ? normalizedCustomStatus.cronReason
                 : undefined,
@@ -2400,6 +2438,61 @@ export class PilotSwarmManagementClient {
         if (!resp) return { status: "pending", commandId: id };
         if (resp.error) throw new Error(resp.error);
         return { retried: Boolean((resp.result as any)?.retried) };
+    }
+
+    /**
+     * Cron prechecks: operator PRECHECK selection for the session's active
+     * interval schedule. `precheck: null` selects None (every wake-up reaches
+     * the model). The orchestration accepts only names resolved when the
+     * schedule was armed, compares `expectedRevision` (STALE on mismatch),
+     * records `session.cron_precheck_changed`, and applies it on the next fire.
+     * Package names still go through the fire-time review and binding check.
+     * `actor` is stamped by the web runtime from the signed-in principal;
+     * direct callers name themselves.
+     */
+    async setSessionCronPrecheck(
+        sessionId: string,
+        input: { precheck: string | null; expectedRevision: number; reason: string; actor?: string },
+        opts?: { timeoutMs?: number },
+    ): Promise<{ ok: true; precheck: string | null; revision: number; appliesOn: "next_fire" } | { status: "pending"; commandId: string }> {
+        this._ensureStarted();
+        const precheck = input?.precheck === null ? null : typeof input?.precheck === "string" ? input.precheck.trim() : undefined;
+        if (precheck === undefined || precheck === "") {
+            throw Object.assign(new Error("precheck must be a precheck name or null (None)"), { code: "INVALID_REQUEST" });
+        }
+        const expectedRevision = input?.expectedRevision;
+        if (!Number.isSafeInteger(expectedRevision) || (expectedRevision as number) < 0) {
+            throw Object.assign(new Error("expectedRevision must be a non-negative integer"), { code: "INVALID_REQUEST" });
+        }
+        const reason = typeof input?.reason === "string" ? input.reason.trim() : "";
+        if (!reason) throw Object.assign(new Error("reason is required"), { code: "INVALID_REQUEST" });
+        if (reason.length > 500) throw Object.assign(new Error("reason must be at most 500 characters"), { code: "INVALID_REQUEST" });
+        const who = typeof input?.actor === "string" ? input.actor.trim() : "";
+        if (!who) throw Object.assign(new Error("actor is required"), { code: "INVALID_REQUEST" });
+        if (who.length > 200) throw Object.assign(new Error("actor must be at most 200 characters"), { code: "INVALID_REQUEST" });
+        const id = buildLifecycleCommandId("set-cron-precheck");
+        await this.sendCommand(sessionId, {
+            cmd: "set_cron_precheck",
+            id,
+            args: { precheck, expectedRevision, actor: who, reason },
+        });
+        const resp = await this._awaitCommandResponse(sessionId, id, commandWaitMs(opts?.timeoutMs, 30_000));
+        if (!resp) return { status: "pending", commandId: id };
+        if (resp.error) {
+            const code = resp.error.startsWith("STALE:") ? "CONFLICT" : "INVALID_REQUEST";
+            throw Object.assign(new Error(resp.error), { code, status: code === "CONFLICT" ? 409 : 400 });
+        }
+        const result = resp.result;
+        if (!result || typeof result !== "object"
+            || !("ok" in result) || result.ok !== true
+            || !("precheck" in result) || result.precheck !== precheck
+            || !("revision" in result) || typeof result.revision !== "number"
+            || !Number.isSafeInteger(result.revision) || result.revision !== expectedRevision + 1
+            || !("appliesOn" in result) || result.appliesOn !== "next_fire") {
+            throw Object.assign(new Error("Invalid PRECHECK command acknowledgement; refresh the schedule before retrying"),
+                { code: "INVALID_RESPONSE" });
+        }
+        return { ok: true, precheck, revision: result.revision, appliesOn: "next_fire" };
     }
 
     /**
@@ -5121,6 +5214,214 @@ export class PilotSwarmManagementClient {
     async listAgentPackages(owner: AgentPrincipal | null, isAdmin: boolean): Promise<AgentPackageSummary[]> {
         this._ensureStarted();
         return this._catalog!.listAgentPackages(this._agentPackagePrincipal(owner, isAdmin), isAdmin);
+    }
+
+    async listAgentPackageReviews(owner: AgentPrincipal | null, isAdmin: boolean) {
+        this._ensureStarted();
+        if (!this._catalog?.packageReviews) throw Object.assign(new Error("Package review catalog unavailable"), { code: "UNAVAILABLE" });
+        return this._catalog.packageReviews.list({ principal: owner, isAdmin });
+    }
+
+    async getAgentPackageReviewStatus(packageId: string, owner: AgentPrincipal | null, isAdmin: boolean) {
+        this._ensureStarted();
+        if (!this._catalog?.packageReviews) throw Object.assign(new Error("Package review catalog unavailable"), { code: "UNAVAILABLE" });
+        return this._catalog.packageReviews.publisherStatus({ principal: owner, isAdmin }, packageId);
+    }
+
+    /** The principal's own review and broken-precheck notifications (newest first). */
+    async listMyNotifications(
+        options: { unreadOnly?: boolean; limit?: number } | undefined, owner: AgentPrincipal | null,
+    ): Promise<import("./notification-store.js").UserNotification[]> {
+        this._ensureStarted();
+        if (!this._catalog?.notifications) throw Object.assign(new Error("Notification catalog unavailable"), { code: "UNAVAILABLE" });
+        return this._catalog.notifications.list(owner, options ?? {});
+    }
+
+    /** Mark the principal's own notifications read; omitted ids marks all unread. */
+    async markNotificationsRead(ids: string[] | null | undefined, owner: AgentPrincipal | null): Promise<{ updated: number }> {
+        this._ensureStarted();
+        if (!this._catalog?.notifications) throw Object.assign(new Error("Notification catalog unavailable"), { code: "UNAVAILABLE" });
+        return { updated: await this._catalog.notifications.markRead(owner, ids ?? null) };
+    }
+
+    async decideAgentPackageReview(
+        input: import("./agent-package-authorization.js").AgentPackageReviewMutation,
+        owner: AgentPrincipal | null, isAdmin: boolean,
+    ): Promise<void> {
+        this._ensureStarted();
+        if (!this._catalog?.packageReviews) throw Object.assign(new Error("Package review catalog unavailable"), { code: "UNAVAILABLE" });
+        const actor = { principal: owner, isAdmin };
+        // A decision made from the review diff names the baseline it was shown.
+        // It must be another version of the same package with the same digest,
+        // and is recorded in the append-only audit reason.
+        if (input && Object.hasOwn(input, "baseline")) {
+            const baseline = input.baseline;
+            if (baseline !== null) {
+                if (!baseline || typeof baseline.versionId !== "string" || typeof baseline.sha256 !== "string"
+                    || baseline.versionId === input.versionId) {
+                    throw Object.assign(new Error("Baseline must be null or another exact version of the same package"), { code: "INVALID_REQUEST" });
+                }
+                const status = await this._catalog.packageReviews.publisherStatus(actor, input.packageId);
+                if (status.packageId !== input.packageId || !status.versions.some((version) =>
+                    version.versionId === baseline.versionId && version.sha256 === baseline.sha256)) {
+                    throw Object.assign(new Error("Reviewed baseline no longer matches this package; refresh the diff"), { code: "CONFLICT" });
+                }
+            }
+            const { baseline: _shown, ...rest } = input;
+            input = typeof rest.reason === "string" && rest.reason.trim()
+                ? { ...rest, reason: `${rest.reason.trim()}${reviewBaselineAuditNote(baseline)}` }
+                : rest;
+        }
+        return this._catalog.packageReviews.decide(actor, input);
+    }
+
+    async getAgentPackageReviewAudit(versionId: string, owner: AgentPrincipal | null, isAdmin: boolean) {
+        this._ensureStarted();
+        if (!this._catalog?.packageReviews) throw Object.assign(new Error("Package review catalog unavailable"), { code: "UNAVAILABLE" });
+        return this._catalog.packageReviews.audit({ principal: owner, isAdmin }, versionId);
+    }
+
+    /**
+     * Authenticated administrator: classified diff of an exact pending
+     * candidate against a baseline of the same package. Both artifacts are
+     * verified against their recorded digests; the response echoes the
+     * candidate digest, review revision and baseline digest that a decision
+     * from this view must carry. `patches: false` lists every change with its
+     * line counts but no patch text; load each file with
+     * getAgentPackageReviewFileDiff.
+     */
+    async getAgentPackageReviewDiff(
+        input: { packageId: string; versionId: string; sha256: string; baselineVersionId?: string | null; patches?: boolean },
+        owner: AgentPrincipal | null, isAdmin: boolean,
+    ): Promise<AgentPackageReviewDiff> {
+        const sides = await this._loadAgentPackageReviewSides(input, owner, isAdmin);
+        const { candidate } = sides;
+        return buildAgentPackageReviewDiff({
+            candidate: {
+                packageId: candidate.packageId, versionId: candidate.versionId, sha256: candidate.sha256,
+                semver: candidate.semver, decision: candidate.decision, active: sides.candidateActive,
+                revision: candidate.revision, name: candidate.name, scope: candidate.scope, publisher: candidate.publisher,
+            },
+            baseline: sides.baseline,
+            baselineSource: sides.baselineSource,
+            candidateEntries: sides.candidateEntries,
+            baselineEntries: sides.baselineEntries,
+            inspectionReasons: candidate.inspection?.reasons ?? ["Legacy artifact: no verified inspection"],
+            includePatches: input?.patches !== false,
+        });
+    }
+
+    /**
+     * Authenticated administrator: one changed file's classified patch for
+     * the same exact candidate and baseline as getAgentPackageReviewDiff, so
+     * a large review loads file by file. NOT_FOUND when the path is unchanged.
+     */
+    async getAgentPackageReviewFileDiff(
+        input: { packageId: string; versionId: string; sha256: string; baselineVersionId?: string | null; path: string },
+        owner: AgentPrincipal | null, isAdmin: boolean,
+    ): Promise<AgentPackageReviewFileDiff> {
+        if (!input || typeof input.path !== "string" || !input.path || input.path.length > 1024) {
+            throw Object.assign(new Error("A changed file path is required"), { code: "INVALID_REQUEST" });
+        }
+        const sides = await this._loadAgentPackageReviewSides(input, owner, isAdmin);
+        const { candidate, baseline } = sides;
+        return {
+            candidate: { packageId: candidate.packageId, versionId: candidate.versionId, sha256: candidate.sha256 },
+            baseline: baseline ? { versionId: baseline.versionId, sha256: baseline.sha256 } : null,
+            baselineSource: sides.baselineSource,
+            change: buildAgentPackageReviewFileChange({
+                candidateEntries: sides.candidateEntries, baselineEntries: sides.baselineEntries, path: input.path,
+            }),
+            advisory: REVIEW_DIFF_ADVISORY,
+        };
+    }
+
+    private async _loadAgentPackageReviewSides(
+        input: { packageId: string; versionId: string; sha256: string; baselineVersionId?: string | null },
+        owner: AgentPrincipal | null, isAdmin: boolean,
+    ) {
+        this._ensureStarted();
+        if (isAdmin !== true || !owner?.provider || !owner.subject) {
+            throw Object.assign(new Error("Authenticated administrator required"), { code: "FORBIDDEN" });
+        }
+        if (!input || typeof input.packageId !== "string" || typeof input.versionId !== "string"
+            || typeof input.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(input.sha256)) {
+            throw Object.assign(new Error("Exact candidate package/version/digest required"), { code: "INVALID_REQUEST" });
+        }
+        if (!this._catalog?.packageReviews) throw Object.assign(new Error("Package review catalog unavailable"), { code: "UNAVAILABLE" });
+        const actor = { principal: owner, isAdmin: true };
+        const candidate = (await this._catalog.packageReviews.list(actor)).find((row) =>
+            row.packageId === input.packageId && row.versionId === input.versionId && row.sha256 === input.sha256);
+        if (!candidate) {
+            throw Object.assign(new Error("Candidate not found for this exact package/version/digest; refresh the review list"), { code: "CONFLICT" });
+        }
+        const status = await this._catalog.packageReviews.publisherStatus(actor, candidate.packageId);
+        const refs = status.versions.map((version) => ({
+            packageId: version.packageId, versionId: version.versionId, sha256: version.sha256,
+            semver: version.semver, decision: version.decision, active: version.active,
+        }));
+        const { baseline, source } = selectReviewBaseline(refs, candidate.versionId, input.baselineVersionId ?? null);
+        const detail = await this._catalog.getAgentPackage(candidate.name, owner, true,
+            this._agentPackageSelector({ scope: candidate.scope, owner: candidate.owner }, true));
+        const row = (ref: { versionId: string; sha256: string }) => {
+            const version = detail?.versions.find((item) => item.versionId === ref.versionId);
+            if (!version || version.sha256 !== ref.sha256) {
+                throw Object.assign(new Error(`Version ${ref.versionId} digest does not match the review record`), { code: "CONFLICT" });
+            }
+            return version;
+        };
+        const artifacts = this._requireAgentPackageArtifacts();
+        const read = async (ref: { versionId: string; sha256: string }) => {
+            const version = row(ref);
+            return readAgentPackageTarGz(await fetchAgentPackageTarGz(artifacts, version.artifactFilename, version.sha256));
+        };
+        const candidateEntries = await read(candidate);
+        const baselineEntries = baseline ? await read(baseline) : [];
+        const candidateRef = refs.find((ref) => ref.versionId === candidate.versionId);
+        return { candidate, baseline, baselineSource: source, candidateEntries, baselineEntries, candidateActive: candidateRef?.active === true };
+    }
+    async getAgentPackageRuntimeStatus(input: import("./agent-package-authorization.js").ExecutablePackageIdentity,
+        owner: AgentPrincipal | null, isAdmin: boolean) {
+        this._ensureStarted();
+        if (isAdmin !== true || !owner?.provider || !owner.subject) throw Object.assign(new Error("Authenticated administrator required"), { code: "FORBIDDEN" });
+        if (!input || !input.packageId || !input.versionId || !/^[a-f0-9]{64}$/.test(input.sha256)) {
+            throw Object.assign(new Error("Exact package/version/digest required"), { code: "INVALID_REQUEST" });
+        }
+        if (!this._catalog?.packageRuntime) throw Object.assign(new Error("Package runtime authority unavailable"), { code: "UNAVAILABLE" });
+        return this._catalog.packageRuntime.fencingStatus(input);
+    }
+
+    async activateAgentPackageVersion(
+        input: import("./agent-package-authorization.js").AgentPackageActivationMutation,
+        owner: AgentPrincipal | null, isAdmin: boolean,
+    ): Promise<void> {
+        this._ensureStarted();
+        if (!this._catalog?.packageReviews) throw Object.assign(new Error("Package review catalog unavailable"), { code: "UNAVAILABLE" });
+        return this._catalog.packageReviews.activate({ principal: owner, isAdmin }, input);
+    }
+
+    async getAgentPackageActivationAudit(packageId: string, owner: AgentPrincipal | null, isAdmin: boolean) {
+        this._ensureStarted();
+        if (!this._catalog?.packageReviews) throw Object.assign(new Error("Package review catalog unavailable"), { code: "UNAVAILABLE" });
+        return this._catalog.packageReviews.activationAudit({ principal: owner, isAdmin }, packageId);
+    }
+
+    async getSessionAgentPackageBinding(sessionId: string, owner: AgentPrincipal | null, isAdmin: boolean) {
+        this._ensureStarted();
+        if (!owner?.provider || !owner?.subject || isAdmin !== true) {
+            throw Object.assign(new Error("Authenticated administrator required"), { code: "FORBIDDEN" });
+        }
+        if (!this._catalog?.packageReviews) throw Object.assign(new Error("Package review catalog unavailable"), { code: "UNAVAILABLE" });
+        return this._catalog.packageReviews.getSessionBinding(sessionId);
+    }
+
+    async rebindSessionAgentPackage(
+        input: import("./agent-package-authorization.js").SessionAgentPackageRebind,
+        owner: AgentPrincipal | null, isAdmin: boolean,
+    ): Promise<void> {
+        this._ensureStarted();
+        if (!this._catalog?.packageReviews) throw Object.assign(new Error("Package review catalog unavailable"), { code: "UNAVAILABLE" });
+        return this._catalog.packageReviews.rebind({ principal: owner, isAdmin }, input);
     }
 
     async getAgentPackage(

@@ -64,6 +64,14 @@ export async function startEmbeddedWorkers({ count, store }) {
             if (workerTools?.length) {
                 worker.registerTools(workerTools);
             }
+            // Cron prechecks from the same worker module, the contract an
+            // agent package's tools/worker-module.js also follows.
+            const workerPrechecks = typeof workerModuleConfig.createCronPrechecks === "function"
+                ? await workerModuleConfig.createCronPrechecks({ workerNodeId: `local-${index}`, workerIndex: index })
+                : workerModuleConfig.cronPrechecks;
+            if (Array.isArray(workerPrechecks) && workerPrechecks.length > 0) {
+                worker.registerCronPrechecks(workerPrechecks);
+            }
             // Same extension hook as the headless worker (examples/worker.js).
             await loadExtensionModules(worker, parseExtensionModules(process.env.PILOTSWARM_EXTENSION_MODULES));
 

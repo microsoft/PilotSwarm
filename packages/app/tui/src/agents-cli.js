@@ -54,6 +54,8 @@ function parseArgs(argv) {
         if (arg === "--shared") flags.scope = "shared";
         else if (arg === "--user") flags.scope = "user";
         else if (arg === "--json") flags.json = true;
+        else if (arg === "--unread") flags.unread = true;
+        else if (arg === "--files") flags.files = true;
         else if (arg === "--yes" || arg === "-y") flags.yes = true;
         else if (arg === "--store") flags.store = argv[++i];
         else if (arg === "--schema") flags.schema = argv[++i];
@@ -72,6 +74,19 @@ Usage:
   pilotswarm agents validate <dir>
   pilotswarm agents push <dir> [--shared|--user] [--json]
   pilotswarm agents list [--json]
+  pilotswarm agents reviews
+  pilotswarm agents review-status <package>
+  pilotswarm agents review <package-id> <version-id> <sha256> <revision> <approved|rejected|revoked> <reason>
+  pilotswarm agents review-audit <version-id>
+  pilotswarm agents review-diff <package-id> <version-id> <sha256> [baseline-version-id] [--files] [--json]
+  pilotswarm agents review-diff-file <package-id> <version-id> <sha256> <path> [baseline-version-id] [--json]
+  pilotswarm agents notifications [--unread] [--json]
+  pilotswarm agents notifications read [<id> ...]
+  pilotswarm agents runtime-status <package-id> <version-id> <sha256>
+  pilotswarm agents activate <package-id> <version-id> <sha256> <review-revision> <activation-revision> <prior-version-id|none> <reason>
+  pilotswarm agents activation-audit <package-id>
+  pilotswarm agents binding <session-id>
+  pilotswarm agents rebind <session-id> <package-id> <version-id> <sha256> <agent-name> <binding-revision> <reason>
   pilotswarm agents show <name> [--json]
   pilotswarm agents pin <name>@<semver>
   pilotswarm agents promote <name> | demote <name>
@@ -290,6 +305,10 @@ export async function runAgentsCommand(argv) {
     const createdBy = `${os.userInfo().username}@cli`;
     const selector = flags.scope ? { scope: flags.scope } : null;
     try {
+        if (!web && ["review-status", "reviews", "review", "review-audit", "review-diff", "review-diff-file", "notifications", "runtime-status", "activate", "activation-audit", "binding", "rebind"].includes(command)) {
+            console.error("Package trust administration requires authenticated Web API mode (--api-url). A direct database connection is not an authenticated administrator identity.");
+            return 1;
+        }
         switch (command) {
             case "push": {
                 const dir = rest[0];
@@ -334,6 +353,108 @@ export async function runAgentsCommand(argv) {
                 if (flags.json) { console.log(JSON.stringify(packages, null, 2)); return 0; }
                 if (packages.length === 0) { console.log("no agent packages registered"); return 0; }
                 for (const pkg of packages) console.log(formatPackageLine(pkg));
+                return 0;
+            }
+            case "reviews": {
+                console.log(JSON.stringify(await ctx.client.listAgentPackageReviews(actor, isAdmin), null, 2));
+                return 0;
+            }
+            case "review": {
+                const [packageId, versionId, sha256, revision, decision, ...reason] = rest;
+                await ctx.client.decideAgentPackageReview({
+                    packageId, versionId, sha256, expectedRevision: Number(revision), decision,
+                    reason: reason.join(" "),
+                }, actor, isAdmin);
+                console.log("Immutable artifact-content review recorded. Dependency closure and executable admission are NOT approved; activation is separate.");
+                return 0;
+            }
+            case "review-audit": {
+                console.log(JSON.stringify(await ctx.client.getAgentPackageReviewAudit(rest[0], actor, isAdmin), null, 2));
+                return 0;
+            }
+            case "review-diff": {
+                const [packageId, versionId, sha256, baselineVersionId] = rest;
+                const filesOnly = flags.files === true;
+                const diff = await ctx.client.getAgentPackageReviewDiff({
+                    packageId, versionId, sha256, baselineVersionId: baselineVersionId || null,
+                    ...(filesOnly ? { patches: false } : {}),
+                }, actor, isAdmin);
+                if (flags.json) { console.log(JSON.stringify(diff, null, 2)); return 0; }
+                console.log(`candidate ${diff.candidate.name}@${diff.candidate.semver} sha256:${diff.candidate.sha256} revision ${diff.candidate.revision}`);
+                console.log(diff.baseline
+                    ? `baseline (${diff.baselineSource}) ${diff.baseline.semver} ${diff.baseline.versionId} sha256:${diff.baseline.sha256}`
+                    : "baseline: none (new package; full listing)");
+                const s = diff.summary;
+                console.log(`changes: ${s.total} · executable ${s.executable} · dependency ${s.dependency} · capability ${s.capability} · precheck-policy ${s["precheck-policy"]} · declarative ${s.declarative} · flagged ${s.flagged}`);
+                for (const change of diff.changes) {
+                    const counts = Number.isInteger(change.additions) ? ` +${change.additions} -${change.deletions}` : "";
+                    console.log(`\n[${change.group}] ${change.status} ${change.path}${counts}${change.flagged ? ` (flagged: ${change.flagged})` : ""}${change.changedKeys?.length ? ` keys: ${change.changedKeys.join(", ")}` : ""}`);
+                    if (change.diff) console.log(change.diff);
+                    else if (change.patchOmitted) continue;
+                    else console.log(`  old ${change.oldSha256 ?? "-"}\n  new ${change.newSha256 ?? "-"}`);
+                }
+                if (diff.truncated) console.log(`\n… ${diff.truncated.omitted} more changed files omitted (counted in the summary).`);
+                if (filesOnly) console.log("\nShow one file: pilotswarm agents review-diff-file <package-id> <version-id> <sha256> <path> [baseline-version-id]");
+                console.log(`\n${diff.advisory}`);
+                return 0;
+            }
+            case "review-diff-file": {
+                const [packageId, versionId, sha256, filePath, baselineVersionId] = rest;
+                if (!filePath) { console.error("usage: pilotswarm agents review-diff-file <package-id> <version-id> <sha256> <path> [baseline-version-id]"); return 1; }
+                const file = await ctx.client.getAgentPackageReviewFileDiff({
+                    packageId, versionId, sha256, baselineVersionId: baselineVersionId || null, path: filePath,
+                }, actor, isAdmin);
+                if (flags.json) { console.log(JSON.stringify(file, null, 2)); return 0; }
+                const change = file.change;
+                console.log(`[${change.group}] ${change.status} ${change.path}${Number.isInteger(change.additions) ? ` +${change.additions} -${change.deletions}` : ""}${change.flagged ? ` (flagged: ${change.flagged})` : ""}`);
+                console.log(change.diff ?? `  old ${change.oldSha256 ?? "-"}\n  new ${change.newSha256 ?? "-"}`);
+                return 0;
+            }
+            case "review-status":
+                console.log(JSON.stringify(await reviewStatusForCli(ctx, rest[0]), null, 2));
+                return 0;
+            case "notifications": {
+                if (rest[0] === "read") {
+                    const { updated } = await ctx.client.markNotificationsRead(rest.length > 1 ? rest.slice(1) : null);
+                    console.log(`marked ${updated} notification(s) read`);
+                    return 0;
+                }
+                const notifications = await ctx.client.listMyNotifications({ unreadOnly: flags.unread === true });
+                if (flags.json) { console.log(JSON.stringify(notifications, null, 2)); return 0; }
+                if (notifications.length === 0) { console.log("no notifications"); return 0; }
+                for (const item of notifications) console.log(formatNotificationLine(item));
+                return 0;
+            }
+            case "runtime-status": {
+                const [packageId, versionId, sha256] = rest;
+                console.log(JSON.stringify(await ctx.client.getAgentPackageRuntimeStatus({ packageId, versionId, sha256 }, actor, isAdmin), null, 2));
+                return 0;
+            }
+            case "activate": {
+                const [packageId, versionId, sha256, reviewRevision, activationRevision, priorVersionId, ...reason] = rest;
+                await ctx.client.activateAgentPackageVersion({
+                    packageId, versionId, sha256, expectedReviewRevision: Number(reviewRevision),
+                    expectedActivationRevision: Number(activationRevision),
+                    expectedActiveVersionId: priorVersionId === "none" ? null : priorVersionId, reason: reason.join(" "),
+                }, actor, isAdmin);
+                console.log("Active pointer changed atomically. Existing session bindings were not changed. No executable admission or distributed fencing is claimed.");
+                return 0;
+            }
+            case "activation-audit": {
+                console.log(JSON.stringify(await ctx.client.getAgentPackageActivationAudit(rest[0], actor, isAdmin), null, 2));
+                return 0;
+            }
+            case "binding": {
+                console.log(JSON.stringify(await ctx.client.getSessionAgentPackageBinding(rest[0], actor, isAdmin), null, 2));
+                return 0;
+            }
+            case "rebind": {
+                const [sessionId, packageId, versionId, sha256, agentName, revision, ...reason] = rest;
+                await ctx.client.rebindSessionAgentPackage({
+                    sessionId, packageId, versionId, sha256, agentName,
+                    expectedBindingRevision: Number(revision), reason: reason.join(" "),
+                }, actor, isAdmin);
+                console.log("Exact version binding changed and audited. No cancellation or distributed fencing is claimed.");
                 return 0;
             }
             case "show": {
@@ -463,6 +584,26 @@ export async function runAgentsCommand(argv) {
     } finally {
         await ctx.close();
     }
+}
+
+/** One line per notification: unread marker, ID, kind and the visible facts. */
+export function formatNotificationLine(item) {
+    const p = item.payload ?? {};
+    const pkg = p.packageName || p.packageId ? `${p.packageName ?? p.packageId}${p.semver ? `@${p.semver}` : ""}` : "";
+    const mark = item.readAt ? " " : "*";
+    if (item.kind === "package_review") {
+        return `${mark} ${item.id} review ${pkg} ${p.decision}${p.approvedNotActive ? " (approved, not active)" : ""}: ${p.reason ?? ""}`;
+    }
+    const session = p.sessionId ? ` session ${p.sessionId}` : "";
+    if (item.kind === "cron_precheck_recovered") {
+        return `${mark} ${item.id} precheck ${p.precheck} recovered${session}${pkg ? ` (${pkg})` : ""} after ${p.brokenOccurrences} broken run(s)`;
+    }
+    return `${mark} ${item.id} precheck ${p.precheck} ${p.outcome}${session}${pkg ? ` (${pkg})` : ""} x${item.occurrences}: ${p.summary ?? ""}`;
+}
+
+export async function reviewStatusForCli(ctx, packageId) {
+    if (!packageId) throw new Error("review-status requires a package ID or name");
+    return ctx.client.getAgentPackageReviewStatus(packageId);
 }
 
 export async function directTree(ctx, name, semver, actor, isAdmin) {

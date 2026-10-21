@@ -11,9 +11,9 @@ It does **not** own tool implementations or Copilot SDK session state. Those
 live in worker activities and the session manager.
 
 Primary source: [`packages/sdk/src/orchestration/`](../../../packages/sdk/src/orchestration).
-The current latest version is `1.0.82`. Frozen prior versions live as siblings
+The current latest version is `1.0.83`. Frozen prior versions live as siblings
 (single files `packages/sdk/src/orchestration_1_0_47.ts` … `_1_0_51.ts`, then
-directories `orchestration_1_0_52/` … `orchestration_1_0_81/`) and run
+directories `orchestration_1_0_52/` … `orchestration_1_0_82/`) and run
 unchanged for any in-flight execution that started against them.
 
 In 1.0.81, Stop and Steer are handled inside the worker's turn activity through
@@ -25,6 +25,13 @@ In 1.0.82, queued work no longer waits behind a timer (issue 192): `drain` runs
 queued prompts and answers at once whatever timer is armed, and `decide` merges
 every queued prompt past timer items into one turn. The KV FIFO compacts
 instead of dropping items. Version 1.0.81 and older keep the old queue.
+
+In 1.0.83, an opted-in interval cron can check for idle work before model
+hydration. An authorized skip re-arms only that schedule; interactive and
+carried work still run. Owner/admin PRECHECK changes are revision-checked and
+audited. Every actual turn resets the consecutive-skip counter, but a budget
+or workspace gate refusal does not. The exact upstream 1.0.82 handler is frozen;
+its FIFO fixes are retained in 1.0.83 without altering 1.0.82 replay.
 
 ---
 
@@ -816,7 +823,7 @@ src/orchestration_1_0_54/     │
 src/orchestration_1_0_55/     │
 ...                          │
 src/orchestration_1_0_81/     ┘
-src/orchestration/            ← current latest (1.0.82)
+src/orchestration/            ← current latest (1.0.83)
 ```
 
 All registered versions are listed in

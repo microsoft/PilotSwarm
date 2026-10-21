@@ -82,6 +82,8 @@
         "url": "https://github.com/microsoft/PilotSwarm/issues"
     },
     "dependencies": {
+        "@modelcontextprotocol/sdk": "1.29.0",
+        "acorn": "8.15.0",
         "@azure/identity": "^4.13.1",
         "@azure/storage-blob": "^12.31.0",
         "@github/copilot": "1.0.83",

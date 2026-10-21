@@ -83,6 +83,7 @@ Why it matters:
 Contract:
 
 - use `cron(seconds=N, reason="...")` for fixed-interval recurring work
+- add `precheck="<name>"` only when the agent's instructions name a cron precheck; an agent definition can instead bind the cron reason with `cronPrechecks` frontmatter, and either way the application skips wake-ups that have no work, without a model turn
 - use `cron_at(minute=M, hour=H, tz="Area/City", reason="...")` for wall-clock schedules
 - do not implement wall-clock schedules by waking every N minutes to inspect the current time
 - either `cron(action="cancel")` or `cron_at(action="cancel")` clears the active recurring schedule

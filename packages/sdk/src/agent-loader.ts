@@ -1,4 +1,5 @@
 import { NATIVE_TASK_NAMES, validateNativeTaskTools, type NativeTaskTools } from "./native-task-policy.js";
+import { validateCronPrecheckBindings, type CronPrecheckBinding } from "./cron-precheck.js";
 /**
  * Agent loader — reads .agent.md files with YAML frontmatter from disk.
  *
@@ -95,6 +96,13 @@ export interface AgentConfig {
     inheritDefaultMcpServers?: boolean;
     /** Explicit per-native-task external tool allowlists (schemaVersion 4). */
     nativeTaskTools?: NativeTaskTools;
+    /**
+     * Cron precheck bindings: a cron schedule this agent arms whose reason
+     * matches (`reason` exactly, or `reasonPrefix`) asks the named precheck
+     * before each wake-up. Loaders without support ignore the key, which only
+     * means no precheck, so no schemaVersion bump is required.
+     */
+    cronPrechecks?: CronPrecheckBinding[];
     /** If true, this is a system agent started automatically by workers. */
     system?: boolean;
     /** Deterministic ID slug for system agents (e.g. "sweeper"). Used to derive a fixed session UUID. */
@@ -223,15 +231,27 @@ export function agentSupportsDirectStart(agent: {
  */
 const BLOCK_SCALAR_KEYS = new Set(["splash", "splashMobile", "initialPrompt", "description"]);
 
+function parseCronPrecheckScalar(raw: string): string {
+    const value = raw.trim();
+    if (value.startsWith('"') || value.startsWith("'")) {
+        const quoted = /^("(?:[^"\\]|\\.)*"|'(?:[^']|'')*')(?:\s+#.*)?$/.exec(value);
+        if (!quoted) throw new Error("Malformed quoted cronPrechecks value");
+        return quoted[1].startsWith('"')
+            ? JSON.parse(quoted[1])
+            : quoted[1].slice(1, -1).replace(/''/g, "'");
+    }
+    return value.replace(/(?:^|\s+)#.*$/, "").trimEnd();
+}
+
 /**
  * Parse YAML frontmatter from an .agent.md file.
  * Handles simple `key: value` pairs and YAML list syntax for `tools` and `skills`.
  */
 function parseAgentFrontmatter(content: string): {
-    meta: { nativeTaskTools?: NativeTaskTools; name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; initialRequiredTool?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string; startedBy?: string[]; supportsDirectStart?: boolean };
+    meta: { nativeTaskTools?: NativeTaskTools; cronPrechecks?: CronPrecheckBinding[]; name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; initialRequiredTool?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string; startedBy?: string[]; supportsDirectStart?: boolean };
     body: string;
 } {
-    const meta: { nativeTaskTools?: NativeTaskTools; name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; initialRequiredTool?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string; startedBy?: string[]; supportsDirectStart?: boolean } = {};
+    const meta: { nativeTaskTools?: NativeTaskTools; cronPrechecks?: CronPrecheckBinding[]; name?: string; description?: string; tools?: string[]; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; system?: boolean; id?: string; title?: string; parent?: string; splash?: string; splashMobile?: string; initialPrompt?: string; initialRequiredTool?: string; crawler?: boolean; harvester?: boolean; schemaVersion?: number; version?: string; startedBy?: string[]; supportsDirectStart?: boolean } = {};
 
     if (!content.startsWith("---")) {
         return { meta, body: content };
@@ -270,6 +290,34 @@ function parseAgentFrontmatter(content: string): {
         validateNativeTaskTools(policy);
         meta.nativeTaskTools = policy;
         lines.splice(nativeIndex, end-nativeIndex);
+    }
+    // cronPrechecks: a list of small mappings, parsed explicitly. Items may be
+    // indented or at column 0, as YAML allows:
+    //   cronPrechecks:
+    //     - reasonPrefix: "Run the queue cycle"
+    //       precheck: queue-gate
+    const cronIndex = lines.findIndex(line => /^cronPrechecks:/.test(line));
+    if (cronIndex >= 0) {
+        if (lines.filter(line => /^cronPrechecks:/.test(line)).length !== 1) throw new Error("Duplicate cronPrechecks declaration");
+        if (!/^cronPrechecks:\s*(?:#.*)?$/.test(lines[cronIndex].trimEnd())) throw new Error("cronPrechecks requires a list of entries");
+        const entries: Array<Record<string, string>> = [];
+        let end = cronIndex + 1;
+        // The block runs until the next top-level key; a column-0 "- " item still belongs to it.
+        for (; end < lines.length && !/^[^\s#-]/.test(lines[end]); end++) {
+            const line = lines[end].replace(/\r$/, "");
+            if (!line.trim() || line.trim().startsWith("#")) continue;
+            const first = /^\s*-\s+(\w+):\s*(.*)$/.exec(line);
+            const next = first ? null : /^\s+(\w+):\s*(.*)$/.exec(line);
+            const match = first ?? next;
+            if (!match || (!first && entries.length === 0)) throw new Error("Malformed cronPrechecks entry");
+            if (first) entries.push({});
+            const entry = entries[entries.length - 1];
+            if (Object.hasOwn(entry, match[1])) throw new Error(`Duplicate cronPrechecks field ${match[1]}`);
+            entry[match[1]] = parseCronPrecheckScalar(match[2]);
+        }
+        if (entries.length === 0) throw new Error("cronPrechecks requires a list of entries");
+        meta.cronPrechecks = validateCronPrecheckBindings(entries);
+        lines.splice(cronIndex, end - cronIndex);
     }
     let currentKey: string | null = null;
     let multilineValue: string[] | null = null;
@@ -480,6 +528,7 @@ export function loadAgentFiles(agentsDir: string, options: LoadAgentFilesOptions
                 mcpServers: meta.mcpServers && meta.mcpServers.length > 0 ? meta.mcpServers : undefined,
                 inheritDefaultMcpServers: meta.inheritDefaultMcpServers,
                 nativeTaskTools: meta.nativeTaskTools,
+                ...(meta.cronPrechecks?.length ? { cronPrechecks: meta.cronPrechecks } : {}),
                 system: meta.system,
                 id: meta.id,
                 title: meta.title,

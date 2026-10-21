@@ -13,6 +13,7 @@ import * as fs from "fs";
 import * as os from "os";
 import * as path from "path";
 import type { ArtifactStore } from "./session-store.js";
+import { inspectAgentPackageArtifact } from "./agent-package-authorization.js";
 import type {
     AgentPackageScope,
     AgentPrincipal,
@@ -139,6 +140,10 @@ export async function publishPackedAgentPackage(
     opts: PublishPackedOptions,
 ): Promise<PublishOutcome> {
     const { manifest, targz, sha256 } = opts;
+    const inspection = inspectAgentPackageArtifact(targz, sha256);
+    if (inspection.name !== manifest.name || inspection.semver !== manifest.version) {
+        throw new Error("AGENT_PACKAGE_REVIEW_INVALID: artifact manifest identity mismatch");
+    }
     const name = manifest.name;
     const semver = manifest.version;
     if (RESERVED_PACKAGE_NAMES.has(name)) {
@@ -192,6 +197,7 @@ export async function publishPackedAgentPackage(
                     status: "noop",
                     packageId: existing.packageId,
                     versionId: existingVersion.versionId,
+                    review: await ctx.catalog.getAgentPackageVersionReview(existingVersion.versionId),
                     name, semver, sha256,
                     sizeBytes: targz.length,
                     artifactFilename: existingVersion.artifactFilename,
@@ -287,6 +293,7 @@ export async function publishPackedAgentPackage(
             manifest: manifest as unknown as Record<string, unknown>,
             createdBy: opts.createdBy,
             isAdmin: opts.isAdmin,
+            inspection,
         });
         return {
             ...result,

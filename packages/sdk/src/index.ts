@@ -36,6 +36,7 @@ export { PilotSwarmWorker } from "./worker.js";
 export { FEATURE_FLAGS, FeatureFlagError, FeatureFlagResolutionError } from "./feature-flags.js";
 export type { FeatureKey, FeatureDecision, FeatureDefinition, FeatureSetting, ResolveOptions } from "./feature-flags.js";
 export { FeatureFlagCache } from "./feature-flag-cache.js";
+export type { CronPrecheckAnswer, CronPrecheckBinding, CronPrecheckContext, CronPrecheckMcpCaller, CronPrecheckRegistration } from "./cron-precheck.js";
 export { FeatureStore } from "./feature-store.js";
 export { FEATURE_OPERATION_SPECS, featureToolParameters } from "./feature-tools.js";
 export type { FeatureViewer, FeatureView, FeatureMutation, FeatureMutationResult } from "./feature-store.js";
@@ -366,6 +367,36 @@ export type {
 export { SessionDumper } from "./session-dumper.js";
 
 // ─── Agent packages (docs/proposals/agent-packages.md) ───────────
+export {
+    inspectAgentPackageArtifact,
+    ExecutablePackageDeniedError,
+    denyPublishedPackageExecution,
+} from "./agent-package-authorization.js";
+export type {
+    ExecutablePackageIdentity,
+    AgentPackageInspection,
+    PackageReviewDecision,
+    AgentPackageReviewCandidate,
+    AgentPackagePublisherStatus,
+    AgentPackageVersionReview,
+    AgentPackageReviewMutation,
+    AgentPackageActivationMutation,
+    SessionAgentPackageBinding,
+    SessionAgentPackageRebind,
+    AgentPackageReviewAudit,
+    ExecutablePackageAdmissionRequest,
+    ExecutablePackageAdmissionAuthority,
+} from "./agent-package-authorization.js";
+export { AgentPackageReviewError } from "./agent-package-review-store.js";
+export { PgPackageRuntimeAuthority } from "./package-runtime-authority.js";
+export type { PackageRuntimeAuthority, PackageRegistration, PackageInvocationContext } from "./package-runtime-authority.js";
+export { SupervisedPackageRuntime } from "./package-runtime-supervisor.js";
+export type { PackageCallbackServices } from "./package-runtime-supervisor.js";
+export { PackageMcpGateway } from "./package-runtime-mcp-gateway.js";
+export { verifyPackageRuntime, type VerifiedPackageRuntime } from "./package-runtime-format.js";
+export type { AgentPackageReviewCatalog, AgentPackageReviewActor } from "./agent-package-review-store.js";
+export { NotificationError } from "./notification-store.js";
+export type { NotificationCatalog, UserNotification, UserNotificationKind } from "./notification-store.js";
 export {
     agentPackagesArtifactSessionId,
     agentPackageArtifactFilename,

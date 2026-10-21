@@ -57,9 +57,10 @@ test("a stale live report cannot hide a preflight that produced no report", t =>
     assert.equal(calls, 1);
 });
 
-test("successful live coverage runs the full public runner with the validated config", t => {
+test("successful live coverage runs the full public runner with the validated config", async t => {
     const input = fixture(t);
     const calls = [];
+    let configMode;
     runAllProviders({ ...input, run(command, args, options) {
         calls.push({ command, args, options });
         assert.equal(options.env.PS_TEST_MAX_WORKERS, "8");
@@ -68,7 +69,7 @@ test("successful live coverage runs the full public runner with the validated co
             assert.equal(options.env.HORIZON_DATABASE_URL, "postgresql://test@horizon.invalid/db");
             const path = options.env.HORIZONDB_ENV_FILE;
             assert.equal(readFileSync(path, "utf8"), config);
-            assert.equal(statSync(path).mode & 0o777, 0o600);
+            configMode = statSync(path).mode & 0o777;
             writeFileSync(join(input.cwd, "pilotswarm-horizondb-preflight.json"), JSON.stringify(report()));
         } else {
             assert.equal(command, "bash");
@@ -78,6 +79,9 @@ test("successful live coverage runs the full public runner with the validated co
     } });
     assert.equal(calls.length, 2);
     assert.equal(existsSync(join(input.cwd, "pilotswarm-horizondb.env")), false);
+    await t.test("temporary provider credentials have owner-only POSIX permissions", {
+        skip: process.platform === "win32" ? "Windows does not expose POSIX mode bits; enforced by Linux CI" : false,
+    }, () => assert.equal(configMode, 0o600));
 });
 
 test("failure during the full pass remains a failure", t => {

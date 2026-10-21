@@ -14,6 +14,13 @@ import { nativeTasksDefaultPolicyMigration } from "./migrations/native-tasks-def
 import { modelEventLoggingFlagMigration } from "./migrations/model-event-logging-flag-0081.js";
 import { turnControlMigration } from "./migrations/turn-control-0082.js";
 import { turnControlConvertMigration } from "./migrations/turn-control-0083.js";
+import { executablePackageReviewsMigration } from "./migrations/executable-package-reviews-0084.js";
+import { packageRuntimeMigration } from "./migrations/package-runtime-0085.js";
+import { packageRuntimeCompletionMigration } from "./migrations/package-runtime-0086.js";
+import { packageReviewRemediationMigration } from "./migrations/package-review-remediation-0087.js";
+import { packageRuntimeProceduresMigration } from "./migrations/package-runtime-procedures-0088.js";
+import { packagePublisherStatusMigration } from "./migrations/package-publisher-status-0089.js";
+import { userNotificationsMigration } from "./migrations/user-notifications-0090.js";
 
 /**
  * Return the ordered list of CMS migrations for a given schema.
@@ -408,6 +415,13 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0081", name: "model_event_logging_flag", sql: modelEventLoggingFlagMigration(schema) },
         { version: "0082", name: "turn_control", sql: turnControlMigration(schema) },
         { version: "0083", name: "turn_control_convert", sql: turnControlConvertMigration(schema) },
+        { version: "0084", name: "executable_package_reviews", sql: executablePackageReviewsMigration(schema) },
+        { version: "0085", name: "supervised_package_runtime", sql: packageRuntimeMigration(schema) },
+        { version: "0086", name: "package_runtime_completion", sql: packageRuntimeCompletionMigration(schema) },
+        { version: "0087", name: "package_review_remediation", sql: packageReviewRemediationMigration(schema) },
+        { version: "0088", name: "package_runtime_procedures", sql: packageRuntimeProceduresMigration(schema) },
+        { version: "0089", name: "package_publisher_status", sql: packagePublisherStatusMigration(schema) },
+        { version: "0090", name: "user_notifications", sql: userNotificationsMigration(schema) },
     ];
 }
 

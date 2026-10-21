@@ -7,6 +7,7 @@ class FakeCopilotSession {
     listeners = new Map();
     catchAllHandlers = [];
     scriptedToolCalls = [];
+    toolResults = [];
     assistantContent = "ok";
     aborted = false;
 
@@ -47,7 +48,7 @@ class FakeCopilotSession {
                 if (this.aborted) break;
                 const tool = this.registeredTools.find((candidate) => candidate.name === call.name);
                 if (!tool) throw new Error(`Missing fake tool: ${call.name}`);
-                await tool.handler(call.args ?? {});
+                this.toolResults.push(await tool.handler(call.args ?? {}));
             }
             if (!this.aborted && this.assistantContent != null) {
                 this.emit("assistant.message", { data: { content: this.assistantContent } });
@@ -123,5 +124,60 @@ describe("cron tool plumbing", () => {
         assertEqual(cycleResult.cycleReport?.status, "material", "cycle report status should be preserved");
         assertEqual(cycleResult.cycleReport?.summary, "New blocker", "cycle report summary should be trimmed/preserved");
         assertEqual(cycleResult.cycleReport?.deltas?.join(","), "changed", "cycle report deltas should be sanitized");
+    });
+
+    async function cronWith(args, config) {
+        const fakeSession = new FakeCopilotSession();
+        fakeSession.scriptedToolCalls = [{ name: "cron", args }];
+        const managed = new ManagedSession("cron-precheck", fakeSession, config);
+        const result = await managed.runTurn("Monitor the queue.");
+        return { action: result.queuedActions?.[0], toolResult: fakeSession.toolResults[0] };
+    }
+
+    it("cron stores a registered precheck named by the call", async () => {
+        const { action, toolResult } = await cronWith(
+            { seconds: 60, reason: "poll", precheck: " queue " },
+            { cronPrecheckSources: { staticNames: ["queue"] } },
+        );
+        assertEqual(action?.precheck, "queue", "the named precheck rides on the cron action");
+        assertEqual(JSON.parse(toolResult).precheck, "queue", "the tool result echoes the precheck");
+    });
+
+    it("cron rejects a precheck the worker has not registered", async () => {
+        const unknown = await cronWith({ seconds: 60, reason: "poll", precheck: "typo" }, { cronPrecheckSources: { staticNames: ["queue"] } });
+        assertEqual(unknown.action, undefined, "an unknown precheck schedules nothing");
+        assertEqual(unknown.toolResult.includes("Available prechecks: queue"), true, "the error lists registered names");
+
+        const none = await cronWith({ seconds: 60, reason: "poll", precheck: "queue" }, {});
+        assertEqual(none.action, undefined, "a worker without prechecks schedules nothing");
+        assertEqual(none.toolResult.includes("No cron prechecks are available"), true, "the error says none are registered");
+    });
+
+    it("cron uses the session's default precheck unless the call names one", async () => {
+        const defaulted = await cronWith({ seconds: 60, reason: "poll" }, { cronPrecheck: "queue", cronPrecheckSources: { staticNames: ["queue", "other"] } });
+        assertEqual(defaulted.action?.precheck, "queue", "the session default applies");
+
+        const overridden = await cronWith({ seconds: 60, reason: "poll", precheck: "other" }, { cronPrecheck: "queue", cronPrecheckSources: { staticNames: ["queue", "other"] } });
+        assertEqual(overridden.action?.precheck, "other", "an explicit precheck overrides the default");
+
+        const plain = await cronWith({ seconds: 60, reason: "poll" }, {});
+        assertEqual(Object.hasOwn(plain.action ?? {}, "precheck"), false, "no precheck without one named or defaulted");
+    });
+
+    it("cron applies the bound agent's reason binding and records the owning package", async () => {
+        const sources = {
+            staticNames: [],
+            packageId: "pkg-queue",
+            packageIdentity: { packageId: "pkg-queue", versionId: "v1", sha256: "a".repeat(64) },
+            packageBindingRevision: 1,
+            packageNames: ["queue-gate"],
+            bindings: [{ reasonPrefix: "Run the queue cycle", precheck: "queue-gate" }],
+        };
+        const bound = await cronWith({ seconds: 60, reason: "Run the queue cycle (scope=both)" }, { cronPrecheckSources: sources });
+        assertEqual(bound.action?.precheck, "queue-gate", "the matching binding attaches the precheck");
+        assertEqual(bound.action?.precheckPackageId, "pkg-queue", "the package that exports it rides on the action");
+
+        const other = await cronWith({ seconds: 60, reason: "Interactive reminder" }, { cronPrecheckSources: sources });
+        assertEqual(Object.hasOwn(other.action ?? {}, "precheck"), false, "a cron the binding does not match gets no precheck");
     });
 });
