@@ -442,6 +442,23 @@ test("admin settings tree groups packages by scope with badges and counts", () =
     assert.equal(foreign.enabled, false);
 });
 
+test("Packages in the admin tree leaves a selected package and returns to the review catalog", async () => {
+    const { controller, store } = makeController({
+        listAgentPackages: async () => [],
+        getAgentPackage: async () => null,
+        getAgentPackageTree: async () => [],
+    });
+    store.dispatch({ type: "admin/packages/select", name: "incident-kit", selector: { scope: "shared" } });
+    assert.equal(selectAdminConsole(store.getState()).packages.selectedName, "incident-kit");
+    assert.equal(selectAdminConsole(store.getState()).settingsTree.find((row) => row.id === "agents").selected, false);
+
+    await controller.showAdminPackageCatalog();
+    const view = selectAdminConsole(store.getState());
+    assert.equal(view.section, "packages");
+    assert.equal(view.packages.selectedName, null, "the catalog (Private / Pending Approval / Shared) is shown again");
+    assert.equal(view.settingsTree.find((row) => row.id === "agents").selected, true);
+});
+
 test("package detail VM: versions and fleet adoption", () => {
     const store = createStore(appReducer, createInitialState());
     loadedPackagesState(store);

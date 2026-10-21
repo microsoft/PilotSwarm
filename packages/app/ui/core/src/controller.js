@@ -4232,6 +4232,17 @@ export class PilotSwarmUiController {
      * first" — both rows showed the same history, and actions could land on
      * the copy the user was not looking at.
      */
+    /**
+     * The Packages row of the settings tree: leave any selected package and
+     * show the catalog (Private / Pending Approval / Shared / Notifications).
+     * Changing the section alone kept the package detail on screen, so the
+     * review list was unreachable without a reload.
+     */
+    async showAdminPackageCatalog() {
+        await this.selectAdminPackage(null);
+        this.setAdminSection("packages");
+    }
+
     async selectAdminPackage(name, selector = null) {
         this.dispatch({ type: "admin/packages/select", name, selector });
         if (!name) return;
