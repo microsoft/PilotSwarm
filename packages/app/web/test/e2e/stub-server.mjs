@@ -323,7 +323,7 @@ export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 
             // and "Publish as app" is rightly not offered.
             if (registry && /\/api\/v1\/bootstrap$/.test(pathname)) {
                 res.writeHead(200, { "content-type": "application/json" });
-                res.end(JSON.stringify({ ok: true, auth: {
+                res.end(JSON.stringify({ ok: true, ...(canvasLegacyMode ? { canvasLegacyMode: true } : {}), auth: {
                     principal: { ...VIEWER, email: "test@example.com", displayName: "Test User", tenantId: null, groups: [] },
                     authorization: { allowed: true, role: admin ? "admin" : "user", reason: "stub", matchedGroups: [] },
                 } }));

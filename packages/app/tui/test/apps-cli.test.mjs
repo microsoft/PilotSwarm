@@ -120,6 +120,19 @@ test("publish rejects a supplied --slot outside 1-5 before any request (review r
     assert.deepEqual(five.calls[0].args, { sessionId: "s-1", slot: 5, checkOnly: true });
 });
 
+test("label takes the same --slot as publish: a number 1-5, checked before any request", async () => {
+    const answer = { sessionId: "s-1", slot: 2, rev: 4, trust: "cross-owner", legacy: false };
+    const two = await run(["label", "s-1", "--slot", "2", "--json"], { getCanvasRevisionLabel: answer });
+    assert.deepEqual(two.calls[0], { op: "getCanvasRevisionLabel", args: { sessionId: "s-1", slot: 2 } });
+    const absent = await run(["label", "s-1", "--json"], { getCanvasRevisionLabel: answer });
+    assert.deepEqual(absent.calls[0].args, { sessionId: "s-1" });
+    for (const bad of ["0", "6", "abc", ""]) {
+        const { client, calls } = stubClient();
+        await assert.rejects(() => runAppsCommand(["label", "s-1", "--slot", bad], { client, out: () => {}, err: () => {} }), /--slot must be a canvas slot from 1 to 5/);
+        assert.deepEqual(calls, [], `no request for --slot ${JSON.stringify(bad)}`);
+    }
+});
+
 test("share and unshare move between scopes", async () => {
     const share = await run(["share", "board"]);
     assert.deepEqual(share.calls[0], { op: "setCanvasAppScope", args: { name: "board", scope: "user", targetScope: "shared" } });

@@ -81,7 +81,6 @@ export function parseAppsArgs(argv) {
         else if (arg === "--description") flags.description = argv[++i];
         else if (arg === "--tags") flags.tags = String(argv[++i] ?? "").split(",").map((t) => t.trim()).filter(Boolean);
         else if (arg === "--limit") flags.limit = Number(argv[++i]);
-        else if (arg === "--slot") flags.slot = Number(argv[++i]);
         else if (arg === "--since") flags.since = argv[++i];
         else if (arg === "--until") flags.until = argv[++i];
         else if (arg === "--cursor") flags.cursor = argv[++i];
@@ -136,8 +135,8 @@ export async function runAppsCommand(argv, deps = {}) {
         return name;
     };
     // An absent --slot means slot 1 (the default); a supplied value must be a
-    // canvas slot, 1-5. It is checked before connecting, so a bad value never
-    // checks or publishes some other slot.
+    // canvas slot, 1-5 (publish and label alike). It is checked before
+    // connecting, so a bad value never reaches some other slot.
     let slot = {};
     if (flags.slot !== undefined) {
         const n = /^\s*\d+\s*$/.test(String(flags.slot)) ? Number(flags.slot) : NaN;
@@ -308,7 +307,7 @@ export async function runAppsCommand(argv, deps = {}) {
             }
             case "label": {
                 const sessionId = needName(rest[0], "label <sessionId>");
-                const label = await client.getCanvasRevisionLabel({ sessionId, ...(flags.slot ? { slot: flags.slot } : {}) });
+                const label = await client.getCanvasRevisionLabel({ sessionId, ...slot });
                 print(label, (l) => `${sessionId} slot ${l.slot}: revision ${l.rev}, ${l.legacy ? "handled as before the registry (transition)" : "registry rules"}`);
                 return 0;
             }
