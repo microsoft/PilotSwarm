@@ -198,6 +198,25 @@ export function PackageReviewTabs({ controller, view }) {
         setReportView(null);
         setReportError(null);
     }, []);
+    // The diff takes over the page; Back returns to the review it was opened from.
+    const pageRef = React.useRef(null);
+    const returnTo = React.useRef(null);
+    React.useEffect(() => {
+        const page = pageRef.current;
+        if (!page?.querySelector) return;
+        if (diffView) {
+            page.scrollIntoView?.({ block: "start" });
+            page.querySelector(".ps-review-page__back")?.focus({ preventScroll: true });
+            return;
+        }
+        const versionId = returnTo.current;
+        returnTo.current = null;
+        if (!versionId) return;
+        const origin = [...page.querySelectorAll("[data-review-version]")]
+            .find((button) => button.getAttribute("data-review-version") === versionId);
+        origin?.scrollIntoView?.({ block: "center" });
+        origin?.focus({ preventScroll: true });
+    }, [diffView]);
     const effectiveTab = tab === "reviews" && !view.isAdmin ? "private" : tab;
     React.useEffect(() => {
         clearDiff();
@@ -282,6 +301,7 @@ export function PackageReviewTabs({ controller, view }) {
                 ...(perFile ? { patches: false } : {}),
             });
             if (generation.current === token) {
+                returnTo.current = candidate.versionId;
                 setDiffView(diff);
                 void loadReport(diff, token);
             }
@@ -377,7 +397,24 @@ export function PackageReviewTabs({ controller, view }) {
     ];
     const packages = (view.settingsTree || []).filter((row) =>
         row.kind === "package" && (effectiveTab === "shared" ? row.scope === "shared" : row.scope !== "shared"));
-    return React.createElement("section", { className: "ps-admin-detail ps-package-catalog" },
+    const closeDiff = () => { clearDiff(); setBusy(false); };
+    if (diffView && effectiveTab === "reviews" && view.isAdmin) {
+        return React.createElement("section", { ref: pageRef, className: "ps-admin-detail ps-package-catalog ps-review-page" },
+            React.createElement("div", { className: "ps-review-page__bar" },
+                React.createElement("button", { type: "button", className: "ps-review-page__back", onClick: closeDiff },
+                    "← Back to Pending Approval"),
+                React.createElement("span", null, `Packages / Pending Approval / ${diffView.candidate.name}@${diffView.candidate.semver}`)),
+            error ? React.createElement("p", { role: "alert" }, error) : null,
+            React.createElement(PackageReviewDiffPanel, {
+                key: `${diffView.candidate.versionId}:${diffView.candidate.sha256}:${diffView.baseline?.sha256 ?? "none"}`,
+                diff: diffView, busy, onDecide: decideFromDiff, onClose: closeDiff,
+                loadFile: typeof controller.transport.getAgentPackageReviewFileDiff === "function" ? loadDiffFile : undefined,
+                reportView, reportError,
+                onAskReviewer: typeof controller.createSessionForAgent === "function" ? askReviewer : undefined,
+                onRefreshReport: () => loadReport(diffView),
+            }));
+    }
+    return React.createElement("section", { ref: pageRef, className: "ps-admin-detail ps-package-catalog" },
         React.createElement("h3", null, "Packages"),
         React.createElement("div", { role: "tablist", "aria-label": "Package catalogs" },
             tabs.map(({ id, label }) => React.createElement("button", {
@@ -389,17 +426,10 @@ export function PackageReviewTabs({ controller, view }) {
             React.createElement("p", null,
                 "Content approval and activation are separate from session permission. Supported tools, declared callbacks and stdio MCP execute in supervised children with fresh admission. Revocation denies first; completion below requires observed process exits. Previously admitted external effects cannot be undone."),
             React.createElement("button", { type: "button", disabled: busy, onClick: refresh }, "Refresh reviews"),
-            diffView ? React.createElement(PackageReviewDiffPanel, {
-                key: `${diffView.candidate.versionId}:${diffView.candidate.sha256}:${diffView.baseline?.sha256 ?? "none"}`,
-                diff: diffView, busy, onDecide: decideFromDiff, onClose: () => { clearDiff(); setBusy(false); },
-                loadFile: typeof controller.transport.getAgentPackageReviewFileDiff === "function" ? loadDiffFile : undefined,
-                reportView, reportError,
-                onAskReviewer: typeof controller.createSessionForAgent === "function" ? askReviewer : undefined,
-                onRefreshReport: () => loadReport(diffView),
-            }) : null,
             reviews.map((r) => React.createElement("article", { key: r.versionId },
                 React.createElement("h4", null, `${r.name}@${r.semver} · artifact content: ${r.decision}`),
                 React.createElement("button", { type: "button", disabled: busy, onClick: () => openDiff(r),
+                    "data-review-version": r.versionId,
                     title: "Risk-grouped diff of this exact digest against the newest approved (else active) version" }, "Review diff"),
                 React.createElement("p", null, `Publisher: ${r.publisher || "unknown"} · ${r.scope} · revision ${r.revision}`),
                 React.createElement("p", null, `Package: ${r.packageId} · Version: ${r.versionId}`),

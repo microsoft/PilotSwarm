@@ -77,6 +77,8 @@ async function finishReport(page, index, mismatch = false) {
 
 test("a late report for another candidate cannot replace the current report, even with the same digest", async ({ page }) => {
     await openDiff(page, "alpha", 1);
+    // An open diff fills the page; switching candidates goes back to the list first.
+    await page.getByRole("button", { name: "← Back to Pending Approval", exact: true }).click();
     await openDiff(page, "beta", 2);
     await finishReport(page, 1);
     const report = page.getByRole("region", { name: "Advisory review report" });
