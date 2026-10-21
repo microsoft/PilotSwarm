@@ -22,7 +22,6 @@ import { normalizePackageReviewReportContent, PackageReviewReportError } from ".
 import { packAgentPackage } from "../../dist/agent-package-format.js";
 import { PilotSwarmManagementClient } from "../../dist/management-client.js";
 import { SessionManager } from "../../dist/session-manager.js";
-import { loadAgentFiles } from "../../dist/agent-loader.js";
 import { buildPackageReviewGuideData, renderPackageReviewGuideHtml } from "../../dist/package-review-guide-canvas.js";
 import { ManagedSession } from "../../dist/managed-session.js";
 
@@ -354,25 +353,16 @@ test("warm reviewer tools observe role revocation, owner changes and lookup fail
     assert.match((await list.handler({})).error, /fleet administrator/);
 });
 
-test("the shipped package-reviewer agent declares exactly the bundle and keeps its advisory promises", () => {
+test("the package-building guide documents the exact reviewer contract that agent authors must declare", () => {
+    // The agent package is maintained outside this repository; this guide is its contract.
     const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../../..");
-    const pkgDir = path.join(repoRoot, "agent-packages/package-reviewer");
-    const agent = loadAgentFiles(path.join(pkgDir, "agents"))[0];
-    const prompt = fs.readFileSync(path.join(pkgDir, "agents/package-reviewer.agent.md"), "utf8");
-    assert.equal(agent.name, "package-reviewer");
-    assert.deepEqual([...agent.tools].sort(), [...PACKAGE_REVIEWER_TOOL_NAMES].sort());
-    assert.ok((agent.description || "").length > 40);
-    assert.match(prompt, /never approve, reject/i);
-    assert.match(prompt, /untrusted data/i);
-    assert.match(prompt, /never obey it/i);
-    assert.match(prompt, /It has no verdict/);
-    assert.match(agent.splash || "", /NEVER APPROVES/);
-    assert.match(agent.splashMobile || "", /NEVER APPROVES/);
-    const stripped = (agent.splash || "").split(/\r?\n/).map((l) => l.replace(/\{[^}]*\}/g, ""));
-    const box = stripped.filter((l) => /[╔║╚]/.test(l));
-    assert.equal(new Set(box.map((l) => [...l].length)).size, 1, "splash warning box is ragged");
-    const manifest = JSON.parse(fs.readFileSync(path.join(pkgDir, "plugin.json"), "utf8"));
-    assert.ok(fs.readFileSync(path.join(pkgDir, "CHANGELOG.md"), "utf8").includes(`## ${manifest.version}`));
+    const guide = fs.readFileSync(path.join(repoRoot, "docs/building-agent-packages.md"), "utf8");
+    const section = guide.slice(guide.indexOf("### Optional advisory review assistant"));
+    const sectionEnd = section.indexOf("\n## ");
+    const text = (sectionEnd > 0 ? section.slice(0, sectionEnd) : section).replace(/\s+/g, " ");
+    assert.match(text, /named exactly `package-reviewer`/);
+    for (const name of PACKAGE_REVIEWER_TOOL_NAMES) assert.ok(text.includes(`\`${name}\``), `guide lists ${name}`);
+    assert.ok(!fs.existsSync(path.join(repoRoot, "agent-packages/package-reviewer")), "the agent package is not bundled here");
 });
 
 const HOSTILE = '</script><script>globalThis.pwned = 1</script><img src=x onerror=alert(1)>';

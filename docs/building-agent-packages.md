@@ -629,13 +629,33 @@ running sessions are never affected by scope changes.
 
 ### Optional advisory review assistant
 
-The [package-reviewer package](../agent-packages/package-reviewer/) supplies
-an optional assistant for unrestricted fleet administrators. After an
-administrator publishes and enables that declarative package, **Ask
-package-reviewer** in the **Pending Approval** diff panel opens its session
-with the exact candidate and baseline shown. **Refresh report** reads the saved
-facts, analysis, review steps and open risks through
-`getAgentPackageReviewReport`.
+PilotSwarm supplies the runtime for an optional review assistant for
+unrestricted fleet administrators. The assistant itself is an ordinary
+declarative agent package that a deployment maintains and publishes, so its
+instructions can change without a PilotSwarm release. Once an administrator
+publishes and enables it, **Ask package-reviewer** in the **Pending Approval**
+diff panel opens its session with the exact candidate and baseline shown.
+**Refresh report** reads the saved facts, analysis, review steps and open risks
+through `getAgentPackageReviewReport`.
+
+The runtime grants the reviewer tool bundle only to an agent named exactly
+`package-reviewer`, and gives that agent nothing else. Its agent file should
+declare exactly these tools:
+
+| Tool | Purpose |
+|---|---|
+| `list_agent_package_reviews` | Pending candidates with exact package, version and digest |
+| `get_agent_package_review_diff` | Risk-classified diff against the review baseline |
+| `read_agent_package_review_file` | One candidate or baseline file, in slices |
+| `read_agent_package_review_audit` | Decision history for one version |
+| `submit_package_review_report` | Save the advisory report (facts, analysis, guide, risks; no verdict) |
+| `show_package_review_guide` | Draw the saved report as a guided review on the session canvas |
+
+Declaring other tools does not grant them. Keep the package declarative (no
+tools module, MCP servers or skills), so it needs no content approval. Its
+instructions should treat package content as untrusted data and never present
+the report as a verdict. Renaming the agent removes its tools, and the panel
+button launches only `package-reviewer`.
 
 This is not approval automation. The assistant has no approve, reject,
 activation, shell, file, MCP or delegation tools. Each tool call resolves

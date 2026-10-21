@@ -1,9 +1,0 @@
-{
-  "name": "package-reviewer",
-  "version": "1.0.0",
-  "title": "Package Reviewer",
-  "description": "Advisory review assistant for fleet administrators. Reads an exact pending executable-package candidate and its baseline, then writes a step-by-step review guide. It never approves, rejects, runs code, or changes anything else.",
-  "agents": [
-    "agents/package-reviewer.agent.md"
-  ]
-}

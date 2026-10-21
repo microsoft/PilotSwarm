@@ -461,10 +461,14 @@ Separate agent-layer PR, stacked on phases 1–4. Advisory only: nothing in it
 approves, rejects, revokes or activates, and the review panel works without
 it.
 
-- **Agent.** `agent-packages/package-reviewer` (declarative, no code) is
-  published like any agent package. A fleet administrator starts it from the
-  review panel with **Ask package-reviewer**; the opening prompt names the
-  exact candidate and baseline digests on screen.
+- **Agent.** The `package-reviewer` agent is a declarative package (no code)
+  maintained and published outside this repository, so its instructions can
+  change without a PilotSwarm release. This PR supplies its runtime; the
+  contract an agent author must follow is in
+  [building agent packages](../building-agent-packages.md#optional-advisory-review-assistant).
+  A fleet administrator starts it from the review panel with **Ask
+  package-reviewer**; the opening prompt names the exact candidate and baseline
+  digests on screen.
 - **Hard tool allowlist.** A session whose bound agent identity is
   `package-reviewer` is created with the Copilot SDK `availableTools` set to
   exactly six tools, and with no app or system tools, MCP servers, skill
