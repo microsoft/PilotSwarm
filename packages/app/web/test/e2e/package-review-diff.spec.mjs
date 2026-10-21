@@ -67,6 +67,8 @@ async function open(page, query = "") {
 
 const fileRow = (page, path) => page.getByRole("navigation", { name: "Changed files" }).getByRole("button", { name: new RegExp(path.replace(/[.]/g, "\\.")) });
 const patch = (page) => page.locator(".ps-review-diff__patch");
+// The report section may raise its own alert; file errors live in the file view.
+const fileAlert = (page) => page.locator(".ps-review-diff__file").getByRole("alert");
 
 test("a large review lists every file and loads only the selected file's patch, once", async ({ page }) => {
     await open(page);
@@ -91,14 +93,14 @@ test("a large review lists every file and loads only the selected file's patch, 
 
 test("a failed file load can be retried", async ({ page }) => {
     await open(page, "?fail=1");
-    await expect(page.getByRole("alert")).toContainText("Could not load this file: temporary outage");
+    await expect(fileAlert(page)).toContainText("Could not load this file: temporary outage");
     await page.getByRole("button", { name: "Retry", exact: true }).click();
     await expect(patch(page)).toContainText("+new tools/module-00.mjs");
 });
 
 test("a file answered for a different digest is refused, never shown", async ({ page }) => {
     await open(page, "?stale=1");
-    await expect(page.getByRole("alert")).toContainText("the review changed since this diff was opened");
+    await expect(fileAlert(page)).toContainText("the review changed since this diff was opened");
     await expect(patch(page)).toHaveCount(0);
 });
 
