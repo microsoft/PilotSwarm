@@ -284,3 +284,82 @@ test("a revision the list names ahead of its draw event is re-read a bounded num
     await c.ensureCanvasSnapshot("s1");
     assert.equal(c.getState().canvas.bySessionId.s1.trust, "owner", "a Retry after the event lands classifies it");
 });
+
+test("re-read records do not accumulate: one per waiting slot, dropped once classified (review R4-1)", async () => {
+    const { PilotSwarmUiController, createStore } = await import("../src/index.js");
+    const log = [{ seq: 1, eventType: "session.canvas_updated", data: { slot: 1, rev: 1, sizeBytes: 10, trust: "owner", pageSha256: SHA_A } }];
+    const store = createStore(appReducer, seed(stateWithSession(), [{ sessionId: "s1", slot: 1, latestRev: 1, name: "one", sizeBytes: 10 }]));
+    const t = logTransport(log);
+    const c = new PilotSwarmUiController({ store, transport: { ...t.transport, stop: async () => {} } });
+    await c.ensureCanvasSnapshot("s1");
+    for (let rev = 2; rev <= 101; rev++) {
+        c.dispatch({ type: "canvas/seed", entries: [{ sessionId: "s1", slot: 1, latestRev: rev, name: "one", sizeBytes: 10 }] });
+        await c.ensureCanvasSnapshot("s1");
+        assert.ok((c.canvasRereads?.size || 0) <= 1, `rev ${rev}: at most one record while waiting`);
+        log.push({ seq: rev, eventType: "session.canvas_updated", data: { slot: 1, rev, sizeBytes: 10, trust: "owner", pageSha256: SHA_A } });
+        await c.ensureCanvasSnapshot("s1");
+    }
+    assert.equal(c.getState().canvas.bySessionId.s1.trust, "owner");
+    assert.equal(c.getState().canvas.bySessionId.s1.latestRev, 101);
+    assert.equal(c.canvasRereads?.size || 0, 0, "classified: no record left");
+    // The five-re-read cap is unchanged, and the count saturates.
+    c.dispatch({ type: "canvas/seed", entries: [{ sessionId: "s1", slot: 1, latestRev: 102, name: "one", sizeBytes: 10 }] });
+    for (let i = 0; i < 9; i++) await c.ensureCanvasSnapshot("s1");
+    assert.deepEqual(c.canvasRereads.get("s1"), { rev: 102, count: 5 });
+    await c.stop();
+    assert.equal(c.canvasRereads.size, 0, "cleared on stop");
+});
+
+test("a read that finds no draw event keeps an exhausted revision's count: no fresh re-read budget (review R5-1)", async () => {
+    const { PilotSwarmUiController, createStore } = await import("../src/index.js");
+    const older = { seq: 1, eventType: "session.canvas_updated", data: { slot: 1, rev: 4, sizeBytes: 10, trust: "agent", pageSha256: SHA_A } };
+    let log = [older];
+    const store = createStore(appReducer, seed(stateWithSession(), [{ sessionId: "s1", slot: 1, latestRev: 5, name: "ahead", sizeBytes: 10 }]));
+    const calls = [];
+    const transport = {
+        listSessions: async () => [], subscribeSession: () => () => {}, getCurrentUserProfile: async () => ({ profileSettings: {} }),
+        getSessionEventsBefore: async (_id, beforeSeq, limit, types) => {
+            calls.push(types[0]);
+            if (types[0] !== "session.canvas_updated") return [];
+            return log.filter((e) => e.seq < beforeSeq).slice(0, limit);
+        },
+    };
+    const c = new PilotSwarmUiController({ store, transport });
+    for (let i = 0; i < 9; i++) await c.ensureCanvasSnapshot("s1");
+    assert.equal(calls.filter((x) => x === "session.canvas_updated").length, 6, "exhausted: the first read plus 5 re-reads");
+    // Retry finds nothing at all, then a later Retry finds the older draw again.
+    log = [];
+    c.dispatch({ type: "canvas/snapshotInvalidate", sessionId: "s1" });
+    await c.ensureCanvasSnapshot("s1");
+    assert.deepEqual(c.canvasRereads.get("s1"), { rev: 5, count: 5 }, "the empty read keeps the count");
+    log = [older];
+    c.dispatch({ type: "canvas/snapshotInvalidate", sessionId: "s1" });
+    const before = calls.length;
+    for (let i = 0; i < 9; i++) await c.ensureCanvasSnapshot("s1");
+    assert.equal(calls.filter((x) => x === "session.canvas_updated").length - calls.slice(0, before).filter((x) => x === "session.canvas_updated").length, 1,
+        "the explicit Retry reads once and re-arms nothing more");
+    assert.equal(c.getState().canvas.bySessionId.s1.trust, undefined, "still unclassified: sealed");
+});
+
+test("a snapshot read still in flight at stop writes no state and no re-read record (review R5-3)", async () => {
+    const { PilotSwarmUiController, createStore } = await import("../src/index.js");
+    const store = createStore(appReducer, seed(stateWithSession(), [{ sessionId: "s1", slot: 1, latestRev: 5, name: "ahead", sizeBytes: 10 }]));
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const transport = {
+        listSessions: async () => [], subscribeSession: () => () => {}, getCurrentUserProfile: async () => ({ profileSettings: {} }),
+        stop: async () => {},
+        getSessionEventsBefore: async (_id, _beforeSeq, _limit, types) => {
+            if (types[0] !== "session.canvas_updated") return [];
+            await gate;
+            return [{ seq: 1, eventType: "session.canvas_updated", data: { slot: 1, rev: 4, sizeBytes: 10, trust: "agent", pageSha256: SHA_A } }];
+        },
+    };
+    const c = new PilotSwarmUiController({ store, transport });
+    const pending = c.ensureCanvasSnapshot("s1");
+    await c.stop();
+    release();
+    await pending;
+    assert.equal(c.canvasRereads?.size || 0, 0, "no record recreated after stop");
+    assert.notEqual(c.getState().canvas.bySessionId.s1.snapshotLoaded, true, "no snapshot written after stop");
+});

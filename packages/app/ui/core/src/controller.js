@@ -2667,6 +2667,9 @@ export class PilotSwarmUiController {
     }
 
     async stop() {
+        // Canvas snapshot reads still in flight write nothing after stop.
+        this.canvasStopGeneration = (this.canvasStopGeneration || 0) + 1;
+        this.canvasRereads?.clear();
         this._featureRefreshSerial = (this._featureRefreshSerial || 0) + 1;
         this._featureUserSerial = (this._featureUserSerial || 0) + 1;
         for (const timer of this._liveTurnIdleTimers?.values() || []) clearTimeout(timer);
@@ -2716,6 +2719,7 @@ export class PilotSwarmUiController {
         // A folder row can never be "gone" from the session catalog: it is not
         // a session. Only sessions/groupsLoaded may remove one.
         if (isSessionGroupRowId(sessionId)) return;
+        for (let slot = 1; slot <= 5; slot++) this.canvasRereads?.delete(canvasPrefKey(sessionId, slot));
         // An older in-flight catalog read must not undo an access revocation.
         this.sessionRefreshSeq = (this.sessionRefreshSeq || 0) + 1;
         if (this.activeSessionSubscriptionId === sessionId) {
@@ -6155,6 +6159,8 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "canvas/snapshot", sessionId, rev: 0 });
             return;
         }
+        const stopGeneration = this.canvasStopGeneration || 0;
+        const stopped = () => (this.canvasStopGeneration || 0) !== stopGeneration;
         try {
             // A 30-event window, not 1: five interleaved slots mean the top
             // event only describes the most recently drawn slot. Latest per
@@ -6187,6 +6193,7 @@ export class PilotSwarmUiController {
                 const missing = page.filter((row) => !bySlot.has(Number(row?.data?.slot) || 1));
                 take(missing);
             }
+            if (stopped()) return;
             // Always at least a slot-1 snapshot (rev 0 marks snapshotLoaded
             // so this does not respin).
             if (!bySlot.has(1)) bySlot.set(1, null);
@@ -6215,6 +6222,7 @@ export class PilotSwarmUiController {
                 const dataRows = await this.transport.getSessionEventsBefore(
                     sessionId, Number.MAX_SAFE_INTEGER, 30, ["session.canvas_data"],
                 ).catch(() => []);
+                if (stopped()) return;
                 const tickBySlot = new Map();
                 for (const row of Array.isArray(dataRows) ? dataRows : []) {
                     const slot = Number(row?.data?.slot) || 1;
@@ -6242,18 +6250,31 @@ export class PilotSwarmUiController {
             // history read is not re-read either: another read would find the
             // same nothing.
             const byKey = this.getState().canvas.bySessionId;
+            // One { rev, count } record per slot, kept only while that slot is
+            // waiting for its draw event: replaced on a new revision, dropped
+            // once classified, with the session, and on stop. A read that
+            // finds no draw event re-arms nothing and keeps the revision's
+            // count, so an exhausted revision never gets a fresh budget.
             if (!this.canvasRereads) this.canvasRereads = new Map();
             let rearm = false;
             for (let slot = 1; slot <= 5; slot++) {
-                const entry = byKey[canvasPrefKey(sessionId, slot)];
+                const slotKey = canvasPrefKey(sessionId, slot);
+                const entry = byKey[slotKey];
                 const known = entry?.latestRev || 0;
-                if (known <= 0 || typeof entry.trust === "string") continue;
                 const found = Number(bySlot.get(slot)?.data?.rev) || 0;
-                if (found <= 0 || found >= known) continue;
-                const key = `${canvasPrefKey(sessionId, slot)}@${known}`;
-                const tries = (this.canvasRereads.get(key) || 0) + 1;
-                this.canvasRereads.set(key, tries);
-                if (tries <= CANVAS_SNAPSHOT_MAX_REREADS) rearm = true;
+                const record = this.canvasRereads.get(slotKey);
+                if (known <= 0 || typeof entry.trust === "string" || found >= known) {
+                    this.canvasRereads.delete(slotKey);
+                    continue;
+                }
+                if (found <= 0) {
+                    if (record && record.rev !== known) this.canvasRereads.delete(slotKey);
+                    continue;
+                }
+                const count = record?.rev === known ? record.count : 0;
+                if (count >= CANVAS_SNAPSHOT_MAX_REREADS) continue;
+                this.canvasRereads.set(slotKey, { rev: known, count: count + 1 });
+                rearm = true;
             }
             if (rearm) this.dispatch({ type: "canvas/snapshotInvalidate", sessionId });
         } catch {
