@@ -16,7 +16,9 @@ import {
     handleSubAgentAction,
     isSubAgentTerminalStatus,
     maybeResolveAgentWaitCompletion,
+    lookUpDeferredChildStatuses,
     refreshTrackedSubAgents,
+    settleDeferredChildStatusLookups,
 } from "./agents.js";
 import {
     applyAgentWorkspaceExtrasChange,
@@ -364,6 +366,10 @@ export function* processPrompt(
     attachments?: PromptAttachmentRef[],
 ): Generator<any, void, any> {
     const { ctx, state } = runtime;
+    // 1.0.82 (issue 192): count every turn attempt, whatever its outcome, so
+    // settleQueuedWorkAfterDecide never re-arms a timer behind an attempt the
+    // turn path already handled (a gate refusal, an error, a thrown failure).
+    runtime.turnsStarted = (runtime.turnsStarted ?? 0) + 1;
     // A provider-budget refusal stashes the whole pending turn contract, not
     // just its text. Any wake or interrupt that finally reaches the model must
     // enforce the same requiredTool as the refused attempt.
@@ -727,7 +733,12 @@ export function* processPrompt(
     // blaming "a worker restart" that never happened. Deterministic on any
     // session whose first turn was refused.
     const gateRefused = result.type === "wait" && timerGate(result as any) !== undefined;
-    if (!gateRefused) state.iteration++;
+    if (!gateRefused) {
+        state.iteration++;
+        if (state.cronSchedule?.precheckSkips) {
+            state.cronSchedule = { ...state.cronSchedule, precheckSkips: 0 };
+        }
+    }
     // A turn that ran (any result but a gate refusal) delivered the pending
     // workspace notes; a refused one did not, so they wait for the next. For
     // a session with a workspace, only a turn that got past the workspace
@@ -738,7 +749,13 @@ export function* processPrompt(
         state.workspaceHeldNote = undefined;
     }
     yield* maybeSummarize(runtime);
-    yield* refreshTrackedSubAgents(runtime);
+    const childListing = yield* refreshTrackedSubAgents(runtime);
+    // 1.0.82 (issue 192): child status lookups put off behind the user work
+    // this turn ran are settled from the same listing, before the result is
+    // handled (wait_for_agents reads these statuses). If the listing failed,
+    // they are looked up one by one now, after the turn (review F1).
+    if (childListing) settleDeferredChildStatusLookups(runtime, childListing);
+    else yield* lookUpDeferredChildStatuses(runtime, { resolveAgentWait: false });
 
     if ("queuedActions" in result && Array.isArray((result as any).queuedActions) && (result as any).queuedActions.length > 0) {
         state.pendingToolActions.push(...(result as any).queuedActions);
@@ -1639,7 +1656,7 @@ export function* handleTurnResult(
 // ─── processTimer: handle fired timers by type ──────────────
 
 /**
- * 1.0.82: whether an interval cron wake-up would reach the model with only
+ * 1.0.83: whether an interval cron wake-up would reach the model with only
  * its own schedule prompt. Anything else carried into the turn (a child
  * digest, a held note, stashed or carried prompts) needs the model, so the
  * cron precheck is not consulted.
@@ -1706,7 +1723,7 @@ export function* processTimer(
                 eventType: "session.cron_fired",
                 data: {},
             }]);
-            // 1.0.82: a schedule that names a worker-registered precheck asks
+            // 1.0.83: a schedule that names a worker-registered precheck asks
             // it first, so an empty cycle does not call the model. Only a
             // wake-up that carries nothing else is eligible, and only a
             // `skip` answer skips. A schedule without one is unchanged.

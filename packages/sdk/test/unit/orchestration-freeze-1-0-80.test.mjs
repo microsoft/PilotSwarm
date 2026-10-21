@@ -6,7 +6,7 @@ import { DURABLE_SESSION_ORCHESTRATION_REGISTRY } from "../../dist/orchestration
 
 const read = name => readFileSync(new URL(`../../src/${name}`, import.meta.url), "utf8").replace(/\r\n/g, "\n");
 
-test("registry freezes 1.0.80 separately from later handlers", () => {
+test("registry keeps 1.0.80 frozen beside later handlers", () => {
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.80").handler.name, "durableSessionOrchestration_1_0_80");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.81").handler.name, "durableSessionOrchestration_1_0_81");
     assert.match(read("orchestration-registry.ts"), /from "\.\/orchestration_1_0_80\/index\.js"/);

@@ -354,7 +354,7 @@ A schedule without a precheck behaves exactly as before: no check and no
 extra activity. Calling `cron` again replaces the schedule, including its
 precheck.
 
-When an interval `cron` schedule with a precheck fires (orchestration 1.0.82
+When an interval `cron` schedule with a precheck fires (orchestration 1.0.83
 and later), the orchestration runs the precheck in an activity before any
 hydration or model call. A `skip` answer records the decision and re-arms the
 same schedule; the model sees nothing for that cycle.

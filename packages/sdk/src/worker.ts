@@ -3,7 +3,7 @@ import { AGENT_HANDOFF_CAPABILITY, CRON_PRECHECK_CAPABILITY, TURN_CONTROL_CAPABI
 import { resolveNativeSubagents } from "./native-subagents.js";
 import { FeatureFlagCache } from "./feature-flag-cache.js";
 import { validateCronPrecheckRegistration, type CronPrecheckRegistration } from "./cron-precheck.js";
-import { SessionManager, packageAgentKey, packageContentKey, agentOwnerKey, type AgentPromptEntry } from "./session-manager.js";
+import { SessionManager, packageAgentKey, packageContentKey, agentOwnerKey, type AgentCopyEntry, type AgentPromptEntry } from "./session-manager.js";
 import { loadAdminScope, ADMIN_SCOPE_POLICY_VERSION } from "../api/src/admin-scope.js";
 import { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
 import { FilesystemArtifactStore, FilesystemSessionStore, type ArtifactStore, type SessionStateStore } from "./session-store.js";
@@ -2075,7 +2075,7 @@ export class PilotSwarmWorker {
         const rank = (agent: any) => agent.packageId == null ? 0 : (agent.packageScope !== "user" ? 1 : 2);
         for (const [name, agents] of byName) {
             const winner = [...agents].sort((a, b) => Number(a.packageActive === false) - Number(b.packageActive === false) || rank(a) - rank(b))[0];
-            const copyOf = (agent: any) => ({
+            const copyOf = (agent: any): AgentCopyEntry => ({
                 prompt: agent.prompt,
                 namespace: agent.namespace ?? undefined,
                 ...(agent.baseV2Prompt ? { baseV2Prompt: agent.baseV2Prompt } : {}),

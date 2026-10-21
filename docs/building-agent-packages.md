@@ -462,6 +462,13 @@ a server with **any** name the deployment catalog already uses — restricted
 or not (`reserved_mcp_server_name` at publish; workers drop such a
 definition at load). Pick your own server names.
 
+Optional activation through `use_package` applies these same rules to the
+session's resolved agent copy. A qualified session binding is a lookup key,
+not the authored agent name: the selected copy supplies its leaf name, raw
+plugin namespace, and package provenance. Loading another agent's instructions
+does not change that identity. Later turns and worker restarts revalidate the
+saved capability source reference without rewriting it or granting new access.
+
 ## 7. Versioning and immutability
 
 - **`name@version` is immutable.** Re-publishing the same version with
@@ -610,6 +617,8 @@ facts, analysis, review steps and open risks through
 This is not approval automation. The assistant has no approve, reject,
 activation, shell, file, MCP or delegation tools. Each tool call resolves
 current owner/admin authority without using the inspect-viewer cache.
+Anonymous no-auth operators and the system principal cannot use this bundle,
+matching the authenticated-admin rule on the review API.
 File-based hooks, custom instructions and discovered skills are disabled.
 Package contents are untrusted data, never imported or executed for a review.
 

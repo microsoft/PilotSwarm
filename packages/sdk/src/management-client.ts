@@ -2478,8 +2478,17 @@ export class PilotSwarmManagementClient {
             const code = resp.error.startsWith("STALE:") ? "CONFLICT" : "INVALID_REQUEST";
             throw Object.assign(new Error(resp.error), { code, status: code === "CONFLICT" ? 409 : 400 });
         }
-        const result = resp.result as any;
-        return { ok: true, precheck: result?.precheck ?? null, revision: Number(result?.revision), appliesOn: "next_fire" };
+        const result = resp.result;
+        if (!result || typeof result !== "object"
+            || !("ok" in result) || result.ok !== true
+            || !("precheck" in result) || result.precheck !== precheck
+            || !("revision" in result) || typeof result.revision !== "number"
+            || !Number.isSafeInteger(result.revision) || result.revision !== expectedRevision + 1
+            || !("appliesOn" in result) || result.appliesOn !== "next_fire") {
+            throw Object.assign(new Error("Invalid PRECHECK command acknowledgement; refresh the schedule before retrying"),
+                { code: "INVALID_RESPONSE" });
+        }
+        return { ok: true, precheck, revision: result.revision, appliesOn: "next_fire" };
     }
 
     /**

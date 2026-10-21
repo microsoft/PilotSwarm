@@ -82,7 +82,7 @@ export function createPackageReviewerTools(opts: CreatePackageReviewerToolsOptio
     const reviewer = async (): Promise<AgentPrincipal> => {
         let viewer: PackageReviewerViewer | null = null;
         try { viewer = await opts.resolveViewer(); } catch { viewer = null; }
-        if (!viewer?.provider || !viewer.subject || viewer.isSystemPrincipal
+        if (!viewer?.provider || viewer.provider === "none" || !viewer.subject || viewer.isSystemPrincipal
             || !adminCanAccessResource(viewer.isAdmin, viewer.adminScope)) {
             throw Object.assign(new Error("package review tools require the session owner to be an unrestricted fleet administrator"), { code: "FORBIDDEN" });
         }

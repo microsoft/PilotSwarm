@@ -100,6 +100,7 @@ test("the bundle is exactly the declared tool names, held only by the package-re
 for (const [label, viewer] of [
     ["no owner", null],
     ["non-admin", { ...ADMIN, isAdmin: false }],
+    ["no-auth operator", { ...ADMIN, provider: "none", subject: "unknown" }],
     ["cluster-scoped admin", { ...ADMIN, adminScope: "cluster" }],
     ["system principal", { ...ADMIN, isSystemPrincipal: true }],
     ["owner without subject", { ...ADMIN, subject: "" }],

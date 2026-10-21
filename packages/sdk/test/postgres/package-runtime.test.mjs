@@ -1435,6 +1435,23 @@ test("0091 review reports: admin-only, bound to the exact pending candidate and 
     assert.equal((await store.get(admin, target)).reportId, newer.reportId, "the newest report wins; older rows remain");
     assert.equal((await f.sql("SELECT count(*)::INTEGER AS n FROM @s.agent_package_review_reports")).rows[0].n, 2);
 
+    const { PilotSwarmManagementClient } = await import("../../dist/management-client.js");
+    const client = Object.assign(Object.create(PilotSwarmManagementClient.prototype), {
+        _started: true, _catalog: f.catalog,
+    });
+    const input = { packageId: target.packageId, versionId: target.versionId, sha256: target.sha256 };
+    assert.equal((await client.getAgentPackageReviewReport(input, admin.principal, true)).report.reportId, newer.reportId);
+    const v3 = await f.publish("v3", "3.0.0"); await f.decide(v3);
+    const changedBaseline = await client.getAgentPackageReviewReport(input, admin.principal, true);
+    assert.deepEqual(changedBaseline.baseline, { versionId: "v3", sha256: v3.sha256 });
+    assert.equal(changedBaseline.report, null, "a newly approved baseline hides the previous advisory report");
+    const explicit = await client.getAgentPackageReviewReport({ ...input, baselineVersionId: "v1" }, admin.principal, true);
+    assert.equal(explicit.report.reportId, newer.reportId, "an explicit comparison can still select its exact old baseline");
+    const v4 = await f.publish("v4", "4.0.0");
+    assert.equal((await client.getAgentPackageReviewReport({
+        packageId: v4.packageId, versionId: v4.versionId, sha256: v4.sha256,
+    }, admin.principal, true)).report, null, "a newly published candidate never inherits another version's report");
+
     await f.decide(v2);
     assert.equal(await store.get(admin, target), null, "a decided candidate shows no advisory report");
     await assert.rejects(store.put(admin, { ...target, sessionId: "s", content }), { code: "CONFLICT" });

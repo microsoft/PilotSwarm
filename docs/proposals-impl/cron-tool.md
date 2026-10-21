@@ -3,12 +3,18 @@
 ## Status
 
 Implemented, unreleased. Published-package prechecks depend on the executable
-package security prerequisite; this proposal is not release or deployment
+package authorization controls consolidated in the same runtime PR; this proposal is not release or deployment
 authorization. The current API and examples are in
 [SDK apps](../developer/building/sdk-apps.md) and
 [building agent packages](../building-agent-packages.md).
 The review and precheck-selection workflow is in
 [package review setup for executable prechecks](#package-review-setup-for-executable-prechecks).
+
+**Upstream reconciliation:** cron prechecks now run on orchestration **1.0.83**.
+Upstream used 1.0.82 for queued-prompt/FIFO fixes while this PR was open. Its
+exact implementation is frozen under `orchestration_1_0_82/`, with hashes
+checked in tests, and those queue fixes remain in the new active handler.
+Existing executions are not reset or replayed through a different 1.0.82 body.
 
 Package prechecks use manifest-declared generic supervised callbacks, not the
 unreleased legacy `createCronPrechecks`/`cronPrechecks` exports. Arming captures
@@ -18,6 +24,11 @@ occurs in activities, never deterministic replay. Pending content imports
 nothing; denial, timeout, caught failed calls and unfinished calls cannot skip a
 model turn. Approved empty-queue callbacks skip without model hydration.
 Trusted `worker.registerCronPrechecks()` registration needs no new opt-in.
+
+The review fixes also use the selected agent copy's authored name and namespace
+for non-LLM MCP admission, reset the consecutive idle-skip count after ordinary
+work turns, and reject malformed/mismatched PRECHECK acknowledgements rather
+than displaying a successful change with an invalid revision.
 
 ### Executable-only pin integration
 
@@ -458,7 +469,8 @@ it.
   sliced; binary returns only a digest), `read_agent_package_review_audit`
   and `submit_package_review_report`. Every call re-checks that the session
   owner is an unrestricted fleet administrator, never the system principal;
-  otherwise it fails closed. Reviewer calls bypass the inspect-viewer cache,
+  anonymous no-auth operators are refused too. Otherwise it fails closed.
+  Reviewer calls bypass the inspect-viewer cache,
   so ownership changes, demotions and lookup failures apply to the next call.
   All package content is labelled untrusted.
 - **Report storage (migration 0091).** Insert-only table
