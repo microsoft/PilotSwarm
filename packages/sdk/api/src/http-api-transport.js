@@ -141,6 +141,7 @@ export class HttpApiTransport {
     decideAgentPackageReview(input) { return this.api.call("decideAgentPackageReview", { input }); }
     getAgentPackageReviewAudit(versionId) { return this.api.call("getAgentPackageReviewAudit", { versionId }); }
     getAgentPackageReviewDiff(input) { return this.api.call("getAgentPackageReviewDiff", { input }); }
+    getAgentPackageReviewFileDiff(input) { return this.api.call("getAgentPackageReviewFileDiff", { input }); }
     getAgentPackageRuntimeStatus(input) { return this.api.call("getAgentPackageRuntimeStatus", { input }); }
     activateAgentPackageVersion(input) { return this.api.call("activateAgentPackageVersion", { input }); }
     getAgentPackageActivationAudit(packageId) { return this.api.call("getAgentPackageActivationAudit", { packageId }); }

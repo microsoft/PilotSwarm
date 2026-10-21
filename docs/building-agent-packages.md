@@ -587,7 +587,13 @@ running sessions are never affected by scope changes.
   approved version is marked "approved, not active" until it is activated.
   Administrators review a candidate against its baseline with
   `getAgentPackageReviewDiff` (portal **Pending Approval** tab, MCP
-  `get_agent_package_review_diff`). Content approval does not approve external
+  `get_agent_package_review_diff`). The portal shows it like a code review:
+  a files-changed list grouped by review risk, with `+/-` line counts, and the
+  selected file's patch. It asks for the list only (`patches: false`, MCP
+  `files_only`, CLI `review-diff --files`) and loads each file when it is
+  selected with `getAgentPackageReviewFileDiff` (MCP
+  `get_agent_package_review_file_diff`, CLI `review-diff-file`), so a large
+  package stays readable. Content approval does not approve external
   tool backends.
 - Keep fast-changing prompts declarative; keep approved executable components
   thin/stable or use deployment-registered trusted prechecks. Unknown inspection

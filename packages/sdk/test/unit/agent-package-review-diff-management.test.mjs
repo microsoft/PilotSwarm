@@ -101,3 +101,37 @@ test("decision from the diff records the baseline digest; stale or self baseline
         (e) => e.code === "INVALID_REQUEST");
     assert.equal(decided.length, 3);
 });
+
+test("summary mode lists every change with line counts and no patch bodies", async (t) => {
+    const { client, v2 } = fixture(t);
+    const input = { packageId: "pkg", versionId: "v2", sha256: v2.sha256 };
+    const full = await client.getAgentPackageReviewDiff(input, admin, true);
+    const summary = await client.getAgentPackageReviewDiff({ ...input, patches: false }, admin, true);
+    assert.deepEqual(summary.changes.map((c) => c.path), full.changes.map((c) => c.path));
+    assert.deepEqual(summary.summary, full.summary);
+    for (const change of summary.changes) {
+        assert.equal(change.diff, null, change.path);
+        assert.equal(change.patchOmitted, true, change.path);
+    }
+    const q = summary.changes.find((c) => c.path === "tools/q.mjs");
+    assert.deepEqual([q.additions, q.deletions], [1, 1]);
+    assert.deepEqual(full.changes.find((c) => c.path === "tools/q.mjs").additions, 1, "full mode carries the same counts");
+});
+
+test("one file's patch loads on its own, with the same admin and exact-digest checks", async (t) => {
+    const { client, v1, v2 } = fixture(t);
+    const input = { packageId: "pkg", versionId: "v2", sha256: v2.sha256 };
+    const file = await client.getAgentPackageReviewFileDiff({ ...input, path: "tools/q.mjs" }, admin, true);
+    assert.equal(file.candidate.sha256, v2.sha256);
+    assert.equal(file.baseline.sha256, v1.sha256);
+    assert.equal(file.change.path, "tools/q.mjs");
+    assert.equal(file.change.group, "executable");
+    assert.match(file.change.diff, /^-export const a = 1;$/m);
+    assert.match(file.change.diff, /^\+export const a = 2;$/m);
+    assert.deepEqual([file.change.additions, file.change.deletions], [1, 1]);
+    await assert.rejects(client.getAgentPackageReviewFileDiff({ ...input, path: "tools/q.mjs" }, admin, false), (e) => e.code === "FORBIDDEN");
+    await assert.rejects(client.getAgentPackageReviewFileDiff({ ...input, sha256: "f".repeat(64), path: "tools/q.mjs" }, admin, true), (e) => e.code === "CONFLICT");
+    await assert.rejects(client.getAgentPackageReviewFileDiff({ ...input, path: "agents/helper.agent.md" }, admin, true),
+        (e) => e.code === "NOT_FOUND", "an unchanged file has no patch");
+    await assert.rejects(client.getAgentPackageReviewFileDiff({ ...input, path: "" }, admin, true), (e) => e.code === "INVALID_REQUEST");
+});

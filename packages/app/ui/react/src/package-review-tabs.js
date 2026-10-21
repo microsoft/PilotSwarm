@@ -9,13 +9,80 @@ const GROUP_LABELS = {
     declarative: "Declarative (prompts, docs, metadata)",
 };
 const GROUP_ORDER = ["executable", "dependency", "capability", "precheck-policy", "declarative"];
+const STATUS_MARK = { added: "A", removed: "D", modified: "M" };
 
-/** Pure render of a risk-classified review diff; decisions carry the exact digests shown. */
-export function PackageReviewDiffPanel({ diff, busy = false, onDecide, onClose }) {
+function patchLineClass(line) {
+    if (line.startsWith("@@")) return "is-hunk";
+    if (line.startsWith("+++ ") || line.startsWith("--- ")) return "is-meta";
+    if (line.startsWith("+")) return "is-add";
+    if (line.startsWith("-")) return "is-del";
+    return "";
+}
+
+/** One file's patch, line-coloured; hashes only when the content is not shown. */
+function ReviewFilePatch({ change, state, onRetry }) {
+    const h = React.createElement;
+    const counts = Number.isInteger(change.additions)
+        ? h("span", { className: "ps-review-diff__counts" },
+            h("span", { className: "is-add" }, `+${change.additions}`), " ",
+            h("span", { className: "is-del" }, `−${change.deletions}`))
+        : null;
+    const patch = state?.change?.diff ?? change.diff ?? null;
+    let body;
+    if (state?.loading) body = h("p", { role: "status" }, "Loading this file's changes…");
+    else if (state?.error) {
+        body = h("div", { role: "alert" }, `Could not load this file: ${state.error} `,
+            h("button", { type: "button", onClick: () => onRetry?.() }, "Retry"));
+    }
+    else if (patch != null) {
+        body = h("pre", { className: "ps-review-diff__patch" },
+            patch.split("\n").map((line, index) => h("span", { key: index, className: patchLineClass(line) }, line || " ")));
+    } else if (change.patchOmitted) body = h("p", { role: "status" }, "Select the file to load its changes.");
+    else body = h("pre", null, `old ${change.oldSha256 || "-"}\nnew ${change.newSha256 || "-"}`);
+    return h("article", { "aria-label": `Changes in ${change.path}`, className: "ps-review-diff__file" },
+        h("header", null,
+            h("h5", null, `${change.status} ${change.path}`), counts),
+        change.flagged ? h("p", { className: "ps-review-diff__flag" }, `⚠ ${change.flagged}`) : null,
+        change.changedKeys?.length ? h("p", null, `Changed keys: ${change.changedKeys.join(", ")}`) : null,
+        body);
+}
+
+/**
+ * Risk-classified review diff, laid out like a code review: a files-changed
+ * list grouped by risk, and the selected file's patch. With a summary diff
+ * (patches left out) each file's patch is loaded through `loadFile` when it is
+ * selected. Decisions carry the exact digests shown.
+ */
+export function PackageReviewDiffPanel({ diff, busy = false, onDecide, onClose, loadFile, initialPath = null }) {
     const h = React.createElement;
     const c = diff.candidate;
     const s = diff.summary;
     const decision = c.decision;
+    const changes = diff.changes || [];
+    const ordered = GROUP_ORDER.flatMap((group) => changes.filter((change) => change.group === group));
+    const [selectedPath, setSelectedPath] = React.useState(
+        initialPath && changes.some((change) => change.path === initialPath) ? initialPath : ordered[0]?.path ?? null);
+    const [files, setFiles] = React.useState({});
+    const [retry, setRetry] = React.useState(0);
+    const requested = React.useRef(new Set());
+    const mounted = React.useRef(true);
+    React.useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+    const selected = ordered.find((change) => change.path === selectedPath) ?? null;
+    React.useEffect(() => {
+        if (!selected?.patchOmitted || typeof loadFile !== "function") return;
+        const path = selected.path;
+        // Each file is requested once per opened diff; a failure can be retried.
+        if (requested.current.has(path)) return;
+        requested.current.add(path);
+        setFiles((prev) => ({ ...prev, [path]: { loading: true } }));
+        Promise.resolve().then(() => loadFile(path)).then(
+            (change) => { if (mounted.current) setFiles((prev) => ({ ...prev, [path]: { change } })); },
+            (error) => {
+                requested.current.delete(path);
+                if (mounted.current) setFiles((prev) => ({ ...prev, [path]: { error: error?.message || String(error) } }));
+            });
+    }, [selected?.path, selected?.patchOmitted, loadFile, retry]);
+    const retryFile = () => setRetry((value) => value + 1);
     return h("section", { "aria-label": "Package review diff", className: "ps-review-diff" },
         h("h4", null, `Review diff · ${c.name}@${c.semver}`),
         h("p", null, `Candidate ${c.versionId} · sha256:${c.sha256} · review revision ${c.revision} · ${c.scope} · publisher ${c.publisher || "unknown"}`),
@@ -26,18 +93,30 @@ export function PackageReviewDiffPanel({ diff, busy = false, onDecide, onClose }
             : `${s.total} changed · executable ${s.executable} · dependency ${s.dependency} · capability ${s.capability} · precheck policy ${s["precheck-policy"]} · declarative ${s.declarative} · flagged ${s.flagged}`),
         h("p", null, diff.advisory),
         h("pre", null, (diff.inspectionReasons || []).join("\n")),
-        GROUP_ORDER.map((group) => {
-            const changes = diff.changes.filter((change) => change.group === group);
-            if (changes.length === 0) return null;
-            return h("details", { key: group, open: group !== "declarative" },
-                h("summary", null, `${GROUP_LABELS[group]} (${changes.length})`),
-                changes.map((change) => h("article", { key: change.path },
-                    h("h5", null, `${change.status} ${change.path}${change.flagged ? ` ⚠ ${change.flagged}` : ""}`),
-                    change.changedKeys?.length ? h("p", null, `Changed keys: ${change.changedKeys.join(", ")}`) : null,
-                    change.diff != null
-                        ? h("pre", null, change.diff)
-                        : h("pre", null, `old ${change.oldSha256 || "-"}\nnew ${change.newSha256 || "-"}`))));
-        }),
+        ordered.length ? h("div", { className: "ps-review-diff__body" },
+            h("nav", { "aria-label": "Changed files", className: "ps-review-diff__files" },
+                GROUP_ORDER.map((group) => {
+                    const inGroup = ordered.filter((change) => change.group === group);
+                    if (inGroup.length === 0) return null;
+                    return h("div", { key: group, className: "ps-review-diff__group" },
+                        h("div", { className: "ps-review-diff__group-label" }, `${GROUP_LABELS[group]} (${inGroup.length})`),
+                        inGroup.map((change) => h("button", {
+                            key: change.path, type: "button",
+                            className: `ps-review-diff__file-row${change.path === selectedPath ? " is-selected" : ""}`,
+                            "aria-current": change.path === selectedPath ? "true" : undefined,
+                            title: change.flagged ? `${change.path} — ${change.flagged}` : change.path,
+                            onClick: () => setSelectedPath(change.path),
+                        },
+                            h("span", { className: `ps-review-diff__status is-${change.status}` }, STATUS_MARK[change.status] ?? "?"),
+                            h("span", { className: "ps-review-diff__path" }, change.path),
+                            change.flagged ? h("span", { className: "ps-review-diff__flag", "aria-label": "flagged" }, "⚠") : null,
+                            Number.isInteger(change.additions)
+                                ? h("span", { className: "ps-review-diff__counts" },
+                                    h("span", { className: "is-add" }, `+${change.additions}`), " ",
+                                    h("span", { className: "is-del" }, `−${change.deletions}`))
+                                : null)));
+                })),
+            selected ? h(ReviewFilePatch, { change: selected, state: files[selected.path], onRetry: retryFile }) : null) : null,
         diff.truncated ? h("p", null, `${diff.truncated.omitted} more changed files are omitted from this view; they are counted above.`) : null,
         h("div", null,
             h("button", { type: "button", disabled: busy || !["pending", "not_required"].includes(decision),
@@ -101,12 +180,34 @@ export function PackageReviewTabs({ controller, view }) {
         setError(null);
         setContents(null);
         try {
+            // Large reviews load file by file: ask for the file list only when
+            // this server can serve one file's patch.
+            const perFile = typeof controller.transport.getAgentPackageReviewFileDiff === "function";
             const diff = await controller.transport.getAgentPackageReviewDiff({
                 packageId: candidate.packageId, versionId: candidate.versionId, sha256: candidate.sha256,
+                ...(perFile ? { patches: false } : {}),
             });
             if (generation.current === token) setDiffView(diff);
         } catch (e) { if (generation.current === token) setError(e.message || String(e)); }
         finally { if (generation.current === token) setBusy(false); }
+    };
+    const loadDiffFile = async (path) => {
+        const shown = diffView;
+        const c = shown.candidate;
+        const result = await controller.transport.getAgentPackageReviewFileDiff({
+            packageId: c.packageId, versionId: c.versionId, sha256: c.sha256,
+            baselineVersionId: shown.baselineSource === "explicit" ? shown.baseline?.versionId ?? null : null,
+            path,
+        });
+        // A file belongs to the exact candidate and baseline on screen, never
+        // to whatever the review became since the list was loaded.
+        if (result?.candidate?.versionId !== c.versionId || result?.candidate?.sha256 !== c.sha256
+            || (result?.baseline?.sha256 ?? null) !== (shown.baseline?.sha256 ?? null)
+            || (result?.baseline?.versionId ?? null) !== (shown.baseline?.versionId ?? null)
+            || result?.change?.path !== path) {
+            throw new Error("the review changed since this diff was opened; close and reopen it");
+        }
+        return result.change;
     };
     const decideFromDiff = (decision) => {
         const c = diffView.candidate;
@@ -173,7 +274,7 @@ export function PackageReviewTabs({ controller, view }) {
     ];
     const packages = (view.settingsTree || []).filter((row) =>
         row.kind === "package" && (effectiveTab === "shared" ? row.scope === "shared" : row.scope !== "shared"));
-    return React.createElement("section", { className: "ps-admin-detail" },
+    return React.createElement("section", { className: "ps-admin-detail ps-package-catalog" },
         React.createElement("h3", null, "Packages"),
         React.createElement("div", { role: "tablist", "aria-label": "Package catalogs" },
             tabs.map(({ id, label }) => React.createElement("button", {
@@ -186,7 +287,9 @@ export function PackageReviewTabs({ controller, view }) {
                 "Content approval and activation are separate from session permission. Supported tools, declared callbacks and stdio MCP execute in supervised children with fresh admission. Revocation denies first; completion below requires observed process exits. Previously admitted external effects cannot be undone."),
             React.createElement("button", { type: "button", disabled: busy, onClick: refresh }, "Refresh reviews"),
             diffView ? React.createElement(PackageReviewDiffPanel, {
+                key: `${diffView.candidate.versionId}:${diffView.candidate.sha256}:${diffView.baseline?.sha256 ?? "none"}`,
                 diff: diffView, busy, onDecide: decideFromDiff, onClose: () => setDiffView(null),
+                loadFile: typeof controller.transport.getAgentPackageReviewFileDiff === "function" ? loadDiffFile : undefined,
             }) : null,
             reviews.map((r) => React.createElement("article", { key: r.versionId },
                 React.createElement("h4", null, `${r.name}@${r.semver} · artifact content: ${r.decision}`),

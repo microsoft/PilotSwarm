@@ -404,8 +404,15 @@ What shipped, and where it differs from the design text above:
   `executable`. A decision made from the diff carries the baseline it showed,
   and the audit reason records that baseline digest.
 - **Review panel.** `PackageReviewDiffPanel` in the Pending Approval tab shows
-  both digests, the review revision, per-group counts and the grouped diff.
-  Decisions it does not allow are disabled.
+  both digests, the review revision and per-group counts, then a code-review
+  layout: a files-changed list grouped by risk with `+/-` line counts, and
+  the selected file's line-coloured patch. The list comes from the diff with
+  `patches: false`; each file is loaded on selection by
+  `getAgentPackageReviewFileDiff` (admin-only, same exact candidate and
+  baseline; a response for any other identity is refused) and cached. Servers
+  without the per-file operation get the full diff as before. Decisions it
+  does not allow are disabled. The admin tree's **Packages** row returns from
+  a package's detail page to this catalog.
 - **Selector validation.** The orchestration accepts an operator choice only
   from the options it resolved when the schedule was armed. Approval, binding
   and current-owner authorization are re-checked on every fire by the

@@ -6,6 +6,8 @@ on:
       - 'packages/sdk/src/**'
       - 'packages/sdk/test/postgres/**'
       - 'packages/sdk/test/unit/package-runtime-host-key.test.mjs'
+      - 'packages/app/ui/react/src/package-review-tabs.js'
+      - 'packages/app/web/test/e2e/package-review-diff.spec.mjs'
       - 'packages/sdk/package.json'
       - 'package-lock.json'
   push:
@@ -14,6 +16,8 @@ on:
       - 'packages/sdk/src/**'
       - 'packages/sdk/test/postgres/**'
       - 'packages/sdk/test/unit/package-runtime-host-key.test.mjs'
+      - 'packages/app/ui/react/src/package-review-tabs.js'
+      - 'packages/app/web/test/e2e/package-review-diff.spec.mjs'
       - 'packages/sdk/package.json'
       - 'package-lock.json'
   workflow_dispatch:
@@ -57,5 +61,7 @@ jobs:
         run: node --test packages/sdk/test/unit/package-runtime-host-key.test.mjs
       - name: Install the review workflow's browser
         run: npx playwright install --with-deps msedge
+      - name: Review diff browser regressions
+        run: npx playwright test --config packages/app/web/playwright.config.mjs package-review-diff.spec.mjs
       - name: Real PostgreSQL, supervised execution, recovery and browser acceptance
         run: node --test --test-reporter=tap --test-timeout=120000 --test-concurrency=1 packages/sdk/test/postgres/package-runtime.test.mjs

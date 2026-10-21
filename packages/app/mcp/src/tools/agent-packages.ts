@@ -106,15 +106,30 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
             jsonResult(await ctx.mgmt.getAgentPackageReviewAudit(version_id, owner, ctx.admin))));
         server.registerTool("get_agent_package_review_diff", {
             title: "Package Review Diff [admin]",
-            description: "Authenticated administrator: risk-classified diff (executable, dependency, capability, precheck-policy, declarative; flagged content shown as hashes) of an exact candidate digest against a same-package baseline. Review aid only; not an approval or security proof.",
+            description: "Authenticated administrator: risk-classified diff (executable, dependency, capability, precheck-policy, declarative; flagged content shown as hashes) of an exact candidate digest against a same-package baseline. Review aid only; not an approval or security proof. For a large review set files_only and read each file with get_agent_package_review_file_diff.",
             inputSchema: {
                 package_id: z.string().min(1), version_id: z.string().min(1),
                 sha256: z.string().regex(/^[a-f0-9]{64}$/),
                 baseline_version_id: z.string().min(1).optional().describe("Explicit baseline; defaults to newest approved, then active, then none"),
+                files_only: z.boolean().optional().describe("List changed files with +/- line counts but no patch text"),
             },
-        }, withToolErrors(async ({ package_id, version_id, sha256, baseline_version_id }) => jsonResult(
+        }, withToolErrors(async ({ package_id, version_id, sha256, baseline_version_id, files_only }) => jsonResult(
             await ctx.mgmt.getAgentPackageReviewDiff({
                 packageId: package_id, versionId: version_id, sha256, baselineVersionId: baseline_version_id ?? null,
+                ...(files_only === true ? { patches: false } : {}),
+            }, owner, ctx.admin))));
+        server.registerTool("get_agent_package_review_file_diff", {
+            title: "Package Review File Diff [admin]",
+            description: "Authenticated administrator: one changed file's classified patch for the same exact candidate and baseline as get_agent_package_review_diff.",
+            inputSchema: {
+                package_id: z.string().min(1), version_id: z.string().min(1),
+                sha256: z.string().regex(/^[a-f0-9]{64}$/),
+                path: z.string().min(1).max(1024).describe("Changed file path as listed by get_agent_package_review_diff"),
+                baseline_version_id: z.string().min(1).optional(),
+            },
+        }, withToolErrors(async ({ package_id, version_id, sha256, path, baseline_version_id }) => jsonResult(
+            await ctx.mgmt.getAgentPackageReviewFileDiff({
+                packageId: package_id, versionId: version_id, sha256, baselineVersionId: baseline_version_id ?? null, path,
             }, owner, ctx.admin))));
         server.registerTool("get_agent_package_runtime_status", {
             title: "Package Runtime Fencing [admin]",

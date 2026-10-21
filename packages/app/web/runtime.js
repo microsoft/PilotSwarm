@@ -970,6 +970,7 @@ export class PortalRuntime {
             case "decideAgentPackageReview":
             case "getAgentPackageReviewAudit":
             case "getAgentPackageReviewDiff":
+            case "getAgentPackageReviewFileDiff":
             case "getAgentPackageRuntimeStatus":
             case "activateAgentPackageVersion":
             case "getAgentPackageActivationAudit":
@@ -995,6 +996,14 @@ export class PortalRuntime {
                     return this.transport.getAgentPackageReviewDiff({
                         packageId: input.packageId, versionId: input.versionId, sha256: input.sha256,
                         baselineVersionId: input.baselineVersionId ?? null,
+                        ...(input.patches === false ? { patches: false } : {}),
+                    }, owner, true);
+                }
+                if (method === "getAgentPackageReviewFileDiff") {
+                    const input = safeParams.input || {};
+                    return this.transport.getAgentPackageReviewFileDiff({
+                        packageId: input.packageId, versionId: input.versionId, sha256: input.sha256,
+                        baselineVersionId: input.baselineVersionId ?? null, path: input.path,
                     }, owner, true);
                 }
                 if (method === "getAgentPackageActivationAudit") {

@@ -173,9 +173,12 @@ import {
 import { readAgentPackageTarGz } from "./agent-package-format.js";
 import {
     buildAgentPackageReviewDiff,
+    buildAgentPackageReviewFileChange,
+    REVIEW_DIFF_ADVISORY,
     reviewBaselineAuditNote,
     selectReviewBaseline,
     type AgentPackageReviewDiff,
+    type AgentPackageReviewFileDiff,
 } from "./agent-package-review-diff.js";
 import fs from "node:fs";
 import os from "node:os";
@@ -5283,12 +5286,60 @@ export class PilotSwarmManagementClient {
      * candidate against a baseline of the same package. Both artifacts are
      * verified against their recorded digests; the response echoes the
      * candidate digest, review revision and baseline digest that a decision
-     * from this view must carry.
+     * from this view must carry. `patches: false` lists every change with its
+     * line counts but no patch text; load each file with
+     * getAgentPackageReviewFileDiff.
      */
     async getAgentPackageReviewDiff(
-        input: { packageId: string; versionId: string; sha256: string; baselineVersionId?: string | null },
+        input: { packageId: string; versionId: string; sha256: string; baselineVersionId?: string | null; patches?: boolean },
         owner: AgentPrincipal | null, isAdmin: boolean,
     ): Promise<AgentPackageReviewDiff> {
+        const sides = await this._loadAgentPackageReviewSides(input, owner, isAdmin);
+        const { candidate } = sides;
+        return buildAgentPackageReviewDiff({
+            candidate: {
+                packageId: candidate.packageId, versionId: candidate.versionId, sha256: candidate.sha256,
+                semver: candidate.semver, decision: candidate.decision, active: sides.candidateActive,
+                revision: candidate.revision, name: candidate.name, scope: candidate.scope, publisher: candidate.publisher,
+            },
+            baseline: sides.baseline,
+            baselineSource: sides.baselineSource,
+            candidateEntries: sides.candidateEntries,
+            baselineEntries: sides.baselineEntries,
+            inspectionReasons: candidate.inspection?.reasons ?? ["Legacy artifact: no verified inspection"],
+            includePatches: input?.patches !== false,
+        });
+    }
+
+    /**
+     * Authenticated administrator: one changed file's classified patch for
+     * the same exact candidate and baseline as getAgentPackageReviewDiff, so
+     * a large review loads file by file. NOT_FOUND when the path is unchanged.
+     */
+    async getAgentPackageReviewFileDiff(
+        input: { packageId: string; versionId: string; sha256: string; baselineVersionId?: string | null; path: string },
+        owner: AgentPrincipal | null, isAdmin: boolean,
+    ): Promise<AgentPackageReviewFileDiff> {
+        if (!input || typeof input.path !== "string" || !input.path || input.path.length > 1024) {
+            throw Object.assign(new Error("A changed file path is required"), { code: "INVALID_REQUEST" });
+        }
+        const sides = await this._loadAgentPackageReviewSides(input, owner, isAdmin);
+        const { candidate, baseline } = sides;
+        return {
+            candidate: { packageId: candidate.packageId, versionId: candidate.versionId, sha256: candidate.sha256 },
+            baseline: baseline ? { versionId: baseline.versionId, sha256: baseline.sha256 } : null,
+            baselineSource: sides.baselineSource,
+            change: buildAgentPackageReviewFileChange({
+                candidateEntries: sides.candidateEntries, baselineEntries: sides.baselineEntries, path: input.path,
+            }),
+            advisory: REVIEW_DIFF_ADVISORY,
+        };
+    }
+
+    private async _loadAgentPackageReviewSides(
+        input: { packageId: string; versionId: string; sha256: string; baselineVersionId?: string | null },
+        owner: AgentPrincipal | null, isAdmin: boolean,
+    ) {
         this._ensureStarted();
         if (isAdmin !== true || !owner?.provider || !owner.subject) {
             throw Object.assign(new Error("Authenticated administrator required"), { code: "FORBIDDEN" });
@@ -5327,18 +5378,7 @@ export class PilotSwarmManagementClient {
         const candidateEntries = await read(candidate);
         const baselineEntries = baseline ? await read(baseline) : [];
         const candidateRef = refs.find((ref) => ref.versionId === candidate.versionId);
-        return buildAgentPackageReviewDiff({
-            candidate: {
-                packageId: candidate.packageId, versionId: candidate.versionId, sha256: candidate.sha256,
-                semver: candidate.semver, decision: candidate.decision, active: candidateRef?.active === true,
-                revision: candidate.revision, name: candidate.name, scope: candidate.scope, publisher: candidate.publisher,
-            },
-            baseline,
-            baselineSource: source,
-            candidateEntries,
-            baselineEntries,
-            inspectionReasons: candidate.inspection?.reasons ?? ["Legacy artifact: no verified inspection"],
-        });
+        return { candidate, baseline, baselineSource: source, candidateEntries, baselineEntries, candidateActive: candidateRef?.active === true };
     }
     async getAgentPackageRuntimeStatus(input: import("./agent-package-authorization.js").ExecutablePackageIdentity,
         owner: AgentPrincipal | null, isAdmin: boolean) {
