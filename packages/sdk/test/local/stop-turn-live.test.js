@@ -23,21 +23,13 @@ import { withClient, createManagementClient, defineTool } from "../helpers/local
 import { assert, assertEqual } from "../helpers/assertions.js";
 import { stopTurnQueueName } from "../../src/types.js";
 import { pinSessionStartVersion, sessionOrchestrationVersion } from "../helpers/pinned-start.mjs";
+import { waitFor, waitForStoppedTurn } from "../helpers/stop-turn-readiness.mjs";
 
 const TIMEOUT = 240_000;
 const getEnv = useSuiteEnv(import.meta.url);
 
 function sleep(ms) {
     return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function waitFor(predicate, timeoutMs, stepMs = 250) {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-        if (await predicate()) return true;
-        await sleep(stepMs);
-    }
-    return predicate();
 }
 
 function createBlockingTool(tracker) {
@@ -98,12 +90,9 @@ async function testStopsRunningTurnMidFlight(env, { legacy = false } = {}) {
                 assert(Number.isFinite(result.controlSeq), "the accepted Stop reports its control seq");
             }
 
-            const idled = await waitFor(async () => {
-                const row = await mgmt._catalog.getSession(session.sessionId);
-                return row?.state === "idle";
-            }, 30_000);
+            const stoppedReady = await waitForStoppedTurn(mgmt, session.sessionId, result.turnIndex, 30_000);
             const row = await mgmt._catalog.getSession(session.sessionId);
-            assert(idled, `CMS state should settle to idle after stop, got ${row?.state}`);
+            assert(stoppedReady, `Stop readiness requires CMS idle and persisted session.turn_stopped for turn ${result.turnIndex}; CMS state: ${row?.state}`);
             assert(row.state !== "cancelled" && row.state !== "completed" && row.state !== "failed",
                 `stop must not change lifecycle state (got ${row.state})`);
             assertEqual(row.activeTurnIndex, null, "active_turn_index should be cleared after stop");
