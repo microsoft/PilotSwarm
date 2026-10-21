@@ -87,7 +87,7 @@ export function registerTurnControlActivity(runtime: any, name: keyof typeof TUR
 }
 
 /**
- * Cron prechecks (1.0.82): runCronPrecheck goes only to workers that declare
+ * Cron prechecks (1.0.83): runCronPrecheck goes only to workers that declare
  * this tag. An older worker lacks the activity. Every worker that declares it
  * also declares the handoff, workspace and turn-control tags.
  */

@@ -1154,7 +1154,7 @@ export function createSessionManagerProxy(
         computeCronAtNextFire(schedule: CronAtSchedule, afterUtcMs: number, lastOccurrenceKey?: string) {
             return ctx.scheduleActivity("computeCronAtNextFire", { schedule, afterUtcMs, lastOccurrenceKey });
         },
-        /** 1.0.82: ask the worker's registered cron precheck whether this interval cron wake-up needs a model turn. */
+        /** 1.0.83: ask the worker's registered cron precheck whether this interval cron wake-up needs a model turn. */
         runCronPrecheck(input: CronPrecheckInput) {
             return routeCronPrecheckActivity(ctx.scheduleActivity("runCronPrecheck", input));
         },
@@ -6167,7 +6167,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         return computeCronAtNextFire(input.schedule, input.afterUtcMs, input.lastOccurrenceKey);
     });
 
-    // -- runCronPrecheck (1.0.82) ------------------------------
+    // -- runCronPrecheck (1.0.83) ------------------------------
     // Runs the worker's registered precheck named by an interval cron
     // schedule. The activity result is recorded in history, so the
     // orchestration's skip/run branch replays deterministically. Fail open:

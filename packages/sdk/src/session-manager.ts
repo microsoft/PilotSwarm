@@ -1,7 +1,7 @@
 import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, capabilityOwnership, parseCapabilityRef, resolveCapabilitySource, workspaceCapabilityHits, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
 import { bindCapabilities, nextCapabilityState, validatePackageRequest } from "./capability-runtime.js";
 import type { CronPrecheckInput } from "./cron-precheck.js";
-import type { MCPServerConfig } from "./mcp-loader.js";
+import type { MCPServerConfig, McpAllowlistAgent } from "./mcp-loader.js";
 import { baseAgentInstructions, resolveBaseAgentPolicy } from "./base-agent-policy.js";
 import { NativeTaskAccess, NATIVE_SYNCHRONOUS_TOOLS, NATIVE_TASK_NAMES, type NativeTaskTools } from "./native-task-policy.js";
 import { linkSkillFolders, resolveWorkspaceAdoption, RepoAgentAccess, type AdoptionSource } from "./workspace-repo-agents.js";
@@ -1325,9 +1325,7 @@ export class SessionManager {
         const originalMcp = this._boundMcpServers(config, copy);
         const selections = this.sessionCatalog?.getSessionCapabilities
             ? (await this.sessionCatalog.getSessionCapabilities(input.sessionId)).selections : [];
-        const agent = copy && config.boundAgentName
-            ? { name: config.boundAgentName, namespace: copy.namespace, packageId: copy.packageId, packageScope: copy.packageScope }
-            : null;
+        const agent = this._mcpAllowlistAgent(copy);
         const originalTools = this._resolveTools({ tools: this.sessionApplicationTools.get(input.sessionId) }, {
             ...config,
             toolNames: [...new Set([
@@ -2552,8 +2550,7 @@ export class SessionManager {
         const capabilityCatalog = new CapabilityCatalog(getSources, this.factStore, this.workerDefaults.reservedFactPrefixes ?? []);
         const originalMcp = { ...effectiveMcpServers };
         const originalTools = [...userTools, ...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools, ...providerTools, ...featureTools];
-        const capabilityAgent = boundAgentCopy ? { name: config.boundAgentName!, namespace: (boundAgentCopy as any).namespace,
-            packageId: boundAgentCopy.packageId, packageScope: (boundAgentCopy as any).packageScope } : null;
+        const capabilityAgent = this._mcpAllowlistAgent(boundAgentCopy);
         const readState = async (): Promise<CapabilityState> => this.sessionCatalog?.getSessionCapabilities
             ? this.sessionCatalog.getSessionCapabilities(sessionId) : { revision: 0, selections: [] };
         const getOwner = async () => this.sessionCatalog
@@ -3993,6 +3990,16 @@ export class SessionManager {
             // shared providers and change nothing.
             return { userId: null, isAdmin: false };
         }
+    }
+
+    private _mcpAllowlistAgent(copy: AgentCopyEntry | null | undefined): McpAllowlistAgent | null {
+        // A qualified binding selects a copy; it is not its authored leaf name.
+        return copy?.descriptor ? {
+            name: copy.descriptor.name,
+            namespace: copy.namespace,
+            packageId: copy.packageId,
+            packageScope: copy.packageScope,
+        } : null;
     }
 
     private async _resolveInspectViewer(sessionId: string): Promise<InspectViewer> {

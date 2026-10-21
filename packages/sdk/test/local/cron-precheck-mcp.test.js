@@ -220,6 +220,7 @@ describe("non-LLM MCP precheck calls", () => {
 describe("precheck session MCP grants without model hydration", () => {
     function setup(extra = {}) {
         const shared = { kind: "app-agent", prompt: "", namespace: "kit", packageId: "shared", packageScope: "shared",
+            descriptor: { name: "poller", layerId: "shared", layerKind: "agent", type: "app", schemaVersion: "1", version: "1.0.0" },
             packageVersionId: "v1", packageSha256: "a".repeat(64) };
         const personal = { kind: "app-agent", prompt: "", packageId: "personal", packageScope: "user", packageOwner: owner };
         const defaults = {
@@ -314,6 +315,26 @@ describe("precheck session MCP grants without model hydration", () => {
         catalog.getSession.mockResolvedValue({ owner });
         select([]);
         expect(await manager.getCronPrecheckMcpServers({ ...input, agent })).not.toHaveProperty("selected_queue");
+    });
+
+    it("uses the authored identity for a namespace-qualified precheck's selected MCP grants", async () => {
+        const source = {
+            id: "selected", name: "extra", source: "deployment", revision: "v1", scope: "shared",
+            artifacts: [], tools: new Map(),
+            mcpServers: { admitted: { ...serverConfig, allowedAgents: ["kit:poller"] } },
+        };
+        const { manager, catalog, defaults } = setup({ getCapabilitySources: () => [source] });
+        defaults.agentPromptLookup["kit:poller"] = defaults.agentPromptLookup.poller;
+        catalog.packageReviews.getSessionBinding = async () => ({
+            ...input.packageIdentity, agentName: "kit:poller", revision: 1, allowed: true,
+        });
+        catalog.getSessionCapabilities.mockResolvedValue({
+            revision: 1, selections: [{ sourceId: "selected", tools: [], mcpServers: ["admitted"] }],
+        });
+        expect(await manager.getCronPrecheckMcpServers({
+            ...input, agent: { ...agent, boundAgentName: "kit:poller" },
+        })).toHaveProperty("admitted");
+        expect(manager.getOrCreate).not.toHaveBeenCalled();
     });
 
     it("actual dispatch denies a tool revoked after callback admission, even when the callback catches it", async () => {

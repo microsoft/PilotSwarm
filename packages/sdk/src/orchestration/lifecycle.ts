@@ -38,6 +38,7 @@ import {
     addCancelledMessageIds,
     touchRecentClientMessageIds,
     type DurableSessionRuntime,
+    type PendingChildDigest,
 } from "./state.js";
 import {
     appendSystemContext,
@@ -304,7 +305,7 @@ export function applyCronAction(
     let pin: Partial<CronSchedule>;
     if (!operator) {
         pin = {
-            // 1.0.82: the schedule's own precheck, if the cron call resolved one.
+            // 1.0.83: the schedule's own precheck, if the cron call resolved one.
             ...(typeof action.precheck === "string" && action.precheck ? { precheck: action.precheck } : {}),
             ...(typeof action.precheck === "string" && action.precheck && typeof action.precheckPackageId === "string" && action.precheckPackageId
                 ? { precheckPackageId: action.precheckPackageId } : {}),
@@ -528,6 +529,42 @@ export function bufferChildUpdate(
     }
 }
 
+/**
+ * 1.0.82 (issue 192, defect E review): give back a digest that a prompt took
+ * and that was never queued (the FIFO was full, or the prompt was cancelled
+ * in the same pass), merged with the pending one. Per child, the newer entry
+ * wins unless the older one is a lifecycle update and the newer one is not,
+ * as in bufferChildUpdate. `chronology` orders entries by when they arrived
+ * (higher is newer); entries it ranks equal count the pending one as newer.
+ * The merged updates are kept in that order.
+ */
+export function restorePendingChildDigest(
+    runtime: DurableSessionRuntime,
+    digest: PendingChildDigest,
+    chronology: (entry: PendingChildDigest["updates"][number]) => number = () => 0,
+): void {
+    const current = runtime.state.pendingChildDigest;
+    if (!current) {
+        runtime.state.pendingChildDigest = digest;
+        return;
+    }
+    const byChild = new Map<string, PendingChildDigest["updates"][number]>();
+    for (const entry of [...digest.updates, ...current.updates]) {
+        const held = byChild.get(entry.sessionId);
+        if (!held) {
+            byChild.set(entry.sessionId, entry);
+            continue;
+        }
+        const [older, newer] = chronology(entry) >= chronology(held) ? [held, entry] : [entry, held];
+        byChild.set(entry.sessionId, childUpdateRank(newer.updateType) >= childUpdateRank(older.updateType) ? newer : older);
+    }
+    runtime.state.pendingChildDigest = {
+        startedAtMs: Math.min(digest.startedAtMs, current.startedAtMs),
+        ...(digest.ready || current.ready ? { ready: true } : {}),
+        updates: [...byChild.values()].sort((a, b) => chronology(a) - chronology(b)),
+    };
+}
+
 function childUpdateRank(updateType: string): number {
     switch (updateType) {
         case "failed":
@@ -693,6 +730,8 @@ export function buildContinueInput(
         ...(state.workspaceRetryScheduleMs?.length ? { workspaceRetryScheduleMs: [...state.workspaceRetryScheduleMs] } : {}),
         ...(state.interruptedCronTimer ? { interruptedCronTimer: state.interruptedCronTimer } : {}),
         ...(state.pendingChildDigest ? { pendingChildDigest: state.pendingChildDigest } : {}),
+        ...(state.deferredChildProbes?.length
+            ? { deferredChildProbes: state.deferredChildProbes.map((entry) => ({ ...entry })) } : {}),
         ...(state.pendingShutdown ? { pendingShutdown: state.pendingShutdown } : {}),
         // Multi-writer attribution posture (security model): carried so a
         // shared session stays attributed across continue-as-new. Omitted
@@ -1263,9 +1302,20 @@ function* captureModelSwitchInterruptedTimer(runtime: DurableSessionRuntime, new
             runtime.state.activeTimer = null;
             return;
         }
+        case "agent-poll":
+            runtime.ctx.traceInfo(`[orch-cmd] ${notePrefix}; clearing active ${timer.type} timer`);
+            runtime.state.activeTimer = null;
+            // 1.0.82: the agent wait ends with its poll. Kept, it held the
+            // continue or grounding prompt with nothing left to settle the
+            // wait, and each execution continued as new without running it.
+            // A graceful shutdown keeps its wait.
+            if (!runtime.state.pendingShutdown && runtime.state.waitingForAgentIds) {
+                runtime.ctx.traceInfo(`[orch-cmd] ${notePrefix}; ending the agent wait so the next turn runs`);
+                runtime.state.waitingForAgentIds = null;
+            }
+            return;
         case "cron_at":
         case "idle":
-        case "agent-poll":
         case "input-grace":
         case "workspace_retry":
             runtime.ctx.traceInfo(`[orch-cmd] ${notePrefix}; clearing active ${timer.type} timer`);

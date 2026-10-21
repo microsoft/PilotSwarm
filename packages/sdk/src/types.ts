@@ -924,24 +924,24 @@ export interface PilotSwarmSessionInfo {
 export interface CronSchedule {
     intervalSeconds: number;
     reason: string;
-    /** 1.0.82: name of the cron precheck this schedule asks before each wake-up. */
+    /** 1.0.83: name of the cron precheck this schedule asks before each wake-up. */
     precheck?: string;
-    /** 1.0.82: the agent package that exports `precheck`; absent for a worker-registered precheck. */
+    /** 1.0.83: the agent package that exports `precheck`; absent for a worker-registered precheck. */
     precheckPackageId?: string;
     precheckIdentity?: import("./agent-package-authorization.js").ExecutablePackageIdentity;
     precheckBindingRevision?: number;
-    /** 1.0.82: consecutive wake-ups the precheck skipped since this schedule's last model turn. */
+    /** 1.0.83: consecutive wake-ups the precheck skipped since this schedule's last model turn. */
     precheckSkips?: number;
-    /** 1.0.82: bumped on every arm and operator precheck change; the operator CAS token. */
+    /** 1.0.83: bumped on every arm and operator precheck change; the operator CAS token. */
     revision?: number;
     /**
-     * 1.0.82: an operator's PRECHECK selection (`null` = None). While set it
+     * 1.0.83: an operator's PRECHECK selection (`null` = None). While set it
      * wins over the agent's own choice when the agent re-arms the schedule.
      */
     operatorPrecheck?: { name: string | null; actor: string; reason: string };
-    /** 1.0.82: prechecks the operator may select, resolved when the schedule was armed. */
+    /** 1.0.83: prechecks the operator may select, resolved when the schedule was armed. */
     precheckOptions?: import("./cron-precheck.js").CronPrecheckOption[];
-    /** 1.0.82: last broken precheck outcome streak, cleared on a healthy answer. */
+    /** 1.0.83: last broken precheck outcome streak, cleared on a healthy answer. */
     precheckHealth?: { outcome: import("./cron-precheck.js").CronPrecheckOutcome; since: number; count: number };
 }
 
@@ -1193,6 +1193,17 @@ export interface OrchestrationInput {
             observedAtMs: number;
         }>;
     };
+    /**
+     * 1.0.82: child updates whose status lookup was put off because user work
+     * was queued (the lookup would have delayed it). Settled from the listing
+     * of children taken after the next turn. One entry per child, latest
+     * update type.
+     */
+    deferredChildProbes?: Array<{
+        sessionId: string;
+        updateType: string;
+        expectingReport?: boolean;
+    }>;
     /** Graceful shutdown state carried across continueAsNew while child sessions drain. */
     pendingShutdown?: {
         mode: "done" | "cancel" | "delete";

@@ -3,7 +3,7 @@
 ## Unreleased
 
 **Security gate (not deployment-ready).** Package-owned cron prechecks depend on
-the separate executable-package approval and worker-fencing prerequisite.
+the executable-package approval and worker-fencing controls in this same change.
 Current-owner/bound-copy checks now run before every callback, including
 no-tools callbacks; denied admissions cannot record idle skips. Cron dispatch
 uses resolved startup metadata and tools rather than the original input.
@@ -29,7 +29,7 @@ in by name, first match wins: the agent calls
 `cron(seconds, reason, precheck="<name>")`; the agent definition binds the
 cron reason in frontmatter (`cronPrechecks: - reasonPrefix: … precheck: …`);
 or the session was created with a default (`createSession({ cronPrecheck })`).
-On orchestration 1.0.82, when such a schedule fires and the wake-up carries
+On orchestration 1.0.83, when such a schedule fires and the wake-up carries
 nothing else, the precheck runs first; a `skip` answer re-arms the schedule
 without hydrating the session or calling the model. Decisions are recorded as
 `session.cron_precheck` events; a `shadow: true` registration records without
@@ -37,7 +37,8 @@ skipping. Unavailable names, failures and timeouts run the model turn as
 before, and the cron tool rejects an explicit name that is not available. A
 schedule without a precheck behaves exactly as today. The activity is routed by
 a new worker capability tag, so older workers never receive it during a
-rolling deploy. Orchestration 1.0.81 is frozen.
+rolling deploy. Upstream orchestration 1.0.82 remains frozen with its FIFO
+ordering fixes; 1.0.83 adds prechecks without changing existing replay.
 
 **Prechecks can call MCP directly, without a model.** The callback receives
 `callMcpTool(server, tool, arguments)` backed by the session's current
@@ -52,6 +53,23 @@ Stateful HTTP sessions are explicitly terminated with a bounded cleanup request,
 and cancellation also settles SSE connections that have not received an endpoint.
 Cron-reason bindings accept inline comments without incorporating them into the
 reason. Invalid package precheck export shapes are rejected, not silently ignored.
+
+## 0.8.5 — 2026-10-20
+
+**Restricted MCP activation for named agents.** Optional MCP admission now uses
+the selected agent copy's authored name, raw namespace and verified package
+provenance, rather than treating its qualified durable binding as a leaf name.
+Both documented deployment ACL forms work for namespaced agents; shared/private
+package ownership rules, default exclusions and direct authored grants remain
+unchanged. Saved source IDs, revisions and references stay intact across session
+continuation and worker restart. See
+[restricted deployment MCP servers](docs/building-agent-packages.md).
+
+**Configurable Foundry deployment authentication.** Azure stamps can opt into
+`FOUNDRY_AUTH_MODE=entra` to disable account-key authentication, grant the worker
+workload identity access, and stage Foundry providers without API keys. Account-key
+authentication remains the compatibility default. See the
+[deployment reference](deploy/scripts/README.md).
 
 ## 0.8.4 — 2026-10-17
 

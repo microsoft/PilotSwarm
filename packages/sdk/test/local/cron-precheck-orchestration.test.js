@@ -1,5 +1,5 @@
 /**
- * Cron prechecks in orchestration 1.0.82: an interval cron schedule that names
+ * Cron prechecks in orchestration 1.0.83: an interval cron schedule that names
  * a worker-registered precheck asks it first, and a `skip` re-arms the
  * schedule without running a model turn. A schedule without a precheck is
  * unchanged. Driven against the generator with a scripted context; no worker,
@@ -7,7 +7,7 @@
  */
 import { describe, expect, it, vi } from "vitest";
 import { createRuntime } from "../../src/orchestration/runtime.ts";
-import { processTimer } from "../../src/orchestration/turn.ts";
+import { processTimer, processPrompt } from "../../src/orchestration/turn.ts";
 import { applyCronAction, buildContinueInput, handleCommand } from "../../src/orchestration/lifecycle.ts";
 import { cronPrecheckStatusFields, PilotSwarmManagementClient } from "../../src/management-client.ts";
 
@@ -87,7 +87,7 @@ function harness(overrides = {}, resolvedAgent = null) {
         blobEnabled: false,
         cronSchedule: { ...SCHEDULE },
         ...overrides,
-    }, { currentVersion: "1.0.82", latestVersion: "1.0.82" }));
+    }, { currentVersion: "1.0.83", latestVersion: "1.0.83" }));
     calls.length = 0;
     const fire = (...answers) => {
         precheckAnswers.push(...answers);
@@ -111,10 +111,11 @@ function harness(overrides = {}, resolvedAgent = null) {
             .find(value => value?.id === id);
         return stored;
     };
-    return { runtime, calls, turns, prechecks, fire, events, eventData, command, statuses, now: () => now };
+    const prompt = text => drive(processPrompt(runtime, text, false));
+    return { runtime, calls, turns, prechecks, fire, events, eventData, command, prompt, statuses, now: () => now };
 }
 
-describe("1.0.82 cron precheck", () => {
+describe("1.0.83 cron precheck", () => {
     it("a schedule without a precheck runs exactly as before, with no precheck activity", () => {
         const h = harness({ cronSchedule: { intervalSeconds: 300, reason: SCHEDULE.reason } });
         h.fire({ skip: true, outcome: "skip" });
@@ -167,6 +168,18 @@ describe("1.0.82 cron precheck", () => {
         expect(h.prechecks).toHaveLength(1);
         expect(h.turns).toHaveLength(1);
         expect(h.runtime.state.cronSchedule.precheckSkips).toBeUndefined();
+    });
+
+    it("a real interactive or carried-work turn resets the consecutive idle-skip count", () => {
+        for (const carried of [false, true]) {
+            const h = harness({ cronSchedule: { ...SCHEDULE, precheckSkips: 3 },
+                ...(carried ? { runtimeModelNotice: "The model changed." } : {}) });
+            if (carried) h.fire();
+            else h.prompt("Inspect the new work");
+            expect(h.turns).toHaveLength(1);
+            expect(h.prechecks).toHaveLength(0);
+            expect(h.runtime.state.cronSchedule.precheckSkips).toBe(0);
+        }
     });
 
     it("fails open when the precheck activity throws", () => {
@@ -315,7 +328,7 @@ describe("management setSessionCronPrecheck", () => {
     const input = { precheck: "pkg-queue", expectedRevision: 2, reason: "use the package check", actor: "owner@example.com" };
 
     it("sends the command with the stamped actor and returns the orchestration's answer", async () => {
-        const mgmt = client({ result: { ok: true, precheck: "pkg-queue", revision: 3 } });
+        const mgmt = client({ result: { ok: true, precheck: "pkg-queue", revision: 3, appliesOn: "next_fire" } });
         await expect(mgmt.setSessionCronPrecheck("s1", input)).resolves.toEqual({ ok: true, precheck: "pkg-queue", revision: 3, appliesOn: "next_fire" });
         expect(mgmt.sent[0]).toMatchObject({ sessionId: "s1", command: { cmd: "set_cron_precheck", args: input } });
     });
@@ -335,9 +348,18 @@ describe("management setSessionCronPrecheck", () => {
         expect(mgmt.sent).toHaveLength(0);
         await expect(mgmt.setSessionCronPrecheck("s1", { ...input, precheck: null })).resolves.toMatchObject({ status: "pending" });
     });
+
+    it("never reports success for a missing or mismatched command result", async () => {
+        const valid = { ok: true, precheck: input.precheck, revision: 3, appliesOn: "next_fire" };
+        for (const result of [undefined, {}, { ...valid, ok: false }, { ...valid, revision: undefined },
+            { ...valid, revision: 9 }, { ...valid, precheck: null }, { ...valid, appliesOn: undefined }]) {
+            await expect(client({ result }).setSessionCronPrecheck("s1", input))
+                .rejects.toMatchObject({ code: "INVALID_RESPONSE" });
+        }
+    });
 });
 
-describe("1.0.82 operator PRECHECK selection", () => {
+describe("1.0.83 operator PRECHECK selection", () => {
     const IDENTITY = { packageId: "pkg", versionId: "v2", sha256: "b".repeat(64) };
     const OPTIONS = [
         { name: "queue", kind: "worker" },
