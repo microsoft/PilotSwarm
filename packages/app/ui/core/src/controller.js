@@ -1,6 +1,6 @@
 import { applyNativeTaskSnapshot } from "./native-tasks.js";
 import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./commands.js";
-import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
+import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey, canvasLegacyLabelKey, canvasEntryNeedsLegacyLabel } from "./state.js";
 import { parseAgentSourceLink } from "./repo-links.js";
 import { importPackageFilesFromLink, readImportedPackageName } from "./repo-import.js";
 import {
@@ -2629,6 +2629,12 @@ export class PilotSwarmUiController {
                 filter: defaultOwnerFilterForPrincipal(authContext?.principal ?? null),
             });
         }
+        // The canvas app transition (issue 181): this portal's own switch.
+        // A transport without it is off.
+        this.dispatch({
+            type: "canvas/legacyMode",
+            legacyMode: typeof this.transport.getCanvasLegacyMode === "function" && this.transport.getCanvasLegacyMode() === true,
+        });
         const logConfig = typeof this.transport.getLogConfig === "function"
             ? this.transport.getLogConfig()
             : null;
@@ -2670,6 +2676,7 @@ export class PilotSwarmUiController {
         // Canvas snapshot reads still in flight write nothing after stop.
         this.canvasStopGeneration = (this.canvasStopGeneration || 0) + 1;
         this.canvasRereads?.clear();
+        this.canvasLegacyLabelReads?.clear();
         this._featureRefreshSerial = (this._featureRefreshSerial || 0) + 1;
         this._featureUserSerial = (this._featureUserSerial || 0) + 1;
         for (const timer of this._liveTurnIdleTimers?.values() || []) clearTimeout(timer);
@@ -2719,7 +2726,10 @@ export class PilotSwarmUiController {
         // A folder row can never be "gone" from the session catalog: it is not
         // a session. Only sessions/groupsLoaded may remove one.
         if (isSessionGroupRowId(sessionId)) return;
-        for (let slot = 1; slot <= 5; slot++) this.canvasRereads?.delete(canvasPrefKey(sessionId, slot));
+        for (let slot = 1; slot <= 5; slot++) {
+            this.canvasRereads?.delete(canvasPrefKey(sessionId, slot));
+            this.canvasLegacyLabelReads?.delete(canvasPrefKey(sessionId, slot));
+        }
         // An older in-flight catalog read must not undo an access revocation.
         this.sessionRefreshSeq = (this.sessionRefreshSeq || 0) + 1;
         if (this.activeSessionSubscriptionId === sessionId) {
@@ -6081,6 +6091,7 @@ export class PilotSwarmUiController {
             trust: event?.data?.trust,
             pageSha256: event?.data?.pageSha256,
             app: event?.data?.app,
+            legacy: event?.data?.legacy,
         });
 
         const state = this.getState();
@@ -6213,6 +6224,7 @@ export class PilotSwarmUiController {
                     trust: top?.data?.trust,
                     pageSha256: top?.data?.pageSha256,
                     app: top?.data?.app,
+                    legacy: top?.data?.legacy,
                 });
             }
             // The latest data tick per slot is that page's cold-load state —
@@ -6280,6 +6292,70 @@ export class PilotSwarmUiController {
         } catch {
             // Leave snapshotLoaded unset — the next selection retries.
         }
+    }
+
+    /**
+     * The canvas app transition (issue 181): ask the server, once, whether a
+     * canvas page that is not the owner's or an agent's own is handled as on
+     * main (getCanvasRevisionLabel). Only while this portal's switch is on,
+     * and only for a draw that recorded no trust (drawn before the registry)
+     * or flagged an old app's page: the frame never trusts the flag alone.
+     *
+     * One read per session, slot, revision and recorded page (a later draw
+     * or other bytes is another key). A missing operation, an error, an
+     * answer for another revision or page, or no page hash is "not legacy":
+     * the page stays sealed. No loop: `force` (the user's Retry) is the only
+     * way to read the same key again.
+     */
+    async ensureCanvasLegacyLabel(sessionId, slot = 1, { force = false } = {}) {
+        const state = this.getState();
+        const slotKey = canvasPrefKey(sessionId, slot);
+        const entry = state.canvas?.bySessionId?.[slotKey];
+        if (!sessionId || !canvasEntryNeedsLegacyLabel(entry, state.canvas?.legacyMode)) return;
+        const key = canvasLegacyLabelKey(entry);
+        if (!this.canvasLegacyLabelReads) this.canvasLegacyLabelReads = new Map();
+        // One record per slot: the key it is for (a new key replaces it).
+        const prior = this.canvasLegacyLabelReads.get(slotKey);
+        if (prior?.key === key && !force) {
+            // Already read: if the stored label was dropped since, put the
+            // same answer back rather than read the key again.
+            if (prior.label && entry.legacyLabel?.key !== key) {
+                this.dispatch({ type: "canvas/legacyLabel", sessionId, slot, key, label: prior.label });
+            }
+            return prior.promise;
+        }
+        if (force) this.dispatch({ type: "canvas/legacyLabel", sessionId, slot, key, label: null });
+        const rev = Number(entry.latestRev) || 0;
+        const recorded = typeof entry.pageSha256 === "string" ? entry.pageSha256 : null;
+        const stopGeneration = this.canvasStopGeneration || 0;
+        const promise = (async () => {
+            // Yield first: the record below is set before any outcome lands,
+            // even when the transport has no label operation.
+            await null;
+            let answer = null;
+            try {
+                answer = typeof this.transport.getCanvasRevisionLabel === "function"
+                    ? await this.transport.getCanvasRevisionLabel({ sessionId, slot })
+                    : null;
+            } catch {
+                answer = null;
+            }
+            if ((this.canvasStopGeneration || 0) !== stopGeneration) return;
+            if (this.canvasLegacyLabelReads.get(slotKey)?.promise !== promise) return;
+            const sha = typeof answer?.pageSha256 === "string" && /^[0-9a-f]{64}$/.test(answer.pageSha256) ? answer.pageSha256 : null;
+            // "Not legacy" is an answer; anything this portal cannot confirm
+            // (no answer, another revision, a legacy answer without the exact
+            // page) is a failure: sealed too, with the user's Retry.
+            const confirmed = Boolean(answer) && Number(answer?.rev) === rev;
+            const legacy = confirmed && answer.legacy === true && sha !== null && (recorded === null || recorded === sha);
+            const failed = !confirmed || (answer.legacy === true && !legacy);
+            const label = { rev, legacy, failed, pageSha256: legacy ? sha : null };
+            record.label = label;
+            this.dispatch({ type: "canvas/legacyLabel", sessionId, slot, key, label });
+        })();
+        const record = { key, promise, label: null };
+        this.canvasLegacyLabelReads.set(slotKey, record);
+        return promise;
     }
 
     /**

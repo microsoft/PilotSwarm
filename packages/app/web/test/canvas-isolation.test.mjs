@@ -127,10 +127,15 @@ test("every surface that frames an untrusted page uses the one contract, never a
     assert.match(WEB_APP, /crossOwner\s*\?\s*fetchCrossOwnerCanvas\(/);
     assert.match(WEB_APP, /function fetchCrossOwnerCanvas[\s\S]*?createIsolationWrapperUrl\(\)[\s\S]*?buildIsolatedInnerHtml\(/);
     assert.match(WEB_APP, /payload\.type === "pse-wrapper-left"/, "the canvas stops relaying when the wrapper reports its page replaced");
-    // Files preview: canvas slot files always go through the wrapper.
+    // Files preview: canvas slot files go through the wrapper, except a page
+    // the transition label confirms (and then only with its exact bytes).
     assert.match(WEB_APP, /const isolated = isCanvasSlotFilename\(filename\)/);
-    assert.match(WEB_APP, /isolated\s*\?\s*fetchCrossOwnerCanvas\(controller, sessionId, filename\)/);
-    assert.match(WEB_APP, /sandbox: isolated \? "allow-scripts" :/);
+    assert.match(WEB_APP, /const wrapped = \(\) => fetchCrossOwnerCanvas\(controller, sessionId, filename\)/);
+    assert.match(WEB_APP, /\(isolated\s*(?:\/\/[^\n]*\n\s*)?\?\s*\(previewDirectSha\s*\?\s*fetchArtifactHtmlObjectUrl\(controller, sessionId, filename, false, false, previewDirectSha\)\s*\.then\(\(url\) => \(\{ url, wrapped: false \}\), \(\) => wrapped\(\)\)\s*:\s*wrapped\(\)\)/,
+        "a slot file is framed directly only with the bytes the label named; anything else is wrapped");
+    assert.match(WEB_APP, /const previewDirectSha = previewLegacy\.direct \? previewLegacy\.pageSha256 : null;/);
+    assert.match(WEB_APP, /sandbox: frameWrapped \? "allow-scripts" :/);
+    assert.match(WEB_APP, /const \[frameWrapped, setFrameWrapped\] = React\.useState\(isolated\);/, "a slot file starts wrapped");
     // Share viewer: another user's app goes through the wrapper; relay is anchored.
     const share = APP.slice(APP.indexOf("function CanvasShareView"), APP.indexOf("export default function App"));
     assert.match(share, /doc\?\.trust !== "owner" && doc\?\.trust !== "agent"[\s\S]*?createIsolationWrapperUrl\(\)[\s\S]*?buildIsolatedInnerHtml\(html\)/, "the share viewer wraps every page not classified owner or agent (fail closed)");
@@ -516,13 +521,46 @@ test("the session canvas waits for the trust, then frames once; sealed after the
     assert.equal(CANVAS_TRUST_HOLD_MS, 3000);
     const WEB_APP = read("../../ui/react/src/web-app.js");
     const frame = WEB_APP.slice(WEB_APP.indexOf("function CanvasFrame("), WEB_APP.indexOf("\n}\n", WEB_APP.indexOf("function CanvasFrame(")));
-    assert.match(frame, /const holding = !trustKnown && !sealedFallback;/);
+    assert.match(frame, /const decided = trustKnown && !legacy\.pending;/, "the transition label is waited for under the same hold");
+    assert.match(frame, /const holding = !decided && !sealedFallback;/);
     assert.match(frame, /setTimeout\(\(\) => setSealedKey\(holdKey\), CANVAS_TRUST_HOLD_MS\)/, "the hold ends sealed, never direct");
     assert.match(frame, /if \(!controller \|\| !sessionId \|\| !latestRev \|\| holding\) return undefined;/, "no fetch while the trust is unknown");
     assert.match(frame, /const trust = trustKnown \? trustEntry\.trust : "cross-owner";/, "an unknown trust frames sealed");
-    assert.match(frame, /const crossOwner = !\(trust === "owner" \|\| trust === "agent"\);/, "only owner and agent frame directly, whatever the state holds");
+    assert.match(frame, /const crossOwner = !\(trust === "owner" \|\| trust === "agent" \|\| legacy\.direct\);/, "only owner, agent or a label-confirmed page frame directly, whatever the state holds");
+    assert.match(frame, /const pageSha256 = legacy\.direct\s*\? legacy\.pageSha256/, "a legacy page is framed only with the bytes its label named");
     assert.match(frame, /!fetchingRef\.current && canvasHashRebind\(previous, request, /, "a late matching hash re-binds, with no fetch in flight");
     assert.match(frame, /\[controller, sessionId, slot, latestRev, retryTick, panelKeys, crossOwner, pageSha256, holding\]/);
     assert.match(frame, /holding && !live && !staging[\s\S]{0,400}?"Loading canvas…"/, "a placeholder, only when nothing is on screen");
-    assert.match(frame, /sealedFallback && !loadError[\s\S]{0,400}?shown sealed[\s\S]{0,600}?canvas\/snapshotInvalidate[\s\S]{0,200}?ensureCanvasSnapshot/, "the sealed fallback says so and can read the trust again");
+    assert.match(frame, /\(sealedFallback \|\| legacy\.failed\) && !loadError[\s\S]{0,400}?shown sealed[\s\S]{0,600}?canvas\/snapshotInvalidate[\s\S]{0,200}?ensureCanvasSnapshot[\s\S]{0,120}?if \(legacy\.needs\) legacy\.retry\(\);/, "the sealed fallback says so and can read the trust and the label again");
+});
+
+test("the canvas app transition: the label decides, never the flag; owner and agent pages read nothing", () => {
+    const WEB_APP = read("../../ui/react/src/web-app.js");
+    const hook = WEB_APP.slice(WEB_APP.indexOf("function useCanvasLegacyDecision("), WEB_APP.indexOf("function CanvasFrame("));
+    assert.match(hook, /const needs = canvasEntryNeedsLegacyLabel\(entry, legacyMode\);/);
+    assert.match(hook, /const label = needs && entry\?\.legacyLabel\?\.key === key \? entry\.legacyLabel : null;/, "a label for another revision or page is not used");
+    assert.match(hook, /const direct = Boolean\(label\?\.legacy && label\.rev === Number\(entry\?\.latestRev\) && typeof label\.pageSha256 === "string"\);/);
+    assert.match(hook, /ensureCanvasLegacyLabel\?\.\(sessionId, slot, \{ force: true \}\)/, "only Retry reads the same key again");
+    // The Files preview waits for the label under the same hold, then wraps.
+    const preview = WEB_APP.slice(WEB_APP.indexOf("function HtmlArtifactPreviewPanel("), WEB_APP.indexOf("function HtmlArtifactSourcePanel("));
+    assert.match(preview, /setTimeout\(\(\) => setPreviewHoldOver\(previewHoldKey\), CANVAS_TRUST_HOLD_MS\)/);
+    assert.match(preview, /if \(previewPending\) return undefined;/);
+    // The hold covers an unclassified page too (review L3 F1), so a cold open
+    // never starts a wrapper before the draw is read.
+    assert.match(preview, /const previewHoldKey = previewUnclassified \|\| previewLegacy\.pending/);
+    // Unconfirmed: said so, with Retry (review L3 F2).
+    assert.match(preview, /const previewUnconfirmed = previewTransition && \(\(Boolean\(previewHoldKey\) && !previewPending\) \|\| previewLegacy\.failed\);/);
+    assert.match(preview, /"data-preview-sealed": "unconfirmed"[\s\S]{0,300}?onClick: retryPreview/);
+    assert.match(preview, /const retryPreview = \(\) => \{[\s\S]{0,400}?canvas\/snapshotInvalidate[\s\S]{0,200}?ensureCanvasSnapshot[\s\S]{0,120}?if \(previewLegacy\.needs\) previewLegacy\.retry\(\);/);
+    // The canvas load-error Retry reads a transition label again too (review L3 F3).
+    const frame = WEB_APP.slice(WEB_APP.indexOf("function CanvasFrame("), WEB_APP.indexOf("\n}\n", WEB_APP.indexOf("function CanvasFrame(")));
+    assert.match(frame, /autoRetryRef\.current = \{ rev: 0, used: false \};\s*\/\/[^\n]*\n[\s\S]{0,200}?if \(legacy\.needs\) \{[\s\S]{0,200}?ensureCanvasSnapshot[\s\S]{0,80}?legacy\.retry\(\);[\s\S]{0,60}?\}\s*setLoadError\(null\);/);
+    // The share view needs no client change: the server sends a legacy page as
+    // text\/html, and the viewer frames text\/html directly as on main.
+    const APP = read("../src/App.jsx");
+    const share = APP.slice(APP.indexOf("function CanvasShareView"), APP.indexOf("export default function App"));
+    assert.doesNotMatch(share, /canvasLegacy|getCanvasRevisionLabel/, "the share viewer asks nothing itself");
+    // A MoA panel's controller is never start()ed: it takes the switch itself.
+    const MOA = read("../src/moa/MoaWorkspace.jsx");
+    assert.match(MOA, /child\.dispatch\(\{ type: "canvas\/legacyMode", legacyMode: typeof transport\.getCanvasLegacyMode === "function" && transport\.getCanvasLegacyMode\(\) === true \}\);/);
 });

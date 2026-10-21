@@ -211,6 +211,7 @@ unrecognized value is `off`.
 | A legacy page: agent byte reads (`read_artifact`, copy, `read_canvas`, publish from a slot, private-bytes `fromArtifact`) | allowed | refused when they are another owner's app |
 | `page` label on KV values and actions | none for owner, agent or a legacy page; `cross-owner` (with the app) for another user's app; `unknown` when the page's origin cannot be confirmed | the same, without the legacy case |
 | A legacy page: share link | the page itself (text/html, CSP sandbox), as on main | by trust |
+| A legacy page: session canvas, Master of Agents panel, Files preview | framed directly, as on main, with the exact bytes the portal's label names (below) | by trust |
 | `getCanvasRevisionLabel` | `{rev, trust, app?, legacy, pageSha256?}` from one read of the latest draw, judged now | the same with `legacy: false` |
 | Bootstrap `canvasLegacyMode` | `true` | `false` |
 
@@ -254,6 +255,46 @@ clock: every PR 195 draw records `trust`, but during a rolling deploy a
 worker still on the previous release draws without it. Such a worker is
 compatibility-trusted during the rollout: its draws count as case (b)
 while the switch is on.
+
+**In the browser** (`ui/core` `ensureCanvasLegacyLabel`, `web-app.js`
+`useCanvasLegacyDecision`), the portal's bootstrap `canvasLegacyMode` is the
+switch; a transport without it is off. The draw-time flag never frames a
+page by itself:
+
+- `owner` and `agent` pages frame directly, as today, with no label read,
+  even when flagged;
+- a page whose draw recorded no trust, or that the draw flagged as an old
+  app's page, waits for one `getCanvasRevisionLabel` answer under the same
+  3 s hold as an unknown trust. It is framed directly only when that answer
+  is for the revision on screen, says `legacy`, names a well-formed
+  `pageSha256`, and that sha is the one the draw recorded (when it recorded
+  one). The frame then fetches only those bytes: other bytes are refused;
+- "not legacy" is an answer: the page is wrapped as another user's page,
+  with no notice (for example, an old app's card changed after the draw);
+- no answer (a transport without the operation, an error, another
+  revision, a legacy answer without the exact page) seals the page, with
+  the "couldn't confirm" notice and Retry, as after the hold;
+- every other page (another user's registry app) reads nothing.
+
+The answer is kept per session, slot, revision and recorded page sha: one
+read for each, never retried in a loop; only the user's Retry reads the same
+key again, and a later draw or other bytes is a new key. The cost is one
+extra request per such canvas revision, before its first frame; owner,
+agent and registry pages pay nothing. The Files preview of `canvas.html` …
+`canvas5.html` uses the same answer: directly with the named bytes, else
+the wrapper (it never runs a page with the session). While the switch is
+on it frames nothing until the slot's draw event and, when needed, its
+label are read, under the same 3 s hold; past the hold, or with a failed
+label, it shows the wrapper with the same notice and Retry. The canvas
+pane's load-error Retry also reads a needed label again, since the label
+may name other bytes than the file now holds. Master of Agents
+panels take the switch from their own transport. Known effect, as on the
+server: while the old catalog cannot be read (a facts-store outage), old
+apps' pages are not legacy, so their labels say so and they are wrapped,
+and a label that cannot be read at all seals the page until Retry. The
+share viewer needs no client change: the server serves a legacy page as
+`text/html`, which the viewer frames as on main. The native TUI renders no
+canvas, so nothing changes there.
 
 A card counts as an old app (`CanvasLegacyCatalog.isExemptSha256`) only if
 all of these hold:

@@ -1,5 +1,5 @@
 import { normalizeSessionSortMode, normalizeSessionUsage } from "../../core/src/session-sort.js";
-import { canvasKey as canvasStateKey } from "../../core/src/state.js";
+import { canvasKey as canvasStateKey, canvasEntryNeedsLegacyLabel, canvasLegacyLabelKey } from "../../core/src/state.js";
 import { ChatCallLine } from "./chat-call-line.js";
 import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
@@ -3302,6 +3302,57 @@ function HtmlArtifactPreviewPanel({
     // another user's app, and the canvas pane, not this preview, is where a
     // page runs with the session. Other HTML artifacts keep today's preview.
     const isolated = isCanvasSlotFilename(filename);
+    // The canvas app transition (issue 181): while this portal's switch is
+    // on, a slot file whose latest page the server labels legacy (drawn
+    // before the registry, or an old app's page) is previewed as on main,
+    // directly and only with the exact bytes the label names. Owner and
+    // agent pages keep the wrapper here, as in r5: the preview never runs a
+    // page with the session.
+    const previewSlot = isolated ? (Number(/^canvas([2-5]?)\.html$/i.exec(String(filename))?.[1]) || 1) : 1;
+    const previewLegacyMode = useControllerSelector(controller, React.useCallback((state) => state.canvas?.legacyMode === true, []));
+    const previewTransition = isolated && previewLegacyMode;
+    const previewEntry = useControllerSelector(controller, React.useCallback(
+        (state) => (previewTransition ? state.canvas?.bySessionId?.[canvasStateKey(sessionId, previewSlot)] ?? null : null),
+        [previewTransition, sessionId, previewSlot]));
+    // The session's draw events have been read (the memo lives on slot 1's key).
+    const previewSnapshotLoaded = useControllerSelector(controller, React.useCallback(
+        (state) => (previewTransition ? state.canvas?.bySessionId?.[sessionId]?.snapshotLoaded === true : false),
+        [previewTransition, sessionId]));
+    React.useEffect(() => {
+        if (previewTransition && sessionId && !previewSnapshotLoaded) controller?.ensureCanvasSnapshot?.(sessionId)?.catch?.(() => {});
+    }, [controller, previewTransition, sessionId, previewSnapshotLoaded]);
+    const previewLegacy = useCanvasLegacyDecision(controller, sessionId, previewSlot,
+        previewEntry && typeof previewEntry.trust === "string" ? previewEntry : null);
+    const previewDirectSha = previewLegacy.direct ? previewLegacy.pageSha256 : null;
+    // The slot's page is not classified yet: its draw events are still being
+    // read, or the list named a revision ahead of its draw event. A slot the
+    // read found nothing for is not waited for (wrapped, as in r5).
+    const previewUnclassified = previewTransition && typeof previewEntry?.trust !== "string"
+        && (!previewSnapshotLoaded || Number(previewEntry?.latestRev) > 0);
+    // The same hold as the canvas frame, over classification and label
+    // alike, so the first frame is the final one; past it, the wrapper, said
+    // so, with Retry. `previewRetry` starts a fresh hold.
+    const [previewRetry, setPreviewRetry] = React.useState(0);
+    const previewHoldKey = previewUnclassified || previewLegacy.pending
+        ? `${sessionId || ""}|${filename || ""}|${previewEntry?.latestRev || 0}|${previewRetry}`
+        : null;
+    const [previewHoldOver, setPreviewHoldOver] = React.useState(null);
+    React.useEffect(() => {
+        if (!previewHoldKey) return undefined;
+        const timer = setTimeout(() => setPreviewHoldOver(previewHoldKey), CANVAS_TRUST_HOLD_MS);
+        return () => clearTimeout(timer);
+    }, [previewHoldKey]);
+    const previewPending = Boolean(previewHoldKey) && previewHoldOver !== previewHoldKey;
+    const previewUnconfirmed = previewTransition && ((Boolean(previewHoldKey) && !previewPending) || previewLegacy.failed);
+    const retryPreview = () => {
+        // Read the draw events and the label again (the user's Retry is the
+        // only re-read of the same label), under a fresh hold.
+        controller?.dispatch?.({ type: "canvas/snapshotInvalidate", sessionId });
+        controller?.ensureCanvasSnapshot?.(sessionId)?.catch?.(() => {});
+        if (previewLegacy.needs) previewLegacy.retry();
+        setPreviewRetry((n) => n + 1);
+    };
+    const [frameWrapped, setFrameWrapped] = React.useState(isolated);
     const isolatedHtmlRef = React.useRef(null);
     const isolatedFramesRef = React.useRef(new Set());
     React.useEffect(() => {
@@ -3338,17 +3389,26 @@ function HtmlArtifactPreviewPanel({
         setError(null);
         isolatedHtmlRef.current = null;
         if (mode !== "rendered" || !controller || !sessionId || !filename) return undefined;
+        // Wait for the transition label rather than frame twice.
+        if (previewPending) return undefined;
         let cancelled = false;
         let created = null;
+        const wrapped = () => fetchCrossOwnerCanvas(controller, sessionId, filename)
+            .then(({ url, html }) => { isolatedHtmlRef.current = html; return { url, wrapped: true }; });
         (isolated
-            ? fetchCrossOwnerCanvas(controller, sessionId, filename).then(({ url, html }) => { isolatedHtmlRef.current = html; return url; })
-            : fetchArtifactHtmlObjectUrl(controller, sessionId, filename))
-            .then((url) => {
+            // Other bytes than the label judged: the wrapper, as for any slot file.
+            ? (previewDirectSha
+                ? fetchArtifactHtmlObjectUrl(controller, sessionId, filename, false, false, previewDirectSha)
+                    .then((url) => ({ url, wrapped: false }), () => wrapped())
+                : wrapped())
+            : fetchArtifactHtmlObjectUrl(controller, sessionId, filename).then((url) => ({ url, wrapped: false })))
+            .then(({ url, wrapped: isWrapped }) => {
                 created = url;
                 if (cancelled) {
                     URL.revokeObjectURL(url);
                     return;
                 }
+                setFrameWrapped(isWrapped);
                 setFrameUrl(url);
             })
             .catch((err) => { if (!cancelled) setError(err?.message || String(err)); });
@@ -3356,7 +3416,7 @@ function HtmlArtifactPreviewPanel({
             cancelled = true;
             if (created) URL.revokeObjectURL(created);
         };
-    }, [controller, sessionId, filename, mode, isolated]);
+    }, [controller, sessionId, filename, mode, isolated, previewDirectSha, previewPending, previewRetry]);
 
     const deepLink = buildArtifactLinkUrl(sessionId, filename);
     const actions = chromeless ? null : React.createElement(React.Fragment, null,
@@ -3421,12 +3481,12 @@ function HtmlArtifactPreviewPanel({
                                 : undefined,
                         src: frameUrl,
                         title: filename || "HTML artifact",
-                        ref: isolated
+                        ref: frameWrapped
                             ? ((el) => { if (el) isolatedFramesRef.current.add(el); else isolatedFramesRef.current.forEach((f) => { if (!f.isConnected) isolatedFramesRef.current.delete(f); }); })
                             : undefined,
                         // No allow-same-origin — see the block comment above.
                         // An isolated canvas file gets no popups either.
-                        sandbox: isolated ? "allow-scripts" : "allow-scripts allow-popups allow-popups-to-escape-sandbox",
+                        sandbox: frameWrapped ? "allow-scripts" : "allow-scripts allow-popups allow-popups-to-escape-sandbox",
                         // Opaque origin ≠ "self", so the autoplay policy would
                         // silently mute an interactive artifact (same fix the
                         // canvas frame carries).
@@ -3443,6 +3503,13 @@ function HtmlArtifactPreviewPanel({
 
     // The measured host wraps the rendered branch only — in Source mode there
     // is no document whose layout could go stale, so nothing observes width.
+    // The canvas app transition: a slot file whose page could not be
+    // confirmed is shown sealed, and says so (a chip over the frame).
+    const sealedNotice = mode === "rendered" && previewUnconfirmed && frameUrl
+        ? React.createElement("div", { key: "sealed", className: "ps-canvas-load-error", role: "status", "data-preview-sealed": "unconfirmed" },
+            React.createElement("span", null, "Couldn't confirm whose page this is, so it is shown sealed: no network, no pop-ups."),
+            React.createElement("button", { type: "button", className: "ps-artifact-pane-btn", onClick: retryPreview }, "Retry"))
+        : null;
     const hosted = mode === "rendered"
         ? React.createElement("div", {
             ref: frameHostRef,
@@ -3450,7 +3517,7 @@ function HtmlArtifactPreviewPanel({
             // while fitting; without clipping, that overflow would hand the host
             // a horizontal scrollbar for content that is already fully visible.
             className: `ps-html-preview-host${fitActive || zoom !== 1 ? " is-fitting" : ""}`,
-        }, body)
+        }, body, sealedNotice)
         : body;
 
     return React.createElement(Panel, { title, color, focused, theme, actions, className: "ps-html-preview" }, hosted);
@@ -8232,6 +8299,34 @@ function canvasWorkspaceApprovalLines(approval) {
     return lines;
 }
 
+/**
+ * The canvas app transition (issue 181): this portal's decision for one canvas
+ * entry. Owner and agent pages need none (no read). A page whose draw recorded
+ * no trust, or flagged an old app's page, is framed directly only when the
+ * server's label (one read per revision and page, see
+ * controller.ensureCanvasLegacyLabel) says legacy for this exact revision,
+ * and only with the page bytes that label names. `pending` while the label is
+ * being read; `failed` when it could not be confirmed (sealed, with Retry).
+ */
+function useCanvasLegacyDecision(controller, sessionId, slot, entry) {
+    const legacyMode = useControllerSelector(controller, React.useCallback((state) => state.canvas?.legacyMode === true, []));
+    const needs = canvasEntryNeedsLegacyLabel(entry, legacyMode);
+    const key = needs ? canvasLegacyLabelKey(entry) : null;
+    const label = needs && entry?.legacyLabel?.key === key ? entry.legacyLabel : null;
+    React.useEffect(() => {
+        if (needs && !label) controller?.ensureCanvasLegacyLabel?.(sessionId, slot)?.catch?.(() => {});
+    }, [controller, sessionId, slot, needs, key, label]);
+    const direct = Boolean(label?.legacy && label.rev === Number(entry?.latestRev) && typeof label.pageSha256 === "string");
+    return {
+        needs,
+        pending: needs && !label,
+        failed: Boolean(label?.failed),
+        direct,
+        pageSha256: direct ? label.pageSha256 : null,
+        retry: () => controller?.ensureCanvasLegacyLabel?.(sessionId, slot, { force: true })?.catch?.(() => {}),
+    };
+}
+
 function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible = true, focusOnPromote = false, dataRev = 0, dataPayload = null, dataPatch = null, onPanelKey = null }) {
     // Trust and page hash come from the canvas state for THIS session and
     // slot, never from the caller: every surface that mounts a canvas (main,
@@ -8246,20 +8341,28 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
     // frame already on screen. If the trust has not come after
     // CANVAS_TRUST_HOLD_MS, the page is framed sealed, as another user's page
     // (fail closed).
+    // The canvas app transition: a page drawn before the registry, or an old
+    // app's page, waits for the server's label too, under the same hold.
+    const legacy = useCanvasLegacyDecision(controller, sessionId, slot, trustKnown ? trustEntry : null);
+    const decided = trustKnown && !legacy.pending;
     const holdKey = `${sessionId || ""}|${slot}|${latestRev || 0}`;
     const [sealedKey, setSealedKey] = React.useState(null);
-    const sealedFallback = !trustKnown && sealedKey === holdKey;
-    const holding = !trustKnown && !sealedFallback;
+    const sealedFallback = !decided && sealedKey === holdKey;
+    const holding = !decided && !sealedFallback;
     React.useEffect(() => {
-        if (trustKnown || !sessionId || !latestRev) return undefined;
+        if (decided || !sessionId || !latestRev) return undefined;
         const timer = setTimeout(() => setSealedKey(holdKey), CANVAS_TRUST_HOLD_MS);
         return () => clearTimeout(timer);
-    }, [trustKnown, holdKey, sessionId, latestRev]);
+    }, [decided, holdKey, sessionId, latestRev]);
     const trust = trustKnown ? trustEntry.trust : "cross-owner";
-    const pageSha256 = trustKnown && typeof trustEntry.pageSha256 === "string" ? trustEntry.pageSha256 : null;
-    // Only "owner" and "agent" frame a page directly; every other value is
-    // another user's page (fail closed here too, not only in the reducer).
-    const crossOwner = !(trust === "owner" || trust === "agent");
+    // A legacy page is framed only with the bytes the label judged.
+    const pageSha256 = legacy.direct
+        ? legacy.pageSha256
+        : (trustKnown && typeof trustEntry.pageSha256 === "string" ? trustEntry.pageSha256 : null);
+    // Only "owner" and "agent", or a page this portal's label confirms as
+    // legacy, frame directly; every other value is another user's page (fail
+    // closed here too, not only in the reducer).
+    const crossOwner = !(trust === "owner" || trust === "agent" || legacy.direct);
     // Canvas app registry: the inner page text per wrapper URL, handed over on
     // the wrapper's ready message; and each frame's revision, sent with every
     // canvas-ws call so the server can refuse a stale page.
@@ -8877,7 +8980,7 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
             ? React.createElement("div", { className: "ps-canvas-blank", role: "status", "data-canvas-hold": "trust" },
                 React.createElement("p", { className: "ps-canvas-blank-title" }, "Loading canvas…"))
             : null,
-        sealedFallback && !loadError
+        (sealedFallback || legacy.failed) && !loadError
             ? React.createElement("div", { className: "ps-canvas-load-error", role: "status", "data-canvas-sealed": "unconfirmed" },
                 React.createElement("span", null, "Couldn't confirm whose page this is, so it is shown sealed: no network, no pop-ups."),
                 React.createElement("button", {
@@ -8885,9 +8988,11 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
                     className: "ps-artifact-pane-btn",
                     onClick: () => {
                         // Read the draw event again; when it comes, the page
-                        // stays sealed (another user's) or opens (yours).
+                        // stays sealed (another user's) or opens (yours). A
+                        // transition label is read again only here.
                         controller?.dispatch?.({ type: "canvas/snapshotInvalidate", sessionId });
                         controller?.ensureCanvasSnapshot?.(sessionId)?.catch?.(() => {});
+                        if (legacy.needs) legacy.retry();
                     },
                 }, "Retry"))
             : null,
@@ -8905,7 +9010,19 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
                 React.createElement("button", {
                     type: "button",
                     className: "ps-artifact-pane-btn",
-                    onClick: () => { autoRetryRef.current = { rev: 0, used: false }; setLoadError(null); setRetryTick((t) => t + 1); },
+                    onClick: () => {
+                        autoRetryRef.current = { rev: 0, used: false };
+                        // A transition page: the label may name other bytes
+                        // than the file now holds; read the draw and the
+                        // label again too (the user's Retry is the only re-read).
+                        if (legacy.needs) {
+                            controller?.dispatch?.({ type: "canvas/snapshotInvalidate", sessionId });
+                            controller?.ensureCanvasSnapshot?.(sessionId)?.catch?.(() => {});
+                            legacy.retry();
+                        }
+                        setLoadError(null);
+                        setRetryTick((t) => t + 1);
+                    },
                 }, "Retry"))
             : null);
 }

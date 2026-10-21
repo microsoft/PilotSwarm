@@ -193,7 +193,7 @@ function rpc(method, SESSIONS, PROFILE_SETTINGS = {}) {
 // sessions list does (sessionIndex -> [{ slot, name, latestRev, sizeBytes }]):
 // the portal then knows a canvas revision before it reads that revision's
 // draw event, which is the cold-open path.
-export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 0, systemEvery = 0, assistantMarkdown = null, groups = [], themeId = null, groupMembers = {}, admin = false, parents = {}, canvases = {} } = {}) {
+export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 0, systemEvery = 0, assistantMarkdown = null, groups = [], themeId = null, groupMembers = {}, admin = false, parents = {}, canvases = {}, canvasLegacyMode = false } = {}) {
     assertFreshBundle();
     const SESSIONS = makeSessions(Math.max(1, sessionCount), groupMembers, parents)
         .map((row, i) => (Array.isArray(canvases[i]) && canvases[i].length ? { ...row, canvases: canvases[i] } : row));
@@ -305,6 +305,8 @@ export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 
                 // enough for the read-only surfaces these tests exercise.
                 body = { ok: true, ...rpc(pathname.split("/").pop(), SESSIONS, themeId ? { themeId } : {}) };
             }
+            // The canvas app transition (issue 181): this portal's switch.
+            if (canvasLegacyMode && /\/bootstrap$/.test(pathname)) body = { ...body, canvasLegacyMode: true };
             res.writeHead(200, { "content-type": "application/json" });
             res.end(JSON.stringify(body));
             return;

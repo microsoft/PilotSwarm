@@ -255,9 +255,14 @@ changed after a page was drawn stops exempting that page, and a worker and
 portal that disagree apply the stricter rules. An edited copy of an old
 app is a new page: it follows the registry's rules.
 
+In the browser, such a page waits a moment for the portal's answer before
+it is shown, once per drawing; owners' and agents' own pages never wait for
+it. If the answer cannot be read, the page is shown sealed and says so;
+Retry asks again.
+
 Known effect: if the old catalog cannot be read (for example while the
 facts store is unavailable), nothing is exempt, so old pages ask for
-approval and are labelled again until it can be read. A catalog too large
+approval, are labelled and are shown sealed again until it can be read. A catalog too large
 to read in full keeps exempting the old cards it did read, and never one it
 did not.
 

@@ -14,15 +14,41 @@
  *
  * Run: npx vitest run test/local/canvas-legacy-bridge.test.js
  */
-import { describe, it } from "vitest";
+import { afterAll, describe, it } from "vitest";
+import pg from "pg";
 import { createHash } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
 import { withScriptedModel } from "../helpers/scripted-workers.js";
-import { CanvasLegacyCatalog, CANVAS_LEGACY_CUTOFF_MARGIN_MS, canvasLegacyCatalogFor, PilotSwarmManagementClient } from "../../src/index.ts";
+import {
+    CanvasLegacyCatalog, CANVAS_LEGACY_CUTOFF_MARGIN_MS, canvasLegacyCatalogFor, PilotSwarmManagementClient,
+    resolveStorageConfig, getRuntimeStorageProvider,
+} from "../../src/index.ts";
 
 const TIMEOUT = 240_000;
-const getEnv = useSuiteEnv(import.meta.url);
+
+// Defined before useSuiteEnv, so it runs after the suite's own cleanup
+// (after hooks run in reverse order): nothing this file created may be left
+// behind. A leftover schema is named in the failure and dropped.
+let suiteEnv = null;
+afterAll(async () => {
+    if (!suiteEnv) return;
+    const client = new pg.Client({ connectionString: suiteEnv.store });
+    await client.connect();
+    try {
+        const names = [suiteEnv.duroxideSchema, suiteEnv.cmsSchema, suiteEnv.factsSchema];
+        const { rows } = await client.query("SELECT nspname FROM pg_namespace WHERE nspname = ANY($1)", [names]);
+        for (const row of rows) await client.query(`DROP SCHEMA IF EXISTS "${row.nspname}" CASCADE`);
+        assert(rows.length === 0, `schemas left after the suite's cleanup: ${rows.map((r) => r.nspname).join(", ")}`);
+    } finally {
+        await client.end();
+    }
+});
+const getEnvRaw = useSuiteEnv(import.meta.url);
+const getEnv = async () => {
+    suiteEnv = await getEnvRaw();
+    return suiteEnv;
+};
 
 const ALICE = { provider: "test", subject: "legacy-bridge-alice", email: "alice@example.invalid", displayName: "Alice" };
 const BOB = { provider: "test", subject: "legacy-bridge-bob", email: "bob@example.invalid", displayName: "Bob" };
@@ -209,6 +235,54 @@ async function latestCanvasDraw(mgmt, sessionId) {
     return [...events].sort((a, b) => Number(b.data?.rev) - Number(a.data?.rev))[0]?.data ?? {};
 }
 
+/**
+ * The portal side: a management client with its OWN session catalog and
+ * fact store (so its old catalog is its own, as in a separate portal
+ * process), on the worker's storage and schemas, and the worker's artifact
+ * store. No duroxide client: these tests need none, and a started client's
+ * duroxide provider is never closed by stop(), so its pool can recreate the
+ * duroxide schema after the suite drops it (one ps_test schema was left).
+ * `close` releases everything it opened.
+ */
+async function portalSide(env, worker, canvasLegacyMode) {
+    const { runtime } = resolveStorageConfig({
+        options: { store: env.store, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema, duroxideSchema: env.duroxideSchema },
+    });
+    const provider = getRuntimeStorageProvider(runtime.provider);
+    const catalog = await provider.createSessionCatalog(runtime);
+    let factStore = null;
+    // Close both, always; a failed close is reported, never swallowed.
+    const closeAll = async () => {
+        const results = await Promise.allSettled([
+            factStore ? Promise.resolve().then(() => factStore.close?.()) : Promise.resolve(),
+            Promise.resolve().then(() => catalog.close?.()),
+        ]);
+        return results.filter((r) => r.status === "rejected").map((r) => r.reason);
+    };
+    try {
+        await catalog.initialize();
+        factStore = await provider.createFactStore(runtime);
+        await factStore.initialize();
+    } catch (err) {
+        const closeErrors = await closeAll();
+        if (closeErrors.length) err.message += ` (and closing failed: ${closeErrors.map((e) => e?.message ?? e).join("; ")})`;
+        throw err;
+    }
+    const mgmt = new PilotSwarmManagementClient({ store: "sqlite::memory:", canvasLegacyMode });
+    mgmt._catalog = catalog;
+    mgmt._factStore = factStore;
+    mgmt._artifactStore = worker.artifactStore;
+    mgmt._started = true;
+    return {
+        mgmt,
+        async close() {
+            mgmt._started = false;
+            const closeErrors = await closeAll();
+            if (closeErrors.length) throw new AggregateError(closeErrors, `portal-side stores did not close: ${closeErrors.map((e) => e?.message ?? e).join("; ")}`);
+        },
+    };
+}
+
 async function legacyScene(env, worker, name) {
     const factStore = worker.factStore;
     const installedAt = new Date(Date.now() + 3_600_000);
@@ -251,11 +325,9 @@ describe("canvas app transition: server decisions about an old app's page (L2)",
             assert(!JSON.parse(aliceResults[1]).error, `Alice publishes the bytes: ${aliceResults[1]}`);
 
             // The portal side judges with its own switch and its own old catalog.
-            const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema, canvasLegacyMode: true });
-            await mgmt.start();
+            const portal = await portalSide(env, worker, true);
+            const mgmt = portal.mgmt;
             try {
-                // The portal reads the same artifacts the worker wrote.
-                mgmt._artifactStore = worker.artifactStore;
                 canvasLegacyCatalogFor(mgmt._factStore, async () => scene.installedAt, { ttlMs: 0 });
                 const bob = await client.createSession({ model: qualifiedModel, owner: BOB });
                 const first = JSON.parse(await bob.sendAndWait("L2-BOB-1", TIMEOUT));
@@ -285,7 +357,7 @@ describe("canvas app transition: server decisions about an old app's page (L2)",
                 assertEqual(JSON.parse(second[2]).error, "CANVAS_APP_BYTES", `the artifact is refused: ${String(second[2]).slice(0, 200)}`);
                 assertEqual((await mgmt.getCanvasRevisionLabel({ sessionId: bob.sessionId, slot: 1 })).legacy, false, "the portal no longer judges it legacy");
             } finally {
-                await mgmt.stop().catch(() => {});
+                await portal.close();
             }
         });
     });
@@ -318,16 +390,15 @@ describe("canvas app transition: server decisions about an old app's page (L2)",
             const get = JSON.parse(results[3]);
             assert(get.found === true && get.key === "app/x" && get.v === 1, `the value is read back: ${results[3]}`);
             assertEqual(get.page?.trust, "cross-owner", "labelled");
-            const mgmt = new PilotSwarmManagementClient({ store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema, canvasLegacyMode: false });
-            await mgmt.start();
+            const portal = await portalSide(env, worker, false);
+            const mgmt = portal.mgmt;
             try {
-                mgmt._artifactStore = worker.artifactStore;
                 const draw = await latestCanvasDraw(mgmt, bob.sessionId);
                 assertEqual(draw.trust, "cross-owner");
                 assertEqual(draw.legacy, undefined, "no legacy flag when the worker's switch is off");
                 assertEqual((await mgmt.getCanvasRevisionLabel({ sessionId: bob.sessionId, slot: 1 })).legacy, false);
             } finally {
-                await mgmt.stop().catch(() => {});
+                await portal.close();
             }
         });
     });

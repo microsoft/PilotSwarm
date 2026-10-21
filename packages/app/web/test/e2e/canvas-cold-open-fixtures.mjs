@@ -39,13 +39,17 @@ export const LIST_CANVASES = {
 };
 
 /**
- * Route one session's canvas reads. `slots`: { [slot]: { html, trust?, pageSha256? } }
- * (`pageSha256` defaults to the served bytes; pass null for none). `snapshot`:
- * { hold, status } for the draw-event read: `hold` keeps every read pending
- * until release(); `status` >= 400 fails it. Returns live counters.
+ * Route one session's canvas reads. `slots`: { [slot]: { html, trust?, pageSha256?, legacy? } }
+ * (`pageSha256` defaults to the served bytes; pass null for none; `legacy`
+ * flags an old app's page on the draw event). `snapshot`: { hold, status }
+ * for the draw-event read: `hold` keeps every read pending until release();
+ * `status` >= 400 fails it. `labels`: { [slot]: (n) => answer } for the
+ * transition label (n counts that slot's reads from 1); an answer with a
+ * `status` >= 400 fails the read, and `{ hang: true }` never answers. Returns live counters.
  */
-export async function routeCanvas(page, sessionId, { slots, snapshot = {} }) {
+export async function routeCanvas(page, sessionId, { slots, snapshot = {}, labels = {} }) {
     const downloads = new Map();
+    const labelReads = new Map();
     let snapshots = 0;
     let released = !snapshot.hold;
     let releaseAll = () => {};
@@ -74,9 +78,21 @@ export async function routeCanvas(page, sessionId, { slots, snapshot = {} }) {
                 const hash = s.pageSha256 === undefined ? sha256(s.html) : s.pageSha256;
                 if (hash) data.pageSha256 = hash;
                 if (s.trust === "cross-owner") data.app = { name: "bobs-board", version: "1.0.0" };
+                if (s.legacy === true) data.legacy = true;
                 return { seq: i + 1, eventType: "session.canvas_updated", data };
             });
             return route.fulfill({ json: { ok: true, result } });
+        }
+        if (url.pathname.endsWith("/canvas-label")) {
+            const slot = Number(url.searchParams.get("slot")) || 1;
+            const n = (labelReads.get(slot) || 0) + 1;
+            labelReads.set(slot, n);
+            const answer = typeof labels[slot] === "function" ? labels[slot](n) : null;
+            if (!answer) return route.fulfill({ status: 404, json: { ok: false, error: { code: "NOT_FOUND", message: "no label" } } });
+            // A label that never answers (the route stays pending).
+            if (answer.hang) return new Promise(() => {});
+            if (answer.status >= 400) return route.fulfill({ status: answer.status, json: { ok: false, error: { code: "UNAVAILABLE", message: "label unavailable" } } });
+            return route.fulfill({ json: { ok: true, result: { sessionId, slot, ...answer } } });
         }
         if (url.pathname.endsWith("/events-before") && url.search.includes("session.canvas_data")) {
             return route.fulfill({ json: { ok: true, result: [] } });
@@ -95,6 +111,7 @@ export async function routeCanvas(page, sessionId, { slots, snapshot = {} }) {
         release: () => { released = true; releaseAll(); },
         downloads: (file) => downloads.get(file) || 0,
         snapshots: () => snapshots,
+        labelReads: (slot = 1) => labelReads.get(slot) || 0,
         srcdocs: () => srcdocs,
         boots: async (marker) => (await page.evaluate(() => window.__canvasBoots || [])).filter((m) => m === marker).length,
     };
