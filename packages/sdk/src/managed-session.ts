@@ -8,10 +8,12 @@ import { normalizeCanvasResponseContract as normalizeCanvasContractShared } from
 // One list gates BOTH halves of every manager tool: the declaration in the
 // manager bundle and the per-turn handler below.
 import { holdsManagerBundle } from "./agent-manager-tools.js";
+import { holdsPackageReviewerBundle } from "./package-reviewer-tools.js";
 // Same arrangement for the provider budget tools: holdsProviderTools() gates
 // the declarations in systemToolDefs() and the handlers in runTurn().
 import { holdsProviderTools, providerToolDefs, providerToolsUnavailable } from "./provider-tools.js";
 import type { CycleReport, TurnAction, TurnResult, TurnOptions, ManagedSessionConfig, CapturedEvent } from "./types.js";
+import { chooseCronPrecheck, listCronPrecheckOptions } from "./cron-precheck.js";
 import type { MessageAgentDelivery } from "./parent-turn-control.js";
 import type { ReasoningEffort, ContextTier } from "./model-providers.js";
 import { LiveTurnCoalescer } from "./live-turn.js";
@@ -1017,7 +1019,8 @@ export class ManagedSession {
                 "Use this when you should keep pursuing a goal autonomously until it is done. " +
                 "If it is genuinely ambiguous whether the task should become an ongoing recurring workflow, clarify that intent before setting cron. " +
                 "Set or update the schedule with seconds + reason. Cancel it with action='cancel'. " +
-                "Minimum interval is 15 seconds.",
+                "Minimum interval is 15 seconds. " +
+                "Pass precheck only when your instructions name a cron precheck: the application then checks for work before each wake-up and skips wake-ups that have none.",
             parameters: {
                 type: "object",
                 properties: {
@@ -1028,6 +1031,10 @@ export class ManagedSession {
                     reason: {
                         type: "string",
                         description: "What to do on each wake-up. Required when setting a schedule.",
+                    },
+                    precheck: {
+                        type: "string",
+                        description: "Optional name of an application-registered cron precheck, exactly as your instructions give it. Omit it otherwise.",
                     },
                     action: {
                         type: "string",
@@ -1636,11 +1643,34 @@ export class ManagedSession {
             waitThreshold: this.config.waitThreshold ?? 30,
         };
         this.activeTurnState = turnState;
+        this.activeTurnBridge = opts?.controlToolBridge ?? null;
         try {
             return await this._runTurnWithState(prompt, turnState, opts);
         } finally {
-            if (this.activeTurnState === turnState) this.activeTurnState = null;
+            if (this.activeTurnState === turnState) {
+                this.activeTurnState = null;
+                this.activeTurnBridge = null;
+            }
         }
+    }
+
+    /**
+     * Draw a finished document on this session's canvas from a host-built
+     * tool during the running turn. Only html and a caption pass through: no
+     * response contract, artifact source, slot or other session, so the page
+     * accepts no actions. Root sessions only, like draw_canvas.
+     */
+    async drawCanvasForCurrentTurn(input: { html: string; note: string }): Promise<{ rev?: number; error?: string }> {
+        const turnState = this.activeTurnState;
+        const bridge = this.activeTurnBridge as any;
+        if (!turnState) return { error: "no turn is running" };
+        if (hasTerminalTurnBoundary(turnState)) return { error: "the turn has already ended" };
+        if (typeof bridge?.drawCanvas !== "function") return { error: "the canvas is available only in a top-level session" };
+        if (typeof input?.html !== "string" || !input.html) return { error: "html is required" };
+        if (Buffer.byteLength(input.html, "utf8") > 900_000) return { error: "the canvas document is over 900 KB" };
+        const result = await bridge.drawCanvas({ html: input.html, note: String(input.note ?? "") });
+        if (result?.error) return { error: String(result.error) };
+        return { ...(result?.rev !== undefined ? { rev: result.rev } : {}) };
     }
 
     private async _runTurnWithState(prompt: string, turnState: TurnState, opts?: TurnOptions): Promise<TurnResult> {
@@ -1799,7 +1829,8 @@ export class ManagedSession {
                 "Use this when you should keep pursuing a goal autonomously until it is done. " +
                 "If it is genuinely ambiguous whether the task should become an ongoing recurring workflow, clarify that intent before setting cron. " +
                 "Set or update the schedule with seconds + reason. Cancel it with action='cancel'. " +
-                "Minimum interval is 15 seconds.",
+                "Minimum interval is 15 seconds. " +
+                "Pass precheck only when your instructions name a cron precheck: the application then checks for work before each wake-up and skips wake-ups that have none.",
             parameters: {
                 type: "object",
                 properties: {
@@ -1811,6 +1842,10 @@ export class ManagedSession {
                         type: "string",
                         description: "What to do on each wake-up. Required when setting a schedule.",
                     },
+                    precheck: {
+                        type: "string",
+                        description: "Optional name of an application-registered cron precheck, exactly as your instructions give it. Omit it otherwise.",
+                    },
                     action: {
                         type: "string",
                         enum: ["cancel"],
@@ -1818,7 +1853,7 @@ export class ManagedSession {
                     },
                 },
             },
-            handler: async (args: { seconds?: number; reason?: string; action?: "cancel" }) => {
+            handler: async (args: { seconds?: number; reason?: string; precheck?: string; action?: "cancel" }) => {
                 if (args.action === "cancel") {
                     turnState.queuedActions.push({
                         type: "cron",
@@ -1840,13 +1875,32 @@ export class ManagedSession {
                     return "Error: cron reason is required when setting a schedule.";
                 }
 
+                // An explicit precheck must name an available one, so a typo
+                // fails here instead of silently never skipping. Otherwise the
+                // agent definition's reason binding, then the session default,
+                // applies; an unavailable one runs every wake-up (fail open)
+                // and records why.
+                const choice = chooseCronPrecheck({
+                    explicit: args.precheck,
+                    reason,
+                    sessionDefault: this.config.cronPrecheck,
+                    sources: this.config.cronPrecheckSources,
+                });
+                if (!choice.ok) return choice.error;
+                const { precheck, packageId: precheckPackageId, packageIdentity: precheckIdentity, packageBindingRevision: precheckBindingRevision } = choice;
+                const precheckOptions = listCronPrecheckOptions(this.config.cronPrecheckSources);
+
                 turnState.queuedActions.push({
                     type: "cron",
                     action: "set",
                     intervalSeconds,
                     reason,
+                    ...(precheck ? { precheck } : {}),
+                    ...(precheck && precheckPackageId ? { precheckPackageId } : {}),
+                    ...(precheck && precheckIdentity ? { precheckIdentity: { ...precheckIdentity }, precheckBindingRevision } : {}),
+                    ...(precheckOptions.length ? { precheckOptions } : {}),
                 });
-                return JSON.stringify({ status: "scheduled", interval: intervalSeconds, reason });
+                return JSON.stringify({ status: "scheduled", interval: intervalSeconds, reason, ...(precheck ? { precheck } : {}) });
             },
         });
 
@@ -2890,7 +2944,10 @@ export class ManagedSession {
         // side effects, but hard exclusion beats instructions — defense in
         // depth on top of the pager's CMS-column call-time gate. Generalize to
         // a config.serviceKind check if a second service kind ever appears.
-        const isServiceSession = this.config.agentIdentity === "regen-distiller";
+        // The package reviewer is restricted the same way: its toolset is
+        // exactly its reviewer bundle (session-manager declares nothing else).
+        const isReviewerSession = holdsPackageReviewerBundle(this.config.agentIdentity);
+        const isServiceSession = this.config.agentIdentity === "regen-distiller" || isReviewerSession;
         // The manager tools are DECLARED only in the manager bundle, but a
         // registered handler is a capability even when the model cannot see
         // the schema. Gate both halves on the same list so there is no tool
@@ -3133,7 +3190,7 @@ export class ManagedSession {
             return `Extra folders changed.\n${lines.join("\n")}\n`
                 + "[SYSTEM: The new folders are ready now; use their full paths. The working directory is unchanged. Continue your task.]";
         };
-        const workspaceToolsForTurn: Tool<any>[] = this.config.workspaceTools ? [
+        const workspaceToolsForTurn: Tool<any>[] = this.config.workspaceTools && !isReviewerSession ? [
             // Section 4.12: an agent from a file. The CLI takes its agents when
             // a session starts or resumes, so the turn ends and the next one
             // has it.
@@ -4116,6 +4173,8 @@ export class ManagedSession {
 
     /** Session workspaces: the running turn's state, read by the native deny hook. */
     private activeTurnState: TurnState | null = null;
+    /** The running turn's control bridge; read by drawCanvasForCurrentTurn. */
+    private activeTurnBridge: unknown = null;
 
     /**
      * Session workspaces: where a change stands in the running turn.
@@ -4300,6 +4359,8 @@ export class ManagedSession {
         if (config.systemMessage !== undefined) this.config.systemMessage = config.systemMessage;
         if (config.turnSystemPrompt !== undefined) this.config.turnSystemPrompt = config.turnSystemPrompt;
         if (config.waitThreshold !== undefined) this.config.waitThreshold = config.waitThreshold;
+        if (config.cronPrecheckSources !== undefined) this.config.cronPrecheckSources = config.cronPrecheckSources;
+        if (Object.prototype.hasOwnProperty.call(config, "cronPrecheck")) this.config.cronPrecheck = config.cronPrecheck;
     }
 
     requiresModelRebind(config: Partial<ManagedSessionConfig>): boolean {

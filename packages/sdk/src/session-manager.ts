@@ -1,6 +1,7 @@
 import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, capabilityOwnership, parseCapabilityRef, resolveCapabilitySource, workspaceCapabilityHits, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
 import { bindCapabilities, nextCapabilityState, validatePackageRequest } from "./capability-runtime.js";
-import type { McpAllowlistAgent } from "./mcp-loader.js";
+import type { CronPrecheckInput } from "./cron-precheck.js";
+import type { MCPServerConfig, McpAllowlistAgent } from "./mcp-loader.js";
 import { baseAgentInstructions, resolveBaseAgentPolicy } from "./base-agent-policy.js";
 import { NativeTaskAccess, NATIVE_SYNCHRONOUS_TOOLS, NATIVE_TASK_NAMES, type NativeTaskTools } from "./native-task-policy.js";
 import { linkSkillFolders, resolveWorkspaceAdoption, RepoAgentAccess, type AdoptionSource } from "./workspace-repo-agents.js";
@@ -25,6 +26,7 @@ import { createFactTools } from "./facts-tools.js";
 import { createToolFactsAccessor } from "./tool-facts-accessor.js";
 import { createGraphTools } from "./graph-tools.js";
 import { createInspectTools, NO_VIEWER, type InspectViewer } from "./inspect-tools.js";
+import { createPackageReviewerTools, holdsPackageReviewerBundle, PACKAGE_REVIEWER_TOOL_NAMES } from "./package-reviewer-tools.js";
 import { createProviderTools, holdsProviderTools } from "./provider-tools.js";
 import { attachWorkloadIdentity } from "./wif-credentials.js";
 import { pinToolsNeverDefer } from "./tool-pinning.js";
@@ -124,16 +126,23 @@ function isMissingDehydrateSnapshotError(error: unknown): boolean {
  * carry no package fields.
  */
 export interface AgentCopyEntry {
+    namespace?: string;
     prompt: string;
     /** V2 declared-skill composition excludes unrelated published packages. */
     baseV2Prompt?: string;
     /** Current named-agent declarations; [] explicitly means no additional tools. */
     toolNames?: string[];
     nativeTaskTools?: NativeTaskTools;
+    /** The agent definition's cron-reason-to-precheck bindings. */
+    cronPrechecks?: import("./cron-precheck.js").CronPrecheckBinding[];
     kind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent";
     descriptor?: import("./prompt-layers.js").PromptLayerDescriptor;
-    namespace?: string | null;
     packageId?: string;
+    packageVersionId?: string;
+    packageSha256?: string;
+    packageExecutable?: boolean;
+    /** False marks an approved version retained solely for existing exact pins. */
+    packageActive?: boolean;
     packageScope?: "shared" | "user";
     packageOwner?: { provider: string; subject: string } | null;
 }
@@ -170,6 +179,16 @@ export function packageAgentKey(packageId: string, agentName: string): string {
     return `pkg\u0001${packageId}\u0001${agentName}`;
 }
 
+export function packageContentKey(packageId: string, versionId: string, sha256: string): string {
+    return `${packageId}\u0001${versionId}\u0001${sha256}`;
+}
+
+function packageRegistryKey(copy: AgentCopyEntry): string {
+    return copy.packageActive !== undefined && copy.packageVersionId && copy.packageSha256
+        ? packageContentKey(copy.packageId!, copy.packageVersionId, copy.packageSha256)
+        : copy.packageId!;
+}
+
 /** Owner key used to match a session owner against a package copy's owner. */
 export function agentOwnerKey(owner?: { provider?: string | null; subject?: string | null } | null): string | null {
     return owner?.provider && owner?.subject ? `${owner.provider}\u0001${owner.subject}` : null;
@@ -178,9 +197,9 @@ export function agentOwnerKey(owner?: { provider?: string | null; subject?: stri
 /**
  * Which copy of an agent name does THIS session get?
  *
- * Runs per turn, so enabling/disabling a copy re-resolves exactly like a
- * republish does — live sessions follow the registry's current answer, they
- * are not pinned to a copy.
+ * Selects the current active copy per turn. Declarative sessions follow that
+ * copy; executable sessions subsequently select an authorized retained exact
+ * version rather than adopting an activated replacement.
  *
  * FAIL CLOSED, matching resolveAgentDefinitionForCaller: a user-scope copy is
  * PRIVATE to its owner, and the worker holds every tenant's copies at once.
@@ -197,7 +216,7 @@ export function pickAgentCopyForOwner(
     ownerKey: string | null,
 ): AgentCopyEntry | undefined {
     if (!entry) return undefined;
-    const copies = entry.copies?.length ? entry.copies : [entry];
+    const copies = (entry.copies?.length ? entry.copies : [entry]).filter(copy => copy.packageActive !== false);
     if (ownerKey) {
         const own = copies.find(
             (copy) => copy.packageScope === "user" && agentOwnerKey(copy.packageOwner) === ownerKey,
@@ -215,15 +234,19 @@ export function pickAgentCopyForOwner(
         ?? undefined;
 }
 
-/** Resolve an already-authorized exact package copy while rechecking owner visibility. */
+/** Resolve an active (or explicitly exact retained) copy while rechecking owner visibility. */
 export function pickAgentCopyByPackageIdForOwner(
     entry: AgentPromptEntry | undefined,
     packageId: string,
     ownerKey: string | null,
+    identity?: { versionId: string; sha256: string },
 ): AgentCopyEntry | undefined {
     if (!entry || !packageId) return undefined;
     const copies = entry.copies?.length ? entry.copies : [entry];
-    const copy = copies.find((candidate) => candidate.packageId === packageId);
+    const copy = copies.find((candidate) => candidate.packageId === packageId
+        && (identity
+            ? candidate.packageVersionId === identity.versionId && candidate.packageSha256 === identity.sha256
+            : candidate.packageActive !== false));
     if (!copy) return undefined;
     if (copy.packageScope !== "user") return copy;
     return agentOwnerKey(copy.packageOwner) === ownerKey && ownerKey !== null
@@ -234,6 +257,7 @@ export function pickAgentCopyByPackageIdForOwner(
 /** Worker-level defaults — applied to every session. */
 export interface WorkerDefaults {
     getCapabilitySources?: () => CapabilitySource[];
+    resolvePackageMcp?: (sessionId: string, servers: Record<string, any>) => Promise<Record<string, any>>;
     /** Host-reserved fact key prefixes, see PilotSwarmWorkerOptions.reservedFactPrefixes. */
     reservedFactPrefixes?: string[];
     nativeSubagents?: "off" | "sync";
@@ -794,6 +818,10 @@ export class SessionManager {
     private featureFlags: FeatureFlagCache | null = null;
     /** Session turn control: the worker's notification hub (null when the worker has no CMS). */
     private turnControlHub: import("./turn-control.js").TurnControlHub | null = null;
+    /** Worker-registered cron prechecks, in registration order. */
+    private cronPrechecks: import("./cron-precheck.js").CronPrecheckRegistration[] = [];
+    /** Cron prechecks exported by agent packages, by package ID. */
+    private packageCronPrechecks = new Map<string, Map<string, import("./cron-precheck.js").CronPrecheckRegistration>>();
     /** Session workspaces: the application's provider, or the built-in one. Null when neither is set. */
     private workspaceProvider: WorkspaceProvider | null = null;
     /** The worker's own ID, for releases this manager starts itself (eviction). */
@@ -1194,6 +1222,141 @@ export class SessionManager {
     /** The worker's hub for activity registration, or null when unavailable. */
     getTurnControlHub(): import("./turn-control.js").TurnControlHub | null {
         return this.turnControlHub;
+    }
+
+    /** Replace a same-named precheck or append a new one. */
+    addCronPrecheck(registration: import("./cron-precheck.js").CronPrecheckRegistration): void {
+        const existing = this.cronPrechecks.findIndex((entry) => entry.name === registration.name);
+        if (existing >= 0) this.cronPrechecks[existing] = registration;
+        else this.cronPrechecks.push(registration);
+    }
+
+    getCronPrechecks(): readonly import("./cron-precheck.js").CronPrecheckRegistration[] {
+        return this.cronPrechecks;
+    }
+
+    /** Swapped in whole on every package refresh, like the package tool registry. */
+    setPackageCronPrechecks(byPackage: Map<string, Map<string, import("./cron-precheck.js").CronPrecheckRegistration>>): void {
+        this.packageCronPrechecks = byPackage;
+    }
+
+    /** The prechecks a schedule may resolve: its package's when it names one, otherwise the worker's. */
+    getCronPrechecksFor(packageId?: string | null, identity?: import("./agent-package-authorization.js").ExecutablePackageIdentity): readonly import("./cron-precheck.js").CronPrecheckRegistration[] {
+        if (!packageId) return this.cronPrechecks;
+        if (!identity || identity.packageId !== packageId) return [];
+        return [...(this.packageCronPrechecks.get(packageContentKey(packageId, identity.versionId, identity.sha256))?.values() ?? [])];
+    }
+
+    private async resolveAgentPackageBinding(sessionId: string, config: SerializableSessionConfig, ownerKey: string | null) {
+        const binding = await this.sessionCatalog?.packageReviews?.getSessionBinding(sessionId);
+        if (binding && binding.executable !== false) {
+            if (!binding.allowed || binding.agentName !== config.boundAgentName || config.boundAgentSource === "deployment"
+                || config.boundAgentPackageId && config.boundAgentPackageId !== binding.packageId) {
+                throw new BoundAgentPackageUnavailableError(binding.packageId, "The durable package binding is denied or conflicts with session configuration.");
+            }
+            config = { ...config, boundAgentPackageId: binding.packageId };
+        }
+        let copy: AgentCopyEntry | undefined;
+        try { copy = resolveBoundAgentCopy(this.workerDefaults, config, ownerKey); }
+        catch (error) {
+            if (!(error instanceof BoundAgentPackageUnavailableError) || !binding?.allowed
+                || binding.executable === false || !config.boundAgentName) throw error;
+            copy = pickAgentCopyByPackageIdForOwner(this.workerDefaults.agentPromptLookup?.[config.boundAgentName],
+                binding.packageId, ownerKey, binding);
+            if (!copy) throw error;
+        }
+        if (binding && binding.executable !== false && copy?.packageExecutable !== false && config.boundAgentName) {
+            copy = pickAgentCopyByPackageIdForOwner(this.workerDefaults.agentPromptLookup?.[config.boundAgentName],
+                binding.packageId, ownerKey, binding) ?? copy;
+        }
+        if (copy?.packageId && (copy.packageExecutable !== false || binding && binding.executable !== false)) {
+            if (!binding?.allowed || binding.executable === false || copy.packageExecutable === false
+                || binding.packageId !== copy.packageId || binding.versionId !== copy.packageVersionId
+                || binding.sha256 !== copy.packageSha256 || binding.agentName !== config.boundAgentName) {
+                throw new BoundAgentPackageUnavailableError(copy.packageId,
+                    "The exact bound package version/digest is unavailable, denied or changed; explicit rebind is required. No active-name fallback is permitted.");
+            }
+        }
+        return { config, copy, binding };
+    }
+
+    /** Admission is mandatory even for callbacks that never invoke a tool. */
+    async authorizeCronPrecheck(input: CronPrecheckInput): Promise<void> {
+        await this.resolveCronPrecheckBinding(input);
+    }
+
+    private async resolveCronPrecheckBinding(input: CronPrecheckInput) {
+        let config = input.agent ?? {};
+        if (input.packageId && config.boundAgentPackageId !== input.packageId) {
+            throw new BoundAgentPackageUnavailableError(input.packageId, "Cron precheck package is no longer bound to this session");
+        }
+        const owner = this.sessionCatalog
+            ? await resolveEffectiveSpawnOwner(id => this.sessionCatalog!.getSession(id), input.sessionId)
+            : null;
+        if (input.packageId && !owner) {
+            throw new BoundAgentPackageUnavailableError(input.packageId,
+                "Cron precheck package requires a current, resolvable session owner");
+        }
+        const ownerKey = owner && owner.provider !== SYSTEM_USER_PRINCIPAL.provider
+            ? agentOwnerKey(owner) : null;
+        const resolved = await this.resolveAgentPackageBinding(input.sessionId, config, ownerKey);
+        config = resolved.config;
+        const copy = resolved.copy;
+        if (config.boundAgentName && !copy) {
+            throw new BoundAgentPackageUnavailableError(input.packageId ?? config.boundAgentPackageId ?? config.boundAgentName);
+        }
+        if (input.packageId) {
+            const pin = input.packageIdentity;
+            const live = resolved.binding;
+            if (!pin || pin.packageId !== input.packageId || !live?.allowed || live.executable === false
+                || live.packageId !== pin.packageId || live.versionId !== pin.versionId || live.sha256 !== pin.sha256
+                || live.agentName !== config.boundAgentName || live.revision !== input.packageBindingRevision
+                || copy?.packageVersionId !== pin.versionId || copy?.packageSha256 !== pin.sha256) {
+                throw new BoundAgentPackageUnavailableError(input.packageId, "Cron schedule's immutable package binding is denied or stale");
+            }
+            if (!this.sessionCatalog?.packageRuntime) throw new Error("Authoritative package runtime unavailable");
+            await this.sessionCatalog.packageRuntime.context(input.sessionId, pin);
+        }
+        return { config, owner, copy };
+    }
+
+    /** Re-resolve current grants for every tool call, without model hydration. */
+    async getCronPrecheckMcpServers(input: CronPrecheckInput): Promise<Record<string, MCPServerConfig>> {
+        const { config, owner, copy } = await this.resolveCronPrecheckBinding(input);
+        if (holdsPackageReviewerBundle(config.agentIdentity)) return {};
+        const originalMcp = this._boundMcpServers(config, copy);
+        const selections = this.sessionCatalog?.getSessionCapabilities
+            ? (await this.sessionCatalog.getSessionCapabilities(input.sessionId)).selections : [];
+        const agent = this._mcpAllowlistAgent(copy);
+        const originalTools = this._resolveTools({ tools: this.sessionApplicationTools.get(input.sessionId) }, {
+            ...config,
+            toolNames: [...new Set([
+                ...(this.workerDefaults.frameworkBaseToolNames ?? []),
+                ...(this.workerDefaults.appDefaultToolNames ?? []),
+                ...(config.toolNames ?? []),
+                ...(copy?.toolNames ?? []),
+            ])],
+            ...(config.boundAgentSource === "deployment" ? { detachedPackageToolPolicy: "reject" as const } : {}),
+        }, copy?.packageId ? packageRegistryKey(copy) : undefined);
+        const attached = config.agentIdentity === "regen-distiller" || config.agentIdentity === "agent-tuner"
+            ? {}
+            : bindCapabilities(this.workerDefaults.getCapabilitySources?.() ?? [], owner, selections, originalTools, originalMcp, agent).mcpServers;
+        const servers = { ...originalMcp, ...attached };
+        if (Object.values(servers).some((server: any) => server?.packageRuntime)) {
+            if (!this.workerDefaults.resolvePackageMcp) throw new Error("Supervised package MCP unavailable");
+            return await this.workerDefaults.resolvePackageMcp(input.sessionId, servers) as Record<string, MCPServerConfig>;
+        }
+        return servers;
+    }
+
+    private _boundMcpServers(config: Pick<SerializableSessionConfig, "boundAgentName">, copy?: AgentCopyEntry): Record<string, MCPServerConfig> {
+        const key = config.boundAgentName && copy
+            ? copy.packageId ? packageAgentKey(packageRegistryKey(copy), config.boundAgentName) : config.boundAgentName
+            : undefined;
+        return {
+            ...(this.workerDefaults.baseMcpServers ?? {}),
+            ...(key ? this.workerDefaults.agentMcpServers?.[key] ?? {} : {}),
+        };
     }
 
     setFeatureFlagCache(cache: FeatureFlagCache | null): void {
@@ -1894,7 +2057,9 @@ export class SessionManager {
         let boundAgentCopy: AgentCopyEntry | undefined;
         let resolvedTools: Tool<any>[];
         try {
-            boundAgentCopy = resolveBoundAgentCopy(this.workerDefaults, effectiveSerializableConfig, sessionOwnerKey);
+            const resolved = await this.resolveAgentPackageBinding(sessionId, effectiveSerializableConfig, sessionOwnerKey);
+            effectiveSerializableConfig = resolved.config;
+            boundAgentCopy = resolved.copy;
             // Snapshot the selected prompt and descriptor. A registry refresh in the
             // middle of a turn must not change instructions while handlers still
             // belong to the previously selected version.
@@ -1933,7 +2098,7 @@ export class SessionManager {
             resolvedTools = this._resolveTools(
                 { tools: this.sessionApplicationTools.get(sessionId) },
                 effectiveSerializableConfig,
-                boundAgentCopy?.packageId,
+                boundAgentCopy?.packageId ? packageRegistryKey(boundAgentCopy) : undefined,
             );
         } catch (error) {
             // Failed authorization/removal must not leave a reusable handle with
@@ -1944,15 +2109,7 @@ export class SessionManager {
         }
         // Capture MCP grants with the same registry snapshot, before asynchronous
         // provider/catalog work below can allow a package reload to intervene.
-        const boundAgentMcpServers = !effectiveSerializableConfig.boundAgentName || !boundAgentCopy
-            ? undefined
-            : boundAgentCopy.packageId
-                ? this.workerDefaults.agentMcpServers?.[packageAgentKey(boundAgentCopy.packageId, effectiveSerializableConfig.boundAgentName)]
-                : this.workerDefaults.agentMcpServers?.[effectiveSerializableConfig.boundAgentName];
-        const effectiveMcpServers = {
-            ...(this.workerDefaults.baseMcpServers ?? {}),
-            ...(boundAgentMcpServers ?? {}),
-        };
+        const effectiveMcpServers = this._boundMcpServers(effectiveSerializableConfig, boundAgentCopy);
 
         const config: ManagedSessionConfig = {
             ...storedConfig,
@@ -2178,6 +2335,11 @@ export class SessionManager {
         // whole purpose is to change agents — so the strip applies only to the
         // legacy id, and dies with it.
         const isTunerSession = effectiveSerializableConfig.agentIdentity === "agent-tuner";
+        // The package reviewer is an allowlisted session: it declares ONLY the
+        // reviewer bundle, and gets no workspace, capability, MCP, native,
+        // skill or custom-agent surface. The identity only narrows; every
+        // reviewer tool still requires the owner to be a fleet administrator.
+        const isReviewerSession = holdsPackageReviewerBundle(effectiveSerializableConfig.agentIdentity);
         const mutatingSystemToolNames = new Set(["send_session_message", "reply_session_message", "draw_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "use_package", "load_agent",
     "update_canvas"]);
         const userTools = config.tools ?? [];
@@ -2196,7 +2358,7 @@ export class SessionManager {
         // get_session_workspace, load_agent) are declared only for a session
         // that has a workspace or default folders, or whose agent lists
         // set_session_workspace in its tools. Everything else is unchanged.
-        const workspaceTools = !isTunerSession && !config.workspaceToolsBlocked && (Boolean(config.workspace)
+        const workspaceTools = !isTunerSession && !isReviewerSession && !config.workspaceToolsBlocked && (Boolean(config.workspace)
             // Section 4.11: a session that has only the deployment's default folders has folders too.
             || Boolean(config.workspaceAttach)
             || (effectiveSerializableConfig.toolNames ?? []).includes("set_session_workspace")
@@ -2321,6 +2483,16 @@ export class SessionManager {
                 ])],
             })
             : [];
+        const reviewerTools = isReviewerSession && this.sessionCatalog
+            ? createPackageReviewerTools({
+                catalog: this.sessionCatalog,
+                artifactStore: this.artifactStore ?? null,
+                resolveViewer: () => this._resolveInspectViewer(sessionId, true),
+                sessionId,
+                drawCanvas: async (input) => this.sessions.get(sessionId)?.drawCanvasForCurrentTurn(input)
+                    ?? { error: "the session is not running" },
+            })
+            : [];
         // Provider budgets. Declared by managed-session for the two Token
         // Manager identities; the real handlers need a catalog, which only
         // this class has, so they are attached here — a declared tool with no
@@ -2360,6 +2532,22 @@ export class SessionManager {
         config.featureToolFingerprint = createHash("sha256")
             .update(JSON.stringify(featureTools.map(({ name, description, parameters }) => ({ name, description, parameters }))))
             .digest("hex");
+        const cronBinding = boundAgentCopy?.packageId
+            ? await this.sessionCatalog?.packageReviews?.getSessionBinding(sessionId) : null;
+        config.cronPrecheckSources = {
+            staticNames: this.cronPrechecks.map((registration) => registration.name),
+            ...(boundAgentCopy?.packageId ? {
+                packageId: boundAgentCopy.packageId,
+                packageActive: boundAgentCopy.packageActive !== false,
+                packageNames: [...(this.packageCronPrechecks.get(packageRegistryKey(boundAgentCopy))?.keys() ?? [])],
+                ...(cronBinding?.allowed && cronBinding.executable !== false && cronBinding.versionId === boundAgentCopy.packageVersionId
+                    && cronBinding.sha256 === boundAgentCopy.packageSha256 ? {
+                        packageIdentity: { packageId: cronBinding.packageId, versionId: cronBinding.versionId, sha256: cronBinding.sha256 },
+                        packageBindingRevision: cronBinding.revision,
+                    } : {}),
+            } : {}),
+            ...(boundAgentCopy?.cronPrechecks?.length ? { bindings: boundAgentCopy.cronPrechecks.map((binding) => ({ ...binding })) } : {}),
+        };
         const nativeOwner = catalogRow?.owner ?? null;
         // An unreadable owner must not bypass a user-level OFF by resolving
         // cluster policy. Ownerless resolution is only for standalone managers.
@@ -2367,11 +2555,11 @@ export class SessionManager {
         config.nativeFeatureAllowed = () => nativeOwnerKnown
             && (this.featureFlags?.resolve("copilot.native_tasks", nativeOwner, { fallback: false }).enabled ?? false);
         const nativeEnabled = this.workerDefaults.nativeSubagents === "sync" && config.nativeFeatureAllowed()
-            && !catalogRow?.isSystem && !isServiceSession && !isTunerSession
+            && !catalogRow?.isSystem && !isServiceSession && !isTunerSession && !isReviewerSession
             && config.promptLayering?.kind !== "pilotswarm-system-agent";
         config.nativeSubagents = nativeEnabled ? "sync" : "off";
         config.baseAgentPolicy = resolveBaseAgentPolicy(this.featureFlags, nativeOwnerKnown ? nativeOwner : null, nativeEnabled);
-        const unlessService = <T,>(tools: T[]): T[] => (isServiceSession ? [] : tools);
+        const unlessService = <T,>(tools: T[]): T[] => (isServiceSession || isReviewerSession ? [] : tools);
         const SYSTEM_TOOL_NAMES = new Set([
             ...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools,
         ].map((t: any) => t.name).concat(FEATURE_OPERATION_SPECS.map(spec => spec.name)));
@@ -2379,13 +2567,7 @@ export class SessionManager {
         const capabilityCatalog = new CapabilityCatalog(getSources, this.factStore, this.workerDefaults.reservedFactPrefixes ?? []);
         const originalMcp = { ...effectiveMcpServers };
         const originalTools = [...userTools, ...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools, ...providerTools, ...featureTools];
-        // A qualified binding selects a copy; it is not that copy's authored leaf name.
-        const capabilityAgent: McpAllowlistAgent | null = boundAgentCopy?.descriptor ? {
-            name: boundAgentCopy.descriptor.name,
-            namespace: boundAgentCopy.namespace,
-            packageId: boundAgentCopy.packageId,
-            packageScope: boundAgentCopy.packageScope,
-        } : null;
+        const capabilityAgent = this._mcpAllowlistAgent(boundAgentCopy);
         const readState = async (): Promise<CapabilityState> => this.sessionCatalog?.getSessionCapabilities
             ? this.sessionCatalog.getSessionCapabilities(sessionId) : { revision: 0, selections: [] };
         const getOwner = async () => this.sessionCatalog
@@ -2399,7 +2581,10 @@ export class SessionManager {
         const desiredCapabilities = this.sessionCatalog?.getSessionCapabilities
             ? await readState()
             : { revision: 0, selections: [] };
-        const attached = isServiceSession || isTunerSession ? { tools: [], mcpServers: {}, unavailable: [], fingerprint: "" }
+        if (isReviewerSession) {
+            for (const name of Object.keys(effectiveMcpServers)) delete effectiveMcpServers[name];
+        }
+        const attached = isServiceSession || isTunerSession || isReviewerSession ? { tools: [], mcpServers: {}, unavailable: [], fingerprint: "" }
             : bindCapabilities(getSources(), capabilityOwner, desiredCapabilities.selections, originalTools, originalMcp, capabilityAgent);
         const attachedTools = attached.tools.map(tool => {
             const selected = desiredCapabilities.selections.find(sel => sel.tools.includes(tool.name)
@@ -2420,6 +2605,14 @@ export class SessionManager {
             } };
         });
         Object.assign(effectiveMcpServers, attached.mcpServers);
+        if (Object.values(effectiveMcpServers).some((server: any) => server?.packageRuntime)) {
+            if (!this.workerDefaults.resolvePackageMcp) throw new Error("Supervised package MCP resolver unavailable");
+            const resolved = await this.workerDefaults.resolvePackageMcp(sessionId, effectiveMcpServers);
+            for (const name of Object.keys(effectiveMcpServers)) delete effectiveMcpServers[name];
+            Object.assign(effectiveMcpServers, resolved);
+            // Native inline agents lack a separately persisted package/agent pin.
+            config.nativeSubagents = "off";
+        }
         config.capabilityFingerprint = attached.fingerprint;
         config.capabilityServices = {
             search: async args => {
@@ -2455,7 +2648,7 @@ export class SessionManager {
             },
             // Section 4.12: agents and skills loaded by path, saved with the session.
             saveWorkspaceLoad: async (change) => {
-                if (isServiceSession || isTunerSession) throw new Error("Loading agents and skills is unavailable in this restricted session");
+                if (isServiceSession || isTunerSession || isReviewerSession) throw new Error("Loading agents and skills is unavailable in this restricted session");
                 if (!this.sessionCatalog?.saveSessionCapabilities) throw new Error("Durable capability storage is unavailable");
                 for (let attempt = 0; attempt < 3; attempt += 1) {
                     const state = await readState();
@@ -2465,7 +2658,7 @@ export class SessionManager {
                 throw new Error("Capability revision conflict; try again");
             },
             use: async args => {
-                if (isServiceSession || isTunerSession) throw new Error("Package activation is unavailable in this restricted session");
+                if (isServiceSession || isTunerSession || isReviewerSession) throw new Error("Package activation is unavailable in this restricted session");
                 if (catalogRow?.parentSessionId) throw new Error("Package activation is available only to the parent session");
                 if (!this.sessionCatalog?.saveSessionCapabilities) throw new Error("Durable capability storage is unavailable");
                 validatePackageRequest(args);
@@ -2488,7 +2681,7 @@ export class SessionManager {
                 return { changed: next.changed, revision: next.state.revision };
             },
         };
-        const persistentSessionTools = [
+        const persistentSessionTools = isReviewerSession ? [...reviewerTools] : [
             ...userTools.filter((t: any) => !SYSTEM_TOOL_NAMES.has(t.name)),
             ...attachedTools,
             ...unlessService(factTools),
@@ -2543,7 +2736,7 @@ export class SessionManager {
         ])];
         // A child of a system session can be non-system yet retain the system
         // principal; use the same filtered owner as the V2 index and catalog.
-        const sdkSkillDirectories = config.baseAgentPolicy?.version === "v2"
+        const sdkSkillDirectories = isReviewerSession ? [] : config.baseAgentPolicy?.version === "v2"
             ? this.workerDefaults.getBaseV2SkillDirectories?.(v2Owner) ?? []
             : this.workerDefaults.skillDirectories ?? [];
         // Session workspaces (section 4.6): the repo agents and skills the
@@ -2589,7 +2782,7 @@ export class SessionManager {
         const adoptedSkillDirectories = repoAdoption?.linkSkills && repoAdoption.skills.length > 0
             ? [linkSkillFolders(path.join(os.tmpdir(), "pilotswarm-skills", sessionId), repoAdoption.skills)]
             : repoAdoption?.skillDirectories ?? [];
-        const sessionSkillDirectories = [...sdkSkillDirectories, ...adoptedSkillDirectories];
+        const sessionSkillDirectories = isReviewerSession ? [] : [...sdkSkillDirectories, ...adoptedSkillDirectories];
         const v2InventoryFingerprint = v2Inventory ? capabilityHash(v2Inventory) : undefined;
         const bindingFingerprint = bindingFingerprintDigest(buildBindingFingerprintInput({
             capabilityFingerprint: config.capabilityFingerprint,
@@ -2665,7 +2858,11 @@ export class SessionManager {
             // Session workspaces: repo hooks never run, and the repo's
             // instruction files load only when the provider adopts them. A
             // cleared session keeps hooks off.
-            ...(workspaceAttach ? {
+            ...(isReviewerSession ? {
+                enableFileHooks: false,
+                skipCustomInstructions: true,
+                enableSkills: false,
+            } : workspaceAttach ? {
                 enableFileHooks: false,
                 skipCustomInstructions: workspaceAttach.adopt?.instructions !== true,
             } : config.workspaceCleared ? { enableFileHooks: false } : {}),
@@ -2692,6 +2889,9 @@ export class SessionManager {
             // Native workers are explicitly scoped: built-ins inherit external
             // tools, and loaded PilotSwarm agents expect durable child contracts.
             excludedTools,
+            // Reviewer sessions: the SDK enables ONLY the named tools, so no
+            // built-in shell, file, web or MCP tool can reach the model.
+            ...(isReviewerSession ? { availableTools: [...PACKAGE_REVIEWER_TOOL_NAMES] } : {}),
             ...(nativeEnabled ? {
                 customAgents: repoAdoption?.customAgents.length
                     ? [...nativeSubagentDefinitions(sdkModelName, nativeTaskAccess), ...repoAdoption.customAgents]
@@ -2704,7 +2904,7 @@ export class SessionManager {
             // Pass loaded skills and agents from worker defaults; MCP servers
             // are the bound agent's own resolved map (see above).
             ...(sessionSkillDirectories.length && { skillDirectories: sessionSkillDirectories }),
-            ...(!nativeEnabled && this.workerDefaults.customAgents?.length && { customAgents: this.workerDefaults.customAgents }),
+            ...(!nativeEnabled && !isReviewerSession && this.workerDefaults.customAgents?.length && { customAgents: this.workerDefaults.customAgents }),
             ...(Object.keys(effectiveMcpServers).length > 0 && { mcpServers: effectiveMcpServers }),
         };
 
@@ -3507,8 +3707,8 @@ export class SessionManager {
      * Resolve tools from per-session config + worker-level registry.
      * Per-session tools take precedence over registry tools with the same name.
      *
-     * `preferredPackageId` is the package copy this session's bound agent
-     * resolved to. On a tool-name collision between two enabled packages
+     * `preferredPackageKey` identifies the selected package/content registry.
+     * On a tool-name collision between two versions or enabled packages
      * (scope shadowing publishes the same tool name twice), the session gets
      * ITS copy's handler instead of whichever package loaded last. Deployment
      * (static) tools still win every collision.
@@ -3516,11 +3716,11 @@ export class SessionManager {
     private _resolveTools(
         storedConfig: ManagedSessionConfig | undefined,
         serializableConfig: SerializableSessionConfig,
-        preferredPackageId?: string | null,
+        preferredPackageKey?: string | null,
     ): Tool<any>[] {
         const registryTools: Tool<any>[] = [];
-        const packageTools = preferredPackageId
-            ? this.packageToolRegistry?.get(preferredPackageId)
+        const packageTools = preferredPackageKey
+            ? this.packageToolRegistry?.get(preferredPackageKey)
             : undefined;
         if (serializableConfig.toolNames?.length) {
             for (const name of serializableConfig.toolNames) {
@@ -3530,7 +3730,7 @@ export class SessionManager {
                 const packageTool = packageTools?.get(name);
                 if (!staticTool && !packageTool && this.packageToolNames.has(name)) {
                     if (serializableConfig.detachedPackageToolPolicy === "drop") continue;
-                    if (serializableConfig.detachedPackageToolPolicy === "reject" || preferredPackageId) {
+                    if (serializableConfig.detachedPackageToolPolicy === "reject" || preferredPackageKey) {
                         throw new PackageToolBindingError(name);
                     }
                 }
@@ -3546,7 +3746,7 @@ export class SessionManager {
             // copy, never a stale object retained by the caller across a reload.
             if (packageTools?.has(name) && serializableConfig.toolNames?.includes(name)) return true;
             if (serializableConfig.detachedPackageToolPolicy === "drop") return false;
-            if (serializableConfig.detachedPackageToolPolicy === "reject" || preferredPackageId) {
+            if (serializableConfig.detachedPackageToolPolicy === "reject" || preferredPackageKey) {
                 throw new PackageToolBindingError(name);
             }
             return true;
@@ -3819,8 +4019,18 @@ export class SessionManager {
         }
     }
 
-    private async _resolveInspectViewer(sessionId: string): Promise<InspectViewer> {
-        const cached = SessionManager._inspectViewerCache.get(sessionId);
+    private _mcpAllowlistAgent(copy: AgentCopyEntry | null | undefined): McpAllowlistAgent | null {
+        // A qualified binding selects a copy; it is not its authored leaf name.
+        return copy?.descriptor ? {
+            name: copy.descriptor.name,
+            namespace: copy.namespace,
+            packageId: copy.packageId,
+            packageScope: copy.packageScope,
+        } : null;
+    }
+
+    private async _resolveInspectViewer(sessionId: string, fresh = false): Promise<InspectViewer> {
+        const cached = fresh ? undefined : SessionManager._inspectViewerCache.get(sessionId);
         if (cached && Date.now() - cached.at < INSPECT_VIEWER_TTL_MS) {
             return { ...cached.viewer, adminScope: cached.viewer.isSystemSession ? "unrestricted" : this.adminScope };
         }

@@ -118,7 +118,7 @@ test('unrecognized comments produce no API calls or candidate outputs', async t 
 
 test('the resolver can acknowledge PRs using its declared permissions, without ordinary issue writes', async t => {
   const f = fixture(t);
-  const workflow = readFileSync(new URL('../../workflows/tests.yml', import.meta.url), 'utf8');
+  const workflow = readFileSync(new URL('../../workflows/tests.yml', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   const resolver = workflow.split('\n  resolve:\n')[1].split('\n  tests:\n')[0];
   const permissions = resolver.split('    permissions:\n')[1].split('    outputs:\n')[0];
   assert.doesNotMatch(permissions, /issues: write|contents: write/);
@@ -232,7 +232,7 @@ test('blank manual selection retains main, baseline and parallel defaults', asyn
 });
 
 test('only enabled test jobs acquire CI concurrency or environment credentials', () => {
-  const workflow = readFileSync(new URL('../../workflows/tests.yml', import.meta.url), 'utf8');
+  const workflow = readFileSync(new URL('../../workflows/tests.yml', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   const resolver = workflow.split('\n  resolve:\n')[1].split('\n  tests:\n')[0];
   const tests = workflow.split('\n  tests:\n')[1].split('\n  report:\n')[0];
   const report = workflow.split('\n  report:\n')[1];

@@ -105,7 +105,7 @@ test('notice maintenance detects changed old assets and is gated independently o
       ...(reads > 1 ? [{ id: 2, name: 'LICENSE', digest: `sha256:${createHash('sha256').update(license).digest('hex')}` }] : [])],
   }) : '';
   assert.throws(() => addReleaseLicense(version, { root, repository: 'microsoft/PilotSwarm', runFn }), /verification failed/);
-  const workflow = readFileSync(new URL('../../workflows/release-notices.yml', import.meta.url), 'utf8');
+  const workflow = readFileSync(new URL('../../workflows/release-notices.yml', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   assert.match(workflow, /workflow_dispatch:/);
   assert.match(workflow, /github\.ref == 'refs\/heads\/main'/);
   assert.match(workflow, /environment: azure-deploy/);
@@ -122,8 +122,8 @@ test('release requires matching versions, lockfile, internal dependencies and ch
   assert.throws(() => validateRelease(version, manifests.map((p, i) => i === 2 ? { ...p, dependencies: { 'pilotswarm-sdk': '0.5.79' } } : p), lock, '## 0.6.0'));
 });
 test('release and additive coverage use hosted runners; regional routing is full-HDB only', () => {
-  const release = readFileSync(new URL('../../workflows/release-tarballs.yml', import.meta.url), 'utf8');
-  const tests = readFileSync(new URL('../../workflows/tests.yml', import.meta.url), 'utf8');
+  const release = readFileSync(new URL('../../workflows/release-tarballs.yml', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+  const tests = readFileSync(new URL('../../workflows/tests.yml', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   assert.match(release, /^    runs-on: ubuntu-latest$/m);
   assert.doesNotMatch(release, /PROVIDER_TEST_RUNNER/);
   assert.doesNotMatch(release, /hdb-diagnostic:|diagnose-hdb/);
@@ -134,7 +134,7 @@ test('release and additive coverage use hosted runners; regional routing is full
   assert.match(tests, /Targeted HDB diagnostics \(not a release gate\)/);
 });
 test('release refreshes Azure authentication after testing and publication, before deployment', () => {
-  const release = readFileSync(new URL('../../workflows/release-tarballs.yml', import.meta.url), 'utf8');
+  const release = readFileSync(new URL('../../workflows/release-tarballs.yml', import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   const gate = release.indexOf('- name: Qualify complete all-provider coverage');
   const publish = release.indexOf('- name: Publish verified package tarballs');
   const refresh = release.indexOf('- name: Refresh Azure login for deployment');
@@ -147,7 +147,7 @@ test('release refreshes Azure authentication after testing and publication, befo
 });
 
 function actionStepScript(file, name) {
-  const text = readFileSync(new URL(file, import.meta.url), 'utf8');
+  const text = readFileSync(new URL(file, import.meta.url), 'utf8').replace(/\r\n/g, '\n');
   const start = text.indexOf(`- name: ${name}`);
   assert(start >= 0);
   const block = text.slice(start).split(/\n {4,6}- name:/)[0];

@@ -1,4 +1,4 @@
-import { HANDOFF_ACTIVITY_NAMES, TURN_CONTROL_ACTIVITY_NAMES, routeHandoffActivity, routedActivityName, registerHandoffActivity, registerTurnControlActivity, routeTurnControlActivity, routeWorkspaceActivity, type ActivityRoutingContract } from "./activity-routing.js";
+import { HANDOFF_ACTIVITY_NAMES, TURN_CONTROL_ACTIVITY_NAMES, routeCronPrecheckActivity, routeHandoffActivity, routedActivityName, registerHandoffActivity, registerTurnControlActivity, routeTurnControlActivity, routeWorkspaceActivity, type ActivityRoutingContract } from "./activity-routing.js";
 import nodeCrypto from "node:crypto";
 import { createCopilotClient } from "./copilot-client.js";
 import {
@@ -27,6 +27,7 @@ import { evaluateRoleObservation } from "../api/src/session-authz.js";
 import { loadAdminScope } from "../api/src/admin-scope.js";
 import { parseAgentFqn } from "./agent-fqn.js";
 import { decideSessionControl } from "./agent-manager-tools.js";
+import { holdsPackageReviewerBundle } from "./package-reviewer-tools.js";
 import type { StorageConfig } from "./storage-config.js";
 import { SESSION_STATE_MISSING_PREFIX, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type ManagedSessionConfig, type SerializableSessionConfig, type TurnResult, type OrchestrationInput, type LateSteer, type TurnEndKind, type TurnStartRecord } from "./types.js";
 import type { ArtifactStore } from "./session-store.js";
@@ -58,6 +59,8 @@ import {
 } from "./regen-worker.js";
 import { REGEN_DISTILLER_SERVICE_KIND } from "./distiller-tools.js";
 import { computeCronAtNextFire, type CronAtSchedule } from "./cron-at.js";
+import { cronPrecheckNotification, evaluateCronPrecheck, type CronPrecheckInput, type CronPrecheckResult } from "./cron-precheck.js";
+import { callCronPrecheckMcpTool } from "./cron-precheck-mcp.js";
 import { SpanStatusCode, trace as otelTrace } from "@opentelemetry/api";
 import os from "node:os";
 import fs from "node:fs";
@@ -133,8 +136,8 @@ export async function resolveAgentDefinitionForCaller(opts: {
     getCallerOwnerKey: () => Promise<string | null>;
 }): Promise<ResolvedAgentDefinition | null> {
     const agents: Array<any> = [
-        ...(opts.userAgents ?? []).map(a => ({ ...a, system: false, creatable: true })),
-        ...(opts.systemAgents ?? []).map(a => ({ ...a, creatable: false })),
+        ...(opts.userAgents ?? []).filter(a => a.packageActive !== false).map(a => ({ ...a, system: false, creatable: true })),
+        ...(opts.systemAgents ?? []).filter(a => a.packageActive !== false).map(a => ({ ...a, creatable: false })),
     ];
     const normalize = (value?: string) => (value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
 
@@ -991,14 +994,14 @@ const WORKSPACE_WAIT_FALLBACK_SECONDS = 30;
 export function resolveBoundAgentBackfill(
     runConfig: SerializableSessionConfig,
     catalogAgentId: string | null | undefined,
-    userAgents?: Array<{ name?: string; id?: string }>,
+    userAgents?: Array<{ name?: string; id?: string; packageActive?: boolean }>,
 ): string | undefined {
     if (runConfig.boundAgentName) return undefined;
     const kind = runConfig.promptLayering?.kind;
     if (kind && kind !== "app-agent") return undefined;
     const wanted = String(catalogAgentId ?? "").trim();
     if (!wanted) return undefined;
-    const match = (userAgents ?? []).find((a) => a.name === wanted || a.id === wanted);
+    const match = (userAgents ?? []).find((a) => a.packageActive !== false && (a.name === wanted || a.id === wanted));
     return match?.name || undefined;
 }
 
@@ -1151,6 +1154,10 @@ export function createSessionManagerProxy(
         /** Compute the next wall-clock cron fire in an activity so tzdata-dependent results are recorded in history. */
         computeCronAtNextFire(schedule: CronAtSchedule, afterUtcMs: number, lastOccurrenceKey?: string) {
             return ctx.scheduleActivity("computeCronAtNextFire", { schedule, afterUtcMs, lastOccurrenceKey });
+        },
+        /** 1.0.83: ask the worker's registered cron precheck whether this interval cron wake-up needs a model turn. */
+        runCronPrecheck(input: CronPrecheckInput) {
+            return routeCronPrecheckActivity(ctx.scheduleActivity("runCronPrecheck", input));
         },
         // ── Session regeneration (1.0.67) ──────────────────────
         /** ARCHIVE stage: transcript slice → attempt-scoped artifact. Idempotent per attempt. */
@@ -3371,6 +3378,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             sendSessionMessage: async (args: { session_id: string; subject: string; body: string; reason?: string; expects_response?: boolean; expires_at?: string }) => {
                 try {
                     if (isReadOnlyTuner()) return `[SYSTEM: send_session_message is disabled for read-only agent-tuner sessions.]`;
+                    if (holdsPackageReviewerBundle(runConfig.agentIdentity)) return `[SYSTEM: send_session_message is disabled for package-reviewer sessions.]`;
                     const targetSessionId = String(args.session_id || "").replace(/^session-/, "");
                     if (!targetSessionId) return `[SYSTEM: send_session_message failed: session_id is required.]`;
                     if (targetSessionId === input.sessionId) return `[SYSTEM: send_session_message failed: target session is this session.]`;
@@ -3400,6 +3408,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             replySessionMessage: async (args: { request_id: string; session_id: string; body: string; verdict?: string }) => {
                 try {
                     if (isReadOnlyTuner()) return `[SYSTEM: reply_session_message is disabled for read-only agent-tuner sessions.]`;
+                    if (holdsPackageReviewerBundle(runConfig.agentIdentity)) return `[SYSTEM: reply_session_message is disabled for package-reviewer sessions.]`;
                     const targetSessionId = String(args.session_id || "").replace(/^session-/, "");
                     if (!targetSessionId || !args.request_id || !args.body?.trim()) return `[SYSTEM: reply_session_message failed: request_id, session_id, and body are required.]`;
                     if (!catalog) return `[SYSTEM: reply_session_message failed: CMS catalog is unavailable.]`;
@@ -6159,6 +6168,52 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     ): Promise<ReturnType<typeof computeCronAtNextFire>> => {
         activityCtx.traceInfo(`[computeCronAtNextFire] tz=${input.schedule?.tz} after=${input.afterUtcMs}`);
         return computeCronAtNextFire(input.schedule, input.afterUtcMs, input.lastOccurrenceKey);
+    });
+
+    // -- runCronPrecheck (1.0.83) ------------------------------
+    // Runs the worker's registered precheck named by an interval cron
+    // schedule. The activity result is recorded in history, so the
+    // orchestration's skip/run branch replays deterministically. Fail open:
+    // any failure here runs the model turn.
+    runtime.registerActivity("runCronPrecheck", async (
+        activityCtx: any,
+        input: CronPrecheckInput,
+    ): Promise<CronPrecheckResult> => {
+        await sessionManager.authorizeCronPrecheck(input);
+        const { result, event } = await evaluateCronPrecheck({
+            registrations: sessionManager.getCronPrechecksFor(input.packageId, input.packageIdentity),
+            input,
+            callMcpTool: async (signal, server, tool, args) => {
+                const servers = await sessionManager.getCronPrecheckMcpServers(input);
+                return callCronPrecheckMcpTool(servers, signal, server, tool, args);
+            },
+        });
+        activityCtx.traceInfo(
+            `[runCronPrecheck] session=${input.sessionId} precheck=${result.precheck} outcome=${result.outcome} shadow=${result.shadow === true} skip=${result.skip}`,
+        );
+        if (catalog) {
+            await cmsRetryBestEffort(
+                `runCronPrecheck.recordEvent session=${input.sessionId}`,
+                () => catalog!.recordEvents(input.sessionId, [{ eventType: "session.cron_precheck", data: event }], workerNodeId),
+                (msg) => activityCtx.traceInfo(msg),
+            );
+            // Owner notices are informational and never change the result.
+            const notice = cronPrecheckNotification(input, result);
+            const notifications = catalog.notifications;
+            if (notice && notifications) {
+                await cmsRetryBestEffort(
+                    `runCronPrecheck.notify(${notice}) session=${input.sessionId}`,
+                    () => notice === "broken"
+                        ? notifications.notifyCronPrecheckBroken({
+                            sessionId: input.sessionId, precheck: result.precheck, outcome: result.outcome,
+                            packageId: input.packageId, packageIdentity: input.packageIdentity,
+                        })
+                        : notifications.resolveCronPrecheckBroken(input.sessionId),
+                    (msg) => activityCtx.traceInfo(msg),
+                );
+            }
+        }
+        return result;
     });
 
     // ── Session regeneration activities (1.0.67) ──────────────

@@ -1,5 +1,22 @@
 # Building a Package for PilotSwarm
 
+> **Executable published-package safety gate:** publishing code records a pending
+> immutable candidate, never automatic activation or grandfathered execution.
+> Supported ESM module tools require administrator content approval, verified
+> packaged dependencies/config, explicit activation and exact durable session pins.
+> They run only in supervised child processes; every tool invocation rechecks
+> authoritative current identity/owner/capability/registration state. Prefer
+> `tools/worker-module.mjs`; `.js` requires packaged `"type":"module"`.
+> Automatic supported stdio MCP uses a session-specific supervised transport,
+> never raw package commands in the SDK. Explicitly declared callbacks execute
+> through JSON/reverse IPC; failed or unfinished nested calls cannot authorize skip.
+> Free-form handlers/prechecks and unverifiable executable/dependency shapes remain
+> rejected. See the runtime proposal for exact callback and host requirements.
+> Declarative prompts/skills retain their behavior. Historical unbound sessions
+> require explicit admin rebind. This prerequisite is **not release-ready**:
+> see the supported/unsupported shapes and remaining integration/review gates.
+> See the [platform prerequisite and remaining gates](proposals/executable-package-authorization.md).
+
 > **Point your coding assistant (Copilot / Claude / …) at this file.** It is a
 > complete, self-contained recipe for authoring a package that uploads
 > to PilotSwarm and passes validation on the first try. Every schema, rule,
@@ -172,6 +189,7 @@ Frontmatter fields:
 | `inheritDefaultMcpServers` | optional | Also attach the deployment's default MCP servers. |
 | `initialPrompt` | optional | Auto-sent first message when a session starts blank. |
 | `initialRequiredTool` | optional, schema `3` | Tool with a registered session handler that must produce a real execution event during the initial prompt turn. It must also appear in `tools`. PilotSwarm corrects one prose-only response, then fails closed if the handler is unavailable or still not invoked. |
+| `cronPrechecks` | optional | Bind this agent's `cron` schedules to a cron precheck by reason: a list of `{ reason \| reasonPrefix, precheck }`. A matching schedule asks the precheck (from this package's worker module, §5) before each wake-up and skips wake-ups that have no work, without a model call. Other cron uses and interactive messages are unaffected. Any schema version. |
 
 **Rejected at validation**: `system: true` (background agents belong to the
 deployment), an agent named `default`, names colliding with a built-in agent
@@ -204,9 +222,9 @@ description: House style for responses.
 - Every subdirectory of `skills/` must contain a parseable `SKILL.md`;
   stray directories fail validation.
 
-## 5. Worker tools — `tools/worker-module.js`
+## 5. Worker tools — `tools/worker-module.mjs` (or packaged ESM `.js`)
 
-Real code executed on the worker. The exact contract (copy this shape):
+Trusted code executed only in a supervised package child. The supported declaration contract:
 
 ```js
 /**
@@ -238,22 +256,165 @@ export default {
 
 - `parameters` is a JSON-Schema object; `handler` is async and returns a
   JSON-serializable value.
-- **No bare imports.** The module loads from an install cache with no
-  `node_modules` above it — `import x from "some-pkg"` fails at load and
-  quarantines the package. `node:` built-ins are fine; anything else must be
-  vendored inside the package (discouraged — export plain objects instead).
+- **Closed imports only.** Bare npm imports, vendored `node_modules`, dynamic
+  imports, child-process/native loading and external executable dependencies are
+  rejected before activation. Static relative packaged ESM imports and a
+  documented subset of `node:` builtins are supported. `.js` needs a packaged
+  `package.json` with `"type":"module"` (include it when using manifest staging).
 - The file must be valid **ES module** syntax; it is compile-checked (never
   executed) at validation.
-- A named agent can declare the tool's `name` in its frontmatter `tools:`
-  list. Generic and named sessions can also discover a package's tools and
-  activate the needed permitted tools with `use_package`; no agent file is
-  required for a tools-only package. Session and deployment restrictions still
-  apply, and loading a skill alone does not attach tools.
+- Agent declarations and current session permissions narrow available tools.
+  Executable named-agent roots require exact durable bindings. Generic agents
+  and declarative named roots can use tools from another executable package
+  through exact durable `use_package` selection grants; a declarative root does
+  not need a named-agent pin. Both root eligibility and target approval/current
+  grants are rechecked before invocation. No agent file is required for a
+  tools-only package. Session and deployment restrictions still apply, and
+  loading a skill alone does not attach tools.
+
+### Cron prechecks
+
+**Not yet deployment-ready:** package-owned prechecks depend on the separate
+executable-package authorization prerequisite. Administrator approval of exact
+content before loading and current session permission to invoke it are separate
+requirements; neither one replaces the other. This also applies to package
+tools and executable MCP integrations.
+
+A package whose agent polls on a `cron` schedule can skip empty cycles without
+a model call. The unreleased package precheck API has intentionally changed:
+`createCronPrechecks` / exported `cronPrechecks` are **rejected**, never imported.
+Declare the schedule name and policy as data in `plugin.json`, mapped to an
+explicit generic supervised callback:
+
+```json
+{
+  "callbacks": {
+    "queue_gate": { "agents": ["queue-poller"], "tools": [], "mcpServers": ["queue"] }
+  },
+  "cronPrechecks": {
+    "queue-gate": { "callback": "queue_gate", "timeoutMs": 10000, "shadow": false, "maxConsecutiveSkips": 12 }
+  }
+}
+```
+
+```js
+export function createTools() { return []; }
+export function createCallbacks() {
+  return [{
+    name: "queue_gate",
+    handler: async ({ sessionId, reason, intervalSeconds, consecutiveSkips }, context) => {
+      const result = await context.callMcp("queue", "tools/call", {
+        name: "queue_status", arguments: { scope: "both" },
+      });
+      const hasWork = result.structuredContent?.hasWork;
+      if (typeof hasWork !== "boolean") throw new Error("Invalid queue status");
+      return { action: hasWork ? "run" : "skip" };
+    },
+  }];
+}
+```
+
+Use canonical `tools/worker-module.js` with packaged `package.json` containing
+`{"type":"module"}`. Only supported, fully verifiable executable dependencies may
+activate; arbitrary npm/bare imports and remote package MCP are not supported.
+The existing user-facing agent frontmatter and schedule names do not change:
+
+```yaml
+cronPrechecks:
+  - reasonPrefix: "Run the queue cycle"
+    precheck: queue-gate
+```
+
+Bindings accept single-line plain or quoted strings (JSON escapes for double
+quotes, doubled apostrophes for single quotes). Inline comments are ignored
+outside quotes; `#` inside a quoted reason remains part of the reason.
+
+- Each worker reads precheck policy without importing package code; no deployment code changes.
+  Only sessions bound to this package's agents can use them.
+- Every callback is subject to current-owner and bound-copy checks, including
+  callbacks that never call MCP. Missing ownership or a removed/inaccessible
+  binding cannot produce an idle-skip result. Admin approval and explicit
+  activation precede imports/factories in a supervised child.
+- Package-owned executable schedule arming captures full package/version/SHA
+  and binding revision. Continue-as-new preserves that identity. An existing
+  approved/authorized V1 schedule can use retained V1 after executable V2
+  activation; it never silently follows V2. Retired package registrations cannot
+  arm new package-owned schedules. Revocation or explicit rebind denies stale
+  schedules; old package-ID-only histories cannot silently adopt executable code.
+- Trusted `worker.registerCronPrechecks()` checks need no package binding row
+  for prompt-only/declarative agents, including historical sessions. Declarative
+  republishing remains fast and needs no administrative rebind. If either the
+  existing binding or active copy is executable/unverified, exact-content
+  admission remains mandatory even for a static check. Both transitions between
+  declarative and executable require explicit rebind and deliberate re-arm.
+  Lower-level SDK callers creating named package roots supply
+  `boundAgentPackageId`; authenticated Web/TUI creation resolves it server-side.
+- `run` continues with the normal model turn. `skip` re-arms the schedule
+  without one. A thrown, timed-out or malformed answer runs the model turn,
+  and unsupported exports/declarations quarantine the package.
+- Timeout cancellation reaches the supervised runtime and kills its owned
+  generation, including synchronous code. The child does not receive the
+  parent's `AbortSignal`; this is process supervision, not a sandbox.
+- Keep the check bounded and answer from authoritative state; return `run`
+  when unsure. See [Cron Prechecks](developer/building/sdk-apps.md#cron-prechecks)
+  for the full behavior.
+
+#### Calling MCP without a model
+
+Package callbacks use the reverse-IPC `context.callMcp` bridge shown above.
+Trusted `worker.registerCronPrechecks` retains `callMcpTool(server, tool, args)`
+and its original `AbortSignal` context unchanged.
+
+Declare `queue` in the agent's `mcpServers` and its connection in the package
+or deployment MCP configuration as usual (§6). This helper grants no new
+servers or tools: the current session owner, exact bound package and a
+deployment server's `tools` allowlist apply. It also honors authorized persisted `use_package`
+MCP selections. Package-owned MCP markers are resolved only through the exact
+supervised/authoritative runtime, never passed to the raw transport helper.
+Trusted deployment HTTP/SSE/stdio uses the current-authorized bridge and a
+bounded fresh connection. Package MCP children are session-specific supervised
+instances. Await every call; failed, caught, or unfinished nested calls cannot
+fabricate skip. Interactive OAuth and MCP model sampling are not provided.
+
+Stateful HTTP calls explicitly terminate their remote MCP session after closing
+the connection, including on errors or cancellation. Disposal has an independent
+one-second deadline so cancellation cannot strand a session without attempting
+cleanup. Servers may decline termination with HTTP 405; their own expiry policy
+then applies. Other cleanup failures run the normal cycle rather than skip.
+
+Connection, protocol and MCP `isError` results throw. Failed or unfinished
+MCP calls force the normal cycle, even if the handler catches an error and
+returns `skip`. Do not turn an unknown response into `skip`.
+Use deterministic, preferably read-only tools;
+activity retries can repeat calls. MCP tools that internally use an LLM may
+still incur backend model cost.
 
 ## 6. MCP servers — `.mcp.json` + `mcp-servers/`
 
-`.mcp.json` maps server names to configs. Each server needs `command`
-(stdio) **or** `url` (http/sse):
+**Executable published packages currently support only reviewed packaged Node ESM
+stdio MCP through supervised authority.** The HTTP/SSE and arbitrary-command
+configurations described below remain trusted deployment configuration formats,
+not permission to publish or execute an unverifiable package server.
+
+For an executable package, each server config may contain only `command`
+(`"node"`), `args` (a package-relative `.mjs`/`.js` entry, then string
+arguments), `env` and `type: "stdio"`. Any other key, including a `tools`
+allowlist, is an approval blocker shown in **Pending Approval**: the content can
+still be approved, but activation is refused. The supervised gateway exposes
+the server's tools; access is limited by the agent's `mcpServers` and the
+callback's declared `mcpServers`, not by a package `tools` list:
+
+```json
+{
+    "lookup-mcp": {
+        "command": "node",
+        "args": ["./mcp-servers/lookup.mjs"]
+    }
+}
+```
+
+In trusted deployment configuration, `.mcp.json` maps server names to configs.
+Each server needs `command` (stdio) **or** `url` (http/sse):
 
 ```json
 {
@@ -401,8 +562,43 @@ running sessions are never affected by scope changes.
 ## 10. What happens after publish
 
 - Every worker notices the registry change on its next poll (~20 s) and
-  installs the new version **without restarting** — watch fleet adoption on
-  the package detail page ("N/N workers current").
+  installs the **active** version without a whole-worker restart — watch fleet
+  adoption on the package detail page ("N/N workers current"). Declarative
+  versions auto-activate; code-bearing versions remain pending administrator
+  content approval and separate activation. A mixed code/prompt package requires
+  approval for its whole immutable version, not just its executable files.
+- Prompt-only agent sessions follow declarative republishes on resume, including
+  historical sessions: no exact pin or administrator rebind is required. If either
+  their prior binding or active copy is executable/unverified, exact-content rules
+  apply. Declarative-to-executable and executable-to-declarative transitions
+  require explicit administrator rebind. Existing approved executable V1 pins
+  remain V1 when executable V2 activates, never silently adopt V2.
+- Owners, package editors and administrators can inspect the package detail's
+  **Approval** status, version ID, full digest and reasons, or run
+  `pilotswarm agents review-status <package> --api-url <portal-url>` with their
+  own authenticated credential. MCP exposes `get_agent_package_review_status`;
+  management/Web clients expose `getAgentPackageReviewStatus`. Labels distinguish
+  not required, pending admin approval, approved (not active), active, rejected
+  and revoked. Publish/republish JSON adds `review` with decision, executable,
+  active, versionId and sha256; `status: published | noop` is unchanged.
+  These are read-only snapshots, not execution grants. Approve, reject and
+  revoke decisions also notify the package owner and editors (portal package
+  catalog → **Notifications**, or `pilotswarm agents notifications`), and an
+  approved version is marked "approved, not active" until it is activated.
+  Administrators review a candidate against its baseline with
+  `getAgentPackageReviewDiff` (portal **Pending Approval** tab, MCP
+  `get_agent_package_review_diff`). The portal shows it like a code review:
+  a files-changed list grouped by review risk, with `+/-` line counts, and the
+  selected file's patch. It asks for the list only (`patches: false`, MCP
+  `files_only`, CLI `review-diff --files`) and loads each file when it is
+  selected with `getAgentPackageReviewFileDiff` (MCP
+  `get_agent_package_review_file_diff`, CLI `review-diff-file`), so a large
+  package stays readable. Content approval does not approve external
+  tool backends.
+- Keep fast-changing prompts declarative; keep approved executable components
+  thin/stable or use deployment-registered trusted prechecks. Unknown inspection
+  is not a declarative exemption. Disabling, deleting or revoking executable
+  content still denies new admissions immediately and requires truthful fencing.
 - A broken package (bad import, runtime throw at load) is **quarantined
   alone**: its capabilities become unavailable, the error lands in the fleet view, and
   every other package keeps working.
@@ -430,6 +626,52 @@ running sessions are never affected by scope changes.
 - Every publish path — CLI, portal import, portal folder upload, MCP —
   converges on the same mechanism: files are validated, canonically packed,
   and stored as a package artifact. There is no server-side repo polling.
+
+### Optional advisory review assistant
+
+PilotSwarm supplies the runtime for an optional review assistant for
+unrestricted fleet administrators. The assistant itself is an ordinary
+declarative agent package that a deployment maintains and publishes, so its
+instructions can change without a PilotSwarm release. Once an administrator
+publishes and enables it, **Ask package-reviewer** in the **Pending Approval**
+diff panel opens its session with the exact candidate and baseline shown.
+**Refresh report** reads the saved facts, analysis, review steps and open risks
+through `getAgentPackageReviewReport`.
+
+The runtime grants the reviewer tool bundle only to an agent named exactly
+`package-reviewer`, and gives that agent nothing else. Its agent file should
+declare exactly these tools:
+
+| Tool | Purpose |
+|---|---|
+| `list_agent_package_reviews` | Pending candidates with exact package, version and digest |
+| `get_agent_package_review_diff` | Risk-classified diff against the review baseline |
+| `read_agent_package_review_file` | One candidate or baseline file, in slices |
+| `read_agent_package_review_audit` | Decision history for one version |
+| `submit_package_review_report` | Save the advisory report (facts, analysis, guide, risks; no verdict) |
+| `show_package_review_guide` | Draw the saved report as a guided review on the session canvas |
+
+Declaring other tools does not grant them. Keep the package declarative (no
+tools module, MCP servers or skills), so it needs no content approval. Its
+instructions should treat package content as untrusted data and never present
+the report as a verdict. Renaming the agent removes its tools, and the panel
+button launches only `package-reviewer`.
+
+This is not approval automation. The assistant has no approve, reject,
+activation, shell, file, MCP or delegation tools. Each tool call resolves
+current owner/admin authority without using the inspect-viewer cache.
+Anonymous no-auth operators and the system principal cannot use this bundle,
+matching the authenticated-admin rule on the review API.
+File-based hooks, custom instructions and discovered skills are disabled.
+Package contents are untrusted data, never imported or executed for a review.
+
+Reports bind package/version IDs and both digests, are insert-only, and are
+shown only while the candidate is pending and the baseline matches. Large
+diff patches are explicitly omitted to keep the tool response within 96 KiB;
+the assistant can read individual files in slices. Binary files expose
+size/hash only. The administrator must independently inspect any incomplete
+analysis. Missing agents, unavailable reports or assistant errors never block
+manual review or its decision controls.
 
 ## 11. Managing a published package from the CLI
 
@@ -617,7 +859,7 @@ Before telling the user the package is ready:
 - [ ] Contents match the capability: skills for reusable methods, tools/MCP for executable integrations, agents for authored workflows. Zero agents is valid.
 - [ ] If present, every `.agent.md` has a non-empty body, the schema version its fields require (§3), and a unique, non-reserved name.
 - [ ] If agents are present, their `tools:` names match available tools; `skills:` match SKILL.md frontmatter names; `mcpServers:` match package or permitted deployment catalog keys.
-- [ ] `worker-module.js` and `mcp-servers/*.js` are valid ESM with **no bare imports**.
+- [ ] `tools/worker-module.mjs` (or `.js` with packaged `"type":"module"`, never both) and `mcp-servers/*` modules are valid ESM with **no bare imports**.
 - [ ] `pilotswarm agents validate ./my-kit` prints no errors.
 - [ ] Version bumped if this `name@version` was ever published with different content.
 - [ ] `CHANGELOG.md` has an entry for the version being published (§7).

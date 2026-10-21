@@ -85,3 +85,17 @@ export function routeTurnControlActivity(task: any): any {
 export function registerTurnControlActivity(runtime: any, name: keyof typeof TURN_CONTROL_ACTIVITY_NAMES, handler: any): void {
     runtime.registerActivity(TURN_CONTROL_ACTIVITY_NAMES[name], handler);
 }
+
+/**
+ * Cron prechecks (1.0.83): runCronPrecheck goes only to workers that declare
+ * this tag. An older worker lacks the activity. Every worker that declares it
+ * also declares the handoff, workspace and turn-control tags.
+ */
+export const CRON_PRECHECK_CAPABILITY = "pilotswarm.cron-precheck.v1";
+
+export function routeCronPrecheckActivity(task: any): any {
+    if (typeof task.withTag !== "function") {
+        throw new Error("Cron prechecks require Duroxide activity tag routing support");
+    }
+    return task.withTag(CRON_PRECHECK_CAPABILITY);
+}

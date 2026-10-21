@@ -15,6 +15,9 @@ const COPILOT_NATIVE_TOOL_NAMES = [
 // The factory coverage test checks this list against all role/capability bundles.
 const SESSION_ATTACHED_TOOL_NAMES = [
     "search_capabilities", "load_agent_guidelines", "list_session_capabilities", "use_package", "load_agent",
+    // package-reviewer-tools.ts PACKAGE_REVIEWER_TOOL_NAMES
+    "list_agent_package_reviews", "get_agent_package_review_diff", "read_agent_package_review_file",
+    "read_agent_package_review_audit", "submit_package_review_report", "show_package_review_guide",
     "bulk_store_facts",
     "context_health",
     "create_agent_session",

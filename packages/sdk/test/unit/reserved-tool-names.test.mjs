@@ -6,6 +6,7 @@ import { createGraphTools } from "../../dist/graph-tools.js";
 import { createInspectTools } from "../../dist/inspect-tools.js";
 import { FEATURE_OPERATION_SPECS } from "../../dist/feature-tools.js";
 import { PROVIDER_TOOL_NAMES } from "../../dist/provider-tools.js";
+import { createPackageReviewerTools } from "../../dist/package-reviewer-tools.js";
 
 test("Copilot-native and PilotSwarm control names are reserved", () => {
     assert.equal(findReservedPackageToolName(["domain_tool", "read_agent"], [], []), "read_agent");
@@ -38,6 +39,8 @@ test("role- and store-gated platform bundles cannot be shadowed by packages", ()
         }
     }
     for (const name of [...PROVIDER_TOOL_NAMES, ...FEATURE_OPERATION_SPECS.map(spec => spec.name)]) emitted.add(name);
+    for (const tool of createPackageReviewerTools({ catalog: inert, artifactStore: inert, resolveViewer: () => null })) emitted.add(tool.name);
+    assert.ok(emitted.has("submit_package_review_report"));
     assert.ok(emitted.has("graph_stats"));
     assert.ok(emitted.has("set_cluster_feature_flag"));
     assert.ok(emitted.has("facts_search"));

@@ -7,7 +7,9 @@ tarball: the test harness and deployment templates are development sources.
 
 ## 1. Prerequisites
 
-- Node.js **24 or later**, npm, Git and Bash. Run Windows commands in WSL.
+- Node.js **24 or later**, npm, Git and Bash. Use WSL for full Linux parity on
+  Windows; the credential-free checks below also support native PowerShell
+  with Git Bash available for shell subprocesses.
 - Docker for a disposable stock PostgreSQL database, or your own test-only
   PostgreSQL server. The GitHub runner uses PostgreSQL 16.
 - For live SDK integration tests, a GitHub token with Copilot access and access
@@ -36,6 +38,13 @@ The Actions check installs the public example catalog in its disposable checkout
 For a fresh local checkout, copy `.model_providers.example.json` to
 `.model_providers.json` if that file does not already exist. Preserve any
 existing private catalog. These checks do not need Azure credentials.
+
+For native Windows CI-policy checks, invoke `node --test` from PowerShell,
+not from inside Git Bash. Put Git's `bin` directory on `PATH` for `bash`, but
+keep Windows' `System32` ahead of Git's `usr\bin` so `tar` accepts Windows
+drive paths. Workflow assertions normalize CRLF checkout text and shell fixtures
+report native paths. The POSIX credential-file mode assertion is explicitly
+skipped on Windows and remains mandatory in Linux CI.
 
 After staging changes, run `npm run check:privacy`. It scans the **Git index**,
 so its input matches what will be committed; ignored local files and historical

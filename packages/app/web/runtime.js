@@ -915,6 +915,7 @@ export class PortalRuntime {
                     model: safeParams.model,
                     reasoningEffort: safeParams.reasoningEffort,
                     contextTier: safeParams.contextTier,
+                    ...(safeParams.cronPrecheck !== undefined ? { cronPrecheck: safeParams.cronPrecheck } : {}),
                     groupId: safeParams.groupId,
                     owner,
                     visibility: normalizeVisibility(safeParams.visibility, this.authz.defaultVisibility),
@@ -928,6 +929,7 @@ export class PortalRuntime {
                     model: safeParams.model,
                     reasoningEffort: safeParams.reasoningEffort,
                     contextTier: safeParams.contextTier,
+                    ...(safeParams.cronPrecheck !== undefined ? { cronPrecheck: safeParams.cronPrecheck } : {}),
                     title: safeParams.title,
                     splash: safeParams.splash,
                     splashMobile: safeParams.splashMobile,
@@ -951,6 +953,91 @@ export class PortalRuntime {
             // authenticated principal, `resourceAdmin` the resolved role.
             case "listAgentPackages":
                 return this.transport.listAgentPackages(owner, resourceAdmin);
+            case "getAgentPackageReviewStatus":
+                if (!owner) throw forbiddenError("Authenticated package manager required.");
+                return this.transport.getAgentPackageReviewStatus(safeParams.packageId, owner, resourceAdmin && role === "admin");
+            // Always the caller's own rows: the principal is never a parameter.
+            case "listMyNotifications":
+                if (!owner) throw forbiddenError("Authenticated principal required.");
+                return this.transport.listMyNotifications({
+                    unreadOnly: safeParams.unreadOnly === true || safeParams.unreadOnly === "true",
+                    ...(Number.isSafeInteger(Number(safeParams.limit)) && safeParams.limit != null ? { limit: Number(safeParams.limit) } : {}),
+                }, owner);
+            case "markNotificationsRead":
+                if (!owner) throw forbiddenError("Authenticated principal required.");
+                return this.transport.markNotificationsRead(safeParams.ids ?? null, owner);
+            case "listAgentPackageReviews":
+            case "decideAgentPackageReview":
+            case "getAgentPackageReviewAudit":
+            case "getAgentPackageReviewDiff":
+            case "getAgentPackageReviewReport":
+            case "getAgentPackageReviewFileDiff":
+            case "getAgentPackageRuntimeStatus":
+            case "activateAgentPackageVersion":
+            case "getAgentPackageActivationAudit":
+            case "getSessionAgentPackageBinding":
+            case "rebindSessionAgentPackage": {
+                // Unlike ordinary no-auth operator features, executable trust
+                // decisions always require an authenticated server admin.
+                if (!resourceAdmin || role !== "admin" || !owner) {
+                    throw forbiddenError("Package reviews require an authenticated administrator.");
+                }
+                if (method === "listAgentPackageReviews") return this.transport.listAgentPackageReviews(owner, true);
+                if (method === "getAgentPackageRuntimeStatus") {
+                    const input = safeParams.input || {};
+                    return this.transport.getAgentPackageRuntimeStatus({
+                        packageId: input.packageId, versionId: input.versionId, sha256: input.sha256,
+                    }, owner, true);
+                }
+                if (method === "getAgentPackageReviewAudit") {
+                    return this.transport.getAgentPackageReviewAudit(safeParams.versionId, owner, true);
+                }
+                if (method === "getAgentPackageReviewDiff" || method === "getAgentPackageReviewReport") {
+                    const input = safeParams.input || {};
+                    return this.transport[method]({
+                        packageId: input.packageId, versionId: input.versionId, sha256: input.sha256,
+                        baselineVersionId: input.baselineVersionId ?? null,
+                        ...(method === "getAgentPackageReviewDiff" && input.patches === false ? { patches: false } : {}),
+                    }, owner, true);
+                }
+                if (method === "getAgentPackageReviewFileDiff") {
+                    const input = safeParams.input || {};
+                    return this.transport.getAgentPackageReviewFileDiff({
+                        packageId: input.packageId, versionId: input.versionId, sha256: input.sha256,
+                        baselineVersionId: input.baselineVersionId ?? null, path: input.path,
+                    }, owner, true);
+                }
+                if (method === "getAgentPackageActivationAudit") {
+                    return this.transport.getAgentPackageActivationAudit(safeParams.packageId, owner, true);
+                }
+                if (method === "getSessionAgentPackageBinding") {
+                    return this.transport.getSessionAgentPackageBinding(safeParams.sessionId, owner, true);
+                }
+                const input = safeParams.input || {};
+                if (method === "activateAgentPackageVersion") {
+                    await this.transport.activateAgentPackageVersion({
+                        packageId: input.packageId, versionId: input.versionId, sha256: input.sha256,
+                        expectedReviewRevision: input.expectedReviewRevision,
+                        expectedActivationRevision: input.expectedActivationRevision,
+                        expectedActiveVersionId: input.expectedActiveVersionId, reason: input.reason,
+                    }, owner, true);
+                    return { activated: true, executionAllowed: false, runtimeFencing: "not-reported" };
+                }
+                if (method === "rebindSessionAgentPackage") {
+                    await this.transport.rebindSessionAgentPackage({
+                        sessionId: input.sessionId, packageId: input.packageId, versionId: input.versionId,
+                        sha256: input.sha256, agentName: input.agentName,
+                        expectedBindingRevision: input.expectedBindingRevision, reason: input.reason,
+                    }, owner, true);
+                    return { rebound: true, executionAllowed: false, runtimeFencing: "not-reported" };
+                }
+                await this.transport.decideAgentPackageReview({
+                    packageId: input.packageId, versionId: input.versionId, sha256: input.sha256,
+                    expectedRevision: input.expectedRevision, decision: input.decision, reason: input.reason,
+                    ...(Object.hasOwn(input, "baseline") ? { baseline: input.baseline ?? null } : {}),
+                }, owner, true);
+                return { recorded: true, approvalScope: "artifact-content", activationAllowed: false, runtimeFencing: "not-reported" };
+            }
             case "getAgentPackage":
                 return this.transport.getAgentPackage(safeParams.name, owner, resourceAdmin, packageSelectorParams(safeParams));
             case "getAgentPackageTree":
@@ -1242,6 +1329,19 @@ export class PortalRuntime {
                 return this.transport.restartSystemSession(safeParams.agentIdOrSessionId, safeParams.options || {});
             case "setSessionModel":
                 return this.transport.setSessionModel(safeParams.sessionId, safeParams.options || {});
+            // Server-stamped actor: the audit names the signed-in principal,
+            // never a client-supplied value.
+            case "setSessionCronPrecheck":
+                return this.transport.setSessionCronPrecheck(
+                    safeParams.sessionId,
+                    {
+                        precheck: safeParams.precheck,
+                        expectedRevision: safeParams.expectedRevision,
+                        reason: safeParams.reason,
+                        actor: principalLabel(authContext) || owner || "anonymous",
+                    },
+                    { timeoutMs: clampInteger(safeParams.options?.timeoutMs, 30_000, 1_000, 120_000) },
+                );
             case "stopSessionTurn":
             case "steerSessionTurn":
                 // Server-stamped caller (P18): the sender and the viewer that

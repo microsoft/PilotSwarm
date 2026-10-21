@@ -270,15 +270,15 @@ describe("orchestration version upgrades", () => {
         expect(readFifo(values).filter((item) => item.kind === "prompt").map((item) => item.prompt)).toEqual(["P2"]);
     });
 
-    it("R9: 1.0.82 drains an inherited 1.0.81 FIFO [timer, timer, P1, P2] in two turns, then waits on the cron", async () => {
+    it("R9: the latest handler drains an inherited 1.0.81 FIFO [timer, timer, P1, P2] in two turns, then waits on the cron", async () => {
         const values = new Map();
         inheritedFifo(values);
         const turns = [];
         const ctx = createCtx(values, [], turns);
         const { DURABLE_SESSION_LATEST_VERSION } = await import("../../src/orchestration-version.ts");
-        expect(DURABLE_SESSION_LATEST_VERSION).toBe("1.0.82");
+        expect(DURABLE_SESSION_LATEST_VERSION).toBe("1.0.83");
         const handler = await loadHandler(DURABLE_SESSION_LATEST_VERSION);
-        const result = driveUntilParked(handler(ctx, inheritedInput("fifo-1.0.82")), ctx);
+        const result = driveUntilParked(handler(ctx, inheritedInput(`fifo-${DURABLE_SESSION_LATEST_VERSION}`)), ctx);
         expect(turns).toHaveLength(2);
         expect(turns[0][0]).toMatch(/P1[\s\S]*P2/);
         expect(turns[1][0]).toMatch(/Scheduled cron wake-up/);
