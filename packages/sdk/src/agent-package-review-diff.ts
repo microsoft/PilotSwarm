@@ -23,6 +23,11 @@ export interface ReviewFileChange extends FilePatch {
     newSha256?: string;
     /** Changed top-level manifest keys, MCP servers or agent frontmatter keys. */
     changedKeys?: string[];
+    /** Added and removed lines in the unified patch (absent when no textual patch exists). */
+    additions?: number;
+    deletions?: number;
+    /** Summary mode: a patch exists but was left out; fetch it per file. */
+    patchOmitted?: boolean;
 }
 
 export interface AgentPackageReviewVersionRef extends ExecutablePackageIdentity {
@@ -47,6 +52,15 @@ export interface AgentPackageReviewDiff {
 
 export const REVIEW_DIFF_ADVISORY =
     "Classification and diff are review aids only. They are not an approval or a security proof; approval binds the exact candidate digest.";
+
+/** One file of a review, loaded on demand for the same exact candidate and baseline. */
+export interface AgentPackageReviewFileDiff {
+    candidate: { packageId: string; versionId: string; sha256: string };
+    baseline: { versionId: string; sha256: string } | null;
+    baselineSource: ReviewBaselineSource;
+    change: ReviewFileChange;
+    advisory: string;
+}
 
 const DEPENDENCY_PATH = /(?:^|\/)(?:node_modules\/|package\.json$|package-lock\.json$|npm-shrinkwrap\.json$|yarn\.lock$|pnpm-lock\.yaml$)/i;
 const EXECUTABLE_PATH = /\.(?:js|mjs|cjs|ts|mts|cts|sh|ps1|py|wasm|node)$/i;
@@ -156,6 +170,50 @@ function sha(buf: Buffer | undefined): string | undefined {
     return buf ? createHash("sha256").update(buf).digest("hex") : undefined;
 }
 
+/** Added/removed line counts of a unified patch, skipping the ---/+++ file headers. */
+function lineCounts(patch: string | null): { additions: number; deletions: number } | null {
+    if (patch === null) return null;
+    let additions = 0, deletions = 0;
+    for (const line of patch.split("\n")) {
+        if (line.startsWith("+++ ") || line.startsWith("--- ")) continue;
+        if (line.startsWith("+")) additions++;
+        else if (line.startsWith("-")) deletions++;
+    }
+    return { additions, deletions };
+}
+
+function describeChange(patch: FilePatch, oldBuf: Buffer | undefined, newBuf: Buffer | undefined): ReviewFileChange {
+    const classified = classifyReviewChange(patch.path, oldBuf, newBuf);
+    const flagged = classified.flagged ?? (patch.diff === null ? patch.note ?? "content not shown" : undefined);
+    return {
+        ...patch,
+        ...classified,
+        ...(flagged ? { flagged } : {}),
+        ...(oldBuf ? { oldSha256: sha(oldBuf) } : {}),
+        ...(newBuf ? { newSha256: sha(newBuf) } : {}),
+        ...(lineCounts(patch.diff) ?? {}),
+    };
+}
+
+/**
+ * One changed file's classified patch, for loading a large review file by
+ * file. Throws NOT_FOUND when the path is unchanged or in neither artifact.
+ */
+export function buildAgentPackageReviewFileChange(params: {
+    candidateEntries: PackageEntry[];
+    baselineEntries: PackageEntry[];
+    path: string;
+}): ReviewFileChange {
+    const oldBuf = entriesToMap(params.baselineEntries).get(params.path);
+    const newBuf = entriesToMap(params.candidateEntries).get(params.path);
+    const patch = diffPackageTrees(
+        oldBuf ? [{ path: params.path, content: oldBuf }] : [],
+        newBuf ? [{ path: params.path, content: newBuf }] : [],
+    ).patches[0];
+    if (!patch) throw Object.assign(new Error(`${params.path} did not change in this review`), { code: "NOT_FOUND" });
+    return describeChange(patch, oldBuf, newBuf);
+}
+
 /** Baseline policy: an explicit same-package version, else the newest approved, else the active, else none. */
 export function selectReviewBaseline(
     versions: readonly AgentPackageReviewVersionRef[],
@@ -185,6 +243,8 @@ export function buildAgentPackageReviewDiff(params: {
     candidateEntries: PackageEntry[];
     baselineEntries: PackageEntry[];
     inspectionReasons?: string[];
+    /** False: list every change with its counts but no patch text (load patches per file). */
+    includePatches?: boolean;
 }): AgentPackageReviewDiff {
     const before = entriesToMap(params.baselineEntries);
     const after = entriesToMap(params.candidateEntries);
@@ -198,18 +258,10 @@ export function buildAgentPackageReviewDiff(params: {
     const pick = (map: Map<string, Buffer>) => [...map].filter(([path]) => shown.has(path)).map(([path, content]) => ({ path, content }));
     const diff = diffPackageTrees(pick(before), pick(after));
     const omitted = changed.length - shown.size;
+    const includePatches = params.includePatches !== false;
     const changes: ReviewFileChange[] = diff.patches.map((patch) => {
-        const oldBuf = before.get(patch.path);
-        const newBuf = after.get(patch.path);
-        const classified = classifyReviewChange(patch.path, oldBuf, newBuf);
-        const flagged = classified.flagged ?? (patch.diff === null ? patch.note ?? "content not shown" : undefined);
-        return {
-            ...patch,
-            ...classified,
-            ...(flagged ? { flagged } : {}),
-            ...(oldBuf ? { oldSha256: sha(oldBuf) } : {}),
-            ...(newBuf ? { newSha256: sha(newBuf) } : {}),
-        };
+        const change = describeChange(patch, before.get(patch.path), after.get(patch.path));
+        return includePatches || change.diff === null ? change : { ...change, diff: null, patchOmitted: true };
     }).sort((left, right) => rank(left.group) - rank(right.group) || left.path.localeCompare(right.path));
     const summary = Object.fromEntries(REVIEW_CHANGE_GROUPS.map((group) => [group, 0])) as AgentPackageReviewDiff["summary"];
     summary.flagged = 0;

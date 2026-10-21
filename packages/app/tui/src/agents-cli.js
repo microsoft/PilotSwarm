@@ -55,6 +55,7 @@ function parseArgs(argv) {
         else if (arg === "--user") flags.scope = "user";
         else if (arg === "--json") flags.json = true;
         else if (arg === "--unread") flags.unread = true;
+        else if (arg === "--files") flags.files = true;
         else if (arg === "--yes" || arg === "-y") flags.yes = true;
         else if (arg === "--store") flags.store = argv[++i];
         else if (arg === "--schema") flags.schema = argv[++i];
@@ -77,7 +78,8 @@ Usage:
   pilotswarm agents review-status <package>
   pilotswarm agents review <package-id> <version-id> <sha256> <revision> <approved|rejected|revoked> <reason>
   pilotswarm agents review-audit <version-id>
-  pilotswarm agents review-diff <package-id> <version-id> <sha256> [baseline-version-id] [--json]
+  pilotswarm agents review-diff <package-id> <version-id> <sha256> [baseline-version-id] [--files] [--json]
+  pilotswarm agents review-diff-file <package-id> <version-id> <sha256> <path> [baseline-version-id] [--json]
   pilotswarm agents notifications [--unread] [--json]
   pilotswarm agents notifications read [<id> ...]
   pilotswarm agents runtime-status <package-id> <version-id> <sha256>
@@ -303,7 +305,7 @@ export async function runAgentsCommand(argv) {
     const createdBy = `${os.userInfo().username}@cli`;
     const selector = flags.scope ? { scope: flags.scope } : null;
     try {
-        if (!web && ["review-status", "reviews", "review", "review-audit", "review-diff", "notifications", "runtime-status", "activate", "activation-audit", "binding", "rebind"].includes(command)) {
+        if (!web && ["review-status", "reviews", "review", "review-audit", "review-diff", "review-diff-file", "notifications", "runtime-status", "activate", "activation-audit", "binding", "rebind"].includes(command)) {
             console.error("Package trust administration requires authenticated Web API mode (--api-url). A direct database connection is not an authenticated administrator identity.");
             return 1;
         }
@@ -372,8 +374,10 @@ export async function runAgentsCommand(argv) {
             }
             case "review-diff": {
                 const [packageId, versionId, sha256, baselineVersionId] = rest;
+                const filesOnly = flags.files === true;
                 const diff = await ctx.client.getAgentPackageReviewDiff({
                     packageId, versionId, sha256, baselineVersionId: baselineVersionId || null,
+                    ...(filesOnly ? { patches: false } : {}),
                 }, actor, isAdmin);
                 if (flags.json) { console.log(JSON.stringify(diff, null, 2)); return 0; }
                 console.log(`candidate ${diff.candidate.name}@${diff.candidate.semver} sha256:${diff.candidate.sha256} revision ${diff.candidate.revision}`);
@@ -383,12 +387,27 @@ export async function runAgentsCommand(argv) {
                 const s = diff.summary;
                 console.log(`changes: ${s.total} · executable ${s.executable} · dependency ${s.dependency} · capability ${s.capability} · precheck-policy ${s["precheck-policy"]} · declarative ${s.declarative} · flagged ${s.flagged}`);
                 for (const change of diff.changes) {
-                    console.log(`\n[${change.group}] ${change.status} ${change.path}${change.flagged ? ` (flagged: ${change.flagged})` : ""}${change.changedKeys?.length ? ` keys: ${change.changedKeys.join(", ")}` : ""}`);
+                    const counts = Number.isInteger(change.additions) ? ` +${change.additions} -${change.deletions}` : "";
+                    console.log(`\n[${change.group}] ${change.status} ${change.path}${counts}${change.flagged ? ` (flagged: ${change.flagged})` : ""}${change.changedKeys?.length ? ` keys: ${change.changedKeys.join(", ")}` : ""}`);
                     if (change.diff) console.log(change.diff);
+                    else if (change.patchOmitted) continue;
                     else console.log(`  old ${change.oldSha256 ?? "-"}\n  new ${change.newSha256 ?? "-"}`);
                 }
                 if (diff.truncated) console.log(`\n… ${diff.truncated.omitted} more changed files omitted (counted in the summary).`);
+                if (filesOnly) console.log("\nShow one file: pilotswarm agents review-diff-file <package-id> <version-id> <sha256> <path> [baseline-version-id]");
                 console.log(`\n${diff.advisory}`);
+                return 0;
+            }
+            case "review-diff-file": {
+                const [packageId, versionId, sha256, filePath, baselineVersionId] = rest;
+                if (!filePath) { console.error("usage: pilotswarm agents review-diff-file <package-id> <version-id> <sha256> <path> [baseline-version-id]"); return 1; }
+                const file = await ctx.client.getAgentPackageReviewFileDiff({
+                    packageId, versionId, sha256, baselineVersionId: baselineVersionId || null, path: filePath,
+                }, actor, isAdmin);
+                if (flags.json) { console.log(JSON.stringify(file, null, 2)); return 0; }
+                const change = file.change;
+                console.log(`[${change.group}] ${change.status} ${change.path}${Number.isInteger(change.additions) ? ` +${change.additions} -${change.deletions}` : ""}${change.flagged ? ` (flagged: ${change.flagged})` : ""}`);
+                console.log(change.diff ?? `  old ${change.oldSha256 ?? "-"}\n  new ${change.newSha256 ?? "-"}`);
                 return 0;
             }
             case "review-status":

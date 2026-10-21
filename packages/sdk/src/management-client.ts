@@ -171,10 +171,17 @@ import {
     resolveAgentPackageVersion,
 } from "./agent-package-service.js";
 import {
+    buildAgentPackageReviewFileChange,
+    REVIEW_DIFF_ADVISORY,
     reviewBaselineAuditNote,
     type AgentPackageReviewDiff,
+    type AgentPackageReviewFileDiff,
 } from "./agent-package-review-diff.js";
-import { loadAgentPackageReviewDiff, resolveAgentPackageReviewTarget } from "./agent-package-review-loader.js";
+import {
+    loadAgentPackageReviewDiff,
+    loadAgentPackageReviewEntries,
+    resolveAgentPackageReviewTarget,
+} from "./agent-package-review-loader.js";
 import { PACKAGE_REVIEW_REPORT_ADVISORY, type AgentPackageReviewReportView } from "./package-review-report-store.js";
 import fs from "node:fs";
 import os from "node:os";
@@ -5282,14 +5289,40 @@ export class PilotSwarmManagementClient {
      * candidate against a baseline of the same package. Both artifacts are
      * verified against their recorded digests; the response echoes the
      * candidate digest, review revision and baseline digest that a decision
-     * from this view must carry.
+     * from this view must carry. `patches: false` lists every change with its
+     * line counts but no patch text; load each file with
+     * getAgentPackageReviewFileDiff.
      */
     async getAgentPackageReviewDiff(
-        input: { packageId: string; versionId: string; sha256: string; baselineVersionId?: string | null },
+        input: { packageId: string; versionId: string; sha256: string; baselineVersionId?: string | null; patches?: boolean },
         owner: AgentPrincipal | null, isAdmin: boolean,
     ): Promise<AgentPackageReviewDiff> {
         this._ensureStarted();
         return loadAgentPackageReviewDiff(this._catalog!, this._artifactStore, owner, isAdmin, input);
+    }
+
+    /**
+     * Authenticated administrator: one changed file's classified patch for
+     * the same exact candidate and baseline as getAgentPackageReviewDiff, so
+     * a large review loads file by file. NOT_FOUND when the path is unchanged.
+     */
+    async getAgentPackageReviewFileDiff(
+        input: { packageId: string; versionId: string; sha256: string; baselineVersionId?: string | null; path: string },
+        owner: AgentPrincipal | null, isAdmin: boolean,
+    ): Promise<AgentPackageReviewFileDiff> {
+        this._ensureStarted();
+        if (!input || typeof input.path !== "string" || !input.path || input.path.length > 1024) {
+            throw Object.assign(new Error("A changed file path is required"), { code: "INVALID_REQUEST" });
+        }
+        const target = await resolveAgentPackageReviewTarget(this._catalog!, owner, isAdmin, input);
+        const entries = await loadAgentPackageReviewEntries(this._catalog!, this._artifactStore, owner!, target);
+        return {
+            candidate: { packageId: target.candidate.packageId, versionId: target.candidate.versionId, sha256: target.candidate.sha256 },
+            baseline: target.baseline ? { versionId: target.baseline.versionId, sha256: target.baseline.sha256 } : null,
+            baselineSource: target.baselineSource,
+            change: buildAgentPackageReviewFileChange({ ...entries, path: input.path }),
+            advisory: REVIEW_DIFF_ADVISORY,
+        };
     }
 
     /**

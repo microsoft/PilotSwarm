@@ -786,6 +786,9 @@ export class NodeSdkTransport {
     async getAgentPackageReviewDiff(input, owner = this.currentUser, isAdmin = false) {
         return this.mgmt.getAgentPackageReviewDiff(input, owner, isAdmin === true);
     }
+    async getAgentPackageReviewFileDiff(input, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.getAgentPackageReviewFileDiff(input, owner, isAdmin === true);
+    }
 
     async getAgentPackageReviewReport(input, owner = this.currentUser, isAdmin = false) {
         return this.mgmt.getAgentPackageReviewReport(input, owner, isAdmin === true);

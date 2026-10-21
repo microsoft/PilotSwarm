@@ -47,6 +47,26 @@ test("MCP runtime status preserves exact identity and never fabricates fencing c
     }, null, true] }]);
 });
 
+test("MCP review diff can list files only and load one file, for the exact candidate", async t => {
+    const { client, calls } = await fixture(t);
+    const sha256 = "c".repeat(64);
+    await client.callTool({ name: "get_agent_package_review_diff", arguments: {
+        package_id: "pkg", version_id: "v2", sha256, files_only: true,
+    } });
+    await client.callTool({ name: "get_agent_package_review_file_diff", arguments: {
+        package_id: "pkg", version_id: "v2", sha256, path: "tools/q.mjs", baseline_version_id: "v1",
+    } });
+    assert.deepEqual(calls, [
+        { method: "getAgentPackageReviewDiff", args: [{ packageId: "pkg", versionId: "v2", sha256, baselineVersionId: null, patches: false }, null, true] },
+        { method: "getAgentPackageReviewFileDiff", args: [{ packageId: "pkg", versionId: "v2", sha256, baselineVersionId: "v1", path: "tools/q.mjs" }, null, true] },
+    ]);
+    const invalid = await client.callTool({ name: "get_agent_package_review_file_diff", arguments: {
+        package_id: "pkg", version_id: "v2", sha256: "substituted", path: "tools/q.mjs",
+    } });
+    assert.equal(invalid.isError, true);
+    assert.equal(calls.length, 2);
+});
+
 for (const options of [{ role: "user", admin: false }, { role: "anonymous" }, { agentMgmt: "read" }, { agentMgmt: "off" }]) {
     test(`MCP review mutation not registered for ${JSON.stringify(options)}`, async (t) => {
         const { client } = await fixture(t, options);

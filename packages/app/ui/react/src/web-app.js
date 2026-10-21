@@ -14872,8 +14872,10 @@ function AdminSettingsTree({ controller, view }) {
                         controller.setAdminModelProviderPage("shared");
                     } else if (row.id === "features") {
                         controller.setAdminSection("features");
+                    } else if (row.id === "agents") {
+                        void controller.showAdminPackageCatalog();
                     } else {
-                        controller.setAdminSection(row.id === "agents" ? "packages" : "workers");
+                        controller.setAdminSection("workers");
                     }
                 };
             return React.createElement("button", {

@@ -64,18 +64,43 @@ function reviewDiff(overrides = {}) {
 }
 
 test("review diff panel binds the exact candidate and baseline digests and groups changes by risk", () => {
-    const html = renderToStaticMarkup(React.createElement(PackageReviewDiffPanel, { diff: reviewDiff() }));
+    const render = (props = {}) => renderToStaticMarkup(React.createElement(PackageReviewDiffPanel, { diff: reviewDiff(), ...props }));
+    const html = render();
     assert(html.includes(`sha256:${"b".repeat(64)}`) && html.includes("review revision 3"));
     assert(html.includes(`Baseline (approved) 1.0.0 · v1 · sha256:${"a".repeat(64)}`));
-    assert(html.indexOf("Executable code (1)") < html.indexOf("Cron precheck policy (1)"));
-    assert(html.indexOf("Cron precheck policy (1)") < html.indexOf("Declarative"));
-    assert.match(html, /Changed keys: cronPrechecks/);
-    assert.match(html, /too large/);
-    assert(html.includes(`new ${"3".repeat(64)}`), "flagged content is shown as hashes only");
-    assert.match(html, /&lt;script&gt;b/);
+    const sidebar = html.slice(html.indexOf('aria-label="Changed files"'), html.indexOf("</nav>"));
+    assert(sidebar.indexOf("Executable code (1)") < sidebar.indexOf("Cron precheck policy (1)"));
+    assert(sidebar.indexOf("Cron precheck policy (1)") < sidebar.indexOf("Declarative"));
+    assert.deepEqual([...sidebar.matchAll(/ps-review-diff__path">([^<]+)</g)].map((m) => m[1]), ["tools/q.mjs", "plugin.json", "docs/big.md"],
+        "every changed file is listed, highest risk first");
+    assert.match(sidebar, /title="docs\/big.md — too large"/, "flagged files are marked in the list");
+    assert.match(html, /aria-label="Changes in tools\/q.mjs"/, "the highest-risk file opens first");
+    assert.match(html, /<span class="is-del">-a<\/span><span class="is-add">\+&lt;script&gt;b<\/span>/);
     assert.doesNotMatch(html, /<script>/);
     assert.match(html, /Review aid only\./);
     assert.match(html, /<button type="button">Approve this digest<\/button>/);
+
+    const policy = render({ initialPath: "plugin.json" });
+    assert.match(policy, /Changed keys: cronPrechecks/);
+    const flagged = render({ initialPath: "docs/big.md" });
+    assert.match(flagged, /⚠ too large/);
+    assert(flagged.includes(`new ${"3".repeat(64)}`), "flagged content is shown as hashes only");
+});
+
+test("a summary diff lists line counts and waits for the selected file instead of showing every patch", () => {
+    const summary = reviewDiff({
+        changes: reviewDiff().changes.map((change) => change.diff == null ? change
+            : { ...change, diff: null, patchOmitted: true, additions: 4, deletions: 2 }),
+    });
+    const html = renderToStaticMarkup(React.createElement(PackageReviewDiffPanel, { diff: summary }));
+    assert.match(html, /<span class="is-add">\+4<\/span> <span class="is-del">−2<\/span>/);
+    assert.doesNotMatch(html, /ps-review-diff__patch/, "no patch body is rendered before it is loaded");
+    assert.match(html, /Select the file to load its changes\./);
+    const empty = renderToStaticMarkup(React.createElement(PackageReviewDiffPanel, {
+        diff: reviewDiff({ changes: [], identical: true, summary: { ...reviewDiff().summary, total: 0 } }),
+    }));
+    assert.match(empty, /No content changes against the baseline\./);
+    assert.doesNotMatch(empty, /Changed files/);
 });
 
 test("review diff panel states a missing baseline and disables decisions that do not apply", () => {

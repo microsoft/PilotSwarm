@@ -22,6 +22,8 @@ export interface AgentPackageReviewTargetInput {
     versionId: string;
     sha256: string;
     baselineVersionId?: string | null;
+    /** False: list changes with line counts but no patch text. */
+    patches?: boolean;
 }
 
 export interface AgentPackageReviewTarget {
@@ -103,6 +105,7 @@ export async function loadAgentPackageReviewEntries(
 export function buildReviewDiffForTarget(
     target: AgentPackageReviewTarget,
     entries: { candidateEntries: ExtractedTarEntry[]; baselineEntries: ExtractedTarEntry[] },
+    opts: { includePatches?: boolean } = {},
 ): AgentPackageReviewDiff {
     const { candidate } = target;
     return buildAgentPackageReviewDiff({
@@ -116,6 +119,7 @@ export function buildReviewDiffForTarget(
         candidateEntries: entries.candidateEntries,
         baselineEntries: entries.baselineEntries,
         inspectionReasons: candidate.inspection?.reasons ?? ["Legacy artifact: no verified inspection"],
+        includePatches: opts.includePatches !== false,
     });
 }
 
@@ -125,5 +129,6 @@ export async function loadAgentPackageReviewDiff(
     owner: AgentPrincipal | null, isAdmin: boolean, input: AgentPackageReviewTargetInput,
 ): Promise<AgentPackageReviewDiff> {
     const target = await resolveAgentPackageReviewTarget(catalog, owner, isAdmin, input);
-    return buildReviewDiffForTarget(target, await loadAgentPackageReviewEntries(catalog!, artifactStore, owner!, target));
+    return buildReviewDiffForTarget(target, await loadAgentPackageReviewEntries(catalog!, artifactStore, owner!, target),
+        { includePatches: input.patches !== false });
 }

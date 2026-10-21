@@ -44,6 +44,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getAgentPackageFile",
     "getAgentPackageReviewAudit",
     "getAgentPackageReviewDiff",
+    "getAgentPackageReviewFileDiff",
     "getAgentPackageReviewReport",
     "getAgentPackageReviewStatus",
     "getAgentPackageRuntimeStatus",
@@ -548,10 +549,18 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Authenticated administrator: risk-classified diff of an exact candidate digest against a same-package baseline (explicit, newest approved, active, or none). Review aid only; echoes the digests and revision a decision must carry.
+     * Authenticated administrator: risk-classified diff of an exact candidate digest against a same-package baseline (explicit, newest approved, active, or none). Review aid only; echoes the digests and revision a decision must carry. input.patches=false lists changes with line counts but no patch text.
      * @remarks `POST /agent-package-reviews/diff` — access: `fleet:admin` (admin)
      */
     getAgentPackageReviewDiff(params: {
+        input?: any;
+    }): Promise<any>;
+
+    /**
+     * Authenticated administrator: one changed file's classified patch ({ packageId, versionId, sha256, baselineVersionId?, path }) for the same exact candidate and baseline as the review diff.
+     * @remarks `POST /agent-package-reviews/file-diff` — access: `fleet:admin` (admin)
+     */
+    getAgentPackageReviewFileDiff(params: {
         input?: any;
     }): Promise<any>;
 
@@ -1967,6 +1976,7 @@ export function createManagementOps(
         getAgentPackageFile: (params: Record<string, unknown> = {}) => callOp("getAgentPackageFile", params),
         getAgentPackageReviewAudit: (params: Record<string, unknown> = {}) => callOp("getAgentPackageReviewAudit", params),
         getAgentPackageReviewDiff: (params: Record<string, unknown> = {}) => callOp("getAgentPackageReviewDiff", params),
+        getAgentPackageReviewFileDiff: (params: Record<string, unknown> = {}) => callOp("getAgentPackageReviewFileDiff", params),
         getAgentPackageReviewReport: (params: Record<string, unknown> = {}) => callOp("getAgentPackageReviewReport", params),
         getAgentPackageReviewStatus: (params: Record<string, unknown> = {}) => callOp("getAgentPackageReviewStatus", params),
         getAgentPackageRuntimeStatus: (params: Record<string, unknown> = {}) => callOp("getAgentPackageRuntimeStatus", params),

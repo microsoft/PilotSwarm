@@ -13,6 +13,7 @@ function fixture() {
         getAgentPackageReviewAudit: async (...args) => { calls.push(["audit", ...args]); return []; },
         getAgentPackageReviewDiff: async (...args) => { calls.push(["diff", ...args]); return { changes: [] }; },
         getAgentPackageReviewReport: async (...args) => { calls.push(["report", ...args]); return { report: null }; },
+        getAgentPackageReviewFileDiff: async (...args) => { calls.push(["fileDiff", ...args]); return { change: null }; },
         getAgentPackageRuntimeStatus: async (...args) => { calls.push(["runtime", ...args]); return { denied: true, complete: false, outstanding: 2 }; },
         activateAgentPackageVersion: async (...args) => { calls.push(["activate", ...args]); },
         getAgentPackageActivationAudit: async (...args) => { calls.push(["activationAudit", ...args]); return []; },
@@ -38,7 +39,7 @@ test("publisher status uses the authenticated principal, not client owner/admin 
 for (const role of ["user", "anonymous", null]) {
     test(`review surface rejects ${role} despite forged body isAdmin and ownership dark launch`, async () => {
         const { runtime, calls } = fixture();
-        for (const method of ["listAgentPackageReviews", "decideAgentPackageReview", "getAgentPackageReviewAudit", "getAgentPackageReviewDiff", "getAgentPackageReviewReport", "getAgentPackageRuntimeStatus",
+        for (const method of ["listAgentPackageReviews", "decideAgentPackageReview", "getAgentPackageReviewAudit", "getAgentPackageReviewDiff", "getAgentPackageReviewFileDiff", "getAgentPackageReviewReport", "getAgentPackageRuntimeStatus",
             "activateAgentPackageVersion", "getAgentPackageActivationAudit", "getSessionAgentPackageBinding", "rebindSessionAgentPackage"]) {
             await assert.rejects(runtime.call(method, {
                 isAdmin: true, owner: { provider: "entra", subject: "admin" },
@@ -77,7 +78,7 @@ test("admin role without authenticated principal cannot decide executable trust"
 test("cluster-scoped administrator cannot use global package review, activation or rebind authority", async () => {
     const { runtime, calls } = fixture();
     runtime.authz.adminScope = "cluster";
-    for (const method of ["listAgentPackageReviews", "decideAgentPackageReview", "getAgentPackageReviewAudit", "getAgentPackageReviewDiff", "getAgentPackageReviewReport", "getAgentPackageRuntimeStatus",
+    for (const method of ["listAgentPackageReviews", "decideAgentPackageReview", "getAgentPackageReviewAudit", "getAgentPackageReviewDiff", "getAgentPackageReviewFileDiff", "getAgentPackageReviewReport", "getAgentPackageRuntimeStatus",
         "activateAgentPackageVersion", "getAgentPackageActivationAudit", "getSessionAgentPackageBinding", "rebindSessionAgentPackage"]) {
         await assert.rejects(runtime.call(method, { input: { isAdmin: true } }, {
             principal: { provider: "entra", subject: "cluster-admin" }, authorization: { role: "admin" },
@@ -126,4 +127,17 @@ test("server admin identity is forwarded; client actor/admin flags are discarded
     await runtime.call("getAgentPackageReviewAudit", { versionId: "v" }, context);
     assert.equal(calls[2][0], "audit");
     assert.equal(calls[2][1], "v");
+});
+
+test("review diff summary and per-file diff forward only exact identity, the summary flag and the path", async () => {
+    const { runtime, calls } = fixture();
+    const context = { principal: { provider: "entra", subject: "real-admin" }, authorization: { role: "admin" } };
+    const exact = { packageId: "pkg", versionId: "v2", sha256: "a".repeat(64) };
+    await runtime.call("getAgentPackageReviewDiff", { input: { ...exact, patches: false, isAdmin: true, actor: "forged" } }, context);
+    await runtime.call("getAgentPackageReviewFileDiff", { input: { ...exact, path: "tools/q.mjs", isAdmin: true, owner: "forged" } }, context);
+    const admin = { provider: "entra", subject: "real-admin", email: null, displayName: null };
+    assert.deepEqual(calls, [
+        ["diff", { ...exact, baselineVersionId: null, patches: false }, admin, true],
+        ["fileDiff", { ...exact, baselineVersionId: null, path: "tools/q.mjs" }, admin, true],
+    ]);
 });
