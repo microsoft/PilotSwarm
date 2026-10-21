@@ -400,7 +400,7 @@ export interface AgentPackageLayout {
     mcpConfig: string | null;
     /** Paths to MCP server code files or directories. */
     mcpServers: string[];
-    /** Path to the worker tool module (canonical: tools/worker-module.js). */
+    /** Path to the worker tool module (canonical: tools/worker-module.mjs, or .js with packaged type:module). */
     tools: string | null;
     /** Extra files/directories shipped verbatim at their relative paths. */
     include: string[];
@@ -563,7 +563,8 @@ export function stageAgentPackageDir(rootDir: string): StagedAgentPackage {
         if (place(rel, destRel, { field: "mcpServers" })) canonical.mcpServers.push(destRel);
     }
     if (layout.tools) {
-        if (place(layout.tools, "tools/worker-module.js", { dir: false, field: "tools" })) canonical.tools = "tools/worker-module.js";
+        const toolsDest = layout.tools.endsWith(".mjs") ? "tools/worker-module.mjs" : "tools/worker-module.js";
+        if (place(layout.tools, toolsDest, { dir: false, field: "tools" })) canonical.tools = toolsDest;
     }
     for (const rel of layout.include) {
         if (place(rel, rel, { field: "include" })) canonical.include.push(rel);
@@ -930,11 +931,18 @@ export async function validateAgentPackageDir(
     // Tools + MCP server code — syntax-gate the module entry points.
     const toolsDir = path.join(rootDir, "tools");
     const hasToolsDir = fs.existsSync(toolsDir) && fs.statSync(toolsDir).isDirectory();
-    const workerModulePath = path.join(toolsDir, "worker-module.js");
-    if (hasToolsDir && !fs.existsSync(workerModulePath)) {
+    const workerModuleNames = ["worker-module.js", "worker-module.mjs"]
+        .filter((name) => hasToolsDir && fs.existsSync(path.join(toolsDir, name)));
+    if (hasToolsDir && workerModuleNames.length === 0) {
         err(errors, "missing_worker_module",
-            "tools/ exists but tools/worker-module.js is missing — it is the tool entry point", "tools");
+            "tools/ exists but tools/worker-module.mjs (or tools/worker-module.js with packaged type:module) is missing — it is the tool entry point", "tools");
     }
+    if (workerModuleNames.length > 1) {
+        // The runtime would silently prefer .js; reviewers must see one entry point.
+        err(errors, "ambiguous_worker_module",
+            "tools/ has both worker-module.js and worker-module.mjs — keep exactly one tool entry point", "tools");
+    }
+    const workerModuleRels = new Set(workerModuleNames.map((name) => `tools/${name}`));
     if (!opts.skipSyntaxCheck && walk) {
         const checkable = walk.files.filter((f) =>
             !f.isDir
@@ -956,7 +964,7 @@ export async function validateAgentPackageDir(
     if (walk) {
         const moduleFiles = walk.files.filter((f) =>
             !f.isDir && /\.(mjs|cjs|js)$/.test(f.rel)
-            && (f.rel === "tools/worker-module.js" || f.rel.startsWith("mcp-servers/"))
+            && (workerModuleRels.has(f.rel) || f.rel.startsWith("mcp-servers/"))
             && !f.rel.includes("node_modules/"));
         const bareRe = /(?:from\s+|import\s*\(\s*|require\s*\(\s*)["']([^"'./][^"']*)["']/g;
         for (const f of moduleFiles) {
