@@ -192,10 +192,48 @@ export async function sha256HexOfBytes(bytes, subtle = globalThis.crypto?.subtle
  * uploads the next page before it records its event, and in that window the
  * file is already the next page. Mismatched bytes are not framed under the
  * old revision's trust; the caller retries once the event lands.
+ *
+ * Resolves to the hex SHA-256 of the bytes, so a frame can record which page
+ * it holds. With no expected hash there is nothing to refuse: the hash is
+ * still taken when it can be (null when the digest fails).
  */
 export async function assertPageBytes(bytes, expectedSha256) {
-    if (typeof expectedSha256 !== "string" || !/^[0-9a-f]{64}$/.test(expectedSha256)) return;
-    if (await sha256HexOfBytes(bytes) !== expectedSha256) {
+    if (typeof expectedSha256 !== "string" || !/^[0-9a-f]{64}$/.test(expectedSha256)) {
+        try { return await sha256HexOfBytes(bytes); } catch { return null; }
+    }
+    const actual = await sha256HexOfBytes(bytes);
+    if (actual !== expectedSha256) {
         throw new Error("the canvas is being redrawn; loading the new revision");
     }
+    return actual;
+}
+
+/**
+ * The session canvas waits this long for a revision's trust before it frames
+ * the page anyway, sealed as another user's page (fail closed).
+ */
+export const CANVAS_TRUST_HOLD_MS = 3000;
+
+/**
+ * Whether a frame already shows what a fetch would load, so the fetch is
+ * skipped (issue 181). Only one case qualifies: the session canvas framed a
+ * page sealed while its trust was unknown (no page hash), and the trust that
+ * arrives later says "another user's page" with the hash of exactly the bytes
+ * that frame holds. Reloading it would restart the app and cancel its calls
+ * for nothing. Any other change (a new revision, a retry, a different trust,
+ * other bytes) loads again.
+ *
+ * `previous` and `next`: { sessionId, slot, rev, retryTick, panelKeys,
+ * crossOwner, pageSha256 } of the last and the new fetch. `frame`: the frame
+ * on screen, { sessionId, rev, crossOwner, sha }.
+ */
+export function canvasHashRebind(previous, next, frame) {
+    if (!previous || !next || !frame) return false;
+    for (const key of ["sessionId", "slot", "rev", "retryTick", "panelKeys", "crossOwner"]) {
+        if (previous[key] !== next[key]) return false;
+    }
+    if (next.crossOwner !== true || previous.pageSha256 !== null) return false;
+    if (typeof next.pageSha256 !== "string" || !/^[0-9a-f]{64}$/.test(next.pageSha256)) return false;
+    return frame.sessionId === next.sessionId && frame.rev === next.rev
+        && frame.crossOwner === true && frame.sha === next.pageSha256;
 }

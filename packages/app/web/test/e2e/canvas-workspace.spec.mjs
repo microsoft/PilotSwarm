@@ -59,9 +59,10 @@ if (location.hash !== "#quiet") setTimeout(() => ws.download("work/notes.md").th
 </script>
 </body></html>`;
 
-// `eventData`: extra draw-event fields, e.g. a real `trust` and `pageSha256`.
-// Without them the portal fails closed and frames the page in the cross-owner wrapper.
-async function drawApp(page, answers, html = APP, eventData = {}) {
+// `eventData`: the draw-event fields. By default an agent page, as the server
+// records every draw it classifies; without a `trust` the portal fails closed
+// and frames the page in the cross-owner wrapper.
+async function drawApp(page, answers, html = APP, eventData = { trust: "agent" }) {
     const calls = [];
     await page.route("**/api/v1/**", async (route) => {
         const url = new URL(route.request().url());

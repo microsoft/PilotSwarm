@@ -4,7 +4,7 @@ import { ChatCallLine } from "./chat-call-line.js";
 import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
 import { NativeTaskCard } from "./native-task-card.js";
-import { assertPageBytes, buildIsolatedInnerHtml, createIsolationWrapperUrl, isCanvasSlotFilename } from "./canvas-isolation.js";
+import { assertPageBytes, buildIsolatedInnerHtml, canvasHashRebind, CANVAS_TRUST_HOLD_MS, createIsolationWrapperUrl, isCanvasSlotFilename } from "./canvas-isolation.js";
 import { WorkspacePane, WORKSPACE_CHANGED_EVENT, announceWorkspaceChange, downloadBase64, workspaceToolActivity } from "./workspace-pane.js";
 // createPortal is only invoked by browser-only surfaces (tooltips, toolbar
 // slots, and viewport-level dialogs); the import itself is side-effect-free
@@ -3200,7 +3200,8 @@ const CANVAS_LINK_GUARD = `<script>addEventListener('click',function(e){var a=e.
  * Another user's app: the portal-authored wrapper (no app bytes in its
  * markup) plus the inner page text, handed to the wrapper by postMessage and
  * set as the inner frame's srcdoc PROPERTY. The one contract lives in
- * canvas-isolation.js. Returns { url, html }.
+ * canvas-isolation.js. Returns { url, html, sha }: `sha` is the hash of the
+ * page bytes the wrapper holds.
  */
 function fetchCrossOwnerCanvas(controller, sessionId, filename, panelKeys = false, expectedSha256 = null, bootstrap = "") {
     const downloadResponse = controller?.transport?.api?.downloadArtifactResponse;
@@ -3209,9 +3210,9 @@ function fetchCrossOwnerCanvas(controller, sessionId, filename, panelKeys = fals
         .then(async (response) => {
             if (!response?.ok) throw new Error(`download failed (${response?.status})`);
             const bytes = await response.arrayBuffer();
-            await assertPageBytes(bytes, expectedSha256);
+            const sha = await assertPageBytes(bytes, expectedSha256);
             const text = new TextDecoder().decode(bytes);
-            return { url: createIsolationWrapperUrl(), html: buildIsolatedInnerHtml(text, { panelKeys, bootstrap }) };
+            return { url: createIsolationWrapperUrl(), html: buildIsolatedInnerHtml(text, { panelKeys, bootstrap }), sha };
         });
 }
 
@@ -8234,14 +8235,31 @@ function canvasWorkspaceApprovalLines(approval) {
 function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible = true, focusOnPromote = false, dataRev = 0, dataPayload = null, dataPatch = null, onPanelKey = null }) {
     // Trust and page hash come from the canvas state for THIS session and
     // slot, never from the caller: every surface that mounts a canvas (main,
-    // MoA pinned, …) gets the same decision. A revision whose classification
-    // is not known here is framed as another user's page (fail closed).
+    // MoA pinned, …) gets the same decision.
     const trustEntry = useControllerSelector(controller, React.useCallback(
         (state) => state.canvas?.bySessionId?.[canvasStateKey(sessionId, slot)] ?? null, [sessionId, slot]));
     const trustKnown = Boolean(trustEntry && Number(trustEntry.latestRev) === Number(latestRev) && typeof trustEntry.trust === "string");
+    // A revision whose classification is not known yet (the session list
+    // names a revision before its draw event is read) is NOT framed at once:
+    // framing it sealed and then again once the trust arrives starts the page
+    // twice and cancels its first calls (issue 181). It waits, keeping any
+    // frame already on screen. If the trust has not come after
+    // CANVAS_TRUST_HOLD_MS, the page is framed sealed, as another user's page
+    // (fail closed).
+    const holdKey = `${sessionId || ""}|${slot}|${latestRev || 0}`;
+    const [sealedKey, setSealedKey] = React.useState(null);
+    const sealedFallback = !trustKnown && sealedKey === holdKey;
+    const holding = !trustKnown && !sealedFallback;
+    React.useEffect(() => {
+        if (trustKnown || !sessionId || !latestRev) return undefined;
+        const timer = setTimeout(() => setSealedKey(holdKey), CANVAS_TRUST_HOLD_MS);
+        return () => clearTimeout(timer);
+    }, [trustKnown, holdKey, sessionId, latestRev]);
     const trust = trustKnown ? trustEntry.trust : "cross-owner";
     const pageSha256 = trustKnown && typeof trustEntry.pageSha256 === "string" ? trustEntry.pageSha256 : null;
-    const crossOwner = trust === "cross-owner";
+    // Only "owner" and "agent" frame a page directly; every other value is
+    // another user's page (fail closed here too, not only in the reducer).
+    const crossOwner = !(trust === "owner" || trust === "agent");
     // Canvas app registry: the inner page text per wrapper URL, handed over on
     // the wrapper's ready message; and each frame's revision, sent with every
     // canvas-ws call so the server can refuse a stale page.
@@ -8271,6 +8289,12 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
     // updaters are neither a reliable post-unmount hook nor a pure place for
     // side effects (StrictMode double-invokes them).
     const urlsRef = React.useRef({ live: null, staging: null });
+    // What each fetched frame URL holds — { sessionId, rev, crossOwner, sha } —
+    // the last fetch's inputs, and the fetch in flight (a token), so a late
+    // page hash can re-bind a sealed frame instead of reloading it.
+    const frameMetaRef = React.useRef(new Map());
+    const lastFetchRef = React.useRef(null);
+    const fetchingRef = React.useRef(null);
     const autoRetryRef = React.useRef({ rev: 0, used: false });
     const hostRef = React.useRef(null);
     const liveIframeElRef = React.useRef(null);
@@ -8577,25 +8601,45 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
     }, [controller, sessionId, slot]);
 
     React.useEffect(() => {
-        if (!controller || !sessionId || !latestRev) return undefined;
+        // No fetch while the revision's trust is unknown: the first frame is
+        // the final one (see `holding` above).
+        if (!controller || !sessionId || !latestRev || holding) return undefined;
+        const request = { sessionId, slot, rev: latestRev, retryTick, panelKeys, crossOwner, pageSha256 };
+        const previous = lastFetchRef.current;
+        lastFetchRef.current = request;
+        // A sealed frame whose trust arrived late as "another user's page",
+        // with the hash of the bytes that frame holds: it already shows the
+        // right page, sealed. Re-bind, do not reload (that would restart the
+        // app and cancel its calls).
+        const shownUrl = urlsRef.current.staging || urlsRef.current.live;
+        if (!fetchingRef.current && canvasHashRebind(previous, request, shownUrl ? frameMetaRef.current.get(shownUrl) : null)) {
+            return undefined;
+        }
         let cancelled = false;
         let retryTimer = null;
+        const token = {};
+        fetchingRef.current = token;
+        const settle = () => { if (fetchingRef.current === token) fetchingRef.current = null; };
         const filename = slot <= 1 ? "canvas.html" : `canvas${slot}.html`;
         (crossOwner
-            ? fetchCrossOwnerCanvas(controller, sessionId, filename, panelKeys, pageSha256).then(({ url, html }) => { wrapperHtmlRef.current.set(url, html); return url; })
-            : fetchArtifactHtmlObjectUrl(controller, sessionId, filename, panelKeys, true, pageSha256))
-            .then((url) => {
+            ? fetchCrossOwnerCanvas(controller, sessionId, filename, panelKeys, pageSha256).then(({ url, html, sha }) => { wrapperHtmlRef.current.set(url, html); return { url, sha }; })
+            : fetchArtifactHtmlObjectUrl(controller, sessionId, filename, panelKeys, true, pageSha256).then((url) => ({ url, sha: null })))
+            .then(({ url, sha }) => {
+                settle();
                 if (cancelled) { URL.revokeObjectURL(url); wrapperHtmlRef.current.delete(url); return; }
                 // A staging revision that never loaded is superseded here —
                 // revoke it, or every rapid redraw leaks a document-sized blob.
                 if (urlsRef.current.staging && urlsRef.current.staging !== urlsRef.current.live) {
                     URL.revokeObjectURL(urlsRef.current.staging);
+                    frameMetaRef.current.delete(urlsRef.current.staging);
                 }
                 urlsRef.current.staging = url;
+                frameMetaRef.current.set(url, { sessionId, rev: latestRev, crossOwner, sha });
                 setLoadError(null);
                 setStaging({ url, rev: latestRev, sessionId, crossOwner });
             })
             .catch(() => {
+                settle();
                 if (cancelled) return;
                 // One quiet retry for transient blips; after that, surface it.
                 // The next draw event or a pane re-open also refetches.
@@ -8611,7 +8655,7 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
             cancelled = true;
             if (retryTimer) clearTimeout(retryTimer);
         };
-    }, [controller, sessionId, slot, latestRev, retryTick, panelKeys, crossOwner, pageSha256]);
+    }, [controller, sessionId, slot, latestRev, retryTick, panelKeys, crossOwner, pageSha256, holding]);
 
     // Session switch / unmount: drop both frames — a different session is a
     // different document, and showing the old canvas under a new session is a
@@ -8622,6 +8666,7 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
         }
         if (urlsRef.current.live) URL.revokeObjectURL(urlsRef.current.live);
         urlsRef.current = { live: null, staging: null };
+        frameMetaRef.current.clear();
         setLive(null);
         setStaging(null);
         setLoadError(null);
@@ -8637,7 +8682,7 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
         const oldLive = urlsRef.current.live;
         urlsRef.current.live = frame.url;
         urlsRef.current.staging = null;
-        if (oldLive && oldLive !== frame.url) { URL.revokeObjectURL(oldLive); wrapperHtmlRef.current.delete(oldLive); }
+        if (oldLive && oldLive !== frame.url) { URL.revokeObjectURL(oldLive); wrapperHtmlRef.current.delete(oldLive); frameMetaRef.current.delete(oldLive); }
         setLive(frame);
         setStaging((current) => (current && current.url === frame.url ? null : current));
         // Record the geometry this revision loaded at (in page-viewport
@@ -8827,6 +8872,24 @@ function CanvasFrame({ controller, sessionId, slot = 1, latestRev, zoom, visible
                             .catch((error) => setConsent({ ...consent, busy: false, error: String(error?.message || error) }));
                     },
                 }, decision === "granted" ? "Allow" : "Don't allow")))
+            : null,
+        holding && !live && !staging
+            ? React.createElement("div", { className: "ps-canvas-blank", role: "status", "data-canvas-hold": "trust" },
+                React.createElement("p", { className: "ps-canvas-blank-title" }, "Loading canvas…"))
+            : null,
+        sealedFallback && !loadError
+            ? React.createElement("div", { className: "ps-canvas-load-error", role: "status", "data-canvas-sealed": "unconfirmed" },
+                React.createElement("span", null, "Couldn't confirm whose page this is, so it is shown sealed: no network, no pop-ups."),
+                React.createElement("button", {
+                    type: "button",
+                    className: "ps-artifact-pane-btn",
+                    onClick: () => {
+                        // Read the draw event again; when it comes, the page
+                        // stays sealed (another user's) or opens (yours).
+                        controller?.dispatch?.({ type: "canvas/snapshotInvalidate", sessionId });
+                        controller?.ensureCanvasSnapshot?.(sessionId)?.catch?.(() => {});
+                    },
+                }, "Retry"))
             : null,
         brokenManifest && !loadError
             ? React.createElement("div", { className: "ps-canvas-load-error", role: "status" },

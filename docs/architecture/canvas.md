@@ -217,9 +217,20 @@ draw event: `owner` (the owner's app, by `fromApp` or exact bytes),
 workspace block), or `agent` (anything else). A draw that cannot be
 classified is recorded as `cross-owner`. A share link whose draw event
 carries no recognised trust serves the page as `cross-owner`. The session
-canvas frames a page as `cross-owner` while its trust is not yet known; a
-draw event recorded before the registry existed (no `trust` field) is
-treated as `agent` there, as it was before. A `cross-owner` page is framed by
+canvas does the same: a draw event without a recognised `trust` (one
+recorded before the registry existed) is `cross-owner` until the canvas is
+drawn again. The sessions list can name a canvas revision before the portal
+reads its draw event, so the session canvas waits for the revision's trust
+before it frames the page: the first frame is the final one, and an app is
+not started twice. If the trust has not come after 3 seconds, the page is
+framed as `cross-owner` and says it could not confirm whose page it is; a
+`cross-owner` trust that arrives later with the `pageSha256` of the bytes
+on screen keeps that frame, and an `owner` or `agent` trust frames the page
+again, directly. A list revision newer than the one the store knows drops
+the older revision's trust and has the draw events read again; that read
+pages back (at most 10 pages of 30 draw events) to find each known slot's
+own draw event, and re-reads a revision named ahead of its draw event at
+most 5 times before it leaves it sealed (Retry reads again). A `cross-owner` page is framed by
 the portal through one isolation contract (`ui/react/src/canvas-isolation.js`):
 a portal-authored wrapper document holds no app bytes, sets the page as its
 inner frame's `srcdoc`, carries the app policy plus `frame-src 'none'`, relays

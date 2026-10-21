@@ -842,9 +842,14 @@ function normalizePromptAttachments(prompt, attachments) {
 }
 
 
-/** Canvas app registry (issue 181): the trust fields of one canvas revision. */
+/**
+ * Canvas app registry (issue 181): the trust fields of one canvas revision.
+ * Fail closed: only an event that says "owner" or "agent" frames the page
+ * directly. A missing or unknown trust (a revision drawn before draw events
+ * carried it) is another user's page, as on the share door.
+ */
 function canvasTrustFields(action) {
-    const trust = action?.trust === "cross-owner" || action?.trust === "owner" ? action.trust : "agent";
+    const trust = action?.trust === "owner" || action?.trust === "agent" ? action.trust : "cross-owner";
     const app = action?.app && typeof action.app === "object" && typeof action.app.name === "string"
         ? { name: action.app.name, version: typeof action.app.version === "string" ? action.app.version : null }
         : null;
@@ -4000,6 +4005,8 @@ function baseReducer(state, action) {
             const entries = Array.isArray(action.entries) ? action.entries : [];
             if (!entries.length) return state;
             let next = null;
+            // Sessions where the seed named a revision the store had not seen.
+            const advanced = new Set();
             for (const e of entries) {
                 const sessionId = String(e?.sessionId || "").trim();
                 const rev = Number(e?.latestRev);
@@ -4010,8 +4017,16 @@ function baseReducer(state, action) {
                 const existing = (next || state.canvas.bySessionId)[key] || {};
                 if ((existing.latestRev || 0) >= rev && existing.name !== undefined) continue;
                 next = next || { ...state.canvas.bySessionId };
+                // Trust belongs to a revision. A seed that raises the revision
+                // brings none, so the old revision's trust, page hash and app
+                // must not stand for the new page: the slot is unclassified
+                // until its draw event is read (issue 181).
+                const { trust: _trust, pageSha256: _sha, app: _app, ...kept } = existing;
+                const raised = rev > (existing.latestRev || 0);
+                if (raised) advanced.add(sessionId);
+                const base = raised ? kept : existing;
                 next[key] = {
-                    ...existing,
+                    ...base,
                     slot: slotN,
                     latestRev: Math.max(existing.latestRev || 0, rev),
                     ...(typeof e.name === "string" && existing.name === undefined ? { name: e.name } : {}),
@@ -4019,6 +4034,13 @@ function baseReducer(state, action) {
                 };
             }
             if (!next) return state;
+            // A newer revision makes the session's snapshot memo stale: drop it
+            // (it lives on the slot-1 entry), so the next selection or poll
+            // reads the draw events again and classifies the new revision.
+            for (const sessionId of advanced) {
+                const memo = next[canvasKey(sessionId, 1)];
+                if (memo?.snapshotLoaded) next[canvasKey(sessionId, 1)] = { ...memo, snapshotLoaded: false };
+            }
             return { ...state, canvas: { ...state.canvas, bySessionId: next } };
         }
 
@@ -4032,7 +4054,11 @@ function baseReducer(state, action) {
             const existing = state.canvas.bySessionId[key] || {};
             // Monotonic: replays and out-of-order merges must never regress
             // the known revision (freshness gates the FLIP, never the data).
-            if ((existing.latestRev || 0) >= rev) return state;
+            // The one exception is the same revision while it is unclassified:
+            // the sessions-list seed can name a revision before its draw event
+            // arrives, and that event is what says whose page it is.
+            const known = existing.latestRev || 0;
+            if (known > rev || (known === rev && typeof existing.trust === "string")) return state;
             return {
                 ...state,
                 canvas: {
@@ -4157,8 +4183,11 @@ function baseReducer(state, action) {
                             responseContract: (existing.latestRev || 0) > rev
                                 ? (existing.responseContract ?? null)
                                 : (action.responseContract && typeof action.responseContract === "object" ? action.responseContract : null),
+                            // A snapshot older than what the store knows keeps the
+                            // store's trust as it is — unknown stays unknown (no
+                            // default), so the frame waits instead of guessing.
                             ...((existing.latestRev || 0) > rev
-                                ? { trust: existing.trust ?? "agent", pageSha256: existing.pageSha256 ?? null, app: existing.app ?? null }
+                                ? { trust: existing.trust, pageSha256: existing.pageSha256 ?? null, app: existing.app ?? null }
                                 : canvasTrustFields(action)),
                             snapshotLoaded: true,
                         },

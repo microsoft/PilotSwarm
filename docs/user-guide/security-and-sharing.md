@@ -231,6 +231,11 @@ reach the agent labelled as that app's data, not as instructions. The
 artifact tools do not hand an agent the bytes of another owner's app that
 the registry recognizes.
 
+A canvas drawn before the app registry has no recorded owner, so the
+portal shows it the same sealed way until the agent draws it again. When
+the portal cannot confirm whose page a canvas is within a few seconds, it
+shows the page sealed too, and says so.
+
 What remains:
 
 - **Prompt injection is not solved.** An agent can still be persuaded by

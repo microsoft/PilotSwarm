@@ -189,9 +189,14 @@ function rpc(method, SESSIONS, PROFILE_SETTINGS = {}) {
     }
 }
 
-export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 0, systemEvery = 0, assistantMarkdown = null, groups = [], themeId = null, groupMembers = {}, admin = false, parents = {} } = {}) {
+// `canvases` attaches session_canvases summaries to list rows, as the real
+// sessions list does (sessionIndex -> [{ slot, name, latestRev, sizeBytes }]):
+// the portal then knows a canvas revision before it reads that revision's
+// draw event, which is the cold-open path.
+export function startStubServer(port = 0, { sessionCount = 6, transcriptTurns = 0, systemEvery = 0, assistantMarkdown = null, groups = [], themeId = null, groupMembers = {}, admin = false, parents = {}, canvases = {} } = {}) {
     assertFreshBundle();
-    const SESSIONS = makeSessions(Math.max(1, sessionCount), groupMembers, parents);
+    const SESSIONS = makeSessions(Math.max(1, sessionCount), groupMembers, parents)
+        .map((row, i) => (Array.isArray(canvases[i]) && canvases[i].length ? { ...row, canvases: canvases[i] } : row));
     const WORKERS = admin ? makeWorkers(8, Date.now()) : [];
     let liveGroups = groups;
     let groupFetches = 0;

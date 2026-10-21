@@ -1607,6 +1607,16 @@ function normalizePreviewPayload(filename, rawContent, contentType = "", metadat
     };
 }
 
+/**
+ * Canvas snapshot bounds (issue 181): how many 30-event pages of draw events
+ * one read may page back to find each known slot's own draw event, and how
+ * many times a revision the sessions list names ahead of its draw event is
+ * read again before the read stops (the canvas then stays sealed; Retry
+ * reads again).
+ */
+const CANVAS_SNAPSHOT_MAX_PAGES = 10;
+const CANVAS_SNAPSHOT_MAX_REREADS = 5;
+
 /** How long a fetched artifact list is trusted before a refetch. */
 const FILES_LIST_TTL_MS = 10_000;
 // How long keyboard navigation must rest on a session before it is fetched.
@@ -6153,10 +6163,29 @@ export class PilotSwarmUiController {
                 sessionId, Number.MAX_SAFE_INTEGER, 30, ["session.canvas_updated"],
             );
             const bySlot = new Map();
-            for (const row of Array.isArray(rows) ? rows : []) {
-                const slot = Number(row?.data?.slot) || 1;
-                const rev = Number(row?.data?.rev) || 0;
-                if (!bySlot.has(slot) || rev > (Number(bySlot.get(slot)?.data?.rev) || 0)) bySlot.set(slot, row);
+            const take = (list) => {
+                for (const row of Array.isArray(list) ? list : []) {
+                    const slot = Number(row?.data?.slot) || 1;
+                    const rev = Number(row?.data?.rev) || 0;
+                    if (!bySlot.has(slot) || rev > (Number(bySlot.get(slot)?.data?.rev) || 0)) bySlot.set(slot, row);
+                }
+            };
+            take(rows);
+            // A slot the store knows (the sessions list named it) whose draw
+            // event is older than this window: page back, bounded, until every
+            // known slot has its own latest draw event or the history ends.
+            // Without its event a slot cannot be classified and stays sealed
+            // (issue 181).
+            const knownSlots = () => [1, 2, 3, 4, 5].filter((slot) => (this.getState().canvas.bySessionId[canvasPrefKey(sessionId, slot)]?.latestRev || 0) > 0);
+            let page = Array.isArray(rows) ? rows : [];
+            for (let pages = 1; pages < CANVAS_SNAPSHOT_MAX_PAGES && page.length >= 30 && knownSlots().some((slot) => !bySlot.has(slot)); pages++) {
+                const oldest = Math.min(...page.map((row) => Number(row?.seq)).filter((seq) => Number.isFinite(seq) && seq > 0));
+                if (!Number.isFinite(oldest)) break;
+                page = await this.transport.getSessionEventsBefore(sessionId, oldest, 30, ["session.canvas_updated"]);
+                page = Array.isArray(page) ? page : [];
+                // Paging backward: a slot already found has its latest draw.
+                const missing = page.filter((row) => !bySlot.has(Number(row?.data?.slot) || 1));
+                take(missing);
             }
             // Always at least a slot-1 snapshot (rev 0 marks snapshotLoaded
             // so this does not respin).
@@ -6204,6 +6233,29 @@ export class PilotSwarmUiController {
                     });
                 }
             }
+            // A slot the store knows at a NEWER revision than its draw event
+            // here (the sessions list names a revision before its event is
+            // recorded) is still unclassified: keep the memo open so the next
+            // poll reads again (issue 181). Bounded per revision, so a revision
+            // whose event never comes stops costing reads; it stays sealed, and
+            // Retry still reads again. A slot with no draw event at all in the
+            // history read is not re-read either: another read would find the
+            // same nothing.
+            const byKey = this.getState().canvas.bySessionId;
+            if (!this.canvasRereads) this.canvasRereads = new Map();
+            let rearm = false;
+            for (let slot = 1; slot <= 5; slot++) {
+                const entry = byKey[canvasPrefKey(sessionId, slot)];
+                const known = entry?.latestRev || 0;
+                if (known <= 0 || typeof entry.trust === "string") continue;
+                const found = Number(bySlot.get(slot)?.data?.rev) || 0;
+                if (found <= 0 || found >= known) continue;
+                const key = `${canvasPrefKey(sessionId, slot)}@${known}`;
+                const tries = (this.canvasRereads.get(key) || 0) + 1;
+                this.canvasRereads.set(key, tries);
+                if (tries <= CANVAS_SNAPSHOT_MAX_REREADS) rearm = true;
+            }
+            if (rearm) this.dispatch({ type: "canvas/snapshotInvalidate", sessionId });
         } catch {
             // Leave snapshotLoaded unset — the next selection retries.
         }

@@ -19,6 +19,7 @@ import {
     CROSS_OWNER_APP_CSP, CROSS_OWNER_WRAPPER_CSP, CROSS_OWNER_WRAPPER_HTML, crossOwnerWrapperHtml,
     CANVAS_WS_UPGRADE_CODE, CANVAS_WS_UPGRADE_ERROR, CANVAS_DOCUMENT_UPGRADE_CODE, CANVAS_DOCUMENT_UPGRADE_ERROR,
     assertPageBytes, buildIsolatedInnerHtml, injectAfterDoctype, isCanvasSlotFilename, isWrapperControlMessage, sha256HexJs, sha256HexOfBytes,
+    canvasHashRebind, CANVAS_TRUST_HOLD_MS,
 } from "../../ui/react/src/canvas-isolation.js";
 import { createHash, randomBytes, randomInt } from "node:crypto";
 
@@ -462,4 +463,66 @@ test("a workspace call refused for consent from the staging frame answers NOT_RE
     const WEB_APP = read("../../ui/react/src/web-app.js");
     assert.match(WEB_APP, /error\?\.code === "CANVAS_WS_CONSENT_REQUIRED" && !fromLive && !\/declined\/i\.test\(message\)\) \{\s*post\(\{ type: "canvas-ws-result", id, ok: false, error: "the canvas is still loading; retry in a moment", code: "NOT_READY" \}\);\s*return;/);
     assert.match(WEB_APP, /error\?\.code === "CANVAS_WS_CONSENT_REQUIRED" && fromLive && !\/declined\/i\.test\(message\)/, "the live frame still opens the prompt");
+});
+
+// ── Cold open (issue 181): one frame per revision ──────────────────────────
+//
+// The session list names a canvas revision before its draw event is read.
+// Framing it at once, sealed, and again when the trust arrives started every
+// owner page twice (sealed, then direct) and every other user's app twice
+// (sealed, then sealed again, once its page hash arrived). The frame now
+// waits for the trust; after CANVAS_TRUST_HOLD_MS it frames the page sealed
+// (fail closed), and a late "another user's page" hash that matches the bytes
+// it holds is re-bound without a reload.
+
+test("assertPageBytes resolves to the hash of the bytes it checked", async () => {
+    const page = "<!doctype html><p>sealed</p>";
+    const bytes = new TextEncoder().encode(page).buffer;
+    const sha = nodeSha(page);
+    assert.equal(await assertPageBytes(bytes, sha), sha, "with an expected hash");
+    assert.equal(await assertPageBytes(bytes, null), sha, "with none: still hashed, nothing refused");
+    assert.equal(await assertPageBytes(bytes, "not-a-hash"), sha, "a malformed expected hash compares nothing");
+    const { crossOwner } = canvasFetchPaths(page);
+    assert.equal((await crossOwner(null)).sha, sha, "the sealed fetch reports the hash of the page the wrapper holds");
+    assert.equal((await crossOwner(sha)).sha, sha);
+});
+
+test("the late-hash re-bind applies only to a sealed frame that holds exactly those bytes", () => {
+    const SHA = "c".repeat(64);
+    const OTHER = "d".repeat(64);
+    const sealed = { sessionId: "s1", slot: 1, rev: 4, retryTick: 0, panelKeys: false, crossOwner: true, pageSha256: null };
+    const late = { ...sealed, pageSha256: SHA };
+    const frame = { sessionId: "s1", rev: 4, crossOwner: true, sha: SHA };
+    assert.equal(canvasHashRebind(sealed, late, frame), true, "the one case: re-bind, no reload");
+    // Everything else reloads.
+    assert.equal(canvasHashRebind(null, late, frame), false, "no previous fetch");
+    assert.equal(canvasHashRebind(sealed, late, null), false, "no frame on screen");
+    assert.equal(canvasHashRebind(sealed, late, { ...frame, sha: OTHER }), false, "the frame holds other bytes");
+    assert.equal(canvasHashRebind(sealed, late, { ...frame, sha: null }), false, "the frame's bytes were never hashed");
+    assert.equal(canvasHashRebind(sealed, late, { ...frame, rev: 3 }), false, "the frame shows another revision");
+    assert.equal(canvasHashRebind(sealed, late, { ...frame, sessionId: "s2" }), false, "another session's frame");
+    assert.equal(canvasHashRebind(sealed, late, { ...frame, crossOwner: false }), false, "a direct frame is never re-bound");
+    assert.equal(canvasHashRebind(sealed, { ...late, crossOwner: false }, frame), false, "the trust became owner or agent: frame it directly");
+    assert.equal(canvasHashRebind({ ...sealed, pageSha256: OTHER }, late, frame), false, "a hash that changed is a new page");
+    assert.equal(canvasHashRebind(sealed, { ...late, pageSha256: null }, frame), false, "no hash arrived");
+    assert.equal(canvasHashRebind(sealed, { ...late, pageSha256: "x".repeat(64) }, frame), false, "a malformed hash");
+    for (const key of ["sessionId", "slot", "rev", "retryTick", "panelKeys"]) {
+        const changed = { ...late, [key]: key === "panelKeys" ? true : key === "sessionId" ? "s2" : late[key] + 1 };
+        assert.equal(canvasHashRebind(sealed, changed, { ...frame, ...(key === "sessionId" ? { sessionId: "s2" } : {}), ...(key === "rev" ? { rev: changed.rev } : {}) }), false, `${key} changed: reload`);
+    }
+});
+
+test("the session canvas waits for the trust, then frames once; sealed after the hold", () => {
+    assert.equal(CANVAS_TRUST_HOLD_MS, 3000);
+    const WEB_APP = read("../../ui/react/src/web-app.js");
+    const frame = WEB_APP.slice(WEB_APP.indexOf("function CanvasFrame("), WEB_APP.indexOf("\n}\n", WEB_APP.indexOf("function CanvasFrame(")));
+    assert.match(frame, /const holding = !trustKnown && !sealedFallback;/);
+    assert.match(frame, /setTimeout\(\(\) => setSealedKey\(holdKey\), CANVAS_TRUST_HOLD_MS\)/, "the hold ends sealed, never direct");
+    assert.match(frame, /if \(!controller \|\| !sessionId \|\| !latestRev \|\| holding\) return undefined;/, "no fetch while the trust is unknown");
+    assert.match(frame, /const trust = trustKnown \? trustEntry\.trust : "cross-owner";/, "an unknown trust frames sealed");
+    assert.match(frame, /const crossOwner = !\(trust === "owner" \|\| trust === "agent"\);/, "only owner and agent frame directly, whatever the state holds");
+    assert.match(frame, /!fetchingRef\.current && canvasHashRebind\(previous, request, /, "a late matching hash re-binds, with no fetch in flight");
+    assert.match(frame, /\[controller, sessionId, slot, latestRev, retryTick, panelKeys, crossOwner, pageSha256, holding\]/);
+    assert.match(frame, /holding && !live && !staging[\s\S]{0,400}?"Loading canvas…"/, "a placeholder, only when nothing is on screen");
+    assert.match(frame, /sealedFallback && !loadError[\s\S]{0,400}?shown sealed[\s\S]{0,600}?canvas\/snapshotInvalidate[\s\S]{0,200}?ensureCanvasSnapshot/, "the sealed fallback says so and can read the trust again");
 });

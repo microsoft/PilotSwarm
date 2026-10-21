@@ -200,7 +200,7 @@ test('Zen shared picker can open a canvas in the normal full-screen canvas view'
     await setup(page);
     await page.route('**/api/v1/**', route => {
         const url = new URL(route.request().url());
-        if (url.pathname.endsWith('/events-before') && url.search.includes('session.canvas_updated')) return route.fulfill({ json: { ok: true, result: [{ seq: 1, eventType: 'session.canvas_updated', data: { slot: 2, rev: 1, sizeBytes: 200, name: 'Interactive canvas' } }] } });
+        if (url.pathname.endsWith('/events-before') && url.search.includes('session.canvas_updated')) return route.fulfill({ json: { ok: true, result: [{ seq: 1, eventType: 'session.canvas_updated', data: { slot: 2, rev: 1, sizeBytes: 200, name: 'Interactive canvas', trust: 'agent' } }] } });
         if (url.pathname.includes('/artifacts/') && /canvas2\.html/.test(url.pathname)) return route.fulfill({ contentType: 'text/html', body: '<!doctype html><h1>Selected canvas</h1>' });
         return route.fallback();
     });
