@@ -19,7 +19,7 @@ import { ModelProviderRegistry, ManagedSession, PilotSwarmManagementClient, Sess
 import { detectFailedModelSwitch } from "../../src/orchestration/turn.ts";
 import { handleTurnResult, processPrompt } from "../../src/orchestration/turn.ts";
 import { handleCommand } from "../../src/orchestration/lifecycle.ts";
-import { findConfiguredModel, findSameProviderModel, matchesModel, isCompletedTurnOnModelAfter } from "../helpers/model-selection.mjs";
+import { findConfiguredModel, findSameProviderModel, matchesModel, isCompletedTurnOnModelAfter, assertRootTurnModel } from "../helpers/model-selection.mjs";
 
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
@@ -89,6 +89,10 @@ async function testModelRecordedAfterTurn(env) {
                 true,
                 `model still ${TEST_GPT_MODEL} after turn (got: ${row.model})`,
             );
+            const expected = worker.modelProviders?.getDescriptor(TEST_GPT_MODEL);
+            assertNotNull(expected, `configured descriptor for ${TEST_GPT_MODEL}`);
+            const observed = assertRootTurnModel(await catalog.getSessionEvents(session.sessionId), expected);
+            console.log(`  Root API usage model: ${[...new Set(observed)].join(", ")}`);
         } finally {
             await catalog.close();
         }

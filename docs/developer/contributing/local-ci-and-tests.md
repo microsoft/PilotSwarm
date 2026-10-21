@@ -85,6 +85,28 @@ is not automatically a live model matrix. `PS_MODEL_PROVIDERS_PATH` can override
 the SDK catalog, but individual tests may require specific models/providers.
 Changing the catalog alone does not port every test to another LLM backend.
 
+The live Copilot fixture uses `github-copilot:gpt-5.6-sol` by default,
+`gpt-6-sol` as its distinct same-provider switch target, and `claude-sonnet-5`.
+Before live tests, `scripts/test-model-summary.mjs` checks every configured
+Copilot model against the pinned native SDK's advertised models and explicit
+policy state. It fails on missing or disabled/unconfigured models, separately
+from authentication/discovery errors; it never substitutes another model.
+The effective SDK override is `PS_MODEL_PROVIDERS_PATH` (prefer an absolute
+path; relative paths are resolved from `packages/sdk`). SDK Vitest's default
+overrides `MODEL_PROVIDERS_PATH` alone. Non-Copilot catalogs are not checked
+against Copilot's model list.
+Explicit `PS_TEST_FORCE_MODEL` / `TEST_FORCE_MODEL` and `PS_INTERRUPT_TEST_MODEL`
+selections must resolve in that effective catalog too; forced single-model
+runs still do not qualify multi-model coverage.
+
+For credential-free checks only, `node scripts/test-model-summary.mjs --unit-only`
+reports an explicit skip; that is not live qualification. Direct filtered
+Vitest invocations should run the normal preflight first. Offered availability
+and successful `create/getCurrent` do not prove which model served inference.
+`Model Recorded in CMS After Turn` also requires native root `assistant.usage`
+model identity to match the requested descriptor, excluding child, sampling,
+compaction and other attributed auxiliary calls.
+
 ## 4. Add your own HorizonDB test database
 
 Provision a dedicated HorizonDB cluster with the extensions configured by
