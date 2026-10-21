@@ -790,7 +790,7 @@ Before telling the user the package is ready:
 - [ ] Contents match the capability: skills for reusable methods, tools/MCP for executable integrations, agents for authored workflows. Zero agents is valid.
 - [ ] If present, every `.agent.md` has a non-empty body, the schema version its fields require (§3), and a unique, non-reserved name.
 - [ ] If agents are present, their `tools:` names match available tools; `skills:` match SKILL.md frontmatter names; `mcpServers:` match package or permitted deployment catalog keys.
-- [ ] `worker-module.js` and `mcp-servers/*.js` are valid ESM with **no bare imports**.
+- [ ] `tools/worker-module.mjs` (or `.js` with packaged `"type":"module"`, never both) and `mcp-servers/*` modules are valid ESM with **no bare imports**.
 - [ ] `pilotswarm agents validate ./my-kit` prints no errors.
 - [ ] Version bumped if this `name@version` was ever published with different content.
 - [ ] `CHANGELOG.md` has an entry for the version being published (§7).
