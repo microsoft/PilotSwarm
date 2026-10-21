@@ -192,8 +192,44 @@ checks the whole archive first. The legacy `apps/<name>` facts migrate once
 with `migrateLegacyCanvasApps` (an admin action): each migrated fact is
 removed only at the revision that was migrated (an atomic compare-and-delete
 on its etag; a fact replaced meanwhile stays), and a skipped one stays. An
-existing shared app is extended only by the same bytes. Agents can read but no
-longer write them.
+existing shared app is extended only by the same bytes.
+
+### The transition (`PILOTSWARM_CANVAS_LEGACY_MODE`)
+
+One switch, `on` by default, keeps the old catalog working next to the
+registry (`canvas-legacy.ts`, exported as `canvasLegacyModeFromEnv()`). Each
+process reads it: workers (`PilotSwarmWorkerOptions.canvasLegacyMode`) and
+the portal (`PilotSwarmManagementClient` config `canvasLegacyMode`). An
+unrecognized value is `off`.
+
+| | `on` | `off` |
+|---|---|---|
+| `find_canvas_app({query})` | registry apps, then old `apps/*` cards from main's own search, in their old shape (`legacy: true`, `key`, `source`); a registry app of the same name wins unless it is not found for the user (a disabled one still wins); a failed old-catalog search is reported as `legacyError` | registry only |
+| `find_canvas_app({name})` | the registry app, else the old card at exactly `apps/<name>` | the registry app |
+| Agent and management writes to `apps/*` | allowed, as before | refused |
+
+A card counts as an old app (`CanvasLegacyCatalog.isExemptSha256`) only if
+all of these hold:
+
+- its key is `apps/<valid app name>` and its `source` has a sha256;
+- its fact was last written at least 5 minutes
+  (`CANVAS_LEGACY_CUTOFF_MARGIN_MS`) before the registry's install: the
+  `applied_at` of CMS migration 0084 in the migrations table
+  (`CanvasAppStore.installedAt()`).
+
+The database sets a fact's `updated_at` on every write, so a card written
+or changed after the deploy is still found and drawn, but it is not an old
+app. The margin covers clock skew between a separate facts database and the
+CMS (skew above 5 minutes is not covered), transaction-start timestamps and
+sub-millisecond precision; it only narrows the set.
+
+The set is enumerated at most once a minute per process, completely: a key
+prefix whose read returns a full page (1,000 facts) is split on the next
+name character, so newer facts cannot push an old card out. One
+enumeration makes at most 200 reads; past that it is incomplete and
+exempts only what it found. An unknown install time, or a failed refresh
+after the minute, exempts nothing. Searches run main's search on every
+call; find by name reads the one exact key.
 
 The card is derived from the document's `CANVAS-APP-MANIFEST`, never from
 the model's memory of it, and **publish refuses a manifest without an

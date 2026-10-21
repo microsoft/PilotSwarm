@@ -7,6 +7,8 @@
  * code. The service (canvas-app-registry.ts) owns bytes and lifecycle.
  */
 import type { Pool } from "pg";
+import { migrationAppliedAt } from "./pg-migrator.js";
+import { CANVAS_APP_REGISTRY_MIGRATION_VERSION, type CanvasRegistryPresence } from "./canvas-legacy.js";
 
 export { CANVAS_APP_SPACE_PREFIX, looksLikeCanvasAppSpace } from "./canvas-app-space.js";
 
@@ -59,6 +61,24 @@ export class CanvasAppError extends Error {
         super(message);
         this.name = "CanvasAppError";
         this.status = STATUS[code] ?? 400;
+    }
+}
+
+/**
+ * The canvas app transition (issue 181): what a registry lookup's outcome
+ * says about a same-name old-catalog app. Success, a disabled app or a
+ * refused one: the registry has it (present, it wins). NOT_FOUND, which an
+ * invisible private app also answers: absent. Anything else is rethrown.
+ */
+export async function canvasRegistryPresence(lookup: () => Promise<unknown>): Promise<CanvasRegistryPresence> {
+    try {
+        await lookup();
+        return "present";
+    } catch (err) {
+        if (!(err instanceof CanvasAppError)) throw err;
+        if (err.code === "NOT_FOUND") return "absent";
+        if (err.code === "APP_DISABLED" || err.code === "FORBIDDEN") return "present";
+        throw err;
     }
 }
 
@@ -259,7 +279,16 @@ export const CANVAS_APP_VERSION_MAX_BYTES = 95;
 
 export class CanvasAppStore {
     private readonly s: string;
-    constructor(private readonly pool: Pool, schema: string) { this.s = `"${schema.replace(/"/g, '""')}"`; }
+    constructor(private readonly pool: Pool, private readonly schema: string) { this.s = `"${schema.replace(/"/g, '""')}"`; }
+
+    /**
+     * When this registry was installed (its CMS migration was applied): the
+     * cutoff for the old catalog's exemptions (canvas-legacy.ts). Null when
+     * unknown, which exempts nothing.
+     */
+    async installedAt(): Promise<Date | null> {
+        return migrationAppliedAt(this.pool, this.schema, CANVAS_APP_REGISTRY_MIGRATION_VERSION);
+    }
 
     private fn(name: string): string { return `${this.s}.cms_canvas_app_${name}`; }
     private wsFn(name: string): string { return `${this.s}.cms_canvas_workspace_${name}`; }

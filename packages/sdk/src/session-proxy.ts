@@ -13,7 +13,9 @@ import {
     publishCanvasAppHtml, readCanvasAppHtml, deleteCanvasApp as deleteRegistryCanvasApp, classifyCanvasDraw, canvasBytesRefusal, viewerCanObtainCanvasBytes, sha256Hex,
     type CanvasDrawAttribution, type CanvasDrawClassification,
 } from "./canvas-app-registry.js";
-import { CanvasAppError } from "./canvas-app-store.js";
+import { CanvasAppError, canvasRegistryPresence } from "./canvas-app-store.js";
+import { canvasLegacyCatalogFor, canvasLegacyModeFromEnv, mergeLegacyCanvasAppHits, type CanvasLegacyCard } from "./canvas-legacy.js";
+import { findCanvasApp as findLegacyCanvasApps } from "./canvas-app-catalog.js";
 import { canvasArtifactFilename, normalizeCanvasSlot, eventSlot, latestCanvasEventData, latestCanvasRev } from "./canvas-support.js";
 import type { SessionStateStore } from "./session-store.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "./cms.js";
@@ -1221,6 +1223,8 @@ export function registerActivities(
         aadDbUser?: string;
         /** The worker's explicit model-providers file, so the clients that create child sessions resolve the same providers. */
         modelProvidersPath?: string;
+        /** The canvas app transition (PILOTSWARM_CANVAS_LEGACY_MODE), resolved by the worker. Not an internal-client setting. */
+        canvasLegacyMode?: boolean;
     },
     /** Loaded system agents — used by resolveAgentConfig activity. */
     systemAgents?: AgentConfig[],
@@ -4060,12 +4064,34 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 },
                 findCanvasApp: async (args: { query?: string; limit?: number; name?: string; scope?: string }) => {
                     const store = (catalog as any)?.canvasApps;
-                    if (!store) return { error: "the canvas app registry is unavailable on this worker" };
+                    // The canvas app transition (issue 181): while it is on, the old
+                    // apps/<name> catalog is found next to the registry, in main's
+                    // shape, and a registry app of the same name wins.
+                    const legacyOn = clientConfig?.canvasLegacyMode ?? canvasLegacyModeFromEnv();
+                    const legacy = legacyOn
+                        ? canvasLegacyCatalogFor(factStore ?? null, async () => (store ? store.installedAt() : null))
+                        : null;
+                    if (!store && !legacy) return { error: "the canvas app registry is unavailable on this worker" };
                     const viewer = await sessionManager.resolveCanvasAppViewer(input.sessionId);
+                    const legacyCard = (card: CanvasLegacyCard) => ({ key: card.key, ...card.value, legacy: true });
+                    const legacyNext = (card: CanvasLegacyCard) => card.source
+                        ? `draw_canvas({fromArtifact: {sessionId: "${card.source.sessionId}", filename: "${card.source.filename}"}}); this is an app from the old catalog, drawn from its source artifact.`
+                        : "This old catalog entry has no source page to draw.";
                     try {
                         if (args.name) {
-                            const target = { name: String(args.name).trim().toLowerCase(), scope: args.scope === "shared" || args.scope === "user" ? args.scope as any : null };
-                            const detail = await store.get(target, viewer);
+                            const name = String(args.name).trim().toLowerCase();
+                            const target = { name, scope: args.scope === "shared" || args.scope === "user" ? args.scope as any : null };
+                            let detail: any = null;
+                            try {
+                                detail = store ? await store.get(target, viewer) : null;
+                            } catch (err: any) {
+                                if (!(legacy && err instanceof CanvasAppError && err.code === "NOT_FOUND")) throw err;
+                            }
+                            if (!detail) {
+                                const card = legacy ? await legacy.get(name) : null;
+                                if (!card) throw new CanvasAppError("NOT_FOUND", `no canvas app "${name}"`);
+                                return { count: 1, app: legacyCard(card), next: legacyNext(card) };
+                            }
                             const active = detail.versions.find((v: any) => v.versionId === detail.activeVersionId) ?? null;
                             return {
                                 count: 1,
@@ -4079,11 +4105,32 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                             };
                         }
                         const limit = Math.max(1, Math.min(20, Math.floor(Number(args.limit) || 8)));
-                        const hits = await store.search(viewer, String(args.query ?? ""), limit);
+                        const hits = store ? await store.search(viewer, String(args.query ?? ""), limit) : [];
+                        const apps: Array<Record<string, unknown>> = hits.map((h: any) => ({ name: h.name, scope: h.scope, description: h.description, tags: h.tags, version: h.version, score: h.score }));
+                        let legacyCount = 0;
+                        let legacyError: string | null = null;
+                        if (legacy && apps.length < limit) {
+                            // Main's own search over the old catalog, unchanged.
+                            const found = await findLegacyCanvasApps({ factStore: factStore ?? null }, { query: args.query, limit });
+                            const merged = await mergeLegacyCanvasAppHits({
+                                registryHits: apps, legacy: found, limit,
+                                // A registry app of the same name wins. Only "not found"
+                                // (which an invisible private app also answers) lets the
+                                // old card through; an app that exists but is disabled or
+                                // refused still wins; any other error is the search's error.
+                                probe: store ? (name: string) => canvasRegistryPresence(() => store.get({ name, scope: null }, viewer)) : null,
+                            });
+                            apps.splice(0, apps.length, ...merged.apps);
+                            legacyCount = merged.legacyCount;
+                            legacyError = merged.legacyError;
+                        }
                         return {
-                            count: hits.length,
-                            apps: hits.map((h: any) => ({ name: h.name, scope: h.scope, description: h.description, tags: h.tags, version: h.version, score: h.score })),
-                            next: "find_canvas_app({name}) returns one app's full card (its interface is how you drive it); then draw_canvas({fromApp: {name}}).",
+                            count: apps.length,
+                            apps,
+                            ...(legacyError ? { legacyError: `the old app catalog could not be searched: ${legacyError}` } : {}),
+                            next: legacyCount > 0
+                                ? "find_canvas_app({name}) returns one app's full card (its interface is how you drive it); then draw_canvas({fromApp: {name}}). An app marked legacy: true is from the old catalog: draw it with draw_canvas({fromArtifact: source})."
+                                : "find_canvas_app({name}) returns one app's full card (its interface is how you drive it); then draw_canvas({fromApp: {name}}).",
                         };
                     } catch (err: any) {
                         return { error: err instanceof CanvasAppError ? `${err.code}: ${err.message}` : (err?.message || String(err)) };

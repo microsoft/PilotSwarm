@@ -23,6 +23,7 @@ import { loadMcpConfig, mcpAllowlistAdmits, type McpAllowlistAgent } from "./mcp
 
 import { createModelProvidersReloader, type ModelProviderRegistry } from "./model-providers.js";
 import { canvasBytesRefusal } from "./canvas-app-registry.js";
+import { canvasLegacyModeFromEnv } from "./canvas-legacy.js";
 import { createArtifactTools } from "./artifact-tools.js";
 import { createDistillerTools } from "./distiller-tools.js";
 import { isEnhancedFactStore, PgFactStore, type FactStore } from "./facts-store.js";
@@ -343,6 +344,8 @@ export class PilotSwarmWorker {
             ...options,
             waitThreshold: options.waitThreshold ?? 30,
             turnTimeoutMs: resolveWorkerTurnTimeoutMs(options.turnTimeoutMs),
+            // Resolved once: every tool and activity of this worker sees one value.
+            canvasLegacyMode: options.canvasLegacyMode ?? canvasLegacyModeFromEnv(),
         };
         const effectiveSessionStateDir = options.sessionStateDir ?? DEFAULT_SESSION_STATE_DIR;
 
@@ -405,6 +408,7 @@ export class PilotSwarmWorker {
             this.sessionStore,
             {
                 reservedFactPrefixes: options.reservedFactPrefixes,
+                canvasLegacyMode: this.config.canvasLegacyMode,
                 frameworkBasePrompt: this._frameworkBasePrompt ?? undefined,
                 frameworkBaseToolNames: this._frameworkBaseToolNames,
                 appDefaultPrompt: this._appDefaultPrompt ?? undefined,
@@ -934,6 +938,7 @@ export class PilotSwarmWorker {
                 useManagedIdentity: storage.runtime.useManagedIdentity,
                 aadDbUser: storage.runtime.aadDbUser,
                 ...(this.config.modelProvidersPath ? { modelProvidersPath: this.config.modelProvidersPath } : {}),
+                canvasLegacyMode: this.config.canvasLegacyMode,
             },
             this._loadedSystemAgents,
             this._sessionPolicy,

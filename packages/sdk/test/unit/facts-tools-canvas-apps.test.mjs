@@ -1,7 +1,9 @@
 // The legacy canvas app catalog `apps/` (issue 181): canvas apps live in
-// their own registry now. The fact tools still READ `apps/<name>` (the
-// one-time migration and old sessions use it), but no agent — the Facts
-// Manager included — writes or deletes there.
+// their own registry now. While the canvas app transition is on
+// (PILOTSWARM_CANVAS_LEGACY_MODE, default on) the old catalog is written and
+// deleted exactly as before. With it off, the fact tools still READ
+// `apps/<name>` (the manual migration and old sessions use it), but no agent
+// — the Facts Manager included — writes or deletes there.
 //
 // Run: node --test test/unit/facts-tools-canvas-apps.test.mjs
 import test from "node:test";
@@ -24,10 +26,10 @@ function fakeStore(rows = []) {
 }
 
 const CTX = { sessionId: "s1" };
-const toolsFor = (store, agentIdentity) => Object.fromEntries(createFactTools({ factStore: store, agentIdentity }).map((t) => [t.name, t]));
+const toolsFor = (store, agentIdentity, canvasLegacyMode = false) => Object.fromEntries(createFactTools({ factStore: store, agentIdentity, canvasLegacyMode }).map((t) => [t.name, t]));
 
 for (const identity of ["task-agent", "facts-manager"]) {
-    test(`${identity}: apps/ is not written or deleted through the fact tools`, async () => {
+    test(`${identity}: transition off: apps/ is not written or deleted through the fact tools`, async () => {
         const store = fakeStore();
         const { store_fact, delete_fact } = toolsFor(store, identity);
         const write = await store_fact.handler({ key: "apps/board", value: { source: "app-board.html" }, shared: true }, CTX);
@@ -43,6 +45,41 @@ for (const identity of ["task-agent", "facts-manager"]) {
     });
 }
 
+for (const identity of ["task-agent", "facts-manager"]) {
+    test(`${identity}: transition on: apps/ is written and deleted as before (the r2d publication record still works)`, async () => {
+        const store = fakeStore();
+        const { store_fact, delete_fact, bulk_store_facts } = toolsFor(store, identity, true);
+        const write = await store_fact.handler({ key: "apps/r2d-blocker-board/publication", value: { appName: "r2d-blocker-board" }, shared: true }, CTX);
+        assert.equal(write.error, undefined, JSON.stringify(write));
+        const batch = await store_fact.handler({ facts: [{ key: "ok/a", value: 1 }, { key: "apps/board", value: 2, shared: true }] }, CTX);
+        assert.equal(batch.error, undefined, JSON.stringify(batch));
+        assert.deepEqual(store.calls.store.map((c) => c.key), ["apps/r2d-blocker-board/publication", "ok/a", "apps/board"]);
+        const bulk = await bulk_store_facts.handler({ facts: [{ key: "apps/bulk", value: 1, shared: true }] }, CTX);
+        assert.equal(bulk.failed_count ?? 0, 0, JSON.stringify(bulk));
+        assert.ok(store.calls.store.some((c) => c.key === "apps/bulk"), "the bulk record reached the store");
+        const del = await delete_fact.handler({ key: "apps/board", shared: true }, CTX);
+        assert.equal(del.error, undefined, JSON.stringify(del));
+        assert.equal(store.calls.delete.length, 1);
+    });
+}
+
+test("the transition defaults to this process's PILOTSWARM_CANVAS_LEGACY_MODE (unset: on)", async () => {
+    const saved = process.env.PILOTSWARM_CANVAS_LEGACY_MODE;
+    try {
+        delete process.env.PILOTSWARM_CANVAS_LEGACY_MODE;
+        let store = fakeStore();
+        let tools = Object.fromEntries(createFactTools({ factStore: store }).map((t) => [t.name, t]));
+        assert.equal((await tools.store_fact.handler({ key: "apps/board", value: 1, shared: true }, CTX)).error, undefined);
+        process.env.PILOTSWARM_CANVAS_LEGACY_MODE = "off";
+        store = fakeStore();
+        tools = Object.fromEntries(createFactTools({ factStore: store }).map((t) => [t.name, t]));
+        assert.match(String((await tools.store_fact.handler({ key: "apps/board", value: 1, shared: true }, CTX)).error), /legacy canvas app catalog/);
+        assert.equal(store.calls.store.length, 0);
+    } finally {
+        if (saved === undefined) delete process.env.PILOTSWARM_CANVAS_LEGACY_MODE; else process.env.PILOTSWARM_CANVAS_LEGACY_MODE = saved;
+    }
+});
+
 test("apps/ stays readable", async () => {
     const rows = [{ key: "apps/board", value: { name: "board" }, shared: true, sessionId: "s0" }];
     const { read_facts } = toolsFor(fakeStore(rows), "task-agent");
@@ -51,9 +88,9 @@ test("apps/ stays readable", async () => {
     assert.deepEqual(out.facts.map((f) => f.key), ["apps/board"]);
 });
 
-test("management fact writes cannot reach the legacy apps/ catalog either (Web API, MCP)", async () => {
+test("transition off: management fact writes cannot reach the legacy apps/ catalog either (Web API, MCP)", async () => {
     const { PilotSwarmManagementClient } = await import("../../dist/management-client.js");
-    const mgmt = new PilotSwarmManagementClient({ store: "postgres://unused" });
+    const mgmt = new PilotSwarmManagementClient({ store: "postgres://unused", canvasLegacyMode: false });
     mgmt._started = true;
     const store = fakeStore();
     mgmt._factStore = store;
@@ -70,9 +107,23 @@ test("management fact writes cannot reach the legacy apps/ catalog either (Web A
     assert.equal(store.calls.delete.length, 1);
 });
 
-test("management pattern deletes: the store's own scope and LIKE rules decide what is reserved", async () => {
+test("transition on: management fact writes reach apps/ as before", async () => {
+    const { PilotSwarmManagementClient } = await import("../../dist/management-client.js");
+    const mgmt = new PilotSwarmManagementClient({ store: "postgres://unused", canvasLegacyMode: true });
+    mgmt._started = true;
+    const store = fakeStore();
+    mgmt._factStore = store;
+    await mgmt.storeFact({ key: "apps/board", value: {}, shared: true });
+    await mgmt.storeFact([{ key: "ok/a", value: 1, shared: true }, { key: "apps/board", value: 2, shared: true }]);
+    await mgmt.deleteFact({ key: "apps/board", shared: true });
+    await mgmt.deleteFact({ key: "apps/*", pattern: true, scope: "shared" });
+    assert.equal(store.calls.store.length, 3);
+    assert.equal(store.calls.delete.length, 2);
+});
+
+test("transition off: management pattern deletes: the store's own scope and LIKE rules decide what is reserved", async () => {
     const { PilotSwarmManagementClient, likePatternCanMatchPrefix } = await import("../../dist/management-client.js");
-    const mgmt = new PilotSwarmManagementClient({ store: "postgres://unused" });
+    const mgmt = new PilotSwarmManagementClient({ store: "postgres://unused", canvasLegacyMode: false });
     mgmt._started = true;
     const store = fakeStore();
     mgmt._factStore = store;

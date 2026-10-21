@@ -161,6 +161,11 @@ start_portal() {
     # Each person sees only their own sessions, as in the release environment.
     export AUTHZ_ENFORCE_OWNERSHIP=true
     export WORKERS=2
+    # The canvas app transition (issue 181): on keeps the old apps/<name>
+    # canvas app catalog working next to the registry. The portal and its
+    # workers share this process, so they always agree. Set it to off to try
+    # the registry's rules alone.
+    export PILOTSWARM_CANVAS_LEGACY_MODE="${PILOTSWARM_CANVAS_LEGACY_MODE:-on}"
     # The model catalog: your own .model_providers.json when there is one (it
     # also has the models this database's system sessions already use), else
     # the GitHub Copilot catalog, which needs only GITHUB_TOKEN.

@@ -337,7 +337,8 @@ const FIND_CANVAS_APP_TOOL_SPEC = {
         "Search the canvas app registry. LOOK BEFORE BUILDING: when the user asks for an app (a board, a poll, a "
         + "sign-off sheet, a review workbench), search first and offer an existing one. With query: ranked apps the user "
         + "may see {name, scope, description, tags, version}. With name: that app's full card — its `interface` tells you "
-        + "the KV keys and req/* ops it speaks. Then draw_canvas({fromApp: {name}}).",
+        + "the KV keys and req/* ops it speaks. Then draw_canvas({fromApp: {name}}). An app marked legacy: true comes "
+        + "from the old catalog and carries its card and `source`: draw it with draw_canvas({fromArtifact: source}).",
     parameters: {
         type: "object",
         properties: {

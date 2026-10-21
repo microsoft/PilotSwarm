@@ -22,6 +22,7 @@ import {
     normalizeAgentName,
     workspaceFilesConfigFromEnv,
     canvasCommandsConfigFromEnv,
+    canvasLegacyModeFromEnv,
 } from "pilotswarm-sdk";
 import { startEmbeddedWorkers, stopEmbeddedWorkers } from "./embedded-workers.js";
 import { getPluginDirsFromEnv } from "./plugin-config.js";
@@ -578,6 +579,8 @@ export class NodeSdkTransport {
             workspaceFiles: workspaceFilesConfigFromEnv(),
             // canvas-ws commands: off unless PORTAL_CANVAS_COMMANDS_RUNNER is set.
             canvasCommands: canvasCommandsConfigFromEnv(),
+            // The canvas app transition (issue 181): this process's own switch.
+            canvasLegacyMode: canvasLegacyModeFromEnv(),
         });
         this.sessionHandles = new Map();
         this.workers = [];

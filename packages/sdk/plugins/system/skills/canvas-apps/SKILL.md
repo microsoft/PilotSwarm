@@ -1,7 +1,7 @@
 ---
 name: canvas-apps
 description: Interactive and SHARED canvas apps — page actions, the canvas_kv store, requests the page queues, the session's files and declared commands (canvas-ws), saving apps. Load before any canvas that takes input, uses files, or is shared.
-version: 1.1.0
+version: 1.2.0
 ---
 
 # Canvas Apps
@@ -251,6 +251,12 @@ A private app of the user hides a shared app with the same name; pass
 `fromApp`, change it, and publish again: that is a new version. Contributors
 of a shared app may publish versions of it; only its owner or an admin
 shares, unshares, deletes or changes contributors.
+
+**Old apps.** During the transition `find_canvas_app` may also return apps
+from the old catalog, marked `legacy: true`, each with its `key` and
+`source`. Draw one with `draw_canvas({ fromArtifact: source })` and drive it
+from its card, as before. To move one to the registry, draw it and publish
+it when the user asks.
 
 **Look before building.** When the user asks for an app — a board, a poll, a
 sign-off sheet, a review workbench — search first and offer what exists.

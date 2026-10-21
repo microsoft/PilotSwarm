@@ -93,12 +93,26 @@ would read, change and run, and which folders those names point to.
 Read the prompt before you allow it: an approved page runs as you. See
 [security and sharing](./security-and-sharing.md#canvas-apps).
 
-## Moving the old app catalog
+## The old app catalog during the transition
 
 Before the registry, `publish_canvas_app` saved a page as an artifact on
-the publishing session and a shared fact `apps/<name>`. A deployment moves
-those apps into the registry once, as an admin, after the release with the
-registry is live.
+the publishing session and a shared fact `apps/<name>`. Those apps keep
+working while the canvas app transition is on:
+
+| `PILOTSWARM_CANVAS_LEGACY_MODE` | What the old catalog does |
+|---|---|
+| `on` (default) | `find_canvas_app` returns old apps next to registry apps, marked `legacy: true`, with their `key` and `source`; an agent draws one with `draw_canvas({fromArtifact: source})`. `find_canvas_app({name})` falls back to the old card. A registry app of the same name wins. Agents write and delete `apps/*` facts as before. |
+| `off` | Only the registry is searched. `apps/*` facts are read-only. |
+
+Workers and the portal read the variable separately; set the same value on
+both. To move an app into the new format, draw it, then publish it: the
+registry app wins by name from then on, and the old fact stays until an
+admin removes it.
+
+## Moving the old app catalog
+
+After the transition, an admin moves the remaining old apps into the
+registry once.
 
 ```
 pilotswarm auth login --api-url https://<portal-host>

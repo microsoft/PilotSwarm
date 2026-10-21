@@ -234,6 +234,8 @@ export interface WorkerDefaults {
     getCapabilitySources?: () => CapabilitySource[];
     /** Host-reserved fact key prefixes, see PilotSwarmWorkerOptions.reservedFactPrefixes. */
     reservedFactPrefixes?: string[];
+    /** The canvas app transition, see PilotSwarmWorkerOptions.canvasLegacyMode (resolved). */
+    canvasLegacyMode?: boolean;
     nativeSubagents?: "off" | "sync";
     frameworkBasePrompt?: string;
     frameworkBaseToolNames?: string[];
@@ -2211,6 +2213,7 @@ export class SessionManager {
         const factTools = createFactTools({
             factStore: this.factStore,
             reservedFactPrefixes: this.workerDefaults?.reservedFactPrefixes ?? null,
+            ...(typeof this.workerDefaults?.canvasLegacyMode === "boolean" ? { canvasLegacyMode: this.workerDefaults.canvasLegacyMode } : {}),
             getLineageSessionIds: this._getLineageSessionIds ?? undefined,
             agentIdentity: effectiveSerializableConfig.agentIdentity,
             // bulk_store_facts reads its records from (and writes its failure

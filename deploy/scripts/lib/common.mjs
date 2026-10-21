@@ -11,7 +11,7 @@ import { platform } from "node:os";
 import { DATABASE_ENV_DEFAULTS, DATABASE_INPUT_KEYS, DATABASE_URL_KEYS, deploysPostgres } from "./database-env.mjs";
 import { WORKSPACES_ENV_DEFAULTS } from "./workspaces.mjs";
 import { AKS_ENV_DEFAULTS } from "./aks-env.mjs";
-import { WORKER_ENV_DEFAULTS, nativeSubagentsSetting } from "./worker-env.mjs";
+import { WORKER_ENV_DEFAULTS, nativeSubagentsSetting, canvasLegacyModeSetting } from "./worker-env.mjs";
 
 // Repo root: this file lives at <repo>/deploy/scripts/lib/common.mjs
 const __filename = fileURLToPath(import.meta.url);
@@ -147,6 +147,8 @@ export function loadEnv(envName) {
   merged.DEPLOY_POSTGRES = String(deployPostgres);
   // A bad value would crash every worker at start; refuse it here instead.
   merged.PILOTSWARM_NATIVE_SUBAGENTS = nativeSubagentsSetting(merged);
+  // Workers and the portal must agree; one validated value feeds both.
+  merged.PILOTSWARM_CANVAS_LEGACY_MODE = canvasLegacyModeSetting(merged);
   for (const key of DATABASE_URL_KEYS) {
     if (process.env[key] === undefined || process.env[key] === "") continue;
     if (deployPostgres) {

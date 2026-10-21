@@ -13,9 +13,12 @@
  * app from, and a card that only says "a board" cannot be driven.
  *
  * Deprecated since the canvas app registry (issue 181): the runtime publishes
- * and finds apps through canvas-app-registry.ts, and existing apps/* facts are
- * imported with migrateLegacyCanvasApps. publishCanvasApp and findCanvasApp
- * stay exported, unchanged, for existing SDK callers until a major release.
+ * and finds apps through canvas-app-registry.ts. While the canvas app
+ * transition is on (PILOTSWARM_CANVAS_LEGACY_MODE, canvas-legacy.ts),
+ * find_canvas_app also returns the old apps/* cards through findCanvasApp,
+ * unchanged. After the transition, migrateLegacyCanvasApps moves them.
+ * publishCanvasApp and findCanvasApp stay exported, unchanged, for existing
+ * SDK callers until a major release.
  */
 
 import { createHash } from "node:crypto";

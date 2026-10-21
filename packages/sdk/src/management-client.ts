@@ -78,6 +78,7 @@ import {
 import { extractCanvasAppManifest } from "./canvas-app-manifest.js";
 import { workspaceGit } from "./workspace-git.js";
 import { canvasArtifactFilename, latestCanvasEventData } from "./canvas-support.js";
+import { canvasLegacyModeFromEnv } from "./canvas-legacy.js";
 import type {
     SessionCatalog, SessionRow, TopEventEmitterRow, AgentPackageSelector, AgentPrincipal,
     AgentPackageScope, AgentPackageSummary, AgentPackageDetail, AgentPackageEditorInfo, AgentWorkerStateRow, WorkerRow,
@@ -778,6 +779,13 @@ export interface PilotSwarmManagementClientOptions {
      * canvas apps can use files but not commands (CANVAS_WS_COMMANDS_DISABLED).
      */
     canvasCommands?: CanvasCommandsConfig | null;
+    /**
+     * The canvas app transition (issue 181, PILOTSWARM_CANVAS_LEGACY_MODE).
+     * On: the old `apps/<name>` canvas app catalog keeps working as before.
+     * Off: only the canvas app registry's rules apply. Default: this
+     * process's environment, on when unset. Keep equal to the workers'.
+     */
+    canvasLegacyMode?: boolean;
     /** App plugin dirs used to discover app-defined system agents for restart operations. */
     pluginDirs?: string[];
     /** Disable bundled PilotSwarm management agents when discovering restartable system agents. */
@@ -858,9 +866,11 @@ function canvasGrantKey(sessionId: string, slot: number, program: CanvasWorkspac
 }
 
 /**
- * The legacy canvas app catalog `apps/` (issue 181) is read-only on every
- * supported write path: the one-time migration reads it through the store
- * and deletes only what it migrated. Patterns that could reach it are
+ * The legacy canvas app catalog `apps/` (issue 181). While the transition is
+ * on it is written as before (a card written after the registry was installed
+ * exempts nothing, canvas-legacy.ts). With the transition off it is read-only
+ * on every supported write path: the manual migration reads it through the
+ * store and deletes only what it migrated. Patterns that could reach it are
  * refused too.
  */
 /**
@@ -3987,6 +3997,11 @@ export class PilotSwarmManagementClient {
     // reads are unrestricted. Per-user fact scoping is future work; the derived
     // context — never client-supplied — is where it will land.
 
+    /** The canvas app transition for this process (config, else PILOTSWARM_CANVAS_LEGACY_MODE). */
+    private _canvasLegacyMode(): boolean {
+        return this.config.canvasLegacyMode ?? canvasLegacyModeFromEnv();
+    }
+
     private _requireFactStore(): FactStore {
         this._ensureStarted();
         if (!this._factStore) throw new Error("Facts store is not available on this deployment.");
@@ -4050,7 +4065,9 @@ export class PilotSwarmManagementClient {
     }
 
     async storeFact(input: StoreFactInput | StoreFactInput[]): Promise<StoredFactResult | { stored: number; facts: StoredFactResult[] }> {
-        for (const one of Array.isArray(input) ? input : [input]) if (one?.shared === true) assertNotLegacyCanvasAppFact(one?.key, false);
+        if (!this._canvasLegacyMode()) {
+            for (const one of Array.isArray(input) ? input : [input]) if (one?.shared === true) assertNotLegacyCanvasAppFact(one?.key, false);
+        }
         return Array.isArray(input)
             ? this._requireFactStore().storeFact(input)
             : this._requireFactStore().storeFact(input);
@@ -4072,7 +4089,7 @@ export class PilotSwarmManagementClient {
         // apps/ facts are shared; a session-scoped delete cannot reach them.
         // The scope is decided exactly as the store decides it.
         const effectiveScope = safe.pattern === true ? (safe.scope ?? (safe.shared === true ? "shared" : "session")) : (safe.shared === true ? "shared" : "session");
-        if (effectiveScope === "shared") assertNotLegacyCanvasAppFact(safe.key, safe.pattern === true);
+        if (effectiveScope === "shared" && !this._canvasLegacyMode()) assertNotLegacyCanvasAppFact(safe.key, safe.pattern === true);
         return this._requireFactStore().deleteFact(safe);
     }
 
