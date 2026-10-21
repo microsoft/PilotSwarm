@@ -103,6 +103,17 @@ export const UI_COMMANDS = {
     ADMIN_PACKAGES_REFRESH: "adminPackagesRefresh",
     ADMIN_PACKAGES_NEXT: "adminPackagesNext",
     ADMIN_PACKAGES_PREV: "adminPackagesPrev",
+    // Canvas Apps section and the Packages/Canvas Apps tree (issue 181 R24).
+    ADMIN_SHOW_CANVAS_APPS: "adminShowCanvasApps",
+    ADMIN_CANVAS_APPS_REFRESH: "adminCanvasAppsRefresh",
+    ADMIN_TREE_NEXT: "adminTreeNext",
+    ADMIN_TREE_PREV: "adminTreePrev",
+    ADMIN_TREE_TOGGLE: "adminTreeToggle",
+    ADMIN_TREE_COLLAPSE: "adminTreeCollapse",
+    ADMIN_TREE_EXPAND: "adminTreeExpand",
+    // The TUI's Canvas Apps detail window (Ctrl+D/PgDn, Ctrl+U/PgUp).
+    ADMIN_CANVAS_APP_DETAIL_PAGE_DOWN: "adminCanvasAppDetailPageDown",
+    ADMIN_CANVAS_APP_DETAIL_PAGE_UP: "adminCanvasAppDetailPageUp",
     ADMIN_BEGIN_EDIT_GHCP_KEY: "adminBeginEditGhcpKey",
     ADMIN_CANCEL_EDIT_GHCP_KEY: "adminCancelEditGhcpKey",
     ADMIN_SAVE_GHCP_KEY: "adminSaveGhcpKey",

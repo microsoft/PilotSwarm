@@ -73,6 +73,66 @@ test("push publishes private unless --shared", async () => {
     }
 });
 
+test("publish --check calls publishCanvasApp with checkOnly and nothing else", async () => {
+    const answer = { checkOnly: true, ok: true, code: null, error: null, sizeBytes: 120, manifest: { name: "board", version: "1.2.0", description: "Use when a team signs off a train.", tags: ["review"] }, workspace: true };
+    const check = await run(["publish", "s-1", "--slot", "2", "--check"], { publishCanvasApp: answer });
+    assert.equal(check.code, 0);
+    // One call, and it is the check: no publish, upload or other write op.
+    assert.deepEqual(check.calls, [{ op: "publishCanvasApp", args: { sessionId: "s-1", slot: 2, checkOnly: true } }]);
+    assert.match(check.out, /check passed/);
+    assert.match(check.out, /name: board/);
+    assert.match(check.out, /workspace/);
+    const failed = await run(["publish", "s-1", "--check"], { publishCanvasApp: { checkOnly: true, ok: false, code: "BAD_REQUEST", error: "the manifest has no `interface` block." } });
+    assert.equal(failed.code, 2);
+    assert.match(failed.out, /check failed: the manifest has no `interface` block/);
+});
+
+test("publish needs --name unless --check, and publishes private unless --shared", async () => {
+    await assert.rejects(() => run(["publish", "s-1"]), /usage: pilotswarm apps publish/);
+    const answer = (args) => ({ status: "published", version: "1.0.0", scope: args.scope ?? "user" });
+    const priv = await run(["publish", "s-1", "--name", "board"], { publishCanvasApp: answer });
+    assert.deepEqual(priv.calls, [{ op: "publishCanvasApp", args: { sessionId: "s-1", name: "board" } }]);
+    assert.match(priv.out, /published board@1\.0\.0 \(private\)/);
+    const shared = await run(["publish", "s-1", "--slot", "3", "--name", "board", "--shared"], { publishCanvasApp: answer });
+    assert.deepEqual(shared.calls[0].args, { sessionId: "s-1", slot: 3, name: "board", scope: "shared" });
+});
+
+test("publish rejects a supplied --slot outside 1-5 before any request (review r1 P7)", async () => {
+    for (const bad of ["0", "-1", "1.5", "6", "abc", ""]) {
+        for (const extra of [["--check"], ["--name", "board"]]) {
+            const { client, calls } = stubClient();
+            await assert.rejects(
+                () => runAppsCommand(["publish", "s-1", "--slot", bad, ...extra], { client, out: () => {}, err: () => {} }),
+                /--slot must be a canvas slot from 1 to 5/,
+                `--slot ${JSON.stringify(bad)} ${extra.join(" ")}`,
+            );
+            assert.deepEqual(calls, [], `no request for --slot ${JSON.stringify(bad)}`);
+        }
+    }
+    // A trailing --slot with no value is invalid too, not slot 1.
+    const { client, calls } = stubClient();
+    await assert.rejects(() => runAppsCommand(["publish", "s-1", "--check", "--slot"], { client, out: () => {}, err: () => {} }), /--slot must be/);
+    assert.deepEqual(calls, []);
+    // Absent: the default slot (nothing sent); 5 is the last slot.
+    const absent = await run(["publish", "s-1", "--check"], { publishCanvasApp: { checkOnly: true, ok: true, sizeBytes: 1, manifest: {} } });
+    assert.deepEqual(absent.calls[0].args, { sessionId: "s-1", checkOnly: true });
+    const five = await run(["publish", "s-1", "--slot", "5", "--check"], { publishCanvasApp: { checkOnly: true, ok: true, sizeBytes: 1, manifest: {} } });
+    assert.deepEqual(five.calls[0].args, { sessionId: "s-1", slot: 5, checkOnly: true });
+});
+
+test("label takes the same --slot as publish: a number 1-5, checked before any request", async () => {
+    const answer = { sessionId: "s-1", slot: 2, rev: 4, trust: "cross-owner", legacy: false };
+    const two = await run(["label", "s-1", "--slot", "2", "--json"], { getCanvasRevisionLabel: answer });
+    assert.deepEqual(two.calls[0], { op: "getCanvasRevisionLabel", args: { sessionId: "s-1", slot: 2 } });
+    const absent = await run(["label", "s-1", "--json"], { getCanvasRevisionLabel: answer });
+    assert.deepEqual(absent.calls[0].args, { sessionId: "s-1" });
+    for (const bad of ["0", "6", "abc", ""]) {
+        const { client, calls } = stubClient();
+        await assert.rejects(() => runAppsCommand(["label", "s-1", "--slot", bad], { client, out: () => {}, err: () => {} }), /--slot must be a canvas slot from 1 to 5/);
+        assert.deepEqual(calls, [], `no request for --slot ${JSON.stringify(bad)}`);
+    }
+});
+
 test("share and unshare move between scopes", async () => {
     const share = await run(["share", "board"]);
     assert.deepEqual(share.calls[0], { op: "setCanvasAppScope", args: { name: "board", scope: "user", targetScope: "shared" } });

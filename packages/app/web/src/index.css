@@ -6414,6 +6414,114 @@ body.is-resizing-pane-y iframe {
 .ps-admin-tree__count { color: var(--ps-border-strong); }
 .ps-admin-tree__hint { padding: 6px 8px; color: var(--ps-muted); font-size: var(--ps-font-size-dense); }
 .ps-admin-tree__hint.is-error { color: #f85149; white-space: normal; }
+/* Packages / Canvas Apps tree (issue 181 R24): sections and groups collapse
+   with a caret; each section's rows scroll in their own box so a long list
+   never pushes the next section off screen. The keyboard cursor shows only
+   while the tree has focus. */
+.ps-admin-tree:focus { outline: none; }
+.ps-admin-tree:focus-visible { box-shadow: inset 0 0 0 1px var(--ps-border-strong); }
+.ps-admin-tree:focus-within .ps-admin-tree__row.is-cursor {
+    border-color: var(--ps-border-strong);
+}
+.ps-admin-tree__caret {
+    flex: none;
+    width: 12px;
+    color: var(--ps-muted);
+    font-size: 10px;
+    text-align: center;
+}
+.ps-admin-tree__row.is-collapsible.depth-0 { padding-left: 4px; }
+.ps-admin-tree__row.is-group.depth-1 { padding-left: 18px; }
+.ps-admin-tree__row.is-group {
+    color: var(--ps-muted);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+.ps-admin-tree__row.is-group .ps-admin-tree__count,
+.ps-admin-tree__row.is-collapsible .ps-admin-tree__count { margin-left: auto; }
+.ps-admin-tree__row.is-selected .ps-admin-tree__caret { color: var(--ps-modal-selected-foreground); }
+.ps-admin-tree__scroll {
+    display: flex;
+    flex-direction: column;
+    flex: none;
+    max-height: min(46vh, 420px);
+    overflow: hidden auto;
+    overscroll-behavior: contain;
+}
+/* Rows keep their natural height so a long list scrolls. A row clips its own
+   overflow, which makes its automatic minimum height 0, so in this column it
+   would otherwise shrink to fit the box instead. */
+.ps-admin-tree__scroll > * { flex: none; }
+.ps-admin-tree__owner {
+    color: var(--ps-muted);
+    font-size: 11px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+.ps-admin-tree__row.is-selected .ps-admin-tree__owner { color: var(--ps-modal-selected-foreground); }
+
+/* Canvas Apps detail (issue 181 R23/R29). */
+.ps-canvas-app-detail__desc p { margin: 0 0 8px; white-space: pre-wrap; line-height: 1.45; }
+.ps-canvas-app-card {
+    border: 1px solid var(--ps-border);
+    border-radius: var(--ps-radius-sm);
+    padding: 8px 10px;
+    margin-bottom: 12px;
+    font-size: var(--ps-font-size-dense);
+}
+.ps-canvas-app-card ul { margin: 2px 0 8px; padding-left: 18px; }
+.ps-canvas-app-card li { margin: 2px 0; overflow-wrap: anywhere; }
+.ps-canvas-app-card code { color: var(--ps-foreground); }
+.ps-canvas-app-card__muted { color: var(--ps-muted); }
+.ps-canvas-app-card__warning {
+    margin-bottom: 8px;
+    padding: 6px 8px;
+    border: 1px solid color-mix(in srgb, #d29922 60%, transparent);
+    border-radius: var(--ps-radius-sm);
+    background: color-mix(in srgb, #d29922 10%, transparent);
+    color: var(--ps-foreground);
+}
+.ps-canvas-app-detail__people { margin: 2px 0 12px; padding-left: 18px; }
+.ps-canvas-app-detail__loads { border-collapse: collapse; margin-bottom: 12px; font-size: var(--ps-font-size-dense); }
+.ps-canvas-app-detail__loads td { padding: 2px 12px 2px 0; color: var(--ps-foreground); }
+.ps-admin-console__hint.is-ok { color: #3fb950; }
+.ps-canvas-app-preview {
+    margin-top: 12px;
+    border: 1px solid var(--ps-border);
+    border-radius: var(--ps-radius-sm);
+    overflow: hidden;
+}
+.ps-canvas-app-preview__bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 4px 8px;
+    background: var(--ps-chrome);
+    color: var(--ps-muted);
+    font-size: 11px;
+}
+.ps-canvas-app-preview__frame {
+    display: block;
+    width: 100%;
+    height: min(60vh, 520px);
+    border: 0;
+    background: #fff;
+}
+.ps-canvas-publish__check {
+    padding: 6px 8px;
+    border: 1px solid var(--ps-border);
+    border-radius: var(--ps-radius-sm);
+    color: var(--ps-muted);
+    font-size: var(--ps-font-size-dense);
+    min-height: 1.4em;
+}
+.ps-canvas-publish__check.is-ok { border-color: color-mix(in srgb, #3fb950 55%, transparent); color: var(--ps-foreground); }
+.ps-canvas-publish__check.is-error { border-color: color-mix(in srgb, #f85149 60%, transparent); color: #f85149; white-space: pre-wrap; }
+.ps-canvas-app-add textarea,
+.ps-canvas-publish textarea { font: inherit; resize: vertical; }
+
 .ps-admin-tree__add {
     /* Set apart from the tree above it: this is a new-thing action, not the
        next row of the list, and at 10px it read as one. */
@@ -8296,6 +8404,32 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
   font-size: 12px;
   z-index: 3;
 }
+
+/* Workspace consent prompt (issue 181 R20): a decision card, not a chip. It
+   carries a lead, the itemized request and two buttons, so it wraps, caps its
+   width and height, and scrolls inside rather than spilling off the canvas. */
+.ps-canvas-load-error.ps-canvas-consent {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+  width: min(460px, calc(100% - 24px));
+  max-height: calc(100% - 28px);
+  overflow: auto;
+  padding: 10px 12px;
+  border-color: color-mix(in srgb, #d29922 60%, var(--ps-border));
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  font-size: 12.5px;
+  line-height: 1.4;
+}
+.ps-canvas-consent > span:first-child { font-weight: 600; }
+.ps-canvas-consent-detail {
+  margin: 0;
+  padding-left: 18px;
+  color: var(--ps-muted);
+  overflow-wrap: anywhere;
+}
+.ps-canvas-consent .is-error { color: #f85149; }
+.ps-canvas-consent .ps-artifact-pane-btn { align-self: flex-start; }
 
 /* The blank canvas is a standard teaching message, not an empty pane — it
    explains the feature at the exact moment the user is looking at its

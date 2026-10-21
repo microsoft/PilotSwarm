@@ -36,6 +36,8 @@ import {
     getContextHeaderBadge,
 } from "./context-usage.js";
 import { canonicalSystemTitle } from "./system-titles.js";
+import { buildVisibleAdminTree, effectiveAdminTreeCursor } from "./admin-tree.js";
+import { buildCanvasAppsView } from "./admin-canvas-apps.js";
 import { matchesSessionError } from "./session-warning.js";
 import { normalizeQuestionForDisplay } from "./question-display.js";
 import { withSessionWarnings, isActivityOnlySessionError } from "./session-errors.js";
@@ -4867,27 +4869,52 @@ export function selectAdminConsole(state) {
     // Settings tree — the session-list-slot navigation. Rendered by both
     // hosts; `kind` drives affordances (section rows switch panes, package
     // rows select a package).
-    const section = ["providers", "packages", "workers", "features"].includes(admin.section) ? admin.section : "providers";
-    const settingsTree = [
-        { id: "providers", kind: "section", depth: 0, label: "Model Providers", selected: false },
-        { id: "myProviders", kind: "subsection", depth: 1, label: "My Providers", selected: section === "providers" && providerPage === "mine" },
-        ...(isAdmin ? [{ id: "sharedProviders", kind: "subsection", depth: 1, label: "Shared Providers", selected: section === "providers" && providerPage === "shared" }] : []),
-        { id: "features", kind: "section", depth: 0, label: "Feature flags", selected: section === "features" },
-        { id: "agents", kind: "section", depth: 0, label: "Packages", selected: section === "packages" && !pkgState.selectedName },
-        { id: "group:shared", kind: "group", depth: 1, label: "Shared", count: sharedRows.length },
-        ...sharedRows.map((row) => ({ id: `pkg:shared:${row.name}`, kind: "package", depth: 2, label: row.name, ...row })),
-        { id: "group:user", kind: "group", depth: 1, label: "User", count: userRows.length },
-        ...userRows.map((row) => ({ id: `pkg:user:${row.name}`, kind: "package", depth: 2, label: row.name, ...row })),
+    const section = ["providers", "packages", "canvasApps", "workers", "features"].includes(admin.section) ? admin.section : "providers";
+    const canvasAppsView = buildCanvasAppsView(admin, {
+        section,
+        isMine: isMinePackage,
+        passesOwnerFilter,
+        resourceAdmin,
+    });
+    const cappRows = canvasAppsView.rows;
+    const packageTotal = sharedRows.length + userRows.length + otherUserRows.length;
+    // Every row names its parent so the Packages and Canvas Apps sections and
+    // their groups can collapse (R24); hidden rows are dropped below.
+    const settingsTreeAll = [
+        { id: "providers", kind: "section", depth: 0, label: "Model Providers", selected: false, parentId: null },
+        { id: "myProviders", kind: "subsection", depth: 1, label: "My Providers", selected: section === "providers" && providerPage === "mine", parentId: "providers" },
+        ...(isAdmin ? [{ id: "sharedProviders", kind: "subsection", depth: 1, label: "Shared Providers", selected: section === "providers" && providerPage === "shared", parentId: "providers" }] : []),
+        { id: "features", kind: "section", depth: 0, label: "Feature flags", selected: section === "features", parentId: null },
+        { id: "agents", kind: "section", depth: 0, label: "Packages", selected: section === "packages" && !pkgState.selectedName, count: packageTotal, parentId: null },
+        { id: "group:shared", kind: "group", depth: 1, label: "Shared", count: sharedRows.length, parentId: "agents" },
+        ...sharedRows.map((row) => ({ id: `pkg:shared:${row.name}`, kind: "package", depth: 2, label: row.name, ...row, parentId: "group:shared" })),
+        { id: "group:user", kind: "group", depth: 1, label: "User", count: userRows.length, parentId: "agents" },
+        ...userRows.map((row) => ({ id: `pkg:user:${row.name}`, kind: "package", depth: 2, label: row.name, ...row, parentId: "group:user" })),
         ...(otherUserRows.length > 0
             ? [
-                { id: "group:others", kind: "group", depth: 1, label: "Other users", count: otherUserRows.length },
-                ...otherUserRows.map((row) => ({ id: `pkg:user:${row.owner?.subject ?? "?"}:${row.name}`, kind: "package", depth: 2, label: row.name, ...row })),
+                { id: "group:others", kind: "group", depth: 1, label: "Other users", count: otherUserRows.length, parentId: "agents" },
+                ...otherUserRows.map((row) => ({ id: `pkg:user:${row.owner?.subject ?? "?"}:${row.name}`, kind: "package", depth: 2, label: row.name, ...row, parentId: "group:others" })),
+            ]
+            : []),
+        { id: "canvasApps", kind: "section", depth: 0, label: "Canvas Apps", selected: section === "canvasApps" && !canvasAppsView.detail, count: canvasAppsView.total, parentId: null },
+        { id: "capps:shared", kind: "group", depth: 1, label: "Shared", count: cappRows.shared.length, parentId: "canvasApps" },
+        ...cappRows.shared.map((row) => ({ ...row, depth: 2, parentId: "capps:shared" })),
+        { id: "capps:mine", kind: "group", depth: 1, label: "Private", count: cappRows.mine.length, parentId: "canvasApps" },
+        ...cappRows.mine.map((row) => ({ ...row, depth: 2, parentId: "capps:mine" })),
+        ...(cappRows.others.length > 0
+            ? [
+                { id: "capps:others", kind: "group", depth: 1, label: "Other users", count: cappRows.others.length, parentId: "canvasApps" },
+                ...cappRows.others.map((row) => ({ ...row, depth: 2, parentId: "capps:others" })),
             ]
             : []),
         // The worker registry is a hard-gated admin read; hide the section
         // entirely from non-admins rather than showing a doomed pane.
-        ...(isAdmin ? [{ id: "workers", kind: "section", depth: 0, label: "Workers", selected: section === "workers" }] : []),
+        ...(isAdmin ? [{ id: "workers", kind: "section", depth: 0, label: "Workers", selected: section === "workers", parentId: null }] : []),
     ];
+    const treeState = admin.tree || { collapsed: [], cursor: null };
+    const visibleTree = buildVisibleAdminTree(settingsTreeAll, treeState.collapsed, null);
+    const treeCursor = effectiveAdminTreeCursor(visibleTree, treeState.cursor, section);
+    const settingsTree = visibleTree.map((row) => (row.id === treeCursor ? { ...row, cursor: true } : row));
 
     // Detail view-model for the selected package.
     const detail = pkgState.detail || null;
@@ -5162,7 +5189,56 @@ export function selectAdminConsole(state) {
             adminPolicyLabel: adminScope === "cluster" ? "Cluster-scoped admin · system-session access retained" : "Unrestricted admin access",
             section,
             settingsTree,
+            settingsTreeAll,
+            treeCursor,
             packages: packagesView,
+            canvasApps: canvasAppsView,
+            workers: workersView,
+            modelProviders,
+            ghcpKey: {
+                configured: Boolean(profile?.githubCopilotKeySet),
+                targetConfigured,
+                storeAsSystem,
+                editing: false,
+                draft: "",
+                cursorIndex: 0,
+                saving: false,
+                error: null,
+                statusText: ghcpStatusText,
+            },
+            systemGhcpKey: {
+                supported: Boolean(systemGhcpKey.supported),
+                loading: Boolean(systemGhcpKey.loading),
+                configured: Boolean(systemGhcpKey.configured),
+                changedBy: systemGhcpKey.changedBy || null,
+                changedAt: systemGhcpKey.changedAt || null,
+                error: systemGhcpKey.error || null,
+            },
+            actions,
+        };
+    }
+    if (section === "canvasApps") {
+        actions.push({ id: "canvasAppsRefresh", label: "Refresh canvas apps", key: "r" });
+        actions.push({ id: "treeNext", label: "Next row", key: "j" });
+        actions.push({ id: "treePrev", label: "Previous row", key: "k" });
+        actions.push({ id: "treeToggle", label: "Open or close", key: "Enter" });
+        actions.push({ id: "showPackages", label: "Packages", key: "a" });
+        actions.push({ id: "showProviders", label: "Model Providers", key: "m" });
+        actions.push({ id: "close", label: "Close console", key: "Esc" });
+        return {
+            visible: Boolean(admin.visible),
+            loading: Boolean(admin.loading),
+            loadError: admin.loadError || null,
+            principal,
+            isAdmin,
+            adminScope,
+            adminPolicyLabel: adminScope === "cluster" ? "Cluster-scoped admin · system-session access retained" : "Unrestricted admin access",
+            section,
+            settingsTree,
+            settingsTreeAll,
+            treeCursor,
+            packages: packagesView,
+            canvasApps: canvasAppsView,
             workers: workersView,
             modelProviders,
             ghcpKey: {
@@ -5191,6 +5267,8 @@ export function selectAdminConsole(state) {
         actions.push({ id: "packagesRefresh", label: "Refresh packages", key: "r" });
         actions.push({ id: "packagesNext", label: "Next package", key: "j" });
         actions.push({ id: "packagesPrev", label: "Previous package", key: "k" });
+        actions.push({ id: "treeToggle", label: "Open or close", key: "Enter" });
+        actions.push({ id: "showCanvasApps", label: "Canvas Apps", key: "c" });
         actions.push({ id: "showProviders", label: "Model Providers", key: "m" });
         actions.push({ id: "close", label: "Close console", key: "Esc" });
         return {
@@ -5203,7 +5281,10 @@ export function selectAdminConsole(state) {
             adminPolicyLabel: adminScope === "cluster" ? "Cluster-scoped admin · system-session access retained" : "Unrestricted admin access",
             section,
             settingsTree,
+            settingsTreeAll,
+            treeCursor,
             packages: packagesView,
+            canvasApps: canvasAppsView,
             workers: workersView,
             modelProviders,
             ghcpKey: {
@@ -5250,7 +5331,10 @@ export function selectAdminConsole(state) {
             adminPolicyLabel: adminScope === "cluster" ? "Cluster-scoped admin · system-session access retained" : "Unrestricted admin access",
             section,
             settingsTree,
+            settingsTreeAll,
+            treeCursor,
             packages: packagesView,
+            canvasApps: canvasAppsView,
             workers: workersView,
             modelProviders,
             ghcpKey: {
@@ -5300,7 +5384,10 @@ export function selectAdminConsole(state) {
         adminPolicyLabel: adminScope === "cluster" ? "Cluster-scoped admin · system-session access retained" : "Unrestricted admin access",
         section,
         settingsTree,
+        settingsTreeAll,
+        treeCursor,
         packages: packagesView,
+        canvasApps: canvasAppsView,
         workers: workersView,
         modelProviders,
         ghcpKey: {
@@ -9665,6 +9752,15 @@ const KEYBINDING_HELP = [
         ["d", "selected queued message: cancel it"],
         ["ctrl-t", "selected queued message: steer now (sends it to the running turn)"],
         ["ctrl-t", "empty prompt: steer every queued message now, in order (not when one has an image)"],
+    ] },
+    { section: "Admin Console", bindings: [
+        ["m / M", "Model Providers: mine / shared"],
+        ["a / c / w", "Packages / Canvas Apps / Workers"],
+        ["j k   ↑ ↓", "Packages and Canvas Apps: move (an item opens)"],
+        ["enter / space", "open / close a section or group"],
+        ["← →", "collapse / expand"],
+        ["r", "refresh"],
+        ["Esc", "close the console"],
     ] },
     { section: "Overlays", bindings: [
         ["Esc / q", "close"],

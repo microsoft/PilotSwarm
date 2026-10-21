@@ -1351,7 +1351,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Publish the canvas on a session slot as a version of an app (private unless scope is shared). The page needs a CANVAS-APP-MANIFEST with an interface block, ≤ 900 KB.
+     * Publish the canvas on a session slot as a version of an app (private unless scope is shared). The page needs a CANVAS-APP-MANIFEST with an interface block, ≤ 900 KB. With checkOnly: true, run the publish checks and return the result with the manifest's name, version, description and tags; nothing is written.
      * @remarks `POST /management/sessions/:sessionId/canvas-apps/publish` — access: `session:write`
      */
     publishCanvasApp(params: {
@@ -1362,6 +1362,7 @@ export interface ManagementOps {
         tags?: any;
         scope?: any;
         version?: any;
+        checkOnly?: any;
     }): Promise<any>;
 
     /**

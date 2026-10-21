@@ -125,6 +125,7 @@ const CANVAS_APP_TOOLS = [
     "set_canvas_app_metadata", "pin_canvas_app_version", "delete_canvas_app",
     "manage_canvas_app_contributors", "export_canvas_app", "import_canvas_app",
     "get_canvas_app_loads", "migrate_legacy_canvas_apps", "prune_canvas_apps",
+    "publish_session_canvas_app",
 ];
 // A person approves workspace use in the portal; no MCP tool may do it.
 const HUMAN_ONLY_TOOLS = ["set_canvas_app_workspace_consent", "set_canvas_workspace_consent"];
@@ -213,6 +214,34 @@ async function main() {
         record("capabilities: bare graph=false", caps2.graph === false);
         record("capabilities: bare facts.search=false", caps2.facts?.search === false);
         await client2.close();
+    }
+
+    // 6. publish_session_canvas_app check_only: one publishCanvasApp call
+    //    carrying checkOnly, and no other registry op (nothing is written).
+    {
+        const calls = [];
+        const ctx = makeCtx({ web: true });
+        ctx.web = new Proxy({ ops: mockWeb().ops }, {
+            get: (target, prop) => (prop in target ? target[prop] : async (args) => {
+                calls.push({ op: String(prop), args });
+                return prop === "publishCanvasApp"
+                    ? { checkOnly: true, ok: true, code: null, error: null, manifest: { name: "demo", version: "1.0.0", description: null, tags: [] } }
+                    : {};
+            }),
+        });
+        const server = createMcpServer(ctx);
+        const [ct, st] = InMemoryTransport.createLinkedPair();
+        const client = new Client({ name: "check-only", version: "1.0.0" }, { capabilities: {} });
+        await Promise.all([server.connect(st), client.connect(ct)]);
+        const res = await client.callTool({ name: "publish_session_canvas_app", arguments: { session_id: "s-1", slot: 2, check_only: true } });
+        const body = JSON.parse(res.content[0].text);
+        record("check_only: one publishCanvasApp call", calls.length === 1 && calls[0].op === "publishCanvasApp", JSON.stringify(calls.map((c) => c.op)));
+        record("check_only: checkOnly forwarded", calls[0]?.args?.checkOnly === true && calls[0]?.args?.sessionId === "s-1" && calls[0]?.args?.slot === 2);
+        record("check_only: result returned", body.checkOnly === true && body.manifest?.name === "demo");
+        calls.length = 0;
+        const refused = await client.callTool({ name: "publish_session_canvas_app", arguments: { session_id: "s-1" } });
+        record("publish without name or check_only refused before any call", refused.isError === true && calls.length === 0);
+        await client.close();
     }
 
     const failed = results.filter((r) => !r.ok);

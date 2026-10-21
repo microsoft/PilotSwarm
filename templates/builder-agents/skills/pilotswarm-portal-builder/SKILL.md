@@ -1,7 +1,7 @@
 ---
 name: pilotswarm-portal-builder
 description: "Use when creating or updating a browser portal on top of PilotSwarm. Covers portal branding, plugin.json.portal, named-agent exposure, auth add-ons, and remote deployment wiring."
-version: 1.2.0
+version: 1.3.0
 ---
 
 # PilotSwarm Portal Builder
@@ -109,6 +109,13 @@ Do not guess these answers when they materially affect the scaffold. If the user
   approval in the portal; a custom UX that renders canvases must show that
   prompt from `getCanvasWorkspaceApproval` and send the decision with
   `setCanvasWorkspaceConsent`, never from the page.
+- The shipped portal manages apps in Admin Console → Canvas Apps and offers
+  **Publish as app** on the canvas toolbar to the session owner. A custom UX
+  that offers publishing should check the page first with
+  `publishCanvasApp({ sessionId, slot, checkOnly: true })` — it returns the
+  check result and the manifest's fields and writes nothing — then publish
+  with the person's chosen name, scope and version. Preview an app's page
+  only through an isolated, sandboxed frame with no session channel.
 
 ## Portal Config Guidance
 

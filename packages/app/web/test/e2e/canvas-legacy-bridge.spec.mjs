@@ -13,7 +13,7 @@
 // in r5. Each case counts downloads, starts and label reads. The phone cases
 // are in canvas-legacy-bridge-phone.spec.mjs (a device is a top-level use).
 import { test, expect } from "@playwright/test";
-import { startStubServer } from "./stub-server.mjs";
+import { makeCanvasApp, startStubServer } from "./stub-server.mjs";
 import { normalizeMoa } from "../../../ui/core/src/moa.js";
 import { appPage, expectShown, LIST_CANVASES, openCanvasCold, routeCanvas, sha256, sid } from "./canvas-cold-open-fixtures.mjs";
 
@@ -222,6 +222,30 @@ test.describe("switch on", () => {
         await expect(frame).toHaveCount(1, { timeout: 30_000 });
         await expect(page.frameLocator("iframe").first().locator("#marker")).toHaveText("share-legacy", { timeout: 30_000 });
         await expect(page.frameLocator("iframe").first().locator("iframe")).toHaveCount(0);
+    });
+});
+
+test.describe("switch on, with the canvas app registry (PR 2 fixtures)", () => {
+    let stub, base;
+    test.beforeAll(async () => {
+        stub = await startStubServer(0, { sessionCount: 1, canvases: LIST_CANVASES, canvasLegacyMode: true, canvasApps: [makeCanvasApp("board")] });
+        base = `http://127.0.0.1:${stub.port}`;
+    });
+    test.afterAll(async () => { await new Promise((resolve) => stub.server.close(resolve)); });
+
+    test("the registry's signed-in bootstrap keeps the switch; a pre-registry page is still framed directly after its label", async ({ page }) => {
+        const boot = await (await page.request.get(`${base}/api/v1/bootstrap`)).json();
+        expect(boot.canvasLegacyMode, "the switch survives the registry's bootstrap").toBe(true);
+        expect(boot.auth?.principal?.subject, "and it is still the signed-in registry bootstrap").toBeTruthy();
+        const apps = await (await page.request.get(`${base}/api/v1/canvas-apps`)).json();
+        expect(apps.result?.map((app) => app.name)).toEqual(["board"]);
+        const html = appPage("registry-and-legacy");
+        const c = await routeCanvas(page, S, { slots: { 1: { html, pageSha256: null }, 2: OTHER }, labels: { 1: legacyLabel(html) } });
+        await openCanvasCold(page, base, S);
+        await expectShown(page, "registry-and-legacy", { wrapped: false });
+        await settle(page);
+        expect(c.labelReads(1)).toBe(1);
+        expect(c.srcdocs()).toBe(0);
     });
 });
 

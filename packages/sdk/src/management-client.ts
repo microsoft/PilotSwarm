@@ -177,7 +177,8 @@ import {
 import {
     publishCanvasAppHtml, readCanvasAppHtml, deleteCanvasApp, exportCanvasApp, importCanvasApp, classifyCanvasDraw,
     migrateLegacyCanvasApps, pruneCanvasAppArtifacts, CANVAS_APP_DESCRIPTION_MIN, sha256Hex, looksLikeCanvasAppSpace,
-    type CanvasAppRegistryDeps, type PublishCanvasAppHtmlResult,
+    checkCanvasAppPublish,
+    type CanvasAppRegistryDeps, type PublishCanvasAppHtmlResult, type CanvasAppPublishCheck,
 } from "./canvas-app-registry.js";
 import {
     CanvasAppError,
@@ -5541,21 +5542,32 @@ export class PilotSwarmManagementClient {
         return { name: resolved.name, version: resolved.version, sha256: resolved.sha256, sizeBytes: resolved.sizeBytes, scope: resolved.scope, html };
     }
 
-    /** Publish the canvas on a session slot (the caller must be able to write the session). */
+    /**
+     * Publish the canvas on a session slot (the caller must be able to write
+     * the session). `checkOnly: true` runs the same publish checks on the
+     * slot's page and returns the result with the manifest's fields, writing
+     * nothing: no app row, no version row, no stored page, no event.
+     */
     async publishCanvasApp(
-        args: { sessionId: string; slot?: number; name: string; description?: string; tags?: string[]; scope?: string; version?: string },
+        args: { sessionId: string; slot?: number; name?: string; description?: string; tags?: string[]; scope?: string; version?: string; checkOnly?: boolean },
         owner: AgentPrincipal | null,
         resourceAdmin: boolean,
-    ): Promise<PublishCanvasAppHtmlResult> {
+    ): Promise<PublishCanvasAppHtmlResult | CanvasAppPublishCheck> {
         const deps = this._canvasAppDeps();
         const sessionId = String(args?.sessionId ?? "");
         const slot = normalizeShareSlot(args?.slot ?? 1);
+        const checkOnly = args?.checkOnly === true || (args?.checkOnly as unknown) === "true";
         await this._assertCanvasSessionWrite(sessionId, owner, resourceAdmin);
         const latest = await latestCanvasEventData(this._catalog, sessionId, slot);
-        if (latest.rev === 0) throw new CanvasAppError("BAD_REQUEST", `no canvas has been drawn on slot ${slot}`);
+        if (latest.rev === 0) {
+            const message = `no canvas has been drawn on slot ${slot}`;
+            if (checkOnly) return { checkOnly: true, ok: false, code: "BAD_REQUEST", error: message, sizeBytes: 0, sha256: null, manifest: null, interface: null, workspace: false };
+            throw new CanvasAppError("BAD_REQUEST", message);
+        }
         const html = await deps.artifactStore.downloadArtifactText(sessionId, canvasArtifactFilename(slot));
+        if (checkOnly) return checkCanvasAppPublish(html, latest.responseContract);
         const result = await publishCanvasAppHtml(deps, {
-            html, name: args?.name, scope: args?.scope === "shared" ? "shared" : "user",
+            html, name: String(args?.name ?? ""), scope: args?.scope === "shared" ? "shared" : "user",
             version: args?.version ?? null, description: args?.description ?? null, tags: args?.tags ?? null,
             responseContract: latest.responseContract, viewer: this._canvasViewer(owner, resourceAdmin),
             sourceSessionId: sessionId, sourceSlot: slot, createdBy: owner ? `${owner.provider}:${owner.subject}` : null,

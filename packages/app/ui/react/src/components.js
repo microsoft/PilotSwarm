@@ -36,6 +36,7 @@ import {
     selectHelpModal,
     selectConfirmModal,
     selectVisibleSessionRows,
+    windowAdminTreeRows,
 } from "pilotswarm/ui-core";
 import { useUiPlatform } from "./platform.js";
 import { useControllerSelector } from "./use-controller-state.js";
@@ -1939,30 +1940,58 @@ function formatAdminPrincipalLabelTui(principal) {
     return [provider, subject].filter(Boolean).join(":") || "user";
 }
 
-function buildAdminPackagesLines(view) {
-    // TUI parity for Admin → Packages: the same selector view-model the web
-    // workspace renders, as text — settings tree, selected package detail,
-    // files, and a preview head. Keys: a/g switch sections, j/k select,
-    // r refresh (wired via the ADMIN_* commands).
+/**
+ * The settings tree as text (issue 181 R24, same rules as the portal):
+ * sections and groups collapse (▸ closed, ▾ open) and a closed one shows its
+ * count; the list is windowed around the cursor row (`›` marks the cursor,
+ * green the selection) so it scrolls and keeps that row in view.
+ */
+function buildAdminTreeLines(view, maxRows = 18) {
     const lines = [];
-    const packages = view.packages || {};
+    const rows = view.settingsTree || [];
+    const cursorId = view.treeCursor || rows.find((row) => row.selected)?.id || null;
+    const overflow = rows.length > maxRows;
+    const win = windowAdminTreeRows(rows, cursorId, overflow ? Math.max(1, maxRows - 2) : maxRows);
     lines.push([{ text: "Settings", color: "cyan", bold: true }]);
-    for (const row of view.settingsTree || []) {
+    if (win.above > 0) lines.push([{ text: `  ↑ ${win.above} more`, color: "gray" }]);
+    for (const row of win.rows) {
         const indent = "  ".repeat(row.depth || 0);
-        if (row.kind === "group") {
-            lines.push([{ text: `${indent}${row.label} (${row.count ?? 0})`, color: "gray" }]);
+        const cursor = row.id === cursorId;
+        const marker = cursor ? "› " : "  ";
+        const caret = row.collapsible ? (row.collapsed ? "▸ " : "▾ ") : "";
+        const isItem = row.kind === "package" || row.kind === "canvasApp";
+        const count = row.kind === "group" || (row.collapsible && row.collapsed) ? ` (${row.count ?? 0})` : "";
+        if (!isItem) {
+            lines.push([
+                { text: `${indent}${marker}`, color: cursor ? "green" : "gray", bold: cursor },
+                { text: `${caret}${row.label}${count}`, color: row.kind === "group" ? "gray" : (row.selected ? "white" : "white"), bold: row.selected || cursor },
+            ]);
             continue;
         }
-        const marker = row.selected ? "› " : "  ";
-        const badge = row.kind === "package" ? `[${row.scope === "shared" ? "S" : "U"}] ` : "";
-        const version = row.kind === "package" && row.semver ? `  ${row.semver}` : "";
+        const badge = row.kind === "package"
+            ? `[${row.scope === "shared" ? "S" : "U"}] `
+            : `[${row.scope === "shared" ? "S" : "P"}] `;
+        const version = row.kind === "package" ? (row.semver ? `  ${row.semver}` : "") : (row.version ? `  ${row.version}` : "");
+        const owner = row.kind === "canvasApp" && row.parentId === "capps:others" && row.ownerLabel ? `  · ${row.ownerLabel}` : "";
         lines.push([
-            { text: `${indent}${marker}`, color: row.selected ? "green" : "gray", bold: row.selected },
-            { text: `${badge}${row.label}${version}${row.kind === "package" && !row.enabled ? "  [disabled]" : ""}`,
-              color: row.selected ? "white" : (row.kind === "package" && !row.enabled ? "gray" : "white"),
+            { text: `${indent}${marker}`, color: row.selected ? "green" : "gray", bold: row.selected || cursor },
+            { text: `${badge}${row.label}${version}${owner}${row.enabled === false ? "  [disabled]" : ""}`,
+              color: row.selected ? "green" : (row.enabled === false ? "gray" : "white"),
               bold: row.selected },
         ]);
     }
+    if (win.below > 0) lines.push([{ text: `  ↓ ${win.below} more`, color: "gray" }]);
+    return lines;
+}
+
+function buildAdminPackagesLines(view, { treeRows = 18 } = {}) {
+    // TUI parity for Admin → Packages: the same selector view-model the web
+    // workspace renders, as text — settings tree, selected package detail,
+    // files, and a preview head. Keys: a/c switch sections, j/k move,
+    // Enter/Space toggle, ←/→ collapse/expand, r refresh.
+    const lines = [];
+    const packages = view.packages || {};
+    lines.push(...buildAdminTreeLines(view, treeRows));
     if (packages.loading) lines.push([{ text: "  loading packages...", color: "gray" }]);
     if (packages.error) lines.push([{ text: `  ! ${packages.error}`, color: "red" }]);
     lines.push([{ text: "", color: "gray" }]);
@@ -2052,12 +2081,7 @@ function buildAdminPackagesLines(view) {
     }
     lines.push([{ text: "", color: "gray" }]);
     lines.push([{ text: "Actions", color: "cyan", bold: true }]);
-    lines.push([
-        { text: " j/k ", color: "green", bold: true }, { text: "select  ", color: "gray" },
-        { text: "r ", color: "cyan", bold: true }, { text: "refresh  ", color: "gray" },
-        { text: "m ", color: "yellow", bold: true }, { text: "Model Providers  ", color: "gray" },
-        { text: "Esc ", color: "red", bold: true }, { text: "close", color: "gray" },
-    ]);
+    lines.push(...adminTreeKeyLines());
     return lines;
 }
 
@@ -2197,7 +2221,241 @@ function buildAdminModelProviderLines(view) {
     return lines;
 }
 
-function buildAdminConsoleLines(view) {
+function adminTreeKeyLines({ detailPaging = false } = {}) {
+    return [
+        [
+            { text: " j/k ", color: "green", bold: true }, { text: "move  ", color: "gray" },
+            { text: "Enter/Space ", color: "green", bold: true }, { text: "open/close  ", color: "gray" },
+            { text: "←/→ ", color: "green", bold: true }, { text: "collapse/expand  ", color: "gray" },
+            ...(detailPaging ? [{ text: "^D/^U ", color: "green", bold: true }, { text: "page detail  ", color: "gray" }] : []),
+            { text: "r ", color: "cyan", bold: true }, { text: "refresh", color: "gray" },
+        ],
+        [
+            { text: " a ", color: "yellow", bold: true }, { text: "Packages  ", color: "gray" },
+            { text: "c ", color: "yellow", bold: true }, { text: "Canvas Apps  ", color: "gray" },
+            { text: "m ", color: "yellow", bold: true }, { text: "Model Providers  ", color: "gray" },
+            { text: "Esc ", color: "red", bold: true }, { text: "close", color: "gray" },
+        ],
+    ];
+}
+
+/**
+ * Admin → Canvas Apps (issue 181 R23/R29) as text. Read-only: Preview, the
+ * actions and Add canvas app are portal-only (as for Packages); the tree's
+ * collapse, scroll and keys match the portal.
+ */
+function canvasAppDetailLines(apps) {
+    const lines = [];
+    const d = apps.detail;
+    if (d) {
+        lines.push([
+            { text: d.name, color: "white", bold: true },
+            { text: d.version ? `  ${d.version}` : "", color: "white" },
+            { text: `  ${d.scopeLabel}`, color: d.scope === "shared" ? "cyan" : "yellow" },
+            { text: d.enabled ? "" : "  disabled", color: "red" },
+        ]);
+        if (d.loading) lines.push([{ text: "loading canvas app...", color: "gray" }]);
+        if (d.error) lines.push([{ text: `! ${d.error}`, color: "red", bold: true }]);
+        lines.push([{ text: "Owner   ", color: "gray" }, { text: d.ownerLabel || "—", color: "white" }]);
+        if (d.tags.length) lines.push([{ text: "Tags    ", color: "gray" }, { text: d.tags.join(", "), color: "white" }]);
+        for (const para of String(d.description || "").split("\n").filter((t) => t.trim()).slice(0, 6)) {
+            lines.push([{ text: para.slice(0, 120), color: "gray" }]);
+        }
+        const card = d.interfaceCard;
+        lines.push([{ text: "Interface", color: "cyan", bold: true }]);
+        if (card.workspaceWarning) lines.push([{ text: `  ! ${card.workspaceWarning}`, color: "yellow" }]);
+        if (card.empty) lines.push([{ text: "  no actions, keys, requests or events", color: "gray" }]);
+        for (const a of card.actions) {
+            lines.push([{ text: "  action  ", color: "gray" }, { text: a.name, color: "white" },
+                { text: a.fields.length ? `  ${a.fields.map((f) => `${f.name}${f.optional ? "?" : ""}: ${f.type}`).join(", ")}` : "", color: "gray" }]);
+        }
+        for (const k of card.keys) {
+            lines.push([{ text: "  key     ", color: "gray" }, { text: k.key, color: "white" },
+                { text: `${k.writer ? `  by ${k.writer}` : ""}${k.note ? `  — ${k.note}` : ""}`.slice(0, 100), color: "gray" }]);
+        }
+        for (const r of card.requests) {
+            lines.push([{ text: "  request ", color: "gray" }, { text: r.op, color: "white" },
+                { text: `  → ${r.result || "nothing"}`.slice(0, 100), color: "gray" }]);
+        }
+        for (const e of card.events) {
+            lines.push([{ text: "  event   ", color: "gray" }, { text: e.key, color: "white" },
+                { text: e.note ? `  — ${e.note}`.slice(0, 100) : "", color: "gray" }]);
+        }
+        if (d.versions.length) {
+            lines.push([{ text: "Versions", color: "cyan", bold: true }]);
+            for (const v of d.versions) {
+                lines.push([
+                    { text: v.active ? " ● " : "   ", color: "green" },
+                    { text: `${v.version}  ${v.sha12}  ${v.sizeText}  ${v.dateText}`, color: v.active ? "white" : "gray" },
+                ]);
+            }
+        }
+        lines.push([{ text: "Contributors", color: "cyan", bold: true }]);
+        if (d.contributorsError) lines.push([{ text: `  ! ${d.contributorsError}`, color: "red" }]);
+        lines.push([{ text: `  ${d.contributors.map((c) => `${c.label} (${c.role})`).join(", ") || "none"}`, color: "gray" }]);
+        if (d.loads.visible) {
+            lines.push([{ text: "Loads", color: "cyan", bold: true },
+                { text: d.loads.total30dText ? `  ${d.loads.total30dText}` : "", color: "gray" }]);
+            if (d.loads.error) lines.push([{ text: `  ! ${d.loads.error}`, color: "red" }]);
+            for (const l of d.loads.rows.slice(0, 5)) {
+                lines.push([{ text: `  ${l.whenText}  ${l.userLabel}  ${l.version}`, color: "gray" }]);
+            }
+            if (!d.loads.rows.length && !d.loads.loading) lines.push([{ text: "  not loaded on a canvas yet", color: "gray" }]);
+        }
+        lines.push([{ text: "Preview, share, enable, download, export and delete are in the portal.", color: "gray" }]);
+    } else {
+        lines.push([{ text: apps.empty
+            ? "No canvas apps yet — publish one from a canvas in the portal, or `pilotswarm apps push`."
+            : "Select an app (j/k) to see its detail.", color: "gray" }]);
+    }
+    return lines;
+}
+
+/**
+ * Break one line of runs into the screen rows the TUI Panel will draw: the
+ * Panel's own word wrap (tui/src/platform.js computeWrappedSlices), so the
+ * detail window counts exactly the rows that appear.
+ */
+function panelWrapSlices(text, width) {
+    if (!text) return [{ start: 0, end: 0 }];
+    const slices = [];
+    let start = 0;
+    while (start < text.length) {
+        const maxEnd = Math.min(start + width, text.length);
+        let end = maxEnd;
+        if (maxEnd < text.length) {
+            let wrapPoint = -1;
+            if (/\s/u.test(text[maxEnd] || "") && maxEnd > start && /\S/u.test(text[maxEnd - 1] || "")) wrapPoint = maxEnd;
+            else {
+                for (let index = Math.min(maxEnd - 1, text.length - 1); index > start; index -= 1) {
+                    if (/\s/u.test(text[index] || "") && /\S/u.test(text[index - 1] || "")) { wrapPoint = index; break; }
+                }
+            }
+            if (wrapPoint > start) end = wrapPoint;
+        }
+        if (end <= start) end = maxEnd;
+        slices.push({ start, end });
+        start = end;
+        while (start < text.length && /\s/u.test(text[start] || "")) start += 1;
+    }
+    return slices;
+}
+
+function wrapRunsLine(line, cols) {
+    if (!Number.isFinite(cols) || cols < 1) return [line];
+    const text = line.map((run) => String(run?.text ?? "")).join("");
+    if (text.length <= cols) return [line];
+    return panelWrapSlices(text, cols).map(({ start, end }) => {
+        const out = [];
+        let cursor = 0;
+        for (const run of line) {
+            const t = String(run?.text ?? "");
+            const a = Math.max(start, cursor);
+            const b = Math.min(end, cursor + t.length);
+            if (a < b) out.push({ ...run, text: t.slice(a - cursor, b - cursor) });
+            cursor += t.length;
+        }
+        return out.length ? out : [{ text: "", color: "gray" }];
+    });
+}
+
+const CANVAS_APPS_COMPACT_KEYS = [[
+    { text: " j/k ←/→ Enter ^D/^U ", color: "green", bold: true }, { text: "move/fold/open/page  ", color: "gray" },
+    { text: "r ", color: "cyan", bold: true }, { text: "refresh  ", color: "gray" },
+    { text: "Esc ", color: "red", bold: true }, { text: "close", color: "gray" },
+]];
+
+/** Screen rows a list of lines takes in a Panel `cols` wide (the Panel's own word wrap). */
+function panelRows(lines, cols) {
+    return lines.reduce((n, line) => n + wrapRunsLine(line, cols).length, 0);
+}
+
+/** One line of runs cut to `cols` characters (an ellipsis marks the cut), so it takes exactly one Panel row. */
+function clipRunsLine(line, cols) {
+    if (!Number.isFinite(cols) || cols < 2) return line;
+    const total = line.reduce((n, run) => n + String(run?.text ?? "").length, 0);
+    if (total <= cols) return line;
+    const out = [];
+    let left = cols - 1;
+    for (const run of line) {
+        if (left <= 0) break;
+        const text = String(run?.text ?? "");
+        out.push({ ...run, text: text.slice(0, left) });
+        left -= Math.min(left, text.length);
+    }
+    out.push({ text: "…", color: "gray" });
+    return out;
+}
+
+const CANVAS_APPS_MINIMAL_KEYS = [[
+    { text: " ^D/^U ", color: "green", bold: true }, { text: "page  ", color: "gray" },
+    { text: "j/k ", color: "green", bold: true }, { text: "move  ", color: "gray" },
+    { text: "Esc", color: "red", bold: true },
+]];
+
+/**
+ * Admin → Canvas Apps in the TUI: header, tree, keys, then the detail in its
+ * own window. Without a finite `bodyRows` everything is returned. With one,
+ * the whole section is fitted into exactly that many Panel rows at `cols`,
+ * counted with the Panel's own wrap: tree labels are cut to one row (the
+ * detail shows the full name); then the tree shrinks, the blank line goes,
+ * the keys compact, the header drops its policy and principal lines, the tree
+ * shrinks to the cursor row, and the keys shrink to "^D/^U page". A paged
+ * detail window is offered only when its measured position line AND at
+ * least one detail row fit; no row is ever invented. `bounds` receives
+ * { maxOffset, page }.
+ */
+function buildAdminCanvasAppsLines(view, { treeRows = 18, bodyRows = Infinity, cols = Infinity, bounds = null, header = [], compactHeader = null } = {}) {
+    const apps = view.canvasApps || {};
+    const status = [];
+    if (apps.loading) status.push([{ text: "  loading canvas apps...", color: "gray" }]);
+    if (apps.error) status.push([{ text: `  ! ${apps.error}`, color: "red" }]);
+    // Pre-wrapped to the panel width, so the window counts real screen rows.
+    const detail = canvasAppDetailLines(apps).flatMap((line) => wrapRunsLine(line, cols));
+    const fullKeys = [[{ text: "Actions", color: "cyan", bold: true }], ...adminTreeKeyLines({ detailPaging: true })];
+    const blank = [[{ text: "", color: "gray" }]];
+    if (!Number.isFinite(bodyRows)) {
+        if (bounds) { bounds.maxOffset = 0; bounds.page = 10; }
+        return [...header, ...buildAdminTreeLines(view, treeRows), ...status, ...fullKeys, ...blank, ...detail];
+    }
+    const clip = (lines) => lines.map((line) => clipRunsLine(line, cols));
+    const position = (offset, shown) => [[{ text: `lines ${offset + 1}–${offset + shown} of ${detail.length} · ^D/^U page`, color: "gray" }]];
+    const positionRows = panelRows(position(detail.length, detail.length), cols);
+    const need = detail.length <= 1 ? detail.length : positionRows + 1;
+    const want = Math.min(detail.length, positionRows + 3);
+    const st = { head: header, tr: Math.max(4, treeRows), keys: fullKeys, gap: blank };
+    const assemble = () => [...st.head, ...clip(buildAdminTreeLines(view, st.tr)), ...clip(status), ...st.keys, ...st.gap];
+    let head = assemble();
+    const room = () => bodyRows - panelRows(head, cols);
+    const shrink = (until, step) => { while (room() < until && step()) head = assemble(); };
+    shrink(want, () => (st.tr > 4 ? (st.tr -= 1, true) : false));
+    shrink(want, () => (st.gap.length ? (st.gap = [], true) : false));
+    shrink(want, () => (st.keys === fullKeys ? (st.keys = CANVAS_APPS_COMPACT_KEYS, true) : false));
+    shrink(need, () => (compactHeader && st.head !== compactHeader ? (st.head = compactHeader, true) : false));
+    shrink(need, () => (st.tr > 1 ? (st.tr -= 1, true) : false));
+    shrink(need, () => (st.keys !== CANVAS_APPS_MINIMAL_KEYS ? (st.keys = CANVAS_APPS_MINIMAL_KEYS, true) : false));
+    const budget = Math.max(0, room());
+    if (detail.length <= budget) {
+        if (bounds) { bounds.maxOffset = 0; bounds.page = Math.max(1, budget); }
+        return [...head, ...detail];
+    }
+    if (budget < positionRows + 1) {
+        // No row is free for the detail: say so (if a row is left) rather than
+        // render a window the Panel would clip.
+        if (bounds) { bounds.maxOffset = 0; bounds.page = 1; }
+        return budget >= 1 ? [...head, clipRunsLine([{ text: "detail needs more rows — enlarge the terminal", color: "yellow" }], cols)] : head;
+    }
+    const window = budget - positionRows;
+    const maxOffset = Math.max(0, detail.length - window);
+    const offset = Math.min(Math.max(0, Number(apps.detailOffset) || 0), maxOffset);
+    const shown = detail.slice(offset, offset + window);
+    if (bounds) { bounds.maxOffset = maxOffset; bounds.page = Math.max(1, window - 1); }
+    return [...head, ...position(offset, shown.length), ...shown];
+}
+
+
+/** @internal Exported for the TUI render tests. */
+export function buildAdminConsoleLines(view, { treeRows = 18, height = null, width = null, bounds = null } = {}) {
     const lines = [];
     if (view.isAdmin && view.adminPolicyLabel) lines.push([{ text: view.adminPolicyLabel, color: "gray" }]);
     lines.push([
@@ -2218,8 +2476,27 @@ function buildAdminConsoleLines(view) {
     }
 
     if (view.section === "packages") {
-        lines.push(...buildAdminPackagesLines(view));
+        lines.push(...buildAdminPackagesLines(view, { treeRows }));
         return lines;
+    }
+
+    if (view.section === "canvasApps") {
+        // Fit into the Panel's real body: height - 2 rows at width - 4 columns
+        // (tui/src/platform.js Panel), after the header above.
+        const panelWidth = Number(width) > 0 ? Math.max(8, Number(width)) : null;
+        const panelHeight = Number(height) > 0 ? Math.max(4, Number(height)) : null;
+        const cols = panelWidth ? Math.max(1, panelWidth - 4) : Infinity;
+        const bodyRows = panelHeight ? Math.max(1, panelHeight - 2) : Infinity;
+        // The header goes in with the section, so it can compact to the
+        // signed-in line when the panel is short of rows. A profile-load
+        // error is never dropped: it stays, cut to one row, and the fitting
+        // counts it, so the tree and keys shrink first.
+        const signedIn = lines.find((line) => line[0]?.text === "Signed in as ");
+        const compactHeader = [
+            ...(signedIn ? [clipRunsLine(signedIn, cols)] : []),
+            ...(view.loadError ? [clipRunsLine([{ text: `! ${view.loadError}`, color: "red", bold: true }], cols)] : []),
+        ];
+        return buildAdminCanvasAppsLines(view, { treeRows, bodyRows, cols, bounds, header: [...lines], compactHeader });
     }
 
     if (view.section === "workers") {
@@ -2278,7 +2555,17 @@ function buildAdminConsoleLines(view) {
 function AdminConsolePanel({ controller, width, height, frame }) {
     const platform = useUiPlatform();
     const view = useControllerSelector(controller, selectAdminConsole, shallowEqualObject);
-    const lines = React.useMemo(() => buildAdminConsoleLines(view), [view]);
+    // The tree gets about half the panel; it scrolls around the cursor.
+    const treeRows = Math.max(6, Math.floor(((Number(height) || 40) - 8) / 2));
+    const { lines, bounds } = React.useMemo(() => {
+        const out = { maxOffset: 0, page: 10 };
+        return { lines: buildAdminConsoleLines(view, { treeRows, height, width, bounds: out }), bounds: out };
+    }, [view, treeRows, height, width]);
+    // Tell the controller how far the Canvas Apps detail can page.
+    React.useEffect(() => {
+        if (view.section !== "canvasApps" || typeof controller.setAdminCanvasAppDetailBounds !== "function") return;
+        controller.setAdminCanvasAppDetailBounds(bounds.maxOffset, bounds.page);
+    }, [controller, view.section, bounds.maxOffset, bounds.page]);
     return React.createElement(platform.Panel, {
         title: "Admin Console",
         color: "cyan",

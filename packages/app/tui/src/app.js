@@ -368,7 +368,7 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             return;
         }
         if (adminVisible) {
-            const adminSection = ["providers", "packages", "workers"].includes(adminState?.section)
+            const adminSection = ["providers", "packages", "canvasApps", "workers"].includes(adminState?.section)
                 ? adminState.section
                 : "providers";
             if (modal?.type === "confirm") {
@@ -389,6 +389,10 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             // Settings-tree section toggles (Model Providers ⟷ Agents ⟷ Workers).
             if (plainShortcut && input === "a" && adminSection !== "packages") {
                 controller.handleCommand(UI_COMMANDS.ADMIN_SHOW_PACKAGES).catch(() => {});
+                return;
+            }
+            if (plainShortcut && input === "c" && adminSection !== "canvasApps") {
+                controller.handleCommand(UI_COMMANDS.ADMIN_SHOW_CANVAS_APPS).catch(() => {});
                 return;
             }
             if (plainShortcut && input === "m") {
@@ -486,17 +490,45 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                 }
                 return;
             }
-            if (adminSection === "packages") {
+            // Packages and Canvas Apps share one tree (issue 181 R24), with
+            // the portal's keys: j/k or ↑/↓ move (landing on an item selects
+            // it), Enter or Space opens/closes a section or group, ← collapses
+            // (or moves to the parent), → expands.
+            if (adminSection === "packages" || adminSection === "canvasApps") {
                 if (plainShortcut && (input === "j" || key.downArrow)) {
-                    controller.handleCommand(UI_COMMANDS.ADMIN_PACKAGES_NEXT).catch(() => {});
+                    controller.handleCommand(UI_COMMANDS.ADMIN_TREE_NEXT).catch(() => {});
                     return;
                 }
                 if (plainShortcut && (input === "k" || key.upArrow)) {
-                    controller.handleCommand(UI_COMMANDS.ADMIN_PACKAGES_PREV).catch(() => {});
+                    controller.handleCommand(UI_COMMANDS.ADMIN_TREE_PREV).catch(() => {});
+                    return;
+                }
+                if (key.return || (plainShortcut && input === " ")) {
+                    controller.handleCommand(UI_COMMANDS.ADMIN_TREE_TOGGLE).catch(() => {});
+                    return;
+                }
+                if (key.leftArrow) {
+                    controller.handleCommand(UI_COMMANDS.ADMIN_TREE_COLLAPSE).catch(() => {});
+                    return;
+                }
+                if (key.rightArrow) {
+                    controller.handleCommand(UI_COMMANDS.ADMIN_TREE_EXPAND).catch(() => {});
+                    return;
+                }
+                // Canvas Apps: the detail has its own window under the tree;
+                // the TUI's page keys page it (the portal's pane scrolls natively).
+                if (adminSection === "canvasApps" && (isCtrlD || key.pageDown)) {
+                    controller.handleCommand(UI_COMMANDS.ADMIN_CANVAS_APP_DETAIL_PAGE_DOWN).catch(() => {});
+                    return;
+                }
+                if (adminSection === "canvasApps" && (isCtrlU || key.pageUp)) {
+                    controller.handleCommand(UI_COMMANDS.ADMIN_CANVAS_APP_DETAIL_PAGE_UP).catch(() => {});
                     return;
                 }
                 if (plainShortcut && input === "r") {
-                    controller.handleCommand(UI_COMMANDS.ADMIN_PACKAGES_REFRESH).catch(() => {});
+                    controller.handleCommand(adminSection === "canvasApps"
+                        ? UI_COMMANDS.ADMIN_CANVAS_APPS_REFRESH
+                        : UI_COMMANDS.ADMIN_PACKAGES_REFRESH).catch(() => {});
                     return;
                 }
                 return;

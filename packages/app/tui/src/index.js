@@ -13,6 +13,7 @@ import {
 import { PilotSwarmTuiApp } from "./app.js";
 import { createTuiPlatform } from "./platform.js";
 import { NodeSdkTransport } from "./node-sdk-transport.js";
+import { adminCollapsedConfigPatch, adminTreeViewerKey, readAdminCollapsedForViewer } from "./admin-tree-config.js";
 
 const require = createRequire(import.meta.url);
 
@@ -194,6 +195,8 @@ async function runTuiApp(config, transport, authNotify, restoreHostRuntime) {
         pinnedSessionIds: userConfig.pinnedSessionIds,
         collapsedSessionIds: userConfig.collapsedSessionIds,
         activeSessionId: userConfig.activeSessionId,
+        // Admin tree state is per viewer; before sign-in that is "local".
+        adminCollapsed: readAdminCollapsedForViewer(userConfig, null),
     }));
     const controller = new PilotSwarmUiController({ store, transport });
     authNotify.dispatch = (message) => {
@@ -294,8 +297,26 @@ async function runTuiApp(config, transport, authNotify, restoreHostRuntime) {
     let lastPersistedPinnedSessionIds = JSON.stringify(store.getState().sessions.pinnedIds || []);
     let lastPersistedCollapsedSessionIds = JSON.stringify(collapsedSessionIdsToArray(store.getState().sessions.collapsedIds));
     let lastPersistedActiveSessionId = store.getState().sessions.activeSessionId || null;
+    let adminTreeViewer = adminTreeViewerKey(store.getState().auth?.principal);
+    let lastPersistedAdminCollapsed = JSON.stringify(store.getState().admin?.tree?.collapsed || []);
     store.subscribe(() => {
         const state = store.getState();
+        // A different signed-in person: load THEIR collapsed nodes, and never
+        // write this person's state under the previous viewer's key.
+        const viewer = adminTreeViewerKey(state.auth?.principal);
+        if (viewer !== adminTreeViewer) {
+            adminTreeViewer = viewer;
+            const saved = readAdminCollapsedForViewer(readConfig(), state.auth?.principal);
+            lastPersistedAdminCollapsed = JSON.stringify(saved);
+            store.dispatch({ type: "admin/tree/setCollapsed", collapsed: saved });
+            return;
+        }
+        const currentAdminCollapsed = state.admin?.tree?.collapsed || [];
+        const currentAdminCollapsedJson = JSON.stringify(currentAdminCollapsed);
+        if (currentAdminCollapsedJson !== lastPersistedAdminCollapsed) {
+            lastPersistedAdminCollapsed = currentAdminCollapsedJson;
+            writeConfig(adminCollapsedConfigPatch(readConfig(), state.auth?.principal, currentAdminCollapsed));
+        }
         const currentThemeId = state.ui.themeId;
         const currentSessionOwnerFilter = state.sessions.ownerFilter || null;
         const currentSessionOwnerFilterJson = JSON.stringify(currentSessionOwnerFilter);

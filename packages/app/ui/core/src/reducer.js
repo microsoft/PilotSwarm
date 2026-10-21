@@ -17,6 +17,7 @@ import {
     canvasLegacyLabelKey,
     parseCanvasKey,
     normalizeStoredCollapsedSessionIds,
+    normalizeStoredAdminCollapsed,
     normalizeStoredDesktopPanes,
     normalizeStoredLayoutAdjustments,
     normalizeStoredPinnedSessionIds,
@@ -41,6 +42,30 @@ function packageResponseIsStale(packages, action) {
     if (packages.selectedName !== action.name) return true;
     if (typeof action.seq === "number") return (packages.selectionSeq ?? 0) !== action.seq;
     return false;
+}
+
+/** Same guard for canvas app responses: they carry the selectionSeq. */
+function canvasAppResponseIsStale(apps, action) {
+    return typeof action.seq !== "number" || (apps.selectionSeq ?? 0) !== action.seq;
+}
+
+/** A preview answer for an earlier request (another version, or a closed preview). */
+function canvasAppPreviewIsStale(apps, action) {
+    return typeof action.previewSeq === "number" && (apps.previewSeq ?? 0) !== action.previewSeq;
+}
+
+/** An action's completion after the person moved on (another selection or a newer action). */
+function canvasAppActionIsStale(apps, action) {
+    if (typeof action.actionSeq === "number" && (apps.actionSeq ?? 0) !== action.actionSeq) return true;
+    return typeof action.seq === "number" && (apps.selectionSeq ?? 0) !== action.seq;
+}
+
+function withCanvasApps(state, patch) {
+    return { ...state, admin: { ...state.admin, canvasApps: { ...state.admin.canvasApps, ...patch } } };
+}
+
+function withCanvasPublish(state, patch) {
+    return { ...state, canvasPublish: { ...state.canvasPublish, ...patch } };
 }
 
 function clearFeatureIdentity(features) {
@@ -1006,17 +1031,25 @@ function baseReducer(state, action) {
                 },
             };
 
-        case "auth/context":
+        case "auth/context": {
+            const identityChanged = featurePrincipalKey(state.auth?.principal) !== featurePrincipalKey(action.principal);
+            const admin = identityChanged || state.auth?.authorization?.role !== action.authorization?.role
+                ? { ...state.admin, features: clearFeatureIdentity(state.admin.features) } : state.admin;
             return {
                 ...state,
-                admin: featurePrincipalKey(state.auth?.principal) !== featurePrincipalKey(action.principal)
-                    || state.auth?.authorization?.role !== action.authorization?.role
-                    ? { ...state.admin, features: clearFeatureIdentity(state.admin.features) } : state.admin,
+                // The tree's collapsed nodes are the viewer's own (R24): a
+                // different signed-in person starts from their own state,
+                // which the host then loads.
+                admin: identityChanged && state.auth?.principal
+                    ? { ...admin, tree: { collapsed: [], cursor: null } }
+                    : admin,
                 auth: {
                     principal: action.principal ?? null,
                     authorization: action.authorization ?? null,
+                    resolved: true,
                 },
             };
+        }
 
         case "ui/status":
             return {
@@ -1193,6 +1226,9 @@ function baseReducer(state, action) {
                 canvas: hasCanvasPrefs
                     ? { ...state.canvas, prefs: mergeCanvasPrefs(state.canvas.prefs, normalizeStoredCanvasPrefs(settings.canvasPrefs), hasLoadedSessions ? state.sessions.byId : null) }
                     : state.canvas,
+                admin: Object.prototype.hasOwnProperty.call(settings, "adminCollapsed") && Array.isArray(settings.adminCollapsed)
+                    ? { ...state.admin, tree: { ...(state.admin.tree || { cursor: null }), collapsed: normalizeStoredAdminCollapsed(settings.adminCollapsed) } }
+                    : state.admin,
             };
         }
 
@@ -3063,9 +3099,230 @@ function baseReducer(state, action) {
             };
         }
         case "admin/section": {
-            const section = ["providers", "packages", "workers", "features", "ghcp"].includes(action.section) ? action.section : "ghcp";
+            const section = ["providers", "packages", "canvasApps", "workers", "features", "ghcp"].includes(action.section) ? action.section : "ghcp";
             return { ...state, admin: { ...state.admin, section } };
         }
+        case "admin/tree/setCollapsed": {
+            const collapsed = normalizeStoredAdminCollapsed(action.collapsed);
+            const tree = state.admin.tree || { collapsed: [], cursor: null };
+            if (collapsed.length === tree.collapsed.length && collapsed.every((id, i) => id === tree.collapsed[i])) return state;
+            return { ...state, admin: { ...state.admin, tree: { ...tree, collapsed } } };
+        }
+        case "admin/tree/setCursor": {
+            const tree = state.admin.tree || { collapsed: [], cursor: null };
+            const cursor = typeof action.cursor === "string" && action.cursor ? action.cursor : null;
+            if (tree.cursor === cursor) return state;
+            return { ...state, admin: { ...state.admin, tree: { ...tree, cursor } } };
+        }
+        case "admin/canvasApps/loading":
+            return withCanvasApps(state, { loading: true, error: null });
+        case "admin/canvasApps/loaded": {
+            const previous = state.admin.canvasApps;
+            const list = Array.isArray(action.list) ? action.list : [];
+            const sel = previous.selected;
+            const stillThere = sel && list.some((app) => app.name === sel.name && app.scope === sel.scope
+                && (sel.scope === "shared" || !sel.ownerSubject
+                    || (app.owner?.provider === sel.ownerProvider && app.owner?.subject === sel.ownerSubject)));
+            return withCanvasApps(state, {
+                loading: false,
+                error: null,
+                list,
+                fetchedAt: Date.now(),
+                ...(sel && !stillThere
+                    ? {
+                        selected: null,
+                        selectionSeq: (previous.selectionSeq ?? 0) + 1,
+                        // This clear is the list's (the copy is gone), not
+                        // the person's: an action that moved the copy may
+                        // follow it (see runAdminCanvasAppAction).
+                        selectionClearedByRefresh: true,
+                        detail: null, detailLoading: false, detailError: null, editors: [], editorsError: null,
+                        loads: { rows: [], total30d: null, loading: false, error: null },
+                        preview: { html: null, version: null, sha256: null, loading: false, error: null },
+                    }
+                    : {}),
+            });
+        }
+        case "admin/canvasApps/loadFailed":
+            return withCanvasApps(state, { loading: false, error: action.error || "Failed to load canvas apps" });
+        case "admin/canvasApps/select": {
+            const sel = action.selected && action.selected.name
+                ? {
+                    name: String(action.selected.name),
+                    scope: action.selected.scope === "shared" ? "shared" : "user",
+                    ownerProvider: action.selected.ownerProvider || null,
+                    ownerSubject: action.selected.ownerSubject || null,
+                }
+                : null;
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    section: "canvasApps",
+                    canvasApps: {
+                        ...state.admin.canvasApps,
+                        selected: sel,
+                        selectionSeq: (state.admin.canvasApps.selectionSeq ?? 0) + 1,
+                        selectionClearedByRefresh: false,
+                        detail: null,
+                        detailLoading: Boolean(sel),
+                        detailError: null,
+                        editors: [],
+                        editorsError: null,
+                        loads: { rows: [], total30d: null, loading: false, error: null },
+                        preview: { html: null, version: null, sha256: null, loading: false, error: null },
+                        action: { pending: null, error: null, notice: null },
+                        detailOffset: 0,
+                    },
+                },
+            };
+        }
+        case "admin/canvasApps/detail/loaded":
+            if (canvasAppResponseIsStale(state.admin.canvasApps, action)) return state;
+            return withCanvasApps(state, { detail: action.detail || null, detailLoading: false, detailError: null });
+        case "admin/canvasApps/detail/loadFailed":
+            if (canvasAppResponseIsStale(state.admin.canvasApps, action)) return state;
+            return withCanvasApps(state, { detail: null, detailLoading: false, detailError: action.error || "Failed to load canvas app" });
+        case "admin/canvasApps/editors/loaded":
+            if (canvasAppResponseIsStale(state.admin.canvasApps, action)) return state;
+            return withCanvasApps(state, { editors: Array.isArray(action.editors) ? action.editors : [], editorsError: null });
+        case "admin/canvasApps/editors/failed":
+            if (canvasAppResponseIsStale(state.admin.canvasApps, action)) return state;
+            return withCanvasApps(state, { editors: [], editorsError: action.error || "Failed to load contributors" });
+        case "admin/canvasApps/loads/loading":
+            if (canvasAppResponseIsStale(state.admin.canvasApps, action)) return state;
+            return withCanvasApps(state, { loads: { ...state.admin.canvasApps.loads, loading: true, error: null } });
+        case "admin/canvasApps/loads/loaded":
+            if (canvasAppResponseIsStale(state.admin.canvasApps, action)) return state;
+            return withCanvasApps(state, {
+                loads: {
+                    rows: Array.isArray(action.page?.rows) ? action.page.rows : [],
+                    total30d: Number.isFinite(action.page?.total30d) ? action.page.total30d : null,
+                    loading: false,
+                    error: null,
+                },
+            });
+        case "admin/canvasApps/loads/failed":
+            if (canvasAppResponseIsStale(state.admin.canvasApps, action)) return state;
+            // Loads are the owner's and admins' to read; anyone else gets
+            // FORBIDDEN. That is not an error worth showing in red.
+            return withCanvasApps(state, { loads: { rows: [], total30d: null, loading: false, error: action.error || null, hidden: Boolean(action.hidden) } });
+        case "admin/canvasApps/detailBounds": {
+            const apps = state.admin.canvasApps;
+            const maxOffset = Math.max(0, Math.floor(Number(action.maxOffset) || 0));
+            const page = Math.max(1, Math.floor(Number(action.page) || 1));
+            const offset = Math.min(apps.detailOffset ?? 0, maxOffset);
+            if (apps.detailMaxOffset === maxOffset && apps.detailPage === page && apps.detailOffset === offset) return state;
+            return withCanvasApps(state, { detailMaxOffset: maxOffset, detailPage: page, detailOffset: offset });
+        }
+        case "admin/canvasApps/detailScroll": {
+            const apps = state.admin.canvasApps;
+            const next = Math.max(0, Math.min(apps.detailMaxOffset ?? 0, (apps.detailOffset ?? 0) + Math.trunc(Number(action.delta) || 0)));
+            return next === apps.detailOffset ? state : withCanvasApps(state, { detailOffset: next });
+        }
+        case "admin/canvasApps/preview/loading":
+            if (canvasAppResponseIsStale(state.admin.canvasApps, action)) return state;
+            return withCanvasApps(state, {
+                previewSeq: typeof action.previewSeq === "number" ? action.previewSeq : (state.admin.canvasApps.previewSeq ?? 0) + 1,
+                preview: { html: null, version: action.version || null, sha256: null, loading: true, error: null },
+            });
+        case "admin/canvasApps/preview/loaded":
+            if (canvasAppResponseIsStale(state.admin.canvasApps, action) || canvasAppPreviewIsStale(state.admin.canvasApps, action)) return state;
+            return withCanvasApps(state, {
+                preview: { html: String(action.page?.html ?? ""), version: action.page?.version || null, sha256: action.page?.sha256 || null, loading: false, error: null },
+            });
+        case "admin/canvasApps/preview/failed":
+            if (canvasAppResponseIsStale(state.admin.canvasApps, action) || canvasAppPreviewIsStale(state.admin.canvasApps, action)) return state;
+            return withCanvasApps(state, { preview: { html: null, version: null, sha256: null, loading: false, error: action.error || "Failed to load the page" } });
+        case "admin/canvasApps/preview/close":
+            // Closing is a new generation too: a request still in flight must not reopen it.
+            return withCanvasApps(state, {
+                previewSeq: (state.admin.canvasApps.previewSeq ?? 0) + 1,
+                preview: { html: null, version: null, sha256: null, loading: false, error: null },
+            });
+        case "admin/canvasApps/action/pending":
+            return withCanvasApps(state, {
+                actionSeq: typeof action.actionSeq === "number" ? action.actionSeq : (state.admin.canvasApps.actionSeq ?? 0) + 1,
+                action: { pending: action.action, error: null, notice: null },
+            });
+        case "admin/canvasApps/action/done":
+            if (canvasAppActionIsStale(state.admin.canvasApps, action)) return state;
+            return withCanvasApps(state, { action: { pending: null, error: null, notice: action.notice || null } });
+        case "admin/canvasApps/action/failed":
+            if (canvasAppActionIsStale(state.admin.canvasApps, action)) return state;
+            return withCanvasApps(state, { action: { pending: null, error: action.error || "Action failed", notice: null } });
+        case "admin/canvasApps/addDialog/open":
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    section: "canvasApps",
+                    canvasApps: {
+                        ...state.admin.canvasApps,
+                        addDialog: {
+                            ...createInitialState().admin.canvasApps.addDialog,
+                            open: true,
+                            kind: action.kind === "archive" ? "archive" : "html",
+                            scope: action.scope === "shared" ? "shared" : "user",
+                        },
+                    },
+                },
+            };
+        case "admin/canvasApps/addDialog/close":
+            return withCanvasApps(state, { addDialog: { ...createInitialState().admin.canvasApps.addDialog } });
+        case "admin/canvasApps/addDialog/setField": {
+            const dialog = state.admin.canvasApps.addDialog;
+            if (!(action.field in dialog) || ["open", "submitting", "error"].includes(action.field)) return state;
+            return withCanvasApps(state, { addDialog: { ...dialog, [action.field]: action.value, error: null } });
+        }
+        case "admin/canvasApps/addDialog/submitting":
+            return withCanvasApps(state, { addDialog: { ...state.admin.canvasApps.addDialog, submitting: true, error: null } });
+        case "admin/canvasApps/addDialog/failed":
+            return withCanvasApps(state, { addDialog: { ...state.admin.canvasApps.addDialog, submitting: false, error: action.error || "Failed to add the app" } });
+        case "canvasPublish/open":
+            return {
+                ...state,
+                canvasPublish: {
+                    ...createInitialState().canvasPublish,
+                    open: true,
+                    sessionId: action.sessionId || null,
+                    slot: Number.isInteger(action.slot) && action.slot >= 1 ? action.slot : 1,
+                    checking: true,
+                },
+            };
+        case "canvasPublish/close":
+            return { ...state, canvasPublish: { ...createInitialState().canvasPublish } };
+        case "canvasPublish/setField": {
+            if (!["name", "description", "tags", "version", "scope"].includes(action.field)) return state;
+            const value = action.field === "scope" ? (action.value === "shared" ? "shared" : "user") : String(action.value ?? "");
+            return withCanvasPublish(state, { [action.field]: value, error: null });
+        }
+        case "canvasPublish/checked": {
+            const dialog = state.canvasPublish;
+            if (!dialog.open || dialog.sessionId !== action.sessionId || dialog.slot !== action.slot) return state;
+            const check = action.check || null;
+            const m = check?.manifest || null;
+            // Prefill only what the person has not typed yet.
+            return withCanvasPublish(state, {
+                checking: false,
+                check,
+                name: dialog.name || (m?.name ? String(m.name).trim().toLowerCase() : ""),
+                description: dialog.description || m?.description || "",
+                tags: dialog.tags || (Array.isArray(m?.tags) ? m.tags.join(", ") : ""),
+                version: dialog.version || m?.version || "",
+            });
+        }
+        case "canvasPublish/checkFailed": {
+            const dialog = state.canvasPublish;
+            if (!dialog.open || dialog.sessionId !== action.sessionId || dialog.slot !== action.slot) return state;
+            return withCanvasPublish(state, { checking: false, check: null, error: action.error || "The check failed" });
+        }
+        case "canvasPublish/submitting":
+            return withCanvasPublish(state, { submitting: true, error: null, result: null });
+        case "canvasPublish/done":
+            return withCanvasPublish(state, { submitting: false, error: null, result: action.result || null });
+        case "canvasPublish/failed":
+            return withCanvasPublish(state, { submitting: false, error: action.error || "Publishing failed" });
         case "admin/features":
             return { ...state, admin: { ...state.admin, features: { ...state.admin.features, ...action.patch } } };
         case "admin/workers/attempt": {

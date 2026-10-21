@@ -231,6 +231,15 @@ test("a page asks before it touches the session's files; the owner's click appro
     const { calls, frame } = await drawApp(page, answers);
     const prompt = page.getByRole("alertdialog", { name: "Allow this page to use the session's files?" });
     await expect(prompt).toBeVisible();
+    // R20 styling: a decision card that stacks and stays inside the canvas,
+    // not a one-line chip running off its edges.
+    const layout = await prompt.evaluate((el) => {
+        const pane = el.closest(".ps-canvas-pane") || el.parentElement;
+        const a = el.getBoundingClientRect();
+        const b = pane.getBoundingClientRect();
+        return { dir: getComputedStyle(el).flexDirection, inside: a.left >= b.left - 1 && a.right <= b.right + 1 && a.top >= b.top - 1 && a.bottom <= b.bottom + 1 };
+    });
+    expect(layout).toEqual({ dir: "column", inside: true });
     // What it would get comes from the server's reading of the declaration.
     await expect(prompt).toContainText("Read: work/**");
     await expect(prompt).toContainText("Change: work/notes.md");

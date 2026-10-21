@@ -8,6 +8,7 @@
  *
  *   pilotswarm apps list | search <words> | show <name>
  *   pilotswarm apps push <file.html> --name <name> [--shared] [--version <v>] [--description <text>]
+ *   pilotswarm apps publish <session-id> [--slot <n>] --name <name> [--shared] … | --check
  *   pilotswarm apps pull <name> [--version <v>] [--output <file>]
  *   pilotswarm apps export <name> [--output <file>] | import <file> [--shared]
  *   pilotswarm apps describe <name> [--description <text>] [--tags a,b]
@@ -32,6 +33,11 @@ Usage:
   pilotswarm apps search <words> [--json]
   pilotswarm apps show <name> [--shared|--user] [--json]
   pilotswarm apps push <file.html> --name <name> [--shared] [--version <v>] [--description <text>] [--tags a,b]
+  pilotswarm apps publish <session-id> [--slot <n>] --name <name> [--shared] [--version <v>] [--description <text>] [--tags a,b]
+                                                       publish the canvas drawn on a session slot (you need write access)
+  pilotswarm apps publish <session-id> [--slot <n>] --check
+                                                       run the publish checks on that page; nothing is written
+                                                       (--slot is a canvas slot, 1-5, default 1; anything else is refused)
   pilotswarm apps pull <name> [--version <v>] [--output <file>] [--shared|--user]
   pilotswarm apps export <name> [--output <file>] [--shared|--user]
   pilotswarm apps import <file.tar.gz> [--shared]
@@ -67,13 +73,14 @@ export function parseAppsArgs(argv) {
         else if (arg === "--json") flags.json = true;
         else if (arg === "--yes" || arg === "-y") flags.yes = true;
         else if (arg === "--apply") flags.apply = true;
+        else if (arg === "--check") flags.check = true;
+        else if (arg === "--slot") flags.slot = argv[++i] ?? "";
         else if (arg === "--api-url") flags.apiUrl = argv[++i];
         else if (arg === "--name") flags.name = argv[++i];
         else if (arg === "--version") flags.version = argv[++i];
         else if (arg === "--description") flags.description = argv[++i];
         else if (arg === "--tags") flags.tags = String(argv[++i] ?? "").split(",").map((t) => t.trim()).filter(Boolean);
         else if (arg === "--limit") flags.limit = Number(argv[++i]);
-        else if (arg === "--slot") flags.slot = Number(argv[++i]);
         else if (arg === "--since") flags.since = argv[++i];
         else if (arg === "--until") flags.until = argv[++i];
         else if (arg === "--cursor") flags.cursor = argv[++i];
@@ -127,6 +134,17 @@ export async function runAppsCommand(argv, deps = {}) {
         if (!name) throw new Error(`usage: pilotswarm apps ${usage}`);
         return name;
     };
+    // An absent --slot means slot 1 (the default); a supplied value must be a
+    // canvas slot, 1-5 (publish and label alike). It is checked before
+    // connecting, so a bad value never reaches some other slot.
+    let slot = {};
+    if (flags.slot !== undefined) {
+        const n = /^\s*\d+\s*$/.test(String(flags.slot)) ? Number(flags.slot) : NaN;
+        if (!Number.isInteger(n) || n < 1 || n > 5) {
+            throw new Error(`--slot must be a canvas slot from 1 to 5 (got ${JSON.stringify(String(flags.slot))})`);
+        }
+        slot = { slot: n };
+    }
     const { client, close } = await connect(flags, deps);
     try {
         switch (command) {
@@ -155,6 +173,31 @@ export async function runAppsCommand(argv, deps = {}) {
                 const html = fs.readFileSync(path.resolve(file), "utf8");
                 const result = await client.uploadCanvasApp({
                     html, name, ...(flags.scope ? { scope: flags.scope } : {}),
+                    ...(flags.version ? { version: flags.version } : {}),
+                    ...(flags.description ? { description: flags.description } : {}),
+                    ...(flags.tags ? { tags: flags.tags } : {}),
+                });
+                print(result, (r) => `${r.status === "published" ? "published" : "unchanged"} ${name}@${r.version} (${r.scope === "shared" ? "shared" : "private"})`);
+                return 0;
+            }
+            case "publish": {
+                const sessionId = needName(rest[0], "publish <session-id> [--slot <n>] --name <name> | --check");
+                if (flags.check) {
+                    const check = await client.publishCanvasApp({ sessionId, ...slot, checkOnly: true });
+                    print(check, (c) => c.ok
+                        ? [`check passed (${c.sizeBytes} bytes)`,
+                            c.manifest?.name ? `name: ${c.manifest.name}` : null,
+                            c.manifest?.version ? `version: ${c.manifest.version}` : null,
+                            c.manifest?.description ? `description: ${c.manifest.description}` : null,
+                            c.manifest?.tags?.length ? `tags: ${c.manifest.tags.join(", ")}` : null,
+                            c.workspace ? "asks for workspace access" : null].filter(Boolean).join("\n")
+                        : `check failed: ${c.error}`);
+                    return check.ok ? 0 : 2;
+                }
+                const name = needName(flags.name, "publish <session-id> [--slot <n>] --name <name>");
+                const result = await client.publishCanvasApp({
+                    sessionId, ...slot, name,
+                    ...(flags.scope ? { scope: flags.scope } : {}),
                     ...(flags.version ? { version: flags.version } : {}),
                     ...(flags.description ? { description: flags.description } : {}),
                     ...(flags.tags ? { tags: flags.tags } : {}),
@@ -264,7 +307,7 @@ export async function runAppsCommand(argv, deps = {}) {
             }
             case "label": {
                 const sessionId = needName(rest[0], "label <sessionId>");
-                const label = await client.getCanvasRevisionLabel({ sessionId, ...(flags.slot ? { slot: flags.slot } : {}) });
+                const label = await client.getCanvasRevisionLabel({ sessionId, ...slot });
                 print(label, (l) => `${sessionId} slot ${l.slot}: revision ${l.rev}, ${l.legacy ? "handled as before the registry (transition)" : "registry rules"}`);
                 return 0;
             }

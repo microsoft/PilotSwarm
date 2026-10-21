@@ -153,6 +153,7 @@ The Admin Console takes over the workspace until you press `Esc` to close it. Wh
 | `m` | Show My Providers |
 | `M` | Show Shared Providers (administrators only) |
 | `a` | Show Agent Packages |
+| `c` | Show Canvas Apps |
 | `w` | Show Workers (administrators only) |
 | `e` | Add a personal provider |
 | `U` | Update the selected personal provider's credential (input is masked) |
@@ -163,11 +164,24 @@ The Admin Console takes over the workspace until you press `Esc` to close it. Wh
 | `s` | Cycle System Session Default for future starts (administrators only) |
 | `C` / `T` / `H` | Apply the next system default and Complete / Terminate / Hard Delete & Restart inheriting system sessions |
 | `Tab` | On Shared Providers, switch between providers and system-agent overrides |
-| `j` / `k` | Move the selected personal provider or system agent |
+| `j` / `k` | Move the selected personal provider or system agent; in Packages and Canvas Apps, move through the tree (an item opens when the cursor lands on it) |
+| `Enter` / `Space` | Packages and Canvas Apps: open or close the section or group under the cursor |
+| `←` / `→` | Packages and Canvas Apps: collapse (or move to the parent) / expand |
+| `Ctrl+D` / `PgDn`, `Ctrl+U` / `PgUp` | Canvas Apps: page the selected app's detail down / up (it has its own window under the tree) |
 | `t` | Toggle system-session use for the selected admin-owned personal provider |
 | `o` | Cycle the selected system-agent override; automatic clears it to inherit |
-| `r` | Refresh providers and defaults (or the active Agents/Workers section) |
+| `r` | Refresh providers and defaults (or the active Packages, Canvas Apps or Workers section) |
 | `Esc` | Close the console and return to the workspace |
+
+In Packages and Canvas Apps a collapsed section or group shows its count, the
+list scrolls to keep the cursor in view, and the collapsed state is saved for
+the signed-in person in the TUI config file (the portal keeps it in that
+person's profile). The portal's settings tree answers the same keys while it
+has focus. The canvas app detail is read-only in the TUI; Preview, the
+actions and **Add canvas app** are in the portal. In the TUI the keys stay
+under the tree and the detail gets its own window: a position line shows
+which lines are on screen, and `Ctrl+D`/`PgDn` and `Ctrl+U`/`PgUp` page it.
+The portal's detail pane scrolls like any page.
 
 While the provider-creation wizard is open the console behaves like a modal:
 
