@@ -448,14 +448,19 @@ it.
   exactly five tools, and with no app or system tools, MCP servers, skill
   directories, custom agents or workspace tools. Sub-agent spawn and
   inter-session messaging are refused. Naming an agent `package-reviewer` only
-  ever narrows its tools.
+  ever narrows its tools. File hooks, discovered skills and filesystem custom
+  instructions are explicitly disabled as well; omitting directories alone
+  does not disable the Copilot runtime's automatic discovery.
 - **Tools.** `list_agent_package_reviews` (pending only),
   `get_agent_package_review_diff` (large patches are left out and named, to
-  read by file), `read_agent_package_review_file` (candidate or baseline,
+  read by file, with a 96 KiB UTF-8 limit including response metadata),
+  `read_agent_package_review_file` (candidate or baseline,
   sliced; binary returns only a digest), `read_agent_package_review_audit`
   and `submit_package_review_report`. Every call re-checks that the session
   owner is an unrestricted fleet administrator, never the system principal;
-  otherwise it fails closed. All package content is labelled untrusted.
+  otherwise it fails closed. Reviewer calls bypass the inspect-viewer cache,
+  so ownership changes, demotions and lookup failures apply to the next call.
+  All package content is labelled untrusted.
 - **Report storage (migration 0091).** Insert-only table
   `agent_package_review_reports`, written and read only through admin-only
   `cms_*` procedures. A report binds the exact candidate digest, the baseline
@@ -465,7 +470,9 @@ it.
 - **Visibility.** The panel shows the newest report only while the candidate
   is still pending with that digest and the baseline still matches; after a
   decision or a baseline change it is hidden. A report load failure never
-  blocks the diff or the decision buttons.
+  blocks the diff or the decision buttons. Matching includes package and version
+  IDs, not just digests. Switching/closing a diff invalidates outstanding
+  requests, and only the newest report refresh can update the panel.
 - **Not done.** Report access from MCP and the CLI. No report retention job.
 
 ## Problem

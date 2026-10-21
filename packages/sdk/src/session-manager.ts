@@ -2489,7 +2489,7 @@ export class SessionManager {
             ? createPackageReviewerTools({
                 catalog: this.sessionCatalog,
                 artifactStore: this.artifactStore ?? null,
-                resolveViewer: () => this._resolveInspectViewer(sessionId),
+                resolveViewer: () => this._resolveInspectViewer(sessionId, true),
                 sessionId,
             })
             : [];
@@ -2859,7 +2859,11 @@ export class SessionManager {
             // Session workspaces: repo hooks never run, and the repo's
             // instruction files load only when the provider adopts them. A
             // cleared session keeps hooks off.
-            ...(workspaceAttach ? {
+            ...(isReviewerSession ? {
+                enableFileHooks: false,
+                skipCustomInstructions: true,
+                enableSkills: false,
+            } : workspaceAttach ? {
                 enableFileHooks: false,
                 skipCustomInstructions: workspaceAttach.adopt?.instructions !== true,
             } : config.workspaceCleared ? { enableFileHooks: false } : {}),
@@ -4016,8 +4020,8 @@ export class SessionManager {
         }
     }
 
-    private async _resolveInspectViewer(sessionId: string): Promise<InspectViewer> {
-        const cached = SessionManager._inspectViewerCache.get(sessionId);
+    private async _resolveInspectViewer(sessionId: string, fresh = false): Promise<InspectViewer> {
+        const cached = fresh ? undefined : SessionManager._inspectViewerCache.get(sessionId);
         if (cached && Date.now() - cached.at < INSPECT_VIEWER_TTL_MS) {
             return { ...cached.viewer, adminScope: cached.viewer.isSystemSession ? "unrestricted" : this.adminScope };
         }

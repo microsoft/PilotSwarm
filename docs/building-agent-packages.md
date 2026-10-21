@@ -597,6 +597,30 @@ running sessions are never affected by scope changes.
   converges on the same mechanism: files are validated, canonically packed,
   and stored as a package artifact. There is no server-side repo polling.
 
+### Optional advisory review assistant
+
+The [package-reviewer package](../agent-packages/package-reviewer/) supplies
+an optional assistant for unrestricted fleet administrators. After an
+administrator publishes and enables that declarative package, **Ask
+package-reviewer** in the **Pending Approval** diff panel opens its session
+with the exact candidate and baseline shown. **Refresh report** reads the saved
+facts, analysis, review steps and open risks through
+`getAgentPackageReviewReport`.
+
+This is not approval automation. The assistant has no approve, reject,
+activation, shell, file, MCP or delegation tools. Each tool call resolves
+current owner/admin authority without using the inspect-viewer cache.
+File-based hooks, custom instructions and discovered skills are disabled.
+Package contents are untrusted data, never imported or executed for a review.
+
+Reports bind package/version IDs and both digests, are insert-only, and are
+shown only while the candidate is pending and the baseline matches. Large
+diff patches are explicitly omitted to keep the tool response within 96 KiB;
+the assistant can read individual files in slices. Binary files expose
+size/hash only. The administrator must independently inspect any incomplete
+analysis. Missing agents, unavailable reports or assistant errors never block
+manual review or its decision controls.
+
 ## 11. Managing a published package from the CLI
 
 Every registry operation is available from the terminal. The CLI talks to a

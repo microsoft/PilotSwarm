@@ -10,6 +10,11 @@ const GROUP_LABELS = {
 };
 const GROUP_ORDER = ["executable", "dependency", "capability", "precheck-policy", "declarative"];
 
+function sameReviewVersion(left, right) {
+    if (!left || !right) return left == null && right == null;
+    return left.versionId === right.versionId && left.sha256 === right.sha256;
+}
+
 export const PACKAGE_REVIEWER_AGENT = "package-reviewer";
 
 /** The reviewer's opening prompt: the exact candidate and baseline the administrator is looking at. */
@@ -106,17 +111,24 @@ export function PackageReviewTabs({ controller, view }) {
     const [reportView, setReportView] = React.useState(null);
     const [reportError, setReportError] = React.useState(null);
     const generation = React.useRef(0);
+    const reportGeneration = React.useRef(0);
+    const clearDiff = React.useCallback(() => {
+        generation.current++;
+        reportGeneration.current++;
+        setDiffView(null);
+        setReportView(null);
+        setReportError(null);
+    }, []);
     const effectiveTab = tab === "reviews" && !view.isAdmin ? "private" : tab;
     React.useEffect(() => {
-        generation.current++;
+        clearDiff();
+        setBusy(false);
         if (!view.isAdmin) {
             setReviews([]);
             setContents(null);
-            setDiffView(null);
-            setReportView(null);
-            setReportError(null);
         }
-    }, [view.isAdmin]);
+        return () => { generation.current++; reportGeneration.current++; };
+    }, [view.isAdmin, clearDiff]);
     const refresh = React.useCallback(async () => {
         const token = generation.current;
         setBusy(true);
@@ -141,13 +153,15 @@ export function PackageReviewTabs({ controller, view }) {
                 expectedRevision: candidate.revision, decision, reason,
                 ...(baseline !== undefined ? { baseline } : {}),
             });
-            setDiffView(null);
+            clearDiff();
             await refresh();
         } catch (e) { setError(e.message || String(e)); }
         finally { setBusy(false); }
     };
     // The report is optional: a missing endpoint, store or report never blocks the diff or a decision.
     const loadReport = async (diff, token = generation.current) => {
+        const request = ++reportGeneration.current;
+        setReportView(null);
         setReportError(null);
         if (typeof controller.transport.getAgentPackageReviewReport !== "function") {
             setReportView(null);
@@ -160,25 +174,26 @@ export function PackageReviewTabs({ controller, view }) {
                 packageId: c.packageId, versionId: c.versionId, sha256: c.sha256,
                 baselineVersionId: diff.baselineSource === "explicit" ? diff.baseline?.versionId ?? null : null,
             });
-            if (generation.current !== token) return;
+            if (generation.current !== token || reportGeneration.current !== request) return;
             // Shown only when it is for the exact candidate and baseline in this diff.
-            const same = result?.candidate?.sha256 === diff.candidate.sha256
-                && (result?.baseline?.sha256 ?? null) === (diff.baseline?.sha256 ?? null);
+            const same = result?.candidate?.packageId === c.packageId
+                && sameReviewVersion(result?.candidate, c) && sameReviewVersion(result?.baseline, diff.baseline)
+                && (!result.report || (result.report.packageId === c.packageId
+                    && sameReviewVersion(result.report, c) && sameReviewVersion(result.report.baseline, diff.baseline)));
             setReportView(same ? result : { ...result, report: null });
         } catch (e) {
-            if (generation.current === token) {
+            if (generation.current === token && reportGeneration.current === request) {
                 setReportView(null);
                 setReportError(e.message || String(e));
             }
         }
     };
     const openDiff = async (candidate) => {
+        clearDiff();
         const token = generation.current;
         setBusy(true);
         setError(null);
         setContents(null);
-        setReportView(null);
-        setReportError(null);
         try {
             const diff = await controller.transport.getAgentPackageReviewDiff({
                 packageId: candidate.packageId, versionId: candidate.versionId, sha256: candidate.sha256,
@@ -268,7 +283,7 @@ export function PackageReviewTabs({ controller, view }) {
         React.createElement("div", { role: "tablist", "aria-label": "Package catalogs" },
             tabs.map(({ id, label }) => React.createElement("button", {
                 key: id, role: "tab", type: "button", "aria-selected": effectiveTab === id,
-                onClick: () => { setContents(null); setDiffView(null); setTab(id); },
+                onClick: () => { clearDiff(); setContents(null); setBusy(false); setTab(id); },
             }, label))),
         error ? React.createElement("p", { role: "alert" }, error) : null,
         effectiveTab === "reviews" && view.isAdmin ? React.createElement("div", { role: "tabpanel" },
@@ -276,7 +291,7 @@ export function PackageReviewTabs({ controller, view }) {
                 "Content approval and activation are separate from session permission. Supported tools, declared callbacks and stdio MCP execute in supervised children with fresh admission. Revocation denies first; completion below requires observed process exits. Previously admitted external effects cannot be undone."),
             React.createElement("button", { type: "button", disabled: busy, onClick: refresh }, "Refresh reviews"),
             diffView ? React.createElement(PackageReviewDiffPanel, {
-                diff: diffView, busy, onDecide: decideFromDiff, onClose: () => { setDiffView(null); setReportView(null); setReportError(null); },
+                diff: diffView, busy, onDecide: decideFromDiff, onClose: () => { clearDiff(); setBusy(false); },
                 reportView, reportError,
                 onAskReviewer: typeof controller.createSessionForAgent === "function" ? askReviewer : undefined,
                 onRefreshReport: () => loadReport(diffView),

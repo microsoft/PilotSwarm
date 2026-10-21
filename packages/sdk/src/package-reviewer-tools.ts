@@ -24,6 +24,7 @@ import {
     resolveAgentPackageReviewTarget,
 } from "./agent-package-review-loader.js";
 import { entriesToMap } from "./agent-package-diff.js";
+import type { AgentPackageReviewDiff } from "./agent-package-review-diff.js";
 import { createHash } from "node:crypto";
 
 export const PACKAGE_REVIEWER_AGENT_ID = "package-reviewer";
@@ -135,25 +136,35 @@ export function createPackageReviewerTools(opts: CreatePackageReviewerToolsOptio
                 });
                 const diff = buildReviewDiffForTarget(target,
                     await loadAgentPackageReviewEntries(catalog, artifactStore, principal, target));
-                let used = JSON.stringify({ ...diff, changes: [] }).length;
-                const omitted: string[] = [];
-                const changes = diff.changes.map((change) => {
-                    const size = JSON.stringify(change).length;
-                    if (used + size <= DIFF_RESPONSE_BUDGET) {
-                        used += size;
-                        return change;
-                    }
-                    omitted.push(change.path);
-                    const { diff: _patch, ...rest } = change;
-                    used += JSON.stringify(rest).length + 80;
-                    return { ...rest, diff: null, note: "patch omitted from this response; use read_agent_package_review_file" };
-                });
-                return {
-                    untrusted: UNTRUSTED_NOTE,
-                    ...diff,
-                    changes,
-                    ...(omitted.length ? { patchesOmitted: omitted } : {}),
+                const result: AgentPackageReviewDiff & { untrusted: string; patchesOmitted?: string[] } = {
+                    ...diff, untrusted: UNTRUSTED_NOTE, changes: [],
                 };
+                const size = () => Buffer.byteLength(JSON.stringify(result), "utf8");
+                for (const change of diff.changes) {
+                    result.changes.push(change);
+                    if (size() <= DIFF_RESPONSE_BUDGET) continue;
+                    result.changes[result.changes.length - 1] = {
+                        ...change, diff: null, note: "patch omitted from this response; use read_agent_package_review_file",
+                    };
+                    (result.patchesOmitted ??= []).push(change.path);
+                    if (size() > DIFF_RESPONSE_BUDGET) {
+                        result.truncated = {
+                            omitted: (diff.truncated?.omitted ?? 0) + diff.changes.length - result.changes.length,
+                        };
+                        // Metadata and omission markers count toward the limit too.
+                        while (result.changes.length && size() > DIFF_RESPONSE_BUDGET) {
+                            const removed = result.changes.pop()!;
+                            result.patchesOmitted = result.patchesOmitted.filter(path => path !== removed.path);
+                            result.truncated.omitted++;
+                        }
+                        break;
+                    }
+                }
+                if (!result.patchesOmitted?.length) delete result.patchesOmitted;
+                if (size() > DIFF_RESPONSE_BUDGET) {
+                    return { error: "get_agent_package_review_diff: review metadata exceeds the 96 KiB response limit" };
+                }
+                return result;
             } catch (err) {
                 return { error: `get_agent_package_review_diff: ${errorText(err)}` };
             }
@@ -170,7 +181,7 @@ export function createPackageReviewerTools(opts: CreatePackageReviewerToolsOptio
                 ...candidateProperties,
                 path: { type: "string", description: "Path inside the package, as shown by the diff." },
                 side: { type: "string", enum: ["candidate", "baseline"], description: "Which artifact to read. Defaults to candidate." },
-                offset: { type: "number", description: "Character offset for the next slice. Defaults to 0." },
+                offset: { type: "integer", minimum: 0, description: "Character offset for the next slice. Defaults to 0." },
             },
             required: ["package_id", "version_id", "sha256", "path"],
         },
@@ -181,7 +192,13 @@ export function createPackageReviewerTools(opts: CreatePackageReviewerToolsOptio
             try {
                 const principal = await reviewer();
                 if (typeof args.path !== "string" || !args.path) return { error: "read_agent_package_review_file: path is required" };
-                const side = args.side === "baseline" ? "baseline" : "candidate";
+                if (args.side !== undefined && args.side !== "candidate" && args.side !== "baseline") {
+                    return { error: "read_agent_package_review_file: side must be candidate or baseline" };
+                }
+                if (args.offset !== undefined && (!Number.isSafeInteger(args.offset) || args.offset < 0)) {
+                    return { error: "read_agent_package_review_file: offset must be a non-negative integer" };
+                }
+                const side = args.side ?? "candidate";
                 const target = await resolveAgentPackageReviewTarget(catalog, principal, true, {
                     packageId: args.package_id, versionId: args.version_id, sha256: args.sha256,
                     baselineVersionId: args.baseline_version_id ?? null,
@@ -197,7 +214,8 @@ export function createPackageReviewerTools(opts: CreatePackageReviewerToolsOptio
                 const base = { side, versionId: ref.versionId, packageSha256: ref.sha256, path: args.path, sizeBytes: body.length, sha256: fileSha256 };
                 if (body.includes(0)) return { ...base, binary: true, note: "binary content is not shown" };
                 const text = body.toString("utf8");
-                const offset = Number.isSafeInteger(args.offset) && args.offset! > 0 ? Math.min(args.offset!, text.length) : 0;
+                const offset = args.offset ?? 0;
+                if (offset > text.length) return { error: "read_agent_package_review_file: offset is beyond the end of the file" };
                 const slice = text.slice(offset, offset + FILE_SLICE_CHARS);
                 const next = offset + slice.length;
                 return {
