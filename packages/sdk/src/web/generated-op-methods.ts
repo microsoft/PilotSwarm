@@ -43,6 +43,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getAgentPackageActivationAudit",
     "getAgentPackageFile",
     "getAgentPackageReviewAudit",
+    "getAgentPackageReviewDiff",
     "getAgentPackageReviewStatus",
     "getAgentPackageRuntimeStatus",
     "getAgentPackageTree",
@@ -120,6 +121,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "listGraphNamespaces",
     "listKnownUsers",
     "listModels",
+    "listMyNotifications",
     "listPausedSessions",
     "listProviders",
     "listSessionGroups",
@@ -128,6 +130,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "listSessionsPage",
     "listSessionWorkspaceFolders",
     "listWorkers",
+    "markNotificationsRead",
     "moveSessionsToGroup",
     "pinAgentPackageVersion",
     "placeSessionsInGroup",
@@ -169,6 +172,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "setProviderHold",
     "setProviderLimit",
     "setProviderSystemUse",
+    "setSessionCronPrecheck",
     "setSessionModel",
     "setSessionVisibility",
     "setSessionWorkspace",
@@ -540,6 +544,14 @@ export interface ManagementOps {
      */
     getAgentPackageReviewAudit(params: {
         versionId: string;
+    }): Promise<any>;
+
+    /**
+     * Authenticated administrator: risk-classified diff of an exact candidate digest against a same-package baseline (explicit, newest approved, active, or none). Review aid only; echoes the digests and revision a decision must carry.
+     * @remarks `POST /agent-package-reviews/diff` — access: `fleet:admin` (admin)
+     */
+    getAgentPackageReviewDiff(params: {
+        input?: any;
     }): Promise<any>;
 
     /**
@@ -1169,6 +1181,15 @@ export interface ManagementOps {
     listModels(params?: Record<string, never>): Promise<any>;
 
     /**
+     * The authenticated caller's own notifications: package review decisions (owner/editors) and broken/recovered cron prechecks (session and package owners). Newest first.
+     * @remarks `GET /notifications` — access: `authed`
+     */
+    listMyNotifications(params: {
+        unreadOnly?: boolean;
+        limit?: number;
+    }): Promise<any>;
+
+    /**
      * Sessions waiting on a limit, allowance, hold, or a provider name that no longer resolves. Admins fleet-wide, everyone else their own.
      * @remarks `GET /providers/paused` — access: `authed`
      */
@@ -1225,6 +1246,14 @@ export interface ManagementOps {
      * @remarks `GET /workers` — access: `fleet:admin` (admin)
      */
     listWorkers(params?: Record<string, never>): Promise<any>;
+
+    /**
+     * Mark the authenticated caller's own notifications read; omit ids to mark all unread.
+     * @remarks `POST /notifications/read` — access: `authed`
+     */
+    markNotificationsRead(params: {
+        ids?: any;
+    }): Promise<any>;
 
     /**
      * Deprecated alias of placeSessionsInGroup.
@@ -1633,6 +1662,18 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Owner or fleet admin: choose the PRECHECK for the active interval cron ({ precheck: name|null, expectedRevision, reason }); audited, applies on the next fire.
+     * @remarks `POST /management/sessions/:sessionId/cron-precheck` — access: `session:manage`
+     */
+    setSessionCronPrecheck(params: {
+        sessionId: string;
+        precheck?: any;
+        expectedRevision?: any;
+        reason?: any;
+        options?: any;
+    }): Promise<any>;
+
+    /**
      * Switch the session model ({ model, reasoningEffort?, contextTier? }).
      * @remarks `POST /management/sessions/:sessionId/model` — access: `session:manage`
      */
@@ -1916,6 +1957,7 @@ export function createManagementOps(
         getAgentPackageActivationAudit: (params: Record<string, unknown> = {}) => callOp("getAgentPackageActivationAudit", params),
         getAgentPackageFile: (params: Record<string, unknown> = {}) => callOp("getAgentPackageFile", params),
         getAgentPackageReviewAudit: (params: Record<string, unknown> = {}) => callOp("getAgentPackageReviewAudit", params),
+        getAgentPackageReviewDiff: (params: Record<string, unknown> = {}) => callOp("getAgentPackageReviewDiff", params),
         getAgentPackageReviewStatus: (params: Record<string, unknown> = {}) => callOp("getAgentPackageReviewStatus", params),
         getAgentPackageRuntimeStatus: (params: Record<string, unknown> = {}) => callOp("getAgentPackageRuntimeStatus", params),
         getAgentPackageTree: (params: Record<string, unknown> = {}) => callOp("getAgentPackageTree", params),
@@ -1993,6 +2035,7 @@ export function createManagementOps(
         listGraphNamespaces: (params: Record<string, unknown> = {}) => callOp("listGraphNamespaces", params),
         listKnownUsers: (params: Record<string, unknown> = {}) => callOp("listKnownUsers", params),
         listModels: (params: Record<string, unknown> = {}) => callOp("listModels", params),
+        listMyNotifications: (params: Record<string, unknown> = {}) => callOp("listMyNotifications", params),
         listPausedSessions: (params: Record<string, unknown> = {}) => callOp("listPausedSessions", params),
         listProviders: (params: Record<string, unknown> = {}) => callOp("listProviders", params),
         listSessionGroups: (params: Record<string, unknown> = {}) => callOp("listSessionGroups", params),
@@ -2001,6 +2044,7 @@ export function createManagementOps(
         listSessionsPage: (params: Record<string, unknown> = {}) => callOp("listSessionsPage", params),
         listSessionWorkspaceFolders: (params: Record<string, unknown> = {}) => callOp("listSessionWorkspaceFolders", params),
         listWorkers: (params: Record<string, unknown> = {}) => callOp("listWorkers", params),
+        markNotificationsRead: (params: Record<string, unknown> = {}) => callOp("markNotificationsRead", params),
         moveSessionsToGroup: (params: Record<string, unknown> = {}) => callOp("moveSessionsToGroup", params),
         pinAgentPackageVersion: (params: Record<string, unknown> = {}) => callOp("pinAgentPackageVersion", params),
         placeSessionsInGroup: (params: Record<string, unknown> = {}) => callOp("placeSessionsInGroup", params),
@@ -2042,6 +2086,7 @@ export function createManagementOps(
         setProviderHold: (params: Record<string, unknown> = {}) => callOp("setProviderHold", params),
         setProviderLimit: (params: Record<string, unknown> = {}) => callOp("setProviderLimit", params),
         setProviderSystemUse: (params: Record<string, unknown> = {}) => callOp("setProviderSystemUse", params),
+        setSessionCronPrecheck: (params: Record<string, unknown> = {}) => callOp("setSessionCronPrecheck", params),
         setSessionModel: (params: Record<string, unknown> = {}) => callOp("setSessionModel", params),
         setSessionVisibility: (params: Record<string, unknown> = {}) => callOp("setSessionVisibility", params),
         setSessionWorkspace: (params: Record<string, unknown> = {}) => callOp("setSessionWorkspace", params),

@@ -2444,6 +2444,28 @@ body.is-resizing-pane-y iframe {
   display: contents;
 }
 
+/* PRECHECK: the value plus an inline selector, kept on one row so the
+   fixed-height detail grid does not move. */
+.ps-cron-precheck-control {
+  display: flex;
+  align-items: center;
+  gap: 0.4em;
+  min-width: 0;
+  white-space: nowrap;
+}
+
+.ps-cron-precheck-control .ps-session-detail-value { flex: 0 1 auto; }
+
+.ps-cron-precheck-control select,
+.ps-cron-precheck-control input,
+.ps-cron-precheck-control button {
+  font: inherit;
+  font-size: 0.9em;
+  min-width: 0;
+}
+
+.ps-cron-precheck-control input { flex: 1 1 8em; }
+
 .ps-session-detail-label {
   color: var(--ps-muted);
   white-space: nowrap;

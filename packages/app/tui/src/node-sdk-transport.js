@@ -768,12 +768,23 @@ export class NodeSdkTransport {
         return this.mgmt.getAgentPackageReviewStatus(packageId, owner, isAdmin === true);
     }
 
+    async listMyNotifications(options = {}, owner = this.currentUser) {
+        return this.mgmt.listMyNotifications(options, owner);
+    }
+
+    async markNotificationsRead(ids = null, owner = this.currentUser) {
+        return this.mgmt.markNotificationsRead(ids, owner);
+    }
+
     async decideAgentPackageReview(input, owner = this.currentUser, isAdmin = false) {
         return this.mgmt.decideAgentPackageReview(input, owner, isAdmin === true);
     }
 
     async getAgentPackageReviewAudit(versionId, owner = this.currentUser, isAdmin = false) {
         return this.mgmt.getAgentPackageReviewAudit(versionId, owner, isAdmin === true);
+    }
+    async getAgentPackageReviewDiff(input, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.getAgentPackageReviewDiff(input, owner, isAdmin === true);
     }
     async getAgentPackageRuntimeStatus(input, owner = this.currentUser, isAdmin = false) {
         return this.mgmt.getAgentPackageRuntimeStatus(input, owner, isAdmin === true);
@@ -1162,6 +1173,19 @@ export class NodeSdkTransport {
 
     async retrySessionWorkspace(sessionId, options = {}) {
         return this.mgmt.retrySessionWorkspace(sessionId, options);
+    }
+
+    /** The web runtime stamps `input.actor`; a local TUI falls back to the OS user. */
+    async setSessionCronPrecheck(sessionId, input = {}, options = {}) {
+        let actor = typeof input?.actor === "string" ? input.actor.trim() : "";
+        if (!actor) {
+            try { actor = os.userInfo().username; } catch { actor = ""; }
+        }
+        return this.mgmt.setSessionCronPrecheck(
+            sessionId,
+            { precheck: input?.precheck, expectedRevision: input?.expectedRevision, reason: input?.reason, actor: actor || "local-operator" },
+            options,
+        );
     }
 
     async listSessionWorkspaceFolders(sessionId) {

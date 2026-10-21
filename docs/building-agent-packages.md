@@ -557,8 +557,14 @@ running sessions are never affected by scope changes.
   not required, pending admin approval, approved (not active), active, rejected
   and revoked. Publish/republish JSON adds `review` with decision, executable,
   active, versionId and sha256; `status: published | noop` is unchanged.
-  These are read-only snapshots, not execution grants. Notifications are future
-  work. Content approval does not approve external tool backends.
+  These are read-only snapshots, not execution grants. Approve, reject and
+  revoke decisions also notify the package owner and editors (portal package
+  catalog → **Notifications**, or `pilotswarm agents notifications`), and an
+  approved version is marked "approved, not active" until it is activated.
+  Administrators review a candidate against its baseline with
+  `getAgentPackageReviewDiff` (portal **Pending Approval** tab, MCP
+  `get_agent_package_review_diff`). Content approval does not approve external
+  tool backends.
 - Keep fast-changing prompts declarative; keep approved executable components
   thin/stable or use deployment-registered trusted prechecks. Unknown inspection
   is not a declarative exemption. Disabling, deleting or revoking executable

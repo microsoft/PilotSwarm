@@ -1,6 +1,7 @@
 import type {
     CommandMessage,
     CommandResponse,
+    CronSchedule,
     OrchestrationInput,
     PilotSwarmSessionStatus,
     SessionCommandResponse,
@@ -8,6 +9,7 @@ import type {
     SessionStatusSignal,
     TurnAction,
 } from "../types.js";
+import type { CronPrecheckOption } from "../cron-precheck.js";
 import { describeCronAt } from "../cron-at.js";
 import { normalizeMessageSender } from "../message-sender.js";
 import {
@@ -46,6 +48,34 @@ import {
 
 // ─── Custom status / KV helpers ─────────────────────────────
 
+function cronPrecheckStatus(schedule: CronSchedule): Partial<SessionStatusSignal> {
+    return {
+        ...(schedule.precheck ? { cronPrecheck: schedule.precheck } : {}),
+        cronPrecheckSource: schedule.operatorPrecheck ? "operator" : "agent",
+        cronRevision: schedule.revision ?? 0,
+        ...(schedule.precheckOptions ? { cronPrecheckOptions: schedule.precheckOptions.map(({ name, kind }) => ({ name, kind })) } : {}),
+        ...(schedule.precheckHealth ? { cronPrecheckHealth: { ...schedule.precheckHealth } } : {}),
+    };
+}
+
+/** Pin fields of a precheck option; empty for None. */
+function precheckPin(option: CronPrecheckOption | null): Partial<CronSchedule> {
+    if (!option) return {};
+    return {
+        precheck: option.name,
+        ...(option.packageId ? { precheckPackageId: option.packageId } : {}),
+        ...(option.packageIdentity ? { precheckIdentity: { ...option.packageIdentity }, precheckBindingRevision: option.packageBindingRevision } : {}),
+    };
+}
+
+function currentPrecheckPin(schedule: CronSchedule): Partial<CronSchedule> {
+    return {
+        ...(schedule.precheck ? { precheck: schedule.precheck } : {}),
+        ...(schedule.precheckPackageId ? { precheckPackageId: schedule.precheckPackageId } : {}),
+        ...(schedule.precheckIdentity ? { precheckIdentity: { ...schedule.precheckIdentity }, precheckBindingRevision: schedule.precheckBindingRevision } : {}),
+    };
+}
+
 export function publishStatus(
     runtime: DurableSessionRuntime,
     status: PilotSwarmSessionStatus,
@@ -74,6 +104,7 @@ export function publishStatus(
                 cronKind: "interval",
                 cronInterval: state.cronSchedule.intervalSeconds,
                 cronReason: state.cronSchedule.reason,
+                ...cronPrecheckStatus(state.cronSchedule),
             }
             : { cronActive: false }),
         ...(state.contextUsage ? { contextUsage: state.contextUsage } : {}),
@@ -263,18 +294,39 @@ export function applyCronAction(
     }
 
     ensureTaskContext(runtime, sourcePrompt);
+    const previous = runtime.state.cronAtSchedule ? undefined : runtime.state.cronSchedule;
     runtime.state.cronAtSchedule = undefined;
+    const options = Array.isArray(action.precheckOptions) ? action.precheckOptions.map((option) => ({ ...option })) : undefined;
+    // An operator's PRECHECK selection outlives the agent re-arming the
+    // schedule: None stays None; a name is re-resolved in the new options, or
+    // keeps its old pin so fire-time authorization decides.
+    const operator = previous?.operatorPrecheck;
+    let pin: Partial<CronSchedule>;
+    if (!operator) {
+        pin = {
+            // 1.0.82: the schedule's own precheck, if the cron call resolved one.
+            ...(typeof action.precheck === "string" && action.precheck ? { precheck: action.precheck } : {}),
+            ...(typeof action.precheck === "string" && action.precheck && typeof action.precheckPackageId === "string" && action.precheckPackageId
+                ? { precheckPackageId: action.precheckPackageId } : {}),
+            ...(action.precheck && action.precheckIdentity
+                ? { precheckIdentity: { ...action.precheckIdentity }, precheckBindingRevision: action.precheckBindingRevision } : {}),
+        };
+    } else if (operator.name === null) {
+        pin = {};
+    } else {
+        const found = options?.find((option) => option.name === operator.name);
+        pin = found ? precheckPin(found) : currentPrecheckPin(previous!);
+    }
     runtime.state.cronSchedule = {
         intervalSeconds: action.intervalSeconds,
         reason: action.reason,
-        // 1.0.82: the schedule's own precheck, if the cron call resolved one.
-        ...(typeof action.precheck === "string" && action.precheck ? { precheck: action.precheck } : {}),
-        ...(typeof action.precheck === "string" && action.precheck && typeof action.precheckPackageId === "string" && action.precheckPackageId
-            ? { precheckPackageId: action.precheckPackageId } : {}),
-        ...(action.precheck && action.precheckIdentity
-            ? { precheckIdentity: { ...action.precheckIdentity }, precheckBindingRevision: action.precheckBindingRevision } : {}),
+        ...pin,
+        revision: (previous?.revision ?? 0) + 1,
+        ...(operator ? { operatorPrecheck: { ...operator } } : {}),
+        ...(options ? { precheckOptions: options } : {}),
+        ...(previous?.precheckHealth && previous.precheck === pin.precheck ? { precheckHealth: { ...previous.precheckHealth } } : {}),
     };
-    runtime.ctx.traceInfo(`[orch] cron scheduled: every ${action.intervalSeconds}s (${action.reason})${runtime.state.cronSchedule.precheck ? ` precheck=${runtime.state.cronSchedule.precheck}` : ""}`);
+    runtime.ctx.traceInfo(`[orch] cron scheduled: every ${action.intervalSeconds}s (${action.reason})${runtime.state.cronSchedule.precheck ? ` precheck=${runtime.state.cronSchedule.precheck}` : ""}${operator ? " (operator selection)" : ""}`);
 }
 
 export function* applyCronAtAction(
@@ -719,6 +771,78 @@ export function continueInputWithPrompt(
 
 // ─── Command handling ───────────────────────────────────────
 
+/**
+ * Operator PRECHECK selection for the active interval schedule. CAS on the
+ * schedule revision; the name must be one of the options resolved when the
+ * schedule was armed. The cron timer is not disturbed.
+ */
+function* handleSetCronPrecheckCommand(runtime: DurableSessionRuntime, cmdMsg: CommandMessage): Generator<any, void, any> {
+    const { state } = runtime;
+    const fail = function* (error: string): Generator<any, void, any> {
+        yield* writeCommandResponse(runtime, { id: cmdMsg.id, cmd: cmdMsg.cmd, error });
+    };
+    const schedule = state.cronAtSchedule ? undefined : state.cronSchedule;
+    if (!schedule) {
+        yield* fail("set_cron_precheck requires an active interval cron schedule");
+        return;
+    }
+    const expectedRevision = cmdMsg.args?.expectedRevision;
+    if (!Number.isSafeInteger(expectedRevision) || expectedRevision !== (schedule.revision ?? 0)) {
+        yield* fail(`STALE: cron schedule revision is ${schedule.revision ?? 0}; refresh and retry`);
+        return;
+    }
+    const actor = String(cmdMsg.args?.actor ?? "").trim();
+    const reason = String(cmdMsg.args?.reason ?? "").trim();
+    if (!actor || !reason) {
+        yield* fail("set_cron_precheck requires an actor and a reason");
+        return;
+    }
+    const requested = cmdMsg.args?.precheck;
+    let option: CronPrecheckOption | null = null;
+    if (requested !== null) {
+        option = typeof requested === "string"
+            ? schedule.precheckOptions?.find((candidate) => candidate.name === requested) ?? null
+            : null;
+        if (!option) {
+            const names = (schedule.precheckOptions ?? []).map((candidate) => candidate.name);
+            yield* fail(`Unknown precheck ${JSON.stringify(requested)}; available: ${names.length ? names.join(", ") : "none"}`);
+            return;
+        }
+    }
+    const before = schedule.precheck ?? null;
+    const {
+        precheck: _p, precheckPackageId: _pp, precheckIdentity: _pi, precheckBindingRevision: _pr,
+        precheckSkips: _ps, precheckHealth: _ph, ...rest
+    } = schedule;
+    const revision = (schedule.revision ?? 0) + 1;
+    state.cronSchedule = {
+        ...rest,
+        ...precheckPin(option),
+        revision,
+        operatorPrecheck: { name: option?.name ?? null, actor, reason },
+    };
+    yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
+        eventType: "session.cron_precheck_changed",
+        data: { actor, reason, before, after: option?.name ?? null, kind: option?.kind ?? null, revision },
+    }]);
+    yield* writeCommandResponse(runtime, {
+        id: cmdMsg.id,
+        cmd: cmdMsg.cmd,
+        result: { ok: true, precheck: option?.name ?? null, revision, appliesOn: "next_fire" },
+    });
+    const timer = state.activeTimer;
+    if (timer?.type === "cron") {
+        const now: number = yield runtime.ctx.utcNow();
+        publishStatus(runtime, "waiting", {
+            waitSeconds: Math.max(0, Math.ceil((timer.deadlineMs - now) / 1000)),
+            waitReason: timer.reason,
+            waitStartedAt: timer.deadlineMs - timer.originalDurationMs,
+        });
+    } else {
+        publishStatus(runtime, "idle");
+    }
+}
+
 export function* handleCommand(
     runtime: DurableSessionRuntime,
     cmdMsg: CommandMessage,
@@ -948,6 +1072,10 @@ export function* handleCommand(
             };
             yield* writeCommandResponse(runtime, resp);
             publishStatus(runtime, "idle");
+            return;
+        }
+        case "set_cron_precheck": {
+            yield* handleSetCronPrecheckCommand(runtime, cmdMsg);
             return;
         }
         case "get_info": {

@@ -8,7 +8,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import {
     chooseCronPrecheck,
+    cronPrecheckNotification,
     evaluateCronPrecheck,
+    listCronPrecheckOptions,
     normalizeCronPrecheckName,
     validateCronPrecheckBindings,
     validateCronPrecheckRegistration,
@@ -20,6 +22,20 @@ const input = { sessionId: "s1", precheck: "queue", reason: "check the work queu
 const registration = (check, extra = {}) => validateCronPrecheckRegistration({ name: "queue", check, ...extra });
 
 describe("cron precheck evaluation", () => {
+    it("notifies owners only for broken answers, and recovers only on a real run/skip after a broken streak", () => {
+        const answer = outcome => ({ skip: outcome === "skip", outcome, precheck: "queue", shadow: false });
+        for (const outcome of ["error", "timeout", "invalid", "unregistered"]) {
+            expect(cronPrecheckNotification({}, answer(outcome))).toBe("broken");
+            expect(cronPrecheckNotification({ previouslyBroken: true }, answer(outcome))).toBe("broken");
+        }
+        expect(cronPrecheckNotification({ previouslyBroken: true }, answer("run"))).toBe("recovered");
+        expect(cronPrecheckNotification({ previouslyBroken: true }, answer("skip"))).toBe("recovered");
+        expect(cronPrecheckNotification({ previouslyBroken: true }, answer("max_skips"))).toBeNull();
+        expect(cronPrecheckNotification({}, answer("run"))).toBeNull();
+        expect(cronPrecheckNotification({}, answer("skip"))).toBeNull();
+        expect(cronPrecheckNotification({}, answer("max_skips"))).toBeNull();
+    });
+
     it("skips when the named precheck answers skip", async () => {
         const { result, event } = await evaluateCronPrecheck({
             registrations: [registration(() => ({ action: "skip", detail: "queue empty" }))],
@@ -173,6 +189,18 @@ describe("choosing a schedule's cron precheck", () => {
         expect(rejected.error).toContain("Available prechecks: app-gate, queue-gate");
         expect(chooseCronPrecheck({ explicit: "queue-gate", reason: "x", sources: { staticNames: [] } }).error)
             .toContain("No cron prechecks are available");
+    });
+
+    it("lists PRECHECK options: worker names, and package names only under a complete approved pin", () => {
+        expect(listCronPrecheckOptions(sources)).toEqual([
+            { name: "app-gate", kind: "worker" },
+            { name: "queue-gate", kind: "package", packageId: "pkg-1", packageIdentity: pin.packageIdentity, packageBindingRevision: 1 },
+        ]);
+        expect(listCronPrecheckOptions({ ...sources, packageActive: false })).toEqual([{ name: "app-gate", kind: "worker" }]);
+        expect(listCronPrecheckOptions({ ...sources, packageIdentity: undefined })).toEqual([{ name: "app-gate", kind: "worker" }]);
+        expect(listCronPrecheckOptions(undefined)).toEqual([]);
+        const many = { staticNames: Array.from({ length: 80 }, (_, i) => `gate-${String(i).padStart(2, "0")}`) };
+        expect(listCronPrecheckOptions(many)).toHaveLength(50);
     });
 
     it("validates agent-definition bindings", () => {

@@ -11,6 +11,7 @@ function fixture() {
         listAgentPackageReviews: async (...args) => { calls.push(["list", ...args]); return []; },
         decideAgentPackageReview: async (...args) => { calls.push(["decide", ...args]); },
         getAgentPackageReviewAudit: async (...args) => { calls.push(["audit", ...args]); return []; },
+        getAgentPackageReviewDiff: async (...args) => { calls.push(["diff", ...args]); return { changes: [] }; },
         getAgentPackageRuntimeStatus: async (...args) => { calls.push(["runtime", ...args]); return { denied: true, complete: false, outstanding: 2 }; },
         activateAgentPackageVersion: async (...args) => { calls.push(["activate", ...args]); },
         getAgentPackageActivationAudit: async (...args) => { calls.push(["activationAudit", ...args]); return []; },
@@ -36,7 +37,7 @@ test("publisher status uses the authenticated principal, not client owner/admin 
 for (const role of ["user", "anonymous", null]) {
     test(`review surface rejects ${role} despite forged body isAdmin and ownership dark launch`, async () => {
         const { runtime, calls } = fixture();
-        for (const method of ["listAgentPackageReviews", "decideAgentPackageReview", "getAgentPackageReviewAudit", "getAgentPackageRuntimeStatus",
+        for (const method of ["listAgentPackageReviews", "decideAgentPackageReview", "getAgentPackageReviewAudit", "getAgentPackageReviewDiff", "getAgentPackageRuntimeStatus",
             "activateAgentPackageVersion", "getAgentPackageActivationAudit", "getSessionAgentPackageBinding", "rebindSessionAgentPackage"]) {
             await assert.rejects(runtime.call(method, {
                 isAdmin: true, owner: { provider: "entra", subject: "admin" },
@@ -75,7 +76,7 @@ test("admin role without authenticated principal cannot decide executable trust"
 test("cluster-scoped administrator cannot use global package review, activation or rebind authority", async () => {
     const { runtime, calls } = fixture();
     runtime.authz.adminScope = "cluster";
-    for (const method of ["listAgentPackageReviews", "decideAgentPackageReview", "getAgentPackageReviewAudit", "getAgentPackageRuntimeStatus",
+    for (const method of ["listAgentPackageReviews", "decideAgentPackageReview", "getAgentPackageReviewAudit", "getAgentPackageReviewDiff", "getAgentPackageRuntimeStatus",
         "activateAgentPackageVersion", "getAgentPackageActivationAudit", "getSessionAgentPackageBinding", "rebindSessionAgentPackage"]) {
         await assert.rejects(runtime.call(method, { input: { isAdmin: true } }, {
             principal: { provider: "entra", subject: "cluster-admin" }, authorization: { role: "admin" },

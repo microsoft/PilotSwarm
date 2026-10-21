@@ -956,9 +956,20 @@ export class PortalRuntime {
             case "getAgentPackageReviewStatus":
                 if (!owner) throw forbiddenError("Authenticated package manager required.");
                 return this.transport.getAgentPackageReviewStatus(safeParams.packageId, owner, resourceAdmin && role === "admin");
+            // Always the caller's own rows: the principal is never a parameter.
+            case "listMyNotifications":
+                if (!owner) throw forbiddenError("Authenticated principal required.");
+                return this.transport.listMyNotifications({
+                    unreadOnly: safeParams.unreadOnly === true || safeParams.unreadOnly === "true",
+                    ...(Number.isSafeInteger(Number(safeParams.limit)) && safeParams.limit != null ? { limit: Number(safeParams.limit) } : {}),
+                }, owner);
+            case "markNotificationsRead":
+                if (!owner) throw forbiddenError("Authenticated principal required.");
+                return this.transport.markNotificationsRead(safeParams.ids ?? null, owner);
             case "listAgentPackageReviews":
             case "decideAgentPackageReview":
             case "getAgentPackageReviewAudit":
+            case "getAgentPackageReviewDiff":
             case "getAgentPackageRuntimeStatus":
             case "activateAgentPackageVersion":
             case "getAgentPackageActivationAudit":
@@ -978,6 +989,13 @@ export class PortalRuntime {
                 }
                 if (method === "getAgentPackageReviewAudit") {
                     return this.transport.getAgentPackageReviewAudit(safeParams.versionId, owner, true);
+                }
+                if (method === "getAgentPackageReviewDiff") {
+                    const input = safeParams.input || {};
+                    return this.transport.getAgentPackageReviewDiff({
+                        packageId: input.packageId, versionId: input.versionId, sha256: input.sha256,
+                        baselineVersionId: input.baselineVersionId ?? null,
+                    }, owner, true);
                 }
                 if (method === "getAgentPackageActivationAudit") {
                     return this.transport.getAgentPackageActivationAudit(safeParams.packageId, owner, true);
@@ -1006,6 +1024,7 @@ export class PortalRuntime {
                 await this.transport.decideAgentPackageReview({
                     packageId: input.packageId, versionId: input.versionId, sha256: input.sha256,
                     expectedRevision: input.expectedRevision, decision: input.decision, reason: input.reason,
+                    ...(Object.hasOwn(input, "baseline") ? { baseline: input.baseline ?? null } : {}),
                 }, owner, true);
                 return { recorded: true, approvalScope: "artifact-content", activationAllowed: false, runtimeFencing: "not-reported" };
             }
@@ -1300,6 +1319,19 @@ export class PortalRuntime {
                 return this.transport.restartSystemSession(safeParams.agentIdOrSessionId, safeParams.options || {});
             case "setSessionModel":
                 return this.transport.setSessionModel(safeParams.sessionId, safeParams.options || {});
+            // Server-stamped actor: the audit names the signed-in principal,
+            // never a client-supplied value.
+            case "setSessionCronPrecheck":
+                return this.transport.setSessionCronPrecheck(
+                    safeParams.sessionId,
+                    {
+                        precheck: safeParams.precheck,
+                        expectedRevision: safeParams.expectedRevision,
+                        reason: safeParams.reason,
+                        actor: principalLabel(authContext) || owner || "anonymous",
+                    },
+                    { timeoutMs: clampInteger(safeParams.options?.timeoutMs, 30_000, 1_000, 120_000) },
+                );
             case "stopSessionTurn":
             case "steerSessionTurn":
                 // Server-stamped caller (P18): the sender and the viewer that

@@ -8,7 +8,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { createRuntime } from "../../src/orchestration/runtime.ts";
 import { processTimer } from "../../src/orchestration/turn.ts";
-import { applyCronAction, buildContinueInput } from "../../src/orchestration/lifecycle.ts";
+import { applyCronAction, buildContinueInput, handleCommand } from "../../src/orchestration/lifecycle.ts";
+import { cronPrecheckStatusFields, PilotSwarmManagementClient } from "../../src/management-client.ts";
 
 vi.mock("../../src/session-proxy.js", () => ({
     createSessionProxy: (ctx) => ctx.proxy("session"),
@@ -25,9 +26,10 @@ function harness(overrides = {}, resolvedAgent = null) {
     let now = 1_750_000_000_000;
     let guid = 0;
     const kv = new Map();
+    const statuses = [];
     const ctx = {
         traceInfo() {},
-        setCustomStatus() {},
+        setCustomStatus(status) { statuses.push(typeof status === "string" ? JSON.parse(status) : status); },
         getValue: key => kv.get(key) ?? null,
         setValue: (key, value) => kv.set(key, value),
         clearValue: key => kv.delete(key),
@@ -96,7 +98,20 @@ function harness(overrides = {}, resolvedAgent = null) {
     const events = () => calls
         .filter(call => call.effect === "manager.recordSessionEvent")
         .flatMap(call => call.args[1].map(event => event.eventType));
-    return { runtime, calls, turns, prechecks, fire, events, now: () => now };
+    const eventData = (type) => calls
+        .filter(call => call.effect === "manager.recordSessionEvent")
+        .flatMap(call => call.args[1])
+        .filter(event => event.eventType === type)
+        .map(event => event.data);
+    const command = (cmd, args) => {
+        const id = `cmd-${cmd}-${calls.length}`;
+        drive(handleCommand(runtime, { type: "cmd", cmd, id, args }));
+        const stored = [...kv.values()]
+            .map(value => (typeof value === "string" ? JSON.parse(value) : value))
+            .find(value => value?.id === id);
+        return stored;
+    };
+    return { runtime, calls, turns, prechecks, fire, events, eventData, command, statuses, now: () => now };
 }
 
 describe("1.0.82 cron precheck", () => {
@@ -206,11 +221,11 @@ describe("1.0.82 cron precheck", () => {
     it("a cron call sets the schedule's precheck, and a later call without one clears it", () => {
         const h = harness({ cronSchedule: undefined });
         applyCronAction(h.runtime, { type: "cron", action: "set", intervalSeconds: 60, reason: "poll", precheck: "queue" });
-        expect(h.runtime.state.cronSchedule).toEqual({ intervalSeconds: 60, reason: "poll", precheck: "queue" });
+        expect(h.runtime.state.cronSchedule).toEqual({ intervalSeconds: 60, reason: "poll", precheck: "queue", revision: 1 });
         applyCronAction(h.runtime, { type: "cron", action: "set", intervalSeconds: 60, reason: "poll" });
-        expect(h.runtime.state.cronSchedule).toEqual({ intervalSeconds: 60, reason: "poll" });
+        expect(h.runtime.state.cronSchedule).toEqual({ intervalSeconds: 60, reason: "poll", revision: 2 });
         applyCronAction(h.runtime, { type: "cron", action: "set", intervalSeconds: 60, reason: "poll", precheckPackageId: "pkg-1" });
-        expect(h.runtime.state.cronSchedule).toEqual({ intervalSeconds: 60, reason: "poll" }, "a package without a precheck name is dropped");
+        expect(h.runtime.state.cronSchedule).toEqual({ intervalSeconds: 60, reason: "poll", revision: 3 }, "a package without a precheck name is dropped");
     });
 
     it("a package precheck sends its package to the activity", () => {
@@ -259,5 +274,170 @@ describe("1.0.82 cron precheck", () => {
         const next = buildContinueInput(h.runtime);
         expect(next.cronSchedule.precheckIdentity).toEqual({ ...identity, versionId: "v1" });
         expect(next.cronSchedule.precheckBindingRevision).toBe(3);
+    });
+});
+
+describe("session view PRECHECK fields", () => {
+    it("are shape-checked, interval-only, and never carry package pins", () => {
+        const status = {
+            cronPrecheck: "pkg-queue",
+            cronPrecheckSource: "operator",
+            cronRevision: 4,
+            cronPrecheckOptions: [
+                { name: "queue", kind: "worker" },
+                { name: "pkg-queue", kind: "package", packageIdentity: { sha256: "c".repeat(64) } },
+                { name: 7, kind: "worker" },
+                { name: "x", kind: "other" },
+            ],
+            cronPrecheckHealth: { outcome: "error", since: 10, count: 3 },
+        };
+        expect(cronPrecheckStatusFields(status, true)).toEqual({
+            cronPrecheck: "pkg-queue",
+            cronPrecheckSource: "operator",
+            cronRevision: 4,
+            cronPrecheckOptions: [{ name: "queue", kind: "worker" }, { name: "pkg-queue", kind: "package" }],
+            cronPrecheckHealth: { outcome: "error", since: 10, count: 3 },
+        });
+        expect(cronPrecheckStatusFields(status, false)).toEqual({});
+        expect(cronPrecheckStatusFields({ cronPrecheckSource: "admin", cronRevision: 1.5, cronPrecheckHealth: { outcome: "error" } }, true)).toEqual({});
+    });
+});
+
+describe("management setSessionCronPrecheck", () => {
+    const client = (response) => {
+        const mgmt = Object.create(PilotSwarmManagementClient.prototype);
+        mgmt._started = true;
+        mgmt.sent = [];
+        mgmt.sendCommand = async (sessionId, command) => { mgmt.sent.push({ sessionId, command }); };
+        mgmt._awaitCommandResponse = async () => response;
+        return mgmt;
+    };
+    const input = { precheck: "pkg-queue", expectedRevision: 2, reason: "use the package check", actor: "owner@example.com" };
+
+    it("sends the command with the stamped actor and returns the orchestration's answer", async () => {
+        const mgmt = client({ result: { ok: true, precheck: "pkg-queue", revision: 3 } });
+        await expect(mgmt.setSessionCronPrecheck("s1", input)).resolves.toEqual({ ok: true, precheck: "pkg-queue", revision: 3, appliesOn: "next_fire" });
+        expect(mgmt.sent[0]).toMatchObject({ sessionId: "s1", command: { cmd: "set_cron_precheck", args: input } });
+    });
+
+    it("maps STALE to CONFLICT and other refusals to INVALID_REQUEST", async () => {
+        await expect(client({ error: "STALE: cron schedule revision is 3; refresh and retry" }).setSessionCronPrecheck("s1", input))
+            .rejects.toMatchObject({ code: "CONFLICT", status: 409 });
+        await expect(client({ error: "Unknown precheck" }).setSessionCronPrecheck("s1", input))
+            .rejects.toMatchObject({ code: "INVALID_REQUEST", status: 400 });
+    });
+
+    it("validates input before sending", async () => {
+        const mgmt = client(null);
+        for (const bad of [{ precheck: "" }, { precheck: 3 }, { expectedRevision: -1 }, { expectedRevision: 1.5 }, { reason: " " }, { actor: "" }]) {
+            await expect(mgmt.setSessionCronPrecheck("s1", { ...input, ...bad })).rejects.toMatchObject({ code: "INVALID_REQUEST" });
+        }
+        expect(mgmt.sent).toHaveLength(0);
+        await expect(mgmt.setSessionCronPrecheck("s1", { ...input, precheck: null })).resolves.toMatchObject({ status: "pending" });
+    });
+});
+
+describe("1.0.82 operator PRECHECK selection", () => {
+    const IDENTITY = { packageId: "pkg", versionId: "v2", sha256: "b".repeat(64) };
+    const OPTIONS = [
+        { name: "queue", kind: "worker" },
+        { name: "pkg-queue", kind: "package", packageId: "pkg", packageIdentity: IDENTITY, packageBindingRevision: 5 },
+    ];
+    const armed = () => {
+        const h = harness({ cronSchedule: undefined });
+        applyCronAction(h.runtime, { type: "cron", action: "set", intervalSeconds: 300, reason: SCHEDULE.reason, precheck: "queue", precheckOptions: OPTIONS });
+        return h;
+    };
+    const change = (h, precheck, extra = {}) => h.command("set_cron_precheck", {
+        precheck, expectedRevision: h.runtime.state.cronSchedule?.revision ?? 0, actor: "owner@example.com", reason: "use the package check", ...extra,
+    });
+
+    it("selects a package option, pins its identity, audits it, and the next fire uses it", () => {
+        const h = armed();
+        const response = change(h, "pkg-queue");
+        expect(response).toMatchObject({ result: { ok: true, precheck: "pkg-queue", revision: 2, appliesOn: "next_fire" } });
+        expect(h.runtime.state.cronSchedule).toMatchObject({
+            precheck: "pkg-queue", precheckPackageId: "pkg", precheckIdentity: IDENTITY, precheckBindingRevision: 5, revision: 2,
+            operatorPrecheck: { name: "pkg-queue", actor: "owner@example.com", reason: "use the package check" },
+        });
+        expect(h.eventData("session.cron_precheck_changed")).toEqual([{
+            actor: "owner@example.com", reason: "use the package check", before: "queue", after: "pkg-queue", kind: "package", revision: 2,
+        }]);
+        h.fire({ skip: true, outcome: "skip" });
+        expect(h.prechecks[0]).toMatchObject({ precheck: "pkg-queue", packageId: "pkg", packageIdentity: IDENTITY, packageBindingRevision: 5 });
+    });
+
+    it("None removes the precheck, so every wake-up reaches the model", () => {
+        const h = armed();
+        expect(change(h, null).result).toMatchObject({ ok: true, precheck: null });
+        expect(h.runtime.state.cronSchedule.precheck).toBeUndefined();
+        h.fire({ skip: true, outcome: "skip" });
+        expect(h.prechecks).toHaveLength(0);
+        expect(h.turns).toHaveLength(1);
+    });
+
+    it("rejects a stale revision, an unlisted name, a missing reason, and wall-clock schedules", () => {
+        const h = armed();
+        expect(change(h, "pkg-queue", { expectedRevision: 0 }).error).toMatch(/^STALE:/);
+        expect(change(h, "other-agent-check").error).toMatch(/Unknown precheck/);
+        expect(change(h, "pkg-queue", { reason: "  " }).error).toMatch(/reason/);
+        expect(h.runtime.state.cronSchedule).toMatchObject({ precheck: "queue", revision: 1 });
+        expect(h.runtime.state.cronSchedule.operatorPrecheck).toBeUndefined();
+
+        const none = harness({ cronSchedule: undefined });
+        expect(change(none, "queue").error).toMatch(/active interval cron/);
+    });
+
+    it("survives the agent re-arming the cron and continue-as-new; cancel clears it", () => {
+        const h = armed();
+        change(h, "pkg-queue");
+        applyCronAction(h.runtime, { type: "cron", action: "set", intervalSeconds: 120, reason: SCHEDULE.reason, precheck: "queue", precheckOptions: OPTIONS });
+        expect(h.runtime.state.cronSchedule).toMatchObject({ intervalSeconds: 120, precheck: "pkg-queue", precheckIdentity: IDENTITY, revision: 3 });
+        const next = buildContinueInput(h.runtime);
+        expect(next.cronSchedule.operatorPrecheck).toMatchObject({ name: "pkg-queue" });
+        expect(next.cronSchedule.precheckOptions).toEqual(OPTIONS);
+
+        change(h, null);
+        applyCronAction(h.runtime, { type: "cron", action: "set", intervalSeconds: 120, reason: SCHEDULE.reason, precheck: "queue", precheckOptions: OPTIONS });
+        expect(h.runtime.state.cronSchedule.precheck).toBeUndefined();
+
+        applyCronAction(h.runtime, { type: "cron", action: "cancel" });
+        expect(h.runtime.state.cronSchedule).toBeUndefined();
+        applyCronAction(h.runtime, { type: "cron", action: "set", intervalSeconds: 60, reason: "poll", precheck: "queue" });
+        expect(h.runtime.state.cronSchedule).toEqual({ intervalSeconds: 60, reason: "poll", precheck: "queue", revision: 1 });
+    });
+
+    it("publishes the selection, its source, revision, options and health for the session view", () => {
+        const h = armed();
+        change(h, "pkg-queue");
+        expect(h.statuses.at(-1)).toMatchObject({
+            cronPrecheck: "pkg-queue",
+            cronPrecheckSource: "operator",
+            cronRevision: 2,
+            cronPrecheckOptions: [{ name: "queue", kind: "worker" }, { name: "pkg-queue", kind: "package" }],
+        });
+        expect(JSON.stringify(h.statuses.at(-1))).not.toContain(IDENTITY.sha256);
+    });
+
+    it("tracks a broken streak without rolling back, and clears it only on the next real run/skip answer", () => {
+        const h = harness();
+        h.fire({ skip: false, outcome: "error", precheck: "queue" });
+        h.fire({ skip: false, outcome: "timeout", precheck: "queue" });
+        expect(h.turns).toHaveLength(2);
+        expect(h.runtime.state.cronSchedule).toMatchObject({ precheck: "queue", precheckHealth: { outcome: "timeout", count: 2 } });
+        const since = h.runtime.state.cronSchedule.precheckHealth.since;
+        expect(Number.isFinite(since)).toBe(true);
+        expect(h.prechecks.map(p => p.previouslyBroken)).toEqual([undefined, true]);
+
+        // max_skips never calls the precheck, so it neither proves recovery nor extends the streak.
+        h.fire({ skip: false, outcome: "max_skips", precheck: "queue" });
+        expect(h.runtime.state.cronSchedule.precheckHealth).toEqual({ outcome: "timeout", since, count: 2 });
+        h.fire({ skip: false, outcome: "invalid", precheck: "queue" });
+        expect(h.runtime.state.cronSchedule.precheckHealth).toEqual({ outcome: "invalid", since, count: 3 });
+        expect(h.prechecks.slice(2).map(p => p.previouslyBroken)).toEqual([true, true]);
+        h.fire({ skip: true, outcome: "skip", precheck: "queue" });
+        expect(h.prechecks.at(-1).previouslyBroken).toBe(true);
+        expect(h.runtime.state.cronSchedule.precheckHealth).toBeUndefined();
+        expect(h.runtime.state.cronSchedule.precheck).toBe("queue");
     });
 });

@@ -5,7 +5,7 @@ import ts from "typescript";
 import { CMS_MIGRATIONS } from "../../dist/cms-migrations.js";
 
 test("package authority and review providers only issue procedure calls and transaction control", () => {
-    for (const name of ["package-runtime-authority", "agent-package-review-store", "package-runtime-query", "cms"]) {
+    for (const name of ["package-runtime-authority", "agent-package-review-store", "package-runtime-query", "notification-store", "cms"]) {
         const text = fs.readFileSync(new URL(`../../src/${name}.ts`, import.meta.url), "utf8");
         const source = ts.createSourceFile(name, text, ts.ScriptTarget.Latest, true);
         const visit = node => {
@@ -46,7 +46,7 @@ test("0088 is additive, has documented procedures, and never introduces metadata
     const migrations = CMS_MIGRATIONS("procedure_review");
     const migration = migrations.find(item => item.version === "0088");
     assert.ok(migration);
-    assert.equal(migrations.at(-1).version, "0089");
+    assert.equal(migrations.at(-1).version, "0090");
     assert.doesNotMatch(migration.sql, /\b(?:DROP|ALTER TABLE|TRUNCATE)\b/i);
     assert.doesNotMatch(migration.sql, /FOR SHARE/i);
     const locking = [...migration.sql.matchAll(/CREATE OR REPLACE FUNCTION[\s\S]*?\$procedure\$;/g)]
@@ -54,7 +54,17 @@ test("0088 is additive, has documented procedures, and never introduces metadata
     assert.equal(locking.length, 1);
     assert.match(locking[0][0], /cms_pkg_live\(/);
     assert.match(locking[0][0], /package_runtime_registrations/);
-    for (const version of ["0084", "0085", "0086", "0087", "0088", "0089"]) {
+    for (const version of ["0084", "0085", "0086", "0087", "0088", "0089", "0090"]) {
         assert.ok(fs.existsSync(new URL(`../../src/migrations/${version}_diff.md`, import.meta.url)), `${version} diff required`);
     }
+});
+
+test("0090 notifications are additive, lock-free and never touch review, activation or binding state", () => {
+    const migration = CMS_MIGRATIONS("procedure_review").find(item => item.version === "0090");
+    assert.ok(migration);
+    assert.doesNotMatch(migration.sql, /\b(?:DROP TABLE|DROP FUNCTION|ALTER TABLE|TRUNCATE|DELETE FROM|FOR UPDATE|FOR SHARE)\b/i);
+    assert.doesNotMatch(migration.sql, /UPDATE\s+"procedure_review"\.(?!user_notifications\b)/i, "only notification rows are updated");
+    assert.doesNotMatch(migration.sql, /INSERT INTO\s+"procedure_review"\.(?!user_notifications\b)/i, "only notification rows are inserted");
+    assert.match(migration.sql, /EXCEPTION WHEN OTHERS THEN\s+RAISE WARNING/, "a notification failure never blocks a review decision");
+    assert.doesNotMatch(migration.sql, /detail/i, "free-form precheck detail never reaches a notification");
 });

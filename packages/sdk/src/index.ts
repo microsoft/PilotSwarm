@@ -395,6 +395,8 @@ export type { PackageCallbackServices } from "./package-runtime-supervisor.js";
 export { PackageMcpGateway } from "./package-runtime-mcp-gateway.js";
 export { verifyPackageRuntime, type VerifiedPackageRuntime } from "./package-runtime-format.js";
 export type { AgentPackageReviewCatalog, AgentPackageReviewActor } from "./agent-package-review-store.js";
+export { NotificationError } from "./notification-store.js";
+export type { NotificationCatalog, UserNotification, UserNotificationKind } from "./notification-store.js";
 export {
     agentPackagesArtifactSessionId,
     agentPackageArtifactFilename,

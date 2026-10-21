@@ -1,4 +1,53 @@
 import React from "react";
+import { MyNotifications } from "./my-notifications.js";
+
+const GROUP_LABELS = {
+    executable: "Executable code",
+    dependency: "Dependencies and runtime config",
+    capability: "Capabilities (tools, MCP servers, grants)",
+    "precheck-policy": "Cron precheck policy",
+    declarative: "Declarative (prompts, docs, metadata)",
+};
+const GROUP_ORDER = ["executable", "dependency", "capability", "precheck-policy", "declarative"];
+
+/** Pure render of a risk-classified review diff; decisions carry the exact digests shown. */
+export function PackageReviewDiffPanel({ diff, busy = false, onDecide, onClose }) {
+    const h = React.createElement;
+    const c = diff.candidate;
+    const s = diff.summary;
+    const decision = c.decision;
+    return h("section", { "aria-label": "Package review diff", className: "ps-review-diff" },
+        h("h4", null, `Review diff · ${c.name}@${c.semver}`),
+        h("p", null, `Candidate ${c.versionId} · sha256:${c.sha256} · review revision ${c.revision} · ${c.scope} · publisher ${c.publisher || "unknown"}`),
+        h("p", null, diff.baseline
+            ? `Baseline (${diff.baselineSource}) ${diff.baseline.semver} · ${diff.baseline.versionId} · sha256:${diff.baseline.sha256}`
+            : "Baseline: none — new package, every file is listed as added"),
+        h("p", { role: "status" }, diff.identical ? "No content changes against the baseline."
+            : `${s.total} changed · executable ${s.executable} · dependency ${s.dependency} · capability ${s.capability} · precheck policy ${s["precheck-policy"]} · declarative ${s.declarative} · flagged ${s.flagged}`),
+        h("p", null, diff.advisory),
+        h("pre", null, (diff.inspectionReasons || []).join("\n")),
+        GROUP_ORDER.map((group) => {
+            const changes = diff.changes.filter((change) => change.group === group);
+            if (changes.length === 0) return null;
+            return h("details", { key: group, open: group !== "declarative" },
+                h("summary", null, `${GROUP_LABELS[group]} (${changes.length})`),
+                changes.map((change) => h("article", { key: change.path },
+                    h("h5", null, `${change.status} ${change.path}${change.flagged ? ` ⚠ ${change.flagged}` : ""}`),
+                    change.changedKeys?.length ? h("p", null, `Changed keys: ${change.changedKeys.join(", ")}`) : null,
+                    change.diff != null
+                        ? h("pre", null, change.diff)
+                        : h("pre", null, `old ${change.oldSha256 || "-"}\nnew ${change.newSha256 || "-"}`))));
+        }),
+        diff.truncated ? h("p", null, `${diff.truncated.omitted} more changed files are omitted from this view; they are counted above.`) : null,
+        h("div", null,
+            h("button", { type: "button", disabled: busy || !["pending", "not_required"].includes(decision),
+                onClick: () => onDecide?.("approved") }, "Approve this digest"),
+            h("button", { type: "button", disabled: busy || decision !== "pending",
+                onClick: () => onDecide?.("rejected") }, "Reject"),
+            h("button", { type: "button", disabled: busy || decision === "revoked",
+                onClick: () => onDecide?.("revoked") }, "Revoke"),
+            h("button", { type: "button", onClick: () => onClose?.() }, "Close diff")));
+}
 
 export function PackageReviewTabs({ controller, view }) {
     const [tab, setTab] = React.useState("private");
@@ -6,6 +55,7 @@ export function PackageReviewTabs({ controller, view }) {
     const [error, setError] = React.useState(null);
     const [busy, setBusy] = React.useState(false);
     const [contents, setContents] = React.useState(null);
+    const [diffView, setDiffView] = React.useState(null);
     const generation = React.useRef(0);
     const effectiveTab = tab === "reviews" && !view.isAdmin ? "private" : tab;
     React.useEffect(() => {
@@ -13,6 +63,7 @@ export function PackageReviewTabs({ controller, view }) {
         if (!view.isAdmin) {
             setReviews([]);
             setContents(null);
+            setDiffView(null);
         }
     }, [view.isAdmin]);
     const refresh = React.useCallback(async () => {
@@ -28,7 +79,7 @@ export function PackageReviewTabs({ controller, view }) {
     React.useEffect(() => {
         if (tab === "reviews" && view.isAdmin) void refresh();
     }, [tab, view.isAdmin, refresh]);
-    const decide = async (candidate, decision) => {
+    const decide = async (candidate, decision, baseline) => {
         const reason = window.prompt(`Reason to ${decision} ${candidate.name}@${candidate.semver}:`);
         if (!reason?.trim()) return;
         setBusy(true);
@@ -37,10 +88,31 @@ export function PackageReviewTabs({ controller, view }) {
             await controller.transport.decideAgentPackageReview({
                 packageId: candidate.packageId, versionId: candidate.versionId, sha256: candidate.sha256,
                 expectedRevision: candidate.revision, decision, reason,
+                ...(baseline !== undefined ? { baseline } : {}),
             });
+            setDiffView(null);
             await refresh();
         } catch (e) { setError(e.message || String(e)); }
         finally { setBusy(false); }
+    };
+    const openDiff = async (candidate) => {
+        const token = generation.current;
+        setBusy(true);
+        setError(null);
+        setContents(null);
+        try {
+            const diff = await controller.transport.getAgentPackageReviewDiff({
+                packageId: candidate.packageId, versionId: candidate.versionId, sha256: candidate.sha256,
+            });
+            if (generation.current === token) setDiffView(diff);
+        } catch (e) { if (generation.current === token) setError(e.message || String(e)); }
+        finally { if (generation.current === token) setBusy(false); }
+    };
+    const decideFromDiff = (decision) => {
+        const c = diffView.candidate;
+        const baseline = diffView.baseline ? { versionId: diffView.baseline.versionId, sha256: diffView.baseline.sha256 } : null;
+        return decide({ packageId: c.packageId, versionId: c.versionId, sha256: c.sha256, revision: c.revision,
+            name: c.name, semver: c.semver }, decision, baseline);
     };
     const readFile = async (candidate, filePath) => {
         setBusy(true);
@@ -97,6 +169,7 @@ export function PackageReviewTabs({ controller, view }) {
         { id: "private", label: "Private" },
         ...(view.isAdmin ? [{ id: "reviews", label: "Pending Approval" }] : []),
         { id: "shared", label: "Shared" },
+        { id: "notifications", label: "Notifications" },
     ];
     const packages = (view.settingsTree || []).filter((row) =>
         row.kind === "package" && (effectiveTab === "shared" ? row.scope === "shared" : row.scope !== "shared"));
@@ -105,15 +178,20 @@ export function PackageReviewTabs({ controller, view }) {
         React.createElement("div", { role: "tablist", "aria-label": "Package catalogs" },
             tabs.map(({ id, label }) => React.createElement("button", {
                 key: id, role: "tab", type: "button", "aria-selected": effectiveTab === id,
-                onClick: () => { setContents(null); setTab(id); },
+                onClick: () => { setContents(null); setDiffView(null); setTab(id); },
             }, label))),
         error ? React.createElement("p", { role: "alert" }, error) : null,
         effectiveTab === "reviews" && view.isAdmin ? React.createElement("div", { role: "tabpanel" },
             React.createElement("p", null,
                 "Content approval and activation are separate from session permission. Supported tools, declared callbacks and stdio MCP execute in supervised children with fresh admission. Revocation denies first; completion below requires observed process exits. Previously admitted external effects cannot be undone."),
             React.createElement("button", { type: "button", disabled: busy, onClick: refresh }, "Refresh reviews"),
+            diffView ? React.createElement(PackageReviewDiffPanel, {
+                diff: diffView, busy, onDecide: decideFromDiff, onClose: () => setDiffView(null),
+            }) : null,
             reviews.map((r) => React.createElement("article", { key: r.versionId },
                 React.createElement("h4", null, `${r.name}@${r.semver} · artifact content: ${r.decision}`),
+                React.createElement("button", { type: "button", disabled: busy, onClick: () => openDiff(r),
+                    title: "Risk-grouped diff of this exact digest against the newest approved (else active) version" }, "Review diff"),
                 React.createElement("p", null, `Publisher: ${r.publisher || "unknown"} · ${r.scope} · revision ${r.revision}`),
                 React.createElement("p", null, `Package: ${r.packageId} · Version: ${r.versionId}`),
                 React.createElement("p", null, `SHA-256: ${r.sha256}`),
@@ -142,6 +220,8 @@ export function PackageReviewTabs({ controller, view }) {
                 React.createElement("button", { type: "button", disabled: busy || r.decision === "revoked",
                     onClick: () => decide(r, "revoked") }, "Revoke"),
                 React.createElement("button", { type: "button", onClick: () => showAudit(r) }, "Audit"))))
+            : effectiveTab === "notifications" ? React.createElement("div", { role: "tabpanel" },
+                React.createElement(MyNotifications, { transport: controller.transport }))
             : React.createElement("div", { role: "tabpanel" },
                 packages.map((p) => React.createElement("button", {
                     key: p.id, type: "button", onClick: () => controller.selectAdminPackage(p.name, {

@@ -20,7 +20,7 @@ export interface CycleReport {
 export type TurnAction =
     | { type: "completed"; content: string; forceContinuePrompt?: string; events?: CapturedEvent[] }
     | { type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; material?: boolean; content?: string; events?: CapturedEvent[] }
-    | { type: "cron"; action: "set"; intervalSeconds: number; reason: string; precheck?: string; precheckPackageId?: string; precheckIdentity?: import("./agent-package-authorization.js").ExecutablePackageIdentity; precheckBindingRevision?: number; events?: CapturedEvent[] }
+    | { type: "cron"; action: "set"; intervalSeconds: number; reason: string; precheck?: string; precheckPackageId?: string; precheckIdentity?: import("./agent-package-authorization.js").ExecutablePackageIdentity; precheckBindingRevision?: number; precheckOptions?: import("./cron-precheck.js").CronPrecheckOption[]; events?: CapturedEvent[] }
     | { type: "cron"; action: "cancel"; events?: CapturedEvent[] }
     | { type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] }
     | { type: "cron_at"; action: "cancel"; events?: CapturedEvent[] }
@@ -116,7 +116,7 @@ type TurnResultVariant =
     // failed, and the provider's `retryAfterMs`; the orchestration picks the
     // wait length, and `seconds` is only a fallback for older handlers.
     | ({ type: "wait"; seconds: number; reason: string; preserveWorkerAffinity?: boolean; material?: boolean; budget?: boolean; gate?: "budget" | "workspace"; code?: string; workerNodeId?: string; retryAfterMs?: number; content?: string; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
-    | ({ type: "cron"; action: "set"; intervalSeconds: number; reason: string; precheck?: string; precheckPackageId?: string; precheckIdentity?: import("./agent-package-authorization.js").ExecutablePackageIdentity; precheckBindingRevision?: number; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
+    | ({ type: "cron"; action: "set"; intervalSeconds: number; reason: string; precheck?: string; precheckPackageId?: string; precheckIdentity?: import("./agent-package-authorization.js").ExecutablePackageIdentity; precheckBindingRevision?: number; precheckOptions?: import("./cron-precheck.js").CronPrecheckOption[]; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron"; action: "cancel"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron_at"; action: "set"; schedule: import("./cron-at.js").CronAtSchedule; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
     | ({ type: "cron_at"; action: "cancel"; events?: CapturedEvent[] } & QueuedTurnActionCarrier)
@@ -932,6 +932,17 @@ export interface CronSchedule {
     precheckBindingRevision?: number;
     /** 1.0.82: consecutive wake-ups the precheck skipped since this schedule's last model turn. */
     precheckSkips?: number;
+    /** 1.0.82: bumped on every arm and operator precheck change; the operator CAS token. */
+    revision?: number;
+    /**
+     * 1.0.82: an operator's PRECHECK selection (`null` = None). While set it
+     * wins over the agent's own choice when the agent re-arms the schedule.
+     */
+    operatorPrecheck?: { name: string | null; actor: string; reason: string };
+    /** 1.0.82: prechecks the operator may select, resolved when the schedule was armed. */
+    precheckOptions?: import("./cron-precheck.js").CronPrecheckOption[];
+    /** 1.0.82: last broken precheck outcome streak, cleared on a healthy answer. */
+    precheckHealth?: { outcome: import("./cron-precheck.js").CronPrecheckOutcome; since: number; count: number };
 }
 
 // ─── Orchestration Input ─────────────────────────────────────────
@@ -2028,6 +2039,14 @@ export interface SessionStatusSignal {
     cronTimezone?: string;
     cronMaxFires?: number;
     cronFiresCompleted?: number;
+    /** Interval cron only: the schedule's precheck name, if any. */
+    cronPrecheck?: string;
+    /** Interval cron only: who chose the precheck. */
+    cronPrecheckSource?: "agent" | "operator";
+    /** Interval cron only: CAS token for `setSessionCronPrecheck`. */
+    cronRevision?: number;
+    cronPrecheckOptions?: Array<{ name: string; kind: "worker" | "package" }>;
+    cronPrecheckHealth?: { outcome: string; since: number; count: number };
     error?: string;
     retriesExhausted?: boolean;
     contextUsage?: SessionContextUsage;

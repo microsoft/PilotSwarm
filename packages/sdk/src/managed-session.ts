@@ -12,7 +12,7 @@ import { holdsManagerBundle } from "./agent-manager-tools.js";
 // the declarations in systemToolDefs() and the handlers in runTurn().
 import { holdsProviderTools, providerToolDefs, providerToolsUnavailable } from "./provider-tools.js";
 import type { CycleReport, TurnAction, TurnResult, TurnOptions, ManagedSessionConfig, CapturedEvent } from "./types.js";
-import { chooseCronPrecheck } from "./cron-precheck.js";
+import { chooseCronPrecheck, listCronPrecheckOptions } from "./cron-precheck.js";
 import type { MessageAgentDelivery } from "./parent-turn-control.js";
 import type { ReasoningEffort, ContextTier } from "./model-providers.js";
 import { LiveTurnCoalescer } from "./live-turn.js";
@@ -1864,6 +1864,7 @@ export class ManagedSession {
                 });
                 if (!choice.ok) return choice.error;
                 const { precheck, packageId: precheckPackageId, packageIdentity: precheckIdentity, packageBindingRevision: precheckBindingRevision } = choice;
+                const precheckOptions = listCronPrecheckOptions(this.config.cronPrecheckSources);
 
                 turnState.queuedActions.push({
                     type: "cron",
@@ -1873,6 +1874,7 @@ export class ManagedSession {
                     ...(precheck ? { precheck } : {}),
                     ...(precheck && precheckPackageId ? { precheckPackageId } : {}),
                     ...(precheck && precheckIdentity ? { precheckIdentity: { ...precheckIdentity }, precheckBindingRevision } : {}),
+                    ...(precheckOptions.length ? { precheckOptions } : {}),
                 });
                 return JSON.stringify({ status: "scheduled", interval: intervalSeconds, reason, ...(precheck ? { precheck } : {}) });
             },

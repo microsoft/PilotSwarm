@@ -19,6 +19,7 @@ import { TurnControlUnavailableError } from "./turn-control-contract.js";
 import type { TurnControlListenClient } from "./turn-control.js";
 import { PgAgentPackageReviewStore, type AgentPackageReviewCatalog } from "./agent-package-review-store.js";
 import { PgPackageRuntimeAuthority, type PackageRuntimeAuthority } from "./package-runtime-authority.js";
+import { PgNotificationStore, type NotificationCatalog } from "./notification-store.js";
 import type { AgentPackageInspection, PackageReviewDecision } from "./agent-package-authorization.js";
 
 // ─── Types ───────────────────────────────────────────────────────
@@ -980,6 +981,8 @@ export interface SessionCatalog {
     /** Optional for provider compatibility; missing support must deny review operations. */
     packageReviews?: AgentPackageReviewCatalog;
     packageRuntime?: PackageRuntimeAuthority;
+    /** Per-user notifications (migration 0090); optional so test doubles need not implement it. */
+    readonly notifications?: NotificationCatalog;
     getSessionCapabilities?(sessionId: string): Promise<CapabilityState>;
     saveSessionCapabilities?(sessionId: string, expectedRevision: number, state: CapabilityState): Promise<boolean>;
     /**
@@ -1648,6 +1651,7 @@ export class PgSessionCatalog implements SessionCatalog {
     readonly features: FeatureStore;
     readonly packageReviews: PgAgentPackageReviewStore;
     readonly packageRuntime: PgPackageRuntimeAuthority;
+    readonly notifications: PgNotificationStore;
     /** Connection settings of the pool, without pool-only fields: reused for the turn-control LISTEN client. */
     private listenConfig: Record<string, unknown> | null = null;
 
@@ -1658,6 +1662,7 @@ export class PgSessionCatalog implements SessionCatalog {
         this.features = new FeatureStore(pool, schema);
         this.packageRuntime = new PgPackageRuntimeAuthority(pool, schema);
         this.packageReviews = new PgAgentPackageReviewStore(pool, schema, this.packageRuntime);
+        this.notifications = new PgNotificationStore(pool, schema);
     }
 
     /**

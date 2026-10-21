@@ -450,6 +450,8 @@ function shouldPreserveStaleWaitingVisual(previousSession, nextSession) {
         && isSameOrOlderSessionUpdate(previousSession, nextSession);
 }
 
+const CRON_PRECHECK_SESSION_KEYS = ["cronPrecheck", "cronPrecheckSource", "cronRevision", "cronPrecheckOptions", "cronPrecheckHealth"];
+
 function shouldPreserveStaleCronVisual(previousSession, nextSession) {
     return previousSession?.cronActive === true
         && nextSession?.cronActive !== true
@@ -548,7 +550,7 @@ function buildSessionMergePatch(previousSession, nextSession) {
     }
     const preserveCronVisual = shouldPreserveStaleCronVisual(previousSession, nextSession);
     if (preserveCronVisual) {
-        for (const key of ["cronActive", "cronKind", "cronInterval", "cronReason", "cronNextFireAt", "cronTimezone", "cronMaxFires", "cronFiresCompleted"]) {
+        for (const key of ["cronActive", "cronKind", "cronInterval", "cronReason", "cronNextFireAt", "cronTimezone", "cronMaxFires", "cronFiresCompleted", ...CRON_PRECHECK_SESSION_KEYS]) {
             if (previousSession?.[key] == null) continue;
             if (areStructuredValuesEqual(patch[key], previousSession[key])) continue;
             patch[key] = previousSession[key];
@@ -559,7 +561,7 @@ function buildSessionMergePatch(previousSession, nextSession) {
             patch.cronReason = null;
             changed = true;
         }
-        for (const key of ["cronKind", "cronNextFireAt", "cronTimezone", "cronMaxFires", "cronFiresCompleted"]) {
+        for (const key of ["cronKind", "cronNextFireAt", "cronTimezone", "cronMaxFires", "cronFiresCompleted", ...CRON_PRECHECK_SESSION_KEYS]) {
             if (previousSession?.[key] != null && nextSession[key] === undefined) {
                 patch[key] = null;
                 changed = true;
@@ -7093,6 +7095,48 @@ export class PilotSwarmUiController {
             await this._afterWorkspaceChange(target.sessionId, "Workspace retry requested: held prompts run if it is back");
         } catch (error) {
             this.dispatch({ type: "ui/status", text: `Retry workspace failed: ${error?.message || String(error)}` });
+        }
+    }
+
+    /**
+     * Cron prechecks: the owner or a fleet admin picks the PRECHECK for the
+     * active interval cron. `precheck: null` is None. The server stamps the
+     * actor; a stale revision answers CONFLICT and the panel refreshes.
+     */
+    async setSessionCronPrecheckChoice({ sessionId, precheck, reason } = {}) {
+        if (typeof this.transport.setSessionCronPrecheck !== "function") {
+            this.dispatch({ type: "ui/status", text: "Cron prechecks are not supported by this deployment" });
+            return null;
+        }
+        const state = this.getState();
+        const session = sessionId ? state.sessions.byId[sessionId] : null;
+        if (!session || session.isGroup || session.cronActive !== true || session.cronKind === "wall-clock" || !Number.isInteger(session.cronRevision)) {
+            this.dispatch({ type: "ui/status", text: "Precheck can change only while an interval cron is active" });
+            return null;
+        }
+        const why = String(reason ?? "").trim();
+        if (!why) {
+            this.dispatch({ type: "ui/status", text: "A reason is required to change the precheck" });
+            return null;
+        }
+        try {
+            const result = await this.transport.setSessionCronPrecheck(sessionId, {
+                precheck: precheck ?? null,
+                expectedRevision: session.cronRevision,
+                reason: why,
+            });
+            this.dispatch({
+                type: "ui/status",
+                text: result?.status === "pending"
+                    ? "Precheck change queued: the session applies it shortly"
+                    : `Precheck set to ${result?.precheck ?? "None"}; applies on the next fire`,
+            });
+            this.scheduleSessionDetailSync?.(sessionId, 100);
+            return result;
+        } catch (error) {
+            this.dispatch({ type: "ui/status", text: `Set precheck failed: ${error?.message || String(error)}` });
+            this.scheduleSessionDetailSync?.(sessionId, 100);
+            return null;
         }
     }
 

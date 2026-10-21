@@ -58,7 +58,7 @@ import {
 } from "./regen-worker.js";
 import { REGEN_DISTILLER_SERVICE_KIND } from "./distiller-tools.js";
 import { computeCronAtNextFire, type CronAtSchedule } from "./cron-at.js";
-import { evaluateCronPrecheck, type CronPrecheckInput, type CronPrecheckResult } from "./cron-precheck.js";
+import { cronPrecheckNotification, evaluateCronPrecheck, type CronPrecheckInput, type CronPrecheckResult } from "./cron-precheck.js";
 import { callCronPrecheckMcpTool } from "./cron-precheck-mcp.js";
 import { SpanStatusCode, trace as otelTrace } from "@opentelemetry/api";
 import os from "node:os";
@@ -6194,6 +6194,21 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 () => catalog!.recordEvents(input.sessionId, [{ eventType: "session.cron_precheck", data: event }], workerNodeId),
                 (msg) => activityCtx.traceInfo(msg),
             );
+            // Owner notices are informational and never change the result.
+            const notice = cronPrecheckNotification(input, result);
+            const notifications = catalog.notifications;
+            if (notice && notifications) {
+                await cmsRetryBestEffort(
+                    `runCronPrecheck.notify(${notice}) session=${input.sessionId}`,
+                    () => notice === "broken"
+                        ? notifications.notifyCronPrecheckBroken({
+                            sessionId: input.sessionId, precheck: result.precheck, outcome: result.outcome,
+                            packageId: input.packageId, packageIdentity: input.packageIdentity,
+                        })
+                        : notifications.resolveCronPrecheckBroken(input.sessionId),
+                    (msg) => activityCtx.traceInfo(msg),
+                );
+            }
         }
         return result;
     });

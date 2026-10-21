@@ -7,8 +7,8 @@ package security prerequisite; this proposal is not release or deployment
 authorization. The current API and examples are in
 [SDK apps](../developer/building/sdk-apps.md) and
 [building agent packages](../building-agent-packages.md).
-The proposed review and precheck-selection workflow is in
-[package review setup for executable prechecks](#proposed-package-review-setup-for-executable-prechecks).
+The review and precheck-selection workflow is in
+[package review setup for executable prechecks](#package-review-setup-for-executable-prechecks).
 
 Package prechecks use manifest-declared generic supervised callbacks, not the
 unreleased legacy `createCronPrechecks`/`cronPrechecks` exports. Arming captures
@@ -127,9 +127,13 @@ Image prerequisites, trusted external legacy/remote-worker fencing proof,
 acceptance reconciliation and exact Claude Opus 4.8 review remain gates.
 No deployment or completed-candidate security approval is claimed.
 
-## Proposed: package review setup for executable prechecks
+## Package review setup for executable prechecks
 
-Status: **proposed, not implemented**. This section adds review usability
+Status: **phases 1–4 implemented, unreleased** (review diff, review panel,
+session `PRECHECK` selector, notifications). Phase 5, the `package-reviewer`
+agent, ships in a separate agent-layer PR. Phase 6 is the acceptance run. See
+[implementation notes](#implementation-notes-phases-14) for where the code
+differs from the design text below. This section adds review usability
 around the existing package-approval controls. It does not change any
 security rule above.
 
@@ -366,6 +370,64 @@ because failures are not rolled back. Phase 5 can ship later.
    (component 6).
 4. **Administrators can change the `PRECHECK` selection** on any session, in
    addition to the session owner, with audit.
+5. **Broken-precheck notifications go only to the package owner and the
+   session owner.** Package editors and fleet administrators are not notified
+   of broken prechecks. Review-decision notices still go to the package owner
+   and editors.
+6. **Three PRs, one per layer.** PilotSwarm runtime (phases 1–4, this PR),
+   Waldemort integration/adoption, and the `package-reviewer` agent.
+
+### Implementation notes (phases 1–4)
+
+What shipped, and where it differs from the design text above:
+
+- **Review diff.** `getAgentPackageReviewDiff` is exposed over management,
+  Web (`GET`, admin-only), MCP and CLI. Classification groups are
+  `executable`, `dependency`, `capability`, `precheck-policy` and
+  `declarative`. "Flagged" is a marker on a file within its group, not a
+  separate group; an unrecognized file type is flagged and ranked as
+  `executable`. A decision made from the diff carries the baseline it showed,
+  and the audit reason records that baseline digest.
+- **Review panel.** `PackageReviewDiffPanel` in the Pending Approval tab shows
+  both digests, the review revision, per-group counts and the grouped diff.
+  Decisions it does not allow are disabled.
+- **Selector validation.** The orchestration accepts an operator choice only
+  from the options it resolved when the schedule was armed. Approval, binding
+  and current-owner authorization are re-checked on every fire by the
+  precheck activity, as for any precheck, rather than separately at selection
+  time.
+- **Worker prechecks.** Trusted `worker.registerCronPrechecks()` prechecks are
+  listed for every session on the worker, matching how `chooseCronPrecheck`
+  already resolves them. They are not scoped per agent.
+- **Schedule revision.** The revision increments on every agent re-arm, so a
+  selector view can go stale while the model re-arms; the UI must refresh and
+  retry. Stale revisions are rejected (`CONFLICT`), never applied.
+- **Health streak.** Only a real `run`/`skip` answer clears a broken streak.
+  `max_skips` does not call the precheck, so it neither clears nor extends
+  the streak, and it neither alerts nor recovers.
+- **Operator change.** Changing the selection drops the schedule's broken
+  streak. Already-open broken notifications stay open until the next recovery
+  on that session.
+- **Notifications (migration 0090).** Table `user_notifications` plus
+  `cms_*` procedures; the portal reads them through `listMyNotifications` and
+  `markNotificationsRead` (any authenticated user, own rows only, chosen by
+  the server principal). Available in the package catalog's Notifications tab
+  (next to Private / Pending Approval / Shared) and
+  `pilotswarm agents notifications [read [ids]] [--unread]`.
+  - Review notices are written by a trigger on the review audit, in the same
+    transaction as the decision. A notification failure logs a warning and
+    never blocks the decision. "Approved, not active" is a live flag computed
+    when listing, so it clears as soon as that exact version is activated; no
+    periodic job.
+  - A broken alert has one open row per recipient, session, precheck, digest
+    and outcome. Repeats increase its count; after a day a repeat re-notifies
+    (unread again). The next real `run`/`skip` closes all open alerts for the
+    session and sends a recovery notice.
+  - Alerts carry a fixed summary per outcome, never the precheck's detail
+    text. The package owner's copy omits the session ID.
+  - Trusted worker prechecks have no package owner, so only the session owner
+    is notified.
+  - There is no retention job yet; notification rows accumulate.
 
 ## Problem
 

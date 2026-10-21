@@ -49,6 +49,11 @@ export interface AgentPackageReviewMutation extends ExecutablePackageIdentity {
     expectedRevision: number;
     decision: "approved" | "rejected" | "revoked";
     reason: string;
+    /**
+     * The baseline the reviewer was shown by the review diff; `null` for a new
+     * package. Validated against the same package and recorded in the audit.
+     */
+    baseline?: { versionId: string; sha256: string } | null;
 }
 
 export interface AgentPackageActivationMutation extends ExecutablePackageIdentity {

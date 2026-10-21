@@ -88,6 +88,8 @@ export interface CronPrecheckInput {
     reason: string;
     intervalSeconds: number;
     consecutiveSkips?: number;
+    /** True when the previous fire also ended in a broken outcome; used for recovery notices. */
+    previouslyBroken?: boolean;
     /** Only agent identity metadata, not prompts, model state or credentials. */
     agent?: Pick<SerializableSessionConfig, "boundAgentName" | "boundAgentPackageId" | "boundAgentSource" | "agentIdentity" | "toolNames">;
 }
@@ -101,12 +103,29 @@ export type CronPrecheckOutcome =
     | "timeout"
     | "invalid";
 
+/** Outcomes that mean the precheck itself is broken: owners are notified, nothing is rolled back. */
+export const CRON_PRECHECK_BROKEN_OUTCOMES: ReadonlySet<string> = new Set(["error", "timeout", "invalid", "unregistered"]);
+
 /** Activity result. The orchestration skips the model turn only when `skip` is true. */
 export interface CronPrecheckResult {
     skip: boolean;
     outcome: CronPrecheckOutcome;
     precheck: string;
     shadow?: boolean;
+}
+
+/**
+ * Which owner notification a precheck result calls for: `broken` for a broken
+ * outcome (deduplicated in CMS), `recovered` only for a `run`/`skip` answer
+ * after a broken streak. `max_skips` neither alerts nor recovers.
+ */
+export function cronPrecheckNotification(
+    input: Pick<CronPrecheckInput, "previouslyBroken">,
+    result: Pick<CronPrecheckResult, "outcome">,
+): "broken" | "recovered" | null {
+    if (CRON_PRECHECK_BROKEN_OUTCOMES.has(result.outcome)) return "broken";
+    if (input.previouslyBroken === true && (result.outcome === "run" || result.outcome === "skip")) return "recovered";
+    return null;
 }
 
 /** A precheck name, trimmed, or null when it is not a valid name. */
@@ -183,6 +202,40 @@ export type CronPrecheckChoice =
     | { ok: true; precheck?: string; packageId?: string;
         packageIdentity?: import("./agent-package-authorization.js").ExecutablePackageIdentity; packageBindingRevision?: number }
     | { ok: false; error: string };
+
+/**
+ * One precheck an operator may select for a schedule. `worker` prechecks are
+ * registered deployment-wide; `package` prechecks come from the session's
+ * exactly pinned bound package.
+ */
+export interface CronPrecheckOption {
+    name: string;
+    kind: "worker" | "package";
+    packageId?: string;
+    packageIdentity?: import("./agent-package-authorization.js").ExecutablePackageIdentity;
+    packageBindingRevision?: number;
+}
+
+export const CRON_PRECHECK_MAX_OPTIONS = 50;
+
+/** Prechecks selectable for this session: worker names, plus package names only under a valid exact pin. */
+export function listCronPrecheckOptions(sources: CronPrecheckSources | null | undefined): CronPrecheckOption[] {
+    if (!sources) return [];
+    const names = [...new Set([...(sources.staticNames ?? []), ...(sources.packageNames ?? [])])].sort();
+    const options: CronPrecheckOption[] = [];
+    for (const name of names) {
+        const choice = chooseCronPrecheck({ explicit: name, reason: "", sources });
+        if (!choice.ok || !choice.precheck) continue;
+        options.push({
+            name: choice.precheck,
+            kind: choice.packageId ? "package" : "worker",
+            ...(choice.packageId ? { packageId: choice.packageId } : {}),
+            ...(choice.packageIdentity ? { packageIdentity: { ...choice.packageIdentity }, packageBindingRevision: choice.packageBindingRevision } : {}),
+        });
+        if (options.length >= CRON_PRECHECK_MAX_OPTIONS) break;
+    }
+    return options;
+}
 
 /**
  * Choose a cron schedule's precheck. An explicit name must be available; an

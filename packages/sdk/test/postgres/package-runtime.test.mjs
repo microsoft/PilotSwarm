@@ -864,13 +864,15 @@ const controller={transport:{
  activateAgentPackageVersion:arg=>rpc("activate",[arg]),
  getAgentPackageReviewAudit:arg=>rpc("audit",[arg]),
  getAgentPackageActivationAudit:arg=>rpc("activationAudit",[arg]),
- getAgentPackageFile:(...args)=>rpc("file",args)}};
+ getAgentPackageFile:(...args)=>rpc("file",args),
+ listMyNotifications:arg=>rpc("notifications",[arg]),
+ markNotificationsRead:arg=>rpc("markRead",[arg])}};
 createRoot(document.getElementById("root")).render(React.createElement(PackageReviewTabs,{controller,view:{isAdmin:ADMIN_VIEW,settingsTree:[]}}));`,
         resolveDir: path.resolve("."), loader: "js" }, bundle: true, write: false, format: "iife",
         define: { "process.env.NODE_ENV": '"test"', ADMIN_VIEW: "globalThis.ADMIN_VIEW" } });
     const server = createServer(async (req, res) => {
         const authenticatedAdmin = req.headers.cookie === `review=${token}`;
-        const actor = authenticatedAdmin ? admin : { principal: { provider: "entra", subject: "viewer" }, isAdmin: false };
+        const actor = authenticatedAdmin ? admin : { principal: { provider: "entra", subject: "publisher" }, isAdmin: false };
         try {
             if (req.url === "/") { res.setHeader("content-type", "text/html"); res.end(`<div id="root"></div><script>globalThis.ADMIN_VIEW=${authenticatedAdmin}</script><script src="/bundle.js"></script>`); return; }
             if (req.url === "/bundle.js") { res.setHeader("content-type", "application/javascript"); res.end(bundle.outputFiles[0].text); return; }
@@ -885,6 +887,8 @@ createRoot(document.getElementById("root")).render(React.createElement(PackageRe
             else if (op === "activate") result = await f.catalog.packageReviews.activate(actor, args[0]);
             else if (op === "audit") result = await f.catalog.packageReviews.audit(actor, args[0]);
             else if (op === "activationAudit") result = await f.catalog.packageReviews.activationAudit(actor, args[0]);
+            else if (op === "notifications") result = await f.catalog.notifications.list(actor.principal, args[0] ?? {});
+            else if (op === "markRead") result = { updated: await f.catalog.notifications.markRead(actor.principal, args[0] ?? null) };
             else if (op === "file") {
                 const reviews = await f.catalog.packageReviews.list(actor);
                 const candidate = reviews.find(r => r.name === args[0] && r.semver === args[1]);
@@ -909,7 +913,7 @@ createRoot(document.getElementById("root")).render(React.createElement(PackageRe
         const page = await context.newPage();
         page.on("dialog", dialog => dialog.accept("browser exact reviewed decision"));
         await page.goto(endpoint);
-        assert.deepEqual(await page.getByRole("tab").allTextContents(), ["Private", "Pending Approval", "Shared"]);
+        assert.deepEqual(await page.getByRole("tab").allTextContents(), ["Private", "Pending Approval", "Shared", "Notifications"]);
         await page.getByRole("tab", { name: "Pending Approval" }).click();
         const article = semver => page.locator("article").filter({ has: page.getByRole("heading", { name: new RegExp(`runtime-kit@${semver.replaceAll(".", "\\.")} ·`) }) });
         await article("1.0.0").getByRole("button", { name: "tools/worker-module.mjs", exact: true }).click();
@@ -932,7 +936,16 @@ createRoot(document.getElementById("root")).render(React.createElement(PackageRe
         assert.equal((await f.catalog.packageReviews.audit(admin, "v2")).length, 2);
         const viewer = await browser.newContext();
         const viewerPage = await viewer.newPage(); await viewerPage.goto(endpoint);
-        assert.deepEqual(await viewerPage.getByRole("tab").allTextContents(), ["Private", "Shared"]);
+        assert.deepEqual(await viewerPage.getByRole("tab").allTextContents(), ["Private", "Shared", "Notifications"]);
+        await viewerPage.getByRole("tab", { name: "Notifications" }).click();
+        await viewerPage.getByText("Review: runtime-kit@2.0.0 revoked — browser exact reviewed decision", { exact: true }).waitFor();
+        await viewerPage.getByText(/^Review: runtime-kit@1\.0\.0 approved/).waitFor();
+        assert.equal(await viewerPage.locator("article.is-unread").count(), 3, "the owner sees v1 approve, v2 approve and v2 revoke");
+        await viewerPage.getByRole("button", { name: "Mark all read", exact: true }).click();
+        await until(async () => (await f.catalog.notifications.list({ provider: "entra", subject: "publisher" }, { unreadOnly: true })).length === 0,
+            "the owner's browser marks only their own notices read");
+        await viewerPage.getByRole("button", { name: "Mark all read", exact: true, disabled: true }).waitFor();
+        assert.deepEqual(await f.catalog.notifications.list(admin.principal), [], "the deciding administrator is not a recipient");
         const response = await viewer.request.post(`${endpoint}/api/decide`, { data: [{ isAdmin: true, decision: "approved" }] });
         assert.equal(response.status(), 403, "forged client admin flags cannot become a server-resolved admin");
         await context.close(); await viewer.close();
@@ -1218,7 +1231,7 @@ test("standalone PostgreSQL: legacy mixed fleet blocks activation and remains bl
     await f.catalog.workerHeartbeat({ workerNodeId: "legacy-worker", info: {} });
     await assert.rejects(f.activate(c), /eligible|unsupported|approval|executable|runtime/i);
     assert.equal((await f.authority.fencingStatus(c)).outstanding, 1);
-    for (const version of ["0085", "0084", "0085", "0086", "0087", "0088", "0089", "0089"]) {
+    for (const version of ["0085", "0084", "0085", "0086", "0087", "0088", "0089", "0090", "0090"]) {
         await f.pool.query(CMS_MIGRATIONS(f.schema).find(m => m.version === version).sql);
     }
     assert.equal((await f.sql("SELECT @s.cms_package_executable_eligible('pkg','v1',$1) AS allowed", [c.sha256])).rows[0].allowed, false);
@@ -1246,7 +1259,7 @@ test("standalone PostgreSQL: ordered migration reapplication retains real eligib
     const f = await fixture(t);
     const candidate = await f.publish(); await f.decide(candidate);
     const migrations = CMS_MIGRATIONS(f.schema);
-    for (const version of ["0085", "0084", "0085", "0086", "0087", "0088", "0089", "0089"]) {
+    for (const version of ["0085", "0084", "0085", "0086", "0087", "0088", "0089", "0090", "0090"]) {
         await f.pool.query(migrations.find(migration => migration.version === version).sql);
     }
     assert.equal((await f.sql("SELECT @s.cms_package_executable_eligible('pkg','v1',$1) AS allowed", [candidate.sha256])).rows[0].allowed, true);
@@ -1387,6 +1400,110 @@ test("standalone PostgreSQL CRON: historical declarative roots use static checks
         expectedBindingRevision: 1, reason: "explicit code removal" });
     assert.equal((await call()).outcome, "run");
     assert.equal(f.events().length, 0, "static checks never import package code");
+});
+
+test("0090 notifications: review notices reach the package owner and editors, with live approved-not-active state", async t => {
+    const f = await fixture(t);
+    const publisher = { provider: "entra", subject: "publisher" };
+    const editor = { provider: "entra", subject: "editor" };
+    const c = await f.publish();
+    await f.catalog.grantAgentPackageEditor("runtime-kit", editor, admin.principal, true);
+    await f.decide(c);
+    assert.deepEqual((await f.catalog.notifications.list(editor)).map(n => n.payload.decision), ["approved"], "editors are notified");
+    let [notice] = await f.catalog.notifications.list(publisher);
+    assert.equal(notice.kind, "package_review");
+    assert.deepEqual({ ...notice.payload }, { packageId: "pkg", packageName: "runtime-kit", versionId: "v1", semver: "1.0.0",
+        sha256: c.sha256, decision: "approved", previousDecision: "pending", reason: "standalone runtime acceptance",
+        revision: 2, approvedNotActive: true });
+    assert.deepEqual(await f.catalog.notifications.list(admin.principal), [], "the deciding administrator is not a recipient");
+    await f.activate(c);
+    [notice] = await f.catalog.notifications.list(publisher);
+    assert.equal(notice.payload.approvedNotActive, false, "the reminder clears once that exact version is active");
+    await f.decide(c, "revoked", 2);
+    const kinds = (await f.catalog.notifications.list(publisher)).map(n => n.payload.decision);
+    assert.deepEqual(kinds, ["revoked", "approved"]);
+    await assert.rejects(f.catalog.notifications.list(null), { code: "FORBIDDEN" });
+    await assert.rejects(f.sql("SELECT * FROM @s.cms_list_user_notifications('', 'x', FALSE, 10)"), /FORBIDDEN/);
+});
+
+test("0090 notifications: broken prechecks dedup per digest/outcome, remind daily, stay private and recover", async t => {
+    const f = await fixture(t);
+    const store = f.catalog.notifications;
+    const c = await f.publish();
+    const alice = { provider: "entra", subject: "alice" };
+    const publisher = { provider: "entra", subject: "publisher" };
+    await f.catalog.createSession("s-alice", { owner: alice });
+    const broken = { sessionId: "s-alice", precheck: "queue", outcome: "error", packageId: "pkg",
+        packageIdentity: { packageId: "pkg", versionId: c.versionId, sha256: c.sha256 } };
+    assert.equal(await store.notifyCronPrecheckBroken(broken), 2);
+    const [mine] = await store.list(alice);
+    assert.equal(mine.kind, "cron_precheck_broken");
+    assert.equal(mine.payload.sessionId, "s-alice");
+    assert.equal(mine.payload.sha256, c.sha256);
+    assert.match(mine.payload.summary, /threw|MCP/);
+    const [theirs] = (await store.list(publisher)).filter(n => n.kind === "cron_precheck_broken");
+    assert.equal(theirs.payload.sessionId, undefined, "the package owner never learns another user's session");
+    assert.equal(await store.notifyCronPrecheckBroken(broken), 2);
+    assert.equal((await store.list(alice)).length, 1, "a repeat counts on the open row");
+    assert.equal((await store.list(alice))[0].occurrences, 2);
+    await store.notifyCronPrecheckBroken({ ...broken, outcome: "timeout" });
+    assert.equal((await store.list(alice)).length, 2, "a different outcome is a different alert");
+
+    assert.equal(await store.markRead(alice, [mine.id]), 1);
+    assert.equal(await store.markRead(alice, [theirs.id]), 0, "a caller cannot touch another recipient's rows");
+    assert.equal(await store.notifyCronPrecheckBroken(broken), 2);
+    assert.notEqual((await store.list(alice)).find(n => n.id === mine.id).readAt, null, "no reminder within a day");
+    await f.sql("UPDATE @s.user_notifications SET notified_at=now()-INTERVAL '25 hours' WHERE notification_id=$1", [mine.id]);
+    await store.notifyCronPrecheckBroken(broken);
+    const reminded = (await store.list(alice)).find(n => n.id === mine.id);
+    assert.equal(reminded.readAt, null, "the daily reminder makes the alert unread again");
+    assert.equal(reminded.occurrences, 4);
+    await assert.rejects(store.notifyCronPrecheckBroken({ ...broken, outcome: "max_skips" }), /not a broken/);
+    await assert.rejects(store.notifyCronPrecheckBroken({ ...broken, outcome: "skip" }), /not a broken/);
+
+    assert.equal(await store.resolveCronPrecheckBroken("s-alice"), 4);
+    assert.equal(await store.resolveCronPrecheckBroken("s-alice"), 0);
+    const recovered = (await store.list(alice)).filter(n => n.kind === "cron_precheck_recovered");
+    assert.deepEqual(recovered.map(n => [n.payload.previousOutcome, n.payload.brokenOccurrences]).sort(), [["error", 4], ["timeout", 1]]);
+    assert.equal((await store.list(publisher)).filter(n => n.kind === "cron_precheck_recovered" && n.payload.sessionId).length, 0);
+    assert.equal(await store.notifyCronPrecheckBroken(broken), 2, "after recovery a new failure opens a new alert");
+    assert.equal((await store.list(alice, { unreadOnly: true })).every(n => n.readAt === null), true);
+    assert.ok(await store.markRead(alice, null) > 0);
+    assert.deepEqual(await store.list(alice, { unreadOnly: true }), []);
+    await assert.rejects(store.markRead(alice, ["1; DROP"]), { code: "INVALID_REQUEST" });
+});
+
+test("standalone PostgreSQL CRON: a broken worker precheck notifies the session owner and recovers, without changing the result", async t => {
+    const f = await fixture(t, { executable: false, noTools: true });
+    await f.publish(); await f.bind();
+    await f.sql("UPDATE @s.sessions SET package_binding_policy_version=NULL WHERE session_id='session-1'");
+    const manager = new SessionManager(undefined, null, { agentPromptLookup: { helper: { kind: "app-agent", prompt: "",
+        packageId: "pkg", packageScope: "shared", packageExecutable: false, packageActive: true } } });
+    manager.setSessionCatalog(f.catalog);
+    manager.getOrCreate = () => { throw new Error("Cron precheck must not hydrate or request a model"); };
+    let mode = "throw";
+    manager.addCronPrecheck({ name: "trusted", maxConsecutiveSkips: 1, check: () => {
+        if (mode === "throw") throw new Error("secret-token-123 leaked in a stack");
+        return { action: mode };
+    } });
+    const handlers = new Map();
+    registerActivities({ registerActivity: (name, handler) => handlers.set(name, handler) }, manager, null, undefined, f.catalog);
+    const call = (extra = {}) => handlers.get("runCronPrecheck")({ traceInfo() {} }, { sessionId: "session-1", precheck: "trusted",
+        intervalSeconds: 15, reason: "poll", consecutiveSkips: 0, agent: { boundAgentName: "helper", boundAgentPackageId: "pkg" }, ...extra });
+    const owner = { provider: "entra", subject: "publisher" };
+    assert.deepEqual(await call(), { skip: false, outcome: "error", precheck: "trusted", shadow: false });
+    let [alert] = await f.catalog.notifications.list(owner);
+    assert.equal(alert.kind, "cron_precheck_broken");
+    assert.equal(alert.payload.packageId, undefined, "a worker precheck has no package owner recipient");
+    assert.doesNotMatch(JSON.stringify(alert.payload), /secret-token/, "detail text never reaches a notification");
+    mode = "skip";
+    assert.equal((await call({ consecutiveSkips: 1 })).outcome, "max_skips");
+    assert.equal((await f.catalog.notifications.list(owner)).length, 1, "max_skips neither alerts nor recovers");
+    assert.equal((await call()).skip, true, "a run without previouslyBroken does not resolve");
+    assert.equal((await f.catalog.notifications.list(owner)).length, 1);
+    assert.equal((await call({ previouslyBroken: true })).skip, true);
+    const kinds = (await f.catalog.notifications.list(owner)).map(n => [n.kind, n.resolvedAt === null]);
+    assert.deepEqual(kinds, [["cron_precheck_recovered", true], ["cron_precheck_broken", false]]);
 });
 
 test("standalone PostgreSQL CRON: timeout cancellation kills synchronous supervised callback and admits no warm replacement", async t => {

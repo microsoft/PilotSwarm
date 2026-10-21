@@ -948,4 +948,36 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
             }
         },
     );
+
+    server.registerTool(
+        "set_session_cron_precheck",
+        {
+            title: "Set Session Cron Precheck",
+            description:
+                "Choose the PRECHECK for a session's active interval cron (owner or fleet admin). precheck is one of the "
+                + "session's cronPrecheckOptions names, or null for None (every wake-up reaches the model). "
+                + "expected_revision must equal the session's cronRevision (read it with get_session). Audited with the "
+                + "reason; applies on the next fire and survives the agent re-arming the same cron. Package prechecks still "
+                + "need the admin-approved digest at fire time.",
+            inputSchema: {
+                session_id: sessionIdShape().describe("The session whose cron to change"),
+                precheck: z.string().min(1).max(100).nullable().describe("A precheck name from cronPrecheckOptions, or null for None"),
+                expected_revision: z.number().int().min(0).describe("The session's current cronRevision"),
+                reason: z.string().min(1).max(500).describe("Why the precheck is changing (audited)"),
+                timeout_ms: z.number().int().min(1_000).max(120_000).optional().describe("Max time to wait for the answer, 1000 to 120000 ms"),
+            },
+        },
+        withToolErrors(async ({ session_id, precheck, expected_revision, reason, timeout_ms }) => {
+            try {
+                return jsonResult(await ctx.mgmt.setSessionCronPrecheck(
+                    session_id,
+                    { precheck, expectedRevision: expected_revision, reason, actor: "mcp-direct" },
+                    { ...(timeout_ms ? { timeoutMs: timeout_ms } : {}) },
+                ));
+            } catch (err: any) {
+                if (typeof err?.code !== "string" || err.status === 403) throw err;
+                return errorResult(err.message, { code: err.code, session_id });
+            }
+        }),
+    );
 }

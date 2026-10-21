@@ -104,6 +104,18 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
             inputSchema: { version_id: z.string().min(1) },
         }, withToolErrors(async ({ version_id }) =>
             jsonResult(await ctx.mgmt.getAgentPackageReviewAudit(version_id, owner, ctx.admin))));
+        server.registerTool("get_agent_package_review_diff", {
+            title: "Package Review Diff [admin]",
+            description: "Authenticated administrator: risk-classified diff (executable, dependency, capability, precheck-policy, declarative; flagged content shown as hashes) of an exact candidate digest against a same-package baseline. Review aid only; not an approval or security proof.",
+            inputSchema: {
+                package_id: z.string().min(1), version_id: z.string().min(1),
+                sha256: z.string().regex(/^[a-f0-9]{64}$/),
+                baseline_version_id: z.string().min(1).optional().describe("Explicit baseline; defaults to newest approved, then active, then none"),
+            },
+        }, withToolErrors(async ({ package_id, version_id, sha256, baseline_version_id }) => jsonResult(
+            await ctx.mgmt.getAgentPackageReviewDiff({
+                packageId: package_id, versionId: version_id, sha256, baselineVersionId: baseline_version_id ?? null,
+            }, owner, ctx.admin))));
         server.registerTool("get_agent_package_runtime_status", {
             title: "Package Runtime Fencing [admin]",
             description: "Current exact-identity admission and observed-exit fencing status, including deleted packages. Lease expiry never proves completion.",
@@ -130,11 +142,17 @@ export function registerAgentPackageTools(server: McpServer, ctx: ServerContext)
                     package_id: z.string().min(1), version_id: z.string().min(1),
                     sha256: z.string().regex(/^[a-f0-9]{64}$/), expected_revision: z.number().int().positive(),
                     decision: z.enum(["approved", "rejected", "revoked"]), reason: z.string().min(1),
+                    baseline_version_id: z.string().min(1).optional().describe("Baseline shown by get_agent_package_review_diff; recorded in the audit"),
+                    baseline_sha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
                 },
-            }, withToolErrors(async ({ package_id, version_id, sha256, expected_revision, decision, reason }) => {
+            }, withToolErrors(async ({ package_id, version_id, sha256, expected_revision, decision, reason, baseline_version_id, baseline_sha256 }) => {
+                if (Boolean(baseline_version_id) !== Boolean(baseline_sha256)) {
+                    throw Object.assign(new Error("baseline_version_id and baseline_sha256 must be given together"), { code: "INVALID_REQUEST" });
+                }
                 await ctx.mgmt.decideAgentPackageReview({
                     packageId: package_id, versionId: version_id, sha256,
                     expectedRevision: expected_revision, decision, reason,
+                    ...(baseline_version_id ? { baseline: { versionId: baseline_version_id, sha256: baseline_sha256! } } : {}),
                 }, owner, ctx.admin);
                 return jsonResult({ recorded: true, approvalScope: "artifact-content", activationAllowed: false, runtimeFencing: "not-reported" });
             }));

@@ -350,6 +350,21 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("retrySessionWorkspace", { sessionId, options: opts });
     }
 
+    /** Cron prechecks: choose the PRECHECK for the active interval cron; the server stamps the actor. */
+    async setSessionCronPrecheck(
+        sessionId: string,
+        input: { precheck: string | null; expectedRevision: number; reason: string; actor?: string },
+        opts: { timeoutMs?: number } = {},
+    ): Promise<any> {
+        return this._api.call("setSessionCronPrecheck", {
+            sessionId,
+            precheck: input?.precheck,
+            expectedRevision: input?.expectedRevision,
+            reason: input?.reason,
+            options: opts,
+        });
+    }
+
     /** Workspace files: the session's folders for the Workspace pane (the session's owner only). */
     async listSessionWorkspaceFolders(sessionId: string): Promise<any> {
         return this._api.call("listSessionWorkspaceFolders", { sessionId });
@@ -460,12 +475,26 @@ export class WebPilotSwarmManagementClient {
         return this.ops.getAgentPackageReviewStatus({ packageId });
     }
 
+    async listMyNotifications(options: { unreadOnly?: boolean; limit?: number } | undefined, _owner: any): Promise<any[]> {
+        return this.ops.listMyNotifications({
+            ...(options?.unreadOnly === true ? { unreadOnly: true } : {}),
+            ...(options?.limit != null ? { limit: options.limit } : {}),
+        });
+    }
+
+    async markNotificationsRead(ids: string[] | null | undefined, _owner: any): Promise<{ updated: number }> {
+        return this.ops.markNotificationsRead(ids == null ? {} : { ids });
+    }
+
     async decideAgentPackageReview(input: any, _owner: any, _isAdmin: boolean): Promise<void> {
         return this.ops.decideAgentPackageReview({ input });
     }
 
     async getAgentPackageReviewAudit(versionId: string, _owner: any, _isAdmin: boolean): Promise<any[]> {
         return this.ops.getAgentPackageReviewAudit({ versionId });
+    }
+    async getAgentPackageReviewDiff(input: any, _owner: any, _isAdmin: boolean): Promise<any> {
+        return this.ops.getAgentPackageReviewDiff({ input });
     }
     async getAgentPackageRuntimeStatus(input: any, _owner: any, _isAdmin: boolean): Promise<any> {
         return this.ops.getAgentPackageRuntimeStatus({ input });

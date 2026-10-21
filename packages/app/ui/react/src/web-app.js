@@ -4674,6 +4674,86 @@ export function waitReasonLabel(session) {
     return session?.cronActive === true ? "On wake" : "Waiting";
 }
 
+/**
+ * The read-only PRECHECK text for the session details box: the name (or
+ * None), who chose it, and a broken streak. Null when no interval cron is
+ * active: wall-clock schedules do not run prechecks.
+ */
+export function describeCronPrecheck(session) {
+    if (!session || session.isGroup || session.cronActive !== true || session.cronKind === "wall-clock") return null;
+    const name = typeof session.cronPrecheck === "string" && session.cronPrecheck ? session.cronPrecheck : "None";
+    const parts = [name];
+    if (session.cronPrecheckSource === "operator") parts.push("set by operator");
+    const health = session.cronPrecheckHealth;
+    if (health && typeof health.outcome === "string") {
+        parts.push(`broken: ${health.outcome}${Number.isInteger(health.count) && health.count > 1 ? ` ×${health.count}` : ""}`);
+    }
+    return parts.join(" · ");
+}
+
+/**
+ * PRECHECK selector (owner or fleet admin; the server enforces it). Options
+ * are the session's own: None plus what its bound agent and approved package
+ * pin resolved when the cron was armed. Changing asks for a reason, which is
+ * audited, and applies on the next fire.
+ */
+export function CronPrecheckControl({ session, onApply, busy: busyProp = false }) {
+    const [draft, setDraft] = React.useState(null);
+    const [reason, setReason] = React.useState("");
+    const [busy, setBusy] = React.useState(false);
+    const text = describeCronPrecheck(session);
+    const options = Array.isArray(session?.cronPrecheckOptions) ? session.cronPrecheckOptions : [];
+    const editable = Boolean(text) && typeof onApply === "function" && Number.isInteger(session?.cronRevision);
+    const current = typeof session?.cronPrecheck === "string" && session.cronPrecheck ? session.cronPrecheck : "";
+    const display = React.createElement("span", {
+        className: "ps-session-detail-value",
+        title: text || SESSION_DETAIL_NONE,
+    }, text || SESSION_DETAIL_NONE);
+    if (!editable) return display;
+    const disabled = busy || busyProp;
+    const selected = draft ?? current;
+    return React.createElement("span", { className: "ps-cron-precheck-control" },
+        display,
+        React.createElement("select", {
+            "aria-label": "Precheck",
+            value: selected,
+            disabled,
+            onChange: (event) => { setDraft(event.target.value); setReason(""); },
+        },
+        React.createElement("option", { key: "", value: "" }, "None"),
+        options.map((option) => React.createElement("option", { key: option.name, value: option.name },
+            `${option.name}${option.kind === "package" ? " (package)" : ""}`))),
+        draft !== null && draft !== current ? React.createElement(React.Fragment, null,
+            React.createElement("input", {
+                type: "text",
+                "aria-label": "Reason for the precheck change",
+                placeholder: "Reason (audited)",
+                maxLength: 500,
+                value: reason,
+                disabled,
+                onChange: (event) => setReason(event.target.value),
+            }),
+            React.createElement("button", {
+                type: "button",
+                disabled: disabled || !reason.trim(),
+                onClick: async () => {
+                    setBusy(true);
+                    try {
+                        await onApply({ precheck: draft || null, reason: reason.trim() });
+                        setDraft(null);
+                        setReason("");
+                    } finally {
+                        setBusy(false);
+                    }
+                },
+            }, "Apply"),
+            React.createElement("button", {
+                type: "button",
+                disabled,
+                onClick: () => { setDraft(null); setReason(""); },
+            }, "Cancel")) : null);
+}
+
 function SessionDetailBox({ session, childCount = 0, pause = null, controller = null, collapsed = false, onToggle = null, onOpenBudget = null }) {
     // EVERY field renders on EVERY selection, empty ones as an em dash. The box
     // is a fixed grid of rows, so moving through the list cannot change its
@@ -4844,6 +4924,19 @@ function SessionDetailBox({ session, childCount = 0, pause = null, controller = 
         field("Model", model),
         field("Context", context, percent != null && percent >= 85 ? "is-hot" : percent != null && percent >= 70 ? "is-warm" : ""),
         field("Cron", cron, session?.cronActive === true ? "is-armed" : ""),
+        React.createElement("div", {
+            className: `ps-session-detail-field${describeCronPrecheck(session) ? "" : " is-none"}${session?.cronPrecheckHealth?.outcome && describeCronPrecheck(session) ? " is-hot" : ""}`,
+            key: "Precheck",
+        },
+            React.createElement("span", { className: "ps-session-detail-label" }, "Precheck"),
+            React.createElement(CronPrecheckControl, {
+                // Keyed by revision so a refreshed schedule drops a stale draft.
+                key: `${session?.sessionId || ""}:${session?.cronRevision ?? ""}`,
+                session,
+                onApply: typeof controller?.setSessionCronPrecheckChoice === "function" && session?.sessionId
+                    ? (change) => controller.setSessionCronPrecheckChoice({ ...change, sessionId: session.sessionId })
+                    : null,
+            })),
         field("Agent", session?.agentId),
         // "when, and what it is doing" in one row. The status comes from the
         // shared derivation rather than the raw field — see

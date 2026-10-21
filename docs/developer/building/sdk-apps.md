@@ -340,6 +340,16 @@ worker.registerCronPrechecks([{
 A worker-registered name wins over a same-named package precheck, as with
 tools.
 
+**Operator selection.** The session owner, or a fleet administrator, can set
+the precheck of the session's active interval schedule from the session
+details `PRECHECK` field, MCP `set_session_cron_precheck`, or
+`setSessionCronPrecheck(sessionId, { precheck, expectedRevision, reason })`.
+`precheck: null` selects **None**. The choice overrides all three sources
+above, survives model re-arms and continue-as-new, and is cleared when the
+schedule is cancelled. Only options resolved for the session's own bound agent
+are accepted, the schedule revision must match (`CONFLICT` otherwise), and the
+change is recorded as a `session.cron_precheck_changed` event with the actor.
+
 A schedule without a precheck behaves exactly as before: no check and no
 extra activity. Calling `cron` again replaces the schedule, including its
 precheck.
@@ -355,6 +365,12 @@ same schedule; the model sees nothing for that cycle.
   compare its decisions with the turns that ran before relying on it.
 - **Fail open.** An unregistered name, a thrown, timed-out or malformed
   answer, or an activity failure runs the model turn as before.
+- **Broken prechecks notify, never roll back.** `error`, `timeout`, `invalid`
+  and `unregistered` answers notify the session owner and, for a package
+  precheck, the package owner, with a daily reminder while it persists and a
+  recovery notice after the next real `run`/`skip`. Notices carry a fixed
+  summary, never the `detail` text. `max_skips` and authorization denial do
+  not notify.
 - **Admission is not optional.** Before entering a callback, the activity
   checks current effective ownership and the bound agent copy, even when the
   callback uses no tools. A package callback requires a resolvable session
