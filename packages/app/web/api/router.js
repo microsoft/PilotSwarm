@@ -43,6 +43,9 @@ const ERROR_STATUS_BY_CODE = {
     // and immutable-version / scope-mismatch conflicts.
     VALIDATION_FAILED: 400,
     CONFLICT: 409,
+    // Package review/activation: the request is valid, but the reviewed
+    // content cannot be activated as is (the reason is a fixed message).
+    PRECONDITION_FAILED: 412,
 };
 
 // Domain/lifecycle errors the runtime throws with actionable, non-sensitive

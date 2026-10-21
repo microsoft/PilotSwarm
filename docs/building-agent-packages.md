@@ -367,8 +367,8 @@ and its original `AbortSignal` context unchanged.
 
 Declare `queue` in the agent's `mcpServers` and its connection in the package
 or deployment MCP configuration as usual (§6). This helper grants no new
-servers or tools: the current session owner, exact bound package and server's
-`tools` allowlist apply. It also honors authorized persisted `use_package`
+servers or tools: the current session owner, exact bound package and a
+deployment server's `tools` allowlist apply. It also honors authorized persisted `use_package`
 MCP selections. Package-owned MCP markers are resolved only through the exact
 supervised/authoritative runtime, never passed to the raw transport helper.
 Trusted deployment HTTP/SSE/stdio uses the current-authorized bridge and a
@@ -396,8 +396,25 @@ stdio MCP through supervised authority.** The HTTP/SSE and arbitrary-command
 configurations described below remain trusted deployment configuration formats,
 not permission to publish or execute an unverifiable package server.
 
-`.mcp.json` maps server names to configs. Each server needs `command`
-(stdio) **or** `url` (http/sse):
+For an executable package, each server config may contain only `command`
+(`"node"`), `args` (a package-relative `.mjs`/`.js` entry, then string
+arguments), `env` and `type: "stdio"`. Any other key, including a `tools`
+allowlist, is an approval blocker shown in **Pending Approval**: the content can
+still be approved, but activation is refused. The supervised gateway exposes
+the server's tools; access is limited by the agent's `mcpServers` and the
+callback's declared `mcpServers`, not by a package `tools` list:
+
+```json
+{
+    "lookup-mcp": {
+        "command": "node",
+        "args": ["./mcp-servers/lookup.mjs"]
+    }
+}
+```
+
+In trusted deployment configuration, `.mcp.json` maps server names to configs.
+Each server needs `command` (stdio) **or** `url` (http/sse):
 
 ```json
 {
