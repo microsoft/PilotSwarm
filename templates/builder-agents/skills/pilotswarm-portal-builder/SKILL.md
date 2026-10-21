@@ -1,7 +1,7 @@
 ---
 name: pilotswarm-portal-builder
 description: "Use when creating or updating a browser portal on top of PilotSwarm. Covers portal branding, plugin.json.portal, named-agent exposure, auth add-ons, and remote deployment wiring."
-version: 1.2.0
+version: 1.3.0
 ---
 
 # PilotSwarm Portal Builder
