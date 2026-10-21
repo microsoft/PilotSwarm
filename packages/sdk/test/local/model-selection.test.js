@@ -19,49 +19,13 @@ import { ModelProviderRegistry, ManagedSession, PilotSwarmManagementClient, Sess
 import { detectFailedModelSwitch } from "../../src/orchestration/turn.ts";
 import { handleTurnResult, processPrompt } from "../../src/orchestration/turn.ts";
 import { handleCommand } from "../../src/orchestration/lifecycle.ts";
-import { modelShort, matchesModel, isCompletedTurnOnModelAfter } from "../helpers/model-selection.mjs";
+import { findConfiguredModel, findSameProviderModel, matchesModel, isCompletedTurnOnModelAfter } from "../helpers/model-selection.mjs";
 
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
 const FORCE_SINGLE_MODEL = Boolean(process.env.PS_TEST_FORCE_MODEL || process.env.TEST_FORCE_MODEL);
 const describeModelSelection = FORCE_SINGLE_MODEL ? describe.skip : describe;
 const INVALID_MODEL_ID = "github-copilot:gpt-nonexistent-9000";
-
-// ─── Model-switch discovery helpers ──────────────────────────────
-
-function providerOf(qualified) {
-    const q = String(qualified || "");
-    return q.includes(":") ? q.slice(0, q.indexOf(":")) : "";
-}
-
-function resolveQualified(mgmt, wanted) {
-    const models = mgmt.listModels();
-    const match = models.find((m) =>
-        m.qualifiedName === wanted
-        || m.modelName === wanted
-        || m.qualifiedName.endsWith(`:${wanted}`),
-    );
-    return match?.qualifiedName ?? null;
-}
-
-function findSameProviderModel(mgmt, fromQ) {
-    const fromProvider = providerOf(fromQ);
-    const fromShort = modelShort(fromQ);
-    const match = mgmt.listModels().find((m) =>
-        providerOf(m.qualifiedName) === fromProvider
-        && modelShort(m.qualifiedName) !== fromShort,
-    );
-    return match?.qualifiedName ?? null;
-}
-
-function findCrossProviderModel(mgmt, fromQ) {
-    const fromProvider = providerOf(fromQ);
-    const match = mgmt.listModels().find((m) =>
-        providerOf(m.qualifiedName)
-        && providerOf(m.qualifiedName) !== fromProvider,
-    );
-    return match?.qualifiedName ?? null;
-}
 
 async function pollForEvent(catalog, sessionId, predicate, label, timeoutMs = TIMEOUT) {
     const deadline = Date.now() + timeoutMs;
@@ -148,14 +112,13 @@ async function testMidSessionModelSwitch(env) {
         });
         await mgmt.start();
         try {
-            const claudeModel = mgmt.listModels().find((model) =>
-                model.qualifiedName === TEST_CLAUDE_MODEL
-                || model.modelName === TEST_CLAUDE_MODEL
-                || model.qualifiedName.endsWith(`:${TEST_CLAUDE_MODEL}`),
-            );
+            const models = mgmt.listModels();
+            const originalModel = findConfiguredModel(models, TEST_GPT_MODEL);
+            assertNotNull(originalModel, `configured original model for ${TEST_GPT_MODEL}`);
+            const claudeModel = findConfiguredModel(models, TEST_CLAUDE_MODEL);
             assertNotNull(claudeModel, `configured Claude model for ${TEST_CLAUDE_MODEL}`);
             const targetModel = claudeModel.qualifiedName;
-            const targetShort = modelShort(targetModel);
+            const targetShort = claudeModel.modelName;
             console.log(`  Switching to ${targetModel}...`);
             await mgmt.setSessionModel(session.sessionId, targetModel);
             console.log("  Management model switch accepted; sending next turn...");
@@ -166,15 +129,15 @@ async function testMidSessionModelSwitch(env) {
             const catalog = await createCatalog(env);
             try {
                 const row = await catalog.getSession(session.sessionId);
-                assertEqual(matchesModel(row.model, targetModel), true, `model switched to ${targetShort} (got ${row.model})`);
+                assertEqual(matchesModel(row.model, claudeModel), true, `model switched to ${targetShort} (got ${row.model})`);
                 const buckets = await catalog.getSessionTokensByModel(session.sessionId);
                 assertEqual(buckets.length >= 2, true, `two model buckets after switch (got ${buckets.length})`);
                 const turns = await catalog.getSessionTurnMetrics(session.sessionId);
                 const orderedTurns = turns.slice().sort((a, b) => a.turnIndex - b.turnIndex);
                 assertEqual(orderedTurns.length >= 2, true, `at least two turn metrics after switch (got ${orderedTurns.length})`);
-                assertEqual(matchesModel(orderedTurns[0].model, TEST_GPT_MODEL), true, `first turn uses original model (got ${orderedTurns[0].model})`);
+                assertEqual(matchesModel(orderedTurns[0].model, originalModel), true, `first turn uses original model (got ${orderedTurns[0].model})`);
                 assertEqual(
-                    matchesModel(orderedTurns[orderedTurns.length - 1].model, targetModel),
+                    matchesModel(orderedTurns[orderedTurns.length - 1].model, claudeModel),
                     true,
                     `next turn uses switched model (got ${orderedTurns[orderedTurns.length - 1].model})`,
                 );
@@ -229,17 +192,20 @@ async function runModelSwitchScenario(env, { initiator, relationship }) {
         await mgmt.start();
         const catalog = await createCatalog(env);
         try {
-            const fromQ = resolveQualified(mgmt, fromModel);
-            assertNotNull(fromQ, `from-model ${fromModel} resolves to a configured model`);
-            const targetQ = relationship === "same"
-                ? findSameProviderModel(mgmt, fromQ)
-                : findCrossProviderModel(mgmt, fromQ);
-            if (!targetQ) {
-                console.warn(`  ⚠️  SKIP ${initiator}/${relationship}: no ${relationship}-provider target configured for ${fromQ}. ` +
+            const models = mgmt.listModels();
+            const from = findConfiguredModel(models, fromModel);
+            assertNotNull(from, `from-model ${fromModel} resolves to a configured model`);
+            const target = relationship === "same"
+                ? findSameProviderModel(models, from)
+                : models.find((model) => model.providerId && model.providerId !== from.providerId);
+            if (!target) {
+                console.warn(`  ⚠️  SKIP ${initiator}/${relationship}: no ${relationship}-provider target configured for ${from.qualifiedName}. ` +
                     `Configure a second provider in .model_providers.json to exercise this case end-to-end.`);
                 return;
             }
-            const crossProvider = providerOf(fromQ) !== providerOf(targetQ);
+            const fromQ = from.qualifiedName;
+            const targetQ = target.qualifiedName;
+            const crossProvider = from.providerId !== target.providerId;
             assertEqual(crossProvider, relationship === "cross", `relationship from ${fromQ} to ${targetQ}`);
             console.log(`  ${initiator.toUpperCase()} ${relationship}-provider switch: ${fromQ} -> ${targetQ}`);
 
@@ -259,12 +225,12 @@ async function runModelSwitchScenario(env, { initiator, relationship }) {
                 assertNotNull(switchResp, "LLM switch turn returned");
             }
 
-            const targetShort = modelShort(targetQ);
-            const fromShort = modelShort(fromQ);
+            const targetShort = target.modelName;
+            const fromShort = from.modelName;
             await pollForTurnMetric(
                 catalog,
                 session.sessionId,
-                (turn) => isCompletedTurnOnModelAfter(turn, targetQ, maxTurnBeforeSwitch),
+                (turn) => isCompletedTurnOnModelAfter(turn, target, maxTurnBeforeSwitch),
                 "automatic post-switch continuation turn metric",
             );
 
@@ -272,15 +238,15 @@ async function runModelSwitchScenario(env, { initiator, relationship }) {
             assertNotNull(postResp, "post-switch turn returned");
 
             const row = await catalog.getSession(session.sessionId);
-            assertEqual(matchesModel(row.model, targetQ), true, `CMS model switched to ${targetShort} (got ${row.model})`);
+            assertEqual(matchesModel(row.model, target), true, `CMS model switched to ${targetShort} (got ${row.model})`);
 
             const turns = (await catalog.getSessionTurnMetrics(session.sessionId)).slice().sort((a, b) => a.turnIndex - b.turnIndex);
             assertEqual(turns.length >= 2, true, `at least two turn metrics (got ${turns.length})`);
-            assertEqual(matchesModel(turns[0].model, fromQ), true, `first turn used ${fromShort} (got ${turns[0].model})`);
+            assertEqual(matchesModel(turns[0].model, from), true, `first turn used ${fromShort} (got ${turns[0].model})`);
             const last = turns[turns.length - 1];
-            assertEqual(matchesModel(last.model, targetQ), true, `last turn uses ${targetShort} (got ${last.model})`);
+            assertEqual(matchesModel(last.model, target), true, `last turn uses ${targetShort} (got ${last.model})`);
             assertEqual(last.resultType, "completed", `post-switch turn completed (got ${last.resultType}; err=${last.errorMessage || "-"})`);
-            const targetTurnsAfterSwitch = turns.filter((turn) => turn.turnIndex > maxTurnBeforeSwitch && matchesModel(turn.model, targetQ));
+            const targetTurnsAfterSwitch = turns.filter((turn) => turn.turnIndex > maxTurnBeforeSwitch && matchesModel(turn.model, target));
             assertEqual(
                 targetTurnsAfterSwitch.length >= 1,
                 true,
@@ -291,7 +257,7 @@ async function runModelSwitchScenario(env, { initiator, relationship }) {
 
             const modelChanged = after.find((e) =>
                 e.eventType === "session.model_changed"
-                && matchesModel(e.data?.newModel, targetQ),
+                && matchesModel(e.data?.newModel, target),
             );
             assertNotNull(modelChanged, "session.model_changed recorded for switch");
             assertEqual(

@@ -90,9 +90,9 @@ async function testStopsRunningTurnMidFlight(env, { legacy = false } = {}) {
                 assert(Number.isFinite(result.controlSeq), "the accepted Stop reports its control seq");
             }
 
-            const idled = await waitForStoppedTurn(mgmt, session.sessionId, result.turnIndex, 30_000);
+            const stoppedReady = await waitForStoppedTurn(mgmt, session.sessionId, result.turnIndex, 30_000);
             const row = await mgmt._catalog.getSession(session.sessionId);
-            assert(idled, `CMS state should settle to idle after stop, got ${row?.state}`);
+            assert(stoppedReady, `Stop readiness requires CMS idle and persisted session.turn_stopped for turn ${result.turnIndex}; CMS state: ${row?.state}`);
             assert(row.state !== "cancelled" && row.state !== "completed" && row.state !== "failed",
                 `stop must not change lifecycle state (got ${row.state})`);
             assertEqual(row.activeTurnIndex, null, "active_turn_index should be cleared after stop");
