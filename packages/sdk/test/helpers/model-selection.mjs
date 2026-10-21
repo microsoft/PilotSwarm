@@ -29,7 +29,7 @@ export function assertRootTurnModel(events, expected) {
         const data = event.data ?? {};
         return event.eventType === "assistant.usage"
             && !event.agentId && !data.nativeAgentId && !data.parentToolCallId
-            && !data.initiator
+            && (!data.initiator || data.initiator === "user")
             && (data.interactionType == null
                 || data.interactionType === "conversation-agent"
                 || data.interactionType === "conversation-user");

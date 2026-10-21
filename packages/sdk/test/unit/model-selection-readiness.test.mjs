@@ -93,6 +93,17 @@ test("root API usage must match the requested descriptor, not echoed configurati
     ], target), /requested fixture:model-b.*observed model-a/);
 });
 
+test("root API usage explicitly initiated by the user retains exact model validation", () => {
+    for (const interactionType of ["conversation-agent", "conversation-user"]) {
+        assert.deepEqual(assertRootTurnModel([
+            rootUsage(target.modelName, { initiator: "user", interactionType }),
+        ], target), [target.modelName]);
+        assert.throws(() => assertRootTurnModel([
+            rootUsage("model-a", { initiator: "user", interactionType }),
+        ], target), /requested fixture:model-b.*observed model-a/);
+    }
+});
+
 test("configuration, turn-start metadata and model self-description are not served-model evidence", () => {
     assert.throws(() => assertRootTurnModel([
         { eventType: "assistant.turn_start", data: { model: target.modelName } },
@@ -104,7 +115,9 @@ test("child and auxiliary API usage cannot satisfy or contaminate the root model
     const auxiliary = [
         rootUsage("model-a", {}, { agentId: "child" }),
         rootUsage("model-a", { nativeAgentId: "child" }),
+        rootUsage(target.modelName, { initiator: "user", nativeAgentId: "child" }),
         rootUsage("model-a", { parentToolCallId: "task-call" }),
+        rootUsage("model-a", { initiator: "sub-agent" }),
         rootUsage("model-a", { initiator: "mcp-sampling" }),
         rootUsage("model-a", { interactionType: "conversation-compaction" }),
         rootUsage("model-a", { interactionType: "conversation-background" }),
