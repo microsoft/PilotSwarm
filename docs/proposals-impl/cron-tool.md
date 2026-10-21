@@ -29,6 +29,10 @@ The review fixes also use the selected agent copy's authored name and namespace
 for non-LLM MCP admission, reset the consecutive idle-skip count after ordinary
 work turns, and reject malformed/mismatched PRECHECK acknowledgements rather
 than displaying a successful change with an invalid revision.
+Linux recovery handles a process disappearing during a procfs read (`ESRCH`)
+as gone, while permission/I/O failures still deny recovery. Host-identity
+probe failures are propagated and evicted from the cache so a later call can
+recover; neither fix fabricates an identity or bypasses process fencing.
 
 ### Executable-only pin integration
 

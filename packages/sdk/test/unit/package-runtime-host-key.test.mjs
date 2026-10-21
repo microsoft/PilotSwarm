@@ -4,6 +4,7 @@ import childProcess from "node:child_process";
 import os from "node:os";
 import { syncBuiltinESMExports } from "node:module";
 import { promisify } from "node:util";
+import { promises as fs } from "node:fs";
 
 test("host identity shares in-flight probes but does not permanently cache a failed probe", async () => {
     const originalExec = childProcess.execFile;
@@ -30,6 +31,30 @@ test("host identity shares in-flight probes but does not permanently cache a fai
         assert.equal(probes, 2, "only a later invocation retries; successful identity is cached");
     } finally {
         childProcess.execFile = originalExec;
+        os.platform = originalPlatform;
+        syncBuiltinESMExports();
+    }
+});
+
+test("procfs process-exit races mean the process is gone; other identity failures still deny recovery", async () => {
+    const originalRead = fs.readFile;
+    const originalPlatform = os.platform;
+    let failure;
+    try {
+        fs.readFile = async () => { throw failure; };
+        os.platform = () => "linux";
+        syncBuiltinESMExports();
+        const { runtimeProcessToken } = await import("../../dist/package-runtime-process.js?procfs-exit");
+        for (const code of ["ENOENT", "ESRCH"]) {
+            failure = Object.assign(new Error("process exited while reading procfs"), { code });
+            assert.equal(await runtimeProcessToken(12345), null);
+        }
+        for (const code of ["EACCES", "EIO"]) {
+            failure = Object.assign(new Error("process identity could not be verified"), { code });
+            await assert.rejects(runtimeProcessToken(12345), error => error === failure);
+        }
+    } finally {
+        fs.readFile = originalRead;
         os.platform = originalPlatform;
         syncBuiltinESMExports();
     }
