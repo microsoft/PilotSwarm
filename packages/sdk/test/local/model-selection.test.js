@@ -19,6 +19,7 @@ import { ModelProviderRegistry, ManagedSession, PilotSwarmManagementClient, Sess
 import { detectFailedModelSwitch } from "../../src/orchestration/turn.ts";
 import { handleTurnResult, processPrompt } from "../../src/orchestration/turn.ts";
 import { handleCommand } from "../../src/orchestration/lifecycle.ts";
+import { modelShort, matchesModel, isCompletedTurnOnModelAfter } from "../helpers/model-selection.mjs";
 
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
@@ -31,10 +32,6 @@ const INVALID_MODEL_ID = "github-copilot:gpt-nonexistent-9000";
 function providerOf(qualified) {
     const q = String(qualified || "");
     return q.includes(":") ? q.slice(0, q.indexOf(":")) : "";
-}
-
-function modelShort(qualified) {
-    return String(qualified || "").split(":").pop();
 }
 
 function resolveQualified(mgmt, wanted) {
@@ -169,15 +166,15 @@ async function testMidSessionModelSwitch(env) {
             const catalog = await createCatalog(env);
             try {
                 const row = await catalog.getSession(session.sessionId);
-                assertEqual(row.model.includes(targetShort), true, `model switched to ${targetShort} (got ${row.model})`);
+                assertEqual(matchesModel(row.model, targetModel), true, `model switched to ${targetShort} (got ${row.model})`);
                 const buckets = await catalog.getSessionTokensByModel(session.sessionId);
                 assertEqual(buckets.length >= 2, true, `two model buckets after switch (got ${buckets.length})`);
                 const turns = await catalog.getSessionTurnMetrics(session.sessionId);
                 const orderedTurns = turns.slice().sort((a, b) => a.turnIndex - b.turnIndex);
                 assertEqual(orderedTurns.length >= 2, true, `at least two turn metrics after switch (got ${orderedTurns.length})`);
-                assertEqual(orderedTurns[0].model.includes(TEST_GPT_MODEL), true, `first turn uses original model (got ${orderedTurns[0].model})`);
+                assertEqual(matchesModel(orderedTurns[0].model, TEST_GPT_MODEL), true, `first turn uses original model (got ${orderedTurns[0].model})`);
                 assertEqual(
-                    orderedTurns[orderedTurns.length - 1].model.includes(targetShort),
+                    matchesModel(orderedTurns[orderedTurns.length - 1].model, targetModel),
                     true,
                     `next turn uses switched model (got ${orderedTurns[orderedTurns.length - 1].model})`,
                 );
@@ -267,7 +264,7 @@ async function runModelSwitchScenario(env, { initiator, relationship }) {
             await pollForTurnMetric(
                 catalog,
                 session.sessionId,
-                (turn) => turn.turnIndex > maxTurnBeforeSwitch && turn.model.includes(targetShort) && turn.resultType === "completed",
+                (turn) => isCompletedTurnOnModelAfter(turn, targetQ, maxTurnBeforeSwitch),
                 "automatic post-switch continuation turn metric",
             );
 
@@ -275,15 +272,15 @@ async function runModelSwitchScenario(env, { initiator, relationship }) {
             assertNotNull(postResp, "post-switch turn returned");
 
             const row = await catalog.getSession(session.sessionId);
-            assertEqual(row.model.includes(targetShort), true, `CMS model switched to ${targetShort} (got ${row.model})`);
+            assertEqual(matchesModel(row.model, targetQ), true, `CMS model switched to ${targetShort} (got ${row.model})`);
 
             const turns = (await catalog.getSessionTurnMetrics(session.sessionId)).slice().sort((a, b) => a.turnIndex - b.turnIndex);
             assertEqual(turns.length >= 2, true, `at least two turn metrics (got ${turns.length})`);
-            assertEqual(turns[0].model.includes(fromShort), true, `first turn used ${fromShort} (got ${turns[0].model})`);
+            assertEqual(matchesModel(turns[0].model, fromQ), true, `first turn used ${fromShort} (got ${turns[0].model})`);
             const last = turns[turns.length - 1];
-            assertEqual(last.model.includes(targetShort), true, `last turn uses ${targetShort} (got ${last.model})`);
+            assertEqual(matchesModel(last.model, targetQ), true, `last turn uses ${targetShort} (got ${last.model})`);
             assertEqual(last.resultType, "completed", `post-switch turn completed (got ${last.resultType}; err=${last.errorMessage || "-"})`);
-            const targetTurnsAfterSwitch = turns.filter((turn) => turn.turnIndex > maxTurnBeforeSwitch && turn.model.includes(targetShort));
+            const targetTurnsAfterSwitch = turns.filter((turn) => turn.turnIndex > maxTurnBeforeSwitch && matchesModel(turn.model, targetQ));
             assertEqual(
                 targetTurnsAfterSwitch.length >= 1,
                 true,
@@ -294,7 +291,7 @@ async function runModelSwitchScenario(env, { initiator, relationship }) {
 
             const modelChanged = after.find((e) =>
                 e.eventType === "session.model_changed"
-                && String(e.data?.newModel || "").includes(targetShort),
+                && matchesModel(e.data?.newModel, targetQ),
             );
             assertNotNull(modelChanged, "session.model_changed recorded for switch");
             assertEqual(
