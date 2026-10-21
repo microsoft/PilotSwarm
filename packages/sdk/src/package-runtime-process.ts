@@ -80,7 +80,7 @@ except ProcessLookupError:
 try:
     try:
         stat = open("/proc/%d/stat" % pid).read()
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
         stat = None
     if stat is not None:
         fields = stat[stat.rfind(")") + 2:].split()
