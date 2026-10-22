@@ -1,6 +1,6 @@
 import { applyNativeTaskSnapshot } from "./native-tasks.js";
 import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./commands.js";
-import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
+import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey, canvasLegacyLabelKey, canvasEntryNeedsLegacyLabel } from "./state.js";
 import { parseAgentSourceLink } from "./repo-links.js";
 import { importPackageFilesFromLink, readImportedPackageName } from "./repo-import.js";
 import {
@@ -1607,6 +1607,16 @@ function normalizePreviewPayload(filename, rawContent, contentType = "", metadat
     };
 }
 
+/**
+ * Canvas snapshot bounds (issue 181): how many 30-event pages of draw events
+ * one read may page back to find each known slot's own draw event, and how
+ * many times a revision the sessions list names ahead of its draw event is
+ * read again before the read stops (the canvas then stays sealed; Retry
+ * reads again).
+ */
+const CANVAS_SNAPSHOT_MAX_PAGES = 10;
+const CANVAS_SNAPSHOT_MAX_REREADS = 5;
+
 /** How long a fetched artifact list is trusted before a refetch. */
 const FILES_LIST_TTL_MS = 10_000;
 // How long keyboard navigation must rest on a session before it is fetched.
@@ -2619,6 +2629,12 @@ export class PilotSwarmUiController {
                 filter: defaultOwnerFilterForPrincipal(authContext?.principal ?? null),
             });
         }
+        // The canvas app transition (issue 181): this portal's own switch.
+        // A transport without it is off.
+        this.dispatch({
+            type: "canvas/legacyMode",
+            legacyMode: typeof this.transport.getCanvasLegacyMode === "function" && this.transport.getCanvasLegacyMode() === true,
+        });
         const logConfig = typeof this.transport.getLogConfig === "function"
             ? this.transport.getLogConfig()
             : null;
@@ -2657,6 +2673,10 @@ export class PilotSwarmUiController {
     }
 
     async stop() {
+        // Canvas snapshot reads still in flight write nothing after stop.
+        this.canvasStopGeneration = (this.canvasStopGeneration || 0) + 1;
+        this.canvasRereads?.clear();
+        this.canvasLegacyLabelReads?.clear();
         this._featureRefreshSerial = (this._featureRefreshSerial || 0) + 1;
         this._featureUserSerial = (this._featureUserSerial || 0) + 1;
         for (const timer of this._liveTurnIdleTimers?.values() || []) clearTimeout(timer);
@@ -2706,6 +2726,10 @@ export class PilotSwarmUiController {
         // A folder row can never be "gone" from the session catalog: it is not
         // a session. Only sessions/groupsLoaded may remove one.
         if (isSessionGroupRowId(sessionId)) return;
+        for (let slot = 1; slot <= 5; slot++) {
+            this.canvasRereads?.delete(canvasPrefKey(sessionId, slot));
+            this.canvasLegacyLabelReads?.delete(canvasPrefKey(sessionId, slot));
+        }
         // An older in-flight catalog read must not undo an access revocation.
         this.sessionRefreshSeq = (this.sessionRefreshSeq || 0) + 1;
         if (this.activeSessionSubscriptionId === sessionId) {
@@ -6063,6 +6087,11 @@ export class PilotSwarmUiController {
             note: typeof event?.data?.note === "string" ? event.data.note : "",
             sizeBytes: event?.data?.sizeBytes,
             responseContract: event?.data?.responseContract,
+            // Canvas app registry (issue 181): whose page this is, for the viewer.
+            trust: event?.data?.trust,
+            pageSha256: event?.data?.pageSha256,
+            app: event?.data?.app,
+            legacy: event?.data?.legacy,
         });
 
         const state = this.getState();
@@ -6123,7 +6152,8 @@ export class PilotSwarmUiController {
         }
         if (!limiter()) return Promise.resolve({ ok: false, reason: "rate limited" });
         const prompt = formatCanvasActionPrompt(verdict.action, verdict.data);
-        return this.transport.sendMessage(sessionId, prompt, { enqueueOnly: true })
+        // The slot lets the server label actions from another user's app.
+        return this.transport.sendMessage(sessionId, prompt, { enqueueOnly: true, canvasSlot: slot })
             .then(() => {
                 this.syncSessionEvents(sessionId).catch(() => {});
                 return { ok: true, action: verdict.action };
@@ -6140,6 +6170,8 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "canvas/snapshot", sessionId, rev: 0 });
             return;
         }
+        const stopGeneration = this.canvasStopGeneration || 0;
+        const stopped = () => (this.canvasStopGeneration || 0) !== stopGeneration;
         try {
             // A 30-event window, not 1: five interleaved slots mean the top
             // event only describes the most recently drawn slot. Latest per
@@ -6148,11 +6180,31 @@ export class PilotSwarmUiController {
                 sessionId, Number.MAX_SAFE_INTEGER, 30, ["session.canvas_updated"],
             );
             const bySlot = new Map();
-            for (const row of Array.isArray(rows) ? rows : []) {
-                const slot = Number(row?.data?.slot) || 1;
-                const rev = Number(row?.data?.rev) || 0;
-                if (!bySlot.has(slot) || rev > (Number(bySlot.get(slot)?.data?.rev) || 0)) bySlot.set(slot, row);
+            const take = (list) => {
+                for (const row of Array.isArray(list) ? list : []) {
+                    const slot = Number(row?.data?.slot) || 1;
+                    const rev = Number(row?.data?.rev) || 0;
+                    if (!bySlot.has(slot) || rev > (Number(bySlot.get(slot)?.data?.rev) || 0)) bySlot.set(slot, row);
+                }
+            };
+            take(rows);
+            // A slot the store knows (the sessions list named it) whose draw
+            // event is older than this window: page back, bounded, until every
+            // known slot has its own latest draw event or the history ends.
+            // Without its event a slot cannot be classified and stays sealed
+            // (issue 181).
+            const knownSlots = () => [1, 2, 3, 4, 5].filter((slot) => (this.getState().canvas.bySessionId[canvasPrefKey(sessionId, slot)]?.latestRev || 0) > 0);
+            let page = Array.isArray(rows) ? rows : [];
+            for (let pages = 1; pages < CANVAS_SNAPSHOT_MAX_PAGES && page.length >= 30 && knownSlots().some((slot) => !bySlot.has(slot)); pages++) {
+                const oldest = Math.min(...page.map((row) => Number(row?.seq)).filter((seq) => Number.isFinite(seq) && seq > 0));
+                if (!Number.isFinite(oldest)) break;
+                page = await this.transport.getSessionEventsBefore(sessionId, oldest, 30, ["session.canvas_updated"]);
+                page = Array.isArray(page) ? page : [];
+                // Paging backward: a slot already found has its latest draw.
+                const missing = page.filter((row) => !bySlot.has(Number(row?.data?.slot) || 1));
+                take(missing);
             }
+            if (stopped()) return;
             // Always at least a slot-1 snapshot (rev 0 marks snapshotLoaded
             // so this does not respin).
             if (!bySlot.has(1)) bySlot.set(1, null);
@@ -6169,6 +6221,10 @@ export class PilotSwarmUiController {
                     note: typeof top?.data?.note === "string" ? top.data.note : "",
                     sizeBytes: top?.data?.sizeBytes,
                     responseContract: top?.data?.responseContract,
+                    trust: top?.data?.trust,
+                    pageSha256: top?.data?.pageSha256,
+                    app: top?.data?.app,
+                    legacy: top?.data?.legacy,
                 });
             }
             // The latest data tick per slot is that page's cold-load state —
@@ -6178,6 +6234,7 @@ export class PilotSwarmUiController {
                 const dataRows = await this.transport.getSessionEventsBefore(
                     sessionId, Number.MAX_SAFE_INTEGER, 30, ["session.canvas_data"],
                 ).catch(() => []);
+                if (stopped()) return;
                 const tickBySlot = new Map();
                 for (const row of Array.isArray(dataRows) ? dataRows : []) {
                     const slot = Number(row?.data?.slot) || 1;
@@ -6196,9 +6253,109 @@ export class PilotSwarmUiController {
                     });
                 }
             }
+            // A slot the store knows at a NEWER revision than its draw event
+            // here (the sessions list names a revision before its event is
+            // recorded) is still unclassified: keep the memo open so the next
+            // poll reads again (issue 181). Bounded per revision, so a revision
+            // whose event never comes stops costing reads; it stays sealed, and
+            // Retry still reads again. A slot with no draw event at all in the
+            // history read is not re-read either: another read would find the
+            // same nothing.
+            const byKey = this.getState().canvas.bySessionId;
+            // One { rev, count } record per slot, kept only while that slot is
+            // waiting for its draw event: replaced on a new revision, dropped
+            // once classified, with the session, and on stop. A read that
+            // finds no draw event re-arms nothing and keeps the revision's
+            // count, so an exhausted revision never gets a fresh budget.
+            if (!this.canvasRereads) this.canvasRereads = new Map();
+            let rearm = false;
+            for (let slot = 1; slot <= 5; slot++) {
+                const slotKey = canvasPrefKey(sessionId, slot);
+                const entry = byKey[slotKey];
+                const known = entry?.latestRev || 0;
+                const found = Number(bySlot.get(slot)?.data?.rev) || 0;
+                const record = this.canvasRereads.get(slotKey);
+                if (known <= 0 || typeof entry.trust === "string" || found >= known) {
+                    this.canvasRereads.delete(slotKey);
+                    continue;
+                }
+                if (found <= 0) {
+                    if (record && record.rev !== known) this.canvasRereads.delete(slotKey);
+                    continue;
+                }
+                const count = record?.rev === known ? record.count : 0;
+                if (count >= CANVAS_SNAPSHOT_MAX_REREADS) continue;
+                this.canvasRereads.set(slotKey, { rev: known, count: count + 1 });
+                rearm = true;
+            }
+            if (rearm) this.dispatch({ type: "canvas/snapshotInvalidate", sessionId });
         } catch {
             // Leave snapshotLoaded unset — the next selection retries.
         }
+    }
+
+    /**
+     * The canvas app transition (issue 181): ask the server, once, whether a
+     * canvas page that is not the owner's or an agent's own is handled as on
+     * main (getCanvasRevisionLabel). Only while this portal's switch is on,
+     * and only for a draw that recorded no trust (drawn before the registry)
+     * or flagged an old app's page: the frame never trusts the flag alone.
+     *
+     * One read per session, slot, revision and recorded page (a later draw
+     * or other bytes is another key). A missing operation, an error, an
+     * answer for another revision or page, or no page hash is "not legacy":
+     * the page stays sealed. No loop: `force` (the user's Retry) is the only
+     * way to read the same key again.
+     */
+    async ensureCanvasLegacyLabel(sessionId, slot = 1, { force = false } = {}) {
+        const state = this.getState();
+        const slotKey = canvasPrefKey(sessionId, slot);
+        const entry = state.canvas?.bySessionId?.[slotKey];
+        if (!sessionId || !canvasEntryNeedsLegacyLabel(entry, state.canvas?.legacyMode)) return;
+        const key = canvasLegacyLabelKey(entry);
+        if (!this.canvasLegacyLabelReads) this.canvasLegacyLabelReads = new Map();
+        // One record per slot: the key it is for (a new key replaces it).
+        const prior = this.canvasLegacyLabelReads.get(slotKey);
+        if (prior?.key === key && !force) {
+            // Already read: if the stored label was dropped since, put the
+            // same answer back rather than read the key again.
+            if (prior.label && entry.legacyLabel?.key !== key) {
+                this.dispatch({ type: "canvas/legacyLabel", sessionId, slot, key, label: prior.label });
+            }
+            return prior.promise;
+        }
+        if (force) this.dispatch({ type: "canvas/legacyLabel", sessionId, slot, key, label: null });
+        const rev = Number(entry.latestRev) || 0;
+        const recorded = typeof entry.pageSha256 === "string" ? entry.pageSha256 : null;
+        const stopGeneration = this.canvasStopGeneration || 0;
+        const promise = (async () => {
+            // Yield first: the record below is set before any outcome lands,
+            // even when the transport has no label operation.
+            await null;
+            let answer = null;
+            try {
+                answer = typeof this.transport.getCanvasRevisionLabel === "function"
+                    ? await this.transport.getCanvasRevisionLabel({ sessionId, slot })
+                    : null;
+            } catch {
+                answer = null;
+            }
+            if ((this.canvasStopGeneration || 0) !== stopGeneration) return;
+            if (this.canvasLegacyLabelReads.get(slotKey)?.promise !== promise) return;
+            const sha = typeof answer?.pageSha256 === "string" && /^[0-9a-f]{64}$/.test(answer.pageSha256) ? answer.pageSha256 : null;
+            // "Not legacy" is an answer; anything this portal cannot confirm
+            // (no answer, another revision, a legacy answer without the exact
+            // page) is a failure: sealed too, with the user's Retry.
+            const confirmed = Boolean(answer) && Number(answer?.rev) === rev;
+            const legacy = confirmed && answer.legacy === true && sha !== null && (recorded === null || recorded === sha);
+            const failed = !confirmed || (answer.legacy === true && !legacy);
+            const label = { rev, legacy, failed, pageSha256: legacy ? sha : null };
+            record.label = label;
+            this.dispatch({ type: "canvas/legacyLabel", sessionId, slot, key, label });
+        })();
+        const record = { key, promise, label: null };
+        this.canvasLegacyLabelReads.set(slotKey, record);
+        return promise;
     }
 
     /**

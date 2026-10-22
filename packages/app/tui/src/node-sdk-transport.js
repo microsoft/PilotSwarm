@@ -22,6 +22,7 @@ import {
     normalizeAgentName,
     workspaceFilesConfigFromEnv,
     canvasCommandsConfigFromEnv,
+    canvasLegacyModeFromEnv,
 } from "pilotswarm-sdk";
 import { startEmbeddedWorkers, stopEmbeddedWorkers } from "./embedded-workers.js";
 import { getPluginDirsFromEnv } from "./plugin-config.js";
@@ -516,6 +517,31 @@ function resolveUserPrincipalFor(transport, principal) {
     return normalizeUserPrincipal(transport.currentUser);
 }
 
+/**
+ * Canvas documents (issue 181) are written only by a draw: its event records
+ * which page the file holds, and workspace approval is bound to that page.
+ * Uploads and copies never target them.
+ */
+const CANVAS_DOCUMENT_FILE = /^canvas[2-5]?\.html$/i;
+function assertNotCanvasDocument(filename) {
+    if (CANVAS_DOCUMENT_FILE.test(path.basename(String(filename ?? "")))) {
+        throw Object.assign(new Error("canvas.html … canvas5.html are written only by drawing a canvas."), { code: "CANVAS_FILE_RESERVED", status: 403 });
+    }
+}
+
+/**
+ * Canvas app storage spaces (issue 181) are not sessions: the artifact
+ * methods report them as missing. A module function, not a method, so the
+ * artifact methods keep working when called with another `this` (tests
+ * borrow them with Function.prototype.call on a stub transport).
+ */
+async function refuseCanvasAppStorage(transport, sessionId) {
+    const mgmt = transport?.mgmt;
+    if (typeof mgmt?.isCanvasAppStorage === "function" && await mgmt.isCanvasAppStorage(sessionId)) {
+        throw Object.assign(new Error(`Session ${String(sessionId).slice(0, 8)} was not found.`), { code: "NOT_FOUND", status: 404 });
+    }
+}
+
 export class NodeSdkTransport {
     constructor({ store, mode, currentUser, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser } = {}) {
         this.store = store;
@@ -539,6 +565,8 @@ export class NodeSdkTransport {
             : {};
         this.client = null;
         this.artifactStore = createArtifactStore();
+        /** The canvas app transition (issue 181), read once; the portal's bootstrap reports it. */
+        this.canvasLegacyMode = canvasLegacyModeFromEnv();
         this.mgmt = new PilotSwarmManagementClient({
             store,
             ...(useManagedIdentity !== undefined ? { useManagedIdentity } : {}),
@@ -553,6 +581,8 @@ export class NodeSdkTransport {
             workspaceFiles: workspaceFilesConfigFromEnv(),
             // canvas-ws commands: off unless PORTAL_CANVAS_COMMANDS_RUNNER is set.
             canvasCommands: canvasCommandsConfigFromEnv(),
+            // The canvas app transition (issue 181): this process's own switch.
+            canvasLegacyMode: this.canvasLegacyMode,
         });
         this.sessionHandles = new Map();
         this.workers = [];
@@ -747,6 +777,106 @@ export class NodeSdkTransport {
             this.allowedAgentNames.push(match.name);
         }
         return match.name;
+    }
+
+    // ── Canvas app registry (issue 181) ─────────────────────────
+    // One args object, then the caller; the management client and the CMS
+    // procedures decide what the caller may see and change.
+
+    // Workspace approval decides who may run a program in someone's folders:
+    // it never assumes admin rights. The portal passes the signed-in
+    // principal and its resource-admin flag explicitly; a caller that does
+    // not is the session owner or nobody.
+    getCanvasLegacyMode() {
+        return this.canvasLegacyMode === true;
+    }
+
+    async getCanvasRevisionLabel(args = {}, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.getCanvasRevisionLabel(args ?? {}, owner, isAdmin === true);
+    }
+
+    async getCanvasWorkspaceApproval(args = {}, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.getCanvasWorkspaceApproval(args ?? {}, owner, isAdmin === true);
+    }
+
+    async setCanvasWorkspaceConsent(args = {}, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.setCanvasWorkspaceConsent(args ?? {}, owner, isAdmin === true);
+    }
+
+    async listCanvasApps(args = {}, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.listCanvasApps(args ?? {}, owner, isAdmin === true);
+    }
+
+    async searchCanvasApps(args = {}, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.searchCanvasApps(args ?? {}, owner, isAdmin === true);
+    }
+
+    async getCanvasApp(args = {}, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.getCanvasApp(args ?? {}, owner, isAdmin === true);
+    }
+
+    async getCanvasAppHtml(args = {}, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.getCanvasAppHtml(args ?? {}, owner, isAdmin === true);
+    }
+
+    async publishCanvasApp(args = {}, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.publishCanvasApp(args ?? {}, owner, isAdmin === true);
+    }
+
+    async uploadCanvasApp(args = {}, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.uploadCanvasApp(args ?? {}, owner, isAdmin === true);
+    }
+
+    async setCanvasAppScope(args = {}, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.setCanvasAppScope(args ?? {}, owner, isAdmin === true);
+    }
+
+    async setCanvasAppEnabled(args = {}, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.setCanvasAppEnabled(args ?? {}, owner, isAdmin === true);
+    }
+
+    async setCanvasAppMetadata(args = {}, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.setCanvasAppMetadata(args ?? {}, owner, isAdmin === true);
+    }
+
+    async pinCanvasAppVersion(args = {}, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.pinCanvasAppVersion(args ?? {}, owner, isAdmin === true);
+    }
+
+    async deleteCanvasApp(args = {}, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.deleteCanvasApp(args ?? {}, owner, isAdmin === true);
+    }
+
+    async grantCanvasAppEditor(args = {}, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.grantCanvasAppEditor(args ?? {}, owner, isAdmin === true);
+    }
+
+    async revokeCanvasAppEditor(args = {}, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.revokeCanvasAppEditor(args ?? {}, owner, isAdmin === true);
+    }
+
+    async listCanvasAppEditors(args = {}, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.listCanvasAppEditors(args ?? {}, owner, isAdmin === true);
+    }
+
+    async exportCanvasApp(args = {}, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.exportCanvasApp(args ?? {}, owner, isAdmin === true);
+    }
+
+    async importCanvasApp(args = {}, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.importCanvasApp(args ?? {}, owner, isAdmin === true);
+    }
+
+    async migrateLegacyCanvasApps(args = {}, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.migrateLegacyCanvasApps(args ?? {}, owner, isAdmin === true);
+    }
+
+    async getCanvasAppLoads(args = {}, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.getCanvasAppLoads(args ?? {}, owner, isAdmin === true);
+    }
+
+    async pruneCanvasApps(args = {}, owner = this.currentUser, isAdmin = false) {
+        return this.mgmt.pruneCanvasApps(args ?? {}, owner, isAdmin === true);
     }
 
     // ── Agent packages: registry CRUD (portal ops surface) ──────
@@ -1663,7 +1793,12 @@ export class NodeSdkTransport {
         return this.mgmt.clearSystemSessionModel(await this._modelProviderViewer(), agentId);
     }
 
+    /**
+     * Canvas app byte spaces (issue 181) are reached only through the registry
+     * operations; generic artifact routes answer as if they did not exist.
+     */
     async listArtifacts(sessionId) {
+        await refuseCanvasAppStorage(this, sessionId);
         if (!this.artifactStore || !sessionId) return [];
         const artifacts = await this.artifactStore.listArtifacts(sessionId);
         return Array.isArray(artifacts)
@@ -1672,6 +1807,7 @@ export class NodeSdkTransport {
     }
 
     async getArtifactMetadata(sessionId, filename) {
+        await refuseCanvasAppStorage(this, sessionId);
         if (!this.artifactStore || !sessionId || !filename) return null;
         if (typeof this.artifactStore.statArtifact === "function") {
             return this.artifactStore.statArtifact(sessionId, filename);
@@ -1681,6 +1817,10 @@ export class NodeSdkTransport {
     }
 
     async copyArtifact(fromSessionId, fromFilename, toSessionId, toFilename) {
+        await refuseCanvasAppStorage(this, fromSessionId);
+        await refuseCanvasAppStorage(this, toSessionId);
+        // An omitted or empty destination name is the source name (the store's rule).
+        assertNotCanvasDocument(toFilename || fromFilename);
         if (!this.artifactStore) {
             throw new Error("Artifact store is not available for this transport.");
         }
@@ -1688,6 +1828,7 @@ export class NodeSdkTransport {
     }
 
     async setArtifactPinned(sessionId, filename, pinned) {
+        await refuseCanvasAppStorage(this, sessionId);
         if (!this.artifactStore) {
             throw new Error("Artifact store is not available for this transport.");
         }
@@ -1696,6 +1837,7 @@ export class NodeSdkTransport {
 
     /** Base64 inline read for the MCP surface — JSON-safe, size-guarded. */
     async readArtifactBase64(sessionId, filename, maxBytes) {
+        await refuseCanvasAppStorage(this, sessionId);
         if (!this.artifactStore) {
             throw new Error("Artifact store is not available for this transport.");
         }
@@ -1711,6 +1853,7 @@ export class NodeSdkTransport {
     }
 
     async deleteArtifact(sessionId, filename) {
+        await refuseCanvasAppStorage(this, sessionId);
         if (!this.artifactStore) {
             throw new Error("Artifact store is not available for this transport.");
         }
@@ -1718,6 +1861,7 @@ export class NodeSdkTransport {
     }
 
     async downloadArtifact(sessionId, filename) {
+        await refuseCanvasAppStorage(this, sessionId);
         if (!this.artifactStore) {
             throw new Error("Artifact store is not available for this transport.");
         }
@@ -1725,6 +1869,7 @@ export class NodeSdkTransport {
     }
 
     async downloadArtifactBinary(sessionId, filename) {
+        await refuseCanvasAppStorage(this, sessionId);
         if (!this.artifactStore) {
             throw new Error("Artifact store is not available for this transport.");
         }
@@ -1774,6 +1919,7 @@ export class NodeSdkTransport {
     }
 
     async uploadArtifactFromPath(sessionId, filePath) {
+        await refuseCanvasAppStorage(this, sessionId);
         if (!this.artifactStore) {
             throw new Error("Artifact store is not available for this transport.");
         }
@@ -1791,6 +1937,7 @@ export class NodeSdkTransport {
         }
 
         const filename = path.basename(resolvedPath);
+        assertNotCanvasDocument(filename);
         const contentType = guessArtifactContentType(filename);
         let meta;
         if (typeof this.artifactStore.uploadArtifactFromFile === "function") {
@@ -1860,6 +2007,8 @@ export class NodeSdkTransport {
     }
 
     async uploadArtifactContent(sessionId, filename, content, contentType = guessArtifactContentType(filename), contentEncoding = null) {
+        await refuseCanvasAppStorage(this, sessionId);
+        assertNotCanvasDocument(filename);
         if (!this.artifactStore) {
             throw new Error("Artifact store is not available for this transport.");
         }

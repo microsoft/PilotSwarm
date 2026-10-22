@@ -156,7 +156,7 @@ test('buttons do not start drags; switching to mobile cancels a pending drag',as
 test('canvas iframe and its own state survive swaps and T-junction rotations',async({page})=>{
     await page.route('**/api/v1/**',async route=>{
         const url=new URL(route.request().url());
-        if(url.pathname.endsWith('/events-before')&&url.search.includes('session.canvas_updated')) return route.fulfill({contentType:'application/json',body:JSON.stringify({ok:true,result:[{seq:1,eventType:'session.canvas_updated',data:{slot:1,rev:1,sizeBytes:128,name:'Canvas one'}}]})});
+        if(url.pathname.endsWith('/events-before')&&url.search.includes('session.canvas_updated')) return route.fulfill({contentType:'application/json',body:JSON.stringify({ok:true,result:[{seq:1,eventType:'session.canvas_updated',data:{slot:1,rev:1,sizeBytes:128,name:'Canvas one',trust:'agent'}}]})});
         if(url.pathname.includes('/artifacts/')&&/canvas(?:2)?\.html/.test(url.pathname)) return route.fulfill({contentType:'text/html',body:'<!doctype html><input aria-label="Canvas draft"><button id="inside">Canvas one</button>'});
         return route.fallback();
     });

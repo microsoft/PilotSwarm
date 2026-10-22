@@ -33,6 +33,12 @@ const BARE_403_MESSAGE = /^(?:forbidden|http 403|403(?: forbidden)?)?\.?$/i;
 export function errorToResult(err: unknown): ToolResult {
     const message = err instanceof Error ? err.message : String(err);
     const status = (err as any)?.status ?? (err as any)?.statusCode;
+    // The canvas app transition (issue 181): the migration apply refused
+    // while the switch is on. Keep the typed code and status, so a caller can
+    // tell it from a failure and act on it (switch the transition off).
+    if ((err as any)?.code === "CANVAS_LEGACY_MODE_ON") {
+        return errorResult(message, { status: typeof status === "number" ? status : 409, code: "CANVAS_LEGACY_MODE_ON" });
+    }
     if ((err as any)?.code === "MODEL_AMBIGUOUS") {
         return errorResult(message, {
             code: "MODEL_AMBIGUOUS",

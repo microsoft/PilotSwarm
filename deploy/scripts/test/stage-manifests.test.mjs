@@ -236,6 +236,23 @@ for (const [edge, tls, overlay] of [
   });
 }
 
+test("stageManifests: PILOTSWARM_CANVAS_LEGACY_MODE reaches the worker and every portal overlay, on unless set", () => {
+  for (const [extra, expected] of [[{}, "on"], [{ PILOTSWARM_CANVAS_LEGACY_MODE: "off" }, "off"]]) {
+    const base = { AZURE_STORAGE_CONTAINER: "copilot-sessions", PILOTSWARM_TURN_TIMEOUT_MS: "1", PILOTSWARM_LIVE_TURN: "0", ...extra };
+    const stagingDir = mkdtempSync(join(tmpdir(), "ps-stage-canvas-legacy-"));
+    try {
+      const worker = stageManifests({ service: "worker", envName: "testenv", env: makePortalEnv(base), stagingDir });
+      assert.match(readFileSync(join(worker, "overlays", "default", ".env"), "utf8"), new RegExp(`^PILOTSWARM_CANVAS_LEGACY_MODE=${expected}$`, "m"));
+      for (const [edge, tls, overlay] of [["afd", "akv", "afd-akv"], ["afd", "letsencrypt", "afd-letsencrypt"], ["private", "akv", "private-akv"], ["public", "letsencrypt", "public-letsencrypt"]]) {
+        const portal = stageManifests({ service: "portal", envName: "testenv", env: makePortalEnv({ ...base, EDGE_MODE: edge, TLS_SOURCE: tls }), stagingDir });
+        assert.match(readFileSync(join(portal, "overlays", overlay, ".env"), "utf8"), new RegExp(`^PILOTSWARM_CANVAS_LEGACY_MODE=${expected}$`, "m"), overlay);
+      }
+    } finally {
+      rmSync(stagingDir, { recursive: true, force: true });
+    }
+  }
+});
+
 test("per-stamp Foundry catalog becomes the worker and portal default", () => {
   const stagingDir = mkdtempSync(join(tmpdir(), "ps-stage-foundry-catalog-"));
   const catalogPath = join(stagingDir, "model_providers.json");

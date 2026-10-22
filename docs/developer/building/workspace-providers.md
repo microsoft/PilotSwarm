@@ -315,7 +315,10 @@ A canvas app can make the same file calls, and run commands, through the
 portal (`canvasWorkspace` in the Web API). The app's manifest declares what
 it may touch; the portal reads that declaration from the drawn document and
 checks every call against it (`packages/sdk/src/canvas-workspace.ts`).
-Commands are off unless the deployment says where they run:
+No call runs until the session owner has approved that exact program in the
+portal — the page's bytes, its declaration and the folders its names resolve
+to (CMS migration 0084; without the registry no call runs). Commands are off
+unless the deployment says where they run:
 
 ```
 PORTAL_CANVAS_COMMANDS_RUNNER=local     run them as a child process of the portal

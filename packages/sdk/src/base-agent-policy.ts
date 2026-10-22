@@ -4,6 +4,15 @@ import type { FeatureFlagCache } from "./feature-flag-cache.js";
 import type { FeatureOwner } from "./feature-flags.js";
 
 const v2Prompt = readFileSync(new URL("../plugins/system/prompts/base-v2.md", import.meta.url), "utf8").trim();
+
+/**
+ * The base V2 prompt's SemVer and the sha256 of its (trimmed) bytes. The
+ * prompt file has no frontmatter — its bytes ARE the prompt — so the version
+ * lives here, and a unit test fails when the bytes change without both being
+ * updated. History: 2.0.0 (implied) → 2.1.0 canvas app registry (issue 181).
+ */
+export const BASE_V2_PROMPT_VERSION = "2.1.0";
+export const BASE_V2_PROMPT_SHA256 = "5c24cd8cf0baa5c30b4b2b3915c2a512847c434ff14123d6ed26fff15f059575";
 export interface BaseAgentPolicy {
     version: "v1" | "v2";
     fingerprint: string;

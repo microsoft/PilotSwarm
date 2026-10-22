@@ -64,6 +64,7 @@ export type {
     ModelDefaultInput,
     SystemModelDefaultInput,
     ResolvedModelDefault,
+    CanvasWorkspaceApproval,
 } from "./management-client.js";
 export { SessionManager } from "./session-manager.js";
 export { ManagedSession } from "./managed-session.js";
@@ -245,9 +246,10 @@ export {
     CANVAS_WS_ERROR_CODES,
     canvasCommandsConfigFromEnv,
     canvasGlobMatch,
+    canvasWorkspaceApprovalKeys,
     normalizeCanvasWorkspaceManifest,
 } from "./canvas-workspace.js";
-export type { CanvasCommand, CanvasCommandParam, CanvasCommandsConfig, CanvasWorkspaceDeclaration } from "./canvas-workspace.js";
+export type { CanvasCommand, CanvasCommandParam, CanvasCommandsConfig, CanvasWorkspaceBinding, CanvasWorkspaceDeclaration } from "./canvas-workspace.js";
 export { loadExtensionModules, parseExtensionModules, type ExtensionModuleContext } from "./extension-modules.js";
 
 // Skills loader
@@ -264,6 +266,23 @@ export type { CanvasAppCatalogDeps, PublishCanvasAppArgs, CanvasAppHit } from ".
 export { canvasArtifactFilename, normalizeCanvasSlot, latestCanvasEventData, latestCanvasRev } from "./canvas-support.js";
 export { buildCanvasAppCatalogRecord, normalizeCanvasAppInterface, CANVAS_APP_NAME_RE, CANVAS_INTERFACE_MAX_BYTES } from "./canvas-app-manifest.js";
 export type { CanvasAppInterface } from "./canvas-app-manifest.js";
+export { CanvasAppStore, CanvasAppError, mapCanvasAppError, CANVAS_APP_ERROR_CODES, canvasRegistryPresence } from "./canvas-app-store.js";
+// The canvas app transition (issue 181): one switch, shared by every surface.
+export {
+    canvasLegacyModeFromEnv,
+    CANVAS_LEGACY_MODE_ENV,
+    CANVAS_APP_REGISTRY_MIGRATION_VERSION,
+    CANVAS_LEGACY_CUTOFF_MARGIN_MS,
+    CanvasLegacyCatalog,
+    canvasLegacyCatalogFor,
+    canvasLegacyCardFromFact,
+    mergeLegacyCanvasAppHits,
+    canvasRevisionIsLegacy,
+    canvasPageLabel,
+    canvasPageLabelFor,
+} from "./canvas-legacy.js";
+export type { CanvasLegacyCard, CanvasLegacySource, CanvasLegacyCatalogDeps, CanvasRegistryPresence, CanvasRevisionLegacyInput, CanvasPageLabel } from "./canvas-legacy.js";
+export type { CanvasAppScope, CanvasAppPrincipal, CanvasAppViewer, CanvasAppTarget, CanvasAppErrorCode, CanvasAppSummary, CanvasAppDetail, CanvasAppVersionRow, CanvasAppSearchHit, CanvasAppResolvedVersion, CanvasAppShaMatch, CanvasAppReserveInput, CanvasAppReserveResult, CanvasAppLoadRow, CanvasAppLoadPage, CanvasAppEditorInfo, CanvasWorkspaceGrantKey } from "./canvas-app-store.js";
 export type { McpAllowlistAgent } from "./mcp-loader.js";
 export type { Skill } from "./skills.js";
 // Local-mode user principal constant (Admin Console / per-user GitHub Copilot key)

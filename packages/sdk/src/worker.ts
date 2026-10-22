@@ -22,6 +22,8 @@ import { firstRuntimeModel } from "./provider-catalog.js";
 import { loadMcpConfig, mcpAllowlistAdmits, type McpAllowlistAgent } from "./mcp-loader.js";
 
 import { createModelProvidersReloader, type ModelProviderRegistry } from "./model-providers.js";
+import { canvasBytesRefusal } from "./canvas-app-registry.js";
+import { canvasLegacyCatalogFor, canvasLegacyModeFromEnv } from "./canvas-legacy.js";
 import { createArtifactTools } from "./artifact-tools.js";
 import { createDistillerTools } from "./distiller-tools.js";
 import { isEnhancedFactStore, PgFactStore, type FactStore } from "./facts-store.js";
@@ -342,6 +344,8 @@ export class PilotSwarmWorker {
             ...options,
             waitThreshold: options.waitThreshold ?? 30,
             turnTimeoutMs: resolveWorkerTurnTimeoutMs(options.turnTimeoutMs),
+            // Resolved once: every tool and activity of this worker sees one value.
+            canvasLegacyMode: options.canvasLegacyMode ?? canvasLegacyModeFromEnv(),
         };
         const effectiveSessionStateDir = options.sessionStateDir ?? DEFAULT_SESSION_STATE_DIR;
 
@@ -404,6 +408,7 @@ export class PilotSwarmWorker {
             this.sessionStore,
             {
                 reservedFactPrefixes: options.reservedFactPrefixes,
+                canvasLegacyMode: this.config.canvasLegacyMode,
                 frameworkBasePrompt: this._frameworkBasePrompt ?? undefined,
                 frameworkBaseToolNames: this._frameworkBaseToolNames,
                 appDefaultPrompt: this._appDefaultPrompt ?? undefined,
@@ -933,6 +938,7 @@ export class PilotSwarmWorker {
                 useManagedIdentity: storage.runtime.useManagedIdentity,
                 aadDbUser: storage.runtime.aadDbUser,
                 ...(this.config.modelProvidersPath ? { modelProvidersPath: this.config.modelProvidersPath } : {}),
+                canvasLegacyMode: this.config.canvasLegacyMode,
             },
             this._loadedSystemAgents,
             this._sessionPolicy,
@@ -960,13 +966,35 @@ export class PilotSwarmWorker {
                 factStore: this.factStore,
                 duroxideSchema: storage.duroxide.schema,
                 storeUrl: storage.duroxide.url,
+                artifactStore: this.artifactStore ?? null,
             });
             this.registerTools(sweeperTools);
         }
 
         // Auto-register artifact tools (blob storage or local filesystem)
         if (this.artifactStore) {
-            const artifactTools = createArtifactTools({ blobStore: this.artifactStore });
+            const artifactTools = createArtifactTools({
+                blobStore: this.artifactStore,
+                // Canvas app registry (issue 181): agents never receive another
+                // owner's app bytes or an app's storage space; they draw fromApp.
+                // Resolved at call time: the catalog and session manager may be
+                // attached after the tools are registered. No registry → no apps.
+                canvasBytesGuard: async (input: { callerSessionId: string | null | undefined; artifactSessionId: string; bytes?: Buffer | string | null; sha256?: string | null; privateOnly?: boolean }) => {
+                    const store = (this._catalog as any)?.canvasApps;
+                    if (!store) return null;
+                    // The canvas app transition: an old app's page is read as on main.
+                    const legacy = this.config.canvasLegacyMode
+                        ? canvasLegacyCatalogFor(this.factStore, () => store.installedAt())
+                        : null;
+                    return canvasBytesRefusal({
+                        store,
+                        resolveViewer: async (sessionId: string) => this.sessionManager
+                            ? this.sessionManager.resolveCanvasAppViewer(sessionId)
+                            : { principal: null, resourceAdmin: false },
+                        ...(legacy ? { isLegacySha256: (sha256: string) => legacy.isExemptSha256(sha256) } : {}),
+                    }, input);
+                },
+            });
             // The write bundle attaches patch artifacts through the same store.
             if (this.sessionManager) this.sessionManager.artifactStore = this.artifactStore ?? null;
             this.registerTools(artifactTools);

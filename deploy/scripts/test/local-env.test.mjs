@@ -232,6 +232,29 @@ test("PILOTSWARM_NATIVE_SUBAGENTS: off by default, sync from the file or a proce
   }
 });
 
+test("PILOTSWARM_CANVAS_LEGACY_MODE: on by default, off from the file or a process variable, anything else refused", () => {
+  cleanup();
+  const before = process.env.PILOTSWARM_CANVAS_LEGACY_MODE;
+  try {
+    delete process.env.PILOTSWARM_CANVAS_LEGACY_MODE;
+    mkdirSync(dirname(TEST_FILE), { recursive: true });
+    writeFileSync(TEST_FILE, "RESOURCE_PREFIX=pststenv\n");
+    assert.equal(loadEnv(TEST_NAME).env.PILOTSWARM_CANVAS_LEGACY_MODE, "on");
+    writeFileSync(TEST_FILE, "RESOURCE_PREFIX=pststenv\nPILOTSWARM_CANVAS_LEGACY_MODE= OFF \n");
+    assert.equal(loadEnv(TEST_NAME).env.PILOTSWARM_CANVAS_LEGACY_MODE, "off");
+    writeFileSync(TEST_FILE, "RESOURCE_PREFIX=pststenv\n");
+    process.env.PILOTSWARM_CANVAS_LEGACY_MODE = "off";
+    assert.equal(loadEnv(TEST_NAME).env.PILOTSWARM_CANVAS_LEGACY_MODE, "off");
+    // The runtime would read a typo as off; the deploy refuses it instead.
+    process.env.PILOTSWARM_CANVAS_LEGACY_MODE = "yes";
+    assert.throws(() => loadEnv(TEST_NAME), /PILOTSWARM_CANVAS_LEGACY_MODE must be on or off/);
+  } finally {
+    if (before === undefined) delete process.env.PILOTSWARM_CANVAS_LEGACY_MODE;
+    else process.env.PILOTSWARM_CANVAS_LEGACY_MODE = before;
+    cleanup();
+  }
+});
+
 test("loadEnv() throws helpful message when local env is missing", () => {
   cleanup();
   assert.throws(

@@ -25,6 +25,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "createSessionGroup",
     "deleteAgentPackage",
     "deleteArtifact",
+    "deleteCanvasApp",
     "deleteFact",
     "deleteGraphEdge",
     "deleteGraphNamespace",
@@ -34,6 +35,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "deleteSession",
     "deleteSessionGroup",
     "downloadArtifact",
+    "exportCanvasApp",
     "exportExecutionHistory",
     "factsCapabilities",
     "forcePurgeFacts",
@@ -41,8 +43,13 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getAgentPackageFile",
     "getAgentPackageTree",
     "getArtifactMetadata",
+    "getCanvasApp",
+    "getCanvasAppHtml",
+    "getCanvasAppLoads",
     "getCanvasLive",
+    "getCanvasRevisionLabel",
     "getCanvasShareLink",
+    "getCanvasWorkspaceApproval",
     "getChildOutcome",
     "getClusterFeatureFlags",
     "getCurrentUserProfile",
@@ -96,14 +103,18 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getUserStats",
     "getWorkerCount",
     "grantAgentPackageEditor",
+    "grantCanvasAppEditor",
     "grantSessionShare",
     "graphNeighbourhood",
     "graphStats",
+    "importCanvasApp",
     "listAgentPackageEditors",
     "listAgentPackages",
     "listAgentWorkerState",
     "listArtifacts",
     "listAuthzAudit",
+    "listCanvasAppEditors",
+    "listCanvasApps",
     "listChildOutcomes",
     "listCreatableAgents",
     "listFeatureFlagChanges",
@@ -120,10 +131,14 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "listSessionsPage",
     "listSessionWorkspaceFolders",
     "listWorkers",
+    "migrateLegacyCanvasApps",
     "moveSessionsToGroup",
     "pinAgentPackageVersion",
+    "pinCanvasAppVersion",
     "placeSessionsInGroup",
+    "pruneCanvasApps",
     "pruneDeletedSummaries",
+    "publishCanvasApp",
     "readArtifactBase64",
     "readCanvasKv",
     "readFacts",
@@ -137,7 +152,9 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "restartSystemSession",
     "retrySessionWorkspace",
     "revokeAgentPackageEditor",
+    "revokeCanvasAppEditor",
     "revokeSessionShare",
+    "searchCanvasApps",
     "searchFacts",
     "searchGraphEdges",
     "searchGraphNodes",
@@ -148,7 +165,11 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "setAgentPackageEnabled",
     "setAgentPackageScope",
     "setArtifactPinned",
+    "setCanvasAppEnabled",
+    "setCanvasAppMetadata",
+    "setCanvasAppScope",
     "setCanvasKvAccess",
+    "setCanvasWorkspaceConsent",
     "setClusterDefault",
     "setClusterFeatureFlag",
     "setCurrentUserGitHubCopilotKey",
@@ -180,6 +201,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "updateSharedProviderCredential",
     "uploadAgentPackage",
     "uploadArtifact",
+    "uploadCanvasApp",
     "upsertGraphEdge",
     "upsertGraphNamespace",
     "upsertGraphNode",
@@ -241,7 +263,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * canvas-ws: one call from a canvas app to its session's folders, checked against the workspace block of the app's CANVAS-APP-MANIFEST: { op: info|list|stat|read|write|mkdir|move|delete|zip|watch, path: "<folder>/<path>" } or { op: run, command, params }. The session's owner only.
+     * canvas-ws: one call from a canvas app to its session's folders, checked against the workspace block of the app's CANVAS-APP-MANIFEST: { op: info|list|stat|read|write|mkdir|move|delete|zip|watch, path: "<folder>/<path>" } or { op: run, command, params }. Every call carries the frame's `rev`; no call runs until the session owner approved that exact page, declaration and folders (CANVAS_WS_CONSENT_REQUIRED, CANVAS_WS_STALE). The session's owner only.
      * @remarks `POST /management/sessions/:sessionId/canvas-workspace` — access: `session:files`
      */
     canvasWorkspace(params: {
@@ -377,6 +399,17 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Delete an app with every version and its stored pages. Owner or admin. Canvases already drawn keep working.
+     * @remarks `DELETE /canvas-apps/:name` — access: `authed`
+     */
+    deleteCanvasApp(params: {
+        name: string;
+        scope?: string;
+        ownerProvider?: string;
+        ownerSubject?: string;
+    }): Promise<any>;
+
+    /**
      * Delete a fact / pattern (DeleteFactInput). POST because DELETE bodies are unreliable.
      * @remarks `POST /facts/delete` — access: `facts:write`
      */
@@ -454,6 +487,17 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * A deterministic .tar.gz of every version and the card, with no owner, scope or user/session ids, as base64 ({ filename, sha256, contentBase64 }).
+     * @remarks `GET /canvas-apps/:name/export` — access: `authed`
+     */
+    exportCanvasApp(params: {
+        name: string;
+        scope?: string;
+        ownerProvider?: string;
+        ownerSubject?: string;
+    }): Promise<any>;
+
+    /**
      * Export execution history to an artifact; returns artifact meta.
      * @remarks `POST /management/sessions/:sessionId/export-execution-history` — access: `session:manage`
      */
@@ -521,6 +565,45 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * One canvas app: card, versions, owner and the caller's rights.
+     * @remarks `GET /canvas-apps/:name` — access: `authed`
+     */
+    getCanvasApp(params: {
+        name: string;
+        scope?: string;
+        ownerProvider?: string;
+        ownerSubject?: string;
+    }): Promise<any>;
+
+    /**
+     * One version's page as JSON ({ html, sha256, version }); the active version when none is named. Never served as text/html.
+     * @remarks `GET /canvas-apps/:name/html` — access: `authed`
+     */
+    getCanvasAppHtml(params: {
+        name: string;
+        version?: string;
+        scope?: string;
+        ownerProvider?: string;
+        ownerSubject?: string;
+    }): Promise<any>;
+
+    /**
+     * App loads, newest first ({ rows, nextCursor, total30d }): load time, session, user, version. Owner or unrestricted admin.
+     * @remarks `GET /canvas-apps/:name/loads` — access: `authed`
+     */
+    getCanvasAppLoads(params: {
+        name: string;
+        limit?: number;
+        cursorAt?: string;
+        cursorId?: string;
+        since?: string;
+        until?: string;
+        scope?: string;
+        ownerProvider?: string;
+        ownerSubject?: string;
+    }): Promise<any>;
+
+    /**
      * The canvas data plane's last-value rows: current doc pointer + latest merged tick per slot. Snapshot source for live canvas subscriptions; empty when the deployment predates the plane.
      * @remarks `GET /management/sessions/:sessionId/canvas-live` — access: `session:read`
      */
@@ -529,10 +612,28 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * The canvas app transition (issue 181): whether the canvas now on a slot is handled as on main — an old app's page still in the old catalog, or a revision drawn before the registry with no redraw in flight — while this deployment's PILOTSWARM_CANVAS_LEGACY_MODE is on. { rev, trust, app?, legacy, pageSha256? } from one read of the slot's latest draw: its recorded trust and app, and the decision; pageSha256 names the bytes judged.
+     * @remarks `GET /management/sessions/:sessionId/canvas-label` — access: `session:read`
+     */
+    getCanvasRevisionLabel(params: {
+        sessionId: string;
+        slot?: number;
+    }): Promise<any>;
+
+    /**
      * Whether a public view link exists for this canvas (never the token itself), with created-at/by.
      * @remarks `GET /management/sessions/:sessionId/canvas-share-link` — access: `session:share`
      */
     getCanvasShareLink(params: {
+        sessionId: string;
+        slot?: number;
+    }): Promise<any>;
+
+    /**
+     * What the session owner is asked to approve before the canvas page on a slot may use its workspace: revision, page sha256, who the page belongs to, the declaration (paths, command lines), the folders it resolves to, the keys an approval quotes back, and any recorded decision. The session's owner only.
+     * @remarks `GET /management/sessions/:sessionId/canvas-workspace/approval` — access: `session:files`
+     */
+    getCanvasWorkspaceApproval(params: {
         sessionId: string;
         slot?: number;
     }): Promise<any>;
@@ -971,6 +1072,15 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Add a contributor to a SHARED app ({ user: { provider, subject } }). Owner or admin.
+     * @remarks `POST /canvas-apps/:name/editors` — access: `authed`
+     */
+    grantCanvasAppEditor(params: {
+        name: string;
+        user?: any;
+    }): Promise<any>;
+
+    /**
      * Grant (or update) a targeted share ({ user: { provider, subject, email?, displayName? }, access: read|write }). Owner or admin.
      * @remarks `POST /sessions/:sessionId/shares` — access: `session:share`
      */
@@ -996,6 +1106,15 @@ export interface ManagementOps {
      */
     graphStats(params: {
         namespace?: string;
+    }): Promise<any>;
+
+    /**
+     * Import an exported archive (≤ 20 MB) as the caller's app (private unless scope is shared). The whole archive is checked first; an existing version with other bytes fails only that version.
+     * @remarks `POST /canvas-apps/import` — access: `authed`
+     */
+    importCanvasApp(params: {
+        contentBase64?: any;
+        scope?: any;
     }): Promise<any>;
 
     /**
@@ -1034,6 +1153,20 @@ export interface ManagementOps {
         limit?: number;
         sessionId?: string;
     }): Promise<any>;
+
+    /**
+     * Contributors of the shared copy of an app. Visible to anyone who can see it.
+     * @remarks `GET /canvas-apps/:name/editors` — access: `authed`
+     */
+    listCanvasAppEditors(params: {
+        name: string;
+    }): Promise<any>;
+
+    /**
+     * Canvas apps the caller may see: shared, own private, and (unrestricted admin) everyone's. Disabled apps only for their owner, contributors and admins.
+     * @remarks `GET /canvas-apps` — access: `authed`
+     */
+    listCanvasApps(params?: Record<string, never>): Promise<any>;
 
     /**
      * Child outcomes recorded under a parent session.
@@ -1154,6 +1287,14 @@ export interface ManagementOps {
     listWorkers(params?: Record<string, never>): Promise<any>;
 
     /**
+     * One-time import of legacy apps/* facts as shared apps. Unrestricted admin. Dry run unless dryRun is false; safe to run again. Refused with CANVAS_LEGACY_MODE_ON (409) while the canvas app transition is on; a dry run then reports applyBlocked.
+     * @remarks `POST /canvas-apps/migrate-legacy` — access: `fleet:admin`
+     */
+    migrateLegacyCanvasApps(params: {
+        dryRun?: any;
+    }): Promise<any>;
+
+    /**
      * Deprecated alias of placeSessionsInGroup.
      * @remarks `POST /management/session-groups/move` — access: `authed`
      */
@@ -1175,6 +1316,18 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Make a published version the active one. Owner, contributor or admin.
+     * @remarks `PUT /canvas-apps/:name/active` — access: `authed`
+     */
+    pinCanvasAppVersion(params: {
+        name: string;
+        version?: any;
+        scope?: any;
+        ownerProvider?: any;
+        ownerSubject?: any;
+    }): Promise<any>;
+
+    /**
      * Place session trees into one of the caller's groups (groupId null = ungroup). Requires read access to each session; changes no shared session data.
      * @remarks `POST /management/session-groups/place` — access: `authed`
      */
@@ -1184,11 +1337,31 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Maintenance: delete loads older than 400 days, abandoned pending versions and the bytes of deleted apps. Unrestricted admin.
+     * @remarks `POST /canvas-apps/prune` — access: `fleet:admin`
+     */
+    pruneCanvasApps(params?: Record<string, never>): Promise<any>;
+
+    /**
      * Prune summaries of deleted sessions.
      * @remarks `POST /management/summaries/prune-deleted` — access: `fleet:admin`
      */
     pruneDeletedSummaries(params: {
         olderThan?: any;
+    }): Promise<any>;
+
+    /**
+     * Publish the canvas on a session slot as a version of an app (private unless scope is shared). The page needs a CANVAS-APP-MANIFEST with an interface block, ≤ 900 KB.
+     * @remarks `POST /management/sessions/:sessionId/canvas-apps/publish` — access: `session:write`
+     */
+    publishCanvasApp(params: {
+        sessionId: string;
+        slot?: any;
+        name?: any;
+        description?: any;
+        tags?: any;
+        scope?: any;
+        version?: any;
     }): Promise<any>;
 
     /**
@@ -1324,12 +1497,30 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Remove a contributor from a shared app. Owner or admin; idempotent.
+     * @remarks `POST /canvas-apps/:name/editors/revoke` — access: `authed`
+     */
+    revokeCanvasAppEditor(params: {
+        name: string;
+        user?: any;
+    }): Promise<any>;
+
+    /**
      * Revoke a targeted share ({ user: { provider, subject } }). Owner or admin.
      * @remarks `POST /sessions/:sessionId/shares/revoke` — access: `session:share`
      */
     revokeSessionShare(params: {
         sessionId: string;
         user?: any;
+    }): Promise<any>;
+
+    /**
+     * Ranked search over name, tags and description, filtered to what the caller may see.
+     * @remarks `GET /canvas-apps/search` — access: `authed`
+     */
+    searchCanvasApps(params: {
+        query?: string;
+        limit?: number;
     }): Promise<any>;
 
     /**
@@ -1430,6 +1621,43 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Enable or disable an app. Owner, contributor or admin.
+     * @remarks `PUT /canvas-apps/:name/enabled` — access: `authed`
+     */
+    setCanvasAppEnabled(params: {
+        name: string;
+        enabled?: any;
+        scope?: any;
+        ownerProvider?: any;
+        ownerSubject?: any;
+    }): Promise<any>;
+
+    /**
+     * Change an app's description or tags. Owner, contributor or admin.
+     * @remarks `PUT /canvas-apps/:name/metadata` — access: `authed`
+     */
+    setCanvasAppMetadata(params: {
+        name: string;
+        description?: any;
+        tags?: any;
+        scope?: any;
+        ownerProvider?: any;
+        ownerSubject?: any;
+    }): Promise<any>;
+
+    /**
+     * Make an app shared or private. Owner or admin. NAME_TAKEN when the target name is in use; making it private removes its contributors.
+     * @remarks `PUT /canvas-apps/:name/scope` — access: `authed`
+     */
+    setCanvasAppScope(params: {
+        name: string;
+        targetScope?: any;
+        scope?: any;
+        ownerProvider?: any;
+        ownerSubject?: any;
+    }): Promise<any>;
+
+    /**
      * Set who may write this canvas's KV: owner (default) | readers (anyone the session is read-shared with) | link. Owner or admin.
      * @remarks `PUT /management/sessions/:sessionId/canvas-kv/access` — access: `session:share`
      */
@@ -1437,6 +1665,20 @@ export interface ManagementOps {
         sessionId: string;
         slot?: any;
         access?: any;
+    }): Promise<any>;
+
+    /**
+     * The session owner's decision (granted|denied) on one exact workspace program on a slot: page bytes, declaration and folder bindings, as shown by getCanvasWorkspaceApproval. Every new program asks once, whoever wrote it; the identical program redrawn in that slot keeps its decision. CANVAS_WS_STALE when the slot shows something else. Given by a person in the portal; no agent tool offers it. The session's owner only.
+     * @remarks `POST /management/sessions/:sessionId/canvas-workspace/consent` — access: `session:files`
+     */
+    setCanvasWorkspaceConsent(params: {
+        sessionId: string;
+        slot?: any;
+        rev?: any;
+        pageSha256?: any;
+        declarationSha256?: any;
+        bindingsSha256?: any;
+        decision?: any;
     }): Promise<any>;
 
     /**
@@ -1746,6 +1988,19 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Publish a raw .html page (≤ 900 KB) as a version of an app.
+     * @remarks `POST /canvas-apps/upload` — access: `authed`
+     */
+    uploadCanvasApp(params: {
+        html?: any;
+        name?: any;
+        description?: any;
+        tags?: any;
+        scope?: any;
+        version?: any;
+    }): Promise<any>;
+
+    /**
      * Upsert a graph edge (GraphEdgeInput).
      * @remarks `POST /graph/edges` — access: `authed`
      */
@@ -1817,6 +2072,7 @@ export function createManagementOps(
         createSessionGroup: (params: Record<string, unknown> = {}) => callOp("createSessionGroup", params),
         deleteAgentPackage: (params: Record<string, unknown> = {}) => callOp("deleteAgentPackage", params),
         deleteArtifact: (params: Record<string, unknown> = {}) => callOp("deleteArtifact", params),
+        deleteCanvasApp: (params: Record<string, unknown> = {}) => callOp("deleteCanvasApp", params),
         deleteFact: (params: Record<string, unknown> = {}) => callOp("deleteFact", params),
         deleteGraphEdge: (params: Record<string, unknown> = {}) => callOp("deleteGraphEdge", params),
         deleteGraphNamespace: (params: Record<string, unknown> = {}) => callOp("deleteGraphNamespace", params),
@@ -1826,6 +2082,7 @@ export function createManagementOps(
         deleteSession: (params: Record<string, unknown> = {}) => callOp("deleteSession", params),
         deleteSessionGroup: (params: Record<string, unknown> = {}) => callOp("deleteSessionGroup", params),
         downloadArtifact: (params: Record<string, unknown> = {}) => callOp("downloadArtifact", params),
+        exportCanvasApp: (params: Record<string, unknown> = {}) => callOp("exportCanvasApp", params),
         exportExecutionHistory: (params: Record<string, unknown> = {}) => callOp("exportExecutionHistory", params),
         factsCapabilities: (params: Record<string, unknown> = {}) => callOp("factsCapabilities", params),
         forcePurgeFacts: (params: Record<string, unknown> = {}) => callOp("forcePurgeFacts", params),
@@ -1833,8 +2090,13 @@ export function createManagementOps(
         getAgentPackageFile: (params: Record<string, unknown> = {}) => callOp("getAgentPackageFile", params),
         getAgentPackageTree: (params: Record<string, unknown> = {}) => callOp("getAgentPackageTree", params),
         getArtifactMetadata: (params: Record<string, unknown> = {}) => callOp("getArtifactMetadata", params),
+        getCanvasApp: (params: Record<string, unknown> = {}) => callOp("getCanvasApp", params),
+        getCanvasAppHtml: (params: Record<string, unknown> = {}) => callOp("getCanvasAppHtml", params),
+        getCanvasAppLoads: (params: Record<string, unknown> = {}) => callOp("getCanvasAppLoads", params),
         getCanvasLive: (params: Record<string, unknown> = {}) => callOp("getCanvasLive", params),
+        getCanvasRevisionLabel: (params: Record<string, unknown> = {}) => callOp("getCanvasRevisionLabel", params),
         getCanvasShareLink: (params: Record<string, unknown> = {}) => callOp("getCanvasShareLink", params),
+        getCanvasWorkspaceApproval: (params: Record<string, unknown> = {}) => callOp("getCanvasWorkspaceApproval", params),
         getChildOutcome: (params: Record<string, unknown> = {}) => callOp("getChildOutcome", params),
         getClusterFeatureFlags: (params: Record<string, unknown> = {}) => callOp("getClusterFeatureFlags", params),
         getCurrentUserProfile: (params: Record<string, unknown> = {}) => callOp("getCurrentUserProfile", params),
@@ -1888,14 +2150,18 @@ export function createManagementOps(
         getUserStats: (params: Record<string, unknown> = {}) => callOp("getUserStats", params),
         getWorkerCount: (params: Record<string, unknown> = {}) => callOp("getWorkerCount", params),
         grantAgentPackageEditor: (params: Record<string, unknown> = {}) => callOp("grantAgentPackageEditor", params),
+        grantCanvasAppEditor: (params: Record<string, unknown> = {}) => callOp("grantCanvasAppEditor", params),
         grantSessionShare: (params: Record<string, unknown> = {}) => callOp("grantSessionShare", params),
         graphNeighbourhood: (params: Record<string, unknown> = {}) => callOp("graphNeighbourhood", params),
         graphStats: (params: Record<string, unknown> = {}) => callOp("graphStats", params),
+        importCanvasApp: (params: Record<string, unknown> = {}) => callOp("importCanvasApp", params),
         listAgentPackageEditors: (params: Record<string, unknown> = {}) => callOp("listAgentPackageEditors", params),
         listAgentPackages: (params: Record<string, unknown> = {}) => callOp("listAgentPackages", params),
         listAgentWorkerState: (params: Record<string, unknown> = {}) => callOp("listAgentWorkerState", params),
         listArtifacts: (params: Record<string, unknown> = {}) => callOp("listArtifacts", params),
         listAuthzAudit: (params: Record<string, unknown> = {}) => callOp("listAuthzAudit", params),
+        listCanvasAppEditors: (params: Record<string, unknown> = {}) => callOp("listCanvasAppEditors", params),
+        listCanvasApps: (params: Record<string, unknown> = {}) => callOp("listCanvasApps", params),
         listChildOutcomes: (params: Record<string, unknown> = {}) => callOp("listChildOutcomes", params),
         listCreatableAgents: (params: Record<string, unknown> = {}) => callOp("listCreatableAgents", params),
         listFeatureFlagChanges: (params: Record<string, unknown> = {}) => callOp("listFeatureFlagChanges", params),
@@ -1912,10 +2178,14 @@ export function createManagementOps(
         listSessionsPage: (params: Record<string, unknown> = {}) => callOp("listSessionsPage", params),
         listSessionWorkspaceFolders: (params: Record<string, unknown> = {}) => callOp("listSessionWorkspaceFolders", params),
         listWorkers: (params: Record<string, unknown> = {}) => callOp("listWorkers", params),
+        migrateLegacyCanvasApps: (params: Record<string, unknown> = {}) => callOp("migrateLegacyCanvasApps", params),
         moveSessionsToGroup: (params: Record<string, unknown> = {}) => callOp("moveSessionsToGroup", params),
         pinAgentPackageVersion: (params: Record<string, unknown> = {}) => callOp("pinAgentPackageVersion", params),
+        pinCanvasAppVersion: (params: Record<string, unknown> = {}) => callOp("pinCanvasAppVersion", params),
         placeSessionsInGroup: (params: Record<string, unknown> = {}) => callOp("placeSessionsInGroup", params),
+        pruneCanvasApps: (params: Record<string, unknown> = {}) => callOp("pruneCanvasApps", params),
         pruneDeletedSummaries: (params: Record<string, unknown> = {}) => callOp("pruneDeletedSummaries", params),
+        publishCanvasApp: (params: Record<string, unknown> = {}) => callOp("publishCanvasApp", params),
         readArtifactBase64: (params: Record<string, unknown> = {}) => callOp("readArtifactBase64", params),
         readCanvasKv: (params: Record<string, unknown> = {}) => callOp("readCanvasKv", params),
         readFacts: (params: Record<string, unknown> = {}) => callOp("readFacts", params),
@@ -1929,7 +2199,9 @@ export function createManagementOps(
         restartSystemSession: (params: Record<string, unknown> = {}) => callOp("restartSystemSession", params),
         retrySessionWorkspace: (params: Record<string, unknown> = {}) => callOp("retrySessionWorkspace", params),
         revokeAgentPackageEditor: (params: Record<string, unknown> = {}) => callOp("revokeAgentPackageEditor", params),
+        revokeCanvasAppEditor: (params: Record<string, unknown> = {}) => callOp("revokeCanvasAppEditor", params),
         revokeSessionShare: (params: Record<string, unknown> = {}) => callOp("revokeSessionShare", params),
+        searchCanvasApps: (params: Record<string, unknown> = {}) => callOp("searchCanvasApps", params),
         searchFacts: (params: Record<string, unknown> = {}) => callOp("searchFacts", params),
         searchGraphEdges: (params: Record<string, unknown> = {}) => callOp("searchGraphEdges", params),
         searchGraphNodes: (params: Record<string, unknown> = {}) => callOp("searchGraphNodes", params),
@@ -1940,7 +2212,11 @@ export function createManagementOps(
         setAgentPackageEnabled: (params: Record<string, unknown> = {}) => callOp("setAgentPackageEnabled", params),
         setAgentPackageScope: (params: Record<string, unknown> = {}) => callOp("setAgentPackageScope", params),
         setArtifactPinned: (params: Record<string, unknown> = {}) => callOp("setArtifactPinned", params),
+        setCanvasAppEnabled: (params: Record<string, unknown> = {}) => callOp("setCanvasAppEnabled", params),
+        setCanvasAppMetadata: (params: Record<string, unknown> = {}) => callOp("setCanvasAppMetadata", params),
+        setCanvasAppScope: (params: Record<string, unknown> = {}) => callOp("setCanvasAppScope", params),
         setCanvasKvAccess: (params: Record<string, unknown> = {}) => callOp("setCanvasKvAccess", params),
+        setCanvasWorkspaceConsent: (params: Record<string, unknown> = {}) => callOp("setCanvasWorkspaceConsent", params),
         setClusterDefault: (params: Record<string, unknown> = {}) => callOp("setClusterDefault", params),
         setClusterFeatureFlag: (params: Record<string, unknown> = {}) => callOp("setClusterFeatureFlag", params),
         setCurrentUserGitHubCopilotKey: (params: Record<string, unknown> = {}) => callOp("setCurrentUserGitHubCopilotKey", params),
@@ -1972,6 +2248,7 @@ export function createManagementOps(
         updateSharedProviderCredential: (params: Record<string, unknown> = {}) => callOp("updateSharedProviderCredential", params),
         uploadAgentPackage: (params: Record<string, unknown> = {}) => callOp("uploadAgentPackage", params),
         uploadArtifact: (params: Record<string, unknown> = {}) => callOp("uploadArtifact", params),
+        uploadCanvasApp: (params: Record<string, unknown> = {}) => callOp("uploadCanvasApp", params),
         upsertGraphEdge: (params: Record<string, unknown> = {}) => callOp("upsertGraphEdge", params),
         upsertGraphNamespace: (params: Record<string, unknown> = {}) => callOp("upsertGraphNamespace", params),
         upsertGraphNode: (params: Record<string, unknown> = {}) => callOp("upsertGraphNode", params),

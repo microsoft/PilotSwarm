@@ -163,6 +163,28 @@ export async function runMigrations(
     }
 }
 
+/**
+ * When one migration was applied to a schema, from the runner's own
+ * `schema_migrations` table (the runner owns that table, so this read lives
+ * here). Null when the table or the version is missing.
+ */
+export async function migrationAppliedAt(
+    pool: { query: (sql: string, values?: unknown[]) => Promise<{ rows: any[] }> },
+    schema: string,
+    version: string,
+): Promise<Date | null> {
+    const table = `"${String(schema).replace(/"/g, '""')}".schema_migrations`;
+    try {
+        const { rows } = await pool.query(`SELECT applied_at FROM ${table} WHERE version = $1`, [version]);
+        const at = rows[0]?.applied_at;
+        if (!at) return null;
+        const date = at instanceof Date ? at : new Date(at);
+        return Number.isFinite(date.getTime()) ? date : null;
+    } catch {
+        return null;
+    }
+}
+
 /** Stable 32-bit hash of a schema name combined with a per-system seed. */
 function hashSchemaName(schema: string, seed: number): number {
     let hash = seed;

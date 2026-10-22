@@ -214,6 +214,13 @@ export interface FactStore {
     deleteFact(input: DeleteFactInput & { pattern?: false | undefined }): Promise<DeletedFactResult>;
     deleteFact(input: DeleteFactInput): Promise<DeletedFactResult | DeletedFactsResult>;
     deleteSessionFactsForSession(sessionId: string): Promise<number>;
+    /**
+     * Delete one fact only while it still has the etag the caller read
+     * (atomic compare-and-delete). False when it changed, is gone, or never
+     * existed. Optional: a store without it cannot offer the guarantee, and
+     * callers that need it must keep the fact instead.
+     */
+    deleteFactIfEtag?(input: { key: string; shared: boolean; sessionId?: string | null; etag: number }): Promise<boolean>;
     /** Per-session non-shared facts, bucketed by namespace. */
     getSessionFactsStats(sessionId: string): Promise<FactsStatsRow[]>;
     /** Same shape, aggregated across an array of session ids (used for spawn trees). */
@@ -407,6 +414,7 @@ function sqlForSchema(schema: string) {
             storeFact:                 `${schema}.facts_store_fact`,
             readFacts:                 `${schema}.facts_read_facts`,
             deleteFact:                `${schema}.facts_delete_fact`,
+            deleteFactIfEtag:          `${schema}.facts_delete_fact_if_etag`,
             deleteSessionFacts:        `${schema}.facts_delete_session_facts`,
             getSessionFactsStats:      `${schema}.facts_get_session_facts_stats`,
             getFactsStatsForSessions:  `${schema}.facts_get_facts_stats_for_sessions`,
@@ -731,6 +739,17 @@ export class PgFactStore implements FactStore {
             shared,
             deleted: Number(rows[0]?.deleted_count) > 0,
         };
+    }
+
+    async deleteFactIfEtag(input: { key: string; shared: boolean; sessionId?: string | null; etag: number }): Promise<boolean> {
+        const etag = Number(input.etag);
+        if (!Number.isInteger(etag) || etag < 0) throw new Error("deleteFactIfEtag: etag must be a non-negative integer");
+        const scopeKey = computeScopeKey(input.key, input.shared === true, input.sessionId);
+        const { rows } = await this.pool.query(
+            `SELECT ${this.sql.fn.deleteFactIfEtag}($1, $2) AS deleted`,
+            [scopeKey, etag],
+        );
+        return rows[0]?.deleted === true;
     }
 
     async deleteSessionFactsForSession(sessionId: string): Promise<number> {

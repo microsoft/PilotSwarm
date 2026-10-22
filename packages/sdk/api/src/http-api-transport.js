@@ -128,6 +128,31 @@ export class HttpApiTransport {
     // copy the op targets (scope shadowing allows several). Optional
     // everywhere for backward compatibility; name-only falls back to the
     // registry's own-copy-then-shared walk.
+    // Canvas app registry (issue 181): one args object; the server derives the caller.
+    /** The deployment's canvas app transition switch (issue 181); absent or anything else is off. */
+    getCanvasLegacyMode() { return this.bootstrap?.canvasLegacyMode === true; }
+    getCanvasRevisionLabel(args = {}) { return this.api.call("getCanvasRevisionLabel", args ?? {}); }
+    getCanvasWorkspaceApproval(args = {}) { return this.api.call("getCanvasWorkspaceApproval", args ?? {}); }
+    setCanvasWorkspaceConsent(args = {}) { return this.api.call("setCanvasWorkspaceConsent", args ?? {}); }
+    listCanvasApps(args = {}) { return this.api.call("listCanvasApps", args ?? {}); }
+    searchCanvasApps(args = {}) { return this.api.call("searchCanvasApps", args ?? {}); }
+    getCanvasApp(args = {}) { return this.api.call("getCanvasApp", args ?? {}); }
+    getCanvasAppHtml(args = {}) { return this.api.call("getCanvasAppHtml", args ?? {}); }
+    publishCanvasApp(args = {}) { return this.api.call("publishCanvasApp", args ?? {}); }
+    uploadCanvasApp(args = {}) { return this.api.call("uploadCanvasApp", args ?? {}); }
+    setCanvasAppScope(args = {}) { return this.api.call("setCanvasAppScope", args ?? {}); }
+    setCanvasAppEnabled(args = {}) { return this.api.call("setCanvasAppEnabled", args ?? {}); }
+    setCanvasAppMetadata(args = {}) { return this.api.call("setCanvasAppMetadata", args ?? {}); }
+    pinCanvasAppVersion(args = {}) { return this.api.call("pinCanvasAppVersion", args ?? {}); }
+    deleteCanvasApp(args = {}) { return this.api.call("deleteCanvasApp", args ?? {}); }
+    grantCanvasAppEditor(args = {}) { return this.api.call("grantCanvasAppEditor", args ?? {}); }
+    revokeCanvasAppEditor(args = {}) { return this.api.call("revokeCanvasAppEditor", args ?? {}); }
+    listCanvasAppEditors(args = {}) { return this.api.call("listCanvasAppEditors", args ?? {}); }
+    exportCanvasApp(args = {}) { return this.api.call("exportCanvasApp", args ?? {}); }
+    importCanvasApp(args = {}) { return this.api.call("importCanvasApp", args ?? {}); }
+    migrateLegacyCanvasApps(args = {}) { return this.api.call("migrateLegacyCanvasApps", args ?? {}); }
+    getCanvasAppLoads(args = {}) { return this.api.call("getCanvasAppLoads", args ?? {}); }
+    pruneCanvasApps(args = {}) { return this.api.call("pruneCanvasApps", args ?? {}); }
     listAgentPackages() { return this.api.call("listAgentPackages"); }
     getAgentPackage(name, selector) { return this.api.call("getAgentPackage", { name, ...selectorParams(selector) }); }
     getAgentPackageTree(name, semver, selector) { return this.api.call("getAgentPackageTree", { name, ...(semver ? { semver } : {}), ...selectorParams(selector) }); }

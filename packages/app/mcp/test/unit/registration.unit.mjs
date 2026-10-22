@@ -119,7 +119,16 @@ const GRAPH_TOOLS = [
     "list_graph_namespaces", "get_graph_namespace",
 ];
 const GRAPH_ADMIN = ["upsert_graph_namespace", "delete_graph_namespace"];
-const WEB_TOOLS = ["list_artifacts", "get_artifact", "upload_artifact", "copy_artifact", "pin_artifact", "delete_artifact", "send_session_event", "get_system_status", "export_execution_history"];
+const CANVAS_APP_TOOLS = [
+    "list_canvas_apps", "search_canvas_apps", "get_canvas_app", "get_canvas_app_html",
+    "publish_canvas_app_html", "set_canvas_app_scope", "set_canvas_app_enabled",
+    "set_canvas_app_metadata", "pin_canvas_app_version", "delete_canvas_app",
+    "manage_canvas_app_contributors", "export_canvas_app", "import_canvas_app",
+    "get_canvas_app_loads", "migrate_legacy_canvas_apps", "prune_canvas_apps",
+];
+// A person approves workspace use in the portal; no MCP tool may do it.
+const HUMAN_ONLY_TOOLS = ["set_canvas_app_workspace_consent", "set_canvas_workspace_consent"];
+const WEB_TOOLS = ["list_artifacts", "get_artifact", "upload_artifact", "copy_artifact", "pin_artifact", "delete_artifact", "send_session_event", "get_system_status", "export_execution_history", ...CANVAS_APP_TOOLS];
 const ADMIN_TOOLS = ["restart_system_session", "facts_admin"];
 const ALWAYS_TOOLS = [
     "create_session", "send_message", "send_and_wait", "list_sessions", "get_session_detail",
@@ -156,6 +165,7 @@ async function main() {
         expectAll(names, [...GRAPH_TOOLS, ...GRAPH_ADMIN], true, "full ctx: graph tools present");
         expectAll(names, WEB_TOOLS, true, "full ctx: web-only tools present");
         expectAll(names, ADMIN_TOOLS, true, "full ctx: admin tools present");
+        expectAll(names, HUMAN_ONLY_TOOLS, false, "full ctx: no workspace-approval tool");
     }
 
     // 3. Non-admin with providers: read tools present, [admin] subset absent.

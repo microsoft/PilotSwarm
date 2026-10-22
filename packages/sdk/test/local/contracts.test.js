@@ -88,6 +88,8 @@ const EXPECTED_ALWAYS_ON_TOOL_NAMES = [
     "canvas_kv",
     "publish_canvas_app",
     "find_canvas_app",
+    // Canvas app registry (issue 181): agents change apps with their owner's rights.
+    "manage_canvas_app",
     "load_skill",
 ];
 const EXPECTED_FRAMEWORK_DEFAULT_TOOL_NAMES = [

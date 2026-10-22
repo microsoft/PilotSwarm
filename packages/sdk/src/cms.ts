@@ -13,6 +13,7 @@ import { randomUUID } from "crypto";
 import { runCmsMigrations } from "./cms-migrator.js";
 import { ProviderStore } from "./provider-store.js";
 import { FeatureStore } from "./feature-store.js";
+import { CanvasAppStore, looksLikeCanvasAppSpace } from "./canvas-app-store.js";
 import { systemSessionProtectedError, type SessionOwnerInfo, type SessionSummaryState, type TurnControlKind, type TurnControlAddResult, type TurnStartResult, type TurnLookInput, type TurnLookRow, type TurnEndKind, type TurnEndResult, type TurnControl, type TurnStartRecord } from "./types.js";
 import type { MessageSender } from "./message-sender.js";
 import { TurnControlUnavailableError } from "./turn-control-contract.js";
@@ -975,6 +976,8 @@ export interface SessionCatalog {
      */
     readonly providers?: ProviderStore;
     readonly features?: FeatureStore;
+    /** Canvas app registry (migration 0084); optional so test doubles need not implement it. */
+    readonly canvasApps?: CanvasAppStore;
 
     /** Per-slot canvas cache (migration 0045); optional so test doubles need not implement it. */
     upsertSessionCanvas?(sessionId: string, slot: number, name: string | null, latestRev: number, sizeBytes: number | null): Promise<void>;
@@ -1627,6 +1630,7 @@ export class PgSessionCatalog implements SessionCatalog {
     private sql: ReturnType<typeof sqlForSchema>;
     private _providers: ProviderStore;
     readonly features: FeatureStore;
+    readonly canvasApps: CanvasAppStore;
     /** Connection settings of the pool, without pool-only fields: reused for the turn-control LISTEN client. */
     private listenConfig: Record<string, unknown> | null = null;
 
@@ -1635,6 +1639,7 @@ export class PgSessionCatalog implements SessionCatalog {
         this.sql = sqlForSchema(schema);
         this._providers = new ProviderStore(pool, schema);
         this.features = new FeatureStore(pool, schema);
+        this.canvasApps = new CanvasAppStore(pool, schema);
     }
 
     /**
@@ -1739,6 +1744,11 @@ export class PgSessionCatalog implements SessionCatalog {
          */
         creationConfig?: Record<string, unknown> | null;
     }): Promise<void> {
+        // Canvas app byte spaces (issue 181) are not sessions: no new session
+        // may take an id from that family.
+        if (looksLikeCanvasAppSpace(sessionId)) {
+            throw Object.assign(new Error("this session id is reserved for canvas app storage"), { code: "RESERVED_SESSION_ID", status: 400 });
+        }
         const explicitGroupId = typeof opts?.groupId === "string" && opts.groupId.trim()
             ? opts.groupId.trim()
             : null;

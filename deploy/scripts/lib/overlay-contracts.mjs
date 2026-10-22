@@ -69,6 +69,9 @@ const SHARED_BICEP_OUTPUT_KEYS = Object.freeze([
   "PILOTSWARM_USE_MANAGED_IDENTITY",
   "PILOTSWARM_BLOB_USE_MANAGED_IDENTITY",
   "SPC_KEYS_HASH",
+  // A static runtime switch with a default (worker-env.mjs WORKER_ENV_DEFAULTS),
+  // carried by the worker and portal ConfigMaps alike.
+  "PILOTSWARM_CANVAS_LEGACY_MODE",
   ...PORTAL_CONFIG_KEYS.map(({ env }) => env),
 ]);
 

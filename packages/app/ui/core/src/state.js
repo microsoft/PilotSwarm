@@ -251,6 +251,24 @@ export function normalizeStoredDesktopPanes(value, legacyRightPaneMode) {
  * every reader written before slots existed keeps working untouched; slots
  * 2-5 append "#<slot>". Used for canvas.bySessionId AND canvas.prefs.
  */
+/** The key a transition label answers for: the revision and the page the draw recorded. */
+export function canvasLegacyLabelKey(entry) {
+    return `${Number(entry?.latestRev) || 0}:${typeof entry?.pageSha256 === "string" ? entry.pageSha256 : ""}`;
+}
+
+/**
+ * Whether this canvas entry needs the server's transition label before it
+ * may be framed directly: the switch is on, its trust is known and is not
+ * owner or agent (those frame directly, with no label read), and its draw
+ * either recorded no trust (drawn before the registry) or flagged an old
+ * app's page.
+ */
+export function canvasEntryNeedsLegacyLabel(entry, legacyMode) {
+    if (legacyMode !== true || !entry || !(Number(entry.latestRev) > 0)) return false;
+    if (typeof entry.trust !== "string" || entry.trust === "owner" || entry.trust === "agent") return false;
+    return entry.legacyFlag === true || entry.trustRecorded === false;
+}
+
 export function canvasKey(sessionId, slot) {
     const id = String(sessionId || "");
     const n = Number(slot);
@@ -589,6 +607,9 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // outside ui.rightPaneMode (the phone's tab strip) watch this to
             // bring their canvas surface forward.
             flipSeq: 0,
+            // The canvas app transition (issue 181): this portal's switch
+            // (bootstrap canvasLegacyMode). Off unless the server says on.
+            legacyMode: false,
         },
         logs: {
             available: false,

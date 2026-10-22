@@ -33,6 +33,7 @@
  *   deployment needs a sandboxed runner instead.
  */
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { CANVAS_WORKING_FOLDER_NAME } from "./workspace-check.js";
 import fs from "node:fs";
 import os from "node:os";
@@ -49,11 +50,19 @@ export const CANVAS_WS_ERROR_CODES = {
     BUSY: "CANVAS_WS_BUSY",
     TIMEOUT: "CANVAS_WS_TIMEOUT",
     RUN_FAILED: "CANVAS_WS_RUN_FAILED",
+    /**
+     * The session owner has not approved this exact page, declaration and
+     * folder bindings for workspace access (issue 181). Every new program
+     * asks once, whoever wrote it.
+     */
+    CONSENT_REQUIRED: "CANVAS_WS_CONSENT_REQUIRED",
+    /** The call or approval names a revision that is no longer on the slot. */
+    STALE: "CANVAS_WS_STALE",
 } as const;
 const E = CANVAS_WS_ERROR_CODES;
 
 const STATUS: Record<string, number> = {
-    [E.UNDECLARED]: 403, [E.DENIED]: 403, [E.PROGRAM_NOT_ALLOWED]: 403, [E.COMMANDS_DISABLED]: 403,
+    [E.UNDECLARED]: 403, [E.DENIED]: 403, [E.CONSENT_REQUIRED]: 403, [E.STALE]: 409, [E.PROGRAM_NOT_ALLOWED]: 403, [E.COMMANDS_DISABLED]: 403,
     [E.FOLDER_UNKNOWN]: 404, [E.COMMAND_UNKNOWN]: 404,
     [E.PARAM_INVALID]: 400, [E.BUSY]: 429, [E.RUN_FAILED]: 422, [E.TIMEOUT]: 504,
 };
@@ -350,6 +359,58 @@ export function splitCanvasPath(value: unknown): { folder: string; path: string 
 /** The name a canvas app uses for a folder: "work" for the working folder. */
 export function canvasFolderName(folder: { id: string; name: string }): string {
     return folder.id === "working" ? CANVAS_WORKING_FOLDER_NAME : folder.id.startsWith("extra:") ? folder.id.slice("extra:".length) : folder.name;
+}
+
+// ─── Approval keys (issue 181) ────────────────────────────────────────
+
+/** Sorted-key JSON: the same value always gives the same text. */
+function canonicalJsonText(value: unknown): string {
+    if (Array.isArray(value)) return `[${value.map(canonicalJsonText).join(",")}]`;
+    if (value && typeof value === "object") {
+        const keys = Object.keys(value as Record<string, unknown>).sort();
+        return `{${keys.map((k) => `${JSON.stringify(k)}:${canonicalJsonText((value as any)[k])}`).join(",")}}`;
+    }
+    return JSON.stringify(value ?? null);
+}
+
+/** The folder names a declaration reaches: first segments of its globs and command folders. */
+export function canvasDeclarationFolders(declaration: CanvasWorkspaceDeclaration): string[] {
+    const names = new Set<string>();
+    for (const glob of [...declaration.read, ...declaration.write]) {
+        const first = String(glob).split("/")[0];
+        if (first) names.add(first);
+    }
+    for (const command of Object.values(declaration.commands)) {
+        const first = String(command.in).split("/")[0];
+        if (first) names.add(first);
+    }
+    return [...names].sort();
+}
+
+export interface CanvasWorkspaceBinding {
+    /** The name the page uses ("work", an extra folder's name). */
+    name: string;
+    /** Where it points now; null when the session has no such folder. */
+    root: string | null;
+    folder: string | null;
+}
+
+/**
+ * What an approval is bound to besides the page: the checked declaration
+ * (read, write, watch, commands) and the folders its names resolve to in the
+ * session now. A change to either asks again.
+ */
+export function canvasWorkspaceApprovalKeys(
+    declaration: CanvasWorkspaceDeclaration,
+    folders: Array<{ id: string; name: string; root: string; folder: string }>,
+): { declarationSha256: string; bindingsSha256: string; bindings: CanvasWorkspaceBinding[] } {
+    const byName = new Map(folders.map((folder) => [canvasFolderName(folder), folder]));
+    const bindings = canvasDeclarationFolders(declaration).map((name) => {
+        const folder = byName.get(name);
+        return { name, root: folder ? folder.root : null, folder: folder ? folder.folder : null };
+    });
+    const sha = (value: unknown) => createHash("sha256").update(canonicalJsonText(value)).digest("hex");
+    return { declarationSha256: sha(declaration), bindingsSha256: sha(bindings), bindings };
 }
 
 // ─── Commands ─────────────────────────────────────────────────────────
