@@ -296,6 +296,10 @@ describe("cancelPendingMessage orchestration", () => {
 
         expect(harness.runTurns).toHaveLength(1);
         expect(harness.runTurns[0].prompt).toBe("run once");
+        // 1.0.82 (issue 192, R10): one drain pass collects every queued
+        // message, so the repeat is caught in drain, before the FIFO append.
+        // Up to 1.0.81 drain stopped after the first message and the
+        // pre-dispatch sweep caught it ("predispatch").
         expect(mockManager.recordSessionEvent).toHaveBeenCalledWith(
             "cancel-session",
             [{
@@ -304,7 +308,7 @@ describe("cancelPendingMessage orchestration", () => {
                     clientMessageIds: ["msg-1"],
                     duplicateClientMessageIds: ["msg-1"],
                     windowSize: 20,
-                    source: "predispatch",
+                    source: "drain",
                 },
             }],
         );
@@ -376,7 +380,10 @@ describe("cancelPendingMessage orchestration", () => {
 
         await harness.runUntilIdle();
 
-        expect(harness.runTurns.map((turn) => turn.prompt)).toEqual(["legacy one", "legacy two"]);
+        // 1.0.82 (issue 192, R10): prompts without client ids that arrive
+        // together are collected in one drain pass and run as one turn, in
+        // order. Up to 1.0.81 each ran alone (defect D).
+        expect(harness.runTurns.map((turn) => turn.prompt)).toEqual(["legacy one\n\nlegacy two"]);
     });
 
     it("maintains a 20-id LRU and carries it through continueAsNew", () => {

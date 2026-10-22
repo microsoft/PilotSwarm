@@ -1,5 +1,6 @@
 import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, capabilityOwnership, parseCapabilityRef, resolveCapabilitySource, workspaceCapabilityHits, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
 import { bindCapabilities, nextCapabilityState, validatePackageRequest } from "./capability-runtime.js";
+import type { McpAllowlistAgent } from "./mcp-loader.js";
 import { baseAgentInstructions, resolveBaseAgentPolicy } from "./base-agent-policy.js";
 import { NativeTaskAccess, NATIVE_SYNCHRONOUS_TOOLS, NATIVE_TASK_NAMES, type NativeTaskTools } from "./native-task-policy.js";
 import { linkSkillFolders, resolveWorkspaceAdoption, RepoAgentAccess, type AdoptionSource } from "./workspace-repo-agents.js";
@@ -131,6 +132,7 @@ export interface AgentCopyEntry {
     nativeTaskTools?: NativeTaskTools;
     kind: "app-agent" | "app-system-agent" | "pilotswarm-system-agent";
     descriptor?: import("./prompt-layers.js").PromptLayerDescriptor;
+    namespace?: string | null;
     packageId?: string;
     packageVersionId?: string;
     packageActive?: boolean;
@@ -2422,8 +2424,13 @@ export class SessionManager {
         const capabilityCatalog = new CapabilityCatalog(getSources, this.factStore, this.workerDefaults.reservedFactPrefixes ?? []);
         const originalMcp = { ...effectiveMcpServers };
         const originalTools = [...userTools, ...systemTools, ...subAgentTools, ...factTools, ...inspectTools, ...graphTools, ...providerTools, ...featureTools];
-        const capabilityAgent = boundAgentCopy ? { name: config.boundAgentName!, namespace: (boundAgentCopy as any).namespace,
-            packageId: boundAgentCopy.packageId, packageScope: (boundAgentCopy as any).packageScope } : null;
+        // A qualified binding selects a copy; it is not that copy's authored leaf name.
+        const capabilityAgent: McpAllowlistAgent | null = boundAgentCopy?.descriptor ? {
+            name: boundAgentCopy.descriptor.name,
+            namespace: boundAgentCopy.namespace,
+            packageId: boundAgentCopy.packageId,
+            packageScope: boundAgentCopy.packageScope,
+        } : null;
         const readState = async (): Promise<CapabilityState> => this.sessionCatalog?.getSessionCapabilities
             ? this.sessionCatalog.getSessionCapabilities(sessionId) : { revision: 0, selections: [] };
         const getOwner = async () => this.sessionCatalog

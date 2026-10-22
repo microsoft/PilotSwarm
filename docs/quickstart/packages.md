@@ -4,7 +4,8 @@ PilotSwarm is an open-source project distributed through public
 [GitHub Releases](https://github.com/microsoft/PilotSwarm/releases). The three
 npm-format tarballs are `pilotswarm-sdk`, `pilotswarm-horizon-store` and
 `pilotswarm` (TUI, portal and MCP). Microsoft does not publish these releases to
-the npm registry. Node.js 24 or later is required.
+the npm registry. Node.js 24.22.1+ within 24.x, or 26.12.1+, is required.
+Use the patched 24.22.1 LTS runtime to match the repository's CI and images.
 
 ## Download and verify
 

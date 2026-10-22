@@ -7,7 +7,8 @@ tarball: the test harness and deployment templates are development sources.
 
 ## 1. Prerequisites
 
-- Node.js **24 or later**, npm, Git and Bash. Run Windows commands in WSL.
+- Node.js **24.22.1 LTS** (or newer patched 24.x / **26.12.1+**), npm, Git
+  and Bash. Run Windows commands in WSL.
 - Docker for a disposable stock PostgreSQL database, or your own test-only
   PostgreSQL server. The GitHub runner uses PostgreSQL 16.
 - For live SDK integration tests, a GitHub token with Copilot access and access
@@ -18,6 +19,13 @@ tarball: the test harness and deployment templates are development sources.
 
 Use databases dedicated to tests. The harness creates and removes schemas and
 cleans stale test state. Never point it at a portal or production database.
+
+CI pins Node 24.22.1 exactly rather than `24`, which can select an older cached
+runtime. Package engine requirements and the deployment tests enforce the
+[October 2026 security baseline](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases).
+Protected PR integration tests take runner setup from trusted **main**, not the
+candidate workflow. A Node pin change must reach main before those runs can
+qualify the patched runtime; ordinary PR checks use the candidate's exact pin.
 
 ## 2. Run the credential-free PR checks locally
 
@@ -84,6 +92,36 @@ The SDK uses the tracked test model catalog by default; your private root catalo
 is not automatically a live model matrix. `PS_MODEL_PROVIDERS_PATH` can override
 the SDK catalog, but individual tests may require specific models/providers.
 Changing the catalog alone does not port every test to another LLM backend.
+
+The live Copilot fixture uses `github-copilot:gpt-5.6-sol` by default,
+`gpt-6-sol` as its distinct same-provider switch target, and `claude-sonnet-5`.
+Before live tests, `scripts/test-model-summary.mjs` checks every configured
+Copilot model against the pinned native SDK's advertised models and explicit
+policy state. It fails on missing or disabled/unconfigured models, separately
+from authentication/discovery errors; it never substitutes another model.
+The effective SDK override is `PS_MODEL_PROVIDERS_PATH` (prefer an absolute
+path; relative paths are resolved from `packages/sdk`). SDK Vitest's default
+overrides `MODEL_PROVIDERS_PATH` alone. Non-Copilot catalogs are not checked
+against Copilot's model list.
+Explicit `PS_TEST_FORCE_MODEL` / `TEST_FORCE_MODEL` and `PS_INTERRUPT_TEST_MODEL`
+selections must resolve in that effective catalog too; forced single-model
+runs still do not qualify multi-model coverage.
+
+For credential-free checks only, `node scripts/test-model-summary.mjs --unit-only`
+reports an explicit skip; that is not live qualification. Direct filtered
+Vitest invocations should run the normal preflight first. Offered availability
+and successful `create/getCurrent` do not prove which model served inference.
+`Model Recorded in CMS After Turn` also requires native root `assistant.usage`
+model identity to match the requested descriptor, excluding child, sampling,
+compaction and other attributed auxiliary calls.
+
+The live Stop cases use real native HTTP requests held open by a loopback test
+service, not shell sleep loops: the default framework prompt prohibits shell
+timers. Request readiness proves the native command is running before controls
+are sent. Stop must still terminate that process, meet the two-second bound
+where specified, preserve an earlier turn's detached command, and leave the
+warm session usable. Fixture teardown completes only its own pending requests;
+it does not weaken the production prompt or substitute a scripted model.
 
 ## 4. Add your own HorizonDB test database
 

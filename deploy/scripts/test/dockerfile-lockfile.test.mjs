@@ -52,7 +52,7 @@ test("AKS application images build generated artifacts inside Docker", () => {
   const worker = readDockerfile("Dockerfile.worker");
 
   for (const [name, source] of [["portal", portal], ["worker", worker]]) {
-    assert.match(source, /FROM node:24-trixie-slim AS build/);
+    assert.match(source, /FROM node:24\.22\.1-trixie-slim AS build/);
     assert.match(source, /rm -rf[\s\S]*packages\/sdk\/dist[\s\S]*packages\/horizon-store\/dist/);
     assert.match(source, /npm run build --workspace=packages\/sdk/);
     assert.match(source, /--workspace=pilotswarm-horizon-store/);

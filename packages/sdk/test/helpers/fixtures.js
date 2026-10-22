@@ -5,6 +5,7 @@
 import { defineTool, loadModelProviders } from "../../src/index.ts";
 import * as fsForSnapshots from "node:fs";
 import * as pathForSnapshots from "node:path";
+import { selectFixtureModel } from "./model-selection.mjs";
 
 const FORCED_TEST_MODEL = process.env.PS_TEST_FORCE_MODEL || process.env.TEST_FORCE_MODEL || "";
 
@@ -111,30 +112,14 @@ export const WAIT_CONFIG = {
 
 const modelRegistry = loadModelProviders();
 
-function firstKnownModel(candidates) {
-    if (FORCED_TEST_MODEL) return FORCED_TEST_MODEL;
-    if (!modelRegistry) return candidates[0];
-    for (const candidate of candidates) {
-        const normalized = modelRegistry.normalize(candidate);
-        if (normalized) return candidate;
-    }
-    return candidates[0];
-}
+export const TEST_GPT_MODEL = selectFixtureModel(modelRegistry, [
+    "gpt-5.6-sol",
+    "gpt-6-sol",
+], "gpt-", FORCED_TEST_MODEL);
 
-export const TEST_GPT_MODEL = firstKnownModel([
-    "gpt-5.4",
-    "gpt-5.1",
-    "gpt-4.1",
-    "gpt-4o",
-]);
-
-export const TEST_CLAUDE_MODEL = firstKnownModel([
+export const TEST_CLAUDE_MODEL = selectFixtureModel(modelRegistry, [
     "claude-sonnet-5",
-    "claude-opus-5",
-    "claude-opus-4.8",
-    "claude-sonnet-4.6",
-    "claude-opus-4.6",
-]);
+], "claude-", FORCED_TEST_MODEL);
 
 /**
  * Resolve a session's snapshot tar in a filesystem store dir. The lifecycle

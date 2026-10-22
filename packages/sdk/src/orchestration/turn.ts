@@ -16,8 +16,10 @@ import {
     handleSubAgentAction,
     isSubAgentTerminalStatus,
     maybeResolveAgentWaitCompletion,
+    lookUpDeferredChildStatuses,
     readWorkflowResult,
     refreshTrackedSubAgents,
+    settleDeferredChildStatusLookups,
     workflowResultsFollowup,
 } from "./agents.js";
 import {
@@ -366,6 +368,10 @@ export function* processPrompt(
     attachments?: PromptAttachmentRef[],
 ): Generator<any, void, any> {
     const { ctx, state } = runtime;
+    // 1.0.82 (issue 192): count every turn attempt, whatever its outcome, so
+    // settleQueuedWorkAfterDecide never re-arms a timer behind an attempt the
+    // turn path already handled (a gate refusal, an error, a thrown failure).
+    runtime.turnsStarted = (runtime.turnsStarted ?? 0) + 1;
     // A provider-budget refusal stashes the whole pending turn contract, not
     // just its text. Any wake or interrupt that finally reaches the model must
     // enforce the same requiredTool as the refused attempt.
@@ -740,7 +746,13 @@ export function* processPrompt(
         state.workspaceHeldNote = undefined;
     }
     yield* maybeSummarize(runtime);
-    yield* refreshTrackedSubAgents(runtime);
+    const childListing = yield* refreshTrackedSubAgents(runtime);
+    // 1.0.82 (issue 192): child status lookups put off behind the user work
+    // this turn ran are settled from the same listing, before the result is
+    // handled (wait_for_agents reads these statuses). If the listing failed,
+    // they are looked up one by one now, after the turn (review F1).
+    if (childListing) settleDeferredChildStatusLookups(runtime, childListing);
+    else yield* lookUpDeferredChildStatuses(runtime, { resolveAgentWait: false });
 
     if ("queuedActions" in result && Array.isArray((result as any).queuedActions) && (result as any).queuedActions.length > 0) {
         state.pendingToolActions.push(...(result as any).queuedActions);

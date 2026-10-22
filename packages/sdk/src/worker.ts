@@ -12,6 +12,7 @@ import {
     packageAgentKey,
     packageCopyKey,
     agentOwnerKey,
+    type AgentCopyEntry,
     type AgentPromptEntry,
 } from "./session-manager.js";
 import { loadAdminScope, ADMIN_SCOPE_POLICY_VERSION } from "../api/src/admin-scope.js";
@@ -2135,13 +2136,14 @@ export class PilotSwarmWorker {
         };
         for (const [name, agents] of byName) {
             const winner = [...agents].sort((a, b) => rank(a) - rank(b))[0];
-            const copyOf = (agent: any) => ({
+            const copyOf = (agent: any): AgentCopyEntry => ({
                 prompt: agent.prompt,
                 ...(agent.baseV2Prompt ? { baseV2Prompt: agent.baseV2Prompt } : {}),
                 toolNames: [...(agent.tools ?? [])],
                 nativeTaskTools: agent.nativeTaskTools,
                 kind: agent.promptLayerKind ?? "app-agent",
                 descriptor: agent.layerDescriptor,
+                namespace: agent.namespace ?? null,
                 ...(agent.packageId ? {
                     packageId: agent.packageId,
                     packageVersionId: agent.packageVersionId,

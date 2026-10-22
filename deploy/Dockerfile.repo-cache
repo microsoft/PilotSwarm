@@ -10,7 +10,7 @@
 # The sample needs no npm packages: the repo service uses Node built-ins only.
 # trixie (Debian 13) ships git 2.47. Section 5.5 asks for 2.40 or later here,
 # so that clones with feature.manyFiles pass `git fsck`.
-FROM node:24-trixie-slim
+FROM node:24.22.1-trixie-slim
 
 # nfs-kernel-server: exportfs, rpc.mountd, rpc.nfsd, nfsdcld.
 # setpriv (util-linux, in the base image) runs clone creation as the session uid.

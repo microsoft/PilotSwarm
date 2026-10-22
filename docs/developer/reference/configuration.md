@@ -4,7 +4,7 @@
 
 ## Prerequisites
 
-- **Node.js >= 24** (required for `--env-file` support)
+- **Node.js 24.22.1+ within 24.x, or 26.12.1+** (patched security baseline; CI uses 24.22.1 LTS)
 - **PostgreSQL** (local or managed — Azure Database for PostgreSQL, AWS RDS, etc.)
 - **LLM provider credentials** — at least one of:
   - `GITHUB_TOKEN` (easiest — gives access to Claude, GPT, etc. via GitHub Copilot)

@@ -55,7 +55,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: "24.22.1"
       - name: Resolve and announce the immutable source
         id: target
         run: node .github/scripts/pr-test-target.mjs resolve
@@ -109,7 +109,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: "24.22.1"
           cache: npm
           cache-dependency-path: ${{ needs.resolve.outputs.source_directory }}/package-lock.json
       - name: Verify the approved source before using private credentials
@@ -157,7 +157,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
-          node-version: "24"
+          node-version: "24.22.1"
       - name: Record the result without executing candidate code
         run: node .github/scripts/pr-test-target.mjs report
         env:

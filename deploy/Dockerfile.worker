@@ -2,7 +2,7 @@
 # production image.
 # trixie-slim (Debian 13, glibc 2.41) required by duroxide-linux-x64-gnu >= 0.1.25
 # (prebuilds link against GLIBC_2.39; bookworm-slim is 2.36 and crashes at dlopen).
-FROM node:24-trixie-slim AS build
+FROM node:24.22.1-trixie-slim AS build
 
 # CA certificates for HTTPS. git for agents that work in session workspaces
 # (docs/proposals/session-workspaces.md, section 5.4: 2.46 or later; trixie
@@ -47,7 +47,7 @@ RUN rm -rf packages/sdk/dist packages/horizon-store/dist \
     && npm run build --workspace=pilotswarm-horizon-store \
     && npm prune --omit=dev --force
 
-FROM node:24-trixie-slim
+FROM node:24.22.1-trixie-slim
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates git nfs-common \

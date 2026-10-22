@@ -6,7 +6,7 @@
             "githubToken": "env:GITHUB_TOKEN",
             "models": [
                 {
-                    "name": "gpt-5.4",
+                    "name": "gpt-5.6-sol",
                     "description": "Primary default test model for PilotSwarm local and integration suites via GitHub Copilot.",
                     "cost": "high",
                     "supportedReasoningEfforts": [
@@ -16,39 +16,12 @@
                     "defaultReasoningEffort": "medium"
                 },
                 {
-                    "name": "gpt-5.5",
-                    "description": "High-capability GitHub Copilot model for explicit model smoke tests.",
+                    "name": "gpt-6-sol",
+                    "description": "Distinct same-provider target for explicit model-switch tests.",
                     "cost": "high",
                     "supportedReasoningEfforts": [
                         "medium",
                         "xhigh"
-                    ],
-                    "defaultReasoningEffort": "medium"
-                },
-                {
-                    "name": "gpt-5.1",
-                    "description": "Primary deterministic test model for PilotSwarm local and integration suites.",
-                    "cost": "high",
-                    "supportedReasoningEfforts": [
-                        "medium"
-                    ],
-                    "defaultReasoningEffort": "medium"
-                },
-                {
-                    "name": "gpt-4.1",
-                    "description": "Fallback GPT model for tests that sweep multiple GitHub Copilot models.",
-                    "cost": "medium",
-                    "supportedReasoningEfforts": [
-                        "medium"
-                    ],
-                    "defaultReasoningEffort": "medium"
-                },
-                {
-                    "name": "gpt-4o",
-                    "description": "Legacy fallback GPT model for compatibility checks.",
-                    "cost": "medium",
-                    "supportedReasoningEfforts": [
-                        "medium"
                     ],
                     "defaultReasoningEffort": "medium"
                 },
@@ -64,22 +37,9 @@
                         "max"
                     ],
                     "defaultReasoningEffort": "medium"
-                },
-                {
-                    "name": "claude-opus-5",
-                    "description": "High-capability Claude model for compatibility checks.",
-                    "cost": "high",
-                    "supportedReasoningEfforts": [
-                        "low",
-                        "medium",
-                        "high",
-                        "xhigh",
-                        "max"
-                    ],
-                    "defaultReasoningEffort": "medium"
                 }
             ]
         }
     ],
-    "defaultModel": "github-copilot:gpt-5.4"
+    "defaultModel": "github-copilot:gpt-5.6-sol"
 }

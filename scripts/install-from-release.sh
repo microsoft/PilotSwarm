@@ -31,7 +31,7 @@ set -euo pipefail
 #   --dry-run         Download and verify, print the install command, do not run it.
 #   -h, --help        This text.
 #
-# Needs: bash, curl, npm (Node 24+). Authenticated `gh` access is needed for
+# Needs: bash, curl, npm (Node ^24.22.1 or >=26.12.1). Authenticated `gh` access is needed for
 # internal repositories; public repositories can also use the GitHub API.
 
 REPO="${PILOTSWARM_REPO:-microsoft/PilotSwarm}"

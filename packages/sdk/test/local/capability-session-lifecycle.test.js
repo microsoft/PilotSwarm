@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { PilotSwarmWorker } from "../../src/worker.ts";
 import { SessionManager } from "../../src/session-manager.ts";
 import { ManagedSession } from "../../src/managed-session.ts";
 import { capabilityRef } from "../../src/capability-catalog.ts";
@@ -21,9 +22,12 @@ function packageSource() {
         mcpServers: { package_mcp: { type: "http", url: "https://example.test/mcp", tools: ["read"] } } };
 }
 
-async function fixture({ child = false } = {}) {
+async function fixture({ child = false, workerFactory, config: bindingConfig = {} } = {}) {
     const dir = mkdtempSync(join(tmpdir(), "ps-capability-lifecycle-"));
-    const source = packageSource();
+    const worker = workerFactory?.(dir);
+    const source = worker
+        ? worker._getCapabilitySources().find(source => source.mcpServers.restricted_mcp)
+        : packageSource();
     let state = { revision: 0, selections: [] };
     const row = { sessionId: "capability-session", owner, isSystem: false,
         parentSessionId: child ? "parent-session" : null, rootSessionId: child ? "parent-session" : "capability-session" };
@@ -39,14 +43,14 @@ async function fixture({ child = false } = {}) {
             return true;
         },
     };
-    const manager = new SessionManager(undefined, null, {
+    const manager = worker?.sessionManager ?? new SessionManager(undefined, null, {
         frameworkBasePrompt: "legacy base", nativeSubagents: "off", getCapabilitySources: () => [source],
     }, dir);
     manager.setSessionCatalog(catalog);
     manager.setFactStore({ readFacts: async () => ({ count: 0, facts: [] }) });
     const opened = [];
     const open = config => {
-        mkdirSync(join(dir, config.sessionId), { recursive: true });
+        mkdirSync(join(worker?.config.sessionStateDir ?? dir, config.sessionId), { recursive: true });
         const handle = { sessionId: config.sessionId, disconnect: vi.fn(async () => {}), registerTools: vi.fn(),
             rpc: { tasks: { list: vi.fn(async () => ({ tasks: [] })) } } };
         opened.push({ config, handle });
@@ -59,11 +63,114 @@ async function fixture({ child = false } = {}) {
         rmSync(dir, { recursive: true, force: true });
     });
     return { manager, opened, source, row, get state() { return state; }, async turn(index) {
-        return manager.getOrCreate(row.sessionId, { model: "gpt-test" }, { turnIndex: index });
+        return manager.getOrCreate(row.sessionId, { model: "gpt-test", ...bindingConfig }, { turnIndex: index });
     } };
 }
 
+function restrictedWorker(dir, { allowedAgents, namespace = "fixture", name = "analyst", packageCopies = false }) {
+    function plugin(folder, pluginNamespace, agentName, mcp) {
+        const pluginDir = join(dir, folder);
+        mkdirSync(join(pluginDir, "agents"), { recursive: true });
+        writeFileSync(join(pluginDir, "plugin.json"), JSON.stringify({ name: pluginNamespace, version: "1.0.0" }));
+        writeFileSync(join(pluginDir, "agents", `${agentName}.agent.md`),
+            `---\nschemaVersion: 2\nversion: 1.0.0\nname: ${agentName}\nmcpServers: []\ninheritDefaultMcpServers: false\n---\nSynthetic capability agent.\n`);
+        if (mcp) writeFileSync(join(pluginDir, ".mcp.json"), JSON.stringify(mcp));
+        return pluginDir;
+    }
+    const base = plugin("deployment", namespace, name, {
+        restricted_mcp: { type: "http", url: "https://example.test/mcp", tools: ["read"], default: false, allowedAgents },
+    });
+    const modelProvidersPath = join(dir, "models.json");
+    writeFileSync(modelProvidersPath, JSON.stringify({ providers: [
+        { id: "fixture", type: "openai", baseUrl: "https://example.test/v1", apiKey: "synthetic", models: ["gpt-test"] },
+    ] }));
+    const worker = new PilotSwarmWorker({
+        pluginDirs: [base], sessionStateDir: join(dir, "sessions"), nativeSubagents: "off", modelProvidersPath,
+    });
+    if (packageCopies) {
+        const packages = [
+            { packageId: "shared-analyst", scope: "shared", owner: null },
+            { packageId: "private-analyst", scope: "user", owner },
+            { packageId: "foreign-analyst", scope: "user", owner: { provider: "test", subject: "someone-else" } },
+        ].map(copy => ({ ...copy, revision: "package-revision", dir: plugin(copy.packageId, namespace, name) }));
+        worker._packageDirOwners = new Map(packages.map(({ dir, ...provenance }) => [dir, provenance]));
+        worker._resetLoadedPluginState();
+        worker.config.pluginDirs = [base, ...packages.map(copy => copy.dir)];
+        worker._loadPlugins();
+    }
+    return worker;
+}
+
 describe("durable package capability lifecycle", () => {
+    it.each(["analyst", "fixture:analyst"])("activates optional restricted MCP for a qualified deployment binding allowed by %s", async allowed => {
+        const h = await fixture({
+            workerFactory: dir => restrictedWorker(dir, { allowedAgents: [allowed] }),
+            config: { boundAgentName: "fixture:analyst", boundAgentSource: "deployment" },
+        });
+        const first = await h.turn(0);
+        expect(h.opened[0].config.mcpServers ?? {}).not.toHaveProperty("restricted_mcp");
+        const sourceRef = capabilityRef(h.source.id, h.source.revision, "source");
+        await expect(first.config.capabilityServices.use({ source_ref: sourceRef, mcp_servers: ["restricted_mcp"],
+            expected_revision: 0, request_id: "restricted-attach" })).resolves.toEqual({ changed: true, revision: 1 });
+        expect(h.state.selections).toEqual([expect.objectContaining({
+            sourceId: h.source.id, sourceRef, mcpServers: ["restricted_mcp"],
+        })]);
+        const rebound = await h.turn(1);
+        expect(h.opened[1].config.mcpServers).toHaveProperty("restricted_mcp.url", "https://example.test/mcp");
+        await expect(rebound.config.capabilityServices.list()).resolves.toMatchObject({ revision: 1, unavailable: [] });
+    });
+
+    it.each([
+        { allowed: "analyst", namespace: "fixture", name: "other" },
+        { allowed: "fixture:analyst", namespace: "fixture", name: "other" },
+        { allowed: "fixture:analyst", namespace: "lookalike", name: "analyst" },
+    ])("denies a different selected deployment identity: $namespace:$name allowed by $allowed", async ({ allowed, namespace, name }) => {
+        const h = await fixture({
+            workerFactory: dir => restrictedWorker(dir, { allowedAgents: [allowed], namespace, name }),
+            config: { boundAgentName: `${namespace}:${name}`, boundAgentSource: "deployment" },
+        });
+        const managed = await h.turn(0);
+        await expect(managed.config.capabilityServices.use({
+            source_ref: capabilityRef(h.source.id, h.source.revision, "source"), mcp_servers: ["restricted_mcp"],
+            expected_revision: 0, request_id: "denied-attach",
+        })).rejects.toThrow(/restricted/i);
+        expect(h.state).toEqual({ revision: 0, selections: [] });
+    });
+
+    it.each([
+        { packageId: "shared-analyst", allowed: "fixture:analyst", admitted: true },
+        { packageId: "shared-analyst", allowed: "analyst", admitted: false },
+        { packageId: "private-analyst", allowed: "fixture:analyst", admitted: false },
+    ])("keeps exact package provenance for $packageId allowed by $allowed", async ({ packageId, allowed, admitted }) => {
+        const h = await fixture({
+            workerFactory: dir => restrictedWorker(dir, { allowedAgents: [allowed], packageCopies: true }),
+            config: { boundAgentName: "analyst", boundAgentPackageId: packageId },
+        });
+        const managed = await h.turn(0);
+        const activation = managed.config.capabilityServices.use({
+            source_ref: capabilityRef(h.source.id, h.source.revision, "source"), mcp_servers: ["restricted_mcp"],
+            expected_revision: 0, request_id: "package-attach",
+        });
+        if (admitted) {
+            await expect(activation).resolves.toEqual({ changed: true, revision: 1 });
+            await h.turn(1);
+            expect(h.opened[1].config.mcpServers).toHaveProperty("restricted_mcp");
+        } else {
+            await expect(activation).rejects.toThrow(/restricted/i);
+            expect(h.state).toEqual({ revision: 0, selections: [] });
+        }
+    });
+
+    it("rejects an exact private copy owned by someone else before MCP activation", async () => {
+        const h = await fixture({
+            workerFactory: dir => restrictedWorker(dir, { allowedAgents: ["fixture:analyst"], packageCopies: true }),
+            config: { boundAgentName: "analyst", boundAgentPackageId: "foreign-analyst" },
+        });
+        await expect(h.turn(0)).rejects.toMatchObject({ code: "BOUND_AGENT_PACKAGE_UNAVAILABLE" });
+        expect(h.opened).toEqual([]);
+        expect(h.state).toEqual({ revision: 0, selections: [] });
+    });
+
     it("keeps discovery tools additive in V1 and rebinds the same session after an exact package selection", async () => {
         const h = await fixture();
         const first = await h.turn(0);
