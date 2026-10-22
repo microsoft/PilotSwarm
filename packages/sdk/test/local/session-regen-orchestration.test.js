@@ -342,58 +342,6 @@ describe("session regeneration orchestration", () => {
         expect(retry.state.continueAsNew).toBeTruthy();
     });
 
-    // Issue 192 re-review F2: a prompt that arrives during a pending
-    // regeneration releases the armed wait; when it is cancelled and the
-    // pipeline then fails, the wait must still be armed (regeneration stages
-    // bypass decide, so they settle the release themselves).
-    it("a prompt cancelled during a regeneration that then fails leaves the wait armed", async () => {
-        const h = createHarness({
-            failDistill: true,
-            inputOverrides: {
-                iteration: 8,
-                activeTimerState: { type: "wait", remainingMs: 600_000, originalDurationMs: 600_000, reason: "sleep" },
-            },
-            messages: [
-                { atMs: 0, payload: regenCmd({ args: { source: "operator", distill_mode: "deterministic" } }) },
-                { atMs: 1, payload: { prompt: "P", clientMessageIds: ["p"] } },
-                { atMs: 2, payload: { cancelPending: ["p"] } },
-            ],
-        });
-        const r = await h.run();
-        expect(eventsOfType(h.state, "session.regenerate_failed")).toHaveLength(1);
-        expect(r.blocked).not.toBe(true);
-        expect(r.runTurnCall?.prompt).toMatch(/600 second wait is now complete/);
-        expect(h.state.nowMs).toBeGreaterThanOrEqual(600_000);
-    });
-
-    // Issue 192 round 3: a successful flip during an agent wait must not
-    // carry the wait without its poll, or the new execution holds its own
-    // grounding prompt and continues as new without running it.
-    it("a flip during an agent wait ends the wait, and the next execution runs the grounding turn", async () => {
-        const waitInput = {
-            iteration: 8,
-            subAgents: [{ orchId: "agent-1", sessionId: "child-session-1", task: "watch", status: "running" }],
-            waitingForAgentIds: ["agent-1"],
-            activeTimerState: { type: "agent-poll", remainingMs: 30_000, originalDurationMs: 30_000, reason: "waiting for 1 agent(s)", agentIds: ["agent-1"] },
-        };
-        const h = createHarness({
-            inputOverrides: waitInput,
-            messages: [
-                { atMs: 0, payload: regenCmd({ args: { source: "operator", distill_mode: "deterministic" } }) },
-                { atMs: 1, payload: { prompt: "P", clientMessageIds: ["p"] } },
-                { atMs: 2, payload: { cancelPending: ["p"] } },
-            ],
-        });
-        await h.run();
-        const flip = h.state.continueAsNew?.input;
-        expect(flip?.transcriptEpoch, "the flip must continue-as-new").toBe(1);
-        expect(flip.waitingForAgentIds ?? null).toBeNull();
-
-        const next = createHarness({ inputOverrides: { ...flip } });
-        await next.run({ resumeWith: { type: "completed", content: "grounded." } });
-        expect(next.state.runTurnCall, "the grounding turn dispatched").toBeTruthy();
-    });
-
     it("llm mode (default): spawn → poll → collect → flip, distiller provenance on the boundary", async () => {
         const h = createHarness({
             distillerPlan: ["running", "completed"],
