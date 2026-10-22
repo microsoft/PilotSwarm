@@ -2,6 +2,15 @@
 
 ## 0.8.5 — 2026-10-20
 
+**Node.js security baseline.** Application images and every CI Node toolchain
+now pin [Node.js 24.22.1 LTS](https://nodejs.org/en/blog/release/v24.22.1),
+including the October 2026 TLS, DNS, Brotli, HTTP and dependency security fixes.
+The package requirement is `^24.22.1 || >=26.12.1`, excluding unpatched
+24.x/26.x releases and the end-of-life 25.x line. Trixie remains the image
+base for native Duroxide compatibility. Existing installations need a Node
+upgrade or full runtime-image rebuild; a UI-only image update does not replace
+its inherited Node runtime.
+
 **Duroxide fail-closed dependency update.** The SDK now pins
 [`duroxide` 0.2.2](https://github.com/microsoft/duroxide-node/releases/tag/v0.2.2)
 and all five native platform packages exactly from npm, replacing the 0.2.1

@@ -5,7 +5,7 @@
 
 # trixie-slim (Debian 13, glibc 2.41) required by duroxide-linux-x64-gnu >= 0.1.25
 # (prebuilds link against GLIBC_2.39; bookworm-slim is 2.36 and crashes at dlopen).
-FROM node:24-trixie-slim AS build
+FROM node:24.22.1-trixie-slim AS build
 
 # Build native dependencies and the TypeScript/browser workspaces in a clean
 # container context so ACR builds do not depend on host-generated dist trees.
@@ -54,7 +54,7 @@ RUN rm -rf \
     && npm run build --workspace=pilotswarm-horizon-store \
     && npm run build --workspace=pilotswarm
 
-FROM node:24-trixie-slim
+FROM node:24.22.1-trixie-slim
 
 # git: canvas apps run the git commands their manifest declares through the
 # portal when PORTAL_CANVAS_COMMANDS_RUNNER=local (packages/sdk/src/canvas-workspace.ts).

@@ -14,7 +14,7 @@ In this post, we'll build a **test swarm plugin** from scratch: a coordinator ag
 
 You'll need:
 
-- **Node.js 24+** (for native ESM and env file support)
+- **Node.js 24.22.1+ within 24.x, or 26.12.1+** (patched security baseline)
 - **PostgreSQL** (local or remote — the durable orchestration layer needs it)
 - A **GitHub Copilot token** (set as `GITHUB_TOKEN` in your env file)
 

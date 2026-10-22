@@ -22,7 +22,7 @@ These are not active agents in this repo. They are templates intended to be copi
 
 ### Run from source
 
-Use Node.js 24 or later and a PostgreSQL instance you can access. Build the
+Use Node.js 24.22.1 LTS (or a newer patched 24.x / Node 26.12.1+) and a PostgreSQL instance you can access. Build the
 repository, copy the example configuration, then set `DATABASE_URL` and a model
 provider credential such as `GITHUB_TOKEN` in `.env`:
 
@@ -240,7 +240,7 @@ Common entry points:
 
 ## Requirements
 
-- Node.js >= 24
+- Node.js 24.22.1+ within 24.x, or 26.12.1+ (CI and images pin 24.22.1 LTS)
 - PostgreSQL
 - GitHub Copilot access token (worker-side only)
 - Azure Blob Storage (optional, for session dehydration across nodes)

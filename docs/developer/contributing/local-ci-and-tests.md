@@ -7,7 +7,8 @@ tarball: the test harness and deployment templates are development sources.
 
 ## 1. Prerequisites
 
-- Node.js **24 or later**, npm, Git and Bash. Run Windows commands in WSL.
+- Node.js **24.22.1 LTS** (or newer patched 24.x / **26.12.1+**), npm, Git
+  and Bash. Run Windows commands in WSL.
 - Docker for a disposable stock PostgreSQL database, or your own test-only
   PostgreSQL server. The GitHub runner uses PostgreSQL 16.
 - For live SDK integration tests, a GitHub token with Copilot access and access
@@ -18,6 +19,13 @@ tarball: the test harness and deployment templates are development sources.
 
 Use databases dedicated to tests. The harness creates and removes schemas and
 cleans stale test state. Never point it at a portal or production database.
+
+CI pins Node 24.22.1 exactly rather than `24`, which can select an older cached
+runtime. Package engine requirements and the deployment tests enforce the
+[October 2026 security baseline](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases).
+Protected PR integration tests take runner setup from trusted **main**, not the
+candidate workflow. A Node pin change must reach main before those runs can
+qualify the patched runtime; ordinary PR checks use the candidate's exact pin.
 
 ## 2. Run the credential-free PR checks locally
 

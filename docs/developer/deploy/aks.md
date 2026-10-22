@@ -752,7 +752,7 @@ docker buildx build \
 ```
 
 The Dockerfile (`deploy/Dockerfile.worker`) builds a minimal image:
-- `node:24-trixie-slim` base
+- `node:24.22.1-trixie-slim` base (patched Node LTS; preserves native-library glibc compatibility)
 - Production dependencies only (`npm ci --omit=dev --force`)
 - Copies `packages/sdk/dist/` and `packages/sdk/examples/worker.js`
 - Runs as non-root `node` user
