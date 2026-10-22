@@ -99,6 +99,52 @@ function driveUntilStop(gen, ctx) {
     throw new Error("Exceeded step limit before stop condition");
 }
 
+// Drive until the handler parks: a continue-as-new, a blocking dequeue with an
+// empty queue, or a race whose only exit is a long timer (an armed schedule).
+function driveUntilParked(gen, ctx) {
+    let input;
+    for (let step = 0; step < 400; step += 1) {
+        const next = gen.next(input);
+        if (next.done) return { done: true, value: next.value };
+        const effect = next.value;
+        if (effect?.effect === "continueAsNew") return { done: false, effect };
+        if (effect?.effect === "dequeueEvent" && !ctx.hasQueuedEvents()) return { done: false, effect };
+        if (effect?.effect === "race" && !ctx.hasQueuedEvents()) {
+            const sides = [effect.left, effect.right];
+            const long = sides.find((side) => side?.effect === "scheduleTimer" && side.ms > 1000);
+            if (long && !sides.some((side) => side?.effect === "session.runTurn")) {
+                return { done: false, effect, parkedOnTimerMs: long.ms };
+            }
+        }
+        input = ctx.resolveEffect(effect);
+    }
+    throw new Error("Exceeded step limit before the handler parked");
+}
+
+function inheritedFifo(values) {
+    // A 1.0.81 session stuck as in issue 192: two cron fires queued ahead of two prompts.
+    const cronFire = {
+        kind: "timer",
+        timer: { type: "cron", deadlineMs: 1_713_083_000_000, originalDurationMs: 3_600_000, reason: "hourly" },
+        firedAtMs: 1_713_083_000_000,
+    };
+    values.set("fifo.0", JSON.stringify([
+        cronFire,
+        cronFire,
+        { kind: "prompt", prompt: "P1", bootstrap: false },
+        { kind: "prompt", prompt: "P2", bootstrap: false, clientMessageIds: ["p2"] },
+    ]));
+}
+
+function readFifo(values) {
+    const items = [];
+    for (let i = 0; i < 20; i += 1) {
+        const raw = values.get(`fifo.${i}`);
+        if (raw) items.push(...JSON.parse(raw));
+    }
+    return items;
+}
+
 describe("orchestration version upgrades", () => {
     beforeEach(() => {
         // Any other method answers with an effect named after it.
@@ -118,7 +164,7 @@ describe("orchestration version upgrades", () => {
 
     // 1.0.79 is the version frozen when session workspaces opened 1.0.80
     // (test C4): its sessions carry no config.workspace into 1.0.80.
-    for (const sourceVersion of ["1.0.40", "1.0.41", "1.0.42", "1.0.79", "1.0.80"]) {
+    for (const sourceVersion of ["1.0.40", "1.0.41", "1.0.42", "1.0.79", "1.0.80", "1.0.81"]) {
         it(`upgrades ${sourceVersion} snapshots into the latest orchestration`, async () => {
             const values = new Map();
             const { DURABLE_SESSION_LATEST_VERSION } = await import("../../src/orchestration-version.ts");
@@ -197,4 +243,46 @@ describe("orchestration version upgrades", () => {
             }
         });
     }
+
+    const inheritedInput = (sessionId) => ({
+        sessionId,
+        config: { model: "github-copilot:gpt-5.4" },
+        sourceOrchestrationVersion: "1.0.81",
+        iteration: 3,
+        isSystem: true,
+        blobEnabled: false,
+        cronSchedule: { intervalSeconds: 3600, reason: "hourly" },
+    });
+
+    it("issue 192 positive control: on 1.0.81 an inherited [timer, timer, P1, P2] FIFO runs P1 alone and leaves P2 behind the hourly cron", async () => {
+        const values = new Map();
+        inheritedFifo(values);
+        const turns = [];
+        const ctx = createCtx(values, [], turns);
+        const handler = await loadHandler("1.0.81");
+        const result = driveUntilParked(handler(ctx, inheritedInput("fifo-1.0.81")), ctx);
+        // Defect B: the timer item at the head stops the merge, so P1 runs alone.
+        expect(turns).toHaveLength(1);
+        expect(turns[0][0]).toMatch(/P1/);
+        expect(turns[0][0]).not.toMatch(/P2/);
+        // Defect A: the turn armed the hourly cron, and P2 waits behind it.
+        expect(result.parkedOnTimerMs).toBe(3_600_000);
+        expect(readFifo(values).filter((item) => item.kind === "prompt").map((item) => item.prompt)).toEqual(["P2"]);
+    });
+
+    it("R9: 1.0.82 drains an inherited 1.0.81 FIFO [timer, timer, P1, P2] in two turns, then waits on the cron", async () => {
+        const values = new Map();
+        inheritedFifo(values);
+        const turns = [];
+        const ctx = createCtx(values, [], turns);
+        const { DURABLE_SESSION_LATEST_VERSION } = await import("../../src/orchestration-version.ts");
+        expect(DURABLE_SESSION_LATEST_VERSION).toBe("1.0.82");
+        const handler = await loadHandler(DURABLE_SESSION_LATEST_VERSION);
+        const result = driveUntilParked(handler(ctx, inheritedInput("fifo-1.0.82")), ctx);
+        expect(turns).toHaveLength(2);
+        expect(turns[0][0]).toMatch(/P1[\s\S]*P2/);
+        expect(turns[1][0]).toMatch(/Scheduled cron wake-up/);
+        expect(readFifo(values)).toEqual([]);
+        expect(result.parkedOnTimerMs).toBe(3_600_000);
+    });
 });
