@@ -1,8 +1,20 @@
 import { capabilityHash, type CapabilitySource } from "./capability-catalog.js";
-import { AGENT_HANDOFF_CAPABILITY, TURN_CONTROL_CAPABILITY, WORKSPACE_CAPABILITY } from "./activity-routing.js";
+import {
+    AGENT_CHILD_BOOTSTRAP_CAPABILITY,
+    AGENT_HANDOFF_CAPABILITY,
+    TURN_CONTROL_CAPABILITY,
+    WORKSPACE_CAPABILITY,
+} from "./activity-routing.js";
 import { resolveNativeSubagents } from "./native-subagents.js";
 import { FeatureFlagCache } from "./feature-flag-cache.js";
-import { SessionManager, packageAgentKey, agentOwnerKey, type AgentCopyEntry, type AgentPromptEntry } from "./session-manager.js";
+import {
+    SessionManager,
+    packageAgentKey,
+    packageCopyKey,
+    agentOwnerKey,
+    type AgentCopyEntry,
+    type AgentPromptEntry,
+} from "./session-manager.js";
 import { loadAdminScope, ADMIN_SCOPE_POLICY_VERSION } from "../api/src/admin-scope.js";
 import { SessionBlobStore, createSessionBlobStore } from "./blob-store.js";
 import { FilesystemArtifactStore, FilesystemSessionStore, type ArtifactStore, type SessionStateStore } from "./session-store.js";
@@ -11,6 +23,12 @@ import {
     DURABLE_SESSION_ORCHESTRATION_NAME,
     DURABLE_SESSION_ORCHESTRATION_REGISTRY,
 } from "./orchestration-registry.js";
+import {
+    WORKFLOW_SESSION_ORCHESTRATION_NAME,
+    WORKFLOW_SESSION_ORCHESTRATION_REGISTRY,
+} from "./workflow-orchestration-registry.js";
+import { registerWorkflowActivities } from "./workflow-orchestration/activities.js";
+import { createSubmitWorkflowResultTool } from "./workflow-orchestration/result-tool.js";
 import { PgSessionCatalog, resolveEffectiveSpawnOwner } from "./cms.js";
 import { createAgentDiscoveryTool } from "./agent-discovery.js";
 import type { SessionCatalog } from "./cms.js";
@@ -239,6 +257,8 @@ export class PilotSwarmWorker {
      * reference in workerDefaults; cleared and refilled in place on reload.
      */
     private _ownerScopedSkills = new Map<string, Skill[]>();
+    /** Skills keyed by exact package/version for immutable workflow children. */
+    private _packageSkillsByPackage = new Map<string, Skill[]>();
     /** Raw loaded user-creatable agent configs from plugins + direct config. */
     private _rawLoadedAgents: Array<{ name: string; description?: string; prompt: string; tools?: string[] | null; skills?: string[]; mcpServers?: string[]; inheritDefaultMcpServers?: boolean; namespace?: string; crawler?: boolean; harvester?: boolean; promptLayerKind?: "app-agent" | "app-system-agent" | "pilotswarm-system-agent" }> = [];
     /** Optional PilotSwarm-bundled user agents, loaded only when session policy opts in. */
@@ -311,13 +331,25 @@ export class PilotSwarmWorker {
      * agent packages. Empty for plugin dirs the deployment configured itself.
      */
     private _capabilitySources: CapabilitySource[] = [];
-    private _packageDirOwners = new Map<string, { packageId: string; revision: string; scope: "shared" | "user"; owner: { provider: string; subject: string } | null }>();
+    private _packageDirOwners = new Map<string, {
+        packageId: string;
+        packageVersionId: string;
+        active: boolean;
+        revision: string;
+        scope: "shared" | "user";
+        owner: { provider: string; subject: string } | null;
+    }>();
     /** Agent-package dynamic install state (docs/proposals/agent-packages.md). */
     private _agentPackagesCacheDir: string | null = null;
     private _agentPackagesRefreshMs = 20_000;
     private _agentPackagesEpoch = -1;
     private _agentPackagesTimer: ReturnType<typeof setInterval> | null = null;
     private _agentPackagesRefreshing = false;
+    private _agentPackagesRefreshWaiters: Array<{
+        reject: (error: unknown) => void;
+        resolve: () => void;
+        throwOnError: boolean;
+    }> = [];
     /** Tools contributed by installed packages, merged under static tools. */
     private _agentPackageTools = new Map<string, Tool<any>>();
     /** Per-package tool maps — lets a session prefer ITS package's handler on a name collision. */
@@ -426,6 +458,7 @@ export class PilotSwarmWorker {
                 // will serve) and _ownerSkillsIndexSection (what its prompt
                 // says exists).
                 ownerScopedSkills: this._ownerScopedSkills,
+                packageSkillsByPackage: this._packageSkillsByPackage,
                 mcpServers: this._loadedMcpServers,
                 agentMcpServers: this._agentMcpServers,
                 baseMcpServers: this._baseMcpServers,
@@ -874,7 +907,14 @@ export class PilotSwarmWorker {
         this.sessionManager.setDuroxideClient(inspectClient);
 
         const runtimeOptions = {
-            workerTagFilter: { defaultAnd: [AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY, TURN_CONTROL_CAPABILITY] },
+            workerTagFilter: {
+                defaultAnd: [
+                    AGENT_HANDOFF_CAPABILITY,
+                    WORKSPACE_CAPABILITY,
+                    AGENT_CHILD_BOOTSTRAP_CAPABILITY,
+                    TURN_CONTROL_CAPABILITY,
+                ],
+            },
             orchestrationConcurrency,
             workerConcurrency,
             dispatcherPollIntervalMs: 10,
@@ -941,6 +981,7 @@ export class PilotSwarmWorker {
             this.factStore,
             this.config.workerNodeId,
             this.artifactStore,
+            () => this.refreshAgentPackages({ force: true, throwOnError: true }),
         );
 
         for (const registration of DURABLE_SESSION_ORCHESTRATION_REGISTRY) {
@@ -950,6 +991,25 @@ export class PilotSwarmWorker {
                 registration.handler,
             );
         }
+        for (const registration of WORKFLOW_SESSION_ORCHESTRATION_REGISTRY) {
+            this.runtime.registerOrchestrationVersioned(
+                WORKFLOW_SESSION_ORCHESTRATION_NAME,
+                registration.version,
+                registration.handler,
+            );
+        }
+        registerWorkflowActivities(
+            this.runtime,
+            this._catalog,
+            this.artifactStore,
+            this.config.workflowStateProviders,
+        );
+        if (this._catalog) {
+            this.registerTools([createSubmitWorkflowResultTool({
+                catalog: this._catalog,
+                duroxideClient: new Client(this._provider),
+            })]);
+        }
 
         // Auto-register sweeper tools if CMS is available
         if (this._catalog) {
@@ -958,6 +1018,7 @@ export class PilotSwarmWorker {
                 catalog: this._catalog,
                 duroxideClient: sweeperClient,
                 factStore: this.factStore,
+                artifactStore: this.artifactStore,
                 duroxideSchema: storage.duroxide.schema,
                 storeUrl: storage.duroxide.url,
             });
@@ -1227,7 +1288,11 @@ export class PilotSwarmWorker {
      */
     private _getCapabilitySources(): CapabilitySource[] {
         const sources = this._capabilitySources.map(source => {
-            const tools = source.packageId ? this._agentPackageToolsByPackage.get(source.packageId) ?? new Map() : source.tools;
+            const tools = source.packageId
+                ? this._agentPackageToolsByPackage.get(
+                    packageCopyKey(source.packageId, source.packageVersionId),
+                ) ?? new Map()
+                : source.tools;
             return { ...source, tools, artifacts: [...source.artifacts, ...[...tools.values()].map(tool => ({
                 kind: "tool" as const, name: tool.name, description: tool.description ?? "" }))] };
         });
@@ -1251,6 +1316,7 @@ export class PilotSwarmWorker {
     private _resetLoadedPluginState(): void {
         this._capabilitySources.length = 0;
         this._agentPackageMcpServersByPackage.clear();
+        this._packageSkillsByPackage.clear();
         this._loadedSkillDirs.length = 0;
         this._loadedSkills.clear();
         this._loadedSkillsAll.length = 0;
@@ -1324,10 +1390,25 @@ export class PilotSwarmWorker {
         ]);
     }
 
-    async refreshAgentPackages(opts: { force?: boolean } = {}): Promise<void> {
-        if (!this._agentPackagesCacheDir || !this._catalog || !this.artifactStore) return;
-        if (this._agentPackagesRefreshing) return;
+    async refreshAgentPackages(opts: { force?: boolean; throwOnError?: boolean } = {}): Promise<void> {
+        if (!this._agentPackagesCacheDir || !this._catalog || !this.artifactStore) {
+            if (opts.throwOnError) {
+                throw new Error("Agent package installation is unavailable on this worker.");
+            }
+            return;
+        }
+        if (this._agentPackagesRefreshing) {
+            await new Promise<void>((resolve, reject) => {
+                this._agentPackagesRefreshWaiters.push({
+                    reject,
+                    resolve,
+                    throwOnError: opts.throwOnError === true,
+                });
+            });
+            return;
+        }
         this._agentPackagesRefreshing = true;
+        let refreshError: unknown;
         try {
             const currentEpoch = await this._catalog.agentRegistryEpoch();
             if (!opts.force && currentEpoch === this._agentPackagesEpoch) {
@@ -1374,7 +1455,12 @@ export class PilotSwarmWorker {
                         packageTools.set((tool as any).name, tool);
                         ownMap.set((tool as any).name, tool);
                     }
-                    if (ownMap.size > 0) packageToolsByPackage.set(pkg.packageId, ownMap);
+                    if (ownMap.size > 0) {
+                        packageToolsByPackage.set(
+                            packageCopyKey(pkg.packageId, pkg.versionId),
+                            ownMap,
+                        );
+                    }
                 } catch (error: any) {
                     pkg.status = "error";
                     pkg.error = `worker-module import failed: ${String(error?.message ?? error)}`;
@@ -1398,7 +1484,14 @@ export class PilotSwarmWorker {
             this._packageDirOwners = new Map(
                 result.packages
                     .filter((p) => p.status === "ok")
-                    .map((p) => [path.resolve(p.dir), { packageId: p.packageId, revision: p.sha256, scope: p.scope, owner: p.owner }]),
+                    .map((p) => [path.resolve(p.dir), {
+                        packageId: p.packageId,
+                        packageVersionId: p.versionId,
+                        active: p.isActive,
+                        revision: p.sha256,
+                        scope: p.scope,
+                        owner: p.owner,
+                    }]),
             );
 
             // Synchronous swap — no await between reset and reload, so no
@@ -1421,7 +1514,8 @@ export class PilotSwarmWorker {
             }
             this._agentPackagesInstalled = Object.fromEntries(result.packages.map((p) => [
                 (installedNameCounts.get(p.name) ?? 0) > 1
-                    ? `${p.name}#${p.scope}${p.scope === "user" && p.owner ? `:${p.owner.subject.slice(0, 8)}` : ""}`
+                    ? `${p.name}#${p.scope}${p.scope === "user" && p.owner ? `:${p.owner.subject.slice(0, 8)}` : ""}` +
+                        `@${p.versionId.slice(0, 8)}:${p.isActive ? "active" : "pinned"}`
                     : p.name,
                 { semver: p.semver, sha256: p.sha256, status: p.status, ...(p.error ? { error: p.error } : {}) },
             ]));
@@ -1435,19 +1529,32 @@ export class PilotSwarmWorker {
             }
             this._agentPackagesRefreshError = null;
         } catch (error: any) {
+            refreshError = error;
             // Recorded into the heartbeat's state so a stuck worker is
             // diagnosable from the registry (actual epoch lags + lastError),
             // not just from this pod's logs.
             this._agentPackagesRefreshError = String(error?.message ?? error);
             console.warn(`[PilotSwarmWorker] agent-package refresh failed (will retry on next poll): ${error?.message ?? error}`);
+            if (opts.throwOnError) throw error;
         } finally {
             // The heartbeat is the worker's PRESENCE, not a success report:
             // it must fire on the unchanged path, the converge path, and the
             // install-failure path alike, or a worker becomes invisible
             // exactly when it is unhealthy. Awaited so fleet truth is durable
             // once a refresh resolves; never throws.
-            await this._reportAgentWorkerState();
-            this._agentPackagesRefreshing = false;
+            try {
+                await this._reportAgentWorkerState();
+            } finally {
+                this._agentPackagesRefreshing = false;
+                const waiters = this._agentPackagesRefreshWaiters.splice(0);
+                for (const waiter of waiters) {
+                    if (refreshError && waiter.throwOnError) {
+                        waiter.reject(refreshError);
+                    } else {
+                        waiter.resolve();
+                    }
+                }
+            }
         }
     }
 
@@ -1646,7 +1753,11 @@ export class PilotSwarmWorker {
             // CustomAgentConfig.mcpServers receives real server configs.
             const { mcpServers: _refs, inheritDefaultMcpServers: _inherit, ...rest } = agent;
             const mcpKey = (agent as any).packageId
-                ? packageAgentKey((agent as any).packageId, agent.name)
+                ? packageAgentKey(
+                    (agent as any).packageId,
+                    agent.name,
+                    (agent as any).packageVersionId,
+                )
                 : agent.namespace ? `${agent.namespace}:${agent.name}` : agent.name;
             return {
                 ...rest,
@@ -1772,7 +1883,12 @@ export class PilotSwarmWorker {
             for (const ref of refs ?? []) {
                 if (typeof ref !== "string" || !ref) continue;
                 const packageServers = agent?.packageId
-                    ? this._agentPackageMcpServersByPackage.get(agent.packageId)
+                    ? this._agentPackageMcpServersByPackage.get(
+                        packageCopyKey(
+                            agent.packageId,
+                            agent.packageVersionId ?? undefined,
+                        ),
+                    )
                     : undefined;
                 const server = packageServers && Object.hasOwn(packageServers, ref)
                     ? packageServers[ref]
@@ -1827,11 +1943,16 @@ export class PilotSwarmWorker {
                 name: agent.name,
                 namespace: agent.namespace ?? null,
                 packageId: (agent as any).packageId ?? null,
+                packageVersionId: (agent as any).packageVersionId ?? null,
                 packageScope: (agent as any).packageScope ?? null,
             });
             const packageId = (agent as any).packageId;
             const keys = packageId
-                ? [packageAgentKey(packageId, agent.name)]
+                ? [packageAgentKey(
+                    packageId,
+                    agent.name,
+                    (agent as any).packageVersionId,
+                )]
                 : [...new Set([agent.name, ...(agent.namespace ? [`${agent.namespace}:${agent.name}`] : [])])];
             for (const key of keys) {
                 if (!packageId && assignedStaticKeys.has(key)) continue;
@@ -1849,13 +1970,25 @@ export class PilotSwarmWorker {
      * The package a loaded skill belongs to, or null for a deployment skill.
      * Matched by directory prefix against the installed package dirs.
      */
-    private _skillPackageOwner(skill: Skill): { scope: "shared" | "user"; owner: { provider: string; subject: string } | null } | null {
+    private _skillPackageOwner(skill: Skill): {
+        packageId: string;
+        packageVersionId: string;
+        active: boolean;
+        scope: "shared" | "user";
+        owner: { provider: string; subject: string } | null;
+    } | null {
         if (!skill.dir) return null;
         // Resolve the skill dir once; the map keys are already resolved.
         const skillDir = path.resolve(skill.dir);
         for (const [dir, prov] of this._packageDirOwners) {
             if (skillDir === dir || skillDir.startsWith(dir + path.sep)) {
-                return { scope: prov.scope, owner: prov.owner };
+                return {
+                    packageId: prov.packageId,
+                    packageVersionId: prov.packageVersionId,
+                    active: prov.active,
+                    scope: prov.scope,
+                    owner: prov.owner,
+                };
             }
         }
         return null;
@@ -1885,11 +2018,19 @@ export class PilotSwarmWorker {
         //                        (`_ownerSkillsIndexSection`).
         this._loadableSkills.length = 0;
         this._ownerScopedSkills.clear();
+        this._packageSkillsByPackage.clear();
         const seen = new Map<string, string>();
         const ownerSeen = new Map<string, Set<string>>();
         for (const skill of this._loadedSkillsAll) {
             if (!skill?.name) continue;
             const prov = this._skillPackageOwner(skill);
+            if (prov) {
+                const key = packageCopyKey(prov.packageId, prov.packageVersionId);
+                const packageSkills = this._packageSkillsByPackage.get(key) ?? [];
+                packageSkills.push(skill);
+                this._packageSkillsByPackage.set(key, packageSkills);
+                if (prov.active === false) continue;
+            }
             if (prov && prov.scope === "user") {
                 // Private to its owner: never in the fleet-wide catalog, but
                 // loadable by that person's own sessions. session-manager
@@ -1942,6 +2083,7 @@ export class PilotSwarmWorker {
                 const skillDir = skill.dir ? path.resolve(skill.dir) : null;
                 const isOwn = Boolean(ownDir && skillDir && skillDir.startsWith(ownDir + path.sep));
                 if (isOwn) { ownSkills.push(skill); continue; }
+                if (prov?.active === false) continue;
                 if (!prov || prov.scope !== "user") { pool.push(skill); continue; }
                 // Foreign user-scope skill: include only if same owner (another
                 // copy the same person owns); otherwise exclude.
@@ -1987,7 +2129,11 @@ export class PilotSwarmWorker {
             list.push(agent);
             byName.set(agent.name, list);
         }
-        const rank = (agent: any) => agent.packageId == null ? 0 : (agent.packageScope !== "user" ? 1 : 2);
+        const rank = (agent: any) => {
+            if (agent.packageId == null) return 0;
+            if (agent.packageActive === false) return 3;
+            return agent.packageScope !== "user" ? 1 : 2;
+        };
         for (const [name, agents] of byName) {
             const winner = [...agents].sort((a, b) => rank(a) - rank(b))[0];
             const copyOf = (agent: any): AgentCopyEntry => ({
@@ -2000,6 +2146,8 @@ export class PilotSwarmWorker {
                 namespace: agent.namespace ?? null,
                 ...(agent.packageId ? {
                     packageId: agent.packageId,
+                    packageVersionId: agent.packageVersionId,
+                    packageActive: agent.packageActive !== false,
                     packageScope: agent.packageScope ?? "shared",
                     packageOwner: agent.packageOwner ?? null,
                 } : {}),
@@ -2113,9 +2261,14 @@ export class PilotSwarmWorker {
         }
 
         const provenance = this._packageDirOwners.get(absDir);
-        const source: CapabilitySource = { id: provenance?.packageId ?? `static:${capabilityHash(absDir).slice(0, 20)}`,
+        const source: CapabilitySource = {
+            id: provenance
+                ? packageCopyKey(provenance.packageId, provenance.packageVersionId)
+                : `static:${capabilityHash(absDir).slice(0, 20)}`,
             name: namespace, source: provenance ? "published" : "static", revision: provenance?.revision ?? "",
-            scope: provenance?.scope ?? "shared", owner: provenance?.owner, packageId: provenance?.packageId,
+            scope: provenance?.scope ?? "shared", owner: provenance?.owner,
+            packageId: provenance?.packageId,
+            packageVersionId: provenance?.packageVersionId,
             artifacts: [], tools: new Map(), mcpServers: {} };
         // Skills
         const skillsDir = path.join(absDir, "skills");
@@ -2192,6 +2345,8 @@ export class PilotSwarmWorker {
                     const provenance = this._packageDirOwners.get(absDir);
                     if (provenance) {
                         (agent as any).packageId = provenance.packageId;
+                        (agent as any).packageVersionId = provenance.packageVersionId;
+                        (agent as any).packageActive = provenance.active;
                         (agent as any).packageDir = absDir;
                     }
                     if (provenance && provenance.scope === "user" && provenance.owner) {
@@ -2235,11 +2390,19 @@ export class PilotSwarmWorker {
             this._loadedMcpServers[name] = cfg;
         }
         if (mcpPackageProvenance && Object.keys(source.mcpServers).length > 0) {
-            this._agentPackageMcpServersByPackage.set(mcpPackageProvenance.packageId, source.mcpServers);
+            this._agentPackageMcpServersByPackage.set(
+                packageCopyKey(
+                    mcpPackageProvenance.packageId,
+                    mcpPackageProvenance.packageVersionId,
+                ),
+                source.mcpServers,
+            );
         }
 
         if (!source.revision) source.revision = capabilityHash({ artifacts: source.artifacts, mcp: source.mcpServers });
-        this._capabilitySources.push(source);
+        if (provenance?.active !== false) {
+            this._capabilitySources.push(source);
+        }
 
         // Session policy — last one wins
         const policyPath = path.join(absDir, "session-policy.json");

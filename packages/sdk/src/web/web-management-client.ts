@@ -6,6 +6,7 @@ import {
 } from "./api-connection.js";
 import { createManagementOps, type ManagementOps } from "./generated-op-methods.js";
 import type { FeatureViewer, FeatureMutation, FeatureView, FeatureMutationResult } from "../feature-store.js";
+import type { WorkflowDefinitionRegistrationRequest } from "../management-client.js";
 import type { StopTurnOptions, StopTurnResult, SteerTurnOptions, SteerTurnResult } from "../types.js";
 
 const WAIT_SLICE_MS = 25_000;
@@ -86,6 +87,56 @@ export class WebPilotSwarmManagementClient {
 
     async getSession(sessionId: string): Promise<any> {
         return this._api.call("getSession", { sessionId });
+    }
+
+    async registerWorkflowDefinition(
+        requestOrYaml: WorkflowDefinitionRegistrationRequest | string,
+        _options?: { packageRoot: string },
+    ): Promise<any> {
+        if (typeof requestOrYaml === "string") {
+            throw Object.assign(
+                new Error("Web registration requires a Git-backed source request."),
+                { code: "WEB_MODE_UNSUPPORTED" },
+            );
+        }
+        return this._api.call("registerWorkflowDefinition", {
+            source: requestOrYaml.source,
+            scope: requestOrYaml.scope ?? "user",
+        });
+    }
+
+    async getWorkflowDefinition(definitionId: string): Promise<any> {
+        return this._api.call("getWorkflowDefinition", { definitionId });
+    }
+
+    async listWorkflowDefinitions(): Promise<any[]> {
+        return this._api.call("listWorkflowDefinitions", {});
+    }
+
+    async getWorkflow(sessionId: string): Promise<any> {
+        return this._api.call("getWorkflow", { sessionId });
+    }
+
+    async listWorkflowExecutions(sessionId: string): Promise<any[]> {
+        return this._api.call("listWorkflowExecutions", { sessionId });
+    }
+
+    async getWorkflowOverview(sessionId: string): Promise<any> {
+        return this._api.call("getWorkflowOverview", { sessionId });
+    }
+
+    async answerWorkflowQuestion(
+        sessionId: string,
+        executionSequence: number,
+        outcome: string,
+        output: unknown,
+    ): Promise<void> {
+        await this._api.call("answerWorkflowQuestion", {
+            sessionId,
+            executionSequence,
+            outcome,
+            output,
+        });
     }
 
     // ── Session actions ─────────────────────────────────────────────────

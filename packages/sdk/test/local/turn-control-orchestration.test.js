@@ -119,7 +119,6 @@ describe("1.0.81 turn control orchestration", () => {
         expect(h.calls.some(call => call.effect === "dequeue" && call.name.startsWith("stopTurn."))).toBe(false);
         expect(h.calls.some(call => call.effect === "session.abortTurn")).toBe(false);
     });
-
     it("late steers start a turn at once, once, and are not recorded as new user messages", () => {
         const h = harness();
         h.run({ type: "completed", content: "first", lateSteers: [steer(10), steer(11)] });
@@ -757,4 +756,3 @@ describe("1.0.81 turn control orchestration", () => {
         });
     });
 });
-

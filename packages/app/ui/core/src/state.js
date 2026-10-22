@@ -513,6 +513,12 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
         history: {
             bySessionId: new Map(),
         },
+        workflowOverview: {
+            bySessionId: {},
+        },
+        workflowExecutions: {
+            bySessionId: {},
+        },
         outbox: {
             bySessionId: {},
         },

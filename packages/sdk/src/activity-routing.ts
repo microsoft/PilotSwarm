@@ -1,9 +1,14 @@
+import {
+    AGENT_CHILD_BOOTSTRAP_CAPABILITY,
+} from "./agent-child-bootstrap.js";
+
 /** Capability routing for the complete named-agent handoff contract.
  *
  * Old orchestration callers omit this contract and retain their exact activity
  * names, inputs and descriptors. Orchestrations 1.0.75 and later opt into it.
  */
 export const AGENT_HANDOFF_CAPABILITY = "pilotswarm.agent-handoff.v2";
+export { AGENT_CHILD_BOOTSTRAP_CAPABILITY };
 /**
  * Contracts:
  * - "agent-handoff-v2" (1.0.75+): handoff activity names and tag.
@@ -18,6 +23,8 @@ export const HANDOFF_ACTIVITY_NAMES = {
     resolveAgentConfig: "resolveAgentConfigV2",
     resolveAgentForRequiredTool: "resolveAgentForRequiredToolV2",
     spawnChildSession: "spawnChildSessionV2",
+    spawnWorkflowSession: "spawnWorkflowSessionV1",
+    getWorkflowResult: "getWorkflowResultV1",
     getSessionStatus: "getSessionStatusV2",
     listChildSessions: "listChildSessionsV2",
 } as const;

@@ -38,7 +38,7 @@ test("the latest version is 1.0.82", () => {
     );
 });
 
-test("1.0.70 through 1.0.79 are frozen in their own directories", () => {
+test("1.0.70 through 1.0.80 are frozen in their own directories", () => {
     assert.ok(existsSync(join(SRC, "orchestration_1_0_70/index.ts")), "the frozen copy must exist");
     assert.ok(existsSync(join(SRC, "orchestration_1_0_71/index.ts")), "the latest frozen copy must exist");
     const registry = read("orchestration-registry.ts");

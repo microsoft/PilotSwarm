@@ -72,6 +72,16 @@ export const OPERATIONS = [
     { name: "sendSessionEvent", access: "session:write", method: "POST", path: "/sessions/:sessionId/events", params: { sessionId: path("sessionId"), eventName: body(), data: body() }, summary: "Send a custom event into the session." },
     { name: "cancelPendingMessage", access: "session:write", method: "POST", path: "/sessions/:sessionId/cancel-pending", params: { sessionId: path("sessionId"), clientMessageIds: body() }, summary: "Cancel queued messages by client message ids." },
 
+    // ── Workflows (read model) ─────────────────────────────────────────
+    { name: "startWorkflow", access: "session:create", method: "POST", path: "/workflows", params: { definitionId: body(), inputs: body(), idempotencyKey: body(), groupId: body(), visibility: body(), rerun: body() }, summary: "Validate, atomically admit, and start one registered workflow execution. Definition-declared primary keys deduplicate logical entities." },
+    { name: "registerWorkflowDefinition", access: "authed", method: "POST", path: "/workflow-definitions", params: { source: body(), scope: body() }, summary: "Resolve a Git-backed workflow package and register an owned user or shared immutable definition." },
+    { name: "listWorkflowDefinitions", access: "authed", method: "GET", path: "/workflow-definitions", params: {}, summary: "List shared workflow definitions plus definitions owned by the caller." },
+    { name: "getWorkflowDefinition", access: "authed", method: "GET", path: "/workflow-definitions/:definitionId", params: { definitionId: path("definitionId") }, summary: "Read one shared or caller-owned immutable workflow definition." },
+    { name: "getWorkflow", access: "session:read", method: "GET", path: "/workflows/:sessionId", params: { sessionId: path("sessionId") }, summary: "Get the workflow's current state, waiting reason, and terminal result when complete." },
+    { name: "listWorkflowExecutions", access: "session:read", method: "GET", path: "/workflows/:sessionId/executions", params: { sessionId: path("sessionId") }, summary: "Authoritative workflow state executions in admission order." },
+    { name: "getWorkflowOverview", access: "session:read", method: "GET", path: "/workflows/:sessionId/overview", params: { sessionId: path("sessionId") }, summary: "Sanitized workflow topology and execution status for an authorized session reader." },
+    { name: "answerWorkflowQuestion", access: "session:write", method: "POST", path: "/workflows/:sessionId/questions/:executionSequence/answer", params: { sessionId: path("sessionId"), executionSequence: path("executionSequence"), outcome: body(), output: body() }, summary: "Answer the workflow's currently pending durable question." },
+
     // ── Session sharing (security model) ────────────────────────────────
     { name: "getSessionAccess", access: "session:read", method: "GET", path: "/sessions/:sessionId/access", params: { sessionId: path("sessionId") }, summary: "The caller's effective access to this session's tree: { visibility, relation, canWrite, canManage, owner }." },
     { name: "setSessionVisibility", access: "session:share", method: "PUT", path: "/sessions/:sessionId/visibility", params: { sessionId: path("sessionId"), visibility: body() }, summary: "Set the tree's sharing level (private | shared_read | shared_write). Owner or admin." },

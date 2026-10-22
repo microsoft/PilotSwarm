@@ -8,6 +8,7 @@
 /** Every operation name in the protocol table, sorted. */
 export const GENERATED_OP_NAMES: readonly string[] = [
     "adoptLegacySystemGitHubCopilotKey",
+    "answerWorkflowQuestion",
     "assignSessionsToGroup",
     "cancelPendingMessage",
     "cancelSession",
@@ -95,6 +96,9 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "getUserFeatureFlags",
     "getUserStats",
     "getWorkerCount",
+    "getWorkflow",
+    "getWorkflowDefinition",
+    "getWorkflowOverview",
     "grantAgentPackageEditor",
     "grantSessionShare",
     "graphNeighbourhood",
@@ -120,6 +124,8 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "listSessionsPage",
     "listSessionWorkspaceFolders",
     "listWorkers",
+    "listWorkflowDefinitions",
+    "listWorkflowExecutions",
     "moveSessionsToGroup",
     "pinAgentPackageVersion",
     "placeSessionsInGroup",
@@ -128,6 +134,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "readCanvasKv",
     "readFacts",
     "regenerateSession",
+    "registerWorkflowDefinition",
     "removeCanvasShareLink",
     "removeProviderLimit",
     "renameSession",
@@ -169,6 +176,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "setUserFeatureFlag",
     "similarFacts",
     "startFactsEmbedder",
+    "startWorkflow",
     "steerSessionTurn",
     "stopFactsEmbedder",
     "stopSessionTurn",
@@ -203,6 +211,17 @@ export interface ManagementOps {
      */
     adoptLegacySystemGitHubCopilotKey(params: {
         name?: any;
+    }): Promise<any>;
+
+    /**
+     * Answer the workflow's currently pending durable question.
+     * @remarks `POST /workflows/:sessionId/questions/:executionSequence/answer` — access: `session:write`
+     */
+    answerWorkflowQuestion(params: {
+        sessionId: string;
+        executionSequence: string;
+        outcome?: any;
+        output?: any;
     }): Promise<any>;
 
     /**
@@ -962,6 +981,30 @@ export interface ManagementOps {
     getWorkerCount(params?: Record<string, never>): Promise<any>;
 
     /**
+     * Get the workflow's current state, waiting reason, and terminal result when complete.
+     * @remarks `GET /workflows/:sessionId` — access: `session:read`
+     */
+    getWorkflow(params: {
+        sessionId: string;
+    }): Promise<any>;
+
+    /**
+     * Read one shared or caller-owned immutable workflow definition.
+     * @remarks `GET /workflow-definitions/:definitionId` — access: `authed`
+     */
+    getWorkflowDefinition(params: {
+        definitionId: string;
+    }): Promise<any>;
+
+    /**
+     * Sanitized workflow topology and execution status for an authorized session reader.
+     * @remarks `GET /workflows/:sessionId/overview` — access: `session:read`
+     */
+    getWorkflowOverview(params: {
+        sessionId: string;
+    }): Promise<any>;
+
+    /**
      * Grant a user write access to a SHARED package ({ user: { provider, subject } }): publish, republish into it, pin, enable/disable — not scope, delete, or the editor list. Owner or admin. Revoked when the package is demoted to user scope.
      * @remarks `POST /agent-packages/:name/editors` — access: `authed`
      */
@@ -1154,6 +1197,20 @@ export interface ManagementOps {
     listWorkers(params?: Record<string, never>): Promise<any>;
 
     /**
+     * List shared workflow definitions plus definitions owned by the caller.
+     * @remarks `GET /workflow-definitions` — access: `authed`
+     */
+    listWorkflowDefinitions(params?: Record<string, never>): Promise<any>;
+
+    /**
+     * Authoritative workflow state executions in admission order.
+     * @remarks `GET /workflows/:sessionId/executions` — access: `session:read`
+     */
+    listWorkflowExecutions(params: {
+        sessionId: string;
+    }): Promise<any>;
+
+    /**
      * Deprecated alias of placeSessionsInGroup.
      * @remarks `POST /management/session-groups/move` — access: `authed`
      */
@@ -1235,6 +1292,15 @@ export interface ManagementOps {
     regenerateSession(params: {
         sessionId: string;
         options?: any;
+    }): Promise<any>;
+
+    /**
+     * Resolve a Git-backed workflow package and register an owned user or shared immutable definition.
+     * @remarks `POST /workflow-definitions` — access: `authed`
+     */
+    registerWorkflowDefinition(params: {
+        source?: any;
+        scope?: any;
     }): Promise<any>;
 
     /**
@@ -1643,6 +1709,19 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Validate, atomically admit, and start one registered workflow execution. Definition-declared primary keys deduplicate logical entities.
+     * @remarks `POST /workflows` — access: `session:create`
+     */
+    startWorkflow(params: {
+        definitionId?: any;
+        inputs?: any;
+        idempotencyKey?: any;
+        groupId?: any;
+        visibility?: any;
+        rerun?: any;
+    }): Promise<any>;
+
+    /**
      * Steer the running turn (options: { text, requestId, replacesClientMessageId? }); needs the sessions.steering feature. replacesClientMessageId converts that queued message: a delivered steer replaces it. Outcome accepted (steerId, turn, repeat?) or a refusal: no_turn | legacy_turn | not_found | too_many | request_id_reused | steering_disabled | already_received.
      * @remarks `POST /management/sessions/:sessionId/steer` — access: `session:write`
      */
@@ -1800,6 +1879,7 @@ export function createManagementOps(
 ): ManagementOps {
     return {
         adoptLegacySystemGitHubCopilotKey: (params: Record<string, unknown> = {}) => callOp("adoptLegacySystemGitHubCopilotKey", params),
+        answerWorkflowQuestion: (params: Record<string, unknown> = {}) => callOp("answerWorkflowQuestion", params),
         assignSessionsToGroup: (params: Record<string, unknown> = {}) => callOp("assignSessionsToGroup", params),
         cancelPendingMessage: (params: Record<string, unknown> = {}) => callOp("cancelPendingMessage", params),
         cancelSession: (params: Record<string, unknown> = {}) => callOp("cancelSession", params),
@@ -1887,6 +1967,9 @@ export function createManagementOps(
         getUserFeatureFlags: (params: Record<string, unknown> = {}) => callOp("getUserFeatureFlags", params),
         getUserStats: (params: Record<string, unknown> = {}) => callOp("getUserStats", params),
         getWorkerCount: (params: Record<string, unknown> = {}) => callOp("getWorkerCount", params),
+        getWorkflow: (params: Record<string, unknown> = {}) => callOp("getWorkflow", params),
+        getWorkflowDefinition: (params: Record<string, unknown> = {}) => callOp("getWorkflowDefinition", params),
+        getWorkflowOverview: (params: Record<string, unknown> = {}) => callOp("getWorkflowOverview", params),
         grantAgentPackageEditor: (params: Record<string, unknown> = {}) => callOp("grantAgentPackageEditor", params),
         grantSessionShare: (params: Record<string, unknown> = {}) => callOp("grantSessionShare", params),
         graphNeighbourhood: (params: Record<string, unknown> = {}) => callOp("graphNeighbourhood", params),
@@ -1912,6 +1995,8 @@ export function createManagementOps(
         listSessionsPage: (params: Record<string, unknown> = {}) => callOp("listSessionsPage", params),
         listSessionWorkspaceFolders: (params: Record<string, unknown> = {}) => callOp("listSessionWorkspaceFolders", params),
         listWorkers: (params: Record<string, unknown> = {}) => callOp("listWorkers", params),
+        listWorkflowDefinitions: (params: Record<string, unknown> = {}) => callOp("listWorkflowDefinitions", params),
+        listWorkflowExecutions: (params: Record<string, unknown> = {}) => callOp("listWorkflowExecutions", params),
         moveSessionsToGroup: (params: Record<string, unknown> = {}) => callOp("moveSessionsToGroup", params),
         pinAgentPackageVersion: (params: Record<string, unknown> = {}) => callOp("pinAgentPackageVersion", params),
         placeSessionsInGroup: (params: Record<string, unknown> = {}) => callOp("placeSessionsInGroup", params),
@@ -1920,6 +2005,7 @@ export function createManagementOps(
         readCanvasKv: (params: Record<string, unknown> = {}) => callOp("readCanvasKv", params),
         readFacts: (params: Record<string, unknown> = {}) => callOp("readFacts", params),
         regenerateSession: (params: Record<string, unknown> = {}) => callOp("regenerateSession", params),
+        registerWorkflowDefinition: (params: Record<string, unknown> = {}) => callOp("registerWorkflowDefinition", params),
         removeCanvasShareLink: (params: Record<string, unknown> = {}) => callOp("removeCanvasShareLink", params),
         removeProviderLimit: (params: Record<string, unknown> = {}) => callOp("removeProviderLimit", params),
         renameSession: (params: Record<string, unknown> = {}) => callOp("renameSession", params),
@@ -1961,6 +2047,7 @@ export function createManagementOps(
         setUserFeatureFlag: (params: Record<string, unknown> = {}) => callOp("setUserFeatureFlag", params),
         similarFacts: (params: Record<string, unknown> = {}) => callOp("similarFacts", params),
         startFactsEmbedder: (params: Record<string, unknown> = {}) => callOp("startFactsEmbedder", params),
+        startWorkflow: (params: Record<string, unknown> = {}) => callOp("startWorkflow", params),
         steerSessionTurn: (params: Record<string, unknown> = {}) => callOp("steerSessionTurn", params),
         stopFactsEmbedder: (params: Record<string, unknown> = {}) => callOp("stopFactsEmbedder", params),
         stopSessionTurn: (params: Record<string, unknown> = {}) => callOp("stopSessionTurn", params),

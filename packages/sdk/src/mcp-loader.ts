@@ -104,6 +104,7 @@ export interface McpAllowlistAgent {
     namespace?: string | null;
     /** Set for agents loaded from an installed agent package. */
     packageId?: string | null;
+    packageVersionId?: string | null;
     /** Which copy of the package the agent came from. */
     packageScope?: "shared" | "user" | null;
 }

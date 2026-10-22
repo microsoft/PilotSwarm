@@ -28,7 +28,7 @@ import { loadAdminScope } from "../api/src/admin-scope.js";
 import { parseAgentFqn } from "./agent-fqn.js";
 import { decideSessionControl } from "./agent-manager-tools.js";
 import type { StorageConfig } from "./storage-config.js";
-import { SESSION_STATE_MISSING_PREFIX, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type ManagedSessionConfig, type SerializableSessionConfig, type TurnResult, type OrchestrationInput, type LateSteer, type TurnEndKind, type TurnStartRecord } from "./types.js";
+import { SESSION_STATE_MISSING_PREFIX, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type ManagedSessionConfig, type SerializableSessionConfig, type TurnResult, type OrchestrationInput, type WorkflowDefinitionSource, type LateSteer, type TurnEndKind, type TurnStartRecord } from "./types.js";
 import type { ArtifactStore } from "./session-store.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { systemChildAgentUUID } from "./agent-loader.js";
@@ -37,6 +37,12 @@ import { PilotSwarmManagementClient, type SessionOrchestrationStats } from "./ma
 import { replyInternalSessionMessage, sendInternalSessionMessage } from "./session-messages.js";
 import { loadKnowledgeIndexFromFactStore } from "./knowledge-index.js";
 import { mergePromptSections } from "./prompt-layering.js";
+import { orchestrationSupportsWorkflowTools } from "./workflow-tools.js";
+import { toWorkflowResult } from "./workflow-session.js";
+import {
+    ENQUEUE_AGENT_CHILD_BOOTSTRAP_ACTIVITY,
+    ENSURE_AGENT_CHILD_SESSION_ACTIVITY,
+} from "./agent-child-bootstrap.js";
 import { approvePermissionForSession } from "./permissions.js";
 import { formatSessionTimestamp, sessionTimestampMillis } from "./session-list-timestamps.js";
 import { formatSessionOwnerLabel, getSessionOwnerKind, matchesSessionOwnerFilters } from "./session-owner-utils.js";
@@ -94,6 +100,7 @@ export interface ResolvedAgentDefinition {
     creatable?: boolean;
     /** Present when the definition came from an agent package. */
     packageId?: string;
+    packageVersionId?: string;
     packageScope?: "shared" | "user";
 }
 
@@ -131,11 +138,13 @@ export async function resolveAgentDefinitionForCaller(opts: {
     userAgents?: any[];
     systemAgents?: any[];
     getCallerOwnerKey: () => Promise<string | null>;
+    includeInactivePackageVersions?: boolean;
 }): Promise<ResolvedAgentDefinition | null> {
     const agents: Array<any> = [
         ...(opts.userAgents ?? []).map(a => ({ ...a, system: false, creatable: true })),
         ...(opts.systemAgents ?? []).map(a => ({ ...a, creatable: false })),
-    ];
+    ].filter(agent =>
+        opts.includeInactivePackageVersions || agent.packageActive !== false);
     const normalize = (value?: string) => (value || "").toLowerCase().replace(/[^a-z0-9]+/g, "");
 
     // Parse the reference. `a:b` has meant `namespace:agent` since long
@@ -246,6 +255,7 @@ export async function resolveAgentDefinitionForCaller(opts: {
         promptLayerKind: agent.promptLayerKind ?? undefined,
         creatable: agent.creatable ?? !agent.system,
         packageId: agent.packageId ?? undefined,
+        packageVersionId: agent.packageVersionId ?? undefined,
         packageScope: agent.packageScope ?? undefined,
     };
 }
@@ -1042,12 +1052,29 @@ export function createSessionManagerProxy(
             return ctx.scheduleActivity("summarizeSession", { sessionId });
         },
         /** Spawn a child session via the PilotSwarmClient SDK. Returns the generated child session ID. */
-        spawnChildSession(parentSessionId: string, config: any, task: string, nestingLevel?: number, isSystem?: boolean, title?: string, agentId?: string, splash?: string, titleIsExplicit?: boolean, requiredTool?: string, workspaceChosen?: boolean) {
+        spawnChildSession(parentSessionId: string, config: any, task: string, nestingLevel?: number, isSystem?: boolean, title?: string, agentId?: string, splash?: string, titleIsExplicit?: boolean, requiredTool?: string, workspaceChosen?: boolean, childSessionId?: string) {
             return routeHandoffActivity(ctx.scheduleActivity(routedActivityName("spawnChildSession", routingContract), {
                 parentSessionId, config, task, nestingLevel, isSystem, title, agentId, splash, titleIsExplicit,
                 ...(requiredTool ? { requiredTool } : {}),
                 // Session workspaces (1.0.80): set only when the parent chose a record.
                 ...(workspaceChosen ? { workspaceChosen: true } : {}),
+                ...(childSessionId ? { childSessionId } : {}),
+            }), routingContract);
+        },
+        /** Spawn a controller-backed workflow child. The workflow result is observed separately through child outcomes. */
+        spawnWorkflowSession(parentSessionId: string, definition: WorkflowDefinitionSource, inputs: Record<string, unknown> = {}, childSessionId?: string) {
+            return routeHandoffActivity(ctx.scheduleActivity(routedActivityName("spawnWorkflowSession", routingContract), {
+                parentSessionId,
+                definition,
+                inputs,
+                ...(childSessionId ? { childSessionId } : {}),
+            }), routingContract);
+        },
+        /** Read a workflow child's controller-written durable result. */
+        getWorkflowResult(parentSessionId: string, childSessionId: string) {
+            return routeHandoffActivity(ctx.scheduleActivity(routedActivityName("getWorkflowResult", routingContract), {
+                parentSessionId,
+                childSessionId,
             }), routingContract);
         },
     /**
@@ -1059,7 +1086,7 @@ export function createSessionManagerProxy(
      * the orchestration generator keeps the yield sequence byte-identical, so
      * this is not an orchestration version change.
      */
-    resolveAgentConfig(agentName: string, callerSessionId?: string, binding?: { packageId?: string; source?: "deployment" }) {
+    resolveAgentConfig(agentName: string, callerSessionId?: string, binding?: { packageId?: string; packageVersionId?: string; source?: "deployment" }) {
         return routeHandoffActivity(ctx.scheduleActivity(routedActivityName("resolveAgentConfig", routingContract), {
             agentName,
             callerSessionId: callerSessionId ?? ctx.instanceId,
@@ -1232,6 +1259,8 @@ export function registerActivities(
     workerNodeId?: string,
     /** Artifact store — resolves image attachment refs to bytes inside runTurn. */
     artifactStore?: ArtifactStore | null,
+    /** Force package convergence after a workflow child pins a historical version. */
+    refreshAgentPackages?: () => Promise<void>,
 ) {
     // Shared config for every activity-layer internal PilotSwarmClient /
     // PilotSwarmManagementClient. Carries the FULL facts/CMS target (07 P3) so
@@ -1252,6 +1281,56 @@ export function registerActivities(
         ...(clientConfig?.aadDbUser != null && { aadDbUser: clientConfig.aadDbUser }),
         ...(clientConfig?.modelProvidersPath != null && { modelProvidersPath: clientConfig.modelProvidersPath }),
     });
+    const startWorkflowChild = async (
+        parentSessionId: string,
+        childSessionId: string,
+        definition: WorkflowDefinitionSource,
+        inputs: Record<string, unknown>,
+        trace: (message: string) => void,
+    ): Promise<string> => {
+        if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
+        if (catalog) {
+            const existing = await cmsRetryCritical(
+                `startWorkflowChild.getSession existing-check session=${childSessionId}`,
+                () => catalog.getSession(childSessionId),
+                trace,
+            );
+            if (existing) {
+                if (existing.parentSessionId !== parentSessionId || existing.sessionKind !== "workflow") {
+                    throw new Error(
+                        `Workflow session id collision: ${childSessionId} is not a workflow child of ${parentSessionId}`,
+                    );
+                }
+                trace(`[startWorkflowChild] reusing existing child=${childSessionId} parent=${parentSessionId}`);
+                return childSessionId;
+            }
+        }
+        const inheritedOwner = catalog
+            ? await resolveEffectiveSpawnOwner(
+                (id) => cmsRetryCritical(
+                    `startWorkflowChild.getSession ancestor=${id}`,
+                    () => catalog.getSession(id),
+                    trace,
+                ),
+                parentSessionId,
+            )
+            : null;
+        const sdkClient = new PilotSwarmClient(internalClientConfig());
+        try {
+            await sdkClient.start();
+            await sdkClient.createWorkflowSession({
+                sessionId: childSessionId,
+                parentSessionId,
+                definition,
+                inputs,
+                ...(inheritedOwner ? { owner: inheritedOwner } : {}),
+            });
+            trace(`[startWorkflowChild] child=${childSessionId} parent=${parentSessionId}`);
+            return childSessionId;
+        } finally {
+            await sdkClient.stop();
+        }
+    };
 
     /**
      * Session workspaces: the attach and path check behind a change, on this
@@ -1535,6 +1614,9 @@ export function registerActivities(
         // tools (review F3).
         if (!orchestrationSupportsWorkspaces(activityCtx?.orchestrationVersion)) {
             (runConfig as ManagedSessionConfig).workspaceToolsBlocked = true;
+        }
+        if (!orchestrationSupportsWorkflowTools(activityCtx?.orchestrationVersion)) {
+            (runConfig as ManagedSessionConfig).workflowToolsBlocked = true;
         }
         // Session workspaces: a cleared workspace still sends its revision;
         // the worker then passes an explicit folder and keeps hooks off.
@@ -2963,6 +3045,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     const {
                         boundAgentName: _parentBoundAgentName,
                         boundAgentPackageId: _parentBoundAgentPackageId,
+                        boundAgentPackageVersionId: _parentBoundAgentPackageVersionId,
                         boundAgentSource: _parentBoundAgentSource,
                         namedAgentToolAdditions: _parentNamedAgentToolAdditions,
                         childContract: _parentChildContract,
@@ -3038,6 +3121,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         systemMessage: childConfig.systemMessage,
                         boundAgentName: childConfig.boundAgentName,
                         boundAgentPackageId: childConfig.boundAgentPackageId,
+                        boundAgentPackageVersionId: childConfig.boundAgentPackageVersionId,
                         boundAgentSource: childConfig.boundAgentSource,
                         detachedPackageToolPolicy: childConfig.detachedPackageToolPolicy,
                         promptLayering: childConfig.promptLayering,
@@ -3118,6 +3202,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     return `[SYSTEM: spawn_agent failed: ${err?.message || String(err)}]`;
                 }
             },
+
             setSessionModel: async (args: { model: string; reasoning_effort?: import("./model-providers.js").ReasoningEffort | null }) => {
                 try {
                     const requestedModel = String(args.model || "").trim();
@@ -5520,18 +5605,21 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     // about which agent a name means.
     registerHandoffActivity(runtime, "resolveAgentConfig", async (
         _activityCtx: any,
-        input: { agentName: string; callerSessionId?: string; binding?: { packageId?: string; source?: "deployment" } },
+        input: { agentName: string; callerSessionId?: string; binding?: { packageId?: string; packageVersionId?: string; source?: "deployment" } },
     ): Promise<ResolvedAgentDefinition | null> => {
         // Top-level verification sessions already selected a package/deployment
         // copy at creation. Keep that selection through the startup resolver.
         // An unavailable pin yields no definition; it never falls back by name.
         const pinnedCandidates = (agents?: any[]) => agents?.filter(agent =>
             (!input.binding?.packageId || agent.packageId === input.binding.packageId)
+            && (!input.binding?.packageVersionId || agent.packageVersionId === input.binding.packageVersionId)
             && (input.binding?.source !== "deployment" || (!agent.packageId && agent.packageScope == null)));
         return resolveAgentDefinitionForCaller({
             agentName: input.agentName,
             userAgents: pinnedCandidates(userAgents),
             systemAgents: pinnedCandidates(systemAgents),
+            includeInactivePackageVersions:
+                Boolean(input.binding?.packageVersionId),
             // PACKAGE PRIVACY, enforced at RESOLUTION rather than at creation.
             //
             // Workers install every enabled package, including other users'
@@ -5569,18 +5657,37 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     // System child agents with a stable agentId use a deterministic UUID.
     // Other child sessions use a random UUID.
     // Goes through the full SDK path: CMS registration + orchestration startup.
-    registerHandoffActivity(runtime, "spawnChildSession", async (
+    type EnsureAgentChildSessionInput = {
+        parentSessionId: string;
+        config: SerializableSessionConfig;
+        nestingLevel?: number;
+        isSystem?: boolean;
+        title?: string;
+        agentId?: string;
+        splash?: string;
+        titleIsExplicit?: boolean;
+        workspaceChosen?: boolean;
+        childSessionId?: string;
+    };
+    type AgentChildBootstrap = {
+        task: string;
+        requiredTool?: string;
+    };
+    type SpawnChildSessionInput = EnsureAgentChildSessionInput & AgentChildBootstrap;
+
+    const ensureAgentChildSession = async (
         activityCtx: any,
-        input: { parentSessionId: string; config: SerializableSessionConfig; task: string; nestingLevel?: number; isSystem?: boolean; title?: string; agentId?: string; splash?: string; titleIsExplicit?: boolean; requiredTool?: string; workspaceChosen?: boolean },
+        input: EnsureAgentChildSessionInput,
+        bootstrap?: AgentChildBootstrap,
     ): Promise<string> => {
         const startedAt = Date.now();
         const trace = (message: string) => {
-            activityCtx.traceInfo(`[spawnChildSession] +${Date.now() - startedAt}ms ${message}`);
+            activityCtx.traceInfo(`[ensureAgentChildSession] +${Date.now() - startedAt}ms ${message}`);
         };
         const isDeterministicSystemChild = Boolean(input.isSystem && input.agentId);
-        const childSessionId = isDeterministicSystemChild
+        const childSessionId = input.childSessionId ?? (isDeterministicSystemChild
             ? systemChildAgentUUID(input.parentSessionId, input.agentId!)
-            : crypto.randomUUID();
+            : crypto.randomUUID());
         trace(`child=${childSessionId} parent=${input.parentSessionId} nesting=${input.nestingLevel ?? 0} isSystem=${input.isSystem ?? false} agent=${input.agentId ?? "custom"}`);
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
@@ -5593,7 +5700,56 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             await sdkClient.start();
             trace(`sdkClient.start done (${Date.now() - clientStartAt}ms)`);
 
-            if (isDeterministicSystemChild && catalog) {
+            const updateChildMetadata = async (): Promise<void> => {
+                const meta: Record<string, any> = {};
+                if (input.isSystem) meta.isSystem = true;
+                if (input.title && (input.titleIsExplicit || input.isSystem)) {
+                    meta.title = input.title;
+                } else if (input.title) {
+                    meta.title = `${input.title}: ${childSessionId.slice(0, 8)}`;
+                }
+                if (input.agentId) meta.agentId = input.agentId;
+                if (input.splash) meta.splash = input.splash;
+                if (input.agentId) {
+                    const packageId = input.config.boundAgentPackageId;
+                    const packageVersionId = input.config.boundAgentPackageVersionId;
+                    const fromBoundCopy = (agents?: any[]) => packageId
+                        ? agents?.filter(a =>
+                            a.packageId === packageId
+                            && (!packageVersionId || a.packageVersionId === packageVersionId))
+                        : input.config.boundAgentSource === "deployment"
+                            ? agents?.filter(a => !a.packageId && a.packageScope == null)
+                            : agents;
+                    const agentDef = await resolveAgentDefinitionForCaller({
+                        agentName: input.config.boundAgentName ?? input.agentId,
+                        userAgents: fromBoundCopy(userAgents),
+                        systemAgents: fromBoundCopy(systemAgents),
+                        getCallerOwnerKey: () => resolveCallerAgentOwnerKey(catalog, input.parentSessionId),
+                    });
+                    if (agentDef?.splashMobile) meta.splashMobile = agentDef.splashMobile;
+                }
+                if (Object.keys(meta).length > 0 && catalog) {
+                    const metaAt = Date.now();
+                    await cmsRetryCritical(
+                        `spawnChildSession.updateSession meta session=${childSessionId}`,
+                        () => catalog.updateSession(childSessionId, meta),
+                        (msg) => activityCtx.traceInfo(msg),
+                    );
+                    trace(`catalog.updateSession meta done (${Date.now() - metaAt}ms)`);
+                }
+            };
+
+            const ensureBoundAgentPackageAvailable = async (): Promise<void> => {
+                if (!input.config.boundAgentPackageVersionId) return;
+                if (!refreshAgentPackages) {
+                    throw new Error(
+                        "Workflow agent package version binding requires package refresh support.",
+                    );
+                }
+                await refreshAgentPackages();
+            };
+
+            if ((isDeterministicSystemChild || input.childSessionId) && catalog) {
                 const existingCheckAt = Date.now();
                 // Critical: missing this read causes a duplicate child spawn for
                 // a deterministic system agent (same UUID, two creates).
@@ -5603,7 +5759,16 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     (msg) => activityCtx.traceInfo(msg),
                 );
                 trace(`catalog.getSession existing check done (${Date.now() - existingCheckAt}ms)`);
+                if (existing && input.childSessionId) {
+                    await ensureBoundAgentPackageAvailable();
+                    if (!bootstrap) {
+                        await updateChildMetadata();
+                    }
+                    trace(`reusing existing replay-stable child: ${childSessionId} (${existing.state})`);
+                    return childSessionId;
+                }
                 if (existing && !["completed", "failed", "terminated"].includes(existing.state)) {
+                    await ensureBoundAgentPackageAvailable();
                     trace(`reusing existing live system child: ${childSessionId}`);
                     return childSessionId;
                 }
@@ -5679,6 +5844,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 systemMessage: input.config.systemMessage,
                 boundAgentName: input.config.boundAgentName,
                 boundAgentPackageId: input.config.boundAgentPackageId,
+                boundAgentPackageVersionId: input.config.boundAgentPackageVersionId,
                 boundAgentSource: input.config.boundAgentSource,
                 detachedPackageToolPolicy: input.config.detachedPackageToolPolicy,
                 promptLayering: input.config.promptLayering,
@@ -5688,70 +5854,166 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 ...(inheritedOwner ? { owner: inheritedOwner } : {}),
             });
             trace(`sdkClient.createSession done (${Date.now() - createSessionAt}ms)`);
+            await ensureBoundAgentPackageAvailable();
 
-            // One-time metadata write: isSystem, title, agentId, splash
-            const meta: Record<string, any> = {};
-            if (input.isSystem) meta.isSystem = true;
-            // Named agents get a prefixed title: "Agent Title: <shortId>"
-            // System agents keep their fixed title as-is.
-            if (input.title && (input.titleIsExplicit || input.isSystem)) {
-                meta.title = input.title;
-            } else if (input.title) {
-                meta.title = `${input.title}: ${childSessionId.slice(0, 8)}`;
-            }
-            if (input.agentId) meta.agentId = input.agentId;
-            if (input.splash) meta.splash = input.splash;
-            // Resolve mobile metadata through the same package pin and caller
-            // visibility rules as the prompt/tools, including for older inputs
-            // that carry only an agent id. A bare first match can expose another
-            // user's copy when private and shared packages have the same name.
-            if (input.agentId) {
-                const packageId = input.config.boundAgentPackageId;
-                const fromBoundCopy = (agents?: any[]) => packageId
-                    ? agents?.filter(a => a.packageId === packageId)
-                    : input.config.boundAgentSource === "deployment"
-                        ? agents?.filter(a => !a.packageId && a.packageScope == null)
-                        : agents;
-                const agentDef = await resolveAgentDefinitionForCaller({
-                    agentName: input.config.boundAgentName ?? input.agentId,
-                    userAgents: fromBoundCopy(userAgents),
-                    systemAgents: fromBoundCopy(systemAgents),
-                    getCallerOwnerKey: () => resolveCallerAgentOwnerKey(catalog, input.parentSessionId),
+            // Critical: title/agentId/splash drive UI rendering of the
+            // newly-spawned child. Idempotent — set-style update.
+            await updateChildMetadata();
+
+            if (bootstrap) {
+                // Fire the initial task prompt (non-blocking: just enqueues).
+                // This prompt is orchestration-generated bootstrap state for the child
+                // session, not an actual user-authored message inside that child chat.
+                const sendAt = Date.now();
+                await session.send(bootstrap.task, {
+                    ...bootstrapTurnOptions(bootstrap.requiredTool),
+                    // The comment above says it: this is orchestration-generated
+                    // bootstrap state, not a user-authored message. Say so in the
+                    // record, or the child's transcript opens under "You:".
+                    sender: { kind: "agent", sessionId: input.parentSessionId, display: "parent agent · task" },
                 });
-                if (agentDef?.splashMobile) meta.splashMobile = agentDef.splashMobile;
-            }
-            if (Object.keys(meta).length > 0 && catalog) {
-                const metaAt = Date.now();
-                // Critical: title/agentId/splash drive UI rendering of the
-                // newly-spawned child. Idempotent — set-style update.
-                await cmsRetryCritical(
-                    `spawnChildSession.updateSession meta session=${childSessionId}`,
-                    () => catalog!.updateSession(childSessionId, meta),
-                    (msg) => activityCtx.traceInfo(msg),
-                );
-                trace(`catalog.updateSession meta done (${Date.now() - metaAt}ms)`);
+                trace(`session.send bootstrap done (${Date.now() - sendAt}ms)`);
             }
 
-            // Fire the initial task prompt (non-blocking: just enqueues).
-            // This prompt is orchestration-generated bootstrap state for the child
-            // session, not an actual user-authored message inside that child chat.
-            const sendAt = Date.now();
-            await session.send(input.task, {
-                ...bootstrapTurnOptions(input.requiredTool),
-                // The comment above says it: this is orchestration-generated
-                // bootstrap state, not a user-authored message. Say so in the
-                // record, or the child's transcript opens under "You:".
-                sender: { kind: "agent", sessionId: input.parentSessionId, display: "parent agent · task" },
-            });
-            trace(`session.send bootstrap done (${Date.now() - sendAt}ms)`);
-
-            trace(`session created and task sent: ${childSessionId}`);
+            trace(bootstrap
+                ? `session created and task sent: ${childSessionId}`
+                : `session ensured without bootstrap: ${childSessionId}`);
             return childSessionId;
         } finally {
             const clientStopAt = Date.now();
             await sdkClient.stop();
             trace(`sdkClient.stop done (${Date.now() - clientStopAt}ms total=${Date.now() - startedAt}ms)`);
         }
+    };
+    const spawnChildSessionHandler = (
+        activityCtx: any,
+        input: SpawnChildSessionInput,
+    ): Promise<string> => {
+        const { task, requiredTool, ...ensureInput } = input;
+        return ensureAgentChildSession(
+            activityCtx,
+            ensureInput,
+            { task, requiredTool },
+        );
+    };
+    registerHandoffActivity(runtime, "spawnChildSession", spawnChildSessionHandler);
+
+    runtime.registerActivity(ENSURE_AGENT_CHILD_SESSION_ACTIVITY, async (
+        activityCtx: any,
+        input: EnsureAgentChildSessionInput,
+    ): Promise<string> => ensureAgentChildSession(activityCtx, input));
+
+    runtime.registerActivity(ENQUEUE_AGENT_CHILD_BOOTSTRAP_ACTIVITY, async (
+        activityCtx: any,
+        input: {
+            parentSessionId: string;
+            childSessionId: string;
+            task: string;
+            requiredTool: string;
+            clientMessageId: string;
+        },
+    ): Promise<void> => {
+        if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
+        if (!catalog) throw new Error("No session catalog — cannot bootstrap agent child");
+        const child = await cmsRetryCritical(
+            `enqueueAgentChildBootstrap.getSession child=${input.childSessionId}`,
+            () => catalog.getSession(input.childSessionId),
+            (message) => activityCtx.traceInfo(message),
+        );
+        if (
+            !child
+            || child.parentSessionId !== input.parentSessionId
+            || child.sessionKind === "workflow"
+        ) {
+            throw new Error(
+                `Agent child ${input.childSessionId} is not a conversational child of ${input.parentSessionId}`,
+            );
+        }
+        let beforeSeq = Number.MAX_SAFE_INTEGER;
+        while (true) {
+            const events = await catalog.getSessionEventsBefore(
+                input.childSessionId,
+                beforeSeq,
+                1000,
+                ["user.message"],
+            );
+            if (events.some(event => {
+                const ids = (event.data as { clientMessageIds?: unknown } | null)
+                    ?.clientMessageIds;
+                return Array.isArray(ids) && ids.includes(input.clientMessageId);
+            })) {
+                activityCtx.traceInfo(
+                    `[enqueueAgentChildBootstrap] delivery already recorded for ${input.clientMessageId}`,
+                );
+                return;
+            }
+            if (events.length < 1000) break;
+            beforeSeq = Math.min(...events.map(event => event.seq));
+        }
+
+        const sdkClient = new PilotSwarmClient({
+            ...internalClientConfig(),
+            traceWriter: (message: string) => activityCtx.traceInfo(
+                `[enqueueAgentChildBootstrap] ${message}`,
+            ),
+        });
+        try {
+            await sdkClient.start();
+            const session = await sdkClient.resumeSession(input.childSessionId);
+            await session.send(input.task, {
+                ...bootstrapTurnOptions(input.requiredTool),
+                clientMessageIds: [input.clientMessageId],
+                sender: {
+                    kind: "agent",
+                    sessionId: input.parentSessionId,
+                    display: "parent agent · task",
+                },
+            });
+        } finally {
+            await sdkClient.stop();
+        }
+    });
+
+    // ── spawnWorkflowSession ──────────────────────────────────
+    // Establishes the deterministic orchestration-to-activity seam for a
+    // conversational parent to create a controller-backed workflow child.
+    // Parent tracking, waiting, and result wake-up are intentionally separate.
+    registerHandoffActivity(runtime, "spawnWorkflowSession", async (
+        activityCtx: any,
+        input: {
+            parentSessionId: string;
+            childSessionId?: string;
+            definition: WorkflowDefinitionSource;
+            inputs?: Record<string, unknown>;
+        },
+    ): Promise<string> => {
+        return startWorkflowChild(
+            input.parentSessionId,
+            input.childSessionId ?? crypto.randomUUID(),
+            input.definition,
+            input.inputs ?? {},
+            (message) => activityCtx.traceInfo(message),
+        );
+    });
+
+    registerHandoffActivity(runtime, "getWorkflowResult", async (
+        _activityCtx: any,
+        input: { parentSessionId: string; childSessionId: string },
+    ): Promise<string> => {
+        if (!catalog) throw new Error("No session catalog — cannot read workflow results");
+        const child = await catalog.getSession(input.childSessionId);
+        if (!child || child.parentSessionId !== input.parentSessionId || child.sessionKind !== "workflow") {
+            throw new Error(`Workflow child ${input.childSessionId} is not a direct child of ${input.parentSessionId}`);
+        }
+        const row = await catalog.getChildOutcome(input.childSessionId);
+        const result = row
+            ? toWorkflowResult(input.childSessionId, input.parentSessionId, row)
+            : null;
+        return JSON.stringify({
+            sessionId: input.childSessionId,
+            status: result?.outcome ?? "running",
+            ...(result ? { result } : {}),
+        });
     });
 
     // ── sendToSession ───────────────────────────────────────
