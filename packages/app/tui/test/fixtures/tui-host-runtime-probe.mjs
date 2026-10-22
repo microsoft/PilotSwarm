@@ -8,6 +8,7 @@ const legacyLogFile = "/tmp/duroxide-tui.log";
 const tracing = [];
 const events = [];
 const writes = [];
+const transportOptions = [];
 const restoredCalls = [];
 const rendered = Promise.withResolvers();
 const fixtureError = Object.assign(new Error(`fixture ${failure} failure`), { code: "EACCES" });
@@ -81,7 +82,13 @@ mock.module(new URL("../../src/platform.js", import.meta.url).href, {
     },
 });
 mock.module(new URL("../../src/node-sdk-transport.js", import.meta.url).href, {
-    namedExports: { NodeSdkTransport: class {} },
+    namedExports: {
+        NodeSdkTransport: class {
+            constructor(options) {
+                transportOptions.push(options);
+            }
+        },
+    },
 });
 mock.module(new URL("../../src/auth/cli.js", import.meta.url).href, {
     namedExports: {
@@ -157,6 +164,7 @@ process.stdout.write(JSON.stringify({
     tracing,
     writes,
     events,
+    transportOptions,
     restoredCalls,
     stderrCallback,
 }));

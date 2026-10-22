@@ -145,6 +145,12 @@ Do not guess these answers when the user has not provided them. Offer the standa
   This is an API option, not a CLI flag; see the CLI guide's
   [Programmatic TUI Hosts](https://github.com/microsoft/PilotSwarm/blob/main/docs/developer/building/cli-apps.md#programmatic-tui-hosts)
   section for configuration and process-lifecycle details.
+- Local programmatic hosts can pass `agentPackages: { cacheDir }` to
+  `startTuiApp` or `NodeSdkTransport` to enable the SDK's existing published
+  package lifecycle. Keep the cache application-owned and stable across
+  restarts, outside static build output. Omission stays off; remote/Web API
+  hosts and `WORKERS=0` do not configure a producer. Do not flatten dynamic
+  packages into static plugins or replace SDK ownership/revision checks.
 
 ## Validation Guidance
 

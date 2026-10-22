@@ -148,6 +148,7 @@ async function createTransport(config, authNotify) {
     return new NodeSdkTransport({
         store: config.store,
         mode: config.mode,
+        ...(config.agentPackages !== undefined ? { agentPackages: config.agentPackages } : {}),
     });
 }
 
@@ -159,6 +160,9 @@ async function createTransport(config, authNotify) {
  * @param {string | null} [config.apiUrl] Web API URL for remote mode.
  * @param {boolean} [config.deviceCode] Use device-code authentication.
  * @param {object} [config.branding] TUI branding.
+ * @param {import("pilotswarm-sdk").PilotSwarmWorkerOptions["agentPackages"]} [config.agentPackages]
+ *   Opt-in registry package loading for local embedded workers. Does not
+ *   configure remote workers in Web API or client-only mode.
  * @param {string} [config.logFile] Host diagnostic path, resolved against cwd.
  *   Creates parent directories and truncates the file at startup. Invalid paths
  *   and log/tracing initialization failures reject startup. Omit to retain the

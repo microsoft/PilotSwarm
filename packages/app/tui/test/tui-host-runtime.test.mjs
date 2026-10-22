@@ -39,6 +39,39 @@ function assertRestored(result) {
     assert.deepEqual(result.restoredCalls, restoredCalls);
 }
 
+for (const agentPackages of [{}, { cacheDir: "app package cache", refreshIntervalMs: 0 }]) {
+    test(`the public TUI host forwards agentPackages ${JSON.stringify(agentPackages)} unchanged`, (t) => {
+        const root = testDirectory(t);
+        const config = { mode: "local", store: "sqlite::memory:", agentPackages };
+        const result = runHost(root, config);
+
+        assert.equal(result.error, null);
+        assert.deepEqual(result.transportOptions, [config]);
+        assertRestored(result);
+    });
+}
+
+test("omitting agentPackages preserves direct transport defaults", (t) => {
+    const root = testDirectory(t);
+    const config = { mode: "local", store: "sqlite::memory:" };
+    const result = runHost(root, config);
+
+    assert.equal(result.error, null);
+    assert.deepEqual(result.transportOptions, [config]);
+});
+
+test("Web API hosts do not configure local package workers", (t) => {
+    const root = testDirectory(t);
+    const result = runHost(root, {
+        apiUrl: "https://portal.example.invalid",
+        agentPackages: { cacheDir: path.join(root, "unused-packages") },
+    });
+
+    assert.equal(result.error, null);
+    assert.deepEqual(result.transportOptions, []);
+    assert.equal(fs.existsSync(path.join(root, "unused-packages")), false);
+});
+
 test("the public TUI host sends every diagnostic sink to its custom path", (t) => {
     const root = testDirectory(t);
     const logFile = path.join(root, "app logs", "diagnostics-λ.log");

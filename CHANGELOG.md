@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+**Opt-in published packages for local TUI hosts.** `startTuiApp` and
+`NodeSdkTransport` now forward the SDK's `agentPackages` option to embedded
+workers before startup. Applications can select a stable package cache and
+refresh interval without a private worker hook. Omission remains off, and
+remote/client-only hosts do not configure producers. Package ownership,
+permissions and source/revision checks are unchanged.
+
 ## 0.8.5 — 2026-10-20
 
 **Node.js security baseline.** Application images and every CI Node toolchain

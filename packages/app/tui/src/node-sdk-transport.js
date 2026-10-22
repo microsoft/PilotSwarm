@@ -517,9 +517,10 @@ function resolveUserPrincipalFor(transport, principal) {
 }
 
 export class NodeSdkTransport {
-    constructor({ store, mode, currentUser, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser } = {}) {
+    constructor({ store, mode, currentUser, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser, agentPackages } = {}) {
         this.store = store;
         this.mode = mode;
+        this.agentPackages = agentPackages;
         this.useManagedIdentity = useManagedIdentity;
         this.cmsFactsDatabaseUrl = cmsFactsDatabaseUrl;
         this.aadDbUser = aadDbUser;
@@ -595,6 +596,7 @@ export class NodeSdkTransport {
             this.workers = await startEmbeddedWorkers({
                 count: workerCount,
                 store: this.store,
+                ...(this.agentPackages !== undefined ? { agentPackages: this.agentPackages } : {}),
             });
         }
         const sessionCreationMetadata = this.resolveSessionCreationMetadata();

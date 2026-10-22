@@ -64,6 +64,13 @@ Omission retains the best-effort `/tmp/duroxide-tui.log` default. Restore host
 logging hooks on startup failure as well as quit. Keep this terminal-only
 setting out of shared UI state and portal configuration.
 
+Local programmatic hosts also accept the SDK's optional `agentPackages`
+configuration. `startTuiApp` forwards it through `NodeSdkTransport` to embedded
+workers before construction/start. Omission stays off; remote/Web API hosts
+and `WORKERS=0` do not configure a producer. The SDK owns package installation,
+refresh, scope and revision checks. Keep this worker-only setting out of
+shared UI state; see the CLI guide's Programmatic TUI Hosts section.
+
 Do not move host rendering details into `ui-core`.
 Do not move controller or selector semantics into `packages/app/tui`.
 Do not bypass shared selectors/components with host-only UI logic unless the behavior is truly terminal-specific.

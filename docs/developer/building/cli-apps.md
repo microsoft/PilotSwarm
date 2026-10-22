@@ -141,6 +141,47 @@ worker log streaming, user configuration, authentication caches, or artifact
 export paths. It is a programmatic host option, not a new CLI flag or
 environment variable.
 
+### Published agent packages in local hosts
+
+Local programmatic hosts can opt their embedded workers into the SDK's
+existing registry-package lifecycle:
+
+```js
+import os from "node:os";
+import path from "node:path";
+import { startTuiApp } from "pilotswarm";
+
+await startTuiApp({
+    mode: "local",
+    store: process.env.DATABASE_URL,
+    agentPackages: {
+        cacheDir: path.join(os.homedir(), ".my-app", "agent-packages"),
+    },
+});
+```
+
+`NodeSdkTransport` from `pilotswarm/host` accepts the same `agentPackages`
+option. Both hosts forward it unchanged to every local `PilotSwarmWorker`,
+before `start()`: the SDK installs enabled registry packages at startup and
+refreshes them when the registry changes. This does not copy dynamic packages
+into the deployment's static plugin roots or alter package ownership, grants,
+source references, or revision checks.
+
+- Omit `agentPackages` (or use `undefined`) to keep package loading off.
+  An empty object opts in with the SDK defaults: a cache adjacent to the
+  session-state directory and a 20,000 ms refresh interval.
+- `cacheDir` and `refreshIntervalMs` use the existing
+  `PilotSwarmWorkerOptions.agentPackages` contract. A zero interval keeps
+  startup installation but disables automatic package refresh.
+- Use a stable, application-owned cache directory, separate from immutable
+  build output. This option does not change session-state, artifact-store,
+  database, provider, or user-config locations; configure those independently.
+- Web API hosts, `mode: "remote"`, and `WORKERS=0` do not start local workers.
+  Their package configuration belongs to the remote producer; this option
+  does not configure it over the transport.
+
+This is a programmatic host option, not a new CLI flag or environment variable.
+
 ## Recommended App Layout
 
 ```text

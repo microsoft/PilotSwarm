@@ -4,7 +4,7 @@ import { createRequire } from "node:module";
 import { PilotSwarmWorker, horizonConfigFromEnv, loadExtensionModules, parseExtensionModules } from "pilotswarm-sdk";
 import { getPluginDirsFromEnv } from "./plugin-config.js";
 
-export async function startEmbeddedWorkers({ count, store }) {
+export async function startEmbeddedWorkers({ count, store, agentPackages }) {
     const workers = [];
     if (!count || count <= 0) return workers;
 
@@ -36,6 +36,7 @@ export async function startEmbeddedWorkers({ count, store }) {
                 workerNodeId: `local-${index}`,
                 systemMessage: workerModuleConfig.systemMessage || process.env._TUI_SYSTEM_MESSAGE || undefined,
                 pluginDirs,
+                ...(agentPackages !== undefined ? { agentPackages } : {}),
                 // Bicep-deploy MI flow (set in worker-env ConfigMap by the
                 // overlay .env). Unset for legacy `scripts/deploy-aks.sh`,
                 // local Docker, and CI — those keep using the password
