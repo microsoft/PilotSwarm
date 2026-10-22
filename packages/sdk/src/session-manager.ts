@@ -11,8 +11,16 @@ import type { FeatureFlagCache } from "./feature-flag-cache.js";
 import { createFeatureTools, FEATURE_OPERATION_SPECS } from "./feature-tools.js";
 import { FeatureFlagError, type FeatureOwner } from "./feature-flags.js";
 import type { FeatureViewer } from "./feature-store.js";
-import { CopilotClient, type CopilotSession, type SectionOverride, type SessionConfig, type SystemMessageConfig, type Tool } from "@github/copilot-sdk";
-import { BYOK_CLIENT_PREFIX, createCopilotClient, needsByokRequestCompatibility } from "./copilot-client.js";
+import { type CopilotClient, type SectionOverride, type SessionConfig, type SystemMessageConfig, type Tool } from "@github/copilot-sdk";
+import { BYOK_CLIENT_PREFIX, needsByokRequestCompatibility } from "./copilot-client.js";
+import {
+    asCopilotClient,
+    createCopilotAgentHarnessClient,
+    createCopilotAgentHarnessClientFrom,
+    type AgentHarnessClient,
+    type AgentHarnessClientFactory,
+    type AgentHarnessSession,
+} from "./agent-harness.js";
 import { ManagedSession } from "./managed-session.js";
 import type { SessionStateStore } from "./session-store.js";
 import { callChangesWorkingFolder, sameFolder, sameWorkingFolder } from "./workspace-check.js";
@@ -734,7 +742,7 @@ export class SessionManager {
     private static _inspectViewerCache = new Map<string, { at: number; viewer: InspectViewer }>();
     private static readonly INSPECT_VIEWER_CACHE_SWEEP_AT = 2_000;
 
-    private clients = new Map<string, CopilotClient>();
+    private clients = new Map<string, AgentHarnessClient>();
     /**
      * The start in progress for each pooled client.
      *
@@ -747,7 +755,7 @@ export class SessionManager {
      * through `_createCopilotSession` / `_resumeCopilotSession`, which share
      * one start per client (`_startClient`).
      */
-    private clientStarts = new WeakMap<CopilotClient, Promise<void>>();
+    private clientStarts = new WeakMap<AgentHarnessClient, Promise<void>>();
     /**
      * Backward-compat accessor for the default-token CopilotClient.
      *
@@ -761,11 +769,19 @@ export class SessionManager {
      * default `GITHUB_TOKEN` was set on the constructor.
      */
     get client(): CopilotClient | undefined {
+        const client = this.harnessClient;
+        return client ? asCopilotClient(client) : undefined;
+    }
+    set client(value: CopilotClient | undefined) {
+        this.harnessClient = value ? createCopilotAgentHarnessClientFrom(value) : undefined;
+    }
+    /** Internal harness-agnostic compatibility seam used by adapter tests. */
+    get harnessClient(): AgentHarnessClient | undefined {
         return this.clients.get("") ?? this.clients.get(this.githubToken || "")
             ?? this.clients.get(BYOK_CLIENT_PREFIX)
             ?? this.clients.get(BYOK_CLIENT_PREFIX + (this.githubToken || ""));
     }
-    set client(value: CopilotClient | undefined) {
+    set harnessClient(value: AgentHarnessClient | undefined) {
         const providerTokens = new Set<string>();
         for (const provider of this.workerDefaults.modelProviders?.allProviders ?? []) {
             const first = provider.models?.[0];
@@ -871,6 +887,7 @@ export class SessionManager {
         sessionStore?: SessionStateStore | null,
         workerDefaults?: WorkerDefaults,
         sessionStateDir?: string,
+        private readonly agentHarnessClientFactory: AgentHarnessClientFactory = createCopilotAgentHarnessClient,
     ) {
         this.adminScope = validateAdminScope(process.env);
         this.sessionStore = sessionStore ?? null;
@@ -1088,7 +1105,7 @@ export class SessionManager {
         // before getOrCreate records one, so fall through to the same
         // per-user/system key resolution getOrCreate itself performs. Only a
         // session with no per-user key lands on the worker-default client.
-        let client: CopilotClient | undefined;
+        let client: AgentHarnessClient | undefined;
         let cacheKey = "";
         if (opts?.sessionId) {
             let key = this.sessionClientKeys.get(opts.sessionId);
@@ -1108,7 +1125,7 @@ export class SessionManager {
             }
         }
         if (!client) {
-            client = this.client;
+            client = this.harnessClient;
             cacheKey = "";
         }
         if (!client) return { modelId: sdkModelName, known: false, vision: false };
@@ -1308,7 +1325,7 @@ export class SessionManager {
      * It may not be started yet: create and resume sessions on it through
      * `_createCopilotSession` / `_resumeCopilotSession`.
      */
-    private async ensureClient(tokenOverride?: string, byokOpenAi = false, workspaceRoot?: string): Promise<CopilotClient> {
+    private async ensureClient(tokenOverride?: string, byokOpenAi = false, workspaceRoot?: string): Promise<AgentHarnessClient> {
         // Resolve the effective token: explicit override > worker default >
         // first registry github provider's resolved token. The override is
         // how per-user GitHub Copilot keys (cms.users.github_copilot_key)
@@ -1331,9 +1348,10 @@ export class SessionManager {
         const existing = this.clients.get(clientKey);
         if (existing) return existing;
 
-        const created = createCopilotClient({
+        const created = this.agentHarnessClientFactory({
             ...(token ? { gitHubToken: token } : {}),
             logLevel: "error",
+            sessionStateDir: this.sessionStateDir,
             // The Copilot CLI honors COPILOT_HOME (and only COPILOT_HOME) to decide
             // where to write per-session state. Passing `configDir` on SessionConfig
             // is inert for state placement (verified empirically against
@@ -1351,7 +1369,7 @@ export class SessionManager {
                 ...process.env,
                 COPILOT_HOME: path.dirname(this.sessionStateDir),
             },
-        }, byokOpenAi ? { type: "openai" } : undefined, byokOpenAi ? (request, context, model) => {
+        }, { provider: byokOpenAi ? { type: "openai" } : undefined, toolCatalog: byokOpenAi ? (request, context, model) => {
             const config = context.sessionId ? this.sessionConfigs.get(context.sessionId) : undefined;
             if (!config) return undefined;
             // Policy lookup must never fail the model request itself: a model
@@ -1372,7 +1390,7 @@ export class SessionManager {
             } catch {
                 return undefined;
             }
-        } : undefined);
+        } : undefined });
         this.clients.set(clientKey, created);
         return created;
     }
@@ -1389,12 +1407,13 @@ export class SessionManager {
      *
      * Returns null for an injected test stub that has no `start()`.
      */
-    private _startClient(client: CopilotClient): Promise<void> | null {
+    private _startClient(client: AgentHarnessClient): Promise<void> | null {
         if (typeof client.start !== "function") return null;
         const inFlight = this.clientStarts.get(client);
         if (inFlight) return inFlight;
+        const start = client.start.bind(client);
         const starting: Promise<void> = Promise.resolve()
-            .then(() => client.start())
+            .then(() => start())
             .catch((error: unknown) => {
                 for (const [key, pooled] of this.clients) {
                     if (pooled === client) this.clients.delete(key);
@@ -1409,17 +1428,17 @@ export class SessionManager {
     }
 
     /** `client.createSession`, after the client's shared start. */
-    private _createCopilotSession(client: CopilotClient, config: SessionConfig): Promise<CopilotSession> {
+    private _createCopilotSession(client: AgentHarnessClient, config: SessionConfig): Promise<AgentHarnessSession> {
         const starting = this._startClient(client);
         return starting ? starting.then(() => client.createSession(config)) : client.createSession(config);
     }
 
     /** `client.resumeSession`, after the client's shared start. */
     private _resumeCopilotSession(
-        client: CopilotClient,
+        client: AgentHarnessClient,
         sessionId: string,
-        config: Parameters<CopilotClient["resumeSession"]>[1],
-    ): Promise<CopilotSession> {
+        config: SessionConfig,
+    ): Promise<AgentHarnessSession> {
         const starting = this._startClient(client);
         return starting
             ? starting.then(() => client.resumeSession(sessionId, config))
@@ -1493,7 +1512,7 @@ export class SessionManager {
      * Resolve a pool key without ever passing its transport namespace as an
      * authentication token. Shared by catalog lookups and session teardown.
      */
-    private async ensureClientForKey(key: string): Promise<CopilotClient> {
+    private async ensureClientForKey(key: string): Promise<AgentHarnessClient> {
         const cached = this.clients.get(key);
         if (cached) return cached;
         const rootAt = key.indexOf(WORKSPACE_ROOT_CLIENT_SEPARATOR);
@@ -1504,7 +1523,7 @@ export class SessionManager {
             : this.ensureClient(base || undefined, false, workspaceRoot);
     }
 
-    private async _ensureClientForSession(sessionId: string): Promise<CopilotClient> {
+    private async _ensureClientForSession(sessionId: string): Promise<AgentHarnessClient> {
         const key = this.sessionClientKeys.get(sessionId);
         return key != null ? this.ensureClientForKey(key) : this.ensureClient();
     }
@@ -2708,7 +2727,7 @@ export class SessionManager {
             ...(Object.keys(effectiveMcpServers).length > 0 && { mcpServers: effectiveMcpServers }),
         };
 
-        let copilotSession: CopilotSession;
+        let copilotSession: AgentHarnessSession;
 
         // 1. Check if already in memory (warm) — update config in case
         //    tools were registered after the session was first created.

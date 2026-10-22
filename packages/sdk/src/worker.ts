@@ -437,6 +437,7 @@ export class PilotSwarmWorker {
                 turnInactivityTimeoutMs: options.turnInactivityTimeoutMs,
             },
             effectiveSessionStateDir,
+            options.agentHarnessClientFactory,
         );
         this.sessionManager.setModelProvidersRefresher(() => this._refreshProviderRegistry());
         this.sessionManager.setWorkspaceProvider(options.workspaceProvider

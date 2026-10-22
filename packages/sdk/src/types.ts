@@ -1,4 +1,5 @@
 import type { Tool, SessionConfig } from "@github/copilot-sdk";
+import type { AgentHarnessClientFactory } from "./agent-harness.js";
 import type { SessionStateStore } from "./session-store.js";
 import type { ReasoningEffort, ContextTier } from "./model-providers.js";
 import type { EmbeddingEndpointConfig } from "./facts-store.js";
@@ -1284,6 +1285,11 @@ export interface PilotSwarmWorkerOptions {
     reservedFactPrefixes?: string[];
     /** GitHub token. Required unless a custom `provider` is specified. */
     githubToken?: string;
+    /**
+     * Internal adapter seam for coding-agent harnesses. The default is the
+     * pinned GitHub Copilot SDK adapter. Pi support is added in a later stage.
+     */
+    agentHarnessClientFactory?: AgentHarnessClientFactory;
     logLevel?: "none" | "error" | "warning" | "info" | "debug" | "all";
     waitThreshold?: number;
     maxSessionsPerRuntime?: number;

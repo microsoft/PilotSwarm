@@ -3,6 +3,7 @@ import { DURABLE_SPAWN_DESCRIPTION } from "./base-agent-policy.js";
 import { isNativeChildEvent, settleNativeSubagents, guardNativeExternalTools } from "./native-subagents.js";
 import { killProcessTree, taskProcessAlive } from "./process-tree.js";
 import { defineTool, type Tool, type CopilotSession } from "@github/copilot-sdk";
+import { asCopilotSession, createCopilotAgentHarnessSessionFrom, type AgentHarnessSession } from "./agent-harness.js";
 import type { ToolFactsAccessor } from "./tool-facts-accessor.js";
 import { normalizeCanvasResponseContract as normalizeCanvasContractShared } from "./canvas-app-manifest.js";
 // One list gates BOTH halves of every manager tool: the declaration in the
@@ -30,7 +31,7 @@ interface TurnState {
     pendingActions: TurnAction[];
     queuedActions: TurnAction[];
     cycleReport?: CycleReport;
-    session: CopilotSession | null;
+    session: AgentHarnessSession | null;
     waitThreshold: number;
     /**
      * Session workspaces: the deny hook saw a set_session_workspace call
@@ -821,7 +822,7 @@ function isBenignPostCompletionQueryError(eventData: any): boolean {
  */
 export class ManagedSession {
     readonly sessionId: string;
-    private copilotSession: CopilotSession;
+    private copilotSession: AgentHarnessSession;
     private config: ManagedSessionConfig;
     /** Skills the `load_skill` tool may return, by reference from the worker. */
     private skillCatalog: Array<{ name: string; description: string; prompt: string }> = [];
@@ -938,11 +939,13 @@ export class ManagedSession {
 
     constructor(
         sessionId: string,
-        copilotSession: CopilotSession,
+        copilotSession: AgentHarnessSession | CopilotSession,
         config: ManagedSessionConfig,
     ) {
         this.sessionId = sessionId;
-        this.copilotSession = copilotSession;
+        this.copilotSession = "harness" in copilotSession
+            ? copilotSession
+            : createCopilotAgentHarnessSessionFrom(copilotSession);
         this.config = config;
     }
 
@@ -3844,7 +3847,9 @@ export class ManagedSession {
             : prompt;
 
         try {
-            normalizeCopilotSessionMessageHistory(this.copilotSession as any);
+            if (this.copilotSession.harness === "copilot") {
+                normalizeCopilotSessionMessageHistory(asCopilotSession(this.copilotSession) as any);
+            }
 
             // Turn control: a Stop that arrived before the prompt was sent
             // ends the turn without a model run (plan P21).
@@ -4334,7 +4339,7 @@ export class ManagedSession {
 
     /** Get the underlying CopilotSession (for direct access when needed). */
     getCopilotSession(): CopilotSession {
-        return this.copilotSession;
+        return asCopilotSession(this.copilotSession);
     }
 }
 
