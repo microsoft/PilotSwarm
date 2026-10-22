@@ -11,10 +11,11 @@ base for native Duroxide compatibility. Existing installations need a Node
 upgrade or full runtime-image rebuild; a UI-only image update does not replace
 its inherited Node runtime.
 
-**Duroxide fail-closed dependency update.** The SDK now pins
-[`duroxide` 0.2.2](https://github.com/microsoft/duroxide-node/releases/tag/v0.2.2)
-and all five native platform packages exactly from npm, replacing the 0.2.1
-GitHub tarball pins. This brings
+**Duroxide fail-closed dependency update.** The SDK now pins the six npm-format
+[`duroxide` 0.2.3 release artifacts](https://github.com/microsoft/duroxide-node/releases/tag/v0.2.3)
+by exact GitHub Release URL and lockfile integrity, including all five native
+platform packages. The release builds and packs on patched Node 24.22.1 and
+smoke-tests its native packages on patched Node 22.23.4. It retains
 [`duroxide-pg` 0.1.37](https://github.com/microsoft/duroxide-pg/releases/tag/v0.1.37):
 migration startup rejects catalog errors and inconsistent history instead of
 re-applying old migrations; malformed durable history and KV snapshots fail

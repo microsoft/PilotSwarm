@@ -6,7 +6,8 @@ import { createRequire } from "node:module";
 const require = createRequire(import.meta.url);
 const manifest = JSON.parse(readFileSync(new URL("../../package.json", import.meta.url), "utf8"));
 const lock = JSON.parse(readFileSync(new URL("../../../../package-lock.json", import.meta.url), "utf8"));
-const version = "0.2.2";
+const version = "0.2.3";
+const assetUrl = name => `https://github.com/microsoft/duroxide-node/releases/download/v${version}/${name}-${version}.tgz`;
 const platforms = {
     "duroxide-darwin-arm64": { os: "darwin", cpu: "arm64" },
     "duroxide-darwin-x64": { os: "darwin", cpu: "x64" },
@@ -15,19 +16,20 @@ const platforms = {
     "duroxide-windows-x64": { os: "win32", cpu: "x64" },
 };
 
-test("duroxide and every native platform pin the same fail-closed release", () => {
-    assert.equal(manifest.dependencies.duroxide, version);
-    const optional = Object.fromEntries(Object.keys(platforms).map(name => [name, version]));
-    assert.deepEqual(manifest.optionalDependencies, optional);
+test("duroxide and every native platform pin the same published security release", () => {
+    assert.equal(manifest.dependencies.duroxide, assetUrl("duroxide"));
+    const optionalVersions = Object.fromEntries(Object.keys(platforms).map(name => [name, version]));
+    const optionalAssets = Object.fromEntries(Object.keys(platforms).map(name => [name, assetUrl(name)]));
+    assert.deepEqual(manifest.optionalDependencies, optionalAssets);
     assert.deepEqual(lock.packages["packages/sdk"].dependencies, manifest.dependencies);
-    assert.deepEqual(lock.packages["packages/sdk"].optionalDependencies, optional);
-    assert.deepEqual(lock.packages["node_modules/duroxide"].optionalDependencies, optional);
+    assert.deepEqual(lock.packages["packages/sdk"].optionalDependencies, optionalAssets);
+    assert.deepEqual(lock.packages["node_modules/duroxide"].optionalDependencies, optionalVersions);
 
     const names = ["duroxide", ...Object.keys(platforms)];
     for (const name of names) {
         const entry = lock.packages[`node_modules/${name}`];
         assert.equal(entry.version, version, name);
-        assert.equal(entry.resolved, `https://registry.npmjs.org/${name}/-/${name}-${version}.tgz`, name);
+        assert.equal(entry.resolved, assetUrl(name), name);
         assert.match(entry.integrity, /^sha512-[A-Za-z0-9+/]{86}==$/, name);
         if (name === "duroxide") continue;
         assert.equal(entry.optional, true, name);
