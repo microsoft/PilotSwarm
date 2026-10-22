@@ -2,6 +2,26 @@
 
 ## 0.8.5 — 2026-10-20
 
+**Node.js security baseline.** Application images and every CI Node toolchain
+now pin [Node.js 24.22.1 LTS](https://nodejs.org/en/blog/release/v24.22.1),
+including the October 2026 TLS, DNS, Brotli, HTTP and dependency security fixes.
+The package requirement is `^24.22.1 || >=26.12.1`, excluding unpatched
+24.x/26.x releases and the end-of-life 25.x line. Trixie remains the image
+base for native Duroxide compatibility. Existing installations need a Node
+upgrade or full runtime-image rebuild; a UI-only image update does not replace
+its inherited Node runtime.
+
+**Duroxide fail-closed dependency update.** The SDK now pins the six npm-format
+[`duroxide` 0.2.3 release artifacts](https://github.com/microsoft/duroxide-node/releases/tag/v0.2.3)
+by exact GitHub Release URL and lockfile integrity, including all five native
+platform packages. The release builds and packs on patched Node 24.22.1 and
+smoke-tests its native packages on patched Node 22.23.4. It retains
+[`duroxide-pg` 0.1.37](https://github.com/microsoft/duroxide-pg/releases/tag/v0.1.37):
+migration startup rejects catalog errors and inconsistent history instead of
+re-applying old migrations; malformed durable history and KV snapshots fail
+closed through the runtime's poison handling. The JavaScript/type API and
+PilotSwarm orchestration versions are unchanged.
+
 **Restricted MCP activation for named agents.** Optional MCP admission now uses
 the selected agent copy's authored name, raw namespace and verified package
 provenance, rather than treating its qualified durable binding as a leaf name.

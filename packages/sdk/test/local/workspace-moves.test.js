@@ -190,6 +190,7 @@ describe("workspace moves between workers", () => {
                 await until(() => c.model.sessionRequests("m4 short").length > 0, "the short turn to start");
 
                 await workerA.gracefulShutdown();
+                console.log("  M4: drain finished; checking workspace releases");
                 // The short turn's activity finished inside the drain, so its
                 // session was idle when A released; the long one was cut.
                 const releasedIds = new Set(c.provider.callsFor("release").map((r) => r.req.sessionId));
@@ -199,12 +200,16 @@ describe("workspace moves between workers", () => {
 
                 // With no worker left, B processes what A finished and runs what A cut.
                 await c.worker("m4-b");
+                console.log("  M4: worker B started; awaiting the short turn");
                 assertEqual(await short.wait(TIMEOUT), "short:done");
+                console.log("  M4: short turn finished; awaiting the cut turn's recovery");
                 assertEqual(c.model.sessionRequests("m4 short").filter((r) => r.position.step === 0).length, 1, "the short turn ran once, on A");
                 assertEqual(await long.wait(TIMEOUT), "long:again", "the cut turn ran again on B with the note");
+                console.log("  M4: cut turn recovered; checking the idle session's next turn");
                 assert(c.provider.deadHolderSeen(long.sessionId), "the provider saw A as a dead holder for the cut session");
                 // The idle session must attach on B before a dead holder can show (T5).
                 assertEqual(await idle.sendAndWait("m4 idle again", TIMEOUT), "idle:done");
+                console.log("  M4: idle session's next turn finished");
                 assertEqual(c.provider.lastAttach(idle.sessionId).req.workerNodeId, "m4-b");
                 assert(!c.provider.deadHolderSeen(idle.sessionId), "not for a released one");
             });

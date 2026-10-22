@@ -10,7 +10,7 @@ A complete source-level map of the PilotSwarm codebase. Complements `architectur
 |-----|-------|
 | **Package** | `pilotswarm-monorepo` (workspaces); SDK publishes as `pilotswarm-sdk` v0.3.3 |
 | **Module system** | ESM (`.js` extensions in imports) |
-| **Runtime** | Node.js 24+ |
+| **Runtime** | Node.js 24.22.1+ within 24.x, or 26.12.1+ |
 | **Language** | TypeScript (`packages/sdk/src`), plain JS (tests, examples, CLI, portal) |
 | **Build** | `tsc` → `dist/`, ES2022 target, NodeNext resolution |
 | **Key deps** | `@github/copilot-sdk` ^1.0.0-beta.4, `duroxide` ^0.1.27, `pg` ^8.18, `@azure/storage-blob` ^12.31 |
@@ -666,7 +666,7 @@ The TUI interacts with PilotSwarm **exclusively through the public API** (`Pilot
 ### Docker
 
 ```dockerfile
-FROM node:24-slim
+FROM node:24.22.1-trixie-slim
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm install --omit=dev --force
