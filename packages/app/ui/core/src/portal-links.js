@@ -13,6 +13,15 @@
  * env var on the portal server: PORTAL_LINK_ORIGINS.
  */
 
+export function buildPortalEntryLink(location, query, entryPath = location.pathname || "/") {
+    const base = new URL(entryPath, location.origin);
+    if (typeof entryPath !== "string" || !entryPath.startsWith("/") || entryPath.startsWith("//")
+        || base.origin !== location.origin || base.pathname !== entryPath || base.search || base.hash) {
+        throw new Error("Portal entry must be an absolute same-origin path without query or fragment.");
+    }
+    return `${base.origin}${base.pathname}?${query}`;
+}
+
 /**
  * Rebase one produced URL onto each configured origin.
  * @param {string} url - a full URL produced against the current origin

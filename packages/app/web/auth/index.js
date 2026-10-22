@@ -4,6 +4,8 @@ import { createDevAuthProvider } from "./providers/dev.js";
 import { createProxyAuthProvider } from "./providers/proxy.js";
 import { authorizePrincipal } from "./authz/engine.js";
 import { loadAuthorizationPolicy, resolveAuthProviderId, resolvePluginAuthConfigFromPluginDirs } from "./config.js";
+import { getPortalBasePath } from "../config.js";
+import { composePortalAuthConfig } from "../portal-paths.js";
 
 const PROVIDERS = {
     none: createNoAuthProvider,
@@ -83,7 +85,7 @@ export function getResolvedAuthProviderId() {
 }
 
 export async function getAuthConfig(req) {
-    return getAuthProvider().getPublicConfig(req);
+    return composePortalAuthConfig(await getAuthProvider().getPublicConfig(req), getPortalBasePath());
 }
 
 export async function validateToken(token, req) {

@@ -20,6 +20,7 @@ import {
     computeLegacyLayout,
     createInitialState,
     buildPortalLinks,
+    buildPortalEntryLink,
     formatPortalLinksForCopy,
     createStore,
     AUTO_HISTORY_EVENT_SOFT_CAP,
@@ -189,7 +190,7 @@ const SESSION_LINK_PRIVATE_WARNING = "Only people with access can open this link
 
 function buildSessionLinkUrl(sessionId) {
     if (!sessionId || typeof window === "undefined" || !window.location) return null;
-    return `${window.location.origin}${window.location.pathname}?session=${encodeURIComponent(sessionId)}`;
+    return buildPortalEntryLink(window.location, `session=${encodeURIComponent(sessionId)}`, portalEntryPath ?? window.location.pathname);
 }
 
 /**
@@ -212,6 +213,11 @@ function buildArtifactLinkUrl(sessionId, filename, { fullscreen = true } = {}) {
 // singleton, deliberately — links are produced from deep inside component
 // trees and the origin list is global, immutable config.
 let portalLinkOrigins = [];
+let portalEntryPath = null;
+export function setPortalEntryPath(path) {
+    if (path !== null && typeof path !== "string") throw new TypeError("Portal entry path must be a string or null.");
+    portalEntryPath = path;
+}
 export function setPortalLinkOrigins(list) {
     portalLinkOrigins = Array.isArray(list) ? list : [];
 }
@@ -7907,7 +7913,9 @@ function CanvasShareDialog({ controller, sessionId, slot, onClose }) {
     // never implies otherwise.
     const [hideChrome, setHideChrome] = React.useState(false);
     const transport = controller.transport;
-    const sessionLink = `${window.location.origin}/?session=${encodeURIComponent(sessionId)}&view=canvas&slot=${slot}&max=1${hideChrome ? "&show_chrome=false" : ""}`;
+    const sessionLink = buildPortalEntryLink(window.location,
+        `session=${encodeURIComponent(sessionId)}&view=canvas&slot=${slot}&max=1${hideChrome ? "&show_chrome=false" : ""}`,
+        portalEntryPath ?? "/");
     // The token variants all resolve the same hashed row: one token, N doors,
     // single-switch revocation whichever door the bearer uses.
     const linkRows = (url, keyPrefix) => React.createElement(MultiOriginLinkRows, {
@@ -7946,7 +7954,7 @@ function CanvasShareDialog({ controller, sessionId, slot, onClose }) {
         setBusy(true); setError("");
         transport.resetCanvasShareLink(sessionId, slot)
             .then(({ token }) => {
-                setFreshLink(`${window.location.origin}/?canvasShare=${encodeURIComponent(token)}`);
+                setFreshLink(buildPortalEntryLink(window.location, `canvasShare=${encodeURIComponent(token)}`, portalEntryPath ?? "/"));
                 setInfo({ exists: true });
             })
             .catch((err) => setError(err?.message || String(err)))

@@ -465,6 +465,21 @@ button {
   white-space: nowrap;
 }
 
+.portal-auth-notice {
+  flex-shrink: 0;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--ps-border);
+  background: var(--ps-surface);
+  color: var(--ps-foreground);
+  font-size: 0.85rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.portal-auth-notice[role="alert"] {
+  color: var(--ps-danger);
+}
+
 .portal-header-status {
   /* Generous on wide screens (tied to viewport so it stays proportional on
      smaller desktops); still ellipsizes rather than pushing Sign Out. */

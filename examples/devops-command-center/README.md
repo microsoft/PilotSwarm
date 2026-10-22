@@ -71,6 +71,13 @@ dashboards do not eagerly refresh. The native direct transport stays on durable 
 [live-plane architecture](../../docs/architecture/live-plane.md) for limits
 and reconnect behavior.
 
+When hosting these agents in the portal, `PORTAL_BASE_PATH` selects a root or
+nested entry without rebuilding browser assets. Preserve the prefix at the
+front proxy and in client URLs and health probes. Proxy browser sign-in uses
+server-validated request identity, not a synthetic access token. See the
+[separate local signed-proxy example](../proxy-auth/README.md); this sample's
+agent and tool behavior does not change.
+
 From the repo root:
 
 ```bash

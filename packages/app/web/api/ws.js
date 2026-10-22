@@ -1,5 +1,6 @@
 import { WebSocketServer } from "ws";
 import { authenticateToken, extractToken } from "../auth.js";
+import { canonicalRequestPath } from "../portal-paths.js";
 
 /**
  * The Web API streaming endpoint: session events and the live log tail.
@@ -444,7 +445,7 @@ export function attachWebSockets(server, runtime, endpoints) {
     }));
 
     server.on("upgrade", (req, socket, head) => {
-        const { pathname } = new URL(req.url || "/", "http://localhost");
+        const pathname = canonicalRequestPath(req.url);
         const wss = byPath.get(pathname);
         if (!wss) {
             socket.destroy();

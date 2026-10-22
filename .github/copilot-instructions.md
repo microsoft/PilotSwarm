@@ -240,6 +240,14 @@ The portal (`packages/app/web/`) must interact with PilotSwarm **exclusively thr
 
 Portal auth is provider-based (`packages/app/web/auth/`). Auth providers live in `auth/providers/`, token normalization in `auth/normalize/`, and authorization policy in `auth/authz/engine.js`. Configuration uses **canonical env vars only**: `PORTAL_AUTH_*` and `PORTAL_AUTHZ_*` — never legacy `ENTRA_*` aliases.
 
+Request-authenticated browser providers require an enabled capability and an
+allowed sanitized admission response; public configuration alone is not sign-in.
+Never invent a browser token/account or copy identity/assertion headers.
+Keep none/dev/Entra credential paths intact. `PORTAL_BASE_PATH` supplies the
+shared root/nested URL boundary for assets, APIs, sockets, canvas and links.
+Front proxies preserve this prefix and enforce Host/Origin/CSRF for ambient
+cookies, including upgrades; the portal does not enforce WebSocket Origin itself.
+
 ## Client Layering Rule — direct vs Web API
 
 Every feature surface goes through the SDK clients, and the **client** is the
@@ -517,6 +525,7 @@ scripts/local-pilotswarm.sh logs      # follow the portal and repo service logs
 |---|---|
 | PostgreSQL | The `pilotswarm-pg` container (`DATABASE_URL` in `.env`). `up` starts it when it is stopped. |
 | Portal | `http://localhost:3001` with dev sign-in (`PORTAL_AUTH_PROVIDER=dev`): pick Ada (admin), Alice, Bob, Carol or Dave. Ownership is enforced, as in the release environment. |
+| Proxy auth example | Optional `PS_LOCAL_AUTH_MODE=proxy`: signed-assertion proxy at `http://127.0.0.1:3001`, real portal on loopback port `3002`, default entry `/portal/`. `PS_LOCAL_PROXY_PORTAL_PORT`, `PS_LOCAL_PROXY_SESSION_TTL` and `PORTAL_BASE_PATH` customize it. The normal `down` stops both processes. See `examples/proxy-auth/README.md`; it is a local persona demo, not a production IdP. |
 | Workers | Two, inside the portal process (`WORKERS=2`). They load the workspaces example through `PILOTSWARM_EXTENSION_MODULES`. |
 | Workspaces | The reference setup in `packages/sdk/examples/repo-workspaces/`: its repo service on `127.0.0.1:8080`, and plain folders under `~/pilotswarm-local/ws` (`a`, `shared`, `home`) in place of the NFS exports. |
 | Workspace tab | The side pane's Workspace tab reads and writes the same folders: the portal gets `PORTAL_WORKSPACE_ROOTS` for them. File limit: `PORTAL_WORKSPACE_MAX_FILE_MB` (default 20). |

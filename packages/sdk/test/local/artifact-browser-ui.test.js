@@ -40,16 +40,38 @@ function seedSession(store, sessionId = "session-12345678") {
 }
 
 describe("artifact browser UI", () => {
-    it("encodes browser file uploads as base64 for binary-safe RPC transport", async () => {
-        // BrowserPortalTransport is a browser-only class: its constructor reads
-        // window.location.origin as the API base. Provide the minimal browser
-        // global so the transport can be unit-tested in Node.
-        const hadWindow = "window" in globalThis;
-        if (!hadWindow) globalThis.window = { location: { origin: "http://localhost" } };
+    it.each([
+        ["/", "http://localhost"],
+        ["/portal/", "http://localhost/portal"],
+    ])("encodes browser file uploads as base64 for binary-safe RPC transport at %s", async (basePath, apiUrl) => {
+        const previousGlobals = new Map(["window", "document"].map(
+            (name) => [name, Object.getOwnPropertyDescriptor(globalThis, name)],
+        ));
         try {
+            Object.defineProperty(globalThis, "window", {
+                configurable: true,
+                writable: true,
+                value: { location: { origin: "http://localhost" } },
+            });
+            Object.defineProperty(globalThis, "document", {
+                configurable: true,
+                writable: true,
+                value: {
+                    querySelector(selector) {
+                        assertEqual(selector, 'meta[name="pilotswarm-base-path"]', "the transport should read the trusted bootstrap marker");
+                        return {
+                            getAttribute(name) {
+                                assertEqual(name, "content", "the bootstrap marker should supply its configured base path");
+                                return basePath;
+                            },
+                        };
+                    },
+                },
+            });
             const transport = new BrowserPortalTransport({
                 getAccessToken: async () => null,
             });
+            assertEqual(transport.api.apiUrl, apiUrl, "browser uploads should use the configured portal API prefix");
             let apiCall = null;
             transport.api.call = async (method, params) => {
                 apiCall = { method, params };
@@ -66,7 +88,10 @@ describe("artifact browser UI", () => {
             assertEqual(apiCall?.params?.contentEncoding, "base64", "browser uploads should mark binary payloads as base64");
             assertEqual(apiCall?.params?.content, "/9j/2wBD", "browser uploads should preserve the raw JPEG bytes in base64 form");
         } finally {
-            if (!hadWindow) delete globalThis.window;
+            for (const [name, descriptor] of previousGlobals) {
+                if (descriptor) Object.defineProperty(globalThis, name, descriptor);
+                else delete globalThis[name];
+            }
         }
     });
 

@@ -2,12 +2,37 @@
 // replaces waldemort's bundle monkey patch.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildPortalLinks, formatPortalLinksForCopy } from "../src/portal-links.js";
+import { buildPortalEntryLink, buildPortalLinks, formatPortalLinksForCopy } from "../src/portal-links.js";
 
 const TWO = [
     { label: "Corporate", origin: "https://corp.example.com" },
     { label: "Private/VPN", origin: "https://vpn.example.com" },
 ];
+
+test("session, artifact and canvas entry links keep the configured path before rebasing origins", () => {
+    const location = { origin: "https://portal.example.invalid", pathname: "/existing/deep/path" };
+    for (const entry of ["/", "/portal/", "/tools/agents/"]) {
+        for (const query of [
+            "session=fixture", "session=fixture&artifact=report%20one.html&view=full",
+            "session=fixture&view=canvas&slot=2&max=1&show_chrome=false", "canvasShare=fixture-value",
+        ]) {
+            const link = buildPortalEntryLink(location, query, entry);
+            assert.equal(link, `${location.origin}${entry}?${query}`);
+            for (const [index, alternate] of buildPortalLinks(`${link}#section`, TWO).entries()) {
+                assert.equal(alternate.url, `${TWO[index].origin}${entry}?${query}#section`);
+            }
+        }
+    }
+    assert.equal(buildPortalEntryLink(location, "session=fixture"), `${location.origin}${location.pathname}?session=fixture`);
+});
+
+test("portal entry links do not inherit old share capabilities or permit an external entry", () => {
+    const location = { origin: "https://portal.example.invalid", pathname: "/portal/", search: "?canvasShare=old-value", hash: "#old" };
+    assert.equal(buildPortalEntryLink(location, "session=fixture"), "https://portal.example.invalid/portal/?session=fixture");
+    for (const entry of ["//elsewhere.invalid/", "https://elsewhere.invalid/", "/a/../portal/", "/portal/?canvasShare=old", "/portal/#old"]) {
+        assert.throws(() => buildPortalEntryLink(location, "session=fixture", entry), /Portal entry/u);
+    }
+});
 
 test("with two origins, every link is rebased onto each, labeled, order preserved", () => {
     const links = buildPortalLinks("https://whatever.host/?session=abc&view=canvas&slot=2&max=1#frag", TWO);

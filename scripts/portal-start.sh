@@ -63,6 +63,11 @@ if [ ! -f "$ENV_FILE" ]; then
   exit 1
 fi
 
+PORTAL_ENTRY="$(node --env-file="$ENV_FILE" --input-type=module -e '
+  import { createPortalPaths } from "./packages/app/web/portal-paths.js";
+  process.stdout.write(createPortalPaths(process.env.PORTAL_BASE_PATH).entryPath);
+')"
+
 # Kill any previous instances. Runs even without a PID file: an instance
 # started outside this script still holds the port, and the readiness probe
 # below cannot tell that server apart from the one we are about to start.
@@ -101,7 +106,7 @@ for i in $(seq 1 30); do
   # Health alone is not proof: a survivor from an earlier run answers it too.
   # Require the port to be held by the process WE started, so a stale server
   # can never be reported as ready.
-  if curl -s "http://localhost:$PORT/api/health" >/dev/null 2>&1 \
+  if curl -fsS "http://localhost:$PORT${PORTAL_ENTRY}api/health" >/dev/null 2>&1 \
      && lsof -ti tcp:"$PORT" -sTCP:LISTEN 2>/dev/null | grep -qx "$SERVER_PID"; then
     echo " ready"
     break
@@ -120,7 +125,7 @@ done
 echo ""
 echo "══════════════════════════════════════════════════════"
 echo "  PilotSwarm Web Portal"
-echo "  URL:  http://localhost:$PORT"
+echo "  URL:  http://localhost:$PORT${PORTAL_ENTRY}"
 echo "  PID:  $SERVER_PID"
 echo "  Mode: $TUI_MODE"
 echo "  Env:  $ENV_FILE"

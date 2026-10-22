@@ -6,6 +6,20 @@ This version-controlled log records prompt behavior changes that affect shipped
 PilotSwarm agents. Model-specific compatibility measurements remain in
 `docs/models/` when a formal evaluation sweep is run.
 
+## 2026-10-17 - Proxy browser and base-path builder guidance
+
+- **Agent:** portal-builder template, `1.3.0` to `1.4.0`.
+- **Model tested:** none; builder maintenance, not a model experiment.
+- **Observed behavior:** the template described only none/Entra API gating and
+  origin-root callbacks, with no request-auth browser admission contract.
+- **Expected behavior:** preserve existing providers, require allowed sanitized
+  request identity without dummy tokens, preserve configured base paths, and
+  put ambient cookie protections at the trusted proxy. Use the separate
+  signed local demo without replacing dev auth.
+- **Validation:** source/document review only so far; implemented browser and
+  example execution are still pending. No model-compliance measurement or
+  compatibility-matrix change is claimed.
+
 ## 2026-09-22 — Maintainer PR comment command
 
 - **Agent:** repository `pilotswarm-release`, `2.2.0` to `2.3.0`.

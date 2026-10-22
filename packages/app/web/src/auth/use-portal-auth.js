@@ -2,6 +2,9 @@ import React from "react";
 import { createNoBrowserAuthProvider } from "./providers/none.js";
 import { createEntraBrowserAuthProvider } from "./providers/entra.js";
 import { createDevBrowserAuthProvider } from "./providers/dev.js";
+import { createProxyBrowserAuthProvider } from "./providers/proxy.js";
+import { fetchRequestAuthContext } from "./proxy-auth.js";
+import { createPortalPaths, getBrowserPortalPaths } from "../../portal-paths.js";
 
 function buildInitialState(authConfig) {
     return {
@@ -23,6 +26,7 @@ function createBrowserAuthProvider(providerId) {
     if (!providerId || providerId === "none") return createNoBrowserAuthProvider();
     if (providerId === "entra") return createEntraBrowserAuthProvider();
     if (providerId === "dev") return createDevBrowserAuthProvider();
+    if (providerId === "proxy") return createProxyBrowserAuthProvider();
     return null;
 }
 
@@ -35,10 +39,10 @@ async function readAuthErrorMessage(response) {
     }
 }
 
-async function fetchAuthContext(token) {
+async function fetchAuthContext(token, paths) {
     const headers = new Headers();
     if (token) headers.set("authorization", `Bearer ${token}`);
-    const response = await fetch("/api/auth/me", { headers });
+    const response = await fetch(paths.path("/api/auth/me"), { headers });
     if (response.status === 401) {
         return {
             status: "unauthorized",
@@ -62,9 +66,47 @@ async function fetchAuthContext(token) {
     };
 }
 
-export function usePortalAuth(authConfig) {
+export function usePortalAuth(authConfig, basePath = getBrowserPortalPaths().basePath) {
+    const paths = React.useMemo(() => createPortalPaths(basePath), [basePath]);
     const [state, setState] = React.useState(() => buildInitialState(authConfig));
     const providerRef = React.useRef(null);
+    const requestGeneration = React.useRef(0);
+    const requestScope = React.useMemo(() => ({ authConfig, paths }), [authConfig, paths]);
+    const requestScopeRef = React.useRef(requestScope);
+    const initializedRequestScope = React.useRef(null);
+    const proxyEpoch = React.useRef(0);
+    if (requestScopeRef.current !== requestScope
+        && (authConfig?.provider === "proxy" || requestScopeRef.current.authConfig?.provider === "proxy")) {
+        ++proxyEpoch.current;
+    }
+    requestScopeRef.current = requestScope;
+
+    const syncRequestAuth = React.useCallback(async (provider, scope) => {
+        const generation = ++requestGeneration.current;
+        const current = () => requestGeneration.current === generation
+            && requestScopeRef.current === scope && providerRef.current === provider;
+        setState({ ...buildInitialState(scope.authConfig), requestAuth: true });
+        let result;
+        try {
+            await provider.initialize(scope.authConfig, scope.paths.basePath);
+            if (!current()) return;
+            initializedRequestScope.current = scope;
+            result = await fetchRequestAuthContext(scope.paths);
+        } catch (error) {
+            result = { status: "error", error: error?.message || String(error) };
+        }
+        if (!current()) return;
+        setState({
+            ...buildInitialState(scope.authConfig),
+            loading: false,
+            requestAuth: true,
+            signedIn: result.status === "authorized",
+            forbidden: result.status === "forbidden",
+            principal: result.status === "authorized" ? result.principal : null,
+            authorization: result.status === "authorized" ? result.authorization : null,
+            error: result.error || null,
+        });
+    }, []);
 
     const applyAuthorizedState = React.useCallback(({ account, accessToken, principal, authorization }) => {
         setState((current) => ({
@@ -95,7 +137,9 @@ export function usePortalAuth(authConfig) {
     }, []);
 
     const syncAuthContext = React.useCallback(async ({ account, accessToken }) => {
-        const result = await fetchAuthContext(accessToken);
+        const epoch = proxyEpoch.current;
+        const result = await fetchAuthContext(accessToken, paths);
+        if (epoch !== proxyEpoch.current) return { status: "stale" };
         if (result.status === "authorized") {
             applyAuthorizedState({
                 account,
@@ -125,10 +169,12 @@ export function usePortalAuth(authConfig) {
             error: null,
         }));
         return result;
-    }, [applyAuthorizedState, applyForbiddenState]);
+    }, [applyAuthorizedState, applyForbiddenState, paths]);
 
     React.useEffect(() => {
         let active = true;
+        ++requestGeneration.current;
+        initializedRequestScope.current = null;
 
         async function initialize() {
             if (!authConfig) {
@@ -179,7 +225,7 @@ export function usePortalAuth(authConfig) {
             if (!authConfig.enabled || authConfig.provider === "none") {
                 try {
                     await provider.initialize(authConfig);
-                    const result = await fetchAuthContext(null);
+                    const result = await fetchAuthContext(null, paths);
                     if (!active) return;
                     if (result.status === "authorized") {
                         setState({
@@ -229,6 +275,11 @@ export function usePortalAuth(authConfig) {
                 return;
             }
 
+            if (provider.authenticatesFromRequest === true) {
+                await syncRequestAuth(provider, requestScope);
+                return;
+            }
+
             try {
                 const initialized = await provider.initialize(authConfig);
                 const account = initialized?.account || provider.getAccount() || null;
@@ -261,7 +312,7 @@ export function usePortalAuth(authConfig) {
                 // would have produced. A 401 that survives this is a real one:
                 // a token the server actually rejected.
                 const result = accessToken
-                    ? await fetchAuthContext(accessToken)
+                    ? await fetchAuthContext(accessToken, paths)
                     : { status: "unauthorized", error: "Unauthorized" };
                 if (!active) return;
                 if (result.status === "authorized") {
@@ -315,6 +366,7 @@ export function usePortalAuth(authConfig) {
         initialize();
         return () => {
             active = false;
+            ++requestGeneration.current;
         };
     }, [
         authConfig?.client?.authority,
@@ -322,7 +374,10 @@ export function usePortalAuth(authConfig) {
         authConfig?.client?.redirectUri,
         authConfig?.enabled,
         authConfig?.provider,
+        authConfig?.provider === "proxy" ? requestScope : null,
+        paths,
         syncAuthContext,
+        syncRequestAuth,
     ]);
 
     const signIn = React.useCallback(async (signInArg) => {
@@ -331,13 +386,36 @@ export function usePortalAuth(authConfig) {
             throw new Error(`Unsupported portal auth provider "${state.provider}"`);
         }
 
+        if (providerRef.current.authenticatesFromRequest === true) {
+            const provider = providerRef.current;
+            const scope = requestScopeRef.current;
+            const generation = ++requestGeneration.current;
+            try {
+                if (!scope.authConfig?.client?.signInUrl) {
+                    await syncRequestAuth(provider, scope);
+                    return;
+                }
+                if (initializedRequestScope.current !== scope) throw new Error("Proxy sign-in configuration is not ready. Retry after it loads.");
+                await provider.signIn();
+            } catch (error) {
+                if (generation !== requestGeneration.current || scope !== requestScopeRef.current) return;
+                setState((current) => ({
+                    ...current, loading: false, actionError: error?.message || String(error),
+                }));
+            }
+            return;
+        }
+
         // signInArg is provider-specific (the dev provider takes a persona id);
         // none/entra ignore it.
+        const epoch = proxyEpoch.current;
         const result = await providerRef.current.signIn(signInArg);
+        if (epoch !== proxyEpoch.current) return;
         if (result?.redirected) return;
 
         const account = result?.account || providerRef.current.getAccount() || null;
         const accessToken = result?.accessToken || await providerRef.current.getAccessToken();
+        if (epoch !== proxyEpoch.current) return;
 
         if (!account) {
             setState((current) => ({
@@ -354,9 +432,30 @@ export function usePortalAuth(authConfig) {
         }
 
         await syncAuthContext({ account, accessToken });
-    }, [state.authEnabled, state.provider, syncAuthContext]);
+    }, [state.authEnabled, state.provider, syncAuthContext, syncRequestAuth]);
 
     const signOut = React.useCallback(async () => {
+        if (providerRef.current?.authenticatesFromRequest === true) {
+            const scope = requestScopeRef.current;
+            const generation = ++requestGeneration.current;
+            try {
+                if (initializedRequestScope.current !== scope) throw new Error("Proxy sign-out configuration is not ready. Retry after it loads.");
+                const result = await providerRef.current.signOut();
+                if (generation !== requestGeneration.current || scope !== requestScopeRef.current) return;
+                if (result?.upstreamManaged) {
+                    setState((current) => ({
+                        ...current, loading: false, actionError: null,
+                        actionNotice: "Sign-out is managed by the upstream proxy. This portal has not signed you out.",
+                    }));
+                }
+            } catch (error) {
+                if (generation !== requestGeneration.current || scope !== requestScopeRef.current) return;
+                setState((current) => ({
+                    ...current, loading: false, actionError: error?.message || String(error),
+                }));
+            }
+            return;
+        }
         if (!providerRef.current) {
             setState((current) => ({
                 ...current,
@@ -370,7 +469,9 @@ export function usePortalAuth(authConfig) {
             return;
         }
 
+        const epoch = proxyEpoch.current;
         const result = await providerRef.current.signOut();
+        if (epoch !== proxyEpoch.current) return;
         if (result?.redirected) return;
 
         setState((current) => ({
@@ -386,8 +487,10 @@ export function usePortalAuth(authConfig) {
     }, []);
 
     const handleUnauthorized = React.useCallback(() => {
+        ++requestGeneration.current;
         setState((current) => ({
             ...current,
+            ...(current.requestAuth ? { loading: false, actionError: null, actionNotice: null } : {}),
             signedIn: false,
             forbidden: false,
             account: null,
@@ -399,8 +502,10 @@ export function usePortalAuth(authConfig) {
     }, []);
 
     const handleForbidden = React.useCallback((error) => {
+        ++requestGeneration.current;
         setState((current) => ({
             ...current,
+            ...(current.requestAuth ? { loading: false, signedIn: false, account: null, accessToken: null, actionError: null, actionNotice: null } : {}),
             forbidden: true,
             principal: null,
             authorization: null,
@@ -426,8 +531,11 @@ export function usePortalAuth(authConfig) {
         return providerRef.current.getResourceToken(resource);
     }, [state.authEnabled]);
 
+    // Never expose an older anonymous/token identity during a proxy config switch.
+    const visibleState = (authConfig?.provider === "proxy" || state.provider === "proxy")
+        && state.config !== authConfig ? buildInitialState(authConfig) : state;
     return {
-        ...state,
+        ...visibleState,
         signIn,
         signOut,
         getAccessToken,

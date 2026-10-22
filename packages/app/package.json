@@ -42,6 +42,7 @@
         "web/api/**/*",
         "web/bin/**/*",
         "web/config.js",
+        "web/portal-paths.js",
         "web/dist/**/*",
         "web/runtime.js",
         "web/server.js",

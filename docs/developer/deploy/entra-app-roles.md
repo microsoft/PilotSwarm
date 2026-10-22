@@ -13,6 +13,13 @@ exclusive — they cover different populations.
 
 ## Recommended End State
 
+If the portal uses `PORTAL_BASE_PATH`, register its canonical entry as the
+SPA redirect URI, for example `https://portal.example.com/portal/`.
+Shared routing composes the prefix onto a root callback and preserves an
+explicit non-root callback. It does not change Entra token acquisition or
+role validation. Ensure the front proxy and health probes retain the same
+prefix; see [base-path configuration](../reference/configuration.md#hosting-below-a-path).
+
 The recommended configuration is a single coherent setup, not a sequence of
 optional toggles. Do all four steps.
 

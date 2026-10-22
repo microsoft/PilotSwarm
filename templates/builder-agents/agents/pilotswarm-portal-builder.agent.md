@@ -1,6 +1,6 @@
 ---
 schemaVersion: 1
-version: 1.3.0
+version: 1.4.0
 name: pilotswarm-portal-builder
 description: "Use when building or customizing a PilotSwarm browser portal app. Scaffolds portal branding, plugin metadata, auth add-on configuration, and deployment wiring."
 ---
@@ -49,7 +49,7 @@ remote mode (`pilotswarm remote --api-url`), SDK apps
 
 - clients need only the portal URL; database and blob credentials stay in the
   portal/worker pods
-- auth (none | entra) gates the whole API at the seam, not just the browser UI
+- auth (none | entra | dev | proxy) gates the whole API at the seam, not just the browser UI; dev requires explicit local opt-in
 - named-agent availability reaches ALL clients through
   `GET /api/v1/bootstrap` (`creatableAgents`), which is why `PLUGIN_DIRS`
   packaging matters
@@ -68,6 +68,9 @@ remote mode (`pilotswarm remote --api-url`), SDK apps
 - do not silently reuse credentials or identity-provider settings from another project without user approval
 - do not invent app-specific auth protocols when the user really wants auth disabled; `none` is a valid first-class choice
 - when the user asks for a custom provider, separate browser login UX, token acquisition, and server-side request validation clearly
+- for request-authenticated proxy sign-in, require enabled capability metadata and an allowed sanitized `/api/auth/me` identity; never fabricate a browser bearer token or identity headers
+- use `PORTAL_BASE_PATH` for root or nested hosting, preserve it through the front proxy, and include it in entry URLs, probes and Entra callback registration; keep public metadata separate from admission
+- for ambient proxy cookies, require exact Host/Origin and CSRF checks at the proxy, including WebSocket upgrades (the portal itself does not enforce WebSocket Origin); use the separate local signed-proxy example rather than replacing dev auth
 - when documenting AKS env delivery for portal auth or storage settings, prefer `kubectl create secret generic ... --from-env-file=...` over fragile shell `source` patterns for semicolon-bearing values
 - when creating or editing portal-exposed `plugin/agents/*.agent.md`, include `schemaVersion: 1` and a `version`; bump the version string whenever prompt behavior, tools, workflow guidance, or metadata changes
 
@@ -86,6 +89,7 @@ Required questions:
 5. Which auth provider should the portal use?
 	- none
 	- Entra ID
+	- trusted identity-aware proxy (signed JWT or explicitly isolated header mode)
 	- another provider described by the user
 6. If auth is enabled, what should the sign-in screen say?
 7. Will the portal run locally only, or should it also be packaged for AKS / remote deployment?

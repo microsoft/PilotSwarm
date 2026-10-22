@@ -26,6 +26,10 @@
 #   PS_LOCAL_DIR             where the folders and logs go (default ~/pilotswarm-local)
 #   PS_LOCAL_REPO_PORT       the repo service's port (default 8080)
 #   PORT                     the portal's port (default 3001)
+#   PS_LOCAL_AUTH_MODE       dev (default) or proxy (explicit local signed-assertion demo)
+#   PS_LOCAL_PROXY_PORTAL_PORT  loopback backend port in proxy mode (default 3002)
+#   PORTAL_BASE_PATH         / by default; /portal by default in proxy mode
+#   PS_LOCAL_PROXY_SESSION_TTL  demo session lifetime in seconds (default 900)
 #   PS_MODEL_PROVIDERS_PATH  the model catalog (default: .model_providers.json when it exists,
 #                            else deploy/config/model_providers.local-docker.json, which has
 #                            GitHub Copilot models only and uses GITHUB_TOKEN)
@@ -45,6 +49,12 @@ LOGS="$LOCAL_DIR/logs"
 REPO_PORT="${PS_LOCAL_REPO_PORT:-8080}"
 PORT="${PORT:-3001}"
 REPO_PID="$LOCAL_DIR/repo-service.pid"
+PROXY_PID="$LOCAL_DIR/proxy-auth.pid"
+AUTH_MODE="${PS_LOCAL_AUTH_MODE:-dev}"
+case "$AUTH_MODE" in
+    dev|proxy) ;;
+    *) echo "[local] PS_LOCAL_AUTH_MODE must be dev or proxy" >&2; exit 1 ;;
+esac
 WORKSPACES="${PS_LOCAL_WORKSPACES:-on}"
 case "$WORKSPACES" in
     on|no-defaults|no-portal|off) ;;
@@ -153,8 +163,10 @@ start_repo_service() {
 # The portal with its workers inside it, set up like the release
 # environment's workers (deploy/providers/azure/gitops/worker/components/workspaces).
 start_portal() {
-    export PORTAL_AUTH_PROVIDER=dev
-    export PORTAL_AUTH_DEV_ALLOW=true
+    if [[ "$AUTH_MODE" == dev ]]; then
+        export PORTAL_AUTH_PROVIDER=dev
+        export PORTAL_AUTH_DEV_ALLOW=true
+    fi
     # This machine only: dev sign-in takes no password, and the agents run
     # shell commands as you. Never on the network unless you set PORTAL_HOST.
     export PORTAL_HOST="${PORTAL_HOST:-127.0.0.1}"
@@ -190,10 +202,67 @@ start_portal() {
     fi
     export GIT_AUTHOR_NAME="PilotSwarm agent" GIT_AUTHOR_EMAIL=agent@pilotswarm.invalid
     export GIT_COMMITTER_NAME="PilotSwarm agent" GIT_COMMITTER_EMAIL=agent@pilotswarm.invalid
-    PORT="$PORT" ./scripts/portal-start.sh local --port "$PORT"
+    if [[ "$AUTH_MODE" == proxy ]]; then
+        start_proxy_demo
+    else
+        PORT="$PORT" ./scripts/portal-start.sh local --port "$PORT"
+    fi
+}
+
+proxy_demo_running() {
+    [[ -f "$PROXY_PID" ]] || return 1
+    local pid
+    pid="$(cat "$PROXY_PID")"
+    if kill -0 "$pid" 2>/dev/null && ps -p "$pid" -o command= 2>/dev/null | grep -q "examples/proxy-auth/run.mjs"; then
+        return 0
+    fi
+    rm -f "$PROXY_PID"
+    return 1
+}
+
+start_proxy_demo() {
+    if proxy_demo_running; then
+        echo "[local] The proxy demo is already running (pid $(cat "$PROXY_PID"))."
+        return
+    fi
+    npm run build:web --workspace=pilotswarm >"$LOGS/proxy-browser-build.log" 2>&1 \
+        || { echo "[local] Browser build failed; see $LOGS/proxy-browser-build.log" >&2; exit 1; }
+    nohup node --env-file=.env examples/proxy-auth/run.mjs --demo \
+        --port "$PORT" --portal-port "${PS_LOCAL_PROXY_PORTAL_PORT:-3002}" \
+        --base-path "${PORTAL_BASE_PATH:-/portal}" \
+        --session-ttl "${PS_LOCAL_PROXY_SESSION_TTL:-900}" >>"$LOGS/proxy-auth.log" 2>&1 &
+    echo $! >"$PROXY_PID"
+    for _ in $(seq 1 90); do
+        if curl -fsS -m 2 -o /dev/null "http://127.0.0.1:$PORT/example-auth/health" \
+            && lsof -ti tcp:"$PORT" -sTCP:LISTEN 2>/dev/null | grep -qx "$(cat "$PROXY_PID")"; then
+            return
+        fi
+        if ! proxy_demo_running; then
+            echo "[local] Proxy demo stopped; see $LOGS/proxy-auth.log" >&2
+            exit 1
+        fi
+        sleep 1
+    done
+    kill "$(cat "$PROXY_PID")"
+    echo "[local] Proxy demo did not become ready; see $LOGS/proxy-auth.log" >&2
+    exit 1
 }
 
 stop_all() {
+    if proxy_demo_running; then
+        local pid
+        pid="$(cat "$PROXY_PID")"
+        kill "$pid"
+        for _ in $(seq 1 35); do
+            if ! kill -0 "$pid" 2>/dev/null; then break; fi
+            sleep 1
+        done
+        if kill -0 "$pid" 2>/dev/null; then
+            echo "[local] Proxy demo did not stop; refusing to start another instance." >&2
+            exit 1
+        fi
+        rm -f "$PROXY_PID"
+    fi
     PORT="$PORT" ./scripts/portal-stop.sh || true
     if repo_service_running; then
         kill "$(cat "$REPO_PID")"
@@ -203,7 +272,12 @@ stop_all() {
 }
 
 summary() {
-    echo "[local] Portal:  http://localhost:$PORT (sign in as Ada, Alice, Bob, Carol or Dave)"
+    if [[ "$AUTH_MODE" == proxy ]]; then
+        echo "[local] Proxy demo: http://127.0.0.1:$PORT/example-auth/login"
+        echo "[local] Local passwordless personas only; do not expose this origin."
+    else
+        echo "[local] Portal:  http://localhost:$PORT${PORTAL_BASE_PATH:-/} (sign in as Ada, Alice, Bob, Carol or Dave)"
+    fi
     echo "[local] Folders: $WS"
     if [[ "$WORKSPACES" != on ]]; then echo "[local] Workspaces: $WORKSPACES (PS_LOCAL_WORKSPACES)"; fi
     echo "[local] Logs:    scripts/local-pilotswarm.sh logs"
@@ -241,7 +315,11 @@ case "${1:-}" in
         echo "[local] Removed $WS. The database is kept."
         ;;
     logs)
-        tail -n 50 -f /tmp/portal-server.log "$LOGS/repo-service.log"
+        if [[ "$AUTH_MODE" == proxy ]]; then
+            tail -n 50 -f "$LOGS/proxy-auth.log" "$LOGS/repo-service.log"
+        else
+            tail -n 50 -f /tmp/portal-server.log "$LOGS/repo-service.log"
+        fi
         ;;
     *)
         sed -n '2,9p' "$0"
