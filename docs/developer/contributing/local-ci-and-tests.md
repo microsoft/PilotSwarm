@@ -115,10 +115,13 @@ and successful `create/getCurrent` do not prove which model served inference.
 model identity to match the requested descriptor, excluding child, sampling,
 compaction and other attributed auxiliary calls.
 
-The live Stop cases use real native HTTP requests held open by a loopback test
-service, not shell sleep loops: the default framework prompt prohibits shell
-timers. Request readiness proves the native command is running before controls
-are sent. Stop must still terminate that process, meet the two-second bound
+The live Stop and Steer cases use real native HTTP requests held open by a
+loopback test service, not shell sleep loops: the default framework prompt
+prohibits shell timers. Request readiness proves the native command is running before controls
+are sent during native work. Steer cases explicitly complete the request after
+accepting the control (after confirmation for the lost-notification case);
+the pre-send hold case completes it once the initial request arrives.
+Stop must still terminate that process, meet the two-second bound
 where specified, preserve an earlier turn's detached command, and leave the
 warm session usable. Fixture teardown completes only its own pending requests;
 it does not weaken the production prompt or substitute a scripted model.

@@ -82,16 +82,19 @@ async function withTurnControl(fn) {
 /** The backend pid of the worker's LISTEN connection (test-only look inside the worker). */
 const listenerPid = (worker) => worker._turnControlHub?.listener?.processID ?? null;
 
-const MULTI_TOOL = (tag) => `Use the bash tool four separate times, one call each: run \`sleep 1 && echo ${tag}-1\`, then \`sleep 1 && echo ${tag}-2\`, then \`sleep 1 && echo ${tag}-3\`, then \`echo ${tag}-4\`. After the last call, reply with one short sentence.`;
+const MULTI_TOOL = (tag, command) => `Use the bash tool four separate times, one call each: run \`${command} && echo ${tag}-1\`, then \`echo ${tag}-2\`, then \`echo ${tag}-3\`, then \`echo ${tag}-4\`. After the last call, reply with one short sentence.`;
 
 describe.skipIf(!TURN_CONTROL_ORCHESTRATION)("turn control with the real CLI (design 7.3)", () => {
     it("a steer during a multi-tool turn is delivered before the next model call", { timeout: TIMEOUT }, async () => {
-        await withTurnControl(async ({ client, catalog }) => {
+        await withTurnControl(async ({ client, catalog, startWorkload }) => {
+            const workload = await startWorkload();
             const session = await client.createSession();
             const sid = session.sessionId;
-            await session.send(MULTI_TOOL("mt"));
+            await session.send(MULTI_TOOL("mt", workload.command));
             await waitForEventCount(catalog, sid, "tool.execution_start", 1, REPLY_TIMEOUT);
+            await until(workload.hasRequest, "the native request reached the test service", REPLY_TIMEOUT);
             const added = await steer(catalog, sid, "Also mention the word KIWI in your final sentence.");
+            await workload.close();
             await session.wait(REPLY_TIMEOUT);
             assertEqual(await awaitOutcome(catalog, sid, added.seq, "multi-tool"), "delivered");
             const [confirmed] = (await events(catalog, sid, EV.steerConfirmed)).filter((e) => e.data.seq === added.seq);
@@ -103,12 +106,15 @@ describe.skipIf(!TURN_CONTROL_ORCHESTRATION)("turn control with the real CLI (de
     });
 
     it("a steer during a long tool call is delivered after the tool ends", { timeout: TIMEOUT }, async () => {
-        await withTurnControl(async ({ client, catalog }) => {
+        await withTurnControl(async ({ client, catalog, startWorkload }) => {
+            const workload = await startWorkload();
             const session = await client.createSession();
             const sid = session.sessionId;
-            await session.send("Use the bash tool once to run `sleep 8 && echo long-done`. Then reply with one short sentence.");
+            await session.send(`Use the bash tool once, in the foreground, to fetch the result of this test service request: \`${workload.command}\`. Then reply with one short sentence.`);
             await waitForEventCount(catalog, sid, "tool.execution_start", 1, REPLY_TIMEOUT);
+            await until(workload.hasRequest, "the native request reached the test service", REPLY_TIMEOUT);
             const added = await steer(catalog, sid, "Also mention the word KIWI in your reply.");
+            await workload.close();
             await session.wait(REPLY_TIMEOUT);
             assertEqual(await awaitOutcome(catalog, sid, added.seq, "long tool"), "delivered");
             const [confirmed] = (await events(catalog, sid, EV.steerConfirmed)).filter((e) => e.data.seq === added.seq);
@@ -258,15 +264,18 @@ describe.skipIf(!TURN_CONTROL_ORCHESTRATION)("turn control with the real CLI (de
     });
 
     it("a steer held before the initial send is delivered right after it (P21)", { timeout: TIMEOUT }, async () => {
-        await withTurnControl(async ({ client, catalog }) => {
+        await withTurnControl(async ({ client, catalog, startWorkload }) => {
+            const workload = await startWorkload();
             const session = await client.createSession();
             const sid = session.sessionId;
             armFaultHold("turn.control.before-send", sid);
-            await session.send(MULTI_TOOL("held"));
+            await session.send(MULTI_TOOL("held", workload.command));
             await waitForHold("turn.control.before-send", sid);
             await until(async () => (await catalog.getSession(sid))?.turnHigh >= 0, "turn start ran");
             const added = await steer(catalog, sid, "Also mention the word KIWI in your final sentence.");
             release("turn.control.before-send", sid);
+            await until(workload.hasRequest, "the native request reached the test service", REPLY_TIMEOUT);
+            await workload.close();
             await session.wait(REPLY_TIMEOUT);
             assertEqual(await awaitOutcome(catalog, sid, added.seq, "held steer"), "delivered");
         });
@@ -328,14 +337,16 @@ describe.skipIf(!TURN_CONTROL_ORCHESTRATION)("turn control with the real CLI (de
     });
 
     it("a lost notification (the LISTEN connection killed) still delivers the steer within the 5 s look", { timeout: TIMEOUT }, async () => {
-        await withTurnControl(async ({ env, client, worker, catalog }) => {
+        await withTurnControl(async ({ env, client, worker, catalog, startWorkload }) => {
+            const workload = await startWorkload();
             const admin = new pg.Client({ connectionString: env.store });
             await admin.connect();
             try {
                 const session = await client.createSession();
                 const sid = session.sessionId;
-                await session.send(MULTI_TOOL("lost"));
+                await session.send(MULTI_TOOL("lost", workload.command));
                 await waitForEventCount(catalog, sid, "tool.execution_start", 1, REPLY_TIMEOUT);
+                await until(workload.hasRequest, "the native request reached the test service", REPLY_TIMEOUT);
                 const pid = listenerPid(worker);
                 assert(pid, "the worker listens");
                 await admin.query("SELECT pg_terminate_backend($1)", [pid]);
@@ -349,6 +360,7 @@ describe.skipIf(!TURN_CONTROL_ORCHESTRATION)("turn control with the real CLI (de
                 console.log(`  lost notification: steer confirmed ${ms} ms after it was accepted`);
                 assert(confirmed, "confirmed");
                 assert(ms <= 5_000 + 3_000, `delivered within the look interval plus one tool call (${ms} ms)`);
+                await workload.close();
                 await session.wait(REPLY_TIMEOUT);
                 assertEqual(await awaitOutcome(catalog, sid, added.seq, "lost"), "delivered");
             } finally {
