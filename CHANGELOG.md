@@ -2,6 +2,16 @@
 
 ## 0.8.5 — 2026-10-20
 
+**Duroxide fail-closed dependency update.** The SDK now pins
+[`duroxide` 0.2.2](https://github.com/microsoft/duroxide-node/releases/tag/v0.2.2)
+and all five native platform packages exactly from npm, replacing the 0.2.1
+GitHub tarball pins. This brings
+[`duroxide-pg` 0.1.37](https://github.com/microsoft/duroxide-pg/releases/tag/v0.1.37):
+migration startup rejects catalog errors and inconsistent history instead of
+re-applying old migrations; malformed durable history and KV snapshots fail
+closed through the runtime's poison handling. The JavaScript/type API and
+PilotSwarm orchestration versions are unchanged.
+
 **Restricted MCP activation for named agents.** Optional MCP admission now uses
 the selected agent copy's authored name, raw namespace and verified package
 provenance, rather than treating its qualified durable binding as a leaf name.
