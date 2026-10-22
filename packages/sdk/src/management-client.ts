@@ -80,6 +80,14 @@ import type {
     AgentPackageScope, AgentPackageSummary, AgentPackageDetail, AgentPackageEditorInfo, AgentWorkerStateRow, WorkerRow,
 } from "./cms.js";
 import { SYSTEM_USER_PRINCIPAL } from "./cms.js";
+import {
+    classifyPageMode,
+    resolvePageLimit,
+    probeFetchSize,
+    buildSessionEventPage,
+    assertValidCursor,
+    assertFilterHonoured,
+} from "./session-events-page.js";
 import { readCanvasKv, writeCanvasKv, CanvasKvError } from "./canvas-kv.js";
 import type { CanvasKvStore, CanvasKvPrincipal, CanvasKvReadResult, CanvasKvWriteOp, CanvasKvWriteResult, CanvasKvMe } from "./canvas-kv.js";
 import type {
@@ -188,6 +196,10 @@ const DEFAULT_SESSION_PAGE_LIMIT = 50;
 const MAX_SESSION_PAGE_LIMIT = 200;
 const DEFAULT_TOP_EVENT_EMITTER_LIMIT = 20;
 const MAX_TOP_EVENT_EMITTER_LIMIT = 100;
+
+// Session event paging constants and pure page shaping live in
+// ./session-events-page.js so they can be unit-tested without importing
+// this module's Postgres/Azure dependency stack (issue 148).
 
 function clampInteger(value: number | undefined, defaultValue: number, min: number, max: number): number {
     if (value == null) return defaultValue;
@@ -3130,6 +3142,58 @@ export class PilotSwarmManagementClient {
     async getSessionEvents(sessionId: string, afterSeq?: number, limit?: number, eventTypes?: string[]): Promise<import("./cms.js").SessionEvent[]> {
         this._ensureStarted();
         return this._catalog!.getSessionEvents(sessionId, afterSeq, limit, eventTypes);
+    }
+
+    /**
+     * Paged session events WITH a continuation receipt (issue 148).
+     *
+     * Additive. `getSessionEvents` and `getSessionEventsBefore` keep their
+     * bare-array shape and behaviour: fifteen call sites depend on it,
+     * including the footprint sensor and the regeneration worker.
+     *
+     * `hasMore` comes from an eligible-existence read, not arithmetic: one
+     * extra row is requested in the SAME call, under the SAME session,
+     * event-type filter, direction and range. Because `limitApplied` is capped
+     * one below the provider clamp, that probe is never silently reduced by
+     * the clamp, so its presence or absence is real evidence rather than an
+     * inference from `count === limit`.
+     *
+     * The page and its existence evidence come from ONE query, so they share a
+     * single read view.
+     *
+     * Completeness is reported as a strength, never a boolean promise, and a
+     * capped page is never complete. See `SessionEventPageCompleteness`.
+     */
+    async getSessionEventsPage(
+        sessionId: string,
+        opts: { afterSeq?: number; beforeSeq?: number; limit?: number; eventTypes?: string[] } = {},
+    ): Promise<import("./cms.js").SessionEventPage> {
+        this._ensureStarted();
+        const { afterSeq, beforeSeq, eventTypes } = opts;
+        if (afterSeq !== undefined && beforeSeq !== undefined) {
+            throw new Error("getSessionEventsPage: afterSeq and beforeSeq are mutually exclusive");
+        }
+        // Invalid input is refused explicitly rather than coerced into a
+        // different request than the caller made.
+        assertValidCursor("afterSeq", afterSeq);
+        assertValidCursor("beforeSeq", beforeSeq);
+        if (eventTypes !== undefined && (!Array.isArray(eventTypes) || eventTypes.some((t) => typeof t !== "string" || t.length === 0))) {
+            throw new Error("eventTypes must be an array of non-empty strings when provided");
+        }
+
+        const mode = classifyPageMode({ afterSeq, beforeSeq });
+        const limitRequested = opts.limit ?? null;
+        const limitApplied = resolvePageLimit(limitRequested);
+        const probe = probeFetchSize(limitApplied);
+
+        const fetched = mode === "backward"
+            ? await this._catalog!.getSessionEventsBefore(sessionId, beforeSeq!, probe, eventTypes)
+            : await this._catalog!.getSessionEvents(sessionId, mode === "forward" ? afterSeq : undefined, probe, eventTypes);
+
+        // A filter the catalog could not apply must not silently broaden the page.
+        assertFilterHonoured(fetched, eventTypes);
+
+        return buildSessionEventPage({ mode, fetched, limitApplied, limitRequested });
     }
 
     /**

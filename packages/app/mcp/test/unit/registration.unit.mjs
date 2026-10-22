@@ -127,6 +127,10 @@ const ALWAYS_TOOLS = [
     "list_session_groups", "manage_session_group", "get_session_metrics", "get_fleet_overview",
     "list_child_outcomes", "get_execution_history", "list_agents", "get_agent_tree",
     "debug_session",
+    // Session-history readers (issue 148). Both are part of the unconditional
+    // surface: a reader that appears only under some capability would make the
+    // documented retrieval journey conditional on deployment shape.
+    "get_session_events", "get_session_transcript",
     // Security model: sharing management + the grantee-lookup helper.
     "set_session_visibility", "grant_session_share", "revoke_session_share",
     "list_session_shares", "list_known_users",

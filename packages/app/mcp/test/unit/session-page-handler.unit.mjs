@@ -1,0 +1,713 @@
+#!/usr/bin/env node
+// Unit test — the REAL get_session_events page:true HANDLER (issue 148).
+//
+// Why this file exists: the GPT-6.1 different-family review identified the
+// existing MCP tests as FALSE CONFIDENCE. They call the pure helpers, not the
+// tool handler, and none of them asserts the bytes actually sent. A helper can
+// be perfect while the handler that assembles the response is wrong.
+//
+// So these drive the actual MCP tool over an in-memory transport, with a
+// recording mgmt mock, and assert the SERIALIZED WIRE BYTES of the response.
+//
+// Covers:
+//   - the hard max_bytes contract: the response NEVER exceeds the budget
+//   - an impossible budget returns an explicit error instead of a truncated page
+//   - a receipt-driven multi-page drain through the handler is a PARTITION of
+//     the session in all three modes, under byte pressure
+//   - escaping survives the handler in both json and text modes
+//
+// No database, no network, no model.
+//
+// Usage: node packages/app/mcp/test/unit/session-page-handler.unit.mjs
+
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { createMcpServer } from "../../dist/src/server.js";
+import { registerSessionTools } from "../../dist/src/tools/sessions.js";
+import { makeServerContext } from "./helpers/fake-context.mjs";
+
+/**
+ * Capture the REAL registered callback for a tool, with no schema in the path.
+ *
+ * Needed because the tool schema rejects NaN before the request ever reaches
+ * the handler, so an end-to-end call can never exercise the handler's own
+ * safe-integer branch. Routing round the schema is the ONLY way to show that
+ * the defence-in-depth guard itself works — and that guard exists precisely
+ * for the day the schema changes.
+ *
+ * This registers the real `registerSessionTools` against a minimal collector,
+ * so the callback under test is the shipped one, not a copy.
+ */
+function captureSessionTool(name, ctx) {
+    let captured = null;
+    const collector = {
+        registerTool(toolName, _spec, handler) {
+            if (toolName === name) captured = handler;
+        },
+        registerResource() {},
+        registerPrompt() {},
+    };
+    registerSessionTools(collector, ctx);
+    if (!captured) throw new Error(`[test] tool "${name}" was not registered; capture failed`);
+    return captured;
+}
+
+const results = [];
+/**
+ * `detail` explains a FAILURE and is printed only when the case fails.
+ * `info` is context worth seeing either way.
+ *
+ * The split exists because the r17 run printed lines like
+ *   ✅ hard budget respected: json @ 2000B -> 1449B   PASS (1449 > 2000)
+ * The detail is phrased as the failure ("actual > budget"), so beside PASS it
+ * asserted the exact opposite of what happened, and a reader scanning output
+ * could reasonably conclude the budget had been blown on a passing case. A
+ * diagnostic that misreports its own result is worse than none.
+ */
+function record(name, ok, detail = "", info = "") {
+    results.push({ name, ok });
+    // On FAILURE show both: `info` is the context that makes the failure
+    // readable, and dropping it there would discard exactly what a debugger
+    // needs. An earlier version chose `detail || info` and silently lost it.
+    const parts = ok ? [info] : [detail, info];
+    const note = parts.filter(Boolean).join(" — ");
+    console.log(`${ok ? "✅" : "❌"} ${name.padEnd(68)} ${ok ? "PASS" : "FAIL"}${note ? ` (${note})` : ""}`);
+}
+
+const SESSION = "11111111-2222-3333-4444-555555555555";
+
+const ev = (seq, content) => ({
+    seq,
+    sessionId: SESSION,
+    eventType: "assistant.message",
+    data: { content },
+    createdAt: new Date(0),
+});
+
+/**
+ * A mgmt mock that serves a real session from an in-memory array, implementing
+ * the same selection semantics as the stored procedures: forward takes the
+ * oldest above the cursor, latest and backward take the newest.
+ */
+function sessionMgmt(all, { pageLimit = 999 } = {}) {
+    return {
+        getSession: async () => ({ sessionId: SESSION }),
+        getSessionEventsPage: async (_id, opts = {}) => {
+            const { afterSeq, beforeSeq, limit } = opts;
+            const mode = beforeSeq !== undefined ? "backward"
+                : (afterSeq !== undefined && afterSeq > 0) ? "forward" : "latest";
+            const applied = Math.max(1, Math.min(limit ?? 50, pageLimit));
+
+            let eligible;
+            if (mode === "forward") eligible = all.filter((e) => e.seq > afterSeq);
+            else if (mode === "backward") eligible = all.filter((e) => e.seq < beforeSeq);
+            else eligible = [...all];
+
+            const window = mode === "forward"
+                ? eligible.slice(0, applied)
+                : eligible.slice(Math.max(0, eligible.length - applied));
+            const hasMore = eligible.length > window.length;
+            const range = window.length
+                ? { fromSeq: window[0].seq, toSeq: window[window.length - 1].seq }
+                : null;
+            const nextDirection = !hasMore || !range ? null : (mode === "forward" ? "forward" : "backward");
+            const nextCursor = nextDirection === null ? null
+                : (nextDirection === "forward" ? range.toSeq : range.fromSeq);
+
+            return {
+                events: window,
+                receipt: {
+                    mode, range, limitRequested: limit ?? null, limitApplied: applied,
+                    providerClamp: 1000, maxPageSize: 999, hasMore, nextCursor, nextDirection,
+                    completeness: "read-view", truncatedReason: hasMore ? "limit" : null,
+                },
+            };
+        },
+    };
+}
+
+async function connect(mgmt) {
+    // A COMPLETE context (see helpers/fake-context.mjs). A hand-rolled
+    // near-miss crashes inside a registrar during setup, which fails the file
+    // before a single case runs — the assertions below would then be neither
+    // passed nor failed, while the output shows only one error.
+    const ctx = makeServerContext({ mgmt });
+    const server = createMcpServer(ctx);
+    const [ct, st] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: "t", version: "0" }, { capabilities: {} });
+    await Promise.all([server.connect(st), client.connect(ct)]);
+    return client;
+}
+
+const textOf = (res) => res.content[0].text;
+const bytesOf = (res) => Buffer.byteLength(textOf(res), "utf8");
+
+async function run() {
+    // ── hard byte contract ───────────────────────────────────────
+    {
+        const all = Array.from({ length: 40 }, (_, i) => ev(i + 1, "x".repeat(500)));
+        const client = await connect(sessionMgmt(all));
+
+        for (const budget of [2000, 5000, 12000]) {
+            for (const format of ["json", "text"]) {
+                const res = await client.callTool({
+                    name: "get_session_events",
+                    arguments: { session_id: SESSION, page: true, limit: 20, max_bytes: budget, format },
+                });
+                const bytes = bytesOf(res);
+                // The contract is on the bytes actually sent, including the
+                // warning, receipt, omissions, pretty-printing and escaping.
+                // Require a real PAGE too: a short clean error also fits any
+                // budget, so a size-only predicate could pass on a refusal and
+                // report byte safety that was never exercised.
+                const text = textOf(res);
+                const isPage = !res.isError && (/"events"/.test(text) || /"transcript"/.test(text));
+                record(`hard budget respected: ${format} @ ${budget}B -> ${bytes}B`,
+                    isPage && bytes <= budget,
+                    res.isError ? `refused: ${text.slice(0, 100)}` : `${bytes} > ${budget}`,
+                    `${bytes}B of ${budget}B`);
+            }
+        }
+    }
+
+    // ── impossible budget is an explicit error, never a truncated page ──
+    {
+        const all = [ev(1, "a")];
+        const client = await connect(sessionMgmt(all));
+        const res = await client.callTool({
+            name: "get_session_events",
+            arguments: { session_id: SESSION, page: true, max_bytes: 1 },
+        });
+        const text = textOf(res);
+        record("impossible budget returns an explicit error",
+            res.isError === true && /too small/i.test(text) && /minimum_envelope_bytes/.test(text),
+            text.slice(0, 120));
+        record("impossible budget does NOT emit a truncated page",
+            !/\"events\"/.test(text) && !/\"transcript\"/.test(text));
+
+        // A size guard that FAILS OPEN is worse than no guard. NaN propagates
+        // through the clamp, and every `bytes > NaN` comparison is false, so
+        // the hard bound would pass vacuously and dispatch an unbounded
+        // response. Fractions are meaningless as a byte budget.
+        //
+        // The schema rejects these today, so this is defence in depth — which
+        // is the point: the guard must not depend on a validation layer above
+        // it staying exactly as it is.
+        // These must assert the SPECIFIC validation error, not "some refusal".
+        // An earlier version accepted any thrown error or any page-less error
+        // response, and that is not regression protection: delete the guard and
+        // 1.5 still reaches a 1.5-byte budget and earns the ordinary
+        // too-small-envelope error, -1.5 still clamps to 1 and earns the same,
+        // and NaN is still caught upstream by the schema. All three would keep
+        // passing while the guard was gone.
+        //
+        // 2000.5 is the discriminating input: large enough to otherwise serve a
+        // real page, so the ONLY reason to refuse it is the safe-integer check.
+        //
+        // NaN is deliberately NOT in this loop. The schema rejects it before
+        // dispatch, so an end-to-end case could only ever assert "something
+        // threw" — a blanket catch that passes on any unrelated transport or
+        // RPC error. NaN is covered properly below, against the real captured
+        // handler. There is no try/catch here: these are ordinary JSON numbers
+        // the schema accepts, so they MUST reach the handler. If one throws,
+        // that is a genuine failure and should surface as one.
+        for (const bad of [2000.5, 1.5, -1.5]) {
+            const r = await client.callTool({
+                name: "get_session_events",
+                arguments: { session_id: SESSION, page: true, max_bytes: bad },
+            });
+            const t = r.content?.[0]?.text ?? "";
+            const saysSafeInteger = /max_bytes must be a safe integer/.test(t);
+            record(`non-integer max_bytes (${String(bad)}) hits the safe-integer guard`,
+                r.isError === true && saysSafeInteger,
+                `expected the safe-integer error, got: ${t.slice(0, 160)}`);
+            record(`non-integer max_bytes (${String(bad)}) emits no page`,
+                !/"events"/.test(t) && !/"transcript"/.test(t), t.slice(0, 120));
+        }
+
+        // The NaN branch CANNOT be reached end-to-end: the schema rejects NaN
+        // before dispatch. That is correct behaviour and good defence — but it
+        // means an end-to-end case can never demonstrate the handler's own
+        // guard, which exists for the day the schema changes.
+        //
+        // So call the REAL registered callback directly, with no schema in the
+        // path. This is the only way to prove the guard discriminates rather
+        // than relying on a layer above it.
+        {
+            const handler = captureSessionTool("get_session_events", makeServerContext({ mgmt: sessionMgmt(all) }));
+
+            const nanRes = await handler({
+                session_id: SESSION, page: true, max_bytes: Number.NaN,
+            });
+            const nanText = nanRes?.content?.[0]?.text ?? "";
+            record("DIRECT: the handler itself rejects NaN max_bytes (schema bypassed)",
+                nanRes?.isError === true && /max_bytes must be a safe integer/.test(nanText),
+                `expected the safe-integer error, got: ${nanText.slice(0, 160)}`);
+            record("DIRECT: the NaN rejection names NaN rather than a number",
+                /"received":\s*"NaN"/.test(nanText), nanText.slice(0, 160));
+            record("DIRECT: the NaN rejection emits no page",
+                !/"events"/.test(nanText) && !/"transcript"/.test(nanText), nanText.slice(0, 120));
+
+            // POSITIVE CONTROL. Without this the three lines above could pass
+            // on a handler that refused everything. The same captured callback
+            // must serve an ordinary budget.
+            const okRes = await handler({ session_id: SESSION, page: true, max_bytes: 200000 });
+            const okText = okRes?.content?.[0]?.text ?? "";
+            record("DIRECT control: the same captured handler serves a valid budget",
+                okRes?.isError !== true && /"events"/.test(okText),
+                okRes?.isError ? `refused: ${okText.slice(0, 140)}` : "no events in a successful response");
+        }
+    }
+
+    // ── GPT-6.1 FINAL-01/02 boundaries ──────────────────────────
+    {
+        // FINAL-01: the counterexample needed no execution. Take the accepted
+        // minimum budget E, then observe that adding response_bytes grows the
+        // returned text past E. The contract must hold on the bytes SENT, so
+        // either the response fits or an explicit error is returned - never a
+        // success-shaped over-budget page.
+        const all = [ev(1, "a")];
+        const client = await connect(sessionMgmt(all));
+
+        // Walk budgets across the whole interesting region, including the exact
+        // envelope boundary, rather than guessing one value.
+        let anyOverBudget = false;
+        let anyFalseRefusal = false;
+        for (let budget = 50; budget <= 1400; budget += 7) {
+            const res = await client.callTool({
+                name: "get_session_events",
+                arguments: { session_id: SESSION, page: true, max_bytes: budget },
+            });
+            const bytes = bytesOf(res);
+            if (res.isError) {
+                // A refusal is acceptable only if the response really could not fit.
+                continue;
+            }
+            if (bytes > budget) anyOverBudget = true;
+        }
+        record("FINAL-01: no budget yields a success-shaped over-budget response", !anyOverBudget);
+
+        // FINAL-02: a budget that comfortably fits a complete small page must be
+        // ACCEPTED, not refused on the cost of an omission-heavy replacement.
+        const generous = await client.callTool({
+            name: "get_session_events",
+            arguments: { session_id: SESSION, page: true, max_bytes: 200000 },
+        });
+        const fullBytes = bytesOf(generous);
+        const exact = await client.callTool({
+            name: "get_session_events",
+            arguments: { session_id: SESSION, page: true, max_bytes: fullBytes },
+        });
+        record("FINAL-02: a budget equal to the real full response is accepted",
+            !exact.isError && bytesOf(exact) <= fullBytes,
+            exact.isError ? textOf(exact).slice(0, 120) : `${bytesOf(exact)} > ${fullBytes}`);
+        if (exact.isError) anyFalseRefusal = true;
+        record("FINAL-02: minimum envelope is not inflated by an omitted record",
+            !anyFalseRefusal);
+    }
+
+    // ── G46-06: the advertised remedy must actually work ────────
+    {
+        // Grok's finding, caught by source review before this file ever ran.
+        //
+        // The planning pass used to measure bodies WITHOUT response_bytes and
+        // only add the field afterwards, so it was blind to a cost it later
+        // incurred. Two false refusals follow near the bound:
+        //
+        //   1. minimum_envelope_bytes understated the true floor by the field's
+        //      width, so obeying the error's own remedy got you refused AGAIN.
+        //   2. a page whose body fit at exactly the budget grew past it once the
+        //      field arrived, and was refused instead of shrunk by one more row.
+        //
+        // The crisp observable is the REMEDY LADDER. minimum_envelope_bytes is
+        // necessary but not sufficient — a page carrying even one row costs more
+        // than the bare envelope — so the contract is that following the numbers
+        // the errors advertise TERMINATES IN A RESPONSE, and that each number is
+        // honest about which kind it is. Only sufficient_max_bytes is a retry
+        // value; smallest_achieved_bytes is DIAGNOSTIC and describes the
+        // rejected request.
+        const all = [ev(1, "a")];
+        const client = await connect(sessionMgmt(all));
+
+        const ask = (max_bytes) => client.callTool({
+            name: "get_session_events",
+            arguments: { session_id: SESSION, page: true, max_bytes },
+        });
+
+        // EXECUTION found the real defect here, which no source review caught:
+        // the envelope refusal advertised only minimum_envelope_bytes, measured
+        // with the REJECTED budget declared. Following it landed below the real
+        // floor (673 reported at a 1-digit budget became 675 at a 3-digit one),
+        // so the retry was refused again and the ladder grew to three steps.
+        //
+        // The contract now is stronger and simpler: EVERY refusal carries a
+        // solved sufficient_max_bytes, so the FIRST error already names a budget
+        // that works. Only that field may be followed.
+        const firstErr = JSON.parse(textOf(await ask(1)));
+        const firstSufficient = firstErr.sufficient_max_bytes;
+        record("G46-06: the FIRST refusal already names a sufficient budget",
+            typeof firstSufficient === "number" && firstSufficient > 0,
+            JSON.stringify(firstErr).slice(0, 200),
+            `advertised ${firstSufficient}`);
+
+        // Presence is not sufficiency. A wrong number is still a number, and
+        // that is exactly the defect r17 found — the envelope branch named a
+        // budget that did not work. So USE it, in ONE step.
+        if (typeof firstSufficient === "number") {
+            const oneStep = await ask(firstSufficient);
+            record("G46-06: that first advertised budget SUCCEEDS in one step",
+                !oneStep.isError && bytesOf(oneStep) <= firstSufficient,
+                oneStep.isError ? textOf(oneStep).slice(0, 160) : `${bytesOf(oneStep)} exceeds ${firstSufficient}`,
+                `${firstSufficient}B accepted`);
+        }
+
+        let budget = 1;
+        let steps = 0;
+        let res = await ask(budget);
+        const advertisedChain = [];
+        while (res.isError && steps < 5) {
+            const err = JSON.parse(textOf(res));
+            // ONLY the solved value. minimum_envelope_bytes and
+            // smallest_achieved_bytes both describe the REJECTED request and
+            // both shift with the declared budget's width.
+            const next = err.sufficient_max_bytes;
+            record(`G46-06: refusal at ${budget}B advertises a larger budget`,
+                typeof next === "number" && next > budget, `advertised ${next} for ${budget}`);
+            if (!(typeof next === "number" && next > budget)) break;
+            advertisedChain.push(next);
+            budget = next;
+            res = await ask(budget);
+            steps++;
+        }
+        record("G46-06: following the advertised remedy terminates in a response",
+            !res.isError, textOf(res).slice(0, 160), `after ${steps} step(s)`);
+        record("G46-06: the response fits the budget its own error advertised",
+            !res.isError && bytesOf(res) <= budget,
+            res.isError ? "refused" : `${bytesOf(res)} > ${budget}`);
+        // One retry, because the first refusal already solved it.
+        record("G46-06: the ladder is ONE retry, not a crawl",
+            steps <= 1, `${steps} steps via ${JSON.stringify(advertisedChain)}`,
+            `chain ${JSON.stringify(advertisedChain)}`);
+
+        // G46-07. The advertised RETRY value (sufficient_max_bytes) must be
+        // sufficient, not merely larger. The trap: `room` is derived from the budget, so retrying at
+        // the size a truncated attempt happened to reach grants MORE room than
+        // the attempt that produced it, can pull in another event, and refuses
+        // again. A reported minimum that fails on retry is worse than none.
+        //
+        // Use a session big enough that the page really is event-truncated,
+        // which is the path that reports the number.
+        {
+            const many = Array.from({ length: 30 }, (_, i) => ev(i + 1, "y".repeat(300)));
+            const c2 = await connect(sessionMgmt(many));
+            const ask2 = (max_bytes) => c2.callTool({
+                name: "get_session_events",
+                arguments: { session_id: SESSION, page: true, limit: 30, max_bytes },
+            });
+
+            // The budgets must be DERIVED, not guessed. My first version of this
+            // case guessed 1/60/120/300 and skipped on a missing field; every one
+            // of those takes the ENVELOPE refusal branch, and at the time that
+            // branch reported no retry value, so the whole case silently
+            // asserted nothing.
+            //
+            // The anchor below is DIAGNOSTIC and it MOVES: the floor is measured
+            // with the rejected budget declared, so the figure reported at
+            // max_bytes 1 is smaller than the one reported at a three-digit
+            // budget. Execution proved that (673 then 675). It is fine as a
+            // probe anchor, but floor+0 can still land in the envelope branch —
+            // which is precisely why that branch must carry a retry value too.
+            const envelopeErr = JSON.parse(textOf(await ask2(1)));
+            const floorBytes = envelopeErr.minimum_envelope_bytes;
+            // The floor value belongs in info, not detail: 673 is the number
+            // that EXPOSED the moving-floor defect in r17, and hiding it on a
+            // pass would remove the evidence a reader needs to notice the
+            // anchor shifting.
+            record("G46-07 setup: the envelope refusal reports a floor",
+                typeof floorBytes === "number" && floorBytes > 0,
+                JSON.stringify(envelopeErr).slice(0, 160),
+                `floor ${floorBytes}, sufficient ${envelopeErr.sufficient_max_bytes}`);
+
+            let exercised = 0;
+            for (const over of [0, 1, 5, 40, 200]) {
+                const tightBudget = floorBytes + over;
+                const refusedRes = await ask2(tightBudget);
+                if (!refusedRes.isError) continue;
+                const err = JSON.parse(textOf(refusedRes));
+                const n = err.sufficient_max_bytes;
+                // EVERY refusal must offer a retry value, whichever branch it
+                // came from. This failed at floor+0 and floor+1 in r17.
+                record(`G46-07: refusal at floor+${over} offers a sufficient budget`,
+                    typeof n === "number" && n > 0, JSON.stringify(err).slice(0, 160));
+                if (typeof n !== "number") continue;
+                exercised++;
+                const retry = await ask2(n);
+                record(`G46-07: sufficient_max_bytes ${n} (from floor+${over}) actually succeeds`,
+                    !retry.isError && bytesOf(retry) <= n,
+                    retry.isError ? textOf(retry).slice(0, 140) : `${bytesOf(retry)} > ${n}`);
+            }
+            // Guard against this case going quiet again: if nothing was probed,
+            // that is itself a failure, not a silent pass.
+            record("G46-07: the retry-sufficiency contract was actually exercised",
+                exercised > 0, "NO budget reached the retry-value branch: this case asserted nothing",
+                `${exercised} budgets reached the retry-value branch`);
+        }
+
+        // FINAL-03: a budget ONE BYTE below the complete response must still
+        // return a smaller page, not refuse. This is the case a budget-only
+        // decrement loop fails: shaving bytes off the event budget re-selects
+        // the same rows, so the identical over-budget candidate is rejected
+        // repeatedly while a one-row page plainly fits.
+        {
+            const two = [ev(101, "x".repeat(500)), ev(102, "x".repeat(500))];
+            const c3 = await connect(sessionMgmt(two));
+            const ask3 = (max_bytes) => c3.callTool({
+                name: "get_session_events",
+                arguments: { session_id: SESSION, page: true, after_seq: 100, limit: 2, max_bytes },
+            });
+            // The reference size must be measured in the SAME budget
+            // representation the later requests use. A generous probe
+            // serializes a six-digit response_bytes_budget; the real requests
+            // serialize four digits, so the identical complete response is two
+            // bytes smaller. Subtracting from the generous figure therefore
+            // lands ABOVE the true full size, the complete page still fits, and
+            // a correct null continuation looked like a failure. Re-measure at
+            // the probe's own answer so the width matches before subtracting.
+            const probe = await ask3(200000);
+            const full = await ask3(bytesOf(probe));
+            const fullBytes = bytesOf(full);
+            const fullBody = JSON.parse(textOf(full));
+
+            // THE REFERENCE MUST NOT COME FROM THE HANDLER.
+            //
+            // Deriving totalCount from the full fetch lets a product-derived
+            // oracle normalize the very loss it should catch: a regression that
+            // drops seq 102 also corrupts the reference, so a tight request
+            // returning only 101 with has_more=false and a null cursor compares
+            // EQUAL to the broken reference and passes the complete-page
+            // branch, while 102 is silently gone.
+            //
+            // So the reference is the KNOWN FIXTURE. Everything downstream
+            // compares against that, not against what the handler says.
+            const EXPECTED_SEQS = two.map((e) => e.seq);      // [101, 102]
+            const totalCount = EXPECTED_SEQS.length;
+            const fullSeqs = (fullBody.events ?? []).map((e) => e.seq);
+            record("FINAL-03 reference: the full page IS the whole known fixture",
+                fullBody.count === totalCount
+                && JSON.stringify(fullSeqs) === JSON.stringify(EXPECTED_SEQS),
+                `count=${fullBody.count} seqs=${JSON.stringify(fullSeqs)} expected ${JSON.stringify(EXPECTED_SEQS)}`,
+                `reference ${JSON.stringify(fullSeqs)}`);
+            record("FINAL-03 reference: the reported count matches the rows delivered",
+                fullBody.count === fullSeqs.length,
+                `count=${fullBody.count} but ${fullSeqs.length} rows delivered`);
+
+            // Every delivered row must be a real fixture row, exactly once.
+            const inFixture = (seqs) => seqs.every((s) => EXPECTED_SEQS.includes(s))
+                && new Set(seqs).size === seqs.length;
+            let subsetsSeen = 0;
+
+            for (const delta of [1, 2, 10, 50]) {
+                const b = fullBytes - delta;
+                const res = await ask3(b);
+                record(`FINAL-03: ${delta}B below the full response still returns a page`,
+                    !res.isError && bytesOf(res) <= b,
+                    res.isError ? textOf(res).slice(0, 140) : `${bytesOf(res)} > ${b}`);
+                if (res.isError) continue;
+
+                const parsed = JSON.parse(textOf(res));
+                const seqs = (parsed.events ?? []).map((e) => e.seq);
+                record(`FINAL-03: the page at full-${delta}B delivers at least one row`,
+                    parsed.count >= 1, `count=${parsed.count}`, `count=${parsed.count}`);
+                // Rows must be genuine fixture rows, each at most once, and the
+                // reported count must match what actually arrived.
+                record(`FINAL-03: full-${delta}B delivers only real fixture rows, once each`,
+                    inFixture(seqs) && parsed.count === seqs.length,
+                    `seqs=${JSON.stringify(seqs)} count=${parsed.count}`,
+                    `seqs=${JSON.stringify(seqs)}`);
+
+                // Continuation is required ONLY when a strict subset was
+                // delivered. A complete page that happens to fit correctly
+                // reports next_cursor null, and demanding a cursor there would
+                // reject correct behaviour. The comparison is against the KNOWN
+                // fixture size, never against the handler's own reference.
+                if (seqs.length < totalCount) {
+                    subsetsSeen++;
+                    // EXACT values, not merely "non-null". This is a forward
+                    // drain over a two-row fixture, so the only correct subset
+                    // is [101] continuing FORWARD from 101. Asserting
+                    // next_cursor !== null would accept a cursor pointing at
+                    // the wrong row or a backward direction that re-reads what
+                    // was just delivered — both of which lose or duplicate
+                    // history while looking like valid continuation.
+                    const r = parsed.receipt;
+                    record(`FINAL-03: the strict subset at full-${delta}B continues EXACTLY from the delivered row`,
+                        r.has_more === true
+                        && r.next_cursor === seqs[seqs.length - 1]
+                        && r.next_direction === "forward"
+                        && JSON.stringify(seqs) === JSON.stringify([101]),
+                        `seqs=${JSON.stringify(seqs)} next_cursor=${r.next_cursor} `
+                        + `next_direction=${r.next_direction} has_more=${r.has_more} (want [101]/101/forward/true)`,
+                        `subset ${JSON.stringify(seqs)} -> ${r.next_direction} from ${r.next_cursor}`);
+                } else {
+                    record(`FINAL-03: the complete page at full-${delta}B ends the drain`,
+                        parsed.receipt.has_more === false && parsed.receipt.next_cursor === null,
+                        `count=${parsed.count} has_more=${parsed.receipt.has_more}`,
+                        `complete, has_more=${parsed.receipt.has_more}`);
+                }
+            }
+
+            // The subset branch is where the continuation contract is actually
+            // tested. If no delta produced one, this case asserted only the
+            // terminal branch and the regression is silently half-asleep.
+            record("FINAL-03: at least one delta produced a STRICT SUBSET to continue",
+                subsetsSeen > 0,
+                "no delta delivered a strict subset: the continuation branch asserted nothing",
+                `${subsetsSeen} subset case(s)`);
+
+            // The text-projection counterexample: admission sizes the compact
+            // SOURCE record, but text mode renders only data.content. A small
+            // content beside a large auxiliary field must not be refused when
+            // the complete rendered response fits.
+            {
+                const fat = [{
+                    seq: 1,
+                    sessionId: SESSION,
+                    eventType: "assistant.message",
+                    data: { content: "a", padding: "x".repeat(5000) },
+                    createdAt: new Date(0),
+                }];
+                const c4 = await connect(sessionMgmt(fat));
+                const askText = (max_bytes) => c4.callTool({
+                    name: "get_session_events",
+                    arguments: { session_id: SESSION, page: true, format: "text", max_bytes },
+                });
+                const generous = await askText(200000);
+                record("FINAL-03 setup: the complete text rendering succeeds generously",
+                    !generous.isError, generous.isError ? textOf(generous).slice(0, 140) : "");
+                if (!generous.isError) {
+                    const renderedBytes = bytesOf(generous);
+                    // The whole point: the rendered form is far smaller than the
+                    // compact source, so a budget sized for the RENDERING must be
+                    // accepted rather than refused on the source's size.
+                    const res = await askText(renderedBytes);
+                    record("FINAL-03: a text budget that fits the RENDERED output is accepted",
+                        !res.isError && bytesOf(res) <= renderedBytes,
+                        res.isError ? textOf(res).slice(0, 180) : `${bytesOf(res)} > ${renderedBytes}`);
+                    record("FINAL-03: and it delivers the content, not an omission",
+                        !res.isError && /\ba\b/.test(textOf(res)) && !/payload omitted/.test(textOf(res)),
+                        res.isError ? "refused" : textOf(res).slice(0, 180));
+                }
+            }
+        }
+
+        // No budget anywhere in the band may yield an over-budget SUCCESS.
+        let overBudget = 0;
+        for (let b = advertisedChain[0] ?? 1; b <= (advertisedChain[0] ?? 1) + 80; b++) {
+            const r = await ask(b);
+            if (!r.isError && bytesOf(r) > b) overBudget++;
+        }
+        record("G46-06: no over-budget success in the band above the floor",
+            overBudget === 0, `${overBudget} violations`);
+    }
+
+    // ── handler-level drain is a PARTITION, under byte pressure ──
+    //
+    // LOAD-BEARING. Do not delete or weaken these in favour of the FINAL-03
+    // cases. The adversarial review identified exactly one way the FINAL-03
+    // oracle can be evaded: a defect that drops the SAME event at EVERY budget
+    // — including the full-budget probe — corrupts `totalCount` too, so a
+    // uniformly short page reads as "complete" and passes.
+    //
+    // These drains close that hole, because they compare the drained sequence
+    // set against the KNOWN fixture rather than against anything the handler
+    // reported. Absolute completeness is asserted HERE; FINAL-03 only asserts
+    // that a budget-forced subset advertises its continuation. Neither is
+    // sufficient alone.
+    {
+        // Sequences start at 101 deliberately. A forward drain must begin from a
+        // cursor ABOVE zero, because afterSeq=0 classifies as LATEST, not
+        // "from the beginning" (session-events-page.ts classifyPageMode). Seeding
+        // forward with after_seq=0 would silently test latest a second time and
+        // report that forward passed - the exact shape of a vacuous test.
+        const all = Array.from({ length: 24 }, (_, i) => ev(i + 101, "y".repeat(400)));
+        const client = await connect(sessionMgmt(all));
+
+        for (const mode of ["latest", "forward", "backward"]) {
+            const seen = [];
+            let args = { session_id: SESSION, page: true, limit: 5, max_bytes: 3000 };
+            let cursor = null, direction = null, guard = 0, ok = true;
+
+            // Seed the first call per mode, and assert the handler agrees with
+            // the mode we think we are exercising.
+            if (mode === "backward") args.before_seq = 1000;
+            if (mode === "forward") args.after_seq = 100;   // below the first seq (101), and > 0
+            let modeConfirmed = null;
+
+            while (guard++ < 60) {
+                const call = { ...args };
+                if (cursor !== null) {
+                    delete call.after_seq; delete call.before_seq;
+                    if (direction === "forward") call.after_seq = cursor;
+                    else call.before_seq = cursor;
+                }
+                const res = await client.callTool({ name: "get_session_events", arguments: call });
+                if (res.isError) { ok = false; break; }
+                const body = JSON.parse(textOf(res));
+                if (modeConfirmed === null) modeConfirmed = body.receipt.mode;
+                if (bytesOf(res) > call.max_bytes) { ok = false; break; }
+                for (const e of body.events ?? []) seen.push(e.seq);
+                if (!body.receipt.has_more) break;
+                cursor = body.receipt.next_cursor;
+                direction = body.receipt.next_direction;
+                if (cursor === null || direction === null) break;
+            }
+
+            const sorted = [...seen].sort((a, b) => a - b);
+            const expected = all.map((e) => e.seq);
+            const partition = JSON.stringify(sorted) === JSON.stringify(expected);
+            const unique = new Set(seen).size === seen.length;
+            // Guard against testing a different mode than intended.
+            record(`handler drain exercises the intended mode: ${mode}`,
+                modeConfirmed === mode, `handler reported "${modeConfirmed}"`);
+            record(`handler drain is a partition: ${mode}`, ok && partition && unique,
+                `saw ${seen.length}/${expected.length}, unique=${unique}`,
+                `${seen.length}/${expected.length} rows, unique=${unique}`);
+        }
+    }
+
+    // ── escaping survives the handler, both modes ────────────────
+    {
+        const nasty = "danger\u009b2Jclear\u2028break\u202ereverse\u0085nel";
+        const all = [ev(1, nasty)];
+        const client = await connect(sessionMgmt(all));
+
+        for (const format of ["json", "text"]) {
+            const res = await client.callTool({
+                name: "get_session_events",
+                arguments: { session_id: SESSION, page: true, format, max_bytes: 200000 },
+            });
+            const text = textOf(res);
+            const clean = !text.includes("\u009b") && !text.includes("\u2028")
+                && !text.includes("\u202e") && !text.includes("\u0085");
+            // Absence of control characters is NOT enough on its own: a clean
+            // ERROR response, or a success that dropped the payload entirely,
+            // satisfies it just as well. Neutralization only means something
+            // if the content ARRIVED and was neutralized, so require a real
+            // page and the surrounding fixture text to still be present.
+            const isPage = !res.isError && (/"events"/.test(text) || /"transcript"/.test(text));
+            const carriesContent = /danger/.test(text) && /clear/.test(text)
+                && /break/.test(text) && /reverse/.test(text) && /nel/.test(text);
+            record(`handler neutralizes control characters: ${format}`,
+                isPage && carriesContent && clean,
+                res.isError
+                    ? `refused: ${text.slice(0, 120)}`
+                    : `isPage=${isPage} carriesContent=${carriesContent} clean=${clean}`);
+        }
+    }
+
+    const failed = results.filter((r) => !r.ok).length;
+    console.log(failed === 0 ? "\nall passed" : `\n${failed} failed`);
+    process.exit(failed === 0 ? 0 : 1);
+}
+
+run().catch((err) => { console.error(err); process.exit(1); });
