@@ -16,7 +16,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
-import { execFileSync } from "node:child_process";
 import { describe, it, beforeAll, afterAll } from "vitest";
 import { preflightChecks, useSuiteEnv } from "../helpers/local-env.js";
 import { withClient } from "../helpers/local-workers.js";
@@ -26,6 +25,7 @@ import { armFaultHold } from "../../src/fault-injection.ts";
 import { readTurnCommitFile } from "../../src/snapshot-protocol.ts";
 import { TURN_CONTROL_EVENT_TYPES as EV } from "../../src/turn-control-contract.ts";
 import { TURN_CONTROL_ORCHESTRATION, until, outcomesOf, awaitOutcome } from "../helpers/turn-control-harness.mjs";
+import { createNativeToolWorkload } from "../helpers/native-tool-workload.mjs";
 
 const TIMEOUT = 300_000;
 const REPLY_TIMEOUT = 180_000;
@@ -60,10 +60,21 @@ async function withTurnControl(fn) {
     const env = getEnv();
     await withClient(env, {}, async (client, worker) => {
         const catalog = await createCatalog(env);
+        const workloads = [];
         try {
-            await fn({ env, client, worker, catalog });
+            await fn({
+                env, client, worker, catalog,
+                async startWorkload() {
+                    const workload = await createNativeToolWorkload();
+                    workloads.push(workload);
+                    return workload;
+                },
+            });
         } finally {
+            const closed = await Promise.allSettled(workloads.map(workload => workload.close()));
             await catalog.close?.();
+            const errors = closed.filter(result => result.status === "rejected").map(result => result.reason);
+            if (errors.length) throw new AggregateError(errors, "Native test workload cleanup failed");
         }
     });
 }
@@ -130,13 +141,16 @@ describe.skipIf(!TURN_CONTROL_ORCHESTRATION)("turn control with the real CLI (de
     });
 
     it("a Stop during a turn: stopped, no retry, the session is idle", { timeout: TIMEOUT }, async () => {
-        await withTurnControl(async ({ client, catalog }) => {
+        await withTurnControl(async ({ client, catalog, startWorkload }) => {
+            const workload = await startWorkload();
             const session = await client.createSession();
             const sid = session.sessionId;
-            await session.send("Use the bash tool once, in the foreground, to run `for i in 1 2 3 4 5 6; do echo working $i; sleep 10; done`. Then reply with one short sentence.");
+            await session.send(`Use the bash tool once, in the foreground, to fetch the result of this test service request: \`${workload.command}\`. Then reply with one short sentence.`);
             await waitForEventCount(catalog, sid, "tool.execution_start", 1, REPLY_TIMEOUT);
+            await until(workload.hasRequest, "the native request reached the test service", REPLY_TIMEOUT);
             const added = await stop(catalog, sid);
             assertEqual(await awaitOutcome(catalog, sid, added.seq, "stop"), "stopped");
+            await until(() => !workload.alive(), "the stopped native command is gone", 5_000);
             await until(async () => (await catalog.getSession(sid))?.state === "idle", "the session is idle", REPLY_TIMEOUT);
             assertEqual((await events(catalog, sid, "session.turn_started")).length, 1, "the turn was not retried");
             const next = await session.sendAndWait("Reply with the single word NEXT.", REPLY_TIMEOUT);
@@ -145,31 +159,33 @@ describe.skipIf(!TURN_CONTROL_ORCHESTRATION)("turn control with the real CLI (de
     });
 
     it("a Stop with a pending steer ends the turn stopped and the steer not delivered", { timeout: TIMEOUT }, async () => {
-        await withTurnControl(async ({ client, catalog }) => {
+        await withTurnControl(async ({ client, catalog, startWorkload }) => {
+            const workload = await startWorkload();
             const session = await client.createSession();
             const sid = session.sessionId;
-            await session.send("Use the bash tool once, in the foreground, to run `for i in 1 2 3 4 5 6; do echo working $i; sleep 10; done`. Then reply with one short sentence.");
+            await session.send(`Use the bash tool once, in the foreground, to fetch the result of this test service request: \`${workload.command}\`. Then reply with one short sentence.`);
             await waitForEventCount(catalog, sid, "tool.execution_start", 1, REPLY_TIMEOUT);
+            await until(workload.hasRequest, "the native request reached the test service", REPLY_TIMEOUT);
             const pending = await steer(catalog, sid, "Mention KIWI in your reply.");
             const added = await stop(catalog, sid);
             assert(pending.seq && added.seq, "both controls were accepted");
             assertEqual(await awaitOutcome(catalog, sid, added.seq, "pending-steer stop"), "stopped");
             assertEqual(await awaitOutcome(catalog, sid, pending.seq, "pending steer"), "not_delivered");
+            await until(() => !workload.alive(), "the stopped native command is gone", 5_000);
             await until(async () => (await catalog.getSession(sid))?.state === "idle", "the session is idle", REPLY_TIMEOUT);
             assertEqual((await events(catalog, sid, "session.turn_started")).length, 1, "the turn was not retried");
         });
     });
 
     it("a Stop after a steer moved a long shell to the background ends the turn within 2 s and stops the shell", { timeout: TIMEOUT }, async () => {
-        await withTurnControl(async ({ client, catalog }) => {
-            const marker = `tcbg${randomUUID().replaceAll("-", "").slice(0, 12)}`;
-            const alive = () => {
-                try { return execFileSync("pgrep", ["-f", marker], { encoding: "utf8" }).trim().length > 0; } catch { return false; }
-            };
+        await withTurnControl(async ({ client, catalog, startWorkload }) => {
+            const workload = await startWorkload();
+            const alive = workload.alive;
             const session = await client.createSession();
             const sid = session.sessionId;
-            await session.send(`Use the bash tool once, in the foreground (not in the background), to run \`for i in 1 2 3 4 5 6; do echo ${marker} $i; sleep 10; done\`. Then reply with one short sentence.`);
+            await session.send(`Use the bash tool once, in the foreground (not in the background), to fetch the result of this test service request: \`${workload.command}\`. Then reply with one short sentence.`);
             await waitForEventCount(catalog, sid, "tool.execution_start", 1, REPLY_TIMEOUT);
+            await until(workload.hasRequest, "the native request reached the test service", REPLY_TIMEOUT);
             const steered = await steer(catalog, sid, "Also mention the word KIWI in your reply.");
             // The CLI takes an immediate message during a sync shell by moving
             // the shell to the background; the model then answers while the
@@ -201,35 +217,26 @@ describe.skipIf(!TURN_CONTROL_ORCHESTRATION)("turn control with the real CLI (de
     });
 
     it("a Stop ends the commands the stopped turn started, not a background command from an earlier turn", { timeout: TIMEOUT }, async () => {
-        await withTurnControl(async ({ client, catalog }) => {
-            const tag = randomUUID().replaceAll("-", "").slice(0, 10);
-            const earlier = `tcearly${tag}`;
-            const current = `tcnow${tag}`;
-            const alive = (marker) => {
-                try { return execFileSync("pgrep", ["-f", marker], { encoding: "utf8" }).trim().length > 0; } catch { return false; }
-            };
-            try {
-                const session = await client.createSession();
-                const sid = session.sessionId;
-                await session.sendAndWait(`Call the bash tool exactly once with mode "async" and detach true to start \`sleep 300; echo ${earlier}\`. Do not wait for it. Then reply with the single word STARTED.`, REPLY_TIMEOUT);
-                await until(() => alive(earlier), "turn 1 left a background command running", 15_000);
+        await withTurnControl(async ({ client, catalog, startWorkload }) => {
+            const earlier = await startWorkload();
+            const current = await startWorkload();
+            const session = await client.createSession();
+            const sid = session.sessionId;
+            await session.sendAndWait(`Call the bash tool exactly once with mode "async" and detach true to fetch this test service result: \`${earlier.command}\`. Do not wait for it. Then reply with the single word STARTED.`, REPLY_TIMEOUT);
+            await until(() => earlier.hasRequest() && earlier.alive(), "turn 1 left a background command running", 15_000);
 
-                await session.send(`Use the bash tool once, in the foreground (not in the background), to run \`for i in 1 2 3 4 5 6; do echo ${current} $i; sleep 10; done\`. Then reply with one short sentence.`);
-                await until(() => alive(current), "turn 2 started its command", REPLY_TIMEOUT);
-                const steered = await steer(catalog, sid, "Also mention the word KIWI in your reply.");
-                await until(async () => (await events(catalog, sid, EV.steerConfirmed)).some((e) => e.data.seq === steered.seq), "the steer was confirmed", REPLY_TIMEOUT);
+            await session.send(`Use the bash tool once, in the foreground (not in the background), to fetch the result of this test service request: \`${current.command}\`. Then reply with one short sentence.`);
+            await until(() => current.hasRequest() && current.alive(), "turn 2 started its command", REPLY_TIMEOUT);
+            const steered = await steer(catalog, sid, "Also mention the word KIWI in your reply.");
+            await until(async () => (await events(catalog, sid, EV.steerConfirmed)).some((e) => e.data.seq === steered.seq), "the steer was confirmed", REPLY_TIMEOUT);
 
-                const stoppedAt = Date.now();
-                const added = await stop(catalog, sid);
-                assertEqual(await awaitOutcome(catalog, sid, added.seq, "stop of turn 2"), "stopped");
-                const ms = Date.now() - stoppedAt;
-                assert(ms <= 2_000, `the Stop ended turn 2 within 2 s (${ms} ms)`);
-                await until(() => !alive(current), "turn 2's command is gone", 5_000);
-                assert(alive(earlier), "turn 1's background command still runs");
-            } finally {
-                try { execFileSync("pkill", ["-f", earlier]); } catch {}
-                try { execFileSync("pkill", ["-f", current]); } catch {}
-            }
+            const stoppedAt = Date.now();
+            const added = await stop(catalog, sid);
+            assertEqual(await awaitOutcome(catalog, sid, added.seq, "stop of turn 2"), "stopped");
+            const ms = Date.now() - stoppedAt;
+            assert(ms <= 2_000, `the Stop ended turn 2 within 2 s (${ms} ms)`);
+            await until(() => !current.alive(), "turn 2's command is gone", 5_000);
+            assert(earlier.alive(), "turn 1's background command still runs");
         });
     });
 
