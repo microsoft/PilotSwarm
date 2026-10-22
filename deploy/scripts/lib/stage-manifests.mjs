@@ -44,6 +44,7 @@ const PLACEHOLDER_FILES = {
   worker: [
     {
       relPath: "base/model_providers.json",
+      requiredWhenFoundryEnabled: true,
       tokens: [
         // Foundry data-plane endpoint, emitted by base-infra (see
         // foundry.bicep / FOUNDRY_ENDPOINT alias). Empty when the stamp
@@ -64,6 +65,7 @@ const PLACEHOLDER_FILES = {
   portal: [
     {
       relPath: "base/model_providers.json",
+      requiredWhenFoundryEnabled: true,
       tokens: [
         { placeholder: "__FOUNDRY_ENDPOINT__", envKey: "FOUNDRY_ENDPOINT" },
       ],
@@ -121,12 +123,62 @@ function applyPlaceholderRules({ service, stagedServiceRoot, env }) {
       resolved++;
     }
     writeFileSync(abs, body);
+    const required = fileRule.required ||
+      (fileRule.requiredWhenFoundryEnabled &&
+        String(env.FOUNDRY_ENABLED ?? "").toLowerCase() === "true");
+    if (required && unresolved > 0) {
+      const missing = fileRule.tokens
+        .filter(({ placeholder, envKey }) => body.includes(placeholder) && !env[envKey])
+        .map(({ envKey }) => envKey);
+      throw new Error(
+        `[stage-manifests] ${service}/${fileRule.relPath} requires: ${missing.join(", ")}.`,
+      );
+    }
     log(
       "info",
       `[stage-manifests] ${fileRule.relPath}: substituted ${resolved} placeholder(s)` +
         (unresolved > 0 ? `, ${unresolved} left unresolved (env values empty/unset)` : ""),
     );
   }
+}
+
+const FOUNDRY_KEY_SENTINEL = "env:AZURE_OAI_KEY";
+const FOUNDRY_CATALOG_SERVICES = new Set(["worker", "portal"]);
+
+function applyFoundryAuthModeTransform({ service, stagedServiceRoot, env }) {
+  if (String(env.FOUNDRY_ENABLED ?? "").toLowerCase() !== "true") return;
+  const authMode = String(env.FOUNDRY_AUTH_MODE ?? "key").trim().toLowerCase();
+  if (!["key", "entra"].includes(authMode)) {
+    throw new Error(
+      `[stage-manifests] FOUNDRY_AUTH_MODE must be 'key' or 'entra'; ` +
+        `received '${env.FOUNDRY_AUTH_MODE}'.`,
+    );
+  }
+  if (authMode === "key") return;
+  if (!FOUNDRY_CATALOG_SERVICES.has(service)) return;
+
+  const abs = join(stagedServiceRoot, "base", "model_providers.json");
+  if (!existsSync(abs)) return;
+
+  const catalog = JSON.parse(readFileSync(abs, "utf8"));
+  const providers = Array.isArray(catalog) ? catalog : catalog.providers;
+  if (!Array.isArray(providers)) return;
+
+  let rewritten = 0;
+  for (const provider of providers) {
+    if (provider?.apiKey !== FOUNDRY_KEY_SENTINEL) continue;
+    provider.type = "foundry-wif";
+    delete provider.apiKey;
+    rewritten++;
+  }
+  if (rewritten === 0) return;
+
+  writeFileSync(abs, `${JSON.stringify(catalog, null, 2)}\n`);
+  log(
+    "info",
+    `[stage-manifests] ${service}/base/model_providers.json: ` +
+      `rewrote ${rewritten} Foundry provider(s) to workload identity`,
+  );
 }
 
 // Resolve which overlay directory under deploy/providers/azure/gitops/<service>/overlays/
@@ -308,6 +360,7 @@ export function stageManifests({ service, envName, env, stagingDir }) {
   // Apply placeholder substitution to allow-listed base files (e.g.
   // model_providers.json's __FOUNDRY_ENDPOINT__).
   applyPlaceholderRules({ service, stagedServiceRoot, env });
+  applyFoundryAuthModeTransform({ service, stagedServiceRoot, env });
 
   return stagedServiceRoot;
 }
