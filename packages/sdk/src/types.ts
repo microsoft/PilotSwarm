@@ -1605,6 +1605,19 @@ export interface PilotSwarmWorkerOptions {
     mcpServers?: Record<string, any>;
 
     /**
+     * Whether repository content may contribute MCP configuration through
+     * the underlying runtime's native configuration discovery. Defaults to
+     * true for compatibility.
+     *
+     * Host applications should set this to false when repository contents and
+     * executable MCP configuration cross different trust boundaries, such as
+     * sessions that attach caller-selected repositories while MCP endpoints,
+     * credentials, and grants remain application-governed. Deployment and
+     * agent-package MCP grants remain available.
+     */
+    repositoryMcpEnabled?: boolean;
+
+    /**
      * Path to a `model_providers.json` file.
      * Defines multiple LLM providers (GitHub Copilot, Azure OpenAI, OpenAI, Anthropic)
      * each with their own endpoints, API keys, and available models.
