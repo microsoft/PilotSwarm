@@ -9,6 +9,28 @@ concurrency:
   group: pr-checks-${{ github.ref }}
   cancel-in-progress: true
 jobs:
+  native-azure-linux:
+    name: Duroxide native runtime (Azure Linux 3)
+    runs-on: ubuntu-latest
+    container: mcr.microsoft.com/onebranch/azurelinux/build:3.0
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.22.1'
+          cache: npm
+      - name: Verify the native compatibility baseline
+        run: |
+          node --eval "
+            const assert = require('node:assert/strict');
+            assert.equal(process.versions.node, '24.22.1');
+            assert.equal(process.report.getReport().header.glibcVersionRuntime, '2.38');
+          "
+      - run: npm ci
+      - name: Verify exact native artifacts and runtime restart
+        run: node --test packages/sdk/test/unit/duroxide-dependency.test.mjs
+
   sdk-unit-windows:
     name: Repository build and SDK unit tests (Windows)
     runs-on: windows-latest
