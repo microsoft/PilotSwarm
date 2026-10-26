@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.8.6 — 2026-10-26
 
 **Restore Azure Linux 3 native compatibility.** The SDK pins the official npm
 `duroxide` 0.2.3 wrapper and all five platform packages, with exact lockfile
