@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+**Restore Azure Linux 3 native compatibility.** The SDK pins the official npm
+`duroxide` 0.2.3 wrapper and all five platform packages, with exact lockfile
+integrities, instead of the separately built GitHub Release artifacts. The npm
+Linux binaries have a GLIBC_2.34 floor; the previously selected GitHub Linux x64
+binary requires GLIBC_2.39. The wrapper APIs and native crate versions
+(`duroxide` 0.1.32 and `duroxide-pg` 0.1.37) are unchanged;
+the Node 24.22.1 security baseline remains in place. PR checks now exercise the
+native runtime on Azure Linux 3 and verify installed binary digests, including
+activity execution and persisted results across a runtime restart. No existing
+release assets are replaced, and application runtime images remain unchanged.
+
 ## 0.8.5 — 2026-10-20
 
 **Node.js security baseline.** Application images and every CI Node toolchain

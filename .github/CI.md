@@ -8,6 +8,13 @@ application unit tests. Forks use the same checks. Full live integration runs
 use workflow/control code from trusted `main` and the protected `azure-deploy`
 environment. Maintainers may explicitly select a reviewed PR head as test source.
 
+PR checks also run the Duroxide dependency contract in an Azure Linux 3 container
+with glibc 2.38 and patched Node 24.22.1. This verifies the exact official npm
+native binary, executes an activity, and reads its persisted result after a
+runtime restart. Same-version GitHub Release binaries are not interchangeable
+with the npm artifacts: their build environments can impose different libc
+requirements. The ordinary Windows and Linux checks remain unchanged.
+
 Release packaging validates the root and all package-local `LICENSE` files,
 then checks the complete notice inside each actual tarball before publication.
 The release has three tarballs, `SHA256SUMS` (covering those tarballs), and a
