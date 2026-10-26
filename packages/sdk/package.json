@@ -1,6 +1,6 @@
 {
     "name": "pilotswarm-sdk",
-    "version": "0.8.5",
+    "version": "0.8.6",
     "description": "A durable execution runtime for GitHub Copilot SDK agents. Crash recovery, durable timers, session dehydration, and multi-node scaling — powered by duroxide.",
     "type": "module",
     "main": "./dist/index.js",
@@ -101,7 +101,7 @@
         "duroxide-windows-x64": "0.2.3"
     },
     "peerDependencies": {
-        "pilotswarm-horizon-store": "0.8.5"
+        "pilotswarm-horizon-store": "0.8.6"
     },
     "peerDependenciesMeta": {
         "pilotswarm-horizon-store": {
@@ -111,7 +111,7 @@
     "devDependencies": {
         "@types/node": "^22.0.0",
         "@types/pg": "^8.16.0",
-        "pilotswarm-horizon-store": "0.8.5",
+        "pilotswarm-horizon-store": "0.8.6",
         "typescript": "^5.0.0",
         "vitest": "^4.1.0"
     },
