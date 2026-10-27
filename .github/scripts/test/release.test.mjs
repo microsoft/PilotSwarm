@@ -140,7 +140,7 @@ test('release refreshes Azure authentication after testing and publication, befo
   const refresh = release.indexOf('- name: Refresh Azure login for deployment');
   const deploy = release.indexOf('- name: Deploy released source to test environment');
   assert(gate >= 0 && gate < publish && publish < refresh && refresh < deploy);
-  assert.match(release.slice(refresh, deploy), /uses: azure\/login@v3/);
+  assert.match(release.slice(refresh, deploy), /uses: azure\/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906(?=\s|$)/);
   for (const secret of ['AZURE_CLIENT_ID', 'AZURE_TENANT_ID', 'AZURE_SUBSCRIPTION_ID']) {
     assert(release.slice(refresh, deploy).includes(`secrets.${secret}`));
   }
