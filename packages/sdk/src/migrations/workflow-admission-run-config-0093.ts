@@ -213,7 +213,9 @@ BEGIN
             THEN v_existing.owner_email ELSE p_owner_email END,
         CASE WHEN COALESCE(p_force_rerun, FALSE)
             THEN v_existing.owner_display_name ELSE p_owner_display_name END,
-        p_group_id, p_visibility, v_reason, 'workflow-' || p_session_id,
+        CASE WHEN COALESCE(p_force_rerun, FALSE)
+            THEN v_existing.group_id ELSE p_group_id END,
+        p_visibility, v_reason, 'session-' || p_session_id,
         v_model
     )
     RETURNING * INTO v_existing;
