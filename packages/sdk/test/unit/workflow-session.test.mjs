@@ -72,12 +72,14 @@ test("createWorkflowSession persists a non-conversational child and returns its 
         parentSessionId: "parent-1",
         definition: { kind: "registered", definitionId: "definition-1" },
         inputs: { target: "staging" },
+        model: "team:gpt-5.3-codex",
     });
 
     assert.deepEqual(writes, [{
         sessionId: "workflow-1",
         options: {
             sessionKind: "workflow",
+            model: "team:gpt-5.3-codex",
             parentSessionId: "parent-1",
             owner: null,
             groupId: null,
@@ -86,6 +88,7 @@ test("createWorkflowSession persists a non-conversational child and returns its 
                 workflow: {
                     definition: { kind: "registered", definitionId: "definition-1" },
                     inputs: { target: "staging" },
+                    model: "team:gpt-5.3-codex",
                 },
             },
         },
@@ -98,6 +101,7 @@ test("createWorkflowSession persists a non-conversational child and returns its 
             parentSessionId: "parent-1",
             definition: { kind: "registered", definitionId: "definition-1" },
             inputs: { target: "staging" },
+            model: "team:gpt-5.3-codex",
         },
         version: "1.0.0",
     }]);
@@ -125,8 +129,13 @@ test("startWorkflow validates, admits, and starts a registered definition", asyn
     const marked = [];
     const placements = [];
     const client = new PilotSwarmClient({});
+    const resolvedModels = [];
     client.duroxideClient = {
         startOrchestrationVersioned: async (...args) => started.push(args),
+    };
+    client._resolveCreationModel = async config => {
+        resolvedModels.push(config);
+        return { model: "team:gpt-5.3-codex" };
     };
     client._catalog = {
         getWorkflowDefinition: async definitionId => registeredDefinition(
@@ -172,6 +181,7 @@ test("startWorkflow validates, admits, and starts a registered definition", asyn
             repository: "microsoft/PilotSwarm",
             changeId: 28,
         },
+        model: " gpt-5.3-codex ",
         idempotencyKey: "request-1",
         groupId: "group-1",
         visibility: "private",
@@ -195,6 +205,9 @@ test("startWorkflow validates, admits, and starts a registered definition", asyn
     });
     assert.deepEqual(admitted[0].primaryKeyValues, ["microsoft/PilotSwarm", 28]);
     assert.match(admitted[0].primaryKeySha256, /^[a-f0-9]{64}$/);
+    assert.equal(resolvedModels[0].model, "gpt-5.3-codex");
+    assert.equal(created[0][1].model, "team:gpt-5.3-codex");
+    assert.equal(started[0][2].model, "team:gpt-5.3-codex");
     assert.equal(created.length, 1);
     assert.equal(started.length, 1);
     assert.deepEqual(marked, [[
@@ -210,6 +223,70 @@ test("startWorkflow validates, admits, and starts a registered definition", asyn
         ["workflow-admitted"],
         "group-1",
     ]]);
+});
+
+test("startWorkflow includes the resolved model in the idempotency contract", async () => {
+    const requestHashes = [];
+    const client = new PilotSwarmClient({});
+    client.duroxideClient = {};
+    client._resolveCreationModel = async config => ({
+        model: `team:${config.model}`,
+    });
+    client._catalog = {
+        getWorkflowDefinition: async definitionId => registeredDefinition(
+            definitionId,
+            {},
+        ),
+        admitWorkflow: async input => {
+            requestHashes.push(input.requestSha256);
+            return {
+                sessionId: `workflow-${requestHashes.length}`,
+                definitionId: input.definitionId,
+                primaryKeyValues: null,
+                primaryKeySha256: null,
+                attempt: 1,
+                inputs: input.inputs,
+                parentSessionId: null,
+                owner: input.owner,
+                groupId: null,
+                visibility: "private",
+                rerunReason: null,
+                orchestrationId: `session-workflow-${requestHashes.length}`,
+                created: false,
+                deduplicated: true,
+                needsStart: false,
+            };
+        },
+        placeSessionsInGroup: async () => {},
+    };
+
+    for (const model of ["gpt-5.3-codex", "claude-opus-5"]) {
+        await client._startWorkflow({
+            definitionId: "definition-1",
+            inputs: {},
+            model,
+            idempotencyKey: "request-1",
+        });
+    }
+
+    assert.equal(requestHashes.length, 2);
+    assert.notEqual(requestHashes[0], requestHashes[1]);
+});
+
+test("workflow model references reject blank values before admission", async () => {
+    const client = new PilotSwarmClient({});
+    client.duroxideClient = {};
+    client._catalog = {};
+
+    await assert.rejects(
+        () => client._startWorkflow({
+            definitionId: "definition-1",
+            inputs: {},
+            model: "  ",
+            idempotencyKey: "request-1",
+        }),
+        error => error.code === "WORKFLOW_MODEL_INVALID",
+    );
 });
 
 test("startWorkflow returns an already-started logical duplicate without restarting it", async () => {

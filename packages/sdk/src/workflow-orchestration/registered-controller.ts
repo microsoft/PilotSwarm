@@ -115,6 +115,7 @@ export function* durableRegisteredWorkflowSessionOrchestration(
         parentSessionId?: string;
         definition: Extract<WorkflowDefinitionSource, { kind: "registered" }>;
         inputs: Record<string, unknown>;
+        model?: string;
     },
 ): Generator<unknown, WorkflowSessionResult, unknown> {
     const resolved = (yield ctx.scheduleActivity(
@@ -200,6 +201,7 @@ export function* durableRegisteredWorkflowSessionOrchestration(
                 executionSequence,
                 childSessionId,
                 workflowInputs: input.inputs,
+                ...(input.model ? { model: input.model } : {}),
                 configuration: manifest.configuration,
                 latestStateOutputs,
                 executionHistory,

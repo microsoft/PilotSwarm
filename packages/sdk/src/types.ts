@@ -597,6 +597,7 @@ export type WorkflowDefinitionSource =
 export interface WorkflowSessionConfig {
     definition: WorkflowDefinitionSource;
     inputs?: Record<string, unknown>;
+    model?: string;
     sessionId?: string;
     parentSessionId?: string;
     owner?: SessionOwnerInfo | null;
@@ -607,6 +608,7 @@ export interface WorkflowSessionConfig {
 export interface WorkflowStartRequest {
     definitionId: string;
     inputs?: Record<string, unknown>;
+    model?: string;
     idempotencyKey: string;
     groupId?: string | null;
     visibility?: "private" | "shared_read" | "shared_write" | null;

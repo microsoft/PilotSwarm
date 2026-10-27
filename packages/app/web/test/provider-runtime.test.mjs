@@ -82,12 +82,14 @@ test("portal workflow starts place the session for the caller outside admission"
     const result = await runtime.call("startWorkflow", {
         definitionId: "definition-1",
         inputs: { entityId: "entity-1" },
+        model: "team:gpt-5.3-codex",
         idempotencyKey: "request-1",
         groupId: "group-1",
         visibility: "private",
     }, authContext);
 
     assert.equal(starts[0].request.groupId, undefined);
+    assert.equal(starts[0].request.model, "team:gpt-5.3-codex");
     assert.deepEqual(starts[0].context, {
         owner: {
             provider: "entra",

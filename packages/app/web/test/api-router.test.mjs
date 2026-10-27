@@ -101,6 +101,7 @@ test("path, query, and body params are collected with declared types", async () 
             body: JSON.stringify({
                 definitionId: "definition-1",
                 inputs: { entityId: "entity-1" },
+                model: "team:gpt-5.3-codex",
                 idempotencyKey: "request-1",
                 groupId: "group-1",
                 visibility: "private",
@@ -110,6 +111,7 @@ test("path, query, and body params are collected with declared types", async () 
         assert.deepEqual(calls.find((call) => call.name === "startWorkflow")?.params, {
             definitionId: "definition-1",
             inputs: { entityId: "entity-1" },
+            model: "team:gpt-5.3-codex",
             idempotencyKey: "request-1",
             groupId: "group-1",
             visibility: "private",

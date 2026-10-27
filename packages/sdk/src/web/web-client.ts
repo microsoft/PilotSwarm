@@ -74,6 +74,7 @@ export class WebPilotSwarmClient {
         return this._api.call("startWorkflow", {
             definitionId: request.definitionId,
             inputs: request.inputs,
+            model: request.model,
             idempotencyKey: request.idempotencyKey,
             groupId: request.groupId,
             visibility: request.visibility,

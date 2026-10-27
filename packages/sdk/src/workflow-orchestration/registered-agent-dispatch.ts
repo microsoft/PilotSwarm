@@ -18,6 +18,7 @@ export function createCompiledAgentStateDispatchPlan(input: {
     executionSequence: number;
     childSessionId: string;
     workflowInputs: Record<string, unknown>;
+    model?: string;
     configuration: Record<string, unknown>;
     latestStateOutputs: Record<string, WorkflowStateExecutionResult>;
     executionHistory: WorkflowExecutionRecord[];
@@ -53,6 +54,7 @@ export function createCompiledAgentStateDispatchPlan(input: {
         executionSequence: input.executionSequence,
         childSessionId: input.childSessionId,
         workflowInputs: input.workflowInputs,
+        ...(input.model ? { model: input.model } : {}),
         latestStateOutputs: input.latestStateOutputs,
         executionHistory: input.executionHistory,
         state: {

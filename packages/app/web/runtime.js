@@ -752,6 +752,7 @@ export class PortalRuntime {
                 const started = await this.transport.startWorkflow({
                     definitionId: safeParams.definitionId,
                     inputs: safeParams.inputs,
+                    model: safeParams.model,
                     idempotencyKey: safeParams.idempotencyKey,
                     visibility: normalizeVisibility(
                         safeParams.visibility,

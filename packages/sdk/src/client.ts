@@ -212,13 +212,20 @@ export class PilotSwarmClient {
                 { code: "WORKFLOW_IDEMPOTENCY_KEY_INVALID" },
             );
         }
-        const definitionViewer = context.owner?.provider && context.owner?.subject
+        const owner = context.owner?.provider && context.owner?.subject
             ? context.owner
             : { ...LOCAL_DEFAULT_USER_PRINCIPAL };
+        const requestedModel = request.model?.trim();
+        if (request.model !== undefined && !requestedModel) {
+            throw Object.assign(
+                new Error("Workflow start model must be a non-empty model reference."),
+                { code: "WORKFLOW_MODEL_INVALID" },
+            );
+        }
         const visibleDefinition = this._catalog.getWorkflowDefinitionForViewer
             ? await this._catalog.getWorkflowDefinitionForViewer(
                 definitionId,
-                definitionViewer,
+                owner,
                 context.isAdmin === true,
             )
             : await this._catalog.getWorkflowDefinition(definitionId);
@@ -228,6 +235,13 @@ export class PilotSwarmClient {
         );
         const inputs = request.inputs ?? {};
         validateWorkflowInputs(definition.compiledManifest, inputs);
+        const resolvedModelSelection = requestedModel
+            ? await this._resolveCreationModel({
+                model: requestedModel,
+                owner,
+            }, false)
+            : null;
+        const resolvedModel = resolvedModelSelection?.model ?? requestedModel;
         const primaryKey = resolveWorkflowPrimaryKey(
             definition.compiledManifest,
             inputs,
@@ -245,12 +259,10 @@ export class PilotSwarmClient {
                 { code: "WORKFLOW_RERUN_REQUIRED" },
             );
         }
-        const owner = context.owner?.provider && context.owner?.subject
-            ? context.owner
-            : { ...LOCAL_DEFAULT_USER_PRINCIPAL };
         const requestSha256 = workflowCanonicalJsonSha256({
             definitionId,
             inputs,
+            model: resolvedModel ?? null,
             visibility: request.visibility ?? null,
             rerunReason,
         });
@@ -270,17 +282,18 @@ export class PilotSwarmClient {
             isAdmin: context.isAdmin === true,
         });
         if (admission.needsStart) {
-            await this.createWorkflowSession({
+            await this._createWorkflowSession({
                 sessionId: admission.sessionId,
                 definition: {
                     kind: "registered",
                     definitionId: admission.definitionId,
                 },
                 inputs: admission.inputs,
+                ...(resolvedModel ? { model: resolvedModel } : {}),
                 owner: admission.owner,
                 groupId: admission.groupId,
                 visibility: admission.visibility,
-            });
+            }, resolvedModelSelection);
             await this._catalog.markWorkflowAdmissionStarted(
                 admission.sessionId,
                 admission.orchestrationId,
@@ -309,9 +322,34 @@ export class PilotSwarmClient {
         config: WorkflowSessionConfig,
     ): Promise<WorkflowSession<TResult>> {
         if (!this.duroxideClient) throw new Error("Not started.");
+        const requestedModel = config.model?.trim();
+        if (config.model !== undefined && !requestedModel) {
+            throw Object.assign(
+                new Error("Workflow session model must be a non-empty model reference."),
+                { code: "WORKFLOW_MODEL_INVALID" },
+            );
+        }
+        const resolvedModel = requestedModel
+            ? await this._resolveCreationModel({
+                model: requestedModel,
+                owner: config.owner ?? null,
+            }, false)
+            : null;
+        return this._createWorkflowSession(config, resolvedModel);
+    }
+
+    private async _createWorkflowSession<TResult = unknown>(
+        config: WorkflowSessionConfig,
+        resolvedModel: RuntimeModelSelection | null,
+    ): Promise<WorkflowSession<TResult>> {
         const sessionId = config.sessionId ?? crypto.randomUUID();
+        const model = resolvedModel?.model ?? config.model?.trim();
         await this._catalog.createSession(sessionId, {
             sessionKind: "workflow",
+            ...(model ? { model } : {}),
+            ...(resolvedModel?.source
+                ? { modelResolutionSource: resolvedModel.source }
+                : {}),
             parentSessionId: config.parentSessionId,
             owner: config.owner ?? null,
             groupId: config.groupId ?? null,
@@ -320,6 +358,7 @@ export class PilotSwarmClient {
                 workflow: {
                     definition: config.definition,
                     inputs: config.inputs ?? {},
+                    ...(model ? { model } : {}),
                 },
             },
         });
@@ -332,6 +371,7 @@ export class PilotSwarmClient {
                 ...(config.parentSessionId ? { parentSessionId: config.parentSessionId } : {}),
                 definition: config.definition,
                 inputs: config.inputs ?? {},
+                ...(model ? { model } : {}),
             },
             WORKFLOW_SESSION_LATEST_VERSION,
         );

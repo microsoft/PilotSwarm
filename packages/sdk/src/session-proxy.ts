@@ -1315,6 +1315,13 @@ export function registerActivities(
                 parentSessionId,
             )
             : null;
+        const inheritedModel = catalog
+            ? (await cmsRetryCritical(
+                `startWorkflowChild.getSession parent=${parentSessionId}`,
+                () => catalog.getSession(parentSessionId),
+                trace,
+            ))?.model?.trim() || null
+            : null;
         const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
             await sdkClient.start();
@@ -1323,6 +1330,7 @@ export function registerActivities(
                 parentSessionId,
                 definition,
                 inputs,
+                ...(inheritedModel ? { model: inheritedModel } : {}),
                 ...(inheritedOwner ? { owner: inheritedOwner } : {}),
             });
             trace(`[startWorkflowChild] child=${childSessionId} parent=${parentSessionId}`);

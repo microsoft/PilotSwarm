@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { PilotSwarmClient } from "../../dist/client.js";
 import { createSessionManagerProxy, createSessionProxy, registerActivities } from "../../dist/session-proxy.js";
 import { routeHandoffActivity, AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY } from "../../dist/activity-routing.js";
 import { DURABLE_SESSION_ORCHESTRATION_REGISTRY } from "../../dist/orchestration-registry.js";
@@ -189,6 +190,67 @@ test("workers register legacy and routed workflow child activities", () => {
     assert.equal(typeof handlers.get("spawnWorkflowSessionV1"), "function");
     assert.equal(typeof handlers.get(ENSURE_AGENT_CHILD_SESSION_ACTIVITY), "function");
     assert.equal(typeof handlers.get(ENQUEUE_AGENT_CHILD_BOOTSTRAP_ACTIVITY), "function");
+});
+
+test("workflow child activities inherit the parent session model", async () => {
+    const handlers = new Map();
+    const created = [];
+    const originalStart = PilotSwarmClient.prototype.start;
+    const originalCreateWorkflowSession = PilotSwarmClient.prototype.createWorkflowSession;
+    const originalStop = PilotSwarmClient.prototype.stop;
+    PilotSwarmClient.prototype.start = async function () {};
+    PilotSwarmClient.prototype.createWorkflowSession = async function (config) {
+        created.push(config);
+        return {};
+    };
+    PilotSwarmClient.prototype.stop = async function () {};
+    const parent = {
+        sessionKind: "agent",
+        parentSessionId: null,
+        isSystem: false,
+        model: "team:gpt-5.3-codex",
+        owner: {
+            provider: "entra",
+            subject: "user-1",
+            email: "user@example.test",
+            displayName: "User One",
+        },
+    };
+    const catalog = {
+        async getSession(sessionId) {
+            if (sessionId === "parent") return parent;
+            return null;
+        },
+    };
+
+    try {
+        registerActivities(
+            { registerActivity: (name, handler) => handlers.set(name, handler) },
+            {},
+            null,
+            undefined,
+            catalog,
+            undefined,
+            "postgres://unused",
+        );
+        const result = await handlers.get("spawnWorkflowSessionV1")(
+            { traceInfo() {} },
+            {
+                parentSessionId: "parent",
+                childSessionId: "workflow-1",
+                definition: { kind: "registered", definitionId: "definition-1" },
+                inputs: { target: "staging" },
+            },
+        );
+
+        assert.equal(result, "workflow-1");
+        assert.equal(created[0].model, "team:gpt-5.3-codex");
+        assert.deepEqual(created[0].owner, parent.owner);
+    } finally {
+        PilotSwarmClient.prototype.start = originalStart;
+        PilotSwarmClient.prototype.createWorkflowSession = originalCreateWorkflowSession;
+        PilotSwarmClient.prototype.stop = originalStop;
+    }
 });
 
 test("routing fails closed if the SDK cannot express capability tags", () => {

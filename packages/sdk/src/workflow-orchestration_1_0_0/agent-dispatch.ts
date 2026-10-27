@@ -19,6 +19,7 @@ export interface AgentStateDispatchPlan {
         activityInput: {
             parentSessionId: string;
             config: {
+                model?: string;
                 boundAgentName: string;
                 boundAgentPackageId?: string;
                 boundAgentPackageVersionId?: string;
@@ -67,6 +68,7 @@ export function createAgentStateDispatchPlan(input: {
     executionSequence: number;
     childSessionId: string;
     workflowInputs: Record<string, unknown>;
+    model?: string;
     latestStateOutputs: Record<string, WorkflowStateExecutionResult>;
     executionHistory: WorkflowExecutionRecord[];
     state: Pick<
@@ -112,6 +114,7 @@ export function createAgentStateDispatchPlan(input: {
             activityInput: {
                 parentSessionId: input.workflowSessionId,
                 config: {
+                    ...(input.model ? { model: input.model } : {}),
                     boundAgentName: input.state.agent,
                     ...(input.agentPackageBinding
                         ? {
