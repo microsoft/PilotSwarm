@@ -249,12 +249,6 @@ export class PilotSwarmClient {
         );
         const inputs = request.inputs ?? {};
         validateWorkflowInputs(definition.compiledManifest, inputs);
-        // Fail fast, before admission: an unusable model must not leave an
-        // admitted-but-unstarted row behind for a caller who cannot correct it
-        // without changing the request identity.
-        const preflightSelection = requestedModel
-            ? await this._resolveWorkflowModel(requestedModel, owner)
-            : null;
         const primaryKey = resolveWorkflowPrimaryKey(
             definition.compiledManifest,
             inputs,
@@ -272,6 +266,23 @@ export class PilotSwarmClient {
                 { code: "WORKFLOW_RERUN_REQUIRED" },
             );
         }
+        // A forced rerun does not run as the caller. Admission carries the prior
+        // execution's owner forward (`CASE WHEN p_force_rerun THEN
+        // v_existing.owner_*`), so the caller is the wrong subject to validate
+        // the model against — and wrong in both directions. An administrator's
+        // own model would pass here and then fail at start, leaving an admitted
+        // attempt that never runs and that later starts deduplicate onto; a
+        // model served by the prior owner's personal provider would be refused
+        // here even though the start would have succeeded.
+        const preflightOwner = request.rerun && primaryKey?.sha256
+            ? (await this._latestWorkflowAdmissionOwner(definitionId, primaryKey.sha256)) ?? owner
+            : owner;
+        // Fail fast, before admission: an unusable model must not leave an
+        // admitted-but-unstarted row behind for a caller who cannot correct it
+        // without changing the request identity.
+        const preflightSelection = requestedModel
+            ? await this._resolveWorkflowModel(requestedModel, preflightOwner)
+            : null;
         const requestSha256 = workflowCanonicalJsonSha256({
             definitionId,
             inputs,
@@ -308,10 +319,12 @@ export class PilotSwarmClient {
             // duplicate arriving under a different idempotency key never
             // compares request digests. Resolution runs against the admitted
             // owner, which an admin rerun can change.
+            // The preflight result may be reused only when it was computed for
+            // the same model AND the same owner the admission actually carries.
             const admittedModel = admission.requestedModel;
             const sameRequest = admittedModel === (requestedModel ?? null)
-                && admission.owner.provider === owner.provider
-                && admission.owner.subject === owner.subject;
+                && admission.owner.provider === preflightOwner.provider
+                && admission.owner.subject === preflightOwner.subject;
             const runSelection = admittedModel
                 ? (sameRequest && preflightSelection
                     ? preflightSelection
@@ -949,6 +962,22 @@ export class PilotSwarmClient {
 
         this.started = true;
         trace("[client] start complete");
+    }
+
+    /**
+     * The owner a forced rerun will actually run as.
+     *
+     * Optional on the catalog interface: a deployment-supplied catalog that
+     * does not implement it falls back to the caller, which is the behaviour
+     * this check replaces rather than a new risk. The built-in PostgreSQL
+     * catalog always implements it.
+     */
+    private async _latestWorkflowAdmissionOwner(
+        definitionId: string,
+        primaryKeySha256: string,
+    ): Promise<SessionOwnerInfo | null> {
+        if (!this._catalog.latestWorkflowAdmissionOwner) return null;
+        return await this._catalog.latestWorkflowAdmissionOwner(definitionId, primaryKeySha256);
     }
 
     /**

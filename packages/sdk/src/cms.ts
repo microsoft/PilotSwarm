@@ -1615,6 +1615,17 @@ export interface SessionCatalog {
         requestedModel?: string | null;
     }): Promise<WorkflowAdmissionRecord>;
 
+    /**
+     * The owner of the most recent admitted attempt for one logical entity, or
+     * null when none exists. A forced rerun runs as that owner rather than as
+     * the caller, so anything validated per-owner before admission must be
+     * validated against this.
+     */
+    latestWorkflowAdmissionOwner?(
+        definitionId: string,
+        primaryKeySha256: string,
+    ): Promise<SessionOwnerInfo | null>;
+
     /** Mark a reserved workflow admission started after idempotent Duroxide start. */
     markWorkflowAdmissionStarted(sessionId: string, orchestrationId: string): Promise<void>;
 
@@ -3167,6 +3178,31 @@ export class PgSessionCatalog implements SessionCatalog {
             );
         }
         return rowToWorkflowAdmissionRecord(rows[0]);
+    }
+
+    /**
+     * Mirrors the lookup `cms_admit_workflow` performs to find a prior attempt:
+     * the highest attempt for this definition and primary key.
+     */
+    async latestWorkflowAdmissionOwner(
+        definitionId: string,
+        primaryKeySha256: string,
+    ): Promise<SessionOwnerInfo | null> {
+        const { rows } = await this.pool.query(
+            `SELECT owner_provider, owner_subject, owner_email, owner_display_name
+               FROM "${this.sql.schema}".workflow_admissions
+              WHERE definition_id = $1 AND primary_key_sha256 = $2
+              ORDER BY attempt DESC
+              LIMIT 1`,
+            [definitionId, primaryKeySha256],
+        );
+        if (rows.length === 0) return null;
+        return {
+            provider: rows[0].owner_provider,
+            subject: rows[0].owner_subject,
+            email: rows[0].owner_email ?? null,
+            displayName: rows[0].owner_display_name ?? null,
+        };
     }
 
     async markWorkflowAdmissionStarted(

@@ -355,6 +355,89 @@ test("a recovery start uses the admitted model, not the later caller's", async (
     assert.equal(started[0][2].model, "team:gpt-5.3-codex");
 });
 
+test("a forced rerun validates the model against the owner it will run as", async () => {
+    // Admission carries the prior execution's owner forward on a forced rerun,
+    // so an administrator reruning someone else's entity does not run as
+    // themselves. Validating against the caller would admit an attempt that
+    // then fails to start, and that later starts deduplicate onto.
+    const resolvedFor = [];
+    const client = new PilotSwarmClient({});
+    client.duroxideClient = {
+        startOrchestrationVersioned: async () => {},
+    };
+    client._resolveCreationModel = async config => {
+        resolvedFor.push(config.owner);
+        // Only the prior owner may use this model; the admin may not.
+        if (config.owner?.subject !== "prior-owner") {
+            throw Object.assign(
+                new Error(`No usable provider serves model "${config.model}".`),
+                { code: "MODEL_UNRESOLVED" },
+            );
+        }
+        return { model: `team:${config.model}`, source: "explicit" };
+    };
+    const priorOwner = {
+        provider: "entra",
+        subject: "prior-owner",
+        email: "prior@example.test",
+        displayName: "Prior Owner",
+    };
+    let admitted = false;
+    client._catalog = {
+        getWorkflowDefinition: async definitionId => registeredDefinition(
+            definitionId,
+            { changeId: { type: "integer", required: true } },
+            { primaryKey: ["inputs.changeId"] },
+        ),
+        latestWorkflowAdmissionOwner: async () => priorOwner,
+        admitWorkflow: async input => {
+            admitted = true;
+            return {
+                sessionId: "workflow-rerun",
+                definitionId: input.definitionId,
+                primaryKeyValues: input.primaryKeyValues,
+                primaryKeySha256: input.primaryKeySha256,
+                attempt: 2,
+                inputs: input.inputs,
+                parentSessionId: null,
+                // Admission carried the prior owner forward.
+                owner: priorOwner,
+                groupId: null,
+                visibility: null,
+                rerunReason: input.rerunReason,
+                orchestrationId: "session-workflow-rerun",
+                requestedModel: input.requestedModel,
+                created: true,
+                deduplicated: false,
+                needsStart: true,
+            };
+        },
+        createSession: async () => {},
+        recordEvents: async () => {},
+        updateSession: async () => {},
+        getChildOutcome: async () => null,
+        markWorkflowAdmissionStarted: async () => {},
+    };
+
+    await client._startWorkflow({
+        definitionId: "definition-1",
+        inputs: { changeId: 9 },
+        model: "gpt-5.3-codex",
+        idempotencyKey: "rerun-1",
+        rerun: { reason: "retry after fix" },
+    }, {
+        owner: { provider: "entra", subject: "admin-1" },
+        isAdmin: true,
+    });
+
+    assert.ok(admitted, "the rerun is admitted");
+    assert.equal(
+        resolvedFor[0]?.subject,
+        "prior-owner",
+        "the preflight resolves against the prior owner, not the calling admin",
+    );
+});
+
 test("a request without a model keeps the pre-model request digest", async () => {
     // Admission request rows written before run-level models existed must stay
     // matchable, or an unchanged retry across the upgrade is rejected as a
