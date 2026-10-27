@@ -423,6 +423,13 @@ export interface WorkflowAdmissionRecord {
     visibility: SessionVisibility | null;
     rerunReason: string | null;
     orchestrationId: string;
+    /**
+     * The model reference this execution was admitted with, as the caller
+     * asked for it. A start rebuilds the run from this, never from the request
+     * that happened to arrive last: a logical duplicate recovering an earlier
+     * admission must not substitute its own model.
+     */
+    requestedModel: string | null;
     created: boolean;
     deduplicated: boolean;
     needsStart: boolean;
@@ -1605,6 +1612,7 @@ export interface SessionCatalog {
         forceRerun: boolean;
         rerunReason?: string | null;
         isAdmin: boolean;
+        requestedModel?: string | null;
     }): Promise<WorkflowAdmissionRecord>;
 
     /** Mark a reserved workflow admission started after idempotent Duroxide start. */
@@ -3117,13 +3125,14 @@ export class PgSessionCatalog implements SessionCatalog {
         forceRerun: boolean;
         rerunReason?: string | null;
         isAdmin: boolean;
+        requestedModel?: string | null;
     }): Promise<WorkflowAdmissionRecord> {
         let rows: any[];
         try {
             ({ rows } = await this.pool.query(
                 `SELECT * FROM ${this.sql.fn.admitWorkflow}(
                     $1, $2, $3::jsonb, $4::jsonb, $5, $6, $7, $8, $9,
-                    $10, $11, $12, $13, $14, $15, $16, $17
+                    $10, $11, $12, $13, $14, $15, $16, $17, $18
                 )`,
                 [
                     input.sessionId,
@@ -3145,6 +3154,7 @@ export class PgSessionCatalog implements SessionCatalog {
                     input.forceRerun,
                     input.rerunReason ?? null,
                     input.isAdmin,
+                    input.requestedModel ?? null,
                 ],
             ));
         } catch (error) {
@@ -4985,6 +4995,7 @@ function rowToWorkflowAdmissionRecord(row: any): WorkflowAdmissionRecord {
         visibility: row.visibility ?? null,
         rerunReason: row.rerun_reason ?? null,
         orchestrationId: row.orchestration_id,
+        requestedModel: row.requested_model ?? null,
         created: row.created === true,
         deduplicated: row.deduplicated === true,
         needsStart: row.needs_start === true,

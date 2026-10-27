@@ -116,6 +116,8 @@ export function* durableRegisteredWorkflowSessionOrchestration(
         definition: Extract<WorkflowDefinitionSource, { kind: "registered" }>;
         inputs: Record<string, unknown>;
         model?: string;
+        reasoningEffort?: string;
+        contextTier?: string;
     },
 ): Generator<unknown, WorkflowSessionResult, unknown> {
     const resolved = (yield ctx.scheduleActivity(
@@ -202,6 +204,8 @@ export function* durableRegisteredWorkflowSessionOrchestration(
                 childSessionId,
                 workflowInputs: input.inputs,
                 ...(input.model ? { model: input.model } : {}),
+                ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
+                ...(input.contextTier ? { contextTier: input.contextTier } : {}),
                 configuration: manifest.configuration,
                 latestStateOutputs,
                 executionHistory,

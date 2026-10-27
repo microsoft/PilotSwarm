@@ -4,6 +4,7 @@ import { PilotSwarmClient } from "../../dist/client.js";
 import {
     workflowCompiledManifestSha256,
 } from "../../dist/workflow-orchestration/compiler.js";
+import { workflowCanonicalJsonSha256 } from "../../dist/workflow-orchestration/admission.js";
 
 function registeredDefinition(definitionId, inputSchema, identity) {
     const manifest = {
@@ -46,8 +47,18 @@ test("createWorkflowSession persists a non-conversational child and returns its 
             starts.push({ id, name, input, version });
         },
     };
+    // Resolution is mandatory for an explicit workflow model, so the fixture
+    // has to stand in for a real provider catalog rather than relying on the
+    // raw reference falling through unvalidated.
+    client._resolveCreationModel = async () => ({
+        model: "team:gpt-5.3-codex",
+        reasoning: "high",
+        context: "long_context",
+        source: "explicit",
+    });
     client._catalog = {
         createSession: async (sessionId, options) => writes.push({ sessionId, options }),
+        recordEvents: async () => {},
         updateSession: async (sessionId, update) => updates.push({ sessionId, update }),
         getChildOutcome: async childSessionId => ({
             childSessionId,
@@ -80,6 +91,9 @@ test("createWorkflowSession persists a non-conversational child and returns its 
         options: {
             sessionKind: "workflow",
             model: "team:gpt-5.3-codex",
+            reasoningEffort: "high",
+            contextTier: "long_context",
+            modelResolutionSource: "explicit",
             parentSessionId: "parent-1",
             owner: null,
             groupId: null,
@@ -89,6 +103,8 @@ test("createWorkflowSession persists a non-conversational child and returns its 
                     definition: { kind: "registered", definitionId: "definition-1" },
                     inputs: { target: "staging" },
                     model: "team:gpt-5.3-codex",
+                    reasoningEffort: "high",
+                    contextTier: "long_context",
                 },
             },
         },
@@ -102,6 +118,8 @@ test("createWorkflowSession persists a non-conversational child and returns its 
             definition: { kind: "registered", definitionId: "definition-1" },
             inputs: { target: "staging" },
             model: "team:gpt-5.3-codex",
+            reasoningEffort: "high",
+            contextTier: "long_context",
         },
         version: "1.0.0",
     }]);
@@ -163,12 +181,14 @@ test("startWorkflow validates, admits, and starts a registered definition", asyn
                 visibility: "private",
                 rerunReason: null,
                 orchestrationId: "session-workflow-admitted",
+                requestedModel: input.requestedModel ?? null,
                 created: true,
                 deduplicated: false,
                 needsStart: true,
             };
         },
         createSession: async (...args) => created.push(args),
+        recordEvents: async () => {},
         updateSession: async () => {},
         getChildOutcome: async () => null,
         markWorkflowAdmissionStarted: async (...args) => marked.push(args),
@@ -206,6 +226,9 @@ test("startWorkflow validates, admits, and starts a registered definition", asyn
     assert.deepEqual(admitted[0].primaryKeyValues, ["microsoft/PilotSwarm", 28]);
     assert.match(admitted[0].primaryKeySha256, /^[a-f0-9]{64}$/);
     assert.equal(resolvedModels[0].model, "gpt-5.3-codex");
+    // The trimmed reference the caller asked for is what admission stores, so
+    // a later recovery start can rebuild the same run configuration.
+    assert.equal(admitted[0].requestedModel, "gpt-5.3-codex");
     assert.equal(created[0][1].model, "team:gpt-5.3-codex");
     assert.equal(started[0][2].model, "team:gpt-5.3-codex");
     assert.equal(created.length, 1);
@@ -225,7 +248,7 @@ test("startWorkflow validates, admits, and starts a registered definition", asyn
     ]]);
 });
 
-test("startWorkflow includes the resolved model in the idempotency contract", async () => {
+test("startWorkflow includes the requested model in the idempotency contract", async () => {
     const requestHashes = [];
     const client = new PilotSwarmClient({});
     client.duroxideClient = {};
@@ -271,6 +294,152 @@ test("startWorkflow includes the resolved model in the idempotency contract", as
 
     assert.equal(requestHashes.length, 2);
     assert.notEqual(requestHashes[0], requestHashes[1]);
+});
+
+test("a recovery start uses the admitted model, not the later caller's", async () => {
+    // Two requests, one logical entity, different idempotency keys. The first
+    // admission never finished starting, so the second request recovers it.
+    // Request identity is never compared on that branch, so nothing but the
+    // admission row itself can keep the run configuration stable.
+    const created = [];
+    const started = [];
+    const client = new PilotSwarmClient({});
+    client.duroxideClient = {
+        startOrchestrationVersioned: async (...args) => started.push(args),
+    };
+    client._resolveCreationModel = async config => ({
+        model: `team:${config.model}`,
+        source: "explicit",
+    });
+    client._catalog = {
+        getWorkflowDefinition: async definitionId => registeredDefinition(
+            definitionId,
+            { changeId: { type: "integer", required: true } },
+            { primaryKey: ["inputs.changeId"] },
+        ),
+        admitWorkflow: async input => ({
+            sessionId: "workflow-admitted",
+            definitionId: input.definitionId,
+            primaryKeyValues: input.primaryKeyValues,
+            primaryKeySha256: input.primaryKeySha256,
+            attempt: 1,
+            inputs: input.inputs,
+            parentSessionId: null,
+            owner: input.owner,
+            groupId: null,
+            visibility: null,
+            rerunReason: null,
+            orchestrationId: "session-workflow-admitted",
+            // The first caller's selection, already on the row.
+            requestedModel: "gpt-5.3-codex",
+            created: false,
+            deduplicated: true,
+            needsStart: true,
+        }),
+        createSession: async (...args) => created.push(args),
+        recordEvents: async () => {},
+        updateSession: async () => {},
+        getChildOutcome: async () => null,
+        markWorkflowAdmissionStarted: async () => {},
+    };
+
+    await client._startWorkflow({
+        definitionId: "definition-1",
+        inputs: { changeId: 7 },
+        model: "claude-opus-5",
+        idempotencyKey: "request-2",
+    });
+
+    assert.equal(created.length, 1);
+    assert.equal(created[0][1].model, "team:gpt-5.3-codex");
+    assert.equal(started[0][2].model, "team:gpt-5.3-codex");
+});
+
+test("a request without a model keeps the pre-model request digest", async () => {
+    // Admission request rows written before run-level models existed must stay
+    // matchable, or an unchanged retry across the upgrade is rejected as a
+    // different request.
+    const hashes = [];
+    const client = new PilotSwarmClient({});
+    client.duroxideClient = {};
+    client._catalog = {
+        getWorkflowDefinition: async definitionId => registeredDefinition(definitionId, {}),
+        admitWorkflow: async input => {
+            hashes.push(input.requestSha256);
+            return {
+                sessionId: "workflow-1",
+                definitionId: input.definitionId,
+                primaryKeyValues: null,
+                primaryKeySha256: null,
+                attempt: 1,
+                inputs: input.inputs,
+                parentSessionId: null,
+                owner: input.owner,
+                groupId: null,
+                visibility: null,
+                rerunReason: null,
+                orchestrationId: "session-workflow-1",
+                requestedModel: null,
+                created: false,
+                deduplicated: true,
+                needsStart: false,
+            };
+        },
+    };
+
+    await client._startWorkflow({
+        definitionId: "definition-1",
+        inputs: { target: "staging" },
+        idempotencyKey: "request-1",
+    });
+
+    assert.equal(hashes.length, 1);
+    assert.equal(hashes[0], workflowCanonicalJsonSha256({
+        definitionId: "definition-1",
+        inputs: { target: "staging" },
+        visibility: null,
+        rerunReason: null,
+    }));
+});
+
+test("a non-string model is refused with a client error, not a type error", async () => {
+    const client = new PilotSwarmClient({});
+    client.duroxideClient = {};
+    client._catalog = {};
+
+    for (const model of [42, true, { name: "gpt-5.3-codex" }, ["gpt-5.3-codex"]]) {
+        await assert.rejects(
+            () => client._startWorkflow({
+                definitionId: "definition-1",
+                inputs: {},
+                model,
+                idempotencyKey: "request-1",
+            }),
+            error => error.code === "WORKFLOW_MODEL_INVALID" && error.status === 400,
+            `model ${JSON.stringify(model)} must be refused as a client error`,
+        );
+    }
+});
+
+test("an explicit model is refused when no provider catalog can resolve it", async () => {
+    // _resolveCreationModel answers null when the catalog carries no provider
+    // store. Persisting the raw reference would also skip the database check,
+    // which is gated on a resolution source.
+    const client = new PilotSwarmClient({});
+    client.duroxideClient = {};
+    client._catalog = {
+        getWorkflowDefinition: async definitionId => registeredDefinition(definitionId, {}),
+    };
+
+    await assert.rejects(
+        () => client._startWorkflow({
+            definitionId: "definition-1",
+            inputs: {},
+            model: "gpt-5.3-codex",
+            idempotencyKey: "request-1",
+        }),
+        error => error.code === "WORKFLOW_MODEL_UNRESOLVABLE",
+    );
 });
 
 test("workflow model references reject blank values before admission", async () => {

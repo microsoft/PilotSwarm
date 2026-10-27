@@ -836,12 +836,21 @@ export function* handleSubAgentAction(
     switch (result.type) {
         case "spawn_workflow": {
             const childSessionId: string = yield ctx.newGuid();
-            yield runtime.manager.spawnWorkflowSession(
-                runtime.input.sessionId,
-                result.definition,
-                result.inputs,
-                childSessionId,
-            );
+            try {
+                yield runtime.manager.spawnWorkflowSession(
+                    runtime.input.sessionId,
+                    result.definition,
+                    result.inputs,
+                    childSessionId,
+                );
+            } catch (err: any) {
+                // Same contract as spawn_agent below: a child that cannot be
+                // created is reported back to the session, not allowed to fail
+                // the parent's turn.
+                ctx.traceInfo(`[orch] spawnWorkflowSession failed: ${err.message}`);
+                queueFollowup(runtime, `[SYSTEM: spawn_workflow failed: ${err.message}]`);
+                return true;
+            }
             state.subWorkflows.push({
                 sessionId: childSessionId,
                 status: "running",

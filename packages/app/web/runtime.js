@@ -189,6 +189,10 @@ const PROVIDER_ERROR_STATUS = {
     WORKFLOW_IDEMPOTENCY_CONFLICT: 409,
     WORKFLOW_DUPLICATE_CONFLICT: 409,
     WORKFLOW_RERUN_FORBIDDEN: 403,
+    WORKFLOW_MODEL_INVALID: 400,
+    // The caller's reference may be perfectly good: this says the deployment
+    // has no provider catalog able to resolve it, so it is not a client fault.
+    WORKFLOW_MODEL_UNRESOLVABLE: 503,
 };
 
 /** `?names=a,b` off the wire, or an array from the legacy /api/rpc caller. */

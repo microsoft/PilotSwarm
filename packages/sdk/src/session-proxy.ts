@@ -12,7 +12,7 @@ import { readCanvasKv, writeCanvasKv } from "./canvas-kv.js";
 import { publishCanvasApp, findCanvasApp } from "./canvas-app-catalog.js";
 import { canvasArtifactFilename, normalizeCanvasSlot, eventSlot, latestCanvasEventData, latestCanvasRev } from "./canvas-support.js";
 import type { SessionStateStore } from "./session-store.js";
-import { resolveEffectiveSpawnOwner, type SessionCatalog } from "./cms.js";
+import { resolveEffectiveSpawnOwner, type SessionCatalog, type SessionRow } from "./cms.js";
 import { admissionToWait, PROVIDER_BUDGET_WAKE_PROMPT } from "./provider-budgets.js";
 import { applyWorkspaceDefaults, checkWorkspaceForSpawn, defaultsRecordOf, orchestrationSupportsWorkspaces, prepareWorkspace, prepareWorkspaceExtras, readDefaultsRecord, resolveWorkspaceDefaults, sameDefaultsRecord, WORKSPACE_PARTIAL_CHANGES_NOTE, workspaceOpenedKey } from "./workspace.js";
 import { workingFolderOf } from "./workspace-check.js";
@@ -1220,6 +1220,27 @@ export function createSessionManagerProxy(
 // Thin dispatchers — each is a one-liner that calls the corresponding
 // SessionManager or ManagedSession method.
 
+/**
+ * Did this failure come from picking the model, rather than from the work?
+ *
+ * Only these codes justify retrying a child creation without the inherited
+ * binding; anything else is a real failure and must surface unchanged.
+ */
+function isModelResolutionFailure(error: unknown): boolean {
+    const code = (error as { code?: unknown } | null)?.code;
+    if (code === "MODEL_UNRESOLVED"
+        || code === "MODEL_AMBIGUOUS"
+        || code === "WORKFLOW_MODEL_UNRESOLVABLE") {
+        return true;
+    }
+    // The database backstop raises PROVIDER_NOT_FOUND as a plain plpgsql
+    // exception, and only WORKFLOW_* messages are promoted to an error code
+    // (cms.ts normalizeWorkflowCatalogError), so this one is recognisable
+    // only by its message prefix.
+    const message = (error as { message?: unknown } | null)?.message;
+    return typeof message === "string" && message.startsWith("PROVIDER_NOT_FOUND:");
+}
+
 export function registerActivities(
     runtime: any,
     sessionManager: SessionManager,
@@ -1305,34 +1326,67 @@ export function registerActivities(
                 return childSessionId;
             }
         }
-        const inheritedOwner = catalog
-            ? await resolveEffectiveSpawnOwner(
-                (id) => cmsRetryCritical(
-                    `startWorkflowChild.getSession ancestor=${id}`,
-                    () => catalog.getSession(id),
-                    trace,
-                ),
-                parentSessionId,
-            )
-            : null;
-        const inheritedModel = catalog
-            ? (await cmsRetryCritical(
-                `startWorkflowChild.getSession parent=${parentSessionId}`,
-                () => catalog.getSession(parentSessionId),
+        // The ancestor walk already reads the parent row; memoize so the model
+        // tuple does not cost a second round-trip on every spawn.
+        const sessionRows = new Map<string, SessionRow | null>();
+        const readSessionRow = async (id: string): Promise<SessionRow | null> => {
+            if (sessionRows.has(id)) return sessionRows.get(id) ?? null;
+            const row = await cmsRetryCritical(
+                `startWorkflowChild.getSession session=${id}`,
+                () => catalog!.getSession(id),
                 trace,
-            ))?.model?.trim() || null
+            );
+            sessionRows.set(id, row ?? null);
+            return row ?? null;
+        };
+        const inheritedOwner = catalog
+            ? await resolveEffectiveSpawnOwner(readSessionRow, parentSessionId)
             : null;
+        const parentRow = catalog ? await readSessionRow(parentSessionId) : null;
+        const inheritedModel = parentRow?.model?.trim() || null;
+        // Inherit the whole selection. Carrying only the name would leave the
+        // child showing the parent's model while running at the descriptor's
+        // default effort and context tier.
+        const inheritedModelConfig = inheritedModel
+            ? {
+                model: inheritedModel,
+                ...(parentRow?.reasoningEffort
+                    ? { reasoningEffort: parentRow.reasoningEffort as any }
+                    : {}),
+                ...(parentRow?.contextTier
+                    ? { contextTier: parentRow.contextTier as any }
+                    : {}),
+            }
+            : {};
         const sdkClient = new PilotSwarmClient(internalClientConfig());
         try {
             await sdkClient.start();
-            await sdkClient.createWorkflowSession({
+            const baseConfig = {
                 sessionId: childSessionId,
                 parentSessionId,
                 definition,
                 inputs,
-                ...(inheritedModel ? { model: inheritedModel } : {}),
                 ...(inheritedOwner ? { owner: inheritedOwner } : {}),
-            });
+            };
+            try {
+                await sdkClient.createWorkflowSession({
+                    ...baseConfig,
+                    ...inheritedModelConfig,
+                });
+            } catch (err: any) {
+                // Inheritance is a convenience, not a requirement. The parent's
+                // binding is re-resolved against the *effective* spawn owner,
+                // which the ancestor walk can move — a parent on a personal
+                // provider, a bare alias that has since become ambiguous, or a
+                // retired model would otherwise fail the activity and take the
+                // parent's turn down with it. Fall back to default resolution.
+                if (!inheritedModel || !isModelResolutionFailure(err)) throw err;
+                trace(
+                    `[startWorkflowChild] parent model "${inheritedModel}" did not resolve for the child owner`
+                    + ` (${err?.code ?? err?.message}); falling back to default resolution`,
+                );
+                await sdkClient.createWorkflowSession(baseConfig);
+            }
             trace(`[startWorkflowChild] child=${childSessionId} parent=${parentSessionId}`);
             return childSessionId;
         } finally {
