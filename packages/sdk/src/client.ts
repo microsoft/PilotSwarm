@@ -136,6 +136,23 @@ export function projectSerializableSessionConfig(
     };
 }
 
+/**
+ * Read an optional run-level model reference off an untrusted request.
+ *
+ * The declared type says `string`, but these values arrive straight from a
+ * JSON body, so a number or an object reaches here intact and `.trim()` would
+ * throw a TypeError the API layer can only report as a server fault. Absent
+ * and null both mean "no selection"; anything else must be a usable string.
+ */
+function normalizeRequestedModel(value: unknown, message: string): string | undefined {
+    if (value === undefined || value === null) return undefined;
+    const trimmed = typeof value === "string" ? value.trim() : "";
+    if (!trimmed) {
+        throw Object.assign(new Error(message), { code: "WORKFLOW_MODEL_INVALID", status: 400 });
+    }
+    return trimmed;
+}
+
 export class PilotSwarmClient {
     private config!: PilotSwarmClientOptions & { waitThreshold: number };
     private _catalog!: SessionCatalog;
@@ -215,13 +232,10 @@ export class PilotSwarmClient {
         const owner = context.owner?.provider && context.owner?.subject
             ? context.owner
             : { ...LOCAL_DEFAULT_USER_PRINCIPAL };
-        const requestedModel = request.model?.trim();
-        if (request.model !== undefined && !requestedModel) {
-            throw Object.assign(
-                new Error("Workflow start model must be a non-empty model reference."),
-                { code: "WORKFLOW_MODEL_INVALID" },
-            );
-        }
+        const requestedModel = normalizeRequestedModel(
+            request.model,
+            "Workflow start model must be a non-empty model reference.",
+        );
         const visibleDefinition = this._catalog.getWorkflowDefinitionForViewer
             ? await this._catalog.getWorkflowDefinitionForViewer(
                 definitionId,
@@ -235,13 +249,12 @@ export class PilotSwarmClient {
         );
         const inputs = request.inputs ?? {};
         validateWorkflowInputs(definition.compiledManifest, inputs);
-        const resolvedModelSelection = requestedModel
-            ? await this._resolveCreationModel({
-                model: requestedModel,
-                owner,
-            }, false)
+        // Fail fast, before admission: an unusable model must not leave an
+        // admitted-but-unstarted row behind for a caller who cannot correct it
+        // without changing the request identity.
+        const preflightSelection = requestedModel
+            ? await this._resolveWorkflowModel(requestedModel, owner)
             : null;
-        const resolvedModel = resolvedModelSelection?.model ?? requestedModel;
         const primaryKey = resolveWorkflowPrimaryKey(
             definition.compiledManifest,
             inputs,
@@ -262,7 +275,12 @@ export class PilotSwarmClient {
         const requestSha256 = workflowCanonicalJsonSha256({
             definitionId,
             inputs,
-            model: resolvedModel ?? null,
+            // Present only when a model was asked for, so a request that names
+            // none keeps the digest it had before run-level models existed and
+            // stays retryable across the upgrade. The requested reference is
+            // hashed rather than the resolved one: request identity must not
+            // move when the provider catalog does.
+            ...(requestedModel ? { model: requestedModel } : {}),
             visibility: request.visibility ?? null,
             rerunReason,
         });
@@ -280,8 +298,25 @@ export class PilotSwarmClient {
             forceRerun: Boolean(request.rerun),
             rerunReason,
             isAdmin: context.isAdmin === true,
+            requestedModel: requestedModel ?? null,
         });
         if (admission.needsStart) {
+            // Every other field below is replayed from the admission, and the
+            // model is no exception. Recovering an execution that was admitted
+            // earlier must use the model it was admitted with, not whatever the
+            // caller that happened to win the race asked for — a logical
+            // duplicate arriving under a different idempotency key never
+            // compares request digests. Resolution runs against the admitted
+            // owner, which an admin rerun can change.
+            const admittedModel = admission.requestedModel;
+            const sameRequest = admittedModel === (requestedModel ?? null)
+                && admission.owner.provider === owner.provider
+                && admission.owner.subject === owner.subject;
+            const runSelection = admittedModel
+                ? (sameRequest && preflightSelection
+                    ? preflightSelection
+                    : await this._resolveWorkflowModel(admittedModel, admission.owner))
+                : null;
             await this._createWorkflowSession({
                 sessionId: admission.sessionId,
                 definition: {
@@ -289,11 +324,11 @@ export class PilotSwarmClient {
                     definitionId: admission.definitionId,
                 },
                 inputs: admission.inputs,
-                ...(resolvedModel ? { model: resolvedModel } : {}),
+                ...(admittedModel ? { model: admittedModel } : {}),
                 owner: admission.owner,
                 groupId: admission.groupId,
                 visibility: admission.visibility,
-            }, resolvedModelSelection);
+            }, runSelection);
             await this._catalog.markWorkflowAdmissionStarted(
                 admission.sessionId,
                 admission.orchestrationId,
@@ -322,18 +357,17 @@ export class PilotSwarmClient {
         config: WorkflowSessionConfig,
     ): Promise<WorkflowSession<TResult>> {
         if (!this.duroxideClient) throw new Error("Not started.");
-        const requestedModel = config.model?.trim();
-        if (config.model !== undefined && !requestedModel) {
-            throw Object.assign(
-                new Error("Workflow session model must be a non-empty model reference."),
-                { code: "WORKFLOW_MODEL_INVALID" },
-            );
-        }
+        const requestedModel = normalizeRequestedModel(
+            config.model,
+            "Workflow session model must be a non-empty model reference.",
+        );
         const resolvedModel = requestedModel
-            ? await this._resolveCreationModel({
-                model: requestedModel,
-                owner: config.owner ?? null,
-            }, false)
+            ? await this._resolveWorkflowModel(
+                requestedModel,
+                config.owner ?? null,
+                config.reasoningEffort,
+                config.contextTier,
+            )
             : null;
         return this._createWorkflowSession(config, resolvedModel);
     }
@@ -344,9 +378,24 @@ export class PilotSwarmClient {
     ): Promise<WorkflowSession<TResult>> {
         const sessionId = config.sessionId ?? crypto.randomUUID();
         const model = resolvedModel?.model ?? config.model?.trim();
+        // A model selection is a tuple everywhere else in the platform.
+        // Persisting only the name leaves the row looking correct while every
+        // agent state re-resolves the effort and context tier from descriptor
+        // defaults — the displayed model is right and the behaviour is not.
+        const reasoningEffort = (resolvedModel?.reasoning ?? config.reasoningEffort
+            ?? undefined) as ManagedSessionConfig["reasoningEffort"];
+        const contextTier = (resolvedModel?.context ?? config.contextTier
+            ?? undefined) as ManagedSessionConfig["contextTier"];
+        const runModel = model
+            ? {
+                model,
+                ...(reasoningEffort ? { reasoningEffort } : {}),
+                ...(contextTier ? { contextTier } : {}),
+            }
+            : {};
         await this._catalog.createSession(sessionId, {
             sessionKind: "workflow",
-            ...(model ? { model } : {}),
+            ...runModel,
             ...(resolvedModel?.source
                 ? { modelResolutionSource: resolvedModel.source }
                 : {}),
@@ -358,10 +407,16 @@ export class PilotSwarmClient {
                 workflow: {
                     definition: config.definition,
                     inputs: config.inputs ?? {},
-                    ...(model ? { model } : {}),
+                    ...runModel,
                 },
             },
         });
+        if (model && resolvedModel?.source) {
+            await this._catalog.recordEvents(sessionId, [{
+                eventType: "session.model_resolved",
+                data: { model, source: resolvedModel.source },
+            }]).catch(() => {});
+        }
         const orchestrationId = `session-${sessionId}`;
         await this.duroxideClient.startOrchestrationVersioned(
             orchestrationId,
@@ -371,7 +426,7 @@ export class PilotSwarmClient {
                 ...(config.parentSessionId ? { parentSessionId: config.parentSessionId } : {}),
                 definition: config.definition,
                 inputs: config.inputs ?? {},
-                ...(model ? { model } : {}),
+                ...runModel,
             },
             WORKFLOW_SESSION_LATEST_VERSION,
         );
@@ -889,6 +944,37 @@ export class PilotSwarmClient {
 
         this.started = true;
         trace("[client] start complete");
+    }
+
+    /**
+     * Resolve a run-level workflow model, or refuse to guess.
+     *
+     * `_resolveCreationModel` answers null when the catalog carries no provider
+     * store. A conversational session tolerates that and keeps the raw string,
+     * but a workflow start tells the caller it validated the reference before
+     * persisting it — and the database backstop in `createSession` is itself
+     * gated on a resolution source, so an unresolved value would slip past both
+     * checks into the orchestration input and every agent state.
+     */
+    private async _resolveWorkflowModel(
+        model: string,
+        owner: SessionOwnerInfo | null,
+        reasoningEffort?: ManagedSessionConfig["reasoningEffort"],
+        contextTier?: ManagedSessionConfig["contextTier"],
+    ): Promise<RuntimeModelSelection> {
+        const resolved = await this._resolveCreationModel(
+            { model, owner, reasoningEffort, contextTier },
+            false,
+        );
+        if (!resolved?.model) {
+            throw Object.assign(
+                new Error(
+                    "Workflow model selection requires a provider catalog that can resolve the model reference.",
+                ),
+                { code: "WORKFLOW_MODEL_UNRESOLVABLE", status: 503 },
+            );
+        }
+        return resolved;
     }
 
     private async _resolveCreationModel(
