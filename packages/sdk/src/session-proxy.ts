@@ -1228,10 +1228,17 @@ export function createSessionManagerProxy(
  */
 function isModelResolutionFailure(error: unknown): boolean {
     const code = (error as { code?: unknown } | null)?.code;
-    return code === "MODEL_UNRESOLVED"
+    if (code === "MODEL_UNRESOLVED"
         || code === "MODEL_AMBIGUOUS"
-        || code === "WORKFLOW_MODEL_UNRESOLVABLE"
-        || code === "PROVIDER_NOT_FOUND";
+        || code === "WORKFLOW_MODEL_UNRESOLVABLE") {
+        return true;
+    }
+    // The database backstop raises PROVIDER_NOT_FOUND as a plain plpgsql
+    // exception, and only WORKFLOW_* messages are promoted to an error code
+    // (cms.ts normalizeWorkflowCatalogError), so this one is recognisable
+    // only by its message prefix.
+    const message = (error as { message?: unknown } | null)?.message;
+    return typeof message === "string" && message.startsWith("PROVIDER_NOT_FOUND:");
 }
 
 export function registerActivities(

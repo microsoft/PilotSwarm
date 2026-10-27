@@ -300,4 +300,20 @@ test("0093: the admission rewrite keeps every guard the original had", () => {
     // And the new column is both stored and returned.
     assert.match(migration.sql, /rerun_reason, orchestration_id, requested_model/);
     assert.match(migration.sql, /v_existing\.orchestration_id, v_existing\.requested_model/);
+
+    // A rolling deployment runs both code versions against one database, so
+    // the dropped 17-argument signature must come back as a forward.
+    const definitions = [...migration.sql.matchAll(
+        /CREATE OR REPLACE FUNCTION "shape_check"\.cms_admit_workflow\(([^)]*)\)/gs,
+    )];
+    assert.equal(definitions.length, 2, "both the new and the compatibility signature are defined");
+    const arity = definitions.map(
+        (m) => m[1].split(",").map((a) => a.trim()).filter(Boolean).length,
+    );
+    assert.deepEqual(arity, [18, 17], "the 18-argument form first, then the 17-argument forward");
+    assert.match(
+        migration.sql,
+        /p_is_admin, NULL::TEXT/,
+        "the compatibility forward admits with no model",
+    );
 });

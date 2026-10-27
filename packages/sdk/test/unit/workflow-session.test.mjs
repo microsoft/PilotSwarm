@@ -248,7 +248,7 @@ test("startWorkflow validates, admits, and starts a registered definition", asyn
     ]]);
 });
 
-test("startWorkflow includes the resolved model in the idempotency contract", async () => {
+test("startWorkflow includes the requested model in the idempotency contract", async () => {
     const requestHashes = [];
     const client = new PilotSwarmClient({});
     client.duroxideClient = {};

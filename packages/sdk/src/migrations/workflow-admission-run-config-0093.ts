@@ -239,5 +239,60 @@ BEGIN
         TRUE, FALSE, TRUE;
 END;
 $$ LANGUAGE plpgsql;
+
+-- Rolling deployments run both code versions against one database. The 17
+-- argument signature had to be dropped because a replacement cannot change a
+-- function's return type, so put it back as a thin forward to the new one.
+-- An un-upgraded process keeps admitting workflows, with no model, until it
+-- is replaced; it reads its columns by name, so the extra one is harmless.
+CREATE OR REPLACE FUNCTION ${s}.cms_admit_workflow(
+    p_session_id          TEXT,
+    p_definition_id       TEXT,
+    p_inputs_json         JSONB,
+    p_primary_key_json    JSONB,
+    p_primary_key_sha256  TEXT,
+    p_owner_provider      TEXT,
+    p_owner_subject       TEXT,
+    p_owner_email         TEXT,
+    p_owner_display_name  TEXT,
+    p_parent_session_id   TEXT,
+    p_group_id            TEXT,
+    p_visibility          TEXT,
+    p_idempotency_key     TEXT,
+    p_request_sha256      TEXT,
+    p_force_rerun         BOOLEAN,
+    p_rerun_reason        TEXT,
+    p_is_admin            BOOLEAN
+) RETURNS TABLE (
+    session_id TEXT,
+    definition_id TEXT,
+    primary_key_json JSONB,
+    primary_key_sha256 TEXT,
+    attempt INTEGER,
+    inputs_json JSONB,
+    parent_session_id TEXT,
+    owner_provider TEXT,
+    owner_subject TEXT,
+    owner_email TEXT,
+    owner_display_name TEXT,
+    group_id TEXT,
+    visibility TEXT,
+    rerun_reason TEXT,
+    orchestration_id TEXT,
+    requested_model TEXT,
+    created BOOLEAN,
+    deduplicated BOOLEAN,
+    needs_start BOOLEAN
+) AS $$
+BEGIN
+    RETURN QUERY SELECT * FROM ${s}.cms_admit_workflow(
+        p_session_id, p_definition_id, p_inputs_json, p_primary_key_json,
+        p_primary_key_sha256, p_owner_provider, p_owner_subject, p_owner_email,
+        p_owner_display_name, p_parent_session_id, p_group_id, p_visibility,
+        p_idempotency_key, p_request_sha256, p_force_rerun, p_rerun_reason,
+        p_is_admin, NULL::TEXT
+    );
+END;
+$$ LANGUAGE plpgsql;
 `;
 }
