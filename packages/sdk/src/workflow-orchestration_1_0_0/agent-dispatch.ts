@@ -19,6 +19,9 @@ export interface AgentStateDispatchPlan {
         activityInput: {
             parentSessionId: string;
             config: {
+                model?: string;
+                reasoningEffort?: string;
+                contextTier?: string;
                 boundAgentName: string;
                 boundAgentPackageId?: string;
                 boundAgentPackageVersionId?: string;
@@ -67,6 +70,9 @@ export function createAgentStateDispatchPlan(input: {
     executionSequence: number;
     childSessionId: string;
     workflowInputs: Record<string, unknown>;
+    model?: string;
+    reasoningEffort?: string;
+    contextTier?: string;
     latestStateOutputs: Record<string, WorkflowStateExecutionResult>;
     executionHistory: WorkflowExecutionRecord[];
     state: Pick<
@@ -112,6 +118,13 @@ export function createAgentStateDispatchPlan(input: {
             activityInput: {
                 parentSessionId: input.workflowSessionId,
                 config: {
+                    ...(input.model ? { model: input.model } : {}),
+                    ...(input.model && input.reasoningEffort
+                        ? { reasoningEffort: input.reasoningEffort }
+                        : {}),
+                    ...(input.model && input.contextTier
+                        ? { contextTier: input.contextTier }
+                        : {}),
                     boundAgentName: input.state.agent,
                     ...(input.agentPackageBinding
                         ? {

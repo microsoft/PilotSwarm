@@ -417,6 +417,7 @@ test("web client starts a registered workflow through the canonical API operatio
     const result = await web.startWorkflow({
         definitionId: "definition-1",
         inputs: { entityId: "entity-1" },
+        model: "team:gpt-5.3-codex",
         idempotencyKey: "request-1",
         groupId: "group-1",
         visibility: "private",
@@ -428,6 +429,7 @@ test("web client starts a registered workflow through the canonical API operatio
         params: {
             definitionId: "definition-1",
             inputs: { entityId: "entity-1" },
+            model: "team:gpt-5.3-codex",
             idempotencyKey: "request-1",
             groupId: "group-1",
             visibility: "private",

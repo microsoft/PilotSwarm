@@ -320,6 +320,7 @@ states:
         sessionId: "workflow-yaml-1",
         definition,
         inputs: { pullRequestId: 116 },
+        model: "team:gpt-5.3-codex",
     }, undefined, {
         agentResult: {
             outcome: "succeeded",
@@ -339,6 +340,7 @@ states:
         operation => operation.name === ENQUEUE_AGENT_CHILD_BOOTSTRAP_ACTIVITY,
     );
     assert.match(bootstrap.input.task, /"pullRequestId": 116/);
+    assert.equal(ensure.input.config.model, "team:gpt-5.3-codex");
     assert.equal(ensure.input.config.boundAgentName, "sample-inspector");
     assert.equal(bootstrap.input.requiredTool, SUBMIT_WORKFLOW_RESULT_TOOL);
     assert.deepEqual(ensure.input.config.toolNames, [SUBMIT_WORKFLOW_RESULT_TOOL]);
@@ -456,6 +458,7 @@ test("dispatches a named agent and waits for its bound workflow result", async (
         sessionId: "workflow-agent-1",
         definition,
         inputs: { pullRequestId: 42 },
+        model: "team:gpt-5.3-codex",
     }, {
         acceptWorkflowExecution: async input => acceptedResults.push(input),
     }, {
@@ -491,6 +494,7 @@ test("dispatches a named agent and waits for its bound workflow result", async (
     assert.equal(ensure.tag, AGENT_CHILD_BOOTSTRAP_CAPABILITY);
     assert.equal(ensure.input.childSessionId, "child-1");
     assert.equal(ensure.input.parentSessionId, "workflow-agent-1");
+    assert.equal(ensure.input.config.model, "team:gpt-5.3-codex");
     assert.deepEqual(ensure.input.config.toolNames, [SUBMIT_WORKFLOW_RESULT_TOOL]);
     assert.deepEqual(ensure.input.config.childContract, {
         kind: "workflow-state-execution",

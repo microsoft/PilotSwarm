@@ -597,6 +597,14 @@ export type WorkflowDefinitionSource =
 export interface WorkflowSessionConfig {
     definition: WorkflowDefinitionSource;
     inputs?: Record<string, unknown>;
+    model?: string;
+    /**
+     * The rest of the model selection. Carried with `model` so an inherited or
+     * resolved binding keeps its effort and context tier instead of silently
+     * falling back to the descriptor defaults at each agent state.
+     */
+    reasoningEffort?: ReasoningEffort | null;
+    contextTier?: import("./model-providers.js").ContextTier | null;
     sessionId?: string;
     parentSessionId?: string;
     owner?: SessionOwnerInfo | null;
@@ -607,6 +615,7 @@ export interface WorkflowSessionConfig {
 export interface WorkflowStartRequest {
     definitionId: string;
     inputs?: Record<string, unknown>;
+    model?: string;
     idempotencyKey: string;
     groupId?: string | null;
     visibility?: "private" | "shared_read" | "shared_write" | null;

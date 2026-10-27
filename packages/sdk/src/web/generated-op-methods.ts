@@ -1715,6 +1715,7 @@ export interface ManagementOps {
     startWorkflow(params: {
         definitionId?: any;
         inputs?: any;
+        model?: any;
         idempotencyKey?: any;
         groupId?: any;
         visibility?: any;

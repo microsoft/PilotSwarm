@@ -423,6 +423,13 @@ export interface WorkflowAdmissionRecord {
     visibility: SessionVisibility | null;
     rerunReason: string | null;
     orchestrationId: string;
+    /**
+     * The model reference this execution was admitted with, as the caller
+     * asked for it. A start rebuilds the run from this, never from the request
+     * that happened to arrive last: a logical duplicate recovering an earlier
+     * admission must not substitute its own model.
+     */
+    requestedModel: string | null;
     created: boolean;
     deduplicated: boolean;
     needsStart: boolean;
@@ -1605,7 +1612,19 @@ export interface SessionCatalog {
         forceRerun: boolean;
         rerunReason?: string | null;
         isAdmin: boolean;
+        requestedModel?: string | null;
     }): Promise<WorkflowAdmissionRecord>;
+
+    /**
+     * The owner of the most recent admitted attempt for one logical entity, or
+     * null when none exists. A forced rerun runs as that owner rather than as
+     * the caller, so anything validated per-owner before admission must be
+     * validated against this.
+     */
+    latestWorkflowAdmissionOwner?(
+        definitionId: string,
+        primaryKeySha256: string,
+    ): Promise<SessionOwnerInfo | null>;
 
     /** Mark a reserved workflow admission started after idempotent Duroxide start. */
     markWorkflowAdmissionStarted(sessionId: string, orchestrationId: string): Promise<void>;
@@ -3117,13 +3136,14 @@ export class PgSessionCatalog implements SessionCatalog {
         forceRerun: boolean;
         rerunReason?: string | null;
         isAdmin: boolean;
+        requestedModel?: string | null;
     }): Promise<WorkflowAdmissionRecord> {
         let rows: any[];
         try {
             ({ rows } = await this.pool.query(
                 `SELECT * FROM ${this.sql.fn.admitWorkflow}(
                     $1, $2, $3::jsonb, $4::jsonb, $5, $6, $7, $8, $9,
-                    $10, $11, $12, $13, $14, $15, $16, $17
+                    $10, $11, $12, $13, $14, $15, $16, $17, $18
                 )`,
                 [
                     input.sessionId,
@@ -3145,6 +3165,7 @@ export class PgSessionCatalog implements SessionCatalog {
                     input.forceRerun,
                     input.rerunReason ?? null,
                     input.isAdmin,
+                    input.requestedModel ?? null,
                 ],
             ));
         } catch (error) {
@@ -3157,6 +3178,31 @@ export class PgSessionCatalog implements SessionCatalog {
             );
         }
         return rowToWorkflowAdmissionRecord(rows[0]);
+    }
+
+    /**
+     * Mirrors the lookup `cms_admit_workflow` performs to find a prior attempt:
+     * the highest attempt for this definition and primary key.
+     */
+    async latestWorkflowAdmissionOwner(
+        definitionId: string,
+        primaryKeySha256: string,
+    ): Promise<SessionOwnerInfo | null> {
+        const { rows } = await this.pool.query(
+            `SELECT owner_provider, owner_subject, owner_email, owner_display_name
+               FROM "${this.sql.schema}".workflow_admissions
+              WHERE definition_id = $1 AND primary_key_sha256 = $2
+              ORDER BY attempt DESC
+              LIMIT 1`,
+            [definitionId, primaryKeySha256],
+        );
+        if (rows.length === 0) return null;
+        return {
+            provider: rows[0].owner_provider,
+            subject: rows[0].owner_subject,
+            email: rows[0].owner_email ?? null,
+            displayName: rows[0].owner_display_name ?? null,
+        };
     }
 
     async markWorkflowAdmissionStarted(
@@ -4985,6 +5031,7 @@ function rowToWorkflowAdmissionRecord(row: any): WorkflowAdmissionRecord {
         visibility: row.visibility ?? null,
         rerunReason: row.rerun_reason ?? null,
         orchestrationId: row.orchestration_id,
+        requestedModel: row.requested_model ?? null,
         created: row.created === true,
         deduplicated: row.deduplicated === true,
         needsStart: row.needs_start === true,

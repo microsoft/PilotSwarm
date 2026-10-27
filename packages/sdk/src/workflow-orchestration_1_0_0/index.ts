@@ -31,6 +31,9 @@ export interface WorkflowOrchestrationInput {
     parentSessionId?: string;
     definition: WorkflowDefinitionSource;
     inputs: Record<string, unknown>;
+    model?: string;
+    reasoningEffort?: string;
+    contextTier?: string;
 }
 
 function workflowControllerError(message: string, code: string): Error {
@@ -165,6 +168,9 @@ export function* durableWorkflowSessionOrchestration_1_0_0(
                 executionSequence,
                 childSessionId,
                 workflowInputs: input.inputs,
+                ...(input.model ? { model: input.model } : {}),
+                ...(input.reasoningEffort ? { reasoningEffort: input.reasoningEffort } : {}),
+                ...(input.contextTier ? { contextTier: input.contextTier } : {}),
                 latestStateOutputs,
                 executionHistory,
                 state,

@@ -136,6 +136,23 @@ export function projectSerializableSessionConfig(
     };
 }
 
+/**
+ * Read an optional run-level model reference off an untrusted request.
+ *
+ * The declared type says `string`, but these values arrive straight from a
+ * JSON body, so a number or an object reaches here intact and `.trim()` would
+ * throw a TypeError the API layer can only report as a server fault. Absent
+ * and null both mean "no selection"; anything else must be a usable string.
+ */
+function normalizeRequestedModel(value: unknown, message: string): string | undefined {
+    if (value === undefined || value === null) return undefined;
+    const trimmed = typeof value === "string" ? value.trim() : "";
+    if (!trimmed) {
+        throw Object.assign(new Error(message), { code: "WORKFLOW_MODEL_INVALID", status: 400 });
+    }
+    return trimmed;
+}
+
 export class PilotSwarmClient {
     private config!: PilotSwarmClientOptions & { waitThreshold: number };
     private _catalog!: SessionCatalog;
@@ -212,13 +229,17 @@ export class PilotSwarmClient {
                 { code: "WORKFLOW_IDEMPOTENCY_KEY_INVALID" },
             );
         }
-        const definitionViewer = context.owner?.provider && context.owner?.subject
+        const owner = context.owner?.provider && context.owner?.subject
             ? context.owner
             : { ...LOCAL_DEFAULT_USER_PRINCIPAL };
+        const requestedModel = normalizeRequestedModel(
+            request.model,
+            "Workflow start model must be a non-empty model reference.",
+        );
         const visibleDefinition = this._catalog.getWorkflowDefinitionForViewer
             ? await this._catalog.getWorkflowDefinitionForViewer(
                 definitionId,
-                definitionViewer,
+                owner,
                 context.isAdmin === true,
             )
             : await this._catalog.getWorkflowDefinition(definitionId);
@@ -245,12 +266,42 @@ export class PilotSwarmClient {
                 { code: "WORKFLOW_RERUN_REQUIRED" },
             );
         }
-        const owner = context.owner?.provider && context.owner?.subject
-            ? context.owner
-            : { ...LOCAL_DEFAULT_USER_PRINCIPAL };
+        // A forced rerun does not run as the caller: admission carries the prior
+        // execution's owner forward (`CASE WHEN p_force_rerun THEN
+        // v_existing.owner_*`), so the caller is the wrong subject to validate
+        // the model against — and wrong in both directions. An administrator's
+        // own model would pass here and then fail at start, leaving an admitted
+        // attempt that never runs and that later starts deduplicate onto; a
+        // model served by the prior owner's personal provider would be refused
+        // here even though the start would have succeeded.
+        //
+        // Only an administrator may rerun an entity they do not own: for anyone
+        // else admission raises WORKFLOW_RERUN_FORBIDDEN unless they are already
+        // the prior owner, in which case the caller IS that owner and nothing is
+        // gained by looking it up. Restricting the lookup to administrators
+        // therefore costs no correctness, and it keeps this check from becoming
+        // an oracle: resolving a model against another user's identity reports
+        // MODEL_AMBIGUOUS with their personal provider names in `candidates`, or
+        // distinguishes MODEL_UNRESOLVED from WORKFLOW_RERUN_FORBIDDEN, and a
+        // 4xx body carries both back to the caller verbatim.
+        const preflightOwner = request.rerun && primaryKey?.sha256 && context.isAdmin === true
+            ? (await this._latestWorkflowAdmissionOwner(definitionId, primaryKey.sha256)) ?? owner
+            : owner;
+        // Fail fast, before admission: an unusable model must not leave an
+        // admitted-but-unstarted row behind for a caller who cannot correct it
+        // without changing the request identity.
+        const preflightSelection = requestedModel
+            ? await this._resolveWorkflowModel(requestedModel, preflightOwner)
+            : null;
         const requestSha256 = workflowCanonicalJsonSha256({
             definitionId,
             inputs,
+            // Present only when a model was asked for, so a request that names
+            // none keeps the digest it had before run-level models existed and
+            // stays retryable across the upgrade. The requested reference is
+            // hashed rather than the resolved one: request identity must not
+            // move when the provider catalog does.
+            ...(requestedModel ? { model: requestedModel } : {}),
             visibility: request.visibility ?? null,
             rerunReason,
         });
@@ -268,19 +319,56 @@ export class PilotSwarmClient {
             forceRerun: Boolean(request.rerun),
             rerunReason,
             isAdmin: context.isAdmin === true,
+            requestedModel: requestedModel ?? null,
         });
         if (admission.needsStart) {
-            await this.createWorkflowSession({
+            // Every other field below is replayed from the admission, and the
+            // model is no exception. Recovering an execution that was admitted
+            // earlier must use the model it was admitted with, not whatever the
+            // caller that happened to win the race asked for — a logical
+            // duplicate arriving under a different idempotency key never
+            // compares request digests. Resolution runs against the admitted
+            // owner, which an admin rerun can change.
+            // The preflight result may be reused only when it was computed for
+            // the same model AND the same owner the admission actually carries.
+            const admittedModel = admission.requestedModel;
+            const sameRequest = admittedModel === (requestedModel ?? null)
+                && admission.owner.provider === preflightOwner.provider
+                && admission.owner.subject === preflightOwner.subject;
+            // Resolving the admitted model reports, in a 4xx the caller can
+            // read, whether its owner may use that model and which of their
+            // providers serve it. The procedure authorizes a *fresh* cross-owner
+            // request, but an idempotency replay returns the stored admission
+            // without re-checking: a caller whose administrator rights were
+            // removed after admission could still replay their own key and read
+            // the owner's current provider names. Resolve as another owner only
+            // while still entitled to act for them.
+            const callerOwnsAdmission = admission.owner.provider === owner.provider
+                && admission.owner.subject === owner.subject;
+            if (admittedModel && !sameRequest
+                && !callerOwnsAdmission && context.isAdmin !== true) {
+                throw Object.assign(
+                    new Error("This workflow execution belongs to another user."),
+                    { code: "WORKFLOW_RERUN_FORBIDDEN", status: 403 },
+                );
+            }
+            const runSelection = admittedModel
+                ? (sameRequest && preflightSelection
+                    ? preflightSelection
+                    : await this._resolveWorkflowModel(admittedModel, admission.owner))
+                : null;
+            await this._createWorkflowSession({
                 sessionId: admission.sessionId,
                 definition: {
                     kind: "registered",
                     definitionId: admission.definitionId,
                 },
                 inputs: admission.inputs,
+                ...(admittedModel ? { model: admittedModel } : {}),
                 owner: admission.owner,
                 groupId: admission.groupId,
                 visibility: admission.visibility,
-            });
+            }, runSelection);
             await this._catalog.markWorkflowAdmissionStarted(
                 admission.sessionId,
                 admission.orchestrationId,
@@ -309,9 +397,48 @@ export class PilotSwarmClient {
         config: WorkflowSessionConfig,
     ): Promise<WorkflowSession<TResult>> {
         if (!this.duroxideClient) throw new Error("Not started.");
+        const requestedModel = normalizeRequestedModel(
+            config.model,
+            "Workflow session model must be a non-empty model reference.",
+        );
+        const resolvedModel = requestedModel
+            ? await this._resolveWorkflowModel(
+                requestedModel,
+                config.owner ?? null,
+                config.reasoningEffort,
+                config.contextTier,
+            )
+            : null;
+        return this._createWorkflowSession(config, resolvedModel);
+    }
+
+    private async _createWorkflowSession<TResult = unknown>(
+        config: WorkflowSessionConfig,
+        resolvedModel: RuntimeModelSelection | null,
+    ): Promise<WorkflowSession<TResult>> {
         const sessionId = config.sessionId ?? crypto.randomUUID();
+        const model = resolvedModel?.model ?? config.model?.trim();
+        // A model selection is a tuple everywhere else in the platform.
+        // Persisting only the name leaves the row looking correct while every
+        // agent state re-resolves the effort and context tier from descriptor
+        // defaults — the displayed model is right and the behaviour is not.
+        const reasoningEffort = (resolvedModel?.reasoning ?? config.reasoningEffort
+            ?? undefined) as ManagedSessionConfig["reasoningEffort"];
+        const contextTier = (resolvedModel?.context ?? config.contextTier
+            ?? undefined) as ManagedSessionConfig["contextTier"];
+        const runModel = model
+            ? {
+                model,
+                ...(reasoningEffort ? { reasoningEffort } : {}),
+                ...(contextTier ? { contextTier } : {}),
+            }
+            : {};
         await this._catalog.createSession(sessionId, {
             sessionKind: "workflow",
+            ...runModel,
+            ...(resolvedModel?.source
+                ? { modelResolutionSource: resolvedModel.source }
+                : {}),
             parentSessionId: config.parentSessionId,
             owner: config.owner ?? null,
             groupId: config.groupId ?? null,
@@ -320,9 +447,21 @@ export class PilotSwarmClient {
                 workflow: {
                     definition: config.definition,
                     inputs: config.inputs ?? {},
+                    ...runModel,
                 },
             },
         });
+        if (model && resolvedModel?.source) {
+            // Best effort, exactly as the conversational paths treat it: the
+            // run is already durable, and losing the audit line must not fail
+            // the start.
+            try {
+                await this._catalog.recordEvents?.(sessionId, [{
+                    eventType: "session.model_resolved",
+                    data: { model, source: resolvedModel.source },
+                }]);
+            } catch { /* audit only */ }
+        }
         const orchestrationId = `session-${sessionId}`;
         await this.duroxideClient.startOrchestrationVersioned(
             orchestrationId,
@@ -332,6 +471,7 @@ export class PilotSwarmClient {
                 ...(config.parentSessionId ? { parentSessionId: config.parentSessionId } : {}),
                 definition: config.definition,
                 inputs: config.inputs ?? {},
+                ...runModel,
             },
             WORKFLOW_SESSION_LATEST_VERSION,
         );
@@ -849,6 +989,53 @@ export class PilotSwarmClient {
 
         this.started = true;
         trace("[client] start complete");
+    }
+
+    /**
+     * The owner a forced rerun will actually run as.
+     *
+     * Optional on the catalog interface: a deployment-supplied catalog that
+     * does not implement it falls back to the caller, which is the behaviour
+     * this check replaces rather than a new risk. The built-in PostgreSQL
+     * catalog always implements it.
+     */
+    private async _latestWorkflowAdmissionOwner(
+        definitionId: string,
+        primaryKeySha256: string,
+    ): Promise<SessionOwnerInfo | null> {
+        if (!this._catalog.latestWorkflowAdmissionOwner) return null;
+        return await this._catalog.latestWorkflowAdmissionOwner(definitionId, primaryKeySha256);
+    }
+
+    /**
+     * Resolve a run-level workflow model, or refuse to guess.
+     *
+     * `_resolveCreationModel` answers null when the catalog carries no provider
+     * store. A conversational session tolerates that and keeps the raw string,
+     * but a workflow start tells the caller it validated the reference before
+     * persisting it — and the database backstop in `createSession` is itself
+     * gated on a resolution source, so an unresolved value would slip past both
+     * checks into the orchestration input and every agent state.
+     */
+    private async _resolveWorkflowModel(
+        model: string,
+        owner: SessionOwnerInfo | null,
+        reasoningEffort?: ManagedSessionConfig["reasoningEffort"],
+        contextTier?: ManagedSessionConfig["contextTier"],
+    ): Promise<RuntimeModelSelection> {
+        const resolved = await this._resolveCreationModel(
+            { model, owner, reasoningEffort, contextTier },
+            false,
+        );
+        if (!resolved?.model) {
+            throw Object.assign(
+                new Error(
+                    "Workflow model selection requires a provider catalog that can resolve the model reference.",
+                ),
+                { code: "WORKFLOW_MODEL_UNRESOLVABLE", status: 503 },
+            );
+        }
+        return resolved;
     }
 
     private async _resolveCreationModel(

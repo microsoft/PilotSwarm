@@ -3,8 +3,10 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { createHash } from "node:crypto";
+import { PilotSwarmClient } from "../../dist/client.js";
 import { createSessionManagerProxy, createSessionProxy, registerActivities } from "../../dist/session-proxy.js";
 import { routeHandoffActivity, AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY } from "../../dist/activity-routing.js";
+import { handleSubAgentAction } from "../../dist/orchestration/agents.js";
 import { DURABLE_SESSION_ORCHESTRATION_REGISTRY } from "../../dist/orchestration-registry.js";
 import {
     ENQUEUE_AGENT_CHILD_BOOTSTRAP_ACTIVITY,
@@ -189,6 +191,183 @@ test("workers register legacy and routed workflow child activities", () => {
     assert.equal(typeof handlers.get("spawnWorkflowSessionV1"), "function");
     assert.equal(typeof handlers.get(ENSURE_AGENT_CHILD_SESSION_ACTIVITY), "function");
     assert.equal(typeof handlers.get(ENQUEUE_AGENT_CHILD_BOOTSTRAP_ACTIVITY), "function");
+});
+
+test("workflow child activities inherit the parent session model", async () => {
+    const handlers = new Map();
+    const created = [];
+    const originalStart = PilotSwarmClient.prototype.start;
+    const originalCreateWorkflowSession = PilotSwarmClient.prototype.createWorkflowSession;
+    const originalStop = PilotSwarmClient.prototype.stop;
+    PilotSwarmClient.prototype.start = async function () {};
+    PilotSwarmClient.prototype.createWorkflowSession = async function (config) {
+        created.push(config);
+        return {};
+    };
+    PilotSwarmClient.prototype.stop = async function () {};
+    const parent = {
+        sessionKind: "agent",
+        parentSessionId: null,
+        isSystem: false,
+        model: "team:gpt-5.3-codex",
+        reasoningEffort: "high",
+        contextTier: "long_context",
+        owner: {
+            provider: "entra",
+            subject: "user-1",
+            email: "user@example.test",
+            displayName: "User One",
+        },
+    };
+    const reads = [];
+    const catalog = {
+        async getSession(sessionId) {
+            reads.push(sessionId);
+            if (sessionId === "parent") return parent;
+            return null;
+        },
+    };
+
+    try {
+        registerActivities(
+            { registerActivity: (name, handler) => handlers.set(name, handler) },
+            {},
+            null,
+            undefined,
+            catalog,
+            undefined,
+            "postgres://unused",
+        );
+        const result = await handlers.get("spawnWorkflowSessionV1")(
+            { traceInfo() {} },
+            {
+                parentSessionId: "parent",
+                childSessionId: "workflow-1",
+                definition: { kind: "registered", definitionId: "definition-1" },
+                inputs: { target: "staging" },
+            },
+        );
+
+        assert.equal(result, "workflow-1");
+        assert.equal(created[0].model, "team:gpt-5.3-codex");
+        // The whole selection travels, not just the name: inheriting the model
+        // alone would leave the child at the descriptor's default effort while
+        // still displaying the parent's model.
+        assert.equal(created[0].reasoningEffort, "high");
+        assert.equal(created[0].contextTier, "long_context");
+        assert.deepEqual(created[0].owner, parent.owner);
+        assert.equal(
+            reads.filter(id => id === "parent").length,
+            1,
+            "the parent row is read once, not once per inherited field",
+        );
+    } finally {
+        PilotSwarmClient.prototype.start = originalStart;
+        PilotSwarmClient.prototype.createWorkflowSession = originalCreateWorkflowSession;
+        PilotSwarmClient.prototype.stop = originalStop;
+    }
+});
+
+test("an inherited model that no longer resolves falls back instead of failing the spawn", async () => {
+    // The parent's binding is re-resolved against the *effective* spawn owner,
+    // which the ancestor walk can move. A personal provider, a bare alias that
+    // has since become ambiguous, or a retired model must not take the
+    // parent's turn down with it.
+    const handlers = new Map();
+    const attempts = [];
+    const originalStart = PilotSwarmClient.prototype.start;
+    const originalCreateWorkflowSession = PilotSwarmClient.prototype.createWorkflowSession;
+    const originalStop = PilotSwarmClient.prototype.stop;
+    PilotSwarmClient.prototype.start = async function () {};
+    PilotSwarmClient.prototype.createWorkflowSession = async function (config) {
+        attempts.push(config);
+        if (config.model) {
+            throw Object.assign(
+                new Error(`No usable provider serves model "${config.model}".`),
+                { code: "MODEL_UNRESOLVED" },
+            );
+        }
+        return {};
+    };
+    PilotSwarmClient.prototype.stop = async function () {};
+    const catalog = {
+        async getSession(sessionId) {
+            if (sessionId === "parent") {
+                return {
+                    sessionKind: "agent",
+                    parentSessionId: null,
+                    isSystem: false,
+                    model: "alice-ghcp:claude-opus-5",
+                    owner: { provider: "entra", subject: "user-1" },
+                };
+            }
+            return null;
+        },
+    };
+
+    try {
+        registerActivities(
+            { registerActivity: (name, handler) => handlers.set(name, handler) },
+            {},
+            null,
+            undefined,
+            catalog,
+            undefined,
+            "postgres://unused",
+        );
+        const result = await handlers.get("spawnWorkflowSessionV1")(
+            { traceInfo() {} },
+            {
+                parentSessionId: "parent",
+                childSessionId: "workflow-1",
+                definition: { kind: "registered", definitionId: "definition-1" },
+                inputs: {},
+            },
+        );
+
+        assert.equal(result, "workflow-1");
+        assert.equal(attempts.length, 2, "it retries once without the inherited model");
+        assert.equal(attempts[0].model, "alice-ghcp:claude-opus-5");
+        assert.equal(attempts[1].model, undefined);
+    } finally {
+        PilotSwarmClient.prototype.start = originalStart;
+        PilotSwarmClient.prototype.createWorkflowSession = originalCreateWorkflowSession;
+        PilotSwarmClient.prototype.stop = originalStop;
+    }
+});
+
+test("a workflow child failure is reported to the parent instead of failing its turn", async () => {
+    // spawn_agent already degrades this way; spawn_workflow yielded the
+    // activity bare, so a creation failure escaped the turn's error handling.
+    const runtime = {
+        ctx: {
+            newGuid: () => "child-1",
+            traceInfo: () => {},
+        },
+        input: { sessionId: "parent" },
+        state: { subWorkflows: [], pendingPrompt: undefined },
+        manager: {
+            spawnWorkflowSession: () => {
+                throw new Error("provider catalog unavailable");
+            },
+        },
+    };
+    const generator = handleSubAgentAction(runtime, {
+        type: "spawn_workflow",
+        definition: { kind: "registered", definitionId: "definition-1" },
+        inputs: {},
+    });
+
+    let step = generator.next();
+    while (!step.done) step = generator.next("child-1");
+
+    assert.equal(step.value, true, "the turn continues");
+    assert.equal(runtime.state.subWorkflows.length, 0, "no child is tracked");
+    assert.match(
+        String(runtime.state.pendingPrompt),
+        /spawn_workflow failed/,
+        "the session is told the spawn failed",
+    );
 });
 
 test("routing fails closed if the SDK cannot express capability tags", () => {

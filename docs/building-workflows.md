@@ -390,6 +390,7 @@ Content-Type: application/json
   "inputs": {
     "changeId": "change-42"
   },
+  "model": "team:gpt-5.3-codex",
   "idempotencyKey": "approval-change-42"
 }
 ```
@@ -400,6 +401,7 @@ The SDK exposes the same operation:
 const started = await client.startWorkflow({
   definitionId,
   inputs: { changeId: "change-42" },
+  model: "team:gpt-5.3-codex",
   idempotencyKey: "approval-change-42",
   visibility: "private"
 });
@@ -407,10 +409,15 @@ const started = await client.startWorkflow({
 console.log(started.sessionId);
 ```
 
+`model` is optional. When supplied, PilotSwarm validates it for the caller,
+persists the resolved provider-qualified model on the workflow session, and
+uses it for every agent state in that run. The registered workflow definition
+remains model-independent.
+
 An idempotency key identifies a retry of the same start request. Reusing it for
-different inputs is rejected. If the workflow declares `identity.primaryKey`,
-PilotSwarm also deduplicates starts for the same logical entity independently
-from request idempotency.
+different inputs or a different model is rejected. If the workflow declares
+`identity.primaryKey`, PilotSwarm also deduplicates starts for the same logical
+entity independently from request idempotency.
 
 To intentionally rerun a workflow with a primary key, include a reason:
 
@@ -452,6 +459,10 @@ registered definition `<definition-id>` and pass the change ID as
 Use `check_workflows` when you can continue other work while it runs. Use
 `wait_for_workflows` when you cannot proceed until the workflow completes.
 ```
+
+Workflows started through `spawn_workflow` inherit the calling session's
+persisted model. The tool does not expose a separate model override, which
+keeps the user-selected parent model consistent across the workflow run.
 
 `spawn_workflow` creates a child workflow session and returns its session ID in
 the agent's follow-up context. `check_workflows` reports current statuses and

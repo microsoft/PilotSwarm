@@ -153,6 +153,28 @@ start admission enforces two independent identities:
 Explicit reruns create a new attempt while preserving the logical workflow
 identity and owner.
 
+### Model selection belongs to the workflow run
+
+Registered definitions remain model-independent. A direct workflow start may
+select one optional model for the run, and every agent state receives that
+persisted provider-qualified model. The model reference the caller asked for
+participates in the request-idempotency hash, so one idempotency key cannot
+silently change models. A request that names no model hashes exactly as it did
+before run-level models existed, so retries spanning the upgrade still match.
+
+The requested reference is also stored on the admission row. A start always
+rebuilds the run from the admitted configuration, so a logical duplicate that
+recovers an execution admitted earlier cannot substitute its own model. The
+consequence is deliberate: if the admitted model stops resolving, that entity
+will not start until someone reruns it with a new one.
+
+A workflow spawned by a conversational parent inherits the parent's persisted
+model, reasoning effort and context tier in the activity layer. The durable
+`spawn_workflow` schedule is unchanged, which preserves replay compatibility for
+existing parent-session histories. Inheritance is best effort: if the parent's
+binding no longer resolves for the child's effective owner, the child is created
+with default resolution rather than failing the parent's turn.
+
 ### Orchestration versions define the durable schedule
 
 Registered definitions execute through `workflow-session-v1@1.0.0`. The

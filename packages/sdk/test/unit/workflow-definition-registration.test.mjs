@@ -266,6 +266,7 @@ test("catalog admits and marks a workflow start through migration procedures", a
         visibility: "private",
         rerunReason: null,
         orchestrationId: "session-workflow-1",
+        requestedModel: null,
         created: true,
         deduplicated: false,
         needsStart: true,

@@ -217,3 +217,103 @@ test("0090: active workflows prevent agent package deletion", () => {
         /session\.state NOT IN \('completed', 'failed', 'error', 'cancelled'\)/,
     );
 });
+
+/**
+ * 0093 rewrites cms_admit_workflow wholesale to add the run-level model, so
+ * the whole function was retyped. That is exactly how a guard, a lock or a
+ * carry-forward goes missing without any test noticing: the unit suite drives
+ * admission through a recording fake, so this SQL never executes here.
+ * These assertions pin the behaviour the rewrite must preserve.
+ */
+test("0093: the admission rewrite keeps every guard the original had", () => {
+    const migration = migrations.find((m) => m.version === "0093");
+    assert.ok(migration, "migration 0093 must be registered");
+    assert.equal(migration.name, "workflow_admission_run_config");
+
+    // The column must exist before the function body references it.
+    const addColumn = migration.sql.indexOf("ADD COLUMN IF NOT EXISTS requested_model");
+    const createFn = migration.sql.indexOf("CREATE OR REPLACE FUNCTION");
+    assert.ok(addColumn > -1, "the requested_model column must be added");
+    assert.ok(addColumn < createFn, "the column must be added before the function uses it");
+
+    // Replacing a function cannot change its return type, so the 17-argument
+    // original must be dropped by its exact signature first.
+    const drop = migration.sql.match(/DROP FUNCTION IF EXISTS[^;]*;/s);
+    assert.ok(drop, "the prior signature must be dropped");
+    const droppedArgs = drop[0]
+        .slice(drop[0].indexOf("(") + 1, drop[0].lastIndexOf(")"))
+        .split(",")
+        .map((a) => a.trim())
+        .filter(Boolean);
+    assert.equal(droppedArgs.length, 17, "the dropped signature is the 17-argument original");
+
+    // Carry-forward on a forced rerun: a new attempt keeps the original
+    // execution's owner and group placement.
+    for (const column of [
+        "owner_provider",
+        "owner_subject",
+        "owner_email",
+        "owner_display_name",
+        "group_id",
+    ]) {
+        assert.match(
+            migration.sql,
+            new RegExp(`THEN v_existing\\.${column} ELSE p_${column} END`),
+            `a forced rerun must carry ${column} forward`,
+        );
+    }
+
+    // The admission's orchestration identity must stay the one the client
+    // actually starts, "session-<sessionId>".
+    assert.match(migration.sql, /'session-' \|\| p_session_id/);
+    assert.doesNotMatch(migration.sql, /'workflow-' \|\| p_session_id/);
+
+    // Every refusal the original raised.
+    for (const code of [
+        "WORKFLOW_ADMISSION_INVALID",
+        "WORKFLOW_DEFINITION_NOT_FOUND",
+        "WORKFLOW_PRIMARY_KEY_INVALID",
+        "WORKFLOW_RERUN_REASON_REQUIRED",
+        "WORKFLOW_IDEMPOTENCY_CONFLICT",
+        "WORKFLOW_RERUN_REQUIRED",
+        "WORKFLOW_RERUN_FORBIDDEN",
+        "WORKFLOW_DUPLICATE_CONFLICT",
+    ]) {
+        assert.match(migration.sql, new RegExp(code), `${code} must still be raised`);
+    }
+
+    // Both serialization points. Compared as plain substrings: the separator
+    // is an escaped newline inside a template literal, and matching it through
+    // a regex invites getting the escaping wrong rather than the SQL.
+    assert.ok(
+        migration.sql.includes("PERFORM pg_advisory_xact_lock(")
+        && migration.sql.includes("hashtextextended(p_owner_provider ||")
+        && migration.sql.includes("|| p_idempotency_key, 0)"),
+        "the per-idempotency-key advisory lock must survive",
+    );
+    assert.ok(
+        migration.sql.includes("hashtextextended(p_definition_id ||")
+        && migration.sql.includes("|| p_primary_key_sha256, 0)"),
+        "the per-logical-entity advisory lock must survive",
+    );
+
+    // And the new column is both stored and returned.
+    assert.match(migration.sql, /rerun_reason, orchestration_id, requested_model/);
+    assert.match(migration.sql, /v_existing\.orchestration_id, v_existing\.requested_model/);
+
+    // A rolling deployment runs both code versions against one database, so
+    // the dropped 17-argument signature must come back as a forward.
+    const definitions = [...migration.sql.matchAll(
+        /CREATE OR REPLACE FUNCTION "shape_check"\.cms_admit_workflow\(([^)]*)\)/gs,
+    )];
+    assert.equal(definitions.length, 2, "both the new and the compatibility signature are defined");
+    const arity = definitions.map(
+        (m) => m[1].split(",").map((a) => a.trim()).filter(Boolean).length,
+    );
+    assert.deepEqual(arity, [18, 17], "the 18-argument form first, then the 17-argument forward");
+    assert.match(
+        migration.sql,
+        /p_is_admin, NULL::TEXT/,
+        "the compatibility forward admits with no model",
+    );
+});
