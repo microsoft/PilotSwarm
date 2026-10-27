@@ -249,12 +249,6 @@ export class PilotSwarmClient {
         );
         const inputs = request.inputs ?? {};
         validateWorkflowInputs(definition.compiledManifest, inputs);
-        // Fail fast, before admission: an unusable model must not leave an
-        // admitted-but-unstarted row behind for a caller who cannot correct it
-        // without changing the request identity.
-        const preflightSelection = requestedModel
-            ? await this._resolveWorkflowModel(requestedModel, owner)
-            : null;
         const primaryKey = resolveWorkflowPrimaryKey(
             definition.compiledManifest,
             inputs,
@@ -272,6 +266,33 @@ export class PilotSwarmClient {
                 { code: "WORKFLOW_RERUN_REQUIRED" },
             );
         }
+        // A forced rerun does not run as the caller: admission carries the prior
+        // execution's owner forward (`CASE WHEN p_force_rerun THEN
+        // v_existing.owner_*`), so the caller is the wrong subject to validate
+        // the model against — and wrong in both directions. An administrator's
+        // own model would pass here and then fail at start, leaving an admitted
+        // attempt that never runs and that later starts deduplicate onto; a
+        // model served by the prior owner's personal provider would be refused
+        // here even though the start would have succeeded.
+        //
+        // Only an administrator may rerun an entity they do not own: for anyone
+        // else admission raises WORKFLOW_RERUN_FORBIDDEN unless they are already
+        // the prior owner, in which case the caller IS that owner and nothing is
+        // gained by looking it up. Restricting the lookup to administrators
+        // therefore costs no correctness, and it keeps this check from becoming
+        // an oracle: resolving a model against another user's identity reports
+        // MODEL_AMBIGUOUS with their personal provider names in `candidates`, or
+        // distinguishes MODEL_UNRESOLVED from WORKFLOW_RERUN_FORBIDDEN, and a
+        // 4xx body carries both back to the caller verbatim.
+        const preflightOwner = request.rerun && primaryKey?.sha256 && context.isAdmin === true
+            ? (await this._latestWorkflowAdmissionOwner(definitionId, primaryKey.sha256)) ?? owner
+            : owner;
+        // Fail fast, before admission: an unusable model must not leave an
+        // admitted-but-unstarted row behind for a caller who cannot correct it
+        // without changing the request identity.
+        const preflightSelection = requestedModel
+            ? await this._resolveWorkflowModel(requestedModel, preflightOwner)
+            : null;
         const requestSha256 = workflowCanonicalJsonSha256({
             definitionId,
             inputs,
@@ -308,10 +329,29 @@ export class PilotSwarmClient {
             // duplicate arriving under a different idempotency key never
             // compares request digests. Resolution runs against the admitted
             // owner, which an admin rerun can change.
+            // The preflight result may be reused only when it was computed for
+            // the same model AND the same owner the admission actually carries.
             const admittedModel = admission.requestedModel;
             const sameRequest = admittedModel === (requestedModel ?? null)
-                && admission.owner.provider === owner.provider
+                && admission.owner.provider === preflightOwner.provider
+                && admission.owner.subject === preflightOwner.subject;
+            // Resolving the admitted model reports, in a 4xx the caller can
+            // read, whether its owner may use that model and which of their
+            // providers serve it. The procedure authorizes a *fresh* cross-owner
+            // request, but an idempotency replay returns the stored admission
+            // without re-checking: a caller whose administrator rights were
+            // removed after admission could still replay their own key and read
+            // the owner's current provider names. Resolve as another owner only
+            // while still entitled to act for them.
+            const callerOwnsAdmission = admission.owner.provider === owner.provider
                 && admission.owner.subject === owner.subject;
+            if (admittedModel && !sameRequest
+                && !callerOwnsAdmission && context.isAdmin !== true) {
+                throw Object.assign(
+                    new Error("This workflow execution belongs to another user."),
+                    { code: "WORKFLOW_RERUN_FORBIDDEN", status: 403 },
+                );
+            }
             const runSelection = admittedModel
                 ? (sameRequest && preflightSelection
                     ? preflightSelection
@@ -949,6 +989,22 @@ export class PilotSwarmClient {
 
         this.started = true;
         trace("[client] start complete");
+    }
+
+    /**
+     * The owner a forced rerun will actually run as.
+     *
+     * Optional on the catalog interface: a deployment-supplied catalog that
+     * does not implement it falls back to the caller, which is the behaviour
+     * this check replaces rather than a new risk. The built-in PostgreSQL
+     * catalog always implements it.
+     */
+    private async _latestWorkflowAdmissionOwner(
+        definitionId: string,
+        primaryKeySha256: string,
+    ): Promise<SessionOwnerInfo | null> {
+        if (!this._catalog.latestWorkflowAdmissionOwner) return null;
+        return await this._catalog.latestWorkflowAdmissionOwner(definitionId, primaryKeySha256);
     }
 
     /**

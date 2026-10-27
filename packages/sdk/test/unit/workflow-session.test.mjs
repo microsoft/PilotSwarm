@@ -355,6 +355,197 @@ test("a recovery start uses the admitted model, not the later caller's", async (
     assert.equal(started[0][2].model, "team:gpt-5.3-codex");
 });
 
+test("a forced rerun validates the model against the owner it will run as", async () => {
+    // Admission carries the prior execution's owner forward on a forced rerun,
+    // so an administrator reruning someone else's entity does not run as
+    // themselves. Validating against the caller would admit an attempt that
+    // then fails to start, and that later starts deduplicate onto.
+    const resolvedFor = [];
+    const client = new PilotSwarmClient({});
+    client.duroxideClient = {
+        startOrchestrationVersioned: async () => {},
+    };
+    client._resolveCreationModel = async config => {
+        resolvedFor.push(config.owner);
+        // Only the prior owner may use this model; the admin may not.
+        if (config.owner?.subject !== "prior-owner") {
+            throw Object.assign(
+                new Error(`No usable provider serves model "${config.model}".`),
+                { code: "MODEL_UNRESOLVED" },
+            );
+        }
+        return { model: `team:${config.model}`, source: "explicit" };
+    };
+    const priorOwner = {
+        provider: "entra",
+        subject: "prior-owner",
+        email: "prior@example.test",
+        displayName: "Prior Owner",
+    };
+    let admitted = false;
+    client._catalog = {
+        getWorkflowDefinition: async definitionId => registeredDefinition(
+            definitionId,
+            { changeId: { type: "integer", required: true } },
+            { primaryKey: ["inputs.changeId"] },
+        ),
+        latestWorkflowAdmissionOwner: async () => priorOwner,
+        admitWorkflow: async input => {
+            admitted = true;
+            return {
+                sessionId: "workflow-rerun",
+                definitionId: input.definitionId,
+                primaryKeyValues: input.primaryKeyValues,
+                primaryKeySha256: input.primaryKeySha256,
+                attempt: 2,
+                inputs: input.inputs,
+                parentSessionId: null,
+                // Admission carried the prior owner forward.
+                owner: priorOwner,
+                groupId: null,
+                visibility: null,
+                rerunReason: input.rerunReason,
+                orchestrationId: "session-workflow-rerun",
+                requestedModel: input.requestedModel,
+                created: true,
+                deduplicated: false,
+                needsStart: true,
+            };
+        },
+        createSession: async () => {},
+        recordEvents: async () => {},
+        updateSession: async () => {},
+        getChildOutcome: async () => null,
+        markWorkflowAdmissionStarted: async () => {},
+    };
+
+    await client._startWorkflow({
+        definitionId: "definition-1",
+        inputs: { changeId: 9 },
+        model: "gpt-5.3-codex",
+        idempotencyKey: "rerun-1",
+        rerun: { reason: "retry after fix" },
+    }, {
+        owner: { provider: "entra", subject: "admin-1" },
+        isAdmin: true,
+    });
+
+    assert.ok(admitted, "the rerun is admitted");
+    assert.equal(
+        resolvedFor[0]?.subject,
+        "prior-owner",
+        "the preflight resolves against the prior owner, not the calling admin",
+    );
+});
+
+test("a non-admin rerun never resolves a model against another user", async () => {
+    // Resolving against someone else's identity is an oracle: MODEL_AMBIGUOUS
+    // returns their personal provider names in `candidates`, and MODEL_UNRESOLVED
+    // versus WORKFLOW_RERUN_FORBIDDEN reveals whether they may use a model. Only
+    // an administrator may rerun an entity they do not own, so for anyone else
+    // the prior owner must never be consulted.
+    const resolvedFor = [];
+    const lookups = [];
+    const client = new PilotSwarmClient({});
+    client.duroxideClient = { startOrchestrationVersioned: async () => {} };
+    client._resolveCreationModel = async config => {
+        resolvedFor.push(config.owner);
+        return { model: `team:${config.model}`, source: "explicit" };
+    };
+    const caller = { provider: "entra", subject: "user-1" };
+    client._catalog = {
+        getWorkflowDefinition: async definitionId => registeredDefinition(
+            definitionId,
+            { changeId: { type: "integer", required: true } },
+            { primaryKey: ["inputs.changeId"] },
+        ),
+        latestWorkflowAdmissionOwner: async (...args) => {
+            lookups.push(args);
+            return { provider: "entra", subject: "someone-else" };
+        },
+        admitWorkflow: async input => ({
+            sessionId: "workflow-x", definitionId: input.definitionId,
+            primaryKeyValues: input.primaryKeyValues, primaryKeySha256: input.primaryKeySha256,
+            attempt: 2, inputs: input.inputs, parentSessionId: null,
+            owner: input.owner, groupId: null, visibility: null,
+            rerunReason: input.rerunReason, orchestrationId: "session-workflow-x",
+            requestedModel: input.requestedModel,
+            created: true, deduplicated: false, needsStart: true,
+        }),
+        createSession: async () => {},
+        recordEvents: async () => {},
+        updateSession: async () => {},
+        getChildOutcome: async () => null,
+        markWorkflowAdmissionStarted: async () => {},
+    };
+
+    await client._startWorkflow({
+        definitionId: "definition-1",
+        inputs: { changeId: 9 },
+        model: "gpt-5.3-codex",
+        idempotencyKey: "rerun-2",
+        rerun: { reason: "retry" },
+    }, { owner: caller, isAdmin: false });
+
+    assert.equal(lookups.length, 0, "a non-admin never looks up the prior owner");
+    assert.equal(
+        resolvedFor[0]?.subject,
+        "user-1",
+        "a non-admin resolves only against themselves",
+    );
+});
+
+test("replaying another owner's admission without rights never resolves their model", async () => {
+    // An idempotency replay returns the stored admission without re-checking
+    // authorization. Someone whose administrator rights were removed after the
+    // admission could otherwise replay their own key and have the model
+    // resolved against the execution's owner, reading that owner's current
+    // provider names out of the resulting 4xx.
+    const resolvedFor = [];
+    const client = new PilotSwarmClient({});
+    client.duroxideClient = { startOrchestrationVersioned: async () => {} };
+    client._resolveCreationModel = async config => {
+        resolvedFor.push(config.owner);
+        return { model: `team:${config.model}`, source: "explicit" };
+    };
+    const victim = { provider: "entra", subject: "victim" };
+    client._catalog = {
+        getWorkflowDefinition: async definitionId => registeredDefinition(definitionId, {}),
+        admitWorkflow: async input => ({
+            sessionId: "workflow-replay", definitionId: input.definitionId,
+            primaryKeyValues: null, primaryKeySha256: null,
+            attempt: 1, inputs: input.inputs, parentSessionId: null,
+            // The stored admission belongs to someone else.
+            owner: victim,
+            groupId: null, visibility: null, rerunReason: null,
+            orchestrationId: "session-workflow-replay",
+            requestedModel: "victim-only-model",
+            created: false, deduplicated: true, needsStart: true,
+        }),
+        createSession: async () => {},
+        recordEvents: async () => {},
+        updateSession: async () => {},
+        getChildOutcome: async () => null,
+        markWorkflowAdmissionStarted: async () => {},
+    };
+
+    await assert.rejects(
+        () => client._startWorkflow({
+            definitionId: "definition-1",
+            inputs: {},
+            idempotencyKey: "replayed-key",
+        }, {
+            owner: { provider: "entra", subject: "former-admin" },
+            isAdmin: false,
+        }),
+        error => error.code === "WORKFLOW_RERUN_FORBIDDEN" && error.status === 403,
+    );
+    assert.ok(
+        !resolvedFor.some(o => o?.subject === "victim"),
+        "the other owner's model is never resolved for an unentitled caller",
+    );
+});
+
 test("a request without a model keeps the pre-model request digest", async () => {
     // Admission request rows written before run-level models existed must stay
     // matchable, or an unchanged retry across the upgrade is rejected as a
