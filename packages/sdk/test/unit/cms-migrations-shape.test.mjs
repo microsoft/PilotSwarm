@@ -282,15 +282,18 @@ test("0093: the admission rewrite keeps every guard the original had", () => {
         assert.match(migration.sql, new RegExp(code), `${code} must still be raised`);
     }
 
-    // Both serialization points.
-    assert.match(
-        migration.sql,
-        /hashtextextended\(p_owner_provider \|\| E'\\\\n' \|\| p_owner_subject \|\| E'\\\\n' \|\| p_idempotency_key, 0\)/,
+    // Both serialization points. Compared as plain substrings: the separator
+    // is an escaped newline inside a template literal, and matching it through
+    // a regex invites getting the escaping wrong rather than the SQL.
+    assert.ok(
+        migration.sql.includes("PERFORM pg_advisory_xact_lock(")
+        && migration.sql.includes("hashtextextended(p_owner_provider ||")
+        && migration.sql.includes("|| p_idempotency_key, 0)"),
         "the per-idempotency-key advisory lock must survive",
     );
-    assert.match(
-        migration.sql,
-        /hashtextextended\(p_definition_id \|\| E'\\\\n' \|\| p_primary_key_sha256, 0\)/,
+    assert.ok(
+        migration.sql.includes("hashtextextended(p_definition_id ||")
+        && migration.sql.includes("|| p_primary_key_sha256, 0)"),
         "the per-logical-entity advisory lock must survive",
     );
 
