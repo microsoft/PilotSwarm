@@ -266,7 +266,7 @@ export class PilotSwarmClient {
                 { code: "WORKFLOW_RERUN_REQUIRED" },
             );
         }
-        // A forced rerun does not run as the caller. Admission carries the prior
+        // A forced rerun does not run as the caller: admission carries the prior
         // execution's owner forward (`CASE WHEN p_force_rerun THEN
         // v_existing.owner_*`), so the caller is the wrong subject to validate
         // the model against — and wrong in both directions. An administrator's
@@ -274,7 +274,17 @@ export class PilotSwarmClient {
         // attempt that never runs and that later starts deduplicate onto; a
         // model served by the prior owner's personal provider would be refused
         // here even though the start would have succeeded.
-        const preflightOwner = request.rerun && primaryKey?.sha256
+        //
+        // Only an administrator may rerun an entity they do not own: for anyone
+        // else admission raises WORKFLOW_RERUN_FORBIDDEN unless they are already
+        // the prior owner, in which case the caller IS that owner and nothing is
+        // gained by looking it up. Restricting the lookup to administrators
+        // therefore costs no correctness, and it keeps this check from becoming
+        // an oracle: resolving a model against another user's identity reports
+        // MODEL_AMBIGUOUS with their personal provider names in `candidates`, or
+        // distinguishes MODEL_UNRESOLVED from WORKFLOW_RERUN_FORBIDDEN, and a
+        // 4xx body carries both back to the caller verbatim.
+        const preflightOwner = request.rerun && primaryKey?.sha256 && context.isAdmin === true
             ? (await this._latestWorkflowAdmissionOwner(definitionId, primaryKey.sha256)) ?? owner
             : owner;
         // Fail fast, before admission: an unusable model must not leave an

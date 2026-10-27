@@ -438,6 +438,63 @@ test("a forced rerun validates the model against the owner it will run as", asyn
     );
 });
 
+test("a non-admin rerun never resolves a model against another user", async () => {
+    // Resolving against someone else's identity is an oracle: MODEL_AMBIGUOUS
+    // returns their personal provider names in `candidates`, and MODEL_UNRESOLVED
+    // versus WORKFLOW_RERUN_FORBIDDEN reveals whether they may use a model. Only
+    // an administrator may rerun an entity they do not own, so for anyone else
+    // the prior owner must never be consulted.
+    const resolvedFor = [];
+    const lookups = [];
+    const client = new PilotSwarmClient({});
+    client.duroxideClient = { startOrchestrationVersioned: async () => {} };
+    client._resolveCreationModel = async config => {
+        resolvedFor.push(config.owner);
+        return { model: `team:${config.model}`, source: "explicit" };
+    };
+    const caller = { provider: "entra", subject: "user-1" };
+    client._catalog = {
+        getWorkflowDefinition: async definitionId => registeredDefinition(
+            definitionId,
+            { changeId: { type: "integer", required: true } },
+            { primaryKey: ["inputs.changeId"] },
+        ),
+        latestWorkflowAdmissionOwner: async (...args) => {
+            lookups.push(args);
+            return { provider: "entra", subject: "someone-else" };
+        },
+        admitWorkflow: async input => ({
+            sessionId: "workflow-x", definitionId: input.definitionId,
+            primaryKeyValues: input.primaryKeyValues, primaryKeySha256: input.primaryKeySha256,
+            attempt: 2, inputs: input.inputs, parentSessionId: null,
+            owner: input.owner, groupId: null, visibility: null,
+            rerunReason: input.rerunReason, orchestrationId: "session-workflow-x",
+            requestedModel: input.requestedModel,
+            created: true, deduplicated: false, needsStart: true,
+        }),
+        createSession: async () => {},
+        recordEvents: async () => {},
+        updateSession: async () => {},
+        getChildOutcome: async () => null,
+        markWorkflowAdmissionStarted: async () => {},
+    };
+
+    await client._startWorkflow({
+        definitionId: "definition-1",
+        inputs: { changeId: 9 },
+        model: "gpt-5.3-codex",
+        idempotencyKey: "rerun-2",
+        rerun: { reason: "retry" },
+    }, { owner: caller, isAdmin: false });
+
+    assert.equal(lookups.length, 0, "a non-admin never looks up the prior owner");
+    assert.equal(
+        resolvedFor[0]?.subject,
+        "user-1",
+        "a non-admin resolves only against themselves",
+    );
+});
+
 test("a request without a model keeps the pre-model request digest", async () => {
     // Admission request rows written before run-level models existed must stay
     // matchable, or an unchanged retry across the upgrade is rejected as a
