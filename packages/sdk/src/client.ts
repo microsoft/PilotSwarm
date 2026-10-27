@@ -412,10 +412,15 @@ export class PilotSwarmClient {
             },
         });
         if (model && resolvedModel?.source) {
-            await this._catalog.recordEvents(sessionId, [{
-                eventType: "session.model_resolved",
-                data: { model, source: resolvedModel.source },
-            }]).catch(() => {});
+            // Best effort, exactly as the conversational paths treat it: the
+            // run is already durable, and losing the audit line must not fail
+            // the start.
+            try {
+                await this._catalog.recordEvents?.(sessionId, [{
+                    eventType: "session.model_resolved",
+                    data: { model, source: resolvedModel.source },
+                }]);
+            } catch { /* audit only */ }
         }
         const orchestrationId = `session-${sessionId}`;
         await this.duroxideClient.startOrchestrationVersioned(
