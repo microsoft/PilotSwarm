@@ -495,6 +495,57 @@ test("a non-admin rerun never resolves a model against another user", async () =
     );
 });
 
+test("replaying another owner's admission without rights never resolves their model", async () => {
+    // An idempotency replay returns the stored admission without re-checking
+    // authorization. Someone whose administrator rights were removed after the
+    // admission could otherwise replay their own key and have the model
+    // resolved against the execution's owner, reading that owner's current
+    // provider names out of the resulting 4xx.
+    const resolvedFor = [];
+    const client = new PilotSwarmClient({});
+    client.duroxideClient = { startOrchestrationVersioned: async () => {} };
+    client._resolveCreationModel = async config => {
+        resolvedFor.push(config.owner);
+        return { model: `team:${config.model}`, source: "explicit" };
+    };
+    const victim = { provider: "entra", subject: "victim" };
+    client._catalog = {
+        getWorkflowDefinition: async definitionId => registeredDefinition(definitionId, {}),
+        admitWorkflow: async input => ({
+            sessionId: "workflow-replay", definitionId: input.definitionId,
+            primaryKeyValues: null, primaryKeySha256: null,
+            attempt: 1, inputs: input.inputs, parentSessionId: null,
+            // The stored admission belongs to someone else.
+            owner: victim,
+            groupId: null, visibility: null, rerunReason: null,
+            orchestrationId: "session-workflow-replay",
+            requestedModel: "victim-only-model",
+            created: false, deduplicated: true, needsStart: true,
+        }),
+        createSession: async () => {},
+        recordEvents: async () => {},
+        updateSession: async () => {},
+        getChildOutcome: async () => null,
+        markWorkflowAdmissionStarted: async () => {},
+    };
+
+    await assert.rejects(
+        () => client._startWorkflow({
+            definitionId: "definition-1",
+            inputs: {},
+            idempotencyKey: "replayed-key",
+        }, {
+            owner: { provider: "entra", subject: "former-admin" },
+            isAdmin: false,
+        }),
+        error => error.code === "WORKFLOW_RERUN_FORBIDDEN" && error.status === 403,
+    );
+    assert.ok(
+        !resolvedFor.some(o => o?.subject === "victim"),
+        "the other owner's model is never resolved for an unentitled caller",
+    );
+});
+
 test("a request without a model keeps the pre-model request digest", async () => {
     // Admission request rows written before run-level models existed must stay
     // matchable, or an unchanged retry across the upgrade is rejected as a

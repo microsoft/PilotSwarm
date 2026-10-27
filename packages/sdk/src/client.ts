@@ -335,6 +335,23 @@ export class PilotSwarmClient {
             const sameRequest = admittedModel === (requestedModel ?? null)
                 && admission.owner.provider === preflightOwner.provider
                 && admission.owner.subject === preflightOwner.subject;
+            // Resolving the admitted model reports, in a 4xx the caller can
+            // read, whether its owner may use that model and which of their
+            // providers serve it. The procedure authorizes a *fresh* cross-owner
+            // request, but an idempotency replay returns the stored admission
+            // without re-checking: a caller whose administrator rights were
+            // removed after admission could still replay their own key and read
+            // the owner's current provider names. Resolve as another owner only
+            // while still entitled to act for them.
+            const callerOwnsAdmission = admission.owner.provider === owner.provider
+                && admission.owner.subject === owner.subject;
+            if (admittedModel && !sameRequest
+                && !callerOwnsAdmission && context.isAdmin !== true) {
+                throw Object.assign(
+                    new Error("This workflow execution belongs to another user."),
+                    { code: "WORKFLOW_RERUN_FORBIDDEN", status: 403 },
+                );
+            }
             const runSelection = admittedModel
                 ? (sameRequest && preflightSelection
                     ? preflightSelection
