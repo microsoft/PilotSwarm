@@ -118,6 +118,8 @@ describe("Agent Tuner: read-only diagnostic tools", () => {
                 "read_session_tree_stats",
                 "read_session_tree_retrieval_usage",
                 "read_user_stats",
+                // Canvas app registry (issue 181).
+                "read_canvas_app_loads",
             ];
             for (const name of expected) {
                 assert(tunerNames.includes(name), `tuner toolset missing ${name} (got ${tunerNames.join(",")})`);

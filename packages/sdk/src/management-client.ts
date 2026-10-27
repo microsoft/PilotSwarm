@@ -39,6 +39,7 @@ import type {
     SessionWorkspaceView,
 } from "./types.js";
 import { validateWorkspaceText } from "./workspace-check.js";
+import { evaluateSessionAccess } from "../api/src/session-authz.js";
 import { readDefaultsRecord } from "./workspace.js";
 import {
     DEFAULT_WORKSPACE_FILE_MAX_BYTES,
@@ -64,17 +65,20 @@ import {
     canvasPathAllowed,
     canvasTreeReadable,
     canvasTreeWritable,
+    canvasWorkspaceApprovalKeys,
     canvasWsError,
     checkCanvasCommandParams,
     normalizeCanvasWorkspaceManifest,
     runCanvasCommandLocally,
     splitCanvasPath,
     type CanvasCommandsConfig,
+    type CanvasWorkspaceBinding,
     type CanvasWorkspaceDeclaration,
 } from "./canvas-workspace.js";
 import { extractCanvasAppManifest } from "./canvas-app-manifest.js";
 import { workspaceGit } from "./workspace-git.js";
-import { canvasArtifactFilename, latestCanvasEventData } from "./canvas-support.js";
+import { canvasArtifactFilename, latestCanvasEventData, mintedCanvasRevStrict } from "./canvas-support.js";
+import { canvasLegacyCatalogFor, canvasLegacyModeFromEnv, canvasRevisionIsLegacy, type CanvasLegacyCatalog } from "./canvas-legacy.js";
 import type {
     SessionCatalog, SessionRow, TopEventEmitterRow, AgentPackageSelector, AgentPrincipal,
     AgentPackageScope, AgentPackageSummary, AgentPackageDetail, AgentPackageEditorInfo, AgentWorkerStateRow, WorkerRow,
@@ -170,6 +174,16 @@ import {
     readAgentPackageVersionEntries,
     resolveAgentPackageVersion,
 } from "./agent-package-service.js";
+import {
+    publishCanvasAppHtml, readCanvasAppHtml, deleteCanvasApp, exportCanvasApp, importCanvasApp, classifyCanvasDraw,
+    migrateLegacyCanvasApps, pruneCanvasAppArtifacts, CANVAS_APP_DESCRIPTION_MIN, sha256Hex, looksLikeCanvasAppSpace,
+    type CanvasAppRegistryDeps, type PublishCanvasAppHtmlResult,
+} from "./canvas-app-registry.js";
+import {
+    CanvasAppError,
+    type CanvasAppViewer, type CanvasAppTarget, type CanvasAppSummary, type CanvasAppDetail,
+    type CanvasAppSearchHit, type CanvasAppLoadPage, type CanvasWorkspaceGrantKey,
+} from "./canvas-app-store.js";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -765,6 +779,13 @@ export interface PilotSwarmManagementClientOptions {
      * canvas apps can use files but not commands (CANVAS_WS_COMMANDS_DISABLED).
      */
     canvasCommands?: CanvasCommandsConfig | null;
+    /**
+     * The canvas app transition (issue 181, PILOTSWARM_CANVAS_LEGACY_MODE).
+     * On: the old `apps/<name>` canvas app catalog keeps working as before.
+     * Off: only the canvas app registry's rules apply. Default: this
+     * process's environment, on when unset. Keep equal to the workers'.
+     */
+    canvasLegacyMode?: boolean;
     /** App plugin dirs used to discover app-defined system agents for restart operations. */
     pluginDirs?: string[];
     /** Disable bundled PilotSwarm management agents when discovering restartable system agents. */
@@ -802,6 +823,91 @@ export interface PilotSwarmManagementClientOptions {
 }
 
 // ─── Management Client ──────────────────────────────────────────
+
+/** What the session owner is asked to approve before a canvas page may use its workspace. */
+export interface CanvasWorkspaceApproval {
+    sessionId: string;
+    slot: number;
+    rev: number;
+    /** The recorded decision for exactly this program, if any. */
+    decision: "granted" | "denied" | null;
+    /** Who the page belongs to: "owner", "agent" or "cross-owner" (wording only; every program asks). */
+    trust: string;
+    /**
+     * The canvas app transition (issue 181): this page is handled as on main
+     * (an old app's page, or one drawn before the registry), so its program
+     * runs without an approval while the transition is on.
+     */
+    legacy: boolean;
+    app: { name: string; version: string; versionId: string | null } | null;
+    pageSha256: string;
+    declarationSha256: string;
+    bindingsSha256: string;
+    declaration: { read: string[]; write: string[]; watch: boolean; commands: Record<string, { in: string; run: string[] }> };
+    bindings: CanvasWorkspaceBinding[];
+}
+
+/** @internal The workspace program on a slot, read from one draw event. */
+interface CanvasWorkspaceProgram {
+    rev: number;
+    declaration: CanvasWorkspaceDeclaration | null;
+    error?: string;
+    folders: ReturnType<typeof workspaceFileFolders>;
+    pageSha256?: string;
+    trust?: string;
+    app?: { name: string; version: string; versionId: string | null } | null;
+    owner?: { provider: string; subject: string } | null;
+    declarationSha256?: string;
+    bindingsSha256?: string;
+    bindings?: CanvasWorkspaceBinding[];
+    /** Handled as on main during the canvas app transition (canvasRevisionIsLegacy, checked now). */
+    legacy?: boolean;
+}
+
+/** The grant key for a program: an ownerless session's grants sit under the empty owner. */
+function canvasGrantKey(sessionId: string, slot: number, program: CanvasWorkspaceProgram): CanvasWorkspaceGrantKey {
+    return {
+        sessionId, slot,
+        pageSha256: program.pageSha256!, declarationSha256: program.declarationSha256!, bindingsSha256: program.bindingsSha256!,
+        owner: program.owner ?? { provider: "", subject: "" },
+    };
+}
+
+/**
+ * The legacy canvas app catalog `apps/` (issue 181). While the transition is
+ * on it is written as before (a card written after the registry was installed
+ * exempts nothing, canvas-legacy.ts). With the transition off it is read-only
+ * on every supported write path: the manual migration reads it through the
+ * store and deletes only what it migrated. Patterns that could reach it are
+ * refused too.
+ */
+/**
+ * Could the facts store's pattern match some key under `prefix`? Mirrors the
+ * store exactly: a pattern with no `%` has `*` turned into `%`; then SQL LIKE
+ * with `%` (any run), `_` (any one character) and `\` escaping the next one.
+ */
+export function likePatternCanMatchPrefix(rawPattern: string, prefix: string): boolean {
+    const pattern = rawPattern.includes("%") ? rawPattern : rawPattern.replaceAll("*", "%");
+    let j = 0;
+    for (let i = 0; i < pattern.length; i++) {
+        if (j >= prefix.length) return true;
+        let ch = pattern[i];
+        if (ch === "%") return true;
+        if (ch === "_") { j++; continue; }
+        if (ch === "\\" && i + 1 < pattern.length) ch = pattern[++i];
+        if (ch !== prefix[j]) return false;
+        j++;
+    }
+    return j >= prefix.length;
+}
+
+function assertNotLegacyCanvasAppFact(key: unknown, pattern: boolean): void {
+    const text = String(key ?? "");
+    const touches = pattern ? likePatternCanMatchPrefix(text, "apps/") : text.startsWith("apps/");
+    if (touches) {
+        throw Object.assign(new Error("the 'apps/' fact namespace is the legacy canvas app catalog; use the canvas app registry"), { code: "FORBIDDEN", status: 403 });
+    }
+}
 
 function normalizeShareSlot(slot: unknown): number {
     const n = Math.floor(Number(slot));
@@ -2163,13 +2269,22 @@ export class PilotSwarmManagementClient {
         if (!["info", "list", "stat", "read", "write", "mkdir", "move", "delete", "zip", "run", "watch"].includes(op)) {
             throw canvasWsError(X.PARAM_INVALID, `unknown canvas workspace call "${op}"`);
         }
-        const { declaration, error: manifestError } = await this._canvasWorkspaceDeclaration(sessionId, canvasSlot);
+        // One read of the slot's latest draw: page, declaration and trust
+        // always belong to the same revision.
+        const program = await this._canvasWorkspaceProgram(sessionId, canvasSlot, config);
+        const declaration = program.declaration;
         if (!declaration) {
-            throw canvasWsError(X.UNDECLARED, manifestError
-                ? `this canvas app's manifest is broken, so it has no workspace access: ${manifestError}`
+            throw canvasWsError(X.UNDECLARED, program.error
+                ? `this canvas app's manifest is broken, so it has no workspace access: ${program.error}`
                 : "this canvas app declared no workspace access (a \"workspace\" block in its CANVAS-APP-MANIFEST)");
         }
-        const folders = workspaceFileFolders(await this.getSessionWorkspace(sessionId), config);
+        // Positive approval (issue 181, R20 as amended): no workspace program
+        // runs until the session owner approved these exact page bytes, this
+        // declaration and these folder bindings, in this slot. Whoever wrote
+        // the page — the owner, an agent, another user — makes no difference.
+        // Decided before any declaration is honored.
+        await this._assertCanvasWorkspaceGrant(sessionId, canvasSlot, program, call);
+        const folders = program.folders;
         const byName = new Map(folders.map((folder) => [canvasFolderName(folder), folder]));
         const commands = this.config.canvasCommands ?? null;
 
@@ -2357,14 +2472,183 @@ export class PilotSwarmManagementClient {
     }
 
     /**
-     * The canvas's `workspace` block, from the document drawn at the slot's
-     * latest revision; `error` when its manifest is broken.
+     * The workspace program on a slot now, from ONE read of its latest draw
+     * event: the checked declaration, the page's sha256, its trust (wording
+     * only — every program needs approval), the folders the declaration's
+     * names resolve to, and the approval keys. Fails closed: a page that
+     * cannot be read or classified here has no workspace access.
      */
-    private async _canvasWorkspaceDeclaration(sessionId: string, slot: number): Promise<{ declaration: CanvasWorkspaceDeclaration | null; error?: string }> {
+    private async _canvasWorkspaceProgram(sessionId: string, slot: number, config: WorkspaceFilesConfig): Promise<CanvasWorkspaceProgram> {
+        const X = CANVAS_WS_ERROR_CODES;
+        const latest = await latestCanvasEventData(this._catalog, sessionId, slot);
+        const folders = workspaceFileFolders(await this.getSessionWorkspace(sessionId), config);
+        const found = await this._canvasWorkspaceDeclaration(sessionId, slot, latest);
+        if (latest.rev === 0 || !found.declaration) {
+            return { rev: latest.rev, declaration: null, ...(found.error ? { error: found.error } : {}), folders };
+        }
+        const data: any = latest.data ?? {};
+        let html: string | null = null;
+        const page = async (): Promise<string> => {
+            if (html !== null) return html;
+            if (!this._artifactStore) throw canvasWsError(X.CONSENT_REQUIRED, "this canvas's page cannot be read here, so it has no workspace access");
+            html = await this._artifactStore.downloadArtifactText(sessionId, canvasArtifactFilename(slot));
+            return html;
+        };
+        const pageSha256 = typeof data.pageSha256 === "string" && /^[0-9a-f]{64}$/.test(data.pageSha256)
+            ? data.pageSha256
+            : sha256Hex(await page());
+        // The approval names the page the draw event recorded; the page the
+        // portal actually serves is the stored file. A redraw uploads its page
+        // before it records its event, so in that window the file is already
+        // the NEXT page. Both must agree, or nothing runs.
+        if (sha256Hex(await page()) !== pageSha256) {
+            throw canvasWsError(X.STALE, "the canvas is being redrawn; try again in a moment");
+        }
+        let trust = typeof data.trust === "string" && ["owner", "agent", "cross-owner"].includes(data.trust) ? data.trust : "";
+        let app: CanvasWorkspaceProgram["app"] = data.app?.name
+            ? { name: String(data.app.name), version: String(data.app.version ?? ""), versionId: data.app.versionId ?? null }
+            : null;
+        const row = await this._catalog!.getSession(sessionId).catch(() => null);
+        const owner = row?.owner?.provider && row?.owner?.subject ? { provider: row.owner.provider, subject: row.owner.subject } : null;
+        if (!trust) {
+            // Drawn before draw events carried trust: classify the stored page now.
+            const store = this._catalog?.canvasApps;
+            if (store) {
+                const text = await page();
+                const classification = await classifyCanvasDraw(store, {
+                    html: text, manifest: extractCanvasAppManifest(text).manifest ?? null, viewer: { principal: owner, resourceAdmin: false },
+                });
+                trust = classification.trust;
+                if (classification.app) app = { name: classification.app.name, version: classification.app.version, versionId: classification.app.versionId };
+            } else {
+                trust = "agent";
+            }
+        }
+        const keys = canvasWorkspaceApprovalKeys(found.declaration, folders);
+        const legacy = await this._canvasRevisionIsLegacy(sessionId, slot, latest, pageSha256);
+        return { rev: latest.rev, declaration: found.declaration, folders, pageSha256, trust, app, owner, legacy, ...keys };
+    }
+
+    private async _assertCanvasWorkspaceGrant(sessionId: string, slot: number, program: CanvasWorkspaceProgram, call: Record<string, any>): Promise<void> {
+        const X = CANVAS_WS_ERROR_CODES;
+        const rev = Number(call?.rev);
+        if (!Number.isInteger(rev) || rev !== program.rev) {
+            throw canvasWsError(X.STALE, `this call is for revision ${Number.isInteger(rev) ? rev : "(none)"}, but the canvas shows revision ${program.rev}`);
+        }
+        // The canvas app transition: an old app's page, or one drawn before the
+        // registry, runs as on main (checked now, by this process's own switch).
+        if (program.legacy === true) return;
+        const store = this._catalog?.canvasApps;
+        if (!store) throw canvasWsError(X.CONSENT_REQUIRED, "workspace approvals need the canvas app registry (CMS migration 0084), so this page has no workspace access");
+        const decision = await store.getWorkspaceGrant(canvasGrantKey(sessionId, slot, program));
+        if (decision !== "granted") {
+            throw canvasWsError(X.CONSENT_REQUIRED, decision === "denied"
+                ? "the session owner declined workspace access for this page"
+                : program.trust === "cross-owner"
+                    ? "this app belongs to another user; the session owner must approve its workspace access first"
+                    : "the session owner must approve this page's workspace access first");
+        }
+    }
+
+    /** The session owner (or, for an ownerless session, a resource admin) — who decides. */
+    private async _canvasWorkspaceDecider(sessionId: string, owner: AgentPrincipal | null, resourceAdmin: boolean): Promise<void> {
+        const row = await this._catalog!.getSession(sessionId).catch(() => null);
+        if (!row) throw new CanvasAppError("NOT_FOUND", "no such session");
+        if (row.owner?.provider && row.owner?.subject) {
+            if (!owner?.provider || !owner?.subject || row.owner.provider !== owner.provider || row.owner.subject !== owner.subject) {
+                throw new CanvasAppError("FORBIDDEN", "only the session's owner decides its workspace access");
+            }
+            return;
+        }
+        if (!resourceAdmin) throw new CanvasAppError("FORBIDDEN", "this session has no owner; only an admin decides its workspace access");
+    }
+
+    /**
+     * What the session owner is asked to approve on a slot now: the page's
+     * revision and sha256, who it belongs to, the declaration (paths and
+     * command lines) and the folders its names resolve to, with the keys an
+     * approval must quote back. `decision` is the recorded one, if any.
+     */
+    async getCanvasWorkspaceApproval(
+        args: { sessionId: string; slot: number },
+        owner: AgentPrincipal | null,
+        resourceAdmin: boolean,
+    ): Promise<CanvasWorkspaceApproval> {
+        this._ensureStarted();
+        const config = this.config.workspaceFiles ?? null;
+        if (!config) throw workspaceFileError(WORKSPACE_FILE_ERROR_CODES.DISABLED, "workspace files are not set up here (PORTAL_WORKSPACE_ROOTS)");
+        const sessionId = String(args?.sessionId ?? "");
+        const slot = normalizeShareSlot(args?.slot);
+        await this._canvasWorkspaceDecider(sessionId, owner, resourceAdmin);
+        const program = await this._canvasWorkspaceProgram(sessionId, slot, config);
+        if (!program.declaration) {
+            throw canvasWsError(CANVAS_WS_ERROR_CODES.UNDECLARED, "the canvas on this slot declares no workspace access");
+        }
+        const store = this._catalog?.canvasApps;
+        const decision = store ? await store.getWorkspaceGrant(canvasGrantKey(sessionId, slot, program)) : null;
+        return {
+            sessionId, slot, rev: program.rev, decision,
+            trust: program.trust!, legacy: program.legacy === true, app: program.app ?? null, pageSha256: program.pageSha256!,
+            declarationSha256: program.declarationSha256!, bindingsSha256: program.bindingsSha256!,
+            declaration: {
+                read: program.declaration.read, write: program.declaration.write, watch: program.declaration.watch,
+                commands: Object.fromEntries(Object.entries(program.declaration.commands).map(([name, command]) => [name, { in: command.in, run: command.run }])),
+            },
+            bindings: program.bindings!,
+        };
+    }
+
+    /**
+     * The session owner's decision on one exact workspace program on a slot
+     * (R20 as amended). The caller quotes the revision, page sha256,
+     * declaration sha256 and bindings sha256 it showed; any difference from
+     * the slot now is refused (CANVAS_WS_STALE). Bound to the session owner:
+     * a decision is never minted by the page, by an agent tool or by an
+     * agent's owner-derived identity — no worker path reaches this method.
+     * `session:files` access class.
+     */
+    async setCanvasWorkspaceConsent(
+        args: { sessionId: string; slot: number; rev: number; pageSha256: string; declarationSha256: string; bindingsSha256: string; decision: "granted" | "denied" },
+        owner: AgentPrincipal | null,
+        resourceAdmin: boolean,
+    ): Promise<{ ok: true; decision: "granted" | "denied" }> {
+        this._ensureStarted();
+        const X = CANVAS_WS_ERROR_CODES;
+        const config = this.config.workspaceFiles ?? null;
+        if (!config) throw workspaceFileError(WORKSPACE_FILE_ERROR_CODES.DISABLED, "workspace files are not set up here (PORTAL_WORKSPACE_ROOTS)");
+        const sessionId = String(args?.sessionId ?? "");
+        const slot = normalizeShareSlot(args?.slot);
+        await this._canvasWorkspaceDecider(sessionId, owner, resourceAdmin);
+        const store = this._catalog?.canvasApps;
+        if (!store) throw canvasWsError(X.CONSENT_REQUIRED, "workspace approvals need the canvas app registry (CMS migration 0084)");
+        const program = await this._canvasWorkspaceProgram(sessionId, slot, config);
+        if (!program.declaration) throw canvasWsError(X.UNDECLARED, "the canvas on this slot declares no workspace access");
+        if (program.rev !== Number(args?.rev)
+            || program.pageSha256 !== String(args?.pageSha256 ?? "")
+            || program.declarationSha256 !== String(args?.declarationSha256 ?? "")
+            || program.bindingsSha256 !== String(args?.bindingsSha256 ?? "")) {
+            throw canvasWsError(X.STALE, "the canvas or its folders changed since this approval was shown; ask again for the current page");
+        }
+        const decision = args?.decision === "granted" ? "granted" : "denied";
+        const by = owner?.provider && owner?.subject ? { provider: owner.provider, subject: owner.subject } : { provider: "", subject: "(admin)" };
+        await store.setWorkspaceGrant({
+            ...canvasGrantKey(sessionId, slot, program),
+            rev: program.rev, trust: program.trust!, versionId: program.app?.versionId ?? null, decision, by,
+        });
+        return { ok: true, decision };
+    }
+
+    /**
+     * The canvas's `workspace` block, from the document drawn at the slot's
+     * latest revision (`latest`: that revision's draw event); `error` when its
+     * manifest is broken.
+     */
+    private async _canvasWorkspaceDeclaration(
+        sessionId: string, slot: number, latest: Awaited<ReturnType<typeof latestCanvasEventData>>,
+    ): Promise<{ declaration: CanvasWorkspaceDeclaration | null; error?: string }> {
         // The draw event carries the checked block with its own rev (written
         // after the page's upload), so a call during a redraw gets the old
         // page's block with the old rev, never a mix.
-        const latest = await latestCanvasEventData(this._catalog, sessionId, slot);
         if (latest.rev === 0) return { declaration: null };
         const data = latest.data ?? {};
         if (Object.prototype.hasOwnProperty.call(data, "workspace")) {
@@ -3725,6 +4009,74 @@ export class PilotSwarmManagementClient {
     // reads are unrestricted. Per-user fact scoping is future work; the derived
     // context — never client-supplied — is where it will land.
 
+    /** The canvas app transition for this process (config, else PILOTSWARM_CANVAS_LEGACY_MODE). */
+    private _canvasLegacyMode(): boolean {
+        return this.config.canvasLegacyMode ?? canvasLegacyModeFromEnv();
+    }
+
+    /** This process's old app catalog while the transition is on; null when off. */
+    private _canvasLegacyCatalog(): CanvasLegacyCatalog | null {
+        if (!this._canvasLegacyMode()) return null;
+        return canvasLegacyCatalogFor(this._factStore, async () => {
+            const registry = this._catalog?.canvasApps;
+            return registry ? registry.installedAt() : null;
+        });
+    }
+
+    /** One revision, judged now by this process (see canvasRevisionIsLegacy). */
+    private async _canvasRevisionIsLegacy(
+        sessionId: string, slot: number, latest: { rev: number; data?: Record<string, any> }, pageSha256: string,
+    ): Promise<boolean> {
+        if (!this._canvasLegacyMode() || !this._catalog) return false;
+        const mintedRev = await mintedCanvasRevStrict(this._catalog, sessionId, slot, latest.rev);
+        return canvasRevisionIsLegacy({
+            mode: true, catalog: this._canvasLegacyCatalog(), eventRev: latest.rev, data: latest.data ?? {}, mintedRev, pageSha256,
+        });
+    }
+
+    /**
+     * The canvas app transition (issue 181): is the canvas now on this slot
+     * handled as on main? `legacy: true` only while this process's switch is
+     * on, for an old app's page still in the old catalog, or a revision drawn
+     * before the registry with no redraw in flight; `pageSha256` then names
+     * the bytes judged, and a client frames only those bytes that way.
+     * `trust` and `app` are what that same draw event recorded (readable from
+     * the session's events anyway), so a caller can decide from one read.
+     * `session:read` access class.
+     */
+    async getCanvasRevisionLabel(
+        args: { sessionId: string; slot?: number },
+        _owner?: AgentPrincipal | null,
+        _resourceAdmin?: boolean,
+    ): Promise<{ sessionId: string; slot: number; rev: number; trust: string | null; app?: string; legacy: boolean; pageSha256?: string }> {
+        this._ensureStarted();
+        const sessionId = String(args?.sessionId ?? "");
+        const slot = normalizeShareSlot(args?.slot);
+        // One read of the slot's latest draw: everything below is about it.
+        const latest = await latestCanvasEventData(this._catalog, sessionId, slot);
+        const data: Record<string, any> = latest.data ?? {};
+        const base = {
+            sessionId, slot, rev: latest.rev,
+            trust: typeof data.trust === "string" ? data.trust : null,
+            ...(typeof data.app?.name === "string" && data.app.name ? { app: String(data.app.name) } : {}),
+        };
+        // An owner or agent page needs no transition decision unless its draw
+        // flagged it as an old app's page; then the label reports the same
+        // decision the workspace approval makes.
+        const ownOrAgent = data.trust === "owner" || data.trust === "agent";
+        if (latest.rev === 0 || !this._canvasLegacyMode() || !this._artifactStore || (ownOrAgent && data.legacy !== true)) {
+            return { ...base, legacy: false };
+        }
+        let pageSha256: string;
+        try {
+            pageSha256 = sha256Hex(await this._artifactStore.downloadArtifactText(sessionId, canvasArtifactFilename(slot)));
+        } catch {
+            return { ...base, legacy: false };
+        }
+        const legacy = await this._canvasRevisionIsLegacy(sessionId, slot, latest, pageSha256);
+        return legacy ? { ...base, legacy, pageSha256 } : { ...base, legacy: false };
+    }
+
     private _requireFactStore(): FactStore {
         this._ensureStarted();
         if (!this._factStore) throw new Error("Facts store is not available on this deployment.");
@@ -3788,6 +4140,9 @@ export class PilotSwarmManagementClient {
     }
 
     async storeFact(input: StoreFactInput | StoreFactInput[]): Promise<StoredFactResult | { stored: number; facts: StoredFactResult[] }> {
+        if (!this._canvasLegacyMode()) {
+            for (const one of Array.isArray(input) ? input : [input]) if (one?.shared === true) assertNotLegacyCanvasAppFact(one?.key, false);
+        }
         return Array.isArray(input)
             ? this._requireFactStore().storeFact(input)
             : this._requireFactStore().storeFact(input);
@@ -3806,6 +4161,10 @@ export class PilotSwarmManagementClient {
             (err as any).code = "INVALID_REQUEST";
             throw err;
         }
+        // apps/ facts are shared; a session-scoped delete cannot reach them.
+        // The scope is decided exactly as the store decides it.
+        const effectiveScope = safe.pattern === true ? (safe.scope ?? (safe.shared === true ? "shared" : "session")) : (safe.shared === true ? "shared" : "session");
+        if (effectiveScope === "shared" && !this._canvasLegacyMode()) assertNotLegacyCanvasAppFact(safe.key, safe.pattern === true);
         return this._requireFactStore().deleteFact(safe);
     }
 
@@ -5116,6 +5475,250 @@ export class PilotSwarmManagementClient {
             throw new Error("agent-package artifact operations require an artifact store in direct mode");
         }
         return this._artifactStore;
+    }
+
+    // ── Canvas app registry (issue 181) ───────────────────────────────
+    //
+    // Every op takes one args object plus the caller (principal, resourceAdmin).
+    // resourceAdmin is the UNRESTRICTED admin; a cluster-scoped admin passes
+    // false. Authorization is in the cms_canvas_app_* procedures; errors carry
+    // the public code (NOT_FOUND, FORBIDDEN, NAME_TAKEN, NO_OWNER,
+    // VERSION_EXISTS, APP_DISABLED, …) and an HTTP status.
+
+    private _canvasAppDeps(): CanvasAppRegistryDeps {
+        this._ensureStarted();
+        const store = this._catalog?.canvasApps;
+        if (!store) throw Object.assign(new Error("the canvas app registry needs the CMS catalog"), { code: "UNAVAILABLE", status: 503 });
+        if (!this._artifactStore) throw Object.assign(new Error("the canvas app registry needs an artifact store in direct mode"), { code: "UNAVAILABLE", status: 503 });
+        return { store, artifactStore: this._artifactStore };
+    }
+
+    private _canvasViewer(owner: AgentPrincipal | null | undefined, resourceAdmin: boolean): CanvasAppViewer {
+        return {
+            principal: owner?.provider && owner?.subject ? { provider: owner.provider, subject: owner.subject } : null,
+            resourceAdmin: Boolean(resourceAdmin),
+        };
+    }
+
+    private _canvasTarget(args: any): CanvasAppTarget {
+        const name = String(args?.name ?? "").trim();
+        if (!name) throw new CanvasAppError("BAD_REQUEST", "name is required");
+        const scope = args?.scope === "shared" || args?.scope === "user" ? args.scope : null;
+        const provider = String(args?.ownerProvider ?? args?.owner?.provider ?? "").trim();
+        const subject = String(args?.ownerSubject ?? args?.owner?.subject ?? "").trim();
+        return { name, scope, owner: provider && subject ? { provider, subject } : null };
+    }
+
+    /**
+     * @internal Is this artifact "session" a canvas app's byte space? Generic
+     * artifact routes refuse such ids; app bytes are reached only through the
+     * registry operations, which apply the app's visibility.
+     */
+    async isCanvasAppStorage(sessionId: string): Promise<boolean> {
+        if (!looksLikeCanvasAppSpace(String(sessionId ?? ""))) return false;
+        const store = this._catalog?.canvasApps;
+        // No registry here: the family is still never a session's, so refuse.
+        if (!store) return true;
+        return store.isSpace(String(sessionId));
+    }
+
+    async listCanvasApps(_args: Record<string, unknown> | null, owner: AgentPrincipal | null, resourceAdmin: boolean): Promise<CanvasAppSummary[]> {
+        return this._canvasAppDeps().store.list(this._canvasViewer(owner, resourceAdmin));
+    }
+
+    async searchCanvasApps(args: { query?: string; limit?: number }, owner: AgentPrincipal | null, resourceAdmin: boolean): Promise<CanvasAppSearchHit[]> {
+        const limit = Math.max(1, Math.min(20, Math.floor(Number(args?.limit) || 8)));
+        return this._canvasAppDeps().store.search(this._canvasViewer(owner, resourceAdmin), String(args?.query ?? ""), limit);
+    }
+
+    async getCanvasApp(args: { name: string; scope?: string; ownerProvider?: string; ownerSubject?: string }, owner: AgentPrincipal | null, resourceAdmin: boolean): Promise<CanvasAppDetail> {
+        return this._canvasAppDeps().store.get(this._canvasTarget(args), this._canvasViewer(owner, resourceAdmin));
+    }
+
+    /** The page bytes as JSON (never served as text/html). */
+    async getCanvasAppHtml(args: { name: string; version?: string; scope?: string; ownerProvider?: string; ownerSubject?: string }, owner: AgentPrincipal | null, resourceAdmin: boolean) {
+        const { html, resolved } = await readCanvasAppHtml(this._canvasAppDeps(), this._canvasTarget(args), this._canvasViewer(owner, resourceAdmin), args?.version ?? null);
+        return { name: resolved.name, version: resolved.version, sha256: resolved.sha256, sizeBytes: resolved.sizeBytes, scope: resolved.scope, html };
+    }
+
+    /** Publish the canvas on a session slot (the caller must be able to write the session). */
+    async publishCanvasApp(
+        args: { sessionId: string; slot?: number; name: string; description?: string; tags?: string[]; scope?: string; version?: string },
+        owner: AgentPrincipal | null,
+        resourceAdmin: boolean,
+    ): Promise<PublishCanvasAppHtmlResult> {
+        const deps = this._canvasAppDeps();
+        const sessionId = String(args?.sessionId ?? "");
+        const slot = normalizeShareSlot(args?.slot ?? 1);
+        await this._assertCanvasSessionWrite(sessionId, owner, resourceAdmin);
+        const latest = await latestCanvasEventData(this._catalog, sessionId, slot);
+        if (latest.rev === 0) throw new CanvasAppError("BAD_REQUEST", `no canvas has been drawn on slot ${slot}`);
+        const html = await deps.artifactStore.downloadArtifactText(sessionId, canvasArtifactFilename(slot));
+        const result = await publishCanvasAppHtml(deps, {
+            html, name: args?.name, scope: args?.scope === "shared" ? "shared" : "user",
+            version: args?.version ?? null, description: args?.description ?? null, tags: args?.tags ?? null,
+            responseContract: latest.responseContract, viewer: this._canvasViewer(owner, resourceAdmin),
+            sourceSessionId: sessionId, sourceSlot: slot, createdBy: owner ? `${owner.provider}:${owner.subject}` : null,
+        });
+        await this._catalog!.recordEvents(sessionId, [{
+            eventType: "session.canvas_app_published",
+            data: { appId: result.appId, versionId: result.versionId, name: String(args?.name ?? ""), version: result.version, scope: result.scope, slot, rev: latest.rev, sha256: result.sha256 },
+        }]).catch(() => { /* telemetry */ });
+        return result;
+    }
+
+    /**
+     * Publishing a session's canvas reads and records on that session: the
+     * caller needs write access to it (the same rule as the Web API's
+     * session:write), whichever transport called. Missing or unreadable
+     * sessions are NOT_FOUND.
+     */
+    private async _assertCanvasSessionWrite(sessionId: string, owner: AgentPrincipal | null, resourceAdmin: boolean): Promise<void> {
+        if (!owner?.provider || !owner?.subject) {
+            if (resourceAdmin) return;
+            throw new CanvasAppError("FORBIDDEN", "publishing a session's canvas needs a signed-in user with write access to the session");
+        }
+        const snapshot = await this._catalog!.getSessionAccess(sessionId, { provider: owner.provider, subject: owner.subject });
+        if (!snapshot) throw new CanvasAppError("NOT_FOUND", "no such session");
+        const verdict = evaluateSessionAccess("session:write", snapshot as any, { isAdmin: resourceAdmin });
+        if (!verdict.allowed) {
+            throw verdict.notFound
+                ? new CanvasAppError("NOT_FOUND", "no such session")
+                : new CanvasAppError("FORBIDDEN", verdict.reason || "write access to the session is required");
+        }
+    }
+
+    /** Publish raw HTML (≤ 900 KB) without a session. */
+    async uploadCanvasApp(
+        args: { html: string; name: string; description?: string; tags?: string[]; scope?: string; version?: string },
+        owner: AgentPrincipal | null,
+        resourceAdmin: boolean,
+    ): Promise<PublishCanvasAppHtmlResult> {
+        return publishCanvasAppHtml(this._canvasAppDeps(), {
+            html: String(args?.html ?? ""), name: args?.name, scope: args?.scope === "shared" ? "shared" : "user",
+            version: args?.version ?? null, description: args?.description ?? null, tags: args?.tags ?? null,
+            viewer: this._canvasViewer(owner, resourceAdmin), createdBy: owner ? `${owner.provider}:${owner.subject}` : null,
+        });
+    }
+
+    async setCanvasAppScope(args: { name: string; scope?: string; targetScope: string; ownerProvider?: string; ownerSubject?: string }, owner: AgentPrincipal | null, resourceAdmin: boolean): Promise<{ ok: true }> {
+        const target = this._canvasTarget(args);
+        const to = args?.targetScope === "shared" ? "shared" : args?.targetScope === "user" ? "user" : null;
+        if (!to) throw new CanvasAppError("BAD_SCOPE", "targetScope must be shared or user");
+        await this._canvasAppDeps().store.setScope(target, to, this._canvasViewer(owner, resourceAdmin));
+        return { ok: true };
+    }
+
+    async setCanvasAppEnabled(args: { name: string; enabled: boolean; scope?: string; ownerProvider?: string; ownerSubject?: string }, owner: AgentPrincipal | null, resourceAdmin: boolean): Promise<{ ok: true }> {
+        await this._canvasAppDeps().store.setEnabled(this._canvasTarget(args), Boolean(args?.enabled), this._canvasViewer(owner, resourceAdmin));
+        return { ok: true };
+    }
+
+    async setCanvasAppMetadata(args: { name: string; description?: string; tags?: string[]; scope?: string; ownerProvider?: string; ownerSubject?: string }, owner: AgentPrincipal | null, resourceAdmin: boolean): Promise<{ ok: true }> {
+        const description = args?.description == null ? null : String(args.description).trim();
+        if (description !== null && description.length < CANVAS_APP_DESCRIPTION_MIN) {
+            throw new CanvasAppError("BAD_REQUEST", "description must say WHEN to use the app, in at least one full sentence");
+        }
+        await this._canvasAppDeps().store.setMetadata(this._canvasTarget(args), {
+            description, tags: Array.isArray(args?.tags) ? args.tags.map((t) => String(t).trim().toLowerCase()).filter(Boolean) : null,
+        }, this._canvasViewer(owner, resourceAdmin));
+        return { ok: true };
+    }
+
+    async pinCanvasAppVersion(args: { name: string; version: string; scope?: string; ownerProvider?: string; ownerSubject?: string }, owner: AgentPrincipal | null, resourceAdmin: boolean): Promise<{ ok: true; versionId: string }> {
+        const versionId = await this._canvasAppDeps().store.pin(this._canvasTarget(args), String(args?.version ?? ""), this._canvasViewer(owner, resourceAdmin));
+        return { ok: true, versionId };
+    }
+
+    async deleteCanvasApp(args: { name: string; scope?: string; ownerProvider?: string; ownerSubject?: string }, owner: AgentPrincipal | null, resourceAdmin: boolean) {
+        return deleteCanvasApp(this._canvasAppDeps(), this._canvasTarget(args), this._canvasViewer(owner, resourceAdmin));
+    }
+
+    async grantCanvasAppEditor(args: { name: string; user: { provider: string; subject: string } }, owner: AgentPrincipal | null, resourceAdmin: boolean): Promise<{ ok: true }> {
+        const provider = String(args?.user?.provider ?? "").trim();
+        const subject = String(args?.user?.subject ?? "").trim();
+        if (!provider || !subject) throw new CanvasAppError("BAD_REQUEST", "user { provider, subject } is required");
+        await this._canvasAppDeps().store.grantEditor(String(args?.name ?? ""), { provider, subject }, this._canvasViewer(owner, resourceAdmin));
+        return { ok: true };
+    }
+
+    async revokeCanvasAppEditor(args: { name: string; user: { provider: string; subject: string } }, owner: AgentPrincipal | null, resourceAdmin: boolean): Promise<{ ok: true }> {
+        const provider = String(args?.user?.provider ?? "").trim();
+        const subject = String(args?.user?.subject ?? "").trim();
+        if (!provider || !subject) throw new CanvasAppError("BAD_REQUEST", "user { provider, subject } is required");
+        await this._canvasAppDeps().store.revokeEditor(String(args?.name ?? ""), { provider, subject }, this._canvasViewer(owner, resourceAdmin));
+        return { ok: true };
+    }
+
+    async listCanvasAppEditors(args: { name: string }, owner: AgentPrincipal | null, resourceAdmin: boolean) {
+        return this._canvasAppDeps().store.listEditors(String(args?.name ?? ""), this._canvasViewer(owner, resourceAdmin));
+    }
+
+    /** The archive as base64 (an attachment, never text/html). */
+    async exportCanvasApp(args: { name: string; scope?: string; ownerProvider?: string; ownerSubject?: string }, owner: AgentPrincipal | null, resourceAdmin: boolean) {
+        const out = await exportCanvasApp(this._canvasAppDeps(), this._canvasTarget(args), this._canvasViewer(owner, resourceAdmin));
+        return { filename: out.filename, sha256: out.sha256, sizeBytes: out.bytes.length, contentBase64: out.bytes.toString("base64") };
+    }
+
+    async importCanvasApp(args: { contentBase64: string; scope?: string }, owner: AgentPrincipal | null, resourceAdmin: boolean) {
+        const bytes = Buffer.from(String(args?.contentBase64 ?? ""), "base64");
+        return importCanvasApp(this._canvasAppDeps(), bytes, this._canvasViewer(owner, resourceAdmin), {
+            scope: args?.scope === "shared" ? "shared" : "user",
+            createdBy: owner ? `${owner.provider}:${owner.subject}` : null,
+        });
+    }
+
+    /**
+     * One-time import of legacy apps/* facts (unrestricted admin; dry run
+     * unless dryRun === false). While this process's canvas app transition
+     * (PILOTSWARM_CANVAS_LEGACY_MODE) is on, applying it is refused
+     * (CANVAS_LEGACY_MODE_ON, 409): it removes the apps/* facts, and so ends
+     * the old apps' exemption while the transition promises none changes. A
+     * dry run still works and says the apply is blocked (`applyBlocked`).
+     */
+    async migrateLegacyCanvasApps(args: { dryRun?: boolean }, owner: AgentPrincipal | null, resourceAdmin: boolean) {
+        // Authorization before availability: a non-admin learns nothing about the deployment.
+        if (!resourceAdmin) throw new CanvasAppError("FORBIDDEN", "migrating legacy canvas apps needs an unrestricted admin");
+        const dryRun = args?.dryRun !== false;
+        const legacyModeOn = this._canvasLegacyMode();
+        const blockedMessage = "the canvas app transition (PILOTSWARM_CANVAS_LEGACY_MODE) is on: switch it off before applying the migration; a dry run still works";
+        if (!dryRun && legacyModeOn) throw new CanvasAppError("CANVAS_LEGACY_MODE_ON", blockedMessage);
+        const deps = this._canvasAppDeps();
+        if (!this._factStore) throw Object.assign(new Error("the legacy migration needs the facts store"), { code: "UNAVAILABLE", status: 503 });
+        const result = await migrateLegacyCanvasApps({
+            ...deps,
+            factStore: this._factStore,
+            sessionOwner: async (id) => {
+                const row = await this._catalog!.getSession(id).catch(() => null);
+                return row?.owner?.provider && row?.owner?.subject ? { provider: row.owner.provider, subject: row.owner.subject } : null;
+            },
+        }, this._canvasViewer(owner, resourceAdmin), { dryRun });
+        return legacyModeOn
+            ? { ...result, applyBlocked: { code: "CANVAS_LEGACY_MODE_ON" as const, message: blockedMessage } }
+            : result;
+    }
+
+    async getCanvasAppLoads(
+        args: { name: string; scope?: string; ownerProvider?: string; ownerSubject?: string; limit?: number; cursorAt?: string; cursorId?: string; since?: string; until?: string },
+        owner: AgentPrincipal | null,
+        resourceAdmin: boolean,
+    ): Promise<CanvasAppLoadPage> {
+        return this._canvasAppDeps().store.listLoads(this._canvasTarget(args), this._canvasViewer(owner, resourceAdmin), {
+            limit: args?.limit,
+            since: args?.since ? new Date(args.since) : null,
+            until: args?.until ? new Date(args.until) : null,
+            cursor: args?.cursorAt && args?.cursorId ? { loadedAt: String(args.cursorAt), loadId: String(args.cursorId) } : null,
+        });
+    }
+
+    /** Maintenance (unrestricted admin): expired loads, stale pending versions, unfinished deletes. */
+    async pruneCanvasApps(_args: Record<string, unknown> | null, _owner: AgentPrincipal | null, resourceAdmin: boolean) {
+        if (!resourceAdmin) throw new CanvasAppError("FORBIDDEN", "pruning the canvas app registry needs an unrestricted admin");
+        const deps = this._canvasAppDeps();
+        let loadsRemoved = 0;
+        for (let n = await deps.store.pruneLoads(new Date(), 1000); n > 0; n = await deps.store.pruneLoads(new Date(), 1000)) loadsRemoved += n;
+        const artifacts = await pruneCanvasAppArtifacts(deps);
+        return { loadsRemoved, ...artifacts };
     }
 
     async listAgentPackages(owner: AgentPrincipal | null, isAdmin: boolean): Promise<AgentPackageSummary[]> {

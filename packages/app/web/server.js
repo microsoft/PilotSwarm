@@ -85,6 +85,10 @@ export function installJsonBodyLimits(app, { workspaceFileMb } = {}) {
     // Agent packages allow 2 MB DECODED. Base64 plus JSON overhead exceeds
     // the default 2 MB request cap, so reserve 4 MB for this route.
     app.use("/api/v1/agent-packages/upload", express.json({ limit: "4mb" }));
+    // Canvas app pages are ≤ 900 KB (JSON escaping can double that); archives are ≤ 20 MB as base64.
+    app.use("/api/v1/canvas-apps/upload", express.json({ limit: "4mb" }));
+    app.use("/api/v1/management/sessions/:sessionId/canvas-apps/publish", express.json({ limit: "1mb" }));
+    app.use("/api/v1/canvas-apps/import", express.json({ limit: "30mb" }));
     // Workspace files (the Workspace pane) and canvas-ws writes carry a whole
     // file as base64: the file limit (PORTAL_WORKSPACE_MAX_FILE_MB, default
     // 20 MB) plus a third, plus room for the rest of the call.
@@ -247,8 +251,15 @@ export async function startServer(opts = {}) {
                 res.status(404).type("text/plain").send("Not found");
                 return;
             }
-            res.set("Content-Security-Policy", "sandbox allow-scripts");
             res.set("Cache-Control", "no-store, max-age=0");
+            // "agent" and "legacy" (the canvas app transition) are served as on
+            // main: the page itself, sandboxed by its CSP.
+            if (doc.trust === "owner" || doc.trust === "cross-owner") {
+                // A registry app page: JSON for the share viewer to frame.
+                res.json({ html: doc.html, trust: doc.trust });
+                return;
+            }
+            res.set("Content-Security-Policy", "sandbox allow-scripts");
             res.type("text/html").send(doc.html);
         } catch {
             res.status(404).type("text/plain").send("Not found");

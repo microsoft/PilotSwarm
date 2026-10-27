@@ -85,5 +85,6 @@ The advanced scenarios deliberately include real durability moments —
 - [Access, sharing & security](./security-and-sharing.md) — who can see and act on a session, visibility levels, targeted shares, roles, and admin break-glass
 - [Keybindings cheat sheet](./keybindings.md) — every TUI key in one table
 - [Working in folders and repos](./workspaces.md) — repo clones, your own folder, the shared folder, and loading agents and skills from files
+- [Canvas apps](./canvas-apps.md) — publish, find, share and version canvas apps; export and import; migrating the old app catalog; approving a page's workspace access
 - [Configuration](../developer/reference/configuration.md) — environment variables, blob storage, worker/client options
 - [Architecture](../architecture/system.md) — what's underneath the UI

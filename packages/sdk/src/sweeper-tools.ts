@@ -16,6 +16,9 @@ import { defineTool } from "@github/copilot-sdk";
 import type { SessionCatalog } from "./cms.js";
 import type { FactStore } from "./facts-store.js";
 import type { Tool } from "@github/copilot-sdk";
+import type { ArtifactStore } from "./session-store.js";
+import type { CanvasAppStore } from "./canvas-app-store.js";
+import { pruneCanvasAppArtifacts } from "./canvas-app-registry.js";
 
 /**
  * Create sweeper tools bound to the given CMS catalog and duroxide client.
@@ -29,6 +32,8 @@ export function createSweeperTools(opts: {
     factStore?: FactStore | null;
     duroxideSchema?: string;
     storeUrl?: string;
+    /** Canvas app registry (issue 181): its stale uploads and deleted apps' bytes are pruned with the orchestrations. */
+    artifactStore?: ArtifactStore | null;
 }): Tool<any>[] {
     const { catalog, duroxideClient, factStore } = opts;
 
@@ -380,8 +385,24 @@ export function createSweeperTools(opts: {
                     }
                 } catch {}
 
+                // Step 4: the canvas app registry's own leftovers — load rows
+                // past retention, uploads that never committed, and the bytes
+                // of deleted apps. A failure here never fails the prune.
+                let canvasApps: Record<string, unknown> | undefined;
+                const registry = (catalog as any).canvasApps as CanvasAppStore | undefined;
+                if (registry && opts.artifactStore) {
+                    try {
+                        let loadsRemoved = 0;
+                        for (let n = await registry.pruneLoads(new Date(), batchLimit); n > 0; n = await registry.pruneLoads(new Date(), batchLimit)) loadsRemoved += n;
+                        canvasApps = { loadsRemoved, ...(await pruneCanvasAppArtifacts({ store: registry, artifactStore: opts.artifactStore })) };
+                    } catch (err: any) {
+                        canvasApps = { error: err?.message || String(err) };
+                    }
+                }
+
                 return {
                     ok: true,
+                    ...(canvasApps ? { canvasApps } : {}),
                     deleteTerminal: {
                         instancesDeleted: deleteResult.instancesDeleted ?? 0,
                         executionsDeleted: deleteResult.executionsDeleted ?? 0,

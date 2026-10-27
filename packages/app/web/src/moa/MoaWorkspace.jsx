@@ -421,6 +421,9 @@ function LivePanel({ node, panels, panelKey, mobile = false, visible = true, foc
             if (session.sessionId !== node.sessionId) throw new Error("Unexpected session response.");
             const auth = transport.getAuthContext();
             child.dispatch({ type: "auth/context", principal: auth?.principal, authorization: auth?.authorization });
+            // The canvas app transition (issue 181): the panel's controller is
+            // never start()ed, so it takes the portal's switch here.
+            child.dispatch({ type: "canvas/legacyMode", legacyMode: typeof transport.getCanvasLegacyMode === "function" && transport.getCanvasLegacyMode() === true });
             child.dispatch({ type: "connection/ready", statusText: "Connected" });
             child.dispatch({ type: "sessions/merged", session });
             child.dispatch({ type: "sessions/navigationIntent", sessionId: node.sessionId });

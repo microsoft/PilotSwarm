@@ -1282,6 +1282,14 @@ export interface PilotSwarmWorkerOptions {
      * worker-registered tool reaches them through `invocation.facts`.
      */
     reservedFactPrefixes?: string[];
+    /**
+     * The canvas app transition (issue 181). On: the old `apps/<name>` canvas
+     * app catalog keeps working as before next to the canvas app registry.
+     * Off: only the registry's rules apply. Default: the
+     * PILOTSWARM_CANVAS_LEGACY_MODE environment variable, on when unset.
+     * The portal process reads the same variable; keep both equal.
+     */
+    canvasLegacyMode?: boolean;
     /** GitHub token. Required unless a custom `provider` is specified. */
     githubToken?: string;
     logLevel?: "none" | "error" | "warning" | "info" | "debug" | "all";

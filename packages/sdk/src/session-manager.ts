@@ -31,7 +31,7 @@ import { pinToolsNeverDefer } from "./tool-pinning.js";
 import type { SessionCatalog } from "./cms.js";
 import { resolveEffectiveSpawnOwner, SYSTEM_USER_PRINCIPAL } from "./cms.js";
 import { evaluateRoleObservation } from "../api/src/session-authz.js";
-import { validateAdminScope, type AdminScope } from "../api/src/admin-scope.js";
+import { validateAdminScope, adminCanAccessResource, type AdminScope } from "../api/src/admin-scope.js";
 
 /**
  * How long a resolved inspect viewer may be reused before it is looked up
@@ -236,6 +236,8 @@ export interface WorkerDefaults {
     getCapabilitySources?: () => CapabilitySource[];
     /** Host-reserved fact key prefixes, see PilotSwarmWorkerOptions.reservedFactPrefixes. */
     reservedFactPrefixes?: string[];
+    /** The canvas app transition, see PilotSwarmWorkerOptions.canvasLegacyMode (resolved). */
+    canvasLegacyMode?: boolean;
     nativeSubagents?: "off" | "sync";
     frameworkBasePrompt?: string;
     frameworkBaseToolNames?: string[];
@@ -2213,6 +2215,7 @@ export class SessionManager {
         const factTools = createFactTools({
             factStore: this.factStore,
             reservedFactPrefixes: this.workerDefaults?.reservedFactPrefixes ?? null,
+            ...(typeof this.workerDefaults?.canvasLegacyMode === "boolean" ? { canvasLegacyMode: this.workerDefaults.canvasLegacyMode } : {}),
             getLineageSessionIds: this._getLineageSessionIds ?? undefined,
             agentIdentity: effectiveSerializableConfig.agentIdentity,
             // bulk_store_facts reads its records from (and writes its failure
@@ -3894,6 +3897,31 @@ export class SessionManager {
         } catch {
             // A read failure is not evidence of privilege.
             return false;
+        }
+    }
+
+    /**
+     * Canvas app registry (issue 181): the session's USER owner and whether
+     * that owner is an unrestricted admin. Read from the catalog row each
+     * time (no inspect-viewer cache): an ownerless or system session gets no
+     * principal, so it can find and draw shared apps but cannot create or
+     * change any (NO_OWNER), and is never a resource admin.
+     */
+    async resolveCanvasAppViewer(sessionId: string): Promise<{ principal: { provider: string; subject: string } | null; resourceAdmin: boolean }> {
+        try {
+            const row = await this.sessionCatalog?.getSession(sessionId);
+            const owner = row?.owner;
+            if (!owner?.provider || !owner?.subject) return { principal: null, resourceAdmin: false };
+            if (owner.provider === SYSTEM_USER_PRINCIPAL.provider && owner.subject === SYSTEM_USER_PRINCIPAL.subject) {
+                return { principal: null, resourceAdmin: false };
+            }
+            const isAdmin = await this._resolveOwnerIsAdmin(owner);
+            return {
+                principal: { provider: owner.provider, subject: owner.subject },
+                resourceAdmin: adminCanAccessResource(isAdmin, this.adminScope),
+            };
+        } catch {
+            return { principal: null, resourceAdmin: false };
         }
     }
 

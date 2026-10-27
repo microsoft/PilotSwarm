@@ -11,6 +11,14 @@
  * manifest, never from a model's memory of it, and an app without an
  * `interface` block is refused: the card is what another agent drives the
  * app from, and a card that only says "a board" cannot be driven.
+ *
+ * Deprecated since the canvas app registry (issue 181): the runtime publishes
+ * and finds apps through canvas-app-registry.ts. While the canvas app
+ * transition is on (PILOTSWARM_CANVAS_LEGACY_MODE, canvas-legacy.ts),
+ * find_canvas_app also returns the old apps/* cards through findCanvasApp,
+ * unchanged. After the transition, migrateLegacyCanvasApps moves them.
+ * publishCanvasApp and findCanvasApp stay exported, unchanged, for existing
+ * SDK callers until a major release.
  */
 
 import { createHash } from "node:crypto";
@@ -55,6 +63,7 @@ export interface CanvasAppHit {
 
 export const CANVAS_APP_DESCRIPTION_MIN = 20;
 
+/** @deprecated Use the canvas app registry (publishCanvasAppHtml); this writes a legacy shared apps/<name> fact. */
 export async function publishCanvasApp(deps: CanvasAppCatalogDeps, args: PublishCanvasAppArgs): Promise<Record<string, unknown> | { error: string }> {
     const { artifactStore, catalog, factStore } = deps;
     if (!artifactStore) return { error: "this worker has no artifact store" };
@@ -151,6 +160,7 @@ export function rankCanvasAppHits(hits: CanvasAppHit[], query: string, limit: nu
         .slice(0, limit);
 }
 
+/** @deprecated Use the canvas app registry (CanvasAppStore.search); this reads legacy apps/* facts. */
 export async function findCanvasApp(deps: Pick<CanvasAppCatalogDeps, "factStore">, args: { query?: string; limit?: number }): Promise<{ count: number; apps: CanvasAppHit[]; next: string } | { error: string }> {
     const { factStore } = deps;
     if (!factStore) return { error: "this worker has no fact store; the catalog is a shared fact" };

@@ -219,7 +219,21 @@ export interface ExtractedTarEntry {
  */
 export function readAgentPackageTarGz(targz: Buffer): ExtractedTarEntry[] {
     // Bounded decompression: a 16 MB gz of zeros must not OOM the process.
-    const tar = zlib.gunzipSync(targz, { maxOutputLength: AGENT_PACKAGE_MAX_RAW_BYTES + 64 * 1024 * 1024 });
+    return readCanonicalTarGz(targz, AGENT_PACKAGE_MAX_RAW_BYTES + 64 * 1024 * 1024);
+}
+
+/** The deterministic ustar writer, gzip-wrapped with fixed settings (canvas app archives reuse it). */
+export function buildCanonicalTarGz(files: Array<{ name: string; body: Buffer }>): Buffer {
+    const entries: TarEntry[] = files.map((f) => ({ name: f.name, body: f.body, mode: 0o644 }));
+    return zlib.gzipSync(buildTar(entries), { level: 9 });
+}
+
+/**
+ * The strict reader behind {@link readAgentPackageTarGz}, with the expanded
+ * size bound supplied by the caller.
+ */
+export function readCanonicalTarGz(targz: Buffer, maxExpandedBytes: number): ExtractedTarEntry[] {
+    const tar = zlib.gunzipSync(targz, { maxOutputLength: maxExpandedBytes });
     const files: ExtractedTarEntry[] = [];
     let offset = 0;
     while (offset + TAR_BLOCK <= tar.length) {

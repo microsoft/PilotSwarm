@@ -14,6 +14,7 @@ import {
     normalizeStoredActiveSessionId,
     normalizeStoredCanvasPrefs,
     canvasKey,
+    canvasLegacyLabelKey,
     parseCanvasKey,
     normalizeStoredCollapsedSessionIds,
     normalizeStoredDesktopPanes,
@@ -839,6 +840,39 @@ function normalizePromptAttachments(prompt, attachments) {
         const token = String(attachment?.token || "").trim();
         return token && safePrompt.includes(token);
     });
+}
+
+
+/**
+ * Canvas app registry (issue 181): the trust fields of one canvas revision.
+ * Fail closed: only an event that says "owner" or "agent" frames the page
+ * directly. A missing or unknown trust (a revision drawn before draw events
+ * carried it) is another user's page, as on the share door.
+ */
+function canvasTrustFields(action, existing = null, rev = 0) {
+    const trust = action?.trust === "owner" || action?.trust === "agent" ? action.trust : "cross-owner";
+    const app = action?.app && typeof action.app === "object" && typeof action.app.name === "string"
+        ? { name: action.app.name, version: typeof action.app.version === "string" ? action.app.version : null }
+        : null;
+    const pageSha256 = typeof action?.pageSha256 === "string" ? action.pageSha256 : null;
+    // A label already read for this very revision and page stays: a re-read
+    // of the same draw (a snapshot after a continuity break) is not a new key,
+    // and the portal reads each key once.
+    const kept = existing?.legacyLabel && existing.legacyLabel.key === canvasLegacyLabelKey({ latestRev: rev, pageSha256 })
+        ? existing.legacyLabel
+        : null;
+    return {
+        trust,
+        pageSha256,
+        app,
+        // The canvas app transition (issue 181): whether the draw recorded a
+        // trust at all (a draw from before the registry did not), and whether
+        // it flagged an old app's page. Neither frames anything by itself: the
+        // portal asks the server's label (canvas/legacyLabel) for such pages.
+        trustRecorded: typeof action?.trust === "string" && action.trust !== "",
+        legacyFlag: action?.legacy === true,
+        legacyLabel: kept,
+    };
 }
 
 export function appReducer(state, action) {
@@ -3990,6 +4024,8 @@ function baseReducer(state, action) {
             const entries = Array.isArray(action.entries) ? action.entries : [];
             if (!entries.length) return state;
             let next = null;
+            // Sessions where the seed named a revision the store had not seen.
+            const advanced = new Set();
             for (const e of entries) {
                 const sessionId = String(e?.sessionId || "").trim();
                 const rev = Number(e?.latestRev);
@@ -4000,8 +4036,16 @@ function baseReducer(state, action) {
                 const existing = (next || state.canvas.bySessionId)[key] || {};
                 if ((existing.latestRev || 0) >= rev && existing.name !== undefined) continue;
                 next = next || { ...state.canvas.bySessionId };
+                // Trust belongs to a revision. A seed that raises the revision
+                // brings none, so the old revision's trust, page hash and app
+                // must not stand for the new page: the slot is unclassified
+                // until its draw event is read (issue 181).
+                const { trust: _trust, pageSha256: _sha, app: _app, trustRecorded: _tr, legacyFlag: _lf, legacyLabel: _ll, ...kept } = existing;
+                const raised = rev > (existing.latestRev || 0);
+                if (raised) advanced.add(sessionId);
+                const base = raised ? kept : existing;
                 next[key] = {
-                    ...existing,
+                    ...base,
                     slot: slotN,
                     latestRev: Math.max(existing.latestRev || 0, rev),
                     ...(typeof e.name === "string" && existing.name === undefined ? { name: e.name } : {}),
@@ -4009,6 +4053,13 @@ function baseReducer(state, action) {
                 };
             }
             if (!next) return state;
+            // A newer revision makes the session's snapshot memo stale: drop it
+            // (it lives on the slot-1 entry), so the next selection or poll
+            // reads the draw events again and classifies the new revision.
+            for (const sessionId of advanced) {
+                const memo = next[canvasKey(sessionId, 1)];
+                if (memo?.snapshotLoaded) next[canvasKey(sessionId, 1)] = { ...memo, snapshotLoaded: false };
+            }
             return { ...state, canvas: { ...state.canvas, bySessionId: next } };
         }
 
@@ -4022,7 +4073,11 @@ function baseReducer(state, action) {
             const existing = state.canvas.bySessionId[key] || {};
             // Monotonic: replays and out-of-order merges must never regress
             // the known revision (freshness gates the FLIP, never the data).
-            if ((existing.latestRev || 0) >= rev) return state;
+            // The one exception is the same revision while it is unclassified:
+            // the sessions-list seed can name a revision before its draw event
+            // arrives, and that event is what says whose page it is.
+            const known = existing.latestRev || 0;
+            if (known > rev || (known === rev && typeof existing.trust === "string")) return state;
             return {
                 ...state,
                 canvas: {
@@ -4042,6 +4097,8 @@ function baseReducer(state, action) {
                             responseContract: action.responseContract && typeof action.responseContract === "object"
                                 ? action.responseContract
                                 : null,
+                            // Trust belongs to the revision too.
+                            ...canvasTrustFields(action, existing, rev),
                         },
                     },
                 },
@@ -4145,12 +4202,48 @@ function baseReducer(state, action) {
                             responseContract: (existing.latestRev || 0) > rev
                                 ? (existing.responseContract ?? null)
                                 : (action.responseContract && typeof action.responseContract === "object" ? action.responseContract : null),
+                            // A snapshot older than what the store knows keeps the
+                            // store's trust as it is — unknown stays unknown (no
+                            // default), so the frame waits instead of guessing.
+                            ...((existing.latestRev || 0) > rev
+                                ? {
+                                    trust: existing.trust, pageSha256: existing.pageSha256 ?? null, app: existing.app ?? null,
+                                    trustRecorded: existing.trustRecorded, legacyFlag: existing.legacyFlag, legacyLabel: existing.legacyLabel ?? null,
+                                }
+                                : canvasTrustFields(action, existing, Math.max(existing.latestRev || 0, rev))),
                             snapshotLoaded: true,
                         },
                     },
                 },
             };
         }
+
+        // The canvas app transition (issue 181): the server's label for one
+        // revision and recorded page. Kept only while the entry is still that
+        // revision and page; a later draw or seed makes it stale.
+        case "canvas/legacyLabel": {
+            const sessionId = String(action.sessionId || "").trim();
+            const slot = Number.isInteger(Number(action.slot)) && Number(action.slot) >= 1 && Number(action.slot) <= 5
+                ? Number(action.slot) : 1;
+            const key = canvasKey(sessionId, slot);
+            const existing = state.canvas.bySessionId[key];
+            if (!sessionId || !existing || canvasLegacyLabelKey(existing) !== action.key) return state;
+            const label = action.label === null ? null : {
+                key: action.key,
+                rev: Number(action.label?.rev) || 0,
+                legacy: action.label?.legacy === true,
+                failed: action.label?.failed === true,
+                pageSha256: typeof action.label?.pageSha256 === "string" ? action.label.pageSha256 : null,
+            };
+            return {
+                ...state,
+                canvas: { ...state.canvas, bySessionId: { ...state.canvas.bySessionId, [key]: { ...existing, legacyLabel: label } } },
+            };
+        }
+
+        case "canvas/legacyMode":
+            if (state.canvas.legacyMode === (action.legacyMode === true)) return state;
+            return { ...state, canvas: { ...state.canvas, legacyMode: action.legacyMode === true } };
 
         // Continuity break (windowed bulk reload replaced gap-free replay):
         // the memoized snapshot can no longer be trusted — re-take on next need.

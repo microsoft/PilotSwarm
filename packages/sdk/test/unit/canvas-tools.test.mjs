@@ -74,7 +74,7 @@ test("sub-agents are NOT filtered out of the canvas declarations", () => {
 test("the HANDLER half is registered on every session and refuses instead of hanging", () => {
     // Per-turn registration is unconditional — a declared tool with no
     // handler is a silent drop in the CLI. The refusal is the guard.
-    assert.match(MS, /drawCanvasTool,\r?\n\s*updateCanvasTool,\r?\n\s*readCanvasTool,\r?\n\s*showCanvasTool,\r?\n\s*canvasKvTool,\r?\n\s*publishCanvasAppTool,\r?\n\s*findCanvasAppTool,\r?\n\s*loadSkillTool,\r?\n\s*\]\.filter/,
+    assert.match(MS, /drawCanvasTool,\r?\n\s*updateCanvasTool,\r?\n\s*readCanvasTool,\r?\n\s*showCanvasTool,\r?\n\s*canvasKvTool,\r?\n\s*publishCanvasAppTool,\r?\n\s*findCanvasAppTool,\r?\n\s*manageCanvasAppTool,\r?\n\s*loadSkillTool,\r?\n\s*\]\.filter/,
         "canvas tools (and canvas_kv / the catalog / load_skill) must be unconditionally in systemToolsForTurn");
     assert.ok(!/\(controlBridge as any\)\?\.drawCanvas \? \[drawCanvasTool/.test(MS),
         "the old bridge-conditional registration must be gone");
@@ -270,7 +270,7 @@ test("draw_canvas declares fromArtifact and requires exactly one source", () => 
     assert.deepEqual(draw.parameters.properties.fromArtifact.required, ["filename"]);
     assert.deepEqual(draw.parameters.required, [], "html must no longer be hard-required");
     // The handler enforces exclusivity — schema alone cannot express XOR to every model.
-    assert.match(MS, /hasHtml === Boolean\(fromArtifact\)/);
+    assert.match(MS, /\[hasHtml, Boolean\(fromArtifact\), Boolean\(fromApp\)\]\.filter\(Boolean\)\.length !== 1/);
     assert.match(MS, /pass exactly one source/);
 });
 
@@ -284,7 +284,12 @@ test("the bridge resolves fromArtifact server-side: fetch, cap, sha precondition
 
 test("contract precedence: explicit argument wins, manifest fills, invalid manifest fails an artifact draw closed", () => {
     assert.match(SP, /let effectiveContract = args\.responseContract/);
-    assert.match(SP, /if \(!effectiveContract && html\)/);
+    // A registry app arms its version's recorded contract first; the page's
+    // manifest fills only for non-registry draws (issue 181, B06).
+    const fromAppAt = SP.search(/if \(!effectiveContract && fromAppContract !== undefined\)/);
+    const manifestAt = SP.search(/if \(!effectiveContract && html && fromAppContract === undefined\)/);
+    assert.ok(fromAppAt > 0 && manifestAt > fromAppAt, "the recorded contract precedes the manifest fill");
+    assert.match(SP, /the stored contract of this canvas app is invalid/);
     assert.match(SP, /the embedded CANVAS-APP-MANIFEST contract is invalid/);
     assert.match(SP, /the artifact's CANVAS-APP-MANIFEST is broken/);
     // The event must carry the EFFECTIVE contract, not the raw argument.
@@ -480,4 +485,18 @@ test("plane-synthesized events are transient: flagged at the source, diverted be
     const TRANSPORT = readFileSync(fileURLToPath(new URL("../../api/src/http-api-transport.js", import.meta.url)), "utf8");
     assert.match(TRANSPORT, /transient: true/, "synthetic events carry the flag");
     assert.match(TRANSPORT, /session\.canvas_plane_released/, "plane death propagates a release event");
+});
+
+test("no agent path decides workspace approval: no tool, no bridge method, no management call (issue 181)", () => {
+    const names = ManagedSession.systemToolDefs().map((tool) => tool.name);
+    for (const name of names) {
+        assert.doesNotMatch(name, /consent|approv/i, `agent tool ${name} must not decide workspace approval`);
+    }
+    for (const [label, source] of [["managed-session.ts", MS], ["session-proxy.ts", SP], ["session-manager.ts", SM]]) {
+        assert.doesNotMatch(source, /setCanvasWorkspaceConsent|setWorkspaceGrant|getCanvasWorkspaceApproval/,
+            `${label}: the worker never records or reads approvals; a person decides in the portal`);
+    }
+    const manage = declaredTool("manage_canvas_app");
+    assert.ok(manage, "manage_canvas_app is declared");
+    assert.doesNotMatch(JSON.stringify(manage.parameters), /consent|approv/i);
 });

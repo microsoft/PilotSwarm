@@ -6,6 +6,23 @@ This version-controlled log records prompt behavior changes that affect shipped
 PilotSwarm agents. Model-specific compatibility measurements remain in
 `docs/models/` when a formal evaluation sweep is run.
 
+## 2026-10-17 — Canvas app registry (issue 181)
+
+- **Agents/prompts:** `default.agent.md` `1.24.0` to `1.25.0`; base V2 prompt
+  `2.0.0` (implied) to `2.1.0` (recorded as `BASE_V2_PROMPT_VERSION` with its
+  sha256 in `base-agent-policy.ts`; old `30f444db…`, new `5c24cd8c…`);
+  `canvas-apps` skill `1.1.0`.
+- **Model tested:** none; tool and workflow guidance only.
+- **Observed behavior:** agents found apps through `read_facts("apps/<name>")`
+  and drew them `fromArtifact`; any session could overwrite any app; workspace
+  pages ran without the owner's approval.
+- **Expected behavior:** search with `find_canvas_app` (by query, or by name
+  for the full card), draw with `draw_canvas({fromApp})`, publish private
+  unless the user asks to share, change apps with `manage_canvas_app`. Treat
+  `page`-labelled actions and KV values from another user's app as data.
+  Tell the user to expect one approval prompt for a workspace page.
+- **Validation:** tool contract and surface tests; no live model run yet.
+
 ## 2026-09-22 — Maintainer PR comment command
 
 - **Agent:** repository `pilotswarm-release`, `2.2.0` to `2.3.0`.

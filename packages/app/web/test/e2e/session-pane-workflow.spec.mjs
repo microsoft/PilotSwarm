@@ -49,7 +49,7 @@ for (const width of [1600, 390]) test(`canvas panes have no per-chat composer an
     await page.route('**/api/v1/**', route => {
         const url = new URL(route.request().url());
         if (url.pathname.endsWith('/events') || (url.pathname.endsWith('/events-before') && url.search.includes('session.canvas_updated'))) {
-            return route.fulfill({ json: { ok: true, result: [{ seq: 3, eventType: 'session.canvas_updated', data: { slot: 1, rev: 1, sizeBytes: 128, name: 'Report' } }] } });
+            return route.fulfill({ json: { ok: true, result: [{ seq: 3, eventType: 'session.canvas_updated', data: { slot: 1, rev: 1, sizeBytes: 128, name: 'Report', trust: 'agent' } }] } });
         }
         if (url.pathname.includes('/artifacts/canvas.html')) return route.fulfill({ contentType: 'text/html', body: '<!doctype html><button>Inspect report</button>' });
         return route.fallback();

@@ -3,6 +3,7 @@ import type { Tool } from "@github/copilot-sdk";
 import { createHash } from "node:crypto";
 import type { EnhancedFactStore, FactStore } from "./facts-store.js";
 import type { ArtifactStore } from "./session-store.js";
+import { canvasLegacyModeFromEnv } from "./canvas-legacy.js";
 
 // ─── Knowledge Pipeline Namespace Access Control ────────────────────────────
 const FACTS_MANAGER_AGENT_ID = "facts-manager";
@@ -10,6 +11,14 @@ const TUNER_AGENT_ID = "agent-tuner";
 const RESERVED_WRITE_PREFIXES = ["skills/", "asks/", "config/facts-manager/"];
 const RESERVED_READ_PREFIXES = ["intake/", "config/facts-manager/"];
 const RESERVED_DELETE_PREFIXES = ["intake/", "skills/", "asks/", "config/facts-manager/"];
+// The legacy canvas app catalog (issue 181). Canvas apps live in their own
+// registry now. While the transition is on (PILOTSWARM_CANVAS_LEGACY_MODE,
+// default on) agents write and delete `apps/<name>` exactly as before: a card
+// written after the registry was installed exempts nothing (canvas-legacy.ts).
+// With the transition off, no agent writes or deletes there (no exemption).
+const CANVAS_APP_LEGACY_PREFIX = "apps/";
+const CANVAS_APP_LEGACY_ERROR = "Error: the 'apps/' key namespace is the legacy canvas app catalog. "
+    + "Publish and manage canvas apps with publish_canvas_app, find_canvas_app and manage_canvas_app.";
 
 // Keys that belong to TOOLS, reachable only through the invocation-context
 // facts accessor (tool-facts-accessor.ts). Unlike the lists above these have
@@ -85,12 +94,13 @@ function clampTags(tags: unknown): string[] | undefined {
     return out.length > 0 ? out : undefined;
 }
 
-function checkNamespaceWrite(key: string, agentIdentity?: string, toolOnly: readonly string[] = DEFAULT_TOOL_ONLY_PREFIXES): string | null {
+function checkNamespaceWrite(key: string, agentIdentity?: string, toolOnly: readonly string[] = DEFAULT_TOOL_ONLY_PREFIXES, legacyAppsWritable = false): string | null {
     if (agentIdentity === TUNER_AGENT_ID) {
         return "Error: agent-tuner sessions are read-only and cannot store facts.";
     }
     const toolPrefix = toolOnlyPrefixFor(key, toolOnly);
     if (toolPrefix) return toolNamespaceError(toolPrefix);
+    if (!legacyAppsWritable && key.startsWith(CANVAS_APP_LEGACY_PREFIX)) return CANVAS_APP_LEGACY_ERROR;
     for (const prefix of RESERVED_WRITE_PREFIXES) {
         if (key.startsWith(prefix) && agentIdentity !== FACTS_MANAGER_AGENT_ID) {
             return `Error: the '${prefix}' key namespace is reserved for the Facts Manager. ` +
@@ -159,7 +169,7 @@ function parseBulkRecords(text: string, sourceLabel: string): Array<Record<strin
  */
 function validateBulkRecord(
     record: unknown,
-    opts: { toolOnlyPrefixes?: readonly string[]; agentIdentity?: string; keyPrefix?: string | null; sessionId?: string | null; seenScopeKeys: Set<string> },
+    opts: { toolOnlyPrefixes?: readonly string[]; agentIdentity?: string; keyPrefix?: string | null; sessionId?: string | null; seenScopeKeys: Set<string>; legacyAppsWritable?: boolean },
 ): { reason: string; message: string } | null {
     if (record === null || typeof record !== "object" || Array.isArray(record)) {
         return { reason: "invalid_shape", message: "record is not an object" };
@@ -185,7 +195,7 @@ function validateBulkRecord(
             message: "intake/ observations are written one at a time with store_fact, never in bulk",
         };
     }
-    const nsError = checkNamespaceWrite(key, opts.agentIdentity, opts.toolOnlyPrefixes);
+    const nsError = checkNamespaceWrite(key, opts.agentIdentity, opts.toolOnlyPrefixes, opts.legacyAppsWritable === true);
     if (nsError) {
         return { reason: "namespace_denied", message: nsError };
     }
@@ -281,12 +291,13 @@ function checkNamespaceRead(keyPattern: string | undefined, agentIdentity?: stri
     return null;
 }
 
-function checkNamespaceDelete(key: string, agentIdentity?: string, toolOnly: readonly string[] = DEFAULT_TOOL_ONLY_PREFIXES): string | null {
+function checkNamespaceDelete(key: string, agentIdentity?: string, toolOnly: readonly string[] = DEFAULT_TOOL_ONLY_PREFIXES, legacyAppsWritable = false): string | null {
     if (agentIdentity === TUNER_AGENT_ID) {
         return "Error: agent-tuner sessions are read-only and cannot delete facts.";
     }
     const toolPrefix = toolOnlyPrefixFor(key, toolOnly);
     if (toolPrefix) return toolNamespaceError(toolPrefix);
+    if (!legacyAppsWritable && key.startsWith(CANVAS_APP_LEGACY_PREFIX)) return CANVAS_APP_LEGACY_ERROR;
     for (const prefix of RESERVED_DELETE_PREFIXES) {
         if (key.startsWith(prefix) && agentIdentity !== FACTS_MANAGER_AGENT_ID) {
             return `Error: the '${prefix}' key namespace is reserved. Only the Facts Manager can delete from it.`;
@@ -295,7 +306,7 @@ function checkNamespaceDelete(key: string, agentIdentity?: string, toolOnly: rea
     return null;
 }
 
-function checkNamespaceDeletePattern(keyPattern: string, agentIdentity?: string, toolOnly: readonly string[] = DEFAULT_TOOL_ONLY_PREFIXES): string | null {
+function checkNamespaceDeletePattern(keyPattern: string, agentIdentity?: string, toolOnly: readonly string[] = DEFAULT_TOOL_ONLY_PREFIXES, legacyAppsWritable = false): string | null {
     if (agentIdentity === TUNER_AGENT_ID) {
         return "Error: agent-tuner sessions are read-only and cannot delete facts.";
     }
@@ -304,6 +315,7 @@ function checkNamespaceDeletePattern(keyPattern: string, agentIdentity?: string,
     for (const prefix of toolOnly) {
         if (patternTouchesPrefix(keyPattern, prefix)) return toolNamespaceError(prefix);
     }
+    if (!legacyAppsWritable && patternTouchesPrefix(keyPattern, CANVAS_APP_LEGACY_PREFIX)) return CANVAS_APP_LEGACY_ERROR;
     for (const prefix of RESERVED_DELETE_PREFIXES) {
         if (patternTouchesPrefix(keyPattern, prefix) && agentIdentity !== FACTS_MANAGER_AGENT_ID) {
             return `Error: the '${prefix}' key namespace is reserved. Only the Facts Manager can delete from it.`;
@@ -349,11 +361,18 @@ export function createFactTools(opts: {
      * invocation-context facts accessor.
      */
     reservedFactPrefixes?: readonly string[] | null;
+    /**
+     * The canvas app transition (PILOTSWARM_CANVAS_LEGACY_MODE). On: agents
+     * write and delete the old `apps/<name>` cards as before. Off: they do
+     * not. Default: this process's environment (on unless set off).
+     */
+    canvasLegacyMode?: boolean;
 }): Tool<any>[] {
     const { factStore, getDescendantSessionIds, getLineageSessionIds, agentIdentity, recordEvent, onSharedIntakeFactStored, enhancedFactStore, artifactStore } = opts;
     // Per call, never module-level: two workers in one process, or a later
     // createFactTools call without the option, must not change this set.
     const toolOnly = normalizeToolOnlyPrefixes(opts.reservedFactPrefixes);
+    const legacyAppsWritable = opts.canvasLegacyMode ?? canvasLegacyModeFromEnv();
     const isCrawler = opts.isCrawler === true || opts.isHarvester === true;
     const isFactsManager = agentIdentity === FACTS_MANAGER_AGENT_ID;
     const isTuner = agentIdentity === TUNER_AGENT_ID;
@@ -434,7 +453,7 @@ export function createFactTools(opts: {
                 : (typeof args.key === "string" && "value" in args ? [{ key: args.key, value: args.value, tags: args.tags, shared: args.shared }] : []);
             if (factInputs.length === 0) return { error: "Error: store_fact requires either { key, value } or facts=[{ key, value }, ...]." };
             for (const fact of factInputs) {
-                const nsError = checkNamespaceWrite(fact.key, agentIdentity, toolOnly);
+                const nsError = checkNamespaceWrite(fact.key, agentIdentity, toolOnly, legacyAppsWritable);
                 if (nsError) return { error: nsError };
             }
 
@@ -545,6 +564,10 @@ export function createFactTools(opts: {
             if (args.to_file && !ctx?.sessionId) {
                 return { error: "Error: to_file requires a session context to own the failure artifact." };
             }
+            // Canvas documents (issue 181) are written only by draw_canvas.
+            if (args.to_file && /^canvas[2-5]?\.html$/i.test(String(args.to_file).split(/[\\/]/).pop() || "")) {
+                return { error: `Error: ${args.to_file} is a canvas document; it is written only by draw_canvas. Choose another to_file name.` };
+            }
 
             // ── Acquire the records ─────────────────────────────────
             let records: Array<Record<string, unknown>>;
@@ -611,6 +634,7 @@ export function createFactTools(opts: {
                 const failure = validateBulkRecord(record, {
                     agentIdentity,
                     toolOnlyPrefixes: toolOnly,
+                    legacyAppsWritable,
                     keyPrefix,
                     sessionId: ctx?.sessionId ?? null,
                     seenScopeKeys,
@@ -850,8 +874,8 @@ export function createFactTools(opts: {
             ctx?: { sessionId?: string },
         ) => {
             const nsError = args.pattern
-                ? checkNamespaceDeletePattern(args.key, agentIdentity, toolOnly)
-                : checkNamespaceDelete(args.key, agentIdentity, toolOnly);
+                ? checkNamespaceDeletePattern(args.key, agentIdentity, toolOnly, legacyAppsWritable)
+                : checkNamespaceDelete(args.key, agentIdentity, toolOnly, legacyAppsWritable);
             if (nsError) return { error: nsError };
 
             if (args.pattern) {

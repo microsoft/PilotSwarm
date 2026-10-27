@@ -323,6 +323,76 @@ survives session and provider deletion; current rules/meters are removed with a
 deleted provider. The budget table always shows fixed day/week/month windows,
 while the selected daily chart offers 14-, 30-, and 90-day history ranges.
 
+### Canvas apps
+
+The canvas app registry (issue 181). An app is `(scope, owner, name)`; `scope` is
+`shared` or `user` (private). Per-app operations accept an optional `scope` and,
+for an unrestricted admin, `ownerProvider` + `ownerSubject` to pick a copy; the
+default is the caller's own copy, then the shared one. A private app the caller
+may not see answers `NOT_FOUND`; a visible app the caller may not change answers
+`FORBIDDEN`. A cluster-scoped admin is an ordinary user here.
+
+| Operation | Route | Parameters | Summary |
+|---|---|---|---|
+| listCanvasApps | `GET /api/v1/canvas-apps` | — | Apps the caller may see; disabled apps only for owner, contributors and admins. |
+| searchCanvasApps | `GET /api/v1/canvas-apps/search` | `query`, `limit` | Ranked search over name, tags and description. |
+| getCanvasApp | `GET /api/v1/canvas-apps/:name` | copy selector | Card, versions, owner, `canEdit`, `canManage`. |
+| getCanvasAppHtml | `GET /api/v1/canvas-apps/:name/html` | `version`, copy selector | `{ html, sha256, version, … }` as JSON; never `text/html`. |
+| publishCanvasApp | `POST /api/v1/management/sessions/:sessionId/canvas-apps/publish` | `slot`, `name`, `description`, `tags`, `scope`, `version` | Session write. Publishes the slot's canvas; private unless `scope` is `shared`. |
+| uploadCanvasApp | `POST /api/v1/canvas-apps/upload` | `html`, `name`, `description`, `tags`, `scope`, `version` | Publishes a raw page (≤ 900 KB). |
+| setCanvasAppScope | `PUT /api/v1/canvas-apps/:name/scope` | `targetScope`, copy selector | Owner or admin. |
+| setCanvasAppEnabled | `PUT /api/v1/canvas-apps/:name/enabled` | `enabled`, copy selector | Owner, contributor or admin. |
+| setCanvasAppMetadata | `PUT /api/v1/canvas-apps/:name/metadata` | `description`, `tags`, copy selector | Owner, contributor or admin. |
+| pinCanvasAppVersion | `PUT /api/v1/canvas-apps/:name/active` | `version`, copy selector | Owner, contributor or admin. |
+| deleteCanvasApp | `DELETE /api/v1/canvas-apps/:name` | copy selector | Owner or admin; drawn canvases keep working. |
+| grantCanvasAppEditor | `POST /api/v1/canvas-apps/:name/editors` | `user { provider, subject }` | Shared apps; owner or admin. |
+| revokeCanvasAppEditor | `POST /api/v1/canvas-apps/:name/editors/revoke` | `user { provider, subject }` | Owner or admin; idempotent. |
+| listCanvasAppEditors | `GET /api/v1/canvas-apps/:name/editors` | — | Contributors of the shared copy. |
+| exportCanvasApp | `GET /api/v1/canvas-apps/:name/export` | copy selector | `{ filename, sha256, sizeBytes, contentBase64 }`: a deterministic `.tar.gz` with no owner, scope or user/session ids. |
+| importCanvasApp | `POST /api/v1/canvas-apps/import` | `contentBase64`, `scope` | Archive ≤ 20 MB; checked whole before any write; `VERSION_EXISTS` fails only that version. |
+| migrateLegacyCanvasApps | `POST /api/v1/canvas-apps/migrate-legacy` | `dryRun` | **[admin]** unrestricted; dry run unless `dryRun` is `false`. While the canvas app transition (`PILOTSWARM_CANVAS_LEGACY_MODE`) is on, `dryRun: false` is refused with `CANVAS_LEGACY_MODE_ON` (409) and a dry run returns `applyBlocked`. |
+| getCanvasAppLoads | `GET /api/v1/canvas-apps/:name/loads` | `limit`, `cursorAt`, `cursorId`, `since`, `until`, copy selector | Owner or unrestricted admin. `{ rows, nextCursor, total30d }`. |
+| pruneCanvasApps | `POST /api/v1/canvas-apps/prune` | — | **[admin]** unrestricted; expired loads, abandoned versions, deleted apps' bytes. |
+
+Errors (`error.code`): `NOT_FOUND`, `FORBIDDEN`, `NAME_TAKEN`, `NO_OWNER`,
+`VERSION_EXISTS`, `VERSION_NOT_FOUND`, `APP_DISABLED`, `BAD_VERSION`,
+`BAD_SCOPE`, `BAD_REQUEST`, `USER_NOT_FOUND`, `BUSY` (an abandoned upload of
+the same page is being cleaned up; try again), `ABORTED` (the publish outlived
+the pending window and was cleaned up; publish again), `CANVAS_LEGACY_MODE_ON`
+(409: `migrateLegacyCanvasApps` with `dryRun: false` while the canvas app
+transition is on; switch `PILOTSWARM_CANVAS_LEGACY_MODE` off first).
+
+#### Workspace approval
+
+No canvas page's canvas-ws call runs until the session owner approves that
+exact program: the page sha256, the checked `workspace` declaration and the
+folders its names resolve to, in that slot. Every program asks once, whoever
+wrote it; the identical program redrawn keeps its decision. Both operations
+are the session owner's only (`session:files`); no agent tool, MCP tool or
+CLI command offers them.
+
+| Operation | Route | Parameters | Summary |
+|---|---|---|---|
+| getCanvasWorkspaceApproval | `GET /api/v1/management/sessions/:sessionId/canvas-workspace/approval` | `slot` | `{ rev, decision, trust, legacy, app, pageSha256, declarationSha256, bindingsSha256, declaration: { read, write, watch, commands: { <name>: { in, run } } }, bindings: [{ name, root, folder }] }`. `legacy: true`: the transition below exempts this page. |
+| setCanvasWorkspaceConsent | `POST /api/v1/management/sessions/:sessionId/canvas-workspace/consent` | `slot`, `rev`, `pageSha256`, `declarationSha256`, `bindingsSha256`, `decision` (`granted`\|`denied`) | Records the decision for exactly the program quoted; audited. |
+
+canvas-ws errors added: `CANVAS_WS_CONSENT_REQUIRED` (403: not approved, or
+declined) and `CANVAS_WS_STALE` (409: the call or approval names a revision,
+page, declaration or folders the slot no longer shows). Every canvas-ws call
+carries the frame's `rev`.
+
+#### The canvas app transition
+
+While the deployment's `PILOTSWARM_CANVAS_LEGACY_MODE` is on (the default),
+an old app's page and a canvas drawn before the registry are handled as
+before the registry: no approval, no labels, framed directly. The bootstrap
+reports the portal's switch as `canvasLegacyMode`. See
+[the canvas architecture](../architecture/canvas.md).
+
+| Operation | Route | Parameters | Summary |
+|---|---|---|---|
+| getCanvasRevisionLabel | `GET /api/v1/management/sessions/:sessionId/canvas-label` | `slot` | `{ sessionId, slot, rev, trust, app?, legacy, pageSha256? }`: the latest draw's recorded trust and app, and the transition decision, from one read, judged now (`session:read`). `pageSha256` names the bytes judged; frame only those bytes that way. Also the MCP tool `get_canvas_label` and `pilotswarm apps label <sessionId> [--slot n]`. |
+
 ### Current user
 
 | Operation | Route | Parameters | Summary |

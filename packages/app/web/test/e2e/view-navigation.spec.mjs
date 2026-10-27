@@ -376,7 +376,7 @@ geometryCases.push({theme:'terminal-green',width:1600}, {theme:'terminal-green',
 for (const {theme,width,admin=false,touchScale=false} of geometryCases) test(`${theme} ${width}px: identical navigation coordinates across desktop screens`, async ({page}) => {
     await page.route('**/api/v1/**', async route => {
         const url=new URL(route.request().url());
-        if(url.pathname.endsWith('/events-before') && url.search.includes('session.canvas_updated')) return route.fulfill({json:{ok:true,result:[1,2].map(slot=>({seq:slot,eventType:'session.canvas_updated',data:{slot,rev:1,sizeBytes:128,name:`Long canvas display name for slot ${slot}`}}))}});
+        if(url.pathname.endsWith('/events-before') && url.search.includes('session.canvas_updated')) return route.fulfill({json:{ok:true,result:[1,2].map(slot=>({seq:slot,eventType:'session.canvas_updated',data:{slot,rev:1,sizeBytes:128,name:`Long canvas display name for slot ${slot}`,trust:'agent'}}))}});
         if(url.pathname.includes('/artifacts/') && /canvas(?:2)?\.html/.test(url.pathname)) return route.fulfill({contentType:'text/html',body:'<!doctype html><h1>Navigation canvas fixture</h1>'});
         return route.fallback();
     });

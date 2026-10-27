@@ -31,6 +31,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { extractCanvasAppManifest, normalizeCanvasResponseContract } from "./canvas-app-manifest.js";
+import { CANVAS_APP_MAX_BYTES } from "./canvas-app-registry.js";
 import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
 import type { ArtifactStore } from "./session-store.js";
@@ -101,8 +102,47 @@ function resolveJailedPath(candidate: string, mustExist: boolean): { path?: stri
  */
 export function createArtifactTools(opts: {
     blobStore: ArtifactStore;
+    /**
+     * Canvas app registry (issue 181): refuses model-visible reads of another
+     * owner's app bytes and of app storage spaces. Returns a refusal message
+     * or null. Absent on workers without a CMS: reads behave as before.
+     */
+    canvasBytesGuard?: (input: { callerSessionId: string | null | undefined; artifactSessionId: string; bytes?: Buffer | string | null; sha256?: string | null; privateOnly?: boolean }) => Promise<string | null>;
 }): Tool<any>[] {
-    const { blobStore } = opts;
+    const { blobStore, canvasBytesGuard } = opts;
+    // Canvas documents (issue 181) are written only by a draw: the draw
+    // event records which page the file holds, and workspace approval is
+    // bound to that page. No tool may write or copy over them.
+    const CANVAS_SLOT_FILE = /^canvas[2-5]?\.html$/i;
+    const canvasFileRefusal = (filename: string | null | undefined) => CANVAS_SLOT_FILE.test(path.basename(String(filename ?? "")))
+        ? toolError("CANVAS_FILE_RESERVED", `${path.basename(String(filename))} is a canvas document; it is written only by draw_canvas.`, "Draw the page with draw_canvas, or save it under another name (e.g. app-<name>.html).")
+        : null;
+    // Every read small enough to be an app page is checked, whatever its
+    // filename or content type says: a label is not evidence.
+    const mayBeAppPage = (sizeBytes: number | null | undefined) =>
+        !!canvasBytesGuard && Number.isFinite(Number(sizeBytes)) && Number(sizeBytes) <= CANVAS_APP_MAX_BYTES;
+    const guard = async (callerSessionId: string | null | undefined, artifactSessionId: string, bytes?: Buffer | string | null) =>
+        canvasBytesGuard ? canvasBytesGuard({ callerSessionId, artifactSessionId, bytes: bytes ?? null }) : null;
+    // Metadata reads hide another user's PRIVATE app page as if absent (a
+    // shared app's card and size are public anyway).
+    const hiddenPrivate = async (callerSessionId: string | null | undefined, artifactSessionId: string, input: { bytes?: Buffer | string | null; sha256?: string | null }) =>
+        canvasBytesGuard ? (await canvasBytesGuard({ callerSessionId, artifactSessionId, bytes: input.bytes ?? null, sha256: input.sha256 ?? null, privateOnly: true })) === "artifact not found" : false;
+    // Metadata and list entries: by the stored sha256 when there is one;
+    // otherwise (legacy metadata has none) by the bytes of any file small
+    // enough to be an app page. A file whose bytes cannot be read is hidden
+    // (fail closed) rather than described.
+    const hiddenPrivateEntry = async (callerSessionId: string | null | undefined, artifactSessionId: string, entry: { filename: string; sha256?: string | null; sizeBytes?: number | null }) => {
+        if (!canvasBytesGuard) return false;
+        if (entry.sha256) return hiddenPrivate(callerSessionId, artifactSessionId, { sha256: entry.sha256 });
+        if (!mayBeAppPage(entry.sizeBytes)) return false;
+        let bytes: string;
+        try {
+            bytes = await blobStore.downloadArtifactText(artifactSessionId, entry.filename);
+        } catch {
+            return true;
+        }
+        return hiddenPrivate(callerSessionId, artifactSessionId, { bytes });
+    };
 
     // ── write_artifact ─────────────────────────────────────────
 
@@ -202,6 +242,8 @@ export function createArtifactTools(opts: {
                     const jailed = resolveJailedPath(params.fromFile, true);
                     if (jailed.error) return toolError("PATH_OUTSIDE_WORKDIR", jailed.error);
                     const filename = params.filename || path.basename(jailed.path!);
+                    const reserved = canvasFileRefusal(filename);
+                    if (reserved) return reserved;
                     const metadata = await blobStore.uploadArtifactFromFile(
                         sessionId, filename, jailed.path!, contentType, { pinned },
                     );
@@ -216,12 +258,27 @@ export function createArtifactTools(opts: {
                 if (params.fromArtifact) {
                     const from = params.fromArtifact;
                     const filename = params.filename || path.basename(from.filename);
+                    const reserved = canvasFileRefusal(filename);
+                    if (reserved) return reserved;
                     // Source session defaults to self: the canonical save-as
                     // ("copy my canvas.html to app-<name>.html") should not
                     // require the model to know its own session id.
+                    const sourceRefusal = await guard(sessionId, from.sessionId || sessionId, null);
+                    if (sourceRefusal) return toolError("CANVAS_APP_BYTES", sourceRefusal);
                     const metadata = await blobStore.copyArtifact(
                         from.sessionId || sessionId, from.filename, sessionId, filename, { pinned },
                     );
+                    if (mayBeAppPage(metadata.sizeBytes)) {
+                        const copied = await blobStore.downloadArtifact(sessionId, metadata.filename).then((r) => r.body).catch(() => null);
+                        const refusal = copied == null ? null : await guard(sessionId, from.sessionId || sessionId, copied);
+                        if (refusal) {
+                            // Another owner's app page: the copy must not exist either.
+                            await blobStore.deleteArtifact(sessionId, metadata.filename).catch(() => false);
+                            return refusal === "artifact not found"
+                                ? toolError("ARTIFACT_NOT_FOUND", `Artifact not found: ${from.filename} in session ${from.sessionId || sessionId}`)
+                                : toolError("CANVAS_APP_BYTES", refusal);
+                        }
+                    }
                     if (from.expectedSha256 && metadata.sha256 !== from.expectedSha256) {
                         await blobStore.deleteArtifact(sessionId, metadata.filename);
                         return toolError(
@@ -244,6 +301,8 @@ export function createArtifactTools(opts: {
                         "filename is required when writing inline content.",
                     );
                 }
+                const reservedInline = canvasFileRefusal(params.filename);
+                if (reservedInline) return reservedInline;
                 const metadata = await blobStore.uploadArtifact(
                     sessionId, params.filename, params.content!, contentType,
                     { encoding: params.encoding, pinned },
@@ -319,7 +378,8 @@ export function createArtifactTools(opts: {
             encoding?: "utf-8" | "base64";
             maxBytes?: number;
             offset?: number;
-        }) => {
+        }, context?: any) => {
+            const callerSessionId = context?.durableSessionId ?? null;
             if ([params.metaOnly, params.manifestOnly, params.toFile].filter(Boolean).length > 1) {
                 return toolError(
                     "EXCLUSIVE_MODE",
@@ -329,8 +389,13 @@ export function createArtifactTools(opts: {
             }
 
             try {
+                const spaceRefusal = await guard(callerSessionId, params.sessionId, null);
+                if (spaceRefusal) return toolError("CANVAS_APP_BYTES", spaceRefusal);
                 if (params.manifestOnly) {
                     const text = await blobStore.downloadArtifactText(params.sessionId, params.filename);
+                    if (await hiddenPrivate(callerSessionId, params.sessionId, { bytes: text })) {
+                        return toolError("ARTIFACT_NOT_FOUND", `Artifact not found: ${params.filename} in session ${params.sessionId}`);
+                    }
                     const extraction = extractCanvasAppManifest(text);
                     // Same discipline as every other card surface: the contract
                     // is returned POST-normalizer (4 KB cap) or not at all — a
@@ -356,7 +421,7 @@ export function createArtifactTools(opts: {
 
                 if (params.metaOnly) {
                     const metadata = await blobStore.statArtifact(params.sessionId, params.filename);
-                    if (!metadata) {
+                    if (!metadata || await hiddenPrivateEntry(callerSessionId, params.sessionId, metadata)) {
                         return toolError("ARTIFACT_NOT_FOUND", `Artifact not found: ${params.filename} in session ${params.sessionId}`);
                     }
                     return JSON.stringify({
@@ -371,6 +436,12 @@ export function createArtifactTools(opts: {
                     const jailed = resolveJailedPath(params.toFile, false);
                     if (jailed.error) return toolError("PATH_OUTSIDE_WORKDIR", jailed.error);
                     const result = await blobStore.downloadArtifact(params.sessionId, params.filename);
+                    if (mayBeAppPage(result.body.length)) {
+                        const refusal = await guard(callerSessionId, params.sessionId, result.body);
+                        if (refusal) return refusal === "artifact not found"
+                            ? toolError("ARTIFACT_NOT_FOUND", `Artifact not found: ${params.filename} in session ${params.sessionId}`)
+                            : toolError("CANVAS_APP_BYTES", refusal);
+                    }
                     fs.mkdirSync(path.dirname(jailed.path!), { recursive: true });
                     fs.writeFileSync(jailed.path!, result.body);
                     const { body: _body, ...metadata } = result;
@@ -385,6 +456,12 @@ export function createArtifactTools(opts: {
                 }
 
                 const result = await blobStore.downloadArtifact(params.sessionId, params.filename);
+                if (mayBeAppPage(result.body.length)) {
+                    const refusal = await guard(callerSessionId, params.sessionId, result.body);
+                    if (refusal) return refusal === "artifact not found"
+                        ? toolError("ARTIFACT_NOT_FOUND", `Artifact not found: ${params.filename} in session ${params.sessionId}`)
+                        : toolError("CANVAS_APP_BYTES", refusal);
+                }
                 const encoding = params.encoding || "utf-8";
                 if (result.isBinary && encoding !== "base64") {
                     return JSON.stringify({
@@ -446,7 +523,15 @@ export function createArtifactTools(opts: {
             }
 
             try {
-                const files = await blobStore.listArtifacts(targetId);
+                const spaceRefusal = await guard(context?.durableSessionId, targetId, null);
+                if (spaceRefusal) return toolError("CANVAS_APP_BYTES", spaceRefusal);
+                const all = await blobStore.listArtifacts(targetId);
+                const files = [];
+                for (const file of all) {
+                    if (file.sizeBytes <= CANVAS_APP_MAX_BYTES
+                        && await hiddenPrivateEntry(context?.durableSessionId, targetId, file)) continue;
+                    files.push(file);
+                }
                 return JSON.stringify({
                     success: true,
                     sessionId: targetId,

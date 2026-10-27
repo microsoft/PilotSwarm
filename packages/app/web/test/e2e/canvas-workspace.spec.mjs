@@ -8,6 +8,7 @@
 //   a download the page asks for is saved by the portal
 //   a page that watches hears about changes made in the Workspace tab
 import fs from "node:fs";
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, expect } from "@playwright/test";
@@ -58,15 +59,27 @@ if (location.hash !== "#quiet") setTimeout(() => ws.download("work/notes.md").th
 </script>
 </body></html>`;
 
-async function drawApp(page, answers, html = APP) {
+// `eventData`: the draw-event fields. By default an agent page, as the server
+// records every draw it classifies; without a `trust` the portal fails closed
+// and frames the page in the cross-owner wrapper.
+async function drawApp(page, answers, html = APP, eventData = { trust: "agent" }) {
     const calls = [];
     await page.route("**/api/v1/**", async (route) => {
         const url = new URL(route.request().url());
         if (url.pathname.endsWith("/events-before") && url.search.includes("session.canvas_updated")) {
-            return route.fulfill({ json: { ok: true, result: [{ seq: 1, eventType: "session.canvas_updated", data: { slot: 1, rev: 1, sizeBytes: html.length, name: "ws-test" } }] } });
+            return route.fulfill({ json: { ok: true, result: [{ seq: 1, eventType: "session.canvas_updated", data: { slot: 1, rev: 1, sizeBytes: html.length, name: "ws-test", ...eventData } }] } });
         }
         if (url.pathname.includes("/artifacts/") && url.pathname.includes("canvas.html")) {
             return route.fulfill({ contentType: "text/html", body: html });
+        }
+        if (url.pathname.endsWith(`/management/sessions/${sessionId}/canvas-workspace/approval`) && answers.approval) {
+            calls.push({ approval: true });
+            return route.fulfill({ json: { ok: true, result: answers.approval() } });
+        }
+        if (url.pathname.endsWith(`/management/sessions/${sessionId}/canvas-workspace/consent`) && answers.consent) {
+            const body = route.request().postDataJSON();
+            calls.push({ consent: body });
+            return route.fulfill({ json: { ok: true, result: answers.consent(body) } });
         }
         if (url.pathname.endsWith(`/management/sessions/${sessionId}/canvas-workspace`)) {
             const body = route.request().postDataJSON();
@@ -105,10 +118,10 @@ test("the page's calls reach the server for this canvas, and a click runs a decl
     await frame.getByRole("button", { name: "Run history" }).click();
     await expect(frame.locator("#out")).toHaveText("abc1234 first commit");
     const run = calls.find((c) => c.call.op === "run");
-    expect(run).toEqual({ slot: 1, call: { op: "run", command: "history", params: { limit: 3 } } });
+    expect(run).toEqual({ slot: 1, call: { op: "run", rev: 1, command: "history", params: { limit: 3 } } });
     await frame.getByRole("button", { name: "Save note" }).click();
     await expect(frame.locator("#out")).toHaveText("saved sha256:feed");
-    expect(calls.find((c) => c.call.op === "write").call).toEqual({ op: "write", path: "work/notes.md", contentBase64: Buffer.from("from the canvas").toString("base64"), ifMatch: null });
+    expect(calls.find((c) => c.call.op === "write").call).toEqual({ op: "write", rev: 1, path: "work/notes.md", contentBase64: Buffer.from("from the canvas").toString("base64"), ifMatch: null });
 });
 
 test("a refusal comes back to the page with its code", async ({ page }) => {
@@ -201,4 +214,79 @@ test("a canvas link opens a new tab; a page the canvas moves to gets nothing fro
     await expect(notice).toBeVisible();
     await notice.getByRole("button", { name: "Show the canvas again" }).click();
     await expect(frame.locator("#info")).toHaveText(/commands on/);
+});
+
+test("a page asks before it touches the session's files; the owner's click approves exactly what was shown", async ({ page }) => {
+    const KEYS = { pageSha256: "a".repeat(64), declarationSha256: "b".repeat(64), bindingsSha256: "c".repeat(64) };
+    let approved = false;
+    const answers = (call) => (approved
+        ? ANSWERS(call)
+        : { status: 403, error: { code: "CANVAS_WS_CONSENT_REQUIRED", message: "the session owner must approve this page's workspace access first" } });
+    answers.approval = () => ({
+        sessionId, slot: 1, rev: 1, decision: null, trust: "agent", app: null, ...KEYS,
+        declaration: { read: ["work/**"], write: ["work/notes.md"], watch: true, commands: { history: { in: "work", run: ["git", "log", "-n", "{limit}"] } } },
+        bindings: [{ name: "work", root: "a", folder: "proj" }],
+    });
+    answers.consent = (body) => { approved = body.decision === "granted"; return { ok: true, decision: body.decision }; };
+    const { calls, frame } = await drawApp(page, answers);
+    const prompt = page.getByRole("alertdialog", { name: "Allow this page to use the session's files?" });
+    await expect(prompt).toBeVisible();
+    // What it would get comes from the server's reading of the declaration.
+    await expect(prompt).toContainText("Read: work/**");
+    await expect(prompt).toContainText("Change: work/notes.md");
+    await expect(prompt).toContainText('Run "history" in work: git log -n {limit}');
+    await expect(prompt).toContainText('"work" is a/proj');
+    await prompt.getByRole("button", { name: "Allow", exact: true }).click();
+    await expect(prompt).toBeHidden();
+    expect(calls.find((c) => c.consent).consent).toEqual({ slot: 1, rev: 1, ...KEYS, decision: "granted" });
+    await frame.getByRole("button", { name: "Run history" }).click();
+    await expect(frame.locator("#out")).toHaveText("abc1234 first commit");
+});
+
+// Review S03/T04: an INFO-ONLY page (no watch, no click). It records every
+// workspace result it receives, so the test sees the staging NOT_READY and the
+// retried call, not just a prompt some other request could have opened.
+const APP_INFO_ONLY = `<!doctype html>
+<!-- CANVAS-APP-MANIFEST
+{ "manifestVersion": 1, "name": "ws-info", "workspace": { "read": ["work/**"] } }
+-->
+<html><body>
+<p id="info">…</p>
+<script>
+const codes = [];
+addEventListener("message", (e) => {
+  const m = e.data || {};
+  if (m.type === "canvas-ws-result") { codes.push(m.ok ? "ok" : m.code); document.body.dataset.codes = codes.join(","); }
+});
+${HELPER}
+CanvasWorkspace().info().then(() => { document.getElementById("info").textContent = "ok"; }, (e) => { document.getElementById("info").textContent = "error " + e.code; });
+</script>
+</body></html>`;
+
+test("an agent page that reads its workspace at boot, while still the staging frame, gets the approval prompt with no click (review S03)", async ({ page }) => {
+    const KEYS = { pageSha256: createHash("sha256").update(APP_INFO_ONLY).digest("hex"), declarationSha256: "b".repeat(64), bindingsSha256: "c".repeat(64) };
+    let approved = false;
+    const answers = (call) => (approved
+        ? ANSWERS(call)
+        : { status: 403, error: { code: "CANVAS_WS_CONSENT_REQUIRED", message: "the session owner must approve this page's workspace access first" } });
+    answers.approval = () => ({
+        sessionId, slot: 1, rev: 1, decision: null, trust: "agent", app: null, ...KEYS,
+        declaration: { read: ["work/**"] },
+        bindings: [{ name: "work", root: "a", folder: "proj" }],
+    });
+    answers.consent = (body) => { approved = body.decision === "granted"; return { ok: true, decision: body.decision }; };
+    // A real agent-trust draw event with the served bytes' hash: the page is framed
+    // directly (no wrapper), runs its boot info() in the staging frame, and is promoted.
+    const { calls, frame } = await drawApp(page, answers, APP_INFO_ONLY, { trust: "agent", pageSha256: KEYS.pageSha256 });
+    const prompt = page.getByRole("alertdialog", { name: "Allow this page to use the session's files?" });
+    await expect(prompt).toBeVisible();
+    // The first answer the page saw was the staging NOT_READY; the helper retried
+    // on the live frame, which got CONSENT_REQUIRED and opened the prompt.
+    await expect(frame.locator("body")).toHaveAttribute("data-codes", /^NOT_READY(,NOT_READY)*,CANVAS_WS_CONSENT_REQUIRED$/);
+    const infos = calls.filter((c) => c.call?.op === "info");
+    expect(infos.length, "the info read reached the server at least twice: once from staging, once retried from the live frame").toBeGreaterThanOrEqual(2);
+    expect(calls.filter((c) => c.call && c.call.op !== "info"), "no other workspace operation was involved").toEqual([]);
+    await prompt.getByRole("button", { name: "Allow", exact: true }).click();
+    await expect(prompt).toBeHidden();
+    expect(calls.find((c) => c.consent).consent).toEqual({ slot: 1, rev: 1, ...KEYS, decision: "granted" });
 });

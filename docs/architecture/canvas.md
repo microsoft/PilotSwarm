@@ -162,21 +162,165 @@ delete`) and receives `canvas-kv-ready`, `canvas-kv-result` and
 `canvas-kv-change`; the `canvas-apps` skill ships the `CanvasKV()` helper a
 page pastes. Nothing is injected into the document.
 
-## The app catalog: publish and find
+## The app registry
 
-A published app is one every session in the deployment can find and draw.
-Two system tools, no schema:
+Canvas apps live in their own registry in the CMS (migration 0084), not in
+facts. An app belongs to a user (its owner), is **private** (owner and
+unrestricted admins) or **shared** (everyone), and has SemVer versions, one
+of them active. A version's bytes are stored once, content-addressed, in the
+app's own artifact space; the app outlives the session it was published
+from. Contributors of a shared app may publish versions of it.
 
 ```
-publish_canvas_app({ name, description, tags?, slot? })
-   canvas bytes            → pinned artifact app-<name>.html on the session
-   manifest + armed contract + source → SHARED fact apps/<name>   (the card)
-find_canvas_app({ query })
-   enhanced store  → searchFacts(hybrid, namespace "apps", scope shared)
-   base store      → read apps/* and rank by term overlap
-read_facts({ key_pattern: "apps/<name>", scope: "shared" })  → the full card
-draw_canvas({ fromArtifact: card.source })                     → on screen
+publish_canvas_app({ name, description, tags?, scope?, version?, slot? })
+   → a version of the user's app; private unless scope: "shared"
+   → the same bytes again: no change; new bytes: the manifest's version, else the next patch
+find_canvas_app({ query })   → ranked apps the user may see
+find_canvas_app({ name })    → that app's full card (interface, contract, workspace)
+draw_canvas({ fromApp: { name, version?, scope? } })   → on screen, card returned
+manage_canvas_app({ action, name, ... })   → enable/disable, describe, pin, share/unshare,
+                                             contributors, delete
 ```
+
+A user's private app hides a shared app of the same name for that user;
+`scope` picks the other. Agents act with their session owner's rights; a
+system or ownerless session cannot publish. The same operations are on
+`PilotSwarmManagementClient` (direct and Web API), the MCP server, the
+`pilotswarm apps` CLI and the portal. Export writes a deterministic
+`.tar.gz` of every version and the card, with no owner or ids; import
+checks the whole archive first. The legacy `apps/<name>` facts migrate once
+with `migrateLegacyCanvasApps` (an admin action, applied only with the
+transition below switched off: while the management client's switch is on,
+`dryRun: false` is refused with `CANVAS_LEGACY_MODE_ON` (409) before
+anything is read, and a dry run reports `applyBlocked`): each migrated fact is
+removed only at the revision that was migrated (an atomic compare-and-delete
+on its etag; a fact replaced meanwhile stays), and a skipped one stays. An
+existing shared app is extended only by the same bytes.
+
+### The transition (`PILOTSWARM_CANVAS_LEGACY_MODE`)
+
+One switch, `on` by default, keeps the old catalog working next to the
+registry (`canvas-legacy.ts`, exported as `canvasLegacyModeFromEnv()`). Each
+process reads it: workers (`PilotSwarmWorkerOptions.canvasLegacyMode`) and
+the portal (`PilotSwarmManagementClient` config `canvasLegacyMode`). An
+unrecognized value is `off`.
+
+| | `on` | `off` |
+|---|---|---|
+| `find_canvas_app({query})` | registry apps, then old `apps/*` cards from main's own search, in their old shape (`legacy: true`, `key`, `source`); a registry app of the same name wins unless it is not found for the user (a disabled one still wins); a failed old-catalog search is reported as `legacyError` | registry only |
+| `find_canvas_app({name})` | the registry app, else the old card at exactly `apps/<name>` | the registry app |
+| Agent and management writes to `apps/*` | allowed, as before | refused |
+| A legacy page (below): workspace calls | no approval | the owner approves the exact program |
+| A legacy page: agent byte reads (`read_artifact`, copy, `read_canvas`, publish from a slot, private-bytes `fromArtifact`) | allowed | refused when they are another owner's app |
+| `page` label on KV values and actions | none for owner, agent or a legacy page; `cross-owner` (with the app) for another user's app; `unknown` when the page's origin cannot be confirmed | the same, without the legacy case |
+| A legacy page: share link | the page itself (text/html, CSP sandbox), as on main | by trust |
+| A legacy page: session canvas, Master of Agents panel, Files preview | framed directly, as on main, with the exact bytes the portal's label names (below) | by trust |
+| `getCanvasRevisionLabel` | `{rev, trust, app?, legacy, pageSha256?}` from one read of the latest draw, judged now | the same with `legacy: false` |
+| Bootstrap `canvasLegacyMode` | `true` | `false` |
+
+**A legacy page** (`canvasRevisionIsLegacy`), judged by the process that
+uses it, when it uses it, with its own switch:
+
+- (a) an old app's page: the draw event says `legacy: true` (the worker
+  adds it next to the true `trust` when the page's sha256 is in the set),
+  its recorded `pageSha256` is the page being used, and that sha256 is in
+  the set now; or
+- (b) a revision drawn before the registry: the event records no `trust`,
+  the minted revision equals the event's (no redraw in flight), and the
+  bytes used are the recorded ones when the event recorded any.
+
+The draw-time flag alone never exempts anything server-side: the worker's
+byte guard and KV label, and the portal's approval, action label and share
+link, each re-check the set when the page is used. The event's `trust` is
+never rewritten, so with the switch off every page follows the registry's
+rules again; a worker or portal whose own switch is off ignores the flag,
+so a mismatch applies the stricter rules. While on, an old app's exact
+bytes are exempt even when the same bytes are also another user's registry
+app (the exemption is per sha256). A sha that cannot be established is
+not in the set: a failed refresh (or an unknown install time)
+exempts nothing, so old pages ask for approval and are labelled until a
+good read (a facts-store outage brings the prompts back). A partial
+enumeration (the read budget below reached) exempts only the qualifying
+cards it read, never one it did not reach: a card read is a real row at its
+exact key, judged by its own `updated_at`, so writing many `apps/*` facts
+cannot strip an old app's exemption.
+
+Labels decide from one draw event at a time: the worker's KV label reads
+the latest event, hashes the stored page and reads the minted revision
+(`canvasPageLabel`); the portal's action label uses one
+`getCanvasRevisionLabel` answer (`canvasPageLabelFor`). Only `owner`,
+`agent` or a verified legacy decision go unlabelled; a failed read, no
+event, no trust (when case (b) does not hold) or an unknown trust string
+is labelled `unknown`. Case (b) needs the minted revision from
+`session_canvases` itself (`mintedCanvasRevStrict`): a failed read is
+"cannot tell", never the event's revision. Case (b) is a format rule, not a
+clock: every PR 195 draw records `trust`, but during a rolling deploy a
+worker still on the previous release draws without it. Such a worker is
+compatibility-trusted during the rollout: its draws count as case (b)
+while the switch is on.
+
+**In the browser** (`ui/core` `ensureCanvasLegacyLabel`, `web-app.js`
+`useCanvasLegacyDecision`), the portal's bootstrap `canvasLegacyMode` is the
+switch; a transport without it is off. The draw-time flag never frames a
+page by itself:
+
+- `owner` and `agent` pages frame directly, as today, with no label read,
+  even when flagged;
+- a page whose draw recorded no trust, or that the draw flagged as an old
+  app's page, waits for one `getCanvasRevisionLabel` answer under the same
+  3 s hold as an unknown trust. It is framed directly only when that answer
+  is for the revision on screen, says `legacy`, names a well-formed
+  `pageSha256`, and that sha is the one the draw recorded (when it recorded
+  one). The frame then fetches only those bytes: other bytes are refused;
+- "not legacy" is an answer: the page is wrapped as another user's page,
+  with no notice (for example, an old app's card changed after the draw);
+- no answer (a transport without the operation, an error, another
+  revision, a legacy answer without the exact page) seals the page, with
+  the "couldn't confirm" notice and Retry, as after the hold;
+- every other page (another user's registry app) reads nothing.
+
+The answer is kept per session, slot, revision and recorded page sha: one
+read for each, never retried in a loop; only the user's Retry reads the same
+key again, and a later draw or other bytes is a new key. The cost is one
+extra request per such canvas revision, before its first frame; owner,
+agent and registry pages pay nothing. The Files preview of `canvas.html` …
+`canvas5.html` uses the same answer: directly with the named bytes, else
+the wrapper (it never runs a page with the session). While the switch is
+on it frames nothing until the slot's draw event and, when needed, its
+label are read, under the same 3 s hold; past the hold, or with a failed
+label, it shows the wrapper with the same notice and Retry. The canvas
+pane's load-error Retry also reads a needed label again, since the label
+may name other bytes than the file now holds. Master of Agents
+panels take the switch from their own transport. Known effect, as on the
+server: while the old catalog cannot be read (a facts-store outage), old
+apps' pages are not legacy, so their labels say so and they are wrapped,
+and a label that cannot be read at all seals the page until Retry. The
+share viewer needs no client change: the server serves a legacy page as
+`text/html`, which the viewer frames as on main. The native TUI renders no
+canvas, so nothing changes there.
+
+A card counts as an old app (`CanvasLegacyCatalog.isExemptSha256`) only if
+all of these hold:
+
+- its key is `apps/<valid app name>` and its `source` has a sha256;
+- its fact was last written at least 5 minutes
+  (`CANVAS_LEGACY_CUTOFF_MARGIN_MS`) before the registry's install: the
+  `applied_at` of CMS migration 0084 in the migrations table
+  (`CanvasAppStore.installedAt()`).
+
+The database sets a fact's `updated_at` on every write, so a card written
+or changed after the deploy is still found and drawn, but it is not an old
+app. The margin covers clock skew between a separate facts database and the
+CMS (skew above 5 minutes is not covered), transaction-start timestamps and
+sub-millisecond precision; it only narrows the set.
+
+The set is enumerated at most once a minute per process, completely: a key
+prefix whose read returns a full page (1,000 facts) is split on the next
+name character, so newer facts cannot push an old card out. One
+enumeration makes at most 200 reads; past that it is incomplete and
+exempts only the qualifying cards it read. An unknown install time, or a
+failed refresh after the minute, exempts nothing. Searches run main's search on every
+call; find by name reads the one exact key.
 
 The card is derived from the document's `CANVAS-APP-MANIFEST`, never from
 the model's memory of it, and **publish refuses a manifest without an
@@ -184,13 +328,65 @@ the model's memory of it, and **publish refuses a manifest without an
 value), `requests` (which `req/*` ops the page queues, their args and the
 `result` it renders), `events` (which `evt/*` notes it shows). That block is
 what an agent that never read the HTML drives the app from. Code:
-`packages/sdk/src/canvas-app-catalog.ts`; manifest grammar and caps in
-`canvas-app-manifest.ts`.
+`canvas-app-registry.ts` (service), `canvas-app-store.ts` (procedures);
+manifest grammar and caps in `canvas-app-manifest.ts`.
 
-Publishing is a disclosure — the shared fact and the artifact are readable
-by every session — so the rule is *publish the shell, never the data*.
-Republishing a name replaces the card and the artifact. The facts stats
-views bucket the namespace as `apps` (facts migration 0012).
+Every `fromApp` draw, and every `fromArtifact` draw whose bytes equal a
+version, records a load (time, session, user, app, version), kept 400 days;
+owners and unrestricted admins read them (`getCanvasAppLoads`, the tuner's
+`read_canvas_app_loads`).
+
+### Who a page belongs to
+
+Every draw is classified for the canvas's owner and the result rides the
+draw event: `owner` (the owner's app, by `fromApp` or exact bytes),
+`cross-owner` (another user's app, by `fromApp`, exact bytes, or the same
+workspace block), or `agent` (anything else). A draw that cannot be
+classified is recorded as `cross-owner`. A share link whose draw event
+carries no recognised trust serves the page as `cross-owner`. The session
+canvas does the same: a draw event without a recognised `trust` (one
+recorded before the registry existed) is `cross-owner` until the canvas is
+drawn again. The sessions list can name a canvas revision before the portal
+reads its draw event, so the session canvas waits for the revision's trust
+before it frames the page: the first frame is the final one, and an app is
+not started twice. If the trust has not come after 3 seconds, the page is
+framed as `cross-owner` and says it could not confirm whose page it is; a
+`cross-owner` trust that arrives later with the `pageSha256` of the bytes
+on screen keeps that frame, and an `owner` or `agent` trust frames the page
+again, directly. A list revision newer than the one the store knows drops
+the older revision's trust and has the draw events read again; that read
+pages back (at most 10 pages of 30 draw events) to find each known slot's
+own draw event, and re-reads a revision named ahead of its draw event at
+most 5 times before it leaves it sealed (Retry reads again). A `cross-owner` page is framed by
+the portal through one isolation contract (`ui/react/src/canvas-isolation.js`):
+a portal-authored wrapper document holds no app bytes, sets the page as its
+inner frame's `srcdoc`, carries the app policy plus `frame-src 'none'`, relays
+only between the portal and that one inner frame, and stops for good if the
+inner frame loads twice. Once its page has loaded, the wrapper tells the
+portal, which replays the current tick state to it. The session canvas, the share viewer and the Files
+preview of canvas files all use it, and a frame's bytes must match the
+`pageSha256` its draw event recorded. Its owner is named; actions
+and `canvas_kv` values from it reach the agent with a `page` label. The
+artifact and canvas read tools do not hand an agent another owner's app
+bytes the registry identifies (defense in depth only: a near-copy is not
+recognized), and `publish_canvas_app` does not publish them as the session
+owner's app (contributors and admins still publish into an app they may
+edit). Bytes the viewer can already obtain as a version it may see (its own
+app, a shared app, or any app for an admin) are never withheld because
+someone else holds an identical private copy; a foreign shared app's
+workspace block is still refused.
+
+### Workspace approval
+
+No page uses the session's folders or commands (canvas-ws) until the
+session owner approves that exact program: the page bytes, its checked
+`workspace` block and the folders its names resolve to, in that slot of
+that session. Classification never authorizes; it only changes the prompt's
+wording. The identical program redrawn keeps its decision; any change asks
+again. The portal asks in its own shell (`getCanvasWorkspaceApproval`,
+`setCanvasWorkspaceConsent`, both the session owner's only); no agent tool,
+MCP tool or CLI command reaches them. See
+[security and sharing](../user-guide/security-and-sharing.md).
 
 ## Canvas apps: save and reuse
 
@@ -224,11 +420,16 @@ read_artifact({sessionId, filename, manifestOnly: true})  # browse candidates
 draw_canvas({fromArtifact: {filename: "app-<name>.html"}})  # reuse; result = interface card
 ```
 
+The canvas documents themselves (`canvas.html` … `canvas5.html`) are
+written only by a draw: `write_artifact` and the Web API upload and copy
+operations refuse them as targets, and a workspace call runs only when the
+stored file still hashes to the page its draw event recorded.
+
 Cross-session sources ride the platform's worker-trusted artifact layer, the
 same trust `read_artifact`/`write_artifact` already extend — the drawing
-agent vouches for what it draws. Package-shipped apps (`fromPackage`) and
-portal browse affordances are designed but unshipped (canvas-apps.md
-phases 2–3).
+agent vouches for what it draws. To reuse an app across sessions and users,
+publish it to the registry and draw it `fromApp`. Package-shipped apps
+(`fromPackage`) are designed but unshipped (canvas-apps.md phase 2).
 
 ## Presentation
 

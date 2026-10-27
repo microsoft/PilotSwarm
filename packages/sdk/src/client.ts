@@ -3,6 +3,7 @@ import {
     sanitizePromptAttachmentRefs,
     systemSessionProtectedError,
 } from "./types.js";
+import { looksLikeCanvasAppSpace } from "./canvas-app-store.js";
 import {
     DURABLE_SESSION_LATEST_VERSION,
     DURABLE_SESSION_ORCHESTRATION_NAME,
@@ -224,6 +225,9 @@ export class PilotSwarmClient {
         }
 
         const sessionId = config?.sessionId ?? crypto.randomUUID();
+        if (looksLikeCanvasAppSpace(sessionId)) {
+            throw Object.assign(new Error("this session id is reserved for canvas app storage"), { code: "RESERVED_SESSION_ID", status: 400 });
+        }
         const resolved = await this._resolveCreationModel(config ?? {}, false);
         const { workspace: _rawWorkspace, ...configWithoutWorkspace } = config ?? {};
         const resolvedConfig = {

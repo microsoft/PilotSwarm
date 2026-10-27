@@ -283,7 +283,7 @@ test("canvas focus binds the shared composer and the pinned slot loads its own d
     await page.route("**/api/v1/**", async route => {
         const url = new URL(route.request().url());
         if (url.pathname.endsWith("/events-before") && url.search.includes("session.canvas_updated")) {
-            return route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true, result: [1, 2].map(slot => ({ seq: slot, eventType: "session.canvas_updated", data: { slot, rev: 1, sizeBytes: 128, name: `Display ${slot}` } })) }) });
+            return route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true, result: [1, 2].map(slot => ({ seq: slot, eventType: "session.canvas_updated", data: { slot, rev: 1, sizeBytes: 128, name: `Display ${slot}`, trust: "agent" } })) }) });
         }
         if (url.pathname.includes("/artifacts/") && /canvas(?:2)?\.html/.test(url.pathname)) {
             downloads.push(url.pathname);

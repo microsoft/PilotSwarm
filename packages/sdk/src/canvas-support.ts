@@ -61,6 +61,27 @@ export async function latestCanvasEventData(catalog: any, sessionId: string, slo
     return latest;
 }
 
+/**
+ * The canvas app transition (issue 181): the slot's minted revision, for a
+ * decision that must fail closed. The table row is authoritative (a draw
+ * mints it before it uploads its page). A row known to be absent (a canvas
+ * drawn before the table existed, never redrawn) is the completed event's
+ * revision. A failed read, or a catalog without the table, is null: the
+ * caller must treat that as "cannot tell".
+ */
+export async function mintedCanvasRevStrict(catalog: any, sessionId: string, slot: number, eventRev: number): Promise<number | null> {
+    if (typeof catalog?.getSessionCanvases !== "function") return null;
+    try {
+        const rows = await catalog.getSessionCanvases(sessionId);
+        const hit = (rows || []).find((r: any) => Number(r.slot) === slot);
+        if (!hit) return Number(eventRev) || 0;
+        const rev = Number(hit.latestRev);
+        return Number.isFinite(rev) && Number.isInteger(rev) && rev >= 0 ? rev : null;
+    } catch {
+        return null;
+    }
+}
+
 /** The current canvas revision: table first (migration 0045), event scan as the durable fallback. */
 export async function latestCanvasRev(catalog: any, sessionId: string, slot = 1): Promise<number> {
     try {
