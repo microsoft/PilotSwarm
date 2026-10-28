@@ -1496,6 +1496,9 @@ export interface PilotSwarmWorkerOptions {
      * Per-folder deadline for workspace root discovery and provider attachment,
      * in milliseconds. Defaults to 30_000. Must be a positive integer no larger
      * than 2_147_483_647. Applies to turn attachments and workspace checks.
+     * When explicitly set and the turn inactivity watchdog is enabled,
+     * 2 * (value + 10_000) + 10_000 must be below turnInactivityTimeoutMs
+     * (default 300_000), allowing queued working/extra path checks and a margin.
      * Providers remain responsible for cancelling their own work on expiry.
      */
     workspaceAttachTimeoutMs?: number;

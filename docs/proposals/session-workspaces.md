@@ -583,6 +583,17 @@ integer milliseconds from 1 through 2,147,483,647. Path-check and release
 deadlines are unchanged. Expiry stops waiting, not the provider's work: the
 provider must enforce its own cancellation and cleanup.
 
+An explicit attachment budget is also checked against the resolved
+`turnInactivityTimeoutMs` (default 300,000 ms). In-turn workspace and spawn
+checks prepare the working folder, then extra folders in parallel. To leave
+room for both phases, each path check's 5-second queue wait plus 5-second
+execution deadline, and a 10-second scheduling margin,
+`2 * (workspaceAttachTimeoutMs + 10_000) + 10_000` must be strictly
+less than the watchdog timeout. Invalid combinations fail at worker
+construction. Raise the watchdog alongside a larger attachment budget, or
+explicitly disable it with `turnInactivityTimeoutMs: 0`; an omitted attachment
+option retains existing behavior. This does not extend the wall-clock turn cap.
+
 - **The clone root** is the nearest folder at or above the attach path, and
   inside the root, that contains `.git`. Agents, skills and the skills folder
   all come from it, so a workspace that is a subfolder of a clone adopts the

@@ -50,11 +50,12 @@ import { createSweeperTools } from "./sweeper-tools.js";
 import { createResourceManagerTools } from "./resourcemgr-tools.js";
 import { composeSystemPrompt, mergePromptSections } from "./prompt-layering.js";
 import { buildSchemaIdentifier } from "./prompt-layers.js";
-import { DEFAULT_TURN_TIMEOUT_MS, ManagedSession } from "./managed-session.js";
+import { DEFAULT_TURN_INACTIVITY_TIMEOUT_MS, DEFAULT_TURN_TIMEOUT_MS, ManagedSession } from "./managed-session.js";
 import { findReservedPackageToolName } from "./reserved-tool-names.js";
 import type { Tool } from "@github/copilot-sdk";
 import type { PilotSwarmWorkerOptions, ManagedSessionConfig, WorkspaceProvider } from "./types.js";
 import { createBuiltInWorkspaceProvider } from "./workspace.js";
+import { DEFAULT_PATH_CHECK_TIMEOUT_MS } from "./workspace-check.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { installAgentPackages, loadAgentPackageTools } from "./agent-package-installer.js";
 import fs from "node:fs";
@@ -74,6 +75,7 @@ const DEFAULT_SESSION_STATE_DIR = path.join(os.homedir(), ".copilot", "session-s
 const DEFAULT_ORCHESTRATION_CONCURRENCY = 2;
 const DEFAULT_WORKER_CONCURRENCY = 2;
 const DEFAULT_DUROXIDE_PG_POOL_MAX = 10;
+const WORKSPACE_CHECK_WATCHDOG_MARGIN_MS = 10_000;
 
 function normalizeAgentIdentity(value: unknown): string {
     return String(value ?? "").toLowerCase().replace(/[^a-z0-9]+/g, "");
@@ -375,6 +377,14 @@ export class PilotSwarmWorker {
                 || options.workspaceAttachTimeoutMs <= 0
                 || options.workspaceAttachTimeoutMs > 2_147_483_647)) {
             throw new RangeError("workspaceAttachTimeoutMs must be an integer between 1 and 2147483647 milliseconds");
+        }
+        const inactivityTimeoutMs = options.turnInactivityTimeoutMs ?? DEFAULT_TURN_INACTIVITY_TIMEOUT_MS;
+        // In-turn checks prepare working, then extras; path checks can queue
+        // for one deadline and execute for another on the same root.
+        if (options.workspaceAttachTimeoutMs !== undefined && inactivityTimeoutMs > 0
+            && 2 * (options.workspaceAttachTimeoutMs + 2 * DEFAULT_PATH_CHECK_TIMEOUT_MS)
+                + WORKSPACE_CHECK_WATCHDOG_MARGIN_MS >= inactivityTimeoutMs) {
+            throw new RangeError("workspaceAttachTimeoutMs must leave room within turnInactivityTimeoutMs for two attachment budgets, queued path checks, and a 10000 ms margin");
         }
         this.config = {
             ...options,
