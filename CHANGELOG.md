@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.8.7 — 2026-10-28
+
+**Adopt the PostgreSQL lock-safety fix.** The SDK pins the official npm
+`duroxide` 0.2.4 wrapper and all five native platform packages, adopting
+[`duroxide-pg` 0.1.38](https://github.com/microsoft/duroxide-pg/pull/44).
+This fixes deadlocks between renewal and fetch, acknowledge, or abandon;
+prevents renewal from reviving an expired lease or shortening a live one;
+and rejects acknowledge after another worker has taken over. The published
+Linux binaries retain the GLIBC_2.34 floor. Native binary digest checks,
+Azure Linux 3 coverage, Copilot pins, and orchestration versions are preserved.
+
+**Database upgrade caution.** PostgreSQL connections apply migration `0026`,
+which replaces the renewal and acknowledge procedures and adds a unique index
+on `instance_locks(lock_token)`. The index is not built concurrently and blocks
+writes to that table while it builds. Qualify database upgrade, mixed-version,
+and rollback compatibility before deployment: an older native build can reject
+an unknown migration, so an image rollback alone is not a proven database
+rollback.
+
 ## 0.8.6 — 2026-10-26
 
 **Restore Azure Linux 3 native compatibility.** The SDK pins the official npm
