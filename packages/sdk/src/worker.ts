@@ -370,6 +370,12 @@ export class PilotSwarmWorker {
     private _registryReporting = false;
 
     constructor(options: PilotSwarmWorkerOptions) {
+        if (options.workspaceAttachTimeoutMs !== undefined
+            && (!Number.isInteger(options.workspaceAttachTimeoutMs)
+                || options.workspaceAttachTimeoutMs <= 0
+                || options.workspaceAttachTimeoutMs > 2_147_483_647)) {
+            throw new RangeError("workspaceAttachTimeoutMs must be an integer between 1 and 2147483647 milliseconds");
+        }
         this.config = {
             ...options,
             waitThreshold: options.waitThreshold ?? 30,
@@ -973,6 +979,7 @@ export class PilotSwarmWorker {
                 useManagedIdentity: storage.runtime.useManagedIdentity,
                 aadDbUser: storage.runtime.aadDbUser,
                 ...(this.config.modelProvidersPath ? { modelProvidersPath: this.config.modelProvidersPath } : {}),
+                workspaceAttachTimeoutMs: this.config.workspaceAttachTimeoutMs,
             },
             this._loadedSystemAgents,
             this._sessionPolicy,

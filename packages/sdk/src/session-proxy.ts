@@ -1244,6 +1244,7 @@ export function registerActivities(
         aadDbUser?: string;
         /** The worker's explicit model-providers file, so the clients that create child sessions resolve the same providers. */
         modelProvidersPath?: string;
+        workspaceAttachTimeoutMs?: number;
     },
     /** Loaded system agents — used by resolveAgentConfig activity. */
     systemAgents?: AgentConfig[],
@@ -1262,6 +1263,7 @@ export function registerActivities(
     /** Force package convergence after a workflow child pins a historical version. */
     refreshAgentPackages?: () => Promise<void>,
 ) {
+    const workspaceAttachOptions = { attachTimeoutMs: clientConfig?.workspaceAttachTimeoutMs };
     // Shared config for every activity-layer internal PilotSwarmClient /
     // PilotSwarmManagementClient. Carries the FULL facts/CMS target (07 P3) so
     // these clients resolve the SAME store as the worker — otherwise
@@ -1369,12 +1371,12 @@ export function registerActivities(
         const checkReq: import("./types.js").WorkspaceAttachRequest = { ...req, purpose: "check" };
         let path: string | null = null;
         if (!opts.skipWorkingFolder) {
-            const prepared = await prepareWorkspace(provider, checkReq, { onAttach });
+            const prepared = await prepareWorkspace(provider, checkReq, { ...workspaceAttachOptions, onAttach });
             if (!prepared.ok) return finish({ ok: false as const, code: prepared.code, message: prepared.message });
             path = prepared.path;
         }
         const extras = req.workspace.extra && Object.keys(req.workspace.extra).length > 0
-            ? await prepareWorkspaceExtras(provider, checkReq, { onAttach, ...(opts.extras ? { names: opts.extras } : {}) })
+            ? await prepareWorkspaceExtras(provider, checkReq, { ...workspaceAttachOptions, onAttach, ...(opts.extras ? { names: opts.extras } : {}) })
             : [];
         const bad = extras.find((extra) => !extra.ok);
         if (bad && !bad.ok) return finish({ ok: false as const, code: bad.code, message: `extra folder "${bad.name}": ${bad.message}` });
@@ -2093,7 +2095,7 @@ export function registerActivities(
             // The working folder alone: default extra folders do not count
             // against the record's limit, so the whole record is not re-checked here.
             const prepared = await prepareWorkspace(sessionManager.getWorkspaceProvider(),
-                { ...attachRequest, workspace: workingFolderOf(turnWorkspace) }, { onAttach });
+                { ...attachRequest, workspace: workingFolderOf(turnWorkspace) }, { ...workspaceAttachOptions, onAttach });
             // Section 4.11: the person's own folder is the working folder only
             // because the record has none. Unless the provider marked it
             // required, it is optional like any default folder: the turn runs
@@ -2121,7 +2123,7 @@ export function registerActivities(
                 // is the one extra folder that may adopt (4.11).
                 const extras = turnWorkspace.extra && Object.keys(turnWorkspace.extra).length > 0
                     ? await prepareWorkspaceExtras(sessionManager.getWorkspaceProvider(), attachRequest,
-                        { onAttach, ...(withDefaults.homeExtra ? { adoptFrom: withDefaults.homeExtra } : {}) })
+                        { ...workspaceAttachOptions, onAttach, ...(withDefaults.homeExtra ? { adoptFrom: withDefaults.homeExtra } : {}) })
                     : [];
                 const heldBy = extras.find((extra) => !extra.ok && extra.required);
                 if (heldBy && !heldBy.ok) {
@@ -3030,7 +3032,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                             revision: 1,
                             workerNodeId: workerNodeId ?? os.hostname(),
                             turnIndex: 0,
-                        });
+                        }, workspaceAttachOptions);
                         if (!checked.ok) {
                             return `[SYSTEM: spawn_agent failed — ${checked.code}: ${checked.message}]`;
                         }
@@ -5828,7 +5830,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     revision: 1,
                     workerNodeId: workerNodeId ?? os.hostname(),
                     turnIndex: 0,
-                });
+                }, workspaceAttachOptions);
                 trace(`workspace check done (ok=${checked.ok}${checked.ok ? "" : ` code=${checked.code}`})`);
                 if (!checked.ok) throw new Error(`${checked.code}: ${checked.message}`);
             }
