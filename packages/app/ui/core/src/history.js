@@ -6,7 +6,7 @@ import { matchesSessionError } from "./session-warning.js";
 import { appendNativeTaskEvent, appendNativeTaskCall } from "./native-tasks.js";
 import { buildSessionWarning } from "./session-errors.js";
 import { appendChatCall, CHAT_CALL_EVENT_TYPES } from "./chat-activity.js";
-import { formatWorkflowEventText, isWorkflowEvent, WORKFLOW_EVENT_TYPES } from "./workflow-sessions.js";
+import { describeWorkflowEvent, isWorkflowEvent, WORKFLOW_EVENT_TYPES } from "./workflow-sessions.js";
 
 export const DEFAULT_HISTORY_EVENT_LIMIT = 300;
 export const HISTORY_EVENT_LIMIT_STEPS = [
@@ -736,10 +736,17 @@ function stripLeadingSenderMarker(text) {
 
 /** A workflow execution event as a system chat line (see workflow-sessions.js). */
 function buildWorkflowChatMessage(event) {
-    const text = formatWorkflowEventText(event);
-    if (!text) return null;
-    const message = buildChatMessage({ ...event, data: { content: text } }, "system");
-    return message ? { ...message, workflowEvent: event.eventType } : null;
+    const view = describeWorkflowEvent(event);
+    if (!view) return null;
+    const message = buildChatMessage({ ...event, data: { content: view.text } }, "system");
+    if (!message) return null;
+    return {
+        ...message,
+        workflowEvent: event.eventType,
+        ...(view.kind === "card"
+            ? { cardTitle: view.title, cardTitleColor: view.color }
+            : { workflowNotice: { title: view.title, summary: view.summary, color: view.color } }),
+    };
 }
 
 function buildChatMessage(event, role) {

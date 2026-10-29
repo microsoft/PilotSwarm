@@ -11,6 +11,7 @@ import {
     appendEventToHistory,
     buildAgentPickerItems,
     buildHistoryModel,
+    describeWorkflowEvent,
     CHAT_HISTORY_EVENT_TYPES,
     createInitialState,
     createStore,
@@ -62,6 +63,22 @@ test("each workflow event reads as one line of an execution log", () => {
     assert.match(formatWorkflowEventText(COMPLETED), /completed after 2 steps with outcome \*\*done\*\* at `report`/);
     assert.match(formatWorkflowEventText(FAILED), /failed after 1 step at `collect`: Script node 'collect' returned undeclared outcome 'odd'/);
     assert.equal(formatWorkflowEventText({ eventType: "assistant.message", data: {} }), null);
+});
+
+test("the graph and the result are cards; each step is a one-line notice", () => {
+    assert.deepEqual(
+        [STARTED, COMPLETED, FAILED].map((e) => [describeWorkflowEvent(e).kind, describeWorkflowEvent(e).title]),
+        [["card", "Workflow"], ["card", "Workflow result"], ["card", "Workflow failed"]],
+    );
+    const step = describeWorkflowEvent(NODE_COMPLETED);
+    assert.equal(step.kind, "notice");
+    assert.equal(step.title, `${WORKFLOW_SESSION_GLYPH} Step 1`);
+    assert.equal(step.summary, "collect → success in 1.3 s · 2 tool calls (read_facts, store_fact), 1 failed");
+    assert.doesNotMatch(step.summary, /[*`]/, "a one-line summary is plain text");
+    assert.match(step.text, /Output:/);
+    const history = buildHistoryModel([STARTED, NODE_COMPLETED]);
+    assert.equal(history.chat[0].cardTitle, "Workflow");
+    assert.equal(history.chat[1].workflowNotice.summary, step.summary);
 });
 
 test("the transcript of a workflow session is its execution log, in order, and survives history paging", () => {

@@ -112,3 +112,35 @@ export function formatWorkflowEventText(event) {
             return null;
     }
 }
+
+/**
+ * How one workflow event is drawn in the transcript. The graph and the end
+ * result are full cards; each step is a one-line notice that opens to show
+ * its output and errors. `text` is the Markdown body either way.
+ */
+export function describeWorkflowEvent(event) {
+    const text = formatWorkflowEventText(event);
+    if (!text) return null;
+    const data = event?.data && typeof event.data === "object" ? event.data : {};
+    const stepTitle = `${WORKFLOW_SESSION_GLYPH} Step ${data.step ?? "?"}`;
+    switch (event.eventType) {
+        case "workflow.started":
+            return { kind: "card", title: "Workflow", color: "magenta", text };
+        case "workflow.completed":
+            return { kind: "card", title: "Workflow result", color: "green", text };
+        case "workflow.failed":
+            return { kind: "card", title: "Workflow failed", color: "red", text };
+        case "workflow.node_started":
+            return { kind: "notice", title: stepTitle, color: "gray", summary: `${data.nodeId ?? "?"} started (${data.runtime ?? "script"})`, text };
+        case "workflow.node_completed": {
+            const duration = formatDuration(data.durationMs);
+            const tools = formatToolCalls(data.toolCalls);
+            const summary = `${data.nodeId ?? "?"} → ${data.outcome ?? "?"}${duration ? ` in ${duration}` : ""}${tools ? ` · ${tools}` : ""}`;
+            return { kind: "notice", title: stepTitle, color: data.exitCode === 0 || data.resultSource === "reported" ? "green" : "yellow", summary, text };
+        }
+        case "workflow.node_failed":
+            return { kind: "notice", title: stepTitle, color: "red", summary: `${data.nodeId ?? "?"} could not run: ${data.error ?? "unknown error"}`, text };
+        default:
+            return null;
+    }
+}
