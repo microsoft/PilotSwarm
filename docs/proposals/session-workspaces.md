@@ -583,16 +583,32 @@ integer milliseconds from 1 through 2,147,483,647. Path-check and release
 deadlines are unchanged. Expiry stops waiting, not the provider's work: the
 provider must enforce its own cancellation and cleanup.
 
-An explicit attachment budget is also checked against the resolved
-`turnInactivityTimeoutMs` (default 300,000 ms). In-turn workspace and spawn
-checks prepare the working folder, then extra folders in parallel. To leave
-room for both phases, each path check's 5-second queue wait plus 5-second
-execution deadline, and a 10-second scheduling margin,
-`2 * (workspaceAttachTimeoutMs + 10_000) + 10_000` must be strictly
-less than the watchdog timeout. Invalid combinations fail at worker
-construction. Raise the watchdog alongside a larger attachment budget, or
-explicitly disable it with `turnInactivityTimeoutMs: 0`; an omitted attachment
-option retains existing behavior. This does not extend the wall-clock turn cap.
+For workers with a workspace provider, fixed roots, or an explicit attachment
+option, the resolved attachment budget (30,000 ms when omitted) is checked
+against both `turnInactivityTimeoutMs` (default 300,000 ms) and the resolved
+`turnTimeoutMs` (option, then `PILOTSWARM_TURN_TIMEOUT_MS`, then 1,200,000 ms).
+In-turn workspace and spawn checks prepare the working folder, then extra
+folders in parallel. The sizing rule reserves both phases, each path check's
+5-second queue wait plus 5-second execution deadline, one 10-second parallel
+release phase, and a 10-second scheduling margin:
+`2 * (resolvedAttachTimeoutMs + 10_000) + 20_000` must be strictly less
+than each enabled turn timeout. Invalid combinations fail at construction
+or when `setWorkspaceProvider()` enables workspaces later. Workers that do
+not use workspaces are unaffected. Raise the turn limits alongside a larger
+attachment budget, or explicitly disable either guard with its own `0`.
+Disabling the inactivity watchdog does not disable the wall-clock turn cap.
+
+External management waits are separate from provider execution deadlines.
+`setSessionWorkspace(..., { timeoutMs })` waits up to 120 seconds by default,
+not 30 seconds; the portal clamps a caller's wait to 1 second through
+5 minutes. An elapsed wait returns `{ status: "pending", commandId }`, not a
+workspace failure, and does not cancel the durable command. The shared UI
+shows the change as queued and refreshes the workspace view. A 90-second
+per-folder attachment can therefore outlast an external wait when working
+and extra folders need preparation. Callers may choose a longer observation
+wait, but it does not change the worker's attachment budget. Transport or
+reverse-proxy disconnects also do not cancel the command; read
+`getSessionWorkspace()` or the command response to observe its outcome.
 
 - **The clone root** is the nearest folder at or above the attach path, and
   inside the root, that contains `.git`. Agents, skills and the skills folder
