@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { ModelProviderRegistry } from "../../src/model-providers.ts";
 import { ManagedSession } from "../../src/managed-session.ts";
-import { collectContractViolations } from "../../src/session-proxy.ts";
+import { collectContractViolations, isFailureToolCompletion } from "../../src/session-proxy.ts";
 
 class FakeCopilotSession {
     registeredTools = [];
@@ -81,7 +81,262 @@ class FakeCopilotSession {
     }
 }
 
+describe("tool completion telemetry classification", () => {
+    it.each([
+        ["native SDK failure", { success: false, error: { code: "failure", message: "Canvas refused" } }, true],
+        ["native SDK failure without details", { success: false }, true],
+        ["legacy failure", { resultType: "failure" }, true],
+        ["legacy error string", { error: "Canvas refused" }, true],
+        ["legacy error message", { errorMessage: "Canvas refused" }, true],
+        ["successful completion", { success: true, result: { content: "drawn" } }, false],
+        ["ordinary error-looking text", { success: true, result: "Error: ordinary tool output" }, false],
+        ["empty event", {}, false],
+        ["missing event", undefined, false],
+        ["null event", null, false],
+    ])("classifies %s", (_label, data, expected) => {
+        expect(isFailureToolCompletion(data)).toBe(expected);
+    });
+});
+
 describe("inline control tool execution", () => {
+    it("reports a refused canvas draw as a failed tool result", async () => {
+        const fakeSession = new FakeCopilotSession();
+        fakeSession.scriptedToolCalls = [
+            {
+                name: "draw_canvas",
+                args: { html: "<html><body>Demo</body></html>" },
+            },
+        ];
+
+        const controlToolBridge = {
+            drawCanvas: vi.fn(async () => ({
+                error: "Canvas draw refused for this reproduction",
+            })),
+        };
+
+        const toolResults = [];
+        fakeSession.on("tool.execution_complete", (event) => {
+            toolResults.push(event.data.result);
+        });
+
+        const managed = new ManagedSession("canvas-refusal-repro", fakeSession, {});
+        await managed.runTurn("Draw the demo canvas.", { controlToolBridge });
+
+        expect(controlToolBridge.drawCanvas).toHaveBeenCalledTimes(1);
+        expect(toolResults).toHaveLength(1);
+        console.log("Canvas refusal result:", toolResults[0]);
+
+        expect(toolResults[0]).toMatchObject({
+            resultType: "failure",
+            error: expect.stringContaining(
+                "Canvas draw refused for this reproduction"
+            ),
+            textResultForLlm: expect.stringContaining(
+                "Canvas draw refused for this reproduction"
+            ),
+        });
+        expect(toolResults[0].textResultForLlm).toContain("find_canvas_app");
+    });
+
+    it("preserves successful canvas draw results", async () => {
+        const fakeSession = new FakeCopilotSession();
+        fakeSession.scriptedToolCalls = [
+            {
+                name: "draw_canvas",
+                args: { html: "<html><body>Demo</body></html>" },
+            },
+        ];
+
+        const controlToolBridge = {
+            drawCanvas: vi.fn(async () => ({
+                rev: 1,
+                sizeBytes: 30,
+            })),
+        };
+
+        const toolResults = [];
+        fakeSession.on("tool.execution_complete", (event) => {
+            toolResults.push(event.data.result);
+        });
+
+        const managed = new ManagedSession("canvas-success-repro", fakeSession, {});
+        await managed.runTurn("Draw the demo canvas.", { controlToolBridge });
+
+        expect(controlToolBridge.drawCanvas).toHaveBeenCalledTimes(1);
+        expect(toolResults).toHaveLength(1);
+        expect(JSON.parse(toolResults[0])).toMatchObject({
+            drawn: true,
+            rev: 1,
+            sizeBytes: 30,
+        });
+    });
+
+    it.each([
+        ["update_canvas", "updateCanvas", { data: { value: 1 } }],
+        ["show_canvas", "showCanvas", {}],
+        ["read_canvas", "readCanvas", {}],
+        ["canvas_kv", "canvasKv", { op: "get", key: "demo" }],
+        ["publish_canvas_app", "publishCanvasApp", { name: "demo" }],
+        ["find_canvas_app", "findCanvasApp", { query: "demo" }],
+    ])("reports a refused %s call as a failed tool result", async (
+        toolName,
+        bridgeMethod,
+        args,
+    ) => {
+        const fakeSession = new FakeCopilotSession();
+        fakeSession.scriptedToolCalls = [{ name: toolName, args }];
+
+        const reason = "Canvas operation refused for this reproduction";
+        const bridgeHandler = vi.fn(async () => ({ error: reason }));
+        const controlToolBridge = {
+            [bridgeMethod]: bridgeHandler,
+        };
+
+        const toolResults = [];
+        fakeSession.on("tool.execution_complete", (event) => {
+            toolResults.push(event.data.result);
+        });
+
+        const managed = new ManagedSession("canvas-tools-refusal", fakeSession, {});
+        await managed.runTurn("Run the canvas operation.", { controlToolBridge });
+
+        expect(bridgeHandler).toHaveBeenCalledTimes(1);
+        expect(toolResults).toHaveLength(1);
+        expect(toolResults[0]).toMatchObject({
+            resultType: "failure",
+            error: expect.stringContaining(reason),
+            textResultForLlm: expect.stringContaining(reason),
+        });
+    });
+
+    it.each([
+        "draw_canvas",
+        "update_canvas",
+        "show_canvas",
+        "read_canvas",
+        "canvas_kv",
+        "publish_canvas_app",
+        "find_canvas_app",
+    ])("reports an unavailable bridge for %s as a failed tool result", async (
+        toolName,
+    ) => {
+        const fakeSession = new FakeCopilotSession();
+        fakeSession.scriptedToolCalls = [{ name: toolName, args: {} }];
+
+        const toolResults = [];
+        fakeSession.on("tool.execution_complete", (event) => {
+            toolResults.push(event.data.result);
+        });
+
+        const managed = new ManagedSession("canvas-no-bridge", fakeSession, {});
+        await managed.runTurn("Run the canvas operation.");
+
+        expect(toolResults).toHaveLength(1);
+        expect(toolResults[0]).toMatchObject({
+            resultType: "failure",
+            error: expect.stringContaining("canvas bridge is unavailable"),
+            textResultForLlm: expect.stringContaining("canvas bridge is unavailable"),
+        });
+    });
+
+    it.each([
+        ["draw_canvas", "drawCanvas", { html: 42 }, "html must be a string"],
+        ["draw_canvas", "drawCanvas", {}, "pass exactly one source"],
+        ["draw_canvas", "drawCanvas", { html: "", fromArtifact: { filename: "demo.html" } }, "pass exactly one source"],
+        ["draw_canvas", "drawCanvas", { fromArtifact: { filename: " " } }, "fromArtifact.filename is required"],
+        ["draw_canvas", "drawCanvas", { html: "x".repeat(900_001) }, "keep it under 900 KB"],
+        ["draw_canvas", "drawCanvas", { html: "\u00e9".repeat(450_001) }, "900002 bytes"],
+        ["draw_canvas", "drawCanvas", { html: "<html></html>", responseContract: { actions: {} } }, "invalid responseContract"],
+        ["update_canvas", "updateCanvas", {}, "pass exactly one of data"],
+        ["update_canvas", "updateCanvas", { data: {}, patch: {} }, "pass exactly one of data"],
+        ["update_canvas", "updateCanvas", { data: [] }, "not an array"],
+        ["update_canvas", "updateCanvas", { patch: [] }, "not an array"],
+        ["update_canvas", "updateCanvas", { data: null }, "must be a JSON object"],
+        ["update_canvas", "updateCanvas", { patch: "invalid" }, "must be a JSON object"],
+        ["update_canvas", "updateCanvas", { data: { text: "x".repeat(32_758) } }, "32769"],
+        ["update_canvas", "updateCanvas", { patch: { text: "\u00e9".repeat(16_379) } }, "32769"],
+        ["canvas_kv", "canvasKv", { op: "invalid" }, "op must be get, put, list or delete"],
+    ])("reports invalid %s arguments as a failed tool result (%#)", async (
+        toolName,
+        bridgeMethod,
+        args,
+        reason,
+    ) => {
+        const fakeSession = new FakeCopilotSession();
+        fakeSession.scriptedToolCalls = [{ name: toolName, args }];
+        const bridgeHandler = vi.fn();
+        const toolResults = [];
+        fakeSession.on("tool.execution_complete", (event) => {
+            toolResults.push(event.data.result);
+        });
+
+        const managed = new ManagedSession("canvas-invalid-arguments", fakeSession, {});
+        await managed.runTurn("Run the canvas operation.", {
+            controlToolBridge: { [bridgeMethod]: bridgeHandler },
+        });
+
+        expect(bridgeHandler).not.toHaveBeenCalled();
+        expect(toolResults).toHaveLength(1);
+        expect(toolResults[0]).toMatchObject({
+            resultType: "failure",
+            error: expect.stringContaining(reason),
+            textResultForLlm: expect.stringContaining(reason),
+        });
+    });
+
+    it.each([
+        ["draw_canvas", "drawCanvas", { html: "" }, { rev: 2, sizeBytes: 0 }, { drawn: true, rev: 2, sizeBytes: 0 }],
+        ["draw_canvas", "drawCanvas", { html: "x".repeat(900_000) }, { rev: 3, sizeBytes: 900_000 }, { drawn: true, sizeBytes: 900_000 }],
+        ["update_canvas", "updateCanvas", { data: { text: "x".repeat(32_757) } }, { dataRev: 2, sizeBytes: 32_768 }, { updated: true, mode: "data", sizeBytes: 32_768 }],
+        ["update_canvas", "updateCanvas", { patch: { value: null } }, { dataRev: 3, sizeBytes: 2 }, { updated: true, mode: "patch", sizeBytes: 2 }],
+        ["show_canvas", "showCanvas", { slot: 2 }, { slot: 2, rev: 1 }, { presented: true, slot: 2, rev: 1 }],
+        ["read_canvas", "readCanvas", {}, { exists: true, rev: 1 }, { exists: true, rev: 1 }],
+        ["canvas_kv", "canvasKv", { op: "get", key: "missing" }, { found: false }, { found: false }],
+        ["publish_canvas_app", "publishCanvasApp", { name: "demo" }, { published: true }, { published: true }],
+        ["find_canvas_app", "findCanvasApp", { query: "demo" }, { count: 1, apps: [{ name: "demo" }] }, { count: 1, apps: [{ name: "demo" }] }],
+        ["find_canvas_app", "findCanvasApp", { query: "missing" }, { count: 0, apps: [] }, { count: 0, apps: [] }],
+    ])("preserves successful %s results (%#)", async (
+        toolName,
+        bridgeMethod,
+        args,
+        bridgeResult,
+        expected,
+    ) => {
+        const fakeSession = new FakeCopilotSession();
+        fakeSession.scriptedToolCalls = [{ name: toolName, args }];
+        const bridgeHandler = vi.fn(async () => bridgeResult);
+        const toolResults = [];
+        fakeSession.on("tool.execution_complete", (event) => {
+            toolResults.push(event.data.result);
+        });
+
+        const managed = new ManagedSession("canvas-success", fakeSession, {});
+        await managed.runTurn("Run the canvas operation.", {
+            controlToolBridge: { [bridgeMethod]: bridgeHandler },
+        });
+
+        expect(bridgeHandler).toHaveBeenCalledTimes(1);
+        expect(toolResults).toHaveLength(1);
+        expect(typeof toolResults[0]).toBe("string");
+        expect(JSON.parse(toolResults[0])).toMatchObject(expected);
+    });
+
+    it("keeps an absent canvas as a normal read result", async () => {
+        const fakeSession = new FakeCopilotSession();
+        fakeSession.scriptedToolCalls = [{ name: "read_canvas", args: {} }];
+        const toolResults = [];
+        fakeSession.on("tool.execution_complete", (event) => {
+            toolResults.push(event.data.result);
+        });
+
+        const managed = new ManagedSession("canvas-empty-read", fakeSession, {});
+        await managed.runTurn("Read the canvas.", {
+            controlToolBridge: { readCanvas: vi.fn(async () => ({ exists: false })) },
+        });
+
+        expect(toolResults).toEqual(["No canvas has been drawn on this session yet."]);
+    });
+
     it("fails before the model turn when a required tool handler is unavailable", async () => {
         const fakeSession = new FakeCopilotSession();
         const managed = new ManagedSession("required-tool-unavailable", fakeSession, {});

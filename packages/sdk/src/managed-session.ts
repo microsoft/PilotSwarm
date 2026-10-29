@@ -2033,18 +2033,18 @@ export class ManagedSession {
             handler: async (args: { html?: string; fromArtifact?: { sessionId?: string; filename?: string; expectedSha256?: string }; note?: string; responseContract?: unknown; slot?: number; name?: string; session_id?: string }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("draw_canvas");
                 if (typeof (controlBridge as any)?.drawCanvas !== "function") {
-                    return "Error: the canvas bridge is unavailable on this session.";
+                    return failureToolResult("the canvas bridge is unavailable on this session.");
                 }
                 if (args?.html !== undefined && typeof args.html !== "string") {
-                    return "Error: html must be a string (the complete document; empty string clears).";
+                    return failureToolResult("html must be a string (the complete document; empty string clears).");
                 }
                 const hasHtml = typeof args?.html === "string";
                 const fromArtifact = args?.fromArtifact && typeof args.fromArtifact === "object" ? args.fromArtifact : null;
                 if (hasHtml === Boolean(fromArtifact)) {
-                    return "Error: pass exactly one source — html (inline document; empty string clears) OR fromArtifact ({filename, sessionId?}).";
+                    return failureToolResult("pass exactly one source — html (inline document; empty string clears) OR fromArtifact ({filename, sessionId?}).");
                 }
                 if (fromArtifact && !String(fromArtifact.filename || "").trim()) {
-                    return "Error: fromArtifact.filename is required.";
+                    return failureToolResult("fromArtifact.filename is required.");
                 }
                 const html = hasHtml ? String(args?.html ?? "") : undefined;
                 // The store caps TEXT artifacts at 1 MiB (TEXT_ARTIFACT_MAX_BYTES);
@@ -2054,15 +2054,15 @@ export class ManagedSession {
                 if (html !== undefined) {
                     const inlineBytes = Buffer.byteLength(html, "utf8");
                     if (inlineBytes > 900_000) {
-                        return `Error: canvas document is ${inlineBytes} bytes; keep it under 900 KB. `
-                            + "Aggregate the data and avoid embedded raster images (see the html-visuals skill).";
+                        return failureToolResult(`canvas document is ${inlineBytes} bytes; keep it under 900 KB. `
+                            + "Aggregate the data and avoid embedded raster images (see the html-visuals skill).");
                     }
                 }
                 const note = args?.note ? String(args.note) : undefined;
                 // A cleared canvas accepts nothing, so a contract on an empty
                 // draw is dropped rather than armed against a blank page.
                 const contractResult = html === "" ? {} : normalizeCanvasContractShared(args?.responseContract);
-                if (contractResult.error) return `Error: invalid responseContract: ${contractResult.error}`;
+                if (contractResult.error) return failureToolResult(`invalid responseContract: ${contractResult.error}`);
                 const result = await (controlBridge as any).drawCanvas({
                     ...(args?.slot !== undefined ? { slot: args.slot } : {}),
                     ...(args?.session_id !== undefined ? { session_id: String(args.session_id) } : {}),
@@ -2076,7 +2076,13 @@ export class ManagedSession {
                     note,
                     responseContract: contractResult.contract,
                 });
-                if (result?.error) return `Error: could not draw the canvas: ${result.error}`;
+                if (result?.error) {
+                    return failureToolResult(
+                        `Could not draw the canvas: ${result.error}\n`
+                        + "Address the reported reason before retrying. "
+                        + "If using a saved canvas app, use find_canvas_app to verify its source."
+                    );
+                }
                 // No emit here, deliberately. The bridge committed the bytes
                 // and then the durable canvas_updated event, awaited and in
                 // that order; the persisted event is ALSO the live path (the
@@ -2115,27 +2121,27 @@ export class ManagedSession {
             handler: async (args: { data?: unknown; patch?: unknown; note?: string; slot?: number; session_id?: string }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("update_canvas");
                 if (typeof (controlBridge as any)?.updateCanvas !== "function") {
-                    return "Error: the canvas bridge is unavailable on this session.";
+                    return failureToolResult("the canvas bridge is unavailable on this session.");
                 }
                 const hasData = args?.data !== undefined;
                 const hasPatch = args?.patch !== undefined;
                 if (hasData === hasPatch) {
-                    return "Error: pass exactly one of data (replace the whole state) or patch (RFC 7386 merge patch — only the changed subtree; null deletes a key).";
+                    return failureToolResult("pass exactly one of data (replace the whole state) or patch (RFC 7386 merge patch — only the changed subtree; null deletes a key).");
                 }
                 const body = hasData ? args.data : args.patch;
                 const label = hasData ? "data" : "patch";
                 if (Array.isArray(body)) {
-                    return `Error: ${label} must be a JSON object, not an array — wrap it: { items: [...] }.`;
+                    return failureToolResult(`${label} must be a JSON object, not an array — wrap it: { items: [...] }.`);
                 }
                 if (!body || typeof body !== "object") {
-                    return `Error: ${label} must be a JSON object.`;
+                    return failureToolResult(`${label} must be a JSON object.`);
                 }
                 const serialized = JSON.stringify(body);
                 const sizeBytes = Buffer.byteLength(serialized, "utf8");
                 // The bridge enforces the real cap on the MERGED state; this
                 // is the cheap early refusal for an oversized message body.
                 if (sizeBytes > 32_768) {
-                    return `Error: ${label} tick is ${sizeBytes} bytes serialized; the cap is 32768. Aggregate before sending, or redraw if the shape truly grew.`;
+                    return failureToolResult(`${label} tick is ${sizeBytes} bytes serialized; the cap is 32768. Aggregate before sending, or redraw if the shape truly grew.`);
                 }
                 const note = args?.note ? String(args.note) : undefined;
                 const result = await (controlBridge as any).updateCanvas({
@@ -2144,7 +2150,9 @@ export class ManagedSession {
                     ...(args?.slot !== undefined ? { slot: args.slot } : {}),
                     ...(args?.session_id !== undefined ? { session_id: String(args.session_id) } : {}),
                 });
-                if (result?.error) return `Error: could not update the canvas: ${result.error}`;
+                if (result?.error) {
+                    return failureToolResult(`Could not update the canvas: ${result.error}`);
+                }
                 return JSON.stringify({
                     updated: true,
                     mode: result.mode ?? label,
@@ -2163,13 +2171,15 @@ export class ManagedSession {
             handler: async (args: { slot?: number; session_id?: string }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("show_canvas");
                 if (typeof (controlBridge as any)?.showCanvas !== "function") {
-                    return "Error: the canvas bridge is unavailable on this session.";
+                    return failureToolResult("the canvas bridge is unavailable on this session.");
                 }
                 const result = await (controlBridge as any).showCanvas({
                     ...(args?.slot !== undefined ? { slot: args.slot } : {}),
                     ...(args?.session_id !== undefined ? { session_id: String(args.session_id) } : {}),
                 });
-                if (result?.error) return `Error: could not present the canvas: ${result.error}`;
+                if (result?.error) {
+                    return failureToolResult(`Could not present the canvas: ${result.error}`);
+                }
                 return JSON.stringify({ presented: true, slot: result.slot, rev: result.rev,
                     reminder: "The user's view turns to that canvas (unless they dismissed it). Nothing was redrawn." });
             },
@@ -2179,7 +2189,7 @@ export class ManagedSession {
             handler: async (args: { offset?: number; maxBytes?: number; manifestOnly?: boolean; include_data?: boolean; slot?: number; session_id?: string }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("read_canvas");
                 if (typeof (controlBridge as any)?.readCanvas !== "function") {
-                    return "Error: the canvas bridge is unavailable on this session.";
+                    return failureToolResult("the canvas bridge is unavailable on this session.");
                 }
                 const result = await (controlBridge as any).readCanvas({
                     offset: args?.offset,
@@ -2189,7 +2199,9 @@ export class ManagedSession {
                     ...(args?.slot !== undefined ? { slot: args.slot } : {}),
                     ...(args?.session_id !== undefined ? { session_id: String(args.session_id) } : {}),
                 });
-                if (result?.error) return `Error: could not read the canvas: ${result.error}`;
+                if (result?.error) {
+                    return failureToolResult(`Could not read the canvas: ${result.error}`);
+                }
                 if (!result?.exists) return "No canvas has been drawn on this session yet.";
                 return JSON.stringify(result);
             },
@@ -2199,10 +2211,10 @@ export class ManagedSession {
             handler: async (args: { op?: string; key?: string; value?: unknown; prefix?: string; limit?: number; after?: string; ifMatch?: number; slot?: number; session_id?: string }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("canvas_kv");
                 if (typeof (controlBridge as any)?.canvasKv !== "function") {
-                    return "Error: the canvas bridge is unavailable on this session.";
+                    return failureToolResult("the canvas bridge is unavailable on this session.");
                 }
                 const op = String(args?.op ?? "");
-                if (!["get", "put", "list", "delete"].includes(op)) return "Error: op must be get, put, list or delete.";
+                if (!["get", "put", "list", "delete"].includes(op)) return failureToolResult("op must be get, put, list or delete.");
                 const result = await (controlBridge as any).canvasKv({
                     op,
                     ...(args?.key !== undefined ? { key: String(args.key) } : {}),
@@ -2214,7 +2226,9 @@ export class ManagedSession {
                     ...(args?.slot !== undefined ? { slot: args.slot } : {}),
                     ...(args?.session_id !== undefined ? { session_id: String(args.session_id) } : {}),
                 });
-                if (result?.error) return `Error: canvas_kv ${op} failed: ${result.error}`;
+                if (result?.error) {
+                    return failureToolResult(`canvas_kv ${op} failed: ${result.error}`);
+                }
                 return JSON.stringify(result);
             },
         });
@@ -2223,7 +2237,7 @@ export class ManagedSession {
             handler: async (args: { name?: string; description?: string; tags?: string[]; slot?: number; session_id?: string }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("publish_canvas_app");
                 if (typeof (controlBridge as any)?.publishCanvasApp !== "function") {
-                    return "Error: the canvas bridge is unavailable on this session.";
+                    return failureToolResult("the canvas bridge is unavailable on this session.");
                 }
                 const result = await (controlBridge as any).publishCanvasApp({
                     name: args?.name, description: args?.description,
@@ -2231,7 +2245,9 @@ export class ManagedSession {
                     ...(args?.slot !== undefined ? { slot: args.slot } : {}),
                     ...(args?.session_id !== undefined ? { session_id: String(args.session_id) } : {}),
                 });
-                if (result?.error) return `Error: could not publish the app: ${result.error}`;
+                if (result?.error) {
+                    return failureToolResult(`Could not publish the app: ${result.error}`);
+                }
                 return JSON.stringify(result);
             },
         });
@@ -2240,10 +2256,12 @@ export class ManagedSession {
             handler: async (args: { query?: string; limit?: number }) => {
                 if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("find_canvas_app");
                 if (typeof (controlBridge as any)?.findCanvasApp !== "function") {
-                    return "Error: the canvas bridge is unavailable on this session.";
+                    return failureToolResult("the canvas bridge is unavailable on this session.");
                 }
                 const result = await (controlBridge as any).findCanvasApp({ query: args?.query, limit: args?.limit });
-                if (result?.error) return `Error: could not search the app catalog: ${result.error}`;
+                if (result?.error) {
+                    return failureToolResult(`Could not search the app catalog: ${result.error}`);
+                }
                 if (!result?.count) return JSON.stringify({ count: 0, apps: [], note: "No published app matches. Build one, and publish_canvas_app it when the user wants it shared." });
                 return JSON.stringify(result);
             },
