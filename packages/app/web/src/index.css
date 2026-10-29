@@ -1541,6 +1541,61 @@ body.is-resizing-pane-y iframe {
   margin-top: 6px;
 }
 
+.ps-workflow-execution {
+  margin: 8px 0;
+  border: 1px solid var(--ps-border);
+  border-radius: var(--ps-radius-sm);
+  background: color-mix(in srgb, var(--ps-surface) 97%, transparent);
+  overflow: hidden;
+}
+
+.ps-workflow-execution-summary {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 9px 12px;
+  cursor: pointer;
+  color: var(--ps-foreground);
+  background: var(--ps-chat-card-header);
+  font-weight: 600;
+  list-style: none;
+}
+
+.ps-workflow-execution-summary::-webkit-details-marker {
+  display: none;
+}
+
+.ps-workflow-execution-summary:hover {
+  background: color-mix(in srgb, var(--ps-chat-card-header) 84%, var(--ps-accent) 16%);
+}
+
+.ps-workflow-execution-caret {
+  flex: none;
+  color: var(--ps-accent);
+}
+
+.ps-workflow-execution-body {
+  padding: 10px 12px 12px;
+  border-top: 1px solid var(--ps-border);
+}
+
+.ps-workflow-parent-link {
+  display: inline-flex;
+  margin: 0 0 10px;
+  padding: 0;
+  border: 0;
+  color: var(--ps-accent);
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.ps-workflow-parent-link:hover {
+  color: var(--ps-foreground);
+}
+
 
 .ps-chat-panel .ps-line,
 .ps-chat-panel .ps-chat-card-line {

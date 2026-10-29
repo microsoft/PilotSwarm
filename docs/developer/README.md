@@ -10,6 +10,7 @@ apps). Both paths share the same plugin model —
 [Plugin architecture & layering](./building/plugins.md) is the deep reference.
 
 - Agent authoring: [for SDK apps](./building/sdk-agents.md) · [for CLI apps](./building/cli-agents.md)
+- [Workflow sessions](./building/workflow-sessions.md) — experimental durable workflow children and their integration test
 - [Facts & graph from the SDK](./building/facts-and-graph.md)
 - [Writing a workspace provider](./building/workspace-providers.md) — give sessions git clones, shared folders and a folder per person
 - [Builder agent templates](./building/builder-agents.md) — reusable Copilot agents that scaffold PilotSwarm apps

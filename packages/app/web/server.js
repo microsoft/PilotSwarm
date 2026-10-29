@@ -3,7 +3,7 @@ import http from "node:http";
 import https from "node:https";
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { WS_PATH } from "pilotswarm-sdk/api";
 import { buildSessionCatalogPgClientConfig } from "pilotswarm-sdk";
 import { getPortalAssetFile, getPortalConfig, parsePortalLinkOrigins } from "./config.js";
@@ -24,6 +24,31 @@ function getPortalMode() {
     const explicitMode = process.env.PORTAL_TUI_MODE || process.env.PORTAL_MODE;
     if (explicitMode) return explicitMode;
     return process.env.KUBERNETES_SERVICE_HOST ? "remote" : "local";
+}
+
+export async function loadWorkflowPackageResolverFromEnv(env = process.env) {
+    const modulePath = String(
+        env.PILOTSWARM_WORKFLOW_PACKAGE_RESOLVER_MODULE || "",
+    ).trim();
+    if (!modulePath) return undefined;
+    const loaded = await import(pathToFileURL(path.resolve(modulePath)).href);
+    if (typeof loaded.createWorkflowPackageResolver !== "function") {
+        throw new Error(
+            "PILOTSWARM_WORKFLOW_PACKAGE_RESOLVER_MODULE must export "
+            + "createWorkflowPackageResolver(context).",
+        );
+    }
+    const resolver = await loaded.createWorkflowPackageResolver({
+        env,
+        trace: (message) => console.log(`[workflow-package-resolver] ${message}`),
+    });
+    if (!resolver || typeof resolver.resolve !== "function") {
+        throw new Error(
+            "createWorkflowPackageResolver(context) must return "
+            + "an object with resolve(source).",
+        );
+    }
+    return resolver;
 }
 
 function createPortalServer({ app }) {
@@ -152,7 +177,12 @@ export async function startServer(opts = {}) {
         cmsFactsDatabaseUrl: process.env.PILOTSWARM_CMS_FACTS_DATABASE_URL || undefined,
         aadDbUser: process.env.PILOTSWARM_DB_AAD_USER || undefined,
     };
-    const runtime = new PortalRuntime({ ...storageOptions, mode });
+    const workflowPackageResolver = await loadWorkflowPackageResolverFromEnv();
+    const runtime = new PortalRuntime({
+        ...storageOptions,
+        mode,
+        workflowPackageResolver,
+    });
 
     const app = express();
     app.set("trust proxy", true);

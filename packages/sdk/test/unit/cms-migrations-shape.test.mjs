@@ -72,3 +72,148 @@ test("0028: drops the old SETOF signature and joins owners", () => {
     const code = sql.split("\n").filter((ln) => !ln.trimStart().startsWith("--")).join("\n");
     assert.doesNotMatch(code, /RETURNS SETOF/, "paged list must not regress to SETOF sessions");
 });
+
+test("0084: workflow sessions are additive and existing rows remain agent sessions", () => {
+    const migration = migrations.find((m) => m.version === "0084");
+    assert.ok(migration, "migration 0084 must be registered");
+    assert.equal(migration.name, "workflow_session_kind");
+    assert.match(migration.sql, /ADD COLUMN IF NOT EXISTS session_kind TEXT NOT NULL DEFAULT 'agent'/);
+    assert.match(migration.sql, /CHECK \(session_kind IN \('agent', 'workflow'\)\)/);
+});
+
+test("0085: workflow facts are authoritative and lifecycle events are transactional", () => {
+    const migration = migrations.find((m) => m.version === "0085");
+    assert.ok(migration, "migration 0085 must be registered");
+    assert.equal(migration.name, "workflow_executions");
+    assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "shape_check"\.workflow_state_executions/);
+    assert.match(migration.sql, /PRIMARY KEY \(workflow_session_id, execution_sequence\)/);
+    assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "shape_check"\.workflow_projections/);
+    assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "shape_check"\.workflow_completions/);
+    assert.match(migration.sql, /CREATE OR REPLACE FUNCTION "shape_check"\.cms_record_workflow_execution/);
+    assert.match(migration.sql, /CREATE OR REPLACE FUNCTION "shape_check"\.cms_accept_workflow_execution/);
+    assert.match(migration.sql, /CREATE OR REPLACE FUNCTION "shape_check"\.cms_complete_workflow/);
+    assert.match(migration.sql, /CREATE OR REPLACE FUNCTION "shape_check"\.cms_rebuild_workflow_projection/);
+    assert.match(migration.sql, /'workflow\.execution_admitted'/);
+    assert.match(migration.sql, /'workflow\.execution_accepted'/);
+    assert.match(migration.sql, /'workflow\.completed'/);
+});
+
+test("0086: workflow definitions retain source and normalized compiled manifests", () => {
+    const migration = migrations.find((m) => m.version === "0086");
+    assert.ok(migration, "migration 0086 must be registered");
+    assert.equal(migration.name, "workflow_definitions");
+    assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "shape_check"\.workflow_definitions/);
+    assert.match(migration.sql, /source_yaml\s+TEXT NOT NULL/);
+    assert.match(migration.sql, /source_sha256\s+TEXT NOT NULL/);
+    assert.match(migration.sql, /package_sha256\s+TEXT NOT NULL/);
+    assert.match(migration.sql, /package_artifact_filename TEXT NOT NULL/);
+    assert.match(migration.sql, /package_source_json\s+JSONB NOT NULL/);
+    assert.match(migration.sql, /pg_advisory_xact_lock\(hashtextextended\(p_graph_id, 0\)\)/);
+    assert.match(migration.sql, /'workflow-package\.' \|\| p_package_sha256 \|\| '\.tar\.gz'/);
+    assert.match(migration.sql, /p_package_source_json->>'kind' NOT IN \('local-package', 'git'\)/);
+    assert.match(migration.sql, /compiled_sha256\s+TEXT NOT NULL/);
+    assert.match(migration.sql, /compiled_manifest_json JSONB NOT NULL/);
+    assert.doesNotMatch(migration.sql, /workflow_definition_states/);
+    assert.match(migration.sql, /CREATE OR REPLACE FUNCTION "shape_check"\.cms_register_workflow_definition/);
+    assert.match(migration.sql, /WORKFLOW_DEFINITION_CONFLICT/);
+    assert.match(migration.sql, /p_compiled_manifest_json->'states'/);
+    assert.match(migration.sql, /p_compiled_manifest_json->>'packageSha256'/);
+    assert.match(migration.sql, /transition,handler,moduleSha256/);
+    assert.match(migration.sql, /transition,handler,packageSha256/);
+});
+
+test("0087: workflow admission atomically enforces logical and request idempotency", () => {
+    const migration = migrations.find((m) => m.version === "0087");
+    assert.ok(migration, "migration 0087 must be registered");
+    assert.equal(migration.name, "workflow_admissions");
+    assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "shape_check"\.workflow_admissions/);
+    assert.match(migration.sql, /CREATE TABLE IF NOT EXISTS "shape_check"\.workflow_admission_requests/);
+    assert.match(
+        migration.sql,
+        /UNIQUE INDEX IF NOT EXISTS idx_shape_check_workflow_admission_logical_attempt/,
+    );
+    assert.match(migration.sql, /PRIMARY KEY \(owner_provider, owner_subject, idempotency_key\)/);
+    assert.match(migration.sql, /CREATE OR REPLACE FUNCTION "shape_check"\.cms_admit_workflow/);
+    assert.match(migration.sql, /pg_advisory_xact_lock/);
+    assert.match(migration.sql, /WORKFLOW_IDEMPOTENCY_CONFLICT/);
+    assert.match(migration.sql, /WORKFLOW_DUPLICATE_CONFLICT/);
+    assert.match(migration.sql, /WORKFLOW_RERUN_FORBIDDEN/);
+    assert.match(migration.sql, /v_attempt := v_existing\.attempt \+ 1/);
+    assert.match(
+        migration.sql,
+        /THEN v_existing\.owner_provider ELSE p_owner_provider END/,
+    );
+    assert.match(
+        migration.sql,
+        /THEN v_existing\.owner_subject ELSE p_owner_subject END/,
+    );
+    assert.match(
+        migration.sql,
+        /THEN v_existing\.group_id ELSE p_group_id END/,
+    );
+    assert.match(
+        migration.sql,
+        /CREATE OR REPLACE FUNCTION "shape_check"\.cms_mark_workflow_admission_started/,
+    );
+});
+
+test("0088: active workflow children retain their exact agent package version", () => {
+    const migration = migrations.find((m) => m.version === "0088");
+    assert.ok(migration, "migration 0088 must be registered");
+    assert.equal(migration.name, "workflow_agent_package_version_pins");
+    assert.match(
+        migration.sql,
+        /CREATE OR REPLACE FUNCTION "shape_check"\.cms_get_agent_packages_install_manifest/,
+    );
+    assert.match(migration.sql, /version_id TEXT/);
+    assert.match(migration.sql, /is_active BOOLEAN/);
+    assert.match(migration.sql, /creation_config->>'boundAgentPackageId'/);
+    assert.match(
+        migration.sql,
+        /creation_config->>'boundAgentPackageVersionId'/,
+    );
+    assert.match(
+        migration.sql,
+        /state NOT IN \('completed', 'failed', 'error', 'cancelled'\)/,
+    );
+});
+
+test("0089: workflow definition and agent package metadata commit atomically", () => {
+    const migration = migrations.find((m) => m.version === "0089");
+    assert.ok(migration, "migration 0089 must be registered");
+    assert.equal(migration.name, "workflow_agent_package_registration");
+    assert.match(
+        migration.sql,
+        /CREATE OR REPLACE FUNCTION "shape_check"\.cms_register_workflow_definition_with_agent_package/,
+    );
+    assert.match(migration.sql, /cms_publish_agent_package\(/);
+    assert.match(migration.sql, /cms_register_workflow_definition\(/);
+    assert.match(migration.sql, /WORKFLOW_AGENT_PACKAGE_RETRY/);
+    assert.match(migration.sql, /WORKFLOW_AGENT_PACKAGE_MISMATCH/);
+    assert.match(migration.sql, /agentPackageId/);
+});
+
+test("0090: active workflows prevent agent package deletion", () => {
+    const migration = migrations.find((m) => m.version === "0090");
+    assert.ok(migration, "migration 0090 must be registered");
+    assert.equal(migration.name, "workflow_agent_package_deletion_guard");
+    assert.match(
+        migration.sql,
+        /CREATE TRIGGER workflow_admission_agent_package_guard/,
+    );
+    assert.match(
+        migration.sql,
+        /hashtextextended\('workflow-agent-package:' \|\| v_package_id, 0\)/,
+    );
+    assert.match(
+        migration.sql,
+        /hashtextextended\('workflow-agent-package:' \|\| v_pkg\.package_id, 0\)/,
+    );
+    assert.match(migration.sql, /WORKFLOW_AGENT_PACKAGE_UNAVAILABLE/);
+    assert.match(migration.sql, /AGENT_PACKAGE_WORKFLOW_IN_USE/);
+    assert.match(migration.sql, /compiled_manifest_json->'states'/);
+    assert.match(
+        migration.sql,
+        /session\.state NOT IN \('completed', 'failed', 'error', 'cancelled'\)/,
+    );
+});

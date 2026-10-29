@@ -37,6 +37,7 @@ export async function listAgentDefinitionsForCaller(opts: {
         .then(opts.getCallerOwnerKey).catch(() => null);
     const candidates: any[] = [];
     for (const candidate of opts.systemOnly ? systemAgents : userAgents) {
+        if (candidate.packageActive === false) continue;
         // Do not even generate aliases from invisible metadata. A foreign
         // name can fuzzy-match a public role; returning that reference would
         // disclose the foreign name despite selecting a public definition.

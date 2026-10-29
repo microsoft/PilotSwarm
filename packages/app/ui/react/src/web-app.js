@@ -3580,6 +3580,35 @@ function parseStructuredChatBlocks(lines = []) {
             continue;
         }
 
+        if (currentLine?.kind === "workflowSectionStart") {
+            const innerLines = [];
+            let depth = 1;
+            index += 1;
+            while (index < lines.length && depth > 0) {
+                const line = lines[index];
+                if (line?.kind === "workflowSectionStart") {
+                    depth += 1;
+                    innerLines.push(line);
+                } else if (line?.kind === "workflowSectionEnd") {
+                    depth -= 1;
+                    if (depth > 0) innerLines.push(line);
+                } else {
+                    innerLines.push(line);
+                }
+                index += 1;
+            }
+            blocks.push({
+                type: "workflowSection",
+                sectionKey: currentLine.sectionKey || null,
+                title: currentLine.title || "Node action",
+                defaultOpen: currentLine.defaultOpen === true,
+                parentSessionId: currentLine.parentSessionId || null,
+                parentTitle: currentLine.parentTitle || null,
+                blocks: parseStructuredChatBlocks(innerLines),
+            });
+            continue;
+        }
+
         // Session turn control: a Stop or Steer transcript item.
         if (currentLine?.kind === "turnControl") {
             blocks.push({ type: "turnControl", control: currentLine.control || {} });
@@ -4025,6 +4054,29 @@ const AssistantPreviewCard = React.memo(function AssistantPreviewCard({ line, th
             ? React.createElement("div", { className: "ps-preview-status" }, "Preview paused — the full answer will appear when complete.")
             : null)));
 });
+
+function WorkflowExecutionSection({ block, theme, controller }) {
+    const [open, setOpen] = React.useState(block.defaultOpen);
+    React.useEffect(() => {
+        if (block.defaultOpen) setOpen(true);
+    }, [block.defaultOpen, block.sectionKey]);
+    return React.createElement("details", {
+        className: "ps-workflow-execution",
+        open,
+        onToggle: event => setOpen(event.currentTarget.open),
+    },
+    React.createElement("summary", { className: "ps-workflow-execution-summary" },
+        React.createElement("span", { className: "ps-workflow-execution-caret", "aria-hidden": true }, open ? "▾" : "▸"),
+        React.createElement("span", null, block.title)),
+    React.createElement("div", { className: "ps-workflow-execution-body" },
+        block.parentSessionId ? React.createElement("button", {
+            type: "button",
+            className: "ps-workflow-parent-link",
+            onClick: () => controller?.loadSession?.(block.parentSessionId),
+        }, `← Back to workflow: ${block.parentTitle || block.parentSessionId}`) : null,
+        React.createElement(StructuredBlockList, { blocks: block.blocks, theme, controller })));
+}
+
 /**
  * A Stop or Steer transcript item (session turn control). A steer reads as
  * a user message with a "steer" badge and its outcome; a Stop as a short
@@ -4156,6 +4208,15 @@ function StructuredBlockList({ blocks, theme, controller = null }) {
                     });
                 }
                 return chatCodeSection;
+            }
+
+            if (block.type === "workflowSection") {
+                return React.createElement(WorkflowExecutionSection, {
+                    key: `workflow:${block.sectionKey || index}`,
+                    block,
+                    theme,
+                    controller,
+                });
             }
 
             if (block.type === "card") {
@@ -7243,6 +7304,10 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         return {
             activeSessionId,
             activeHistory: activeSessionId ? state.history.bySessionId.get(activeSessionId) || null : null,
+            historyBySessionId: state.history.bySessionId,
+            executionHistoryBySessionId: state.executionHistory?.bySessionId || null,
+            workflowOverviewBySessionId: state.workflowOverview?.bySessionId || null,
+            workflowExecutionsBySessionId: state.workflowExecutions?.bySessionId || null,
             // A shared empty array, not a literal: a fresh [] per call failed
             // the shallow-equal check on every dispatch and re-rendered the
             // whole pane, transcript included, on every keystroke.
@@ -7275,9 +7340,16 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
             flat: viewState.sessionsFlat,
         },
         history: {
-            bySessionId: viewState.activeSessionId && viewState.activeHistory
-                ? new Map([[viewState.activeSessionId, viewState.activeHistory]])
-                : new Map(),
+            bySessionId: viewState.historyBySessionId,
+        },
+        executionHistory: {
+            bySessionId: viewState.executionHistoryBySessionId || {},
+        },
+        workflowOverview: {
+            bySessionId: viewState.workflowOverviewBySessionId || {},
+        },
+        workflowExecutions: {
+            bySessionId: viewState.workflowExecutionsBySessionId || {},
         },
         outbox: {
             bySessionId: viewState.activeSessionId
@@ -7289,6 +7361,10 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         },
     }), [
         viewState.activeHistory,
+        viewState.historyBySessionId,
+        viewState.executionHistoryBySessionId,
+        viewState.workflowOverviewBySessionId,
+        viewState.workflowExecutionsBySessionId,
         viewState.activeSessionId,
         viewState.activeOutbox,
         viewState.authPrincipal,

@@ -134,6 +134,8 @@ export interface AgentCopyEntry {
     descriptor?: import("./prompt-layers.js").PromptLayerDescriptor;
     namespace?: string | null;
     packageId?: string;
+    packageVersionId?: string;
+    packageActive?: boolean;
     packageScope?: "shared" | "user";
     packageOwner?: { provider: string; subject: string } | null;
 }
@@ -166,8 +168,18 @@ export class BoundAgentPackageUnavailableError extends Error {
 }
 
 /** Key under which a package copy's per-agent config (MCP) is registered. */
-export function packageAgentKey(packageId: string, agentName: string): string {
-    return `pkg\u0001${packageId}\u0001${agentName}`;
+export function packageCopyKey(packageId: string, packageVersionId?: string): string {
+    return packageVersionId
+        ? `${packageId}\u0001${packageVersionId}`
+        : packageId;
+}
+
+export function packageAgentKey(
+    packageId: string,
+    agentName: string,
+    packageVersionId?: string,
+): string {
+    return `pkg\u0001${packageCopyKey(packageId, packageVersionId)}\u0001${agentName}`;
 }
 
 /** Owner key used to match a session owner against a package copy's owner. */
@@ -200,7 +212,9 @@ export function pickAgentCopyForOwner(
     const copies = entry.copies?.length ? entry.copies : [entry];
     if (ownerKey) {
         const own = copies.find(
-            (copy) => copy.packageScope === "user" && agentOwnerKey(copy.packageOwner) === ownerKey,
+            (copy) => copy.packageScope === "user"
+                && copy.packageActive !== false
+                && agentOwnerKey(copy.packageOwner) === ownerKey,
         );
         if (own) return own;
     }
@@ -211,7 +225,8 @@ export function pickAgentCopyForOwner(
     // deployment agent of the same name exists — the two would disagree about
     // which copy is the default. Never a foreign private copy, at any rank.
     return copies.find((copy) => copy.packageScope == null)
-        ?? copies.find((copy) => copy.packageScope === "shared")
+        ?? copies.find((copy) =>
+            copy.packageScope === "shared" && copy.packageActive !== false)
         ?? undefined;
 }
 
@@ -220,10 +235,15 @@ export function pickAgentCopyByPackageIdForOwner(
     entry: AgentPromptEntry | undefined,
     packageId: string,
     ownerKey: string | null,
+    packageVersionId?: string,
 ): AgentCopyEntry | undefined {
     if (!entry || !packageId) return undefined;
     const copies = entry.copies?.length ? entry.copies : [entry];
-    const copy = copies.find((candidate) => candidate.packageId === packageId);
+    const copy = copies.find((candidate) =>
+        candidate.packageId === packageId
+        && (packageVersionId
+            ? candidate.packageVersionId === packageVersionId
+            : candidate.packageActive !== false));
     if (!copy) return undefined;
     if (copy.packageScope !== "user") return copy;
     return agentOwnerKey(copy.packageOwner) === ownerKey && ownerKey !== null
@@ -269,6 +289,8 @@ export interface WorkerDefaults {
      * refilled in place on plugin reload.
      */
     ownerScopedSkills?: Map<string, Array<{ name: string; description: string; prompt: string; dir?: string }>>;
+    /** Exact package-version skill catalogs for sessions with immutable package pins. */
+    packageSkillsByPackage?: Map<string, Array<{ name: string; description: string; prompt: string; dir?: string }>>;
     /**
      * Deployment MCP catalog (merged `.mcp.json` map). NOT applied to
      * sessions wholesale — a session receives exactly its bound agent's
@@ -314,13 +336,19 @@ function resolveBoundAgentCopy(
     config: SerializableSessionConfig,
     sessionOwnerKey: string | null,
 ): AgentCopyEntry | undefined {
+    if (config.boundAgentPackageVersionId && !config.boundAgentPackageId) {
+        throw new BoundAgentPackageUnavailableError(
+            "",
+            "A bound agent package version requires a package id.",
+        );
+    }
     const entry = config.boundAgentName
         ? workerDefaults.agentPromptLookup?.[config.boundAgentName]
         : undefined;
     if (config.boundAgentSource === "deployment") {
         const copies = entry?.copies?.length ? entry.copies : entry ? [entry] : [];
         const deployment = copies.find(copy => !copy.packageId && copy.packageScope == null);
-        if (config.boundAgentPackageId || !deployment) {
+        if (config.boundAgentPackageId || config.boundAgentPackageVersionId || !deployment) {
             throw new BoundAgentPackageUnavailableError(
                 `deployment:${config.boundAgentName ?? ""}`,
                 `The bound deployment agent "${config.boundAgentName ?? ""}" is no longer available or has a conflicting package binding.`,
@@ -329,7 +357,12 @@ function resolveBoundAgentCopy(
         return deployment;
     }
     const copy = config.boundAgentPackageId
-        ? pickAgentCopyByPackageIdForOwner(entry, config.boundAgentPackageId, sessionOwnerKey)
+        ? pickAgentCopyByPackageIdForOwner(
+            entry,
+            config.boundAgentPackageId,
+            sessionOwnerKey,
+            config.boundAgentPackageVersionId,
+        )
         : pickAgentCopyForOwner(entry, sessionOwnerKey);
     if (config.boundAgentPackageId && !copy) {
         throw new BoundAgentPackageUnavailableError(config.boundAgentPackageId);
@@ -1933,7 +1966,12 @@ export class SessionManager {
             resolvedTools = this._resolveTools(
                 { tools: this.sessionApplicationTools.get(sessionId) },
                 effectiveSerializableConfig,
-                boundAgentCopy?.packageId,
+                boundAgentCopy?.packageId
+                    ? packageCopyKey(
+                        boundAgentCopy.packageId,
+                        boundAgentCopy.packageVersionId,
+                    )
+                    : undefined,
             );
         } catch (error) {
             // Failed authorization/removal must not leave a reusable handle with
@@ -1947,7 +1985,11 @@ export class SessionManager {
         const boundAgentMcpServers = !effectiveSerializableConfig.boundAgentName || !boundAgentCopy
             ? undefined
             : boundAgentCopy.packageId
-                ? this.workerDefaults.agentMcpServers?.[packageAgentKey(boundAgentCopy.packageId, effectiveSerializableConfig.boundAgentName)]
+                ? this.workerDefaults.agentMcpServers?.[packageAgentKey(
+                    boundAgentCopy.packageId,
+                    effectiveSerializableConfig.boundAgentName,
+                    boundAgentCopy.packageVersionId,
+                )]
                 : this.workerDefaults.agentMcpServers?.[effectiveSerializableConfig.boundAgentName];
         const effectiveMcpServers = {
             ...(this.workerDefaults.baseMcpServers ?? {}),
@@ -2208,7 +2250,10 @@ export class SessionManager {
             ...(workspaceTools ? { workspaceTools: true } : {}),
         }).filter((tool: any) => !isTunerSession || !mutatingSystemToolNames.has(tool.name));
         const readOnlyTunerSubAgentToolNames = new Set(["check_agents", "list_sessions"]);
-        const subAgentTools = ManagedSession.subAgentToolDefs(workspaceTools ? { workspaceTools: true } : undefined)
+        const subAgentTools = ManagedSession.subAgentToolDefs({
+            ...(workspaceTools ? { workspaceTools: true } : {}),
+            workflowTools: !config.workflowToolsBlocked,
+        })
             .filter((tool: any) => !isTunerSession || readOnlyTunerSubAgentToolNames.has(tool.name));
         const factTools = createFactTools({
             factStore: this.factStore,
@@ -3022,7 +3067,12 @@ export class SessionManager {
                             const client = await this._ensureClientForSession(sessionId);
                             const config = this.sessionConfigs.get(sessionId) ?? {};
                             const copilotSession = await this._resumeCopilotSession(client, sessionId, {
-                                tools: [...ManagedSession.systemToolDefs(), ...ManagedSession.subAgentToolDefs()],
+                                tools: [
+                                    ...ManagedSession.systemToolDefs(),
+                                    ...ManagedSession.subAgentToolDefs({
+                                        workflowTools: !config.workflowToolsBlocked,
+                                    }),
+                                ],
                                 onPermissionRequest: approvePermissionForSession,
                             });
                             const managed = new ManagedSession(sessionId, copilotSession, config);
@@ -3965,6 +4015,15 @@ export class SessionManager {
      * failure to identify somebody must never hand out their private skills.
      */
     private async _skillCatalogForSession(sessionId: string, turnOwner?: { provider: string; subject: string } | null): Promise<Array<{ name: string; description: string; prompt: string; dir?: string }>> {
+        const config = this.sessionConfigs.get(sessionId);
+        if (config?.boundAgentPackageId && config.boundAgentPackageVersionId) {
+            return this.workerDefaults.packageSkillsByPackage?.get(
+                packageCopyKey(
+                    config.boundAgentPackageId,
+                    config.boundAgentPackageVersionId,
+                ),
+            ) ?? [];
+        }
         if (this.sessionConfigs.get(sessionId)?.baseAgentPolicy?.version === "v2") {
             const getSources = this.workerDefaults.getCapabilitySources;
             if (!getSources) return []; // Unknown provenance must not become an automatic V2 skill.

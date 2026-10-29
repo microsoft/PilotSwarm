@@ -14,6 +14,13 @@ import { nativeTasksDefaultPolicyMigration } from "./migrations/native-tasks-def
 import { modelEventLoggingFlagMigration } from "./migrations/model-event-logging-flag-0081.js";
 import { turnControlMigration } from "./migrations/turn-control-0082.js";
 import { turnControlConvertMigration } from "./migrations/turn-control-0083.js";
+import { workflowExecutionsMigration } from "./migrations/workflow-executions-0085.js";
+import { workflowDefinitionsMigration } from "./migrations/workflow-definitions-0086.js";
+import { workflowAdmissionsMigration } from "./migrations/workflow-admissions-0087.js";
+import { workflowAgentPackageRegistrationMigration } from "./migrations/workflow-agent-package-registration-0089.js";
+import { workflowAgentPackageDeletionGuardMigration } from "./migrations/workflow-agent-package-deletion-0090.js";
+import { workflowDefinitionOwnershipMigration } from "./migrations/workflow-definition-ownership-0091.js";
+import { workflowFailuresMigration } from "./migrations/workflow-failures-0092.js";
 
 /**
  * Return the ordered list of CMS migrations for a given schema.
@@ -408,7 +415,84 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0081", name: "model_event_logging_flag", sql: modelEventLoggingFlagMigration(schema) },
         { version: "0082", name: "turn_control", sql: turnControlMigration(schema) },
         { version: "0083", name: "turn_control_convert", sql: turnControlConvertMigration(schema) },
+        { version: "0084", name: "workflow_session_kind", sql: migration_0084_workflow_session_kind(schema) },
+        { version: "0085", name: "workflow_executions", sql: workflowExecutionsMigration(schema) },
+        { version: "0086", name: "workflow_definitions", sql: workflowDefinitionsMigration(schema) },
+        { version: "0087", name: "workflow_admissions", sql: workflowAdmissionsMigration(schema) },
+        { version: "0088", name: "workflow_agent_package_version_pins", sql: migration_0088_workflow_agent_package_version_pins(schema) },
+        { version: "0089", name: "workflow_agent_package_registration", sql: workflowAgentPackageRegistrationMigration(schema) },
+        { version: "0090", name: "workflow_agent_package_deletion_guard", sql: workflowAgentPackageDeletionGuardMigration(schema) },
+        { version: "0091", name: "workflow_definition_ownership", sql: workflowDefinitionOwnershipMigration(schema) },
+        { version: "0092", name: "workflow_failures", sql: workflowFailuresMigration(schema) },
     ];
+}
+
+function migration_0088_workflow_agent_package_version_pins(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+DROP FUNCTION IF EXISTS ${s}.cms_get_agent_packages_install_manifest();
+
+CREATE OR REPLACE FUNCTION ${s}.cms_get_agent_packages_install_manifest()
+RETURNS TABLE(
+    package_id TEXT, version_id TEXT, is_active BOOLEAN, name TEXT, scope TEXT,
+    owner_provider TEXT, owner_subject TEXT, semver TEXT, sha256 TEXT,
+    size_bytes BIGINT, artifact_filename TEXT, manifest JSONB
+) AS $$
+    WITH requested AS (
+        SELECT p.package_id, v.version_id, TRUE AS is_active, p.name, p.scope,
+               p.owner_provider, p.owner_subject, v.semver, v.sha256,
+               v.size_bytes, v.artifact_filename, v.manifest
+          FROM ${s}.agent_packages p
+          JOIN ${s}.agent_package_versions v
+            ON v.version_id = p.active_version_id
+         WHERE p.enabled
+
+        UNION ALL
+
+        SELECT p.package_id, v.version_id, FALSE AS is_active, p.name, p.scope,
+               p.owner_provider, p.owner_subject, v.semver, v.sha256,
+               v.size_bytes, v.artifact_filename, v.manifest
+          FROM ${s}.sessions sess
+          JOIN ${s}.agent_package_versions v
+            ON v.version_id = sess.creation_config->>'boundAgentPackageVersionId'
+          JOIN ${s}.agent_packages p
+            ON p.package_id = v.package_id
+         WHERE sess.state NOT IN ('completed', 'failed', 'error', 'cancelled')
+           AND sess.creation_config->>'boundAgentPackageId' = p.package_id
+    )
+    SELECT package_id, version_id, BOOL_OR(is_active), name, scope,
+           owner_provider, owner_subject, semver, sha256,
+           size_bytes, artifact_filename, manifest
+      FROM requested
+     GROUP BY package_id, version_id, name, scope, owner_provider,
+              owner_subject, semver, sha256, size_bytes, artifact_filename,
+              manifest
+     ORDER BY name, scope, owner_provider, owner_subject, package_id, version_id;
+$$ LANGUAGE sql;
+`;
+}
+
+/** Additive discriminator; every pre-existing and omitted value remains an agent session. */
+function migration_0084_workflow_session_kind(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+ALTER TABLE ${s}.sessions
+    ADD COLUMN IF NOT EXISTS session_kind TEXT NOT NULL DEFAULT 'agent';
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+          FROM pg_constraint
+         WHERE conname = 'sessions_session_kind_check'
+           AND conrelid = '${schema}.sessions'::regclass
+    ) THEN
+        ALTER TABLE ${s}.sessions
+            ADD CONSTRAINT sessions_session_kind_check
+            CHECK (session_kind IN ('agent', 'workflow'));
+    END IF;
+END $$;
+`;
 }
 
 /** Additive page filter used by the portal's independent system-session load. */

@@ -1,1 +1,1 @@
-{ "tools": ["scan_completed_sessions", "cleanup_session", "prune_orchestrations", "get_system_stats"] }
+{ "tools": ["scan_completed_sessions", "cleanup_session", "sweep_package_artifacts", "prune_orchestrations", "get_system_stats"] }
