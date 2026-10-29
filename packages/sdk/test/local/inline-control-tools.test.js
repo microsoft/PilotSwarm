@@ -99,18 +99,26 @@ describe("tool completion telemetry classification", () => {
 });
 
 describe("inline control tool execution", () => {
-    it("reports a refused canvas draw as a failed tool result", async () => {
+    it.each([
+        ["inline HTML", { html: "<html><body>Demo</body></html>", slot: 0 }, "slot must be an integer 1-5", false],
+        ["a stored artifact", { fromArtifact: { filename: "missing.html" } }, "Artifact not found: missing.html", true],
+    ])("reports a refused canvas draw from %s as a failed tool result", async (
+        _source,
+        args,
+        reason,
+        expectsAppHint,
+    ) => {
         const fakeSession = new FakeCopilotSession();
         fakeSession.scriptedToolCalls = [
             {
                 name: "draw_canvas",
-                args: { html: "<html><body>Demo</body></html>" },
+                args,
             },
         ];
 
         const controlToolBridge = {
             drawCanvas: vi.fn(async () => ({
-                error: "Canvas draw refused for this reproduction",
+                error: reason,
             })),
         };
 
@@ -124,18 +132,14 @@ describe("inline control tool execution", () => {
 
         expect(controlToolBridge.drawCanvas).toHaveBeenCalledTimes(1);
         expect(toolResults).toHaveLength(1);
-        console.log("Canvas refusal result:", toolResults[0]);
 
         expect(toolResults[0]).toMatchObject({
             resultType: "failure",
-            error: expect.stringContaining(
-                "Canvas draw refused for this reproduction"
-            ),
-            textResultForLlm: expect.stringContaining(
-                "Canvas draw refused for this reproduction"
-            ),
+            error: expect.stringContaining(reason),
+            textResultForLlm: expect.stringContaining(reason),
         });
-        expect(toolResults[0].textResultForLlm).toContain("find_canvas_app");
+        expect(toolResults[0].textResultForLlm).toContain("Address the reported reason before retrying.");
+        expect(toolResults[0].textResultForLlm.includes("find_canvas_app")).toBe(expectsAppHint);
     });
 
     it("preserves successful canvas draw results", async () => {

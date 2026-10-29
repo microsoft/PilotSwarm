@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+**Canvas refusal reporting.** Canvas tools return structured failures for
+refusals, unavailable bridges and invalid arguments instead of successful
+results containing error text. Refusal reasons and recovery guidance remain
+visible; saved-app lookup guidance is included only for artifact-based draws.
+
+**Correct native tool-error counts.** Turn telemetry now recognizes SDK
+`success: false` completions across all tools, not just canvas tools. Native
+failures, including rejected or denied calls reported this way, now contribute
+to the calls/errors display and the `pilotswarm.tool_errors` span attribute.
+Higher error counts reflect corrected reporting, not additional tool failures.
+
 ## 0.8.6 — 2026-10-26
 
 **Restore Azure Linux 3 native compatibility.** The SDK pins the official npm

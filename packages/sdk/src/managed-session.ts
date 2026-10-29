@@ -2079,8 +2079,8 @@ export class ManagedSession {
                 if (result?.error) {
                     return failureToolResult(
                         `Could not draw the canvas: ${result.error}\n`
-                        + "Address the reported reason before retrying. "
-                        + "If using a saved canvas app, use find_canvas_app to verify its source."
+                        + "Address the reported reason before retrying."
+                        + (fromArtifact ? " If using a saved canvas app, use find_canvas_app to verify its source." : "")
                     );
                 }
                 // No emit here, deliberately. The bridge committed the bytes
