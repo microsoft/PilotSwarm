@@ -1,5 +1,8 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
     compileWorkflowPackageSnapshotYaml,
@@ -216,6 +219,36 @@ test("rejects a workflow artifact that does not match the registered package", a
         () => provider.resolve({ kind: "registered", definitionId }),
         error => error?.code === "WORKFLOW_PACKAGE_ARTIFACT_INVALID",
     );
+});
+
+test("cached provider snapshots cannot execute transitions after host approval is revoked", async (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ps-provider-policy-"));
+    const previous = process.env.PILOTSWARM_PACKAGE_POLICY_MODULE;
+    t.after(() => {
+        if (previous === undefined) delete process.env.PILOTSWARM_PACKAGE_POLICY_MODULE;
+        else process.env.PILOTSWARM_PACKAGE_POLICY_MODULE = previous;
+        fs.rmSync(root, { recursive: true, force: true });
+    });
+    const revoked = path.join(root, "revoked");
+    const policy = path.join(root, "policy.mjs");
+    fs.writeFileSync(policy, `
+        import fs from "node:fs";
+        export function authorizePackage() {
+            if (fs.existsSync(${JSON.stringify(revoked)})) throw new Error("approval revoked");
+        }
+    `);
+    process.env.PILOTSWARM_PACKAGE_POLICY_MODULE = policy;
+    const { provider, definitionId, downloads } = await providerHarness();
+    await provider.resolve({ kind: "registered", definitionId });
+    fs.writeFileSync(revoked, "");
+    await assert.rejects(provider.executeTransition({
+        definitionId, stateId: "inspect",
+        context: {
+            workflowInputs: {}, currentStateId: "inspect", stateOutcome: "succeeded",
+            stateOutput: {}, latestStateOutputs: {}, executionHistory: [],
+        },
+    }), /approval revoked/);
+    assert.equal(downloads.length, 1, "the denial must also apply to the cached snapshot");
 });
 
 test("rejects a persisted manifest that does not match its registered digest", async () => {

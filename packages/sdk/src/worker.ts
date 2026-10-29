@@ -1434,7 +1434,8 @@ export class PilotSwarmWorker {
             const packageTools = new Map<string, Tool<any>>();
             const packageToolsByPackage = new Map<string, Map<string, Tool<any>>>();
             for (const pkg of result.packages) {
-                if (pkg.status !== "ok" || !pkg.workerModulePath) continue;
+                if (pkg.status !== "ok" || !pkg.workerModulePath ||
+                    this.config.agentPackages?.workerModules === "disabled") continue;
                 try {
                     const tools = await loadAgentPackageTools(pkg, { workerNodeId: this.config.workerNodeId });
                     const collision = findReservedPackageToolName(
@@ -2366,8 +2367,9 @@ export class PilotSwarmWorker {
         // or not), and may not restrict entries itself — `allowedAgents` is a
         // deployment-catalog field. Deployment dirs load before package dirs,
         // so every deployment name is known when a package tries to shadow it.
-        const mcpConfig = loadMcpConfig(absDir);
         const mcpPackageProvenance = this._packageDirOwners.get(absDir);
+        const mcpConfig = mcpPackageProvenance && this.config.agentPackages?.mcpServers === "deployment-only"
+            ? {} : loadMcpConfig(absDir);
         for (const [name, cfg] of Object.entries(mcpConfig)) {
             if (mcpPackageProvenance) {
                 if (this._deploymentMcpNames.has(name)) {
