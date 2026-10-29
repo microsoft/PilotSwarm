@@ -2211,7 +2211,10 @@ export class SessionManager {
         }).filter((tool: any) => !isTunerSession || !mutatingSystemToolNames.has(tool.name));
         const readOnlyTunerSubAgentToolNames = new Set(["check_agents", "list_sessions"]);
         const subAgentTools = ManagedSession.subAgentToolDefs(workspaceTools ? { workspaceTools: true } : undefined)
-            .filter((tool: any) => !isTunerSession || readOnlyTunerSubAgentToolNames.has(tool.name));
+            .filter((tool: any) => !isTunerSession || readOnlyTunerSubAgentToolNames.has(tool.name))
+            // Declared only where it can work: a worker with script workflows
+            // off would refuse every call, so the model is not shown it.
+            .filter((tool: any) => tool.name !== "spawn_workflow" || this.scriptWorkflowsEnabled);
         const factTools = this._createSessionFactTools({
             agentIdentity: effectiveSerializableConfig.agentIdentity,
             isCrawler: effectiveSerializableConfig.isCrawler === true || effectiveSerializableConfig.isHarvester === true,

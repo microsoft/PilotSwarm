@@ -127,9 +127,15 @@ Scripts run as child processes **on the worker**, so script workflows are
 | `PILOTSWARM_SCRIPT_WORKFLOWS=1` or `new PilotSwarmWorker({ scriptWorkflows: { enabled: true } })` | Run script workflows on this worker. |
 | `PILOTSWARM_SCRIPT_WORKFLOW_PYTHON`, `PILOTSWARM_SCRIPT_WORKFLOW_PWSH`, or `scriptWorkflows.executables` | The program for a runtime. Defaults: this worker's Node, `python3`, `pwsh`. |
 
-A worker with workflows off still runs the controller, so a workflow started
-there fails at its first step with a message that names the setting, instead
-of waiting. `spawn_workflow` refuses with the same message.
+Turn workflows on for **every** worker of a deployment: any worker may run any
+node. A worker with workflows off still runs the controller, so a node that
+lands there fails the workflow with a message that names the setting, instead
+of waiting. Agents on such a worker are not shown `spawn_workflow`.
+
+Each running node holds one of the worker's activity slots
+(`PILOTSWARM_WORKER_CONCURRENCY`, 2 by default) for as long as its script
+runs, and agent turns use the same slots. Raise the setting, or keep nodes
+short, when workflows run beside busy agents.
 
 Isolation, in this version:
 

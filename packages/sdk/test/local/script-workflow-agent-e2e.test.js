@@ -122,4 +122,18 @@ describe("agent-driven script workflows", () => {
             }
         });
     });
+
+    it("a worker with script workflows off does not show spawn_workflow to the model", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        await withScriptedModel(env, {
+            respond: () => ({ content: "ok" }),
+            worker: { scriptWorkflows: { enabled: false } },
+        }, async ({ client, model, qualifiedModel }) => {
+            const session = await client.createSession({ model: qualifiedModel, owner: OWNER });
+            await session.sendAndWait("list your tools", TIMEOUT);
+            const names = model.sessionRequests("list your tools")[0].body.tools.map((tool) => tool?.function?.name);
+            expect(names).toContain("spawn_agent");
+            expect(names).not.toContain("spawn_workflow");
+        });
+    });
 });
