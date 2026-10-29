@@ -1,5 +1,6 @@
 import type { NativeTaskAccess } from "./native-task-policy.js";
-import type { CopilotSession, CustomAgentConfig, SessionHooks, Tool } from "@github/copilot-sdk";
+import type { AgentHarnessSession } from "./agent-harness.js";
+import type { CustomAgentConfig, SessionHooks, Tool } from "@github/copilot-sdk";
 
 export type NativeSubagentMode = "off" | "sync";
 
@@ -185,7 +186,7 @@ export function isNativeChildEvent(event: any): boolean {
  * Do not waitForPending(): its ten-minute wait may schedule follow-up turns.
  * A timeout/failure rejects the activity rather than claiming a safe boundary.
  */
-export async function settleNativeSubagents(session: CopilotSession, { timeoutMs = 5_000, rejectRunning = false }: { timeoutMs?: number; rejectRunning?: boolean } = {}): Promise<void> {
+export async function settleNativeSubagents(session: AgentHarnessSession, { timeoutMs = 5_000, rejectRunning = false }: { timeoutMs?: number; rejectRunning?: boolean } = {}): Promise<void> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let expired = false;
     const timeoutError = () => new Error("Native subagent cleanup timed out; turn cannot commit");

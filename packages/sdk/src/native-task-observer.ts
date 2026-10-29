@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { CopilotSession } from "@github/copilot-sdk";
+import type { AgentHarnessSession } from "./agent-harness.js";
 
 export interface NativeTaskSummary {
     id: string;
@@ -88,7 +88,7 @@ export class NativeTaskObserver {
     private dirty = false;
     private rpcDisabled = false;
 
-    constructor(private readonly session: Pick<CopilotSession, "rpc">, private readonly options: Options) {
+    constructor(private readonly session: Pick<AgentHarnessSession, "rpc">, private readonly options: Options) {
         this.intervalMs = Math.max(1, options.intervalMs ?? 500);
     }
 
@@ -268,6 +268,7 @@ export class NativeTaskObserver {
             // while another request is still pending behind it.
             await Promise.allSettled(response.tasks.filter(row => row.type === "agent").slice(0, 32).map(async row => {
                 if (row.type !== "agent") return;
+                if (!row.toolCallId) return;
                 const task = this.tasks.get(row.toolCallId);
                 // Registry-only work has no transcript anchor. In particular,
                 // don't import restored tasks from a prior worker/turn.
@@ -283,8 +284,9 @@ export class NativeTaskObserver {
                 if (terminal(task.status)) { this.persistBoundary(task); return; }
                 const { progress } = await this.session.rpc.tasks.getProgress({ id: row.id });
                 if (!active() || terminal(task.status) || progress?.type !== "agent") return;
-                task.recentActivity = progress.recentActivity.slice(-5).map(line => ({ message: text(line.message) ?? "", timestamp: iso(line.timestamp) }));
-                task.preview = text(progress.latestIntent) ?? task.recentActivity.at(-1)?.message ?? task.preview;
+                const recentActivity = (progress.recentActivity ?? []).slice(-5).map(line => ({ message: text(line.message) ?? "", timestamp: iso(line.timestamp) }));
+                task.recentActivity = recentActivity;
+                task.preview = text(progress.latestIntent) ?? recentActivity.at(-1)?.message ?? task.preview;
             }));
             if (active()) this.schedulePublish();
         } catch { /* Experimental registry RPC failures are cosmetic. */ }
