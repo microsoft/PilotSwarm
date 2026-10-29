@@ -24,7 +24,9 @@ import {
 const { Runtime, Client, SqliteProvider } = createRequire(import.meta.url)("duroxide");
 
 const hasPython = spawnSync("python3", ["--version"]).status === 0;
-const hasPwsh = spawnSync("pwsh", ["-NoLogo", "-NoProfile", "-Command", "exit 0"]).status === 0;
+// PS_TEST_PWSH points at a PowerShell that is not on PATH (a portable install).
+const pwshExecutable = process.env.PS_TEST_PWSH || "pwsh";
+const hasPwsh = spawnSync(pwshExecutable, ["-NoLogo", "-NoProfile", "-Command", "exit 0"]).status === 0;
 
 function node(id, runtime, source, next = { success: null }, timeoutSeconds = 30) {
     return { id, runtime, source, next, timeoutSeconds };
@@ -40,7 +42,7 @@ function run(nodeDef, extra = {}) {
         step: 1,
         callTool: async () => { throw new Error("no tools in this test"); },
         ...extra,
-    });
+    }, { executables: { powershell: pwshExecutable } });
 }
 
 describe("script runner", () => {
@@ -139,6 +141,12 @@ describe("script runner", () => {
             callTool: async (call) => call.arguments.a + call.arguments.b,
         });
         expect(result).toMatchObject({ outcome: "success", output: { total: 5, prior: "previous" }, resultSource: "reported" });
+    });
+
+    it.skipIf(!hasPwsh)("maps a powershell error to outcome failure with its message", async () => {
+        const result = await run(node("n", "powershell", "throw 'disk full'"));
+        expect(result).toMatchObject({ outcome: "failure", resultSource: "exit" });
+        expect(result.output.stderr).toMatch(/disk full/);
     });
 
     it.skipIf(!hasPwsh)("runs powershell with context, tool calls and Set-PilotSwarmResult", async () => {

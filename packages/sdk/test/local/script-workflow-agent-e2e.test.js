@@ -15,7 +15,9 @@ import { withScriptedModel } from "../helpers/scripted-workers.js";
 const TIMEOUT = 240_000;
 const OWNER = { provider: "test", subject: "workflow-owner" };
 const SETUP_PROMPT = "Every 15 seconds, run the counter workflow and tell me what it returns.";
-const RESULT_MARK = "[SYSTEM: Workflow session";
+// The orchestration delivers the result as a wake-up whose system context
+// carries the notification text.
+const isWorkflowResult = (text) => /Workflow session \S+ "counter" completed after/.test(text);
 
 const WORKFLOW_YAML = `
 apiVersion: pilotswarm.dev/v1alpha1
@@ -39,7 +41,7 @@ const getEnv = useSuiteEnv(import.meta.url);
 
 function respond(body, position) {
     const prompt = position.lastUserText;
-    if (prompt.includes(RESULT_MARK)) {
+    if (isWorkflowResult(prompt)) {
         return { content: "Noted the workflow result." };
     }
     if (prompt.includes(SETUP_PROMPT)) {
@@ -86,15 +88,9 @@ describe("agent-driven script workflows", () => {
                 const toolNames = firstRequest.body.tools.map((tool) => tool?.function?.name);
                 expect(toolNames).toContain("spawn_workflow");
 
-                if (process.env.WF_DEBUG) {
-                    for (const record of model.sessionRequests(SETUP_PROMPT)) {
-                        console.log("REQ", record.position.turn, record.position.step, JSON.stringify(record.position.lastUserText.replace(/<current_datetime>[^<]*<\/current_datetime>\s*/, "").slice(0, 300)), JSON.stringify(record.position.toolResults).slice(0, 800));
-                    }
-                }
                 const children = await waitFor(async () => {
                     const all = await mgmt.listSessions();
                     const workflows = all.filter((s) => s.parentSessionId === parent.sessionId && s.sessionKind === "workflow");
-                    if (process.env.WF_DEBUG) console.log("CHILDREN", JSON.stringify(all.filter((s) => s.parentSessionId === parent.sessionId).map((s) => ({ id: s.sessionId, kind: s.sessionKind, status: s.status, err: s.error })), null, 0), "parent cron", (await mgmt.getSession(parent.sessionId))?.cronActive);
                     return workflows.length === 2 && workflows.every((s) => s.status === "completed") ? workflows : null;
                 }, "two completed workflow children");
 
@@ -113,7 +109,7 @@ describe("agent-driven script workflows", () => {
                 // Each result reached the agent as a turn of its own.
                 await waitFor(() => {
                     const resultTurns = model.sessionRequests(SETUP_PROMPT)
-                        .filter((record) => record.position.step === 0 && record.position.lastUserText.includes(RESULT_MARK));
+                        .filter((record) => record.position.step === 0 && isWorkflowResult(record.position.lastUserText));
                     const ids = new Set(children.map((child) => child.sessionId));
                     const seen = new Set(resultTurns.flatMap((record) => [...ids].filter((id) => record.position.lastUserText.includes(id))));
                     return seen.size === 2;

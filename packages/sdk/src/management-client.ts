@@ -2468,6 +2468,12 @@ export class PilotSwarmManagementClient {
                 { code: "REGENERATE_UNSUPPORTED" },
             );
         }
+        if (session.sessionKind === "workflow") {
+            throw Object.assign(
+                new Error("Workflow sessions run a script graph and have no conversation to regenerate"),
+                { code: "REGENERATE_UNSUPPORTED" },
+            );
+        }
         const store = this._requireProviders();
         if (!this._modelProviders) throw new Error("Provider type catalog is unavailable");
         const actor = session.owner ? await store.lookupUserId(session.owner) : null;
@@ -2602,6 +2608,9 @@ export class PilotSwarmManagementClient {
             throw invalidTurnControlRequest("steerSessionTurn requires a requestId");
         }
         const replaces = validReplacesClientMessageId(opts?.replacesClientMessageId);
+        if ((await this._catalog!.getSession(sessionId).catch(() => null))?.sessionKind === "workflow") {
+            throw workflowNotConversationalError(sessionId);
+        }
         // The flag gates new steers only. The catalog checks it under the
         // session row lock after its request-id retry lookup, so a retry of
         // an already recorded request id still gets its first answer (or

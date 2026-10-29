@@ -105,6 +105,7 @@ sessions return not-found to avoid an existence oracle.
 |---|---|---|---|
 | listSessions | `GET /api/v1/sessions` | — | List session summaries. |
 | createSession | `POST /api/v1/sessions` | model (body), reasoningEffort (body), contextTier (body), groupId (body), visibility (body) | Create a session. Owner is the authenticated principal; visibility defaults to the deployment default. `groupId` is an initial placement into one of **your** groups — `403` if the group is missing or not yours. |
+| createScriptWorkflowSession | `POST /api/v1/sessions/workflow` | yaml (body), inputs (body), groupId (body), visibility (body) | Create a script workflow session from ScriptWorkflow YAML (see [Script workflow sessions](../developer/building/script-workflows.md)). Refused with `WORKFLOW_INVALID` (400) when the YAML is not a valid script-only workflow. |
 | createSessionForAgent | `POST /api/v1/sessions/for-agent` | agentName (body), model (body), reasoningEffort (body), contextTier (body), title (body), splash (body), initialPrompt (body), groupId (body), visibility (body) | Create a session bound to a named agent. Same `groupId` placement rule as createSession. |
 | getSession | `GET /api/v1/sessions/:sessionId` | sessionId (path) | Get one session view (live orchestration status). |
 | deleteSession | `DELETE /api/v1/sessions/:sessionId` | sessionId (path) | Cancel and soft-delete a session. |

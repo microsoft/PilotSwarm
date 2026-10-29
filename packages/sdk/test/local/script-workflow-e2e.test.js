@@ -94,6 +94,10 @@ describe("script workflow sessions (worker + client + PostgreSQL)", () => {
                 // A workflow session is not a conversation.
                 await expect(mgmt.sendMessage(sessionId, "hello")).rejects.toMatchObject({ code: "WORKFLOW_SESSION_NOT_CONVERSATIONAL" });
                 await expect(client.resumeSession(sessionId)).rejects.toMatchObject({ code: "WORKFLOW_SESSION_NOT_CONVERSATIONAL" });
+                await expect(mgmt.steerSessionTurn(sessionId, { text: "go faster", requestId: "steer-1" }))
+                    .rejects.toMatchObject({ code: "WORKFLOW_SESSION_NOT_CONVERSATIONAL" });
+                await expect(mgmt.regenerateSession(sessionId)).rejects.toMatchObject({ code: "REGENERATE_UNSUPPORTED" });
+                expect(await mgmt.stopSessionTurn(sessionId)).toMatchObject({ outcome: "no_active_turn" });
 
                 // Creating with the same id again returns it without a second run.
                 const again = await client.createScriptWorkflowSession({ sessionId, yaml: WORKFLOW, inputs: { run: "first" } });
