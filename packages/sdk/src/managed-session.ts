@@ -21,6 +21,7 @@ import { attachedFoldersOf, parseSkillFile, readLoadFiles, resolveLoadPath } fro
 import { groupSkipped, parseRepoAgentFile } from "./workspace-repo-agents.js";
 import path from "node:path";
 import { NativeTaskObserver, nativeTaskAgentMarks } from "./native-task-observer.js";
+import { SPAWN_WORKFLOW_TOOL_SPEC, type SpawnWorkflowToolArgs } from "./script-workflow/tool-spec.js";
 
 /**
  * Mutable state shared between the wait tool handler and runTurn().
@@ -1401,7 +1402,9 @@ export class ManagedSession {
             handler: async () => "stub",
         });
 
-        return [spawnAgentTool, messageAgentTool, checkAgentsTool, waitForAgentsTool, listSessionsTool,
+        const spawnWorkflowTool = defineTool("spawn_workflow", { ...SPAWN_WORKFLOW_TOOL_SPEC, handler: async () => "stub" });
+
+        return [spawnAgentTool, spawnWorkflowTool, messageAgentTool, checkAgentsTool, waitForAgentsTool, listSessionsTool,
             ...ManagedSession._childManagementToolDefs()];
     }
 
@@ -2849,7 +2852,7 @@ export class ManagedSession {
         });
 
         const SYSTEM_TOOL_NAMES = new Set([
-    "update_canvas","wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "send_session_message", "reply_session_message", "show_artifact", "draw_canvas", "read_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "find_canvas_app", "load_skill", "load_agent", "search_capabilities", "load_agent_guidelines", "list_session_capabilities", "use_package", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "stop_agent_turn", "delete_agent"]);
+    "update_canvas","wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "send_session_message", "reply_session_message", "show_artifact", "draw_canvas", "read_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "find_canvas_app", "load_skill", "load_agent", "search_capabilities", "load_agent_guidelines", "list_session_capabilities", "use_package", "spawn_agent", "spawn_workflow", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "stop_agent_turn", "delete_agent"]);
 
         // Merge user tools with system tools
         const userTools = this.config.tools ?? [];
@@ -2944,12 +2947,29 @@ export class ManagedSession {
                 .filter((tool: any) => !wiredToolNames.has(tool.name))
             : [];
 
+        // spawn_workflow runs inline through the control bridge and does not
+        // end the turn. Without a bridge it refuses rather than staying
+        // silent: a declared tool with no answer hangs the turn.
+        const spawnWorkflowTool = defineTool("spawn_workflow", {
+            ...SPAWN_WORKFLOW_TOOL_SPEC,
+            handler: async (args: SpawnWorkflowToolArgs, invocation?: { toolCallId?: string }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("spawn_workflow");
+                if (typeof args?.yaml !== "string" || !args.yaml.trim()) return "Error: yaml is required.";
+                if (args.inputs !== undefined && (args.inputs === null || typeof args.inputs !== "object" || Array.isArray(args.inputs))) {
+                    return "Error: inputs must be a JSON object.";
+                }
+                if (!controlBridge?.spawnWorkflow) return "Error: spawn_workflow is not available in this session.";
+                return await controlBridge.spawnWorkflow(args, { toolCallId: invocation?.toolCallId });
+            },
+        });
+
         const subAgentToolsForTurn = isServiceSession
             ? []
             : isReadOnlyTuner
                 ? [checkAgentsTool, listSessionsTool]
                 : [
                     spawnAgentTool,
+                    spawnWorkflowTool,
                     messageAgentTool,
                     checkAgentsTool,
                     waitForAgentsTool,

@@ -25,6 +25,7 @@ import {
     selectReasoningEffortPickerModal,
     selectContextTierPickerModal,
     selectRenameSessionModal,
+    selectWorkflowCreateModal,
     selectSessionAgentPickerModal,
     selectShareSessionModal,
     selectSessionGroupNameModal,
@@ -1428,6 +1429,25 @@ function SessionOwnerFilterModalContainer({ controller }) {
     return React.createElement(SessionOwnerFilterModal, { state });
 }
 
+function WorkflowCreateNoteModal({ state }) {
+    const platform = useUiPlatform();
+    const modal = selectWorkflowCreateModal(state);
+    if (!modal) return null;
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width: 76 },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "magenta",
+                focused: true,
+                width: 76,
+                height: modal.noteLines.length + 4,
+                lines: [...modal.noteLines, [{ text: "Enter or Esc to close.", color: "gray" }]],
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            })));
+}
+
 function RenameSessionModal({ state }) {
     const platform = useUiPlatform();
     const modal = selectRenameSessionModal(state);
@@ -1474,6 +1494,13 @@ function RenameSessionModal({ state }) {
                 fillColor: "surface",
             }),
         ));
+}
+
+function WorkflowCreateNoteModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => ({
+        ui: { modal: rootState.ui.modal },
+    }), shallowEqualObject);
+    return React.createElement(WorkflowCreateNoteModal, { state });
 }
 
 function RenameSessionModalContainer({ controller }) {
@@ -2553,6 +2580,7 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
         React.createElement(StatusBar, { controller, width: viewportWidth }),
         React.createElement(PromptBar, { controller, rows: layoutState.promptRows }),
         React.createElement(RenameSessionModalContainer, { controller }),
+        React.createElement(WorkflowCreateNoteModalContainer, { controller }),
         React.createElement(ShareSessionModalContainer, { controller }),
         React.createElement(ArtifactUploadModalContainer, { controller }),
         React.createElement(ArtifactPickerModalContainer, { controller }),

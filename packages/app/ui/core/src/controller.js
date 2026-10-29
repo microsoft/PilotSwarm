@@ -93,6 +93,34 @@ export function packageRowSelector(row) {
     };
 }
 
+/** Starting point in the workflow editor: a two-node graph that shows a tool call and a branch. */
+export const WORKFLOW_YAML_TEMPLATE = `apiVersion: pilotswarm.dev/v1alpha1
+kind: ScriptWorkflow
+metadata:
+  name: example-workflow
+spec:
+  entry: collect
+  nodes:
+    collect:
+      type: script
+      runtime: python
+      source: |
+        facts = call_tool("read_facts", {"key_pattern": context["inputs"].get("keyPattern", "%"), "limit": 20})
+        set_result("success", {"facts": facts})
+      next:
+        success: summarize
+        failure: null
+    summarize:
+      type: script
+      runtime: node
+      source: |
+        const count = context.input?.facts?.count ?? 0;
+        await setResult(count > 0 ? "found" : "empty", { count });
+      next:
+        found: null
+        empty: null
+`;
+
 const ORCHESTRATION_STATS_REFRESH_MS = 20_000;
 const SESSION_STATS_REFRESH_MS = 20_000;
 const FLEET_STATS_REFRESH_MS = 30_000;
@@ -1087,6 +1115,7 @@ export function buildAgentPickerItems(catalog = [], opts = {}) {
         sort = AGENT_PICKER_DEFAULT_SORT,
         usage = null,
         genericItem = null,
+        workflowItem = null,
     } = opts || {};
 
     // Generic sits ABOVE everything and never filters out on an empty query:
@@ -1096,6 +1125,11 @@ export function buildAgentPickerItems(catalog = [], opts = {}) {
     const terms = String(query || "").trim();
     if (genericItem && (!terms || scoreAgentMatch({ label: genericItem.label, description: genericItem.description }, terms) >= 0)) {
         items.push({ ...genericItem, depth: 0 });
+    }
+    // A script workflow is the other kind of session, so it sits beside
+    // Generic rather than among the agents.
+    if (workflowItem && (!terms || scoreAgentMatch({ label: workflowItem.title, description: workflowItem.description }, terms) >= 0)) {
+        items.push({ ...workflowItem, depth: 0 });
     }
 
     // Composition still decides whether an agent can be STARTED — `startedBy`
@@ -6634,6 +6668,74 @@ export class PilotSwarmUiController {
         }
     }
 
+    /** Open the editor for a new script workflow session (see workflow-sessions.js). */
+    openWorkflowCreateModal(sessionOptions = {}, previousFocus = null) {
+        this.dispatch({
+            type: "ui/modal",
+            modal: {
+                type: "workflowCreate",
+                title: "New script workflow session",
+                yaml: WORKFLOW_YAML_TEMPLATE,
+                inputs: "{}",
+                error: null,
+                busy: false,
+                sessionOptions,
+                previousFocus: previousFocus ?? this.getState().ui.focusRegion,
+            },
+        });
+        this.dispatch({ type: "ui/status", text: "Edit the workflow, then Create" });
+    }
+
+    /**
+     * Create a script workflow session from the editor. A refusal (invalid
+     * YAML, bad inputs) keeps the editor open with the reason, so nothing the
+     * person typed is lost.
+     */
+    async createScriptWorkflowSession({ yaml, inputs } = {}) {
+        const modal = this.getState().ui.modal;
+        const fail = (message) => {
+            const current = this.getState().ui.modal;
+            if (current?.type === "workflowCreate") {
+                this.dispatch({ type: "ui/modal", modal: { ...current, yaml, inputs, error: message, busy: false } });
+            }
+            this.dispatch({ type: "ui/status", text: message });
+            return null;
+        };
+        if (typeof this.transport.createScriptWorkflowSession !== "function") {
+            return fail("Workflow sessions are not supported by this connection.");
+        }
+        if (typeof yaml !== "string" || !yaml.trim()) return fail("The workflow YAML is empty.");
+        let parsedInputs = {};
+        const inputsText = typeof inputs === "string" ? inputs.trim() : "";
+        if (inputsText) {
+            try { parsedInputs = JSON.parse(inputsText); }
+            catch (error) { return fail(`Inputs are not valid JSON: ${error?.message || error}`); }
+            if (!parsedInputs || typeof parsedInputs !== "object" || Array.isArray(parsedInputs)) {
+                return fail("Inputs must be a JSON object, for example {\"key\": \"value\"}.");
+            }
+        }
+        if (modal?.type === "workflowCreate") {
+            this.dispatch({ type: "ui/modal", modal: { ...modal, yaml, inputs, error: null, busy: true } });
+        }
+        const sessionOptions = modal?.type === "workflowCreate" ? modal.sessionOptions || {} : {};
+        try {
+            const requestOptions = this.applyActiveGroupDefault(sessionOptions);
+            const created = await this.transport.createScriptWorkflowSession({
+                yaml,
+                inputs: parsedInputs,
+                ...(requestOptions.groupId ? { groupId: requestOptions.groupId } : {}),
+            });
+            const previousFocus = modal?.previousFocus;
+            this.dispatch({ type: "ui/modal", modal: null });
+            if (previousFocus) this.setFocus(previousFocus);
+            await this.placeCreatedSessionInGroup(created, requestOptions.groupId ?? null);
+            await this.openCreatedSession({ ...created, sessionKind: "workflow", status: "running" }, requestOptions);
+            return created;
+        } catch (error) {
+            return fail(error?.message || String(error) || "Failed to create the workflow session");
+        }
+    }
+
     async createSessionForAgent(agentName, options = {}) {
         if (typeof this.transport.createSessionForAgent !== "function") {
             throw new Error("Named-agent session creation is not supported by this transport");
@@ -7344,7 +7446,18 @@ export class PilotSwarmUiController {
         const sort = AGENT_PICKER_SORTS.includes(this._agentPickerSort)
             ? this._agentPickerSort
             : AGENT_PICKER_DEFAULT_SORT;
-        const items = buildAgentPickerItems(catalog, { query: "", sort, usage, genericItem });
+        const workflowItem = typeof this.transport.createScriptWorkflowSession === "function"
+            ? {
+                id: "__workflow__",
+                kind: "workflow",
+                group: "generic",
+                title: "Script workflow",
+                description: "A durable state machine of script nodes (Python, Node or PowerShell) that runs without an LLM. Paste or edit ScriptWorkflow YAML.",
+                tools: [],
+                supportsDirectStart: true,
+            }
+            : null;
+        const items = buildAgentPickerItems(catalog, { query: "", sort, usage, genericItem, workflowItem });
 
         this.dispatch({
             type: "ui/modal",
@@ -7353,6 +7466,7 @@ export class PilotSwarmUiController {
                 title: "Select agent for new session",
                 catalog,
                 genericItem,
+                workflowItem,
                 items,
                 query: "",
                 sort,
@@ -8973,6 +9087,7 @@ export class PilotSwarmUiController {
             sort: next.sort,
             usage: next.usage,
             genericItem: next.genericItem || null,
+            workflowItem: next.workflowItem || null,
         });
         // Keep the same agent selected when it survives the new list; land on
         // the first row when it does not, so Enter always does something.
@@ -9231,12 +9346,18 @@ export class PilotSwarmUiController {
             await this.openSessionAgentPicker(nextOptions, previousFocus);
             return;
         }
+        if (modal.type === "workflowCreate") {
+            // The portal submits from its editor; a host without one (the TUI)
+            // can only show the note and close.
+            this.closeModal();
+            return;
+        }
         if (modal.type === "sessionAgentPicker") {
             const item = modal.items?.[modal.selectedIndex || 0];
             // A called-only agent is rendered so the package's composition is
             // visible, but starting one cold is not a thing you can do. Refuse
             // here rather than letting the create fail after the dialog closes.
-            if (item && item.kind !== "generic" && item.supportsDirectStart === false) {
+            if (item && item.kind !== "generic" && item.kind !== "workflow" && item.supportsDirectStart === false) {
                 this.dispatch({
                     type: "ui/status",
                     text: `${item.title || item.agentName} is created by another agent and cannot be started on its own`,
@@ -9251,6 +9372,10 @@ export class PilotSwarmUiController {
             }
             if (!item || item.kind === "generic") {
                 await this.createSession(sessionOptions);
+                return;
+            }
+            if (item.kind === "workflow") {
+                this.openWorkflowCreateModal(sessionOptions, previousFocus);
                 return;
             }
             await this.createSessionForAgent(item.agentName, {
@@ -10760,6 +10885,10 @@ export class PilotSwarmUiController {
         }
         if (activeSession?.serviceKind) {
             this.dispatch({ type: "ui/status", text: "Service sessions are runtime machinery and cannot be regenerated." });
+            return;
+        }
+        if (activeSession?.sessionKind === "workflow") {
+            this.dispatch({ type: "ui/status", text: "Workflow sessions run a script graph and have no conversation to regenerate." });
             return;
         }
         if (!confirmed) {

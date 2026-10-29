@@ -39,6 +39,11 @@ import type { PilotSwarmWorkerOptions, ManagedSessionConfig, WorkspaceProvider }
 import { createBuiltInWorkspaceProvider } from "./workspace.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { installAgentPackages, loadAgentPackageTools } from "./agent-package-installer.js";
+import {
+    registerScriptWorkflowActivities,
+    SCRIPT_WORKFLOW_ORCHESTRATION_NAME,
+    SCRIPT_WORKFLOW_ORCHESTRATION_REGISTRY,
+} from "./script-workflow/index.js";
 import fs from "node:fs";
 import os from "node:os";
 import { monitorEventLoopDelay, type IntervalHistogram } from "node:perf_hooks";
@@ -130,6 +135,21 @@ export function resolveDuroxideLockOptions(
         if (options[key] === undefined) delete options[key];
     }
     return options;
+}
+
+/** @internal Script workflow switch and runtimes: explicit option > deployment env > off. */
+export function resolveScriptWorkflowSettings(
+    config: PilotSwarmWorkerOptions["scriptWorkflows"],
+    env: Record<string, string | undefined> = process.env,
+): { enabled: boolean; executables: Partial<Record<"node" | "python" | "powershell", string>> } {
+    const flag = String(env.PILOTSWARM_SCRIPT_WORKFLOWS ?? "").trim().toLowerCase();
+    const enabled = config?.enabled ?? (flag === "1" || flag === "true" || flag === "yes");
+    const executables: Partial<Record<"node" | "python" | "powershell", string>> = {
+        ...(env.PILOTSWARM_SCRIPT_WORKFLOW_PYTHON ? { python: env.PILOTSWARM_SCRIPT_WORKFLOW_PYTHON } : {}),
+        ...(env.PILOTSWARM_SCRIPT_WORKFLOW_PWSH ? { powershell: env.PILOTSWARM_SCRIPT_WORKFLOW_PWSH } : {}),
+        ...(config?.executables ?? {}),
+    };
+    return { enabled, executables };
 }
 
 /** @internal Resolve the worker-wide turn cap: explicit option > deployment env > SDK default. */
@@ -950,6 +970,34 @@ export class PilotSwarmWorker {
                 registration.handler,
             );
         }
+
+        // Script workflow sessions: a sibling controller orchestration. It is
+        // registered on every worker so that a workflow started while script
+        // workflows are off fails with a clear message instead of waiting.
+        const scriptWorkflowSettings = resolveScriptWorkflowSettings(this.config.scriptWorkflows);
+        this.sessionManager.scriptWorkflowsEnabled = scriptWorkflowSettings.enabled;
+        const scriptWorkflowClient = new Client(this._provider);
+        registerScriptWorkflowActivities(this.runtime, {
+            catalog: this._catalog,
+            enabled: () => scriptWorkflowSettings.enabled,
+            resolveTools: (sessionId) => this.sessionManager.resolveScriptTools(sessionId),
+            notifyParent: async (parentSessionId, prompt, sender) => {
+                await scriptWorkflowClient.enqueueEvent(
+                    `session-${parentSessionId}`,
+                    "messages",
+                    JSON.stringify({ prompt, sender }),
+                );
+            },
+            runnerOptions: { executables: scriptWorkflowSettings.executables },
+        });
+        for (const registration of SCRIPT_WORKFLOW_ORCHESTRATION_REGISTRY) {
+            this.runtime.registerOrchestrationVersioned(
+                SCRIPT_WORKFLOW_ORCHESTRATION_NAME,
+                registration.version,
+                registration.handler,
+            );
+        }
+        trace(`[worker] script workflows ${scriptWorkflowSettings.enabled ? "enabled" : "disabled"}`);
 
         // Auto-register sweeper tools if CMS is available
         if (this._catalog) {

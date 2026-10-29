@@ -6,6 +6,7 @@ import { matchesSessionError } from "./session-warning.js";
 import { appendNativeTaskEvent, appendNativeTaskCall } from "./native-tasks.js";
 import { buildSessionWarning } from "./session-errors.js";
 import { appendChatCall, CHAT_CALL_EVENT_TYPES } from "./chat-activity.js";
+import { formatWorkflowEventText, isWorkflowEvent, WORKFLOW_EVENT_TYPES } from "./workflow-sessions.js";
 
 export const DEFAULT_HISTORY_EVENT_LIMIT = 300;
 export const HISTORY_EVENT_LIMIT_STEPS = [
@@ -60,6 +61,8 @@ export const CHAT_HISTORY_EVENT_TYPES = [
     "session.control_outcome",
     "session.carried_steers_closed",
     "session.steer_confirmed",
+    // Script workflow sessions: their execution log is the transcript.
+    ...WORKFLOW_EVENT_TYPES,
 ];
 
 // ─── Session turn control (Stop and Steer) ──────────────────────
@@ -729,6 +732,14 @@ function stripLeadingSenderMarker(text) {
     return typeof text === "string"
         ? text.replace(/^\[FROM:[^\]\n]*\]\n?/, "")
         : text;
+}
+
+/** A workflow execution event as a system chat line (see workflow-sessions.js). */
+function buildWorkflowChatMessage(event) {
+    const text = formatWorkflowEventText(event);
+    if (!text) return null;
+    const message = buildChatMessage({ ...event, data: { content: text } }, "system");
+    return message ? { ...message, workflowEvent: event.eventType } : null;
 }
 
 function buildChatMessage(event, role) {
@@ -1485,6 +1496,11 @@ export function buildHistoryModel(events = [], options = {}) {
         if (["user.message", "session.turn_completed", "session.turn_stopped", "session.epoch_committed"].includes(event.eventType)) {
             settleAssistantResponses(chat, event);
         }
+        if (isWorkflowEvent(event)) {
+            const message = buildWorkflowChatMessage(event);
+            if (message) chat.push(message);
+            continue;
+        }
         if (event.eventType === "user.message") {
             activity.push(...buildEmbeddedSystemNoticeActivityItems(event, "user"));
             const message = buildChatMessage(event, "user");
@@ -1596,6 +1612,12 @@ export function appendEventToHistory(history, event) {
     appendParentChatCall(next.chat, event);
     appendSessionWarning(next.chat, event);
     next.chat = clampHistoryItems(next.chat, loadedEventLimit);
+
+    if (isWorkflowEvent(event)) {
+        const message = buildWorkflowChatMessage(event);
+        if (message) next.chat = clampHistoryItems([...next.chat, message], loadedEventLimit);
+        return next;
+    }
 
     if (["user.message", "session.turn_completed", "session.turn_stopped", "session.epoch_committed"].includes(event.eventType)) {
         settleAssistantResponses(next.chat, event);

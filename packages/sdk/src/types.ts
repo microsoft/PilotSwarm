@@ -203,6 +203,14 @@ export interface TurnOptions {
          * sessions are refused for every principal.
          */
         manageAgentSession?(args: { session_id: string; action: string; reason?: string }): Promise<string>;
+        /**
+         * Start a script workflow session as a child of this session. Runs
+         * inline in the turn; `call.toolCallId` names the run when no key is given.
+         */
+        spawnWorkflow?(
+            args: import("./script-workflow/tool-spec.js").SpawnWorkflowToolArgs,
+            call?: { toolCallId?: string },
+        ): Promise<string>;
         spawnAgent(args: {
             agent_name?: string;
             task?: string;
@@ -1292,6 +1300,19 @@ export interface SessionPolicy {
 
 export interface PilotSwarmWorkerOptions {
     store: string;
+    /**
+     * Script workflow sessions. Off unless enabled here or with
+     * `PILOTSWARM_SCRIPT_WORKFLOWS=1`: a workflow's scripts run as child
+     * processes on the worker (without the worker's environment), so an
+     * operator opts in. A worker with them off still runs the controller and
+     * fails each new workflow at its first step with a clear message.
+     * `executables` overrides the program per runtime (env
+     * `PILOTSWARM_SCRIPT_WORKFLOW_PYTHON`, `PILOTSWARM_SCRIPT_WORKFLOW_PWSH`).
+     */
+    scriptWorkflows?: {
+        enabled?: boolean;
+        executables?: Partial<Record<"node" | "python" | "powershell", string>>;
+    };
     /**
      * Fact key prefixes reserved for tools, in addition to the built-in
      * `tools/`. No agent can read, write, delete or search under them; a

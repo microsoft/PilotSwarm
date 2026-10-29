@@ -21,6 +21,7 @@ import type {
     SessionOwnerInfo,
     PromptAttachmentRef,
     SessionWorkspace,
+    ScriptWorkflowSessionConfig,
 } from "./types.js";
 import { validateWorkspaceText } from "./workspace-check.js";
 import type { SessionCatalog, SessionEvent, SessionVisibility, SessionRow } from "./cms.js";
@@ -34,6 +35,12 @@ import { assertUnambiguousProvider, isWebOptions, type PilotSwarmWebOptions } fr
 import { WebPilotSwarmClient } from "./web/web-client.js";
 import { loadModelProviderTypes, type ModelProviderRegistry } from "./model-providers.js";
 import { resolveRuntimeModelSelection, type RuntimeModelSelection } from "./provider-catalog.js";
+import { compileScriptWorkflow, ScriptWorkflowCompileError } from "./script-workflow/compiler.js";
+import {
+    SCRIPT_WORKFLOW_LATEST_VERSION,
+    SCRIPT_WORKFLOW_ORCHESTRATION_NAME,
+    type ScriptWorkflowOrchestrationInput,
+} from "./script-workflow/orchestration.js";
 
 // duroxide is CommonJS — use createRequire for ESM compatibility
 import { createRequire } from "node:module";
@@ -164,6 +171,65 @@ export class PilotSwarmClient {
     }
 
     // ─── Session Management ──────────────────────────────────
+
+    /**
+     * Create and start a script workflow session: a session that runs the
+     * script graph in `config.yaml` instead of a conversation. The YAML is
+     * compiled here first, so an invalid definition is refused before any
+     * session exists. Pass `parentSessionId` to create it as a child of an
+     * agent session; that session is told the result when it ends.
+     *
+     * Idempotent for a given `sessionId`: a second call returns the same
+     * session without starting a second run.
+     */
+    async createScriptWorkflowSession(config: ScriptWorkflowSessionConfig & { notifyParent?: boolean }): Promise<{ sessionId: string; workflowName: string }> {
+        if (!this.duroxideClient) throw new Error("PilotSwarmClient is not started.");
+        let workflowName: string;
+        try {
+            workflowName = compileScriptWorkflow(config.yaml).name;
+        } catch (error) {
+            if (error instanceof ScriptWorkflowCompileError) {
+                throw Object.assign(new Error(`Invalid workflow: ${error.message}`), { code: "WORKFLOW_INVALID", status: 400 });
+            }
+            throw error;
+        }
+        const inputs = config.inputs && typeof config.inputs === "object" && !Array.isArray(config.inputs)
+            ? config.inputs
+            : {};
+        const sessionId = config.sessionId ?? crypto.randomUUID();
+        const orchestrationId = `session-${sessionId}`;
+        const existing = await this._catalog.getSession(sessionId).catch(() => null);
+        if (existing && existing.sessionKind !== "workflow") {
+            throw Object.assign(new Error(`Session ${sessionId} already exists and is not a workflow session.`), { code: "SESSION_EXISTS", status: 409 });
+        }
+        if (!existing) {
+            await this._catalog.createSession(sessionId, {
+                sessionKind: "workflow",
+                ...(config.parentSessionId ? { parentSessionId: config.parentSessionId } : {}),
+                ...(config.owner ? { owner: config.owner } : {}),
+                ...(config.groupId ? { groupId: config.groupId } : {}),
+                ...(config.visibility ? { visibility: config.visibility } : {}),
+            });
+            await this._catalog.updateSession(sessionId, { title: `Workflow: ${workflowName}`, titleLocked: true });
+        }
+        const input: ScriptWorkflowOrchestrationInput = {
+            sessionId,
+            yaml: config.yaml,
+            inputs,
+            ...(config.parentSessionId ? { parentSessionId: config.parentSessionId } : {}),
+            ...(config.notifyParent !== undefined ? { notifyParent: config.notifyParent } : {}),
+        };
+        await this.duroxideClient.startOrchestrationVersioned(
+            orchestrationId,
+            SCRIPT_WORKFLOW_ORCHESTRATION_NAME,
+            input,
+            SCRIPT_WORKFLOW_LATEST_VERSION,
+        );
+        if (!existing || existing.state === "pending") {
+            await this._catalog.updateSession(sessionId, { orchestrationId, state: "running", lastActiveAt: new Date() });
+        }
+        return { sessionId, workflowName };
+    }
 
     async createSession(config?: Omit<ManagedSessionConfig, "workspace"> & {
         /** Session workspaces: the working folder. `schema` may be left out; the folder-text check normalizes it. */
@@ -445,6 +511,13 @@ export class PilotSwarmClient {
     async resumeSession(sessionId: string, config?: ManagedSessionConfig & {
         onUserInputRequest?: UserInputHandler;
     }): Promise<PilotSwarmSession> {
+        const persisted = await this._catalog.getSession(sessionId).catch(() => null);
+        if (persisted?.sessionKind === "workflow") {
+            throw Object.assign(
+                new Error(`Session ${sessionId} is a workflow session; it runs a script graph and has no conversation to resume.`),
+                { code: "WORKFLOW_SESSION_NOT_CONVERSATIONAL", status: 409 },
+            );
+        }
         if (config) {
             this.sessionConfigs.set(sessionId, config);
         }
@@ -513,7 +586,7 @@ export class PilotSwarmClient {
         const rows = await this._catalog.listSessions();
         return rows.map(row => ({
             sessionId: row.sessionId,
-            sessionKind: "agent",
+            sessionKind: row.sessionKind ?? "agent",
             status: (row.state as PilotSwarmSessionStatus) ?? "pending",
             title: row.title ?? undefined,
             owner: row.owner ?? undefined,
@@ -1144,7 +1217,7 @@ export class PilotSwarmClient {
 
         return {
             sessionId,
-            sessionKind: "agent",
+            sessionKind: cmsRow?.sessionKind ?? "agent",
             status,
             model: cmsRow?.model ?? undefined,
             title: cmsRow?.title ?? undefined,

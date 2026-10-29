@@ -11110,3 +11110,22 @@ textarea.ps-link-input {
     justify-content: center;
   }
 }
+
+/* Script workflow editor (new-session flow). */
+.ps-workflow-modal .ps-workflow-label {
+  display: block;
+  margin: 10px 0 4px;
+  color: var(--ps-muted);
+  font-size: var(--ps-font-size-dense);
+}
+
+.ps-workflow-modal .ps-workflow-yaml,
+.ps-workflow-modal .ps-workflow-inputs {
+  font-family: var(--ps-mono, monospace);
+  white-space: pre;
+  tab-size: 2;
+}
+
+.ps-workflow-modal .ps-workflow-yaml {
+  min-height: 280px;
+}

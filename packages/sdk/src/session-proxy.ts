@@ -73,6 +73,9 @@ import { LatestValuePublisher, type LiveTurnPayload } from "./live-turn.js";
 import { STREAMING_EVENT_TYPES, keepOrchestrationTurnEvents, turnResultSizeWarning } from "./turn-result-events.js";
 import { MODEL_EVENT_TYPES_RECORDED_WHEN_LOGGING, modelEventLoggingEnabled } from "./model-event-logging.js";
 import type { NativeTasksPayload } from "./native-task-observer.js";
+import { compileScriptWorkflow } from "./script-workflow/compiler.js";
+import { SCRIPT_WORKFLOWS_DISABLED_MESSAGE } from "./script-workflow/activities.js";
+import type { SpawnWorkflowToolArgs } from "./script-workflow/tool-spec.js";
 
 const SYSTEM_AGENT_IDS = new Set(["pilotswarm", "sweeper", "resourcemgr", "facts-manager"]);
 
@@ -2675,6 +2678,60 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     return `[SYSTEM: ${action} requested for ${targetId}. It settles on its own schedule — poll read_session_info to confirm. Reason: ${reason}]`;
                 } catch (error: any) {
                     return `[SYSTEM: manage_agent_session failed — ${error?.message || String(error)}]`;
+                }
+            },
+
+            /**
+             * spawn_workflow: start a script workflow session as a CHILD of
+             * this session. Runs inline in the runTurn activity and does not
+             * end the turn.
+             *
+             * The child's id is derived from (this session, key), so the same
+             * key always names the same workflow and a repeated call returns
+             * it. Without a key the tool call id is used, which gives a new
+             * run per call (the cron pattern) and still keeps a re-sent call
+             * from starting twice.
+             */
+            spawnWorkflow: async (args: SpawnWorkflowToolArgs, call?: { toolCallId?: string }) => {
+                try {
+                    if (!sessionManager.scriptWorkflowsEnabled) {
+                        return `[SYSTEM: spawn_workflow refused — ${SCRIPT_WORKFLOWS_DISABLED_MESSAGE}]`;
+                    }
+                    let workflowName: string;
+                    try {
+                        workflowName = compileScriptWorkflow(args.yaml).name;
+                    } catch (error: any) {
+                        return `[SYSTEM: spawn_workflow refused — the YAML is not a valid ScriptWorkflow: ${error?.message || String(error)} `
+                            + "Fix the YAML and call spawn_workflow again.]";
+                    }
+                    const key = typeof args.key === "string" && args.key.trim()
+                        ? `key:${args.key.trim()}`
+                        : `call:${call?.toolCallId || randomUUID()}`;
+                    const workflowSessionId = systemChildAgentUUID(input.sessionId, `script-workflow:${key}`);
+                    const existing = catalog ? await catalog.getSession(workflowSessionId).catch(() => null) : null;
+                    if (existing) {
+                        return `[SYSTEM: spawn_workflow found the existing workflow session ${workflowSessionId} for this key `
+                            + `("${existing.title ?? workflowName}", state ${existing.state}). Nothing new was started; pass a different key for another run.]`;
+                    }
+                    const owner = catalog
+                        ? await resolveEffectiveSpawnOwner((id) => catalog!.getSession(id), input.sessionId).catch(() => null)
+                        : null;
+                    const sdkClient = await getInlineClient();
+                    await sdkClient.createScriptWorkflowSession({
+                        sessionId: workflowSessionId,
+                        yaml: args.yaml,
+                        inputs: args.inputs ?? {},
+                        parentSessionId: input.sessionId,
+                        ...(owner ? { owner } : {}),
+                        notifyParent: args.notify_on_completion !== false,
+                    });
+                    return `[SYSTEM: started workflow session ${workflowSessionId} running "${workflowName}". `
+                        + (args.notify_on_completion === false
+                            ? "You will not be told when it ends; check it with read_session_info or list_sessions. "
+                            : "You will receive its result as a system message when it ends; do not poll for it. ")
+                        + "The user can follow each step in the portal, under this session.]";
+                } catch (error: any) {
+                    return `[SYSTEM: spawn_workflow failed — ${error?.message || String(error)}]`;
                 }
             },
 
