@@ -221,7 +221,7 @@ Accepted, and stated here so nobody expects otherwise:
 | `<system_context>` note | Text PilotSwarm appends to a prompt to tell the model what changed. It is not in the system message, so the prompt cache is kept. This document names five: the changed-cwd note (4.3), the partial-changes note (4.7), the agents-changed note (4.6), the extra-folders-changed note and the extra-folder availability note (4.10). |
 | Native tasks | The CLI's `task` tool, which runs custom agents inside the CLI process. Gated per user by the `copilot.native_tasks` feature flag. |
 | Folder-text check | The text rules in 4.1. Every caller runs them in process. |
-| Attach | The `provider.ensureAttached` call, with a 30 s deadline. It includes the provider's own steps in 5.3. |
+| Attach | The `provider.ensureAttached` call, with a 30 s default deadline. It includes the provider's own steps in 5.3. |
 | Path check | PilotSwarm's own out-of-process check of the attach path, with a 5 s deadline. Its timeout error is `WORKSPACE_CHECK_TIMEOUT`. |
 | Duroxide | The durable orchestration engine PilotSwarm runs on. It owns the per-session work-item lock and the affinity key. |
 | Affinity key | The ID Duroxide uses to keep a session on one worker. A new key lets any worker take the session. |
@@ -269,7 +269,7 @@ provider, its agent tools and its repo service, which
 | Concern | Core supplies | The deployment supplies | Where they meet |
 |---|---|---|---|
 | Where folders live | Named roots. The root list is asked for again before every turn. A built-in provider for fixed roots (the `workspaceRoots` worker option). | The storage: a repo pod exporting `/ws/a` over NFS, mounted on each node; the list of roots | `provider.listRoots()` |
-| Making a folder ready on this worker | A call to the provider before every turn, with a 30 s deadline | Mounts the root if needed, checks the export marker, takes a lease, says what to adopt | `provider.ensureAttached(req)`, which returns `{ ok, path, adopt }` or an error code with `retryAfterMs` |
+| Making a folder ready on this worker | A call to the provider before every turn, with a 30 s default deadline | Mounts the root if needed, checks the export marker, takes a lease, says what to adopt | `provider.ensureAttached(req)`, which returns `{ ok, path, adopt }` or an error code with `retryAfterMs` |
 | Checking the folder | A check in a child process, 5 s, one at a time per root: inside the root, a directory, links followed | Optional stricter rules inside `ensureAttached` (the reference serves session clones only) | None |
 | Running the turn | The CLI's working directory, repo hooks off, one CLI process per credential and root, the partial-changes note after a lost attempt | Git 2.46 or later and the credential helper in the worker image; `gh` and `az` wrappers | None |
 | Folder unavailable | The prompt held with no model call, the retry schedule, status `waiting`, "retry now", a move to another worker after two failures on one | Error codes, an optional `retryAfterMs`, a remount after `ESTALE` | The error result of `ensureAttached` |
@@ -423,7 +423,7 @@ Rules for provider implementations:
   worker. A changed cwd misses the prompt cache and changes the session
   fingerprint (section 4.4).
 - **No synchronous file calls on the mount inside the hook.** PilotSwarm
-  enforces a deadline (30 s), but it cannot stop a blocked event loop. Use
+  enforces a deadline (30 s by default), but it cannot stop a blocked event loop. Use
   child processes.
 - **An empty mount point is not proof of a mount.** Check the real mount,
   for example with a marker file on the export.
@@ -554,7 +554,7 @@ fixed one model; the deny fixes the rest.
 
 ```text
 1. Store-wins preamble (as today)
-2. Attach: provider.ensureAttached, with a 30 s deadline
+2. Attach: provider.ensureAttached, with a 30 s default deadline
 3. Path check, out of process, 5 s: inside the root, a directory
 4. If adopted: read the repo's agents and skills, and stamp its instruction
    files, all from the clone root (section 4.6)
@@ -573,6 +573,42 @@ fixed one model; the deny fixes the rest.
    conversation from disk.
 6. Run the turn
 ```
+
+Applications can set `PilotSwarmWorkerOptions.workspaceAttachTimeoutMs` to
+change the per-folder attachment budget, for example `90_000` for a provider
+that prepares cold repository content. Root discovery and `ensureAttached`
+share that budget. It applies to working and extra folders, workspace-change
+checks and child-spawn checks; the default remains 30 seconds. Values must be
+integer milliseconds from 1 through 2,147,483,647. Path-check and release
+deadlines are unchanged. Expiry stops waiting, not the provider's work: the
+provider must enforce its own cancellation and cleanup.
+
+For workers with a workspace provider, fixed roots, or an explicit attachment
+option, the resolved attachment budget (30,000 ms when omitted) is checked
+against both `turnInactivityTimeoutMs` (default 300,000 ms) and the resolved
+`turnTimeoutMs` (option, then `PILOTSWARM_TURN_TIMEOUT_MS`, then 1,200,000 ms).
+In-turn workspace and spawn checks prepare the working folder, then extra
+folders in parallel. The sizing rule reserves both phases, each path check's
+5-second queue wait plus 5-second execution deadline, one 10-second parallel
+release phase, and a 10-second scheduling margin:
+`2 * (resolvedAttachTimeoutMs + 10_000) + 20_000` must be strictly less
+than each enabled turn timeout. Invalid combinations fail at construction
+or when `setWorkspaceProvider()` enables workspaces later. Workers that do
+not use workspaces are unaffected. Raise the turn limits alongside a larger
+attachment budget, or explicitly disable either guard with its own `0`.
+Disabling the inactivity watchdog does not disable the wall-clock turn cap.
+
+External management waits are separate from provider execution deadlines.
+`setSessionWorkspace(..., { timeoutMs })` waits up to 120 seconds by default,
+not 30 seconds; the portal clamps a caller's wait to 1 second through
+5 minutes. An elapsed wait returns `{ status: "pending", commandId }`, not a
+workspace failure, and does not cancel the durable command. The shared UI
+shows the change as queued and refreshes the workspace view. A 90-second
+per-folder attachment can therefore outlast an external wait when working
+and extra folders need preparation. Callers may choose a longer observation
+wait, but it does not change the worker's attachment budget. Transport or
+reverse-proxy disconnects also do not cancel the command; read
+`getSessionWorkspace()` or the command response to observe its outcome.
 
 - **The clone root** is the nearest folder at or above the attach path, and
   inside the root, that contains `.git`. Agents, skills and the skills folder
@@ -954,7 +990,7 @@ caller's request.
 **Errors:** `WORKSPACE_ROOT_UNKNOWN`, `WORKSPACE_PATH_INVALID` (also a
 symlink that leaves the root, and a folder that fails the text check),
 `WORKSPACE_FOLDER_MISSING` (also a file, a FIFO or a symlink to a file),
-`WORKSPACE_CHECK_TIMEOUT`, `WORKSPACE_ATTACH_TIMEOUT` (the 30 s attach
+`WORKSPACE_CHECK_TIMEOUT`, `WORKSPACE_ATTACH_TIMEOUT` (the configured attach
 deadline passed), `WORKSPACE_ATTACH_FAILED` (the provider threw or returned
 no path, or the check activity did not run), `WORKSPACE_REVISION_CONFLICT`,
 `WORKSPACE_BUSY`. Provider codes,

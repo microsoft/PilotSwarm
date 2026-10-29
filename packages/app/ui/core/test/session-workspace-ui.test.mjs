@@ -165,6 +165,17 @@ test("retry and clear refuse when they do not apply; no support means no dialog"
     assert.equal(unsupported.state().ui.modal, null);
 });
 
+test("an expired workspace observation wait is shown as queued, not failed", async () => {
+    const h = await seeded(READY, {
+        setSessionWorkspace: async () => ({ status: "pending", commandId: "workspace-command" }),
+    });
+    await h.controller.handleCommand(UI_COMMANDS.OPEN_SET_WORKSPACE);
+    h.controller.setSetWorkspaceValue("a/repo-y");
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    assert.match(h.state().ui.statusText, /Workspace change queued/);
+    assert.doesNotMatch(h.state().ui.statusText, /failed/i);
+});
+
 test("the dialog has a footer hint, and the help lists the keys", async () => {
     const h = await seeded(HELD);
     await h.controller.handleCommand(UI_COMMANDS.OPEN_SET_WORKSPACE);

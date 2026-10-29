@@ -360,7 +360,9 @@ describe("workspace repo agents and skills", () => {
             { content: "never" },
         ]]);
         try {
-            await withScriptedModel(env, { respond, worker: { workspaceRoots: [{ name: "a", path: root }], turnTimeoutMs: 4_000 } }, async ({ client, qualifiedModel }) => {
+            await withScriptedModel(env, { respond, worker: { workspaceRoots: [{ name: "a", path: root }] } }, async ({ client, qualifiedModel, worker }) => {
+                // Fault-inject the managed-turn cap below worker budget validation.
+                worker.sessionManager.workerDefaults.turnTimeoutMs = 4_000;
                 const sessionId = randomUUID();
                 const session = await client.createSession({ sessionId, model: qualifiedModel, workspace: { root: "a", folder: "repo-x" } });
                 await session.send("f10 start and hang");

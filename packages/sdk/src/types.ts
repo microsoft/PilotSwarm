@@ -1493,6 +1493,19 @@ export interface PilotSwarmWorkerOptions {
      */
     workspaceProvider?: WorkspaceProvider;
     /**
+     * Per-folder deadline for workspace root discovery and provider attachment,
+     * in milliseconds. Defaults to 30_000. Must be a positive integer no larger
+     * than 2_147_483_647. Applies to turn attachments and workspace checks.
+     * For workspace-enabled workers (or an explicit attachment option),
+     * 2 * (value + 10_000) + 20_000 must be below each enabled turn timeout:
+     * turnInactivityTimeoutMs (default 300_000) and turnTimeoutMs (resolved
+     * from the option, environment or 1_200_000 default). This includes
+     * queued working/extra path checks, parallel releases and a margin.
+     * Omission uses 30_000 for validation, including later provider registration.
+     * Providers remain responsible for cancelling their own work on expiry.
+     */
+    workspaceAttachTimeoutMs?: number;
+    /**
      * Session workspaces without an application provider: fixed roots served
      * by the built-in provider (`path` = root path + folder, adopts nothing).
      */

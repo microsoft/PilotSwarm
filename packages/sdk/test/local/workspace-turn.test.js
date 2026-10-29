@@ -1175,7 +1175,9 @@ describe("workspace turn", () => {
             return { content: `out:${firstLine(position.toolResults)}` };
         };
         try {
-            await withScriptedModel(env, { respond, worker: { workspaceRoots: [{ name: "a", path: root }], turnTimeoutMs: 4_000 } }, async ({ client, qualifiedModel }) => {
+            await withScriptedModel(env, { respond, worker: { workspaceRoots: [{ name: "a", path: root }] } }, async ({ client, qualifiedModel, worker }) => {
+                // Fault-inject the managed-turn cap below worker budget validation.
+                worker.sessionManager.workerDefaults.turnTimeoutMs = 4_000;
                 const sessionId = randomUUID();
                 const session = await client.createSession({ sessionId, model: qualifiedModel, workspace: { root: "a", folder: "repo-x" } });
                 assertEqual(await session.sendAndWait("switch, then hang", TIMEOUT), `out:${path.join(root, "repo-y")}`, "the retried turn ran in the new folder");
