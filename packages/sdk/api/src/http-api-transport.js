@@ -578,6 +578,17 @@ export class HttpApiTransport {
         return this.api.call("getSessionEventsBefore", { sessionId, beforeSeq, limit, eventTypes });
     }
 
+    /** Paged session events with a continuation receipt (issue 148). */
+    async getSessionEventsPage(sessionId, opts = {}) {
+        return this.api.call("getSessionEventsPage", {
+            sessionId,
+            afterSeq: opts.afterSeq,
+            beforeSeq: opts.beforeSeq,
+            limit: opts.limit,
+            eventTypes: opts.eventTypes,
+        });
+    }
+
     async getExecutionHistory(sessionId, executionId) {
         return this.api.call("getExecutionHistory", { sessionId, executionId });
     }

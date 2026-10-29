@@ -372,6 +372,7 @@ with `get_capabilities` to see the shape of this server.
 | `list_sessions` | Discovery — list all sessions with status, model, agent info, and parent/child relationships; keyset pagination via `limit`/`cursor`/`include_deleted` |
 | `get_session_detail` | Discovery — get detailed info for a session including status, context usage, cron state, and pending questions |
 | `get_session_events` | Discovery — CMS event stream with `after_seq` forward paging, `before_seq` history paging, `event_types` server-side filter, and long-poll support |
+| `get_session_transcript` | Discovery — drains the retained history into one chronological transcript, following the paging cursors internally. Bounded by `max_events` (default 5000). Returns a drain receipt, an explicit `truncated_reason` and a redaction report. Drains BACKWARD, because a forward read cannot reach the oldest retained row |
 | `get_session_access` | Effective caller access, visibility, relation, and owner for one session tree |
 | `set_session_visibility` | Set `private`, `shared_read`, or `shared_write` on an owned session tree |
 | `grant_session_share` / `revoke_session_share` | Owner/admin targeted read/write grant management |
@@ -468,7 +469,7 @@ External MCP clients can **inspect** the sub-agent tree freely:
 - `list_registered_agents` — read the catalog of agent definitions
 - `get_agent_tree` — recursive subtree from a root session
 - `get_session_tree_stats` — aggregated metrics across a subtree
-- `get_session_detail`, `get_session_events` — work on any session id, including child sessions
+- `get_session_detail`, `get_session_events`, `get_session_transcript` — work on any session id, including child sessions
 - `pilotswarm://agents/{agentId}` resources — read-only details for *system* sub-agents (sweeper, resourcemgr, etc.); not a generic per-child resource
 
 External clients **cannot** spawn, message, or cancel a sub-agent. Calling a removed tool name returns the standard MCP "unknown tool" error.

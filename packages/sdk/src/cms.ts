@@ -30,6 +30,106 @@ export interface SessionEvent {
     workerNodeId?: string;
 }
 
+/**
+ * How a page of session events was selected (issue 148).
+ *
+ * The three modes are NOT cosmetic — the underlying procedures select
+ * different ends of the range, so continuation differs per mode:
+ *
+ * - `latest`   — no cursor. `cms_get_session_events` takes the NEWEST rows
+ *                (`ORDER BY seq DESC LIMIT`, re-sorted ascending). More
+ *                history therefore lies BELOW the page, so continuation is
+ *                backward. Treating this as a forward page is the
+ *                "latest-page trap": continuing forward from it silently skips
+ *                all older history.
+ * - `forward`  — `afterSeq > 0`. Takes the OLDEST rows above the cursor
+ *                (`seq > afterSeq ORDER BY seq ASC LIMIT`). More lies ABOVE.
+ * - `backward` — `beforeSeq`. Takes the NEWEST rows below the cursor
+ *                (`seq < beforeSeq ORDER BY seq DESC LIMIT`, re-sorted
+ *                ascending). More lies BELOW.
+ *
+ * Note `afterSeq = 0` is NOT "from the beginning": the procedure's guard is
+ * `p_after_seq IS NOT NULL AND p_after_seq > 0`, so zero falls through to the
+ * latest-page branch. `getSessionEventsPage` reports that as `latest`.
+ */
+export type SessionEventPageMode = "latest" | "forward" | "backward";
+
+/**
+ * How strong this page's completeness claim is (issue 148).
+ *
+ * Deliberately NOT a boolean. A frozen observed upper bound stops a reader
+ * chasing a moving head, but it is not an immutable membership snapshot:
+ * `seq` is a global BIGSERIAL allocated at INSERT, so a transaction that
+ * allocated earlier may commit later and become visible BELOW a bound already
+ * read. Retention/archival can also remove rows between requests.
+ *
+ * - `retained-visible` — everything retained and visible to this read view
+ *                        within the requested range.
+ * - `read-view`        — consistent within one read view; later-committing
+ *                        rows may still appear below the observed bound.
+ *                        It does NOT promise that a forward reader has seen
+ *                        every event: a row that commits after a newer one was
+ *                        already read becomes visible BELOW a cursor already
+ *                        advanced past it, and forward reads never return it.
+ *                        The row is retained — recover it by paging backward
+ *                        with `beforeSeq`, or by reading the history from its
+ *                        start. Note `afterSeq = 0` will not do it (see the
+ *                        mode note above: zero is a latest page).
+ *                        Tracked as issue 189.
+ * - `scan`             — assembled across multiple requests; membership is
+ *                        not frozen.
+ *
+ * None of these discharges the gap-free drain obligation on a LIVE session.
+ */
+export type SessionEventPageCompleteness = "retained-visible" | "read-view" | "scan";
+
+/** Why a page stopped short, when it did. Never silent, never a redaction. */
+export type SessionEventPageTruncation = "limit" | "byte_budget";
+
+/**
+ * Continuation receipt for one page of session events (issue 148).
+ *
+ * `hasMore` is established by an eligible-existence read — one extra real row
+ * fetched in the SAME call, under the SAME session, event-type filter,
+ * direction and range — never by sequence arithmetic, count equality, an
+ * unfiltered max sequence, or `fromSeq > 0`.
+ */
+export interface SessionEventPageReceipt {
+    mode: SessionEventPageMode;
+    /** Sequence span actually delivered, or null for an empty page. */
+    range: { fromSeq: number; toSeq: number } | null;
+    /** What the caller asked for, before defaulting or capping. */
+    limitRequested: number | null;
+    /** What was actually applied, after defaulting and capping. */
+    limitApplied: number;
+    /** The provider's own hard clamp, disclosed so the cap is explicable. */
+    providerClamp: number;
+    /**
+     * Largest page this method will deliver. One row below `providerClamp`,
+     * because that row is spent on the eligible-existence probe.
+     */
+    maxPageSize: number;
+    /** True when at least one further eligible row exists in `nextDirection`. */
+    hasMore: boolean;
+    /**
+     * Cursor for the next request: the seq of the LAST DELIVERED record in
+     * `nextDirection`, never of a fetched-but-undelivered row. Null when
+     * nothing was delivered or nothing more exists.
+     */
+    nextCursor: number | null;
+    /** Which cursor parameter `nextCursor` feeds, and which way to continue. */
+    nextDirection: "forward" | "backward" | null;
+    completeness: SessionEventPageCompleteness;
+    /** Null when the page ended naturally rather than being cut short. */
+    truncatedReason: SessionEventPageTruncation | null;
+}
+
+/** One page of session events plus its continuation receipt (issue 148). */
+export interface SessionEventPage {
+    events: SessionEvent[];
+    receipt: SessionEventPageReceipt;
+}
+
 /** One row from cms_get_top_event_emitters. */
 export interface TopEventEmitterRow {
     workerNodeId: string;

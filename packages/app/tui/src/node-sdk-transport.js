@@ -2023,6 +2023,21 @@ export class NodeSdkTransport {
         return this.mgmt.getSessionEventsBefore(sessionId, beforeSeq, limit, eventTypes);
     }
 
+    /**
+     * Paged session events with a continuation receipt (issue 148). The portal
+     * runtime dispatches `getSessionEventsPage` here, so without this wrapper
+     * that case would call undefined and throw. Nothing typechecks this file,
+     * so the gap is invisible to the build.
+     */
+    async getSessionEventsPage(sessionId, opts = {}) {
+        if (typeof this.mgmt.getSessionEventsPage !== "function") {
+            const err = new Error("getSessionEventsPage is not available on this management client");
+            err.code = "WEB_MODE_UNSUPPORTED";
+            throw err;
+        }
+        return this.mgmt.getSessionEventsPage(sessionId, opts);
+    }
+
     async getCanvasLive(sessionId) {
         if (typeof this.mgmt.getCanvasLive !== "function") return [];
         return this.mgmt.getCanvasLive(sessionId);
