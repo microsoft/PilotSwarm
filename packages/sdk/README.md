@@ -47,6 +47,24 @@ capabilities, load only the guidance they need, and attach selected permitted
 tools or MCP servers at the next turn boundary. Existing sessions retain the V1
 framework unless the feature is enabled, and Base V2 requires native tasks.
 
+Credentialed hosts can set `PILOTSWARM_PACKAGE_POLICY_MODULE` to an absolute,
+deployment-owned ESM file exporting `authorizePackage({ kind, root,
+packageSha256 })`. Throw to deny; `kind` is `agent` or `workflow`. The SDK verifies
+the canonical package bytes before invoking the policy, including warm registry
+caches, and calls it before workflow registration and every transition-module
+load. Missing/invalid configured modules fail closed. No policy is enabled by
+default; `PACKAGE_POLICY_API_VERSION === 1` lets hosts refuse older runtimes.
+Policies should reread mutable approvals rather than caching grants.
+
+Worker options `agentPackages: { mcpServers: "deployment-only",
+workerModules: "disabled" }` suppress package-defined MCP servers and generic
+worker-module imports without removing agent prompts. Named references still
+honor the deployment catalog and its agent restrictions. These options do not
+approve workflow JavaScript: use the host policy to admit exact package
+identities before import. Approved modules execute as ordinary trusted Node
+code, not in a sandbox. Neither content hashes nor package ownership alone
+establish execution approval.
+
 Tool-catalog overflow dispatch is off by default. A model on a validated
 OpenAI-compatible Chat Completions endpoint can opt in with
 `toolCatalog: { "maxDeclarations": 128, "overflowStrategy": "typed-dispatch" }`

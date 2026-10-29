@@ -357,6 +357,8 @@ export { loadExtensionModules, parseExtensionModules, type ExtensionModuleContex
 // Skills loader
 export { loadSkills, loadSkillsSync, composeDeclaredSkillsPrompt } from "./skills.js";
 export { loadAgentFiles, systemAgentUUID, systemChildAgentUUID, listBundledAgentNames, agentSupportsDirectStart } from "./agent-loader.js";
+export { PACKAGE_POLICY_API_VERSION, assertPackagePolicy } from "./package-policy.js";
+export type { PackagePolicyInput } from "./package-policy.js";
 export { loadMcpConfig, mcpAllowlistAdmits, listRestrictedMcpServerNames, listDeploymentMcpServerNames } from "./mcp-loader.js";
 export {
     readCanvasKv, writeCanvasKv, validateCanvasKvKey, canvasKvGlobMatches, resolveCanvasKvViewer, decideCanvasKvWrite,

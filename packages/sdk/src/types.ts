@@ -1421,6 +1421,10 @@ export interface PilotSwarmWorkerOptions {
      * a restart. Off by default — zero behavior change unless opted in.
      */
     agentPackages?: {
+        /** Suppress package-defined MCP servers; named deployment references still resolve. */
+        mcpServers?: "deployment-only";
+        /** Do not import package-owned tools/worker-module.js. */
+        workerModules?: "disabled";
         /** Unpack cache. Default: <sessionStateDir>/../agent-packages */
         cacheDir?: string;
         /**

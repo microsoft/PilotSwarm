@@ -20,6 +20,7 @@ import type { ArtifactStore } from "./session-store.js";
 import type { AgentPackageInstallEntry, SessionCatalog } from "./cms.js";
 import { extractAgentPackageTarGz } from "./agent-package-format.js";
 import { fetchAgentPackageTarGz } from "./agent-package-service.js";
+import { assertPackagePolicy } from "./package-policy.js";
 
 const META_FILENAME = ".pilotswarm-meta.json";
 
@@ -150,6 +151,7 @@ export async function installAgentPackages(opts: {
                     throw error;
                 }
             }
+            await assertPackagePolicy({ kind: "agent", root: dir, packageSha256: entry.sha256 });
             const workerModule = path.join(dir, "tools", "worker-module.js");
             installed.workerModulePath = fs.existsSync(workerModule) ? workerModule : null;
         } catch (error: any) {
@@ -198,6 +200,7 @@ export async function loadAgentPackageTools(
     context: { workerNodeId?: string },
 ): Promise<any[]> {
     if (!pkg.workerModulePath) return [];
+    await assertPackagePolicy({ kind: "agent", root: pkg.dir, packageSha256: pkg.sha256 });
     const url = `${pathToFileURL(pkg.workerModulePath).href}?v=${pkg.sha256.slice(0, 12)}`;
     const mod: any = await import(url);
     const surface = mod?.default ?? mod;

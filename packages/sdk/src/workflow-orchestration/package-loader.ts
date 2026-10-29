@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { assertPackagePolicy } from "../package-policy.js";
 import { parseDocument } from "yaml";
 import {
     agentPackageTarSha256,
@@ -146,6 +147,7 @@ export async function materializeWorkflowPackageArtifactSnapshot(
             "WORKFLOW_PACKAGE_SNAPSHOT_INVALID",
         );
     }
+    await assertPackagePolicy({ kind: "workflow", root: snapshotRoot, packageSha256 });
     return {
         root: snapshotRoot,
         packageSha256,
@@ -242,6 +244,9 @@ async function loadRegistration(
     snapshot: WorkflowPackageMaterialization,
     reference: WorkflowTransitionReference,
 ): Promise<WorkflowTransitionRegistration> {
+    await assertPackagePolicy({
+        kind: "workflow", root: snapshot.root, packageSha256: snapshot.packageSha256,
+    });
     const resolvedModule = await resolvePackageModule(snapshot.root, reference.module);
     const fileStat = await stat(resolvedModule).catch(() => null);
     if (!fileStat?.isFile()) {
