@@ -513,6 +513,7 @@ export class PilotSwarmClient {
         const rows = await this._catalog.listSessions();
         return rows.map(row => ({
             sessionId: row.sessionId,
+            sessionKind: "agent",
             status: (row.state as PilotSwarmSessionStatus) ?? "pending",
             title: row.title ?? undefined,
             owner: row.owner ?? undefined,
@@ -1143,6 +1144,7 @@ export class PilotSwarmClient {
 
         return {
             sessionId,
+            sessionKind: "agent",
             status,
             model: cmsRow?.model ?? undefined,
             title: cmsRow?.title ?? undefined,

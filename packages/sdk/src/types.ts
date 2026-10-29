@@ -6,6 +6,9 @@ import type { StorageConfig } from "./storage-config.js";
 
 export const SESSION_STATE_MISSING_PREFIX = "SESSION_STATE_MISSING:";
 
+/** Runtime implementation behind a session. Omitted persisted values are agent sessions. */
+export type SessionKind = "agent" | "workflow";
+
 // ─── Turn Result ─────────────────────────────────────────────────
 // What ManagedSession.runTurn() returns to the orchestration.
 
@@ -793,6 +796,17 @@ export interface SessionOwnerInfo {
     displayName?: string | null;
 }
 
+/** Immutable, inline source for the conservative script-only workflow runtime. */
+export interface ScriptWorkflowSessionConfig {
+    yaml: string;
+    inputs?: Record<string, unknown>;
+    sessionId?: string;
+    parentSessionId?: string;
+    owner?: SessionOwnerInfo | null;
+    groupId?: string | null;
+    visibility?: "private" | "shared_read" | "shared_write" | null;
+}
+
 export interface SessionSummaryState {
     schemaVersion: number;
     updatedAt: string;
@@ -857,6 +871,8 @@ export interface ChildSessionResult {
 
 export interface PilotSwarmSessionInfo {
     sessionId: string;
+    /** Runtime implementation. Existing sessions default to "agent". */
+    sessionKind: SessionKind;
     status: PilotSwarmSessionStatus;
     /** LLM model used for this session. */
     model?: string;
