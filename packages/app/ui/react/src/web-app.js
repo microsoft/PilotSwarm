@@ -13768,7 +13768,19 @@ function ModalLayer({ controller }) {
     // session, so the confirm action is "Switch Model", not "Create Session".
     const pickerConfirmLabel = modal.sessionOptions?.mode === "switchModel" ? "Switch Model" : "Create Session";
     if (modal.type === "modelPicker" && modalState.modelPicker) {
-        return renderListModal(modalState.modelPicker, pickerConfirmLabel);
+        // A workflow session needs no model, so the first step of the
+        // new-session flow offers it directly, beside the agent route.
+        const offerWorkflow = modal.sessionOptions?.mode !== "switchModel"
+            && typeof controller.transport?.createScriptWorkflowSession === "function";
+        const workflowFooter = offerWorkflow
+            ? React.createElement("button", {
+                type: "button",
+                className: "ps-modal-button ps-workflow-start",
+                title: "A durable state machine of script nodes that runs without an LLM",
+                onClick: () => controller.openWorkflowCreateModal({}, modal.previousFocus),
+            }, "⛓ Script workflow instead")
+            : null;
+        return renderListModal(modalState.modelPicker, pickerConfirmLabel, workflowFooter);
     }
     if (modal.type === "reasoningEffortPicker" && modalState.reasoningEffortPicker) {
         return renderListModal(modalState.reasoningEffortPicker, pickerConfirmLabel);

@@ -201,6 +201,79 @@ describe("inline control tool execution", () => {
         expect(result.type).toBe("completed");
         expect(result.content).toBe("Spawned one and continuing.");
     });
+    it("spawn_workflow runs inline, keeps the turn going and passes the tool call id", async () => {
+        const fakeSession = new FakeCopilotSession();
+        const yaml = "apiVersion: pilotswarm.dev/v1alpha1\nkind: ScriptWorkflow\n";
+        fakeSession.scriptedToolCalls = [
+            { name: "spawn_workflow", id: "call-wf", args: { yaml, inputs: { n: 1 } } },
+            { name: "spawn_workflow", id: "call-empty", args: { yaml: "  " } },
+            { name: "spawn_workflow", id: "call-list", args: { yaml, inputs: [1] } },
+        ];
+        fakeSession.assistantContent = "Started the workflow.";
+        const results = [];
+        fakeSession.on("tool.execution_complete", (event) => results.push(event.data.result));
+        const controlToolBridge = {
+            spawnAgent: vi.fn(),
+            spawnWorkflow: vi.fn(async () => "[SYSTEM: started workflow session wf-1]"),
+            messageAgent: vi.fn(),
+        };
+        const managed = new ManagedSession("inline-spawn-workflow", fakeSession, {});
+        const result = await managed.runTurn("run my workflow", { controlToolBridge });
+
+        const live = fakeSession.registeredTools.find((tool) => tool.name === "spawn_workflow");
+        const stub = ManagedSession.subAgentToolDefs().find((tool) => tool.name === "spawn_workflow");
+        expect(live?.parameters).toEqual(stub?.parameters);
+        expect(live?.description).toBe(stub?.description);
+        expect(controlToolBridge.spawnWorkflow).toHaveBeenCalledTimes(1);
+        expect(controlToolBridge.spawnWorkflow).toHaveBeenCalledWith({ yaml, inputs: { n: 1 } }, { toolCallId: "call-wf" });
+        expect(results).toEqual([
+            "[SYSTEM: started workflow session wf-1]",
+            "Error: yaml is required.",
+            "Error: inputs must be a JSON object.",
+        ]);
+        expect(result.type).toBe("completed");
+        expect(result.content).toBe("Started the workflow.");
+    });
+
+    it("spawn_workflow without the bridge method refuses instead of hanging", async () => {
+        const fakeSession = new FakeCopilotSession();
+        fakeSession.scriptedToolCalls = [{ name: "spawn_workflow", args: { yaml: "kind: ScriptWorkflow" } }];
+        const results = [];
+        fakeSession.on("tool.execution_complete", (event) => results.push(event.data.result));
+        const managed = new ManagedSession("inline-spawn-workflow-missing", fakeSession, {});
+        await managed.runTurn("run it", { controlToolBridge: { spawnAgent: vi.fn(), messageAgent: vi.fn() } });
+        expect(results).toEqual(["Error: spawn_workflow is not available in this session."]);
+    });
+
+    it("cron then spawn_workflow: the schedule is set and every wake-up can start a run", async () => {
+        const yaml = "apiVersion: pilotswarm.dev/v1alpha1\nkind: ScriptWorkflow\n";
+        const controlToolBridge = {
+            spawnAgent: vi.fn(),
+            messageAgent: vi.fn(),
+            spawnWorkflow: vi.fn(async (_args, call) => `[SYSTEM: started workflow session for ${call.toolCallId}]`),
+        };
+
+        // The turn that sets it up: start the first run now, then schedule.
+        const setupSession = new FakeCopilotSession();
+        setupSession.scriptedToolCalls = [
+            { name: "spawn_workflow", id: "call-first", args: { yaml } },
+            { name: "cron", id: "call-cron", args: { seconds: 3600, reason: "run the nightly workflow" } },
+        ];
+        setupSession.assistantContent = "Started the first run; it repeats every hour.";
+        const setup = await new ManagedSession("cron-workflow", setupSession, {}).runTurn("Every hour, run this workflow", { controlToolBridge });
+        // cron does not end the turn: the schedule rides the result as a queued action.
+        expect(setup.type).toBe("completed");
+        expect(setup.queuedActions).toContainEqual(expect.objectContaining({ type: "cron", action: "set", intervalSeconds: 3600 }));
+
+        // A cron wake-up: the agent starts the next run and ends its turn.
+        const wakeSession = new FakeCopilotSession();
+        wakeSession.scriptedToolCalls = [{ name: "spawn_workflow", id: "call-wake", args: { yaml } }];
+        wakeSession.assistantContent = "Started this hour's run.";
+        const wake = await new ManagedSession("cron-workflow", wakeSession, {}).runTurn("[cron wake-up]", { controlToolBridge, cycleOrigin: "cron" });
+        expect(wake.type).toBe("completed");
+        expect(controlToolBridge.spawnWorkflow.mock.calls.map(([, call]) => call.toolCallId)).toEqual(["call-first", "call-wake"]);
+    });
+
     it("keeps sub-agent stub schemas aligned with live schemas", () => {
         const spawnTool = ManagedSession.subAgentToolDefs().find((tool) => tool.name === "spawn_agent");
         const completeTool = ManagedSession.subAgentToolDefs().find((tool) => tool.name === "complete_agent");

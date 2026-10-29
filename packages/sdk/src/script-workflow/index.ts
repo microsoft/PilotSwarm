@@ -3,3 +3,5 @@ export * from "./executor.js";
 export * from "./runner.js";
 export * from "./orchestration.js";
 export * from "./activities.js";
+export * from "./tool-spec.js";
+export * from "./spawn.js";
