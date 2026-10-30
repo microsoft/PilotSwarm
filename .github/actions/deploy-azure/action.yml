@@ -18,11 +18,11 @@ runs:
       run: node deploy/scripts/prepare-github-env.mjs
       shell: bash
     - name: Setup kubectl
-      uses: azure/setup-kubectl@v4
+      uses: azure/setup-kubectl@776406bce94f63e41d621b960d78ee25c8b76ede # v4.0.1
       with:
         version: v1.34.0
     - name: Setup ORAS
-      uses: oras-project/setup-oras@v1
+      uses: oras-project/setup-oras@22ce207df3b08e061f537244349aac6ae1d214f6 # v1.2.4
       with:
         version: 1.3.0
     - name: Setup Flux CLI
