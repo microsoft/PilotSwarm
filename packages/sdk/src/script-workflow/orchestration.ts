@@ -54,32 +54,42 @@ export interface ScriptWorkflowRunNodeResult {
     output: unknown;
 }
 
+/** How a workflow run ended. "deleted" also removes the session. */
+export type ScriptWorkflowEndStatus = "completed" | "failed" | "cancelled" | "deleted";
+
+/** The command queue every session listens on; management and parents send `{ type: "cmd" }` here. */
+export const SCRIPT_WORKFLOW_COMMAND_QUEUE = "messages";
+
 export interface ScriptWorkflowFinishInput {
     sessionId: string;
     parentSessionId?: string;
     notifyParent: boolean;
     workflowName: string | null;
-    status: "completed" | "failed";
+    status: ScriptWorkflowEndStatus;
     outcome?: string;
     output?: unknown;
     terminalNodeId?: string;
     steps: number;
     error?: string;
+    /** Why a cancelled or deleted run stopped, and which session asked. */
+    reason?: string;
+    requestedBy?: string;
 }
 
 export interface ScriptWorkflowTerminalResult {
-    status: "completed" | "failed";
+    status: ScriptWorkflowEndStatus;
     workflowName: string | null;
     outcome?: string;
     output?: unknown;
     terminalNodeId?: string;
     steps: number;
     error?: string;
+    reason?: string;
 }
 
 /** The custom status the client and portal read; `status` follows session status words. */
 export interface ScriptWorkflowCustomStatus {
-    status: "running" | "completed" | "failed";
+    status: "running" | "completed" | "failed" | "cancelled";
     sessionKind: "workflow";
     workflow: {
         name: string | null;
@@ -96,6 +106,19 @@ const ACTIVITY_ERROR_PREFIX = /^Activity '[^']+' JS execution failed: [A-Za-z]+,
 export function workflowErrorMessage(error: unknown): string {
     const message = error instanceof Error ? error.message : String(error);
     return message.replace(ACTIVITY_ERROR_PREFIX, "");
+}
+
+/** A lifecycle command read from the command queue, or null for anything else. */
+export function parseWorkflowCommand(raw: unknown): { cmd: "cancel" | "done" | "delete"; reason?: string; requestedBy?: string } | null {
+    let message: any = raw;
+    if (typeof message === "string") {
+        try { message = JSON.parse(message); } catch { return null; }
+    }
+    if (!message || typeof message !== "object" || message.type !== "cmd") return null;
+    if (message.cmd !== "cancel" && message.cmd !== "done" && message.cmd !== "delete") return null;
+    const reason = typeof message.args?.reason === "string" && message.args.reason.trim() ? message.args.reason.trim() : undefined;
+    const requestedBy = typeof message.requestedBy === "string" && message.requestedBy ? message.requestedBy : undefined;
+    return { cmd: message.cmd, ...(reason ? { reason } : {}), ...(requestedBy ? { requestedBy } : {}) };
 }
 
 function publish(ctx: any, status: ScriptWorkflowCustomStatus): void {
@@ -123,7 +146,7 @@ export function* scriptWorkflowOrchestration_1_0_0(
 
     const finish = function* (result: Omit<ScriptWorkflowFinishInput, "sessionId" | "parentSessionId" | "notifyParent">) {
         publish(ctx, {
-            status: result.status,
+            status: result.status === "deleted" ? "cancelled" : result.status,
             sessionKind: "workflow",
             workflow: {
                 name: result.workflowName,
@@ -131,6 +154,7 @@ export function* scriptWorkflowOrchestration_1_0_0(
                 step: result.steps,
                 ...(result.outcome ? { outcome: result.outcome } : {}),
                 ...(result.error ? { error: result.error } : {}),
+                ...(result.reason ? { error: result.reason } : {}),
             },
         });
         yield ctx.scheduleActivityTyped(SCRIPT_WORKFLOW_ACTIVITIES.finish, {
@@ -147,6 +171,7 @@ export function* scriptWorkflowOrchestration_1_0_0(
             ...(Object.hasOwn(result, "output") ? { output: result.output } : {}),
             ...(result.terminalNodeId ? { terminalNodeId: result.terminalNodeId } : {}),
             ...(result.error ? { error: result.error } : {}),
+            ...(result.reason ? { reason: result.reason } : {}),
         };
         return terminal;
     };
@@ -185,15 +210,41 @@ export function* scriptWorkflowOrchestration_1_0_0(
             if (!node) throw new Error(`Workflow entered unknown node '${nodeId}'.`);
             publish(ctx, { status: "running", sessionKind: "workflow", workflow: { name: workflow.name, nodeId: node.id, step } });
 
-            const raw: ScriptWorkflowRunNodeResult = yield ctx.scheduleActivityTyped(SCRIPT_WORKFLOW_ACTIVITIES.runNode, {
-                sessionId: input.sessionId,
-                workflowName: workflow.name,
-                nodeId: node.id,
-                node,
-                inputs: input.inputs,
-                priorOutput,
-                step,
-            } satisfies ScriptWorkflowRunNodeInput);
+            // The node races the command queue, so cancel, complete and
+            // delete stop a running script: the losing activity is cancelled
+            // and the runner kills its process tree.
+            const raced = yield ctx.raceTyped(
+                ctx.scheduleActivity(SCRIPT_WORKFLOW_ACTIVITIES.runNode, {
+                    sessionId: input.sessionId,
+                    workflowName: workflow.name,
+                    nodeId: node.id,
+                    node,
+                    inputs: input.inputs,
+                    priorOutput,
+                    step,
+                } satisfies ScriptWorkflowRunNodeInput),
+                ctx.dequeueEvent(SCRIPT_WORKFLOW_COMMAND_QUEUE),
+            );
+            if (raced?.index === 1) {
+                const command = parseWorkflowCommand(raced.value);
+                if (!command) {
+                    // Workflow sessions take no other messages; the senders
+                    // refuse them. One that slips through stopped the node,
+                    // so the same node runs again from its start.
+                    ctx.traceWarn?.(`[script-workflow] session=${input.sessionId} ignored a non-command message at node ${node.id}`);
+                    step -= 1;
+                    continue;
+                }
+                return yield* finish({
+                    workflowName: workflow.name,
+                    status: command.cmd === "delete" ? "deleted" : "cancelled",
+                    terminalNodeId: node.id,
+                    steps: step,
+                    reason: command.reason ?? (command.cmd === "delete" ? "Deleted" : command.cmd === "done" ? "Stopped" : "Cancelled"),
+                    ...(command.requestedBy ? { requestedBy: command.requestedBy } : {}),
+                });
+            }
+            const raw = typeof raced?.value === "string" ? JSON.parse(raced.value) : raced?.value;
             const result = requireScriptResult(node.id, raw);
             const target = resolveTransition(workflow, node.id, result.outcome);
             if (target === null) {

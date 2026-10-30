@@ -19,7 +19,9 @@ const STREAM_TAIL_BYTES = 16 * 1024;
 /** Environment variables a script inherits from the worker. Everything else is dropped. */
 const INHERITED_ENV = ["PATH", "LANG", "LC_ALL", "TZ", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT"];
 
-export type ScriptResultSource = "reported" | "stdout" | "exit" | "timeout";
+export type ScriptResultSource = "reported" | "stdout" | "exit" | "timeout" | "cancelled";
+
+const CANCEL_POLL_MS = 250;
 
 export interface ScriptToolCallRecord {
     name: string;
@@ -37,6 +39,8 @@ export interface RunScriptNodeRequest {
     step: number;
     /** Routes one tool call to the workflow session's tool set. */
     callTool: (call: ScriptToolCall) => Promise<unknown>;
+    /** True once the workflow stopped waiting for this node (cancel, complete or delete). */
+    isCancelled?: () => boolean;
 }
 
 export interface RunScriptNodeResult {
@@ -307,6 +311,7 @@ export async function runScriptNode(
         const stdout = new StreamTail();
         const stderr = new StreamTail();
         let timedOut = false;
+        let cancelled = false;
 
         const exitCode = await new Promise<number | null>((resolve, reject) => {
             const child = spawn(executable, runtime.args(scriptPath), {
@@ -315,14 +320,27 @@ export async function runScriptNode(
                 stdio: ["pipe", "pipe", "pipe"],
                 windowsHide: true,
             });
+            const stop = () => { if (!killProcessTree(child.pid)) child.kill("SIGKILL"); };
             const timer = setTimeout(() => {
                 timedOut = true;
-                if (!killProcessTree(child.pid)) child.kill("SIGKILL");
+                stop();
             }, node.timeoutSeconds * 1000);
+            const cancelWatch = request.isCancelled
+                ? setInterval(() => {
+                    if (!cancelled && request.isCancelled!()) {
+                        cancelled = true;
+                        stop();
+                    }
+                }, CANCEL_POLL_MS)
+                : null;
+            const settle = () => {
+                clearTimeout(timer);
+                if (cancelWatch) clearInterval(cancelWatch);
+            };
             child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
             child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
             child.on("error", (error: NodeJS.ErrnoException) => {
-                clearTimeout(timer);
+                settle();
                 reject(error.code === "ENOENT"
                     ? new ScriptWorkflowExecutionError(
                         `Script node '${node.id}' needs the ${node.runtime} runtime, but '${executable}' is not installed on this worker.`,
@@ -330,7 +348,7 @@ export async function runScriptNode(
                     : error);
             });
             child.on("close", (code) => {
-                clearTimeout(timer);
+                settle();
                 resolve(code);
             });
             child.stdin.on("error", () => { /* the script may exit without reading its context */ });
@@ -353,6 +371,9 @@ export async function runScriptNode(
             stderrTail,
             toolCalls,
         };
+        if (cancelled) {
+            return { ...common, outcome: "cancelled", output: null, resultSource: "cancelled" };
+        }
         if (timedOut) {
             return { ...common, outcome: "timeout", output: { timeoutSeconds: node.timeoutSeconds }, resultSource: "timeout" };
         }

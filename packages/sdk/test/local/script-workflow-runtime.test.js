@@ -20,6 +20,8 @@ import {
     registerScriptWorkflowActivities,
     SCRIPT_WORKFLOWS_DISABLED_MESSAGE,
 } from "../../src/script-workflow/activities.js";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 const { Runtime, Client, SqliteProvider } = createRequire(import.meta.url)("duroxide");
 
@@ -170,6 +172,9 @@ function fakeCatalog() {
         updates,
         async recordEvents(sessionId, list) { for (const event of list) events.push({ sessionId, ...event }); },
         async updateSession(sessionId, changes) { updates.push({ sessionId, ...changes }); },
+        async getSessionEvents(sessionId, _after, _limit, types) {
+            return events.filter((e) => e.sessionId === sessionId && (!types || types.includes(e.eventType)));
+        },
     };
 }
 
@@ -449,6 +454,354 @@ spec:
             releaseHang?.(ok(null));
             await secondRuntime.shutdown(100);
         }
+    });
+});
+
+// ─── Cancellation ───────────────────────────────────────────────
+
+const LONG_YAML = `
+apiVersion: pilotswarm.dev/v1alpha1
+kind: ScriptWorkflow
+metadata: { name: long-running }
+spec:
+  entry: first
+  nodes:
+    first: { type: script, runtime: node, source: 'await setResult("success", null)', next: { success: slow } }
+    slow:
+      type: script
+      runtime: node
+      timeoutSeconds: 600
+      source: |
+        process.stdout.write("started\\n");
+        await new Promise(() => setInterval(() => {}, 1000));
+      next: { success: null }
+`;
+
+async function startLongWorkflow({ runNode, parentSessionId = "parent-1" } = {}) {
+    const provider = await SqliteProvider.inMemory();
+    const catalog = fakeCatalog();
+    const notifications = [];
+    const deleted = [];
+    const runtime = await startRuntime(provider, {
+        catalog,
+        enabled: () => true,
+        resolveTools: async () => new Map(),
+        notifyParent: async (parent, prompt) => { notifications.push({ parent, prompt }); },
+        deleteSession: async (id) => { deleted.push(id); },
+        ...(runNode ? { runNode } : {}),
+    // A running activity learns of its cancellation when it renews its lock;
+    // a short lock keeps these tests fast (production renews every few seconds).
+    }, { workerLockTimeoutMs: 1_000 });
+    const client = new Client(provider);
+    const sessionId = `wf-${Math.random().toString(36).slice(2)}`;
+    const instanceId = `session-${sessionId}`;
+    await client.startOrchestrationVersioned(instanceId, SCRIPT_WORKFLOW_ORCHESTRATION_NAME, {
+        sessionId, yaml: LONG_YAML, inputs: {}, parentSessionId,
+    }, SCRIPT_WORKFLOW_LATEST_VERSION);
+    const waitFor = async (check, label, timeoutMs = 20_000) => {
+        const deadline = Date.now() + timeoutMs;
+        while (Date.now() < deadline) {
+            if (check()) return;
+            await new Promise((r) => setTimeout(r, 25));
+        }
+        throw new Error(`timed out waiting for ${label}`);
+    };
+    return { provider, runtime, client, catalog, notifications, deleted, sessionId, instanceId, waitFor };
+}
+
+const okResult = (output) => ({ outcome: "success", output, resultSource: "reported", exitCode: 0, durationMs: 0, stdoutTail: "", stderrTail: "", toolCalls: [] });
+const command = (cmd, extra = {}) => JSON.stringify({ type: "cmd", cmd, id: `${cmd}-1`, args: { reason: `${cmd} by test` }, ...extra });
+
+describe("script workflow cancellation (duroxide)", () => {
+    it("cancel stops the running script, ends the run as cancelled and tells the parent why", async () => {
+        const { runtime, client, catalog, notifications, instanceId, waitFor } = await startLongWorkflow();
+        try {
+            await waitFor(() => catalog.events.some((e) => e.eventType === "workflow.node_started" && e.data.nodeId === "slow"), "the slow node to start");
+            const started = Date.now();
+            await client.enqueueEvent(instanceId, "messages", command("cancel"));
+            const status = await client.waitForOrchestration(instanceId, 20_000);
+            expect(status.status).toBe("Completed");
+            expect(status.output).toMatchObject({ status: "cancelled", reason: "cancel by test", terminalNodeId: "slow", steps: 2 });
+            // The script process is killed, not left to run to its 600 s timeout.
+            await waitFor(() => catalog.events.some((e) => e.eventType === "workflow.node_cancelled"), "the runner to report the kill");
+            expect(Date.now() - started).toBeLessThan(10_000);
+            expect(catalog.events.find((e) => e.eventType === "workflow.cancelled").data).toMatchObject({ reason: "cancel by test", steps: 2 });
+            expect(catalog.updates.at(-1)).toMatchObject({ state: "cancelled", lastError: "cancel by test" });
+            expect(notifications.map((n) => n.prompt)).toEqual([expect.stringMatching(/cancelled after 2 step\(s\)\. Reason: cancel by test/)]);
+            const custom = JSON.parse((await client.getStatus(instanceId)).customStatus);
+            expect(custom).toMatchObject({ status: "cancelled", workflow: { nodeId: "slow" } });
+        } finally {
+            await runtime.shutdown(100);
+        }
+    });
+
+    it("complete stops a running workflow too, and a parent that asked is not told", async () => {
+        let cancelSeen = false;
+        const { runtime, client, notifications, instanceId, catalog, waitFor } = await startLongWorkflow({
+            runNode: async (request) => {
+                if (request.node.id === "first") return okResult(null);
+                while (!request.isCancelled?.()) await new Promise((r) => setTimeout(r, 20));
+                cancelSeen = true;
+                return { ...okResult(null), outcome: "cancelled", resultSource: "cancelled" };
+            },
+        });
+        try {
+            await waitFor(() => catalog.events.some((e) => e.eventType === "workflow.node_started" && e.data.nodeId === "slow"), "the slow node to start");
+            await client.enqueueEvent(instanceId, "messages", command("done", { requestedBy: "parent-1" }));
+            const status = await client.waitForOrchestration(instanceId, 20_000);
+            expect(status.output).toMatchObject({ status: "cancelled", reason: "done by test" });
+            await waitFor(() => cancelSeen, "the node to see its cancellation");
+            expect(notifications).toEqual([]);
+        } finally {
+            await runtime.shutdown(100);
+        }
+    });
+
+    it("delete stops the script and removes the session", async () => {
+        const { runtime, client, deleted, sessionId, instanceId, catalog, waitFor } = await startLongWorkflow();
+        try {
+            await waitFor(() => catalog.events.some((e) => e.eventType === "workflow.node_started" && e.data.nodeId === "slow"), "the slow node to start");
+            await client.enqueueEvent(instanceId, "messages", command("delete"));
+            const status = await client.waitForOrchestration(instanceId, 20_000);
+            expect(status.output).toMatchObject({ status: "deleted" });
+            expect(deleted).toEqual([sessionId]);
+            expect(catalog.updates.some((u) => u.state === "cancelled")).toBe(false);
+        } finally {
+            await runtime.shutdown(100);
+        }
+    });
+
+    it("a stray non-command message re-runs the interrupted node and the workflow still completes", async () => {
+        const runs = [];
+        const { runtime, client, instanceId, catalog, waitFor } = await startLongWorkflow({
+            runNode: async (request) => {
+                runs.push(request.node.id);
+                if (request.node.id === "first") return okResult(null);
+                if (runs.filter((id) => id === "slow").length === 1) {
+                    while (!request.isCancelled?.()) await new Promise((r) => setTimeout(r, 20));
+                    return { ...okResult(null), outcome: "cancelled", resultSource: "cancelled" };
+                }
+                return okResult({ second: true });
+            },
+        });
+        try {
+            await waitFor(() => catalog.events.some((e) => e.eventType === "workflow.node_started" && e.data.nodeId === "slow"), "the slow node to start");
+            await client.enqueueEvent(instanceId, "messages", JSON.stringify({ prompt: "hello" }));
+            const status = await client.waitForOrchestration(instanceId, 20_000);
+            expect(status.output).toMatchObject({ status: "completed", output: { second: true }, steps: 2 });
+            expect(runs).toEqual(["first", "slow", "slow"]);
+        } finally {
+            await runtime.shutdown(100);
+        }
+    });
+
+    it("cancelling the instance itself (how a client delete ends it) cancels the running node", async () => {
+        let cancelSeen = false;
+        const { runtime, client, instanceId, catalog, waitFor } = await startLongWorkflow({
+            runNode: async (request) => {
+                if (request.node.id === "first") return okResult(null);
+                while (!request.isCancelled?.()) await new Promise((r) => setTimeout(r, 20));
+                cancelSeen = true;
+                return { ...okResult(null), outcome: "cancelled", resultSource: "cancelled" };
+            },
+        });
+        try {
+            await waitFor(() => catalog.events.some((e) => e.eventType === "workflow.node_started" && e.data.nodeId === "slow"), "the slow node to start");
+            await client.cancelInstance(instanceId, "Session deleted");
+            await waitFor(() => cancelSeen, "the running node to see the instance cancellation", 20_000);
+        } finally {
+            await runtime.shutdown(100);
+        }
+    });
+
+    it("a command that arrives between nodes is not lost", async () => {
+        let release;
+        const gate = new Promise((r) => { release = r; });
+        const { runtime, client, instanceId, catalog, waitFor } = await startLongWorkflow({
+            runNode: async (request) => {
+                if (request.node.id === "first") { await gate; return okResult(null); }
+                while (!request.isCancelled?.()) await new Promise((r) => setTimeout(r, 20));
+                return { ...okResult(null), outcome: "cancelled", resultSource: "cancelled" };
+            },
+        });
+        try {
+            await waitFor(() => catalog.events.some((e) => e.eventType === "workflow.node_started" && e.data.nodeId === "first"), "the first node to start");
+            // Sent while the first node runs: it wins that race, so the first
+            // node is the one stopped.
+            await client.enqueueEvent(instanceId, "messages", command("cancel"));
+            const status = await client.waitForOrchestration(instanceId, 20_000);
+            release();
+            expect(status.output).toMatchObject({ status: "cancelled", terminalNodeId: "first", steps: 1 });
+        } finally {
+            await runtime.shutdown(100);
+        }
+    });
+});
+
+// ─── Live canvas ────────────────────────────────────────────────
+
+function fakeCanvas() {
+    const draws = [];
+    const ticks = [];
+    return {
+        draws,
+        ticks,
+        async draw(sessionId, html) { draws.push({ sessionId, html }); },
+        async tick(sessionId, state) { ticks.push({ sessionId, state: JSON.parse(JSON.stringify(state)) }); },
+    };
+}
+
+describe("script workflow live canvas (duroxide)", () => {
+    it("draws the graph once and ticks the state on every step and at the end", async () => {
+        const canvas = fakeCanvas();
+        const { status } = await runWorkflow(BRANCHING_YAML, {
+            inputs: { key: "k" },
+            deps: { canvas, resolveTools: async () => new Map([["read_facts", async () => ({ count: 3 })]]) },
+        });
+        expect(status.output).toMatchObject({ status: "completed", outcome: "done" });
+        expect(canvas.draws).toHaveLength(1);
+        expect(canvas.draws[0].html).toContain('"entry":"collect"');
+        expect(canvas.draws[0].html).toContain("applyData");
+        // Two ticks per step (start, end) and one for the end of the run.
+        expect(canvas.ticks).toHaveLength(3 * 2 + 1);
+        const running = canvas.ticks[0].state;
+        expect(running).toMatchObject({ status: "running", current: "collect", step: 1 });
+        expect(running.nodes.collect).toMatchObject({ state: "running", runs: 1 });
+        const last = canvas.ticks.at(-1).state;
+        expect(last).toMatchObject({ status: "completed", outcome: "done", step: 3 });
+        expect(last.nodes).toMatchObject({ collect: { state: "done", lastOutcome: "success" }, decide: { state: "done", lastOutcome: "many" }, report: { state: "done" } });
+        expect(last.taken).toEqual({ "collect\u0001success": 1, "decide\u0001many": 1, "report\u0001done": 1 });
+        expect(last.steps.map((s) => [s.step, s.node, s.outcome])).toEqual([[1, "collect", "success"], [2, "decide", "many"], [3, "report", "done"]]);
+    });
+
+    it("a cancelled run ends with the running node shown as stopped", async () => {
+        const canvas = fakeCanvas();
+        const { runtime, client, instanceId, catalog, waitFor } = await (async () => {
+            const provider = await SqliteProvider.inMemory();
+            const catalog = fakeCatalog();
+            const runtime = await startRuntime(provider, {
+                catalog, canvas, enabled: () => true, resolveTools: async () => new Map(), notifyParent: async () => {},
+                runNode: async (request) => {
+                    if (request.node.id === "first") return okResult(null);
+                    while (!request.isCancelled?.()) await new Promise((r) => setTimeout(r, 20));
+                    return { ...okResult(null), outcome: "cancelled", resultSource: "cancelled" };
+                },
+            });
+            const client = new Client(provider);
+            const instanceId = `session-wf-canvas-${Math.random().toString(36).slice(2)}`;
+            await client.startOrchestrationVersioned(instanceId, SCRIPT_WORKFLOW_ORCHESTRATION_NAME, {
+                sessionId: instanceId.slice("session-".length), yaml: LONG_YAML, inputs: {},
+            }, SCRIPT_WORKFLOW_LATEST_VERSION);
+            const waitFor = async (check, label) => {
+                const deadline = Date.now() + 20_000;
+                while (Date.now() < deadline) { if (check()) return; await new Promise((r) => setTimeout(r, 25)); }
+                throw new Error(`timed out waiting for ${label}`);
+            };
+            return { runtime, client, instanceId, catalog, waitFor };
+        })();
+        try {
+            await waitFor(() => catalog.events.some((e) => e.eventType === "workflow.node_started" && e.data.nodeId === "slow"), "the slow node");
+            await client.enqueueEvent(instanceId, "messages", command("cancel"));
+            await client.waitForOrchestration(instanceId, 20_000);
+            await waitFor(() => canvas.ticks.some((t) => t.state.status === "cancelled"), "the cancelled tick");
+            const end = canvas.ticks.filter((t) => t.state.status === "cancelled").at(-1).state;
+            expect(end).toMatchObject({ status: "cancelled", reason: "cancel by test" });
+            expect(end.nodes.slow.state).toBe("cancelled");
+            expect(end.nodes.first.state).toBe("done");
+        } finally {
+            await runtime.shutdown(100);
+        }
+    });
+
+    it("a canvas that cannot be written never fails the run", async () => {
+        const { status } = await runWorkflow(BRANCHING_YAML, {
+            inputs: { key: "k" },
+            deps: {
+                canvas: { draw: async () => { throw new Error("blob store down"); }, tick: async () => { throw new Error("blob store down"); } },
+                resolveTools: async () => new Map([["read_facts", async () => ({ count: 0 })]]),
+            },
+        });
+        expect(status.output).toMatchObject({ status: "completed", outcome: "few" });
+    });
+});
+
+// ─── MCP server tools ───────────────────────────────────────────
+
+const CALC_SERVER = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../fixtures/workflow-mcp/calc-server.mjs");
+
+describe("MCP server tools for scripts", () => {
+    it("a node script calls MCP tools as <server>/<tool>, lists them, and is held to the server's tools list", async () => {
+        const yaml = `
+apiVersion: pilotswarm.dev/v1alpha1
+kind: ScriptWorkflow
+metadata: { name: mcp-use }
+spec:
+  entry: use
+  nodes:
+    use:
+      type: script
+      runtime: node
+      source: |
+        const sum = await callTool("calc/add", { a: 2, b: 40 });
+        const info = await callTool("calc/info", {});
+        const listed = await callTool("list_mcp_tools", {});
+        let secret = null, failed = null, unknown = null;
+        try { await callTool("calc/secret", {}); } catch (e) { secret = e.message; }
+        try { await callTool("calc/fail", {}); } catch (e) { failed = e.message; }
+        try { await callTool("nope/tool", {}); } catch (e) { unknown = e.message; }
+        await setResult("success", { sum, info, listed, secret, failed, unknown });
+      next: { success: null }
+`;
+        const { status, catalog } = await runWorkflow(yaml, {
+            deps: {
+                resolveMcpServers: async () => ({
+                    calc: { command: process.execPath, args: [CALC_SERVER], tools: ["add", "info", "fail"], env: { CALC_LABEL: "from-config" } },
+                }),
+            },
+        });
+        expect(status.output.status).toBe("completed");
+        const out = status.output.output;
+        expect(out.sum).toBe("42");
+        expect(out.info).toMatchObject({ env: "from-config" });
+        expect(out.listed.servers).toEqual(["calc"]);
+        expect(out.listed.tools.map((t) => t.name).sort()).toEqual(["calc/add", "calc/fail", "calc/info"]);
+        expect(out.secret).toMatch(/not enabled on MCP server 'calc'/);
+        expect(out.failed).toMatch(/calc refused/);
+        expect(out.unknown).toMatch(/not available to workflow scripts.*MCP servers .*calc/);
+        const done = catalog.events.find((e) => e.eventType === "workflow.node_completed");
+        expect(done.data.toolCalls.map((c) => [c.name, c.ok])).toEqual([
+            ["calc/add", true], ["calc/info", true], ["list_mcp_tools", true],
+            ["calc/secret", false], ["calc/fail", false], ["nope/tool", false],
+        ]);
+    });
+
+    it("the node's MCP server process ends when the node ends", async () => {
+        const yaml = `
+apiVersion: pilotswarm.dev/v1alpha1
+kind: ScriptWorkflow
+metadata: { name: mcp-lifetime }
+spec:
+  entry: use
+  nodes:
+    use:
+      type: script
+      runtime: node
+      source: |
+        const info = await callTool("calc/info", {});
+        await setResult("success", { pid: info.pid });
+      next: { success: null }
+`;
+        const { status } = await runWorkflow(yaml, {
+            deps: { resolveMcpServers: async () => ({ calc: { command: process.execPath, args: [CALC_SERVER], tools: ["*"] } }) },
+        });
+        const pid = status.output.output.pid;
+        expect(Number.isInteger(pid)).toBe(true);
+        const deadline = Date.now() + 5_000;
+        let alive = true;
+        while (alive && Date.now() < deadline) {
+            try { process.kill(pid, 0); await new Promise((r) => setTimeout(r, 50)); } catch { alive = false; }
+        }
+        expect(alive).toBe(false);
     });
 });
 

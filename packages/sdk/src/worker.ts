@@ -40,6 +40,7 @@ import { createBuiltInWorkspaceProvider } from "./workspace.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { installAgentPackages, loadAgentPackageTools } from "./agent-package-installer.js";
 import {
+    createWorkflowCanvasPublisher,
     registerScriptWorkflowActivities,
     SCRIPT_WORKFLOW_ORCHESTRATION_NAME,
     SCRIPT_WORKFLOW_ORCHESTRATION_REGISTRY,
@@ -980,7 +981,17 @@ export class PilotSwarmWorker {
         registerScriptWorkflowActivities(this.runtime, {
             catalog: this._catalog,
             enabled: () => scriptWorkflowSettings.enabled,
+            canvas: createWorkflowCanvasPublisher({
+                catalog: this._catalog,
+                artifactStore: this.artifactStore,
+                ...(this.config.workerNodeId ? { workerNodeId: this.config.workerNodeId } : {}),
+            }),
             resolveTools: (sessionId) => this.sessionManager.resolveScriptTools(sessionId),
+            resolveMcpServers: () => this.sessionManager.scriptMcpServers(),
+            deleteSession: async (sessionId) => {
+                await this._catalog?.softDeleteSession(sessionId);
+                await this.factStore?.deleteSessionFactsForSession(sessionId).catch(() => undefined);
+            },
             notifyParent: async (parentSessionId, prompt, sender) => {
                 await scriptWorkflowClient.enqueueEvent(
                     `session-${parentSessionId}`,

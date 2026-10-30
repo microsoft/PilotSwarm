@@ -4,7 +4,8 @@
  * A workflow session runs a graph of script nodes instead of a conversation.
  * The worker records one CMS event per step; the transcript renders them as
  * an execution log: the graph when it starts, a line per node as it starts
- * and ends, and the final result.
+ * and ends, and the final result. The live view is the session's canvas,
+ * which the worker draws and updates (packages/sdk script-workflow/canvas.ts).
  */
 
 export const WORKFLOW_SESSION_GLYPH = "⛓";
@@ -14,8 +15,10 @@ export const WORKFLOW_EVENT_TYPES = [
     "workflow.node_started",
     "workflow.node_completed",
     "workflow.node_failed",
+    "workflow.node_cancelled",
     "workflow.completed",
     "workflow.failed",
+    "workflow.cancelled",
 ];
 
 const WORKFLOW_EVENT_TYPE_SET = new Set(WORKFLOW_EVENT_TYPES);
@@ -108,6 +111,13 @@ export function formatWorkflowEventText(event) {
         case "workflow.failed":
             return `✗ Workflow **${data.name ?? "workflow"}** failed after ${data.steps ?? 0} step${data.steps === 1 ? "" : "s"}`
                 + `${data.terminalNodeId ? ` at ${code(data.terminalNodeId)}` : ""}: ${data.error ?? "unknown error"}`;
+        case "workflow.node_cancelled": {
+            const duration = formatDuration(data.durationMs);
+            return `⏹ Step ${data.step ?? "?"}: ${code(data.nodeId)} stopped${duration ? ` after ${duration}` : ""}.`;
+        }
+        case "workflow.cancelled":
+            return `⏹ Workflow **${data.name ?? "workflow"}** stopped after ${data.steps ?? 0} step${data.steps === 1 ? "" : "s"}`
+                + `${data.terminalNodeId ? ` at ${code(data.terminalNodeId)}` : ""}: ${data.reason ?? "cancelled"}`;
         default:
             return null;
     }
@@ -130,6 +140,8 @@ export function describeWorkflowEvent(event) {
             return { kind: "card", title: "Workflow result", color: "green", text };
         case "workflow.failed":
             return { kind: "card", title: "Workflow failed", color: "red", text };
+        case "workflow.cancelled":
+            return { kind: "card", title: "Workflow stopped", color: "yellow", text };
         case "workflow.node_started":
             return { kind: "notice", title: stepTitle, color: "gray", summary: `${data.nodeId ?? "?"} started (${data.runtime ?? "script"})`, text };
         case "workflow.node_completed": {
@@ -140,6 +152,10 @@ export function describeWorkflowEvent(event) {
         }
         case "workflow.node_failed":
             return { kind: "notice", title: stepTitle, color: "red", summary: `${data.nodeId ?? "?"} could not run: ${data.error ?? "unknown error"}`, text };
+        case "workflow.node_cancelled": {
+            const duration = formatDuration(data.durationMs);
+            return { kind: "notice", title: stepTitle, color: "yellow", summary: `${data.nodeId ?? "?"} stopped${duration ? ` after ${duration}` : ""}`, text };
+        }
         default:
             return null;
     }

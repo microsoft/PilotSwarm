@@ -2408,6 +2408,7 @@ export function registerActivities(
                     parentSessionId: child.parentSessionId,
                     isSystem: child.isSystem ?? info.isSystem ?? false,
                     agentId: child.agentId ?? info.agentId,
+                    sessionKind: (child as any).sessionKind ?? info.sessionKind ?? "agent",
                     result: outcome?.summary ?? (typeof outcomeResult?.summary === "string" ? outcomeResult.summary : info.result),
                     contract: contractCurrent ?? undefined,
                     contractStatus: outcome?.contractJson ? "contracted" : undefined,
@@ -3239,6 +3240,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             ) => {
                 try {
                     const child = await resolveManagedChild(args.agent_id);
+                    if (child.sessionKind === "workflow") {
+                        return `[SYSTEM: message_agent refused — ${child.orchId} is a workflow session; it runs a script graph and takes no messages. `
+                            + `Use cancel_agent or delete_agent to stop it.]`;
+                    }
                     if (catalog && args.contract_patch) {
                         const existing = await catalog.getChildOutcome(child.sessionId);
                         const contractJson = appendContractPatchJson(existing?.contractJson ?? null, args.contract_patch, input.sessionId, child.sessionId);
@@ -5947,6 +5952,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     parentSessionId: child.parentSessionId,
                     isSystem: child.isSystem ?? info.isSystem ?? false,
                     agentId: child.agentId ?? info.agentId,
+                    sessionKind: (child as any).sessionKind ?? info.sessionKind ?? "agent",
                     result: outcome?.summary ?? (typeof outcomeResult?.summary === "string" ? outcomeResult.summary : info.result),
                     ...(includeResultSource ? {
                         resultSource: outcome?.summary != null || typeof outcomeResult?.summary === "string"

@@ -233,3 +233,148 @@ test("spawn_workflow can run without waking the parent, and reports a failed cre
         "[SYSTEM: spawn_workflow failed — catalog unavailable]",
     );
 });
+
+// ── Live view, cancellation commands, MCP and session tools ─────────
+
+import {
+    buildWorkflowCanvasHtml,
+    fitWorkflowCanvasState,
+    foldWorkflowCanvasState,
+    mcpConfigAllowsTool,
+    parseScriptMcpToolName,
+    parseWorkflowCommand,
+    scriptMcpResult,
+} from "../../dist/script-workflow/index.js";
+import { createScriptSessionTools } from "../../dist/script-workflow/session-tools.js";
+
+test("lifecycle commands are recognised; everything else is not a command", () => {
+    assert.deepEqual(parseWorkflowCommand(JSON.stringify({ type: "cmd", cmd: "cancel", args: { reason: " stop " }, requestedBy: "p" })),
+        { cmd: "cancel", reason: "stop", requestedBy: "p" });
+    assert.deepEqual(parseWorkflowCommand({ type: "cmd", cmd: "delete" }), { cmd: "delete" });
+    assert.equal(parseWorkflowCommand({ type: "cmd", cmd: "set_model" }), null);
+    assert.equal(parseWorkflowCommand({ prompt: "hi" }), null);
+    assert.equal(parseWorkflowCommand("not json"), null);
+});
+
+test("the canvas page carries the definition as data, never as markup", () => {
+    const workflow = compileScriptWorkflow(`
+apiVersion: pilotswarm.dev/v1alpha1
+kind: ScriptWorkflow
+metadata: { name: "</script><img src=x onerror=alert(1)>" }
+spec:
+  entry: a
+  nodes:
+    a:
+      type: script
+      runtime: node
+      source: x
+      next: { "</script><b>": null }
+`);
+    const html = buildWorkflowCanvasHtml(workflow, foldWorkflowCanvasState([], workflow));
+    assert.equal((html.match(/<\/script>/g) || []).length, 3, "only the page's own script elements close");
+    assert.ok(!html.includes("<img src=x"));
+    assert.ok(html.includes("\\u003c/script\\u003e\\u003cimg"));
+    assert.match(html, /textContent/);
+    assert.ok(!/innerHTML/.test(html));
+});
+
+test("the canvas state is folded from the workflow log and fits a data tick", () => {
+    const events = [
+        { eventType: "workflow.started", data: { name: "loop", nodes: [{ id: "a" }, { id: "b" }] } },
+        { eventType: "workflow.node_started", data: { nodeId: "a", step: 1 } },
+        { eventType: "workflow.node_completed", data: { nodeId: "a", step: 1, outcome: "again", resultSource: "reported", durationMs: 5, toolCalls: [{ ok: true }, { ok: false }] } },
+        { eventType: "workflow.node_started", data: { nodeId: "a", step: 2 } },
+        { eventType: "workflow.node_completed", data: { nodeId: "a", step: 2, outcome: "next", exitCode: 1, resultSource: "exit" } },
+        { eventType: "workflow.node_started", data: { nodeId: "b", step: 3 } },
+        { eventType: "workflow.failed", data: { steps: 3, error: "boom" } },
+    ];
+    const state = foldWorkflowCanvasState(events);
+    assert.equal(state.status, "failed");
+    assert.equal(state.error, "boom");
+    assert.deepEqual(state.nodes.a, { state: "failed", runs: 2, lastOutcome: "next", lastDurationMs: undefined });
+    assert.equal(state.nodes.b.state, "cancelled", "a node still running when the run ended was stopped");
+    assert.deepEqual(state.taken, { "a\u0001again": 1, "a\u0001next": 1 });
+    assert.deepEqual(state.steps.map((s) => [s.step, s.state, s.tools ?? 0, s.failedTools ?? 0]), [[1, "done", 2, 1], [2, "failed", 0, 0], [3, "cancelled", 0, 0]]);
+
+    const big = { ...state, steps: Array.from({ length: 400 }, (_, i) => ({ step: i, node: "a".repeat(60), outcome: "x".repeat(80), state: "done" })) };
+    const fitted = fitWorkflowCanvasState(big);
+    assert.ok(Buffer.byteLength(JSON.stringify(fitted)) <= 32_768);
+    assert.equal(fitted.steps.at(-1).step, 399, "the newest steps are kept");
+});
+
+test("MCP tool names, tool lists and results", () => {
+    assert.deepEqual(parseScriptMcpToolName("github/search_issues"), { server: "github", tool: "search_issues" });
+    assert.deepEqual(parseScriptMcpToolName("a/b/c"), { server: "a", tool: "b/c" });
+    assert.equal(parseScriptMcpToolName("store_fact"), null);
+    assert.equal(parseScriptMcpToolName("/x"), null);
+    assert.equal(mcpConfigAllowsTool({ tools: ["*"] }, "any"), true);
+    assert.equal(mcpConfigAllowsTool({ tools: ["a"] }, "b"), false);
+    assert.equal(mcpConfigAllowsTool({}, "any"), true);
+    assert.equal(scriptMcpResult({ content: [{ type: "text", text: "a" }, { type: "text", text: "b" }] }), "a\nb");
+    assert.deepEqual(scriptMcpResult({ content: [{ type: "text", text: "{}" }], structuredContent: { n: 1 } }), { n: 1 });
+    assert.deepEqual(scriptMcpResult({ content: [{ type: "image", data: "x", mimeType: "image/png" }] }), [{ type: "image", data: "x", mimeType: "image/png" }]);
+    assert.throws(() => scriptMcpResult({ isError: true, content: [{ type: "text", text: "nope" }] }), /nope/);
+});
+
+function sessionCatalog(rows) {
+    return {
+        async listSessions() { return rows; },
+        async getSession(id) { return rows.find((r) => r.sessionId === id) ?? null; },
+    };
+}
+
+test("list_sessions for scripts filters like the agent tool and returns JSON", async () => {
+    const now = Date.now();
+    const rows = [
+        { sessionId: "wf", title: "Workflow: x", state: "running", sessionKind: "workflow", parentSessionId: "agent", owner: { provider: "dev", subject: "alice" }, createdAt: new Date(now), updatedAt: new Date(now) },
+        { sessionId: "agent", title: "Release agent", state: "idle", agentId: "release", owner: { provider: "dev", subject: "alice" }, createdAt: new Date(now - 1000), updatedAt: new Date(now - 1000) },
+        { sessionId: "sys", title: "Sweeper", state: "running", isSystem: true, createdAt: new Date(now), updatedAt: new Date(now) },
+        { sessionId: "gone", title: "Deleted", state: "idle", deletedAt: new Date(now), createdAt: new Date(now), updatedAt: new Date(now) },
+    ];
+    const tools = createScriptSessionTools({ sessionId: "wf", catalog: sessionCatalog(rows), duroxideClient: null });
+    const top = await tools.get("list_sessions")({});
+    assert.deepEqual(top.sessions.map((s) => s.sessionId), ["agent"]);
+    const all = await tools.get("list_sessions")({ include_children: true });
+    assert.deepEqual(all.sessions.map((s) => [s.sessionId, s.kind, s.self ?? false]), [["wf", "workflow", true], ["agent", "agent", false]]);
+    const byParent = await tools.get("list_sessions")({ parent_session_id: "session-agent" });
+    assert.deepEqual(byParent.sessions.map((s) => s.sessionId), ["wf"]);
+    const byQuery = await tools.get("list_sessions")({ query: "release" });
+    assert.deepEqual(byQuery.sessions.map((s) => s.sessionId), ["agent"]);
+    const withSystem = await tools.get("list_sessions")({ include_system: true });
+    assert.ok(withSystem.sessions.some((s) => s.sessionId === "sys"));
+});
+
+test("send_session_message from a script is one-way, and workflow sessions accept no messages", async () => {
+    const rows = [
+        { sessionId: "wf", title: "Workflow: x", state: "running", sessionKind: "workflow" },
+        { sessionId: "agent", title: "Agent", state: "idle" },
+        { sessionId: "wf2", title: "Workflow: y", state: "running", sessionKind: "workflow" },
+    ];
+    const enqueued = [];
+    const duroxideClient = {
+        async getStatus() { return { status: "Running" }; },
+        async getInstanceInfo() { return { status: "Running" }; },
+        async enqueueEvent(id, queue, data) { enqueued.push({ id, queue, data: JSON.parse(data) }); },
+    };
+    const tools = createScriptSessionTools({ sessionId: "wf", catalog: sessionCatalog(rows), duroxideClient });
+    await assert.rejects(() => tools.get("send_session_message")({ session_id: "agent", subject: "s", body: "b", expects_response: true }), /cannot receive replies/);
+    const sent = await tools.get("send_session_message")({ session_id: "session-agent", subject: "Report", body: "3 rows", reason: "handoff" });
+    assert.equal(sent.target, "agent");
+    assert.equal(enqueued.length, 1);
+    assert.equal(enqueued[0].id, "session-agent");
+    assert.match(enqueued[0].data.prompt, /\[SESSION_MESSAGE request_id=\S+ from=wf subject=Report reason=handoff\]/);
+    await assert.rejects(() => tools.get("send_session_message")({ session_id: "wf2", subject: "s", body: "b" }), /workflow session; .*takes no session messages/);
+    await assert.rejects(() => tools.get("reply_session_message")({ request_id: "r", session_id: "wf2", body: "b" }), /workflow session; .*takes no session replies/);
+});
+
+test("scripts get the session and inspect tools, without context_health", async () => {
+    const manager = new SessionManager(undefined, null, {});
+    manager.setSessionCatalog({ async listSessions() { return []; }, async getSession() { return null; } });
+    const names = [...(await manager.resolveScriptTools("wf-session")).keys()];
+    for (const name of ["list_sessions", "send_session_message", "reply_session_message", "read_agent_events"]) {
+        assert.ok(names.includes(name), `${name} should be available to scripts`);
+    }
+    assert.ok(!names.includes("context_health"));
+    const servers = new SessionManager(undefined, null, { baseMcpServers: { github: { type: "http", url: "https://example.invalid/mcp", tools: ["*"] } } }).scriptMcpServers();
+    assert.deepEqual(Object.keys(servers), ["github"]);
+});

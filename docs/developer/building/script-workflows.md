@@ -6,10 +6,15 @@ script; the script can call the same tools an agent session has; its
 **outcome** picks the next node. No LLM runs inside the workflow.
 
 A workflow session is a sibling of an agent session: it has a row in the
-session list (marked `⛓`), an owner, sharing, and a transcript. The
-transcript is the workflow's **execution log**: the graph when it starts, one
-line per node as it starts and ends (outcome, duration, tool calls, output
-preview), and the final result.
+session list (marked `⛓`), an owner, sharing, and a transcript.
+
+- The **live view** is the session's canvas. The worker draws the graph when
+  the run starts and updates it after every step: the running node pulses,
+  finished nodes show their outcome and time, taken transitions light up, and
+  a table lists recent steps. The portal opens it when you open the session.
+- The **transcript** is the execution log: the graph, one line per node as it
+  starts and ends (outcome, duration, tool calls, output preview), and the
+  final result.
 
 Only `type: script` nodes exist. Agent nodes are deliberately not supported
 yet; a definition that uses one is refused before any session is created.
@@ -81,18 +86,26 @@ workflow.
 ## Tools a script can call
 
 Scripts call tools **as the workflow session**: facts are stored on that
-session and are visible across its spawn tree, exactly as for an agent
-session. The set is the data-plane tools of a generic agent session:
+session and are visible across its spawn tree, inspect tools act as its
+owner, and messages are sent from it, exactly as for an agent session. The
+set is what a generic agent session has:
 
-- the worker tools that the deployment's base and default agents list
-  (`registerTools` plus the default agent's `tools:`), and
-- the fact tools (`store_fact`, `read_facts`, `facts_search`, ...) and, when
-  a graph store is configured, the graph tools.
+| Tools | Notes |
+|---|---|
+| The worker tools the deployment's base and default agents list | `registerTools` plus the default agent's `tools:`, for example `write_artifact`, `read_artifact`, `ps_list_agents` |
+| Fact tools, and graph tools when a graph store is configured | `store_fact`, `read_facts`, `facts_search`, ... |
+| Session tools | `list_sessions` and `read_agent_events` (and the usage reads). `send_session_message` is one-way: a workflow session cannot receive replies. `reply_session_message` answers a request another session sent. These return JSON, not the text an agent sees. |
+| MCP servers | The deployment's default MCP servers (the set a generic agent gets), called as `<server>/<tool>`; each server's `tools` list applies. `list_mcp_tools` (optionally `{ "server": name }`) lists them. The worker connects to a server on a node's first call and closes the connection when the node ends. |
 
-Turn-control tools (`wait`, `cron`, `ask_user`, `spawn_agent`,
-`spawn_workflow`, canvas tools) are not available: a script has no
-conversation turn for them to act on. Tools from agent packages are not
-available either, because they belong to their bound named agent.
+Not available: turn-control tools (`wait`, `cron`, `ask_user`, `spawn_agent`,
+`spawn_workflow`, canvas tools), because a script has no conversation turn;
+tools from agent packages and MCP servers granted only to named agents,
+because they belong to those agents; and `context_health`, which reports on
+an LLM context.
+
+A stdio MCP server is started with a small default environment (`PATH`,
+`HOME`, ...) plus the `env` of its configuration, not the worker's full
+environment; pass what a server needs through its configuration.
 
 A failed tool call is raised in the script (a Python `RuntimeError`, a
 JavaScript `Error`, a PowerShell error), so the script can catch it.
@@ -113,9 +126,24 @@ JavaScript `Error`, a PowerShell error), so the script can catch it.
 - **From the SDK or Web API:** `client.createScriptWorkflowSession({ yaml, inputs })`,
   or `POST /api/v1/sessions/workflow` (`createScriptWorkflowSession`).
 
-A workflow session does not accept chat messages, answers or steers (refused
-with `WORKFLOW_SESSION_NOT_CONVERSATIONAL`) or regeneration (refused with
-`REGENERATE_UNSUPPORTED`); a stop request answers `no_active_turn`.
+A workflow session does not accept chat messages, answers, steers or session
+messages (refused with `WORKFLOW_SESSION_NOT_CONVERSATIONAL` or a clear
+error) or regeneration (refused with `REGENERATE_UNSUPPORTED`); a stop request
+answers `no_active_turn`.
+
+## Stopping a workflow
+
+Cancel, complete and delete work as they do for an agent session: from the
+portal, the management API (`cancelSession`, `completeSession`,
+`deleteSession`), or a parent agent's `cancel_agent`, `complete_agent` or
+`delete_agent`. The running node's script is killed (with every process it
+started), the run ends as **cancelled** (complete also ends it as cancelled,
+with reason "Stopped"), and the parent is told unless it asked. Delete also
+removes the session.
+
+The kill reaches the worker when the running node next renews its activity
+lock, so it takes up to about half of `PILOTSWARM_WORKER_LOCK_TIMEOUT_MS`
+(5 seconds by default). A command sent between two nodes stops the next node.
 
 ## Running workflows (operators)
 

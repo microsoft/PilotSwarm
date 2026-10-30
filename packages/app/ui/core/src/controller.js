@@ -6165,6 +6165,16 @@ export class PilotSwarmUiController {
             .catch((error) => ({ ok: false, reason: error?.message || String(error) }));
     }
 
+    revealWorkflowCanvas(sessionId, drawn) {
+        if (!drawn) return;
+        const state = this.getState();
+        if (state.sessions.activeSessionId !== sessionId) return;
+        if (state.sessions.byId[sessionId]?.sessionKind !== "workflow") return;
+        if (state.canvas.prefs[canvasPrefKey(sessionId, 1)]?.optedOut) return;
+        if (state.ui.rightPaneMode === "canvas" && state.ui.canvasOpen && (state.ui.canvasSlot || 1) === 1) return;
+        this.dispatch({ type: "canvas/flip", sessionId, slot: 1 });
+    }
+
     async ensureCanvasSnapshot(sessionId) {
         if (!sessionId) return;
         if (this.getState().canvas.bySessionId[sessionId]?.snapshotLoaded) return;
@@ -6230,6 +6240,9 @@ export class PilotSwarmUiController {
                     });
                 }
             }
+            // A workflow session's canvas IS its execution view: show it when
+            // the session is opened, unless the person closed it here.
+            this.revealWorkflowCanvas(sessionId, anyDrawn);
         } catch {
             // Leave snapshotLoaded unset — the next selection retries.
         }

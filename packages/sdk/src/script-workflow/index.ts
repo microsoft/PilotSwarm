@@ -5,3 +5,5 @@ export * from "./orchestration.js";
 export * from "./activities.js";
 export * from "./tool-spec.js";
 export * from "./spawn.js";
+export * from "./canvas.js";
+export * from "./mcp.js";

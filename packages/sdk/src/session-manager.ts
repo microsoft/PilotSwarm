@@ -23,6 +23,7 @@ import { applyReasoningEffortToProviderConfig, providerTypeUsesWorkloadIdentity 
 import { clipDescription } from "./skills.js";
 import { createFactTools } from "./facts-tools.js";
 import { createToolFactsAccessor } from "./tool-facts-accessor.js";
+import { createScriptSessionTools } from "./script-workflow/session-tools.js";
 import { createGraphTools } from "./graph-tools.js";
 import { createInspectTools, NO_VIEWER, type InspectViewer } from "./inspect-tools.js";
 import { createProviderTools, holdsProviderTools } from "./provider-tools.js";
@@ -3440,7 +3441,11 @@ export class SessionManager {
      *
      * The set is the data-plane tools a generic agent session has: the
      * deployment's default worker tools (base and app default agents), the
-     * fact tools and, when a graph store is configured, the graph tools.
+     * fact tools, the graph tools when a graph store is configured, the
+     * session tools (list_sessions, send_session_message,
+     * reply_session_message) and the generic inspect tools
+     * (read_agent_events and the usage reads). MCP servers are separate:
+     * see scriptMcpServers.
      * Every handler sees the workflow session as its caller, exactly as it
      * sees an agent session, so fact visibility, artifacts and provenance
      * follow the workflow session and its spawn tree. Turn-control tools
@@ -3454,10 +3459,24 @@ export class SessionManager {
             ...(this.workerDefaults.appDefaultToolNames ?? []),
         ])];
         const registryTools = this._resolveTools(undefined, { toolNames, detachedPackageToolPolicy: "drop" } as SerializableSessionConfig);
+        // The inspect tools a generic agent gets (read_agent_events and the
+        // lineage usage reads), acting as the workflow session's owner.
+        // context_health reports on an LLM context, which a workflow has none of.
+        const inspectTools = this.sessionCatalog
+            ? createInspectTools({
+                catalog: this.sessionCatalog,
+                duroxideClient: this._duroxideClient ?? undefined,
+                factStore: this.factStore ?? undefined,
+                resolveViewer: () => this._resolveInspectViewer(sessionId),
+                artifactStore: this.artifactStore ?? null,
+                sessionId,
+            }).filter((tool: any) => tool.name !== "context_health")
+            : [];
         const tools = [
             ...registryTools,
             ...this._createSessionFactTools({ isCrawler: false }),
             ...this._createSessionGraphTools({ isCrawler: false }),
+            ...inspectTools,
         ];
         const row = this.sessionCatalog ? await this.sessionCatalog.getSession(sessionId).catch(() => null) : null;
         const facts = this.factStore
@@ -3469,6 +3488,13 @@ export class SessionManager {
             })
             : undefined;
         const handlers = new Map<string, (args: Record<string, unknown>) => Promise<unknown>>();
+        if (this.sessionCatalog) {
+            for (const [name, handler] of createScriptSessionTools({
+                sessionId,
+                catalog: this.sessionCatalog,
+                duroxideClient: this._duroxideClient ?? null,
+            })) handlers.set(name, handler);
+        }
         for (const tool of tools) {
             const name = String((tool as any)?.name || "");
             const handler = (tool as any)?.handler;
@@ -3483,6 +3509,11 @@ export class SessionManager {
             }));
         }
         return handlers;
+    }
+
+    /** The MCP servers workflow scripts may call: the default set a generic agent session gets. */
+    scriptMcpServers(): Record<string, any> {
+        return { ...(this.workerDefaults.baseMcpServers ?? {}) };
     }
 
     /** The fact tools a session gets. Shared by agent sessions and script workflow sessions. */

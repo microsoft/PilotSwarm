@@ -205,3 +205,33 @@ test("a workflow session takes no steering and no regeneration", async () => {
     await controller.regenerateActiveSession({ confirmed: true });
     assert.match(store.getState().ui.statusText || "", /Workflow sessions run a script graph/);
 });
+
+test("a stopped run reads as stopped, in the log and as cards", () => {
+    const stoppedNode = event("workflow.node_cancelled", { nodeId: "collect", step: 1, durationMs: 2500 });
+    const stopped = event("workflow.cancelled", { name: "nightly-report", steps: 1, terminalNodeId: "collect", reason: "no longer needed" });
+    assert.equal(formatWorkflowEventText(stoppedNode), "⏹ Step 1: `collect` stopped after 2.5 s.");
+    assert.equal(describeWorkflowEvent(stoppedNode).summary, "collect stopped after 2.5 s");
+    assert.match(formatWorkflowEventText(stopped), /stopped after 1 step at `collect`: no longer needed/);
+    assert.deepEqual([describeWorkflowEvent(stopped).kind, describeWorkflowEvent(stopped).title], ["card", "Workflow stopped"]);
+    assert.ok(CHAT_HISTORY_EVENT_TYPES.includes("workflow.cancelled"));
+});
+
+test("opening a workflow session shows its canvas; an agent session's canvas stays where the person left it", async () => {
+    const canvasEvent = { seq: 1, eventType: "session.canvas_updated", data: { rev: 1, slot: 1, name: "Workflow" } };
+    const { controller, store } = makeController({
+        getSessionEventsBefore: async (_id, _before, _limit, types) => (types.includes("session.canvas_updated") ? [canvasEvent] : []),
+    });
+    store.dispatch({ type: "sessions/loaded", sessions: [
+        { sessionId: "wf-1", title: "Workflow: x", status: "running", sessionKind: "workflow" },
+        { sessionId: "agent-1", title: "Agent", status: "idle" },
+    ] });
+    store.dispatch({ type: "sessions/selected", sessionId: "agent-1" });
+    await controller.ensureCanvasSnapshot("agent-1");
+    assert.notEqual(store.getState().ui.rightPaneMode, "canvas");
+
+    store.dispatch({ type: "sessions/selected", sessionId: "wf-1" });
+    await controller.ensureCanvasSnapshot("wf-1");
+    assert.equal(store.getState().ui.rightPaneMode, "canvas");
+    assert.equal(store.getState().ui.canvasOpen, true);
+});
+

@@ -28,12 +28,14 @@ export const SPAWN_WORKFLOW_TOOL_SPEC = {
         + "        failure: null\n"
         + "In a script, `context` holds inputs, input (the previous node's output), node, step, workflow and sessionId. "
         + "Call tools with call_tool(name, args) in python, await callTool(name, args) in node, or Invoke-PilotSwarmTool -Name -Arguments in powershell. "
-        + "Scripts get this deployment's default agent tools plus the fact tools (store_fact, read_facts, ...), acting as the workflow session; "
-        + "they cannot wait, schedule, ask the user or spawn agents. "
+        + "Scripts get the tools a generic agent session has, acting as the workflow session: this deployment's default agent tools, "
+        + "the fact and artifact tools, list_sessions, send_session_message (one-way), read_agent_events, and the default MCP servers' tools "
+        + "called as \"<server>/<tool>\" (list_mcp_tools lists them). They cannot wait, schedule, ask the user or spawn agents. "
         + "Report a node's result with set_result(outcome, output) / await setResult(outcome, output) / Set-PilotSwarmResult -Outcome -Output, "
         + "or print one final JSON line {\"outcome\": ..., \"output\": ...}. Without a report, exit code 0 is outcome success (output = stdout), "
         + "any other exit code is failure, and running past the timeout is timeout. An outcome not listed in next fails the workflow. "
-        + "Outputs are JSON and at most 256 KB; store larger data as an artifact or fact and pass its key.",
+        + "Outputs are JSON and at most 256 KB; store larger data as an artifact or fact and pass its key. "
+        + "The workflow is your child: stop it with cancel_agent or delete_agent; it takes no messages.",
     parameters: {
         type: "object",
         properties: {
