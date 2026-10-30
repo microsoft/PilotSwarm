@@ -23,6 +23,7 @@ import { applyReasoningEffortToProviderConfig, providerTypeUsesWorkloadIdentity 
 import { clipDescription } from "./skills.js";
 import { createFactTools } from "./facts-tools.js";
 import { createToolFactsAccessor } from "./tool-facts-accessor.js";
+import { createScriptSessionTools } from "./workflow/session-tools.js";
 import { createGraphTools } from "./graph-tools.js";
 import { createInspectTools, NO_VIEWER, type InspectViewer } from "./inspect-tools.js";
 import { createProviderTools, holdsProviderTools } from "./provider-tools.js";
@@ -47,7 +48,7 @@ import { buildKnowledgePromptBlocks, loadKnowledgeIndexFromFactStore, buildEnhan
 import { composeStructuredSystemMessage, extractPromptContent, mergePromptSections } from "./prompt-layering.js";
 import { buildPromptLayersEventPayload, type PromptLayerDescriptor } from "./prompt-layers.js";
 import { approvePermissionForSession } from "./permissions.js";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readSnapshotMarker, supportsVersionedSnapshots, writeSnapshotMarker } from "./snapshot-protocol.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -887,6 +888,8 @@ export class SessionManager {
      * it is absent rather than failing a turn.
      */
     artifactStore: import("./session-store.js").ArtifactStore | null = null;
+    /** Whether this worker runs workflow scripts; set by the worker at start. */
+    workflowScriptsEnabled = false;
 
     /** Store full config (with tools/hooks) for a session. Called by PilotSwarmClient. */
     setConfig(sessionId: string, config: ManagedSessionConfig): void {
@@ -2209,94 +2212,23 @@ export class SessionManager {
         }).filter((tool: any) => !isTunerSession || !mutatingSystemToolNames.has(tool.name));
         const readOnlyTunerSubAgentToolNames = new Set(["check_agents", "list_sessions"]);
         const subAgentTools = ManagedSession.subAgentToolDefs(workspaceTools ? { workspaceTools: true } : undefined)
-            .filter((tool: any) => !isTunerSession || readOnlyTunerSubAgentToolNames.has(tool.name));
-        const factTools = createFactTools({
-            factStore: this.factStore,
-            reservedFactPrefixes: this.workerDefaults?.reservedFactPrefixes ?? null,
-            getLineageSessionIds: this._getLineageSessionIds ?? undefined,
+            .filter((tool: any) => !isTunerSession || readOnlyTunerSubAgentToolNames.has(tool.name))
+            // Declared only where it can work: a worker with workflow scripts
+            // off would refuse every call, so the model is not shown it.
+            .filter((tool: any) => tool.name !== "spawn_workflow" || this.workflowScriptsEnabled);
+        const factTools = this._createSessionFactTools({
             agentIdentity: effectiveSerializableConfig.agentIdentity,
-            // bulk_store_facts reads its records from (and writes its failure
-            // artifact to) the artifact store, so fact bytes never ride the
-            // model's context.
-            artifactStore: this.artifactStore ?? null,
             isCrawler: effectiveSerializableConfig.isCrawler === true || effectiveSerializableConfig.isHarvester === true,
-            // Enhanced tools light up only when the store is an EnhancedFactStore.
-            // Pass it when EITHER capability is present: search powers
-            // facts_search / facts_similar / search_skills; embedder powers the
-            // facts-manager-only `manage_embedder` control tool. The tools
-            // themselves gate on the specific capability they need.
-            enhancedFactStore: isEnhancedFactStore(this.factStore)
-                && (this.factStore.capabilities.search || this.factStore.capabilities.embedder)
-                ? this.factStore
-                : undefined,
-            recordEvent: this.sessionCatalog
-                ? async (sid, eventType, data) => {
-                    try {
-                        await this.sessionCatalog!.recordEvents(sid, [{ eventType, data }]);
-                    } catch {
-                        // Best-effort — never fail a tool call on telemetry errors.
-                    }
-                }
-                : undefined,
-            onSharedIntakeFactStored: this.sessionCatalog && this._duroxideClient
-                ? async ({ key, sourceSessionId, agentId }) => {
-                    try {
-                        const sessions = await this.sessionCatalog!.listSessions();
-                        const factsManager = sessions.find((session) => session.agentId === "facts-manager" && session.state !== "failed" && session.state !== "cancelled");
-                        if (!factsManager) return;
-                        const payload = {
-                            type: "facts.intake_written",
-                            key,
-                            sourceSessionId,
-                            agentId,
-                            createdAt: new Date().toISOString(),
-                        };
-                        await this._duroxideClient.enqueueEvent(
-                            `session-${factsManager.sessionId}`,
-                            "messages",
-                            JSON.stringify({ prompt: `[FACTS_INTAKE ${JSON.stringify(payload)}]` }),
-                        );
-                    } catch {
-                        // Best-effort wake-up; the 6h maintenance pass is the fallback.
-                    }
-                }
-                : undefined,
-            }).filter((tool: any) => !isTunerSession || tool.name === "read_facts" || tool.name === "facts_search" || tool.name === "facts_similar" || tool.name === "search_skills");
+        }).filter((tool: any) => !isTunerSession || tool.name === "read_facts" || tool.name === "facts_search" || tool.name === "facts_similar" || tool.name === "search_skills");
         // Graph tools (07 P4) — registered ONLY when a graph store is configured.
         // Reader tools AND graph write/delete go to every session (so any agent
         // can incorporate into the SHARED graph) EXCEPT the read-only agent-tuner;
         // the crawl queue stays app-crawler-role + facts-manager only; graph_stats
         // to facts-manager + agent-tuner. Tuner never gets a mutating tool.
-        const graphTools = this.graphStore
-            ? createGraphTools({
-                graphStore: this.graphStore,
-                factStore: this.factStore,
-                reservedFactPrefixes: this.workerDefaults?.reservedFactPrefixes ?? null,
-                agentIdentity: effectiveSerializableConfig.agentIdentity,
-                isCrawler: effectiveSerializableConfig.isCrawler === true || effectiveSerializableConfig.isHarvester === true,
-                agentId: effectiveSerializableConfig.agentIdentity,
-                // Graph reads use the SAME lineage visibility as read_facts. The
-                // tuner branch inside createGraphTools forces unrestricted; for
-                // everyone else this resolves their granted lineage sessions.
-                resolveAccess: this._getLineageSessionIds
-                    ? async (sessionId: string | undefined) => {
-                        if (!sessionId) return { readerSessionId: null, grantedSessionIds: [] };
-                        const raw = await this._getLineageSessionIds!(sessionId);
-                        const granted = [...new Set((raw || []).filter((sid) => Boolean(sid) && sid !== sessionId))];
-                        return { readerSessionId: sessionId, grantedSessionIds: granted };
-                    }
-                    : undefined,
-                recordEvent: this.sessionCatalog
-                    ? async (sid, eventType, data) => {
-                        try {
-                            await this.sessionCatalog!.recordEvents(sid, [{ eventType, data }]);
-                        } catch {
-                            // Best-effort telemetry.
-                        }
-                    }
-                    : undefined,
-            })
-            : [];
+        const graphTools = this._createSessionGraphTools({
+            agentIdentity: effectiveSerializableConfig.agentIdentity,
+            isCrawler: effectiveSerializableConfig.isCrawler === true || effectiveSerializableConfig.isHarvester === true,
+        });
         const inspectTools = this.sessionCatalog
             ? createInspectTools({
                 catalog: this.sessionCatalog,
@@ -3501,6 +3433,179 @@ export class SessionManager {
                 if (timer) clearTimeout(timer);
             }
         }));
+    }
+
+    /**
+     * The tools a script in a workflow session may call, by name, bound to
+     * that session.
+     *
+     * The set is the data-plane tools a generic agent session has: the
+     * deployment's default worker tools (base and app default agents), the
+     * fact tools, the graph tools when a graph store is configured, the
+     * session tools (list_sessions, send_session_message,
+     * reply_session_message) and the generic inspect tools
+     * (read_agent_events and the usage reads). MCP servers are separate:
+     * see scriptMcpServers.
+     * Every handler sees the workflow session as its caller, exactly as it
+     * sees an agent session, so fact visibility, artifacts and provenance
+     * follow the workflow session and its spawn tree. Turn-control tools
+     * (wait, cron, spawn_agent, ask_user, canvas and the like) are not part
+     * of it: a script has no conversation turn for them to act on. Package
+     * tools are left out because they belong to a bound named agent.
+     */
+    async resolveScriptTools(sessionId: string): Promise<Map<string, (args: Record<string, unknown>) => Promise<unknown>>> {
+        const toolNames = [...new Set([
+            ...(this.workerDefaults.frameworkBaseToolNames ?? []),
+            ...(this.workerDefaults.appDefaultToolNames ?? []),
+        ])];
+        const registryTools = this._resolveTools(undefined, { toolNames, detachedPackageToolPolicy: "drop" } as SerializableSessionConfig);
+        // The inspect tools a generic agent gets (read_agent_events and the
+        // lineage usage reads), acting as the workflow session's owner.
+        // context_health reports on an LLM context, which a workflow has none of.
+        const inspectTools = this.sessionCatalog
+            ? createInspectTools({
+                catalog: this.sessionCatalog,
+                duroxideClient: this._duroxideClient ?? undefined,
+                factStore: this.factStore ?? undefined,
+                resolveViewer: () => this._resolveInspectViewer(sessionId),
+                artifactStore: this.artifactStore ?? null,
+                sessionId,
+            }).filter((tool: any) => tool.name !== "context_health")
+            : [];
+        const tools = [
+            ...registryTools,
+            ...this._createSessionFactTools({ isCrawler: false }),
+            ...this._createSessionGraphTools({ isCrawler: false }),
+            ...inspectTools,
+        ];
+        const row = this.sessionCatalog ? await this.sessionCatalog.getSession(sessionId).catch(() => null) : null;
+        const facts = this.factStore
+            ? createToolFactsAccessor({
+                factStore: this.factStore,
+                durableSessionId: sessionId,
+                rootSessionId: row?.rootSessionId ?? null,
+                agentId: null,
+            })
+            : undefined;
+        const handlers = new Map<string, (args: Record<string, unknown>) => Promise<unknown>>();
+        if (this.sessionCatalog) {
+            for (const [name, handler] of createScriptSessionTools({
+                sessionId,
+                catalog: this.sessionCatalog,
+                duroxideClient: this._duroxideClient ?? null,
+            })) handlers.set(name, handler);
+        }
+        for (const tool of tools) {
+            const name = String((tool as any)?.name || "");
+            const handler = (tool as any)?.handler;
+            if (!name || typeof handler !== "function" || handlers.has(name)) continue;
+            handlers.set(name, async (args) => handler(args ?? {}, {
+                sessionId,
+                durableSessionId: sessionId,
+                toolCallId: `workflow-${randomUUID()}`,
+                toolName: name,
+                arguments: args ?? {},
+                ...(facts ? { facts } : {}),
+            }));
+        }
+        return handlers;
+    }
+
+    /** The MCP servers workflow scripts may call: the default set a generic agent session gets. */
+    scriptMcpServers(): Record<string, any> {
+        return { ...(this.workerDefaults.baseMcpServers ?? {}) };
+    }
+
+    /** The fact tools a session gets. Shared by agent sessions and workflow sessions. */
+    private _createSessionFactTools(opts: { agentIdentity?: string; isCrawler: boolean }): Tool<any>[] {
+        const factStore = this.factStore;
+        if (!factStore) return [];
+        return createFactTools({
+            factStore,
+            reservedFactPrefixes: this.workerDefaults?.reservedFactPrefixes ?? null,
+            getLineageSessionIds: this._getLineageSessionIds ?? undefined,
+            agentIdentity: opts.agentIdentity,
+            // bulk_store_facts reads its records from (and writes its failure
+            // artifact to) the artifact store, so fact bytes never ride the
+            // model's context.
+            artifactStore: this.artifactStore ?? null,
+            isCrawler: opts.isCrawler,
+            // Enhanced tools light up only when the store is an EnhancedFactStore.
+            // Pass it when EITHER capability is present: search powers
+            // facts_search / facts_similar / search_skills; embedder powers the
+            // facts-manager-only `manage_embedder` control tool. The tools
+            // themselves gate on the specific capability they need.
+            enhancedFactStore: isEnhancedFactStore(factStore)
+                && (factStore.capabilities.search || factStore.capabilities.embedder)
+                ? factStore
+                : undefined,
+            recordEvent: this.sessionCatalog
+                ? async (sid, eventType, data) => {
+                    try {
+                        await this.sessionCatalog!.recordEvents(sid, [{ eventType, data }]);
+                    } catch {
+                        // Best-effort — never fail a tool call on telemetry errors.
+                    }
+                }
+                : undefined,
+            onSharedIntakeFactStored: this.sessionCatalog && this._duroxideClient
+                ? async ({ key, sourceSessionId, agentId }) => {
+                    try {
+                        const sessions = await this.sessionCatalog!.listSessions();
+                        const factsManager = sessions.find((session) => session.agentId === "facts-manager" && session.state !== "failed" && session.state !== "cancelled");
+                        if (!factsManager) return;
+                        const payload = {
+                            type: "facts.intake_written",
+                            key,
+                            sourceSessionId,
+                            agentId,
+                            createdAt: new Date().toISOString(),
+                        };
+                        await this._duroxideClient.enqueueEvent(
+                            `session-${factsManager.sessionId}`,
+                            "messages",
+                            JSON.stringify({ prompt: `[FACTS_INTAKE ${JSON.stringify(payload)}]` }),
+                        );
+                    } catch {
+                        // Best-effort wake-up; the 6h maintenance pass is the fallback.
+                    }
+                }
+                : undefined,
+        });
+    }
+
+    /** The graph tools a session gets, or none without a graph store. Shared like the fact tools. */
+    private _createSessionGraphTools(opts: { agentIdentity?: string; isCrawler: boolean }): Tool<any>[] {
+        const factStore = this.factStore;
+        if (!this.graphStore || !factStore) return [];
+        return createGraphTools({
+            graphStore: this.graphStore,
+            factStore,
+            reservedFactPrefixes: this.workerDefaults?.reservedFactPrefixes ?? null,
+            agentIdentity: opts.agentIdentity,
+            isCrawler: opts.isCrawler,
+            agentId: opts.agentIdentity,
+            // Graph reads use the SAME lineage visibility as read_facts. The
+            // tuner branch inside createGraphTools forces unrestricted; for
+            // everyone else this resolves their granted lineage sessions.
+            resolveAccess: this._getLineageSessionIds
+                ? async (sessionId: string | undefined) => {
+                    if (!sessionId) return { readerSessionId: null, grantedSessionIds: [] };
+                    const raw = await this._getLineageSessionIds!(sessionId);
+                    const granted = [...new Set((raw || []).filter((sid) => Boolean(sid) && sid !== sessionId))];
+                    return { readerSessionId: sessionId, grantedSessionIds: granted };
+                }
+                : undefined,
+            recordEvent: this.sessionCatalog
+                ? async (sid, eventType, data) => {
+                    try {
+                        await this.sessionCatalog!.recordEvents(sid, [{ eventType, data }]);
+                    } catch {
+                        // Best-effort telemetry.
+                    }
+                }
+                : undefined,
+        });
     }
 
     /**

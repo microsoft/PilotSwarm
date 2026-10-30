@@ -39,6 +39,12 @@ import type { PilotSwarmWorkerOptions, ManagedSessionConfig, WorkspaceProvider }
 import { createBuiltInWorkspaceProvider } from "./workspace.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { installAgentPackages, loadAgentPackageTools } from "./agent-package-installer.js";
+import {
+    createWorkflowCanvasPublisher,
+    registerWorkflowActivities,
+    WORKFLOW_SESSION_ORCHESTRATION_NAME,
+    WORKFLOW_SESSION_ORCHESTRATION_REGISTRY,
+} from "./workflow/index.js";
 import fs from "node:fs";
 import os from "node:os";
 import { monitorEventLoopDelay, type IntervalHistogram } from "node:perf_hooks";
@@ -130,6 +136,21 @@ export function resolveDuroxideLockOptions(
         if (options[key] === undefined) delete options[key];
     }
     return options;
+}
+
+/** @internal Workflow script switch and runtimes: explicit option > deployment env > off. */
+export function resolveWorkflowScriptSettings(
+    config: PilotSwarmWorkerOptions["workflowScripts"],
+    env: Record<string, string | undefined> = process.env,
+): { enabled: boolean; executables: Partial<Record<"node" | "python" | "powershell", string>> } {
+    const flag = String(env.PILOTSWARM_WORKFLOW_SCRIPTS ?? "").trim().toLowerCase();
+    const enabled = config?.enabled ?? (flag === "1" || flag === "true" || flag === "yes");
+    const executables: Partial<Record<"node" | "python" | "powershell", string>> = {
+        ...(env.PILOTSWARM_WORKFLOW_PYTHON ? { python: env.PILOTSWARM_WORKFLOW_PYTHON } : {}),
+        ...(env.PILOTSWARM_WORKFLOW_PWSH ? { powershell: env.PILOTSWARM_WORKFLOW_PWSH } : {}),
+        ...(config?.executables ?? {}),
+    };
+    return { enabled, executables };
 }
 
 /** @internal Resolve the worker-wide turn cap: explicit option > deployment env > SDK default. */
@@ -950,6 +971,44 @@ export class PilotSwarmWorker {
                 registration.handler,
             );
         }
+
+        // Workflow sessions: a sibling controller orchestration. It is
+        // registered on every worker so that a workflow started where scripts
+        // are off fails with a clear message instead of waiting.
+        const workflowScriptSettings = resolveWorkflowScriptSettings(this.config.workflowScripts);
+        this.sessionManager.workflowScriptsEnabled = workflowScriptSettings.enabled;
+        const workflowClient = new Client(this._provider);
+        registerWorkflowActivities(this.runtime, {
+            catalog: this._catalog,
+            enabled: () => workflowScriptSettings.enabled,
+            canvas: createWorkflowCanvasPublisher({
+                catalog: this._catalog,
+                artifactStore: this.artifactStore,
+                ...(this.config.workerNodeId ? { workerNodeId: this.config.workerNodeId } : {}),
+            }),
+            resolveTools: (sessionId) => this.sessionManager.resolveScriptTools(sessionId),
+            resolveMcpServers: () => this.sessionManager.scriptMcpServers(),
+            deleteSession: async (sessionId) => {
+                await this._catalog?.softDeleteSession(sessionId);
+                await this.factStore?.deleteSessionFactsForSession(sessionId).catch(() => undefined);
+            },
+            notifyParent: async (parentSessionId, prompt, sender) => {
+                await workflowClient.enqueueEvent(
+                    `session-${parentSessionId}`,
+                    "messages",
+                    JSON.stringify({ prompt, sender }),
+                );
+            },
+            runnerOptions: { executables: workflowScriptSettings.executables },
+        });
+        for (const registration of WORKFLOW_SESSION_ORCHESTRATION_REGISTRY) {
+            this.runtime.registerOrchestrationVersioned(
+                WORKFLOW_SESSION_ORCHESTRATION_NAME,
+                registration.version,
+                registration.handler,
+            );
+        }
+        trace(`[worker] workflow scripts ${workflowScriptSettings.enabled ? "enabled" : "disabled"}`);
 
         // Auto-register sweeper tools if CMS is available
         if (this._catalog) {

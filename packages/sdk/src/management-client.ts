@@ -402,10 +402,19 @@ function normalizeSystemRestartDisposition(disposition: SystemSessionRestartDisp
     );
 }
 
+/** A workflow session runs a workflow graph; it has no conversation to send to. */
+function workflowNotConversationalError(sessionId: string): Error {
+    return Object.assign(
+        new Error(`Session ${sessionId.slice(0, 8)} is a workflow session; it runs a workflow graph and does not accept chat messages.`),
+        { code: "WORKFLOW_SESSION_NOT_CONVERSATIONAL", status: 409 },
+    );
+}
+
 function sessionViewFromCmsRow(row: SessionRow): PilotSwarmSessionView {
     const liveStatus: PilotSwarmSessionStatus = (row.state as PilotSwarmSessionStatus) || "pending";
     return {
         sessionId: row.sessionId,
+        sessionKind: row.sessionKind ?? "agent",
         title: row.title ?? undefined,
         agentId: row.agentId ?? undefined,
         splash: row.splash ?? undefined,
@@ -441,6 +450,8 @@ function sessionViewFromCmsRow(row: SessionRow): PilotSwarmSessionView {
 /** Merged view of a session for management UIs. */
 export interface PilotSwarmSessionView {
     sessionId: string;
+    /** Runtime implementation. Existing sessions are "agent". */
+    sessionKind: import("./types.js").SessionKind;
     title?: string;
     agentId?: string;
     splash?: string;
@@ -1381,6 +1392,7 @@ export class PilotSwarmManagementClient {
 
         return {
             sessionId: row.sessionId,
+            sessionKind: row.sessionKind ?? "agent",
             title: row.title ?? undefined,
             agentId: row.agentId ?? undefined,
             splash: row.splash ?? undefined,
@@ -2456,6 +2468,12 @@ export class PilotSwarmManagementClient {
                 { code: "REGENERATE_UNSUPPORTED" },
             );
         }
+        if (session.sessionKind === "workflow") {
+            throw Object.assign(
+                new Error("Workflow sessions run a workflow graph and have no conversation to regenerate"),
+                { code: "REGENERATE_UNSUPPORTED" },
+            );
+        }
         const store = this._requireProviders();
         if (!this._modelProviders) throw new Error("Provider type catalog is unavailable");
         const actor = session.owner ? await store.lookupUserId(session.owner) : null;
@@ -2590,6 +2608,9 @@ export class PilotSwarmManagementClient {
             throw invalidTurnControlRequest("steerSessionTurn requires a requestId");
         }
         const replaces = validReplacesClientMessageId(opts?.replacesClientMessageId);
+        if ((await this._catalog!.getSession(sessionId).catch(() => null))?.sessionKind === "workflow") {
+            throw workflowNotConversationalError(sessionId);
+        }
         // The flag gates new steers only. The catalog checks it under the
         // session row lock after its request-id retry lookup, so a retry of
         // an already recorded request id still gets its first answer (or
@@ -4052,6 +4073,9 @@ export class PilotSwarmManagementClient {
                 `Session ${sessionId.slice(0, 8)} is a service session (runtime machinery) — its transcript is a read-only trace and it does not accept messages.`,
             );
         }
+        if (session.sessionKind === "workflow") {
+            throw workflowNotConversationalError(sessionId);
+        }
         if (session.status === "failed" || session.status === "cancelled") {
             throw new Error(
                 `Session ${sessionId.slice(0, 8)} is a terminal orchestration and cannot accept new messages.`,
@@ -4142,6 +4166,9 @@ export class PilotSwarmManagementClient {
      */
     async sendAnswer(sessionId: string, answer: string, options?: { sender?: MessageSender; expectedQuestion?: { question: string; iteration?: number } | null }): Promise<void> {
         this._ensureStarted();
+        if ((await this.getSession(sessionId))?.sessionKind === "workflow") {
+            throw workflowNotConversationalError(sessionId);
+        }
         const orchId = `session-${sessionId}`;
         await this._assertOrchestrationLive(orchId, sessionId, "sendAnswer");
         const expectedQuestion = options?.expectedQuestion !== undefined

@@ -73,6 +73,8 @@ import { LatestValuePublisher, type LiveTurnPayload } from "./live-turn.js";
 import { STREAMING_EVENT_TYPES, keepOrchestrationTurnEvents, turnResultSizeWarning } from "./turn-result-events.js";
 import { MODEL_EVENT_TYPES_RECORDED_WHEN_LOGGING, modelEventLoggingEnabled } from "./model-event-logging.js";
 import type { NativeTasksPayload } from "./native-task-observer.js";
+import { spawnWorkflowFromTool } from "./workflow/spawn.js";
+import type { SpawnWorkflowToolArgs } from "./workflow/tool-spec.js";
 
 const SYSTEM_AGENT_IDS = new Set(["pilotswarm", "sweeper", "resourcemgr", "facts-manager"]);
 
@@ -2408,6 +2410,7 @@ export function registerActivities(
                     parentSessionId: child.parentSessionId,
                     isSystem: child.isSystem ?? info.isSystem ?? false,
                     agentId: child.agentId ?? info.agentId,
+                    sessionKind: (child as any).sessionKind ?? info.sessionKind ?? "agent",
                     result: outcome?.summary ?? (typeof outcomeResult?.summary === "string" ? outcomeResult.summary : info.result),
                     contract: contractCurrent ?? undefined,
                     contractStatus: outcome?.contractJson ? "contracted" : undefined,
@@ -2679,6 +2682,21 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     return `[SYSTEM: manage_agent_session failed — ${error?.message || String(error)}]`;
                 }
             },
+
+            /**
+             * spawn_workflow: start a workflow session as a CHILD of
+             * this session. Runs inline in the runTurn activity and does not
+             * end the turn. See workflow/spawn.ts for the id rule.
+             */
+            spawnWorkflow: async (args: SpawnWorkflowToolArgs, call?: { toolCallId?: string }) => spawnWorkflowFromTool(args, call, {
+                parentSessionId: input.sessionId,
+                enabled: () => sessionManager.workflowScriptsEnabled,
+                getSession: async (id) => catalog ? catalog.getSession(id) : null,
+                resolveOwner: async () => catalog
+                    ? resolveEffectiveSpawnOwner((id) => catalog!.getSession(id), input.sessionId)
+                    : null,
+                createWorkflowSession: async (config) => (await getInlineClient()).createWorkflowSession(config),
+            }),
 
             /**
              * Create a TOP-LEVEL session — the Agent Manager's test loop (§7).
@@ -3224,6 +3242,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             ) => {
                 try {
                     const child = await resolveManagedChild(args.agent_id);
+                    if (child.sessionKind === "workflow") {
+                        return `[SYSTEM: message_agent refused — ${child.orchId} is a workflow session; it runs a workflow graph and takes no messages. `
+                            + `Use cancel_agent or delete_agent to stop it.]`;
+                    }
                     if (catalog && args.contract_patch) {
                         const existing = await catalog.getChildOutcome(child.sessionId);
                         const contractJson = appendContractPatchJson(existing?.contractJson ?? null, args.contract_patch, input.sessionId, child.sessionId);
@@ -5932,6 +5954,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     parentSessionId: child.parentSessionId,
                     isSystem: child.isSystem ?? info.isSystem ?? false,
                     agentId: child.agentId ?? info.agentId,
+                    sessionKind: (child as any).sessionKind ?? info.sessionKind ?? "agent",
                     result: outcome?.summary ?? (typeof outcomeResult?.summary === "string" ? outcomeResult.summary : info.result),
                     ...(includeResultSource ? {
                         resultSource: outcome?.summary != null || typeof outcomeResult?.summary === "string"

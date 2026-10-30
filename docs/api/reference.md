@@ -105,6 +105,7 @@ sessions return not-found to avoid an existence oracle.
 |---|---|---|---|
 | listSessions | `GET /api/v1/sessions` | — | List session summaries. |
 | createSession | `POST /api/v1/sessions` | model (body), reasoningEffort (body), contextTier (body), groupId (body), visibility (body) | Create a session. Owner is the authenticated principal; visibility defaults to the deployment default. `groupId` is an initial placement into one of **your** groups — `403` if the group is missing or not yours. |
+| createWorkflowSession | `POST /api/v1/sessions/workflow` | yaml (body), inputs (body), groupId (body), visibility (body) | Create a workflow session from Workflow YAML (`kind: Workflow`; see [Workflow sessions](../developer/building/workflow-sessions.md)). Refused with 400 and a code such as `WORKFLOW_INVALID`, `WORKFLOW_STATE_TYPE_UNSUPPORTED` or `WORKFLOW_INPUT_INVALID` when the document or its inputs are not valid. |
 | createSessionForAgent | `POST /api/v1/sessions/for-agent` | agentName (body), model (body), reasoningEffort (body), contextTier (body), title (body), splash (body), initialPrompt (body), groupId (body), visibility (body) | Create a session bound to a named agent. Same `groupId` placement rule as createSession. |
 | getSession | `GET /api/v1/sessions/:sessionId` | sessionId (path) | Get one session view (live orchestration status). |
 | deleteSession | `DELETE /api/v1/sessions/:sessionId` | sessionId (path) | Cancel and soft-delete a session. |

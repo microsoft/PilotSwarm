@@ -6,6 +6,9 @@ import type { StorageConfig } from "./storage-config.js";
 
 export const SESSION_STATE_MISSING_PREFIX = "SESSION_STATE_MISSING:";
 
+/** Runtime implementation behind a session. Omitted persisted values are agent sessions. */
+export type SessionKind = "agent" | "workflow";
+
 // ─── Turn Result ─────────────────────────────────────────────────
 // What ManagedSession.runTurn() returns to the orchestration.
 
@@ -200,6 +203,14 @@ export interface TurnOptions {
          * sessions are refused for every principal.
          */
         manageAgentSession?(args: { session_id: string; action: string; reason?: string }): Promise<string>;
+        /**
+         * Start a workflow session as a child of this session. Runs
+         * inline in the turn; `call.toolCallId` names the run when no key is given.
+         */
+        spawnWorkflow?(
+            args: import("./workflow/tool-spec.js").SpawnWorkflowToolArgs,
+            call?: { toolCallId?: string },
+        ): Promise<string>;
         spawnAgent(args: {
             agent_name?: string;
             task?: string;
@@ -793,6 +804,17 @@ export interface SessionOwnerInfo {
     displayName?: string | null;
 }
 
+/** Immutable, inline source for the conservative script-only workflow runtime. */
+export interface WorkflowSessionConfig {
+    yaml: string;
+    inputs?: Record<string, unknown>;
+    sessionId?: string;
+    parentSessionId?: string;
+    owner?: SessionOwnerInfo | null;
+    groupId?: string | null;
+    visibility?: "private" | "shared_read" | "shared_write" | null;
+}
+
 export interface SessionSummaryState {
     schemaVersion: number;
     updatedAt: string;
@@ -857,6 +879,8 @@ export interface ChildSessionResult {
 
 export interface PilotSwarmSessionInfo {
     sessionId: string;
+    /** Runtime implementation. Existing sessions default to "agent". */
+    sessionKind: SessionKind;
     status: PilotSwarmSessionStatus;
     /** LLM model used for this session. */
     model?: string;
@@ -1276,6 +1300,19 @@ export interface SessionPolicy {
 
 export interface PilotSwarmWorkerOptions {
     store: string;
+    /**
+     * Script states in workflow sessions. Off unless enabled here or with
+     * `PILOTSWARM_WORKFLOW_SCRIPTS=1`: a workflow's scripts run as child
+     * processes on the worker (without the worker's environment), so an
+     * operator opts in. A worker with them off still runs the controller and
+     * fails each new workflow that has script states at its start, with a
+     * clear message. `executables` overrides the program per runtime (env
+     * `PILOTSWARM_WORKFLOW_PYTHON`, `PILOTSWARM_WORKFLOW_PWSH`).
+     */
+    workflowScripts?: {
+        enabled?: boolean;
+        executables?: Partial<Record<"node" | "python" | "powershell", string>>;
+    };
     /**
      * Fact key prefixes reserved for tools, in addition to the built-in
      * `tools/`. No agent can read, write, delete or search under them; a

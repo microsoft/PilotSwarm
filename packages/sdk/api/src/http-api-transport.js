@@ -208,6 +208,10 @@ export class HttpApiTransport {
         return this.api.call("createSession", options);
     }
 
+    async createWorkflowSession(options = {}) {
+        return this.api.call("createWorkflowSession", options);
+    }
+
     async createSessionForAgent(agentName, options = {}) {
         return this.api.call("createSessionForAgent", { agentName, ...options });
     }
