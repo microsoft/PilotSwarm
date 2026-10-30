@@ -58,7 +58,7 @@ test("compiles a Workflow document with script and terminal states", () => {
     assert.deepEqual(compiled.inputs, { pattern: { type: "string", required: true }, limit: { type: "integer" } });
     assert.deepEqual(compiled.states.collect, {
         id: "collect", type: "script", runtime: "python", timeoutSeconds: 60,
-        source: "print('{\"outcome\":\"found\",\"output\":{\"value\":1}}')\n",
+        source: "print('{\"outcome\":\"found\",\"output\":{\"value\":1}}')",
         outcomes: ["found", "empty"], next: { found: "done", empty: "nothing" },
     });
     assert.equal(compiled.states.done.type, "terminal");
@@ -115,6 +115,12 @@ test("limits on ids, timeouts, document size and YAML strictness", () => {
     rejects(VALID.replace("runtime: python", "runtime: bash"), /runtime must be node, python or powershell/);
     rejects(`# ${"x".repeat(WORKFLOW_MAX_YAML_BYTES)}\n${VALID}`, /at most/);
     rejects(VALID.replace("initial: collect", "initial: collect\ninitial: collect"), /Workflow YAML is invalid/);
+    rejects(
+        VALID.replace("value: ${states.collect.result.value}", "value: { v: ${states.collect.result.value} }"),
+        /Quote \$\{\.\.\.\} expressions written inside \{ \}/,
+    );
+    assert.equal(compileWorkflow(VALID.replace("value: ${states.collect.result.value}", 'value: { v: "${states.collect.result.value}" }')).states.done.output.value.v,
+        "${states.collect.result.value}");
 });
 
 test("inputs are checked against the declared schema", () => {

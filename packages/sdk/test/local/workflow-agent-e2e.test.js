@@ -37,7 +37,7 @@ states:
       await setResult("success", { run: context.inputs.run });
     completion: { outcomes: [success] }
     transition: { next: { success: counted } }
-  counted: { type: terminal, outcome: succeeded, output: \${states.count.result} }
+  counted: { type: terminal, outcome: succeeded, output: "\${states.count.result}" }
 `;
 
 const getEnv = useSuiteEnv(import.meta.url);

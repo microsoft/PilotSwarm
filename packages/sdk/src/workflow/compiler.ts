@@ -261,6 +261,11 @@ function compileTerminalState(id: string, state: JsonObject, name: string, state
     };
 }
 
+/** `${...}` inside a `{ }` flow mapping must be quoted; this is the usual cause of a parse error. */
+function yamlHint(yaml: string): string {
+    return /\{[^\n]*\$\{/.test(yaml) ? ' Quote ${...} expressions written inside { } (for example output: "${states.x.result}").' : "";
+}
+
 /** Compile and validate one `kind: Workflow` document. */
 export function compileWorkflow(yaml: string): CompiledWorkflow {
     if (typeof yaml !== "string" || !yaml.trim()) fail("Workflow YAML must be a non-empty string.");
@@ -270,11 +275,11 @@ export function compileWorkflow(yaml: string): CompiledWorkflow {
     let parsed: unknown;
     try {
         const document = parseDocument(yaml, { prettyErrors: false, strict: true, uniqueKeys: true });
-        if (document.errors.length > 0) fail(`Workflow YAML is invalid: ${document.errors[0].message}`, "WORKFLOW_YAML_INVALID");
+        if (document.errors.length > 0) fail(`Workflow YAML is invalid: ${document.errors[0].message}${yamlHint(yaml)}`, "WORKFLOW_YAML_INVALID");
         parsed = document.toJS({ maxAliasCount: 50 });
     } catch (error) {
         if (error instanceof WorkflowCompileError) throw error;
-        fail(`Workflow YAML is invalid: ${error instanceof Error ? error.message : String(error)}`, "WORKFLOW_YAML_INVALID");
+        fail(`Workflow YAML is invalid: ${error instanceof Error ? error.message : String(error)}${yamlHint(yaml)}`, "WORKFLOW_YAML_INVALID");
     }
 
     const root = requireObject(parsed, "workflow");

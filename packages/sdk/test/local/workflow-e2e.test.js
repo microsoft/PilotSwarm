@@ -70,7 +70,7 @@ describe("script workflow sessions (worker + client + PostgreSQL)", () => {
             const mgmt = await createManagementClient(env);
             try {
                 await expect(client.createWorkflowSession({ yaml: WORKFLOW.replace("type: script", "type: agent") }))
-                    .rejects.toMatchObject({ code: "WORKFLOW_INVALID" });
+                    .rejects.toMatchObject({ code: "WORKFLOW_STATE_TYPE_UNSUPPORTED", status: 400 });
 
                 const { sessionId, workflowName } = await client.createWorkflowSession({
                     yaml: WORKFLOW,
@@ -217,7 +217,7 @@ states:
       await setResult("success", { sum, kinds: sessions.sessions.filter((s) => s.self).map((s) => s.kind), events });
     completion: { outcomes: [success] }
     transition: { next: { success: done } }
-  done: { type: terminal, outcome: succeeded, output: \${states.use.result} }
+  done: { type: terminal, outcome: succeeded, output: "\${states.use.result}" }
 `;
         await withClient(env, {
             worker: {

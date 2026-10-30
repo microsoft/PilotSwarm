@@ -322,7 +322,7 @@ states:
     source: "unused: runNode is stubbed"
     completion: { outcomes: [again, done] }
     transition: { next: { again: tick, done: finished } }
-  finished: { type: terminal, outcome: succeeded, output: \${states.tick.result} }
+  finished: { type: terminal, outcome: succeeded, output: "\${states.tick.result}" }
 `;
         const { status, executions } = await runWorkflow(yaml, {
             inputs: { limit: iterations },
@@ -364,7 +364,7 @@ states:
     type: terminal
     outcome: failed
     summary: Limit is over 10.
-    output: { limit: \${inputs.limit}, seen: \${states.check.result} }
+    output: { limit: "\${inputs.limit}", seen: "\${states.check.result}" }
 `;
         const { status, catalog, notifications } = await runWorkflow(yaml, { inputs: { limit: 50 }, parentSessionId: "p" });
         expect(status.output).toMatchObject({
@@ -423,7 +423,7 @@ states:
     source: 'await setResult("success", { recoveredFrom: context.input.exitCode })'
     completion: { outcomes: [success] }
     transition: { next: { success: done } }
-  done: { type: terminal, outcome: succeeded, output: \${states.recover.result} }
+  done: { type: terminal, outcome: succeeded, output: "\${states.recover.result}" }
 `;
         const unrouted = await runWorkflow(make("[success]", "{ success: done }"));
         expect(unrouted.status.output).toMatchObject({ status: "failed" });
@@ -462,7 +462,7 @@ initial: first
 states:
   first: { type: script, runtime: node, source: "stub", completion: { outcomes: [success] }, transition: { next: { success: second } } }
   second: { type: script, runtime: node, source: "stub", completion: { outcomes: [success] }, transition: { next: { success: done } } }
-  done: { type: terminal, outcome: succeeded, output: \${states.second.result} }
+  done: { type: terminal, outcome: succeeded, output: "\${states.second.result}" }
 `;
         const ok = (output) => ({ outcome: "success", output, resultSource: "reported", exitCode: 0, durationMs: 0, stdoutTail: "", stderrTail: "", toolCalls: [] });
         let releaseHang;
@@ -526,7 +526,7 @@ states:
       await new Promise(() => setInterval(() => {}, 1000));
     completion: { outcomes: [success] }
     transition: { next: { success: done } }
-  done: { type: terminal, outcome: succeeded, output: \${states.slow.result} }
+  done: { type: terminal, outcome: succeeded, output: "\${states.slow.result}" }
 `;
 
 async function startLongWorkflow({ runNode, parentSessionId = "parent-1" } = {}) {
@@ -806,7 +806,7 @@ states:
       await setResult("success", { sum, info, listed, secret, failed, unknown });
     completion: { outcomes: [success] }
     transition: { next: { success: done } }
-  done: { type: terminal, outcome: succeeded, output: \${states.use.result} }
+  done: { type: terminal, outcome: succeeded, output: "\${states.use.result}" }
 `;
         const { status, catalog } = await runWorkflow(yaml, {
             deps: {
@@ -846,7 +846,7 @@ states:
       await setResult("success", { pid: info.pid });
     completion: { outcomes: [success] }
     transition: { next: { success: done } }
-  done: { type: terminal, outcome: succeeded, output: \${states.use.result} }
+  done: { type: terminal, outcome: succeeded, output: "\${states.use.result}" }
 `;
         const { status } = await runWorkflow(yaml, {
             deps: { resolveMcpServers: async () => ({ calc: { command: process.execPath, args: [CALC_SERVER], tools: ["*"] } }) },

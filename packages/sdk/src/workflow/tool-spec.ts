@@ -31,7 +31,7 @@ export const SPAWN_WORKFLOW_TOOL_SPEC = {
         + "    type: terminal\n"
         + "    outcome: succeeded      # succeeded | blocked | failed | cancelled\n"
         + "    summary: <optional one line>\n"
-        + "    output: ${states.<state id>.result}   # optional; or ${inputs.x}\n"
+        + "    output: ${states.<state id>.result}   # optional; or ${inputs.x}; quote it inside { }\n"
         + "Every run must end at a terminal state. "
         + "In a script, `context` holds inputs, input (the previous state's output), node (the state id), step, workflow and sessionId. "
         + "Call tools with call_tool(name, args) in python, await callTool(name, args) in node, or Invoke-PilotSwarmTool -Name -Arguments in powershell. "
