@@ -87,20 +87,17 @@ export async function runAuthCommand(argv) {
 pilotswarm auth — manage Web API sign-in
 
 USAGE
-  pilotswarm auth login  --api-url <url>   Sign in (Entra: browser and cached tokens)
-  pilotswarm auth status --api-url <url>   Show Entra account/cache or dev persona selection
+  pilotswarm auth login  --api-url <url>   Sign in (opens your browser) and cache tokens
+  pilotswarm auth status --api-url <url>   Show the signed-in account
   pilotswarm auth logout --api-url <url>   Drop cached tokens for that origin
 
 FLAGS
-      --device-code    Entra only: use device code instead of the browser
+      --device-code    Use the device-code flow instead of the browser
                        (headless hosts; only where the tenant permits it —
                        many corp tenants block device code via Conditional Access)
 
   PILOTSWARM_API_URL can replace --api-url.
-  Dev: set PILOTSWARM_DEV_USER to a persona id (e.g. alice); no interactive login.
-  Dev status reports local selection, not server-verified authentication.
-  Disabled/none auth needs no login. Other providers are unsupported.
-  Logout clears local cached tokens offline; it does not unset PILOTSWARM_DEV_USER.
+  Dev-auth deployments: set PILOTSWARM_DEV_USER=<persona>; no browser sign-in.
 `.trim());
         return flags.help ? 0 : 1;
     }

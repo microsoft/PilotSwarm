@@ -234,14 +234,9 @@ npx pilotswarm auth status --api-url https://portal.example.com
 npx pilotswarm auth logout --api-url https://portal.example.com
 ```
 
-These commands discover the deployment's provider. Disabled/`none` auth needs
-no login. For `dev`, set `PILOTSWARM_DEV_USER=alice` (or another roster persona);
-login requires no browser, and status reports the normalized local selection,
-not server-verified authentication or roster membership. Entra status checks
-the cache silently, without opening a browser; `--device-code` applies only to
-Entra login. Other providers (including `proxy`) are unsupported by CLI
-login/status. Logout clears local cached tokens offline and does not unset
-`PILOTSWARM_DEV_USER`.
+Deployments that use the `dev` auth provider need no browser sign-in: set
+`PILOTSWARM_DEV_USER` to a persona id, for example `alice`. `auth status` shows
+the selected persona but does not verify it with the server.
 
 For operators and internal use, the direct store-connected variant still works:
 
