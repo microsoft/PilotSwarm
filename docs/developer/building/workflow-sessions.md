@@ -214,3 +214,17 @@ resumes at the state that was running: finished states are never run again,
 and the state that was running is run again from its start. Write scripts so
 that running one twice is safe. The orchestration continues as new every 20
 script states to keep its history small.
+
+## Testing
+
+`npm run test:local:workflows` runs every workflow test that needs no model
+and no deployment: the compiler and portal unit tests, the Duroxide runtime
+tests, and real-worker runs on PostgreSQL. It needs `DATABASE_URL`; set
+`PS_TEST_PWSH` to a PowerShell outside `PATH` if needed. One of these runs is a
+synthetic workflow that uses Python, Node and PowerShell states, loops past
+one continue-as-new, routes a non-zero exit and a timeout as outcomes, calls
+tools, and checks that every state ran exactly once. Python and PowerShell
+states fall back to Node where those runtimes are not installed.
+
+The portal's workflow browser tests run with Playwright:
+`npm run test:e2e --workspace=pilotswarm -- workflow-session`.

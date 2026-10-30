@@ -12,6 +12,9 @@ import { createManagementClient, withClient } from "../helpers/local-workers.js"
 
 const getEnv = useSuiteEnv(import.meta.url);
 const hasPython = spawnSync("python3", ["--version"]).status === 0;
+// PS_TEST_PWSH points at a PowerShell that is not on PATH (a portable install).
+const pwshExecutable = process.env.PS_TEST_PWSH || "pwsh";
+const hasPwsh = spawnSync(pwshExecutable, ["-NoLogo", "-NoProfile", "-Command", "exit 0"]).status === 0;
 
 const WORKFLOW = `
 apiVersion: pilotswarm.dev/v1alpha1
@@ -245,6 +248,160 @@ states:
                 expect(output.kinds).toEqual(["workflow"]);
                 // The same rule an agent meets: the caller is the workflow session itself.
                 expect(output.events.error).toMatch(/cannot read your own session events/);
+            } finally {
+                await mgmt.stop?.();
+            }
+        });
+    });
+
+    it("a synthetic workflow exercises every runtime, a loop across continue-as-new, both failure routes and tools", { timeout: 120_000 }, async () => {
+        const LOOPS = 22; // more steps than one execution holds (20), so the run continues as new once
+        const startRuntime = hasPython ? "python" : "node";
+        const psRuntime = hasPwsh ? "powershell" : "node";
+        const yaml = `
+apiVersion: pilotswarm.dev/v1alpha1
+kind: Workflow
+metadata: { name: kitchen-sink, version: 1.0.0 }
+inputs:
+  run: { type: string, required: true }
+  seed: { type: integer, required: true }
+  loops: { type: integer, required: true }
+configuration: { label: synthetic }
+initial: start
+states:
+  start:
+    type: script
+    runtime: ${startRuntime}
+    source: |
+${hasPython
+        ? `      call_tool("store_fact", {"key": "kitchen/" + context["inputs"]["run"], "value": {"seed": context["inputs"]["seed"]}})
+      set_result("ready", {"count": 0, "runtime": "python"})`
+        : `      await callTool("store_fact", { key: "kitchen/" + context.inputs.run, value: { seed: context.inputs.seed } });
+      await setResult("ready", { count: 0, runtime: "node" });`}
+    completion: { outcomes: [ready] }
+    transition: { next: { ready: tick } }
+  tick:
+    type: script
+    runtime: node
+    source: |
+      const count = context.input.count + 1;
+      await setResult(count < context.inputs.loops ? "again" : "done", { count });
+    completion: { outcomes: [again, done] }
+    transition: { next: { again: tick, done: ps } }
+  ps:
+    type: script
+    runtime: ${psRuntime}
+    source: |
+${hasPwsh
+        ? `      $found = Invoke-PilotSwarmTool -Name 'read_facts' -Arguments @{ key_pattern = ('kitchen/' + $context.inputs.run); scope = 'session' }
+      Set-PilotSwarmResult -Outcome 'ok' -Output @{ seed = $found.facts[0].value.seed; loops = $context.input.count; runtime = 'powershell' }`
+        : `      const found = await callTool("read_facts", { key_pattern: "kitchen/" + context.inputs.run, scope: "session" });
+      await setResult("ok", { seed: found.facts[0].value.seed, loops: context.input.count, runtime: "node" });`}
+    completion: { outcomes: [ok] }
+    transition: { next: { ok: boom } }
+  boom:
+    type: script
+    runtime: node
+    source: |
+      process.stderr.write("intentional failure\\n");
+      process.exit(3);
+    completion: { outcomes: [success, failure] }
+    transition: { next: { success: wrong, failure: recover } }
+  recover:
+    type: script
+    runtime: node
+    source: |
+      const routed = context.input.exitCode === 3 && /intentional failure/.test(context.input.stderr);
+      await setResult(routed ? "ok" : "bad", { recoveredFrom: context.input.exitCode });
+    completion: { outcomes: [ok, bad] }
+    transition: { next: { ok: slow, bad: wrong } }
+  slow:
+    type: script
+    runtime: node
+    timeoutSeconds: 1
+    source: |
+      await new Promise(() => setInterval(() => {}, 1000));
+    completion: { outcomes: [success, timeout] }
+    transition: { next: { success: wrong, timeout: checked } }
+  checked:
+    type: script
+    runtime: node
+    source: |
+      const facts = await callTool("read_facts", { key_pattern: "kitchen/" + context.inputs.run, scope: "session" });
+      const me = await callTool("list_sessions", { session_id: context.sessionId });
+      const kind = me.sessions[0]?.kind ?? null;
+      await setResult(facts.count === 1 && kind === "workflow" ? "verified" : "missing",
+        { facts: facts.count, kind, timedOutAfter: context.input.timeoutSeconds });
+    completion: { outcomes: [verified, missing] }
+    transition: { next: { verified: finished, missing: wrong } }
+  finished:
+    type: terminal
+    outcome: succeeded
+    summary: Every runtime, the loop, both failure routes and the checks ran.
+    output:
+      label: \${configuration.label}
+      loops: \${inputs.loops}
+      start: \${states.start.result}
+      lastTick: \${states.tick.result}
+      ps: \${states.ps.result}
+      recover: \${states.recover.result}
+      checked: \${states.checked.result}
+  wrong: { type: terminal, outcome: failed, summary: A route that should not be taken was taken. }
+`;
+        const env = getEnv();
+        await withClient(env, {
+            worker: { workflowScripts: { enabled: true, executables: { powershell: pwshExecutable } } },
+        }, async (client) => {
+            const mgmt = await createManagementClient(env);
+            try {
+                const run = `ks-${Math.random().toString(36).slice(2)}`;
+                const { sessionId } = await client.createWorkflowSession({ yaml, inputs: { run, seed: 7, loops: LOOPS } });
+                const view = await waitForTerminal(mgmt, sessionId);
+                const events = await mgmt.getSessionEvents(sessionId, 0, 1_000);
+                const workflowEvents = events.filter((event) => event.eventType.startsWith("workflow."));
+                const end = workflowEvents.at(-1);
+                expect(view.status, JSON.stringify(end?.data)).toBe("completed");
+
+                const steps = 1 + LOOPS + 5;
+                expect(end.eventType).toBe("workflow.completed");
+                expect(end.data).toMatchObject({ outcome: "succeeded", stateId: "finished", steps,
+                    summary: "Every runtime, the loop, both failure routes and the checks ran." });
+                expect(JSON.parse(end.data.outputPreview)).toEqual({
+                    label: "synthetic",
+                    loops: LOOPS,
+                    start: { count: 0, runtime: startRuntime },
+                    lastTick: { count: LOOPS },
+                    ps: { seed: 7, loops: LOOPS, runtime: psRuntime },
+                    recover: { recoveredFrom: 3 },
+                    checked: { facts: 1, kind: "workflow", timedOutAfter: 1 },
+                });
+
+                // The runtimes that ran are the ones declared (both non-Node ones where installed).
+                const started = workflowEvents.find((event) => event.eventType === "workflow.started");
+                expect(Object.fromEntries(started.data.states.filter((st) => st.type === "script").map((st) => [st.id, st.runtime])))
+                    .toMatchObject({ start: startRuntime, ps: psRuntime, tick: "node" });
+
+                // Every state ran exactly as often as the graph says, across continue-as-new: no state ran twice.
+                const ran = workflowEvents.filter((event) => event.eventType === "workflow.state_started").map((event) => event.data.stateId);
+                expect(ran).toEqual(["start", ...Array(LOOPS).fill("tick"), "ps", "boom", "recover", "slow", "checked"]);
+                const completed = workflowEvents.filter((event) => event.eventType === "workflow.state_completed");
+                expect(completed.map((event) => event.data.step)).toEqual(Array.from({ length: steps }, (_, i) => i + 1));
+                expect(workflowEvents.filter((event) => event.eventType === "workflow.started")).toHaveLength(1);
+                expect(workflowEvents.some((event) => ["workflow.state_failed", "workflow.state_cancelled"].includes(event.eventType))).toBe(false);
+
+                // Both failure routes were taken as ordinary outcomes.
+                const byState = (id) => completed.find((event) => event.data.stateId === id).data;
+                expect(byState("boom")).toMatchObject({ outcome: "failure", resultSource: "exit", exitCode: 3 });
+                expect(byState("boom").stderrTail).toMatch(/intentional failure/);
+                expect(byState("slow")).toMatchObject({ outcome: "timeout", resultSource: "timeout" });
+                expect(byState("start").toolCalls).toEqual([expect.objectContaining({ name: "store_fact", ok: true })]);
+                expect(byState("ps").toolCalls).toEqual([expect.objectContaining({ name: "read_facts", ok: true })]);
+
+                // The live canvas was drawn once and ended on the terminal state, through the continue-as-new.
+                const canvas = await mgmt.getSessionEvents(sessionId, 0, 1_000, ["session.canvas_updated", "session.canvas_data"]);
+                expect(canvas.filter((event) => event.eventType === "session.canvas_updated")).toHaveLength(1);
+                expect(canvas.filter((event) => event.eventType === "session.canvas_data").at(-1).data.payload)
+                    .toMatchObject({ status: "completed", outcome: "succeeded", current: "finished", step: steps });
             } finally {
                 await mgmt.stop?.();
             }
