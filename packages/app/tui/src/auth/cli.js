@@ -39,7 +39,20 @@ function resolveAuthMode(authConfig, apiUrl) {
                 + `(e.g. PILOTSWARM_DEV_USER=alice) to choose who you sign in as.`,
             );
         }
-        return { provider: "dev", persona };
+        // The server rejects personas outside its published roster; fail here
+        // instead of on the first API request.
+        const roster = authConfig.client?.users;
+        if (!Array.isArray(roster)) {
+            return { provider: "dev", persona, rosterChecked: false };
+        }
+        const known = roster.map((user) => String(user?.id ?? "").trim().toLowerCase());
+        if (!known.includes(persona)) {
+            throw new Error(
+                `Dev persona '${persona}' is not in the roster of ${apiUrl}. `
+                + `Set PILOTSWARM_DEV_USER to one of: ${known.join(", ")}.`,
+            );
+        }
+        return { provider: "dev", persona, rosterChecked: true };
     }
     if (authConfig.provider !== "entra") {
         throw new Error(`Unsupported auth provider '${authConfig.provider}' reported by ${apiUrl}.`);
@@ -117,10 +130,10 @@ FLAGS
         return 0;
     }
     if (mode.provider === "dev") {
-        console.log(`Selected dev persona '${mode.persona}' for ${apiUrl}.`);
-        console.log(action === "login"
-            ? "No interactive login is required; the server validates the persona on API requests."
-            : "Local selection only; server authentication and roster membership are not verified.");
+        console.log(`Selected dev persona '${mode.persona}' for ${apiUrl}; no interactive sign-in is needed.`);
+        console.log(mode.rosterChecked
+            ? "The persona is in the deployment's dev roster."
+            : "The deployment published no dev roster, so the persona was not checked.");
         return 0;
     }
 

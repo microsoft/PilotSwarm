@@ -8,7 +8,9 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const cli = fileURLToPath(new URL("../bin/tui.js", import.meta.url));
-const probe = fileURLToPath(new URL("./fixtures/auth-cli-probe.mjs", import.meta.url));
+// `--import` takes a module specifier; a Windows path would parse as a `c:` URL.
+const probeUrl = new URL("./fixtures/auth-cli-probe.mjs", import.meta.url);
+const probe = fileURLToPath(probeUrl);
 const entra = {
     enabled: true, provider: "entra",
     client: { clientId: "synthetic-client", authority: "https://login.example.invalid/tenant" },
@@ -40,7 +42,7 @@ async function run(f, action, { persona, mocked = true, scenario = "valid", boot
     if (persona !== undefined) env.PILOTSWARM_DEV_USER = persona;
     if (bootstrap) env.AUTH_PROBE_BOOTSTRAP = bootstrap;
     const args = mocked
-        ? ["--experimental-test-module-mocks", "--no-warnings=ExperimentalWarning", "--import", probe]
+        ? ["--experimental-test-module-mocks", "--no-warnings=ExperimentalWarning", "--import", probeUrl.href]
         : [];
     args.push(...(bootstrap ? [probe] : [cli, "auth", action, ...extra]));
     const result = await new Promise((resolve, reject) => {
@@ -73,7 +75,7 @@ test("real CLI login/status select normalized dev personas without Entra configu
         for (const action of ["status", "login"]) {
             const result = await run(f, action, { persona, mocked: false });
             expect(result, 0, new RegExp(`Selected dev persona '${name}'`));
-            assert.match(result.output, action === "status" ? /not verified/ : /No interactive login/);
+            assert.match(result.output, /no dev roster, so the persona was not checked/);
             assert.doesNotMatch(result.output, /Entra|browser|Token cache is valid/);
         }
     }
@@ -82,20 +84,28 @@ test("real CLI login/status select normalized dev personas without Entra configu
 });
 
 test("dev commands and startup share persona resolution and never enter MSAL", async (t) => {
-    const f = await fixture(t, { enabled: true, provider: "dev", client: { users: [{ id: "alice" }] } });
+    const f = await fixture(t, { enabled: true, provider: "dev", client: { users: [{ id: "alice" }, { id: "bob" }] } });
     for (const [persona, name] of [[" Alice ", "alice"], ["BOB", "bob"]]) {
         for (const action of ["login", "status"]) {
-            expect(await run(f, action, { persona, extra: ["--device-code"] }), 0, new RegExp(`'${name}'`), []);
+            const result = await run(f, action, { persona, extra: ["--device-code"] });
+            expect(result, 0, new RegExp(`'${name}'`), []);
+            assert.match(result.output, /in the deployment's dev roster/);
         }
         const boot = await run(f, null, { persona, bootstrap: "interactive" });
         assert.equal(boot.code, 0);
         assert.deepEqual(boot.trace.calls, []);
         assert.equal(boot.trace.bootstrap.token, `dev:${name}`);
     }
-    for (const persona of [undefined, "  "]) {
+    for (const [persona, error] of [
+        [undefined, /Set PILOTSWARM_DEV_USER to a persona id/],
+        ["  ", /Set PILOTSWARM_DEV_USER to a persona id/],
+        // The server rejects personas outside its roster, so success here would end in 401s.
+        ["mallory", /'mallory' is not in the roster .*one of: alice, bob/],
+        ["alice bob", /'alice bob' is not in the roster/],
+    ]) {
         for (const action of ["login", "status", null]) {
             const result = await run(f, action, { persona, bootstrap: action === null ? "interactive" : undefined });
-            expect(result, 1, /Set PILOTSWARM_DEV_USER/, []);
+            expect(result, 1, error, []);
         }
     }
 });
@@ -164,11 +174,9 @@ test("Entra login preserves silent-first, browser/device-code fallback and boots
 
 test("real logout remains offline and removes only the synthetic origin cache", async (t) => {
     const f = await fixture(t, {});
-    // A non-network URL ensures discovery cannot succeed.
-    f.apiUrl = "http://offline.example.invalid:197";
     const cache = path.join(f.home, "pilotswarm", "auth");
     await mkdir(cache, { recursive: true });
-    const ownFile = path.join(cache, "http_offline.example.invalid_197.json");
+    const ownFile = path.join(cache, `http_127.0.0.1_${new URL(f.apiUrl).port}.json`);
     const otherFile = path.join(cache, "unrelated.json");
     await writeFile(ownFile, "synthetic cache");
     await writeFile(otherFile, "unrelated synthetic cache");
@@ -177,5 +185,6 @@ test("real logout remains offline and removes only the synthetic origin cache", 
         assert.deepEqual(await readdir(cache), ["unrelated.json"]);
     }
     assert.equal(await readFile(otherFile, "utf8"), "unrelated synthetic cache");
+    // The fixture serves discovery; logout must not request it.
     assert.deepEqual(f.requests, []);
 });
