@@ -20,7 +20,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "copyArtifact",
     "createMyProvider",
     "createProvider",
-    "createScriptWorkflowSession",
+    "createWorkflowSession",
     "createSession",
     "createSessionForAgent",
     "createSessionGroup",
@@ -319,10 +319,10 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Create a script workflow session from ScriptWorkflow YAML. It runs the script graph instead of a conversation; inputs is a JSON object the scripts read as context.inputs.
+     * Create a workflow session from Workflow YAML (kind: Workflow). It runs the workflow graph instead of a conversation; inputs is a JSON object checked against the workflow's inputs schema and read by its states as context.inputs.
      * @remarks `POST /sessions/workflow` — access: `session:create`
      */
-    createScriptWorkflowSession(params: {
+    createWorkflowSession(params: {
         yaml?: any;
         inputs?: any;
         groupId?: any;
@@ -1824,7 +1824,7 @@ export function createManagementOps(
         copyArtifact: (params: Record<string, unknown> = {}) => callOp("copyArtifact", params),
         createMyProvider: (params: Record<string, unknown> = {}) => callOp("createMyProvider", params),
         createProvider: (params: Record<string, unknown> = {}) => callOp("createProvider", params),
-        createScriptWorkflowSession: (params: Record<string, unknown> = {}) => callOp("createScriptWorkflowSession", params),
+        createWorkflowSession: (params: Record<string, unknown> = {}) => callOp("createWorkflowSession", params),
         createSession: (params: Record<string, unknown> = {}) => callOp("createSession", params),
         createSessionForAgent: (params: Record<string, unknown> = {}) => callOp("createSessionForAgent", params),
         createSessionGroup: (params: Record<string, unknown> = {}) => callOp("createSessionGroup", params),

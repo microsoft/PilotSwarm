@@ -402,10 +402,10 @@ function normalizeSystemRestartDisposition(disposition: SystemSessionRestartDisp
     );
 }
 
-/** A workflow session runs a script graph; it has no conversation to send to. */
+/** A workflow session runs a workflow graph; it has no conversation to send to. */
 function workflowNotConversationalError(sessionId: string): Error {
     return Object.assign(
-        new Error(`Session ${sessionId.slice(0, 8)} is a workflow session; it runs a script graph and does not accept chat messages.`),
+        new Error(`Session ${sessionId.slice(0, 8)} is a workflow session; it runs a workflow graph and does not accept chat messages.`),
         { code: "WORKFLOW_SESSION_NOT_CONVERSATIONAL", status: 409 },
     );
 }
@@ -2470,7 +2470,7 @@ export class PilotSwarmManagementClient {
         }
         if (session.sessionKind === "workflow") {
             throw Object.assign(
-                new Error("Workflow sessions run a script graph and have no conversation to regenerate"),
+                new Error("Workflow sessions run a workflow graph and have no conversation to regenerate"),
                 { code: "REGENERATE_UNSUPPORTED" },
             );
         }

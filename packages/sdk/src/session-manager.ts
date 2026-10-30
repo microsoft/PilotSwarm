@@ -23,7 +23,7 @@ import { applyReasoningEffortToProviderConfig, providerTypeUsesWorkloadIdentity 
 import { clipDescription } from "./skills.js";
 import { createFactTools } from "./facts-tools.js";
 import { createToolFactsAccessor } from "./tool-facts-accessor.js";
-import { createScriptSessionTools } from "./script-workflow/session-tools.js";
+import { createScriptSessionTools } from "./workflow/session-tools.js";
 import { createGraphTools } from "./graph-tools.js";
 import { createInspectTools, NO_VIEWER, type InspectViewer } from "./inspect-tools.js";
 import { createProviderTools, holdsProviderTools } from "./provider-tools.js";
@@ -888,8 +888,8 @@ export class SessionManager {
      * it is absent rather than failing a turn.
      */
     artifactStore: import("./session-store.js").ArtifactStore | null = null;
-    /** Whether this worker runs script workflows; set by the worker at start. */
-    scriptWorkflowsEnabled = false;
+    /** Whether this worker runs workflow scripts; set by the worker at start. */
+    workflowScriptsEnabled = false;
 
     /** Store full config (with tools/hooks) for a session. Called by PilotSwarmClient. */
     setConfig(sessionId: string, config: ManagedSessionConfig): void {
@@ -2213,9 +2213,9 @@ export class SessionManager {
         const readOnlyTunerSubAgentToolNames = new Set(["check_agents", "list_sessions"]);
         const subAgentTools = ManagedSession.subAgentToolDefs(workspaceTools ? { workspaceTools: true } : undefined)
             .filter((tool: any) => !isTunerSession || readOnlyTunerSubAgentToolNames.has(tool.name))
-            // Declared only where it can work: a worker with script workflows
+            // Declared only where it can work: a worker with workflow scripts
             // off would refuse every call, so the model is not shown it.
-            .filter((tool: any) => tool.name !== "spawn_workflow" || this.scriptWorkflowsEnabled);
+            .filter((tool: any) => tool.name !== "spawn_workflow" || this.workflowScriptsEnabled);
         const factTools = this._createSessionFactTools({
             agentIdentity: effectiveSerializableConfig.agentIdentity,
             isCrawler: effectiveSerializableConfig.isCrawler === true || effectiveSerializableConfig.isHarvester === true,
@@ -3516,7 +3516,7 @@ export class SessionManager {
         return { ...(this.workerDefaults.baseMcpServers ?? {}) };
     }
 
-    /** The fact tools a session gets. Shared by agent sessions and script workflow sessions. */
+    /** The fact tools a session gets. Shared by agent sessions and workflow sessions. */
     private _createSessionFactTools(opts: { agentIdentity?: string; isCrawler: boolean }): Tool<any>[] {
         const factStore = this.factStore;
         if (!factStore) return [];

@@ -95,30 +95,40 @@ export function packageRowSelector(row) {
 
 /** Starting point in the workflow editor: a two-node graph that shows a tool call and a branch. */
 export const WORKFLOW_YAML_TEMPLATE = `apiVersion: pilotswarm.dev/v1alpha1
-kind: ScriptWorkflow
+kind: Workflow
 metadata:
   name: example-workflow
-spec:
-  entry: collect
-  nodes:
-    collect:
-      type: script
-      runtime: python
-      source: |
-        facts = call_tool("read_facts", {"key_pattern": context["inputs"].get("keyPattern", "%"), "limit": 20})
-        set_result("success", {"facts": facts})
-      next:
-        success: summarize
-        failure: null
-    summarize:
-      type: script
-      runtime: node
-      source: |
-        const count = context.input?.facts?.count ?? 0;
-        await setResult(count > 0 ? "found" : "empty", { count });
-      next:
-        found: null
-        empty: null
+  version: 1.0.0
+inputs:
+  keyPattern: { type: string }
+initial: collect
+states:
+  collect:
+    type: script
+    runtime: python
+    source: |
+      facts = call_tool("read_facts", {"key_pattern": context["inputs"].get("keyPattern", "%"), "limit": 20})
+      set_result("success", {"facts": facts})
+    completion: { outcomes: [success, failure] }
+    transition:
+      next: { success: summarize, failure: failed }
+  summarize:
+    type: script
+    runtime: node
+    source: |
+      const count = context.input?.facts?.count ?? 0;
+      await setResult(count > 0 ? "found" : "empty", { count });
+    completion: { outcomes: [found, empty] }
+    transition:
+      next: { found: done, empty: done }
+  done:
+    type: terminal
+    outcome: succeeded
+    output: \${states.summarize.result}
+  failed:
+    type: terminal
+    outcome: failed
+    summary: Could not read facts.
 `;
 
 const ORCHESTRATION_STATS_REFRESH_MS = 20_000;
@@ -1126,7 +1136,7 @@ export function buildAgentPickerItems(catalog = [], opts = {}) {
     if (genericItem && (!terms || scoreAgentMatch({ label: genericItem.label, description: genericItem.description }, terms) >= 0)) {
         items.push({ ...genericItem, depth: 0 });
     }
-    // A script workflow is the other kind of session, so it sits beside
+    // A workflow is the other kind of session, so it sits beside
     // Generic rather than among the agents.
     if (workflowItem && (!terms || scoreAgentMatch({ label: workflowItem.title, description: workflowItem.description }, terms) >= 0)) {
         items.push({ ...workflowItem, depth: 0 });
@@ -6681,13 +6691,13 @@ export class PilotSwarmUiController {
         }
     }
 
-    /** Open the editor for a new script workflow session (see workflow-sessions.js). */
+    /** Open the editor for a new workflow session (see workflow-sessions.js). */
     openWorkflowCreateModal(sessionOptions = {}, previousFocus = null) {
         this.dispatch({
             type: "ui/modal",
             modal: {
                 type: "workflowCreate",
-                title: "New script workflow session",
+                title: "New workflow session",
                 yaml: WORKFLOW_YAML_TEMPLATE,
                 inputs: "{}",
                 error: null,
@@ -6700,11 +6710,11 @@ export class PilotSwarmUiController {
     }
 
     /**
-     * Create a script workflow session from the editor. A refusal (invalid
+     * Create a workflow session from the editor. A refusal (invalid
      * YAML, bad inputs) keeps the editor open with the reason, so nothing the
      * person typed is lost.
      */
-    async createScriptWorkflowSession({ yaml, inputs } = {}) {
+    async createWorkflowSession({ yaml, inputs } = {}) {
         const modal = this.getState().ui.modal;
         const fail = (message) => {
             const current = this.getState().ui.modal;
@@ -6714,7 +6724,7 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: message });
             return null;
         };
-        if (typeof this.transport.createScriptWorkflowSession !== "function") {
+        if (typeof this.transport.createWorkflowSession !== "function") {
             return fail("Workflow sessions are not supported by this connection.");
         }
         if (typeof yaml !== "string" || !yaml.trim()) return fail("The workflow YAML is empty.");
@@ -6733,7 +6743,7 @@ export class PilotSwarmUiController {
         const sessionOptions = modal?.type === "workflowCreate" ? modal.sessionOptions || {} : {};
         try {
             const requestOptions = this.applyActiveGroupDefault(sessionOptions);
-            const created = await this.transport.createScriptWorkflowSession({
+            const created = await this.transport.createWorkflowSession({
                 yaml,
                 inputs: parsedInputs,
                 ...(requestOptions.groupId ? { groupId: requestOptions.groupId } : {}),
@@ -7459,13 +7469,13 @@ export class PilotSwarmUiController {
         const sort = AGENT_PICKER_SORTS.includes(this._agentPickerSort)
             ? this._agentPickerSort
             : AGENT_PICKER_DEFAULT_SORT;
-        const workflowItem = typeof this.transport.createScriptWorkflowSession === "function"
+        const workflowItem = typeof this.transport.createWorkflowSession === "function"
             ? {
                 id: "__workflow__",
                 kind: "workflow",
                 group: "generic",
-                title: "Script workflow",
-                description: "A durable state machine of script nodes (Python, Node or PowerShell) that runs without an LLM. Paste or edit ScriptWorkflow YAML.",
+                title: "Workflow",
+                description: "A durable state machine that runs without an LLM: script states (Python, Node or PowerShell) that call agent tools. Paste or edit Workflow YAML.",
                 tools: [],
                 supportsDirectStart: true,
             }
@@ -10901,7 +10911,7 @@ export class PilotSwarmUiController {
             return;
         }
         if (activeSession?.sessionKind === "workflow") {
-            this.dispatch({ type: "ui/status", text: "Workflow sessions run a script graph and have no conversation to regenerate." });
+            this.dispatch({ type: "ui/status", text: "Workflow sessions run a workflow graph and have no conversation to regenerate." });
             return;
         }
         if (!confirmed) {

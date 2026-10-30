@@ -21,7 +21,7 @@ import { attachedFoldersOf, parseSkillFile, readLoadFiles, resolveLoadPath } fro
 import { groupSkipped, parseRepoAgentFile } from "./workspace-repo-agents.js";
 import path from "node:path";
 import { NativeTaskObserver, nativeTaskAgentMarks } from "./native-task-observer.js";
-import { SPAWN_WORKFLOW_TOOL_SPEC, type SpawnWorkflowToolArgs } from "./script-workflow/tool-spec.js";
+import { SPAWN_WORKFLOW_TOOL_SPEC, type SpawnWorkflowToolArgs } from "./workflow/tool-spec.js";
 
 /**
  * Mutable state shared between the wait tool handler and runTurn().

@@ -78,16 +78,16 @@ export class WebPilotSwarmClient {
     }
 
     /**
-     * Create a script workflow session through the Web API. The owner is the
+     * Create a workflow session through the Web API. The owner is the
      * authenticated principal; the deployment's workers run the graph.
      */
-    async createScriptWorkflowSession(config: {
+    async createWorkflowSession(config: {
         yaml: string;
         inputs?: Record<string, unknown>;
         groupId?: string | null;
         visibility?: "private" | "shared_read" | "shared_write" | null;
     }): Promise<{ sessionId: string; workflowName: string }> {
-        const view = await this._api.call("createScriptWorkflowSession", {
+        const view = await this._api.call("createWorkflowSession", {
             yaml: config.yaml,
             inputs: config.inputs ?? {},
             ...(config.groupId != null ? { groupId: config.groupId } : {}),

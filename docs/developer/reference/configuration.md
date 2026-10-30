@@ -379,7 +379,7 @@ new PilotSwarmWorker({
     waitThreshold: 30,       // seconds — waits above this become durable timers
     workerNodeId: "pod-1",   // identifier for this worker (default: hostname)
     turnTimeoutMs: 1_200_000, // explicit override; 0 disables the cap
-    scriptWorkflows: { enabled: false }, // run script workflow sessions (env PILOTSWARM_SCRIPT_WORKFLOWS=1)
+    workflowScripts: { enabled: false }, // run workflow script states (env PILOTSWARM_WORKFLOW_SCRIPTS=1)
 
     // Blob storage for session dehydration
     blobConnectionString: string,   // Azure Storage connection string
@@ -843,13 +843,13 @@ desired state rather than maintain a second long-lived configuration source.
 | `npm run worker` | Headless worker process |
 | `npm run db:reset` | Reset database schemas |
 
-## Script workflows
+## Workflow scripts
 
-Off by default: a workflow's scripts run as processes on the worker. See
-[Script workflow sessions](../building/script-workflows.md).
+Off by default: a workflow's script states run as processes on the worker.
+See [Workflow sessions](../building/workflow-sessions.md).
 
 | Variable | Default | Effect |
 |---|---|---|
-| `PILOTSWARM_SCRIPT_WORKFLOWS` | off | `1` runs script workflow sessions on this worker. The `scriptWorkflows.enabled` option wins. |
-| `PILOTSWARM_SCRIPT_WORKFLOW_PYTHON` | `python3` | The Python program for `runtime: python`. |
-| `PILOTSWARM_SCRIPT_WORKFLOW_PWSH` | `pwsh` | The PowerShell 7 program for `runtime: powershell`. |
+| `PILOTSWARM_WORKFLOW_SCRIPTS` | off | `1` runs workflow script states on this worker. The `workflowScripts.enabled` option wins. |
+| `PILOTSWARM_WORKFLOW_PYTHON` | `python3` | The Python program for `runtime: python`. |
+| `PILOTSWARM_WORKFLOW_PWSH` | `pwsh` | The PowerShell 7 program for `runtime: powershell`. |

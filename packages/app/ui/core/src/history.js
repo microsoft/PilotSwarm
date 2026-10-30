@@ -61,7 +61,7 @@ export const CHAT_HISTORY_EVENT_TYPES = [
     "session.control_outcome",
     "session.carried_steers_closed",
     "session.steer_confirmed",
-    // Script workflow sessions: their execution log is the transcript.
+    // Workflow sessions: their execution log is the transcript.
     ...WORKFLOW_EVENT_TYPES,
 ];
 

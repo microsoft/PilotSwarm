@@ -1,4 +1,4 @@
-// Script workflow sessions in the UI:
+// Workflow sessions in the UI:
 //   - the session list marks them apart from agent sessions
 //   - their transcript is an execution log built from workflow.* events
 //   - they are created from the same chooser as agent sessions
@@ -34,34 +34,40 @@ function event(eventType, data) {
 
 const STARTED = event("workflow.started", {
     name: "nightly-report",
-    entry: "collect",
-    nodes: [
-        { id: "collect", runtime: "python", next: { success: "report", failure: null } },
-        { id: "report", runtime: "node", next: { done: null } },
+    version: "1.0.0",
+    initial: "collect",
+    states: [
+        { id: "collect", type: "script", runtime: "python", next: { success: "report", failure: "failed" } },
+        { id: "report", type: "script", runtime: "node", next: { done: "published" } },
+        { id: "published", type: "terminal", outcome: "succeeded" },
+        { id: "failed", type: "terminal", outcome: "failed" },
     ],
 });
-const NODE_STARTED = event("workflow.node_started", { nodeId: "collect", runtime: "python", step: 1 });
-const NODE_COMPLETED = event("workflow.node_completed", {
-    nodeId: "collect", step: 1, outcome: "success", durationMs: 1250, exitCode: 0,
+const NODE_STARTED = event("workflow.state_started", { stateId: "collect", runtime: "python", step: 1 });
+const NODE_COMPLETED = event("workflow.state_completed", {
+    stateId: "collect", step: 1, outcome: "success", durationMs: 1250, exitCode: 0,
     toolCalls: [{ name: "read_facts", ok: true }, { name: "store_fact", ok: false }],
     outputPreview: "{\"count\":3}",
 });
-const COMPLETED = event("workflow.completed", { name: "nightly-report", steps: 2, outcome: "done", terminalNodeId: "report", outputPreview: "{\"rows\":3}" });
-const FAILED = event("workflow.failed", { name: "nightly-report", steps: 1, terminalNodeId: "collect", error: "Script node 'collect' returned undeclared outcome 'odd'" });
+const COMPLETED = event("workflow.completed", { name: "nightly-report", steps: 2, stateId: "published", outcome: "succeeded", summary: "Report published.", outputPreview: "{\"rows\":3}" });
+const FAILED = event("workflow.failed", { name: "nightly-report", steps: 1, stateId: "collect", error: "Script state 'collect' returned undeclared outcome 'odd'" });
 
 test("each workflow event reads as one line of an execution log", () => {
     const started = formatWorkflowEventText(STARTED);
-    assert.match(started, /Workflow \*\*nightly-report\*\* started: 2 nodes, entry `collect`/);
-    assert.match(started, /\| collect \| python \| success → report, failure → end \|/);
-    assert.match(started, /\| report \| node \| done → end \|/);
+    assert.match(started, /Workflow \*\*nightly-report\*\* 1\.0\.0 started: 4 states, initial `collect`/);
+    assert.match(started, /\| collect \| script \(python\) \| success → report, failure → failed \|/);
+    assert.match(started, /\| report \| script \(node\) \| done → published \|/);
+    assert.match(started, /\| published \| terminal \| ends: succeeded \|/);
 
     assert.equal(formatWorkflowEventText(NODE_STARTED), "▶ Step 1: `collect` started (python).");
     const completed = formatWorkflowEventText(NODE_COMPLETED);
     assert.match(completed, /✓ Step 1: `collect` → \*\*success\*\* in 1\.3 s · 2 tool calls \(read_facts, store_fact\), 1 failed\./);
     assert.match(completed, /Output: `\{"count":3\}`/);
 
-    assert.match(formatWorkflowEventText(COMPLETED), /completed after 2 steps with outcome \*\*done\*\* at `report`/);
-    assert.match(formatWorkflowEventText(FAILED), /failed after 1 step at `collect`: Script node 'collect' returned undeclared outcome 'odd'/);
+    assert.match(formatWorkflowEventText(COMPLETED), /reached `published` after 2 steps: outcome \*\*succeeded\*\*\. Report published\./);
+    assert.match(formatWorkflowEventText(FAILED), /failed after 1 step at `collect`: Script state 'collect' returned undeclared outcome 'odd'/);
+    const authoredFailure = event("workflow.failed", { name: "nightly-report", steps: 1, stateId: "failed", outcome: "failed", summary: "Could not read facts." });
+    assert.match(formatWorkflowEventText(authoredFailure), /reached `failed` after 1 step: outcome \*\*failed\*\*\. Could not read facts\./);
     assert.equal(formatWorkflowEventText({ eventType: "assistant.message", data: {} }), null);
 });
 
@@ -87,7 +93,7 @@ test("the transcript of a workflow session is its execution log, in order, and s
     const history = buildHistoryModel([STARTED, NODE_STARTED, NODE_COMPLETED, COMPLETED]);
     const lines = history.chat.filter((item) => item.workflowEvent);
     assert.deepEqual(lines.map((item) => item.workflowEvent), [
-        "workflow.started", "workflow.node_started", "workflow.node_completed", "workflow.completed",
+        "workflow.started", "workflow.state_started", "workflow.state_completed", "workflow.completed",
     ]);
     assert.ok(lines.every((item) => item.role === "system"));
 
@@ -98,7 +104,7 @@ test("the transcript of a workflow session is its execution log, in order, and s
 
 function makeController(transportOverrides = {}) {
     const sessions = [];
-    const calls = { createScriptWorkflowSession: [] };
+    const calls = { createWorkflowSession: [] };
     const transport = {
         listSessions: async () => sessions,
         getSession: async (sessionId) => sessions.find((session) => session.sessionId === sessionId) || null,
@@ -106,8 +112,8 @@ function makeController(transportOverrides = {}) {
         createSession: async () => ({ sessionId: "generic-1", status: "idle" }),
         listCreatableAgents: async () => [{ name: "alpha", title: "Alpha" }],
         getSessionCreationPolicy: () => ({ creation: { allowGeneric: true } }),
-        createScriptWorkflowSession: async (options) => {
-            calls.createScriptWorkflowSession.push(options);
+        createWorkflowSession: async (options) => {
+            calls.createWorkflowSession.push(options);
             const session = { sessionId: "wf-1", sessionKind: "workflow", title: "Workflow: example-workflow", status: "running" };
             sessions.push(session);
             return { sessionId: "wf-1", sessionKind: "workflow", workflowName: "example-workflow" };
@@ -147,7 +153,7 @@ test("the agent chooser offers a script workflow beside the generic session", as
     const view = selectSessionAgentPickerModal(store.getState());
     const workflowRow = view.rows[1];
     const text = (Array.isArray(workflowRow) ? workflowRow : [workflowRow]).map((run) => run.text).join("");
-    assert.match(text, new RegExp(`${WORKFLOW_SESSION_GLYPH} Script workflow`));
+    assert.match(text, new RegExp(`${WORKFLOW_SESSION_GLYPH} Workflow`));
 
     // Choosing it opens the editor, prefilled with a working example.
     store.dispatch({ type: "ui/modal", modal: { ...modal, selectedIndex: 1 } });
@@ -159,18 +165,18 @@ test("the agent chooser offers a script workflow beside the generic session", as
 });
 
 test("a connection that cannot create workflows does not offer them", async () => {
-    const { controller, store } = makeController({ createScriptWorkflowSession: undefined });
+    const { controller, store } = makeController({ createWorkflowSession: undefined });
     await controller.openSessionAgentPicker();
     assert.ok(!store.getState().ui.modal.items.some((item) => item.kind === "workflow"));
-    assert.equal(buildAgentPickerItems([], { query: "zzz", workflowItem: { id: "w", kind: "workflow", title: "Script workflow" } }).length, 0);
+    assert.equal(buildAgentPickerItems([], { query: "zzz", workflowItem: { id: "w", kind: "workflow", title: "Workflow" } }).length, 0);
 });
 
 test("creating a workflow sends the YAML and parsed inputs, then opens the new session", async () => {
     const { controller, store, calls } = makeController();
     controller.openWorkflowCreateModal();
-    const created = await controller.createScriptWorkflowSession({ yaml: WORKFLOW_YAML_TEMPLATE, inputs: "{\"keyPattern\":\"metrics/%\"}" });
+    const created = await controller.createWorkflowSession({ yaml: WORKFLOW_YAML_TEMPLATE, inputs: "{\"keyPattern\":\"metrics/%\"}" });
     assert.equal(created.sessionId, "wf-1");
-    assert.deepEqual(calls.createScriptWorkflowSession, [{ yaml: WORKFLOW_YAML_TEMPLATE, inputs: { keyPattern: "metrics/%" } }]);
+    assert.deepEqual(calls.createWorkflowSession, [{ yaml: WORKFLOW_YAML_TEMPLATE, inputs: { keyPattern: "metrics/%" } }]);
     const state = store.getState();
     assert.equal(state.ui.modal, null);
     assert.equal(state.sessions.activeSessionId, "wf-1");
@@ -179,20 +185,20 @@ test("creating a workflow sends the YAML and parsed inputs, then opens the new s
 
 test("a refused workflow keeps the editor open with the reason and the text", async () => {
     const { controller, store, calls } = makeController({
-        createScriptWorkflowSession: async () => { throw new Error("Invalid workflow: spec.nodes.a.type must be 'script'; agent nodes are not supported."); },
+        createWorkflowSession: async () => { throw new Error("Invalid workflow: states.a.type 'agent' is not supported yet; this version runs script and terminal states."); },
     });
     controller.openWorkflowCreateModal();
 
-    await controller.createScriptWorkflowSession({ yaml: "kind: ScriptWorkflow", inputs: "[1]" });
+    await controller.createWorkflowSession({ yaml: "kind: Workflow", inputs: "[1]" });
     assert.match(selectWorkflowCreateModal(store.getState()).error, /Inputs must be a JSON object/);
-    assert.equal(calls.createScriptWorkflowSession.length, 0);
+    assert.equal(calls.createWorkflowSession.length, 0);
 
-    await controller.createScriptWorkflowSession({ yaml: "kind: ScriptWorkflow", inputs: "{" });
+    await controller.createWorkflowSession({ yaml: "kind: Workflow", inputs: "{" });
     assert.match(selectWorkflowCreateModal(store.getState()).error, /Inputs are not valid JSON/);
 
-    await controller.createScriptWorkflowSession({ yaml: "my: yaml", inputs: "{}" });
+    await controller.createWorkflowSession({ yaml: "my: yaml", inputs: "{}" });
     const editor = selectWorkflowCreateModal(store.getState());
-    assert.match(editor.error, /agent nodes are not supported/);
+    assert.match(editor.error, /type 'agent' is not supported yet/);
     assert.equal(editor.yaml, "my: yaml");
     assert.equal(editor.busy, false);
 });
@@ -203,12 +209,12 @@ test("a workflow session takes no steering and no regeneration", async () => {
     store.dispatch({ type: "sessions/selected", sessionId: "wf-1" });
     assert.equal(selectTurnControlView(store.getState()).canSteer, false);
     await controller.regenerateActiveSession({ confirmed: true });
-    assert.match(store.getState().ui.statusText || "", /Workflow sessions run a script graph/);
+    assert.match(store.getState().ui.statusText || "", /Workflow sessions run a workflow graph/);
 });
 
 test("a stopped run reads as stopped, in the log and as cards", () => {
-    const stoppedNode = event("workflow.node_cancelled", { nodeId: "collect", step: 1, durationMs: 2500 });
-    const stopped = event("workflow.cancelled", { name: "nightly-report", steps: 1, terminalNodeId: "collect", reason: "no longer needed" });
+    const stoppedNode = event("workflow.state_cancelled", { stateId: "collect", step: 1, durationMs: 2500 });
+    const stopped = event("workflow.cancelled", { name: "nightly-report", steps: 1, stateId: "collect", reason: "no longer needed" });
     assert.equal(formatWorkflowEventText(stoppedNode), "⏹ Step 1: `collect` stopped after 2.5 s.");
     assert.equal(describeWorkflowEvent(stoppedNode).summary, "collect stopped after 2.5 s");
     assert.match(formatWorkflowEventText(stopped), /stopped after 1 step at `collect`: no longer needed/);

@@ -1077,7 +1077,7 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
             role: "status",
         });
         if (isWorkflowSession(session)) {
-            // Workflow sessions run a script graph, not a conversation: the
+            // Workflow sessions run a workflow graph, not a conversation: the
             // chain mark tells them apart from agent sessions at a glance.
             prefixRuns.push({ text: `${WORKFLOW_SESSION_GLYPH} `, color: "magenta", bold: true, role: "sessionKind" });
         }
@@ -7455,7 +7455,7 @@ export function selectWorkflowCreateModal(state) {
     const modal = state.ui.modal;
     if (!modal || modal.type !== "workflowCreate") return null;
     return {
-        title: modal.title || "New script workflow session",
+        title: modal.title || "New workflow session",
         yaml: typeof modal.yaml === "string" ? modal.yaml : "",
         inputs: typeof modal.inputs === "string" ? modal.inputs : "{}",
         error: modal.error || null,

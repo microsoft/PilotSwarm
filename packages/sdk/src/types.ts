@@ -204,11 +204,11 @@ export interface TurnOptions {
          */
         manageAgentSession?(args: { session_id: string; action: string; reason?: string }): Promise<string>;
         /**
-         * Start a script workflow session as a child of this session. Runs
+         * Start a workflow session as a child of this session. Runs
          * inline in the turn; `call.toolCallId` names the run when no key is given.
          */
         spawnWorkflow?(
-            args: import("./script-workflow/tool-spec.js").SpawnWorkflowToolArgs,
+            args: import("./workflow/tool-spec.js").SpawnWorkflowToolArgs,
             call?: { toolCallId?: string },
         ): Promise<string>;
         spawnAgent(args: {
@@ -805,7 +805,7 @@ export interface SessionOwnerInfo {
 }
 
 /** Immutable, inline source for the conservative script-only workflow runtime. */
-export interface ScriptWorkflowSessionConfig {
+export interface WorkflowSessionConfig {
     yaml: string;
     inputs?: Record<string, unknown>;
     sessionId?: string;
@@ -1301,15 +1301,15 @@ export interface SessionPolicy {
 export interface PilotSwarmWorkerOptions {
     store: string;
     /**
-     * Script workflow sessions. Off unless enabled here or with
-     * `PILOTSWARM_SCRIPT_WORKFLOWS=1`: a workflow's scripts run as child
+     * Script states in workflow sessions. Off unless enabled here or with
+     * `PILOTSWARM_WORKFLOW_SCRIPTS=1`: a workflow's scripts run as child
      * processes on the worker (without the worker's environment), so an
      * operator opts in. A worker with them off still runs the controller and
-     * fails each new workflow at its first step with a clear message.
-     * `executables` overrides the program per runtime (env
-     * `PILOTSWARM_SCRIPT_WORKFLOW_PYTHON`, `PILOTSWARM_SCRIPT_WORKFLOW_PWSH`).
+     * fails each new workflow that has script states at its start, with a
+     * clear message. `executables` overrides the program per runtime (env
+     * `PILOTSWARM_WORKFLOW_PYTHON`, `PILOTSWARM_WORKFLOW_PWSH`).
      */
-    scriptWorkflows?: {
+    workflowScripts?: {
         enabled?: boolean;
         executables?: Partial<Record<"node" | "python" | "powershell", string>>;
     };

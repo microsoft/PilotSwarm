@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { systemChildAgentUUID } from "../agent-loader.js";
-import type { ScriptWorkflowSessionConfig, SessionOwnerInfo } from "../types.js";
-import { SCRIPT_WORKFLOWS_DISABLED_MESSAGE } from "./activities.js";
-import { compileScriptWorkflow } from "./compiler.js";
+import type { WorkflowSessionConfig, SessionOwnerInfo } from "../types.js";
+import { WORKFLOW_SCRIPTS_DISABLED_MESSAGE } from "./activities.js";
+import { compileWorkflow, validateWorkflowInputs } from "./compiler.js";
 import type { SpawnWorkflowToolArgs } from "./tool-spec.js";
 
 export interface SpawnWorkflowDeps {
@@ -11,7 +11,7 @@ export interface SpawnWorkflowDeps {
     enabled: () => boolean;
     getSession: (sessionId: string) => Promise<{ title?: string | null; state?: string | null } | null>;
     resolveOwner: () => Promise<SessionOwnerInfo | null>;
-    createWorkflowSession: (config: ScriptWorkflowSessionConfig & { notifyParent?: boolean }) => Promise<{ sessionId: string; workflowName: string }>;
+    createWorkflowSession: (config: WorkflowSessionConfig & { notifyParent?: boolean }) => Promise<{ sessionId: string; workflowName: string }>;
 }
 
 /**
@@ -23,7 +23,7 @@ export function workflowChildSessionId(parentSessionId: string, key: string | un
     const slug = typeof key === "string" && key.trim()
         ? `key:${key.trim()}`
         : `call:${toolCallId || randomUUID()}`;
-    return systemChildAgentUUID(parentSessionId, `script-workflow:${slug}`);
+    return systemChildAgentUUID(parentSessionId, `workflow:${slug}`);
 }
 
 /**
@@ -37,14 +37,16 @@ export async function spawnWorkflowFromTool(
 ): Promise<string> {
     try {
         if (!deps.enabled()) {
-            return `[SYSTEM: spawn_workflow refused — ${SCRIPT_WORKFLOWS_DISABLED_MESSAGE}]`;
+            return `[SYSTEM: spawn_workflow refused — ${WORKFLOW_SCRIPTS_DISABLED_MESSAGE}]`;
         }
         let workflowName: string;
         try {
-            workflowName = compileScriptWorkflow(args.yaml).name;
+            const compiled = compileWorkflow(args.yaml);
+            validateWorkflowInputs(compiled, args.inputs ?? {});
+            workflowName = compiled.name;
         } catch (error) {
-            return `[SYSTEM: spawn_workflow refused — the YAML is not a valid ScriptWorkflow: ${error instanceof Error ? error.message : String(error)} `
-                + "Fix the YAML and call spawn_workflow again.]";
+            return `[SYSTEM: spawn_workflow refused — the workflow is not valid: ${error instanceof Error ? error.message : String(error)} `
+                + "Fix it and call spawn_workflow again.]";
         }
         const workflowSessionId = workflowChildSessionId(deps.parentSessionId, args.key, call?.toolCallId);
         const existing = await deps.getSession(workflowSessionId).catch(() => null);

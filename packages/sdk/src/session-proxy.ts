@@ -73,8 +73,8 @@ import { LatestValuePublisher, type LiveTurnPayload } from "./live-turn.js";
 import { STREAMING_EVENT_TYPES, keepOrchestrationTurnEvents, turnResultSizeWarning } from "./turn-result-events.js";
 import { MODEL_EVENT_TYPES_RECORDED_WHEN_LOGGING, modelEventLoggingEnabled } from "./model-event-logging.js";
 import type { NativeTasksPayload } from "./native-task-observer.js";
-import { spawnWorkflowFromTool } from "./script-workflow/spawn.js";
-import type { SpawnWorkflowToolArgs } from "./script-workflow/tool-spec.js";
+import { spawnWorkflowFromTool } from "./workflow/spawn.js";
+import type { SpawnWorkflowToolArgs } from "./workflow/tool-spec.js";
 
 const SYSTEM_AGENT_IDS = new Set(["pilotswarm", "sweeper", "resourcemgr", "facts-manager"]);
 
@@ -2682,18 +2682,18 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             },
 
             /**
-             * spawn_workflow: start a script workflow session as a CHILD of
+             * spawn_workflow: start a workflow session as a CHILD of
              * this session. Runs inline in the runTurn activity and does not
-             * end the turn. See script-workflow/spawn.ts for the id rule.
+             * end the turn. See workflow/spawn.ts for the id rule.
              */
             spawnWorkflow: async (args: SpawnWorkflowToolArgs, call?: { toolCallId?: string }) => spawnWorkflowFromTool(args, call, {
                 parentSessionId: input.sessionId,
-                enabled: () => sessionManager.scriptWorkflowsEnabled,
+                enabled: () => sessionManager.workflowScriptsEnabled,
                 getSession: async (id) => catalog ? catalog.getSession(id) : null,
                 resolveOwner: async () => catalog
                     ? resolveEffectiveSpawnOwner((id) => catalog!.getSession(id), input.sessionId)
                     : null,
-                createWorkflowSession: async (config) => (await getInlineClient()).createScriptWorkflowSession(config),
+                createWorkflowSession: async (config) => (await getInlineClient()).createWorkflowSession(config),
             }),
 
             /**
@@ -3241,7 +3241,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 try {
                     const child = await resolveManagedChild(args.agent_id);
                     if (child.sessionKind === "workflow") {
-                        return `[SYSTEM: message_agent refused — ${child.orchId} is a workflow session; it runs a script graph and takes no messages. `
+                        return `[SYSTEM: message_agent refused — ${child.orchId} is a workflow session; it runs a workflow graph and takes no messages. `
                             + `Use cancel_agent or delete_agent to stop it.]`;
                     }
                     if (catalog && args.contract_patch) {

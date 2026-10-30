@@ -181,7 +181,7 @@ function supportsLocalFileOpen(controller) {
     return typeof controller?.transport?.openPathInDefaultApp === "function";
 }
 
-const WORKFLOW_COMPOSER_NOTE = "⛓ Workflow session — it runs a script graph, not a conversation, and does not accept messages. Each step appears above as it runs.";
+const WORKFLOW_COMPOSER_NOTE = "⛓ Workflow session — it runs a workflow graph, not a conversation, and does not accept messages. Each step appears above as it runs.";
 const SESSION_LINK_COPIED_STATUS = "Session link copied to clipboard";
 const ARTIFACT_LINK_COPIED_STATUS = "Artifact link copied to clipboard";
 // Mirrors SESSION_NAV_SETTLE_MS in the controller: the access probe rides the
@@ -13430,7 +13430,7 @@ function WorkflowCreateEditor({ controller, view, theme, close }) {
     const [inputs, setInputs] = React.useState(view.inputs);
     const submit = () => {
         if (view.busy) return;
-        controller.createScriptWorkflowSession({ yaml, inputs }).catch(() => {});
+        controller.createWorkflowSession({ yaml, inputs }).catch(() => {});
     };
     // Keys typed into the editor belong to the editor: the global shortcuts
     // (Enter confirms, Esc closes, arrows navigate) must not fire from here.
@@ -13771,14 +13771,14 @@ function ModalLayer({ controller }) {
         // A workflow session needs no model, so the first step of the
         // new-session flow offers it directly, beside the agent route.
         const offerWorkflow = modal.sessionOptions?.mode !== "switchModel"
-            && typeof controller.transport?.createScriptWorkflowSession === "function";
+            && typeof controller.transport?.createWorkflowSession === "function";
         const workflowFooter = offerWorkflow
             ? React.createElement("button", {
                 type: "button",
                 className: "ps-modal-button ps-workflow-start",
                 title: "A durable state machine of script nodes that runs without an LLM",
                 onClick: () => controller.openWorkflowCreateModal({}, modal.previousFocus),
-            }, "⛓ Script workflow instead")
+            }, "⛓ Workflow instead")
             : null;
         return renderListModal(modalState.modelPicker, pickerConfirmLabel, workflowFooter);
     }

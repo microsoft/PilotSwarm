@@ -1,5 +1,5 @@
 /**
- * The live execution view of a script workflow session: a canvas page the
+ * The live execution view of a workflow session: a canvas page the
  * worker draws once when the run starts (the graph) and then updates with a
  * data tick after every step and at the end. The page renders the state it
  * is sent, so a cold load replays the latest tick and shows the same view.
@@ -7,7 +7,7 @@
  * The state is folded from the session's own `workflow.*` events, so every
  * activity computes it the same way and a late or repeated tick is harmless.
  */
-import type { CompiledScriptWorkflow } from "./compiler.js";
+import type { CompiledWorkflow } from "./compiler.js";
 
 export const WORKFLOW_CANVAS_SLOT = 1;
 export const WORKFLOW_CANVAS_NAME = "Workflow";
@@ -26,6 +26,7 @@ export interface WorkflowCanvasState {
     taken: Record<string, number>;
     steps: Array<{ step: number; node: string; outcome?: string; durationMs?: number; tools?: number; failedTools?: number; state: WorkflowNodeState }>;
     outcome?: string;
+    summary?: string;
     output?: string;
     error?: string;
     reason?: string;
@@ -44,10 +45,10 @@ function clip(value: unknown): string | undefined {
 }
 
 /** Fold a workflow session's events, oldest first, into the canvas state. */
-export function foldWorkflowCanvasState(events: WorkflowEventLike[], graph?: CompiledScriptWorkflow | null): WorkflowCanvasState {
+export function foldWorkflowCanvasState(events: WorkflowEventLike[], graph?: CompiledWorkflow | null): WorkflowCanvasState {
     const state: WorkflowCanvasState = { status: "running", name: graph?.name ?? null, current: null, step: 0, nodes: {}, taken: {}, steps: [] };
     const node = (id: string) => (state.nodes[id] ??= { state: "idle", runs: 0 });
-    for (const id of Object.keys(graph?.nodes ?? {})) node(id);
+    for (const id of Object.keys(graph?.states ?? {})) node(id);
     const stepEntry = (step: number, id: string) => {
         let entry = state.steps.find((s) => s.step === step);
         if (!entry) {
@@ -62,10 +63,10 @@ export function foldWorkflowCanvasState(events: WorkflowEventLike[], graph?: Com
         switch (event?.eventType) {
             case "workflow.started":
                 state.name = data.name ?? state.name;
-                for (const n of Array.isArray(data.nodes) ? data.nodes : []) if (n?.id) node(String(n.id));
+                for (const n of Array.isArray(data.states) ? data.states : []) if (n?.id) node(String(n.id));
                 break;
-            case "workflow.node_started": {
-                const id = String(data.nodeId ?? "");
+            case "workflow.state_started": {
+                const id = String(data.stateId ?? "");
                 if (!id) break;
                 if (lastFinished) {
                     const key = `${lastFinished.node}\u0001${lastFinished.outcome}`;
@@ -80,8 +81,8 @@ export function foldWorkflowCanvasState(events: WorkflowEventLike[], graph?: Com
                 stepEntry(Number(data.step) || state.step, id);
                 break;
             }
-            case "workflow.node_completed": {
-                const id = String(data.nodeId ?? "");
+            case "workflow.state_completed": {
+                const id = String(data.stateId ?? "");
                 if (!id) break;
                 const n = node(id);
                 const ok = data.exitCode === 0 || data.resultSource === "reported" || data.resultSource === "stdout";
@@ -99,12 +100,12 @@ export function foldWorkflowCanvasState(events: WorkflowEventLike[], graph?: Com
                 lastFinished = typeof data.outcome === "string" ? { node: id, outcome: data.outcome } : null;
                 break;
             }
-            case "workflow.node_failed":
-            case "workflow.node_cancelled": {
-                const id = String(data.nodeId ?? "");
+            case "workflow.state_failed":
+            case "workflow.state_cancelled": {
+                const id = String(data.stateId ?? "");
                 if (!id) break;
                 const n = node(id);
-                n.state = event.eventType === "workflow.node_failed" ? "failed" : "cancelled";
+                n.state = event.eventType === "workflow.state_failed" ? "failed" : "cancelled";
                 Object.assign(stepEntry(Number(data.step) || state.step, id), { state: n.state, durationMs: data.durationMs });
                 lastFinished = null;
                 break;
@@ -115,10 +116,19 @@ export function foldWorkflowCanvasState(events: WorkflowEventLike[], graph?: Com
                 state.status = event.eventType === "workflow.completed" ? "completed"
                     : event.eventType === "workflow.failed" ? "failed" : "cancelled";
                 state.step = Math.max(state.step, Number(data.steps) || 0);
-                if (lastFinished && event.eventType === "workflow.completed") {
-                    const key = `${lastFinished.node}\u0001${lastFinished.outcome}`;
-                    state.taken[key] = (state.taken[key] ?? 0) + 1;
+                // A run that reached a terminal state: mark it and the edge into it.
+                const reachedTerminal = data.outcome !== undefined && typeof data.stateId === "string";
+                if (reachedTerminal) {
+                    if (lastFinished) {
+                        const key = `${lastFinished.node}\u0001${lastFinished.outcome}`;
+                        state.taken[key] = (state.taken[key] ?? 0) + 1;
+                    }
+                    const terminal = node(data.stateId);
+                    terminal.state = state.status === "completed" ? "done" : state.status === "failed" ? "failed" : "cancelled";
+                    terminal.runs = 1;
+                    state.current = data.stateId;
                 }
+                if (data.summary) state.summary = String(data.summary);
                 lastFinished = null;
                 if (data.outcome !== undefined) state.outcome = String(data.outcome);
                 const output = clip(data.outputPreview);
@@ -156,11 +166,13 @@ function scriptJson(value: unknown): string {
  * The canvas page for one workflow. Self-contained: no network, no storage;
  * every string from the definition reaches the page as text, never markup.
  */
-export function buildWorkflowCanvasHtml(workflow: CompiledScriptWorkflow, initial: WorkflowCanvasState): string {
+export function buildWorkflowCanvasHtml(workflow: CompiledWorkflow, initial: WorkflowCanvasState): string {
     const graph = {
         name: workflow.name,
-        entry: workflow.entry,
-        nodes: Object.values(workflow.nodes).map((n) => ({ id: n.id, runtime: n.runtime, next: n.next })),
+        entry: workflow.initial,
+        nodes: Object.values(workflow.states).map((n) => n.type === "script"
+            ? { id: n.id, type: "script", runtime: n.runtime, next: n.next }
+            : { id: n.id, type: "terminal", outcome: n.outcome, next: {} }),
     };
     return `<!doctype html>
 <html lang="en">
@@ -189,8 +201,8 @@ export function buildWorkflowCanvasHtml(workflow: CompiledScriptWorkflow, initia
   .node.cancelled rect { stroke: #e3b341; fill: #2a2414; }
   .node.entry rect { stroke-dasharray: 5 3; }
   .node.done.entry rect, .node.running.entry rect, .node.failed.entry rect, .node.cancelled.entry rect { stroke-dasharray: none; }
-  .end circle { fill: #1b2433; stroke: #8b96a8; stroke-width: 1.5; }
-  .end text { fill: #8b96a8; font: 11px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+  .node.terminal rect { fill: #161d29; stroke: #5c6b82; stroke-dasharray: 3 3; }
+  .node.terminal.done rect, .node.terminal.failed rect, .node.terminal.cancelled rect { stroke-dasharray: none; }
   .edge path { fill: none; stroke: #4a5a74; stroke-width: 1.4; }
   .edge text { fill: #8b96a8; font: 10.5px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; paint-order: stroke; stroke: #121a27; stroke-width: 3px; }
   .edge.taken path { stroke: #5fd38d; stroke-width: 2.2; }
@@ -222,28 +234,31 @@ export function buildWorkflowCanvasHtml(workflow: CompiledScriptWorkflow, initia
 (function () {
   var graph = JSON.parse(document.getElementById("graph-data").textContent);
   var SVG = "http://www.w3.org/2000/svg";
-  var W = 184, H = 46, GAP_X = 46, GAP_Y = 70, PAD = 30, SIDE = 90, END = "\\u0000end";
+  var W = 184, H = 46, GAP_X = 46, GAP_Y = 70, PAD = 30, SIDE = 90;
   var byId = {};
   graph.nodes.forEach(function (n) { byId[n.id] = n; });
+  function isTerminal(id) { return byId[id] && byId[id].type === "terminal"; }
 
-  // Layers by breadth-first distance from the entry; unreachable nodes last.
+  // Script states by breadth-first distance from the initial state;
+  // unreachable ones after them; every terminal state on the last row.
   var layer = {}; var order = [graph.entry]; layer[graph.entry] = 0;
   for (var i = 0; i < order.length; i++) {
     var n = byId[order[i]]; if (!n) continue;
     Object.keys(n.next || {}).forEach(function (k) {
       var t = n.next[k];
-      if (t && byId[t] && layer[t] === undefined) { layer[t] = layer[n.id] + 1; order.push(t); }
+      if (t && byId[t] && !isTerminal(t) && layer[t] === undefined) { layer[t] = layer[n.id] + 1; order.push(t); }
     });
   }
   var maxLayer = 0;
-  graph.nodes.forEach(function (n) { if (layer[n.id] === undefined) { layer[n.id] = -1; } else if (layer[n.id] > maxLayer) { maxLayer = layer[n.id]; } });
-  graph.nodes.forEach(function (n) { if (layer[n.id] === -1) layer[n.id] = maxLayer + 1; });
-  graph.nodes.forEach(function (n) { if (layer[n.id] > maxLayer) maxLayer = layer[n.id]; });
-  var hasEnd = graph.nodes.some(function (n) { return Object.keys(n.next || {}).some(function (k) { return n.next[k] === null; }); });
+  graph.nodes.forEach(function (n) { if (!isTerminal(n.id) && layer[n.id] !== undefined && layer[n.id] > maxLayer) maxLayer = layer[n.id]; });
+  graph.nodes.forEach(function (n) { if (!isTerminal(n.id) && layer[n.id] === undefined) layer[n.id] = maxLayer + 1; });
+  graph.nodes.forEach(function (n) { if (!isTerminal(n.id) && layer[n.id] > maxLayer) maxLayer = layer[n.id]; });
+  var lastLayer = maxLayer + 1;
+  graph.nodes.forEach(function (n) { if (isTerminal(n.id)) layer[n.id] = lastLayer; });
   var rows = [];
   graph.nodes.forEach(function (n) { (rows[layer[n.id]] = rows[layer[n.id]] || []).push(n.id); });
   var widest = Math.max.apply(null, rows.map(function (r) { return r ? r.length : 0; }).concat([1]));
-  // Side lanes: ends that skip layers run down the left, back edges up the right.
+  // Side lanes: edges that skip rows run down the left, back edges up the right.
   var width = Math.max(360, widest * W + (widest - 1) * GAP_X + PAD * 2 + SIDE * 2);
   var pos = {};
   rows.forEach(function (row, li) {
@@ -252,9 +267,7 @@ export function buildWorkflowCanvasHtml(workflow: CompiledScriptWorkflow, initia
     var x0 = (width - rowWidth) / 2;
     row.forEach(function (id, j) { pos[id] = { x: x0 + j * (W + GAP_X), y: PAD + li * (H + GAP_Y) }; });
   });
-  var endY = PAD + (maxLayer + 1) * (H + GAP_Y);
-  if (hasEnd) pos[END] = { x: width / 2 - 18, y: endY };
-  var height = (hasEnd ? endY + 36 : PAD + (maxLayer + 1) * (H + GAP_Y) - GAP_Y + H) + PAD;
+  var height = PAD + lastLayer * (H + GAP_Y) + H + PAD;
 
   var svg = document.getElementById("graph");
   svg.setAttribute("viewBox", "0 0 " + width + " " + height);
@@ -273,26 +286,21 @@ export function buildWorkflowCanvasHtml(workflow: CompiledScriptWorkflow, initia
   });
   var edgeLayer = el("g", {}, svg), nodeLayer = el("g", {}, svg);
   var edges = [];
-  var endLanes = 0, labelAnchor = "middle";
+  var lanes = 0;
   graph.nodes.forEach(function (n) {
     var outs = Object.keys(n.next || {});
     outs.forEach(function (outcome, k) {
-      var target = n.next[outcome] === null ? END : n.next[outcome];
+      var target = n.next[outcome];
       var a = pos[n.id], b = pos[target]; if (!a || !b) return;
       var sx = a.x + W / 2 + (k - (outs.length - 1) / 2) * 16, sy = a.y + H;
-      var d, lx, ly;
-      if (target === END && layer[n.id] < maxLayer) {
-        // An end from an upper layer: around the left side, clear of the nodes below.
-        var lane = PAD + 16 + (endLanes++ % 4) * 12;
-        var ay0 = a.y + H / 2, ecx = b.x, ecy = b.y + 14;
+      var d, lx, ly, anchor = "middle";
+      if (layer[target] - layer[n.id] > 1) {
+        // Skips a row: around the left side, clear of the states between.
+        var lane = PAD + 16 + (lanes++ % 4) * 12;
+        var ay0 = a.y + H / 2, by0 = b.y + H / 2;
         d = "M" + a.x + "," + ay0 + " C" + lane + "," + ay0 + " " + lane + "," + ay0 + " " + lane + "," + (ay0 + 30)
-          + " L" + lane + "," + (ecy - 30) + " C" + lane + "," + ecy + " " + lane + "," + ecy + " " + (ecx + 4) + "," + ecy;
-        lx = lane + 4; ly = ay0 + 24;
-        labelAnchor = "start";
-      } else if (target === END) {
-        var ex = b.x + 18, ey = b.y;
-        d = "M" + sx + "," + sy + " C" + sx + "," + (sy + 40) + " " + ex + "," + (ey - 40) + " " + ex + "," + ey;
-        lx = (sx + ex) / 2; ly = (sy + ey) / 2;
+          + " L" + lane + "," + (by0 - 30) + " C" + lane + "," + by0 + " " + lane + "," + by0 + " " + (b.x - 2) + "," + by0;
+        lx = lane + 4; ly = ay0 + 24; anchor = "start";
       } else if (b.y > a.y) {
         var tx = b.x + W / 2, ty = b.y;
         d = "M" + sx + "," + sy + " C" + sx + "," + (sy + GAP_Y / 2) + " " + tx + "," + (ty - GAP_Y / 2) + " " + tx + "," + ty;
@@ -306,8 +314,7 @@ export function buildWorkflowCanvasHtml(workflow: CompiledScriptWorkflow, initia
       }
       var g = el("g", { "class": "edge" }, edgeLayer);
       el("path", { d: d, "marker-end": "url(#arrow)" }, g);
-      var t = el("text", { x: lx, y: ly, "text-anchor": labelAnchor }, g);
-      labelAnchor = "middle";
+      var t = el("text", { x: lx, y: ly, "text-anchor": anchor }, g);
       t.textContent = outcome;
       edges.push({ key: n.id + "\\u0001" + outcome, g: g, path: g.firstChild });
     });
@@ -315,19 +322,17 @@ export function buildWorkflowCanvasHtml(workflow: CompiledScriptWorkflow, initia
   var nodeEls = {};
   graph.nodes.forEach(function (n) {
     var p = pos[n.id];
-    var g = el("g", { "class": "node" + (n.id === graph.entry ? " entry" : ""), transform: "translate(" + p.x + "," + p.y + ")" }, nodeLayer);
-    el("rect", { width: W, height: H, rx: 8 }, g);
-    var t = el("text", { x: 10, y: 19 }, g); t.textContent = n.id.length > 22 ? n.id.slice(0, 21) + "…" : n.id;
-    var sub = el("text", { x: 10, y: 36, "class": "sub" }, g); sub.textContent = n.runtime;
+    var terminal = n.type === "terminal";
+    var cls = "node" + (terminal ? " terminal outcome-" + n.outcome : "") + (n.id === graph.entry ? " entry" : "");
+    var g = el("g", { "class": cls, transform: "translate(" + p.x + "," + p.y + ")" }, nodeLayer);
+    el("rect", { width: W, height: H, rx: terminal ? H / 2 : 8 }, g);
+    var t = el("text", { x: terminal ? 18 : 10, y: 19 }, g); t.textContent = n.id.length > 22 ? n.id.slice(0, 21) + "…" : n.id;
+    var label = terminal ? "ends · " + n.outcome : n.runtime;
+    var sub = el("text", { x: terminal ? 18 : 10, y: 36, "class": "sub" }, g); sub.textContent = label;
     var runs = el("text", { x: W - 10, y: 19, "text-anchor": "end", "class": "runs" }, g);
     var title = el("title", {}, g); title.textContent = n.id;
-    nodeEls[n.id] = { g: g, sub: sub, runs: runs, base: g.getAttribute("class"), runtime: n.runtime };
+    nodeEls[n.id] = { g: g, sub: sub, runs: runs, base: cls, runtime: label, terminal: terminal };
   });
-  if (hasEnd) {
-    var eg = el("g", { "class": "end", transform: "translate(" + pos[END].x + "," + pos[END].y + ")" }, nodeLayer);
-    el("circle", { cx: 18, cy: 14, r: 13 }, eg);
-    var et = el("text", { x: 18, y: 18, "text-anchor": "middle" }, eg); et.textContent = "end";
-  }
 
   function fmt(ms) {
     if (typeof ms !== "number" || !isFinite(ms)) return "";
@@ -347,9 +352,9 @@ export function buildWorkflowCanvasHtml(workflow: CompiledScriptWorkflow, initia
       ? "step " + state.step + " · running " + state.current
       : state.step ? state.step + " step" + (state.step === 1 ? "" : "s") : "starting");
     var note = document.getElementById("note");
-    var noteText = state.status === "failed" ? "Failed: " + (state.error || "unknown error")
-      : state.status === "cancelled" ? "Stopped: " + (state.reason || "cancelled")
-      : state.status === "completed" ? "Outcome " + (state.outcome || "?") + (state.output ? "\\n" + state.output : "")
+    var noteText = state.status === "failed" ? (state.error ? "Failed: " + state.error : "Outcome failed" + (state.summary ? " — " + state.summary : ""))
+      : state.status === "cancelled" ? (state.reason ? "Stopped: " + state.reason : "Outcome cancelled" + (state.summary ? " — " + state.summary : ""))
+      : state.status === "completed" ? "Outcome " + (state.outcome || "?") + (state.summary ? " — " + state.summary : "") + (state.output ? "\\n" + state.output : "")
       : "";
     note.hidden = !noteText;
     note.className = "note " + (state.status || "");
@@ -358,8 +363,8 @@ export function buildWorkflowCanvasHtml(workflow: CompiledScriptWorkflow, initia
       var n = (state.nodes || {})[id] || { state: "idle", runs: 0 };
       var e = nodeEls[id];
       e.g.setAttribute("class", e.base + " " + n.state);
-      e.runs.textContent = n.runs > 1 ? "×" + n.runs : "";
-      var sub = e.runtime + (n.lastOutcome ? " → " + n.lastOutcome : "") + (n.lastDurationMs !== undefined ? " · " + fmt(n.lastDurationMs) : "");
+      e.runs.textContent = !e.terminal && n.runs > 1 ? "×" + n.runs : "";
+      var sub = e.terminal ? e.runtime : e.runtime + (n.lastOutcome ? " → " + n.lastOutcome : "") + (n.lastDurationMs !== undefined ? " · " + fmt(n.lastDurationMs) : "");
       e.sub.textContent = sub.length > 27 ? sub.slice(0, 26) + "…" : sub;
     });
     edges.forEach(function (e) {

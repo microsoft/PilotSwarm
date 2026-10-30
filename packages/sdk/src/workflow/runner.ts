@@ -6,8 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import type { AddressInfo } from "node:net";
 import { killProcessTree } from "../process-tree.js";
-import type { ScriptRuntime, ScriptWorkflowNode } from "./compiler.js";
-import { ScriptWorkflowExecutionError, type ScriptToolCall } from "./executor.js";
+import type { ScriptRuntime, WorkflowScriptState } from "./compiler.js";
+import { WorkflowExecutionError, type ScriptToolCall } from "./executor.js";
 
 /** Largest JSON a node may hand to the next node (it is stored in durable history). */
 export const SCRIPT_NODE_MAX_OUTPUT_BYTES = 256 * 1024;
@@ -33,7 +33,7 @@ export interface ScriptToolCallRecord {
 export interface RunScriptNodeRequest {
     sessionId: string;
     workflowName: string;
-    node: ScriptWorkflowNode;
+    node: WorkflowScriptState;
     inputs: Record<string, unknown>;
     priorOutput: unknown;
     step: number;
@@ -153,8 +153,8 @@ function boundedOutput(nodeId: string, output: unknown): unknown {
     const safe = toJsonSafe(output);
     const bytes = Buffer.byteLength(JSON.stringify(safe), "utf8");
     if (bytes > SCRIPT_NODE_MAX_OUTPUT_BYTES) {
-        throw new ScriptWorkflowExecutionError(
-            `Script node '${nodeId}' produced ${bytes} bytes of output; the limit is ${SCRIPT_NODE_MAX_OUTPUT_BYTES}. `
+        throw new WorkflowExecutionError(
+            `Script state '${nodeId}' produced ${bytes} bytes of output; the limit is ${SCRIPT_NODE_MAX_OUTPUT_BYTES}. `
             + "Store large results as an artifact or fact and pass its key instead.",
         );
     }
@@ -225,7 +225,7 @@ export async function runScriptNode(
 ): Promise<RunScriptNodeResult> {
     const { node } = request;
     const runtime = RUNTIME_FILES[node.runtime];
-    if (!runtime) throw new ScriptWorkflowExecutionError(`Script node '${node.id}' uses unsupported runtime '${node.runtime}'.`);
+    if (!runtime) throw new WorkflowExecutionError(`Script state '${node.id}' uses unsupported runtime '${node.runtime}'.`);
     const executable = options.executables?.[node.runtime] ?? defaultExecutable(node.runtime);
     const startedAt = Date.now();
     const token = randomBytes(32).toString("hex");
@@ -342,8 +342,8 @@ export async function runScriptNode(
             child.on("error", (error: NodeJS.ErrnoException) => {
                 settle();
                 reject(error.code === "ENOENT"
-                    ? new ScriptWorkflowExecutionError(
-                        `Script node '${node.id}' needs the ${node.runtime} runtime, but '${executable}' is not installed on this worker.`,
+                    ? new WorkflowExecutionError(
+                        `Script state '${node.id}' needs the ${node.runtime} runtime, but '${executable}' is not installed on this worker.`,
                     )
                     : error);
             });

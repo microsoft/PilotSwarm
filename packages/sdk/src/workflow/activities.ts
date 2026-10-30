@@ -1,12 +1,12 @@
 import type { SessionCatalog } from "../cms.js";
-import { compileScriptWorkflow } from "./compiler.js";
+import { compileWorkflow, validateWorkflowInputs, workflowUsesScripts, type CompiledWorkflow } from "./compiler.js";
 import type { ScriptToolCall } from "./executor.js";
 import {
-    SCRIPT_WORKFLOW_ACTIVITIES,
-    type ScriptWorkflowBeginResult,
-    type ScriptWorkflowFinishInput,
-    type ScriptWorkflowRunNodeInput,
-    type ScriptWorkflowRunNodeResult,
+    WORKFLOW_ACTIVITIES,
+    type WorkflowBeginResult,
+    type WorkflowFinishInput,
+    type WorkflowRunStateInput,
+    type WorkflowRunStateResult,
 } from "./orchestration.js";
 import { runScriptNode, type RunScriptNodeResult, type ScriptRunnerOptions } from "./runner.js";
 import { parseScriptMcpToolName, ScriptMcpConnections } from "./mcp.js";
@@ -15,10 +15,10 @@ import { buildWorkflowCanvasHtml, foldWorkflowCanvasState, type WorkflowCanvasPu
 /** The events a workflow writes; the canvas state is folded from them. */
 export const WORKFLOW_LOG_EVENT_TYPES = [
     "workflow.started",
-    "workflow.node_started",
-    "workflow.node_completed",
-    "workflow.node_failed",
-    "workflow.node_cancelled",
+    "workflow.state_started",
+    "workflow.state_completed",
+    "workflow.state_failed",
+    "workflow.state_cancelled",
     "workflow.completed",
     "workflow.failed",
     "workflow.cancelled",
@@ -26,11 +26,11 @@ export const WORKFLOW_LOG_EVENT_TYPES = [
 
 export type ScriptToolHandler = (args: Record<string, unknown>) => Promise<unknown>;
 
-export interface ScriptWorkflowActivityDeps {
+export interface WorkflowActivityDeps {
     catalog: (Pick<SessionCatalog, "updateSession" | "recordEvents"> & Partial<Pick<SessionCatalog, "getSessionEvents">>) | null;
     /** Draws and updates the live execution canvas. Absent: no canvas. */
     canvas?: WorkflowCanvasPublisher | null;
-    /** Whether this worker runs script workflows. A disabled worker fails them at the first step. */
+    /** Whether this worker runs workflow scripts. A workflow with script states fails at its start where it is off. */
     enabled: () => boolean;
     /** The tools a script in this workflow session may call, by name. */
     resolveTools: (sessionId: string) => Promise<Map<string, ScriptToolHandler>>;
@@ -45,9 +45,9 @@ export interface ScriptWorkflowActivityDeps {
     runNode?: typeof runScriptNode;
 }
 
-export const SCRIPT_WORKFLOWS_DISABLED_MESSAGE =
-    "Script workflows are disabled on this worker. An operator enables them with PILOTSWARM_SCRIPT_WORKFLOWS=1 "
-    + "(or the worker option scriptWorkflows.enabled), because scripts run as processes on the worker.";
+export const WORKFLOW_SCRIPTS_DISABLED_MESSAGE =
+    "Workflow scripts are disabled on this worker. An operator enables them with PILOTSWARM_WORKFLOW_SCRIPTS=1 "
+    + "(or the worker option workflowScripts.enabled), because scripts run as processes on the worker.";
 
 const PREVIEW_CHARS = 1_000;
 
@@ -66,7 +66,7 @@ function errorMessage(error: unknown): string {
 }
 
 async function record(
-    deps: ScriptWorkflowActivityDeps,
+    deps: WorkflowActivityDeps,
     sessionId: string,
     eventType: string,
     data: Record<string, unknown>,
@@ -79,7 +79,7 @@ async function record(
 }
 
 /** Re-render the live canvas from the session's workflow events. Best effort. */
-async function refreshCanvas(deps: ScriptWorkflowActivityDeps, sessionId: string): Promise<void> {
+async function refreshCanvas(deps: WorkflowActivityDeps, sessionId: string): Promise<void> {
     if (!deps.canvas || typeof deps.catalog?.getSessionEvents !== "function") return;
     try {
         const events = await deps.catalog.getSessionEvents(sessionId, 0, 5_000, WORKFLOW_LOG_EVENT_TYPES);
@@ -89,46 +89,49 @@ async function refreshCanvas(deps: ScriptWorkflowActivityDeps, sessionId: string
     }
 }
 
-export function buildParentNotification(input: ScriptWorkflowFinishInput): string {
+export function buildParentNotification(input: WorkflowFinishInput): string {
     const name = input.workflowName ? `"${input.workflowName}"` : "(unnamed)";
+    if (input.outcome !== undefined) {
+        return `[SYSTEM: Workflow session ${input.sessionId} ${name} ended at state '${input.stateId}' with outcome ${input.outcome} after ${input.steps} step(s). `
+            + `${input.summary ?? ""} Output: ${preview(input.output)}]`;
+    }
     const header = `[SYSTEM: Workflow session ${input.sessionId} ${name} ${input.status} after ${input.steps} step(s).`;
-    if (input.status === "failed") {
-        return `${header} Error: ${input.error ?? "unknown error"}]`;
-    }
-    if (input.status === "cancelled" || input.status === "deleted") {
-        return `${header} Reason: ${input.reason ?? input.status}]`;
-    }
-    return `${header} Outcome: ${input.outcome}. Output: ${preview(input.output)}]`;
+    if (input.status === "failed") return `${header} Error: ${input.error ?? "unknown error"}]`;
+    return `${header} Reason: ${input.reason ?? input.status}]`;
 }
 
-const END_EVENT: Record<ScriptWorkflowFinishInput["status"], string> = {
+/** The graph as the `workflow.started` event and the views describe it. */
+export function describeStates(workflow: CompiledWorkflow): Array<Record<string, unknown>> {
+    return Object.values(workflow.states).map((state) => state.type === "script"
+        ? { id: state.id, type: "script", runtime: state.runtime, timeoutSeconds: state.timeoutSeconds, next: state.next }
+        : { id: state.id, type: "terminal", outcome: state.outcome });
+}
+
+const END_EVENT: Record<WorkflowFinishInput["status"], string> = {
     completed: "workflow.completed",
     failed: "workflow.failed",
     cancelled: "workflow.cancelled",
     deleted: "workflow.cancelled",
 };
 
-/** Register the three activities behind the script workflow controller. */
-export function registerScriptWorkflowActivities(runtime: any, deps: ScriptWorkflowActivityDeps): void {
+/** Register the three activities behind the workflow controller. */
+export function registerWorkflowActivities(runtime: any, deps: WorkflowActivityDeps): void {
     const runNode = deps.runNode ?? runScriptNode;
 
-    runtime.registerActivity(SCRIPT_WORKFLOW_ACTIVITIES.begin, async (
+    runtime.registerActivity(WORKFLOW_ACTIVITIES.begin, async (
         _ctx: any,
-        input: { sessionId: string; yaml: string },
-    ): Promise<ScriptWorkflowBeginResult> => {
-        if (!deps.enabled()) throw new Error(SCRIPT_WORKFLOWS_DISABLED_MESSAGE);
-        const workflow = compileScriptWorkflow(input.yaml);
+        input: { sessionId: string; yaml: string; inputs?: Record<string, unknown> },
+    ): Promise<WorkflowBeginResult> => {
+        const workflow = compileWorkflow(input.yaml);
+        if (workflowUsesScripts(workflow) && !deps.enabled()) throw new Error(WORKFLOW_SCRIPTS_DISABLED_MESSAGE);
+        validateWorkflowInputs(workflow, input.inputs ?? {});
         await deps.catalog?.updateSession(input.sessionId, { state: "running", lastError: null, lastActiveAt: new Date() })
             .catch(() => undefined);
         await record(deps, input.sessionId, "workflow.started", {
             name: workflow.name,
-            entry: workflow.entry,
-            nodes: Object.values(workflow.nodes).map((node) => ({
-                id: node.id,
-                runtime: node.runtime,
-                timeoutSeconds: node.timeoutSeconds,
-                next: node.next,
-            })),
+            version: workflow.version,
+            initial: workflow.initial,
+            states: describeStates(workflow),
         });
         if (deps.canvas) {
             try {
@@ -140,13 +143,13 @@ export function registerScriptWorkflowActivities(runtime: any, deps: ScriptWorkf
         return { workflow };
     });
 
-    runtime.registerActivity(SCRIPT_WORKFLOW_ACTIVITIES.runNode, async (
+    runtime.registerActivity(WORKFLOW_ACTIVITIES.runScript, async (
         activityCtx: any,
-        input: ScriptWorkflowRunNodeInput,
-    ): Promise<ScriptWorkflowRunNodeResult> => {
-        if (!deps.enabled()) throw new Error(SCRIPT_WORKFLOWS_DISABLED_MESSAGE);
-        await record(deps, input.sessionId, "workflow.node_started", {
-            nodeId: input.nodeId,
+        input: WorkflowRunStateInput,
+    ): Promise<WorkflowRunStateResult> => {
+        if (!deps.enabled()) throw new Error(WORKFLOW_SCRIPTS_DISABLED_MESSAGE);
+        await record(deps, input.sessionId, "workflow.state_started", {
+            stateId: input.stateId,
             runtime: input.node.runtime,
             step: input.step,
         });
@@ -195,8 +198,8 @@ export function registerScriptWorkflowActivities(runtime: any, deps: ScriptWorkf
                     : {}),
             }, deps.runnerOptions);
         } catch (error) {
-            await record(deps, input.sessionId, "workflow.node_failed", {
-                nodeId: input.nodeId,
+            await record(deps, input.sessionId, "workflow.state_failed", {
+                stateId: input.stateId,
                 step: input.step,
                 error: errorMessage(error),
             });
@@ -207,8 +210,8 @@ export function registerScriptWorkflowActivities(runtime: any, deps: ScriptWorkf
         }
 
         if (result.resultSource === "cancelled") {
-            await record(deps, input.sessionId, "workflow.node_cancelled", {
-                nodeId: input.nodeId,
+            await record(deps, input.sessionId, "workflow.state_cancelled", {
+                stateId: input.stateId,
                 step: input.step,
                 durationMs: result.durationMs,
                 toolCalls: result.toolCalls,
@@ -216,8 +219,8 @@ export function registerScriptWorkflowActivities(runtime: any, deps: ScriptWorkf
             await refreshCanvas(deps, input.sessionId);
             return { outcome: result.outcome, output: result.output };
         }
-        await record(deps, input.sessionId, "workflow.node_completed", {
-            nodeId: input.nodeId,
+        await record(deps, input.sessionId, "workflow.state_completed", {
+            stateId: input.stateId,
             step: input.step,
             outcome: result.outcome,
             resultSource: result.resultSource,
@@ -233,17 +236,18 @@ export function registerScriptWorkflowActivities(runtime: any, deps: ScriptWorkf
         return { outcome: result.outcome, output: result.output };
     });
 
-    runtime.registerActivity(SCRIPT_WORKFLOW_ACTIVITIES.finish, async (
+    runtime.registerActivity(WORKFLOW_ACTIVITIES.finish, async (
         _ctx: any,
-        input: ScriptWorkflowFinishInput,
+        input: WorkflowFinishInput,
     ): Promise<null> => {
-        const stopped = input.status === "cancelled" || input.status === "deleted";
+        const stopped = input.status === "cancelled" && input.outcome === undefined || input.status === "deleted";
         await record(deps, input.sessionId, END_EVENT[input.status], {
             name: input.workflowName,
             steps: input.steps,
-            ...(input.terminalNodeId ? { terminalNodeId: input.terminalNodeId } : {}),
+            ...(input.stateId ? { stateId: input.stateId } : {}),
             ...(input.outcome !== undefined ? { outcome: input.outcome } : {}),
-            ...(input.status === "completed" ? { outputPreview: preview(input.output) } : {}),
+            ...(input.summary ? { summary: input.summary } : {}),
+            ...(input.outcome !== undefined ? { outputPreview: preview(input.output) } : {}),
             ...(input.error ? { error: input.error } : {}),
             ...(stopped ? { reason: input.reason ?? input.status } : {}),
             ...(input.status === "deleted" ? { deleted: true } : {}),
@@ -255,8 +259,8 @@ export function registerScriptWorkflowActivities(runtime: any, deps: ScriptWorkf
             await deps.catalog?.updateSession(input.sessionId, {
                 state: input.status,
                 lastError: input.status === "failed"
-                    ? (input.error ?? "Workflow failed")
-                    : input.status === "cancelled" ? (input.reason ?? "Cancelled") : null,
+                    ? (input.error ?? input.summary ?? "Workflow failed")
+                    : stopped ? (input.reason ?? "Cancelled") : null,
                 lastActiveAt: new Date(),
             }).catch(() => undefined);
         }

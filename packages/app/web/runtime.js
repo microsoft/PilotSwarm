@@ -922,15 +922,15 @@ export class PortalRuntime {
                 });
                 return this._ensureCreatedPlacement(created, safeParams.groupId, authContext, isAdmin);
             }
-            case "createScriptWorkflowSession": {
+            case "createWorkflowSession": {
                 await this._assertPlacementGroupOwned(safeParams.groupId, authContext, { isAdmin });
                 if (typeof safeParams.yaml !== "string" || !safeParams.yaml.trim()) {
-                    throw Object.assign(new Error("createScriptWorkflowSession requires yaml"), { code: "INVALID_REQUEST", status: 400 });
+                    throw Object.assign(new Error("createWorkflowSession requires yaml"), { code: "INVALID_REQUEST", status: 400 });
                 }
                 if (safeParams.inputs != null && (typeof safeParams.inputs !== "object" || Array.isArray(safeParams.inputs))) {
-                    throw Object.assign(new Error("createScriptWorkflowSession inputs must be a JSON object"), { code: "INVALID_REQUEST", status: 400 });
+                    throw Object.assign(new Error("createWorkflowSession inputs must be a JSON object"), { code: "INVALID_REQUEST", status: 400 });
                 }
-                const created = await this.transport.createScriptWorkflowSession({
+                const created = await this.transport.createWorkflowSession({
                     yaml: safeParams.yaml,
                     inputs: safeParams.inputs ?? {},
                     groupId: safeParams.groupId,

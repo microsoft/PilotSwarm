@@ -1,5 +1,5 @@
 /**
- * Script workflow sessions end to end: a real worker and client on
+ * Workflow sessions end to end: a real worker and client on
  * PostgreSQL (CMS, facts and duroxide), real script processes, and the
  * worker's own tool set. No LLM is needed: the workflow runs no model.
  */
@@ -15,34 +15,41 @@ const hasPython = spawnSync("python3", ["--version"]).status === 0;
 
 const WORKFLOW = `
 apiVersion: pilotswarm.dev/v1alpha1
-kind: ScriptWorkflow
+kind: Workflow
 metadata:
   name: remember-and-check
-spec:
-  entry: remember
-  nodes:
-    remember:
-      type: script
-      runtime: ${hasPython ? "python" : "node"}
-      source: |
+  version: 1.0.0
+inputs:
+  run: { type: string, required: true }
+initial: remember
+states:
+  remember:
+    type: script
+    runtime: ${hasPython ? "python" : "node"}
+    source: |
 ${hasPython
-        ? `        key = "e2e/" + context["inputs"]["run"]
-        call_tool("store_fact", {"key": key, "value": {"n": 2}})
-        set_result("success", {"key": key})`
-        : `        const key = "e2e/" + context.inputs.run;
-        await callTool("store_fact", { key, value: { n: 2 } });
-        await setResult("success", { key });`}
-      next:
-        success: check
-    check:
-      type: script
-      runtime: node
-      source: |
-        const found = await callTool("read_facts", { key_pattern: context.input.key, scope: "session" });
-        await setResult(found.count > 0 ? "found" : "missing", { count: found.count, value: found.facts?.[0]?.value ?? null });
-      next:
-        found: null
-        missing: null
+        ? `      key = "e2e/" + context["inputs"]["run"]
+      call_tool("store_fact", {"key": key, "value": {"n": 2}})
+      set_result("success", {"key": key})`
+        : `      const key = "e2e/" + context.inputs.run;
+      await callTool("store_fact", { key, value: { n: 2 } });
+      await setResult("success", { key });`}
+    completion: { outcomes: [success] }
+    transition: { next: { success: check } }
+  check:
+    type: script
+    runtime: node
+    source: |
+      const found = await callTool("read_facts", { key_pattern: context.input.key, scope: "session" });
+      await setResult(found.count > 0 ? "found" : "missing", { count: found.count, value: found.facts?.[0]?.value ?? null });
+    completion: { outcomes: [found, missing] }
+    transition: { next: { found: remembered, missing: lost } }
+  remembered:
+    type: terminal
+    outcome: succeeded
+    summary: The fact was stored and read back.
+    output: \${states.check.result}
+  lost: { type: terminal, outcome: failed, summary: The fact was not found. }
 `;
 
 async function waitForTerminal(mgmt, sessionId, timeoutMs = 90_000) {
@@ -59,13 +66,13 @@ async function waitForTerminal(mgmt, sessionId, timeoutMs = 90_000) {
 describe("script workflow sessions (worker + client + PostgreSQL)", () => {
     it("runs the graph durably, gives scripts the session's tools, and records an execution log", async () => {
         const env = getEnv();
-        await withClient(env, { worker: { scriptWorkflows: { enabled: true } } }, async (client) => {
+        await withClient(env, { worker: { workflowScripts: { enabled: true } } }, async (client) => {
             const mgmt = await createManagementClient(env);
             try {
-                await expect(client.createScriptWorkflowSession({ yaml: WORKFLOW.replace("type: script", "type: agent") }))
+                await expect(client.createWorkflowSession({ yaml: WORKFLOW.replace("type: script", "type: agent") }))
                     .rejects.toMatchObject({ code: "WORKFLOW_INVALID" });
 
-                const { sessionId, workflowName } = await client.createScriptWorkflowSession({
+                const { sessionId, workflowName } = await client.createWorkflowSession({
                     yaml: WORKFLOW,
                     inputs: { run: "first" },
                 });
@@ -81,16 +88,16 @@ describe("script workflow sessions (worker + client + PostgreSQL)", () => {
 
                 const events = await mgmt.getSessionEvents(sessionId);
                 const workflowEvents = events.filter((event) => event.eventType.startsWith("workflow."));
-                expect(workflowEvents.map((event) => `${event.eventType}${event.data?.nodeId ? `:${event.data.nodeId}` : ""}`)).toEqual([
+                expect(workflowEvents.map((event) => `${event.eventType}${event.data?.stateId ? `:${event.data.stateId}` : ""}`)).toEqual([
                     "workflow.started",
-                    "workflow.node_started:remember", "workflow.node_completed:remember",
-                    "workflow.node_started:check", "workflow.node_completed:check",
-                    "workflow.completed",
+                    "workflow.state_started:remember", "workflow.state_completed:remember",
+                    "workflow.state_started:check", "workflow.state_completed:check",
+                    "workflow.completed:remembered",
                 ]);
                 const done = workflowEvents.at(-1).data;
-                expect(done).toMatchObject({ name: "remember-and-check", steps: 2, outcome: "found", terminalNodeId: "check" });
+                expect(done).toMatchObject({ name: "remember-and-check", steps: 2, outcome: "succeeded", stateId: "remembered", summary: "The fact was stored and read back." });
                 expect(JSON.parse(done.outputPreview)).toEqual({ count: 1, value: { n: 2 } });
-                const remember = workflowEvents.find((event) => event.eventType === "workflow.node_completed" && event.data.nodeId === "remember");
+                const remember = workflowEvents.find((event) => event.eventType === "workflow.state_completed" && event.data.stateId === "remember");
                 expect(remember.data.toolCalls).toEqual([expect.objectContaining({ name: "store_fact", ok: true })]);
 
                 // The live execution canvas was drawn once and updated per step.
@@ -100,7 +107,7 @@ describe("script workflow sessions (worker + client + PostgreSQL)", () => {
                 expect(draws).toHaveLength(1);
                 expect(draws[0].data).toMatchObject({ rev: 1, slot: 1, name: "Workflow" });
                 expect(ticks.length).toBe(2 * 2 + 1);
-                expect(ticks.at(-1).data.payload).toMatchObject({ status: "completed", outcome: "found", step: 2 });
+                expect(ticks.at(-1).data.payload).toMatchObject({ status: "completed", outcome: "succeeded", current: "remembered", step: 2 });
 
                 // A workflow session is not a conversation.
                 await expect(mgmt.sendMessage(sessionId, "hello")).rejects.toMatchObject({ code: "WORKFLOW_SESSION_NOT_CONVERSATIONAL" });
@@ -111,7 +118,7 @@ describe("script workflow sessions (worker + client + PostgreSQL)", () => {
                 expect(await mgmt.stopSessionTurn(sessionId)).toMatchObject({ outcome: "no_active_turn" });
 
                 // Creating with the same id again returns it without a second run.
-                const again = await client.createScriptWorkflowSession({ sessionId, yaml: WORKFLOW, inputs: { run: "first" } });
+                const again = await client.createWorkflowSession({ sessionId, yaml: WORKFLOW, inputs: { run: "first" } });
                 expect(again.sessionId).toBe(sessionId);
                 const after = await mgmt.getSessionEvents(sessionId);
                 expect(after.filter((event) => event.eventType === "workflow.started")).toHaveLength(1);
@@ -123,16 +130,16 @@ describe("script workflow sessions (worker + client + PostgreSQL)", () => {
 
     it("fails the workflow with a clear reason when the worker has script workflows off", async () => {
         const env = getEnv();
-        await withClient(env, { worker: { scriptWorkflows: { enabled: false } } }, async (client) => {
+        await withClient(env, { worker: { workflowScripts: { enabled: false } } }, async (client) => {
             const mgmt = await createManagementClient(env);
             try {
-                const { sessionId } = await client.createScriptWorkflowSession({ yaml: WORKFLOW, inputs: { run: "off" } });
+                const { sessionId } = await client.createWorkflowSession({ yaml: WORKFLOW, inputs: { run: "off" } });
                 const view = await waitForTerminal(mgmt, sessionId);
                 expect(view.status).toBe("failed");
                 const events = await mgmt.getSessionEvents(sessionId);
                 const failed = events.find((event) => event.eventType === "workflow.failed");
-                expect(failed.data.error).toMatch(/Script workflows are disabled on this worker/);
-                expect(events.some((event) => event.eventType === "workflow.node_started")).toBe(false);
+                expect(failed.data.error).toMatch(/Workflow scripts are disabled on this worker/);
+                expect(events.some((event) => event.eventType === "workflow.state_started")).toBe(false);
             } finally {
                 await mgmt.stop?.();
             }
@@ -143,20 +150,21 @@ describe("script workflow sessions (worker + client + PostgreSQL)", () => {
         const env = getEnv();
         const LONG = `
 apiVersion: pilotswarm.dev/v1alpha1
-kind: ScriptWorkflow
-metadata: { name: long }
-spec:
-  entry: wait
-  nodes:
-    wait:
-      type: script
-      runtime: node
-      timeoutSeconds: 600
-      source: |
-        await new Promise(() => setInterval(() => {}, 1000));
-      next: { success: null }
+kind: Workflow
+metadata: { name: long, version: "1" }
+initial: wait
+states:
+  wait:
+    type: script
+    runtime: node
+    timeoutSeconds: 600
+    source: |
+      await new Promise(() => setInterval(() => {}, 1000));
+    completion: { outcomes: [success] }
+    transition: { next: { success: done } }
+  done: { type: terminal, outcome: succeeded }
 `;
-        await withClient(env, { worker: { scriptWorkflows: { enabled: true } } }, async (client) => {
+        await withClient(env, { worker: { workflowScripts: { enabled: true } } }, async (client) => {
             const mgmt = await createManagementClient(env);
             try {
                 const waitForEvent = async (sessionId, type) => {
@@ -169,19 +177,19 @@ spec:
                     throw new Error(`no ${type} on ${sessionId}`);
                 };
 
-                const first = await client.createScriptWorkflowSession({ yaml: LONG });
-                await waitForEvent(first.sessionId, "workflow.node_started");
+                const first = await client.createWorkflowSession({ yaml: LONG });
+                await waitForEvent(first.sessionId, "workflow.state_started");
                 const started = Date.now();
                 await mgmt.cancelSession(first.sessionId, "no longer needed");
                 const cancelled = await mgmt.getSession(first.sessionId);
                 expect(cancelled.status).toBe("cancelled");
-                await waitForEvent(first.sessionId, "workflow.node_cancelled");
+                await waitForEvent(first.sessionId, "workflow.state_cancelled");
                 expect(Date.now() - started).toBeLessThan(20_000);
                 const end = (await waitForEvent(first.sessionId, "workflow.cancelled"))[0];
                 expect(end.data).toMatchObject({ reason: "no longer needed", steps: 1 });
 
-                const second = await client.createScriptWorkflowSession({ yaml: LONG });
-                await waitForEvent(second.sessionId, "workflow.node_started");
+                const second = await client.createWorkflowSession({ yaml: LONG });
+                await waitForEvent(second.sessionId, "workflow.state_started");
                 await mgmt.deleteSession(second.sessionId, "cleanup");
                 expect(await mgmt.getSession(second.sessionId)).toBeNull();
             } finally {
@@ -195,30 +203,31 @@ spec:
         const calc = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../fixtures/workflow-mcp/calc-server.mjs");
         const yaml = `
 apiVersion: pilotswarm.dev/v1alpha1
-kind: ScriptWorkflow
-metadata: { name: tools-check }
-spec:
-  entry: use
-  nodes:
-    use:
-      type: script
-      runtime: node
-      source: |
-        const sum = await callTool("calc/add", { a: 20, b: 22 });
-        const sessions = await callTool("list_sessions", { include_children: true });
-        const events = await callTool("read_agent_events", { agent_id: context.sessionId, event_types: ["workflow.started"] });
-        await setResult("success", { sum, kinds: sessions.sessions.filter((s) => s.self).map((s) => s.kind), events });
-      next: { success: null }
+kind: Workflow
+metadata: { name: tools-check, version: "1" }
+initial: use
+states:
+  use:
+    type: script
+    runtime: node
+    source: |
+      const sum = await callTool("calc/add", { a: 20, b: 22 });
+      const sessions = await callTool("list_sessions", { include_children: true });
+      const events = await callTool("read_agent_events", { agent_id: context.sessionId, event_types: ["workflow.started"] });
+      await setResult("success", { sum, kinds: sessions.sessions.filter((s) => s.self).map((s) => s.kind), events });
+    completion: { outcomes: [success] }
+    transition: { next: { success: done } }
+  done: { type: terminal, outcome: succeeded, output: \${states.use.result} }
 `;
         await withClient(env, {
             worker: {
-                scriptWorkflows: { enabled: true },
+                workflowScripts: { enabled: true },
                 mcpServers: { calc: { command: process.execPath, args: [calc], tools: ["add"] } },
             },
         }, async (client) => {
             const mgmt = await createManagementClient(env);
             try {
-                const { sessionId } = await client.createScriptWorkflowSession({ yaml });
+                const { sessionId } = await client.createWorkflowSession({ yaml });
                 const view = await waitForTerminal(mgmt, sessionId);
                 const done = (await mgmt.getSessionEvents(sessionId, 0, 200, ["workflow.completed", "workflow.failed"]))[0];
                 expect(view.status, JSON.stringify(done?.data)).toBe("completed");

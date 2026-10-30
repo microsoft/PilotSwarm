@@ -1390,8 +1390,8 @@ export class NodeSdkTransport {
         };
     }
 
-    async createScriptWorkflowSession({ yaml, inputs, owner, groupId, visibility } = {}) {
-        const created = await this.client.createScriptWorkflowSession({
+    async createWorkflowSession({ yaml, inputs, owner, groupId, visibility } = {}) {
+        const created = await this.client.createWorkflowSession({
             yaml,
             inputs: inputs ?? {},
             ...(owner ? { owner } : {}),

@@ -1,8 +1,8 @@
-// Script workflow sessions in the portal, in a real browser:
+// Workflow sessions in the portal, in a real browser:
 //   - the session list marks a workflow session (⛓) beside agent sessions
 //   - its transcript is the execution log, and the composer says why there
 //     is no chat box
-//   - New → "Script workflow instead" opens the YAML editor, Create sends the
+//   - New → "Workflow instead" opens the YAML editor, Create sends the
 //     YAML and inputs and opens the new session, and a refusal keeps the text
 //
 // PS_E2E_SHOT_DIR, when set, receives screenshots of each state for review.
@@ -10,7 +10,7 @@ import { test, expect } from "@playwright/test";
 import fs from "node:fs";
 import path from "node:path";
 import { startStubServer } from "./stub-server.mjs";
-import { buildWorkflowCanvasHtml, compileScriptWorkflow, foldWorkflowCanvasState } from "../../../../sdk/dist/script-workflow/index.js";
+import { buildWorkflowCanvasHtml, compileWorkflow, foldWorkflowCanvasState } from "../../../../sdk/dist/workflow/index.js";
 
 const AGENT_ID = "11111110-2222-3333-4444-555555555550";
 const WORKFLOW_ID = "77777777-2222-3333-4444-555555555555";
@@ -31,23 +31,27 @@ const ev = (eventType, data, offsetMs) => ({ seq: ++seq, sessionId: WORKFLOW_ID,
 const WORKFLOW_EVENTS = [
     ev("workflow.started", {
         name: "nightly-report",
-        entry: "collect",
-        nodes: [
-            { id: "collect", runtime: "python", timeoutSeconds: 300, next: { found: "report", empty: null, failure: null } },
-            { id: "report", runtime: "node", timeoutSeconds: 300, next: { done: null } },
+        version: "1.0.0",
+        initial: "collect",
+        states: [
+            { id: "collect", type: "script", runtime: "python", timeoutSeconds: 300, next: { found: "report", empty: "nothing", failure: "failed" } },
+            { id: "report", type: "script", runtime: "node", timeoutSeconds: 300, next: { done: "published" } },
+            { id: "published", type: "terminal", outcome: "succeeded" },
+            { id: "nothing", type: "terminal", outcome: "blocked" },
+            { id: "failed", type: "terminal", outcome: "failed" },
         ],
     }, 0),
-    ev("workflow.node_started", { nodeId: "collect", runtime: "python", step: 1 }, 100),
-    ev("workflow.node_completed", {
-        nodeId: "collect", step: 1, outcome: "found", resultSource: "reported", exitCode: 0, durationMs: 1840,
+    ev("workflow.state_started", { stateId: "collect", runtime: "python", step: 1 }, 100),
+    ev("workflow.state_completed", {
+        stateId: "collect", step: 1, outcome: "found", resultSource: "reported", exitCode: 0, durationMs: 1840,
         toolCalls: [{ name: "read_facts", ok: true, durationMs: 40 }], outputPreview: "{\"count\":3}",
     }, 2000),
-    ev("workflow.node_started", { nodeId: "report", runtime: "node", step: 2 }, 2100),
-    ev("workflow.node_completed", {
-        nodeId: "report", step: 2, outcome: "done", resultSource: "reported", exitCode: 0, durationMs: 420,
+    ev("workflow.state_started", { stateId: "report", runtime: "node", step: 2 }, 2100),
+    ev("workflow.state_completed", {
+        stateId: "report", step: 2, outcome: "done", resultSource: "reported", exitCode: 0, durationMs: 420,
         toolCalls: [{ name: "store_fact", ok: true, durationMs: 30 }], outputPreview: "{\"count\":3}",
     }, 2600),
-    ev("workflow.completed", { name: "nightly-report", steps: 2, outcome: "done", terminalNodeId: "report", outputPreview: "{\"count\":3}" }, 2700),
+    ev("workflow.completed", { name: "nightly-report", steps: 2, stateId: "published", outcome: "succeeded", summary: "Report published.", outputPreview: "{\"count\":3}" }, 2700),
 ];
 
 let stub;
@@ -95,19 +99,20 @@ test("a workflow session is marked in the list, shows its execution log and has 
     await expect(page.locator(".ps-session-row-content", { hasText: "Release triage agent" }).first()).not.toContainText("⛓");
 
     const chat = page.locator(".ps-chat-panel");
-    await expect(chat).toContainText("Workflow nightly-report started: 2 nodes, entry collect");
-    await expect(chat).toContainText("found → report, empty → end, failure → end");
+    await expect(chat).toContainText("Workflow nightly-report 1.0.0 started: 5 states, initial collect");
+    await expect(chat).toContainText("found → report, empty → nothing, failure → failed");
+    await expect(chat).toContainText("ends: succeeded");
     await expect(chat).toContainText("Step 1: collect → found in 1.8 s · 1 tool call (read_facts)");
     await expect(chat).toContainText("Step 2: report → done");
-    await expect(chat).toContainText("Workflow nightly-report completed after 2 steps with outcome done at report");
+    await expect(chat).toContainText("Workflow nightly-report reached published after 2 steps: outcome succeeded. Report published.");
 
-    await expect(page.locator(".ps-composer-readonly")).toContainText("Workflow session — it runs a script graph");
+    await expect(page.locator(".ps-composer-readonly")).toContainText("Workflow session — it runs a workflow graph");
     await expect(page.locator(".ps-prompt-input")).toHaveCount(0);
     await shot(page, "1-workflow-session-execution-log");
     expect(errors).toEqual([]);
 });
 
-test("New → Script workflow opens the editor, creates the session and opens it", async ({ page }) => {
+test("New → Workflow opens the editor, creates the session and opens it", async ({ page }) => {
     const errors = [];
     const created = [];
     page.on("pageerror", (error) => errors.push(error.message));
@@ -123,11 +128,11 @@ test("New → Script workflow opens the editor, creates the session and opens it
     await page.getByRole("button", { name: "New session — choose model and agent", exact: true }).click();
     await expect(page.getByText("Select model for new session", { exact: true })).toBeVisible();
     await shot(page, "2-new-session-model-step");
-    await page.getByRole("button", { name: "⛓ Script workflow instead" }).click();
+    await page.getByRole("button", { name: "⛓ Workflow instead" }).click();
 
     const yaml = page.locator("#ps-workflow-yaml");
     await expect(yaml).toBeVisible();
-    await expect(yaml).toHaveValue(/kind: ScriptWorkflow/);
+    await expect(yaml).toHaveValue(/kind: Workflow\n/);
     await expect(yaml).toHaveValue(/runtime: python/);
     // Typing in the editor must stay in the editor: "n" is the global
     // new-session shortcut, and Enter confirms other dialogs.
@@ -140,7 +145,7 @@ test("New → Script workflow opens the editor, creates the session and opens it
 
     await page.getByRole("button", { name: "Create workflow" }).click();
     await expect.poll(() => created.length).toBe(1);
-    expect(created[0].yaml).toMatch(/kind: ScriptWorkflow/);
+    expect(created[0].yaml).toMatch(/kind: Workflow\n/);
     expect(created[0].inputs).toEqual({ keyPattern: "metrics/%" });
     await expect(page.locator(".ps-workflow-modal")).toHaveCount(0);
     await expect(page.locator(".ps-composer-readonly")).toContainText("Workflow session");
@@ -152,16 +157,16 @@ test("a refused workflow keeps the editor open with the reason and the text", as
     await routeApi(page, {
         onCreate: (route) => route.fulfill({
             status: 400,
-            json: { ok: false, error: { code: "WORKFLOW_INVALID", message: "Invalid workflow: spec.nodes.collect.type must be 'script'; agent nodes are not supported." } },
+            json: { ok: false, error: { code: "WORKFLOW_INVALID", message: "Invalid workflow: states.collect.type 'agent' is not supported yet; this version runs script and terminal states." } },
         }),
     });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
     await page.getByRole("button", { name: "New session — choose model and agent", exact: true }).click();
-    await page.getByRole("button", { name: "⛓ Script workflow instead" }).click();
+    await page.getByRole("button", { name: "⛓ Workflow instead" }).click();
     const yaml = page.locator("#ps-workflow-yaml");
     await yaml.fill(String(await yaml.inputValue()).replace("type: script", "type: agent"));
     await page.getByRole("button", { name: "Create workflow" }).click();
-    await expect(page.locator(".ps-workflow-modal [role=alert]")).toContainText("agent nodes are not supported");
+    await expect(page.locator(".ps-workflow-modal [role=alert]")).toContainText("type 'agent' is not supported yet");
     await expect(yaml).toHaveValue(/type: agent/);
     await shot(page, "5-workflow-editor-refusal");
 });
@@ -171,28 +176,30 @@ test("a refused workflow keeps the editor open with the reason and the text", as
 const LIVE_ID = "66666666-2222-3333-4444-555555555555";
 const LIVE_YAML = `
 apiVersion: pilotswarm.dev/v1alpha1
-kind: ScriptWorkflow
-metadata: { name: nightly-report }
-spec:
-  entry: collect
-  nodes:
-    collect: { type: script, runtime: python, source: x, next: { found: summarize, empty: null } }
-    summarize: { type: script, runtime: node, source: x, next: { again: summarize, done: publish, failure: null } }
-    publish: { type: script, runtime: powershell, source: x, next: { success: null } }
+kind: Workflow
+metadata: { name: nightly-report, version: 1.0.0 }
+initial: collect
+states:
+  collect: { type: script, runtime: python, source: x, completion: { outcomes: [found, empty] }, transition: { next: { found: summarize, empty: nothing } } }
+  summarize: { type: script, runtime: node, source: x, completion: { outcomes: [again, done, failure] }, transition: { next: { again: summarize, done: publish, failure: failed } } }
+  publish: { type: script, runtime: powershell, source: x, completion: { outcomes: [success] }, transition: { next: { success: published } } }
+  published: { type: terminal, outcome: succeeded, summary: Report published. }
+  nothing: { type: terminal, outcome: blocked }
+  failed: { type: terminal, outcome: failed }
 `;
 
 test("a workflow's live canvas opens with the session and follows each step", async ({ page }) => {
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    const graph = compileScriptWorkflow(LIVE_YAML);
+    const graph = compileWorkflow(LIVE_YAML);
     const html = buildWorkflowCanvasHtml(graph, foldWorkflowCanvasState([], graph));
     const log = [
-        { eventType: "workflow.started", data: { name: "nightly-report", nodes: Object.values(graph.nodes).map((n) => ({ id: n.id, runtime: n.runtime, next: n.next })) } },
-        { eventType: "workflow.node_started", data: { nodeId: "collect", step: 1 } },
-        { eventType: "workflow.node_completed", data: { nodeId: "collect", step: 1, outcome: "found", resultSource: "reported", durationMs: 1840, toolCalls: [{ name: "read_facts", ok: true }] } },
-        { eventType: "workflow.node_started", data: { nodeId: "summarize", step: 2 } },
-        { eventType: "workflow.node_completed", data: { nodeId: "summarize", step: 2, outcome: "again", resultSource: "reported", durationMs: 920, toolCalls: [] } },
-        { eventType: "workflow.node_started", data: { nodeId: "summarize", step: 3 } },
+        { eventType: "workflow.started", data: { name: "nightly-report", states: Object.values(graph.states).map((n) => ({ id: n.id, type: n.type })) } },
+        { eventType: "workflow.state_started", data: { stateId: "collect", step: 1 } },
+        { eventType: "workflow.state_completed", data: { stateId: "collect", step: 1, outcome: "found", resultSource: "reported", durationMs: 1840, toolCalls: [{ name: "read_facts", ok: true }] } },
+        { eventType: "workflow.state_started", data: { stateId: "summarize", step: 2 } },
+        { eventType: "workflow.state_completed", data: { stateId: "summarize", step: 2, outcome: "again", resultSource: "reported", durationMs: 920, toolCalls: [] } },
+        { eventType: "workflow.state_started", data: { stateId: "summarize", step: 3 } },
     ];
     const running = foldWorkflowCanvasState(log);
     const sockets = [];
@@ -238,10 +245,10 @@ test("a workflow's live canvas opens with the session and follows each step", as
     await expect.poll(() => subscribed).toBe(true);
     const done = foldWorkflowCanvasState([
         ...log,
-        { eventType: "workflow.node_completed", data: { nodeId: "summarize", step: 3, outcome: "done", resultSource: "reported", durationMs: 610, toolCalls: [] } },
-        { eventType: "workflow.node_started", data: { nodeId: "publish", step: 4 } },
-        { eventType: "workflow.node_completed", data: { nodeId: "publish", step: 4, outcome: "success", resultSource: "reported", durationMs: 300, toolCalls: [{ name: "write_artifact", ok: true }] } },
-        { eventType: "workflow.completed", data: { name: "nightly-report", steps: 4, outcome: "success", terminalNodeId: "publish", outputPreview: "{\"rows\":3}" } },
+        { eventType: "workflow.state_completed", data: { stateId: "summarize", step: 3, outcome: "done", resultSource: "reported", durationMs: 610, toolCalls: [] } },
+        { eventType: "workflow.state_started", data: { stateId: "publish", step: 4 } },
+        { eventType: "workflow.state_completed", data: { stateId: "publish", step: 4, outcome: "success", resultSource: "reported", durationMs: 300, toolCalls: [{ name: "write_artifact", ok: true }] } },
+        { eventType: "workflow.completed", data: { name: "nightly-report", steps: 4, stateId: "published", outcome: "succeeded", summary: "Report published.", outputPreview: "{\"rows\":3}" } },
     ]);
     for (const socket of sockets) {
         socket.send(JSON.stringify({ type: "sessionEvent", sessionId: LIVE_ID, event: {
@@ -250,9 +257,11 @@ test("a workflow's live canvas opens with the session and follows each step", as
         } }));
     }
     await expect(frame.locator("#status")).toHaveText("completed");
-    await expect(frame.locator("g.node.done")).toHaveCount(3);
+    await expect(frame.locator("g.node.done")).toHaveCount(4);
+    await expect(frame.locator("g.node.terminal.done text").first()).toHaveText("published");
     await expect(frame.locator("g.node.running")).toHaveCount(0);
-    await expect(frame.locator("#note")).toContainText("Outcome success");
+    await expect(frame.locator("g.node.terminal")).toHaveCount(3);
+    await expect(frame.locator("#note")).toContainText("Outcome succeeded — Report published.");
     await shot(page, "7-live-canvas-completed");
     expect(errors).toEqual([]);
 });

@@ -1,5 +1,5 @@
 /**
- * Script workflow surfaces: the spawn_workflow tool, the tools a script may
+ * Workflow surfaces: the spawn_workflow tool, the tools a script may
  * call, the worker switch, the Web API operation and the compiler limits.
  */
 import test from "node:test";
@@ -7,31 +7,33 @@ import assert from "node:assert/strict";
 import { ManagedSession } from "../../dist/managed-session.js";
 import { SessionManager } from "../../dist/session-manager.js";
 import { findReservedPackageToolName } from "../../dist/reserved-tool-names.js";
-import { resolveScriptWorkflowSettings } from "../../dist/worker.js";
+import { resolveWorkflowScriptSettings } from "../../dist/worker.js";
 import {
     buildParentNotification,
-    compileScriptWorkflow,
-    ScriptWorkflowCompileError,
+    compileWorkflow,
+    WorkflowCompileError,
     SPAWN_WORKFLOW_TOOL_SPEC,
-    SCRIPT_WORKFLOW_MAX_YAML_BYTES,
+    WORKFLOW_MAX_YAML_BYTES,
     workflowErrorMessage,
+    workflowStatusForOutcome,
     spawnWorkflowFromTool,
     workflowChildSessionId,
-} from "../../dist/script-workflow/index.js";
+} from "../../dist/workflow/index.js";
 import { OPERATIONS } from "../../api/src/protocol.js";
 
-const yaml = (nodeExtra = "", nodeId = "only") => `
+const yaml = (stateExtra = "", stateId = "only") => `
 apiVersion: pilotswarm.dev/v1alpha1
-kind: ScriptWorkflow
-metadata: { name: limits }
-spec:
-  entry: ${nodeId}
-  nodes:
-    ${nodeId}:
-      type: script
-      runtime: python
-      source: print(1)
-${nodeExtra}      next: { success: null }
+kind: Workflow
+metadata: { name: limits, version: 1.0.0 }
+initial: ${stateId}
+states:
+  ${stateId}:
+    type: script
+    runtime: python
+    source: print(1)
+${stateExtra}    completion: { outcomes: [success] }
+    transition: { next: { success: done } }
+  done: { type: terminal, outcome: succeeded }
 `;
 
 test("spawn_workflow is declared for agent sessions and carries the YAML contract", () => {
@@ -40,7 +42,7 @@ test("spawn_workflow is declared for agent sessions and carries the YAML contrac
     assert.ok(tool, "spawn_workflow must be declared beside spawn_agent");
     assert.deepEqual(tool.parameters.required, ["yaml"]);
     assert.deepEqual(Object.keys(tool.parameters.properties).sort(), ["inputs", "key", "notify_on_completion", "yaml"]);
-    for (const phrase of ["kind: ScriptWorkflow", "type: script", "call_tool", "callTool", "Invoke-PilotSwarmTool", "set_result", "cron"]) {
+    for (const phrase of ["kind: Workflow", "type: script", "type: terminal", "completion: { outcomes:", "transition:", "call_tool", "callTool", "Invoke-PilotSwarmTool", "set_result", "cron"]) {
         assert.ok(tool.description.includes(phrase), `description should mention ${phrase}`);
     }
     assert.equal(tool.description, SPAWN_WORKFLOW_TOOL_SPEC.description);
@@ -106,46 +108,46 @@ test("script tools are the generic agent's data-plane tools, bound to the workfl
     assert.equal(stored[0].sessionId, "wf-session");
 });
 
-test("script workflows are off unless an operator turns them on", () => {
-    assert.equal(resolveScriptWorkflowSettings(undefined, {}).enabled, false);
-    assert.equal(resolveScriptWorkflowSettings(undefined, { PILOTSWARM_SCRIPT_WORKFLOWS: "1" }).enabled, true);
-    assert.equal(resolveScriptWorkflowSettings(undefined, { PILOTSWARM_SCRIPT_WORKFLOWS: "true" }).enabled, true);
-    assert.equal(resolveScriptWorkflowSettings({ enabled: false }, { PILOTSWARM_SCRIPT_WORKFLOWS: "1" }).enabled, false);
-    assert.equal(resolveScriptWorkflowSettings({ enabled: true }, {}).enabled, true);
+test("workflow scripts are off unless an operator turns them on", () => {
+    assert.equal(resolveWorkflowScriptSettings(undefined, {}).enabled, false);
+    assert.equal(resolveWorkflowScriptSettings(undefined, { PILOTSWARM_WORKFLOW_SCRIPTS: "1" }).enabled, true);
+    assert.equal(resolveWorkflowScriptSettings(undefined, { PILOTSWARM_WORKFLOW_SCRIPTS: "true" }).enabled, true);
+    assert.equal(resolveWorkflowScriptSettings({ enabled: false }, { PILOTSWARM_WORKFLOW_SCRIPTS: "1" }).enabled, false);
+    assert.equal(resolveWorkflowScriptSettings({ enabled: true }, {}).enabled, true);
     assert.deepEqual(
-        resolveScriptWorkflowSettings({ executables: { powershell: "/opt/pwsh" } }, { PILOTSWARM_SCRIPT_WORKFLOW_PYTHON: "/usr/bin/python3.12" }).executables,
+        resolveWorkflowScriptSettings({ executables: { powershell: "/opt/pwsh" } }, { PILOTSWARM_WORKFLOW_PYTHON: "/usr/bin/python3.12" }).executables,
         { python: "/usr/bin/python3.12", powershell: "/opt/pwsh" },
     );
 });
 
 test("the Web API creates workflow sessions under the session-create gate", () => {
-    const op = OPERATIONS.find((entry) => entry.name === "createScriptWorkflowSession");
+    const op = OPERATIONS.find((entry) => entry.name === "createWorkflowSession");
     assert.ok(op);
     assert.equal(op.access, "session:create");
     assert.equal(op.method, "POST");
     assert.deepEqual(Object.keys(op.params).sort(), ["groupId", "inputs", "visibility", "yaml"]);
 });
 
-test("the compiler bounds node ids, timeouts and document size", () => {
-    assert.equal(compileScriptWorkflow(yaml()).nodes.only.timeoutSeconds, 300);
-    assert.equal(compileScriptWorkflow(yaml("      timeoutSeconds: 5\n")).nodes.only.timeoutSeconds, 5);
-    for (const bad of ["      timeoutSeconds: 0\n", "      timeoutSeconds: 3601\n", "      timeoutSeconds: 1.5\n"]) {
-        assert.throws(() => compileScriptWorkflow(yaml(bad)), ScriptWorkflowCompileError);
-    }
-    assert.throws(() => compileScriptWorkflow(yaml("", "1bad")), /must use a letter/);
-    assert.throws(() => compileScriptWorkflow(yaml("      runtime: bash\n")), /Map keys must be unique|runtime must be/);
-    assert.throws(() => compileScriptWorkflow(`# ${"x".repeat(SCRIPT_WORKFLOW_MAX_YAML_BYTES)}\n${yaml()}`), /at most/);
-});
-
-test("the parent hears the outcome, or the reason it failed", () => {
+test("the parent hears the terminal state and outcome, or the reason the run stopped", () => {
     assert.equal(
-        buildParentNotification({ sessionId: "s1", workflowName: "nightly", status: "completed", outcome: "done", output: { n: 2 }, steps: 3, notifyParent: true }),
-        '[SYSTEM: Workflow session s1 "nightly" completed after 3 step(s). Outcome: done. Output: {"n":2}]',
+        buildParentNotification({ sessionId: "s1", workflowName: "nightly", status: "completed", outcome: "succeeded", summary: "Done.", stateId: "done", output: { n: 2 }, steps: 3, notifyParent: true }),
+        '[SYSTEM: Workflow session s1 "nightly" ended at state \'done\' with outcome succeeded after 3 step(s). Done. Output: {"n":2}]',
     );
     assert.equal(
         buildParentNotification({ sessionId: "s1", workflowName: null, status: "failed", error: "boom", steps: 0, notifyParent: true }),
         "[SYSTEM: Workflow session s1 (unnamed) failed after 0 step(s). Error: boom]",
     );
+    assert.equal(
+        buildParentNotification({ sessionId: "s1", workflowName: "n", status: "cancelled", reason: "no longer needed", steps: 1, notifyParent: true }),
+        '[SYSTEM: Workflow session s1 "n" cancelled after 1 step(s). Reason: no longer needed]',
+    );
+});
+
+test("a terminal outcome sets the session status", () => {
+    assert.equal(workflowStatusForOutcome("succeeded"), "completed");
+    assert.equal(workflowStatusForOutcome("blocked"), "completed");
+    assert.equal(workflowStatusForOutcome("failed"), "failed");
+    assert.equal(workflowStatusForOutcome("cancelled"), "cancelled");
 });
 
 test("activity error wrappers are removed from the reason people read", () => {
@@ -212,12 +214,16 @@ test("spawn_workflow is idempotent per key, and per tool call without one", asyn
 
 test("spawn_workflow refuses when workflows are off or the YAML is wrong, without creating anything", async () => {
     const off = spawnDeps({ enabled: () => false });
-    assert.match(await spawnWorkflowFromTool({ yaml: yaml() }, {}, off.deps), /refused — Script workflows are disabled on this worker/);
+    assert.match(await spawnWorkflowFromTool({ yaml: yaml() }, {}, off.deps), /refused — Workflow scripts are disabled on this worker/);
     assert.equal(off.created.length, 0);
 
     const bad = spawnDeps();
     const text = await spawnWorkflowFromTool({ yaml: yaml().replace("type: script", "type: agent") }, {}, bad.deps);
-    assert.match(text, /not a valid ScriptWorkflow: .*agent nodes are not supported.*Fix the YAML/);
+    assert.match(text, /the workflow is not valid: .*type 'agent' is not supported yet.*Fix it/);
+    const missingInput = spawnDeps();
+    const typed = yaml().replace("initial: only", "inputs: { day: { type: string, required: true } }\ninitial: only");
+    assert.match(await spawnWorkflowFromTool({ yaml: typed }, {}, missingInput.deps), /Input 'day' is required/);
+    assert.equal(missingInput.created.length, 0);
     assert.equal(bad.created.length, 0);
 });
 
@@ -244,8 +250,8 @@ import {
     parseScriptMcpToolName,
     parseWorkflowCommand,
     scriptMcpResult,
-} from "../../dist/script-workflow/index.js";
-import { createScriptSessionTools } from "../../dist/script-workflow/session-tools.js";
+} from "../../dist/workflow/index.js";
+import { createScriptSessionTools } from "../../dist/workflow/session-tools.js";
 
 test("lifecycle commands are recognised; everything else is not a command", () => {
     assert.deepEqual(parseWorkflowCommand(JSON.stringify({ type: "cmd", cmd: "cancel", args: { reason: " stop " }, requestedBy: "p" })),
@@ -257,18 +263,19 @@ test("lifecycle commands are recognised; everything else is not a command", () =
 });
 
 test("the canvas page carries the definition as data, never as markup", () => {
-    const workflow = compileScriptWorkflow(`
+    const workflow = compileWorkflow(`
 apiVersion: pilotswarm.dev/v1alpha1
-kind: ScriptWorkflow
-metadata: { name: "</script><img src=x onerror=alert(1)>" }
-spec:
-  entry: a
-  nodes:
-    a:
-      type: script
-      runtime: node
-      source: x
-      next: { "</script><b>": null }
+kind: Workflow
+metadata: { name: "</script><img src=x onerror=alert(1)>", version: "1" }
+initial: a
+states:
+  a:
+    type: script
+    runtime: node
+    source: x
+    completion: { outcomes: ["</script><b>"] }
+    transition: { next: { "</script><b>": done } }
+  done: { type: terminal, outcome: succeeded }
 `);
     const html = buildWorkflowCanvasHtml(workflow, foldWorkflowCanvasState([], workflow));
     assert.equal((html.match(/<\/script>/g) || []).length, 3, "only the page's own script elements close");
@@ -280,12 +287,12 @@ spec:
 
 test("the canvas state is folded from the workflow log and fits a data tick", () => {
     const events = [
-        { eventType: "workflow.started", data: { name: "loop", nodes: [{ id: "a" }, { id: "b" }] } },
-        { eventType: "workflow.node_started", data: { nodeId: "a", step: 1 } },
-        { eventType: "workflow.node_completed", data: { nodeId: "a", step: 1, outcome: "again", resultSource: "reported", durationMs: 5, toolCalls: [{ ok: true }, { ok: false }] } },
-        { eventType: "workflow.node_started", data: { nodeId: "a", step: 2 } },
-        { eventType: "workflow.node_completed", data: { nodeId: "a", step: 2, outcome: "next", exitCode: 1, resultSource: "exit" } },
-        { eventType: "workflow.node_started", data: { nodeId: "b", step: 3 } },
+        { eventType: "workflow.started", data: { name: "loop", states: [{ id: "a" }, { id: "b" }] } },
+        { eventType: "workflow.state_started", data: { stateId: "a", step: 1 } },
+        { eventType: "workflow.state_completed", data: { stateId: "a", step: 1, outcome: "again", resultSource: "reported", durationMs: 5, toolCalls: [{ ok: true }, { ok: false }] } },
+        { eventType: "workflow.state_started", data: { stateId: "a", step: 2 } },
+        { eventType: "workflow.state_completed", data: { stateId: "a", step: 2, outcome: "next", exitCode: 1, resultSource: "exit" } },
+        { eventType: "workflow.state_started", data: { stateId: "b", step: 3 } },
         { eventType: "workflow.failed", data: { steps: 3, error: "boom" } },
     ];
     const state = foldWorkflowCanvasState(events);
@@ -300,6 +307,20 @@ test("the canvas state is folded from the workflow log and fits a data tick", ()
     const fitted = fitWorkflowCanvasState(big);
     assert.ok(Buffer.byteLength(JSON.stringify(fitted)) <= 32_768);
     assert.equal(fitted.steps.at(-1).step, 399, "the newest steps are kept");
+});
+
+test("a run that reaches a terminal state marks it and the edge into it", () => {
+    const state = foldWorkflowCanvasState([
+        { eventType: "workflow.started", data: { name: "w", states: [{ id: "a", type: "script" }, { id: "done", type: "terminal", outcome: "succeeded" }] } },
+        { eventType: "workflow.state_started", data: { stateId: "a", step: 1 } },
+        { eventType: "workflow.state_completed", data: { stateId: "a", step: 1, outcome: "ok", resultSource: "reported" } },
+        { eventType: "workflow.completed", data: { steps: 1, stateId: "done", outcome: "succeeded", summary: "All good.", outputPreview: "{}" } },
+    ]);
+    assert.equal(state.status, "completed");
+    assert.equal(state.nodes.done.state, "done");
+    assert.equal(state.current, "done");
+    assert.equal(state.summary, "All good.");
+    assert.deepEqual(state.taken, { "a\u0001ok": 1 });
 });
 
 test("MCP tool names, tool lists and results", () => {

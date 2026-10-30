@@ -1,21 +1,21 @@
 /**
- * Script workflow sessions in the UI.
+ * Workflow sessions in the UI.
  *
- * A workflow session runs a graph of script nodes instead of a conversation.
+ * A workflow session runs a graph of states instead of a conversation.
  * The worker records one CMS event per step; the transcript renders them as
- * an execution log: the graph when it starts, a line per node as it starts
- * and ends, and the final result. The live view is the session's canvas,
- * which the worker draws and updates (packages/sdk script-workflow/canvas.ts).
+ * an execution log: the graph when it starts, a line per state as it starts
+ * and ends, and the terminal state the run reached. The live view is the session's canvas,
+ * which the worker draws and updates (packages/sdk workflow/canvas.ts).
  */
 
 export const WORKFLOW_SESSION_GLYPH = "⛓";
 
 export const WORKFLOW_EVENT_TYPES = [
     "workflow.started",
-    "workflow.node_started",
-    "workflow.node_completed",
-    "workflow.node_failed",
-    "workflow.node_cancelled",
+    "workflow.state_started",
+    "workflow.state_completed",
+    "workflow.state_failed",
+    "workflow.state_cancelled",
     "workflow.completed",
     "workflow.failed",
     "workflow.cancelled",
@@ -66,27 +66,35 @@ function formatToolCalls(toolCalls) {
     return `${label} (${names.join(", ")})${failed ? `, ${failed} failed` : ""}`;
 }
 
+function endedAtTerminal(data, mark) {
+    return `${mark} Workflow **${data.name ?? "workflow"}** reached ${code(data.stateId)} after ${data.steps ?? 0} step${data.steps === 1 ? "" : "s"}: `
+        + `outcome **${data.outcome ?? "?"}**${data.summary ? `. ${data.summary}` : "."}`;
+}
+
 /** Markdown text for one workflow event, or null when it is not one. */
 export function formatWorkflowEventText(event) {
     const data = event?.data && typeof event.data === "object" ? event.data : {};
     switch (event?.eventType) {
         case "workflow.started": {
-            const nodes = Array.isArray(data.nodes) ? data.nodes : [];
+            const states = Array.isArray(data.states) ? data.states : [];
             const lines = [
-                `${WORKFLOW_SESSION_GLYPH} Workflow **${data.name ?? "workflow"}** started: ${nodes.length} node${nodes.length === 1 ? "" : "s"}, entry ${code(data.entry)}.`,
+                `${WORKFLOW_SESSION_GLYPH} Workflow **${data.name ?? "workflow"}**${data.version ? ` ${data.version}` : ""} started: `
+                + `${states.length} state${states.length === 1 ? "" : "s"}, initial ${code(data.initial)}.`,
             ];
-            if (nodes.length > 0) {
-                lines.push("", "| Node | Runtime | Outcome → next |", "|---|---|---|");
-                for (const node of nodes) {
-                    lines.push(`| ${cell(node.id)} | ${cell(node.runtime)} | ${cell(formatNext(node.next))} |`);
+            if (states.length > 0) {
+                lines.push("", "| State | Type | Outcome → next |", "|---|---|---|");
+                for (const state of states) {
+                    const type = state?.type === "terminal" ? "terminal" : `script (${state?.runtime ?? "?"})`;
+                    const next = state?.type === "terminal" ? `ends: ${state.outcome ?? "?"}` : formatNext(state?.next);
+                    lines.push(`| ${cell(state?.id)} | ${cell(type)} | ${cell(next)} |`);
                 }
             }
             return lines.join("\n");
         }
-        case "workflow.node_started":
-            return `▶ Step ${data.step ?? "?"}: ${code(data.nodeId)} started (${data.runtime ?? "script"}).`;
-        case "workflow.node_completed": {
-            const parts = [`✓ Step ${data.step ?? "?"}: ${code(data.nodeId)} → **${data.outcome ?? "?"}**`];
+        case "workflow.state_started":
+            return `▶ Step ${data.step ?? "?"}: ${code(data.stateId)} started (${data.runtime ?? "script"}).`;
+        case "workflow.state_completed": {
+            const parts = [`✓ Step ${data.step ?? "?"}: ${code(data.stateId)} → **${data.outcome ?? "?"}**`];
             const duration = formatDuration(data.durationMs);
             if (duration) parts.push(`in ${duration}`);
             const tools = formatToolCalls(data.toolCalls);
@@ -96,28 +104,27 @@ export function formatWorkflowEventText(event) {
             if (data.stderrTail) lines.push("", "```text", shortPreview(data.stderrTail, 1_000), "```");
             return lines.join("\n");
         }
-        case "workflow.node_failed":
-            return `✗ Step ${data.step ?? "?"}: ${code(data.nodeId)} could not run: ${data.error ?? "unknown error"}`;
+        case "workflow.state_failed":
+            return `✗ Step ${data.step ?? "?"}: ${code(data.stateId)} could not run: ${data.error ?? "unknown error"}`;
         case "workflow.completed": {
-            const lines = [
-                `■ Workflow **${data.name ?? "workflow"}** completed after ${data.steps ?? "?"} step${data.steps === 1 ? "" : "s"} `
-                + `with outcome **${data.outcome ?? "?"}**${data.terminalNodeId ? ` at ${code(data.terminalNodeId)}` : ""}.`,
-            ];
+            const lines = [endedAtTerminal(data, "■")];
             if (data.outputPreview && data.outputPreview !== "null") {
                 lines.push("", "```json", shortPreview(data.outputPreview, 1_000), "```");
             }
             return lines.join("\n");
         }
         case "workflow.failed":
+            if (data.outcome !== undefined) return endedAtTerminal(data, "✗");
             return `✗ Workflow **${data.name ?? "workflow"}** failed after ${data.steps ?? 0} step${data.steps === 1 ? "" : "s"}`
-                + `${data.terminalNodeId ? ` at ${code(data.terminalNodeId)}` : ""}: ${data.error ?? "unknown error"}`;
-        case "workflow.node_cancelled": {
+                + `${data.stateId ? ` at ${code(data.stateId)}` : ""}: ${data.error ?? "unknown error"}`;
+        case "workflow.state_cancelled": {
             const duration = formatDuration(data.durationMs);
-            return `⏹ Step ${data.step ?? "?"}: ${code(data.nodeId)} stopped${duration ? ` after ${duration}` : ""}.`;
+            return `⏹ Step ${data.step ?? "?"}: ${code(data.stateId)} stopped${duration ? ` after ${duration}` : ""}.`;
         }
         case "workflow.cancelled":
+            if (data.outcome !== undefined) return endedAtTerminal(data, "⏹");
             return `⏹ Workflow **${data.name ?? "workflow"}** stopped after ${data.steps ?? 0} step${data.steps === 1 ? "" : "s"}`
-                + `${data.terminalNodeId ? ` at ${code(data.terminalNodeId)}` : ""}: ${data.reason ?? "cancelled"}`;
+                + `${data.stateId ? ` at ${code(data.stateId)}` : ""}: ${data.reason ?? "cancelled"}`;
         default:
             return null;
     }
@@ -142,19 +149,19 @@ export function describeWorkflowEvent(event) {
             return { kind: "card", title: "Workflow failed", color: "red", text };
         case "workflow.cancelled":
             return { kind: "card", title: "Workflow stopped", color: "yellow", text };
-        case "workflow.node_started":
-            return { kind: "notice", title: stepTitle, color: "gray", summary: `${data.nodeId ?? "?"} started (${data.runtime ?? "script"})`, text };
-        case "workflow.node_completed": {
+        case "workflow.state_started":
+            return { kind: "notice", title: stepTitle, color: "gray", summary: `${data.stateId ?? "?"} started (${data.runtime ?? "script"})`, text };
+        case "workflow.state_completed": {
             const duration = formatDuration(data.durationMs);
             const tools = formatToolCalls(data.toolCalls);
-            const summary = `${data.nodeId ?? "?"} → ${data.outcome ?? "?"}${duration ? ` in ${duration}` : ""}${tools ? ` · ${tools}` : ""}`;
+            const summary = `${data.stateId ?? "?"} → ${data.outcome ?? "?"}${duration ? ` in ${duration}` : ""}${tools ? ` · ${tools}` : ""}`;
             return { kind: "notice", title: stepTitle, color: data.exitCode === 0 || data.resultSource === "reported" ? "green" : "yellow", summary, text };
         }
-        case "workflow.node_failed":
-            return { kind: "notice", title: stepTitle, color: "red", summary: `${data.nodeId ?? "?"} could not run: ${data.error ?? "unknown error"}`, text };
-        case "workflow.node_cancelled": {
+        case "workflow.state_failed":
+            return { kind: "notice", title: stepTitle, color: "red", summary: `${data.stateId ?? "?"} could not run: ${data.error ?? "unknown error"}`, text };
+        case "workflow.state_cancelled": {
             const duration = formatDuration(data.durationMs);
-            return { kind: "notice", title: stepTitle, color: "yellow", summary: `${data.nodeId ?? "?"} stopped${duration ? ` after ${duration}` : ""}`, text };
+            return { kind: "notice", title: stepTitle, color: "yellow", summary: `${data.stateId ?? "?"} stopped${duration ? ` after ${duration}` : ""}`, text };
         }
         default:
             return null;

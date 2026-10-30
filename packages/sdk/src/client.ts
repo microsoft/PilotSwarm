@@ -21,7 +21,7 @@ import type {
     SessionOwnerInfo,
     PromptAttachmentRef,
     SessionWorkspace,
-    ScriptWorkflowSessionConfig,
+    WorkflowSessionConfig,
 } from "./types.js";
 import { validateWorkspaceText } from "./workspace-check.js";
 import type { SessionCatalog, SessionEvent, SessionVisibility, SessionRow } from "./cms.js";
@@ -35,12 +35,12 @@ import { assertUnambiguousProvider, isWebOptions, type PilotSwarmWebOptions } fr
 import { WebPilotSwarmClient } from "./web/web-client.js";
 import { loadModelProviderTypes, type ModelProviderRegistry } from "./model-providers.js";
 import { resolveRuntimeModelSelection, type RuntimeModelSelection } from "./provider-catalog.js";
-import { compileScriptWorkflow, ScriptWorkflowCompileError } from "./script-workflow/compiler.js";
+import { compileWorkflow, validateWorkflowInputs, WorkflowCompileError } from "./workflow/compiler.js";
 import {
-    SCRIPT_WORKFLOW_LATEST_VERSION,
-    SCRIPT_WORKFLOW_ORCHESTRATION_NAME,
-    type ScriptWorkflowOrchestrationInput,
-} from "./script-workflow/orchestration.js";
+    WORKFLOW_SESSION_LATEST_VERSION,
+    WORKFLOW_SESSION_ORCHESTRATION_NAME,
+    type WorkflowOrchestrationInput,
+} from "./workflow/orchestration.js";
 
 // duroxide is CommonJS — use createRequire for ESM compatibility
 import { createRequire } from "node:module";
@@ -173,8 +173,8 @@ export class PilotSwarmClient {
     // ─── Session Management ──────────────────────────────────
 
     /**
-     * Create and start a script workflow session: a session that runs the
-     * script graph in `config.yaml` instead of a conversation. The YAML is
+     * Create and start a workflow session: a session that runs the
+     * workflow graph in `config.yaml` instead of a conversation. The YAML is
      * compiled here first, so an invalid definition is refused before any
      * session exists. Pass `parentSessionId` to create it as a child of an
      * agent session; that session is told the result when it ends.
@@ -182,20 +182,22 @@ export class PilotSwarmClient {
      * Idempotent for a given `sessionId`: a second call returns the same
      * session without starting a second run.
      */
-    async createScriptWorkflowSession(config: ScriptWorkflowSessionConfig & { notifyParent?: boolean }): Promise<{ sessionId: string; workflowName: string }> {
+    async createWorkflowSession(config: WorkflowSessionConfig & { notifyParent?: boolean }): Promise<{ sessionId: string; workflowName: string }> {
         if (!this.duroxideClient) throw new Error("PilotSwarmClient is not started.");
-        let workflowName: string;
-        try {
-            workflowName = compileScriptWorkflow(config.yaml).name;
-        } catch (error) {
-            if (error instanceof ScriptWorkflowCompileError) {
-                throw Object.assign(new Error(`Invalid workflow: ${error.message}`), { code: "WORKFLOW_INVALID", status: 400 });
-            }
-            throw error;
-        }
         const inputs = config.inputs && typeof config.inputs === "object" && !Array.isArray(config.inputs)
             ? config.inputs
             : {};
+        let workflowName: string;
+        try {
+            const compiled = compileWorkflow(config.yaml);
+            validateWorkflowInputs(compiled, inputs);
+            workflowName = compiled.name;
+        } catch (error) {
+            if (error instanceof WorkflowCompileError) {
+                throw Object.assign(new Error(`Invalid workflow: ${error.message}`), { code: error.code, status: 400 });
+            }
+            throw error;
+        }
         const sessionId = config.sessionId ?? crypto.randomUUID();
         const orchestrationId = `session-${sessionId}`;
         const existing = await this._catalog.getSession(sessionId).catch(() => null);
@@ -212,7 +214,7 @@ export class PilotSwarmClient {
             });
             await this._catalog.updateSession(sessionId, { title: `Workflow: ${workflowName}`, titleLocked: true });
         }
-        const input: ScriptWorkflowOrchestrationInput = {
+        const input: WorkflowOrchestrationInput = {
             sessionId,
             yaml: config.yaml,
             inputs,
@@ -221,9 +223,9 @@ export class PilotSwarmClient {
         };
         await this.duroxideClient.startOrchestrationVersioned(
             orchestrationId,
-            SCRIPT_WORKFLOW_ORCHESTRATION_NAME,
+            WORKFLOW_SESSION_ORCHESTRATION_NAME,
             input,
-            SCRIPT_WORKFLOW_LATEST_VERSION,
+            WORKFLOW_SESSION_LATEST_VERSION,
         );
         if (!existing || existing.state === "pending") {
             await this._catalog.updateSession(sessionId, { orchestrationId, state: "running", lastActiveAt: new Date() });
@@ -514,7 +516,7 @@ export class PilotSwarmClient {
         const persisted = await this._catalog.getSession(sessionId).catch(() => null);
         if (persisted?.sessionKind === "workflow") {
             throw Object.assign(
-                new Error(`Session ${sessionId} is a workflow session; it runs a script graph and has no conversation to resume.`),
+                new Error(`Session ${sessionId} is a workflow session; it runs a workflow graph and has no conversation to resume.`),
                 { code: "WORKFLOW_SESSION_NOT_CONVERSATIONAL", status: 409 },
             );
         }

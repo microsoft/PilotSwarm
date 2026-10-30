@@ -41,10 +41,10 @@ import type { AgentConfig } from "./agent-loader.js";
 import { installAgentPackages, loadAgentPackageTools } from "./agent-package-installer.js";
 import {
     createWorkflowCanvasPublisher,
-    registerScriptWorkflowActivities,
-    SCRIPT_WORKFLOW_ORCHESTRATION_NAME,
-    SCRIPT_WORKFLOW_ORCHESTRATION_REGISTRY,
-} from "./script-workflow/index.js";
+    registerWorkflowActivities,
+    WORKFLOW_SESSION_ORCHESTRATION_NAME,
+    WORKFLOW_SESSION_ORCHESTRATION_REGISTRY,
+} from "./workflow/index.js";
 import fs from "node:fs";
 import os from "node:os";
 import { monitorEventLoopDelay, type IntervalHistogram } from "node:perf_hooks";
@@ -138,16 +138,16 @@ export function resolveDuroxideLockOptions(
     return options;
 }
 
-/** @internal Script workflow switch and runtimes: explicit option > deployment env > off. */
-export function resolveScriptWorkflowSettings(
-    config: PilotSwarmWorkerOptions["scriptWorkflows"],
+/** @internal Workflow script switch and runtimes: explicit option > deployment env > off. */
+export function resolveWorkflowScriptSettings(
+    config: PilotSwarmWorkerOptions["workflowScripts"],
     env: Record<string, string | undefined> = process.env,
 ): { enabled: boolean; executables: Partial<Record<"node" | "python" | "powershell", string>> } {
-    const flag = String(env.PILOTSWARM_SCRIPT_WORKFLOWS ?? "").trim().toLowerCase();
+    const flag = String(env.PILOTSWARM_WORKFLOW_SCRIPTS ?? "").trim().toLowerCase();
     const enabled = config?.enabled ?? (flag === "1" || flag === "true" || flag === "yes");
     const executables: Partial<Record<"node" | "python" | "powershell", string>> = {
-        ...(env.PILOTSWARM_SCRIPT_WORKFLOW_PYTHON ? { python: env.PILOTSWARM_SCRIPT_WORKFLOW_PYTHON } : {}),
-        ...(env.PILOTSWARM_SCRIPT_WORKFLOW_PWSH ? { powershell: env.PILOTSWARM_SCRIPT_WORKFLOW_PWSH } : {}),
+        ...(env.PILOTSWARM_WORKFLOW_PYTHON ? { python: env.PILOTSWARM_WORKFLOW_PYTHON } : {}),
+        ...(env.PILOTSWARM_WORKFLOW_PWSH ? { powershell: env.PILOTSWARM_WORKFLOW_PWSH } : {}),
         ...(config?.executables ?? {}),
     };
     return { enabled, executables };
@@ -972,15 +972,15 @@ export class PilotSwarmWorker {
             );
         }
 
-        // Script workflow sessions: a sibling controller orchestration. It is
-        // registered on every worker so that a workflow started while script
-        // workflows are off fails with a clear message instead of waiting.
-        const scriptWorkflowSettings = resolveScriptWorkflowSettings(this.config.scriptWorkflows);
-        this.sessionManager.scriptWorkflowsEnabled = scriptWorkflowSettings.enabled;
-        const scriptWorkflowClient = new Client(this._provider);
-        registerScriptWorkflowActivities(this.runtime, {
+        // Workflow sessions: a sibling controller orchestration. It is
+        // registered on every worker so that a workflow started where scripts
+        // are off fails with a clear message instead of waiting.
+        const workflowScriptSettings = resolveWorkflowScriptSettings(this.config.workflowScripts);
+        this.sessionManager.workflowScriptsEnabled = workflowScriptSettings.enabled;
+        const workflowClient = new Client(this._provider);
+        registerWorkflowActivities(this.runtime, {
             catalog: this._catalog,
-            enabled: () => scriptWorkflowSettings.enabled,
+            enabled: () => workflowScriptSettings.enabled,
             canvas: createWorkflowCanvasPublisher({
                 catalog: this._catalog,
                 artifactStore: this.artifactStore,
@@ -993,22 +993,22 @@ export class PilotSwarmWorker {
                 await this.factStore?.deleteSessionFactsForSession(sessionId).catch(() => undefined);
             },
             notifyParent: async (parentSessionId, prompt, sender) => {
-                await scriptWorkflowClient.enqueueEvent(
+                await workflowClient.enqueueEvent(
                     `session-${parentSessionId}`,
                     "messages",
                     JSON.stringify({ prompt, sender }),
                 );
             },
-            runnerOptions: { executables: scriptWorkflowSettings.executables },
+            runnerOptions: { executables: workflowScriptSettings.executables },
         });
-        for (const registration of SCRIPT_WORKFLOW_ORCHESTRATION_REGISTRY) {
+        for (const registration of WORKFLOW_SESSION_ORCHESTRATION_REGISTRY) {
             this.runtime.registerOrchestrationVersioned(
-                SCRIPT_WORKFLOW_ORCHESTRATION_NAME,
+                WORKFLOW_SESSION_ORCHESTRATION_NAME,
                 registration.version,
                 registration.handler,
             );
         }
-        trace(`[worker] script workflows ${scriptWorkflowSettings.enabled ? "enabled" : "disabled"}`);
+        trace(`[worker] workflow scripts ${workflowScriptSettings.enabled ? "enabled" : "disabled"}`);
 
         // Auto-register sweeper tools if CMS is available
         if (this._catalog) {

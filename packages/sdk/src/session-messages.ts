@@ -112,7 +112,7 @@ async function validateSessionMessageTarget(
     const targetRow = await catalog.getSession(toSessionId).catch(() => null);
     if (!targetRow) throw new Error(`Session ${toSessionId.slice(0, 8)} was not found.`);
     if (targetRow.sessionKind === "workflow") {
-        throw new Error(`Session ${toSessionId.slice(0, 8)} is a workflow session; it runs a script graph and takes no session ${operationKind}.`);
+        throw new Error(`Session ${toSessionId.slice(0, 8)} is a workflow session; it runs a workflow graph and takes no session ${operationKind}.`);
     }
     if (targetRow.state === "failed" || targetRow.state === "cancelled") {
         throw new Error(`Session ${toSessionId.slice(0, 8)} is terminal and cannot accept cross-session ${operationKind}.`);

@@ -17,24 +17,27 @@ const OWNER = { provider: "test", subject: "workflow-owner" };
 const SETUP_PROMPT = "Every 15 seconds, run the counter workflow and tell me what it returns.";
 // The orchestration delivers the result as a wake-up whose system context
 // carries the notification text.
-const isWorkflowResult = (text) => /Workflow session \S+ "counter" completed after/.test(text);
+const isWorkflowResult = (text) => /Workflow session \S+ "counter" ended at state 'counted' with outcome succeeded/.test(text);
 
 const WORKFLOW_YAML = `
 apiVersion: pilotswarm.dev/v1alpha1
-kind: ScriptWorkflow
+kind: Workflow
 metadata:
   name: counter
-spec:
-  entry: count
-  nodes:
-    count:
-      type: script
-      runtime: node
-      source: |
-        await callTool("store_fact", { key: "counter/" + context.inputs.run, value: { run: context.inputs.run } });
-        await setResult("success", { run: context.inputs.run });
-      next:
-        success: null
+  version: 1.0.0
+inputs:
+  run: { type: string, required: true }
+initial: count
+states:
+  count:
+    type: script
+    runtime: node
+    source: |
+      await callTool("store_fact", { key: "counter/" + context.inputs.run, value: { run: context.inputs.run } });
+      await setResult("success", { run: context.inputs.run });
+    completion: { outcomes: [success] }
+    transition: { next: { success: counted } }
+  counted: { type: terminal, outcome: succeeded, output: \${states.count.result} }
 `;
 
 const getEnv = useSuiteEnv(import.meta.url);
@@ -77,7 +80,7 @@ describe("agent-driven script workflows", () => {
         const env = getEnv();
         await withScriptedModel(env, {
             respond,
-            worker: { scriptWorkflows: { enabled: true } },
+            worker: { workflowScripts: { enabled: true } },
         }, async ({ client, model, qualifiedModel }) => {
             const mgmt = await createManagementClient(env);
             try {
@@ -127,7 +130,7 @@ describe("agent-driven script workflows", () => {
         const env = getEnv();
         await withScriptedModel(env, {
             respond: () => ({ content: "ok" }),
-            worker: { scriptWorkflows: { enabled: false } },
+            worker: { workflowScripts: { enabled: false } },
         }, async ({ client, model, qualifiedModel }) => {
             const session = await client.createSession({ model: qualifiedModel, owner: OWNER });
             await session.sendAndWait("list your tools", TIMEOUT);
