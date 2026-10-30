@@ -222,7 +222,7 @@ export function buildWorkflowCanvasHtml(workflow: CompiledScriptWorkflow, initia
 (function () {
   var graph = JSON.parse(document.getElementById("graph-data").textContent);
   var SVG = "http://www.w3.org/2000/svg";
-  var W = 150, H = 46, GAP_X = 46, GAP_Y = 70, PAD = 30, END = "\\u0000end";
+  var W = 184, H = 46, GAP_X = 46, GAP_Y = 70, PAD = 30, SIDE = 90, END = "\\u0000end";
   var byId = {};
   graph.nodes.forEach(function (n) { byId[n.id] = n; });
 
@@ -243,7 +243,8 @@ export function buildWorkflowCanvasHtml(workflow: CompiledScriptWorkflow, initia
   var rows = [];
   graph.nodes.forEach(function (n) { (rows[layer[n.id]] = rows[layer[n.id]] || []).push(n.id); });
   var widest = Math.max.apply(null, rows.map(function (r) { return r ? r.length : 0; }).concat([1]));
-  var width = Math.max(360, widest * W + (widest - 1) * GAP_X + PAD * 2 + 80);
+  // Side lanes: ends that skip layers run down the left, back edges up the right.
+  var width = Math.max(360, widest * W + (widest - 1) * GAP_X + PAD * 2 + SIDE * 2);
   var pos = {};
   rows.forEach(function (row, li) {
     if (!row) return;
@@ -272,6 +273,7 @@ export function buildWorkflowCanvasHtml(workflow: CompiledScriptWorkflow, initia
   });
   var edgeLayer = el("g", {}, svg), nodeLayer = el("g", {}, svg);
   var edges = [];
+  var endLanes = 0, labelAnchor = "middle";
   graph.nodes.forEach(function (n) {
     var outs = Object.keys(n.next || {});
     outs.forEach(function (outcome, k) {
@@ -279,7 +281,15 @@ export function buildWorkflowCanvasHtml(workflow: CompiledScriptWorkflow, initia
       var a = pos[n.id], b = pos[target]; if (!a || !b) return;
       var sx = a.x + W / 2 + (k - (outs.length - 1) / 2) * 16, sy = a.y + H;
       var d, lx, ly;
-      if (target === END) {
+      if (target === END && layer[n.id] < maxLayer) {
+        // An end from an upper layer: around the left side, clear of the nodes below.
+        var lane = PAD + 16 + (endLanes++ % 4) * 12;
+        var ay0 = a.y + H / 2, ecx = b.x, ecy = b.y + 14;
+        d = "M" + a.x + "," + ay0 + " C" + lane + "," + ay0 + " " + lane + "," + ay0 + " " + lane + "," + (ay0 + 30)
+          + " L" + lane + "," + (ecy - 30) + " C" + lane + "," + ecy + " " + lane + "," + ecy + " " + (ecx + 4) + "," + ecy;
+        lx = lane + 4; ly = ay0 + 24;
+        labelAnchor = "start";
+      } else if (target === END) {
         var ex = b.x + 18, ey = b.y;
         d = "M" + sx + "," + sy + " C" + sx + "," + (sy + 40) + " " + ex + "," + (ey - 40) + " " + ex + "," + ey;
         lx = (sx + ex) / 2; ly = (sy + ey) / 2;
@@ -296,7 +306,8 @@ export function buildWorkflowCanvasHtml(workflow: CompiledScriptWorkflow, initia
       }
       var g = el("g", { "class": "edge" }, edgeLayer);
       el("path", { d: d, "marker-end": "url(#arrow)" }, g);
-      var t = el("text", { x: lx, y: ly, "text-anchor": "middle" }, g);
+      var t = el("text", { x: lx, y: ly, "text-anchor": labelAnchor }, g);
+      labelAnchor = "middle";
       t.textContent = outcome;
       edges.push({ key: n.id + "\\u0001" + outcome, g: g, path: g.firstChild });
     });
@@ -306,7 +317,7 @@ export function buildWorkflowCanvasHtml(workflow: CompiledScriptWorkflow, initia
     var p = pos[n.id];
     var g = el("g", { "class": "node" + (n.id === graph.entry ? " entry" : ""), transform: "translate(" + p.x + "," + p.y + ")" }, nodeLayer);
     el("rect", { width: W, height: H, rx: 8 }, g);
-    var t = el("text", { x: 10, y: 19 }, g); t.textContent = n.id.length > 18 ? n.id.slice(0, 17) + "…" : n.id;
+    var t = el("text", { x: 10, y: 19 }, g); t.textContent = n.id.length > 22 ? n.id.slice(0, 21) + "…" : n.id;
     var sub = el("text", { x: 10, y: 36, "class": "sub" }, g); sub.textContent = n.runtime;
     var runs = el("text", { x: W - 10, y: 19, "text-anchor": "end", "class": "runs" }, g);
     var title = el("title", {}, g); title.textContent = n.id;
@@ -348,7 +359,8 @@ export function buildWorkflowCanvasHtml(workflow: CompiledScriptWorkflow, initia
       var e = nodeEls[id];
       e.g.setAttribute("class", e.base + " " + n.state);
       e.runs.textContent = n.runs > 1 ? "×" + n.runs : "";
-      e.sub.textContent = e.runtime + (n.lastOutcome ? " → " + n.lastOutcome : "") + (n.lastDurationMs !== undefined ? " · " + fmt(n.lastDurationMs) : "");
+      var sub = e.runtime + (n.lastOutcome ? " → " + n.lastOutcome : "") + (n.lastDurationMs !== undefined ? " · " + fmt(n.lastDurationMs) : "");
+      e.sub.textContent = sub.length > 27 ? sub.slice(0, 26) + "…" : sub;
     });
     edges.forEach(function (e) {
       var taken = (state.taken || {})[e.key] > 0;
