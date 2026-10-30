@@ -649,10 +649,12 @@ function buildUsageSummaryUpsert(data: unknown): {
     };
 }
 
-function isFailureToolCompletion(data: unknown): boolean {
+/** @internal */
+export function isFailureToolCompletion(data: unknown): boolean {
     const eventData = normalizeEventData(data as Record<string, unknown> | undefined);
     if (!eventData) return false;
-    return eventData.resultType === "failure"
+    return eventData.success === false
+        || eventData.resultType === "failure"
         || typeof eventData.error === "string"
         || typeof eventData.errorMessage === "string";
 }
