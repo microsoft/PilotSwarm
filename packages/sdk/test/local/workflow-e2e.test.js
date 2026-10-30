@@ -220,7 +220,8 @@ states:
     runtime: node
     source: |
       const sum = await callTool("calc/add", { a: 20, b: 22 });
-      const sessions = await callTool("list_sessions", { include_children: true });
+      // Look itself up by id: other tests may have created more sessions than one page holds.
+      const sessions = await callTool("list_sessions", { session_id: context.sessionId });
       const events = await callTool("read_agent_events", { agent_id: context.sessionId, event_types: ["workflow.started"] });
       await setResult("success", { sum, kinds: sessions.sessions.filter((s) => s.self).map((s) => s.kind), events });
     completion: { outcomes: [success] }
