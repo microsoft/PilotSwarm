@@ -20,10 +20,10 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "copyArtifact",
     "createMyProvider",
     "createProvider",
-    "createWorkflowSession",
     "createSession",
     "createSessionForAgent",
     "createSessionGroup",
+    "createWorkflowSession",
     "deleteAgentPackage",
     "deleteArtifact",
     "deleteFact",
@@ -319,17 +319,6 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Create a workflow session from Workflow YAML (kind: Workflow). It runs the workflow graph instead of a conversation; inputs is a JSON object checked against the workflow's inputs schema and read by its states as context.inputs.
-     * @remarks `POST /sessions/workflow` — access: `session:create`
-     */
-    createWorkflowSession(params: {
-        yaml?: any;
-        inputs?: any;
-        groupId?: any;
-        visibility?: any;
-    }): Promise<any>;
-
-    /**
      * Create a session. Owner is the authenticated principal; visibility defaults to the deployment default. workspace { root, folder? } sets its working folder.
      * @remarks `POST /sessions` — access: `session:create`
      */
@@ -366,6 +355,17 @@ export interface ManagementOps {
      */
     createSessionGroup(params: {
         input?: any;
+    }): Promise<any>;
+
+    /**
+     * Create a workflow session from Workflow YAML (kind: Workflow). It runs the workflow graph instead of a conversation; inputs is a JSON object checked against the workflow's inputs schema and read by its states as context.inputs.
+     * @remarks `POST /sessions/workflow` — access: `session:create`
+     */
+    createWorkflowSession(params: {
+        yaml?: any;
+        inputs?: any;
+        groupId?: any;
+        visibility?: any;
     }): Promise<any>;
 
     /**
@@ -1824,10 +1824,10 @@ export function createManagementOps(
         copyArtifact: (params: Record<string, unknown> = {}) => callOp("copyArtifact", params),
         createMyProvider: (params: Record<string, unknown> = {}) => callOp("createMyProvider", params),
         createProvider: (params: Record<string, unknown> = {}) => callOp("createProvider", params),
-        createWorkflowSession: (params: Record<string, unknown> = {}) => callOp("createWorkflowSession", params),
         createSession: (params: Record<string, unknown> = {}) => callOp("createSession", params),
         createSessionForAgent: (params: Record<string, unknown> = {}) => callOp("createSessionForAgent", params),
         createSessionGroup: (params: Record<string, unknown> = {}) => callOp("createSessionGroup", params),
+        createWorkflowSession: (params: Record<string, unknown> = {}) => callOp("createWorkflowSession", params),
         deleteAgentPackage: (params: Record<string, unknown> = {}) => callOp("deleteAgentPackage", params),
         deleteArtifact: (params: Record<string, unknown> = {}) => callOp("deleteArtifact", params),
         deleteFact: (params: Record<string, unknown> = {}) => callOp("deleteFact", params),
