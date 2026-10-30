@@ -179,6 +179,14 @@ states:
 
                 const first = await client.createWorkflowSession({ yaml: LONG });
                 await waitForEvent(first.sessionId, "workflow.state_started");
+                // Stop targets a turn; a workflow has none, so it answers at once and the run goes on.
+                expect(await mgmt.stopSessionTurn(first.sessionId, { timeoutMs: 5_000 })).toEqual({
+                    outcome: "no_active_turn",
+                    detail: "workflow sessions have no turns; cancel the session to stop the run",
+                });
+                expect((await mgmt.getSession(first.sessionId)).status).toBe("running");
+                expect(await mgmt.getSessionEvents(first.sessionId, 0, 200, ["workflow.state_cancelled", "workflow.state_started"]))
+                    .toHaveLength(1);
                 const started = Date.now();
                 await mgmt.cancelSession(first.sessionId, "no longer needed");
                 const cancelled = await mgmt.getSession(first.sessionId);

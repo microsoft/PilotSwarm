@@ -11,6 +11,7 @@ import {
     appendEventToHistory,
     buildAgentPickerItems,
     buildHistoryModel,
+    canStopSessionTurn,
     describeWorkflowEvent,
     CHAT_HISTORY_EVENT_TYPES,
     createInitialState,
@@ -203,11 +204,16 @@ test("a refused workflow keeps the editor open with the reason and the text", as
     assert.equal(editor.busy, false);
 });
 
-test("a workflow session takes no steering and no regeneration", async () => {
+test("a workflow session takes no steering, no Stop and no regeneration", async () => {
     const { controller, store } = makeController({ regenerateSession: async () => { throw new Error("must not be called"); } });
     store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf-1", title: "Workflow: x", status: "running", sessionKind: "workflow" }] });
     store.dispatch({ type: "sessions/selected", sessionId: "wf-1" });
     assert.equal(selectTurnControlView(store.getState()).canSteer, false);
+    assert.equal(selectTurnControlView(store.getState()).canStop, false);
+    assert.equal(canStopSessionTurn({ sessionId: "wf-1", status: "running", sessionKind: "workflow" }), false);
+    assert.equal(canStopSessionTurn({ sessionId: "a-1", status: "running" }), true);
+    await controller.stopActiveSessionTurn();
+    assert.match(store.getState().ui.statusText || "", /Workflow sessions have no turns; cancel the session/);
     await controller.regenerateActiveSession({ confirmed: true });
     assert.match(store.getState().ui.statusText || "", /Workflow sessions run a workflow graph/);
 });

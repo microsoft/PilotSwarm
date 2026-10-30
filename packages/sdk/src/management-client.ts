@@ -402,6 +402,9 @@ function normalizeSystemRestartDisposition(disposition: SystemSessionRestartDisp
     );
 }
 
+/** Stop's answer for a workflow session, which has no turns to stop. */
+const WORKFLOW_STOP_DETAIL = "workflow sessions have no turns; cancel the session to stop the run";
+
 /** A workflow session runs a workflow graph; it has no conversation to send to. */
 function workflowNotConversationalError(sessionId: string): Error {
     return Object.assign(
@@ -2646,7 +2649,9 @@ export class PilotSwarmManagementClient {
      *    finished; the turn completed normally.
      *  - stop_forced: legacy path only.
      *  - no_active_turn: nothing was running (`detail` names any other
-     *    refusal, for example `not_found`).
+     *    refusal, for example `not_found`). A workflow session has no turns:
+     *    Stop always answers no_active_turn and leaves the run alone; cancel
+     *    the session to stop it.
      *  - timeout: no outcome was observed before `timeoutMs`. `controlSeq`
      *    identifies the accepted Stop, not proof that it is still open.
      *    Read its outcome before deciding whether another action is needed.
@@ -2659,6 +2664,9 @@ export class PilotSwarmManagementClient {
         }
         const requestId = validTurnControlRequestId(opts?.requestId, "stopSessionTurn") ?? crypto.randomUUID();
         const timeoutMs = validStopTimeoutMs(opts?.timeoutMs);
+        if ((await this._catalog!.getSession(sessionId).catch(() => null))?.sessionKind === "workflow") {
+            return { outcome: "no_active_turn", detail: WORKFLOW_STOP_DETAIL };
+        }
         const added = await this._turnControlAdd(sessionId, "stop", reason, requestId, opts?.caller);
         if ("refused" in added) {
             if (added.refused === "legacy_turn") {

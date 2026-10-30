@@ -11508,6 +11508,10 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: "Select a session to stop its turn." });
             return;
         }
+        if (session.sessionKind === "workflow") {
+            this.dispatch({ type: "ui/status", text: "Workflow sessions have no turns; cancel the session to stop the run." });
+            return;
+        }
         if (typeof this.transport.stopSessionTurn !== "function") {
             this.dispatch({ type: "ui/status", text: "Stop turn is not supported by this transport" });
             return;

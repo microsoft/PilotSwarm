@@ -1705,7 +1705,8 @@ export function selectSessionFilterExceptionNotice(state) {
  * Applies to user AND system sessions; group/container rows are not sessions.
  */
 export function canStopSessionTurn(session) {
-    if (!session || session.isGroup) return false;
+    // A workflow session has no turns; Cancel is how it is stopped.
+    if (!session || session.isGroup || isWorkflowSession(session)) return false;
     return (session.status || "") === "running";
 }
 

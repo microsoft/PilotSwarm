@@ -154,8 +154,10 @@ JavaScript `Error`, a PowerShell error), so the script can catch it.
 
 A workflow session does not accept chat messages, answers, steers or session
 messages (refused with `WORKFLOW_SESSION_NOT_CONVERSATIONAL` or a clear
-error) or regeneration (refused with `REGENERATE_UNSUPPORTED`); a stop request
-answers `no_active_turn`.
+error) or regeneration (refused with `REGENERATE_UNSUPPORTED`). A workflow has
+no turns, so a stop request answers `no_active_turn` without touching the run,
+and the portal and TUI offer no Stop for it. Pause and resume are not supported
+yet; cancel is the way to stop a run.
 
 ## Stopping a workflow
 
