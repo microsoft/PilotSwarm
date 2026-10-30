@@ -23,15 +23,11 @@ function resolveApiUrl(flags) {
     return apiUrl.replace(/\/+$/, "");
 }
 
-/**
- * Resolve the deployment's auth mode and, for Entra, run sign-in (silent
- * first, then device code) and return a token supplier. Used by both the
- * auth subcommands and TUI startup — runs before the Ink app renders.
- */
-export async function bootstrapApiAuth(apiUrl, { output = console.error, interactive = true, useDeviceCode = false } = {}) {
-    const authConfig = await fetchAuthConfig(apiUrl);
+// Shared dispatch only: resolving a provider must not acquire tokens or
+// start an interactive flow (in particular for `auth status`).
+function resolveAuthMode(authConfig, apiUrl) {
     if (!authConfig?.enabled || authConfig?.provider === "none") {
-        return { authConfig, getAccessToken: async () => null };
+        return { provider: "none" };
     }
     if (authConfig.provider === "dev") {
         // Dev roster provider (multi-user test deployments): the bearer token
@@ -43,11 +39,27 @@ export async function bootstrapApiAuth(apiUrl, { output = console.error, interac
                 + `(e.g. PILOTSWARM_DEV_USER=alice) to choose who you sign in as.`,
             );
         }
-        output(`Signed in to ${apiUrl} as dev persona '${persona}'.`);
-        return { authConfig, getAccessToken: async () => `dev:${persona}` };
+        return { provider: "dev", persona };
     }
     if (authConfig.provider !== "entra") {
         throw new Error(`Unsupported auth provider '${authConfig.provider}' reported by ${apiUrl}.`);
+    }
+    return { provider: "entra" };
+}
+
+/**
+ * Discover auth for TUI startup before the Ink app renders. Entra signs in
+ * silent-first, then browser/device code, and returns a token supplier.
+ */
+export async function bootstrapApiAuth(apiUrl, { output = console.error, interactive = true, useDeviceCode = false } = {}) {
+    const authConfig = await fetchAuthConfig(apiUrl);
+    const mode = resolveAuthMode(authConfig, apiUrl);
+    if (mode.provider === "none") {
+        return { authConfig, getAccessToken: async () => null };
+    }
+    if (mode.provider === "dev") {
+        output(`Signed in to ${apiUrl} as dev persona '${mode.persona}'.`);
+        return { authConfig, getAccessToken: async () => `dev:${mode.persona}` };
     }
     if (interactive) {
         await signIn(apiUrl, authConfig, { output, useDeviceCode });
@@ -75,16 +87,20 @@ export async function runAuthCommand(argv) {
 pilotswarm auth — manage Web API sign-in
 
 USAGE
-  pilotswarm auth login  --api-url <url>   Sign in (opens your browser) and cache tokens
-  pilotswarm auth status --api-url <url>   Show the signed-in account
+  pilotswarm auth login  --api-url <url>   Sign in (Entra: browser and cached tokens)
+  pilotswarm auth status --api-url <url>   Show Entra account/cache or dev persona selection
   pilotswarm auth logout --api-url <url>   Drop cached tokens for that origin
 
 FLAGS
-      --device-code    Use the device-code flow instead of the browser
+      --device-code    Entra only: use device code instead of the browser
                        (headless hosts; only where the tenant permits it —
                        many corp tenants block device code via Conditional Access)
 
   PILOTSWARM_API_URL can replace --api-url.
+  Dev: set PILOTSWARM_DEV_USER to a persona id (e.g. alice); no interactive login.
+  Dev status reports local selection, not server-verified authentication.
+  Disabled/none auth needs no login. Other providers are unsupported.
+  Logout clears local cached tokens offline; it does not unset PILOTSWARM_DEV_USER.
 `.trim());
         return flags.help ? 0 : 1;
     }
@@ -98,8 +114,16 @@ FLAGS
     }
 
     const authConfig = await fetchAuthConfig(apiUrl);
-    if (!authConfig?.enabled || authConfig?.provider === "none") {
+    const mode = resolveAuthMode(authConfig, apiUrl);
+    if (mode.provider === "none") {
         console.log(`${apiUrl} does not require sign-in (auth provider: ${authConfig?.provider || "none"}).`);
+        return 0;
+    }
+    if (mode.provider === "dev") {
+        console.log(`Selected dev persona '${mode.persona}' for ${apiUrl}.`);
+        console.log(action === "login"
+            ? "No interactive login is required; the server validates the persona on API requests."
+            : "Local selection only; server authentication and roster membership are not verified.");
         return 0;
     }
 

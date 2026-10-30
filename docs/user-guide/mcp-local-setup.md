@@ -27,7 +27,7 @@ to run this against a real deployment.
 2. **Authenticate once** against the deployment:
 
    ```bash
-   node packages/app/tui/bin/pilotswarm.js auth login --api-url https://<your-portal-host>
+   node packages/app/tui/bin/tui.js auth login --api-url https://<your-portal-host>
    ```
 
    This caches a refresh token under `~/.config/pilotswarm/auth/`; the MCP
