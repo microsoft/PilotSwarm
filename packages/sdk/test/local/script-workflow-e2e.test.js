@@ -5,6 +5,8 @@
  */
 import { describe, it, expect } from "vitest";
 import { spawnSync } from "node:child_process";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { createManagementClient, withClient } from "../helpers/local-workers.js";
 
@@ -187,4 +189,48 @@ spec:
             }
         });
     });
+
+    it("scripts reach the worker's default MCP servers and the session tools, as the workflow session", async () => {
+        const env = getEnv();
+        const calc = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../fixtures/workflow-mcp/calc-server.mjs");
+        const yaml = `
+apiVersion: pilotswarm.dev/v1alpha1
+kind: ScriptWorkflow
+metadata: { name: tools-check }
+spec:
+  entry: use
+  nodes:
+    use:
+      type: script
+      runtime: node
+      source: |
+        const sum = await callTool("calc/add", { a: 20, b: 22 });
+        const sessions = await callTool("list_sessions", { include_children: true });
+        const events = await callTool("read_agent_events", { agent_id: context.sessionId, event_types: ["workflow.started"] });
+        await setResult("success", { sum, kinds: sessions.sessions.filter((s) => s.self).map((s) => s.kind), events });
+      next: { success: null }
+`;
+        await withClient(env, {
+            worker: {
+                scriptWorkflows: { enabled: true },
+                mcpServers: { calc: { command: process.execPath, args: [calc], tools: ["add"] } },
+            },
+        }, async (client) => {
+            const mgmt = await createManagementClient(env);
+            try {
+                const { sessionId } = await client.createScriptWorkflowSession({ yaml });
+                const view = await waitForTerminal(mgmt, sessionId);
+                const done = (await mgmt.getSessionEvents(sessionId, 0, 200, ["workflow.completed", "workflow.failed"]))[0];
+                expect(view.status, JSON.stringify(done?.data)).toBe("completed");
+                const output = JSON.parse(done.data.outputPreview);
+                expect(output.sum).toBe("42");
+                expect(output.kinds).toEqual(["workflow"]);
+                // The same rule an agent meets: the caller is the workflow session itself.
+                expect(output.events.error).toMatch(/cannot read your own session events/);
+            } finally {
+                await mgmt.stop?.();
+            }
+        });
+    });
 });
+
