@@ -23,15 +23,11 @@ function resolveApiUrl(flags) {
     return apiUrl.replace(/\/+$/, "");
 }
 
-/**
- * Resolve the deployment's auth mode and, for Entra, run sign-in (silent
- * first, then device code) and return a token supplier. Used by both the
- * auth subcommands and TUI startup — runs before the Ink app renders.
- */
-export async function bootstrapApiAuth(apiUrl, { output = console.error, interactive = true, useDeviceCode = false } = {}) {
-    const authConfig = await fetchAuthConfig(apiUrl);
+// Shared dispatch only: resolving a provider must not acquire tokens or
+// start an interactive flow (in particular for `auth status`).
+function resolveAuthMode(authConfig, apiUrl) {
     if (!authConfig?.enabled || authConfig?.provider === "none") {
-        return { authConfig, getAccessToken: async () => null };
+        return { provider: "none" };
     }
     if (authConfig.provider === "dev") {
         // Dev roster provider (multi-user test deployments): the bearer token
@@ -43,11 +39,40 @@ export async function bootstrapApiAuth(apiUrl, { output = console.error, interac
                 + `(e.g. PILOTSWARM_DEV_USER=alice) to choose who you sign in as.`,
             );
         }
-        output(`Signed in to ${apiUrl} as dev persona '${persona}'.`);
-        return { authConfig, getAccessToken: async () => `dev:${persona}` };
+        // The server rejects personas outside its published roster; fail here
+        // instead of on the first API request.
+        const roster = authConfig.client?.users;
+        if (!Array.isArray(roster)) {
+            return { provider: "dev", persona, rosterChecked: false };
+        }
+        const known = roster.map((user) => String(user?.id ?? "").trim().toLowerCase());
+        if (!known.includes(persona)) {
+            throw new Error(
+                `Dev persona '${persona}' is not in the roster of ${apiUrl}. `
+                + `Set PILOTSWARM_DEV_USER to one of: ${known.join(", ")}.`,
+            );
+        }
+        return { provider: "dev", persona, rosterChecked: true };
     }
     if (authConfig.provider !== "entra") {
         throw new Error(`Unsupported auth provider '${authConfig.provider}' reported by ${apiUrl}.`);
+    }
+    return { provider: "entra" };
+}
+
+/**
+ * Discover auth for TUI startup before the Ink app renders. Entra signs in
+ * silent-first, then browser/device code, and returns a token supplier.
+ */
+export async function bootstrapApiAuth(apiUrl, { output = console.error, interactive = true, useDeviceCode = false } = {}) {
+    const authConfig = await fetchAuthConfig(apiUrl);
+    const mode = resolveAuthMode(authConfig, apiUrl);
+    if (mode.provider === "none") {
+        return { authConfig, getAccessToken: async () => null };
+    }
+    if (mode.provider === "dev") {
+        output(`Signed in to ${apiUrl} as dev persona '${mode.persona}'.`);
+        return { authConfig, getAccessToken: async () => `dev:${mode.persona}` };
     }
     if (interactive) {
         await signIn(apiUrl, authConfig, { output, useDeviceCode });
@@ -85,6 +110,7 @@ FLAGS
                        many corp tenants block device code via Conditional Access)
 
   PILOTSWARM_API_URL can replace --api-url.
+  Dev-auth deployments: set PILOTSWARM_DEV_USER=<persona>; no browser sign-in.
 `.trim());
         return flags.help ? 0 : 1;
     }
@@ -98,8 +124,16 @@ FLAGS
     }
 
     const authConfig = await fetchAuthConfig(apiUrl);
-    if (!authConfig?.enabled || authConfig?.provider === "none") {
+    const mode = resolveAuthMode(authConfig, apiUrl);
+    if (mode.provider === "none") {
         console.log(`${apiUrl} does not require sign-in (auth provider: ${authConfig?.provider || "none"}).`);
+        return 0;
+    }
+    if (mode.provider === "dev") {
+        console.log(`Selected dev persona '${mode.persona}' for ${apiUrl}; no interactive sign-in is needed.`);
+        console.log(mode.rosterChecked
+            ? "The persona is in the deployment's dev roster."
+            : "The deployment published no dev roster, so the persona was not checked.");
         return 0;
     }
 
