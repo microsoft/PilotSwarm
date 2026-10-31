@@ -173,13 +173,15 @@ test("node selection and log height belong only to their workflow session", () =
     assert.equal(store.getState().ui.workflowViews.agent, undefined);
 });
 
-test("a phone keeps the workflow graph in Main until explicit node selection", () => {
-    const { controller, store } = harness();
-    store.dispatch({ type: "ui/sessionViewDevice", device: "mobile" });
-    controller.revealWorkflowCanvas("wf", true);
-    assert.equal(store.getState().ui.canvasOpen, false);
-    controller.applyCanvasUpdate("wf", { data: { rev: 1, slot: 1 } });
-    assert.equal(store.getState().ui.canvasOpen, false);
-    store.dispatch({ type: "canvas/flip", sessionId: "wf", slot: 1 });
-    assert.equal(store.getState().ui.canvasOpen, true);
+test("phone and cold-start unknown devices keep the graph in Main until explicit selection", () => {
+    for (const device of [null, "mobile"]) {
+        const { controller, store } = harness();
+        if (device) store.dispatch({ type: "ui/sessionViewDevice", device });
+        controller.revealWorkflowCanvas("wf", true);
+        assert.equal(store.getState().ui.canvasOpen, false);
+        controller.applyCanvasUpdate("wf", { data: { rev: 1, slot: 1 } });
+        assert.equal(store.getState().ui.canvasOpen, false);
+        store.dispatch({ type: "canvas/flip", sessionId: "wf", slot: 1 });
+        assert.equal(store.getState().ui.canvasOpen, true);
+    }
 });

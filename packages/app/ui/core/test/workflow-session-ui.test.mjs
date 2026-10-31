@@ -230,6 +230,7 @@ test("opening a workflow session shows its canvas; an agent session's canvas sta
     const { controller, store } = makeController({
         getSessionEventsBefore: async (_id, _before, _limit, types) => (types.includes("session.canvas_updated") ? [canvasEvent] : []),
     });
+    store.dispatch({ type: "ui/sessionViewDevice", device: "desktop" });
     store.dispatch({ type: "sessions/loaded", sessions: [
         { sessionId: "wf-1", title: "Workflow: x", status: "running", sessionKind: "workflow" },
         { sessionId: "agent-1", title: "Agent", status: "idle" },

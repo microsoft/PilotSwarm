@@ -6114,7 +6114,7 @@ export class PilotSwarmUiController {
         if (sessionId !== state.sessions.activeSessionId) return true;
         // A workflow's graph is already in Main. Do not cover it with the
         // phone's node-details layer until the viewer selects a node.
-        if (state.sessions.byId[sessionId]?.sessionKind === "workflow" && state.ui.sessionViewDevice === "mobile") return true;
+        if (state.sessions.byId[sessionId]?.sessionKind === "workflow" && state.ui.sessionViewDevice !== "desktop") return true;
         // The opt-out is PER SLOT: leaving one canvas by hand must not
         // silence a different canvas's first draw.
         if (state.canvas.prefs[canvasPrefKey(sessionId, slot)]?.optedOut) return true;
@@ -6184,7 +6184,7 @@ export class PilotSwarmUiController {
         const state = this.getState();
         if (state.sessions.activeSessionId !== sessionId) return;
         if (state.sessions.byId[sessionId]?.sessionKind !== "workflow") return;
-        if (state.ui.sessionViewDevice === "mobile") return;
+        if (state.ui.sessionViewDevice !== "desktop") return;
         if (state.canvas.prefs[canvasPrefKey(sessionId, 1)]?.optedOut) return;
         if (state.ui.rightPaneMode === "canvas" && state.ui.canvasOpen && (state.ui.canvasSlot || 1) === 1) return;
         this.dispatch({ type: "canvas/flip", sessionId, slot: 1 });
