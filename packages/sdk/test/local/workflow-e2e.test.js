@@ -5,6 +5,8 @@
  */
 import { describe, it, expect } from "vitest";
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { compileWorkflow, validateWorkflowInputs } from "../../src/workflow/compiler.ts";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { useSuiteEnv } from "../helpers/local-env.js";
@@ -12,6 +14,19 @@ import { createManagementClient, withClient } from "../helpers/local-workers.js"
 
 const getEnv = useSuiteEnv(import.meta.url);
 const hasPython = spawnSync("python3", ["--version"]).status === 0;
+
+/** Reproduce an already-admitted pre-policy run; this is not a public root-start API. */
+async function startLegacyAdmission(client, config) {
+    const workflow = compileWorkflow(config.yaml);
+    validateWorkflowInputs(workflow, config.inputs ?? {});
+    const sessionId = randomUUID();
+    await client._catalog.createSession(sessionId, { sessionKind: "workflow" });
+    await client._catalog.updateSession(sessionId, { title: `Workflow: ${workflow.name}`, titleLocked: true });
+    await client.duroxideClient.startOrchestrationVersioned(`session-${sessionId}`, "workflow-session", {
+        sessionId, yaml: config.yaml, inputs: config.inputs ?? {},
+    }, "1.0.0");
+    return { sessionId, workflowName: workflow.name };
+}
 
 const WORKFLOW = `
 apiVersion: pilotswarm.dev/v1alpha1
@@ -63,16 +78,16 @@ async function waitForTerminal(mgmt, sessionId, timeoutMs = 90_000) {
     throw new Error(`workflow ${sessionId} did not finish; last status ${view?.status}`);
 }
 
-describe("script workflow sessions (worker + client + PostgreSQL)", () => {
+describe("previously admitted script workflow sessions (worker + client + PostgreSQL)", () => {
     it("runs the graph durably, gives scripts the session's tools, and records an execution log", async () => {
         const env = getEnv();
         await withClient(env, { worker: { workflowScripts: { enabled: true } } }, async (client) => {
             const mgmt = await createManagementClient(env);
             try {
                 await expect(client.createWorkflowSession({ yaml: WORKFLOW.replace("type: script", "type: agent") }))
-                    .rejects.toMatchObject({ code: "WORKFLOW_STATE_TYPE_UNSUPPORTED", status: 400 });
+                    .rejects.toMatchObject({ code: "WORKFLOW_PARENT_REQUIRED", status: 400 });
 
-                const { sessionId, workflowName } = await client.createWorkflowSession({
+                const { sessionId, workflowName } = await startLegacyAdmission(client, {
                     yaml: WORKFLOW,
                     inputs: { run: "first" },
                 });
@@ -133,7 +148,7 @@ describe("script workflow sessions (worker + client + PostgreSQL)", () => {
         await withClient(env, { worker: { workflowScripts: { enabled: false } } }, async (client) => {
             const mgmt = await createManagementClient(env);
             try {
-                const { sessionId } = await client.createWorkflowSession({ yaml: WORKFLOW, inputs: { run: "off" } });
+                const { sessionId } = await startLegacyAdmission(client, { yaml: WORKFLOW, inputs: { run: "off" } });
                 const view = await waitForTerminal(mgmt, sessionId);
                 expect(view.status).toBe("failed");
                 const events = await mgmt.getSessionEvents(sessionId);
@@ -177,7 +192,7 @@ states:
                     throw new Error(`no ${type} on ${sessionId}`);
                 };
 
-                const first = await client.createWorkflowSession({ yaml: LONG });
+                const first = await startLegacyAdmission(client, { yaml: LONG });
                 await waitForEvent(first.sessionId, "workflow.state_started");
                 const started = Date.now();
                 await mgmt.cancelSession(first.sessionId, "no longer needed");
@@ -188,7 +203,7 @@ states:
                 const end = (await waitForEvent(first.sessionId, "workflow.cancelled"))[0];
                 expect(end.data).toMatchObject({ reason: "no longer needed", steps: 1 });
 
-                const second = await client.createWorkflowSession({ yaml: LONG });
+                const second = await startLegacyAdmission(client, { yaml: LONG });
                 await waitForEvent(second.sessionId, "workflow.state_started");
                 await mgmt.deleteSession(second.sessionId, "cleanup");
                 expect(await mgmt.getSession(second.sessionId)).toBeNull();
@@ -227,7 +242,7 @@ states:
         }, async (client) => {
             const mgmt = await createManagementClient(env);
             try {
-                const { sessionId } = await client.createWorkflowSession({ yaml });
+                const { sessionId } = await startLegacyAdmission(client, { yaml });
                 const view = await waitForTerminal(mgmt, sessionId);
                 const done = (await mgmt.getSessionEvents(sessionId, 0, 200, ["workflow.completed", "workflow.failed"]))[0];
                 expect(view.status, JSON.stringify(done?.data)).toBe("completed");
@@ -242,4 +257,3 @@ states:
         });
     });
 });
-

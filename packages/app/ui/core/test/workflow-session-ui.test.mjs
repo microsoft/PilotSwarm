@@ -171,16 +171,13 @@ test("a connection that cannot create workflows does not offer them", async () =
     assert.equal(buildAgentPickerItems([], { query: "zzz", workflowItem: { id: "w", kind: "workflow", title: "Workflow" } }).length, 0);
 });
 
-test("creating a workflow sends the YAML and parsed inputs, then opens the new session", async () => {
+test("top-level workflow creation is refused without calling the transport", async () => {
     const { controller, store, calls } = makeController();
     controller.openWorkflowCreateModal();
     const created = await controller.createWorkflowSession({ yaml: WORKFLOW_YAML_TEMPLATE, inputs: "{\"keyPattern\":\"metrics/%\"}" });
-    assert.equal(created.sessionId, "wf-1");
-    assert.deepEqual(calls.createWorkflowSession, [{ yaml: WORKFLOW_YAML_TEMPLATE, inputs: { keyPattern: "metrics/%" } }]);
-    const state = store.getState();
-    assert.equal(state.ui.modal, null);
-    assert.equal(state.sessions.activeSessionId, "wf-1");
-    assert.equal(state.sessions.byId["wf-1"].sessionKind, "workflow");
+    assert.equal(created, null);
+    assert.deepEqual(calls.createWorkflowSession, []);
+    assert.match(selectWorkflowCreateModal(store.getState()).error, /Start a workflow from an agent/);
 });
 
 test("a refused workflow keeps the editor open with the reason and the text", async () => {
@@ -190,15 +187,15 @@ test("a refused workflow keeps the editor open with the reason and the text", as
     controller.openWorkflowCreateModal();
 
     await controller.createWorkflowSession({ yaml: "kind: Workflow", inputs: "[1]" });
-    assert.match(selectWorkflowCreateModal(store.getState()).error, /Inputs must be a JSON object/);
+    assert.match(selectWorkflowCreateModal(store.getState()).error, /top-level workflows are deferred/);
     assert.equal(calls.createWorkflowSession.length, 0);
 
     await controller.createWorkflowSession({ yaml: "kind: Workflow", inputs: "{" });
-    assert.match(selectWorkflowCreateModal(store.getState()).error, /Inputs are not valid JSON/);
+    assert.match(selectWorkflowCreateModal(store.getState()).error, /top-level workflows are deferred/);
 
     await controller.createWorkflowSession({ yaml: "my: yaml", inputs: "{}" });
     const editor = selectWorkflowCreateModal(store.getState());
-    assert.match(editor.error, /type 'agent' is not supported yet/);
+    assert.match(editor.error, /Start a workflow from an agent/);
     assert.equal(editor.yaml, "my: yaml");
     assert.equal(editor.busy, false);
 });
@@ -240,4 +237,3 @@ test("opening a workflow session shows its canvas; an agent session's canvas sta
     assert.equal(store.getState().ui.rightPaneMode, "canvas");
     assert.equal(store.getState().ui.canvasOpen, true);
 });
-

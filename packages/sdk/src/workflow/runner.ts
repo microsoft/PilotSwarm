@@ -41,6 +41,10 @@ export interface RunScriptNodeRequest {
     callTool: (call: ScriptToolCall) => Promise<unknown>;
     /** True once the workflow stopped waiting for this node (cancel, complete or delete). */
     isCancelled?: () => boolean;
+    /** New admissions opt in; historical workflows keep the original runner. */
+    guardedNode?: boolean;
+    /** Stop brokered work when the script is interrupted. */
+    cancelTools?: () => Promise<void>;
 }
 
 export interface RunScriptNodeResult {
@@ -227,9 +231,21 @@ export async function runScriptNode(
     const runtime = RUNTIME_FILES[node.runtime];
     if (!runtime) throw new WorkflowExecutionError(`Script state '${node.id}' uses unsupported runtime '${node.runtime}'.`);
     const executable = options.executables?.[node.runtime] ?? defaultExecutable(node.runtime);
+    if (request.guardedNode && (node.runtime !== "node" || executable !== process.execPath)) {
+        throw new WorkflowExecutionError("Guarded workflows require the worker's supported Node runtime.");
+    }
+    if (request.guardedNode) {
+        const [major, minor, patch] = process.versions.node.split(".").map(Number);
+        if (!(major === 24 && (minor > 22 || minor === 22 && patch >= 1)
+            || major > 26 || major === 26 && (minor > 12 || minor === 12 && patch >= 1))) {
+            throw new WorkflowExecutionError("Guarded workflows require Node 24.22.1 or a supported newer runtime.");
+        }
+    }
     const startedAt = Date.now();
     const token = randomBytes(32).toString("hex");
     const toolCalls: ScriptToolCallRecord[] = [];
+    let admittedToolCalls = 0;
+    let acceptingToolCalls = true;
     let reported: { outcome: string; output: unknown } | null = null;
 
     const server = http.createServer(async (req, res) => {
@@ -255,9 +271,10 @@ export async function runScriptNode(
             return;
         }
         if (req.url === "/tool") {
+            if (!acceptingToolCalls) { reply(409, { ok: false, error: "Workflow state is stopping" }); return; }
             const name = typeof body?.name === "string" ? body.name.trim() : "";
             if (!name) { reply(400, { ok: false, error: "name is required" }); return; }
-            if (toolCalls.length >= SCRIPT_NODE_MAX_TOOL_CALLS) {
+            if (admittedToolCalls >= SCRIPT_NODE_MAX_TOOL_CALLS) {
                 reply(429, { ok: false, error: `a node may make at most ${SCRIPT_NODE_MAX_TOOL_CALLS} tool calls` });
                 return;
             }
@@ -265,6 +282,7 @@ export async function runScriptNode(
                 ? body.arguments as Record<string, unknown>
                 : {};
             const callStarted = Date.now();
+            admittedToolCalls++;
             try {
                 const result = await request.callTool({ name, arguments: args });
                 toolCalls.push({ name, ok: true, durationMs: Date.now() - callStarted });
@@ -312,15 +330,27 @@ export async function runScriptNode(
         const stderr = new StreamTail();
         let timedOut = false;
         let cancelled = false;
+        let toolCancellation: Promise<void> | undefined;
 
         const exitCode = await new Promise<number | null>((resolve, reject) => {
-            const child = spawn(executable, runtime.args(scriptPath), {
+            const args = request.guardedNode
+                ? ["--permission", `--allow-fs-read=${workDir}`, `--allow-fs-write=${workDir}`, scriptPath]
+                : runtime.args(scriptPath);
+            const child = spawn(executable, args, {
                 cwd: workDir,
                 env,
                 stdio: ["pipe", "pipe", "pipe"],
                 windowsHide: true,
             });
-            const stop = () => { if (!killProcessTree(child.pid)) child.kill("SIGKILL"); };
+            const stop = () => {
+                acceptingToolCalls = false;
+                if (!killProcessTree(child.pid)) child.kill("SIGKILL");
+                if (request.cancelTools && !toolCancellation) {
+                    toolCancellation = request.cancelTools();
+                    // Awaited below; observe rejection now to avoid an unhandled rejection.
+                    void toolCancellation.catch(() => undefined);
+                }
+            };
             const timer = setTimeout(() => {
                 timedOut = true;
                 stop();
@@ -361,6 +391,8 @@ export async function runScriptNode(
                 input: request.priorOutput ?? null,
             }));
         });
+        acceptingToolCalls = false;
+        if (toolCancellation) await toolCancellation;
 
         const stdoutTail = stdout.text();
         const stderrTail = stderr.text();

@@ -105,10 +105,10 @@ initial: collect
 states:
   collect:
     type: script
-    runtime: python
+    runtime: node
     source: |
-      facts = call_tool("read_facts", {"key_pattern": context["inputs"].get("keyPattern", "%"), "limit": 20})
-      set_result("success", {"facts": facts})
+      const facts = await callTool("read_facts", {key_pattern: context.inputs.keyPattern ?? "%", limit: 20});
+      await setResult("success", {facts});
     completion: { outcomes: [success, failure] }
     transition:
       next: { success: summarize, failure: failed }
@@ -6700,13 +6700,13 @@ export class PilotSwarmUiController {
                 title: "New workflow session",
                 yaml: WORKFLOW_YAML_TEMPLATE,
                 inputs: "{}",
-                error: null,
+                error: "Start a workflow from an agent with spawn_workflow to inherit its permitted tools. New top-level workflows are deferred.",
                 busy: false,
                 sessionOptions,
                 previousFocus: previousFocus ?? this.getState().ui.focusRegion,
             },
         });
-        this.dispatch({ type: "ui/status", text: "Edit the workflow, then Create" });
+        this.dispatch({ type: "ui/status", text: "Start this workflow from an agent with spawn_workflow." });
     }
 
     /**
@@ -6715,48 +6715,13 @@ export class PilotSwarmUiController {
      * person typed is lost.
      */
     async createWorkflowSession({ yaml, inputs } = {}) {
+        const message = "Start a workflow from an agent with spawn_workflow to inherit its permitted tools. New top-level workflows are deferred.";
         const modal = this.getState().ui.modal;
-        const fail = (message) => {
-            const current = this.getState().ui.modal;
-            if (current?.type === "workflowCreate") {
-                this.dispatch({ type: "ui/modal", modal: { ...current, yaml, inputs, error: message, busy: false } });
-            }
-            this.dispatch({ type: "ui/status", text: message });
-            return null;
-        };
-        if (typeof this.transport.createWorkflowSession !== "function") {
-            return fail("Workflow sessions are not supported by this connection.");
-        }
-        if (typeof yaml !== "string" || !yaml.trim()) return fail("The workflow YAML is empty.");
-        let parsedInputs = {};
-        const inputsText = typeof inputs === "string" ? inputs.trim() : "";
-        if (inputsText) {
-            try { parsedInputs = JSON.parse(inputsText); }
-            catch (error) { return fail(`Inputs are not valid JSON: ${error?.message || error}`); }
-            if (!parsedInputs || typeof parsedInputs !== "object" || Array.isArray(parsedInputs)) {
-                return fail("Inputs must be a JSON object, for example {\"key\": \"value\"}.");
-            }
-        }
         if (modal?.type === "workflowCreate") {
-            this.dispatch({ type: "ui/modal", modal: { ...modal, yaml, inputs, error: null, busy: true } });
+            this.dispatch({ type: "ui/modal", modal: { ...modal, yaml, inputs, error: message, busy: false } });
         }
-        const sessionOptions = modal?.type === "workflowCreate" ? modal.sessionOptions || {} : {};
-        try {
-            const requestOptions = this.applyActiveGroupDefault(sessionOptions);
-            const created = await this.transport.createWorkflowSession({
-                yaml,
-                inputs: parsedInputs,
-                ...(requestOptions.groupId ? { groupId: requestOptions.groupId } : {}),
-            });
-            const previousFocus = modal?.previousFocus;
-            this.dispatch({ type: "ui/modal", modal: null });
-            if (previousFocus) this.setFocus(previousFocus);
-            await this.placeCreatedSessionInGroup(created, requestOptions.groupId ?? null);
-            await this.openCreatedSession({ ...created, sessionKind: "workflow", status: "running" }, requestOptions);
-            return created;
-        } catch (error) {
-            return fail(error?.message || String(error) || "Failed to create the workflow session");
-        }
+        this.dispatch({ type: "ui/status", text: message });
+        return null;
     }
 
     async createSessionForAgent(agentName, options = {}) {

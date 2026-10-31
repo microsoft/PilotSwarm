@@ -9,7 +9,7 @@ This version runs two state types:
 
 | Type | What it does |
 |---|---|
-| `script` | Runs one Python, Node or PowerShell script. The script can call the same tools an agent session has; it reports an outcome, which picks the next state. |
+| `script` | Runs JavaScript on Node for a new workflow. It invokes the parent's captured permitted tools without a model turn and reports an outcome to select the next state. |
 | `terminal` | Ends the run with an outcome: `succeeded`, `blocked`, `failed` or `cancelled`, an optional summary and an optional output. |
 
 Other state types of the workflow language (`agent`, `question`, `action`,
@@ -43,11 +43,11 @@ initial: collect
 states:
   collect:
     type: script
-    runtime: python            # python | node | powershell
+    runtime: node              # new admissions are JavaScript-only
     timeoutSeconds: 120        # optional, 1-3600, default 300
     source: |
-      facts = call_tool("read_facts", {"key_pattern": context["inputs"]["keyPattern"]})
-      set_result("found" if facts["count"] else "empty", {"count": facts["count"]})
+      const facts = await callTool("read_facts", {key_pattern: context.inputs.keyPattern});
+      await setResult(facts.count ? "found" : "empty", {count: facts.count});
     completion: { outcomes: [found, empty, failure] }
     transition:
       next: { found: report, empty: nothing, failure: failed }
@@ -83,7 +83,7 @@ states:
 ## What a script sees
 
 The script's standard input is a JSON **context**, already parsed into a
-variable named `context` (Python dict, JavaScript object, PowerShell object):
+variable named `context` (a JavaScript object for new runs):
 
 | Field | Value |
 |---|---|
@@ -91,7 +91,8 @@ variable named `context` (Python dict, JavaScript object, PowerShell object):
 | `input` | The previous state's output (`null` for the initial state). |
 | `node` (the state id), `step`, `workflow`, `sessionId` | Where the script is running. |
 
-Helpers, one set per runtime:
+New runs use the Node helpers. Historical Python/PowerShell definitions remain
+executable only for workflows admitted before the parent-tool policy:
 
 | | Call a tool | Report the result |
 |---|---|---|
@@ -111,20 +112,31 @@ workflow.
 Scripts call tools **as the workflow session**: facts are stored on that
 session and are visible across its spawn tree, inspect tools act as its
 owner, and messages are sent from it, exactly as for an agent session. The
-set is what a generic agent session has:
+set is captured from the actual parent's effective tool catalog, excluding
+durable scheduling, delegation, lifecycle and capability-changing operations.
+The worker creates a separate CLI execution handle; it does not borrow the
+live parent handle or send a model prompt.
 
 | Tools | Notes |
 |---|---|
-| The worker tools the deployment's base and default agents list | `registerTools` plus the default agent's `tools:`, for example `write_artifact`, `read_artifact`, `ps_list_agents` |
+| Native Copilot tools | Actual shell, file, search and edit implementations through `session.rpc.tools.execute`, subject to normal permissions and workspace scope |
+| Registered application and package tools | Only the captured parent-authorized binding; package access is not replaced with generic defaults |
 | Fact tools, and graph tools when a graph store is configured | `store_fact`, `read_facts`, `facts_search`, ... |
 | Session tools | `list_sessions` and `read_agent_events` (and the usage reads). `send_session_message` is one-way: a workflow session cannot receive replies. `reply_session_message` answers a request another session sent. These return JSON, not the text an agent sees. |
-| MCP servers | The deployment's default MCP servers (the set a generic agent gets), called as `<server>/<tool>`; each server's `tools` list applies. `list_mcp_tools` (optionally `{ "server": name }`) lists them. The worker connects to a server on a script state's first call and closes the connection when that state ends. |
+| MCP servers | Captured parent-authorized servers/tools through the CLI; `<server>/<tool>` aliases must resolve uniquely |
 
 Not available: turn-control tools (`wait`, `cron`, `ask_user`, `spawn_agent`,
-`spawn_workflow`, canvas tools), because a script has no conversation turn;
-tools from agent packages and MCP servers granted only to named agents,
-because they belong to those agents; and `context_health`, which reports on
-an LLM context.
+`spawn_workflow`, native `task`), lifecycle and capability-changing tools, and
+`context_health`. Existing approved application tools retain their authority;
+a generated confirmation flag is not human approval. Parent capability
+removal or a changed source binding can stop later calls, but newly added
+parent tools do not enlarge an admitted run.
+
+Parent policies and tools that exist only as in-memory callbacks cannot be
+delegated durably and are refused at admission. Use registered tool/policy
+implementations. Native background shell handles belong to one script state;
+they are stopped before that state's executor closes, not carried to another
+state or worker.
 
 A stdio MCP server is started with a small default environment (`PATH`,
 `HOME`, ...) plus the `env` of its configuration, not the worker's full
@@ -143,11 +155,13 @@ JavaScript `Error`, a PowerShell error), so the script can catch it.
   The agent sets `cron`/`cron_at` and calls `spawn_workflow` on each wake-up;
   each run is its own child workflow session. Pass `key` to make a call
   idempotent (the same key returns the same workflow session).
-- **From the portal:** New session → *Workflow* (in the agent chooser
-  beside *Generic Session*, or *Workflow instead* in the model step).
-  The editor starts with a working example.
-- **From the SDK or Web API:** `client.createWorkflowSession({ yaml, inputs })`,
-  or `POST /api/v1/sessions/workflow` (`createWorkflowSession`). An invalid
+- **New top-level creation is deferred:** ask an agent to start the child with
+  `spawn_workflow`. The portal explains this requirement. New root SDK/API
+  starts fail with `WORKFLOW_PARENT_REQUIRED`; no generic tool set is
+  substituted for a missing parent. Already-admitted workflows retain their
+  execution behavior.
+- **Internal creation:** the inline bridge calls `createWorkflowSession`
+  with its host-captured parent grant. An invalid
   document or inputs that do not match its `inputs` schema are refused with
   status 400 and a code such as `WORKFLOW_INVALID`,
   `WORKFLOW_STATE_TYPE_UNSUPPORTED` or `WORKFLOW_INPUT_INVALID`.
@@ -199,9 +213,18 @@ Isolation, in this version:
   `HOME`, and **none of the worker's environment** except `PATH` and locale
   variables. It reaches PilotSwarm only through a loopback endpoint guarded
   by a per-run token.
-- It is **not** a sandbox: the script runs as the worker's OS user, with its
-  network access. Turn scripts on only where every user who can create a
-  session may run code on the worker.
+- New runs use Node's `--permission` with filesystem grants limited to their
+  own bootstrap/scratch directory, without direct child-process, worker-thread
+  or native-addon permission. This prevents accidental direct filesystem
+  access; it is **not** a hostile-code or network sandbox.
+- Native shell/file tools execute outside that script guardrail under their
+  own captured permission and workspace policies. Granting a shell tool still
+  grants its authorized effects. The script's Node flags do not restrict a
+  brokered shell process.
+- The persisted policy marker selects this behavior. Unmarked, already-admitted
+  workflows keep the legacy runtime; a deployment must not change their
+  Python/PowerShell history into Node implicitly. Old workers must be drained
+  before admitting the new policy, because they do not enforce it.
 
 ## Durability
 

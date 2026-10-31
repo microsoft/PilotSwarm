@@ -328,3 +328,13 @@ export function compileWorkflow(yaml: string): CompiledWorkflow {
 export function workflowUsesScripts(workflow: CompiledWorkflow): boolean {
     return Object.values(workflow.states).some((state) => state.type === "script");
 }
+
+/** Admission for new runs only; old compiled histories retain their runtime. */
+export function validateNodeWorkflowAdmission(workflow: CompiledWorkflow): void {
+    for (const state of Object.values(workflow.states)) {
+        if (state.type === "script" && state.runtime !== "node") {
+            fail(`New workflow state '${state.id}' must use runtime: node. Python and PowerShell are supported only for previously admitted runs.`,
+                "WORKFLOW_RUNTIME_UNSUPPORTED");
+        }
+    }
+}

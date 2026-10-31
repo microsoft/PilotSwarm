@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { systemChildAgentUUID } from "../agent-loader.js";
 import type { WorkflowSessionConfig, SessionOwnerInfo } from "../types.js";
 import { WORKFLOW_SCRIPTS_DISABLED_MESSAGE } from "./activities.js";
-import { compileWorkflow, validateWorkflowInputs } from "./compiler.js";
+import { compileWorkflow, validateWorkflowInputs, validateNodeWorkflowAdmission } from "./compiler.js";
+import type { WorkflowToolBinding } from "./tool-policy.js";
 import type { SpawnWorkflowToolArgs } from "./tool-spec.js";
 
 export interface SpawnWorkflowDeps {
@@ -11,7 +12,8 @@ export interface SpawnWorkflowDeps {
     enabled: () => boolean;
     getSession: (sessionId: string) => Promise<{ title?: string | null; state?: string | null } | null>;
     resolveOwner: () => Promise<SessionOwnerInfo | null>;
-    createWorkflowSession: (config: WorkflowSessionConfig & { notifyParent?: boolean }) => Promise<{ sessionId: string; workflowName: string }>;
+    captureToolBinding: () => Promise<WorkflowToolBinding>;
+    createWorkflowSession: (config: WorkflowSessionConfig & { notifyParent?: boolean }, binding: WorkflowToolBinding) => Promise<{ sessionId: string; workflowName: string }>;
 }
 
 /**
@@ -42,6 +44,7 @@ export async function spawnWorkflowFromTool(
         let workflowName: string;
         try {
             const compiled = compileWorkflow(args.yaml);
+            validateNodeWorkflowAdmission(compiled);
             validateWorkflowInputs(compiled, args.inputs ?? {});
             workflowName = compiled.name;
         } catch (error) {
@@ -56,6 +59,7 @@ export async function spawnWorkflowFromTool(
         }
         const owner = await deps.resolveOwner().catch(() => null);
         const notify = args.notify_on_completion !== false;
+        const binding = await deps.captureToolBinding();
         await deps.createWorkflowSession({
             sessionId: workflowSessionId,
             yaml: args.yaml,
@@ -63,7 +67,7 @@ export async function spawnWorkflowFromTool(
             parentSessionId: deps.parentSessionId,
             ...(owner ? { owner } : {}),
             notifyParent: notify,
-        });
+        }, binding);
         return `[SYSTEM: started workflow session ${workflowSessionId} running "${workflowName}". `
             + (notify
                 ? "You will receive its result as a system message when it ends; do not poll for it. "

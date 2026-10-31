@@ -2693,7 +2693,8 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 resolveOwner: async () => catalog
                     ? resolveEffectiveSpawnOwner((id) => catalog!.getSession(id), input.sessionId)
                     : null,
-                createWorkflowSession: async (config) => (await getInlineClient()).createWorkflowSession(config),
+                captureToolBinding: () => sessionManager.captureWorkflowToolBinding(input.sessionId),
+                createWorkflowSession: async (config, binding) => (await getInlineClient()).createWorkflowSession(config, binding),
             }),
 
             /**

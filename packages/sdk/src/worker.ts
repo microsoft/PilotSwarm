@@ -987,6 +987,13 @@ export class PilotSwarmWorker {
                 ...(this.config.workerNodeId ? { workerNodeId: this.config.workerNodeId } : {}),
             }),
             resolveTools: (sessionId) => this.sessionManager.resolveScriptTools(sessionId),
+            resolveToolBinding: async (sessionId) => {
+                if (!this._catalog?.getSessionCreationConfig) throw new Error("Workflow tool-policy storage is unavailable.");
+                const config = await this._catalog.getSessionCreationConfig(sessionId);
+                const { readWorkflowToolBinding } = await import("./workflow/tool-policy.js");
+                return readWorkflowToolBinding(config?.workflowToolBinding);
+            },
+            openToolExecutor: (sessionId, binding, step) => this.sessionManager.openWorkflowToolExecutor(sessionId, binding, step),
             resolveMcpServers: () => this.sessionManager.scriptMcpServers(),
             deleteSession: async (sessionId) => {
                 await this._catalog?.softDeleteSession(sessionId);

@@ -112,7 +112,7 @@ test("a workflow session is marked in the list, shows its execution log and has 
     expect(errors).toEqual([]);
 });
 
-test("New → Workflow opens the editor, creates the session and opens it", async ({ page }) => {
+test("new top-level workflows explain the parent requirement without sending a create", async ({ page }) => {
     const errors = [];
     const created = [];
     page.on("pageerror", (error) => errors.push(error.message));
@@ -128,32 +128,16 @@ test("New → Workflow opens the editor, creates the session and opens it", asyn
     await page.getByRole("button", { name: "New session — choose model and agent", exact: true }).click();
     await expect(page.getByText("Select model for new session", { exact: true })).toBeVisible();
     await shot(page, "2-new-session-model-step");
-    await page.getByRole("button", { name: "⛓ Workflow instead" }).click();
-
-    const yaml = page.locator("#ps-workflow-yaml");
-    await expect(yaml).toBeVisible();
-    await expect(yaml).toHaveValue(/kind: Workflow\n/);
-    await expect(yaml).toHaveValue(/runtime: python/);
-    // Typing in the editor must stay in the editor: "n" is the global
-    // new-session shortcut, and Enter confirms other dialogs.
-    await page.locator("#ps-workflow-inputs").fill("");
-    await page.locator("#ps-workflow-inputs").type("{\"keyPattern\": \"metrics/%\"}");
-    await yaml.press("End");
-    await yaml.press("Enter");
-    await expect(page.locator(".ps-workflow-modal")).toBeVisible();
-    await shot(page, "3-workflow-editor");
-
-    await page.getByRole("button", { name: "Create workflow" }).click();
-    await expect.poll(() => created.length).toBe(1);
-    expect(created[0].yaml).toMatch(/kind: Workflow\n/);
-    expect(created[0].inputs).toEqual({ keyPattern: "metrics/%" });
+    const workflow = page.getByRole("button", { name: "⛓ Workflows start from an agent" });
+    await expect(workflow).toBeDisabled();
+    await expect(workflow).toHaveAttribute("title", /spawn_workflow/);
+    expect(created).toHaveLength(0);
     await expect(page.locator(".ps-workflow-modal")).toHaveCount(0);
-    await expect(page.locator(".ps-composer-readonly")).toContainText("Workflow session");
-    await shot(page, "4-created-workflow-session");
+    await shot(page, "3-workflow-child-first");
     expect(errors).toEqual([]);
 });
 
-test("a refused workflow keeps the editor open with the reason and the text", async ({ page }) => {
+test("the child-first restriction leaves the ordinary agent conversation available", async ({ page }) => {
     await routeApi(page, {
         onCreate: (route) => route.fulfill({
             status: 400,
@@ -162,13 +146,9 @@ test("a refused workflow keeps the editor open with the reason and the text", as
     });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
     await page.getByRole("button", { name: "New session — choose model and agent", exact: true }).click();
-    await page.getByRole("button", { name: "⛓ Workflow instead" }).click();
-    const yaml = page.locator("#ps-workflow-yaml");
-    await yaml.fill(String(await yaml.inputValue()).replace("type: script", "type: agent"));
-    await page.getByRole("button", { name: "Create workflow" }).click();
-    await expect(page.locator(".ps-workflow-modal [role=alert]")).toContainText("type 'agent' is not supported yet");
-    await expect(yaml).toHaveValue(/type: agent/);
-    await shot(page, "5-workflow-editor-refusal");
+    await expect(page.getByRole("button", { name: "⛓ Workflows start from an agent" })).toBeDisabled();
+    await page.keyboard.press("Escape");
+    await expect(page.locator(".ps-prompt-input")).toBeVisible();
 });
 
 // ── The live canvas ────────────────────────────────────────────────
@@ -265,4 +245,3 @@ test("a workflow's live canvas opens with the session and follows each step", as
     await shot(page, "7-live-canvas-completed");
     expect(errors).toEqual([]);
 });
-

@@ -8,6 +8,9 @@
  * next run and stops the schedule.
  */
 import { describe, it, expect } from "vitest";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import path from "node:path";
+import os from "node:os";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { createManagementClient } from "../helpers/local-workers.js";
 import { withScriptedModel } from "../helpers/scripted-workers.js";
@@ -76,6 +79,59 @@ async function waitFor(check, label, timeoutMs = 150_000) {
 }
 
 describe("agent-driven script workflows", () => {
+    it("inherits native file and shell tools while refusing direct filesystem and orchestration access", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const folder = await mkdtemp(path.join(os.tmpdir(), "workflow-parent-files-"));
+        const file = path.join(folder, "input.txt");
+        await writeFile(file, "parent-file-marker");
+        const yaml = `
+apiVersion: pilotswarm.dev/v1alpha1
+kind: Workflow
+metadata: { name: native-parity, version: "1" }
+initial: read
+states:
+  read:
+    type: script
+    runtime: node
+    source: |
+      const viewed = await callTool("view", {path: context.inputs.path});
+      const shell = await callTool("bash", {command: "printf child-shell-marker", description: "Print fixture marker"});
+      let directFsDenied = false, waitDenied = false;
+      try { require("node:fs").readFileSync(context.inputs.path); }
+      catch (error) { directFsDenied = error.code === "ERR_ACCESS_DENIED"; }
+      try { await callTool("wait", {seconds: 1}); }
+      catch (error) { waitDenied = /not permitted/.test(error.message); }
+      await callTool("store_fact", {key: "parity/result", value: {child: context.sessionId}});
+      await setResult("done", {file: JSON.stringify(viewed).includes("parent-file-marker"), shell: JSON.stringify(shell).includes("child-shell-marker"), directFsDenied, waitDenied});
+    completion: {outcomes: [done]}
+    transition: {next: {done: end}}
+  end: {type: terminal, outcome: succeeded, output: "\${states.read.result}"}
+`;
+        try {
+            await withScriptedModel(env, {
+                respond: (_body, position) => position.lastUserText.includes("run native parity") && position.step === 0
+                    ? { tools: [{ name: "spawn_workflow", args: { yaml, inputs: { path: file }, notify_on_completion: false } }] }
+                    : { content: "parent remains conversational" },
+                worker: { workflowScripts: { enabled: true } },
+            }, async ({ client, qualifiedModel }) => {
+                const mgmt = await createManagementClient(env);
+                try {
+                    const parent = await client.createSession({ model: qualifiedModel, owner: OWNER, workingDirectory: folder });
+                    await parent.sendAndWait("run native parity", TIMEOUT);
+                    const child = await waitFor(async () => {
+                        const runs = (await mgmt.listSessions()).filter(s => s.parentSessionId === parent.sessionId && s.sessionKind === "workflow");
+                        return runs.find(s => ["completed", "failed"].includes(s.status));
+                    }, "native workflow completion");
+                    const events = await mgmt.getSessionEvents(child.sessionId);
+                    const end = events.find(e => e.eventType === "workflow.completed" || e.eventType === "workflow.failed");
+                    expect(child.status, JSON.stringify(end?.data)).toBe("completed");
+                    expect(JSON.parse(end.data.outputPreview)).toEqual({ file: true, shell: true, directFsDenied: true, waitDenied: true });
+                    await parent.sendAndWait("are you still available?", TIMEOUT);
+                } finally { await mgmt.stop?.(); }
+            });
+        } finally { await rm(folder, { recursive: true, force: true }); }
+    });
+
     it("a prompt becomes spawn_workflow plus cron; each run is a child workflow session whose result wakes the agent", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         await withScriptedModel(env, {

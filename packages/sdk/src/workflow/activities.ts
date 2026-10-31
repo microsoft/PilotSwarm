@@ -11,6 +11,8 @@ import {
 import { runScriptNode, type RunScriptNodeResult, type ScriptRunnerOptions } from "./runner.js";
 import { parseScriptMcpToolName, ScriptMcpConnections } from "./mcp.js";
 import { buildWorkflowCanvasHtml, foldWorkflowCanvasState, type WorkflowCanvasPublisher } from "./canvas.js";
+import type { WorkflowToolBinding } from "./tool-policy.js";
+import type { WorkflowToolExecutor } from "./tool-executor.js";
 
 /** The events a workflow writes; the canvas state is folded from them. */
 export const WORKFLOW_LOG_EVENT_TYPES = [
@@ -36,6 +38,8 @@ export interface WorkflowActivityDeps {
     resolveTools: (sessionId: string) => Promise<Map<string, ScriptToolHandler>>;
     /** The MCP servers a script may call as `<server>/<tool>`. Absent: none. */
     resolveMcpServers?: (sessionId: string) => Record<string, any> | Promise<Record<string, any>>;
+    resolveToolBinding?: (sessionId: string) => Promise<WorkflowToolBinding | null>;
+    openToolExecutor?: (sessionId: string, binding: WorkflowToolBinding, step: number) => Promise<WorkflowToolExecutor>;
     /** Remove a deleted workflow session: CMS soft delete and its session facts. */
     deleteSession?: (sessionId: string) => Promise<void>;
     /** Deliver a system prompt to the parent session's message queue. */
@@ -155,12 +159,19 @@ export function registerWorkflowActivities(runtime: any, deps: WorkflowActivityD
         });
         await refreshCanvas(deps, input.sessionId);
         let tools: Map<string, ScriptToolHandler> | null = null;
+        const binding = await deps.resolveToolBinding?.(input.sessionId);
+        let executor: WorkflowToolExecutor | undefined;
+        if (binding) {
+            if (!deps.openToolExecutor) throw new Error("This worker cannot execute the captured workflow tool policy.");
+            executor = await deps.openToolExecutor(input.sessionId, binding, input.step);
+        }
         let mcp: ScriptMcpConnections | null = null;
         const mcpConnections = async () => {
             mcp ??= new ScriptMcpConnections((await deps.resolveMcpServers?.(input.sessionId)) ?? {});
             return mcp;
         };
         const callTool = async (call: ScriptToolCall): Promise<unknown> => {
+            if (executor) return executor.call(call.name, call.arguments);
             tools ??= await deps.resolveTools(input.sessionId);
             const handler = tools.get(call.name);
             if (handler) return handler(call.arguments);
@@ -193,6 +204,7 @@ export function registerWorkflowActivities(runtime: any, deps: WorkflowActivityD
                 priorOutput: input.priorOutput,
                 step: input.step,
                 callTool,
+                ...(binding ? { guardedNode: true, cancelTools: () => executor!.close() } : {}),
                 ...(typeof activityCtx?.isCancelled === "function"
                     ? { isCancelled: () => { try { return activityCtx.isCancelled() === true; } catch { return false; } } }
                     : {}),
@@ -206,7 +218,8 @@ export function registerWorkflowActivities(runtime: any, deps: WorkflowActivityD
             await refreshCanvas(deps, input.sessionId);
             throw error;
         } finally {
-            await (mcp as ScriptMcpConnections | null)?.close();
+            try { await executor?.close(); }
+            finally { await (mcp as ScriptMcpConnections | null)?.close(); }
         }
 
         if (result.resultSource === "cancelled") {

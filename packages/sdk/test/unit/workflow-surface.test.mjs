@@ -29,8 +29,8 @@ initial: ${stateId}
 states:
   ${stateId}:
     type: script
-    runtime: python
-    source: print(1)
+    runtime: node
+    source: console.log(1)
 ${stateExtra}    completion: { outcomes: [success] }
     transition: { next: { success: done } }
   done: { type: terminal, outcome: succeeded }
@@ -42,7 +42,7 @@ test("spawn_workflow is declared for agent sessions and carries the YAML contrac
     assert.ok(tool, "spawn_workflow must be declared beside spawn_agent");
     assert.deepEqual(tool.parameters.required, ["yaml"]);
     assert.deepEqual(Object.keys(tool.parameters.properties).sort(), ["inputs", "key", "notify_on_completion", "yaml"]);
-    for (const phrase of ["kind: Workflow", "type: script", "type: terminal", "completion: { outcomes:", "transition:", "call_tool", "callTool", "Invoke-PilotSwarmTool", "set_result", "cron"]) {
+    for (const phrase of ["kind: Workflow", "type: script", "type: terminal", "completion: { outcomes:", "transition:", "callTool", "setResult", "cron", "JavaScript-only", "parent"]) {
         assert.ok(tool.description.includes(phrase), `description should mention ${phrase}`);
     }
     assert.equal(tool.description, SPAWN_WORKFLOW_TOOL_SPEC.description);
@@ -173,6 +173,7 @@ function spawnDeps(overrides = {}) {
             enabled: () => true,
             getSession: async (id) => sessions.get(id) ?? null,
             resolveOwner: async () => ({ provider: "dev", subject: "alice" }),
+            captureToolBinding: async () => ({ policy: "node-parent-tools-v1", parentSessionId: "parent-agent" }),
             createWorkflowSession: async (config) => {
                 created.push(config);
                 sessions.set(config.sessionId, { title: "Workflow: limits", state: "running" });

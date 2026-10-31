@@ -13768,17 +13768,17 @@ function ModalLayer({ controller }) {
     // session, so the confirm action is "Switch Model", not "Create Session".
     const pickerConfirmLabel = modal.sessionOptions?.mode === "switchModel" ? "Switch Model" : "Create Session";
     if (modal.type === "modelPicker" && modalState.modelPicker) {
-        // A workflow session needs no model, so the first step of the
-        // new-session flow offers it directly, beside the agent route.
+        // A new workflow inherits its parent's tool grant; root admission is deferred.
         const offerWorkflow = modal.sessionOptions?.mode !== "switchModel"
             && typeof controller.transport?.createWorkflowSession === "function";
         const workflowFooter = offerWorkflow
             ? React.createElement("button", {
                 type: "button",
                 className: "ps-modal-button ps-workflow-start",
-                title: "A durable state machine of script nodes that runs without an LLM",
+                title: "Start a workflow from an agent with spawn_workflow to inherit its permitted tools.",
+                disabled: true,
                 onClick: () => controller.openWorkflowCreateModal({}, modal.previousFocus),
-            }, "⛓ Workflow instead")
+            }, "⛓ Workflows start from an agent")
             : null;
         return renderListModal(modalState.modelPicker, pickerConfirmLabel, workflowFooter);
     }
