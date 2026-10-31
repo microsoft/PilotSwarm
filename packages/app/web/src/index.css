@@ -4567,6 +4567,11 @@ body.is-resizing-pane-y iframe {
   background-size: 18px 18px;
 }
 .ps-workflow-graph-scroll { width: 100%; height: 100%; overflow: auto; padding: 8px; }
+.ps-workflow-graph-view { height: 100%; min-height: 0; display: flex; flex-direction: column; }
+.ps-workflow-graph-view > .ps-workflow-graph-scroll { flex: 1; min-height: 0; }
+.ps-workflow-graph-tools { display: flex; align-items: center; gap: 6px; padding: 6px 10px; font-size: 0.75rem; color: var(--ps-muted); }
+.ps-workflow-graph-tools span { flex: 1; }
+.ps-workflow-graph-tools button[aria-pressed="true"] { color: var(--ps-accent); }
 .ps-workflow-graph { display: block; margin: auto; color: var(--ps-muted); }
 .ps-workflow-node { cursor: pointer; outline: none; }
 .ps-workflow-node rect { fill: var(--ps-chrome); stroke: var(--ps-border); stroke-width: 1.5; }

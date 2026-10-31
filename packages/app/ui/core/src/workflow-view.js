@@ -70,71 +70,105 @@ export function workflowNodeViews(definition, events = [], live = null) {
     });
 }
 
-/** Layer transitions, wrapping wide branches instead of shrinking phone labels. */
+/** Keep graph topology independent of the viewport; narrow views pan or zoom. */
 export function layoutWorkflowGraph(definition, availableWidth = 640) {
     const nodes = definition?.states || [];
     const byId = new Map(nodes.map(node => [node.id, node]));
-    const ranks = new Map();
-    const queue = byId.has(definition?.initial) ? [definition.initial] : [];
-    if (queue.length) ranks.set(queue[0], 0);
-    for (let i = 0; i < queue.length; i++) {
-        for (const target of Object.values(byId.get(queue[i])?.next || {})) {
-            if (byId.has(target) && !ranks.has(target)) {
-                ranks.set(target, ranks.get(queue[i]) + 1);
-                queue.push(target);
+    const successors = id => [...new Set(Object.values(byId.get(id)?.next || {}))].filter(target => byId.has(target));
+    const indices = new Map(), low = new Map(), stack = [], onStack = new Set(), component = new Map();
+    let nextIndex = 0, componentCount = 0;
+    // Collapse cycles before ranking so reconverging DAG paths retain their
+    // depth, without iterating forever on loops.
+    const visit = id => {
+        indices.set(id, nextIndex); low.set(id, nextIndex++);
+        stack.push(id); onStack.add(id);
+        for (const target of successors(id)) {
+            if (!indices.has(target)) {
+                visit(target);
+                low.set(id, Math.min(low.get(id), low.get(target)));
+            } else if (onStack.has(target)) {
+                low.set(id, Math.min(low.get(id), indices.get(target)));
             }
         }
-    }
-    let lastRank = Math.max(0, ...ranks.values()) + 1;
-    for (const node of nodes) if (!ranks.has(node.id)) ranks.set(node.id, lastRank);
-    const width = Math.max(300, availableWidth);
-    const nodeWidth = 202, nodeHeight = 66, gap = 48, margin = 44;
-    const columns = Math.max(1, Math.floor((width - margin * 2 + gap) / (nodeWidth + gap)));
-    const positions = new Map();
-    let y = 28;
-    for (let rank = 0; rank <= lastRank; rank++) {
-        const row = nodes.filter(node => ranks.get(node.id) === rank);
-        for (let offset = 0; offset < row.length; offset += columns) {
-            const chunk = row.slice(offset, offset + columns);
-            const left = (width - (chunk.length * nodeWidth + (chunk.length - 1) * gap)) / 2;
-            chunk.forEach((node, index) => positions.set(node.id, {
-                x: left + index * (nodeWidth + gap), y, width: nodeWidth, height: nodeHeight,
-            }));
-            y += nodeHeight + 78;
+        if (low.get(id) === indices.get(id)) {
+            let member;
+            do {
+                member = stack.pop(); onStack.delete(member); component.set(member, componentCount);
+            } while (member !== id);
+            componentCount++;
         }
+    };
+    for (const node of nodes) if (!indices.has(node.id)) visit(node.id);
+    const outgoing = Array.from({ length: componentCount }, () => new Set());
+    const indegree = Array(componentCount).fill(0), componentRank = Array(componentCount).fill(0);
+    for (const node of nodes) for (const target of successors(node.id)) {
+        const from = component.get(node.id), to = component.get(target);
+        if (from !== to && !outgoing[from].has(to)) { outgoing[from].add(to); indegree[to]++; }
     }
+    const queue = indegree.flatMap((degree, id) => degree === 0 ? [id] : []);
+    for (let i = 0; i < queue.length; i++) for (const to of outgoing[queue[i]]) {
+        componentRank[to] = Math.max(componentRank[to], componentRank[queue[i]] + 1);
+        if (--indegree[to] === 0) queue.push(to);
+    }
+    const ranks = new Map(nodes.map(node => [node.id, componentRank[component.get(node.id)]]));
     const edges = [];
     const pairs = new Map();
     for (const node of nodes) {
-        const from = positions.get(node.id);
         for (const [outcome, target] of Object.entries(node.next || {})) {
-            const to = positions.get(target);
-            if (!to) continue;
+            if (!byId.has(target)) continue;
             const pair = JSON.stringify([node.id, target]);
             if (pairs.has(pair)) {
-                pairs.get(pair).outcome += ` / ${outcome}`;
+                const edge = pairs.get(pair);
+                edge.outcomes.push(outcome);
+                edge.outcome = edge.outcomes.join(" / ");
                 continue;
             }
-            let path, labelX, labelY;
-            if (target === node.id) {
-                const right = from.x + nodeWidth;
-                path = `M${right},${from.y + 44} C${right + 48},${from.y + 70} ${right + 48},${from.y - 20} ${right},${from.y + 16}`;
-                labelX = from.x + nodeWidth / 2; labelY = from.y + 84;
-            } else if (to.y > from.y) {
-                const sx = from.x + nodeWidth / 2, sy = from.y + nodeHeight;
-                const tx = to.x + nodeWidth / 2;
-                const mid = (sy + to.y) / 2;
-                path = `M${sx},${sy} C${sx},${mid} ${tx},${mid} ${tx},${to.y}`;
-                labelX = (sx + tx) / 2; labelY = mid - 5;
-            } else {
-                const side = Math.max(from.x, to.x) + nodeWidth + 30;
-                path = `M${from.x + nodeWidth},${from.y + 33} H${side} V${to.y + 33} H${to.x + nodeWidth}`;
-                labelX = side; labelY = (from.y + to.y) / 2 + 23;
-            }
-            const edge = { from: node.id, to: target, outcome, path, labelX, labelY };
+            const edge = { from: node.id, to: target, outcome, outcomes: [outcome] };
             pairs.set(pair, edge);
             edges.push(edge);
         }
     }
-    return { width, height: Math.max(150, y - 50), positions, edges };
+    const nodeWidth = 202, nodeHeight = 66, gap = 100, margin = 40;
+    const rows = Array.from({ length: Math.max(0, ...ranks.values()) + 1 },
+        (_, rank) => nodes.filter(node => ranks.get(node.id) === rank));
+    const rowEdges = rows.map((_, rank) => edges.filter(edge => ranks.get(edge.from) === rank));
+    const outerEdges = edges.filter(edge => ranks.get(edge.to) !== ranks.get(edge.from) + 1);
+    const contentWidth = Math.max(300, availableWidth,
+        Math.max(1, ...rows.map(row => row.length)) * (nodeWidth + gap) - gap + margin * 2);
+    const width = contentWidth + (outerEdges.length ? outerEdges.length * 22 + 60 : 0);
+    const positions = new Map();
+    let y = 40;
+    rows.forEach((row, rank) => {
+        const left = (contentWidth - (row.length * nodeWidth + Math.max(0, row.length - 1) * gap)) / 2;
+        row.forEach((node, index) => positions.set(node.id, {
+            x: left + index * (nodeWidth + gap), y, width: nodeWidth, height: nodeHeight,
+        }));
+        y += nodeHeight + Math.max(100, rowEdges[rank].length * 20 + 48);
+    });
+    for (const edge of edges) {
+        const from = positions.get(edge.from), to = positions.get(edge.to);
+        const siblings = edges.filter(item => item.from === edge.from);
+        const incoming = edges.filter(item => item.to === edge.to);
+        const sx = from.x + nodeWidth * (siblings.indexOf(edge) + 1) / (siblings.length + 1);
+        const tx = to.x + nodeWidth * (incoming.indexOf(edge) + 1) / (incoming.length + 1);
+        const track = from.y + nodeHeight + 24 + rowEdges[ranks.get(edge.from)].indexOf(edge) * 20;
+        const outside = outerEdges.indexOf(edge);
+        // Skip/back edges travel outside every node column. Their segments
+        // cannot masquerade as an outgoing edge from an intervening terminal.
+        const points = outside < 0
+            ? [[sx, from.y + nodeHeight], [sx, track], [tx, track], [tx, to.y]]
+            : [[sx, from.y + nodeHeight], [sx, track], [contentWidth + 22 + outside * 22, track],
+                [contentWidth + 22 + outside * 22, to.y - 18], [tx, to.y - 18], [tx, to.y]];
+        edge.points = points;
+        edge.path = points.map(([x, yy], i) => `${i ? "L" : "M"}${x},${yy}`).join(" ");
+        edge.labelX = outside < 0 ? (sx + tx) / 2 : (sx + points[2][0]) / 2;
+        edge.labelY = track - 5;
+    }
+    return { width, height: Math.max(150, y), positions, edges };
+}
+
+export function workflowLogBounds(availableHeight, requested = 210) {
+    const min = 100;
+    const max = Math.max(min, Math.floor(availableHeight) - 162);
+    return { min, max, height: Math.max(min, Math.min(max, requested)) };
 }

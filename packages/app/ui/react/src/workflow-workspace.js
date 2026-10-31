@@ -1,6 +1,6 @@
 import React from "react";
 import { useControllerSelector } from "./use-controller-state.js";
-import { layoutWorkflowGraph, workflowNodeViews } from "../../core/src/workflow-view.js";
+import { layoutWorkflowGraph, workflowLogBounds, workflowNodeViews } from "../../core/src/workflow-view.js";
 
 const EMPTY_EVENTS = [];
 const EMPTY_VIEW = {};
@@ -41,6 +41,7 @@ function Duration({ ms }) {
 function WorkflowGraph({ definition, nodes, selected, select }) {
     const hostRef = React.useRef(null);
     const [width, setWidth] = React.useState(640);
+    const [zoomMode, setZoomMode] = React.useState("fit");
     const markerId = `wf-arrow-${React.useId().replace(/:/g, "")}`;
     React.useEffect(() => {
         const host = hostRef.current;
@@ -51,15 +52,25 @@ function WorkflowGraph({ definition, nodes, selected, select }) {
         return () => observer.disconnect();
     }, []);
     const layout = React.useMemo(() => layoutWorkflowGraph(definition, width), [definition, width]);
-    return React.createElement("div", { ref: hostRef, className: "ps-workflow-graph-scroll" },
+    const zoom = zoomMode === "fit" ? Math.min(1, width / layout.width) : 1;
+    return React.createElement("div", { className: "ps-workflow-graph-view" },
+        React.createElement("div", { className: "ps-workflow-graph-tools" },
+            React.createElement("span", null, "Full graph · scroll to explore"),
+            React.createElement("button", { type: "button", className: "ps-mini-button", "aria-pressed": zoomMode === "fit",
+                onClick: () => setZoomMode("fit") }, "Fit"),
+            React.createElement("button", { type: "button", className: "ps-mini-button", "aria-pressed": zoomMode === "actual",
+                onClick: () => setZoomMode("actual") }, "100%")),
+        React.createElement("div", { ref: hostRef, className: "ps-workflow-graph-scroll", tabIndex: 0,
+            role: "region", "aria-label": "Scrollable workflow graph" },
         React.createElement("svg", {
             className: "ps-workflow-graph", viewBox: `0 0 ${layout.width} ${layout.height}`,
-            width: layout.width, height: layout.height, role: "group", "aria-label": "Workflow graph",
+            width: layout.width * zoom, height: layout.height * zoom, role: "group", "aria-label": "Workflow graph",
         },
         React.createElement("defs", null,
             React.createElement("marker", { id: markerId, viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 6, markerHeight: 6, orient: "auto" },
                 React.createElement("path", { d: "M0 0L10 5L0 10z", fill: "currentColor" }))),
-        layout.edges.map(edge => React.createElement("g", { key: `${edge.from}:${edge.outcome}`, className: "ps-workflow-edge" },
+        layout.edges.map(edge => React.createElement("g", { key: `${edge.from}:${edge.to}`, className: "ps-workflow-edge",
+            "data-from": edge.from, "data-to": edge.to, "aria-label": `${edge.from}: ${edge.outcome} → ${edge.to}` },
             React.createElement("path", { d: edge.path, markerEnd: `url(#${markerId})` }),
             React.createElement("text", { x: edge.labelX, y: edge.labelY, textAnchor: "middle" },
                 edge.outcome.length > 20 ? `${edge.outcome.slice(0, 19)}…` : edge.outcome,
@@ -83,30 +94,41 @@ function WorkflowGraph({ definition, nodes, selected, select }) {
             React.createElement("text", { x: box.width - 12, y: 57, textAnchor: "end", className: "ps-workflow-node-meta" },
                 node.runs ? `×${node.runs}${node.partial ? " loaded" : ""}` : ""),
             React.createElement("title", null, node.id));
-        })));
+        }))));
 }
 
-export function WorkflowMainPane({ controller, log, icon }) {
+export function WorkflowMainPane({ controller, log, icon, showFooter = true, onNodeSelected }) {
     const { sessionId, session, view, nodes, selected, select, status } = useWorkflowView(controller);
     const splitRef = React.useRef(null);
     const dragRef = React.useRef(false);
-    const height = view.logHeight || 210;
+    const [splitHeight, setSplitHeight] = React.useState(500);
+    React.useEffect(() => {
+        const element = splitRef.current;
+        const observer = new ResizeObserver(() => setSplitHeight(element.clientHeight));
+        observer.observe(element);
+        setSplitHeight(element.clientHeight);
+        return () => observer.disconnect();
+    }, []);
+    const { min, max, height } = workflowLogBounds(splitHeight, view.logHeight ?? 210);
     const resizeLog = next => {
-        const max = Math.max(100, (splitRef.current?.clientHeight || 500) - 170);
         controller.dispatch({ type: "ui/workflowView", sessionId,
-            view: { logHeight: Math.max(100, Math.min(max, next)) } });
+            view: { logHeight: workflowLogBounds(splitRef.current?.clientHeight || splitHeight, next).height } });
+    };
+    const selectNode = id => {
+        select(id);
+        onNodeSelected?.();
     };
     return React.createElement("section", { className: "ps-workflow-main", "aria-label": "Workflow session" },
         React.createElement("header", { className: "ps-workflow-main-header" },
             React.createElement("strong", null, icon, view.definition?.name || session?.title || "Workflow"),
             React.createElement("span", { className: "ps-workflow-status" }, status),
             React.createElement("button", { type: "button", className: "ps-mini-button", disabled: !selected,
-                onClick: () => select(selected.id) }, "Node details")),
+                onClick: () => selectNode(selected.id) }, "Node details")),
         React.createElement("div", { ref: splitRef, className: "ps-workflow-split",
-            style: { gridTemplateRows: `minmax(150px, 1fr) 12px minmax(100px, min(${height}px, 60%))` } },
+            style: { gridTemplateRows: `minmax(150px, 1fr) 12px ${height}px` } },
             React.createElement("div", { className: "ps-workflow-graph-region" },
                 view.definition
-                    ? React.createElement(WorkflowGraph, { definition: view.definition, nodes, selected, select })
+                    ? React.createElement(WorkflowGraph, { definition: view.definition, nodes, selected, select: selectNode })
                     : React.createElement("div", { className: "ps-workflow-empty", role: view.error ? "alert" : "status" },
                         view.error || "Loading workflow graph…",
                         view.error ? React.createElement("button", { type: "button", className: "ps-mini-button",
@@ -114,7 +136,7 @@ export function WorkflowMainPane({ controller, log, icon }) {
             React.createElement("div", {
                 className: "ps-workflow-log-resizer", role: "separator", tabIndex: 0,
                 "aria-label": "Resize execution log", "aria-orientation": "horizontal",
-                "aria-valuemin": 100, "aria-valuemax": Math.max(100, (splitRef.current?.clientHeight || 500) - 170),
+                "aria-valuemin": min, "aria-valuemax": max,
                 "aria-valuenow": height,
                 onPointerDown: event => {
                     if (event.button !== 0) return;
@@ -134,8 +156,8 @@ export function WorkflowMainPane({ controller, log, icon }) {
                 },
             }, React.createElement("span", { "aria-hidden": true })),
             React.createElement("div", { className: "ps-workflow-log" }, log)),
-        React.createElement("div", { className: "ps-chat-composer is-workflow" },
-            React.createElement("div", { className: "ps-composer-readonly" }, "Workflow session")));
+        showFooter ? React.createElement("div", { className: "ps-chat-composer is-workflow" },
+            React.createElement("div", { className: "ps-composer-readonly" }, "Workflow session")) : null);
 }
 
 export function WorkflowNodePane({ controller }) {

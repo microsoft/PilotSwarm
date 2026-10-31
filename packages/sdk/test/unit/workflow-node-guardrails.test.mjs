@@ -44,3 +44,22 @@ test("guarded policy refuses non-Node and unverified executable overrides", asyn
     await assert.rejects(runScriptNode({ ...r, node: { ...r.node, runtime: "python" } }), /supported Node/);
     await assert.rejects(runScriptNode(r, { executables: { node: "/not-the-worker-node" } }), /supported Node/);
 });
+
+test("the documented previous-output binding works and bare input fails explicitly", async () => {
+    const previous = { coverage: 84, criticalFindings: 0 };
+    const good = await runScriptNode({
+        ...request("const metrics = context.input; await setResult('done', { ...metrics, approved: metrics.coverage >= 80 });"),
+        priorOutput: previous, step: 2,
+    });
+    assert.equal(good.exitCode, 0);
+    assert.equal(good.outcome, "done");
+    assert.deepEqual(good.output, { ...previous, approved: true });
+
+    const bad = await runScriptNode({
+        ...request("const metrics = input; await setResult('done', metrics);"),
+        priorOutput: previous, step: 2,
+    });
+    assert.equal(bad.exitCode, 1);
+    assert.equal(bad.resultSource, "exit");
+    assert.match(bad.stderrTail, /ReferenceError: input is not defined/);
+});

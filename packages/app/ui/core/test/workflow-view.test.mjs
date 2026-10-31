@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { workflowDefinition, workflowNodeViews, layoutWorkflowGraph } from "../src/workflow-view.js";
+import { workflowDefinition, workflowNodeViews, layoutWorkflowGraph, workflowLogBounds } from "../src/workflow-view.js";
 import { PilotSwarmUiController, appReducer, createInitialState, createStore } from "../src/index.js";
 
 const start = { eventType: "workflow.started", data: { name: "watch", initial: "poll", states: [
@@ -19,7 +19,7 @@ test("definition projection preserves transitions without executing source or ac
     assert.throws(() => workflowDefinition({ states: [start.data.states[0]] }), /undefined state/);
 });
 
-test("graph layout includes self loops and wraps phone branches without scaling labels down", () => {
+test("phone graphs retain sibling branches instead of folding them into a false sequence", () => {
     for (const width of [300, 390, 1440]) {
         const layout = layoutWorkflowGraph(definition, width);
         assert.equal(layout.positions.size, 3);
@@ -32,7 +32,68 @@ test("graph layout includes self loops and wraps phone branches without scaling 
         assert.ok(layout.edges.every(edge => !edge.path.includes("NaN")));
     }
     const phone = layoutWorkflowGraph(definition, 390);
-    assert.notEqual(phone.positions.get("end").y, phone.positions.get("limit").y);
+    assert.equal(phone.positions.get("end").y, phone.positions.get("limit").y);
+    assert.notEqual(phone.positions.get("end").x, phone.positions.get("limit").x);
+    assert.ok(phone.width > 390, "wide topology uses pan/zoom instead of wrapping");
+});
+
+const branching = workflowDefinition({ name: "branching-workflow-test", initial: "collect_metrics", states: [
+    { id: "collect_metrics", type: "script", next: { success: "evaluate_quality", failure: "failed" } },
+    { id: "evaluate_quality", type: "script", next: { approved: "approved", blocked: "blocked", failure: "failed" } },
+    { id: "approved", type: "terminal", outcome: "succeeded" },
+    { id: "blocked", type: "terminal", outcome: "blocked" },
+    { id: "failed", type: "terminal", outcome: "failed" },
+] });
+
+function assertNoNodeCrossings(layout) {
+    for (const edge of layout.edges) {
+        for (const [id, box] of layout.positions) {
+            if (id === edge.from || id === edge.to) continue;
+            for (let i = 1; i < edge.points.length; i++) {
+                const [x1, y1] = edge.points[i - 1], [x2, y2] = edge.points[i];
+                const crosses = x1 === x2
+                    ? x1 > box.x && x1 < box.x + box.width && Math.max(y1, y2) > box.y && Math.min(y1, y2) < box.y + box.height
+                    : y1 > box.y && y1 < box.y + box.height && Math.max(x1, x2) > box.x && Math.min(x1, x2) < box.x + box.width;
+                assert.equal(crosses, false, `${edge.from} -> ${edge.to} must not pass through ${id}`);
+            }
+        }
+    }
+}
+
+test("the reported five-node quality gate preserves every edge and all three terminal siblings", () => {
+    for (const viewport of [300, 390, 1440]) {
+        const layout = layoutWorkflowGraph(branching, viewport);
+        const terminals = ["approved", "blocked", "failed"].map(id => layout.positions.get(id));
+        assert.equal(new Set(terminals.map(box => box.y)).size, 1);
+        assert.equal(new Set(terminals.map(box => box.x)).size, 3);
+        assert.ok(layout.positions.get("evaluate_quality").y > layout.positions.get("collect_metrics").y);
+        assert.ok(terminals[0].y > layout.positions.get("evaluate_quality").y);
+        assert.equal(layout.edges.length, 5);
+        assert.deepEqual(layout.edges.filter(edge => edge.from === "failed"), []);
+        assertNoNodeCrossings(layout);
+    }
+});
+
+test("skip edges and cycles use routes outside unrelated node rectangles", () => {
+    const graph = workflowDefinition({ initial: "a", states: [
+        { id: "a", type: "script", next: { next: "b", skip: "end", loop: "a" } },
+        { id: "b", type: "script", next: { next: "c" } },
+        { id: "c", type: "script", next: { back: "b", finish: "end" } },
+        { id: "end", type: "terminal", outcome: "succeeded" },
+    ] });
+    const layout = layoutWorkflowGraph(graph, 390);
+    assertNoNodeCrossings(layout);
+    for (const edge of layout.edges) for (const [x, y] of edge.points) {
+        assert.ok(x >= 0 && x <= layout.width);
+        assert.ok(y >= 0 && y <= layout.height);
+    }
+});
+
+test("the log's rendered size and accessibility value use the same viewport clamp", () => {
+    assert.deepEqual(workflowLogBounds(335, 210), { min: 100, max: 173, height: 173 });
+    assert.equal(workflowLogBounds(335, 150).height, 150);
+    assert.equal(workflowLogBounds(335, 500).height, 173);
+    assert.equal(workflowLogBounds(600, 210).height, 210);
 });
 
 test("layout terminates for cycles, disconnected states and special object-key IDs", () => {

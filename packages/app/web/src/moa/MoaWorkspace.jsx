@@ -949,7 +949,7 @@ export function MobileZen({ controller, onClose, drafts, createTransport }) {
             </div>
         </header>
         {error && <div role="alert">{error}</div>}
-        <div className="ps-mobile-zen-chat"><ChatPane controller={controller} mobile fullWidth showComposer={false} activityInHeader /></div>
+        <div className="ps-mobile-zen-chat"><ChatPane controller={controller} mobile fullWidth showComposer={false} activityInHeader onWorkflowNodeSelected={onClose} /></div>
         <footer className="ps-mobile-zen-composer">{loading ? <span role="status">Opening session…</span> : <SessionComposer controller={controller} mobile compact />}</footer>
         {picker && <SessionPicker controller={controller} initial={{ type: "chat", sessionId: active }} onClose={() => setPicker(false)} onCreate={() => { setPicker(false); setCreating(true); }} onChoose={binding => { setPicker(false); changeSession(binding.sessionId, binding); }} />}
         {creating && <CreatePanelSession parent={controller} createTransport={createTransport} onClose={() => { setCreating(false); setPicker(true); }} onCreated={created => { controller.dispatch({ type: "sessions/merged", session: created }); controller.refreshSessions().catch(() => {}); setCreating(false); changeSession(created.sessionId); }} />}

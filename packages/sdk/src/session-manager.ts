@@ -26,6 +26,7 @@ import { createToolFactsAccessor } from "./tool-facts-accessor.js";
 import { createScriptSessionTools } from "./workflow/session-tools.js";
 import { WORKFLOW_TOOL_POLICY, captureWorkflowTools, isWorkflowControlTool, workflowToolPermission, type WorkflowToolBinding } from "./workflow/tool-policy.js";
 import { createWorkflowToolExecutor, type WorkflowToolExecutor } from "./workflow/tool-executor.js";
+import { WORKFLOW_SESSION_GUIDANCE } from "./workflow/guidance.js";
 import { createGraphTools } from "./graph-tools.js";
 import { createInspectTools, NO_VIEWER, type InspectViewer } from "./inspect-tools.js";
 import { createProviderTools, holdsProviderTools } from "./provider-tools.js";
@@ -4300,7 +4301,10 @@ export class SessionManager {
         sessionOwnerKey: string | null = null,
         boundAgentCopy: AgentCopyEntry | null = resolveBoundAgentCopy(this.workerDefaults, config, sessionOwnerKey) ?? null,
     ): SystemMessageConfig | undefined {
-        const frameworkBase = baseAgentInstructions(config.baseAgentPolicy, this.workerDefaults.frameworkBasePrompt ?? this.workerDefaults.systemMessage);
+        const base = baseAgentInstructions(config.baseAgentPolicy, this.workerDefaults.frameworkBasePrompt ?? this.workerDefaults.systemMessage);
+        const frameworkBase = this.workflowScriptsEnabled
+            ? [base, WORKFLOW_SESSION_GUIDANCE].filter(Boolean).join("\n\n")
+            : base;
         const boundAgentName = config.boundAgentName;
         const layerKind = config.promptLayering?.kind ?? (boundAgentName ? "app-agent" : undefined);
         const knowledgeToolInstructions = this._buildKnowledgeToolInstructionsSection(sessionId, config.agentIdentity);

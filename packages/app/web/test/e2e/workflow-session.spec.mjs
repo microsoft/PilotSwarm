@@ -1,9 +1,7 @@
 // Workflow sessions in the portal, in a real browser:
-//   - the session list marks workflow sessions with a flowchart icon
-//   - its transcript is the execution log, and the composer says why there
-//     is no chat box
-//   - New → "Workflow instead" opens the YAML editor, Create sends the
-//     YAML and inputs and opens the new session, and a refusal keeps the text
+//   - the main pane preserves branching topology, with a resizable log below
+//   - node selection opens details in the canvas; the footer is read-only
+//   - new workflows are child-first and ordinary agent/canvas behavior stays
 //
 // PS_E2E_SHOT_DIR, when set, receives screenshots of each state for review.
 import { test, expect } from "@playwright/test";
@@ -220,6 +218,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
             rows.push(item);
             for (const socket of sockets) socket.send(JSON.stringify({ type: "sessionEvent", sessionId: WORKFLOW_ID, event: item }));
         }
+
         await expect(summary.locator("summary")).toContainText("29 checks");
         await expect(summary).toHaveAttribute("open", "");
         await expect(summary.locator(".ps-system-notice-body")).toContainText("Latest output");
@@ -240,6 +239,91 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         expect(errors).toEqual([]);
     });
 }
+
+const QUALITY_EVENTS = [
+    { eventType: "workflow.started", data: {
+        name: "branching-workflow-test", version: "1.0.0", initial: "collect_metrics", states: [
+            { id: "collect_metrics", type: "script", runtime: "node", next: { success: "evaluate_quality", failure: "failed" } },
+            { id: "evaluate_quality", type: "script", runtime: "node", next: { approved: "approved", blocked: "blocked", failure: "failed" } },
+            { id: "approved", type: "terminal", outcome: "succeeded" },
+            { id: "blocked", type: "terminal", outcome: "blocked" },
+            { id: "failed", type: "terminal", outcome: "failed" },
+        ],
+    } },
+    { eventType: "workflow.state_started", data: { stateId: "collect_metrics", step: 1 } },
+    { eventType: "workflow.state_completed", data: { stateId: "collect_metrics", step: 1, outcome: "success",
+        resultSource: "reported", exitCode: 0, outputPreview: '{"coverage":84,"criticalFindings":0}' } },
+    { eventType: "workflow.state_started", data: { stateId: "evaluate_quality", step: 2 } },
+    { eventType: "workflow.state_completed", data: { stateId: "evaluate_quality", step: 2, outcome: "failure",
+        resultSource: "exit", exitCode: 1, stderrTail: "ReferenceError: input is not defined" } },
+    { eventType: "workflow.failed", data: { stateId: "failed", steps: 2, outcome: "failed" } },
+].map((event, index) => ({ ...event, sessionId: WORKFLOW_ID, seq: index + 1, createdAt: new Date().toISOString() }));
+
+for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+    test(`the quality gate is a real branching graph at ${viewport.width}px`, async ({ page }) => {
+        await page.setViewportSize(viewport);
+        await routeApi(page, { workflowEvents: QUALITY_EVENTS,
+            workflowState: { title: "Workflow: branching-workflow-test", status: "failed" } });
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+        const main = page.locator(".ps-workflow-main");
+        const graph = main.getByRole("group", { name: "Workflow graph" });
+        await expect(graph.locator(".ps-workflow-node")).toHaveCount(5);
+        await expect(graph.locator(".ps-workflow-edge")).toHaveCount(5);
+        await expect(graph.locator('[data-from="failed"], [data-from="approved"], [data-from="blocked"]')).toHaveCount(0);
+        const terminals = await graph.locator('[data-node-id="approved"], [data-node-id="blocked"], [data-node-id="failed"]')
+            .evaluateAll(nodes => nodes.map(node => {
+                const matrix = node.transform.baseVal.consolidate().matrix;
+                return { x: matrix.e, y: matrix.f };
+            }));
+        expect(new Set(terminals.map(node => node.y)).size).toBe(1);
+        expect(new Set(terminals.map(node => node.x)).size).toBe(3);
+        await expect(graph.getByRole("button", { name: "Inspect evaluate_quality", exact: true })).toHaveClass(/is-failed/);
+        const scroll = main.getByRole("region", { name: "Scrollable workflow graph" });
+        const fitted = await graph.boundingBox();
+        expect(fitted.width).toBeLessThanOrEqual((await scroll.boundingBox()).width);
+        await shot(page, `quality-branches-fit-${viewport.width}`);
+        await main.getByRole("button", { name: "100%", exact: true }).click();
+        if (viewport.width === 390) {
+            expect(await scroll.evaluate(node => node.scrollWidth > node.clientWidth)).toBe(true);
+        }
+        await graph.getByRole("button", { name: "Inspect blocked", exact: true }).scrollIntoViewIfNeeded();
+        await graph.getByRole("button", { name: "Inspect blocked", exact: true }).click();
+        await expect(page.locator(".ps-workflow-node-details").filter({ visible: true }).locator("h2")).toHaveText("blocked");
+        await shot(page, `quality-branch-details-${viewport.width}`);
+    });
+}
+
+test("mobile Zen has one workflow footer, accurate resize bounds and reachable node details", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await routeApi(page, { workflowEvents: QUALITY_EVENTS,
+        workflowState: { title: "Workflow: branching-workflow-test", status: "failed" } });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    await page.getByRole("button", { name: "Enter mobile zen", exact: true }).click();
+    const zen = page.locator(".ps-mobile-zen");
+    await expect(zen.locator(".ps-composer-readonly")).toHaveCount(1);
+    await expect(zen.locator(".ps-composer-readonly")).toHaveText("Workflow session");
+    const divider = zen.getByRole("separator", { name: "Resize execution log" });
+    const log = zen.locator(".ps-workflow-log");
+    const initialHeight = (await log.boundingBox()).height;
+    const max = Number(await divider.getAttribute("aria-valuemax"));
+    expect(Number(await divider.getAttribute("aria-valuenow"))).toBeLessThanOrEqual(max);
+    expect(Number(await divider.getAttribute("aria-valuenow"))).toBeCloseTo(initialHeight, 0);
+    const box = await divider.boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2 + 30, { steps: 5 });
+    await page.mouse.up();
+    await expect.poll(async () => (await log.boundingBox()).height).toBeLessThan(initialHeight - 8);
+    await divider.dblclick();
+    await expect.poll(async () => Math.abs((await log.boundingBox()).height - initialHeight)).toBeLessThan(2);
+    await shot(page, "quality-mobile-zen-single-footer");
+    await zen.getByRole("button", { name: "Inspect evaluate_quality", exact: true }).click();
+    await expect(zen).toHaveCount(0);
+    const details = page.locator(".ps-workflow-node-details").filter({ visible: true });
+    await expect(details.locator("h2")).toHaveText("evaluate_quality");
+    await details.getByRole("tab", { name: "Output", exact: true }).click();
+    await expect(details).toContainText("ReferenceError: input is not defined");
+});
 
 // ── The live canvas ────────────────────────────────────────────────
 

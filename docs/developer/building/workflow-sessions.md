@@ -23,6 +23,10 @@ sharing, and a transcript.
 
 - The **live view** occupies the main pane instead of a chat conversation.
   The graph uses the immutable workflow definition and live execution state.
+  Sibling branches stay side by side at every viewport size. Use **Fit** for
+  the whole width or **100%** and the graph's own scroll area for readable
+  detail. Skip edges and loops route around nodes, never through an unrelated
+  terminal.
   Select a node to inspect its outcome, tools, output and recent history in
   the right-hand canvas pane. On a phone, node details open as a separate
   layer; return to Main to see the graph and log again. The worker's original
@@ -38,6 +42,16 @@ sharing, and a transcript.
   says only "Workflow session".
 
 ## Example
+
+The base instructions explain when to prefer a finite workflow over repeated
+parent model turns, when an ordinary agent is needed, and how to choose
+completion notifications. This guidance applies only when `spawn_workflow` is
+available and never expands tool permissions or approval scope.
+
+Scripts read the previous state's result as `context.input` and initial
+parameters as `context.inputs`. A bare `input` variable is not defined. Each
+script is a Node ES module: use `await setResult(...)`, not a top-level
+`return`. Preserve data needed by later steps in the output you pass forward.
 
 ```yaml
 apiVersion: pilotswarm.dev/v1alpha1
