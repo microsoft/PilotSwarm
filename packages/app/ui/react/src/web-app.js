@@ -1598,7 +1598,7 @@ function ChatActivityRun({ calls }) {
     }, [open, calls.length, updateKey]);
 
     return React.createElement("details", {
-        className: "ps-native-tasks ps-activity-run",
+        className: `ps-native-tasks ps-activity-run${failed ? " is-failed" : active ? " is-working" : " is-done"}`,
         open,
         onToggle: (event) => setOpen(event.currentTarget.open),
     },
@@ -14750,67 +14750,147 @@ function AdminWorkersPane({ controller, view }) {
                         React.createElement("td", null, row.sdkVersion ?? "—")))))));
 }
 
+function highlightPackageQuery(text, query) {
+    const value = String(text || "");
+    const needle = String(query || "").trim();
+    if (!needle) return value;
+    const at = value.toLowerCase().indexOf(needle.toLowerCase());
+    if (at < 0) return value;
+    return [
+        value.slice(0, at),
+        React.createElement("mark", { key: "hit", className: "ps-admin-tree__mark" }, value.slice(at, at + needle.length)),
+        value.slice(at + needle.length),
+    ];
+}
+
 function AdminSettingsTree({ controller, view }) {
     const packages = view.packages || {};
+    const query = packages.query || "";
+    const field = packages.queryField || "all";
+    const renderRow = (row) => {
+        if (row.kind === "group") {
+            const count = row.total != null && row.total !== row.count
+                ? `${row.count} of ${row.total}`
+                : String(row.count ?? 0);
+            return React.createElement("div", { key: row.id, className: "ps-admin-tree__group" },
+                row.label, React.createElement("span", { className: "ps-admin-tree__count" }, count));
+        }
+        const onClick = row.kind === "package"
+            // The selector says WHICH copy this row is — one name can be a
+            // shared package and a user copy at once (scope shadowing).
+            ? () => controller.selectAdminPackage(row.name, {
+                scope: row.scope === "shared" ? "shared" : "user",
+                ...(row.scope !== "shared" && row.owner?.provider && row.owner?.subject
+                    ? { owner: { provider: row.owner.provider, subject: row.owner.subject } }
+                    : {}),
+            })
+            : () => {
+                if (row.id === "providers" || row.id === "myProviders") {
+                    controller.setAdminSection("providers");
+                    controller.setAdminModelProviderPage("mine");
+                } else if (row.id === "sharedProviders") {
+                    controller.setAdminSection("providers");
+                    controller.setAdminModelProviderPage("shared");
+                } else if (row.id === "features") {
+                    controller.setAdminSection("features");
+                } else {
+                    controller.setAdminSection(row.id === "agents" ? "packages" : "workers");
+                }
+            };
+        return React.createElement("button", {
+            key: row.id,
+            type: "button",
+            className: `ps-admin-tree__row depth-${row.depth}${row.selected ? " is-selected" : ""}${row.kind === "package" && !row.enabled ? " is-disabled" : ""}`,
+            onClick,
+        },
+            // A user-scope package shows WHOSE it is, using the same
+            // owner-initials chip the session rows use, so "[ad]" means
+            // the same thing on both sides of the app. Shared packages
+            // belong to the deployment, so they keep the scope badge.
+            row.kind === "package"
+                ? (row.ownerBadge
+                    ? React.createElement(OwnerAvatar, { badge: row.ownerBadge })
+                    : React.createElement("span", {
+                        className: "ps-scope-badge is-shared",
+                        title: "shared with the whole deployment",
+                    }, "S"))
+                : null,
+            React.createElement("span", { className: "ps-admin-tree__name" },
+                highlightPackageQuery(row.label, query),
+                row.matchText
+                    ? React.createElement("span", { className: "ps-admin-tree__match" },
+                        highlightPackageQuery(`${row.matchField} · ${row.matchText}${row.matchExtra ? ` · +${row.matchExtra}` : ""}`, query))
+                    : null),
+            row.kind === "package" && row.semver
+                ? React.createElement("span", { className: "ps-admin-tree__ver" }, row.semver)
+                : null);
+    };
+    const tree = view.settingsTree || [];
+    const agentsIndex = tree.findIndex((row) => row.id === "agents");
+    const workersIndex = tree.findIndex((row) => row.id === "workers");
+    const headEnd = agentsIndex >= 0 ? agentsIndex + 1 : 0;
+    const tailStart = workersIndex >= 0 ? workersIndex : tree.length;
+    const filtering = query.trim().length > 0;
+    const fields = [
+        ["all", "All"],
+        ["package", "Package"],
+        ["agent", "Agent"],
+        ["author", "Author"],
+        ["contributor", "Contributor"],
+    ];
     return React.createElement("nav", { className: "ps-admin-tree" },
         React.createElement("div", { className: "ps-admin-tree__label" }, "Settings"),
-        (view.settingsTree || []).map((row) => {
-            if (row.kind === "group") {
-                return React.createElement("div", { key: row.id, className: "ps-admin-tree__group" },
-                    `${row.label}`, React.createElement("span", { className: "ps-admin-tree__count" }, String(row.count ?? 0)));
-            }
-            const onClick = row.kind === "package"
-                // The selector says WHICH copy this row is — one name can be a
-                // shared package and a user copy at once (scope shadowing).
-                ? () => controller.selectAdminPackage(row.name, {
-                    scope: row.scope === "shared" ? "shared" : "user",
-                    ...(row.scope !== "shared" && row.owner?.provider && row.owner?.subject
-                        ? { owner: { provider: row.owner.provider, subject: row.owner.subject } }
-                        : {}),
-                })
-                : () => {
-                    if (row.id === "providers" || row.id === "myProviders") {
-                        controller.setAdminSection("providers");
-                        controller.setAdminModelProviderPage("mine");
-                    } else if (row.id === "sharedProviders") {
-                        controller.setAdminSection("providers");
-                        controller.setAdminModelProviderPage("shared");
-                    } else if (row.id === "features") {
-                        controller.setAdminSection("features");
-                    } else {
-                        controller.setAdminSection(row.id === "agents" ? "packages" : "workers");
-                    }
-                };
-            return React.createElement("button", {
-                key: row.id,
-                type: "button",
-                className: `ps-admin-tree__row depth-${row.depth}${row.selected ? " is-selected" : ""}${row.kind === "package" && !row.enabled ? " is-disabled" : ""}`,
-                onClick,
-            },
-                // A user-scope package shows WHOSE it is, using the same
-                // owner-initials chip the session rows use, so "[ad]" means
-                // the same thing on both sides of the app. Shared packages
-                // belong to the deployment, so they keep the scope badge.
-                row.kind === "package"
-                    ? (row.ownerBadge
-                        ? React.createElement(OwnerAvatar, { badge: row.ownerBadge })
-                        : React.createElement("span", {
-                            className: "ps-scope-badge is-shared",
-                            title: "shared with the whole deployment",
-                        }, "S"))
-                    : null,
-                React.createElement("span", { className: "ps-admin-tree__name" }, row.label),
-                row.kind === "package" && row.semver
-                    ? React.createElement("span", { className: "ps-admin-tree__ver" }, row.semver)
-                    : null);
-        }),
+        tree.slice(0, headEnd).map(renderRow),
+        React.createElement("div", { className: "ps-admin-pkg-search" },
+            React.createElement("label", { className: "ps-admin-pkg-search__box" },
+                React.createElement("span", { className: "ps-admin-pkg-search__kicker" }, "Find"),
+                React.createElement("input", {
+                    type: "search",
+                    value: query,
+                    placeholder: "Package, agent, author, contributor",
+                    autoComplete: "off",
+                    "aria-label": "Find a package",
+                    onChange: (event) => controller.setAdminPackageQuery(event.target.value),
+                    onKeyDown: (event) => {
+                        if (event.key === "Escape") {
+                            event.preventDefault();
+                            controller.setAdminPackageQuery("");
+                        }
+                    },
+                }),
+                query ? React.createElement("button", {
+                    type: "button",
+                    className: "ps-admin-pkg-search__clear",
+                    "aria-label": "Clear search",
+                    onClick: () => controller.setAdminPackageQuery(""),
+                }, "×") : null),
+            React.createElement("div", { className: "ps-admin-pkg-search__fields", role: "group", "aria-label": "Which field to search" },
+                fields.map(([id, label]) => React.createElement("button", {
+                    key: id,
+                    type: "button",
+                    className: field === id ? "is-on" : "",
+                    onClick: () => controller.setAdminPackageQuery(query, id),
+                }, label))),
+            React.createElement("div", { className: "ps-admin-pkg-search__meta" },
+                React.createElement("b", null, String(packages.visibleCount ?? 0)),
+                ` of ${packages.totalCount ?? 0}`)),
+        React.createElement("div", { className: "ps-admin-pkg-scroll", role: "listbox", "aria-label": "Packages" },
+            listRows(tree, headEnd, tailStart, renderRow),
+            filtering && (packages.visibleCount ?? 0) === 0
+                ? React.createElement("div", { className: "ps-admin-tree__hint" }, `No package matches “${query.trim()}”.`)
+                : null),
         packages.loading ? React.createElement("div", { className: "ps-admin-tree__hint" }, "Loading packages…") : null,
         packages.error ? React.createElement("div", { className: "ps-admin-tree__hint is-error" }, packages.error) : null,
         view.section === "packages" ? React.createElement("button", {
             type: "button",
             className: "ps-admin-tree__add",
             onClick: () => controller.openAdminAddPackage(),
-        }, "+ Add package") : null);
+        }, "+ Add package") : null,
+        tree.slice(tailStart).map(renderRow));
+}
+
+function listRows(tree, headEnd, tailStart, renderRow) {
+    return tree.slice(headEnd, tailStart).map(renderRow);
 }
 
 function AdminPackageDetailPane({ controller, view }) {

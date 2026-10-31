@@ -3058,6 +3058,22 @@ function baseReducer(state, action) {
         case "admin/workers/loadFailed": {
             return { ...state, admin: { ...state.admin, workers: { ...state.admin.workers, loading: false, error: action.error || "Failed to load workers" } } };
         }
+        case "admin/packages/query": {
+            const allowed = new Set(["all", "package", "agent", "author", "contributor"]);
+            const current = state.admin.packages.queryField || "all";
+            const field = action.field == null ? current : (allowed.has(action.field) ? action.field : current);
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    packages: {
+                        ...state.admin.packages,
+                        query: String(action.query ?? ""),
+                        queryField: field,
+                    },
+                },
+            };
+        }
         case "admin/packages/loading": {
             return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, loading: true, error: null } } };
         }

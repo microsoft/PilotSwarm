@@ -1779,6 +1779,31 @@ body.is-resizing-pane-y iframe {
    grammar. The transcript remains chronological: ordinary assistant prose
    closes one run, and later activity starts a new card below that prose. */
 .ps-activity-run { margin: 8px 0 12px; }
+/* A tool run is a line in the transcript, not another pane. The left edge is
+   status. The pane keeps the frame. This uses theme tokens, so every theme
+   gets the same shape. */
+.ps-chat-panel .ps-activity-run {
+  margin: 8px 14px 12px;
+  border: 0;
+  border-left: 3px solid var(--ps-chat-card-success);
+  border-radius: 0 var(--ps-radius-sm) var(--ps-radius-sm) 0;
+  background: var(--ps-chat-card-body);
+  box-shadow: none;
+}
+.ps-chat-panel .ps-activity-run.is-working { border-left-color: var(--ps-chat-card-accent, var(--ps-accent)); }
+.ps-chat-panel .ps-activity-run.is-failed { border-left-color: var(--ps-chat-card-warning); }
+.ps-chat-panel .ps-activity-run.is-done { border-left-color: var(--ps-chat-card-success); }
+.ps-chat-panel .ps-activity-run-viewport {
+  border-top: 0;
+  border-bottom: 0;
+}
+.ps-chat-panel .ps-system-notice.is-live-reasoning {
+  margin-left: 14px;
+  margin-right: 14px;
+  border: 0;
+  border-left: 3px solid var(--ps-muted);
+  border-radius: 0 var(--ps-radius-sm) var(--ps-radius-sm) 0;
+}
 .ps-activity-run > summary { list-style: none; cursor: pointer; }
 .ps-activity-run > summary::-webkit-details-marker { display: none; }
 .ps-activity-run-summary { flex-wrap: nowrap; min-width: 0; }
@@ -5596,6 +5621,12 @@ body.is-resizing-pane-y iframe {
   background: var(--w95-soft-face);
   border-color: var(--w95-face);
 }
+:root[data-ps-theme="win95"] .ps-chat-panel .ps-activity-run {
+  border: 0;
+  border-left: 3px solid var(--ps-chat-card-success);
+  border-radius: 0;
+  box-shadow: none;
+}
 :root[data-ps-theme="win95"] .ps-chat-panel .ps-activity-run-viewport,
 :root[data-ps-theme="win95"] .ps-chat-panel .ps-native-task-detail,
 :root[data-ps-theme="win95"] .ps-chat-panel .ps-chat-call {
@@ -6336,10 +6367,11 @@ body.is-resizing-pane-y iframe {
 .ps-admin-tree {
     display: flex;
     flex-direction: column;
-    overflow: hidden auto;
+    overflow: hidden;
     border-right: 1px solid var(--ps-border);
     padding: 8px 6px;
     background: var(--ps-chrome);
+    min-height: 0;
 }
 .ps-admin-tree__label {
     font-size: 10.5px;
@@ -6348,11 +6380,88 @@ body.is-resizing-pane-y iframe {
     color: var(--ps-muted);
     padding: 2px 8px 8px;
 }
+.ps-admin-tree__row,
+.ps-admin-tree__group,
+.ps-admin-tree__label,
+.ps-admin-tree__add,
+.ps-admin-pkg-search {
+    flex: none;
+}
+.ps-admin-pkg-scroll {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    margin: 0 2px 6px;
+    border: 1px solid var(--ps-border);
+    border-radius: var(--ps-radius-sm);
+    background: var(--ps-background);
+}
+.ps-admin-pkg-search { padding: 0 6px 6px; }
+.ps-admin-pkg-search__box {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    border: 1px solid var(--ps-border-strong);
+    border-radius: var(--ps-radius-sm);
+    background: var(--ps-background);
+    padding: 0 8px;
+}
+.ps-admin-pkg-search__kicker {
+    color: var(--ps-muted);
+    font-size: 11px;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+}
+.ps-admin-pkg-search__box input {
+    flex: 1;
+    min-width: 0;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    font-size: 16px;
+    padding: 6px 0;
+    outline: none;
+}
+.ps-admin-pkg-search__clear {
+    border: 0;
+    background: transparent;
+    color: var(--ps-muted);
+    font: inherit;
+    cursor: pointer;
+    min-width: 28px;
+    min-height: 28px;
+}
+.ps-admin-pkg-search__fields { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+.ps-admin-pkg-search__fields button {
+    border: 1px solid var(--ps-border);
+    background: transparent;
+    color: var(--ps-muted);
+    border-radius: var(--ps-radius-sm);
+    font: inherit;
+    font-size: 12px;
+    padding: 2px 6px;
+    cursor: pointer;
+}
+.ps-admin-pkg-search__fields button.is-on {
+    color: var(--ps-foreground);
+    border-color: var(--ps-modal-selected-border);
+    background: var(--ps-modal-selected-background);
+}
+.ps-admin-pkg-search__meta {
+    margin-top: 4px;
+    color: var(--ps-muted);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+.ps-admin-pkg-search__meta b { color: var(--ps-foreground); font-weight: 600; }
+.ps-admin-tree__mark { background: color-mix(in srgb, var(--ps-modal-selected-border) 35%, transparent); color: inherit; }
 .ps-admin-tree__row {
     display: flex;
     align-items: center;
     gap: 7px;
     padding: 4px 8px;
+    min-height: 28px;
     border: 1px solid transparent;
     border-radius: var(--ps-radius-sm);
     background: none;
@@ -6376,7 +6485,9 @@ body.is-resizing-pane-y iframe {
     color: var(--ps-modal-selected-foreground);
 }
 .ps-admin-tree__row.is-disabled .ps-admin-tree__name { color: var(--ps-muted); }
-.ps-admin-tree__name { overflow: hidden; text-overflow: ellipsis; }
+.ps-admin-tree__name { overflow: hidden; text-overflow: ellipsis; display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.ps-admin-tree__match { color: var(--ps-muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
+.ps-admin-tree__row.is-selected .ps-admin-tree__match { color: var(--ps-modal-selected-foreground); }
 .ps-admin-tree__ver { margin-left: auto; color: var(--ps-muted); font-size: 11px; }
 
 /* On a SELECTED row the whole line sits on the selection fill, so every part

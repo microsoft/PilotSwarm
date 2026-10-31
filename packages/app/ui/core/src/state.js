@@ -796,6 +796,9 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
                 list: [],
                 workerState: [],
                 fetchedAt: 0,
+                // In-page filter. Typing updates this and nothing else.
+                query: "",
+                queryField: "all",
                 selectedName: null,
                 detail: null,
                 detailLoading: false,

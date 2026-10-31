@@ -3888,6 +3888,17 @@ export class PilotSwarmUiController {
 
     // ── Packages (Admin → Packages) ──────────────────────────────
 
+    /**
+     * Filter the package list already in the browser. Does not load packages.
+     */
+    setAdminPackageQuery(query, field) {
+        this.dispatch({
+            type: "admin/packages/query",
+            query: String(query ?? ""),
+            ...(field == null ? {} : { field }),
+        });
+    }
+
     setAdminSection(section) {
         this.dispatch({ type: "admin/section", section });
         if (section === "features") void this.refreshFeatureFlags();
