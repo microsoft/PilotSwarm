@@ -64,22 +64,23 @@ async function shot(page, name) {
     await page.screenshot({ path: path.join(SHOTS, `${name}.png`), fullPage: false });
 }
 
-async function routeApi(page, { onCreate, workflowEvents = WORKFLOW_EVENTS, onSocket = () => {} } = {}) {
+async function routeApi(page, { onCreate, workflowEvents = WORKFLOW_EVENTS, onSocket = () => {}, workflowState = {} } = {}) {
     await page.routeWebSocket("**/api/v1/ws", onSocket);
     await page.route("**/api/v1/**", async (route) => {
         const req = route.request();
         const pathname = new URL(req.url()).pathname;
         const answer = (result) => route.fulfill({ json: { ok: true, result } });
+        const sessions = SESSIONS.map(session => session.sessionId === WORKFLOW_ID ? { ...session, ...workflowState } : session);
         if (pathname.endsWith("/models")) return answer([{ providerId: "test", modelName: "test-model", qualifiedName: "test:test-model" }]);
         if (pathname.endsWith("/providers")) return answer({ providers: [{ name: "test", typeId: "test", class: "shared", hasCredential: true, usableByMe: true }] });
         if (pathname.endsWith("/providers/status")) return answer({ providers: [] });
         if (pathname.endsWith("/defaults")) return answer({});
-        if (pathname.endsWith("/management/sessions")) return answer({ sessions: SESSIONS, hasMore: false, nextCursor: null });
-        if (pathname.endsWith("/sessions") && req.method() === "GET") return answer({ sessions: SESSIONS, hasMore: false });
+        if (pathname.endsWith("/management/sessions")) return answer({ sessions, hasMore: false, nextCursor: null });
+        if (pathname.endsWith("/sessions") && req.method() === "GET") return answer({ sessions, hasMore: false });
         if (pathname.endsWith("/sessions/workflow") && req.method() === "POST") return onCreate(route, req.postDataJSON());
         if (pathname.includes(`/sessions/${WORKFLOW_ID}/events`)) return answer(workflowEvents);
         if (pathname.includes(`/sessions/${CREATED_ID}/events`)) return answer([]);
-        if (pathname.endsWith(`/sessions/${WORKFLOW_ID}`)) return answer({ ...SESSIONS[1], events: [], messages: [] });
+        if (pathname.endsWith(`/sessions/${WORKFLOW_ID}`)) return answer({ ...sessions[1], events: [], messages: [] });
         if (pathname.endsWith(`/sessions/${CREATED_ID}`)) {
             return answer({ sessionId: CREATED_ID, sessionKind: "workflow", title: "Workflow: example-workflow", status: "running", events: [], messages: [] });
         }
@@ -172,7 +173,8 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         for (let step = 1; step <= 28; step++) rows.push(start(step), complete(step));
         const sockets = [];
         let subscribed = false;
-        await routeApi(page, { workflowEvents: rows, onSocket: socket => {
+        const workflowState = { status: "running", title: "Workflow: query-watch" };
+        await routeApi(page, { workflowEvents: rows, workflowState, onSocket: socket => {
             sockets.push(socket);
             socket.onMessage(raw => { if (JSON.parse(raw).type === "subscribeSession") subscribed = true; });
         } });
@@ -207,6 +209,7 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         await expect(summary.locator("summary")).toContainText("Polling ended");
         await expect(page.locator(".ps-chat-panel")).toContainText("poll_query → changed");
         await expect(summary).toHaveCount(1);
+        workflowState.status = "completed";
         await page.reload();
         await expect(page.locator(".ps-workflow-progress")).toHaveCount(1);
         await expect(page.locator(".ps-workflow-progress summary")).toContainText("29 checks");
