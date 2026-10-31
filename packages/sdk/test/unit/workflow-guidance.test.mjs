@@ -8,7 +8,7 @@ test("workflow guidance teaches bounded selection, correct bindings and controll
     const block = WORKFLOW_SESSION_GUIDANCE;
     for (const phrase of ["When `spawn_workflow` is available", "already-authorized, finite", "without an LLM turn",
         "new judgment", "does not expand permissions", "context.input", "context.inputs", "top-level `return`",
-        "transition.delaySeconds", "survives worker restart", "1 to 3,600", "1,000-state",
+        "transition.delaySeconds", "survives worker restart", "1 to 3,600", "1,000 script-state executions",
         "notify_on_completion", "not an instruction to start another", "actual terminal result"]) {
         assert.ok(block.includes(phrase), `Missing guidance: ${phrase}`);
     }

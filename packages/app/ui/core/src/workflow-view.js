@@ -133,17 +133,18 @@ export function layoutWorkflowGraph(definition, availableWidth = 640) {
         (_, rank) => nodes.filter(node => ranks.get(node.id) === rank));
     const rowEdges = rows.map((_, rank) => edges.filter(edge => ranks.get(edge.from) === rank));
     const outerEdges = edges.filter(edge => ranks.get(edge.to) !== ranks.get(edge.from) + 1);
+    const arrivals = rows.map((_, rank) => outerEdges.filter(edge => ranks.get(edge.to) === rank));
     const contentWidth = Math.max(300, availableWidth,
         Math.max(1, ...rows.map(row => row.length)) * (nodeWidth + gap) - gap + margin * 2);
     const width = contentWidth + (outerEdges.length ? outerEdges.length * 22 + 60 : 0);
     const positions = new Map();
-    let y = 40;
+    let y = 40 + arrivals[0].length * 20;
     rows.forEach((row, rank) => {
         const left = (contentWidth - (row.length * nodeWidth + Math.max(0, row.length - 1) * gap)) / 2;
         row.forEach((node, index) => positions.set(node.id, {
             x: left + index * (nodeWidth + gap), y, width: nodeWidth, height: nodeHeight,
         }));
-        y += nodeHeight + Math.max(100, rowEdges[rank].length * 20 + 48);
+        y += nodeHeight + Math.max(100, (rowEdges[rank].length + (arrivals[rank + 1]?.length || 0)) * 20 + 48);
     });
     for (const edge of edges) {
         const from = positions.get(edge.from), to = positions.get(edge.to);
@@ -153,12 +154,13 @@ export function layoutWorkflowGraph(definition, availableWidth = 640) {
         const tx = to.x + nodeWidth * (incoming.indexOf(edge) + 1) / (incoming.length + 1);
         const track = from.y + nodeHeight + 24 + rowEdges[ranks.get(edge.from)].indexOf(edge) * 20;
         const outside = outerEdges.indexOf(edge);
+        const arrival = to.y - 24 - arrivals[ranks.get(edge.to)].indexOf(edge) * 20;
         // Skip/back edges travel outside every node column. Their segments
         // cannot masquerade as an outgoing edge from an intervening terminal.
         const points = outside < 0
             ? [[sx, from.y + nodeHeight], [sx, track], [tx, track], [tx, to.y]]
             : [[sx, from.y + nodeHeight], [sx, track], [contentWidth + 22 + outside * 22, track],
-                [contentWidth + 22 + outside * 22, to.y - 18], [tx, to.y - 18], [tx, to.y]];
+                [contentWidth + 22 + outside * 22, arrival], [tx, arrival], [tx, to.y]];
         edge.points = points;
         edge.path = points.map(([x, yy], i) => `${i ? "L" : "M"}${x},${yy}`).join(" ");
         edge.labelX = outside < 0 ? (sx + tx) / 2 : (sx + points[2][0]) / 2;

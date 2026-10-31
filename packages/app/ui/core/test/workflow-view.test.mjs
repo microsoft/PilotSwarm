@@ -89,6 +89,23 @@ test("skip edges and cycles use routes outside unrelated node rectangles", () =>
     }
 });
 
+test("return edges have separate arrival tracks rather than merging into misleading branches", () => {
+    const graph = workflowDefinition({ initial: "a", states: [
+        { id: "a", type: "script", next: { cycle: "b", finish: "done" } },
+        { id: "b", type: "script", next: { cycle: "a" } },
+        { id: "done", type: "terminal", outcome: "succeeded" },
+    ] });
+    const layout = layoutWorkflowGraph(graph, 390);
+    const cycles = layout.edges.filter(edge => edge.to !== "done");
+    const returnTrack = edge => edge.points[3][1];
+    assert.notEqual(returnTrack(cycles[0]), returnTrack(cycles[1]));
+    assertNoNodeCrossings(layout);
+    for (const edge of layout.edges) for (const [x, y] of edge.points) {
+        assert.ok(x >= 0 && x <= layout.width);
+        assert.ok(y >= 0 && y <= layout.height);
+    }
+});
+
 test("the log's rendered size and accessibility value use the same viewport clamp", () => {
     assert.deepEqual(workflowLogBounds(335, 210), { min: 100, max: 173, height: 173 });
     assert.equal(workflowLogBounds(335, 150).height, 150);
