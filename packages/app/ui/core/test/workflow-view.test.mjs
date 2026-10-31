@@ -49,7 +49,7 @@ test("node details use full-run counters when available and label loaded-only co
         event("workflow.state_started", { stateId: "poll", step: 29 }),
         event("workflow.state_completed", { stateId: "poll", step: 29, outcome: "unchanged", outputPreview: "<script>unsafe()</script>", toolCalls: [{ name: "read", ok: true }] }),
     ];
-    const live = { nodes: { poll: { state: "done", runs: 29, lastOutcome: "unchanged" } } };
+    const live = { step: 29, nodes: { poll: { state: "done", runs: 29, lastOutcome: "unchanged" } } };
     const node = workflowNodeViews(definition, events, live)[0];
     assert.equal(node.runs, 29);
     assert.equal(node.partial, false);
@@ -71,6 +71,21 @@ test("node details keep failures and terminal summaries separate and bound recen
     assert.equal(node.history.length, 40);
     const terminal = workflowNodeViews(definition, [event("workflow.completed", { stateId: "end", outcome: "succeeded", summary: "Changed" })])[1];
     assert.equal(terminal.result.summary, "Changed");
+});
+
+test("new durable events override a delayed canvas tick without double-counting attempts", () => {
+    const live = { step: 28, nodes: { poll: { state: "done", runs: 28, lastOutcome: "unchanged" } } };
+    const events = [
+        event("workflow.state_started", { stateId: "poll", step: 29 }),
+        event("workflow.state_completed", { stateId: "poll", step: 29, outcome: "changed" }),
+    ];
+    const node = workflowNodeViews(definition, events, live)[0];
+    assert.equal(node.runs, 29);
+    assert.equal(node.outcome, "changed");
+    const running = { step: 29, nodes: { poll: { state: "running", runs: 29 } } };
+    const completed = workflowNodeViews(definition, events, running)[0];
+    assert.equal(completed.runs, 29);
+    assert.equal(completed.state, "done");
 });
 
 function harness(getSessionEventsBefore) {

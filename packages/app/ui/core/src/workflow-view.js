@@ -17,17 +17,31 @@ export function workflowNodeViews(definition, events = [], live = null) {
         const snapshot = live?.nodes?.[node.id];
         const attempts = new Set(history.filter(event => Number.isSafeInteger(event.data.step))
             .map(event => event.data.step)).size || (node.type === "terminal" && latest ? 1 : 0);
-        const state = snapshot?.state || (latest?.eventType === "workflow.state_started" ? "running"
+        const eventState = latest?.eventType === "workflow.state_started" ? "running"
             : latest?.eventType?.endsWith("failed") ? "failed"
                 : latest?.eventType?.endsWith("cancelled") ? "cancelled"
-                    : latest ? "done" : "idle");
+                    : latest ? "done" : "idle";
+        // Canvas ticks are best-effort. A newer durable event must not leave
+        // the graph displaying an older running state or result.
+        const eventIsNewer = latest && (!snapshot
+            || Number(latest.data.step ?? latest.data.steps) >= Number(live?.step || 0));
+        const newAttempts = snapshot ? new Set(history.filter(event =>
+            Number.isSafeInteger(event.data.step) && event.data.step > Number(live.step || 0))
+            .map(event => event.data.step)).size : 0;
+        const state = eventIsNewer ? eventState : snapshot?.state || eventState;
+        const outcome = eventIsNewer
+            ? result?.data?.outcome ?? snapshot?.lastOutcome
+            : snapshot?.lastOutcome ?? result?.data?.outcome;
+        const durationMs = eventIsNewer
+            ? result?.data?.durationMs ?? snapshot?.lastDurationMs
+            : snapshot?.lastDurationMs ?? result?.data?.durationMs;
         return {
             ...node,
             state,
-            runs: snapshot?.runs ?? attempts,
+            runs: node.type === "terminal" && latest ? 1 : snapshot ? snapshot.runs + newAttempts : attempts,
             partial: !snapshot,
-            outcome: snapshot?.lastOutcome ?? result?.data?.outcome ?? (node.type === "terminal" ? node.outcome : undefined),
-            durationMs: snapshot?.lastDurationMs ?? result?.data?.durationMs,
+            outcome: outcome ?? (node.type === "terminal" ? node.outcome : undefined),
+            durationMs,
             result: result?.data || null,
             history: history.filter(event => event.eventType !== "workflow.state_started").slice(-40).reverse(),
         };
