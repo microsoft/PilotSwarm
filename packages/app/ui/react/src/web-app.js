@@ -1501,11 +1501,12 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         topPullDistance, loadingOlderHistory: loadingHistorySessionId === historySessionId };
 }
 
-function WorkflowGlyph({ className = "" }) {
+function WorkflowGlyph({ className = "", decorative = false }) {
     return React.createElement("svg", {
         className: `ps-workflow-glyph ${className}`.trim(),
         viewBox: "0 0 20 20", fill: "none", stroke: "currentColor", strokeWidth: 1.5,
-        "aria-label": "Workflow", role: "img", focusable: "false",
+        ...(decorative ? { "aria-hidden": true } : { "aria-label": "Workflow", role: "img" }),
+        focusable: "false",
     },
     React.createElement("rect", { x: 7, y: 1, width: 6, height: 3, rx: 1.5 }),
     React.createElement("path", { d: "M10 4v3m0 0 4 3-4 3-4-3 4-3Zm-4 3H3v6m11-6h3v6M1 14l2 2 2-2m10 0 2 2 2-2" }),
@@ -1585,8 +1586,9 @@ function SystemNoticeLine({ line, theme }) {
             className: "ps-system-notice-summary",
             style: { color: resolveColor(theme, line?.color) || "var(--ps-muted)" },
         },
-        line?.workflowProgress ? React.createElement(WorkflowGlyph) : null,
-        React.createElement("span", { className: "ps-system-notice-summary-text" },
+        line?.workflowProgress ? React.createElement(WorkflowGlyph, { decorative: true }) : null,
+        React.createElement("span", { className: "ps-system-notice-summary-text",
+            ...(line?.workflowProgress ? { "aria-live": "polite", "aria-atomic": true } : {}) },
             line?.workflowProgress ? String(line.text).replace(`${WORKFLOW_SESSION_GLYPH} `, "") : line?.text || "System notice")),
         body && open
             ? React.createElement("div", { className: "ps-system-notice-body" },

@@ -33,7 +33,10 @@ function render(message) {
         ...progress.entries.map(entry => `| ${entry.step} | ${cell(entry.outcome)} | ${duration(entry.durationMs) ?? "—"} | ${entry.tools} |`),
     ];
     if (count > progress.entries.length) lines.push("", `Showing the latest ${progress.entries.length} of ${count} ${label}s. Full events remain in the execution log.`);
-    if (latest?.outputPreview && latest.outputPreview !== "null") lines.push("", "Latest output:", "", "```json", latest.outputPreview, "```");
+    if (latest?.outputPreview && latest.outputPreview !== "null") {
+        const fence = "`".repeat(Math.max(3, ...[...latest.outputPreview.matchAll(/`+/g)].map(match => match[0].length + 1)));
+        lines.push("", "Latest output:", "", `${fence}json`, latest.outputPreview, fence);
+    }
     return {
         ...message,
         text: lines.join("\n"),
@@ -78,8 +81,14 @@ export function appendWorkflowProgress(chat, event, message) {
         return;
     }
     const started = event.eventType === "workflow.state_started";
-    const definition = [...chat].reverse().find(item => item.sessionId === message.sessionId && item.workflowDefinition)?.workflowDefinition
-        ?.find(node => node.id === data.stateId);
+    let definition;
+    for (let i = chat.length - 1; i >= 0; i--) {
+        const item = chat[i];
+        if (item?.sessionId === message.sessionId && item.workflowDefinition) {
+            definition = item.workflowDefinition.find(node => node?.id === data.stateId);
+            break;
+        }
+    }
     const sameState = prior?.stateId === data.stateId;
     const selfLoop = definition && Object.values(definition.next ?? {}).includes(data.stateId);
     const eligible = definition ? (started ? selfLoop : definition.next?.[data.outcome] === data.stateId) : Boolean(sameState);

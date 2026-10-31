@@ -183,6 +183,8 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         await expect(summary).toHaveCount(1);
         await expect(summary.locator("summary")).toContainText("Waiting for changes");
         await expect(summary.locator("summary")).toContainText("28 checks");
+        await expect(summary.locator(".ps-system-notice-summary-text")).toHaveAttribute("aria-live", "polite");
+        await expect(summary.locator(".ps-workflow-glyph")).toHaveAttribute("aria-hidden", "true");
         await expect(summary).not.toHaveAttribute("open", "");
         await expect(page.locator(".ps-composer-readonly")).toHaveText("Workflow session");
         const footer = await page.locator(".ps-chat-composer.is-workflow").boundingBox();

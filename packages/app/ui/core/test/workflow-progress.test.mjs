@@ -168,3 +168,16 @@ test("explicit change and failure outcomes stay visible even when routed back to
         assert.match(history.chat.at(-1).workflowNotice.summary, new RegExp(outcome));
     }
 });
+
+test("malformed definition entries do not crash history projection", () => {
+    const f = fixture();
+    f.definition.data.states = [null, 3, ...f.definition.data.states];
+    assert.doesNotThrow(() => buildHistoryModel([f.definition, f.start(1), f.complete(1)]));
+});
+
+test("poll output cannot close its own details code fence", () => {
+    const f = fixture();
+    const outputPreview = "```\\n# this remains output\\n```";
+    const history = buildHistoryModel([f.definition, f.start(1), f.complete(1, { outputPreview })]);
+    assert.ok(progress(history)[0].text.includes("````json\n" + outputPreview + "\n````"));
+});

@@ -9509,6 +9509,10 @@ export class PilotSwarmUiController {
         if (sessionId && !activeSession) {
             activeSession = this.getState().sessions.byId[sessionId] || null;
         }
+        if (activeSession?.sessionKind === "workflow") {
+            this.dispatch({ type: "ui/status", text: "Workflow session" });
+            return;
+        }
         if (!sessionId) {
             const created = await this.createSession({});
             if (!created?.sessionId) return;

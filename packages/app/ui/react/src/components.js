@@ -924,7 +924,7 @@ const ActivityPane = React.memo(function ActivityPane({ controller, width, heigh
     });
 });
 
-const PromptBar = React.memo(function PromptBar({ controller, rows }) {
+export const PromptBar = React.memo(function PromptBar({ controller, rows }) {
     const platform = useUiPlatform();
     const promptState = useControllerSelector(controller, (state) => {
         const activeSessionId = state.sessions.activeSessionId;
@@ -935,6 +935,7 @@ const PromptBar = React.memo(function PromptBar({ controller, rows }) {
         return {
             prompt: state.ui.prompt,
             promptCursor: state.ui.promptCursor,
+            workflow: activeSession?.sessionKind === "workflow",
             focused: state.ui.focusRegion === "prompt",
             answeringQuestion: Boolean(activeSession?.pendingQuestion?.question),
             editingPending: state.ui.promptEdit?.sessionId === activeSessionId,
@@ -942,6 +943,9 @@ const PromptBar = React.memo(function PromptBar({ controller, rows }) {
             hasPendingOutbox: outbox.some((item) => item?.phase === "pending"),
         };
     }, shallowEqualObject);
+    if (promptState.workflow) {
+        return React.createElement(platform.Lines, { lines: [{ text: "Workflow session", color: "gray" }] });
+    }
     return React.createElement(platform.Input, {
         label: promptState.answeringQuestion ? "answer" : promptState.editingPending ? "pending" : "you",
         value: promptState.prompt,
