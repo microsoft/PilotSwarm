@@ -21,12 +21,15 @@ function useWorkflowView(controller) {
         || nodes.find(node => node.id === live?.current)
         || nodes.find(node => node.id === view.definition?.initial)
         || nodes[0];
+    const terminal = events.findLast(event => ["workflow.completed", "workflow.failed", "workflow.cancelled"].includes(event?.eventType));
+    const status = terminal?.eventType.slice("workflow.".length)
+        || (["completed", "failed", "cancelled"].includes(session?.status) ? session.status : live?.status || session?.status || "Starting");
     const select = nodeId => {
         controller.dispatch({ type: "ui/workflowView", sessionId, view: { selectedNodeId: nodeId } });
         controller.dispatch({ type: "ui/sidePaneTab", tab: "canvas" });
         controller.dispatch({ type: "canvas/flip", sessionId, slot: 1 });
     };
-    return { sessionId, session, view, nodes, selected, select, live };
+    return { sessionId, session, view, nodes, selected, select, live, status };
 }
 
 function Duration({ ms }) {
@@ -84,7 +87,7 @@ function WorkflowGraph({ definition, nodes, selected, select }) {
 }
 
 export function WorkflowMainPane({ controller, log, icon }) {
-    const { sessionId, session, view, nodes, selected, select, live } = useWorkflowView(controller);
+    const { sessionId, session, view, nodes, selected, select, status } = useWorkflowView(controller);
     const splitRef = React.useRef(null);
     const dragRef = React.useRef(false);
     const height = view.logHeight || 210;
@@ -96,8 +99,7 @@ export function WorkflowMainPane({ controller, log, icon }) {
     return React.createElement("section", { className: "ps-workflow-main", "aria-label": "Workflow session" },
         React.createElement("header", { className: "ps-workflow-main-header" },
             React.createElement("strong", null, icon, view.definition?.name || session?.title || "Workflow"),
-            React.createElement("span", { className: "ps-workflow-status" },
-                ["completed", "failed", "cancelled"].includes(session?.status) ? session.status : live?.status || session?.status || "Starting"),
+            React.createElement("span", { className: "ps-workflow-status" }, status),
             React.createElement("button", { type: "button", className: "ps-mini-button", disabled: !selected,
                 onClick: () => select(selected.id) }, "Node details")),
         React.createElement("div", { ref: splitRef, className: "ps-workflow-split",
@@ -165,18 +167,21 @@ export function WorkflowNodePane({ controller }) {
                     React.createElement("button", { key: outcome, type: "button", className: "ps-workflow-transition",
                         disabled: !nodes.some(node => node.id === target), onClick: () => select(target) },
                     outcome, " → ", target)),
-                selected.type === "terminal" ? React.createElement("p", null, result?.summary || "The workflow ends at this node.") : null,
+                selected.type === "terminal" ? React.createElement("p", null, String(result?.summary || "The workflow ends at this node.")) : null,
                 React.createElement("h3", null, "Latest tools"),
                 Array.isArray(result?.toolCalls) && result.toolCalls.length
                     ? result.toolCalls.map((tool, i) => React.createElement("div", { className: "ps-workflow-tool", key: i },
-                        `${tool.name || "Tool"} · ${tool.ok === false ? "failed" : "completed"}`))
+                        `${tool?.name || "Tool"} · ${tool?.ok === false ? "failed" : "completed"}`))
                     : React.createElement("p", null, "No tool details in the loaded history."))
                 : tab === "output"
                     ? React.createElement(React.Fragment, null,
-                        React.createElement("p", null, "Latest recorded result for this node."),
+                        React.createElement("p", null, "Latest result in the loaded history for this node."),
                         React.createElement("pre", null, result
                             ? String(result.error || result.reason || result.outputPreview || result.summary || "No output was recorded.")
-                            : "This node has no result in the loaded history."))
+                            : "This node has no result in the loaded history."),
+                        result?.stderrTail ? React.createElement(React.Fragment, null,
+                            React.createElement("h3", null, "Standard error"),
+                            React.createElement("pre", null, String(result.stderrTail))) : null)
                     : React.createElement(React.Fragment, null,
                         React.createElement("p", null, "Most recent executions available in the loaded history."),
                         selected.history.length ? React.createElement("table", null,

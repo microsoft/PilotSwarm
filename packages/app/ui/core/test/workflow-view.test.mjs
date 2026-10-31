@@ -14,7 +14,9 @@ const event = (eventType, data) => ({ eventType, data });
 test("definition projection preserves transitions without executing source or accepting empty definitions", () => {
     assert.deepEqual(definition.states, start.data.states);
     assert.throws(() => workflowDefinition(null), /no states/);
-    assert.throws(() => workflowDefinition({ states: [null, 3] }), /no supported states/);
+    assert.throws(() => workflowDefinition({ states: [null, 3] }), /invalid or unsupported state/);
+    assert.throws(() => workflowDefinition({ states: [start.data.states[0], start.data.states[0]] }), /repeats state/);
+    assert.throws(() => workflowDefinition({ states: [start.data.states[0]] }), /undefined state/);
 });
 
 test("graph layout includes self loops and wraps phone branches without scaling labels down", () => {
@@ -47,7 +49,7 @@ test("layout terminates for cycles, disconnected states and special object-key I
 test("node details use full-run counters when available and label loaded-only counts", () => {
     const events = [
         event("workflow.state_started", { stateId: "poll", step: 29 }),
-        event("workflow.state_completed", { stateId: "poll", step: 29, outcome: "unchanged", outputPreview: "<script>unsafe()</script>", toolCalls: [{ name: "read", ok: true }] }),
+        event("workflow.state_completed", { stateId: "poll", step: 29, outcome: "unchanged", resultSource: "reported", outputPreview: "<script>unsafe()</script>", toolCalls: [{ name: "read", ok: true }] }),
     ];
     const live = { step: 29, nodes: { poll: { state: "done", runs: 29, lastOutcome: "unchanged" } } };
     const node = workflowNodeViews(definition, events, live)[0];
@@ -77,7 +79,7 @@ test("new durable events override a delayed canvas tick without double-counting 
     const live = { step: 28, nodes: { poll: { state: "done", runs: 28, lastOutcome: "unchanged" } } };
     const events = [
         event("workflow.state_started", { stateId: "poll", step: 29 }),
-        event("workflow.state_completed", { stateId: "poll", step: 29, outcome: "changed" }),
+        event("workflow.state_completed", { stateId: "poll", step: 29, outcome: "changed", resultSource: "reported" }),
     ];
     const node = workflowNodeViews(definition, events, live)[0];
     assert.equal(node.runs, 29);
@@ -86,6 +88,35 @@ test("new durable events override a delayed canvas tick without double-counting 
     const completed = workflowNodeViews(definition, events, running)[0];
     assert.equal(completed.runs, 29);
     assert.equal(completed.state, "done");
+});
+
+test("timeouts and failed process exits stay failed with or without a canvas snapshot", () => {
+    for (const data of [
+        { outcome: "timeout", resultSource: "timeout", exitCode: null },
+        { outcome: "failure", resultSource: "exit", exitCode: 1 },
+    ]) {
+        const events = [event("workflow.state_completed", { stateId: "poll", step: 1, ...data })];
+        for (const live of [null, { step: 1, nodes: { poll: { state: "failed", runs: 1 } } }]) {
+            assert.equal(workflowNodeViews(definition, events, live)[0].state, "failed");
+        }
+    }
+    for (const data of [{ exitCode: 0 }, { resultSource: "reported" }, { resultSource: "stdout" }]) {
+        assert.equal(workflowNodeViews(definition, [event("workflow.state_completed", { stateId: "poll", step: 1, ...data })])[0].state, "done");
+    }
+});
+
+test("a terminal event stops a running node even without a node-specific cancellation", () => {
+    const events = [event("workflow.state_started", { stateId: "poll", step: 1 }), event("workflow.cancelled", { steps: 1 })];
+    assert.equal(workflowNodeViews(definition, events)[0].state, "cancelled");
+});
+
+test("parallel transitions share a labelled edge rather than drawing overlapping labels", () => {
+    const graph = workflowDefinition({ states: [
+        { id: "poll", type: "script", next: { unchanged: "poll", retry: "poll" } },
+    ] });
+    const layout = layoutWorkflowGraph(graph);
+    assert.equal(layout.edges.length, 1);
+    assert.equal(layout.edges[0].outcome, "unchanged / retry");
 });
 
 function harness(getSessionEventsBefore) {

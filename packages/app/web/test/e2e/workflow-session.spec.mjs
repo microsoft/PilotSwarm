@@ -153,6 +153,27 @@ test("the child-first restriction leaves the ordinary agent conversation availab
     await expect(page.locator(".ps-prompt-input")).toBeVisible();
 });
 
+test("failed process results remain failed and node output is rendered as text", async ({ page }) => {
+    const events = [
+        WORKFLOW_EVENTS[0],
+        { sessionId: WORKFLOW_ID, seq: 2, eventType: "workflow.state_started", data: { stateId: "collect", step: 1 } },
+        { sessionId: WORKFLOW_ID, seq: 3, eventType: "workflow.state_completed", data: {
+            stateId: "collect", step: 1, outcome: "timeout", resultSource: "timeout", exitCode: null,
+            outputPreview: "<img src=x onerror=alert(1)>", stderrTail: "connection timed out",
+        } },
+    ];
+    await routeApi(page, { workflowEvents: events, workflowState: { status: "running" } });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    const node = page.getByRole("button", { name: "Inspect collect", exact: true });
+    await expect(node).toHaveClass(/is-failed/);
+    await node.click();
+    const details = page.locator(".ps-workflow-node-details");
+    await details.getByRole("tab", { name: "Output", exact: true }).click();
+    await expect(details).toContainText("<img src=x onerror=alert(1)>");
+    await expect(details).toContainText("connection timed out");
+    await expect(details.locator("img")).toHaveCount(0);
+});
+
 for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
     test(`quiet polling stays in one updating row at ${viewport.width}px`, async ({ page }) => {
         await page.setViewportSize(viewport);

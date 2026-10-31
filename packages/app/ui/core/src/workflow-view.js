@@ -1,14 +1,33 @@
 /** Read-only workflow view data. Execution and its durable events are unchanged. */
 export function workflowDefinition(data) {
     if (!Array.isArray(data?.states)) throw new Error("The workflow definition has no states.");
-    const states = data.states.filter(node => node && typeof node.id === "string"
-        && (node.type === "script" || node.type === "terminal"));
-    if (!states.length) throw new Error("The workflow definition has no supported states.");
-    return { name: data.name, version: data.version, initial: data.initial || states[0].id, states };
+    const states = data.states;
+    if (!states.length) throw new Error("The workflow definition has no states.");
+    const ids = new Set();
+    for (const node of states) {
+        if (!node || typeof node.id !== "string" || !node.id
+            || (node.type !== "script" && node.type !== "terminal")) {
+            throw new Error("The workflow definition contains an invalid or unsupported state.");
+        }
+        if (ids.has(node.id)) throw new Error(`The workflow definition repeats state '${node.id}'.`);
+        ids.add(node.id);
+    }
+    const initial = data.initial || states[0].id;
+    if (!ids.has(initial)) throw new Error("The workflow's initial state is not defined.");
+    for (const node of states) {
+        if (node.next != null && (typeof node.next !== "object" || Array.isArray(node.next))) {
+            throw new Error(`State '${node.id}' has invalid transitions.`);
+        }
+        for (const target of Object.values(node.next || {})) {
+            if (!ids.has(target)) throw new Error(`State '${node.id}' has a transition to an undefined state.`);
+        }
+    }
+    return { name: data.name, version: data.version, initial, states };
 }
 
 export function workflowNodeViews(definition, events = [], live = null) {
     if (!definition) return [];
+    const terminal = events.findLast(event => ["workflow.completed", "workflow.failed", "workflow.cancelled"].includes(event?.eventType));
     return definition.states.map(node => {
         const history = events.filter(event => event?.data?.stateId === node.id
             && String(event.eventType).startsWith("workflow."));
@@ -18,6 +37,8 @@ export function workflowNodeViews(definition, events = [], live = null) {
         const attempts = new Set(history.filter(event => Number.isSafeInteger(event.data.step))
             .map(event => event.data.step)).size || (node.type === "terminal" && latest ? 1 : 0);
         const eventState = latest?.eventType === "workflow.state_started" ? "running"
+            : latest?.eventType === "workflow.state_completed"
+                ? (latest.data.exitCode === 0 || ["reported", "stdout"].includes(latest.data.resultSource) ? "done" : "failed")
             : latest?.eventType?.endsWith("failed") ? "failed"
                 : latest?.eventType?.endsWith("cancelled") ? "cancelled"
                     : latest ? "done" : "idle";
@@ -28,7 +49,8 @@ export function workflowNodeViews(definition, events = [], live = null) {
         const newAttempts = snapshot ? new Set(history.filter(event =>
             Number.isSafeInteger(event.data.step) && event.data.step > Number(live.step || 0))
             .map(event => event.data.step)).size : 0;
-        const state = eventIsNewer ? eventState : snapshot?.state || eventState;
+        let state = eventIsNewer ? eventState : snapshot?.state || eventState;
+        if (state === "running" && terminal) state = terminal.eventType === "workflow.completed" ? "done" : "cancelled";
         const outcome = eventIsNewer
             ? result?.data?.outcome ?? snapshot?.lastOutcome
             : snapshot?.lastOutcome ?? result?.data?.outcome;
@@ -82,11 +104,17 @@ export function layoutWorkflowGraph(definition, availableWidth = 640) {
         }
     }
     const edges = [];
+    const pairs = new Map();
     for (const node of nodes) {
         const from = positions.get(node.id);
         for (const [outcome, target] of Object.entries(node.next || {})) {
             const to = positions.get(target);
             if (!to) continue;
+            const pair = JSON.stringify([node.id, target]);
+            if (pairs.has(pair)) {
+                pairs.get(pair).outcome += ` / ${outcome}`;
+                continue;
+            }
             let path, labelX, labelY;
             if (target === node.id) {
                 const right = from.x + nodeWidth;
@@ -103,7 +131,9 @@ export function layoutWorkflowGraph(definition, availableWidth = 640) {
                 path = `M${from.x + nodeWidth},${from.y + 33} H${side} V${to.y + 33} H${to.x + nodeWidth}`;
                 labelX = side; labelY = (from.y + to.y) / 2 + 23;
             }
-            edges.push({ from: node.id, to: target, outcome, path, labelX, labelY });
+            const edge = { from: node.id, to: target, outcome, path, labelX, labelY };
+            pairs.set(pair, edge);
+            edges.push(edge);
         }
     }
     return { width, height: Math.max(150, y - 50), positions, edges };
