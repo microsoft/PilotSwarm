@@ -79,6 +79,7 @@ states:
 | Session status | A terminal outcome `succeeded` or `blocked` ends the session `completed`; `failed` ends it `failed`; `cancelled` ends it `cancelled`. |
 | Size limits | YAML at most 256 KB. Each state's output at most 256 KB of JSON: store larger data as a fact or artifact and pass its key. |
 | Run limit | At most 1,000 script-state executions per run, so a loop in the graph cannot run forever. |
+| Poll delay | New child workflows may declare `transition.delaySeconds: { unchanged: 30 }`. Keys must be declared outcomes; values are integer seconds from 1 to 3,600. The controller waits after that outcome, without occupying a script process or waking the parent. |
 
 ## What a script sees
 
@@ -132,6 +133,13 @@ a generated confirmation flag is not human approval. Parent capability
 removal or a changed source binding can stop later calls, but newly added
 parent tools do not enlarge an admitted run.
 
+MCP sampling is refused: an MCP tool cannot request an extra model turn.
+Native shell `detach: true` is also refused. The captured workspace stays
+fixed if the parent navigates to another folder. A terminal or deleted parent,
+revoked capability, changed tool schema or changed package binding stops later
+tool calls. A named parent's agent identity supplies the same authorization
+context; the child session remains the source of execution events and facts.
+
 Parent policies and tools that exist only as in-memory callbacks cannot be
 delegated durably and are refused at admission. Use registered tool/policy
 implementations. Native background shell handles belong to one script state;
@@ -171,6 +179,43 @@ messages (refused with `WORKFLOW_SESSION_NOT_CONVERSATIONAL` or a clear
 error) or regeneration (refused with `REGENERATE_UNSUPPORTED`); a stop request
 answers `no_active_turn`.
 
+The first admitted definition, inputs, owner, parent and tool grant are
+immutable. Retrying a pending creation with the same key resumes its stored
+start after a catalog/start interruption. A different definition or owner
+conflicts; a completed run does not restart. There is no automatic sweep for
+a pending creation that is never retried.
+
+## Finite change watchers
+
+A watcher can read a query and linked pull-request snapshot, retain the
+baseline in `context.input`, and return `unchanged` until a meaningful
+difference appears:
+
+```yaml
+completion: { outcomes: [unchanged, changed, expired] }
+transition:
+  next: { unchanged: poll, changed: report, expired: no_change }
+  delaySeconds: { unchanged: 30 }
+```
+
+Only a terminal result wakes the parent. The watcher ends on the first change;
+it does not automatically start again. Include an explicit poll-count or time
+limit and a terminal `expired` path. The global 1,000-step bound is a final
+safety limit, not a recommended watcher lifetime. Store a large delta as an
+artifact and return its reference; the parent message contains a short preview.
+
+Completion notification is on by default. `notify_on_completion: false`
+disables it; a parent-requested stop does not send a redundant wake-up.
+Delivery is a separate activity with up to three attempts over 40 seconds.
+A durable child receipt prevents later re-delivery after success. If a worker
+dies between enqueue and receipt, the parent's normal `clientMessageIds`
+deduplication covers pending messages and its last 20 consumed IDs. This is
+not an unbounded exactly-once guarantee. Delivery failures are recorded as
+`workflow.parent_notification_failed`; they do not replace the workflow's
+terminal result. A terminal, deleted or no-longer-authorized parent is skipped.
+Workflow names and outputs arrive as escaped JSON explicitly marked untrusted,
+not as executable instructions.
+
 ## Stopping a workflow
 
 Cancel, complete and delete work as they do for an agent session: from the
@@ -201,6 +246,19 @@ state. A worker with scripts off still runs the controller, so a workflow
 with script states fails there at its start, or at its next script state,
 with a message that names the setting instead of waiting. Agents on such a
 worker are not shown `spawn_workflow`.
+
+Upgrade workers before admitting new child workflows. New runs use controller
+`workflow-session@1.1.0` and `workflow.child.*` activities; workers that only
+know the old controller cannot execute them. Do not admit new runs into a
+mixed-version worker fleet. Existing runs keep controller `1.0.0`, its activity
+names and its version at continue-as-new, including historical runtimes.
+The new delay completes before continue-as-new; irrelevant messages do not
+restart a completed poll or reset its deadline.
+
+Cleanup failures are explicit. The worker attempts native-task cancellation
+and disconnect even when abort fails. If it cannot confirm that tasks stopped,
+it retains the folder hold and blocks a new executor on that worker pending
+recovery; it does not report a successful release.
 
 Each running script state holds one of the worker's activity slots
 (`PILOTSWARM_WORKER_CONCURRENCY`, 2 by default) for as long as its script

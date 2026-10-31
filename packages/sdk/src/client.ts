@@ -37,7 +37,9 @@ import { WebPilotSwarmClient } from "./web/web-client.js";
 import { loadModelProviderTypes, type ModelProviderRegistry } from "./model-providers.js";
 import { resolveRuntimeModelSelection, type RuntimeModelSelection } from "./provider-catalog.js";
 import { compileWorkflow, validateWorkflowInputs, validateNodeWorkflowAdmission, WorkflowCompileError } from "./workflow/compiler.js";
-import { WORKFLOW_TOOL_POLICY, type WorkflowToolBinding } from "./workflow/tool-policy.js";
+import { WORKFLOW_TOOL_POLICY, readWorkflowToolBinding, type WorkflowToolBinding } from "./workflow/tool-policy.js";
+import { readWorkflowAdmission, type WorkflowAdmission } from "./workflow/admission.js";
+import { isDeepStrictEqual } from "node:util";
 import {
     WORKFLOW_SESSION_LATEST_VERSION,
     WORKFLOW_SESSION_ORCHESTRATION_NAME,
@@ -188,15 +190,17 @@ export class PilotSwarmClient {
         if (!this.duroxideClient) throw new Error("PilotSwarmClient is not started.");
         const sessionId = config.sessionId ?? crypto.randomUUID();
         const existing = await this._catalog.getSession(sessionId);
+        const creation = existing ? await this._catalog.getSessionCreationConfig?.(sessionId) : null;
+        const admission = readWorkflowAdmission(creation?.workflowAdmission);
         if (existing) {
             if (existing.sessionKind !== "workflow") {
                 throw Object.assign(new Error(`Session ${sessionId} already exists and is not a workflow session.`), { code: "SESSION_EXISTS", status: 409 });
             }
             // Existing admitted runs continue through their own history, never a new policy/source.
-            return { sessionId, workflowName: existing.title?.replace(/^Workflow: /, "") ?? "workflow" };
+            if (!admission) return { sessionId, workflowName: existing.title?.replace(/^Workflow: /, "") ?? "workflow" };
         }
-        if (!existing && (!config.parentSessionId || binding?.policy !== WORKFLOW_TOOL_POLICY
-            || binding.parentSessionId !== config.parentSessionId)) {
+        if (!config.parentSessionId || binding?.policy !== WORKFLOW_TOOL_POLICY
+            || binding.parentSessionId !== config.parentSessionId) {
             throw Object.assign(new Error("New workflows must be started by a parent agent with spawn_workflow; top-level workflow creation is deferred."),
                 { code: "WORKFLOW_PARENT_REQUIRED", status: 400 });
         }
@@ -205,8 +209,8 @@ export class PilotSwarmClient {
             : {};
         let workflowName: string;
         try {
-            const compiled = compileWorkflow(config.yaml);
-            if (!existing) validateNodeWorkflowAdmission(compiled);
+            const compiled = compileWorkflow(config.yaml, { allowOutcomeDelay: true });
+            validateNodeWorkflowAdmission(compiled);
             validateWorkflowInputs(compiled, inputs);
             workflowName = compiled.name;
         } catch (error) {
@@ -216,10 +220,11 @@ export class PilotSwarmClient {
             throw error;
         }
         const orchestrationId = `session-${sessionId}`;
-        if (!existing) {
+        {
             const parent = await this._catalog.getSession(config.parentSessionId!);
             const parentOwner = parent && await resolveEffectiveSpawnOwner(id => this._catalog.getSession(id), parent.sessionId);
             if (!parent || parent.deletedAt || parent.sessionKind === "workflow"
+                || ["completed", "failed", "cancelled"].includes(parent.state ?? "")
                 || !parentOwner || parentOwner.provider !== binding!.owner.provider || parentOwner.subject !== binding!.owner.subject
                 || config.owner?.provider !== binding!.owner.provider || config.owner?.subject !== binding!.owner.subject) {
                 throw Object.assign(new Error("Workflow tool binding does not match the authorized parent owner."),
@@ -228,29 +233,45 @@ export class PilotSwarmClient {
             if (!this._catalog.getSessionCreationConfig || !await this._catalog.getSessionCreationConfig(parent.sessionId)) {
                 throw new Error("Durable parent configuration is required before workflow admission.");
             }
+        }
+        const input: WorkflowOrchestrationInput = {
+            sessionId,
+            yaml: config.yaml,
+            inputs,
+            parentSessionId: config.parentSessionId,
+            notifyParent: config.notifyParent !== false,
+            executionPolicy: WORKFLOW_TOOL_POLICY,
+        };
+        if (!existing) {
             await this._catalog.createSession(sessionId, {
                 sessionKind: "workflow",
                 ...(config.parentSessionId ? { parentSessionId: config.parentSessionId } : {}),
                 ...(config.owner ? { owner: config.owner } : {}),
                 ...(config.groupId ? { groupId: config.groupId } : {}),
                 ...(config.visibility ? { visibility: config.visibility } : {}),
-                creationConfig: { workflowToolBinding: binding },
+                creationConfig: {
+                    workflowToolBinding: binding,
+                    workflowAdmission: { policy: WORKFLOW_TOOL_POLICY, workflowName, input } satisfies WorkflowAdmission,
+                },
             });
-            const stored = await this._catalog.getSessionCreationConfig?.(sessionId);
-            if (!stored?.workflowToolBinding) throw new Error("Durable workflow tool-policy storage is required before execution.");
-            await this._catalog.updateSession(sessionId, { title: `Workflow: ${workflowName}`, titleLocked: true });
         }
-        const input: WorkflowOrchestrationInput = {
-            sessionId,
-            yaml: config.yaml,
-            inputs,
-            ...(config.parentSessionId ? { parentSessionId: config.parentSessionId } : {}),
-            ...(config.notifyParent !== undefined ? { notifyParent: config.notifyParent } : {}),
-        };
+        const stored = await this._catalog.getSessionCreationConfig?.(sessionId);
+        const persisted = readWorkflowAdmission(stored?.workflowAdmission);
+        const storedBinding = readWorkflowToolBinding(stored?.workflowToolBinding);
+        const row = await this._catalog.getSession(sessionId);
+        if (!persisted || !storedBinding) throw new Error("Durable workflow admission and tool-policy storage are required before execution.");
+        if (!row || row.deletedAt || row.sessionKind !== "workflow" || row.parentSessionId !== config.parentSessionId
+            || !isDeepStrictEqual(persisted.input, input)
+            || storedBinding.owner.provider !== binding!.owner.provider || storedBinding.owner.subject !== binding!.owner.subject
+            || storedBinding.parentSessionId !== config.parentSessionId) {
+            throw Object.assign(new Error("This workflow session ID already has a different admission."), { code: "WORKFLOW_ADMISSION_CONFLICT", status: 409 });
+        }
+        if (row.orchestrationId || row.state !== "pending") return { sessionId, workflowName: persisted.workflowName };
+        await this._catalog.updateSession(sessionId, { title: `Workflow: ${persisted.workflowName}`, titleLocked: true });
         await this.duroxideClient.startOrchestrationVersioned(
             orchestrationId,
             WORKFLOW_SESSION_ORCHESTRATION_NAME,
-            input,
+            persisted.input,
             WORKFLOW_SESSION_LATEST_VERSION,
         );
         await this._catalog.updateSession(sessionId, { orchestrationId, state: "running", lastActiveAt: new Date() });

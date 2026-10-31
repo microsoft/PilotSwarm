@@ -79,6 +79,23 @@ async function waitForTerminal(mgmt, sessionId, timeoutMs = 90_000) {
 }
 
 describe("previously admitted script workflow sessions (worker + client + PostgreSQL)", () => {
+    it("catalog creation cannot overwrite a workflow admission under concurrent retry", async () => {
+        const env = getEnv();
+        await withClient(env, async client => {
+            const sessionId = `immutable-workflow-${Date.now()}`;
+            const variants = ["first", "second"].map(name => ({
+                sessionKind: "workflow",
+                creationConfig: { workflowAdmission: { policy: "node-parent-tools-v1", name } },
+            }));
+            await Promise.all(variants.map(options => client._catalog.createSession(sessionId, options)));
+            const stored = await client._catalog.getSessionCreationConfig(sessionId);
+            expect(["first", "second"]).toContain(stored.workflowAdmission.name);
+            await client._catalog.createSession(sessionId, { creationConfig: { replace: true } });
+            expect(await client._catalog.getSessionCreationConfig(sessionId)).toEqual(stored);
+            expect((await client._catalog.getSession(sessionId)).sessionKind).toBe("workflow");
+        });
+    });
+
     it("runs the graph durably, gives scripts the session's tools, and records an execution log", async () => {
         const env = getEnv();
         await withClient(env, { worker: { workflowScripts: { enabled: true } } }, async (client) => {

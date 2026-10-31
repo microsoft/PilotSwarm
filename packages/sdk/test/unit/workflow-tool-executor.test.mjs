@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { captureWorkflowTools, isWorkflowControlTool, resolveWorkflowTool } from "../../dist/workflow/tool-policy.js";
+import { captureWorkflowTools, isWorkflowControlTool, resolveWorkflowTool, validateWorkflowToolArguments, workflowToolPermission } from "../../dist/workflow/tool-policy.js";
 import { createWorkflowToolExecutor, workflowToolResult } from "../../dist/workflow/tool-executor.js";
 import { compileWorkflow, validateNodeWorkflowAdmission } from "../../dist/workflow/compiler.js";
 
@@ -100,6 +100,65 @@ test("cleanup errors remain visible", async () => {
     const f = fixture({ dispose: async () => { throw new Error("shell still active"); } });
     const executor = await createWorkflowToolExecutor(f.options);
     await assert.rejects(executor.close(), /shell still active/);
+});
+test("effective exclusions apply to capture and invocation, including MCP aliases", () => {
+    assert.deepEqual(captureWorkflowTools(metadata, ["bash", "facts/read"]).map(tool => tool.name), ["view"]);
+    assert.throws(() => resolveWorkflowTool("bash", captureWorkflowTools(metadata), metadata, ["bash"]), /not uniquely admitted/);
+});
+test("workflow permission handling permits ordinary tools but rejects sampling and unknown kinds", () => {
+    for (const request of [{ kind: "read" }, { kind: "write" }, { kind: "shell", commands: [] },
+        { kind: "mcp", serverName: "example", toolName: "read" }, { kind: "custom-tool", toolName: "echo" }]) {
+        assert.equal(workflowToolPermission(request).kind, "approve-once");
+    }
+    for (const request of [{ kind: "mcp-sampling", serverName: "example" }, { kind: "future" }, undefined]) {
+        assert.equal(workflowToolPermission(request).kind, "reject");
+    }
+});
+test("attached shells remain usable; detached shells cannot outlive a workflow state", () => {
+    assert.doesNotThrow(() => validateWorkflowToolArguments("bash", { mode: "async", detach: false }));
+    assert.throws(() => validateWorkflowToolArguments("bash", { mode: "async", detach: true }), /remain attached/);
+});
+test("close during authorization registers and aborts the call without executing it", async () => {
+    let authorize;
+    const f = fixture({ authorize: () => new Promise(resolve => { authorize = resolve; }) });
+    let aborts = 0;
+    f.session.abort = async () => { aborts++; authorize(); };
+    const executor = await createWorkflowToolExecutor(f.options);
+    const call = executor.call("bash", {});
+    const rejected = assert.rejects(call, /cancelled/);
+    await executor.close();
+    await rejected;
+    assert.equal(aborts, 1);
+    assert.equal(f.calls.length, 0);
+    assert.equal(f.disposed, 1);
+});
+test("abort failure still disposes and waits for the active call", async () => {
+    let finish;
+    const f = fixture();
+    f.session.rpc.tools.execute = () => new Promise(resolve => { finish = resolve; });
+    f.session.abort = async () => { throw new Error("abort failed"); };
+    let disposed = 0;
+    f.options.dispose = async () => { disposed++; finish({ resultType: "success", textResultForLlm: "stopped" }); };
+    const executor = await createWorkflowToolExecutor(f.options);
+    const call = executor.call("bash", {});
+    await Promise.resolve();
+    await Promise.resolve();
+    await assert.rejects(executor.close(), /abort failed/);
+    assert.equal(await call, "stopped");
+    assert.equal(disposed, 1);
+});
+test("a hung abort has a bounded close and does not skip disposal", async () => {
+    let finish;
+    const f = fixture({ cleanupTimeoutMs: 10 });
+    f.session.rpc.tools.execute = () => new Promise(resolve => { finish = resolve; });
+    f.session.abort = () => new Promise(() => {});
+    f.options.dispose = async () => { finish({ resultType: "success", textResultForLlm: "stopped" }); };
+    const executor = await createWorkflowToolExecutor(f.options);
+    const call = executor.call("bash", {});
+    await Promise.resolve();
+    await Promise.resolve();
+    await assert.rejects(executor.close(), /cleanup timed out/);
+    assert.equal(await call, "stopped");
 });
 test("new admission is Node-only without invalidating old compiled documents", () => {
     for (const runtime of ["node", "python", "powershell"]) {

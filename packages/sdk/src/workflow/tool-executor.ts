@@ -9,12 +9,25 @@ export interface WorkflowToolExecutor {
 export interface WorkflowToolExecutorOptions {
     session: Pick<CopilotSession, "rpc" | "abort">;
     grants: WorkflowToolGrant[];
+    excludedTools?: string[];
     /** Recheck authority before every invocation, not only session creation. */
     authorize: () => Promise<void>;
     /** Stop only this handle's background work, disconnect, then release its folders. */
     dispose: () => Promise<void>;
     invocationPrefix: string;
     maxCalls?: number;
+    cleanupTimeoutMs?: number;
+}
+
+async function cleanupWithin<T>(work: Promise<T>, timeoutMs: number): Promise<T> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+        return await Promise.race([work, new Promise<never>((_, reject) => {
+            timer = setTimeout(() => reject(new Error("Workflow tool cleanup timed out.")), timeoutMs);
+        })]);
+    } finally {
+        if (timer) clearTimeout(timer);
+    }
 }
 
 type ToolResult = Awaited<ReturnType<CopilotSession["rpc"]["tools"]["execute"]>>;
@@ -58,7 +71,7 @@ export async function createWorkflowToolExecutor(options: WorkflowToolExecutorOp
                 if (closed) throw new Error("Workflow tool executor was cancelled.");
                 const current = await options.session.rpc.tools.getCurrentMetadata();
                 if (!current.tools) throw new Error("The Copilot tool catalog is unavailable.");
-                const tool = resolveWorkflowTool(name, options.grants, current.tools);
+                const tool = resolveWorkflowTool(name, options.grants, current.tools, options.excludedTools);
                 validateWorkflowToolArguments(tool.name, args);
                 if (closed) throw new Error("Workflow tool executor was cancelled.");
                 return workflowToolResult(await options.session.rpc.tools.execute({
@@ -76,10 +89,22 @@ export async function createWorkflowToolExecutor(options: WorkflowToolExecutorOp
             closePromise ??= (async () => {
                 closed = true;
                 const inFlight = pending;
-                if (inFlight) await options.session.abort();
-                // Disposal stops native background work before waiting on a blocked shell result.
-                await options.dispose();
-                if (inFlight) await Promise.allSettled([inFlight]);
+                const errors: unknown[] = [];
+                const deadline = options.cleanupTimeoutMs ?? 10_000;
+                if (inFlight) {
+                    try { await cleanupWithin(options.session.abort(), deadline); }
+                    catch (error) { errors.push(error); }
+                }
+                // Abort failure must not skip stopping this handle's native background work.
+                try { await cleanupWithin(options.dispose(), deadline); }
+                catch (error) { errors.push(error); }
+                if (inFlight) {
+                    try { await cleanupWithin(Promise.allSettled([inFlight]), deadline); }
+                    catch (error) { errors.push(error); }
+                }
+                if (errors.length) {
+                    throw new AggregateError(errors, errors.map(error => error instanceof Error ? error.message : String(error)).join("; "));
+                }
             })();
             return closePromise;
         },

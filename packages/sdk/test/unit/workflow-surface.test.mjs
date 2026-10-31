@@ -175,8 +175,10 @@ function spawnDeps(overrides = {}) {
             resolveOwner: async () => ({ provider: "dev", subject: "alice" }),
             captureToolBinding: async () => ({ policy: "node-parent-tools-v1", parentSessionId: "parent-agent" }),
             createWorkflowSession: async (config) => {
-                created.push(config);
-                sessions.set(config.sessionId, { title: "Workflow: limits", state: "running" });
+                if (!sessions.has(config.sessionId)) {
+                    created.push(config);
+                    sessions.set(config.sessionId, { title: "Workflow: limits", state: "running" });
+                }
                 return { sessionId: config.sessionId, workflowName: "limits" };
             },
             ...overrides,

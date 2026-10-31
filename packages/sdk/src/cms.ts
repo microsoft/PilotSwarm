@@ -1780,6 +1780,19 @@ export class PgSessionCatalog implements SessionCatalog {
                 );
             }
 
+            if (await this.supportsCreationConfig()) {
+                // The create procedure locks even a conflicting row. Keep a workflow's
+                // first grant/input immutable across concurrent creates and retries.
+                const { rows } = await client.query(
+                    `SELECT creation_config FROM "${this.sql.schema}".sessions WHERE session_id = $1 FOR UPDATE`,
+                    [sessionId],
+                );
+                if (rows[0]?.creation_config?.workflowAdmission) {
+                    await client.query("ROLLBACK");
+                    return;
+                }
+            }
+
             // Creation config rides the same transaction as a raw UPDATE, like
             // the service columns below — the create proc's signature stays
             // untouched, and a pre-0072 database simply skips the write (the

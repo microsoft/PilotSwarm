@@ -43,7 +43,7 @@ export async function spawnWorkflowFromTool(
         }
         let workflowName: string;
         try {
-            const compiled = compileWorkflow(args.yaml);
+            const compiled = compileWorkflow(args.yaml, { allowOutcomeDelay: true });
             validateNodeWorkflowAdmission(compiled);
             validateWorkflowInputs(compiled, args.inputs ?? {});
             workflowName = compiled.name;
@@ -52,11 +52,7 @@ export async function spawnWorkflowFromTool(
                 + "Fix it and call spawn_workflow again.]";
         }
         const workflowSessionId = workflowChildSessionId(deps.parentSessionId, args.key, call?.toolCallId);
-        const existing = await deps.getSession(workflowSessionId).catch(() => null);
-        if (existing) {
-            return `[SYSTEM: spawn_workflow found the existing workflow session ${workflowSessionId} for this key `
-                + `("${existing.title ?? workflowName}", state ${existing.state ?? "unknown"}). Nothing new was started; pass a different key for another run.]`;
-        }
+        const existing = await deps.getSession(workflowSessionId);
         const owner = await deps.resolveOwner().catch(() => null);
         const notify = args.notify_on_completion !== false;
         const binding = await deps.captureToolBinding();
@@ -68,6 +64,10 @@ export async function spawnWorkflowFromTool(
             ...(owner ? { owner } : {}),
             notifyParent: notify,
         }, binding);
+        if (existing && existing.state !== "pending") {
+            return `[SYSTEM: spawn_workflow found the existing workflow session ${workflowSessionId} for this key `
+                + `("${existing.title ?? workflowName}", state ${existing.state ?? "unknown"}). Nothing new was started; pass a different key for another run.]`;
+        }
         return `[SYSTEM: started workflow session ${workflowSessionId} running "${workflowName}". `
             + (notify
                 ? "You will receive its result as a system message when it ends; do not poll for it. "

@@ -24,7 +24,7 @@ import { clipDescription } from "./skills.js";
 import { createFactTools } from "./facts-tools.js";
 import { createToolFactsAccessor } from "./tool-facts-accessor.js";
 import { createScriptSessionTools } from "./workflow/session-tools.js";
-import { WORKFLOW_TOOL_POLICY, captureWorkflowTools, isWorkflowControlTool, type WorkflowToolBinding } from "./workflow/tool-policy.js";
+import { WORKFLOW_TOOL_POLICY, captureWorkflowTools, isWorkflowControlTool, workflowToolPermission, type WorkflowToolBinding } from "./workflow/tool-policy.js";
 import { createWorkflowToolExecutor, type WorkflowToolExecutor } from "./workflow/tool-executor.js";
 import { createGraphTools } from "./graph-tools.js";
 import { createInspectTools, NO_VIEWER, type InspectViewer } from "./inspect-tools.js";
@@ -820,8 +820,9 @@ export class SessionManager {
     private sessionStore: SessionStateStore | null = null;
     /** In-memory configs with non-serializable fields (tools, hooks). */
     private sessionConfigs = new Map<string, ManagedSessionConfig>();
-    private workflowParentConfigs = new Map<string, SerializableSessionConfig>();
+    private workflowParentConfigs = new Map<string, SerializableSessionConfig & { excludedTools?: string[] }>();
     private workflowExecutors = new Map<string, WorkflowToolExecutor>();
+    private workflowExecutorFailures = new Map<string, Error>();
     /** Only application-supplied tools; resolved registry/platform handlers are never cached as inputs. */
     private sessionApplicationTools = new Map<string, Tool<any>[]>();
     /** One authorized agent snapshot per turn, also used by dynamic prompt callbacks. */
@@ -2650,6 +2651,7 @@ export class SessionManager {
                 enableFileHooks: false,
                 skipCustomInstructions: true,
                 infiniteSessions: { enabled: false },
+                onPermissionRequest: workflowToolPermission,
             } : {}),
         };
         this.workflowParentConfigs.set(sessionId, {
@@ -2665,6 +2667,7 @@ export class SessionManager {
             detachedPackageToolPolicy: config.detachedPackageToolPolicy,
             toolNames: effectiveSerializableConfig.toolNames ? [...effectiveSerializableConfig.toolNames] : undefined,
             agentIdentity: config.agentIdentity,
+            excludedTools: [...excludedTools],
         });
 
         let copilotSession: CopilotSession;
@@ -3425,7 +3428,13 @@ export class SessionManager {
 
     /** Final worker cleanup, after the durable runtime has drained. */
     async shutdown(): Promise<void> {
-        await Promise.all([...this.workflowExecutors.values()].map(executor => executor.close()));
+        const cleanup = await Promise.allSettled([...this.workflowExecutors.values()]
+            .map(executor => withWorkspaceDeadline(executor.close(), "workflow cleanup")));
+        for (const result of cleanup) {
+            if (result.status === "rejected") {
+                console.warn(`[SessionManager] Workflow cleanup failed; stopping its Copilot client: ${normalizeError(result.reason).message}`);
+            }
+        }
         this.unsubscribeFeatureFlags?.();
         this.unsubscribeFeatureFlags = null;
         // CopilotClient.stop owns session detachment. Detaching each session
@@ -3500,7 +3509,8 @@ export class SessionManager {
         await cli.rpc.tools.initializeAndValidate();
         const metadata = await cli.rpc.tools.getCurrentMetadata();
         if (!metadata.tools) throw new Error("The parent's Copilot tool catalog is not initialized.");
-        const tools = captureWorkflowTools(metadata.tools);
+        const excludedTools = [...(config.excludedTools ?? [])];
+        const tools = captureWorkflowTools(metadata.tools, excludedTools);
         const capabilities = this.sessionCatalog.getSessionCapabilities
             ? await this.sessionCatalog.getSessionCapabilities(parentSessionId)
             : { revision: 0, selections: [] };
@@ -3514,7 +3524,7 @@ export class SessionManager {
         return {
             policy: WORKFLOW_TOOL_POLICY, parentSessionId, owner,
             config: structuredClone(config), capabilities: structuredClone(capabilities), tools, sourceRevisions,
-            excludedTools: [...(fullConfig?.excludedTools ?? [])],
+            excludedTools,
             boundAgentFingerprint: this.workflowAgentFingerprint(config, owner),
         };
     }
@@ -3531,7 +3541,10 @@ export class SessionManager {
             this.sessionCatalog.getSession(sessionId), this.sessionCatalog.getSession(binding.parentSessionId),
         ]);
         if (!child || child.deletedAt || child.parentSessionId !== binding.parentSessionId || child.sessionKind !== "workflow"
-            || !parent || parent.deletedAt || parent.isSystem) throw new Error("Workflow parent authority is no longer available.");
+            || !parent || parent.deletedAt || parent.isSystem
+            || ["completed", "failed", "cancelled"].includes(parent.state ?? "")) {
+            throw new Error("Workflow parent authority is no longer available.");
+        }
         const owner = await resolveEffectiveSpawnOwner(id => this.sessionCatalog!.getSession(id), sessionId);
         if (owner?.provider !== binding.owner.provider || owner?.subject !== binding.owner.subject) throw new Error("Workflow owner changed.");
         if (this.workflowAgentFingerprint(binding.config, owner) !== binding.boundAgentFingerprint) {
@@ -3554,6 +3567,8 @@ export class SessionManager {
     }
 
     async openWorkflowToolExecutor(sessionId: string, binding: WorkflowToolBinding, step: number): Promise<WorkflowToolExecutor> {
+        const cleanupFailure = this.workflowExecutorFailures.get(sessionId);
+        if (cleanupFailure) throw new Error(`Workflow executor requires recovery: ${cleanupFailure.message}`);
         if (this.workflowExecutors.has(sessionId)) throw new Error("A workflow tool executor is already active.");
         await this.authorizeWorkflowTools(sessionId, binding);
         const config: ManagedSessionConfig = structuredClone(binding.config);
@@ -3585,12 +3600,21 @@ export class SessionManager {
         }
         let managed: ManagedSession | undefined;
         const dispose = async () => {
+            const errors: unknown[] = [];
             if (managed) {
-                await managed.cancelBackgroundTasks();
+                try { await withWorkspaceDeadline(managed.cancelBackgroundTasks(), "workflow task cancel"); }
+                catch (error) { errors.push(error); }
+                try { await withWorkspaceDeadline(managed.destroy(), "workflow disconnect"); }
+                catch (error) { errors.push(error); }
             }
-            const released = await this.releaseWorkspace(sessionId, { reason: "workflow_state_finished", workerNodeId });
-            if (!released.released && managed) await managed.destroy();
+            if (errors.length) {
+                const error = new AggregateError(errors, errors.map(item => normalizeError(item).message).join("; "));
+                this.workflowExecutorFailures.set(sessionId, error);
+                // Retain the folder hold and block further states until recovery proves tasks stopped.
+                throw error;
+            }
             this._forgetWarmSession(sessionId);
+            const released = await this.releaseWorkspace(sessionId, { reason: "workflow_state_finished", workerNodeId });
             this.workflowExecutors.delete(sessionId);
             if (released.detail && released.released) throw new Error(released.detail);
         };
@@ -3600,6 +3624,7 @@ export class SessionManager {
             await managed.prepareWorkflowTools(new Set(binding.tools.map(tool => tool.name)), overrides);
             const executor = await createWorkflowToolExecutor({
                 session: managed.getWorkflowToolSession(), grants: binding.tools,
+                excludedTools: binding.excludedTools,
                 authorize: () => this.authorizeWorkflowTools(sessionId, binding), dispose,
                 invocationPrefix: `${sessionId}/${step}/${randomUUID()}`,
             });

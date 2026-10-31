@@ -999,11 +999,26 @@ export class PilotSwarmWorker {
                 await this._catalog?.softDeleteSession(sessionId);
                 await this.factStore?.deleteSessionFactsForSession(sessionId).catch(() => undefined);
             },
-            notifyParent: async (parentSessionId, prompt, sender) => {
+            authorizeParentNotification: async (sessionId, parentSessionId) => {
+                if (!this._catalog) throw new Error("Workflow parent catalog is unavailable.");
+                const [child, parent] = await Promise.all([
+                    this._catalog.getSession(sessionId), this._catalog.getSession(parentSessionId),
+                ]);
+                if (!child || child.parentSessionId !== parentSessionId || !parent || parent.deletedAt
+                    || ["completed", "failed", "cancelled"].includes(parent.state ?? "")) return false;
+                const { resolveEffectiveSpawnOwner } = await import("./cms.js");
+                const [childOwner, parentOwner] = await Promise.all([
+                    resolveEffectiveSpawnOwner(id => this._catalog!.getSession(id), sessionId),
+                    resolveEffectiveSpawnOwner(id => this._catalog!.getSession(id), parentSessionId),
+                ]);
+                return Boolean(childOwner && parentOwner && childOwner.provider === parentOwner.provider
+                    && childOwner.subject === parentOwner.subject);
+            },
+            notifyParent: async (parentSessionId, prompt, sender, clientMessageId) => {
                 await workflowClient.enqueueEvent(
                     `session-${parentSessionId}`,
                     "messages",
-                    JSON.stringify({ prompt, sender }),
+                    JSON.stringify({ prompt, sender, ...(clientMessageId ? { clientMessageIds: [clientMessageId] } : {}) }),
                 );
             },
             runnerOptions: { executables: workflowScriptSettings.executables },

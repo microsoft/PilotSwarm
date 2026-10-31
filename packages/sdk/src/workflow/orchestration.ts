@@ -1,4 +1,5 @@
 import type { CompiledWorkflow, WorkflowScriptState, WorkflowTerminalOutcome } from "./compiler.js";
+import { WORKFLOW_TOOL_POLICY } from "./tool-policy.js";
 import {
     requireScriptResult,
     resolveTransition,
@@ -7,7 +8,7 @@ import {
 } from "./executor.js";
 
 export const WORKFLOW_SESSION_ORCHESTRATION_NAME = "workflow-session";
-export const WORKFLOW_SESSION_LATEST_VERSION = "1.0.0";
+export const WORKFLOW_SESSION_LATEST_VERSION = "1.1.0";
 
 /** Script-state executions per orchestration execution before continue-as-new bounds history. */
 export const WORKFLOW_STEPS_PER_EXECUTION = 20;
@@ -16,6 +17,12 @@ export const WORKFLOW_ACTIVITIES = {
     begin: "workflow.begin",
     runScript: "workflow.runScript",
     finish: "workflow.finish",
+} as const;
+export const WORKFLOW_CHILD_ACTIVITIES = {
+    begin: "workflow.child.begin",
+    runScript: "workflow.child.runScript",
+    finish: "workflow.child.finish",
+    notify: "workflow.child.notify",
 } as const;
 
 export interface WorkflowResumePoint {
@@ -34,6 +41,7 @@ export interface WorkflowOrchestrationInput {
     parentSessionId?: string;
     /** Wake the parent session with the result when the workflow ends. Default true for children. */
     notifyParent?: boolean;
+    executionPolicy?: typeof WORKFLOW_TOOL_POLICY;
     /** Set only by continue-as-new. */
     resume?: WorkflowResumePoint;
 }
@@ -50,11 +58,13 @@ export interface WorkflowRunStateInput {
     inputs: Record<string, unknown>;
     priorOutput: unknown;
     step: number;
+    executionPolicy?: typeof WORKFLOW_TOOL_POLICY;
 }
 
 export interface WorkflowRunStateResult {
     outcome: string;
     output: unknown;
+    cancelled?: boolean;
 }
 
 /**
@@ -85,6 +95,7 @@ export interface WorkflowFinishInput {
     /** Why a cancelled or deleted run stopped, and which session asked. */
     reason?: string;
     requestedBy?: string;
+    executionPolicy?: typeof WORKFLOW_TOOL_POLICY;
 }
 
 export interface WorkflowRunResult {
@@ -109,6 +120,7 @@ export interface WorkflowCustomStatus {
         step: number;
         outcome?: string;
         error?: string;
+        waitingUntil?: number;
     };
 }
 
@@ -156,14 +168,34 @@ export function* workflowSessionOrchestration_1_0_0(
     ctx: any,
     input: WorkflowOrchestrationInput,
 ): Generator<any, WorkflowRunResult | null, any> {
+    return yield* workflowSessionOrchestration(ctx, input, false);
+}
+
+export function* workflowSessionOrchestration_1_1_0(
+    ctx: any,
+    input: WorkflowOrchestrationInput,
+): Generator<any, WorkflowRunResult | null, any> {
+    if (input.executionPolicy !== WORKFLOW_TOOL_POLICY) throw new Error("A child workflow execution policy is required.");
+    return yield* workflowSessionOrchestration(ctx, input, true);
+}
+
+function* workflowSessionOrchestration(
+    ctx: any,
+    input: WorkflowOrchestrationInput,
+    childPolicy: boolean,
+): Generator<any, WorkflowRunResult | null, any> {
+    const activities = childPolicy ? WORKFLOW_CHILD_ACTIVITIES : WORKFLOW_ACTIVITIES;
+    const policy = childPolicy ? { executionPolicy: WORKFLOW_TOOL_POLICY } : {};
     const notifyParent = Boolean(input.parentSessionId) && input.notifyParent !== false;
     let workflow: CompiledWorkflow | null = input.resume?.workflow ?? null;
     let stateId: string | null = input.resume?.stateId ?? null;
     let priorOutput: unknown = input.resume?.priorOutput ?? null;
     let step = input.resume?.step ?? 0;
     const results: Record<string, unknown> = { ...(input.resume?.results ?? {}) };
+    let finishing = false;
 
     const finish = function* (result: Omit<WorkflowFinishInput, "sessionId" | "parentSessionId" | "notifyParent">) {
+        finishing = true;
         publish(ctx, {
             status: result.status === "deleted" ? "cancelled" : result.status,
             sessionKind: "workflow",
@@ -176,12 +208,19 @@ export function* workflowSessionOrchestration_1_0_0(
                 ...(result.reason ? { error: result.reason } : {}),
             },
         });
-        yield ctx.scheduleActivityTyped(WORKFLOW_ACTIVITIES.finish, {
+        const finishInput: WorkflowFinishInput = {
             sessionId: input.sessionId,
             ...(input.parentSessionId ? { parentSessionId: input.parentSessionId } : {}),
             notifyParent,
             ...result,
-        } satisfies WorkflowFinishInput);
+            ...policy,
+        };
+        yield ctx.scheduleActivityTyped(activities.finish, finishInput);
+        if (childPolicy && notifyParent) {
+            yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_CHILD_ACTIVITIES.notify, finishInput, {
+                maxAttempts: 3, timeoutMs: 10_000, totalTimeoutMs: 40_000,
+            });
+        }
         const run: WorkflowRunResult = {
             status: result.status,
             workflowName: result.workflowName,
@@ -199,10 +238,11 @@ export function* workflowSessionOrchestration_1_0_0(
     try {
         if (!workflow) {
             publish(ctx, { status: "running", sessionKind: "workflow", workflow: { name: null, stateId: null, step: 0 } });
-            const begun: WorkflowBeginResult = yield ctx.scheduleActivityTyped(WORKFLOW_ACTIVITIES.begin, {
+            const begun: WorkflowBeginResult = yield ctx.scheduleActivityTyped(activities.begin, {
                 sessionId: input.sessionId,
                 yaml: input.yaml,
                 inputs: input.inputs,
+                ...policy,
             });
             workflow = begun.workflow;
             stateId = workflow.initial;
@@ -236,8 +276,9 @@ export function* workflowSessionOrchestration_1_0_0(
                     inputs: input.inputs,
                     ...(input.parentSessionId ? { parentSessionId: input.parentSessionId } : {}),
                     ...(input.notifyParent !== undefined ? { notifyParent: input.notifyParent } : {}),
+                    ...policy,
                     resume: { workflow, stateId: stateId!, priorOutput, step, results },
-                } satisfies WorkflowOrchestrationInput, WORKFLOW_SESSION_LATEST_VERSION);
+                } satisfies WorkflowOrchestrationInput, childPolicy ? "1.1.0" : "1.0.0");
                 return null;
             }
 
@@ -249,7 +290,7 @@ export function* workflowSessionOrchestration_1_0_0(
             // delete stop a running script: the losing activity is cancelled
             // and the runner kills its process tree.
             const raced = yield ctx.raceTyped(
-                ctx.scheduleActivity(WORKFLOW_ACTIVITIES.runScript, {
+                ctx.scheduleActivity(activities.runScript, {
                     sessionId: input.sessionId,
                     workflowName: workflow.name,
                     stateId: state.id,
@@ -257,6 +298,7 @@ export function* workflowSessionOrchestration_1_0_0(
                     inputs: input.inputs,
                     priorOutput,
                     step,
+                    ...policy,
                 } satisfies WorkflowRunStateInput),
                 ctx.dequeueEvent(WORKFLOW_COMMAND_QUEUE),
             );
@@ -280,13 +322,42 @@ export function* workflowSessionOrchestration_1_0_0(
                 });
             }
             const raw = typeof raced?.value === "string" ? JSON.parse(raced.value) : raced?.value;
+            if (childPolicy && raw?.cancelled === true) {
+                return yield* finish({
+                    workflowName: workflow.name, status: "cancelled", stateId: state.id, steps: step,
+                    reason: "Script execution was cancelled",
+                });
+            }
             const result = requireScriptResult(state.id, raw);
             const target = resolveTransition(workflow, state.id, result.outcome);
             results[state.id] = result.output;
             priorOutput = result.output;
             stateId = target;
+            const delay = childPolicy ? state.delaySeconds?.[result.outcome] : undefined;
+            if (delay) {
+                const deadline: number = (yield ctx.utcNow()) + delay * 1_000;
+                publish(ctx, { status: "running", sessionKind: "workflow",
+                    workflow: { name: workflow.name, stateId: state.id, step, waitingUntil: deadline } });
+                let remaining = delay * 1_000;
+                while (remaining > 0) {
+                    // Prefer a queued lifecycle command if it is already available.
+                    const waiting = yield ctx.raceTyped(ctx.dequeueEvent(WORKFLOW_COMMAND_QUEUE), ctx.scheduleTimer(remaining));
+                    if (waiting?.index === 1) break;
+                    const command = parseWorkflowCommand(waiting?.value);
+                    if (command) {
+                        return yield* finish({
+                            workflowName: workflow.name, status: command.cmd === "delete" ? "deleted" : "cancelled",
+                            stateId: state.id, steps: step, reason: command.reason ?? "Stopped during workflow delay",
+                            ...(command.requestedBy ? { requestedBy: command.requestedBy } : {}),
+                        });
+                    }
+                    remaining = deadline - (yield ctx.utcNow());
+                }
+            }
         }
     } catch (error) {
+        // Delivery errors must not rewrite a result already recorded by finish.
+        if (childPolicy && finishing) throw error;
         const message = workflowErrorMessage(error);
         ctx.traceWarn?.(`[workflow] session=${input.sessionId} failed: ${message}`);
         return yield* finish({
@@ -300,5 +371,6 @@ export function* workflowSessionOrchestration_1_0_0(
 }
 
 export const WORKFLOW_SESSION_ORCHESTRATION_REGISTRY: ReadonlyArray<{ version: string; handler: any }> = [
-    { version: WORKFLOW_SESSION_LATEST_VERSION, handler: workflowSessionOrchestration_1_0_0 },
+    { version: "1.0.0", handler: workflowSessionOrchestration_1_0_0 },
+    { version: "1.1.0", handler: workflowSessionOrchestration_1_1_0 },
 ];

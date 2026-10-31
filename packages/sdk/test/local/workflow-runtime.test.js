@@ -13,7 +13,6 @@ import { runScriptNode, SCRIPT_NODE_MAX_OUTPUT_BYTES } from "../../src/workflow/
 import {
     WORKFLOW_SESSION_ORCHESTRATION_NAME,
     WORKFLOW_SESSION_ORCHESTRATION_REGISTRY,
-    WORKFLOW_SESSION_LATEST_VERSION,
     WORKFLOW_STEPS_PER_EXECUTION,
 } from "../../src/workflow/orchestration.js";
 import {
@@ -24,6 +23,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const { Runtime, Client, SqliteProvider } = createRequire(import.meta.url)("duroxide");
+// These cases preserve the originally released controller's behavior.
+const WORKFLOW_SESSION_LATEST_VERSION = "1.0.0";
 
 const hasPython = spawnSync("python3", ["--version"]).status === 0;
 // PS_TEST_PWSH points at a PowerShell that is not on PATH (a portable install).

@@ -392,7 +392,14 @@ export async function runScriptNode(
             }));
         });
         acceptingToolCalls = false;
-        if (toolCancellation) await toolCancellation;
+        if (toolCancellation) {
+            try { await toolCancellation; }
+            catch (error) {
+                throw new WorkflowExecutionError(
+                    `Script state '${node.id}' ${cancelled ? "was cancelled" : timedOut ? "timed out" : "stopped"}; tool cleanup failed: ${errorText(error)}`,
+                );
+            }
+        }
 
         const stdoutTail = stdout.text();
         const stderrTail = stderr.text();

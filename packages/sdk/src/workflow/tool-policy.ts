@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import type { CopilotSession } from "@github/copilot-sdk";
+import type { CopilotSession, PermissionRequestResult } from "@github/copilot-sdk";
 import type { CapabilityState } from "../capability-catalog.js";
 import type { SerializableSessionConfig, SessionOwnerInfo } from "../types.js";
+import { sessionApprovalForPermissionRequest } from "../permissions.js";
 
 export const WORKFLOW_TOOL_POLICY = "node-parent-tools-v1" as const;
 export type WorkflowToolMetadata = NonNullable<Awaited<ReturnType<CopilotSession["rpc"]["tools"]["getCurrentMetadata"]>>["tools"]>[number];
@@ -100,17 +101,22 @@ export function allowedWorkflowTool(tool: Pick<WorkflowToolGrant, "name" | "name
         && !(tool.mcpToolName && isWorkflowControlTool(tool.mcpToolName));
 }
 
-export function captureWorkflowTools(tools: WorkflowToolMetadata[]): WorkflowToolGrant[] {
-    return tools.filter(allowedWorkflowTool).map(workflowToolGrant);
+function isExcluded(tool: WorkflowToolGrant, exclusions: readonly string[]): boolean {
+    return workflowToolAliases(tool).some(name => exclusions.includes(name));
+}
+
+export function captureWorkflowTools(tools: WorkflowToolMetadata[], exclusions: readonly string[] = []): WorkflowToolGrant[] {
+    return tools.filter(tool => allowedWorkflowTool(tool) && !isExcluded(workflowToolGrant(tool), exclusions)).map(workflowToolGrant);
 }
 
 export function resolveWorkflowTool(
     name: string,
     grants: WorkflowToolGrant[],
     offered: WorkflowToolMetadata[],
+    exclusions: readonly string[] = [],
 ): WorkflowToolMetadata {
     if (isWorkflowControlTool(name)) throw new Error(`Workflow control tool '${name}' is not permitted.`);
-    const admitted = grants.filter(grant => allowedWorkflowTool(grant) && workflowToolAliases(grant).includes(name));
+    const admitted = grants.filter(grant => allowedWorkflowTool(grant) && !isExcluded(grant, exclusions) && workflowToolAliases(grant).includes(name));
     if (admitted.length !== 1) throw new Error(`Tool '${name}' is not uniquely admitted for this workflow.`);
     const grant = admitted[0];
     const matches = offered.filter(tool => tool.name === grant.name
@@ -124,10 +130,22 @@ export function resolveWorkflowTool(
 }
 
 export function validateWorkflowToolArguments(name: string, args: Record<string, unknown>): void {
+    if (["bash", "powershell"].includes(name) && args.detach === true) {
+        throw new Error("Workflow shells must remain attached to the state that owns them.");
+    }
     if (name === "load_skill" && (args.path !== undefined || args.unload !== undefined)) {
         throw new Error("Workflow scripts cannot change loaded capabilities.");
     }
+
     if (name === "send_session_message" && args.expects_response === true) {
         throw new Error("Workflow sessions cannot receive conversational replies.");
     }
+}
+
+/** Tool execution can request permissions, but must never request model inference. */
+export function workflowToolPermission(request: Parameters<typeof sessionApprovalForPermissionRequest>[0]): PermissionRequestResult {
+    if (request?.kind === "mcp-sampling" || (request?.kind !== "url" && !sessionApprovalForPermissionRequest(request))) {
+        return { kind: "reject", feedback: "Workflow tools cannot request model sampling or unknown permissions." };
+    }
+    return { kind: "approve-once" };
 }

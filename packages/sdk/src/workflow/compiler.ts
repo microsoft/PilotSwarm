@@ -39,6 +39,8 @@ export interface WorkflowScriptState {
     outcomes: string[];
     /** Outcome -> next state id. Every outcome has exactly one target. */
     next: Record<string, string>;
+    /** Controller-owned delay after an outcome; only new child runs compile this field. */
+    delaySeconds?: Record<string, number>;
 }
 
 export interface WorkflowTerminalState {
@@ -207,7 +209,7 @@ export function validateWorkflowInputs(workflow: CompiledWorkflow, inputs: Recor
     }
 }
 
-function compileScriptState(id: string, state: JsonObject, stateIds: ReadonlySet<string>): WorkflowScriptState {
+function compileScriptState(id: string, state: JsonObject, stateIds: ReadonlySet<string>, allowOutcomeDelay: boolean): WorkflowScriptState {
     const path = `states.${id}`;
     const runtime = requireText(state.runtime, `${path}.runtime`);
     if (runtime !== "node" && runtime !== "python" && runtime !== "powershell") {
@@ -230,6 +232,17 @@ function compileScriptState(id: string, state: JsonObject, stateIds: ReadonlySet
     for (const outcome of Object.keys(rawNext)) {
         if (!outcomes.includes(outcome)) fail(`${path}.transition.next.${outcome} is not a declared outcome.`);
     }
+    let delaySeconds: Record<string, number> | undefined;
+    if (allowOutcomeDelay && transition.delaySeconds !== undefined) {
+        delaySeconds = {};
+        for (const [outcome, delay] of Object.entries(requireObject(transition.delaySeconds, `${path}.transition.delaySeconds`))) {
+            if (!outcomes.includes(outcome)) fail(`${path}.transition.delaySeconds.${outcome} is not a declared outcome.`);
+            if (typeof delay !== "number" || !Number.isInteger(delay) || delay < 1 || delay > 3_600) {
+                fail(`${path}.transition.delaySeconds.${outcome} must be an integer from 1 to 3600.`);
+            }
+            delaySeconds[outcome] = delay;
+        }
+    }
     return {
         id,
         type: "script",
@@ -238,6 +251,7 @@ function compileScriptState(id: string, state: JsonObject, stateIds: ReadonlySet
         timeoutSeconds: parseTimeout(state.timeoutSeconds, `${path}.timeoutSeconds`),
         outcomes,
         next,
+        ...(delaySeconds ? { delaySeconds } : {}),
     };
 }
 
@@ -267,7 +281,7 @@ function yamlHint(yaml: string): string {
 }
 
 /** Compile and validate one `kind: Workflow` document. */
-export function compileWorkflow(yaml: string): CompiledWorkflow {
+export function compileWorkflow(yaml: string, options: { allowOutcomeDelay?: boolean } = {}): CompiledWorkflow {
     if (typeof yaml !== "string" || !yaml.trim()) fail("Workflow YAML must be a non-empty string.");
     if (Buffer.byteLength(yaml, "utf8") > WORKFLOW_MAX_YAML_BYTES) {
         fail(`Workflow YAML must be at most ${WORKFLOW_MAX_YAML_BYTES} bytes.`);
@@ -313,7 +327,7 @@ export function compileWorkflow(yaml: string): CompiledWorkflow {
         if (state.next !== undefined || state.transitions !== undefined || state.events !== undefined) {
             fail(`states.${id} declares transitions outside 'transition'; use transition.next.`, "WORKFLOW_INLINE_TRANSITION_UNSUPPORTED");
         }
-        if (type === "script") states[id] = compileScriptState(id, state, stateIds);
+        if (type === "script") states[id] = compileScriptState(id, state, stateIds, options.allowOutcomeDelay === true);
         else if (type === "terminal") states[id] = compileTerminalState(id, state, name, stateIds);
         else if (DEFERRED_STATE_TYPES.has(type)) fail(`states.${id}.type '${type}' is not supported yet; this version runs script and terminal states.`, "WORKFLOW_STATE_TYPE_UNSUPPORTED");
         else fail(`states.${id}.type '${type}' is not a workflow state type.`, "WORKFLOW_STATE_TYPE_UNSUPPORTED");
