@@ -3495,6 +3495,16 @@ function baseReducer(state, action) {
         // separate column with its own toggle.
         //
         // `open` may be omitted to mean "toggle".
+        case "ui/workflowView": {
+            const sessionId = action.sessionId;
+            if (!sessionId || state.sessions.byId[sessionId]?.sessionKind !== "workflow") return state;
+            const previous = state.ui.workflowViews?.[sessionId] || {};
+            return { ...state, ui: { ...state.ui, workflowViews: {
+                ...state.ui.workflowViews,
+                [sessionId]: { ...previous, ...action.view },
+            } } };
+        }
+
         case "ui/canvasOpen": {
             const open = typeof action.open === "boolean" ? action.open : !state.ui.canvasOpen;
             const sessionId = action.sessionId || state.sessions.activeSessionId || null;

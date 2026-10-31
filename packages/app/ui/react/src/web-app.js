@@ -3,6 +3,7 @@ import { ChatCallLine } from "./chat-call-line.js";
 import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
 import { NativeTaskCard } from "./native-task-card.js";
+import { WorkflowMainPane, WorkflowNodePane } from "./workflow-workspace.js";
 import { WorkspacePane, WORKSPACE_CHANGED_EVENT, announceWorkspaceChange, downloadBase64, workspaceToolActivity } from "./workspace-pane.js";
 // createPortal is only invoked by browser-only surfaces (tooltips, toolbar
 // slots, and viewport-level dialogs); the import itself is side-effect-free
@@ -1508,9 +1509,10 @@ function WorkflowGlyph({ className = "", decorative = false }) {
         ...(decorative ? { "aria-hidden": true } : { "aria-label": "Workflow", role: "img" }),
         focusable: "false",
     },
-    React.createElement("rect", { x: 7, y: 1, width: 6, height: 3, rx: 1.5 }),
-    React.createElement("path", { d: "M10 4v3m0 0 4 3-4 3-4-3 4-3Zm-4 3H3v6m11-6h3v6M1 14l2 2 2-2m10 0 2 2 2-2" }),
-    React.createElement("path", { d: "M1 19h4m10 0h4" }));
+    React.createElement("rect", { x: 1, y: 7, width: 6, height: 6, rx: 1.5 }),
+    React.createElement("rect", { x: 13, y: 1, width: 6, height: 6, rx: 1.5 }),
+    React.createElement("rect", { x: 13, y: 13, width: 6, height: 6, rx: 1.5 }),
+    React.createElement("path", { d: "M7 10h3M10 4v12m0-12h3m-3 12h3" }));
 }
 
 function Runs({ runs, theme }) {
@@ -7255,7 +7257,18 @@ function OutboxStrip({ controller, sessionId, header, blocks, theme }) {
 }
 const OUTBOX_SELECTABLE_PHASES = new Set(["pending", "queued", "cancelling"]);
 
-function ChatPane({ controller, mobile = false, fullWidth = false, showComposer = true, onEnterZen = null, activityInHeader = false }) {
+function ChatPane(props) {
+    const workflow = useControllerSelector(props.controller, state =>
+        state.sessions.byId[state.sessions.activeSessionId]?.sessionKind === "workflow");
+    return workflow
+        ? React.createElement(WorkflowMainPane, {
+            controller: props.controller, icon: React.createElement(WorkflowGlyph, { decorative: true }),
+            log: React.createElement(ChatTranscriptPane, { ...props, showComposer: false, workflowLog: true }),
+        })
+        : React.createElement(ChatTranscriptPane, props);
+}
+
+function ChatTranscriptPane({ controller, mobile = false, fullWidth = false, showComposer = true, onEnterZen = null, activityInHeader = false, workflowLog = false }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
     const viewState = useControllerSelector(controller, (state) => {
@@ -7332,7 +7345,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         () => selectChatPaneChrome(selectorState, { width: contentWidth }),
         [selectorState, contentWidth],
     );
-    const animatedDots = useAnimatedDots(Boolean(chrome.animateTitleRight));
+    const animatedDots = useAnimatedDots(!workflowLog && Boolean(chrome.animateTitleRight));
     const titleRight = React.useMemo(
         () => appendAnimatedDotsToRuns(chrome.titleRight, chrome.animateTitleRight ? animatedDots : ""),
         [animatedDots, chrome.animateTitleRight, chrome.titleRight],
@@ -7358,7 +7371,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
     // The live-activity line is pinned in the bottom-sticky strip (with the
     // outbox overlay), NOT appended to the transcript — it must stay put while
     // chat content scrolls, and it drops the instant the turn ends.
-    const pinnedActivityLines = liveActivityLines;
+    const pinnedActivityLines = workflowLog ? EMPTY_ARRAY : liveActivityLines;
     const outbox = React.useMemo(
         () => selectOutboxOverlayBlocks(selectorState, contentWidth, { tableMode: "sentinel" }),
         [selectorState, contentWidth],
@@ -7420,8 +7433,8 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
 
     return React.createElement(ScrollLinesPanel, {
         controller,
-        title: mobile ? compactTitleRuns(chrome.title, 28) : chrome.title,
-        titleRight: mobile && titleRight ? compactTitleRuns(titleRight, 18) : titleRight,
+        title: workflowLog ? [{ text: "Execution log", color: "gray" }] : mobile ? compactTitleRuns(chrome.title, 28) : chrome.title,
+        titleRight: workflowLog ? null : mobile && titleRight ? compactTitleRuns(titleRight, 18) : titleRight,
         // Chat/Summary toggling lives on the top toolbar so the pane chrome
         // stays clean. The toolbar button is disabled for group sessions.
         actions: mobile && onEnterZen ? React.createElement(IconButton, { className: "ps-mini-button", icon: React.createElement(ExpandGlyph), label: "Enter mobile zen", onClick: onEnterZen }) : null,
@@ -7434,7 +7447,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         scrollTailKey: activityInHeader ? outbox.revision : "",
         bottomStickyTop: activityInHeader ? null : outboxStrip,
         bottomStickyLines: activityInHeader ? EMPTY_ARRAY : pinnedActivityLines,
-        reserveBottomSticky: !activityInHeader,
+        reserveBottomSticky: !activityInHeader && !workflowLog,
         scrollOffset: viewState.scroll,
         scrollMode: viewState.followBottom ? "bottom" : "top",
         stickyBottom: true,
@@ -8692,6 +8705,8 @@ function SidePaneTabs({ mode, onChange, compact = false }) {
 
 function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote = false, maximized = false, onToggleMaximized = null }) {
     const view = useControllerSelector(controller, selectCanvasView, shallowEqualObject);
+    const isWorkflow = useControllerSelector(controller, state =>
+        state.sessions.byId[state.sessions.activeSessionId]?.sessionKind === "workflow");
     const [paneMode, setPaneMode] = useSidePaneMode(controller);
     const workspaceTab = portalWorkspaceFiles;
     const onCanvas = !workspaceTab || paneMode === "canvas";
@@ -8761,15 +8776,15 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
     //
     // With a Workspace tab the strip always renders: it holds the Canvas |
     // Workspace switch, the only way to reach the Workspace on a phone.
-    const showRevStrip = mobile && (workspaceTab || view.exists || maximized);
+    const showRevStrip = mobile && (workspaceTab || isWorkflow || view.exists || maximized);
     const header = mobile
         ? (showRevStrip
             ? React.createElement("header", { className: "ps-artifact-pane-bar is-rev-strip" },
                 React.createElement(SidePaneTabs, { mode: paneMode, onChange: setPaneMode, compact: true }),
                 React.createElement("span", { className: "ps-artifact-pane-type", title: onCanvas ? (view.note || undefined) : undefined },
-                    onCanvas ? (view.exists ? `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}` : "") : "Workspace"),
-                onCanvas ? React.createElement(CanvasSlotControls, { controller, view, compact: true }) : null,
-                onCanvas && view.exists
+                    onCanvas ? (isWorkflow ? "Node details" : view.exists ? `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}` : "") : "Workspace"),
+                onCanvas && !isWorkflow ? React.createElement(CanvasSlotControls, { controller, view, compact: true }) : null,
+                onCanvas && view.exists && !isWorkflow
                     ? React.createElement("button", {
                         type: "button",
                         className: "ps-canvas-max-btn",
@@ -8790,11 +8805,11 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
             : null)
         : (maximized ? (toolbarSlot ? createPortal(React.createElement(React.Fragment, null,
             React.createElement(SidePaneTabs, { mode: paneMode, onChange: setPaneMode, compact: true }),
-            onCanvas && view.exists
-                ? React.createElement("span", { className: "ps-toolbar-canvas-rev" }, `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}`)
+            onCanvas && (view.exists || isWorkflow)
+                ? React.createElement("span", { className: "ps-toolbar-canvas-rev" }, isWorkflow ? "Node details" : `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}`)
                 : null,
-            onCanvas ? React.createElement(CanvasSlotControls, { controller, view, compact: true }) : null,
-            onCanvas && view.exists ? React.createElement(HtmlZoomControl, { zoom, setZoom }) : null,
+            onCanvas && !isWorkflow ? React.createElement(CanvasSlotControls, { controller, view, compact: true }) : null,
+            onCanvas && view.exists && !isWorkflow ? React.createElement(HtmlZoomControl, { zoom, setZoom }) : null,
             React.createElement("button", {
                 type: "button",
                 className: `ps-artifact-pane-btn${zenOn ? " is-active" : ""}`,
@@ -8819,14 +8834,14 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
         : React.createElement("header", { className: "ps-artifact-pane-bar" },
             React.createElement("span", { className: "ps-artifact-pane-heading" },
                 React.createElement(SidePaneTabs, { mode: paneMode, onChange: setPaneMode }),
-                onCanvas && view.exists
+                onCanvas && (view.exists || isWorkflow)
                     ? React.createElement("span", { className: "ps-artifact-pane-type", title: view.note || undefined },
-                        `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}`)
+                        isWorkflow ? "Node details" : `${view.name ? `${view.name} \u00b7 ` : ""}rev ${view.latestRev}`)
                     : null,
-                onCanvas ? React.createElement(CanvasSlotControls, { controller, view }) : null),
+                onCanvas && !isWorkflow ? React.createElement(CanvasSlotControls, { controller, view }) : null),
             React.createElement("span", { className: "ps-artifact-pane-actions" },
-                onCanvas && view.exists ? React.createElement(HtmlZoomControl, { zoom, setZoom }) : null,
-                onCanvas && view.exists
+                onCanvas && view.exists && !isWorkflow ? React.createElement(HtmlZoomControl, { zoom, setZoom }) : null,
+                onCanvas && view.exists && !isWorkflow
                     ? React.createElement("button", {
                         type: "button",
                         className: "ps-artifact-pane-btn",
@@ -8872,7 +8887,9 @@ function CanvasPane({ controller, mobile = false, visible = true, focusOnPromote
     // note on .ps-canvas-pane .ps-html-preview-frame).
     React.createElement("div", { className: "ps-artifact-pane-body ps-side-pane-body" },
         React.createElement("div", { className: `ps-side-pane-layer${onCanvas ? "" : " is-parked"}`, inert: !onCanvas },
-            view.exists
+            isWorkflow
+                ? React.createElement(WorkflowNodePane, { controller })
+                : view.exists
                 ? React.createElement(CanvasFrame, {
                     key: `slot:${view.slot}`,
                     controller,

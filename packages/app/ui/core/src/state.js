@@ -405,6 +405,7 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // a "look at this now" gesture, and returning to a portal with no
             // chat and no session list would read as a broken app.
             canvasMaximized: false,
+            workflowViews: {},
             // Per-session desktop views (see normalizeStoredSessionViews).
             // Applied when the active session changes, recorded when the
             // columns or the right-side sizes change — desktop only, and only

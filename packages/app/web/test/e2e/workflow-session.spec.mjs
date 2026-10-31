@@ -237,13 +237,14 @@ states:
   failed: { type: terminal, outcome: failed }
 `;
 
-test("a workflow's live canvas opens with the session and follows each step", async ({ page }) => {
+test("the main workflow graph follows live ticks and selection drives canvas node details", async ({ page }) => {
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     const graph = compileWorkflow(LIVE_YAML);
     const html = buildWorkflowCanvasHtml(graph, foldWorkflowCanvasState([], graph));
     const log = [
-        { eventType: "workflow.started", data: { name: "nightly-report", states: Object.values(graph.states).map((n) => ({ id: n.id, type: n.type })) } },
+        { eventType: "workflow.started", data: { name: "nightly-report", initial: graph.initial,
+            states: Object.values(graph.states).map(n => ({ id: n.id, type: n.type, runtime: n.runtime, next: n.next, outcome: n.outcome })) } },
         { eventType: "workflow.state_started", data: { stateId: "collect", step: 1 } },
         { eventType: "workflow.state_completed", data: { stateId: "collect", step: 1, outcome: "found", resultSource: "reported", durationMs: 1840, toolCalls: [{ name: "read_facts", ok: true }] } },
         { eventType: "workflow.state_started", data: { stateId: "summarize", step: 2 } },
@@ -261,6 +262,7 @@ test("a workflow's live canvas opens with the session and follows each step", as
     await page.route("**/api/v1/**", async (route) => {
         const url = new URL(route.request().url());
         const answer = (result) => route.fulfill({ json: { ok: true, result } });
+        if (url.pathname.endsWith("/events-before") && url.search.includes("workflow.started")) return answer([log[0]]);
         if (url.pathname.endsWith("/events-before") && url.search.includes("session.canvas_updated")) {
             return answer([{ seq: 1, eventType: "session.canvas_updated", data: { slot: 1, rev: 1, sizeBytes: html.length, name: "Workflow" } }]);
         }
@@ -278,17 +280,19 @@ test("a workflow's live canvas opens with the session and follows each step", as
     });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${LIVE_ID}`);
 
-    // No click: a workflow session opens on its canvas.
-    const frame = page.frameLocator(".ps-side-pane-layer:not(.is-parked) iframe.ps-html-preview-frame:not(.is-staging)");
-    await expect(frame.locator("#status")).toHaveText("running");
-    await expect(frame.locator("#where")).toHaveText("step 3 · running summarize");
-    await expect(frame.locator("g.node.done")).toHaveCount(1);
-    await expect(frame.locator("g.node.running")).toHaveCount(1);
-    await expect(frame.locator("g.node.running text").first()).toHaveText("summarize");
-    await expect(frame.locator("g.node.running .runs")).toHaveText("×2");
-    await expect(frame.locator("g.edge.taken")).toHaveCount(2);
-    await expect(frame.locator("#steps tr")).toHaveCount(3);
-    await shot(page, "6-live-canvas-running");
+    const main = page.locator(".ps-workflow-main");
+    const graphView = main.locator(".ps-workflow-graph");
+    await expect(main.locator(".ps-workflow-status")).toHaveText("running");
+    await expect(graphView.locator(".ps-workflow-node.is-done")).toHaveCount(1);
+    await expect(graphView.locator(".ps-workflow-node.is-running")).toHaveCount(1);
+    await expect(graphView.locator(".ps-workflow-node.is-running")).toContainText("summarize");
+    await expect(graphView.locator(".ps-workflow-node.is-running")).toContainText("×2");
+    await graphView.getByRole("button", { name: "Inspect summarize", exact: true }).click();
+    const details = page.getByRole("region", { name: "Session canvas" }).locator(".ps-workflow-node-details");
+    await expect(details.locator("h2")).toHaveText("summarize");
+    await expect(details).toContainText("again → summarize");
+    await expect(page.locator(".ps-canvas-pane iframe")).toHaveCount(0);
+    await shot(page, "6-live-workflow-main-running");
 
     // A live tick: the run finishes.
     await expect.poll(() => subscribed).toBe(true);
@@ -305,12 +309,52 @@ test("a workflow's live canvas opens with the session and follows each step", as
             data: { slot: 1, dataRev: 2, payload: done },
         } }));
     }
-    await expect(frame.locator("#status")).toHaveText("completed");
-    await expect(frame.locator("g.node.done")).toHaveCount(4);
-    await expect(frame.locator("g.node.terminal.done text").first()).toHaveText("published");
-    await expect(frame.locator("g.node.running")).toHaveCount(0);
-    await expect(frame.locator("g.node.terminal")).toHaveCount(3);
-    await expect(frame.locator("#note")).toContainText("Outcome succeeded — Report published.");
-    await shot(page, "7-live-canvas-completed");
+    await expect(main.locator(".ps-workflow-status")).toHaveText("completed");
+    await expect(graphView.locator(".ps-workflow-node.is-done")).toHaveCount(4);
+    await expect(graphView.locator(".ps-workflow-node.is-running")).toHaveCount(0);
+    await expect(details.locator("h2")).toHaveText("summarize");
+    await graphView.getByRole("button", { name: "Inspect published", exact: true }).click();
+    await expect(details.locator("h2")).toHaveText("published");
+    await expect(details).toContainText("succeeded");
+    await shot(page, "7-live-workflow-main-completed");
     expect(errors).toEqual([]);
 });
+
+for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+    test(`workflow graph, resizable log and node detail navigation at ${viewport.width}px`, async ({ page }) => {
+        await page.setViewportSize(viewport);
+        const errors = [];
+        page.on("pageerror", error => errors.push(error.message));
+        await routeApi(page);
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+        const main = page.locator(".ps-workflow-main");
+        await expect(main.locator(".ps-workflow-graph")).toBeVisible();
+        await expect(main.locator(".ps-workflow-log .ps-chat-panel")).toBeVisible();
+        const divider = main.getByRole("separator", { name: "Resize execution log" });
+        const before = await main.locator(".ps-workflow-log").boundingBox();
+        await divider.focus();
+        await page.keyboard.press("ArrowDown");
+        await expect.poll(async () => (await main.locator(".ps-workflow-log").boundingBox()).height).toBeLessThan(before.height);
+        const box = await divider.boundingBox();
+        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+        await page.mouse.down();
+        await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2 - 35, { steps: 4 });
+        await page.mouse.up();
+        await main.getByRole("button", { name: "Inspect collect", exact: true }).click();
+        const details = page.locator(".ps-workflow-node-details").filter({ visible: true });
+        await expect(details.locator("h2")).toHaveText("collect");
+        await expect(details).toContainText("read_facts");
+        await details.getByRole("tab", { name: "Output", exact: true }).click();
+        await expect(details.locator("pre")).toHaveText('{"count":3}');
+        await shot(page, `node-details-${viewport.width}`);
+        if (viewport.width < 920) {
+            await page.getByRole("button", { name: /^Sessions — / }).click();
+            await expect(main.locator(".ps-workflow-graph")).toBeVisible();
+        }
+        await page.reload();
+        await expect(main.locator(".ps-workflow-graph")).toBeVisible();
+        await expect(page.locator(".ps-prompt-input")).toHaveCount(0);
+        await shot(page, `workflow-main-${viewport.width}`);
+        expect(errors).toEqual([]);
+    });
+}

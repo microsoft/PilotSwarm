@@ -1,4 +1,5 @@
 import { applyNativeTaskSnapshot } from "./native-tasks.js";
+import { workflowDefinition } from "./workflow-view.js";
 import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./commands.js";
 import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
 import { parseAgentSourceLink } from "./repo-links.js";
@@ -6111,6 +6112,9 @@ export class PilotSwarmUiController {
 
         const state = this.getState();
         if (sessionId !== state.sessions.activeSessionId) return true;
+        // A workflow's graph is already in Main. Do not cover it with the
+        // phone's node-details layer until the viewer selects a node.
+        if (state.sessions.byId[sessionId]?.sessionKind === "workflow" && state.ui.sessionViewDevice === "mobile") return true;
         // The opt-out is PER SLOT: leaving one canvas by hand must not
         // silence a different canvas's first draw.
         if (state.canvas.prefs[canvasPrefKey(sessionId, slot)]?.optedOut) return true;
@@ -6180,9 +6184,51 @@ export class PilotSwarmUiController {
         const state = this.getState();
         if (state.sessions.activeSessionId !== sessionId) return;
         if (state.sessions.byId[sessionId]?.sessionKind !== "workflow") return;
+        if (state.ui.sessionViewDevice === "mobile") return;
         if (state.canvas.prefs[canvasPrefKey(sessionId, 1)]?.optedOut) return;
         if (state.ui.rightPaneMode === "canvas" && state.ui.canvasOpen && (state.ui.canvasSlot || 1) === 1) return;
         this.dispatch({ type: "canvas/flip", sessionId, slot: 1 });
+    }
+
+    async ensureWorkflowDefinition(sessionId, { retry = false } = {}) {
+        const state = this.getState();
+        if (state.sessions.byId[sessionId]?.sessionKind !== "workflow") return;
+        const view = state.ui.workflowViews?.[sessionId];
+        if (view?.definition) return;
+        const loaded = state.history.bySessionId.get(sessionId)?.events
+            ?.find(event => event.eventType === "workflow.started");
+        if (loaded) {
+            try {
+                this.dispatch({ type: "ui/workflowView", sessionId,
+                    view: { definition: workflowDefinition(loaded.data), loading: false, error: null } });
+            } catch (error) {
+                this.dispatch({ type: "ui/workflowView", sessionId, view: { loading: false, error: error.message } });
+            }
+            return;
+        }
+        if (view?.error && !retry) return;
+        if (!this.workflowDefinitionRequests) this.workflowDefinitionRequests = new Map();
+        if (this.workflowDefinitionRequests.has(sessionId)) return this.workflowDefinitionRequests.get(sessionId);
+        const request = (async () => {
+            this.dispatch({ type: "ui/workflowView", sessionId, view: { loading: true, error: null } });
+            try {
+                if (typeof this.transport.getSessionEventsBefore !== "function") {
+                    throw new Error("This connection cannot load the workflow definition.");
+                }
+                const rows = await this.transport.getSessionEventsBefore(
+                    sessionId, Number.MAX_SAFE_INTEGER, 1, ["workflow.started"],
+                );
+                const start = rows.find(event => event.eventType === "workflow.started");
+                if (!start) throw new Error("The workflow definition is not available yet. Retry after the workflow starts.");
+                this.dispatch({ type: "ui/workflowView", sessionId,
+                    view: { definition: workflowDefinition(start.data), loading: false, error: null } });
+            } catch (error) {
+                this.dispatch({ type: "ui/workflowView", sessionId,
+                    view: { loading: false, error: error?.message || String(error) } });
+            }
+        })();
+        this.workflowDefinitionRequests.set(sessionId, request);
+        try { await request; } finally { this.workflowDefinitionRequests.delete(sessionId); }
     }
 
     async ensureCanvasSnapshot(sessionId) {
@@ -6250,8 +6296,8 @@ export class PilotSwarmUiController {
                     });
                 }
             }
-            // A workflow session's canvas IS its execution view: show it when
-            // the session is opened, unless the person closed it here.
+            // Desktop node details accompany the graph in Main. On phones,
+            // node selection opens that layer instead of covering the graph.
             this.revealWorkflowCanvas(sessionId, anyDrawn);
         } catch {
             // Leave snapshotLoaded unset — the next selection retries.
