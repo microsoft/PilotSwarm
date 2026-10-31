@@ -1,5 +1,5 @@
 // Workflow sessions in the portal, in a real browser:
-//   - the session list marks a workflow session (⛓) beside agent sessions
+//   - the session list marks workflow sessions with a flowchart icon
 //   - its transcript is the execution log, and the composer says why there
 //     is no chat box
 //   - New → "Workflow instead" opens the YAML editor, Create sends the
@@ -64,8 +64,8 @@ async function shot(page, name) {
     await page.screenshot({ path: path.join(SHOTS, `${name}.png`), fullPage: false });
 }
 
-async function routeApi(page, { onCreate } = {}) {
-    await page.routeWebSocket("**/api/v1/ws", () => {});
+async function routeApi(page, { onCreate, workflowEvents = WORKFLOW_EVENTS, onSocket = () => {} } = {}) {
+    await page.routeWebSocket("**/api/v1/ws", onSocket);
     await page.route("**/api/v1/**", async (route) => {
         const req = route.request();
         const pathname = new URL(req.url()).pathname;
@@ -77,7 +77,7 @@ async function routeApi(page, { onCreate } = {}) {
         if (pathname.endsWith("/management/sessions")) return answer({ sessions: SESSIONS, hasMore: false, nextCursor: null });
         if (pathname.endsWith("/sessions") && req.method() === "GET") return answer({ sessions: SESSIONS, hasMore: false });
         if (pathname.endsWith("/sessions/workflow") && req.method() === "POST") return onCreate(route, req.postDataJSON());
-        if (pathname.includes(`/sessions/${WORKFLOW_ID}/events`)) return answer(WORKFLOW_EVENTS);
+        if (pathname.includes(`/sessions/${WORKFLOW_ID}/events`)) return answer(workflowEvents);
         if (pathname.includes(`/sessions/${CREATED_ID}/events`)) return answer([]);
         if (pathname.endsWith(`/sessions/${WORKFLOW_ID}`)) return answer({ ...SESSIONS[1], events: [], messages: [] });
         if (pathname.endsWith(`/sessions/${CREATED_ID}`)) {
@@ -95,10 +95,11 @@ test("a workflow session is marked in the list, shows its execution log and has 
 
     const workflowRow = page.locator(".ps-session-row-content", { hasText: "Workflow: nightly-report" }).first();
     await expect(workflowRow).toBeVisible();
-    await expect(workflowRow).toContainText("⛓");
-    await expect(page.locator(".ps-session-row-content", { hasText: "Release triage agent" }).first()).not.toContainText("⛓");
+    await expect(workflowRow.getByRole("img", { name: "Workflow" })).toBeVisible();
+    await expect(page.locator(".ps-session-row-content", { hasText: "Release triage agent" }).first().locator(".ps-workflow-glyph")).toHaveCount(0);
 
     const chat = page.locator(".ps-chat-panel");
+    await chat.locator(".ps-system-notice-summary", { hasText: "Workflow: nightly-report" }).click();
     await expect(chat).toContainText("Workflow nightly-report 1.0.0 started: 5 states, initial collect");
     await expect(chat).toContainText("found → report, empty → nothing, failure → failed");
     await expect(chat).toContainText("ends: succeeded");
@@ -106,7 +107,7 @@ test("a workflow session is marked in the list, shows its execution log and has 
     await expect(chat).toContainText("Step 2: report → done");
     await expect(chat).toContainText("Workflow nightly-report reached published after 2 steps: outcome succeeded. Report published.");
 
-    await expect(page.locator(".ps-composer-readonly")).toContainText("Workflow session — it runs a workflow graph");
+    await expect(page.locator(".ps-composer-readonly")).toHaveText("Workflow session");
     await expect(page.locator(".ps-prompt-input")).toHaveCount(0);
     await shot(page, "1-workflow-session-execution-log");
     expect(errors).toEqual([]);
@@ -128,7 +129,7 @@ test("new top-level workflows explain the parent requirement without sending a c
     await page.getByRole("button", { name: "New session — choose model and agent", exact: true }).click();
     await expect(page.getByText("Select model for new session", { exact: true })).toBeVisible();
     await shot(page, "2-new-session-model-step");
-    const workflow = page.getByRole("button", { name: "⛓ Workflows start from an agent" });
+    const workflow = page.getByRole("button", { name: /Workflows start from an agent/ });
     await expect(workflow).toBeDisabled();
     await expect(workflow).toHaveAttribute("title", /spawn_workflow/);
     expect(created).toHaveLength(0);
@@ -146,10 +147,73 @@ test("the child-first restriction leaves the ordinary agent conversation availab
     });
     await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
     await page.getByRole("button", { name: "New session — choose model and agent", exact: true }).click();
-    await expect(page.getByRole("button", { name: "⛓ Workflows start from an agent" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: /Workflows start from an agent/ })).toBeDisabled();
     await page.keyboard.press("Escape");
     await expect(page.locator(".ps-prompt-input")).toBeVisible();
 });
+
+for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+    test(`quiet polling stays in one updating row at ${viewport.width}px`, async ({ page }) => {
+        await page.setViewportSize(viewport);
+        const errors = [];
+        page.on("pageerror", error => errors.push(error.message));
+        let nextSeq = 0;
+        const event = (eventType, data) => ({ sessionId: WORKFLOW_ID, seq: ++nextSeq,
+            eventType, data, createdAt: new Date().toISOString() });
+        const rows = [event("workflow.started", { name: "query-watch", version: "1", initial: "poll_query", states: [
+            { id: "poll_query", type: "script", runtime: "node", next: { unchanged: "poll_query", changed: "end" } },
+            { id: "end", type: "terminal", outcome: "succeeded" },
+        ] })];
+        const start = step => event("workflow.state_started", { stateId: "poll_query", runtime: "node", step });
+        const complete = (step, outcome = "unchanged") => event("workflow.state_completed", {
+            stateId: "poll_query", step, outcome, durationMs: 120, resultSource: "reported",
+            toolCalls: [{ name: "demo_query_snapshot", ok: true }], outputPreview: '{"count":1}',
+        });
+        for (let step = 1; step <= 28; step++) rows.push(start(step), complete(step));
+        const sockets = [];
+        let subscribed = false;
+        await routeApi(page, { workflowEvents: rows, onSocket: socket => {
+            sockets.push(socket);
+            socket.onMessage(raw => { if (JSON.parse(raw).type === "subscribeSession") subscribed = true; });
+        } });
+        await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+        const summary = page.locator(".ps-workflow-progress");
+        await expect(summary).toHaveCount(1);
+        await expect(summary.locator("summary")).toContainText("Waiting for changes");
+        await expect(summary.locator("summary")).toContainText("28 checks");
+        await expect(summary).not.toHaveAttribute("open", "");
+        await expect(page.locator(".ps-composer-readonly")).toHaveText("Workflow session");
+        const footer = await page.locator(".ps-chat-composer.is-workflow").boundingBox();
+        expect(footer.height).toBeLessThan(48);
+        const bounds = await summary.boundingBox();
+        expect(bounds.x + bounds.width).toBeLessThanOrEqual(viewport.width);
+        await shot(page, `poll-waiting-${viewport.width}`);
+        await expect.poll(() => subscribed).toBe(true);
+        await summary.locator("summary").click();
+        await expect(summary).toHaveAttribute("open", "");
+        for (const item of [start(29), complete(29)]) {
+            rows.push(item);
+            for (const socket of sockets) socket.send(JSON.stringify({ type: "sessionEvent", sessionId: WORKFLOW_ID, event: item }));
+        }
+        await expect(summary.locator("summary")).toContainText("29 checks");
+        await expect(summary).toHaveAttribute("open", "");
+        await expect(summary.locator(".ps-system-notice-body")).toContainText("Latest output");
+        await shot(page, `poll-details-${viewport.width}`);
+        for (const item of [start(30), complete(30, "changed"),
+            event("workflow.completed", { name: "query-watch", stateId: "end", steps: 30, outcome: "succeeded" })]) {
+            rows.push(item);
+            for (const socket of sockets) socket.send(JSON.stringify({ type: "sessionEvent", sessionId: WORKFLOW_ID, event: item }));
+        }
+        await expect(summary.locator("summary")).toContainText("Polling ended");
+        await expect(page.locator(".ps-chat-panel")).toContainText("poll_query → changed");
+        await expect(summary).toHaveCount(1);
+        await page.reload();
+        await expect(page.locator(".ps-workflow-progress")).toHaveCount(1);
+        await expect(page.locator(".ps-workflow-progress summary")).toContainText("29 checks");
+        await shot(page, `poll-summary-${viewport.width}`);
+        expect(errors).toEqual([]);
+    });
+}
 
 // ── The live canvas ────────────────────────────────────────────────
 

@@ -7,6 +7,7 @@ import { appendNativeTaskEvent, appendNativeTaskCall } from "./native-tasks.js";
 import { buildSessionWarning } from "./session-errors.js";
 import { appendChatCall, CHAT_CALL_EVENT_TYPES } from "./chat-activity.js";
 import { describeWorkflowEvent, isWorkflowEvent, WORKFLOW_EVENT_TYPES } from "./workflow-sessions.js";
+import { appendWorkflowProgress } from "./workflow-progress.js";
 
 export const DEFAULT_HISTORY_EVENT_LIMIT = 300;
 export const HISTORY_EVENT_LIMIT_STEPS = [
@@ -742,6 +743,7 @@ function buildWorkflowChatMessage(event) {
     if (!message) return null;
     return {
         ...message,
+        sessionId: event.sessionId,
         workflowEvent: event.eventType,
         ...(view.kind === "card"
             ? { cardTitle: view.title, cardTitleColor: view.color }
@@ -1505,7 +1507,7 @@ export function buildHistoryModel(events = [], options = {}) {
         }
         if (isWorkflowEvent(event)) {
             const message = buildWorkflowChatMessage(event);
-            if (message) chat.push(message);
+            if (message) appendWorkflowProgress(chat, event, message);
             continue;
         }
         if (event.eventType === "user.message") {
@@ -1622,7 +1624,10 @@ export function appendEventToHistory(history, event) {
 
     if (isWorkflowEvent(event)) {
         const message = buildWorkflowChatMessage(event);
-        if (message) next.chat = clampHistoryItems([...next.chat, message], loadedEventLimit);
+        if (message) {
+            appendWorkflowProgress(next.chat, event, message);
+            next.chat = clampHistoryItems(next.chat, loadedEventLimit);
+        }
         return next;
     }
 

@@ -13,6 +13,7 @@ import { appendAnimatedDotsToRuns, useAnimatedDots, useSpinnerFrame } from "./ch
 import {
     normalizeMoa,
     UI_COMMANDS,
+    WORKFLOW_SESSION_GLYPH,
     INSPECTOR_TABS,
     ARTIFACT_DOWNLOAD_HINT,
     appReducer,
@@ -181,7 +182,7 @@ function supportsLocalFileOpen(controller) {
     return typeof controller?.transport?.openPathInDefaultApp === "function";
 }
 
-const WORKFLOW_COMPOSER_NOTE = "⛓ Workflow session — it runs a workflow graph, not a conversation, and does not accept messages. Each step appears above as it runs.";
+const WORKFLOW_COMPOSER_NOTE = "Workflow session";
 const SESSION_LINK_COPIED_STATUS = "Session link copied to clipboard";
 const ARTIFACT_LINK_COPIED_STATUS = "Artifact link copied to clipboard";
 // Mirrors SESSION_NAV_SETTLE_MS in the controller: the access probe rides the
@@ -1500,6 +1501,17 @@ function useScrollSync(ref, lines, scrollOffset, scrollMode, paneKey, controller
         topPullDistance, loadingOlderHistory: loadingHistorySessionId === historySessionId };
 }
 
+function WorkflowGlyph({ className = "" }) {
+    return React.createElement("svg", {
+        className: `ps-workflow-glyph ${className}`.trim(),
+        viewBox: "0 0 20 20", fill: "none", stroke: "currentColor", strokeWidth: 1.5,
+        "aria-label": "Workflow", role: "img", focusable: "false",
+    },
+    React.createElement("rect", { x: 7, y: 1, width: 6, height: 3, rx: 1.5 }),
+    React.createElement("path", { d: "M10 4v3m0 0 4 3-4 3-4-3 4-3Zm-4 3H3v6m11-6h3v6M1 14l2 2 2-2m10 0 2 2 2-2" }),
+    React.createElement("path", { d: "M1 19h4m10 0h4" }));
+}
+
 function Runs({ runs, theme }) {
     return React.createElement(React.Fragment, null,
         (runs || []).map((run, index, all) => {
@@ -1511,6 +1523,10 @@ function Runs({ runs, theme }) {
                 fontWeight: run.bold ? 700 : 400,
                 textDecoration: run.underline ? "underline" : "none",
             };
+            if (run?.role === "sessionKind") {
+                return React.createElement("span", { key: index, style, className: "ps-workflow-kind" },
+                    React.createElement(WorkflowGlyph));
+            }
             // A run flagged trailingRule renders its text then a CSS rule that
             // fills the remaining width — see selectors.js for why this is not
             // a repeated box-drawing character.
@@ -1563,13 +1579,15 @@ function Runs({ runs, theme }) {
 function SystemNoticeLine({ line, theme }) {
     const [open, setOpen] = React.useState(false);
     const body = String(line?.body || "").trim();
-    const className = `ps-system-notice${line?.liveReasoning || line?.streamReasoning ? " is-live-reasoning" : ""}`;
+    const className = `ps-system-notice${line?.liveReasoning || line?.streamReasoning ? " is-live-reasoning" : ""}${line?.workflowProgress ? " ps-workflow-progress" : ""}`;
     return React.createElement("details", { className, onToggle: (event) => setOpen(event.currentTarget.open) },
         React.createElement("summary", {
             className: "ps-system-notice-summary",
             style: { color: resolveColor(theme, line?.color) || "var(--ps-muted)" },
         },
-        React.createElement("span", { className: "ps-system-notice-summary-text" }, line?.text || "System notice")),
+        line?.workflowProgress ? React.createElement(WorkflowGlyph) : null,
+        React.createElement("span", { className: "ps-system-notice-summary-text" },
+            line?.workflowProgress ? String(line.text).replace(`${WORKFLOW_SESSION_GLYPH} `, "") : line?.text || "System notice")),
         body && open
             ? React.createElement("div", { className: "ps-system-notice-body" },
                 React.createElement(MarkdownPreviewContent, { content: body, theme }))
@@ -7122,7 +7140,7 @@ function SessionComposer({ controller, onReadOnlyFocus = null, mobile = false, c
     const readOnly = session?.serviceKind || isWorkflow || access?.canWrite === false;
     React.useLayoutEffect(() => { if (readOnly && !modal) onReadOnlyFocus?.(); }, [readOnly, modal, onReadOnlyFocus]);
     if (!session || session.isGroup || modal) return null;
-    return React.createElement("div", { className: "ps-chat-composer" }, readOnly
+    return React.createElement("div", { className: `ps-chat-composer${isWorkflow ? " is-workflow" : ""}` }, readOnly
         ? React.createElement("div", { className: "ps-composer-readonly" }, session.serviceKind
             ? "⚗ Service session — runtime machinery. Its transcript is a read-only trace; it does not accept messages."
             : isWorkflow
@@ -7362,7 +7380,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
     const activeIsWorkflow = viewState.sessionsById?.[viewState.activeSessionId]?.sessionKind === "workflow";
     const readOnly = activeIsService || activeIsWorkflow || (Boolean(access) && access.canWrite === false);
     const composer = composerBase
-        ? React.createElement("div", { className: "ps-chat-composer" },
+        ? React.createElement("div", { className: `ps-chat-composer${activeIsWorkflow ? " is-workflow" : ""}` },
             readOnly
                 ? React.createElement("div", { className: "ps-composer-readonly" },
                     activeIsService
@@ -13779,7 +13797,7 @@ function ModalLayer({ controller }) {
                 title: "Start a workflow from an agent with spawn_workflow to inherit its permitted tools.",
                 disabled: true,
                 onClick: () => controller.openWorkflowCreateModal({}, modal.previousFocus),
-            }, "⛓ Workflows start from an agent")
+            }, React.createElement(WorkflowGlyph), " Workflows start from an agent")
             : null;
         return renderListModal(modalState.modelPicker, pickerConfirmLabel, workflowFooter);
     }

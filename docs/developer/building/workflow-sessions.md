@@ -18,16 +18,21 @@ document that uses one is refused with "not supported yet" before any session
 is created.
 
 A workflow session is a sibling of an agent session: it has a row in the
-session list (marked `⛓`), an owner, sharing, and a transcript.
+session list (a flowchart icon in the portal, `◇` in the terminal), an owner,
+sharing, and a transcript.
 
 - The **live view** is the session's canvas. The worker draws the graph when
   the run starts and updates it after every step: the running state pulses,
   finished states show their outcome and time, taken transitions light up,
   the terminal state reached is marked, and a table lists recent steps. The
   portal opens it when you open the session.
-- The **transcript** is the execution log: the graph, one line per state as
-  it starts and ends (outcome, duration, tool calls, output preview), and the
-  terminal state reached.
+- The **transcript** starts with a compact, expandable definition. Repeated
+  healthy self-loop checks update one progress row with an increasing count,
+  the last outcome and check time. Expand it for the most recent 40 checks
+  and latest output. Changes, errors and terminal results remain separate.
+  Raw execution events are unchanged; partial history labels its count as
+  loaded checks rather than claiming the whole run. The read-only footer
+  says only "Workflow session".
 
 ## Example
 

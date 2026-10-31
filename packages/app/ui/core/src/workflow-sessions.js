@@ -2,13 +2,13 @@
  * Workflow sessions in the UI.
  *
  * A workflow session runs a graph of states instead of a conversation.
- * The worker records one CMS event per step; the transcript renders them as
- * an execution log: the graph when it starts, a line per state as it starts
- * and ends, and the terminal state the run reached. The live view is the session's canvas,
+ * The worker records one CMS event per step; the transcript projects repeated
+ * polls as one updating row, with the definition and history available on
+ * expansion. The live view is the session's canvas,
  * which the worker draws and updates (packages/sdk workflow/canvas.ts).
  */
 
-export const WORKFLOW_SESSION_GLYPH = "⛓";
+export const WORKFLOW_SESSION_GLYPH = "◇";
 
 export const WORKFLOW_EVENT_TYPES = [
     "workflow.started",
@@ -132,7 +132,7 @@ export function formatWorkflowEventText(event) {
 
 /**
  * How one workflow event is drawn in the transcript. The graph and the end
- * result are full cards; each step is a one-line notice that opens to show
+ * result are readable summaries; each step is a one-line notice that opens to show
  * its output and errors. `text` is the Markdown body either way.
  */
 export function describeWorkflowEvent(event) {
@@ -142,7 +142,9 @@ export function describeWorkflowEvent(event) {
     const stepTitle = `${WORKFLOW_SESSION_GLYPH} Step ${data.step ?? "?"}`;
     switch (event.eventType) {
         case "workflow.started":
-            return { kind: "card", title: "Workflow", color: "magenta", text };
+            return { kind: "notice", title: "Workflow", color: "magenta",
+                summary: `${data.name ?? "workflow"}${data.version ? ` ${data.version}` : ""} · ${Array.isArray(data.states) ? data.states.length : 0} states · initial ${data.initial ?? "?"}`,
+                text };
         case "workflow.completed":
             return { kind: "card", title: "Workflow result", color: "green", text };
         case "workflow.failed":

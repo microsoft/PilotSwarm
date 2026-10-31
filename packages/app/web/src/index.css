@@ -4517,6 +4517,49 @@ body.is-resizing-pane-y iframe {
   line-height: 1.5;
 }
 
+.ps-chat-composer.is-workflow {
+  padding: 5px 12px;
+}
+
+.ps-chat-composer.is-workflow .ps-composer-readonly {
+  padding: 0;
+  border: 0;
+  font-size: 0.85rem;
+  line-height: 1.4;
+}
+
+.ps-workflow-glyph {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  vertical-align: -0.12em;
+  flex: 0 0 auto;
+}
+
+.ps-workflow-kind {
+  display: inline-flex;
+  align-items: center;
+  padding-right: 0.35em;
+}
+
+.ps-workflow-progress {
+  margin: 6px 0;
+  border-left: 2px solid var(--ps-muted);
+  padding-left: 8px;
+}
+
+.ps-workflow-progress .ps-system-notice-summary {
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+  white-space: normal;
+}
+
+.ps-workflow-progress .ps-system-notice-summary-text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .ps-share-overlay {
   position: fixed;
   inset: 0;
