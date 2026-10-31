@@ -7462,8 +7462,8 @@ export function selectWorkflowCreateModal(state) {
         busy: modal.busy === true,
         noteLines: [
             [{ text: `${WORKFLOW_SESSION_GLYPH} A workflow session runs a graph of script nodes instead of a conversation.`, color: "white" }],
-            [{ text: "Each node runs Python, Node or PowerShell, can call this deployment's agent tools, and picks the next node by its outcome.", color: "gray" }],
-            [{ text: "Workflow YAML is edited in the portal. In this terminal, ask an agent to run it with spawn_workflow.", color: "gray" }],
+            [{ text: "New workflows run JavaScript and call their parent agent's permitted tools without a model turn.", color: "gray" }],
+            [{ text: "Start the workflow from an agent with spawn_workflow. New top-level workflow starts are deferred.", color: "gray" }],
         ],
     };
 }

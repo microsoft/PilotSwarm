@@ -6691,7 +6691,7 @@ export class PilotSwarmUiController {
         }
     }
 
-    /** Open the editor for a new workflow session (see workflow-sessions.js). */
+    /** Explain child-first creation for callers of the legacy workflow editor. */
     openWorkflowCreateModal(sessionOptions = {}, previousFocus = null) {
         this.dispatch({
             type: "ui/modal",
@@ -6709,11 +6709,7 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "ui/status", text: "Start this workflow from an agent with spawn_workflow." });
     }
 
-    /**
-     * Create a workflow session from the editor. A refusal (invalid
-     * YAML, bad inputs) keeps the editor open with the reason, so nothing the
-     * person typed is lost.
-     */
+    /** Keep legacy editor input intact while directing new runs to a parent. */
     async createWorkflowSession({ yaml, inputs } = {}) {
         const message = "Start a workflow from an agent with spawn_workflow to inherit its permitted tools. New top-level workflows are deferred.";
         const modal = this.getState().ui.modal;
@@ -7440,9 +7436,9 @@ export class PilotSwarmUiController {
                 kind: "workflow",
                 group: "generic",
                 title: "Workflow",
-                description: "A durable state machine that runs without an LLM: script states (Python, Node or PowerShell) that call agent tools. Paste or edit Workflow YAML.",
+                description: "JavaScript workflows run as children of an agent and inherit its permitted tools. Ask the agent to use spawn_workflow; top-level starts are deferred.",
                 tools: [],
-                supportsDirectStart: true,
+                supportsDirectStart: false,
             }
             : null;
         const items = buildAgentPickerItems(catalog, { query: "", sort, usage, genericItem, workflowItem });

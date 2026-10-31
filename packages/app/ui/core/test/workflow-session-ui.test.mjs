@@ -144,24 +144,30 @@ test("the session list marks workflow sessions apart from agent sessions", () =>
     assert.equal(agent.chrome?.kind, "session");
 });
 
-test("the agent chooser offers a script workflow beside the generic session", async () => {
+test("the agent chooser explains child-first workflows instead of offering a direct start", async () => {
     const { controller, store } = makeController();
     await controller.openSessionAgentPicker();
     const modal = store.getState().ui.modal;
     assert.equal(modal.type, "sessionAgentPicker");
     assert.deepEqual(modal.items.slice(0, 2).map((item) => item.kind), ["generic", "workflow"]);
+    assert.equal(modal.items[1].supportsDirectStart, false);
+    assert.match(modal.items[1].description, /spawn_workflow/);
+    assert.doesNotMatch(modal.items[1].description, /Python|PowerShell|Paste/);
     const view = selectSessionAgentPickerModal(store.getState());
     const workflowRow = view.rows[1];
     const text = (Array.isArray(workflowRow) ? workflowRow : [workflowRow]).map((run) => run.text).join("");
     assert.match(text, new RegExp(`${WORKFLOW_SESSION_GLYPH} Workflow`));
 
-    // Choosing it opens the editor, prefilled with a working example.
+    // Legacy callers can still inspect the example, but cannot create a root.
     store.dispatch({ type: "ui/modal", modal: { ...modal, selectedIndex: 1 } });
     await controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
     const editor = selectWorkflowCreateModal(store.getState());
     assert.ok(editor);
     assert.equal(editor.yaml, WORKFLOW_YAML_TEMPLATE);
     assert.equal(editor.inputs, "{}");
+    const note = editor.noteLines.flat().map(run => run.text).join(" ");
+    assert.match(note, /top-level workflow starts are deferred/);
+    assert.doesNotMatch(note, /Python|PowerShell|edited in the portal/);
 });
 
 test("a connection that cannot create workflows does not offer them", async () => {

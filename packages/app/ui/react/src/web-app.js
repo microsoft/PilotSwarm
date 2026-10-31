@@ -13477,9 +13477,10 @@ function WorkflowCreateEditor({ controller, view, theme, close }) {
                 React.createElement("button", {
                     type: "button",
                     className: "ps-modal-button is-primary",
-                    disabled: view.busy,
+                    disabled: true,
+                    title: "Start a workflow from an agent with spawn_workflow.",
                     onClick: submit,
-                }, view.busy ? "Creating…" : "Create workflow")),
+                }, "Workflows start from an agent")),
         ));
 }
 
