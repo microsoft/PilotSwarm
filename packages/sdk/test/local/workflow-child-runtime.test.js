@@ -33,16 +33,27 @@ async function waitFor(check) {
     throw new Error("workflow did not reach its delay");
 }
 
-async function fixture({ failDeliveryOnce = false } = {}) {
+async function fixture({ failDeliveryOnce = false, failFinishOnce = false, failEndEventOnce = false } = {}) {
     const provider = await SqliteProvider.inMemory();
     const client = new Client(provider);
     const events = [], messages = [];
-    let polls = 0, attempts = 0;
+    let polls = 0, attempts = 0, terminalUpdates = 0;
     const deps = {
         enabled: () => true,
         catalog: {
-            updateSession: async () => {},
-            recordEvents: async (_id, rows) => events.push(...rows),
+            updateSession: async (_id, update) => {
+                if (update.state === "completed") {
+                    if (failFinishOnce) { failFinishOnce = false; throw new Error("temporary catalog update failure"); }
+                    terminalUpdates++;
+                }
+            },
+            recordEvents: async (_id, rows) => {
+                if (failEndEventOnce && rows.some(row => row.eventType === "workflow.completed")) {
+                    failEndEventOnce = false;
+                    throw new Error("temporary end event failure");
+                }
+                events.push(...rows);
+            },
             getSessionEvents: async (_id, _after, _limit, types) => events.filter(event => types.includes(event.eventType)),
         },
         resolveTools: async () => new Map(),
@@ -67,7 +78,8 @@ async function fixture({ failDeliveryOnce = false } = {}) {
         await runtime.start();
         return runtime;
     };
-    return { client, events, messages, startWorker, get polls() { return polls; }, get attempts() { return attempts; } };
+    return { client, events, messages, startWorker, get polls() { return polls; }, get attempts() { return attempts; },
+        get terminalUpdates() { return terminalUpdates; } };
 }
 
 function start(client, id, options = {}) {
@@ -78,6 +90,59 @@ function start(client, id, options = {}) {
 }
 
 describe("child workflow controller 1.1 on the real durable runtime", () => {
+    for (const failure of ["failFinishOnce", "failEndEventOnce"]) {
+        it(`retries ${failure} without duplicating the terminal event or losing the parent wake`, async () => {
+            const f = await fixture({ [failure]: true });
+            const worker = await f.startWorker();
+            try {
+                await start(f.client, failure);
+                const result = await f.client.waitForOrchestration(`session-${failure}`, 30_000);
+                expect(result.status, JSON.stringify(result)).toBe("Completed");
+                expect(f.terminalUpdates).toBe(1);
+                expect(f.events.filter(event => event.eventType === "workflow.completed")).toHaveLength(1);
+                expect(f.messages).toHaveLength(1);
+            } finally { await worker.shutdown(100); }
+        });
+    }
+
+    it("deduplicates repeated starts with the same instance ID on the actual provider", async () => {
+        const f = await fixture();
+        const worker = await f.startWorker();
+        try {
+            await Promise.all([start(f.client, "duplicate"), start(f.client, "duplicate")]);
+            const result = await f.client.waitForOrchestration("session-duplicate", 30_000);
+            expect(result.status, JSON.stringify(result)).toBe("Completed");
+            expect(f.polls).toBe(2);
+            expect(f.messages).toHaveLength(1);
+        } finally { await worker.shutdown(100); }
+    });
+
+    it("keeps an unsupported orchestration version queued until an upgraded worker starts", async () => {
+        const provider = await SqliteProvider.inMemory();
+        const client = new Client(provider);
+        const oldWorker = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error" });
+        oldWorker.registerOrchestrationVersioned("rollout-probe", "1.0.0", function* () { return "old"; });
+        await oldWorker.start();
+        let upgraded;
+        try {
+            await client.startOrchestrationVersioned("old-control", "rollout-probe", {}, "1.0.0");
+            expect((await client.waitForOrchestration("old-control", 5_000)).status).toBe("Completed");
+            await client.startOrchestrationVersioned("new-version", "rollout-probe", {}, "1.1.0");
+            await new Promise(resolve => setTimeout(resolve, 150));
+            const status = await client.getStatus("new-version");
+            expect(status.status, JSON.stringify(status)).not.toBe("Failed");
+            await oldWorker.shutdown(100);
+            upgraded = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error" });
+            upgraded.registerOrchestrationVersioned("rollout-probe", "1.1.0", function* () { return "new"; });
+            await upgraded.start();
+            const result = await client.waitForOrchestration("new-version", 10_000);
+            expect(result.status, JSON.stringify(result)).toBe("Completed");
+            expect(result.output).toBe("new");
+        } finally {
+            if (upgraded) await upgraded.shutdown(100);
+            else await oldWorker.shutdown(100);
+        }
+    });
     it("replays a waiting child after worker restart without repeating the completed poll", async () => {
         const f = await fixture();
         let worker = await f.startWorker();

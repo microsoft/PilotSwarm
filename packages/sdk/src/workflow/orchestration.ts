@@ -215,7 +215,13 @@ function* workflowSessionOrchestration(
             ...result,
             ...policy,
         };
-        yield ctx.scheduleActivityTyped(activities.finish, finishInput);
+        if (childPolicy) {
+            yield ctx.scheduleActivityWithRetryTyped(activities.finish, finishInput, {
+                maxAttempts: 3, timeoutMs: 10_000, totalTimeoutMs: 40_000,
+            });
+        } else {
+            yield ctx.scheduleActivityTyped(activities.finish, finishInput);
+        }
         if (childPolicy && notifyParent) {
             yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_CHILD_ACTIVITIES.notify, finishInput, {
                 maxAttempts: 3, timeoutMs: 10_000, totalTimeoutMs: 40_000,

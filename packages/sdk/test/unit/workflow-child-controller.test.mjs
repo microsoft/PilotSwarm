@@ -88,11 +88,44 @@ test("a terminal notification failure cannot rewrite the workflow result", () =>
     run.next({ workflow: compileWorkflow(yaml, { allowOutcomeDelay: true }) });
     const finish = run.next({ index: 0, value: { outcome: "changed", output: { ids: [12] } } }).value;
     assert.equal(finish.name, "workflow.child.finish");
+    assert.equal(finish.type, "retry");
     assert.equal(finish.input.status, "completed");
     const notify = run.next(null).value;
     assert.equal(notify.name, "workflow.child.notify");
     assert.equal(notify.retry.maxAttempts, 3);
     assert.throws(() => run.throw(new Error("delivery exhausted")), /delivery exhausted/);
+});
+
+test("the global transition bound ends the child and schedules a parent notification", () => {
+    const workflow = compileWorkflow(yaml, { allowOutcomeDelay: true });
+    const run = workflowSessionOrchestration_1_1_0(context(), {
+        sessionId: "child", parentSessionId: "parent", yaml, inputs: {}, executionPolicy: WORKFLOW_TOOL_POLICY,
+        resume: { workflow, stateId: "poll", priorOutput: {}, step: 1000, results: {} },
+    });
+    const finish = run.next().value;
+    assert.equal(finish.name, "workflow.child.finish");
+    assert.equal(finish.input.status, "failed");
+    assert.match(finish.input.error, /exceeded 1000 state executions/);
+    assert.equal(run.next(null).value.name, "workflow.child.notify");
+});
+
+test("the twentieth poll finishes its delay before continuing as new on 1.1", () => {
+    const workflow = compileWorkflow(yaml, { allowOutcomeDelay: true });
+    const run = workflowSessionOrchestration_1_1_0(context(), {
+        sessionId: "child", parentSessionId: "parent", yaml, inputs: {}, executionPolicy: WORKFLOW_TOOL_POLICY,
+        resume: { workflow, stateId: "poll", priorOutput: null, step: 0, results: {} },
+    });
+    let item = run.next().value;
+    for (let index = 0; index < WORKFLOW_STEPS_PER_EXECUTION; index++) {
+        assert.equal(item.sides[0].name, "workflow.child.runScript");
+        assert.equal(run.next({ index: 0, value: { outcome: "unchanged", output: { index } } }).value.type, "time");
+        assert.equal(run.next(index * 5000).value.sides[1].ms, 5000);
+        item = run.next({ index: 1, value: null }).value;
+    }
+    assert.equal(item.type, "continue");
+    assert.equal(item.version, "1.1.0");
+    assert.equal(item.input.executionPolicy, WORKFLOW_TOOL_POLICY);
+    assert.equal(item.input.resume.step, 20);
 });
 
 function activities(overrides = {}) {

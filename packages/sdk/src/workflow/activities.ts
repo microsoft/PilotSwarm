@@ -294,8 +294,11 @@ function registerWorkflowActivitySet(runtime: any, deps: WorkflowActivityDeps, c
             ...(input.status === "deleted" ? { deleted: true } : {}),
         };
         if (childPolicy) {
-            if (!deps.catalog) throw new Error("Workflow completion storage is unavailable.");
-            await deps.catalog.recordEvents(input.sessionId, [{ eventType: END_EVENT[input.status], data: endData }]);
+            if (!deps.catalog?.getSessionEvents) throw new Error("Workflow completion storage is unavailable.");
+            const prior = await deps.catalog.getSessionEvents(input.sessionId, 0, 1, [END_EVENT[input.status]]);
+            if (!prior.length) {
+                await deps.catalog.recordEvents(input.sessionId, [{ eventType: END_EVENT[input.status], data: endData }]);
+            }
         } else {
             await record(deps, input.sessionId, END_EVENT[input.status], endData);
         }
