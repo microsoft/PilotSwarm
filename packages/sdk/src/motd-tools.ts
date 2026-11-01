@@ -6,7 +6,7 @@ export const MOTD_OPERATION_SPECS = [
     { method: "dismissMotd", name: "dismiss_motd", kind: "dismiss", access: "authed", description: "Dismiss a message for yourself permanently. Later messages still show." },
     { method: "getMotdImage", name: "get_motd_image", kind: "image", access: "authed", description: "Read a message picture. Mobile falls back to the main picture." },
     { method: "listMotds", name: "list_motds", kind: "list", access: "authed", description: "Read message history, windows and overlap status. Use before for older messages. Creator identity and dismissal counts are admin-only." },
-    { method: "createMotd", name: "create_motd", kind: "create", access: "fleet:admin", description: "Admin: create a deployment-wide message with a UTC window and markdown. Pictures are at most 2 MB each. Reuse requestId unchanged for retries." },
+    { method: "createMotd", name: "create_motd", kind: "create", access: "fleet:admin", description: "Admin: create a deployment-wide message. Omit startsAt to show it from server creation. Omit endsAt to keep it until replaced or deleted. Pictures are at most 2 MB each. Reuse requestId unchanged for retries." },
     { method: "deleteMotd", name: "delete_motd", kind: "delete", access: "fleet:admin", description: "Admin: delete a message and its pictures. Dismissals remain; no audit record is written." },
 ] as const;
 export type MotdOperationSpec = typeof MOTD_OPERATION_SPECS[number];
@@ -33,21 +33,22 @@ export function motdToolParameters(spec: MotdOperationSpec, { artifactPictures =
         properties.before = { type: "string", pattern: "^[1-9][0-9]*$" };
     }
     if (spec.kind === "create") {
-        Object.assign(properties, { fromAt: { type: "string", description: "ISO 8601 start time with UTC offset." },
-            toAt: { type: "string", description: "ISO 8601 end time, exclusive." },
+        Object.assign(properties, { startsAt: { type: "string", description: "Optional ISO 8601 start with UTC offset. Omit for server creation time." },
+            endsAt: { type: "string", description: "Optional future ISO 8601 end, exclusive. Omit endsAt to keep it until replaced or deleted." },
+            fromAt: { type: "string", description: "Legacy startsAt alias." }, toAt: { type: "string", description: "Legacy endsAt alias." },
             bodyMd: { type: "string", minLength: 1, maxLength: 16384 }, mobileBodyMd: { type: "string", maxLength: 16384 },
             requestId: { type: "string", minLength: 1, maxLength: 128 },
             imagePlacement: { type: "string", enum: ["above", "beside", "background"], default: "above" },
             image: picture, mobileImage: picture });
-        required.push("fromAt", "toAt", "bodyMd", "requestId");
+        required.push("bodyMd", "requestId");
     }
     return { type: "object" as const, properties, required, additionalProperties: false };
 }
 export function motdCreateInput(args: MotdArgs): MotdCreateInput {
-    if (!args.fromAt || !args.toAt || !args.bodyMd || !args.requestId
+    if (!args.bodyMd || !args.requestId
         || args.image && !("base64" in args.image) || args.mobileImage && !("base64" in args.mobileImage))
-        throw new MotdError("MOTD_INVALID", "Message times, body, request ID and resolved pictures are required");
-    return { fromAt: args.fromAt, toAt: args.toAt, bodyMd: args.bodyMd, requestId: args.requestId,
+        throw new MotdError("MOTD_INVALID", "Message body, request ID and resolved pictures are required");
+    return { startsAt: args.startsAt, endsAt: args.endsAt, fromAt: args.fromAt, toAt: args.toAt, bodyMd: args.bodyMd, requestId: args.requestId,
         mobileBodyMd: args.mobileBodyMd, imagePlacement: args.imagePlacement, image: args.image, mobileImage: args.mobileImage };
 }
 export function runMotdStoreOperation(store: MotdStore, spec: MotdOperationSpec, viewer: MotdViewer, args: MotdArgs = {}) {

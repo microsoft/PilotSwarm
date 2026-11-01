@@ -55,3 +55,15 @@ test("MCP web mode does not invent viewer privilege", async () => {
         assert.equal(calls[0].args[0].isAdmin, false);
     }, { webMode: true });
 });
+test("MCP creation accepts omitted times and documents open-ended delivery", async () => {
+    await fixture(async (client, calls) => {
+        const create = (await client.listTools()).tools.find(tool => tool.name === "create_motd");
+        assert.ok(!create.inputSchema.required.includes("startsAt"));
+        assert.ok(!create.inputSchema.required.includes("endsAt"));
+        assert.match(create.inputSchema.properties.endsAt.description, /until replaced or deleted/);
+        const response = await client.callTool({ name: "create_motd", arguments: { bodyMd: "Now, no end", requestId: "optional" } });
+        assert.ok(!response.isError);
+        assert.equal(calls[0].args[1].startsAt, undefined);
+        assert.equal(calls[0].args[1].endsAt, undefined);
+    });
+});

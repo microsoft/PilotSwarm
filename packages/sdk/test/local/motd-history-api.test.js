@@ -17,9 +17,10 @@ describe.skipIf(!url)("authenticated MoTD history through HTTP and the real CMS 
         try {
             catalog = await PgSessionCatalog.create(url, schema); await catalog.initialize();
             const admin = { principal: { provider: "test", subject: "admin" }, isAdmin: true };
-            const previous = await catalog.motds.create(admin, { fromAt: "2020-01-01T00:00:00Z", toAt: "2021-01-01T00:00:00Z",
+            const previous = await catalog.motds.create(admin, { fromAt: "2020-01-01T00:00:00Z", toAt: "2090-01-01T00:00:00Z",
                 bodyMd: "Previous announcement", requestId: randomUUID(), image: {
                     base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", contentType: "image/png", alt: "Previous picture" } });
+            await pool.query(`UPDATE "${schema}".motds SET to_at = '2021-01-01T00:00:00Z' WHERE motd_id = $1`, [previous.motdId]);
             const scheduled = await catalog.motds.create(admin, { fromAt: "2080-01-01T00:00:00Z", toAt: "2090-01-01T00:00:00Z",
                 bodyMd: "Not announced yet", requestId: randomUUID() });
             const mgmt = new PilotSwarmManagementClient({ store: "sqlite::memory:" });
@@ -38,6 +39,10 @@ describe.skipIf(!url)("authenticated MoTD history through HTTP and the real CMS 
             const client = actor => new ApiClient({ apiUrl: base, fetchImpl: (uri, options) => fetch(uri, { ...options,
                 headers: { ...options.headers, "x-test-actor": actor } }) });
             const reader = client("reader"), privileged = client("admin");
+            const open = await privileged.call("createMotd", { bodyMd: "Optional times", requestId: randomUUID() });
+            expect(open.startsAt).toBe(open.createdAt); expect(open.endsAt).toBeNull();
+            expect((await reader.call("getCurrentMotd")).endsAt).toBeNull();
+            await privileged.call("deleteMotd", { motdId: open.motdId });
             const history = await reader.call("listMotds");
             expect(history).toHaveLength(1);
             expect(history[0]).toMatchObject({ motdId: previous.motdId, status: "ended", bodyMd: "Previous announcement" });

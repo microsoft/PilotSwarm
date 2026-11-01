@@ -302,10 +302,12 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Create a message with a UTC window and optional 2 MB pictures. [admin]
+     * Create a message. Start defaults to server creation; omit endsAt to keep it until replaced or deleted. [admin]
      * @remarks `POST /management/motd` — access: `fleet:admin`
      */
     createMotd(params: {
+        startsAt?: any;
+        endsAt?: any;
         fromAt?: any;
         toAt?: any;
         bodyMd?: any;

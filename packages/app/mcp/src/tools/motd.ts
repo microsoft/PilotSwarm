@@ -26,7 +26,7 @@ export function registerMotdTools(server: McpServer, ctx: ServerContext) {
         const schema = motdToolParameters(spec);
         const inputSchema: Record<string, z.ZodTypeAny> = {};
         for (const [key, property] of Object.entries(schema.properties)) {
-            const field = fieldSchema(property);
+            const field = property.description ? fieldSchema(property).describe(property.description) : fieldSchema(property);
             inputSchema[key] = schema.required.includes(key) ? field : field.optional();
         }
         server.registerTool(spec.name, { title: spec.name.replaceAll("_", " "), description: spec.description, inputSchema },

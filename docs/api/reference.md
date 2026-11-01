@@ -432,10 +432,19 @@ All paths below are relative to `/api/v1`.
 | POST `/management/motd` | `createMotd` | Admin |
 | DELETE `/management/motd/:motdId` | `deleteMotd` | Admin |
 
-Creation requires `fromAt` and `toAt` as ISO 8601 times, `bodyMd` (at most
-16 KB of UTF-8), and `requestId`. Reuse the same request ID and unchanged input
-to retry an uncertain response. `toAt` is exclusive. Overlaps select the
-latest start time, then creation time, then message ID.
+Creation requires `bodyMd` (at most 16 KB of UTF-8) and `requestId`.
+`startsAt` and `endsAt` are optional ISO 8601 times with UTC offsets. An
+omitted start uses server creation time. Omit `endsAt` to keep the message
+until replaced or deleted. An explicit end is exclusive and must be in the
+future; when both times are supplied, end must follow start. Legacy `fromAt`
+and `toAt` aliases remain accepted. Reuse the same request ID and unchanged
+input to retry an uncertain response.
+
+Among active messages not dismissed by that viewer, the latest to become
+active wins: `GREATEST(start, created_at)` descending, then message ID
+descending. A newly created active message takes over at once. An
+earlier-created schedule takes over when its start arrives. Open-ended
+messages do not expire. Readers still cannot see future schedules.
 
 Optional `image` and `mobileImage` each contain `{base64, contentType, alt}`.
 PNG, JPEG, WebP and GIF are allowed. Each picture is at most 2 MB of decoded

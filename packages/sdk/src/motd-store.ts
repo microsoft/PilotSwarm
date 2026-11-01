@@ -8,12 +8,15 @@ export const MOTD_IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image
 export interface MotdViewer { principal: FeatureOwner | null; isAdmin: boolean }
 export interface MotdImageInput { base64: string; contentType: string; alt: string }
 export interface MotdCreateInput {
-    fromAt: string; toAt: string; bodyMd: string; mobileBodyMd?: string;
+    startsAt?: string; endsAt?: string;
+    /** Legacy aliases retained for existing clients. */
+    fromAt?: string; toAt?: string; bodyMd: string; mobileBodyMd?: string;
     image?: MotdImageInput; mobileImage?: MotdImageInput;
     imagePlacement?: "above" | "beside" | "background"; requestId: string;
 }
 export interface MotdMessage {
-    motdId: string; fromAt: string; toAt: string; bodyMd: string; mobileBodyMd: string | null;
+    motdId: string; startsAt: string; endsAt: string | null;
+    fromAt: string; toAt: string | null; bodyMd: string; mobileBodyMd: string | null;
     hasImage: boolean; imageType: string | null; imageAlt: string | null;
     hasMobileImage: boolean; mobileImageType: string | null; mobileImageAlt: string | null;
     imagePlacement: "above" | "beside" | "background"; createdAt: string; createdBy?: FeatureOwner;
@@ -84,14 +87,20 @@ export class MotdStore {
     }
     async create(viewer: MotdViewer, input: MotdCreateInput): Promise<MotdMessage> {
         const textValid = (value: unknown) => typeof value === "string" && value.trim().length > 0 && Buffer.byteLength(value, "utf8") <= MOTD_BODY_MAX_BYTES;
+        const timeValid = (value: unknown) => value === undefined
+            || typeof value === "string" && /T.*(?:Z|[+-]\d{2}:\d{2})$/i.test(value) && Number.isFinite(Date.parse(value));
+        const start = input?.startsAt ?? input?.fromAt, end = input?.endsAt ?? input?.toAt;
         if (!input || !textValid(input.bodyMd) || input.mobileBodyMd !== undefined && !textValid(input.mobileBodyMd)
-            || typeof input.fromAt !== "string" || typeof input.toAt !== "string"
-            || !Number.isFinite(Date.parse(input.fromAt)) || !Number.isFinite(Date.parse(input.toAt)) || Date.parse(input.toAt) <= Date.parse(input.fromAt)
+            || ![input.startsAt, input.endsAt, input.fromAt, input.toAt].every(timeValid)
+            || start !== undefined && end !== undefined && Date.parse(end) <= Date.parse(start)
+            || input.startsAt !== undefined && input.fromAt !== undefined && Date.parse(input.startsAt) !== Date.parse(input.fromAt)
+            || input.endsAt !== undefined && input.toAt !== undefined && Date.parse(input.endsAt) !== Date.parse(input.toAt)
             || typeof input.requestId !== "string" || !input.requestId.trim() || input.requestId.length > 128
             || input.imagePlacement !== undefined && !["above", "beside", "background"].includes(input.imagePlacement))
             throw new MotdError("MOTD_INVALID", "Invalid message body, window, placement or request ID");
         const [image, mobileImage] = await Promise.all([decodePicture(input.image), decodePicture(input.mobileImage)]);
-        const metadata = { fromAt: new Date(input.fromAt).toISOString(), toAt: new Date(input.toAt).toISOString(),
+        const metadata = { fromAt: start === undefined ? null : new Date(start).toISOString(),
+            toAt: end === undefined ? null : new Date(end).toISOString(),
             bodyMd: input.bodyMd, mobileBodyMd: input.mobileBodyMd ?? null, imagePlacement: input.imagePlacement ?? "above",
             requestId: input.requestId, imageType: input.image?.contentType ?? null, imageAlt: input.image?.alt ?? null,
             mobileImageType: input.mobileImage?.contentType ?? null, mobileImageAlt: input.mobileImage?.alt ?? null };
