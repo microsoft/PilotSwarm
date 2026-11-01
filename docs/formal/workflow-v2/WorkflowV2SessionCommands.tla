@@ -114,9 +114,9 @@ StoreTx(a) ==
     /\ rcptDigest' = IF TxFresh(a) THEN Digest(a) ELSE rcptDigest
     /\ rcptApplied' = IF TxFresh(a) THEN NewApplied ELSE rcptApplied
     /\ ares' = [ares EXCEPT ![a] = IF TxReplay(a) THEN rcptApplied ELSE NewApplied]
-    /\ apc' = [apc EXCEPT ![a] = CASE deleted -> "deletedPath2"
-                                   [] TxConflict(a) -> "refused"
-                                   [] OTHER -> "after"]
+    /\ apc' = [apc EXCEPT ![a] = (CASE deleted -> "deletedPath2"
+                                    [] TxConflict(a) -> "refused"
+                                    [] OTHER -> "after")]
     /\ aout' = [aout EXCEPT ![a] = IF ~deleted /\ TxConflict(a) THEN "refused" ELSE aout[a]]
     /\ acceptedNotBegun' = (acceptedNotBegun \/ CancelsNow(a))
     /\ UNCHANGED <<facts, ctl, queued, conflictApplied>>
@@ -147,12 +147,12 @@ DeletedChild(a) ==
 (* delete applied in the store removes the facts.                          *)
 AfterNext(a) ==
     IF DeleteInStore
-    THEN CASE Command = "delete" -> "cleanup"
-           [] ares[a] = "queued" /\ status \in ActiveStatus -> "enqueue"
-           [] OTHER -> "returned"
-    ELSE CASE ares[a] = "queued" /\ status \in ActiveStatus -> "enqueue"
-           [] ares[a] = "store" /\ Command = "delete" -> "cleanup"
-           [] OTHER -> "returned"
+    THEN (CASE Command = "delete" -> "cleanup"
+            [] ares[a] = "queued" /\ status \in ActiveStatus -> "enqueue"
+            [] OTHER -> "returned")
+    ELSE (CASE ares[a] = "queued" /\ status \in ActiveStatus -> "enqueue"
+            [] ares[a] = "store" /\ Command = "delete" -> "cleanup"
+            [] OTHER -> "returned")
 
 After(a) ==
     /\ apc[a] = "after"

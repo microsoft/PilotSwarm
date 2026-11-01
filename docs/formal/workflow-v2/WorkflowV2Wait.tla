@@ -126,7 +126,7 @@ AdmEval ==
     /\ admRes' = CASE wState = "absent" -> "none"
                    [] wState = "pending" -> "pending"
                    [] OTHER -> "completed"
-    /\ evalAt' = clk
+    /\ evalAt' = IF wState = "absent" THEN clk ELSE NoTime
     /\ UNCHANGED <<clk, runVars, rowVars, txAt, tent, tentAt, tentDl, ctrlDl, elVars, crashes, zombie>>
 
 (* S enterNode's transaction begins; now() is read here.                    *)
@@ -145,6 +145,7 @@ AdmLock ==
 
 (* The live and status guards, then the insert with its entry reading; a    *)
 (* paused or ended run is refused (the KV guard is in WorkflowV2Admission). *)
+(* The attempt's earlier readings are not used after this step.            *)
 AdmInsert ==
     /\ pc = "insert"
     /\ pc' = "commit"
@@ -154,7 +155,9 @@ AdmInsert ==
     /\ admRes' = CASE Admitting -> "pending"
                    [] ~deleted /\ run = "paused" -> "paused"
                    [] OTHER -> "ended"
-    /\ UNCHANGED <<clk, runVars, rowVars, evalAt, txAt, ctrlDl, elVars, crashes, zombie>>
+    /\ evalAt' = NoTime
+    /\ txAt' = NoTime
+    /\ UNCHANGED <<clk, runVars, rowVars, ctrlDl, elVars, crashes, zombie>>
 
 (* The commit makes the row visible; the clock may have advanced since the  *)
 (* insert.                                                                  *)

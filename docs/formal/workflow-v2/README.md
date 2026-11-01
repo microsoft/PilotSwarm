@@ -651,7 +651,8 @@ child.
 
 | Case | Mode | Checked | Expected |
 |---|---|---|---|
-| `cmd-hd-delete` | this commit, delete, overlapping redelivery, a conflicting request, another deletion | `CommandSafety`, `Live_DeleteTakesEffect` | PASS |
+| `cmd-hd-delete` | this commit, delete, overlapping redelivery, a conflicting request, another deletion | `CommandSafety` | PASS |
+| `cmd-hd-delete-live` | the same | `Live_DeleteTakesEffect` | PASS |
 | `cmd-hd-cancel` | this commit, cancel, the same environment | `CommandSafety` | PASS |
 | `cmd-rv-9fda34bd` | a begun run's delete is queued, and the run ends first | `Live_DeleteTakesEffect` | liveness violation (D1) |
 | `cmd-rv-31dc9888` | the transaction path answers applied without the cleanup | `Inv_DeleteAnswerClean` | safety violation (D2) |
