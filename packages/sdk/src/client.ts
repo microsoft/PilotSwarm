@@ -196,6 +196,9 @@ export class PilotSwarmClient {
             if (existing.sessionKind !== "workflow") {
                 throw Object.assign(new Error(`Session ${sessionId} already exists and is not a workflow session.`), { code: "SESSION_EXISTS", status: 409 });
             }
+            if (creation?.workflowV2) {
+                throw Object.assign(new Error(`Session ${sessionId} is a version 2 workflow; use its v2 commands.`), { code: "SESSION_EXISTS", status: 409 });
+            }
             // Existing admitted runs continue through their own history, never a new policy/source.
             if (!admission) return { sessionId, workflowName: existing.title?.replace(/^Workflow: /, "") ?? "workflow" };
         }

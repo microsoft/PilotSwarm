@@ -477,10 +477,16 @@ function endEventType(status: "completed" | "failed" | "cancelled"): string {
     return status === "completed" ? "workflow.completed" : status === "failed" ? "workflow.failed" : "workflow.cancelled";
 }
 
-export function describeWorkflowV2States(ir: WorkflowIR): Array<Record<string, JsonValue>> {
-    return Object.values(ir.nodes).map(node => node.type === "script"
-        ? { id: node.id, type: "script", runtime: "node", timeoutSeconds: node.timeoutSeconds, next: node.next }
-        : { id: node.id, type: "terminal", outcome: node.outcome });
+/** One state of the graph as views and events describe it. */
+export function describeWorkflowV2State(node: WorkflowIRNode): { [key: string]: JsonValue } {
+    if (node.type === "script") {
+        return { id: node.id, type: "script", runtime: "node", timeoutSeconds: node.timeoutSeconds, outcomes: node.outcomes, next: node.next };
+    }
+    return { id: node.id, type: "terminal", outcome: node.outcome };
+}
+
+export function describeWorkflowV2States(ir: WorkflowIR): Array<{ [key: string]: JsonValue }> {
+    return Object.values(ir.nodes).map(describeWorkflowV2State);
 }
 
 export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: WorkflowV2RuntimeDeps): void {

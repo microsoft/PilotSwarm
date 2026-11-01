@@ -22,6 +22,7 @@ import { groupSkipped, parseRepoAgentFile } from "./workspace-repo-agents.js";
 import path from "node:path";
 import { NativeTaskObserver, nativeTaskAgentMarks } from "./native-task-observer.js";
 import { SPAWN_WORKFLOW_TOOL_SPEC, type SpawnWorkflowToolArgs } from "./workflow/tool-spec.js";
+import { READ_WORKFLOW_TOOL_SPEC, UPDATE_WORKFLOW_TOOL_SPEC } from "./workflow/v2/tools.js";
 
 /**
  * Mutable state shared between the wait tool handler and runTurn().
@@ -1403,8 +1404,10 @@ export class ManagedSession {
         });
 
         const spawnWorkflowTool = defineTool("spawn_workflow", { ...SPAWN_WORKFLOW_TOOL_SPEC, handler: async () => "stub" });
+        const updateWorkflowTool = defineTool("update_workflow", { ...UPDATE_WORKFLOW_TOOL_SPEC, handler: async () => "stub" });
+        const readWorkflowTool = defineTool("read_workflow", { ...READ_WORKFLOW_TOOL_SPEC, handler: async () => "stub" });
 
-        return [spawnAgentTool, spawnWorkflowTool, messageAgentTool, checkAgentsTool, waitForAgentsTool, listSessionsTool,
+        return [spawnAgentTool, spawnWorkflowTool, updateWorkflowTool, readWorkflowTool, messageAgentTool, checkAgentsTool, waitForAgentsTool, listSessionsTool,
             ...ManagedSession._childManagementToolDefs()];
     }
 
@@ -2852,7 +2855,7 @@ export class ManagedSession {
         });
 
         const SYSTEM_TOOL_NAMES = new Set([
-    "update_canvas","wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "send_session_message", "reply_session_message", "show_artifact", "draw_canvas", "read_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "find_canvas_app", "load_skill", "load_agent", "search_capabilities", "load_agent_guidelines", "list_session_capabilities", "use_package", "spawn_agent", "spawn_workflow", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "stop_agent_turn", "delete_agent"]);
+    "update_canvas","wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "send_session_message", "reply_session_message", "show_artifact", "draw_canvas", "read_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "find_canvas_app", "load_skill", "load_agent", "search_capabilities", "load_agent_guidelines", "list_session_capabilities", "use_package", "spawn_agent", "spawn_workflow", "update_workflow", "read_workflow", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "stop_agent_turn", "delete_agent"]);
 
         // Merge user tools with system tools
         const userTools = this.config.tools ?? [];
@@ -2963,6 +2966,24 @@ export class ManagedSession {
             },
         });
 
+        // update_workflow / read_workflow (workflow v2) also run inline through the bridge.
+        const updateWorkflowTool = defineTool("update_workflow", {
+            ...UPDATE_WORKFLOW_TOOL_SPEC,
+            handler: async (args: Record<string, unknown>) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("update_workflow");
+                if (!controlBridge?.updateWorkflow) return "Error: update_workflow is not available in this session.";
+                return await controlBridge.updateWorkflow(args ?? {});
+            },
+        });
+        const readWorkflowTool = defineTool("read_workflow", {
+            ...READ_WORKFLOW_TOOL_SPEC,
+            handler: async (args: Record<string, unknown>) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("read_workflow");
+                if (!controlBridge?.readWorkflow) return "Error: read_workflow is not available in this session.";
+                return await controlBridge.readWorkflow(args ?? {});
+            },
+        });
+
         const subAgentToolsForTurn = isServiceSession
             ? []
             : isReadOnlyTuner
@@ -2970,6 +2991,8 @@ export class ManagedSession {
                 : [
                     spawnAgentTool,
                     spawnWorkflowTool,
+                    updateWorkflowTool,
+                    readWorkflowTool,
                     messageAgentTool,
                     checkAgentsTool,
                     waitForAgentsTool,

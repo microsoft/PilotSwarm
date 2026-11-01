@@ -211,6 +211,10 @@ export interface TurnOptions {
             args: import("./workflow/tool-spec.js").SpawnWorkflowToolArgs,
             call?: { toolCallId?: string },
         ): Promise<string>;
+        /** Workflow v2: change a draft/published child workflow this session created. Returns JSON. */
+        updateWorkflow?(args: Record<string, unknown>): Promise<string>;
+        /** Workflow v2: read a child workflow this session created. Returns JSON. */
+        readWorkflow?(args: Record<string, unknown>): Promise<string>;
         spawnAgent(args: {
             agent_name?: string;
             task?: string;

@@ -234,8 +234,8 @@ describe("workflow v2 store and controller on PostgreSQL", () => {
             expect(count(log, "workflow.completed")).toBe(1);
             const session = await client._catalog.getSession(id);
             expect(session.state).toBe("completed");
-            const status = await client.duroxideClient.getStatus(started.receipt.run.controllerInstanceId);
-            expect(status.status).toBe("Completed");
+            const status = await client.duroxideClient.waitForOrchestration(started.receipt.run.controllerInstanceId, 30_000);
+            expect(status.status, JSON.stringify(status)).toBe("Completed");
         });
     });
 
@@ -299,10 +299,12 @@ describe("workflow v2 store and controller on PostgreSQL", () => {
             expect(run.status).toBe("cancelled");
             const stored = await h.store.readNodeExecution(node.nodeExecutionId);
             expect(stored).toMatchObject({ state: "completed", outcome: "cancelled", resultKind: "runtime_error", winner: "cancel" });
-            await until(async () => {
+            // The effect orchestration is asked to stop; its own terminal status word is the runtime's.
+            const effect = await until(async () => {
                 const status = await client.duroxideClient.getStatus(workflowEffectInstanceId(node.nodeExecutionId));
-                return ["Completed", "Failed", "Terminated"].includes(status.status) ? status : null;
+                return status.status !== "Running" ? status : null;
             }, "the effect to stop");
+            expect(effect.status).not.toBe("NotFound");
             const after = await h.store.readNodeExecution(node.nodeExecutionId);
             expect(after.winner).toBe("cancel");
             const log = await events(client, id);

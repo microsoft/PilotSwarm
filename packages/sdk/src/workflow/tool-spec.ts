@@ -54,7 +54,12 @@ export const SPAWN_WORKFLOW_TOOL_SPEC = {
         + "any other exit code is failure, and running past the timeout is timeout. An outcome not declared in completion.outcomes fails the workflow. "
         + "Outputs are JSON and at most 256 KB; store larger data as an artifact or fact and pass its key. "
         + "New top-level workflows are not supported: start from this agent so the tool grant has a parent. "
-        + "The workflow is your child: stop it with cancel_agent or delete_agent; it takes no messages.",
+        + "The workflow is your child: stop it with cancel_agent or delete_agent; it takes no messages.\n"
+        + "Version 2 (apiVersion: pilotswarm.dev/v2-draft) adds review before execution: spawn_workflow saves a DRAFT that runs nothing "
+        + "(state: published publishes revision 1; add start: true to also start its one live run). Drafts may be invalid and come back with diagnostics. "
+        + "Use update_workflow to replace the draft, publish the exact reviewed definitionHash, or start; read_workflow shows definition, graph and runs. "
+        + "V2 states: script (source, optional input binding, inputSchema/outputSchema, transition.next routes; runtime errors route by code or 'failure') "
+        + "and terminal (outcome, output binding). Bindings are whole-string ${inputs.x}, ${input.x} or ${runtime.error}; schemas are JSON Schema 2020-12 under schemas, referenced as {$ref: '#/schemas/Name'}.",
     parameters: {
         type: "object",
         properties: {
@@ -76,6 +81,15 @@ export const SPAWN_WORKFLOW_TOOL_SPEC = {
                     "Optional idempotency key. The same key in this session always names the same workflow session, "
                     + "so a repeated call returns it instead of starting another run. Omit it to start a new run each call.",
             },
+            state: {
+                type: "string",
+                enum: ["draft", "published"],
+                description: "v2 only: draft (default, runs nothing) or published (immutable revision 1).",
+            },
+            start: {
+                type: "boolean",
+                description: "v2 only, with state: published: also start the live run with inputs.",
+            },
         },
         required: ["yaml"],
     },
@@ -86,4 +100,8 @@ export interface SpawnWorkflowToolArgs {
     inputs?: Record<string, unknown>;
     notify_on_completion?: boolean;
     key?: string;
+    /** v2 documents only. */
+    state?: "draft" | "published";
+    /** v2 documents only, with state: published. */
+    start?: boolean;
 }

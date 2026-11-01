@@ -5,6 +5,8 @@ import { WORKFLOW_SCRIPTS_DISABLED_MESSAGE } from "./activities.js";
 import { compileWorkflow, validateWorkflowInputs, validateNodeWorkflowAdmission } from "./compiler.js";
 import type { WorkflowToolBinding } from "./tool-policy.js";
 import type { SpawnWorkflowToolArgs } from "./tool-spec.js";
+import { declaresWorkflowV2 } from "./v2/compiler.js";
+import { spawnWorkflowV2FromTool, type WorkflowToolHost } from "./v2/tools.js";
 
 export interface SpawnWorkflowDeps {
     /** The agent session calling spawn_workflow; it becomes the workflow's parent. */
@@ -14,6 +16,8 @@ export interface SpawnWorkflowDeps {
     resolveOwner: () => Promise<SessionOwnerInfo | null>;
     captureToolBinding: () => Promise<WorkflowToolBinding>;
     createWorkflowSession: (config: WorkflowSessionConfig & { notifyParent?: boolean }, binding: WorkflowToolBinding) => Promise<{ sessionId: string; workflowName: string }>;
+    /** Workflow v2 persistence and dispatch (drafts, publication, runs). Absent: v2 documents are refused. */
+    workflowV2Host?: () => Promise<WorkflowToolHost>;
 }
 
 /**
@@ -40,6 +44,23 @@ export async function spawnWorkflowFromTool(
     try {
         if (!deps.enabled()) {
             return `[SYSTEM: spawn_workflow refused — ${WORKFLOW_SCRIPTS_DISABLED_MESSAGE}]`;
+        }
+        if (declaresWorkflowV2(args.yaml)) {
+            if (!deps.workflowV2Host) return JSON.stringify({ ok: false, error: { code: "WORKFLOW_V2_UNAVAILABLE", message: "This worker cannot store v2 workflows." } });
+            const slug = typeof args.key === "string" && args.key.trim() ? `key:${args.key.trim()}` : `call:${call?.toolCallId ?? ""}`;
+            if (slug === "call:") return JSON.stringify({ ok: false, error: { code: "WORKFLOW_COMMAND_INVALID", message: "spawn_workflow needs a key or a tool call id." } });
+            const owner = await deps.resolveOwner();
+            return spawnWorkflowV2FromTool(args, {
+                callerSessionId: deps.parentSessionId,
+                workflowSessionId: workflowChildSessionId(deps.parentSessionId, args.key, call?.toolCallId),
+                operationId: `spawn:${slug}`,
+                owner,
+                binding: await deps.captureToolBinding(),
+                host: await deps.workflowV2Host(),
+            });
+        }
+        if (args.state !== undefined || args.start !== undefined) {
+            return "[SYSTEM: spawn_workflow refused — state and start apply to apiVersion pilotswarm.dev/v2-draft workflows only.]";
         }
         let workflowName: string;
         try {

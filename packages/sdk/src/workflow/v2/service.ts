@@ -3,7 +3,7 @@ import type { SessionCatalog } from "../../cms.js";
 import type { SessionOwnerInfo } from "../../types.js";
 import type { WorkflowToolBinding } from "../tool-policy.js";
 import { compileWorkflowV2, declaredSemver, WORKFLOW_V2_API_VERSION, type WorkflowCompileResult } from "./compiler.js";
-import { boundedCanonicalJson, canonicalJson, jsonSha256, type JsonValue } from "./json.js";
+import { boundedCanonicalJson, canonicalJson, isJsonObject, jsonSha256, type JsonValue } from "./json.js";
 import { schemaSetFor } from "./schema.js";
 import {
     WORKFLOW_V2_CONTROLLER_NAME,
@@ -29,7 +29,7 @@ import {
  */
 
 export interface WorkflowV2Host {
-    catalog: Pick<SessionCatalog, "createSession" | "getSession" | "updateSession">;
+    catalog: Pick<SessionCatalog, "createSession" | "getSession" | "updateSession" | "getSessionCreationConfig">;
     store: WorkflowStore;
     duroxideClient: { startOrchestrationVersioned(instanceId: string, name: string, input: unknown, version: string): Promise<void> };
 }
@@ -94,6 +94,13 @@ export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWork
         throw new WorkflowStoreError("SESSION_EXISTS", `Session ${request.workflowSessionId} exists and is not a workflow.`);
     }
     if (existing?.deletedAt) throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow id was deleted and cannot be reused.");
+    if (existing) {
+        // Only a v2 creation (possibly interrupted before its definition) may continue on this id.
+        const creation = await host.catalog.getSessionCreationConfig?.(request.workflowSessionId);
+        if (!creation || !isJsonObject(creation.workflowV2 ?? null)) {
+            throw new WorkflowStoreError("SESSION_EXISTS", `Session ${request.workflowSessionId} is an existing workflow of another version.`);
+        }
+    }
     await host.catalog.createSession(request.workflowSessionId, {
         sessionKind: "workflow",
         ...(request.parentSessionId ? { parentSessionId: request.parentSessionId } : {}),
@@ -115,11 +122,7 @@ export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWork
         publish,
         start: request.start ? liveAdmission(request.workflowSessionId, request.start.inputs) : null,
     });
-    if (!stored.replayed) {
-        await host.catalog.updateSession(request.workflowSessionId, {
-            title: `Workflow: ${compiled.name ?? "draft"}`, titleLocked: true, state: stored.receipt.run ? "pending" : "idle",
-        });
-    }
+    await host.catalog.updateSession(request.workflowSessionId, { title: `Workflow: ${compiled.name ?? "draft"}`, titleLocked: true });
     await dispatchWorkflowV2Run(host, stored.receipt);
     return stored;
 }

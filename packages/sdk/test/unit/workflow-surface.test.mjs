@@ -41,7 +41,7 @@ test("spawn_workflow is declared for agent sessions and carries the YAML contrac
     const tool = defs.find((def) => def.name === "spawn_workflow");
     assert.ok(tool, "spawn_workflow must be declared beside spawn_agent");
     assert.deepEqual(tool.parameters.required, ["yaml"]);
-    assert.deepEqual(Object.keys(tool.parameters.properties).sort(), ["inputs", "key", "notify_on_completion", "yaml"]);
+    assert.deepEqual(Object.keys(tool.parameters.properties).sort(), ["inputs", "key", "notify_on_completion", "start", "state", "yaml"]);
     for (const phrase of ["kind: Workflow", "type: script", "type: terminal", "completion: { outcomes:", "transition:", "callTool", "setResult", "cron", "JavaScript-only", "parent"]) {
         assert.ok(tool.description.includes(phrase), `description should mention ${phrase}`);
     }
@@ -51,6 +51,17 @@ test("spawn_workflow is declared for agent sessions and carries the YAML contrac
 test("a package cannot shadow spawn_workflow", () => {
     const platform = [...ManagedSession.systemToolDefs(), ...ManagedSession.subAgentToolDefs()].map((def) => def.name);
     assert.equal(findReservedPackageToolName(["spawn_workflow"], platform, []), "spawn_workflow");
+    for (const name of ["update_workflow", "read_workflow"]) assert.equal(findReservedPackageToolName([name], platform, []), name);
+});
+
+test("workflow v2 tools are declared beside spawn_workflow with typed operations", () => {
+    const defs = ManagedSession.subAgentToolDefs();
+    const update = defs.find((def) => def.name === "update_workflow");
+    const read = defs.find((def) => def.name === "read_workflow");
+    assert.ok(update && read);
+    assert.deepEqual([...update.parameters.properties.operation.enum].sort(), ["publish", "publish_and_start", "replace_definition", "start"]);
+    assert.deepEqual([...update.parameters.required].sort(), ["operation", "operation_id", "workflow_id"]);
+    assert.deepEqual([...read.parameters.required], ["workflow_id"]);
 });
 
 test("script tools are the generic agent's data-plane tools, bound to the workflow session", async () => {

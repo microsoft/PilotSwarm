@@ -74,6 +74,7 @@ import { STREAMING_EVENT_TYPES, keepOrchestrationTurnEvents, turnResultSizeWarni
 import { MODEL_EVENT_TYPES_RECORDED_WHEN_LOGGING, modelEventLoggingEnabled } from "./model-event-logging.js";
 import type { NativeTasksPayload } from "./native-task-observer.js";
 import { spawnWorkflowFromTool } from "./workflow/spawn.js";
+import { readWorkflowFromTool, updateWorkflowFromTool, type WorkflowToolHost } from "./workflow/v2/tools.js";
 import type { SpawnWorkflowToolArgs } from "./workflow/tool-spec.js";
 
 const SYSTEM_AGENT_IDS = new Set(["pilotswarm", "sweeper", "resourcemgr", "facts-manager"]);
@@ -2359,6 +2360,12 @@ export function registerActivities(
             }
         };
 
+        const workflowV2Host = async (): Promise<WorkflowToolHost> => {
+            if (!catalog?.workflowStore) throw new Error("Workflow v2 storage is unavailable on this worker.");
+            const sdkClient = await getInlineClient();
+            return { catalog, store: catalog.workflowStore(), duroxideClient: sdkClient._getDuroxideClient() };
+        };
+
         const isAutonomousSystemTurn = () => {
             if (!SYSTEM_AGENT_IDS.has(runConfig.agentIdentity || "")) return false;
             if (input.bootstrap === true) return true;
@@ -2695,6 +2702,15 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     : null,
                 captureToolBinding: () => sessionManager.captureWorkflowToolBinding(input.sessionId),
                 createWorkflowSession: async (config, binding) => (await getInlineClient()).createWorkflowSession(config, binding),
+                workflowV2Host,
+            }),
+
+            /** update_workflow / read_workflow: the calling session is the host-stamped actor. */
+            updateWorkflow: async (args: Record<string, unknown>) => updateWorkflowFromTool(args, {
+                callerSessionId: input.sessionId, host: await workflowV2Host(),
+            }),
+            readWorkflow: async (args: Record<string, unknown>) => readWorkflowFromTool(args, {
+                callerSessionId: input.sessionId, host: await workflowV2Host(),
             }),
 
             /**
