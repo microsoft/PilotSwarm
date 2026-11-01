@@ -7,9 +7,13 @@ export function createMotdAdminState() {
     return { history: [], today: null, expandedIds: [], loading: false, saving: false, error: null, notice: null,
         fetchedAt: null, hasMore: false, draft: { fromAt: "", toAt: "", bodyMd: "", mobileBodyMd: "", imagePlacement: "above" } };
 }
-export function canReadMotd(state) {
+export function motdPrincipal(state) {
     // Some transports provide identity only through the authenticated profile API.
-    const principal = state.auth?.principal || state.admin?.profile;
+    const auth = state.auth?.principal;
+    return auth?.provider && auth?.subject ? auth : state.admin?.profile || null;
+}
+export function canReadMotd(state) {
+    const principal = motdPrincipal(state);
     return state.motd?.portalEnabled === true && Boolean(principal?.provider && principal?.subject)
         && state.auth?.authorization?.allowed !== false;
 }

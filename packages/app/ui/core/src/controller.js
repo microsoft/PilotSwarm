@@ -3,7 +3,7 @@ import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./comman
 import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
 import { parseAgentSourceLink } from "./repo-links.js";
 import { importPackageFilesFromLink, readImportedPackageName } from "./repo-import.js";
-import { MOTD_REFRESH_MS, canReadMotd } from "./motd.js";
+import { MOTD_REFRESH_MS, canReadMotd, motdPrincipal } from "./motd.js";
 import {
     appendEventToHistory,
     applyLiveTurnToHistory,
@@ -3921,7 +3921,7 @@ export class PilotSwarmUiController {
 
     _motdContext() {
         const state = this.getState();
-        const principal = state.auth?.principal || state.admin.profile;
+        const principal = motdPrincipal(state);
         return JSON.stringify([state.motd.generation, principal?.provider, principal?.subject]);
     }
     async _motdRequest(read, timeoutMs = 10_000) {

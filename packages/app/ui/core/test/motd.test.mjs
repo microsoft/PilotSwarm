@@ -76,11 +76,16 @@ test("unsigned viewers cannot enter the history tab or preview", () => {
 test("transports with only an authenticated profile still expose reader history", async () => {
     const store = createStore(appReducer, createInitialState({ mode: "remote" }));
     store.dispatch({ type: "motd/patch", patch: { portalEnabled: true } });
+    store.dispatch({ type: "auth/context", principal: { displayName: "Profile-only reader" }, authorization: null });
     store.dispatch({ type: "admin/profile/loaded", profile: { ...admin, isAdmin: false } });
     const controller = new PilotSwarmUiController({ store, transport: { listMotds: async () => [message("9", { status: "ended" })] } });
     assert.ok(selectAdminConsole(store.getState()).settingsTree.some(row => row.id === "motd"));
     await controller.refreshAdminMotds();
     assert.equal(store.getState().admin.motds.history[0].motdId, "9");
+    store.dispatch({ type: "motd/patch", patch: { current: message(), dismissed: ["9"] } });
+    store.dispatch({ type: "admin/profile/loaded", profile: { ...admin, subject: "different-reader", isAdmin: false } });
+    assert.equal(store.getState().motd.current, null);
+    assert.deepEqual(store.getState().motd.dismissed, []);
 });
 test("a non-admin can read and expand picture history without gaining mutation rights", async () => {
     let creates = 0, deletes = 0, pictureReads = 0;

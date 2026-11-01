@@ -7,7 +7,7 @@ import { DEFAULT_HISTORY_EVENT_LIMIT, dedupeChatMessages } from "./history.js";
 import { getPromptInputRows } from "./layout.js";
 import { SYSTEM_OWNER_KEY, ownerKeyForOwner, selectSessionRows } from "./selectors.js";
 import { systemSessionSortOrder } from "./system-titles.js";
-import { createMotdState, createMotdAdminState, canReadMotd } from "./motd.js";
+import { createMotdState, createMotdAdminState, canReadMotd, motdPrincipal } from "./motd.js";
 import {
     normalizeArtifactEntries,
     normalizeSessionOwnerFilter,
@@ -53,8 +53,8 @@ function featurePrincipalKey(principal) {
 }
 
 function motdForIdentity(state, auth = state.auth, profile = state.admin.profile) {
-    const previous = state.auth?.principal || state.admin.profile;
-    const next = auth?.principal || profile;
+    const previous = motdPrincipal(state);
+    const next = motdPrincipal({ auth, admin: { profile } });
     if (featurePrincipalKey(previous) !== featurePrincipalKey(next))
         return createMotdState((state.motd?.generation || 0) + 1, state.motd?.portalEnabled);
     const admin = (a, p) => a?.authorization?.role

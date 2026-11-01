@@ -10,11 +10,20 @@ export async function fixture(page, { admin = true, current = message(), history
     const stub = await startStubServer(0, { sessionCount: 1, admin });
     const state = { current, history: history || (current ? [current] : []), calls: [], imageRequests: [],
         reads: 0, failDismiss: false, failCreate: false };
+    const principal = { provider: "none", subject: "test", displayName: "Test User" };
+    const authorization = { allowed: true, role: admin ? "admin" : "user" };
+    await page.route("**/api/v1/bootstrap", async route => {
+        const response = await route.fetch();
+        const body = await response.json();
+        return route.fulfill({ json: { ...body, auth: { principal, authorization } } });
+    });
     await page.route("**/api/auth/me", route => route.fulfill({ json: { ok: true,
         principal: { provider: "none", subject: "test", displayName: "Test User" },
         authorization: { allowed: true, role: admin ? "admin" : "user" } } }));
     await page.route("**/api/v1/management/**", async route => {
         const request = route.request(), url = new URL(request.url());
+        if (url.pathname.endsWith("/users/me/profile")) return route.fulfill({ json: { ok: true,
+            result: { ...principal, isAdmin: admin, profileSettings: {} } } });
         if (!url.pathname.includes("/motd")) return route.fallback();
         if (url.pathname.endsWith("/current")) {
             state.reads++;
@@ -23,13 +32,14 @@ export async function fixture(page, { admin = true, current = message(), history
         if (url.pathname.endsWith("/image")) {
             const id = url.pathname.split("/").at(-2);
             const row = state.history.find(entry => entry.motdId === id) || (state.current?.motdId === id ? state.current : null);
-            if (!row) return route.fulfill({ status: 404, json: { ok: false, error: { code: "MOTD_NOT_FOUND", message: "Message not found" } } });
+            if (!row || !admin && Date.parse(row.fromAt) > Date.now()) return route.fulfill({ status: 404, json: { ok: false, error: { code: "MOTD_NOT_FOUND", message: "Message not found" } } });
             state.imageRequests.push(url.searchParams.get("mobile") === "true");
             return route.fulfill({ json: { ok: true,
                 result: { ...picture, alt: url.searchParams.get("mobile") === "true" && row.hasMobileImage ? "Phone picture" : "Main picture" } } });
         }
         if (request.method() === "GET") {
-            const rows = admin ? state.history : state.history.map(({ createdBy, dismissalCount, ...row }) => row);
+            const rows = admin ? state.history : state.history.filter(row => Date.parse(row.fromAt) <= Date.now())
+                .map(({ createdBy, dismissalCount, ...row }) => row);
             return route.fulfill({ json: { ok: true, result: rows } });
         }
         const input = request.method() === "POST" ? request.postDataJSON() || {} : {};
