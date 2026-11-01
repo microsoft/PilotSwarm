@@ -11,7 +11,7 @@ deliberate faults and witnesses).
 | `WorkflowV2Run.tla` | One run: controller, effects, store transitions, crashes, wakes, cancellation, deletion, controller death and recover, the catch-all state | this section to "Regressions" |
 | `WorkflowV2Wait.tla` | A wait state: the accepted-entry clock (W1), the store's elapse guard against skewed controller clocks, the first result kept, the deadline across retries and continue-as-new, pause, with a finite clock that stands for all later time at its bound | "Wait model" |
 | `WorkflowV2Admission.tla` | Admission under the open KV and pause: the revision current at commit, KV_CHANGING, refusals, ordinals, the paused wait and its backstop, begin of a run paused before it began, the deletion trigger | "Admission model" |
-| `WorkflowV2Lifecycle.tla` | Start of a run and cancels before begin: lost and skipped dispatch, the provider's drop, begin honoring an accepted cancel (C1), its recorded (nullable) requester and who is told (C2, M1), notification eligibility and failure (A6), recover | "Lifecycle model" |
+| `WorkflowV2Lifecycle.tla` | Start of a run and cancels before begin: lost and skipped dispatch, the provider's drop, begin honoring an accepted cancel (C1), its recorded (nullable) requester and who is told (C2, M1), notification eligibility and each notification's outcome (A6), recover | "Lifecycle model" |
 | `WorkflowV2SessionCommands.tla` | A parent session's cancel and delete for a v2 child through `sendCommandToSession`: receipts, redelivery, conflicts, the deleted-child path (D2), deletes applied in the store (D1) and the repeat of an earlier build's queued delete | "Session command model" |
 
 `WorkflowV2Run.tla` models one workflow v2 run as the code in
@@ -358,8 +358,8 @@ DEV receipts for this commit, not in this file.
 
 Run from this folder with the TLA+ tools jar (`tla2tools.jar`). Each case
 names its module by its prefix: `wait-` and `wit-wait-` cases are for
-`WorkflowV2Wait.tla`, `adm-` for `WorkflowV2Admission.tla`, `lc-` for
-`WorkflowV2Lifecycle.tla`, `cmd-` and `wit-cmd-` for
+`WorkflowV2Wait.tla`, `adm-` for `WorkflowV2Admission.tla`, `lc-` and
+`wit-lc-` for `WorkflowV2Lifecycle.tla`, `cmd-` and `wit-cmd-` for
 `WorkflowV2SessionCommands.tla`, and every other case for
 `WorkflowV2Run.tla`.
 
@@ -622,15 +622,32 @@ model.
 
 Assumption A6 (notification), for the liveness cases that need it: the
 workflow has a parent and asked to be told (`NotifyEnabled`), the parent's
-authority to receive it holds, and each notifier start and delivery
-succeeds within its retry budget (the begin activity's store retry policy;
-the notifier's and the controller's `persistently` batches), so no
-notification fails for good (`NotifyFaults = FALSE`). Without A6 the model
-lets a start or a delivery fail for good (`NotifyFaults`): the notifier
-ends `failed`, the controller fails, or the request returns an error, and
-`noticeLost` records it; a workflow that did not ask is never told. A3
-(recover) does not repair a lost notice: a cancelled run is not active, so
-recover does not act on it (finding `be9aa9b3-notification-assumptions`).
+authority to receive it holds when a delivery is attempted (`AuthorityLoss
+= FALSE`), and each notifier start and delivery succeeds within its retry
+budget (the begin activity's store retry policy; the notifier's and the
+controller's `persistently` batches), so none fails for good (`NotifyFaults
+= FALSE`). Without A6 each notification effect has the outcome the code
+gives it (finding `f96d2bea` F2):
+
+- A delivery (`notifyParent`) that finds the parent's authority gone
+  records `workflow.parent_notification_skipped` and returns normally
+  (`skipped`); its caller goes on as after a delivery, and no later call
+  delivers (the dedup by the run's events).
+- A delivery that runs out fails its caller. The notifier orchestration
+  ends `failed`. The controller takes its failure path (`CtlFallback`):
+  `failRun`'s finish keeps the run's end, and `reportEnded` calls
+  `notifyParent` once more; the controller completes when that call
+  returns, and fails when it runs out too.
+- A notifier start that fails for good fails its caller. A cancel or a
+  recover request returns an error after its commit (`req` or `rnotify`
+  `error`), and a cancel requester may repeat it with its operation id
+  (A5). The begin activity fails, and the controller takes its failure
+  path. The start of a begin activity whose controller ended fails unseen
+  (`zBegin = "lost"`).
+
+A workflow that did not ask is never told. A3 (recover) does not repair a
+lost notice: a cancelled run is not active, so recover does not act on it
+(finding `be9aa9b3-notification-assumptions`).
 
 | Constant | Kind | Code |
 |---|---|---|
@@ -641,23 +658,25 @@ recover does not act on it (finding `be9aa9b3-notification-assumptions`).
 | `Cancellers` | environment | Who sends a cancel: `parent`, `other` (another agent session) and `system` (a non-agent actor; requester null). |
 | `LoseDispatch`, `Interrupts`, `ControllerDeath` | faults | The start after admission never reaches duroxide; a cancel request stops after its commit, and the begin activity runs again after its commit; the controller ends without ending its run, and a begin activity it scheduled may still commit and start the notifier afterwards (`ZombieBeginTx`, `ZombieBeginNotify`, not fair). |
 | `NotifyEnabled` | workflow | The workflow has a parent and asked to be told (`notifyParent`). |
-| `NotifyFaults` | fault | A notifier start or a delivery fails for good: retries exhausted, or the parent's authority gone (a skip). A6 is `NotifyEnabled` and not `NotifyFaults`. |
+| `NotifyFaults` | fault | A notifier start, or a delivery that `notifyParent` attempts, fails for good: its retries run out. |
+| `AuthorityLoss` | environment | The parent's authority to be told is gone when a delivery is attempted: `notifyParent` records a skip and returns. A6 is `NotifyEnabled`, not `AuthorityLoss` and not `NotifyFaults`. |
 | `DropOrphans` | provider | duroxide-pg drops queue messages of an instance with no row and no history. |
-| `Repeats`, `Recovery` | assumptions A5 and A3 | A requester repeats an interrupted cancel with its operation id, and the repeat completes; the parent recovers a run that needs it. |
+| `Repeats`, `Recovery` | assumptions A5 and A3 | A requester repeats, with its operation id, a cancel that was interrupted after its commit or that returned an error, and the repeat completes; the parent recovers a run that needs it. |
 
 | Lifecycle action | Code | Boundary |
 |---|---|---|
 | `DispatchSend` / `DispatchLose` | `V` `dispatchWorkflowV2Run` 122 | Skips a run that is not active; the start may never reach duroxide. |
 | `Start` / `OrphanDrop` | duroxide 0.1.32; duroxide-pg 0.1.38 `provider.rs` 1132-1161, migrations 0025 and 0026 | A second start of an instance id is ignored; queue messages fetched for an instance with no row and no history are acknowledged, which deletes them. |
 | `BeginTx` | `S` `beginRun` 1246, 1254 (the earliest accepted cancel receipt), 1261 (requester attributed to the parent, M1) | Session and run locks, as the cancel's transaction takes. |
-| `BeginNotify` / `BeginRetry` | `R` 1015 (activity), 978 (enabled and requester checks), 1035 (notifier start) | After the commit; the activity runs again until the start succeeds, or fails the controller when it fails for good (`NotifyFaults`). |
-| `ApplyCmd` / `RunFinish` | `R` 486, 491 (notify with the requester), 426 | The controller reports its run's end at least once; a delivery may fail for good (`NotifyFaults`), and then the controller fails. |
+| `BeginNotify` / `BeginRetry` | `R` 1015 (activity), 978 (enabled and requester checks), 1035 (notifier start) | After the commit; the activity runs again until the start succeeds. A start that fails for good (`NotifyFaults`) fails the activity, and the controller takes its failure path (`CtlFallback`). |
+| `ApplyCmd` / `RunFinish` | `R` 486, 491 (notify with the requester), 426 | The controller reports its run's end at least once. A delivery may record a skip and return (`AuthorityLoss`), or run out (`NotifyFaults`); then the controller takes its failure path. |
+| `CtlFallback` | `R` `workflowV2Controller` 454, `failRun` 449, `finishRun` 434; the finish activity 1200 returns a run that ended as it is | The run already ended (`Inv_FallbackAfterEnd`). `reportEnded` calls `notifyParent` once more, with no requester: the controller completes when that call returns, and fails when it runs out. |
 | `CancelTx` | `V` `controlWorkflowV2Run` 556, 581 (the requester: an agent's session, otherwise null); `S` `recordRunCancelRequest` 1023, `cancelBeforeBegin` 1055 | Session, definition and run locks; the receipt and the before-begin end in one transaction; a repeat ends a run that has not begun. |
-| `CancelFollow` / `CancelInterrupt` | `V` 585 (enqueue), `notifyCancelledBeforeBegin` 225 | After the commit; not transactional with it. |
-| `RecoverDispatch` / `RecoverEnd` | `V` `recoverWorkflowV2Run` 257, 285 (dispatch); `S` `recordRecoverDispatch` 635, `finishRun` 1718; `V` `notifyRecoveredRun` 193 | The dispatch receipt is stored before the start. |
+| `CancelFollow` / `CancelInterrupt` | `V` 585 (enqueue), `notifyCancelledBeforeBegin` 225 | After the commit; not transactional with it. A notifier start that fails for good is an error the request returns; its repeat with the operation id starts the notifier again (A5). |
+| `RecoverDispatch` / `RecoverEnd` / `RecoverNotify` | `V` `recoverWorkflowV2Run` 257, 285 (dispatch); `S` `recordRecoverDispatch` 635, `finishRun` 1718; `V` `notifyRecoveredRun` 193 | The dispatch receipt is stored before the start. The end commits before the notifier start, which may fail for good: an error the request returns, and the end stays. |
 | `CtrlDie` | `R` 413, 888, or an external termination | The controller ends; its run stays as it is. |
-| `ZombieBeginTx` / `ZombieBeginNotify` | `R` 1015 (the begin activity) | duroxide does not stop an activity of an instance that ended: a begin activity in flight may still commit and start the notifier (not fair). |
-| `NotifierRun` | `R` `workflowV2Notify` 744, `notifyParent` 1361, 1366 (enabled), 1368 (the requester the end names), 1372 (authority skip) | At least once, with the stable client message id; a delivery may fail for good, or be skipped when the parent's authority is gone (`NotifyFaults`). |
+| `ZombieBeginTx` / `ZombieBeginNotify` | `R` 1015 (the begin activity) | duroxide does not stop an activity of an instance that ended: a begin activity in flight may still commit and start the notifier, and that start may fail for good, unseen (not fair). |
+| `NotifierRun` | `R` `workflowV2Notify` 744, `notifyParent` 1361, 1366 (enabled), 1368 (the requester the end names), 1370 (told or skipped already), 1372 (authority skip) | At least once, with the stable client message id. A delivery records a skip and returns when the parent's authority is gone (`AuthorityLoss`: the notifier completes), or runs out (`NotifyFaults`: the notifier fails). |
 
 | Property | Meaning |
 |---|---|
@@ -667,35 +686,53 @@ recover does not act on it (finding `be9aa9b3-notification-assumptions`).
 | `Inv_EndNamesRequester` | A before-begin end records no requester (null) exactly when a system actor asked: an agent's cancel, and a legacy receipt under `C2Fix`, name a session. |
 | `Inv_AttributionTruthful` | The recorded requester is the one that asked (null for a system actor). For a legacy receipt it holds under M1 only. |
 | `Inv_NoticeEnabled` | The parent is told only when the workflow asked for it. |
-| `LifecycleSafety` | `TypeOK` and the six invariants above. |
+| `Inv_FallbackAfterEnd` | The controller takes its failure path only for a run that already ended, so `failRun`'s finish keeps that end. |
+| `LifecycleSafety` | `TypeOK` and the seven invariants above. |
 | `Live_OtherTold` | The parent is told of a run that a requester other than the parent (an agent or a system actor) ended with its cancel. Needs A5 and A6. |
 | `Live_OtherToldOnceStarted` | The same, at least when the run's controller starts after a before-begin end. Needs A6, not A5. |
-| `Live_OtherToldOrFailed` | Without A6: the parent is told, or a notification visibly failed for good. Needs A5. |
+| `Live_OtherOutcomeVisible` | Without A6: the parent is told, a delivery recorded a skip, or a notification visibly failed for good (the notifier or the controller failed, or a cancel request returned an error). Needs A5. It replaces `Live_OtherToldOrFailed` of `f96d2bea`, whose failure ghost did not tell these outcomes apart. |
+| `Wit_SkipCompletes` | Witness: a delivery recorded a skip, and the notifier completed. |
+| `Wit_ErrorRepeated` | Witness: a request returned an error, and its repeat with the same operation id completed. |
+| `Wit_FallbackTells` | Witness: the begin activity's notifier start failed for good, and the controller's failure path told the parent and completed. |
+| `Wit_FallbackFails` | Witness: the controller's failure path ran out too, and the controller failed. |
+| `Wit_RecoverStartFails` | Witness: a recover's notifier start failed for good. |
+| `Wit_ZombieStartLost` | Witness: the notifier start of a begin activity whose controller ended failed for good. |
 
 | Case | Mode | Checked | Expected |
 |---|---|---|---|
-| `lc-hd-safety` | this commit, an earlier build's receipt by the parent (M1), the parent, another agent and a system actor, every fault including `NotifyFaults` and controller death, A5 | `LifecycleSafety` | PASS |
+| `lc-hd-safety` | this commit, an earlier build's receipt by the parent (M1), the parent, another agent and a system actor, every fault including `NotifyFaults`, `AuthorityLoss` and controller death, A5 | `LifecycleSafety` | PASS |
 | `lc-hd-safety-fresh` | the same with no earlier build's receipt | `LifecycleSafety` | PASS |
 | `lc-hd-notify-disabled` | as `lc-hd-safety`, and the workflow asked not to be told | `LifecycleSafety` | PASS |
 | `lc-hd-live-other` | this commit, the parent and another agent, A5, A6 | `Live_OtherTold` | PASS |
 | `lc-hd-live-other-started` | the same, no repeat | `Live_OtherToldOnceStarted` | PASS |
 | `lc-hd-live-system` | this commit, the parent and a system actor (requester null), A5, A6 | `Live_OtherTold` | PASS |
 | `lc-hd-live-system-started` | the same, no repeat (the control regression's input) | `Live_OtherToldOnceStarted` | PASS |
-| `lc-hd-notify-faults-qualified` | this commit, the parent and another agent, A5, without A6 | `Live_OtherToldOrFailed` | PASS |
-| `lc-lim-notify-faults` | the same | `Live_OtherTold` | liveness violation: the stated limit (A6 is needed for a notice) |
+| `lc-hd-notify-faults-qualified` | this commit, the parent and another agent, A5, without A6 (`NotifyFaults`, `AuthorityLoss`) | `Live_OtherOutcomeVisible` | PASS |
+| `lc-lim-notify-faults` | this commit, the parent and another agent, A5, `NotifyFaults` | `Live_OtherTold` | liveness violation: the stated limit (A6 is needed for a notice) |
+| `lc-lim-authority-skip` | the same with `AuthorityLoss` instead of `NotifyFaults` | `Live_OtherTold` | liveness violation: the stated limit (a skip is not a notice) |
+| `lc-lim-outcome-needs-repeat` | as `lc-hd-notify-faults-qualified`, no repeat | `Live_OtherOutcomeVisible` | liveness violation: the stated limit (A5) |
 | `lc-lim-other-told-needs-repeat` | this commit, A6, no repeat | `Live_OtherTold` | liveness violation: the stated limit (a notice lost after the commit stays lost when no controller starts and the requester does not repeat) |
 | `lc-rv-183bb0b0` | the cancel is queued and dropped | `Inv_AcceptedCancelWins` | safety violation (C1) |
 | `lc-rv-369beaf0` | an earlier build's receipt and a late start | `Inv_AcceptedCancelWins` | safety violation |
 | `lc-rv-31dc9888` | begin's repair records no requester; the parent repeats | `Inv_NoSelfNotice` | safety violation (C2) |
 | `lc-rv-31dc9888-live-other-started` | 31dc9888, no repeat | `Live_OtherToldOnceStarted` | liveness violation (C2) |
 | `lc-df-m1-broken` | this commit with an earlier build's receipt by another requester | `Inv_AttributionTruthful` | safety violation |
+| `wit-lc-skip-completes` | as `lc-hd-notify-faults-qualified` without `NotifyFaults` | `Wit_SkipCompletes` | safety violation (witness) |
+| `wit-lc-error-repeated` | as `lc-hd-notify-faults-qualified` without `Interrupts` | `Wit_ErrorRepeated` | safety violation (witness) |
+| `wit-lc-fallback-tells` | as `lc-hd-notify-faults-qualified` | `Wit_FallbackTells` | safety violation (witness) |
+| `wit-lc-fallback-fails` | as `lc-hd-notify-faults-qualified` | `Wit_FallbackFails` | safety violation (witness) |
+| `wit-lc-recover-start-fails` | as `lc-hd-notify-faults-qualified` with controller death | `Wit_RecoverStartFails` | safety violation (witness) |
+| `wit-lc-zombie-start-lost` | as `lc-hd-notify-faults-qualified` with controller death | `Wit_ZombieStartLost` | safety violation (witness) |
 
 Limits:
 
 - `notice` records that the parent was told at least once; the stable
-  client message id, the recent-id window, the dedup by session events and
-  the full receipt and terminal payload bytes are not modeled (the control
-  regressions compare them).
+  client message id, the recent-id window and the full receipt and
+  terminal payload bytes are not modeled (the control regressions compare
+  them). A `notifyParent` call is one step here, after its dedup read: the
+  code reads the run's events first, so two calls at once (the notifier and
+  the controller's failure path) may both deliver (with one client message
+  id), or one deliver and the other record a skip.
 - The provider's drop is conservative: any message queued before the
   instance's start is processed may be dropped.
 - No deletion here: the run model and the session command model have it.
@@ -703,19 +740,23 @@ Limits:
   uses the run its transaction returned. They differ only when the run
   ended between the commit and the follow-up, where the code enqueues a
   command that no controller applies (a moot enqueue, omitted here).
-- A begin whose notifier start fails for good (`NotifyFaults`) fails the
-  controller, whose failure path (`failRun`, then `notifyParent`) tries the
-  delivery once more; the model records the failure (`noticeLost`) and
-  omits that extra delivery.
+- `NotifyFaults` is a start or a delivery that runs out. A store outage
+  that exhausts anything else is not modeled here: a `notifyParent` call
+  with nothing to deliver (its reads), the record of a skip, the failure
+  path's finish, or a cancel request's enqueue. Such store faults are the
+  run model's (`ControllerFault`).
+- After a recover's notifier start failed, a repeat of the recover starts
+  it again (`V` `recoverWorkflowV2Run` replay); the model does not repeat
+  it, as no property here concerns the notice of a recover's end.
 - `RunFinish` abstracts the run's own work. It needs an empty queue: the
   controller polls its queue before each admission, so a command queued
   before begin is applied first. The race of a late command with the
   terminal's finish is the run model's (`PollCommand`, `CancelTx`).
 - A controller terminated before or during begin may leave its begin
   activity running: it may still commit, and then start the notifier
-  (`ZombieBeginTx`, `ZombieBeginNotify`), or never complete. A notice lost
-  that way is not repaired by recover (A3); the liveness cases exclude
-  controller death.
+  (`ZombieBeginTx`, `ZombieBeginNotify`), fail that start unseen, or never
+  complete. A notice lost that way is not repaired by recover (A3); the
+  liveness cases exclude controller death.
 
 ## Session command model
 

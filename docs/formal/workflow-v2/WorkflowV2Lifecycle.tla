@@ -10,7 +10,10 @@
 (* agent session or by a system actor (a service caller that is not the   *)
 (* parent; not a production entry point), cancel receipts that an earlier  *)
 (* build stored, and who is told that the run ended. A system actor's     *)
-(* cancel records no requester (null).                                     *)
+(* cancel records no requester (null). Each notification effect has the    *)
+(* outcome the code gives it: a notifier start succeeds or fails for good; *)
+(* a delivery is made, records a skip when the parent's authority is gone, *)
+(* or runs out, and its caller sees that.                                  *)
 (***************************************************************************)
 EXTENDS Integers
 
@@ -23,11 +26,12 @@ CONSTANTS
     LoseDispatch,          \* fault: the controller start after admission never reaches duroxide
     DropOrphans,           \* the provider: duroxide-pg drops queue messages of an instance with no row and no history
     Interrupts,            \* fault: a cancel request stops after its commit; the begin activity runs again after its commit
-    Repeats,               \* environment: a requester repeats an interrupted cancel with its operation id (assumption A5)
+    Repeats,               \* environment: a requester repeats, with its operation id, a cancel that was interrupted or returned an error (assumption A5)
     Recovery,              \* the parent's recover of a run that needs it (assumption A3)
     ControllerDeath,       \* fault: the controller ends without ending its run; its begin activity may still complete
     NotifyEnabled,         \* workflow: it has a parent and asked to be told (notifyParent)
-    NotifyFaults,          \* fault: a notifier start or a delivery fails for good (retries exhausted, or the parent's authority is gone)
+    NotifyFaults,          \* fault: a notifier start, or a delivery that notifyParent attempts, fails for good (its retries run out)
+    AuthorityLoss,         \* environment: the parent's authority to be told is gone when a delivery is attempted (notifyParent records a skip)
     MaxCrashes             \* begin activity re-executions
 
 Reqs == {"parent", "other", "system"}
@@ -35,11 +39,14 @@ NonParent == {"other", "system"}
 ASSUME Cancellers \subseteq Reqs
 ASSUME LegacyWriter \in Reqs \cup {"none"}
 ASSUME {CancelEndsBeforeBegin, BeginHonorsReceipt, C2Fix, LoseDispatch, DropOrphans, Interrupts, Repeats,
-        Recovery, ControllerDeath, NotifyEnabled, NotifyFaults} \subseteq BOOLEAN
+        Recovery, ControllerDeath, NotifyEnabled, NotifyFaults, AuthorityLoss} \subseteq BOOLEAN
 ASSUME MaxCrashes \in Nat
 
 Active == {"admitted", "running"}
 Terminal == {"completed", "cancelled", "failed"}
+(* A controller that ended: it completed, it failed, or it ended without   *)
+(* ending its run (dead).                                                  *)
+Ended == {"done", "failed", "dead"}
 (* The legacy writer may repeat its earlier request.                       *)
 Senders == Cancellers \cup {w \in Reqs : w = LegacyWriter}
 (* The requester a cancel records (V controlWorkflowV2Run): an agent's      *)
@@ -57,22 +64,25 @@ VARIABLES
     acceptedNotBegun, \* ghost: a cancel was accepted while the run had not begun
     dispatch,         \* the dispatch after admission: "pending", "sent", "skipped", "lost"
     rdispatch,        \* a recover dispatched the run
-    inst,             \* the controller instance: "none" (NotFound), "begin", "beginNotify", "run", "done"
+    rnotify,          \* the recover that ended the run: "none", "pending" (its end committed), "done", "error" (its notifier start failed for good)
+    inst,             \* the controller instance: "none" (NotFound), "begin", "beginNotify", "run", "fallback" (its failure path),
+                      \* "done" (completed), "failed", "dead" (ended without ending its run)
     q,                \* cancel commands queued for the controller instance, by requester
     crashes,          \* begin activity re-executions taken
-    zBegin,           \* the begin activity of a controller that ended: "none", "tx" (may still commit), "notify" (may still start the notifier)
-    req,              \* each requester's cancel request: "idle", "committed", "done"
+    zBegin,           \* the begin activity of a controller that ended: "none", "tx" (may still commit),
+                      \* "notify" (may still start the notifier), "lost" (that start failed for good, unseen)
+    req,              \* each requester's cancel request: "idle", "committed", "done", "error" (it returned an error after its commit)
     tries,            \* requests each requester sent (the first and a repeat)
-    notifier,         \* the notifier orchestration: "none", "started", "done", "failed"
+    notifier,         \* the notifier orchestration: "none", "started", "done" (completed), "failed" (its delivery ran out)
     notice,           \* the parent was told that the run ended
-    noticeLost,       \* ghost: a notifier start or a delivery failed for good, visibly
+    skipped,          \* a delivery found the parent's authority gone and recorded a skip
     selfNotice        \* ghost: the parent was told of a cancel it asked for itself
 
 endVars == <<endKind, endReq, endTruth, endOp>>
 storeVars == <<status, rcpt, firstRcpt, endVars, acceptedNotBegun>>
-ctlVars == <<dispatch, rdispatch, inst, q, crashes, zBegin>>
+ctlVars == <<dispatch, rdispatch, rnotify, inst, q, crashes, zBegin>>
 reqVars == <<req, tries>>
-noteVars == <<notifier, notice, noticeLost, selfNotice>>
+noteVars == <<notifier, notice, skipped, selfNotice>>
 vars == <<storeVars, ctlVars, reqVars, noteVars>>
 
 TypeOK ==
@@ -86,15 +96,16 @@ TypeOK ==
     /\ acceptedNotBegun \in BOOLEAN
     /\ dispatch \in {"pending", "sent", "skipped", "lost"}
     /\ rdispatch \in BOOLEAN
-    /\ inst \in {"none", "begin", "beginNotify", "run", "done"}
+    /\ rnotify \in {"none", "pending", "done", "error"}
+    /\ inst \in {"none", "begin", "beginNotify", "run", "fallback"} \cup Ended
     /\ q \in SUBSET Reqs
     /\ crashes \in 0..MaxCrashes
-    /\ zBegin \in {"none", "tx", "notify"}
-    /\ req \in [Reqs -> {"idle", "committed", "done"}]
+    /\ zBegin \in {"none", "tx", "notify", "lost"}
+    /\ req \in [Reqs -> {"idle", "committed", "done", "error"}]
     /\ tries \in [Reqs -> 0..2]
     /\ notifier \in {"none", "started", "done", "failed"}
     /\ notice \in BOOLEAN
-    /\ noticeLost \in BOOLEAN
+    /\ skipped \in BOOLEAN
     /\ selfNotice \in BOOLEAN
 
 (* An earlier build stored LegacyWriter's cancel receipt and queued its     *)
@@ -105,23 +116,44 @@ Init ==
     /\ firstRcpt = LegacyWriter
     /\ endKind = "none" /\ endReq = "none" /\ endTruth = "none" /\ endOp = "none"
     /\ acceptedNotBegun = (LegacyWriter # "none")
-    /\ dispatch = "pending" /\ rdispatch = FALSE /\ inst = "none" /\ q = {} /\ crashes = 0 /\ zBegin = "none"
+    /\ dispatch = "pending" /\ rdispatch = FALSE /\ rnotify = "none" /\ inst = "none" /\ q = {} /\ crashes = 0 /\ zBegin = "none"
     /\ req = [r \in Reqs |-> "idle"]
     /\ tries = [r \in Reqs |-> IF r = LegacyWriter THEN 1 ELSE 0]
-    /\ notifier = "none" /\ notice = FALSE /\ noticeLost = FALSE /\ selfNotice = FALSE
+    /\ notifier = "none" /\ notice = FALSE /\ skipped = FALSE /\ selfNotice = FALSE
+
+(* The outcomes of a notifier start (a duroxide client call that its caller *)
+(* awaits): when it is attempted, it may fail for good (NotifyFaults).      *)
+StartOk(attempted) == IF NotifyFaults /\ attempted THEN BOOLEAN ELSE {TRUE}
+
+(* R notifyParent, one call with its retries, given whether the run's end   *)
+(* tells the parent: nothing when it does not, or when the parent was told  *)
+(* or a skip was recorded (its dedup by the run's events); otherwise it     *)
+(* delivers, records a skip and returns when the parent's authority is gone *)
+(* (AuthorityLoss), or runs out (NotifyFaults), which fails its caller.     *)
+Outcomes(tells) ==
+    IF tells /\ ~notice /\ ~skipped
+    THEN {"delivered"} \cup (IF AuthorityLoss THEN {"skipped"} ELSE {}) \cup (IF NotifyFaults THEN {"exhausted"} ELSE {})
+    ELSE {"nothing"}
+
+(* What that call changes; kind and truth describe the run's end after     *)
+(* this step.                                                              *)
+Notified(o, kind, truth) ==
+    /\ notice' = (notice \/ (o = "delivered"))
+    /\ skipped' = (skipped \/ (o = "skipped"))
+    /\ selfNotice' = (selfNotice \/ (o = "delivered" /\ kind \in {"beforeBegin", "cmd"} /\ truth = "parent"))
 
 (* V dispatchWorkflowV2Run after admission: it starts the controller of a  *)
 (* run that is still active, and skips one that already ended.              *)
 DispatchSend ==
     /\ dispatch = "pending"
     /\ dispatch' = IF status \in Active THEN "sent" ELSE "skipped"
-    /\ UNCHANGED <<storeVars, rdispatch, inst, q, crashes, zBegin, reqVars, noteVars>>
+    /\ UNCHANGED <<storeVars, rdispatch, rnotify, inst, q, crashes, zBegin, reqVars, noteVars>>
 
 DispatchLose ==
     /\ LoseDispatch
     /\ dispatch = "pending"
     /\ dispatch' = "lost"
-    /\ UNCHANGED <<storeVars, rdispatch, inst, q, crashes, zBegin, reqVars, noteVars>>
+    /\ UNCHANGED <<storeVars, rdispatch, rnotify, inst, q, crashes, zBegin, reqVars, noteVars>>
 
 (* duroxide processes a start (the dispatch's or a recover's): the instance *)
 (* has a row and history now; a second start is ignored.                   *)
@@ -129,7 +161,7 @@ Start ==
     /\ inst = "none"
     /\ dispatch = "sent" \/ rdispatch
     /\ inst' = "begin"
-    /\ UNCHANGED <<storeVars, dispatch, rdispatch, q, crashes, zBegin, reqVars, noteVars>>
+    /\ UNCHANGED <<storeVars, dispatch, rdispatch, rnotify, q, crashes, zBegin, reqVars, noteVars>>
 
 (* duroxide-pg acknowledges, and so deletes, the queue messages it fetches  *)
 (* for an instance with no row and no history.                              *)
@@ -138,7 +170,7 @@ OrphanDrop ==
     /\ inst = "none"
     /\ q # {}
     /\ q' = {}
-    /\ UNCHANGED <<storeVars, dispatch, rdispatch, inst, crashes, zBegin, reqVars, noteVars>>
+    /\ UNCHANGED <<storeVars, dispatch, rdispatch, rnotify, inst, crashes, zBegin, reqVars, noteVars>>
 
 (* S beginRun: a run that has not begun and has an accepted cancel receipt  *)
 (* (the earliest) is ended as cancelled, before it began; its requester is  *)
@@ -158,24 +190,25 @@ BeginTx ==
     /\ inst = "begin"
     /\ BeginEffect
     /\ inst' = "beginNotify"
-    /\ UNCHANGED <<rcpt, firstRcpt, acceptedNotBegun, dispatch, rdispatch, q, crashes, zBegin, reqVars, noteVars>>
+    /\ UNCHANGED <<rcpt, firstRcpt, acceptedNotBegun, dispatch, rdispatch, rnotify, q, crashes, zBegin, reqVars, noteVars>>
 
 (* The begin activity after its commit: with C2Fix it starts the notifier   *)
 (* for a run that a cancel ended before it began, unless the run's end      *)
 (* names the parent or the workflow asked not to be told (R                 *)
 (* parentToldOfCancelBeforeBegin); the controller runs an active run and    *)
-(* ends otherwise. A start that fails for good fails the begin activity and *)
-(* the controller (NotifyFaults).                                           *)
+(* completes otherwise. The start is attempted whenever the end tells the   *)
+(* parent (duroxide ignores a second start of the notifier). A start that   *)
+(* fails for good (NotifyFaults) fails the begin activity, and the          *)
+(* controller takes its failure path (CtlFallback).                         *)
 BeginTells == NotifyEnabled /\ C2Fix /\ status = "cancelled" /\ endKind = "beforeBegin" /\ endReq # "parent"
 NotifierStart == IF BeginTells /\ notifier = "none" THEN "started" ELSE notifier
 
 BeginNotify ==
     /\ inst = "beginNotify"
-    /\ \E ok \in (IF NotifyFaults /\ BeginTells /\ notifier = "none" THEN BOOLEAN ELSE {TRUE}) :
+    /\ \E ok \in StartOk(BeginTells) :
         /\ notifier' = IF ok THEN NotifierStart ELSE notifier
-        /\ noticeLost' = (noticeLost \/ ~ok)
-    /\ inst' = IF status \in Active THEN "run" ELSE "done"
-    /\ UNCHANGED <<storeVars, dispatch, rdispatch, q, crashes, zBegin, reqVars, notice, selfNotice>>
+        /\ inst' = IF ~ok THEN "fallback" ELSE IF status \in Active THEN "run" ELSE "done"
+    /\ UNCHANGED <<storeVars, dispatch, rdispatch, rnotify, q, crashes, zBegin, reqVars, notice, skipped, selfNotice>>
 
 (* The begin activity runs again after its commit (a worker crash).         *)
 BeginRetry ==
@@ -184,7 +217,7 @@ BeginRetry ==
     /\ crashes < MaxCrashes
     /\ inst' = "begin"
     /\ crashes' = crashes + 1
-    /\ UNCHANGED <<storeVars, dispatch, rdispatch, q, zBegin, reqVars, noteVars>>
+    /\ UNCHANGED <<storeVars, dispatch, rdispatch, rnotify, q, zBegin, reqVars, noteVars>>
 
 (* R notifyParent: the parent is told unless the requester that the run's   *)
 (* end names is the parent: the command's requester, or, with C2Fix, when   *)
@@ -195,37 +228,49 @@ Tells(arg) ==
 
 (* The controller reads a queued cancel (its first poll follows begin), the *)
 (* cancel activity ends the run with the command's requester, and it        *)
-(* notifies with that requester; a delivery may fail for good.              *)
+(* notifies with that requester (R applyCommand). When that notification   *)
+(* runs out, the controller takes its failure path.                        *)
 ApplyCmd ==
     /\ inst = "run"
     /\ status = "running"
     /\ \E r \in q :
-        \E ok \in (IF NotifyFaults /\ NotifyEnabled /\ Tells(Rec(r)) THEN BOOLEAN ELSE {TRUE}) :
+        \E o \in Outcomes(NotifyEnabled /\ Tells(Rec(r))) :
             /\ status' = "cancelled"
             /\ endKind' = "cmd"
             /\ endReq' = Rec(r)
             /\ endTruth' = r
             /\ q' = q \ {r}
-            /\ notice' = (notice \/ (ok /\ NotifyEnabled /\ Tells(Rec(r))))
-            /\ noticeLost' = (noticeLost \/ ~ok)
-    /\ inst' = "done"
-    /\ UNCHANGED <<rcpt, firstRcpt, endOp, acceptedNotBegun, dispatch, rdispatch, crashes, zBegin, reqVars, notifier, selfNotice>>
+            /\ Notified(o, "cmd", r)
+            /\ inst' = IF o = "exhausted" THEN "fallback" ELSE "done"
+    /\ UNCHANGED <<rcpt, firstRcpt, endOp, acceptedNotBegun, dispatch, rdispatch, rnotify, crashes, zBegin, reqVars, notifier>>
 
 (* The run's own work ends it (abstracted); reportEnded tells the parent.  *)
 (* The controller polls its queue before it admits anything, so the work    *)
 (* starts only with no command queued (README "Lifecycle model": limits).  *)
+(* When that notification runs out, the controller takes its failure path. *)
 RunFinish ==
     /\ inst = "run"
     /\ status = "running"
     /\ q = {}
-    /\ \E ok \in (IF NotifyFaults /\ NotifyEnabled THEN BOOLEAN ELSE {TRUE}) :
-        /\ notice' = (notice \/ (ok /\ NotifyEnabled))
-        /\ noticeLost' = (noticeLost \/ ~ok)
+    /\ \E o \in Outcomes(NotifyEnabled) :
+        /\ Notified(o, "finish", "none")
+        /\ inst' = IF o = "exhausted" THEN "fallback" ELSE "done"
     /\ status' = "completed"
     /\ endKind' = "finish"
-    /\ inst' = "done"
-    /\ UNCHANGED <<rcpt, firstRcpt, endReq, endTruth, endOp, acceptedNotBegun, dispatch, rdispatch, q, crashes, zBegin,
-                   reqVars, notifier, selfNotice>>
+    /\ UNCHANGED <<rcpt, firstRcpt, endReq, endTruth, endOp, acceptedNotBegun, dispatch, rdispatch, rnotify, q, crashes, zBegin,
+                   reqVars, notifier>>
+
+(* The controller's failure path after a notification effect ran out (R    *)
+(* workflowV2Controller, failRun): its finish keeps the run's end (the run  *)
+(* already ended, Inv_FallbackAfterEnd), and reportEnded calls              *)
+(* notifyParent once more, with no requester. The controller completes      *)
+(* when that call returns, and fails when it runs out too.                  *)
+CtlFallback ==
+    /\ inst = "fallback"
+    /\ \E o \in Outcomes(NotifyEnabled /\ Tells("none")) :
+        /\ Notified(o, endKind, endTruth)
+        /\ inst' = IF o = "exhausted" THEN "failed" ELSE "done"
+    /\ UNCHANGED <<storeVars, dispatch, rdispatch, rnotify, q, crashes, zBegin, reqVars, notifier>>
 
 (* V controlWorkflowV2Run cancel and S recordRunCancelRequest, one          *)
 (* transaction: the receipt and, with CancelEndsBeforeBegin, the end of a   *)
@@ -236,7 +281,7 @@ EndsNow == CancelEndsBeforeBegin /\ status = "admitted"
 
 CancelTx(r) ==
     /\ r \in Senders
-    /\ req[r] = "idle"
+    /\ req[r] \in {"idle", "error"}
     /\ tries[r] < (IF Repeats THEN 2 ELSE 1)
     /\ status' = IF EndsNow THEN "cancelled" ELSE status
     /\ endKind' = IF EndsNow THEN "beforeBegin" ELSE endKind
@@ -248,14 +293,15 @@ CancelTx(r) ==
     /\ acceptedNotBegun' = (acceptedNotBegun \/ (~rcpt[r] /\ status = "admitted"))
     /\ req' = [req EXCEPT ![r] = "committed"]
     /\ tries' = [tries EXCEPT ![r] = tries[r] + 1]
-    /\ UNCHANGED <<dispatch, rdispatch, inst, q, crashes, zBegin, noteVars>>
+    /\ UNCHANGED <<dispatch, rdispatch, rnotify, inst, q, crashes, zBegin, noteVars>>
 
 (* After the commit: an active run's controller gets the command (V         *)
 (* enqueueEvent, a repeat too); for a run this request's operation ended    *)
 (* before it began, V notifyCancelledBeforeBegin starts the notifier unless *)
 (* the end names the parent, the workflow asked not to be told, or (with    *)
-(* C2Fix) the parent asks. A start that fails for good is an error the      *)
-(* caller sees (NotifyFaults).                                              *)
+(* C2Fix) the parent asks. A start that fails for good (NotifyFaults) is an *)
+(* error the request returns; its receipt and the run's end stay, and the   *)
+(* requester may repeat it with its operation id (A5).                      *)
 FollowTells(r) ==
     /\ NotifyEnabled
     /\ status = "cancelled"
@@ -266,12 +312,11 @@ FollowTells(r) ==
 
 CancelFollow(r) ==
     /\ req[r] = "committed"
-    /\ \E ok \in (IF NotifyFaults /\ FollowTells(r) /\ notifier = "none" THEN BOOLEAN ELSE {TRUE}) :
+    /\ \E ok \in StartOk(FollowTells(r)) :
         /\ notifier' = IF ok /\ FollowTells(r) /\ notifier = "none" THEN "started" ELSE notifier
-        /\ noticeLost' = (noticeLost \/ ~ok)
+        /\ req' = [req EXCEPT ![r] = IF ok THEN "done" ELSE "error"]
     /\ q' = IF status \in Active THEN q \cup {r} ELSE q
-    /\ req' = [req EXCEPT ![r] = "done"]
-    /\ UNCHANGED <<storeVars, dispatch, rdispatch, inst, crashes, zBegin, tries, notice, selfNotice>>
+    /\ UNCHANGED <<storeVars, dispatch, rdispatch, rnotify, inst, crashes, zBegin, tries, notice, skipped, selfNotice>>
 
 (* The first request stops after its commit (A5: its repeat completes).    *)
 CancelInterrupt(r) ==
@@ -283,78 +328,92 @@ CancelInterrupt(r) ==
 
 (* V recoverWorkflowV2Run: a run that has not begun and has no controller   *)
 (* instance is dispatched again (its receipt first); an active run whose    *)
-(* controller ended is ended as failed, and the notifier starts when the    *)
-(* workflow asked to be told.                                              *)
+(* controller ended is ended as failed. After that commit the request       *)
+(* starts the notifier when the workflow asked to be told (V               *)
+(* notifyRecoveredRun); a start that fails for good is an error the request *)
+(* returns, and the run's end stays.                                       *)
 RecoverDispatch ==
     /\ Recovery
     /\ inst = "none"
     /\ status = "admitted"
     /\ ~rdispatch
     /\ rdispatch' = TRUE
-    /\ UNCHANGED <<storeVars, dispatch, inst, q, crashes, zBegin, reqVars, noteVars>>
+    /\ UNCHANGED <<storeVars, dispatch, rnotify, inst, q, crashes, zBegin, reqVars, noteVars>>
 
 RecoverEnd ==
     /\ Recovery
-    /\ inst = "done"
+    /\ inst \in Ended
     /\ status \in Active
     /\ status' = "failed"
     /\ endKind' = "recover"
-    /\ notifier' = IF NotifyEnabled /\ notifier = "none" THEN "started" ELSE notifier
-    /\ UNCHANGED <<rcpt, firstRcpt, endReq, endTruth, endOp, acceptedNotBegun, ctlVars, reqVars, notice, noticeLost, selfNotice>>
+    /\ rnotify' = "pending"
+    /\ UNCHANGED <<rcpt, firstRcpt, endReq, endTruth, endOp, acceptedNotBegun, dispatch, rdispatch, inst, q, crashes, zBegin,
+                   reqVars, noteVars>>
+
+RecoverNotify ==
+    /\ rnotify = "pending"
+    /\ \E ok \in StartOk(NotifyEnabled) :
+        /\ notifier' = IF ok /\ NotifyEnabled /\ notifier = "none" THEN "started" ELSE notifier
+        /\ rnotify' = IF ok THEN "done" ELSE "error"
+    /\ UNCHANGED <<storeVars, dispatch, rdispatch, inst, q, crashes, zBegin, reqVars, notice, skipped, selfNotice>>
 
 (* The controller ends without ending its run (before, during or after      *)
-(* begin). A begin activity it had scheduled is not stopped: it may still   *)
-(* commit, and after its commit still start the notifier (zBegin).          *)
+(* begin, or in its failure path). A begin activity it had scheduled is not *)
+(* stopped: it may still commit, and after its commit still start the       *)
+(* notifier (zBegin).                                                       *)
 CtrlDie ==
     /\ ControllerDeath
-    /\ inst \in {"begin", "beginNotify", "run"}
-    /\ inst' = "done"
+    /\ inst \in {"begin", "beginNotify", "run", "fallback"}
+    /\ inst' = "dead"
     /\ zBegin' = CASE inst = "begin" -> "tx"
                    [] inst = "beginNotify" -> "notify"
                    [] OTHER -> zBegin
-    /\ UNCHANGED <<storeVars, dispatch, rdispatch, q, crashes, reqVars, noteVars>>
+    /\ UNCHANGED <<storeVars, dispatch, rdispatch, rnotify, q, crashes, reqVars, noteVars>>
 
 (* That begin activity's transaction and its notifier start, after its     *)
-(* controller ended (not fair: they may never happen).                     *)
+(* controller ended (not fair: they may never happen). The start may fail   *)
+(* for good (NotifyFaults); no controller sees that (zBegin = "lost").      *)
 ZombieBeginTx ==
     /\ zBegin = "tx"
     /\ BeginEffect
     /\ zBegin' = "notify"
-    /\ UNCHANGED <<rcpt, firstRcpt, acceptedNotBegun, dispatch, rdispatch, inst, q, crashes, reqVars, noteVars>>
+    /\ UNCHANGED <<rcpt, firstRcpt, acceptedNotBegun, dispatch, rdispatch, rnotify, inst, q, crashes, reqVars, noteVars>>
 
 ZombieBeginNotify ==
     /\ zBegin = "notify"
-    /\ notifier' = NotifierStart
-    /\ zBegin' = "none"
-    /\ UNCHANGED <<storeVars, dispatch, rdispatch, inst, q, crashes, reqVars, notice, noticeLost, selfNotice>>
+    /\ \E ok \in StartOk(BeginTells) :
+        /\ notifier' = IF ok THEN NotifierStart ELSE notifier
+        /\ zBegin' = IF ok THEN "none" ELSE "lost"
+    /\ UNCHANGED <<storeVars, dispatch, rdispatch, rnotify, inst, q, crashes, reqVars, notice, skipped, selfNotice>>
 
-(* The notifier orchestration runs notifyParent with no requester; when it  *)
-(* would tell the parent, the delivery may fail for good (NotifyFaults).    *)
+(* The notifier orchestration runs notifyParent with no requester (R        *)
+(* workflowV2Notify): it completes when the call returns (it delivered, had  *)
+(* nothing to tell, or recorded a skip), and fails when the call runs out.  *)
 NotifierTells == NotifyEnabled /\ Tells("none")
 
 NotifierRun ==
     /\ notifier = "started"
-    /\ \E ok \in (IF NotifyFaults /\ NotifierTells THEN BOOLEAN ELSE {TRUE}) :
-        /\ notifier' = IF ok THEN "done" ELSE "failed"
-        /\ notice' = (notice \/ (ok /\ NotifierTells))
-        /\ noticeLost' = (noticeLost \/ ~ok)
-        /\ selfNotice' = (selfNotice \/ (ok /\ NotifierTells /\ endKind \in {"beforeBegin", "cmd"} /\ endTruth = "parent"))
+    /\ \E o \in Outcomes(NotifierTells) :
+        /\ notifier' = IF o = "exhausted" THEN "failed" ELSE "done"
+        /\ Notified(o, endKind, endTruth)
     /\ UNCHANGED <<storeVars, ctlVars, reqVars>>
 
 Next ==
     \/ DispatchSend \/ DispatchLose \/ Start \/ OrphanDrop
-    \/ BeginTx \/ BeginNotify \/ BeginRetry \/ ApplyCmd \/ RunFinish
+    \/ BeginTx \/ BeginNotify \/ BeginRetry \/ ApplyCmd \/ RunFinish \/ CtlFallback
     \/ \E r \in Reqs : (CancelTx(r) \/ CancelFollow(r) \/ CancelInterrupt(r))
-    \/ RecoverDispatch \/ RecoverEnd \/ CtrlDie \/ ZombieBeginTx \/ ZombieBeginNotify \/ NotifierRun
+    \/ RecoverDispatch \/ RecoverEnd \/ RecoverNotify \/ CtrlDie \/ ZombieBeginTx \/ ZombieBeginNotify \/ NotifierRun
 
-(* Weak fairness of the dispatch, duroxide, the controller, the request's   *)
-(* follow-up, the notifier, recover (A3) and the repeat of an interrupted   *)
-(* request (A5). The first cancel, the faults, the drop and the begin       *)
-(* activity of a controller that ended are not fair.                       *)
+(* Weak fairness of the dispatch, duroxide, the controller and its failure  *)
+(* path, the request's follow-up, the notifier, recover and its follow-up   *)
+(* (A3), and the repeat of a request that was interrupted or returned an    *)
+(* error (A5). The first cancel, the faults, the drop and the begin         *)
+(* activity of a controller that ended are not fair; an outcome of a fair   *)
+(* step may be its fault.                                                   *)
 Fairness ==
     /\ WF_vars(DispatchSend) /\ WF_vars(Start) /\ WF_vars(BeginTx) /\ WF_vars(BeginNotify)
-    /\ WF_vars(ApplyCmd) /\ WF_vars(RunFinish) /\ WF_vars(NotifierRun)
-    /\ WF_vars(RecoverDispatch) /\ WF_vars(RecoverEnd)
+    /\ WF_vars(ApplyCmd) /\ WF_vars(RunFinish) /\ WF_vars(CtlFallback) /\ WF_vars(NotifierRun)
+    /\ WF_vars(RecoverDispatch) /\ WF_vars(RecoverEnd) /\ WF_vars(RecoverNotify)
     /\ \A r \in Reqs : WF_vars(CancelFollow(r))
     /\ \A r \in Reqs : WF_vars(tries[r] = 1 /\ CancelTx(r))
 
@@ -388,9 +447,14 @@ Inv_AttributionTruthful == endKind = "beforeBegin" => endReq = Rec(endTruth)
 (* The parent is told only when the workflow asked for it.                 *)
 Inv_NoticeEnabled == notice => NotifyEnabled
 
+(* The controller takes its failure path only for a run that already      *)
+(* ended, so failRun's finish keeps that end (S finishRun).                *)
+Inv_FallbackAfterEnd == inst = "fallback" => status \in Terminal
+
 LifecycleSafety ==
     /\ TypeOK /\ Inv_AcceptedCancelWins /\ Inv_EndedBeforeBegin
     /\ Inv_NoSelfNotice /\ Inv_EndNamesRequester /\ Inv_AttributionTruthful /\ Inv_NoticeEnabled
+    /\ Inv_FallbackAfterEnd
 
 (* A run that a requester other than the parent (an agent or a system       *)
 (* actor) ended with its cancel.                                           *)
@@ -403,8 +467,39 @@ Live_OtherTold == NonParentEnd ~> notice
 (* (assumption A6; no repeat needed).                                      *)
 Live_OtherToldOnceStarted == (endKind = "beforeBegin" /\ endTruth \in NonParent /\ inst # "none") ~> notice
 
-(* Without A6: the parent is told, or a notification visibly failed for     *)
-(* good (assumption A5).                                                   *)
-Live_OtherToldOrFailed == NonParentEnd ~> (notice \/ noticeLost)
+(* A notification effect visibly failed for good: the notifier or the      *)
+(* controller failed, or a cancel request returned an error to its caller.  *)
+FailedVisibly == notifier = "failed" \/ inst = "failed" \/ \E r \in Reqs : req[r] = "error"
+
+(* Without A6: the parent is told, a delivery recorded a skip (the parent's *)
+(* authority was gone), or a notification visibly failed for good           *)
+(* (assumption A5).                                                        *)
+Live_OtherOutcomeVisible == NonParentEnd ~> (notice \/ skipped \/ FailedVisibly)
+
+(***************************************************************************)
+(* Witnesses: each is expected to be violated, which shows that its        *)
+(* outcome is reachable.                                                   *)
+(***************************************************************************)
+
+(* A delivery recorded a skip, and the notifier completed.                 *)
+Wit_SkipCompletes == ~(skipped /\ notifier = "done")
+
+(* A request returned an error, and its repeat with the same operation id   *)
+(* completed (checked without Interrupts, so a repeat follows an error).    *)
+Wit_ErrorRepeated == ~(\E r \in Reqs : tries[r] = 2 /\ req[r] = "done")
+
+(* The begin activity's notifier start failed for good, and the            *)
+(* controller's failure path told the parent and completed.                *)
+Wit_FallbackTells == ~(endKind = "beforeBegin" /\ notifier = "none" /\ notice /\ inst = "done")
+
+(* The controller's failure path ran out too: the controller failed.       *)
+Wit_FallbackFails == inst # "failed"
+
+(* A recover's notifier start failed for good.                             *)
+Wit_RecoverStartFails == rnotify # "error"
+
+(* The notifier start of a begin activity whose controller ended failed     *)
+(* for good.                                                               *)
+Wit_ZombieStartLost == zBegin # "lost"
 
 =============================================================================
