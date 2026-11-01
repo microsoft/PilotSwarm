@@ -4932,8 +4932,9 @@ export function selectAdminConsole(state) {
     // Settings tree — the session-list-slot navigation. Rendered by both
     // hosts; `kind` drives affordances (section rows switch panes, package
     // rows select a package).
-    const section = ["providers", "packages", "workers", "features"].includes(admin.section) ? admin.section : "providers";
+    const section = ["providers", "packages", "workers", "features", "appearance"].includes(admin.section) ? admin.section : "providers";
     const settingsTree = [
+        { id: "appearance", kind: "section", depth: 0, label: "Appearance", selected: section === "appearance" },
         { id: "providers", kind: "section", depth: 0, label: "Model Providers", selected: false },
         { id: "myProviders", kind: "subsection", depth: 1, label: "My Providers", selected: section === "providers" && providerPage === "mine" },
         ...(isAdmin ? [{ id: "sharedProviders", kind: "subsection", depth: 1, label: "Shared Providers", selected: section === "providers" && providerPage === "shared" }] : []),

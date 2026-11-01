@@ -26,6 +26,7 @@ import {
     SESSION_VIEW_LAYOUT_KEYS,
     defaultSessionView,
     normalizeStoredSessionViews,
+    normalizeChatReading,
 } from "./state.js";
 
 /**
@@ -1012,6 +1013,20 @@ function baseReducer(state, action) {
             if (Boolean(action.enabled) === Boolean(state.ui.touchScale)) return state;
             return { ...state, ui: { ...state.ui, touchScale: Boolean(action.enabled) } };
 
+        case "ui/chatReading": {
+            const next = normalizeChatReading(action.reading);
+            if (!next) return state;
+            const current = state.ui.chatReading;
+            if (current
+                && current.on === next.on
+                && current.width === next.width
+                && current.align === next.align
+                && current.pad === next.pad) {
+                return state;
+            }
+            return { ...state, ui: { ...state.ui, chatReading: next } };
+        }
+
         case "ui/agentPickerUsage": {
             const usage = action.usage && typeof action.usage === "object" && !Array.isArray(action.usage)
                 ? action.usage
@@ -1040,6 +1055,9 @@ function baseReducer(state, action) {
             // say "rich" fall through to the transcript below.
             const hasTouchScale = Object.prototype.hasOwnProperty.call(settings, "touchScale")
                 && typeof settings.touchScale === "boolean";
+            const nextChatReading = Object.prototype.hasOwnProperty.call(settings, "chatReading")
+                ? normalizeChatReading(settings.chatReading)
+                : null;
             const hasSessionDetailCollapsed = Object.prototype.hasOwnProperty.call(settings, "sessionDetailCollapsed")
                 && typeof settings.sessionDetailCollapsed === "boolean";
             const hasAgentPickerUsage = Object.prototype.hasOwnProperty.call(settings, "agentPickerUsage")
@@ -1141,6 +1159,7 @@ function baseReducer(state, action) {
                     moaLoaded: true,
                     themeId: hasTheme ? settings.themeId.trim() : selection.ui.themeId,
                     touchScale: hasTouchScale ? settings.touchScale : selection.ui.touchScale,
+                    chatReading: nextChatReading || selection.ui.chatReading,
                     sessionDetailCollapsed: hasSessionDetailCollapsed
                         ? settings.sessionDetailCollapsed
                         : selection.ui.sessionDetailCollapsed,
@@ -3029,7 +3048,7 @@ function baseReducer(state, action) {
             };
         }
         case "admin/section": {
-            const section = ["providers", "packages", "workers", "features", "ghcp"].includes(action.section) ? action.section : "ghcp";
+            const section = ["providers", "packages", "workers", "features", "appearance", "ghcp"].includes(action.section) ? action.section : "ghcp";
             return { ...state, admin: { ...state.admin, section } };
         }
         case "admin/features":

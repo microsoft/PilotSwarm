@@ -1817,6 +1817,59 @@ body.is-resizing-pane-y iframe {
 .ps-activity-run .ps-chat-call { margin: 0; border-top: 1px solid color-mix(in srgb, var(--ps-border) 45%, transparent); border-radius: 0; }
 .ps-activity-run .ps-chat-call:first-child { border-top: 0; }
 .ps-activity-run .ps-chat-call-summary { padding-inline: 12px; }
+/* The tool's own left edge is a second rail. It was drawn on the inner side
+   of the status rail, so the two read as one double stroke. Step it in so
+   the card ground shows between them. */
+.ps-chat-panel .ps-activity-run .ps-chat-call .ps-system-notice-body {
+  margin: 2px 12px 8px 18px;
+}
+.ps-chat-panel .ps-native-task-calls {
+  margin-left: 18px;
+}
+/* Native tasks and artifact rows are lines in the transcript, not nested
+   panes. The left edge is the mark. The pane keeps the frame. */
+.ps-chat-panel .ps-native-tasks:not(.ps-activity-run) {
+  margin: 8px 14px 12px;
+  border: 0;
+  border-left: 3px solid var(--ps-chat-card-accent, var(--ps-accent));
+  border-radius: 0 var(--ps-radius-sm) var(--ps-radius-sm) 0;
+  background: var(--ps-chat-card-body);
+  box-shadow: none;
+}
+.ps-chat-panel .ps-native-task {
+  background: transparent;
+}
+.ps-chat-panel .ps-artifact-card {
+  width: auto;
+  max-width: 36rem;
+  margin: 8px 14px;
+  padding: 7px 12px;
+  border: 0;
+  border-left: 3px solid var(--ps-chat-card-accent, var(--ps-accent));
+  border-radius: 0 var(--ps-radius-sm) var(--ps-radius-sm) 0;
+  background: var(--ps-chat-card-body);
+  box-shadow: none;
+}
+.ps-chat-panel .ps-artifact-card:hover,
+.ps-chat-panel .ps-artifact-card:focus-visible {
+  border-color: transparent;
+  border-left-color: var(--ps-accent);
+  background: color-mix(in srgb, var(--ps-accent) 10%, var(--ps-chat-card-body));
+}
+.ps-chat-panel .ps-artifact-card-thumb,
+.ps-chat-panel .ps-artifact-card.is-page .ps-artifact-card-thumb {
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+.ps-chat-panel .ps-artifact-card-open {
+  border: 0;
+  border-radius: 0;
+  padding: 0 2px;
+  color: var(--ps-chat-card-accent, var(--ps-accent));
+}
 .ps-activity-run-footer { padding: 7px 12px 8px; color: var(--ps-chat-card-muted); font-size: var(--ps-font-size-dense); }
 @media (max-width: 620px) {
   .ps-activity-run-summary { display: grid; grid-template-columns: minmax(0, 1fr) auto 12px; gap: 5px 8px; }
@@ -3343,6 +3396,195 @@ body.is-resizing-pane-y iframe {
   padding-bottom: 8px;
 }
 
+/* Desktop reading column. Applied only when the main chat pane carries
+   is-reading. Master of Agents panels do not. */
+.ps-appearance {
+  padding: 22px 28px;
+  max-width: 560px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.ps-appearance h3 {
+  margin: 0;
+  font-size: var(--ps-font-size-base);
+  font-weight: 650;
+}
+.ps-reading-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  margin-right: 6px;
+  padding: 2px 8px;
+  border: 1px solid var(--ps-border-strong);
+  border-radius: var(--ps-radius-sm);
+  background: var(--ps-background);
+  font-size: var(--ps-font-size-dense);
+  font-weight: 650;
+  color: var(--ps-foreground);
+}
+.ps-reading-switch,
+.ps-reading-width {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+.ps-reading-switch input {
+  accent-color: var(--ps-accent);
+}
+.ps-reading-width input {
+  width: 92px;
+  min-width: 64px;
+  accent-color: var(--ps-accent);
+}
+.ps-reading-width span {
+  font-variant-numeric: tabular-nums;
+  color: var(--ps-foreground);
+}
+.ps-reading-align {
+  display: inline-flex;
+  gap: 4px;
+}
+.ps-reading-align button {
+  border: 1px solid var(--ps-border);
+  background: transparent;
+  color: var(--ps-muted);
+  border-radius: var(--ps-radius-sm);
+  font: inherit;
+  font-size: 12px;
+  padding: 1px 7px;
+  cursor: pointer;
+}
+.ps-reading-align button.is-on {
+  color: var(--ps-foreground);
+  border-color: var(--ps-accent);
+}
+.ps-reading-control.is-stacked {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 14px;
+  width: min(100%, 420px);
+  margin: 4px 0 0;
+  padding: 16px;
+}
+.ps-reading-control.is-stacked .ps-reading-width input {
+  width: 180px;
+}
+.ps-reading-width button {
+  border: 1px solid var(--ps-border);
+  background: transparent;
+  color: var(--ps-muted);
+  border-radius: var(--ps-radius-sm);
+  font: inherit;
+  font-size: 12px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+.ps-reading-width button.is-on {
+  color: var(--ps-foreground);
+  border-color: var(--ps-accent);
+}
+.ps-chat-panel.is-reading .ps-scroll-panel > *,
+.ps-chat-panel.is-reading .ps-chat-composer,
+.ps-chat-panel.is-reading .ps-panel-bottom-sticky {
+  width: min(calc(100% - var(--ps-reading-pad, 0px)), var(--ps-reading-width, 720px));
+  max-width: 100%;
+  margin-left: var(--ps-reading-pad, 0px);
+  margin-right: auto;
+  box-sizing: border-box;
+}
+.ps-chat-panel.is-reading.is-reading-center .ps-scroll-panel > *,
+.ps-chat-panel.is-reading.is-reading-center .ps-chat-composer,
+.ps-chat-panel.is-reading.is-reading-center .ps-panel-bottom-sticky {
+  width: min(100%, var(--ps-reading-width, 720px));
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* A hairline on the column's right edge. Text and cards stop the same
+   distance short of it. It fades before the top and before the composer.
+   It is not drawn when a pane is open on the right, or when the pane's own
+   right edge is close enough to land on the line. */
+.ps-chat-panel.is-reading {
+  --ps-reading-edge: 36px;
+  container-type: inline-size;
+  container-name: reading;
+}
+.ps-chat-panel.is-reading .ps-scroll-panel > *,
+.ps-chat-panel.is-reading .ps-chat-composer,
+.ps-chat-panel.is-reading .ps-panel-bottom-sticky {
+  padding-right: var(--ps-reading-edge);
+}
+.ps-chat-panel.is-reading .ps-scroll-panel > .ps-activity-run,
+.ps-chat-panel.is-reading .ps-scroll-panel > .ps-native-tasks,
+.ps-chat-panel.is-reading .ps-scroll-panel > .ps-artifact-card,
+.ps-chat-panel.is-reading .ps-scroll-panel > .ps-chat-card,
+.ps-chat-panel.is-reading .ps-scroll-panel > .ps-chat-code-block,
+.ps-chat-panel.is-reading .ps-scroll-panel > .ps-md-code-block,
+.ps-chat-panel.is-reading .ps-scroll-panel > .ps-chat-table-wrap,
+.ps-chat-panel.is-reading .ps-scroll-panel > .ps-system-notice {
+  margin-right: 0;
+  margin-left: var(--ps-reading-pad, 0px);
+  padding-right: 0;
+  width: min(
+    calc(100% - var(--ps-reading-pad, 0px) - var(--ps-reading-edge)),
+    calc(var(--ps-reading-width, 720px) - var(--ps-reading-edge))
+  );
+}
+.ps-chat-panel.is-reading.is-reading-center .ps-scroll-panel > .ps-activity-run,
+.ps-chat-panel.is-reading.is-reading-center .ps-scroll-panel > .ps-native-tasks,
+.ps-chat-panel.is-reading.is-reading-center .ps-scroll-panel > .ps-artifact-card,
+.ps-chat-panel.is-reading.is-reading-center .ps-scroll-panel > .ps-chat-card,
+.ps-chat-panel.is-reading.is-reading-center .ps-scroll-panel > .ps-chat-code-block,
+.ps-chat-panel.is-reading.is-reading-center .ps-scroll-panel > .ps-md-code-block,
+.ps-chat-panel.is-reading.is-reading-center .ps-scroll-panel > .ps-chat-table-wrap,
+.ps-chat-panel.is-reading.is-reading-center .ps-scroll-panel > .ps-system-notice {
+  margin-left: max(0px, calc((100% - min(100%, var(--ps-reading-width, 720px))) / 2));
+  margin-right: calc(max(0px, (100% - min(100%, var(--ps-reading-width, 720px))) / 2) + var(--ps-reading-edge));
+  width: min(
+    calc(100% - var(--ps-reading-edge)),
+    calc(var(--ps-reading-width, 720px) - var(--ps-reading-edge))
+  );
+}
+.ps-chat-panel.is-reading .ps-panel-body {
+  position: relative;
+}
+.ps-chat-panel.is-reading .ps-panel-body::after {
+  content: "";
+  position: absolute;
+  top: 28px;
+  bottom: 76px;
+  width: 1px;
+  left: auto;
+  pointer-events: none;
+  z-index: 3;
+  background: linear-gradient(
+    to bottom,
+    transparent 0%,
+    color-mix(in srgb, var(--ps-foreground) 24%, transparent) 14%,
+    color-mix(in srgb, var(--ps-foreground) 24%, transparent) 80%,
+    transparent 100%
+  );
+}
+.ps-chat-panel.is-reading.is-reading-center .ps-panel-body::after {
+  right: max(8px, calc((100% - min(100%, var(--ps-reading-width, 720px))) / 2));
+}
+.ps-chat-panel.is-reading.is-reading-left .ps-panel-body::after {
+  right: auto;
+  left: calc(10px + var(--ps-reading-pad, 0px) + min(calc(100% - 28px - var(--ps-reading-pad, 0px)), var(--ps-reading-width, 720px)));
+}
+.ps-workspace-grid:not(.is-right-hidden) .ps-chat-panel.is-reading .ps-panel-body::after {
+  content: none;
+}
+@container reading (max-width: calc(var(--ps-reading-width, 720px) + var(--ps-reading-pad, 0px) + 36px)) {
+  .ps-panel-body::after {
+    content: none;
+  }
+}
+
 .ps-chat-panel .ps-panel-body {
   padding-top: 2px;
 }
@@ -4357,7 +4599,7 @@ body.is-resizing-pane-y iframe {
   border-bottom: 1px solid var(--ps-border);
   padding-bottom: 8px;
 }
-.ps-admin-console__header h2 { margin: 0; font-size: 1.25rem; }
+.ps-admin-console__header h2 { margin: 0; font-size: var(--ps-font-size-base); font-weight: 650; }
 .ps-admin-console__identity dl {
   display: grid;
   grid-template-columns: max-content 1fr;
@@ -4375,8 +4617,8 @@ body.is-resizing-pane-y iframe {
   border-radius: 6px;
   padding: 12px 14px;
 }
-.ps-admin-console__section h3 { margin: 0; font-size: 1.11rem; }
-.ps-admin-console__hint { margin: 0; color: var(--ps-muted); font-size: 0.96rem; }
+.ps-admin-console__section h3 { margin: 0; font-size: var(--ps-font-size-base); font-weight: 650; }
+.ps-admin-console__hint { margin: 0; color: var(--ps-muted); font-size: var(--ps-font-size-dense); }
 .ps-admin-console__status { margin: 0; font-size: 0.96rem; color: var(--ps-muted); }
 .ps-admin-console__system-toggle { display: flex; align-items: center; gap: 8px; margin: 2px 0; font-size: 0.96rem; color: var(--ps-foreground); cursor: pointer; user-select: none; }
 .ps-admin-console__system-toggle input { accent-color: var(--ps-accent); }
@@ -5617,9 +5859,13 @@ body.is-resizing-pane-y iframe {
 
 /* Light gray headers and softly shaded details distinguish activity from the
    white transcript without the heavy gray or teal of application chrome. */
-:root[data-ps-theme="win95"] .ps-chat-panel .ps-native-tasks {
+:root[data-ps-theme="win95"] .ps-chat-panel .ps-native-tasks:not(.ps-activity-run),
+:root[data-ps-theme="win95"] .ps-chat-panel .ps-artifact-card {
+  border: 0;
+  border-left: 3px solid #000080;
+  border-radius: 0;
+  box-shadow: none;
   background: var(--w95-soft-face);
-  border-color: var(--w95-face);
 }
 :root[data-ps-theme="win95"] .ps-chat-panel .ps-activity-run {
   border: 0;
@@ -6419,8 +6665,8 @@ body.is-resizing-pane-y iframe {
     background: transparent;
     color: inherit;
     font: inherit;
-    font-size: 16px;
-    padding: 6px 0;
+    font-size: var(--ps-font-size-base);
+    padding: 5px 0;
     outline: none;
 }
 .ps-admin-pkg-search__clear {
@@ -6647,7 +6893,7 @@ body.is-resizing-pane-y iframe {
 .ps-admin-detail { padding: 14px 18px; max-width: 72ch; }
 .ps-admin-detail.is-empty h3 { margin-top: 0; }
 .ps-admin-detail__head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-.ps-admin-detail__head h3 { margin: 0; font-size: 15px; }
+.ps-admin-detail__head h3 { margin: 0; font-size: var(--ps-font-size-base); font-weight: 650; }
 .ps-admin-detail__desc { color: var(--ps-muted); margin: 8px 0 12px; }
 .ps-admin-detail__meta {
     display: grid;
@@ -8240,6 +8486,72 @@ body.ps-dragging-sessions .ps-session-list-button.is-insert-before {
   border-color: color-mix(in srgb, var(--ps-accent) 26%, var(--ps-border));
 }
 
+/* Tool cards on the felt.
+ *
+ * The shared card ground is an 8% lift of the surface. That lift sits inside
+ * the felt's own light patches, so the card, its rail and its secondary text
+ * dissolve into the sheet. Sit the card on the deeper page ground, draw the
+ * status rail in the bright status colour, and keep secondary text on the
+ * foreground side of the muted slot. */
+:root[data-ps-theme="duroxide"] .ps-chat-panel .ps-activity-run,
+:root[data-ps-theme="duroxide"] .ps-chat-panel .ps-native-tasks,
+:root[data-ps-theme="duroxide"] .ps-chat-panel .ps-chat-card {
+  background: var(--ps-page-background);
+}
+:root[data-ps-theme="duroxide"] .ps-chat-panel .ps-activity-run {
+  border-left-width: 4px;
+  border-left-color: #9bc888;
+}
+:root[data-ps-theme="duroxide"] .ps-chat-panel .ps-activity-run.is-working {
+  border-left-color: #efc069;
+}
+:root[data-ps-theme="duroxide"] .ps-chat-panel .ps-activity-run.is-failed {
+  border-left-color: #f4897f;
+}
+:root[data-ps-theme="duroxide"] .ps-activity-run-status,
+:root[data-ps-theme="duroxide"] .ps-native-task-status,
+:root[data-ps-theme="duroxide"] .ps-native-task-mark {
+  color: #9bc888;
+}
+:root[data-ps-theme="duroxide"] .ps-activity-run.is-working .ps-activity-run-status {
+  color: #efc069;
+}
+:root[data-ps-theme="duroxide"] .ps-activity-run.is-failed .ps-activity-run-status,
+:root[data-ps-theme="duroxide"] .ps-activity-run-status.is-failed {
+  color: #f4897f;
+}
+:root[data-ps-theme="duroxide"] .ps-chat-call-tag {
+  color: #efc069;
+}
+:root[data-ps-theme="duroxide"] .ps-chat-panel .ps-native-tasks:not(.ps-activity-run),
+:root[data-ps-theme="duroxide"] .ps-chat-panel .ps-artifact-card {
+  border: 0;
+  border-left: 4px solid #efc069;
+  background: var(--ps-page-background);
+}
+:root[data-ps-theme="duroxide"] .ps-chat-panel .ps-activity-run {
+  border-left-color: #9bc888;
+}
+:root[data-ps-theme="duroxide"] .ps-chat-panel .ps-activity-run.is-working {
+  border-left-color: #efc069;
+}
+:root[data-ps-theme="duroxide"] .ps-chat-panel .ps-activity-run.is-failed {
+  border-left-color: #f4897f;
+}
+:root[data-ps-theme="duroxide"] .ps-activity-run-latest,
+:root[data-ps-theme="duroxide"] .ps-activity-run-footer,
+:root[data-ps-theme="duroxide"] .ps-chat-call-payload,
+:root[data-ps-theme="duroxide"] .ps-chat-call-status,
+:root[data-ps-theme="duroxide"] .ps-native-task-preview,
+:root[data-ps-theme="duroxide"] .ps-native-task-meta,
+:root[data-ps-theme="duroxide"] .ps-native-tasks-count {
+  color: color-mix(in srgb, var(--ps-foreground) 82%, var(--ps-muted));
+}
+:root[data-ps-theme="duroxide"] .ps-chat-panel .ps-activity-run .ps-chat-call .ps-system-notice-body {
+  border-left-color: var(--ps-accent);
+}
+
+
 /* ── Joined panels ───────────────────────────────────────────────────────────
    The workspace was five floating cards: every pane carried its own 2px border
    and rounded corners, separated by an 8px grid gap plus an 18px resizer
@@ -9737,7 +10049,7 @@ textarea.ps-link-input {
    every block collapsed into an unreadable stack (2026-08-24). */
 .ps-admin-model-providers { display: flex; flex-direction: column; gap: 16px; max-width: 660px; }
 .ps-admin-provider-heading { display: flex; align-items: center; gap: 10px; }
-.ps-admin-provider-heading h3 { margin: 0; font-size: 1.11rem; flex: 1; }
+.ps-admin-provider-heading h3 { margin: 0; font-size: var(--ps-font-size-base); font-weight: 650; flex: 1; }
 .ps-admin-provider-block {
   display: flex; flex-direction: column; gap: 10px;
   border: 1px solid var(--ps-border); border-radius: 6px; padding: 14px 16px;

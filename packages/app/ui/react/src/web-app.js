@@ -81,6 +81,7 @@ import {
     selectConfirmModal,
     defaultOwnerFilterForPrincipal,
     normalizeStoredLayoutAdjustments,
+    normalizeChatReading,
     normalizeStoredSessionViews,
     normalizeStoredPinnedSessionIds,
     normalizeStoredSessionOrder,
@@ -354,6 +355,12 @@ function normalizeProfileSettings(settings) {
     if (typeof candidate.touchScaleMobile === "boolean") {
         normalized.touchScaleMobile = candidate.touchScaleMobile;
     }
+    // Desktop only. A phone must not invent a mobile slot; it carries this
+    // object through unchanged when the save path passes it in.
+    if (hasOwn(candidate, "chatReading")) {
+        const chatReading = normalizeChatReading(candidate.chatReading);
+        if (chatReading) normalized.chatReading = chatReading;
+    }
     if (hasOwn(candidate, "sessionOwnerFilter") && candidate.sessionOwnerFilter && typeof candidate.sessionOwnerFilter === "object") {
         const storedFilter = candidate.sessionOwnerFilter;
         // Profiles saved before the "Shared with me" bucket existed have no
@@ -475,7 +482,7 @@ function profileViewState(root) {
     };
 }
 
-function profileSettingsFromViewState(state, preservedOtherTouchScale = null, preservedRightPaneMode = null, preservedDesktopPanes = null) {
+function profileSettingsFromViewState(state, preservedOtherTouchScale = null, preservedRightPaneMode = null, preservedDesktopPanes = null, preservedChatReading = null) {
     return normalizeProfileSettings({
         ...(state.moa ? { moa: state.moa } : {}),
         themeId: state.themeId,
@@ -540,6 +547,11 @@ function profileSettingsFromViewState(state, preservedOtherTouchScale = null, pr
             && Object.keys(state.agentPickerUsage).length > 0
             ? { agentPickerUsage: state.agentPickerUsage }
             : {}),
+        // Desktop writes the live column. A phone has no column setting, so
+        // it writes the last desktop value back or the replace would delete it.
+        ...(isNarrowViewport()
+            ? (preservedChatReading ? { chatReading: preservedChatReading } : {})
+            : { chatReading: state.chatReading }),
     });
 }
 
@@ -647,6 +659,11 @@ function materializeProfileSettings(remoteSettings, defaults) {
         ...(hasOwn(normalizedRemote, touchScaleKey())
             ? { touchScale: normalizedRemote[touchScaleKey()] }
             // Never inherit the other device class's preference.
+            : {}),
+        // Desktop only. A phone must not apply the column, and must not
+        // synthesize one: an omitted key leaves the current value alone.
+        ...(!isNarrowViewport() && hasOwn(normalizedRemote, "chatReading")
+            ? { chatReading: normalizedRemote.chatReading }
             : {}),
         // Read back for the same reason as touchScale above: written but never
         // merged means the fold state resets on every reload. No default here
@@ -7230,9 +7247,78 @@ function OutboxStrip({ controller, sessionId, header, blocks, theme }) {
 }
 const OUTBOX_SELECTABLE_PHASES = new Set(["pending", "queued", "cancelling"]);
 
-function ChatPane({ controller, mobile = false, fullWidth = false, showComposer = true, onEnterZen = null, activityInHeader = false }) {
+function ChatReadingControl({ reading, onChange }) {
+    const set = (patch) => onChange({ ...reading, ...patch });
+    const full = reading.width == null;
+    return React.createElement("div", { className: "ps-reading-control is-stacked" },
+        React.createElement("label", { className: "ps-reading-switch" },
+            React.createElement("input", {
+                type: "checkbox",
+                role: "switch",
+                checked: reading.on,
+                "aria-checked": reading.on,
+                onChange: (event) => set({ on: event.target.checked }),
+            }),
+            "Reading column"),
+        React.createElement("div", { className: "ps-reading-width" },
+            React.createElement("span", null, "Maximum width"),
+            React.createElement("button", {
+                type: "button",
+                className: full ? "is-on" : "",
+                onClick: () => set({ width: null }),
+            }, "Full"),
+            full
+                ? null
+                : React.createElement("input", {
+                    type: "range",
+                    min: 480,
+                    max: 1100,
+                    step: 20,
+                    value: reading.width,
+                    "aria-label": "Maximum width",
+                    onChange: (event) => set({ width: Number(event.target.value) }),
+                }),
+            React.createElement("span", null, full ? "Full" : String(reading.width)),
+            full
+                ? React.createElement("button", {
+                    type: "button",
+                    onClick: () => set({ width: 1100 }),
+                }, "Set a maximum")
+                : null),
+        full
+            ? null
+            : React.createElement("span", { className: "ps-reading-align", role: "group", "aria-label": "Column alignment" },
+                ["left", "center"].map((align) => React.createElement("button", {
+                    key: align,
+                    type: "button",
+                    className: reading.align === align ? "is-on" : "",
+                    onClick: () => set({ align }),
+                }, align === "left" ? "Left" : "Center"))),
+        !full && reading.align === "left"
+            ? React.createElement("label", { className: "ps-reading-width" },
+                React.createElement("span", null, "Left inset"),
+                React.createElement("input", {
+                    type: "range",
+                    min: 0,
+                    max: 160,
+                    step: 4,
+                    value: reading.pad,
+                    "aria-label": "Left inset",
+                    onChange: (event) => set({ pad: Number(event.target.value) }),
+                }),
+                React.createElement("span", null, String(reading.pad)))
+            : null);
+}
+
+function ChatPane({ controller, mobile = false, fullWidth = false, showComposer = true, onEnterZen = null, activityInHeader = false, readingColumn = false }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
+    // Only the main desktop chat opts in. Master of Agents panels, zen, and
+    // the phone chat pass readingColumn false, so this setting cannot reach them.
+    const storedReading = useControllerSelector(controller, (state) => state.ui.chatReading);
+    const reading = readingColumn && storedReading?.on && Number.isFinite(storedReading.width)
+        ? storedReading
+        : null;
     const viewState = useControllerSelector(controller, (state) => {
         const activeSessionId = state.sessions.activeSessionId;
         const layout = computeStateLayout(state);
@@ -7417,7 +7503,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         historyPullEnabled: Boolean(viewState.activeHistory?.hasOlderEvents && !showLoadOlder),
         ariaLive: "polite",
         className: "is-wrapped",
-        panelClassName: "ps-chat-panel",
+        panelClassName: `ps-chat-panel${reading ? ` is-reading is-reading-${reading.align}` : ""}`,
         panelRef,
         bottomContent: composer,
         topContent: ({ topPullDistance, loadingOlderHistory }) => {
@@ -14492,6 +14578,16 @@ function formatAdminPrincipalLabel(principal) {
     return [provider, subject].filter(Boolean).join(":") || "user";
 }
 
+function AppearanceSettingsPane({ controller }) {
+    const reading = useControllerSelector(controller, (state) => state.ui.chatReading);
+    return React.createElement("section", { className: "ps-appearance", "aria-label": "Appearance" },
+        React.createElement("h3", null, "Appearance"),
+        React.createElement(ChatReadingControl, {
+            reading,
+            onChange: (next) => controller.dispatch({ type: "ui/chatReading", reading: next }),
+        }));
+}
+
 function AdminConsolePanel({ controller, mobile = false }) {
     const view = useControllerSelector(controller, selectAdminConsole, shallowEqualObject);
     const features = useControllerSelector(controller, state => state.admin.features);
@@ -14501,6 +14597,7 @@ function AdminConsolePanel({ controller, mobile = false }) {
     const showPackages = view.section === "packages";
     const showWorkers = view.section === "workers";
     const showFeatures = view.section === "features";
+    const showAppearance = view.section === "appearance";
     const featureSection = React.createElement(FeatureFlagsPanel, { controller, features,
         workers: featureWorkers?.list || [], workersError: featureWorkers?.error,
         isAdmin: view.isAdmin && (!featureRole || featureRole === "admin" || featureRole === "anonymous") });
@@ -14652,7 +14749,10 @@ function AdminConsolePanel({ controller, mobile = false }) {
             body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree,
                 React.createElement(AdminWorkersPane, { controller, view }));
         } else {
-            body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree, showFeatures ? featureSection : providerSection);
+            body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree,
+                showAppearance
+                    ? React.createElement(AppearanceSettingsPane, { controller })
+                    : showFeatures ? featureSection : providerSection);
         }
         return React.createElement("div", { className: "ps-admin-console is-mobile" },
             header,
@@ -14681,7 +14781,13 @@ function AdminConsolePanel({ controller, mobile = false }) {
                     "aria-label": "Resize settings column",
                 })),
             React.createElement("div", { className: "ps-admin-main" },
-                showPackages ? detail : showWorkers ? React.createElement(AdminWorkersPane, { controller, view }) : showFeatures ? featureSection : providerSection),
+                showPackages
+                    ? detail
+                    : showWorkers
+                        ? React.createElement(AdminWorkersPane, { controller, view })
+                        : showAppearance
+                            ? React.createElement(AppearanceSettingsPane, { controller })
+                            : showFeatures ? featureSection : providerSection),
             workspacePane),
         dialog,
         createProviderDialog);
@@ -14793,6 +14899,8 @@ function AdminSettingsTree({ controller, view }) {
                     controller.setAdminModelProviderPage("shared");
                 } else if (row.id === "features") {
                     controller.setAdminSection("features");
+                } else if (row.id === "appearance") {
+                    controller.setAdminSection("appearance");
                 } else {
                     controller.setAdminSection(row.id === "agents" ? "packages" : "workers");
                 }
@@ -15841,6 +15949,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         moa: rootState.ui.moa,
         themeId: rootState.ui.themeId,
         touchScale: Boolean(rootState.ui.touchScale),
+        chatReading: rootState.ui.chatReading,
         sessionDetailCollapsed: Boolean(rootState.ui.sessionDetailCollapsed),
         agentPickerUsage: rootState.ui.agentPickerUsage,
         ownerFilter: rootState.sessions.ownerFilter,
@@ -15901,6 +16010,8 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     // Same preservation contract as desktopRightPaneModeRef: a phone must not
     // overwrite the desktop's column toggles with its own (absent) ones.
     const desktopPanesRef = React.useRef(null);
+    // Desktop column, preserved across a phone save. There is no phone slot.
+    const desktopChatReadingRef = React.useRef(null);
     const profileSettingsSaveTimerRef = React.useRef(null);
     const profileSettingsPollTimerRef = React.useRef(null);
     const profileSettingsPollInFlightRef = React.useRef(false);
@@ -16078,6 +16189,9 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                 if (remoteNormalized.desktopPanes) {
                     desktopPanesRef.current = remoteNormalized.desktopPanes;
                 }
+                if (remoteNormalized.chatReading) {
+                    desktopChatReadingRef.current = remoteNormalized.chatReading;
+                }
                 defaultProfileSettingsRef.current = buildDefaultProfileSettingsFromState(
                     controller.getState(), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current,
                 );
@@ -16092,7 +16206,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                 );
                 const settingsJson = JSON.stringify(settings);
                 const currentSettingsBeforeApply = profileSettingsFromViewState(
-                    profileViewState(controller.getState()), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current,
+                    profileViewState(controller.getState()), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current, desktopChatReadingRef.current,
                 );
                 const currentSettingsBeforeApplyJson = JSON.stringify(currentSettingsBeforeApply);
                 const hasUnpersistedLocalChange = profileSettingsHydratedRef.current
@@ -16137,10 +16251,11 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                 // remote state by definition and there is nothing to lose).
                 if (!profileSettingsHydratedRef.current || !hasPendingLocalWrite) {
                     const currentSettings = profileSettingsFromViewState(
-                        profileViewState(controller.getState()), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current,
+                        profileViewState(controller.getState()), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current, desktopChatReadingRef.current,
                     );
                     lastProfileSettingsJsonRef.current = JSON.stringify(currentSettings);
                 }
+                try { window.localStorage.removeItem("ps-chat-reading"); } catch { /* private mode */ }
                 profileSettingsHydratedRef.current = true;
             } catch {
                 if (!active) return;
@@ -16171,7 +16286,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
 
     React.useEffect(() => {
         if (!profileSettingsHydratedRef.current) return undefined;
-        const settings = profileSettingsFromViewState(state, otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current);
+        const settings = profileSettingsFromViewState(state, otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current, desktopChatReadingRef.current);
         const settingsJson = JSON.stringify(settings);
         if (lastProfileSettingsJsonRef.current === settingsJson) return undefined;
         lastProfileSettingsJsonRef.current = settingsJson;
@@ -16195,12 +16310,23 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                 });
         }, 400);
         return undefined;
-    }, [controller, state.moa, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.sidePaneTab, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.sessionSortMode, state.sessionUsedAt, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale]);
+    }, [controller, state.moa, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.sidePaneTab, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.sessionSortMode, state.sessionUsedAt, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale, state.chatReading]);
 
     React.useEffect(() => {
         applyDocumentTheme(state.themeId);
         applyTouchScale(state.touchScale);
     }, [state.themeId, state.touchScale]);
+
+    React.useEffect(() => {
+        const reading = state.chatReading;
+        if (!reading || typeof document === "undefined") return;
+        if (Number.isFinite(reading.width)) {
+            document.documentElement.style.setProperty("--ps-reading-width", `${reading.width}px`);
+        } else {
+            document.documentElement.style.removeProperty("--ps-reading-width");
+        }
+        document.documentElement.style.setProperty("--ps-reading-pad", reading.align === "left" ? `${reading.pad || 0}px` : "0px");
+    }, [state.chatReading]);
 
     // Follow focus only on an actual TRANSITION, never on the first run.
     //
@@ -16405,7 +16531,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         className: "ps-workspace-pane-slot",
         style: { gridColumn: "3" },
     },
-        React.createElement(ChatPane, { controller }))),
+        React.createElement(ChatPane, { controller, readingColumn: true }))),
     rightSideActive
         ? (artifactPaneActive
             ? React.createElement(ColumnResizeHandle, { controller, paneAdjust: state.paneAdjust })
