@@ -202,20 +202,24 @@ export function projectWorkflowV2ReadModel(model) {
     }
     const run = normalizeRun(model.run);
     const runInfo = run ? model.runs.find(item => item?.runId === run.runId) : null;
+    const runRevision = Number.isSafeInteger(runInfo?.revision) ? runInfo.revision : null;
     let overlay = Boolean(run && graph);
-    if (run && graph && Number.isSafeInteger(runInfo?.revision) && runInfo.revision !== graph.revision) {
+    if (run && graph && runRevision === null) {
         overlay = false;
-        banners.push({ level: "warning", text: `This run used revision ${runInfo.revision}; the graph shows revision ${graph.revision}, so node status is not overlaid.` });
+        banners.push({ level: "warning", text: "This run's revision is not listed, so node status is not overlaid." });
+    } else if (run && graph && runRevision !== graph.revision) {
+        overlay = false;
+        banners.push({ level: "warning", text: `This run used revision ${runRevision}; the graph shows revision ${graph.revision}, so node status is not overlaid.` });
     }
     if (model.run !== null && model.run !== undefined && !run) {
         banners.push({ level: "warning", text: "The run in this read model has an unknown shape, so it was not shown." });
     } else if (!run) {
         banners.push({ level: "info", text: model.runs.length
-            ? `No live run is selected; ${model.runs.length} other run${model.runs.length === 1 ? "" : "s"} exist.` : "No run yet." });
+            ? `No live run is selected; ${model.runs.length === 1 ? "1 other run exists" : `${model.runs.length} other runs exist`}.` : "No run yet." });
     }
     if (run?.executionsTruncated) banners.push({ level: "info", text: `Only the first ${WORKFLOW_V2_READ_LIMITS.nodeExecutions} node executions are listed, so counts may be incomplete.` });
     return {
-        ok: true, status, workflowId: model.workflowId, definition: graph, diagnostics, banners, run, overlay,
+        ok: true, status, workflowId: model.workflowId, definition: graph, diagnostics, banners, run, overlay, runRevision,
         lifecycle: lifecycle.state, semver: lifecycle.semver ?? null, currentRevision: lifecycle.currentRevision,
         publishedRevision: lifecycle.publishedRevision ?? null, validRevision: revision.valid, runs: model.runs,
     };
@@ -311,7 +315,7 @@ function collectExecutions(events, runId, run, overlay) {
  * from either source. Otherwise the read model's status is used, then the latest
  * pause or resume event, then whether any state event exists.
  */
-export function workflowV2RunStatus({ run = null, events = [], runId = null } = {}) {
+export function workflowV2RunStatus({ run = null, events = [], runId = null, readModelAfterSeq = null } = {}) {
     let end = null;
     let control = null;
     let begun = false;
@@ -319,8 +323,8 @@ export function workflowV2RunStatus({ run = null, events = [], runId = null } = 
         const data = isRecord(event?.data) ? event.data : {};
         if (!runId || data.runId !== runId) continue;
         if (Object.hasOwn(END_EVENTS, event.eventType)) end = { status: END_EVENTS[event.eventType], outcome: data.outcome ?? null, stateId: data.stateId ?? null, error: data.error, code: text(data.code) };
-        else if (event.eventType === "workflow.paused") control = "paused";
-        else if (event.eventType === "workflow.resumed") control = "running";
+        else if (event.eventType === "workflow.paused") control = { kind: "paused", seq: event.seq };
+        else if (event.eventType === "workflow.resumed") control = { kind: "running", seq: event.seq };
         else if (event.eventType === "workflow.started" || STATE_EVENTS.has(event.eventType)) begun = true;
     }
     if (!end && run && ["completed", "failed", "cancelled"].includes(run.status)) {
@@ -336,7 +340,18 @@ export function workflowV2RunStatus({ run = null, events = [], runId = null } = 
         return { phase: end.status, ended: true, label: mode + label, businessOutcome: business ? end.outcome : null, error: end.error,
             terminalState: end.stateId };
     }
-    const status = run?.status ?? (control ?? (begun ? "running" : null));
+    // A read model carries no sequence number. A pause or resume event it may not have seen can contradict it, and nothing
+    // here can say which is newer, so the status is reported as unverified. `readModelAfterSeq` is supplied by the caller: the
+    // highest event sequence it had loaded before it fetched the read model; events up to it are older than the snapshot.
+    const guarded = Number.isSafeInteger(readModelAfterSeq);
+    const contradicts = control && run && (run.status === "paused") !== (control.kind === "paused")
+        && !(guarded && Number.isSafeInteger(control.seq) && control.seq <= readModelAfterSeq);
+    if (contradicts) {
+        const modelSays = run.status === "paused" ? "paused" : run.status;
+        return { phase: "unverified", ended: false, stale: true, conflict: { readModel: modelSays, events: control.kind === "paused" ? "paused" : "resumed" },
+            label: `${mode}Status unverified · read model says ${modelSays}, latest event says ${control.kind === "paused" ? "paused" : "resumed"}` };
+    }
+    const status = run?.status ?? (control?.kind ?? (begun ? "running" : null));
     switch (status) {
         case "admitted": return { phase: "admitted", ended: false, label: `${mode}Admitted · not started` };
         case "paused": {
@@ -346,7 +361,7 @@ export function workflowV2RunStatus({ run = null, events = [], runId = null } = 
         }
         case "running": return { phase: "running", ended: false, label: `${mode}Running` };
         default:
-            return control === "paused" ? { phase: "paused", ended: false, label: "Paused" } : { phase: "none", ended: false, label: "No run yet" };
+            return control?.kind === "paused" ? { phase: "paused", ended: false, label: "Paused" } : { phase: "none", ended: false, label: "No run yet" };
     }
 }
 
@@ -410,12 +425,14 @@ function nodeView(node, executions, context) {
     const stalePending = list.some(item => item.status === "pending" && item !== pending);
     const reachedByRun = node.type === "terminal" && context.terminalState === node.id;
     const runs = Math.max(list.length, ...list.map(item => item.ordinal ?? 0), reachedByRun ? 1 : 0);
-    let state = "idle", phase = "not-reached", stateLabel = context.hasRun ? "Not reached" : "No run";
+    let state = "idle", phase = "not-reached", stateLabel = context.stateless ?? (context.hasRun ? "Not reached" : "No run");
     const result = latestDone || null;
     let outcome = result?.outcome, resultKind = result?.resultKind;
     if (pending && !(node.type === "terminal" && context.run.ended)) {
         if (context.run.ended) {
             state = "cancelled"; phase = "ended-early"; stateLabel = "Run ended first";
+        } else if (context.run.phase === "unverified") {
+            state = "idle"; phase = "unverified"; stateLabel = "Pending · run status unverified";
         } else if (context.run.phase === "paused") {
             state = "idle"; phase = "paused"; stateLabel = "Pending · run paused";
         } else {
@@ -453,29 +470,48 @@ function nodeView(node, executions, context) {
  * events and an optional read model object. Always returns; it reports what it
  * ignored instead of throwing.
  */
-export function projectWorkflowV2({ definition = null, readModel = null, events = [] } = {}) {
+export function projectWorkflowV2({ definition = null, readModel = null, events = [], readModelAfterSeq = null } = {}) {
     const model = readModel ? projectWorkflowV2ReadModel(readModel) : null;
     const banners = model ? [...model.banners] : [];
+    const modelOk = Boolean(model?.ok);
     const modelUsable = Boolean(model?.ok && model.definition);
     // A read model that says there is no graph is not overridden by an older run's definition.
     const active = modelUsable ? model.definition : model?.ok ? null : definition?.shape === "v2" ? definition : null;
-    const run = modelUsable ? model.run : null;
-    const overlay = modelUsable ? model.overlay : true;
-    const runId = run?.runId ?? latestRunId(events);
-    const { executions, ignoredEvents, ignoredRows } = collectExecutions(events, runId, run, overlay);
-    const status = workflowV2RunStatus({ run, events, runId });
+    // With a read model, only the run it names, and only when that run used the graph's revision, may be overlaid.
+    // Events that belong to no selected run, or to another revision, are never painted onto the graph.
+    const run = modelOk ? model.run : null;
+    const runId = modelOk ? run?.runId ?? null : latestRunId(events);
+    let bound = modelOk ? Boolean(run && model.overlay) : true;
+    let unboundRevision = modelOk ? model.runRevision : null;
+    if (!modelOk && runId && active?.revision !== undefined) {
+        const begun = events.findLast(event => event?.eventType === "workflow.started" && event.data?.runId === runId);
+        const revision = begun?.data?.revision;
+        if (Number.isSafeInteger(revision) && revision !== active.revision) {
+            bound = false; unboundRevision = revision;
+            banners.push({ level: "warning", text: `This run used revision ${revision}; the graph shows revision ${active.revision}, so node status is not overlaid.` });
+        }
+    }
+    const { executions, ignoredEvents, ignoredRows } = bound
+        ? collectExecutions(events, runId, run, true) : { executions: [], ignoredEvents: 0, ignoredRows: 0 };
+    let status = !bound && modelOk && !run
+        ? { phase: "none", ended: false, label: model.runs.length ? "No live run selected" : "No run yet" }
+        : workflowV2RunStatus({ run, events: bound || !modelOk ? events : [], runId, readModelAfterSeq });
+    if (!bound && runId) status = { ...status, terminalState: null, label: `${unboundRevision === null ? "Unbound" : `Revision ${unboundRevision}`} run · ${status.label}` };
+    if (status.phase === "unverified") {
+        banners.push({ level: "warning", text: `Run status is not verified: the read model says ${status.conflict.readModel} but the latest durable event says ${status.conflict.events}. Refresh the read model.` });
+    }
     if (ignoredEvents) banners.push({ level: "warning", text: `${ignoredEvents} workflow event${ignoredEvents === 1 ? "" : "s"} did not have the v2 shape and ${ignoredEvents === 1 ? "was" : "were"} ignored.` });
     if (ignoredRows) banners.push({ level: "warning", text: `${ignoredRows} node execution row${ignoredRows === 1 ? "" : "s"} did not have the v2 shape and ${ignoredRows === 1 ? "was" : "were"} ignored.` });
     const known = new Set((active?.states || []).map(node => node.id));
     const unknown = executions.filter(item => !known.has(item.stateId)).length;
     if (unknown) banners.push({ level: "warning", text: `${unknown} execution${unknown === 1 ? "" : "s"} belong to states that are not in this graph.` });
-    const context = { run: status, hasRun: status.phase !== "none", terminalState: status.terminalState ?? run?.terminalState ?? null,
-        complete: Boolean(run && overlay && !run.executionsTruncated) };
+    const context = { run: status, hasRun: status.phase !== "none", terminalState: bound ? status.terminalState ?? run?.terminalState ?? null : null,
+        complete: Boolean(run && bound && !run.executionsTruncated), stateless: !bound && runId ? "Run not overlaid" : undefined };
     const nodes = (active?.states || []).map(node => nodeView(node, executions, context));
     return {
-        shape: "v2", status, definition: active, nodes, banners, readModel: model, runId,
-        diagnostics: model?.diagnostics || [], inbox: run?.inbox || [], outbox: run?.outbox || [],
-        output: run?.output ?? null, error: run?.error ?? null, modelStatus: model?.status ?? null,
+        shape: "v2", status, definition: active, nodes, banners, readModel: model, runId, bound,
+        diagnostics: model?.diagnostics || [], inbox: bound ? run?.inbox || [] : [], outbox: bound ? run?.outbox || [] : [],
+        output: bound ? run?.output ?? null : null, error: bound ? run?.error ?? null : null, modelStatus: model?.status ?? null,
     };
 }
 

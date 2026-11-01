@@ -269,3 +269,81 @@ test("v2 graphs keep real branches, loops and reconvergence, mark runtime-error 
     const legacy = layoutWorkflowGraph(workflowDefinition(legacyStartedData), 390);
     assert.ok(legacy.edges.every(edge => edge.kind === undefined));
 });
+
+test("no overlay of any kind is painted unless the run is bound to the graph's revision", () => {
+    const completedRun = { status: "completed", outcome: "succeeded", terminalState: "done", output: '{"ok":true}' };
+    const mismatched = projectWorkflowV2({
+        readModel: readModel({ runs: [{ runId: RUN, mode: "live", status: "completed", revision: 2, outcome: "succeeded" }],
+            run: completedRun, nodeExecutions: [done("poll", 1, "changed")] }),
+        events: [completed("poll", 1, "changed"), ended("workflow.completed", { stateId: "done", outcome: "succeeded" })],
+    });
+    assert.equal(mismatched.bound, false);
+    assert.equal(mismatched.status.label, "Revision 2 run · Completed · succeeded");
+    assert.equal(mismatched.status.terminalState, null);
+    assert.ok(mismatched.nodes.every(node => node.state === "idle" && node.stateLabel === "Run not overlaid" && node.runs === 0));
+    assert.equal(mismatched.output, null);
+    const bound = projectWorkflowV2({ readModel: readModel({ run: completedRun, nodeExecutions: [done("poll", 1, "changed")] }) });
+    assert.equal(bound.bound, true);
+    assert.equal(byId(bound, "done").state, "done");
+    assert.equal(byId(bound, "poll").stateLabel, "Done · changed");
+    const unlisted = projectWorkflowV2({ readModel: readModel({ runs: [{ runId: RUN, mode: "live", status: "running", outcome: null }],
+        nodeExecutions: [done("poll", 1, "changed")] }) });
+    assert.ok(unlisted.banners.some(banner => banner.text === "This run's revision is not listed, so node status is not overlaid."));
+    assert.ok(unlisted.nodes.every(node => node.state === "idle"));
+});
+
+test("historical events are not painted onto a graph when the read model selects no run", () => {
+    const history = [started("poll", 1), completed("poll", 1, "changed"), ended("workflow.completed", { stateId: "done", outcome: "succeeded" })];
+    const none = projectWorkflowV2({ readModel: readModel({ noRun: true, definition: { state: "draft", publishedRevision: null, publishedDefinitionHash: null } }), events: history });
+    assert.equal(none.runId, null);
+    assert.equal(none.status.label, "No run yet");
+    assert.deepEqual(none.banners.map(banner => banner.text), ["Draft revision 1 · not published.", "No run yet."]);
+    assert.ok(none.nodes.every(node => node.state === "idle" && node.stateLabel === "No run"));
+    const others = projectWorkflowV2({ readModel: readModel({ noRun: true, runs: [{ runId: "old", mode: "test", status: "completed", revision: 1, outcome: "succeeded" }] }), events: history });
+    assert.equal(others.status.label, "No live run selected");
+    assert.ok(others.banners.some(banner => banner.text === "No live run is selected; 1 other run exists."));
+    assert.ok(others.nodes.every(node => node.state === "idle"));
+    const invalid = projectWorkflowV2({ readModel: readModel({ noRun: true, graph: null, revision: { revision: 2, valid: false, diagnostics: [] } }), events: history });
+    assert.equal(invalid.runId, null);
+    assert.equal(invalid.status.label, "No run yet");
+    const withStart = (revision, events) => [ev("workflow.started", { ...startedData, revision }), ...events];
+    const events = [completed("poll", 1, "changed")];
+    const other = projectWorkflowV2({ definition, events: withStart(2, events) });
+    assert.equal(other.bound, false);
+    assert.equal(other.status.label, "Revision 2 run · Running");
+    assert.ok(other.nodes.every(node => node.state === "idle"));
+    assert.ok(other.banners.some(banner => /used revision 2; the graph shows revision 1/.test(banner.text)));
+    const same = projectWorkflowV2({ definition, events: withStart(1, events) });
+    assert.equal(same.bound, true);
+    assert.equal(byId(same, "poll").state, "done");
+});
+
+test("a read model that contradicts a pause or resume event is reported as unverified, in both directions", () => {
+    const paused = seq => ({ ...ev("workflow.paused", { runId: RUN }), seq });
+    const resumed = seq => ({ ...ev("workflow.resumed", { runId: RUN }), seq });
+    const running = nodeExecutions => readModel({ nodeExecutions });
+    const pausedModel = readModel({ run: { status: "paused", pausedFrom: "running", pauseSettled: true } });
+    const a = projectWorkflowV2({ readModel: running([row("poll", 1, "pending")]), events: [paused(5)] });
+    assert.equal(a.status.phase, "unverified");
+    assert.equal(a.status.label, "Status unverified · read model says running, latest event says paused");
+    assert.ok(a.banners.some(banner => banner.text === "Run status is not verified: the read model says running but the latest durable event says paused. Refresh the read model."));
+    assert.equal(byId(a, "poll").stateLabel, "Pending · run status unverified");
+    assert.equal(byId(a, "poll").state, "idle");
+    const b = projectWorkflowV2({ readModel: pausedModel, events: [resumed(6)] });
+    assert.equal(b.status.label, "Status unverified · read model says paused, latest event says resumed");
+    const pausing = projectWorkflowV2({ readModel: readModel({ run: { status: "paused", pausedFrom: "running", pauseSettled: false } }), events: [resumed(6)] });
+    assert.equal(pausing.status.phase, "unverified");
+    assert.equal(projectWorkflowV2({ readModel: running([]), events: [paused(5), resumed(6)] }).status.label, "Running");
+    assert.equal(projectWorkflowV2({ readModel: pausedModel, events: [paused(5)] }).status.label, "Paused");
+    assert.equal(projectWorkflowV2({ readModel: running([]) }).status.label, "Running");
+    assert.equal(projectWorkflowV2({ readModel: readModel({ run: { status: "admitted" } }), events: [resumed(2)] }).status.label, "Admitted · not started");
+    assert.equal(projectWorkflowV2({ readModel: readModel({ run: { status: "admitted" } }), events: [paused(2)] }).status.phase, "unverified");
+    const status = (afterSeq, event) => projectWorkflowV2({ readModel: running([]), events: [event], readModelAfterSeq: afterSeq }).status;
+    assert.equal(status(7, paused(5)).label, "Running", "an event older than the snapshot cannot contradict it");
+    assert.equal(status(5, paused(5)).label, "Running");
+    assert.equal(status(4, paused(5)).phase, "unverified", "an event that may be newer still contradicts it");
+    assert.equal(status(7, ev("workflow.paused", { runId: RUN })).phase, "unverified", "an event with no sequence is never ordered");
+    assert.equal(status("7", paused(5)).phase, "unverified", "an unusable watermark is not trusted");
+    const ended = projectWorkflowV2({ readModel: readModel({ run: { status: "completed", outcome: "succeeded", terminalState: "done" } }), events: [paused(9)] });
+    assert.equal(ended.status.label, "Completed · succeeded");
+});

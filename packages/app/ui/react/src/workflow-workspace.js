@@ -19,14 +19,18 @@ function useWorkflowView(controller) {
         controller.ensureWorkflowDefinition(sessionId);
     }, [controller, sessionId, events]);
     // `view.readModel` is the object readWorkflowV2View returns. Nothing in this
-    // file fetches it; a caller supplies it with ui/workflowView.
+    // file fetches it; a caller supplies it with ui/workflowView. The optional
+    // `view.readModelAfterSeq` is the highest event sequence the caller had loaded
+    // before it fetched that read model; it only lets older pause/resume events
+    // stop contradicting the snapshot.
     const readModel = view.readModel ?? null;
     const v2 = React.useMemo(() => {
         if (view.definition?.shape !== "v2" && !readModel) return null;
-        const projected = projectWorkflowV2({ definition: view.definition, readModel, events });
-        // A read model that is not v2 never hides a legacy definition.
-        return !projected.definition && view.definition ? null : projected;
-    }, [view.definition, readModel, events]);
+        const projected = projectWorkflowV2({ definition: view.definition, readModel, events, readModelAfterSeq: view.readModelAfterSeq ?? null });
+        // Only a legacy definition falls back to the legacy view. A v2 definition is never redrawn once the
+        // read model says there is no graph (invalid or unavailable); the no-graph panel explains why.
+        return !projected.definition && view.definition && view.definition.shape !== "v2" ? null : projected;
+    }, [view.definition, readModel, view.readModelAfterSeq, events]);
     const definition = v2 ? v2.definition : view.definition;
     const legacyNodes = React.useMemo(() => v2 ? [] : workflowNodeViews(view.definition, events, live), [v2, view.definition, events, live]);
     const nodes = v2 ? v2.nodes : legacyNodes;

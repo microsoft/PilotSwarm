@@ -113,3 +113,25 @@ test("output and history tabs show the right result kind, truncation, and combin
     assert.ok(terminalOutput.includes("Run output"));
     assert.ok(terminalOutput.includes("all good"));
 });
+
+test("a v2 definition is not redrawn once the read model says there is no graph", () => {
+    const invalid = readModel({ noRun: true, graph: null, definition: { state: "draft", publishedRevision: null, publishedDefinitionHash: null },
+        revision: { revision: 2, valid: false, irSha256: null, diagnostics: [{ severity: "error", code: "BAD", path: "states[0]", message: "state is not valid", line: 3 }] } });
+    const controller = mount({ view: { definition: workflowDefinition(startedData), readModel: invalid } });
+    const html = main(controller);
+    assert.ok(html.includes("This workflow definition is invalid"));
+    assert.ok(html.includes("state is not valid"));
+    assert.ok(!html.includes("data-node-id"), "the older graph is not drawn");
+    assert.ok(!html.includes("send · Alert@1"));
+    assert.ok(node(controller).includes("This workflow definition is invalid"));
+    const withGraph = main(mount({ view: { definition: workflowDefinition(startedData), readModel: readModel({ noRun: true }) } }));
+    assert.ok(withGraph.includes("data-node-id"));
+});
+
+test("an unverified run status is shown with its notice", () => {
+    const html = main(mount({ view: { readModel: readModel({ nodeExecutions: [row("poll", 1, "pending")] }), readModelAfterSeq: 1 },
+        events: [{ eventType: "workflow.paused", seq: 4, data: { runId: "run-1" } }] }));
+    assert.ok(html.includes("Status unverified · read model says running, latest event says paused"));
+    assert.ok(html.includes("Refresh the read model."));
+    assert.ok(html.includes("Pending · run status unverified"));
+});
