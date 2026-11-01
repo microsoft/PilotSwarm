@@ -47,8 +47,8 @@ export function headingSlug(text) {
  * Returns the HTML, the front matter, and the addresses of the images that
  * were held back.
  */
-export function renderMarkdown(text, { images = null, escapeRawHtml = false, allowInlineImages = true, externalLinksOnly = false } = {}) {
-    const { frontMatter, body } = splitFrontMatter(text);
+export function renderMarkdown(text, { images = null, escapeRawHtml = false, allowInlineImages = true, externalLinksOnly = false, stripFrontMatter = true } = {}) {
+    const { frontMatter, body } = stripFrontMatter ? splitFrontMatter(text) : { frontMatter: null, body: String(text ?? "") };
     const parser = escapeRawHtml ? new Marked({ renderer: { html: token => String(token.text)
         .replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;") } }) : marked;
     const clean = DOMPurify.sanitize(parser.parse(body, { gfm: true, async: false }), {

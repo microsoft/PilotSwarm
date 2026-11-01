@@ -14,7 +14,7 @@ function windowText(message) {
 }
 export function MotdMarkdown({ body }) {
     const html = React.useMemo(() => typeof document === "undefined" ? null
-        : renderMarkdown(body, { images: {}, escapeRawHtml: true, allowInlineImages: false, externalLinksOnly: true }).html, [body]);
+        : renderMarkdown(body, { images: {}, escapeRawHtml: true, allowInlineImages: false, externalLinksOnly: true, stripFrontMatter: false }).html, [body]);
     return html === null ? React.createElement("pre", { className: "ps-motd-markdown" }, body)
         : React.createElement("div", { className: "ps-motd-markdown", dangerouslySetInnerHTML: { __html: html } });
 }
@@ -27,6 +27,8 @@ export function MotdContent({ message, pictures = {}, mobile = false }) {
         src ? React.createElement("img", { className: "ps-motd-picture", src, alt: picture.alt || "", draggable: false }) : null,
         React.createElement("div", { className: "ps-motd-copy" },
             React.createElement("div", { className: "ps-motd-kicker" }, "Message of the day"),
+            pictures.failures?.[mobile ? "mobile" : "desktop"]
+                ? React.createElement("p", { role: "status", className: "ps-motd-picture-notice" }, "The picture could not be loaded. The message is still available.") : null,
             React.createElement(MotdMarkdown, { body })));
 }
 export function MotdSplash({ message, pictures, mobile = false, preview = false, onDismiss }) {
@@ -71,7 +73,7 @@ export function MotdAdminPanel({ controller, state, images = {}, isAdmin }) {
     const [reading, setReading] = React.useState(false);
     if (!isAdmin) return null;
     const draft = state.draft;
-    const busy = state.saving || reading;
+    const busy = state.saving || state.loading || reading;
     const input = (label, field, type = "text") => React.createElement("label", { className: "ps-motd-field" }, label,
         React.createElement("input", { type, value: draft[field] || "", disabled: busy,
             onChange: event => controller.setMotdDraft({ [field]: event.target.value }) }));

@@ -441,10 +441,17 @@ limits. `imagePlacement` is `above` (default), `beside` or `background`. Phones
 always use `above`. Optional `mobileBodyMd` supplies a shorter phone notice;
 otherwise the desktop body scrolls in a bottom sheet with Got it visible.
 Markdown escapes raw HTML and leaves body images as placeholders.
+The splash preserves a leading markdown `---` block. It is not front matter.
+The portal loads the picture for the current device. Failed picture reads
+back off for five minutes. Transfers have a 60-second limit and cancel on
+timeout. The text remains visible when a picture cannot be loaded.
 
 Message IDs are decimal strings. Deletion removes the message and its
 pictures, writes no audit record, and keeps dismissal rows. IDs are not reused.
 History returns `live`, `hidden`, `scheduled` or `ended`, plus dismissal count.
+Current reads do not expose the creator's identity. History does.
+Ordinary viewers can read pictures only inside a message's time window.
+Admins can read pictures for history and preview outside that window.
 
 The matching MCP names are `get_current_motd`, `dismiss_motd`, `get_motd_image`,
 `list_motds`, `create_motd` and `delete_motd`. Direct MCP mutations require

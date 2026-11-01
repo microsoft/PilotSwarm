@@ -76,3 +76,16 @@ test("HTTP transport uses the canonical operation names and parameters", async (
     await transport.listMotds(2, "9"); await transport.createMotd({ bodyMd: "body" }); await transport.deleteMotd("1");
     assert.deepEqual(calls.map(c => c[0]), MOTD_OPERATION_SPECS.map(s => s.method));
 });
+test("MoTD transfer cancellation reaches fetch and prevents an already-aborted request", async () => {
+    let calls = 0;
+    const controller = new AbortController();
+    const api = new ApiClient({ apiUrl: "https://example.invalid", fetchImpl: async (_url, options) => {
+        calls++; assert.equal(options.signal, controller.signal);
+        return { ok: true, status: 200, json: async () => ({ ok: true, result: null }) };
+    } });
+    const transport = new HttpApiTransport({ api });
+    await transport.getMotdImage("1", false, { signal: controller.signal });
+    controller.abort();
+    await assert.rejects(transport.getMotdImage("1", false, { signal: controller.signal }), { name: "AbortError" });
+    assert.equal(calls, 1);
+});

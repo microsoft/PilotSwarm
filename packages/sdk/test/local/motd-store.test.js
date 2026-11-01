@@ -141,4 +141,25 @@ describe.skipIf(!pool)("message SQL functions in isolated PostgreSQL", () => {
         await store.delete(admin, message.motdId);
         expect(await store.dismiss(alice, message.motdId)).toMatchObject({ dismissed: true });
     });
+    it("hides inactive pictures from ordinary viewers and minimizes creator identity", async () => {
+        const ended = await store.create(admin, input({ image: png, toAt: "2021-01-01T00:00:00Z" }));
+        const scheduled = await store.create(admin, input({ image: png, fromAt: "2080-01-01T00:00:00Z" }));
+        for (const message of [ended, scheduled]) {
+            await expect(store.image(alice, message.motdId)).rejects.toMatchObject({ status: 404 });
+            expect(await store.image(admin, message.motdId)).toEqual(png);
+        }
+        const older = await store.create(admin, input({ image: png }));
+        await store.create(admin, input({ fromAt: "2025-01-01T00:00:00Z" }));
+        expect(await store.image(alice, older.motdId)).toEqual(png);
+        expect(await store.current(alice)).not.toHaveProperty("createdBy");
+        expect((await store.list(admin))[0]).toHaveProperty("createdBy");
+    });
+    it("accepts an animated PNG declared as image/png", async () => {
+        const original = Buffer.from(png.base64, "base64");
+        const control = Buffer.alloc(20);
+        control.writeUInt32BE(8, 0); control.write("acTL", 4); control.writeUInt32BE(1, 8);
+        const animated = Buffer.concat([original.subarray(0, 33), control, original.subarray(33)]);
+        const message = await store.create(admin, input({ image: { ...png, base64: animated.toString("base64") } }));
+        expect(message).toMatchObject({ hasImage: true, imageType: "image/png" });
+    });
 });

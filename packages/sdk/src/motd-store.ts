@@ -16,7 +16,7 @@ export interface MotdMessage {
     motdId: string; fromAt: string; toAt: string; bodyMd: string; mobileBodyMd: string | null;
     hasImage: boolean; imageType: string | null; imageAlt: string | null;
     hasMobileImage: boolean; mobileImageType: string | null; mobileImageAlt: string | null;
-    imagePlacement: "above" | "beside" | "background"; createdAt: string; createdBy: FeatureOwner;
+    imagePlacement: "above" | "beside" | "background"; createdAt: string; createdBy?: FeatureOwner;
 }
 export interface MotdHistoryMessage extends MotdMessage { status: "live" | "hidden" | "scheduled" | "ended"; dismissalCount: number }
 export class MotdError extends Error {
@@ -37,7 +37,8 @@ async function decodePicture(input: MotdImageInput | undefined): Promise<Buffer 
     if (!bytes.length || bytes.length > MOTD_IMAGE_MAX_BYTES || bytes.toString("base64") !== input.base64)
         throw new MotdError("MOTD_INVALID", "A picture must be at most 2 MB");
     const detected = await fileTypeFromBuffer(bytes);
-    if (detected?.mime !== input.contentType) throw new MotdError("MOTD_INVALID", "Picture bytes do not match the declared type");
+    const detectedType = detected?.mime === "image/apng" ? "image/png" : detected?.mime;
+    if (detectedType !== input.contentType) throw new MotdError("MOTD_INVALID", "Picture bytes do not match the declared type");
     return bytes;
 }
 export class MotdStore {

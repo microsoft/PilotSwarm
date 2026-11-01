@@ -94,3 +94,65 @@ test("request timeout releases reads and rejects late replies", async t => {
     assert.equal(state().reading, false); assert.match(state().error, /timed out/);
     resolve(message()); await tick(); assert.equal(state().current, null);
 });
+test("pictures load only for the active device and do not block metadata reads", async () => {
+    const calls = [];
+    const { controller, store, state } = setup({ getCurrentMotd: async () => message("1", { hasImage: true, hasMobileImage: true }),
+        getMotdImage: async (_id, mobile) => { calls.push(mobile); return { base64: "AAAA", contentType: "image/png", alt: "Picture" }; } });
+    store.dispatch({ type: "ui/sessionViewDevice", device: "mobile" });
+    await controller.refreshMotd(); await tick();
+    assert.deepEqual(calls, [true]); assert.equal(state().reading, false);
+    store.dispatch({ type: "ui/sessionViewDevice", device: "desktop" });
+    await controller.refreshMotd(); await tick();
+    assert.deepEqual(calls, [true, false]);
+});
+test("failed pictures back off for five minutes and keep today's admin cache", async () => {
+    let calls = 0;
+    const { controller, store, state } = setup({ getCurrentMotd: async () => message("1", { hasImage: true }),
+        getMotdImage: async () => { calls++; throw new Error("picture unavailable"); } });
+    await controller.refreshMotd(); await tick();
+    assert.equal(calls, 1); assert.equal(state().images["1"].failures.desktop, true);
+    store.dispatch({ type: "motd/patch", patch: { readAt: 0 } });
+    await controller.refreshMotd(); await tick(); assert.equal(calls, 1);
+    const cached = state().images["1"];
+    store.dispatch({ type: "motd/patch", patch: { images: { "1": { ...cached, attempted: { desktop: Date.now() - 300_001 } } } } });
+    await controller.refreshMotd(); await tick(); assert.equal(calls, 2);
+    store.dispatch({ type: "admin/motds", patch: { today: message("1", { status: "live" }) } });
+    store.dispatch({ type: "motd/patch", patch: { readAt: 0, dismissed: ["1"] } });
+    await controller.refreshMotd();
+    assert.ok(state().images["1"], "dismissed today's admin preview keeps its picture entry");
+});
+test("a timed-out picture request is aborted", async t => {
+    t.mock.timers.enable({ apis: ["setTimeout"] });
+    let signal;
+    const { controller, state } = setup({ getMotdImage: (_id, _mobile, options) => {
+        signal = options.signal; return new Promise(() => {});
+    } });
+    const loading = controller._motdPictures(message("1", { hasImage: true })); await tick();
+    t.mock.timers.tick(60_000); await loading;
+    assert.equal(signal.aborted, true); assert.equal(state().images["1"].failures.desktop, true);
+});
+test("first profile seed for the signed-in person keeps the splash and a pending dismissal", async () => {
+    const store = createStore(appReducer, createInitialState({ mode: "remote" }));
+    store.dispatch({ type: "auth/context", principal: admin, authorization: { role: "admin" } });
+    store.dispatch({ type: "motd/patch", patch: { portalEnabled: true, current: message(), dismissed: ["9"], pendingDismissals: ["9"] } });
+    const before = store.getState().motd;
+    store.dispatch({ type: "admin/profile/loaded", profile: admin });
+    assert.equal(store.getState().motd, before);
+    store.dispatch({ type: "admin/profile/loaded", profile: { ...admin, isAdmin: false } });
+    assert.deepEqual(store.getState().motd.pendingDismissals, ["9"]);
+});
+test("late list and current replies cannot restore a deleted message", async () => {
+    let listResolve, currentResolve, reads = 0;
+    const { controller, store, state, adminState } = setup({
+        getCurrentMotd: () => new Promise(resolve => { currentResolve = resolve; }),
+        listMotds: () => ++reads === 1 ? new Promise(resolve => { listResolve = resolve; }) : Promise.resolve([]),
+        deleteMotd: async () => {},
+    });
+    const current = controller.refreshMotd();
+    const listing = controller.refreshAdminMotds(); await tick();
+    await controller.deleteAdminMotd("1");
+    listResolve([message("1", { status: "live" })]); currentResolve(message("1"));
+    await Promise.all([current, listing]);
+    assert.equal(reads, 2); assert.deepEqual(adminState().history, []);
+    assert.equal(state().current, null); assert.equal(adminState().loading, false);
+});

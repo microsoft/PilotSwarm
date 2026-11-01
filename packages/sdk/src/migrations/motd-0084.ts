@@ -58,7 +58,7 @@ RETURNS JSONB LANGUAGE plpgsql STABLE AS $$
 DECLARE v_user BIGINT; v_result JSONB;
 BEGIN
     v_user := ${s}.cms_motd_actor(p_provider, p_subject, p_admin, false);
-    SELECT ${s}.cms_motd_json(m) INTO v_result FROM ${s}.motds m
+    SELECT ${s}.cms_motd_json(m) - 'createdBy' INTO v_result FROM ${s}.motds m
         WHERE m.from_at <= now() AND now() < m.to_at
         AND NOT EXISTS (SELECT 1 FROM ${s}.motd_dismissals d WHERE d.user_id = v_user AND d.motd_id = m.motd_id)
         ORDER BY m.from_at DESC, m.created_at DESC, m.motd_id DESC LIMIT 1;
@@ -161,6 +161,9 @@ BEGIN
     PERFORM ${s}.cms_motd_actor(p_provider, p_subject, p_admin, false);
     SELECT * INTO m FROM ${s}.motds WHERE motd_id = p_id;
     IF NOT FOUND THEN RAISE EXCEPTION 'MOTD_NOT_FOUND: Message not found'; END IF;
+    IF NOT COALESCE(p_admin, false) AND NOT (m.from_at <= now() AND now() < m.to_at) THEN
+        RAISE EXCEPTION 'MOTD_NOT_FOUND: Message not found';
+    END IF;
     IF p_mobile AND m.mobile_image IS NOT NULL THEN
         RETURN jsonb_build_object('base64', replace(encode(m.mobile_image, 'base64'), E'\\n', ''), 'contentType', m.mobile_image_type, 'alt', m.mobile_image_alt);
     END IF;

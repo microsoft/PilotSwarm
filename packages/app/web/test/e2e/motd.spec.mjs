@@ -57,9 +57,10 @@ test("desktop splash renders markdown, blocks background and records one click d
     } finally { await f.stop(); }
 });
 test("raw HTML is escaped, body pictures stay placeholders and links do not dismiss", async ({ page }) => {
-    const f = await fixture(page, { current: message({ bodyMd: '## Safe\n<strong data-raw="yes">literal</strong>\n\n![remote](https://example.invalid/pic.png)\n\n[Guide](https://example.invalid/guide)' }) });
+    const f = await fixture(page, { current: message({ bodyMd: '---\n**Maintenance tonight**\n---\n\n## Safe\n<strong data-raw="yes">literal</strong>\n\n![remote](https://example.invalid/pic.png)\n\n[Guide](https://example.invalid/guide)' }) });
     try {
         await expect(splash(page)).toBeVisible();
+        await expect(splash(page)).toContainText("Maintenance tonight");
         await expect(splash(page)).toContainText('<strong data-raw="yes">literal</strong>');
         await expect(splash(page).locator("[data-raw]")).toHaveCount(0);
         await expect(splash(page).locator("img")).toHaveCount(0);

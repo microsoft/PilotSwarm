@@ -52,6 +52,18 @@ function featurePrincipalKey(principal) {
     return JSON.stringify([principal?.provider, principal?.subject]);
 }
 
+function motdForIdentity(state, auth = state.auth, profile = state.admin.profile) {
+    const previous = state.auth?.principal || state.admin.profile;
+    const next = auth?.principal || profile;
+    if (featurePrincipalKey(previous) !== featurePrincipalKey(next))
+        return createMotdState((state.motd?.generation || 0) + 1, state.motd?.portalEnabled);
+    const admin = (a, p) => a?.authorization?.role
+        ? ["admin", "anonymous"].includes(a.authorization.role) && p?.isAdmin !== false : p?.isAdmin === true;
+    if (admin(state.auth, state.admin.profile) !== admin(auth, profile))
+        return { ...state.motd, generation: (state.motd?.generation || 0) + 1, preview: null, reading: false };
+    return state.motd;
+}
+
 /** A provider name, or null. Names are cluster-unique and never blank. */
 function normalizeProviderName(value) {
     const name = String(value ?? "").trim();
@@ -979,9 +991,7 @@ function baseReducer(state, action) {
                 admin: featurePrincipalKey(state.auth?.principal) !== featurePrincipalKey(action.principal)
                     || state.auth?.authorization?.role !== action.authorization?.role
                     ? { ...state.admin, features: clearFeatureIdentity(state.admin.features), motds: createMotdAdminState() } : state.admin,
-                motd: featurePrincipalKey(state.auth?.principal) !== featurePrincipalKey(action.principal)
-                    || state.auth?.authorization?.role !== action.authorization?.role
-                    ? createMotdState((state.motd?.generation || 0) + 1, state.motd?.portalEnabled) : state.motd,
+                motd: motdForIdentity(state, { principal: action.principal, authorization: action.authorization }),
                 auth: {
                     principal: action.principal ?? null,
                     authorization: action.authorization ?? null,
@@ -2574,9 +2584,7 @@ function baseReducer(state, action) {
         case "admin/profile/loaded": {
             return {
                 ...state,
-                motd: featurePrincipalKey(state.admin.profile) !== featurePrincipalKey(action.profile)
-                    || Boolean(state.admin.profile?.isAdmin) !== Boolean(action.profile?.isAdmin)
-                    ? createMotdState((state.motd?.generation || 0) + 1, state.motd?.portalEnabled) : state.motd,
+                motd: motdForIdentity(state, state.auth, action.profile),
                 admin: {
                     ...state.admin,
                     loading: false,
