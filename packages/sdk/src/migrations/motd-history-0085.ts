@@ -15,7 +15,8 @@ BEGIN
         ELSE ${s}.cms_motd_json(m) - 'createdBy' END)
         || jsonb_build_object('status', CASE WHEN m.from_at > now() THEN 'scheduled' WHEN m.to_at <= now() THEN 'ended'
             WHEN m.motd_id = v_live THEN 'live' ELSE 'hidden' END) ORDER BY m.motd_id DESC)
-        FROM (SELECT * FROM ${s}.motds WHERE p_before IS NULL OR motd_id < p_before
+        FROM (SELECT * FROM ${s}.motds WHERE (p_before IS NULL OR motd_id < p_before)
+            AND (COALESCE(p_admin, false) OR from_at <= now())
             ORDER BY motd_id DESC LIMIT LEAST(200, GREATEST(1, COALESCE(p_limit, 50)))) m), '[]'::JSONB);
 END;
 $$;
@@ -26,6 +27,9 @@ BEGIN
     PERFORM ${s}.cms_motd_actor(p_provider, p_subject, p_admin, false);
     SELECT * INTO m FROM ${s}.motds WHERE motd_id = p_id;
     IF NOT FOUND THEN RAISE EXCEPTION 'MOTD_NOT_FOUND: Message not found'; END IF;
+    IF NOT COALESCE(p_admin, false) AND m.from_at > now() THEN
+        RAISE EXCEPTION 'MOTD_NOT_FOUND: Message not found';
+    END IF;
     IF p_mobile AND m.mobile_image IS NOT NULL THEN
         RETURN jsonb_build_object('base64', replace(encode(m.mobile_image, 'base64'), E'\\n', ''), 'contentType', m.mobile_image_type, 'alt', m.mobile_image_alt);
     END IF;

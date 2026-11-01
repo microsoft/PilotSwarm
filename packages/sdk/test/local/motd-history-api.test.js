@@ -20,6 +20,8 @@ describe.skipIf(!url)("authenticated MoTD history through HTTP and the real CMS 
             const previous = await catalog.motds.create(admin, { fromAt: "2020-01-01T00:00:00Z", toAt: "2021-01-01T00:00:00Z",
                 bodyMd: "Previous announcement", requestId: randomUUID(), image: {
                     base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", contentType: "image/png", alt: "Previous picture" } });
+            const scheduled = await catalog.motds.create(admin, { fromAt: "2080-01-01T00:00:00Z", toAt: "2090-01-01T00:00:00Z",
+                bodyMd: "Not announced yet", requestId: randomUUID() });
             const mgmt = new PilotSwarmManagementClient({ store: "sqlite::memory:" });
             mgmt._catalog = catalog; mgmt._started = true;
             const runtime = new PortalRuntime({ store: "sqlite::memory:", mode: "local" });
@@ -37,10 +39,12 @@ describe.skipIf(!url)("authenticated MoTD history through HTTP and the real CMS 
                 headers: { ...options.headers, "x-test-actor": actor } }) });
             const reader = client("reader"), privileged = client("admin");
             const history = await reader.call("listMotds");
+            expect(history).toHaveLength(1);
             expect(history[0]).toMatchObject({ motdId: previous.motdId, status: "ended", bodyMd: "Previous announcement" });
             expect(history[0]).not.toHaveProperty("createdBy"); expect(history[0]).not.toHaveProperty("dismissalCount");
-            expect((await privileged.call("listMotds"))[0]).toMatchObject({ createdBy: admin.principal, dismissalCount: 0 });
+            expect((await privileged.call("listMotds"))[0]).toMatchObject({ motdId: scheduled.motdId, createdBy: admin.principal, dismissalCount: 0 });
             expect((await reader.call("getMotdImage", { motdId: previous.motdId })).alt).toBe("Previous picture");
+            await expect(reader.call("getMotdImage", { motdId: scheduled.motdId })).rejects.toMatchObject({ status: 404 });
             const forged = await runtime.call("listMotds", { isAdmin: true, principal: admin.principal }, {
                 principal: { provider: "test", subject: "reader" }, authorization: { role: "user" },
             });

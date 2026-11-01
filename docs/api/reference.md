@@ -455,7 +455,8 @@ History returns `live`, `hidden`, `scheduled` or `ended`, plus dismissal count.
 Current reads do not expose the creator's identity.
 History includes creator identity and dismissal counts only for admins.
 Authenticated viewers can read existing message pictures for history and
-preview, including outside the automatic splash window. Deleted messages and
+preview after a message's start time, including after it ends. Scheduled
+messages remain admin-only until their start time. Deleted messages and
 pictures remain unreadable. Migration 0085 enables this read-only access over
 deployed 0084; it does not change create or delete authorization.
 

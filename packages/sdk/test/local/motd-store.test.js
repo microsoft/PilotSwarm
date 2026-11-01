@@ -147,10 +147,12 @@ describe.skipIf(!pool)("message SQL functions in isolated PostgreSQL", () => {
     it("allows authenticated history pictures while keeping admin-only metadata private", async () => {
         const ended = await store.create(admin, input({ image: png, toAt: "2021-01-01T00:00:00Z" }));
         const scheduled = await store.create(admin, input({ image: png, fromAt: "2080-01-01T00:00:00Z" }));
-        for (const message of [ended, scheduled]) {
-            expect(await store.image(alice, message.motdId)).toEqual(png);
-            expect(await store.image(admin, message.motdId)).toEqual(png);
-        }
+        expect(await store.image(alice, ended.motdId)).toEqual(png);
+        await expect(store.image(alice, scheduled.motdId)).rejects.toMatchObject({ status: 404 });
+        expect(await store.image(admin, scheduled.motdId)).toEqual(png);
+        expect((await store.list(admin)).some(row => row.motdId === scheduled.motdId)).toBe(true);
+        expect((await store.list(alice)).some(row => row.motdId === scheduled.motdId)).toBe(false);
+        expect((await store.list(alice, 50, "9223372036854775807")).some(row => row.motdId === scheduled.motdId)).toBe(false);
         const older = await store.create(admin, input({ image: png }));
         await store.create(admin, input({ fromAt: "2025-01-01T00:00:00Z" }));
         expect(await store.image(alice, older.motdId)).toEqual(png);
