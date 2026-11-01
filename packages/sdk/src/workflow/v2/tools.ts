@@ -1,12 +1,13 @@
 import type { SessionOwnerInfo } from "../../types.js";
 import type { WorkflowToolBinding } from "../tool-policy.js";
-import { assertJsonValue, isJsonObject, jsonbSafeText, previewJson, type JsonValue } from "./json.js";
+import { assertJsonValue, isJsonObject, jsonbSafeText, previewJson, WorkflowJsonError, type JsonValue } from "./json.js";
 import { describeWorkflowV2States } from "./runtime.js";
 import {
     controlWorkflowV2Run,
     createWorkflowV2,
     inspectWorkflowV2Controller,
     recoverWorkflowV2Run,
+    sendWorkflowInputV2,
     updateWorkflowV2,
     type WorkflowV2Command,
     type WorkflowV2Host,
@@ -68,7 +69,8 @@ export const READ_WORKFLOW_TOOL_SPEC = {
     description:
         "Read a workflow child you created with spawn_workflow (v2): definition state, current revision and diagnostics, "
         + "the graph, runs, and the node executions of one run (default: the live run), with the run's open KV (kv, kvRevision) "
-        + "and, while it is paused, pausedFrom and pauseSettled (true once no state it admitted is still running). Returns JSON. Reading changes nothing: "
+        + "and, while it is paused, pausedFrom and pauseSettled (true once no state it admitted is still running), and the run's inbox of typed input "
+        + "(send_workflow_input: each message, its sender and the receive state that took it). Returns JSON. Reading changes nothing: "
         + "an active run whose controller can no longer end it shows run.controller.needsRecovery; use update_workflow operation recover.",
     parameters: {
         type: "object",
@@ -78,6 +80,31 @@ export const READ_WORKFLOW_TOOL_SPEC = {
             include_yaml: { type: "boolean", description: "Include the current revision's YAML. Default false." },
         },
         required: ["workflow_id"],
+    },
+} as const;
+
+export const SEND_WORKFLOW_INPUT_TOOL_SPEC = {
+    description:
+        "Give a run of a version 2 workflow one typed input for its messaging receive states. "
+        + "contract names one of the workflow's contracts that a receive state takes (such as BuildEvent@1); payload must satisfy its schema. "
+        + "correlation (optional JSON object) must equal the receive's correlate values; run_id defaults to the live run. "
+        + "The input is accepted durably once per operation_id (a repeat returns the same receipt; another request with the id is refused). "
+        + "A receive that waits for it takes it now; otherwise it is kept, in order, until a receive takes it or ttl_seconds pass (default and most 86400). "
+        + "A receive that elapsed first does not discard it. Acceptance is not processing: read_workflow shows what the run did. "
+        + "You may send to the workflows you created, and to workflows of your own user; the workflow's receive may also require a specific sender. "
+        + "Returns JSON: messageId, acceptedAt, expiresAt and claimedBy (the receive state that took it, or null).",
+    parameters: {
+        type: "object",
+        properties: {
+            workflow_id: { type: "string", description: "The workflow session id." },
+            contract: { type: "string", description: "The contract name, Name@version, that a receive state of the workflow takes." },
+            payload: { description: "The JSON value; it must satisfy the contract's schema." },
+            correlation: { type: "object", description: "Optional correlation values; they must equal the receive's correlate values. Default {}." },
+            run_id: { type: "string", description: "Optional run id; default the live run." },
+            ttl_seconds: { type: "integer", description: "How long the input stays eligible while unclaimed, 1 to 86400. Default 86400." },
+            operation_id: { type: "string", description: "Idempotency id for this input from you." },
+        },
+        required: ["workflow_id", "contract", "payload", "operation_id"],
     },
 } as const;
 
@@ -134,6 +161,17 @@ function revisionArg(args: Record<string, unknown>): number {
         throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "expected_revision must be a positive integer.");
     }
     return value;
+}
+
+/** A JSON argument of typed input; anything that is not plain JSON is INPUT_INVALID. */
+function inputJsonArg(value: unknown, name: string): JsonValue {
+    try {
+        assertJsonValue(value, name);
+        return value;
+    } catch (error) {
+        if (error instanceof WorkflowJsonError) throw new WorkflowStoreError("INPUT_INVALID", error.message);
+        throw error;
+    }
 }
 
 function inputsArg(args: Record<string, unknown>): JsonValue {
@@ -270,6 +308,7 @@ export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId
     const selected = options.runId ? runs.find(run => run.runId === options.runId) : runs.find(run => run.mode === "live");
     if (options.runId && !selected) throw new WorkflowStoreError("RUN_NOT_FOUND", `Run ${options.runId} is not a run of this workflow.`);
     const nodes = selected ? await store.listNodeExecutions(selected.runId, 200) : [];
+    const inbox = selected ? await store.listInbox(selected.runId, 50) : [];
     // A paused run has settled once no state it admitted is still running.
     const pauseSettled = selected?.status === "paused" ? !await store.hasPendingNodes(selected.runId) : null;
     return {
@@ -297,8 +336,14 @@ export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId
                 nodeExecutionId: node.nodeExecutionId, stateId: node.nodeId, ordinal: node.ordinal, state: node.state,
                 outcome: node.outcome, resultKind: node.resultKind, winner: node.winner, attempts: node.effectAttempts, kvRevision: node.kvRevision,
                 ...(node.deadlineAt !== null ? { deadline: node.deadlineAt.toISOString() } : {}),
+                ...(node.receive !== null ? { receive: { contract: node.receive.contract, from: node.receive.from, correlation: node.receive.correlation } } : {}),
                 ...(node.resultKind === "business" ? { outputPreview: previewJson(node.output, 500) } : {}),
                 ...(node.resultKind === "runtime_error" ? { errorPreview: previewJson(node.error, 500) } : {}),
+            })),
+            inbox: inbox.map(message => ({
+                messageId: message.messageId, contract: message.contract, senderSessionId: message.senderSessionId,
+                correlation: message.correlation, acceptedAt: message.acceptedAt.toISOString(), expiresAt: message.expiresAt.toISOString(),
+                claimedBy: message.consumedBy, payloadPreview: previewJson(message.payload, 300),
             })),
         } : null,
     };
@@ -318,6 +363,36 @@ export async function readWorkflowFromTool(args: Record<string, unknown>, contex
             view.run = { ...view.run, controller: { status: controller.status, error: controller.error, needsRecovery: controller.needsRecovery } };
         }
         return payload({ ok: true, ...view });
+    } catch (error) {
+        return errorPayload(error);
+    }
+}
+
+/**
+ * send_workflow_input: the calling session (from the host) gives a run typed
+ * input. Unlike update_workflow it is not limited to the parent: the
+ * service allows any session that does not cross a user ownership boundary.
+ */
+export async function sendWorkflowInputFromTool(args: Record<string, unknown>, context: { callerSessionId: string; host: WorkflowToolHost }): Promise<string> {
+    try {
+        const workflowSessionId = requiredString(args, "workflow_id");
+        const contract = requiredString(args, "contract");
+        const operationId = requiredString(args, "operation_id");
+        if (!Object.hasOwn(args, "payload")) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "payload is required.");
+        const payloadValue = inputJsonArg(args.payload, "payload");
+        const correlation = args.correlation === undefined || args.correlation === null ? undefined : inputJsonArg(args.correlation, "correlation");
+        const ttl = args.ttl_seconds;
+        if (ttl !== undefined && ttl !== null && typeof ttl !== "number") throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "ttl_seconds must be an integer.");
+        const sent = await sendWorkflowInputV2(context.host, {
+            workflowSessionId, senderSessionId: context.callerSessionId, runId: optionalString(args, "run_id"), contract,
+            correlation, payload: payloadValue, ttlSeconds: typeof ttl === "number" ? ttl : null, operationId,
+        });
+        const receipt = sent.receipt;
+        return payload({
+            ok: true, workflowId: receipt.workflowSessionId, runId: receipt.runId, messageId: receipt.messageId, contract: receipt.contract,
+            replayed: sent.replayed, acceptedAt: receipt.acceptedAt, expiresAt: receipt.expiresAt,
+            claimedBy: receipt.claimedBy ? { nodeExecutionId: receipt.claimedBy.nodeExecutionId, stateId: receipt.claimedBy.stateId } : null,
+        });
     } catch (error) {
         return errorPayload(error);
     }

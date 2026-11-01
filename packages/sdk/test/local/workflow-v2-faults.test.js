@@ -464,8 +464,8 @@ states:
             await h.host.catalog.createSession(parentId, {});
             const context = { callerSessionId: parentId, host: h.host };
             const undispatched = { ...h.host, duroxideClient: { ...h.host.duroxideClient, startOrchestrationVersioned: async () => undefined } };
-            // 1.4.0 and 1.5.0 are fenced too: no test replays a history an earlier build wrote.
-            for (const version of ["1.1.0", "1.4.0", "1.5.0"]) {
+            // 1.4.0, 1.5.0 and 1.6.0 are fenced too: no test replays a history an earlier build wrote.
+            for (const version of ["1.1.0", "1.4.0", "1.5.0", "1.6.0"]) {
                 const id = randomUUID();
                 const created = await createWorkflowV2(undispatched, { workflowSessionId: id, parentSessionId: parentId, yaml: TWO_STEPS,
                     actor: ACTOR, operationId: "start", start: { inputs: {} } });

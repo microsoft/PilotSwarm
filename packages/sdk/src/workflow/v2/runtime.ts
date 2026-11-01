@@ -7,13 +7,16 @@ import { WORKFLOW_SCRIPTS_DISABLED_MESSAGE } from "../activities.js";
 import type { WorkflowToolBinding } from "../tool-policy.js";
 import type { WorkflowToolExecutor } from "../tool-executor.js";
 import { evaluateBindingTemplate, WorkflowBindingError, type BindingScope } from "./bindings.js";
+import { typedInputAuthority } from "./authority.js";
 import {
     FAILURE_ROUTE,
+    RECEIVE_RECEIVED,
     WAIT_ELAPSED,
     WAIT_MAX_SECONDS,
     type RuntimeErrorCode,
     type TerminalOutcome,
     type WorkflowIR,
+    type WorkflowIRMessaging,
     type WorkflowIRNode,
     type WorkflowIRScript,
 } from "./compiler.js";
@@ -21,6 +24,7 @@ import {
     boundedCanonicalJson,
     canonicalJson,
     isJsonObject,
+    isStorableText,
     jsonbSafeText,
     previewJson,
     WorkflowJsonError,
@@ -66,23 +70,26 @@ export const WORKFLOW_V2_CONTROLLER_NAME = "workflow-v2-controller";
  * no ordinal or step and is tried again after a resume), and runs wait
  * states on its own durable timers. The store's clock decides when a wait
  * elapses: a wait the store does not find due yet (this worker's clock runs
- * ahead of it) waits the time the store reports.
+ * ahead of it) waits the time the store reports. 1.7.0 also runs messaging
+ * receive states: no effect orchestration; the store decides between a
+ * message and the receive's wait, and a wake or the backstop collects it.
  */
-export const WORKFLOW_V2_CONTROLLER_VERSION = "1.6.0";
+export const WORKFLOW_V2_CONTROLLER_VERSION = "1.7.0";
 /**
  * Controller versions written only by pre-release builds, in ascending order
  * (duroxide registers an orchestration's versions only in that order). Their
  * histories are not replayed: this code would make different decisions
  * (1.2.0 re-entered the catch-all state after an explicit route into it,
  * 1.3.0 ended its controller when an admission was refused for a pause, and
- * the elapse activity of 1.5.0 returned no result), and no test replays a
+ * the elapse activity of 1.5.0 returned no result; 1.6.0 refused a plan
+ * with a messaging state, which this code admits), and no test replays a
  * history an earlier build wrote. An instance of one fails at once with this
  * reason, so its run shows needsRecovery and update_workflow recover ends it
  * visibly. Its history and rows are kept. Until the first release, a build
  * replays only its own controller version: this is a recovery policy, and
  * replay of an earlier build's history remains an open requirement.
  */
-export const WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS: readonly string[] = ["1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0", "1.5.0"];
+export const WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS: readonly string[] = ["1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0", "1.5.0", "1.6.0"];
 export const WORKFLOW_V2_EFFECT_NAME = "workflow-v2-effect";
 export const WORKFLOW_V2_EFFECT_VERSION = "1.0.0";
 /**
@@ -195,7 +202,7 @@ export interface ControllerPlan {
     wakeBackstopMs: number;
     /** The state an unhandled runtime error (or a terminal's invalid output) routes to, once per run; null without one. */
     catchAll: string | null;
-    nodes: Record<string, { type: "script" | "wait" | "terminal"; next: Record<string, string> }>;
+    nodes: Record<string, { type: "script" | "wait" | "messaging" | "terminal"; next: Record<string, string> }>;
 }
 
 export interface ControllerResult {
@@ -289,7 +296,7 @@ function parsePlan(value: unknown): ControllerPlan {
     const parsed: ControllerPlan["nodes"] = {};
     for (const [id, node] of Object.entries(nodes)) {
         const item = record(node, `plan node ${id}`);
-        expect(item.type === "script" || item.type === "wait" || item.type === "terminal", `plan node ${id} type is invalid`);
+        expect(item.type === "script" || item.type === "wait" || item.type === "messaging" || item.type === "terminal", `plan node ${id} type is invalid`);
         const next = record(item.next, `plan node ${id} next`);
         const routes: Record<string, string> = {};
         for (const [label, target] of Object.entries(next)) routes[label] = text(target, `route ${label}`);
@@ -575,6 +582,12 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
                 expect(entered.state !== "pending" || cursor.deadlineMs !== null, `wait ${entered.nodeExecutionId} has no deadline`);
                 continue;
             }
+            // A receive state waits in the store for its message, and on this
+            // controller's timers for its wait when it races one: no effect orchestration.
+            if (node.type === "messaging") {
+                cursor.deadlineMs = entered.state === "pending" ? entered.deadlineMs : null;
+                continue;
+            }
             if (entered.state === "pending") {
                 yield ctx.startOrchestrationVersioned(WORKFLOW_V2_EFFECT_NAME, WORKFLOW_V2_EFFECT_VERSION,
                     workflowEffectInstanceId(entered.nodeExecutionId),
@@ -780,6 +793,30 @@ function envelopeText(envelope: ErrorEnvelope): string {
     return canonicalJson({ code: envelope.code, message: jsonbSafeText(envelope.message, 4_000), ...(envelope.details !== undefined ? { details: envelope.details } : {}) });
 }
 
+/** What a receive state accepts, resolved when it is entered (store.enterNode). */
+interface ReceiveSpec {
+    contract: string;
+    /** The sender session, or null for any sender allowed to give this workflow input. */
+    from: string | null;
+    /** Canonical JSON of the correlation object a message must carry. */
+    correlationText: string;
+}
+
+/** The most a correlation object may take as canonical JSON. */
+export const WORKFLOW_V2_MAX_CORRELATION_BYTES = 4_096;
+
+/** Canonical JSON of a correlation object within its bound, or null. */
+export function correlationTextOf(value: JsonValue): string | null {
+    if (!isJsonObject(value)) return null;
+    let text: string;
+    try { text = canonicalJson(value); }
+    catch (error) {
+        if (error instanceof WorkflowJsonError) return null;
+        throw error;
+    }
+    return Buffer.byteLength(text, "utf8") <= WORKFLOW_V2_MAX_CORRELATION_BYTES ? text : null;
+}
+
 /** A wait's seconds as an integer from 1 to WAIT_MAX_SECONDS, or its invalid_input error. */
 function waitSeconds(seconds: number | string, scope: BindingScope, path: string): number | NodeResultInput {
     let value: JsonValue = seconds;
@@ -832,6 +869,14 @@ export function describeWorkflowV2State(node: WorkflowIRNode): { [key: string]: 
         return { id: node.id, type: "script", runtime: "node", timeoutSeconds: node.timeoutSeconds, outcomes: node.outcomes, next: node.next };
     }
     if (node.type === "wait") return { id: node.id, type: "wait", seconds: node.seconds, outcomes: [WAIT_ELAPSED], next: node.next };
+    if (node.type === "messaging") {
+        return {
+            id: node.id, type: "messaging", mode: node.mode, contract: node.contract,
+            from: node.from === null ? null : "parent" in node.from ? "parent" : node.from.sessionId,
+            ...(node.waitSeconds !== null ? { waitSeconds: node.waitSeconds } : {}),
+            outcomes: node.waitSeconds !== null ? [RECEIVE_RECEIVED, WAIT_ELAPSED] : [RECEIVE_RECEIVED], next: node.next,
+        };
+    }
     return { id: node.id, type: "terminal", outcome: node.outcome };
 }
 
@@ -872,6 +917,53 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     const scopeFor = (run: WorkflowRunRow, incoming: JsonValue, runtimeErrorValue: JsonValue, kv: JsonValue): BindingScope => ({
         inputs: run.inputs, input: incoming, kv: isJsonObject(kv) ? kv : {}, runtime: { error: runtimeErrorValue },
     });
+    /**
+     * A receive state's sender, correlation and contract, resolved when it
+     * is entered. The parent comes from the definition (trusted lineage); a
+     * named session must exist and may give this workflow typed input (the
+     * rule of send_workflow_input), otherwise the state fails with
+     * unavailable or forbidden. A correlation is a JSON object of at most
+     * WORKFLOW_V2_MAX_CORRELATION_BYTES.
+     */
+    const resolveReceive = async (node: WorkflowIRMessaging, run: WorkflowRunRow, scope: BindingScope)
+        : Promise<{ spec: ReceiveSpec } | { failure: NodeResultInput }> => {
+        let correlation: JsonValue = {};
+        if (node.correlate !== null) {
+            try { correlation = evaluateBindingTemplate(node.correlate, scope, `states.${node.id}.correlate`); }
+            catch (error) {
+                if (!(error instanceof WorkflowBindingError)) throw error;
+                return { failure: runtimeError("invalid_input", error.message) };
+            }
+        }
+        const correlationText = correlationTextOf(correlation);
+        if (correlationText === null) {
+            return { failure: runtimeError("invalid_input", `The correlation of state '${node.id}' must be a JSON object of at most ${WORKFLOW_V2_MAX_CORRELATION_BYTES} bytes.`) };
+        }
+        let from: string | null = null;
+        if (node.from !== null && "parent" in node.from) {
+            const definition = await store.readDefinition(run.workflowSessionId);
+            if (!definition?.parentSessionId) return { failure: runtimeError("unavailable", "This workflow has no parent session to receive from.") };
+            from = definition.parentSessionId;
+        } else if (node.from !== null) {
+            let named: JsonValue;
+            try { named = evaluateBindingTemplate(node.from.sessionId, scope, `states.${node.id}.from`); }
+            catch (error) {
+                if (!(error instanceof WorkflowBindingError)) throw error;
+                return { failure: runtimeError("invalid_input", error.message) };
+            }
+            if (typeof named !== "string" || !named.trim() || named.length > 256 || !isStorableText(named)) {
+                return { failure: runtimeError("invalid_input", `The sender of state '${node.id}' must be a session id.`) };
+            }
+            const authority = await typedInputAuthority(deps.catalog, store, run.workflowSessionId, named);
+            if (authority === "unknown") return { failure: runtimeError("unavailable", `Session ${named} does not exist or was deleted.`, { sessionId: named }) };
+            if (authority === "cross_owner") {
+                return { failure: runtimeError("forbidden", `Session ${named} belongs to another user; typed input across users needs a grant this release does not support.`,
+                    { sessionId: named }) };
+            }
+            from = named;
+        }
+        return { spec: { contract: node.contract, from, correlationText } };
+    };
     /** The value arriving at a node from its exact predecessor (or the initial input). */
     /**
      * Whether the parent is to be told of a run that an accepted cancel ended
@@ -993,6 +1085,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             let immediate: NodeResultInput | null = null;
             let value: JsonValue = null;
             let waitFor: number | null = null;
+            let receive: ReceiveSpec | null = null;
             const arrived = await arrival(current, ir, kv, nodeId, predecessorId, arrivalRoute);
             if ("failure" in arrived) immediate = arrived.failure;
             else {
@@ -1015,6 +1108,17 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                     if (typeof seconds === "number") waitFor = seconds;
                     else immediate = seconds;
                 }
+                // A receive's sender, correlation and wait are resolved once, here, and frozen for this occurrence.
+                if (!immediate && node.type === "messaging") {
+                    const scope = scopeFor(current, arrived.incoming, arrived.runtimeError, kv);
+                    const resolved = await resolveReceive(node, current, scope);
+                    if ("failure" in resolved) immediate = resolved.failure;
+                    else if (node.waitSeconds !== null) {
+                        const seconds = waitSeconds(node.waitSeconds, scope, `states.${nodeId}.wait.seconds`);
+                        if (typeof seconds === "number") { waitFor = seconds; receive = resolved.spec; }
+                        else immediate = seconds;
+                    } else receive = resolved.spec;
+                }
             }
             let inputText: string;
             try { inputText = boundedCanonicalJson(value, `Input of state '${nodeId}'`); }
@@ -1027,6 +1131,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             const result = await store.enterNode({
                 runId, nodeExecutionId, scopeId, nodeId, ordinal, nodeType: node.type, predecessorId, arrivalRoute, inputText, kvRevision, immediate,
                 waitSeconds: immediate ? null : waitFor,
+                receive: immediate ? null : receive,
                 projection: {
                     sessionId: current.workflowSessionId,
                     events: [{ eventType: "workflow.state_started", data: {
@@ -1296,8 +1401,8 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         const notDue: Array<{ nodeExecutionId: string; remainingMs: number }> = [];
         for (const nodeExecutionId of ids) {
             const executed = await store.readNodeExecution(nodeExecutionId);
-            if (!executed || executed.runId !== runId || executed.nodeType !== "wait") {
-                throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${nodeExecutionId} is not a wait state of run ${runId}.`);
+            if (!executed || executed.runId !== runId || (executed.nodeType !== "wait" && executed.nodeType !== "messaging")) {
+                throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${nodeExecutionId} is not a wait state or a receive state of run ${runId}.`);
             }
             if (executed.state !== "pending") continue;
             const elapsed = await store.elapseWait(nodeExecutionId, {

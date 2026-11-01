@@ -62,7 +62,7 @@ test("spawn_workflow is declared for agent sessions and carries the YAML contrac
 test("a package cannot shadow spawn_workflow", () => {
     const platform = [...ManagedSession.systemToolDefs(), ...ManagedSession.subAgentToolDefs()].map((def) => def.name);
     assert.equal(findReservedPackageToolName(["spawn_workflow"], platform, []), "spawn_workflow");
-    for (const name of ["update_workflow", "read_workflow"]) assert.equal(findReservedPackageToolName([name], platform, []), name);
+    for (const name of ["update_workflow", "read_workflow", "send_workflow_input"]) assert.equal(findReservedPackageToolName([name], platform, []), name);
 });
 
 test("workflow v2 tools are declared beside spawn_workflow with typed operations", () => {
@@ -86,6 +86,20 @@ test("workflow v2 tools are declared beside spawn_workflow with typed operations
     assert.ok(read.description.includes("needsRecovery") && read.description.includes("update_workflow operation recover"),
         "read_workflow points to recover instead of acting itself");
     assert.ok(read.description.includes("kvRevision") && read.description.includes("pausedFrom"), "read_workflow shows the run's KV and pause");
+});
+
+test("send_workflow_input is declared beside the workflow tools, with the sender taken from the session", () => {
+    const defs = ManagedSession.subAgentToolDefs();
+    const send = defs.find((def) => def.name === "send_workflow_input");
+    assert.ok(send, "send_workflow_input must be declared beside update_workflow");
+    assert.deepEqual([...send.parameters.required].sort(), ["contract", "operation_id", "payload", "workflow_id"]);
+    assert.deepEqual(Object.keys(send.parameters.properties).sort(),
+        ["contract", "correlation", "operation_id", "payload", "run_id", "ttl_seconds", "workflow_id"]);
+    // No field names a sender: the runtime names the calling session.
+    assert.ok(!Object.keys(send.parameters.properties).some((name) => /sender|from|actor/.test(name)));
+    for (const phrase of ["receive", "operation_id", "claimedBy", "not processing", "your own user"]) {
+        assert.ok(send.description.includes(phrase), `send_workflow_input describes ${phrase}`);
+    }
 });
 
 /** True when semantic version a is later than b. */
@@ -112,8 +126,10 @@ test("workflow v2 registers each orchestration's versions in ascending order, th
     // Only the current version runs this build's controller: no earlier history is replayed.
     const fenced = controllers.slice(0, WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS.length);
     assert.deepEqual(controllers.slice(fenced.length).map((entry) => [entry.version, entry.fn]), [[WORKFLOW_V2_CONTROLLER_VERSION, workflowV2Controller]]);
-    assert.ok(WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS.includes("1.4.0") && WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS.includes("1.5.0"),
-        "1.4.0 and 1.5.0 are fenced: no test replays a history they wrote");
+    for (const version of ["1.4.0", "1.5.0", "1.6.0"]) {
+        assert.ok(WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS.includes(version), `${version} is fenced: no test replays a history it wrote`);
+    }
+    assert.equal(WORKFLOW_V2_CONTROLLER_VERSION, "1.7.0");
     // Each fenced version keeps its handler: it fails at once, naming its version and the way out.
     assert.ok(fenced.length > 0);
     for (const entry of fenced) {

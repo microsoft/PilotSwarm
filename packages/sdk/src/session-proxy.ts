@@ -74,7 +74,7 @@ import { STREAMING_EVENT_TYPES, keepOrchestrationTurnEvents, turnResultSizeWarni
 import { MODEL_EVENT_TYPES_RECORDED_WHEN_LOGGING, modelEventLoggingEnabled } from "./model-event-logging.js";
 import type { NativeTasksPayload } from "./native-task-observer.js";
 import { spawnWorkflowFromTool } from "./workflow/spawn.js";
-import { readWorkflowFromTool, updateWorkflowFromTool, type WorkflowToolHost } from "./workflow/v2/tools.js";
+import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool, type WorkflowToolHost } from "./workflow/v2/tools.js";
 import { applySessionCommandToWorkflowV2 } from "./workflow/v2/service.js";
 import type { SpawnWorkflowToolArgs } from "./workflow/tool-spec.js";
 
@@ -2711,6 +2711,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 callerSessionId: input.sessionId, host: await workflowV2Host(),
             }),
             readWorkflow: async (args: Record<string, unknown>) => readWorkflowFromTool(args, {
+                callerSessionId: input.sessionId, host: await workflowV2Host(),
+            }),
+            /** send_workflow_input: the calling session is the host-stamped sender. */
+            sendWorkflowInput: async (args: Record<string, unknown>) => sendWorkflowInputFromTool(args, {
                 callerSessionId: input.sessionId, host: await workflowV2Host(),
             }),
 

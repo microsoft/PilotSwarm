@@ -215,6 +215,8 @@ export interface TurnOptions {
         updateWorkflow?(args: Record<string, unknown>): Promise<string>;
         /** Workflow v2: read a child workflow this session created. Returns JSON. */
         readWorkflow?(args: Record<string, unknown>): Promise<string>;
+        /** Workflow v2: give a workflow run one typed input as this session. Returns JSON. */
+        sendWorkflowInput?(args: Record<string, unknown>): Promise<string>;
         spawnAgent(args: {
             agent_name?: string;
             task?: string;

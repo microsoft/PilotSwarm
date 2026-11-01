@@ -121,7 +121,7 @@ describe("workflow v2 data from an earlier build", () => {
         try {
             await catalog.initialize();
             const after = (await q("SELECT version FROM SCHEMA.schema_migrations ORDER BY version")).rows.map(row => row.version);
-            expect(after).toEqual([...before, "0086", "0087", "0088"]);
+            expect(after).toEqual([...before, "0086", "0087", "0088", "0089"]);
             expect(await has()).toEqual({ fn: 1, trigger: 1 });
             const store = catalog.workflowStore();
             expect((await store.readDefinition(id)).state).toBe("published");
@@ -130,6 +130,9 @@ describe("workflow v2 data from an earlier build", () => {
             expect(await store.readRun(runId)).toMatchObject({ status: "running", kv: {}, kvRevision: 1, pausedFrom: null });
             expect(await store.readKv(runId, 1)).toEqual({});
             expect((await store.readNodeExecution("nx-earlier")).kvRevision).toBeNull();
+            // 0089: an earlier node execution accepts no typed input, and the inbox starts empty.
+            expect((await store.readNodeExecution("nx-earlier")).receive).toBeNull();
+            expect((await q("SELECT count(*)::int AS n FROM SCHEMA.workflow_inbox")).rows[0].n).toBe(0);
 
             // Exclusive creation now works on this schema, and never takes an existing row.
             const fresh = randomUUID();

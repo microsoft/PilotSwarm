@@ -50,7 +50,7 @@ export function readWorkflowToolBinding(value: unknown): WorkflowToolBinding | n
 
 const controls = new Set([
     "wait", "wait_on_worker", "cron", "cron_at", "schedule", "manage_schedule",
-    "task", "read_agent", "write_agent", "spawn_agent", "spawn_workflow", "update_workflow", "read_workflow",
+    "task", "read_agent", "write_agent", "spawn_agent", "spawn_workflow", "update_workflow", "read_workflow", "send_workflow_input",
     "create_agent_session", "create_session", "create_workflow_session",
     "message_agent", "message_agent_session", "manage_agent_session",
     "complete_agent", "cancel_agent", "delete_agent", "stop_agent_turn", "wait_for_agents",

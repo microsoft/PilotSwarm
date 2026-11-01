@@ -3,11 +3,14 @@ import type { SessionCatalog } from "../../cms.js";
 import type { SessionOwnerInfo } from "../../types.js";
 import type { WorkflowToolBinding } from "../tool-policy.js";
 import { compileWorkflowV2, declaredSemver, WORKFLOW_V2_API_VERSION, type WorkflowCompileResult } from "./compiler.js";
-import { boundedCanonicalJson, canonicalJson, isJsonObject, isStorableText, jsonbSafeText, jsonSha256, type JsonValue } from "./json.js";
+import { boundedCanonicalJson, canonicalJson, isJsonObject, isStorableText, jsonbSafeText, jsonSha256, WorkflowJsonError, type JsonValue } from "./json.js";
+import { typedInputAuthority } from "./authority.js";
 import { schemaSetFor } from "./schema.js";
 import {
+    correlationTextOf,
     WORKFLOW_V2_CONTROLLER_NAME,
     WORKFLOW_V2_CONTROLLER_VERSION,
+    WORKFLOW_V2_MAX_CORRELATION_BYTES,
     WORKFLOW_V2_NOTIFY_NAME,
     WORKFLOW_V2_NOTIFY_VERSION,
     workflowLiveControllerInstanceId,
@@ -27,6 +30,7 @@ import {
     type StoredOperation,
     type WorkflowActor,
     type WorkflowDefinitionReceipt,
+    type WorkflowInboxLimits,
     type WorkflowRunCommandReceipt,
     type WorkflowRunRow,
     type WorkflowRunStatus,
@@ -697,4 +701,111 @@ export async function applySessionCommandToWorkflowV2(
     // A cancel or done for the run's controller: queue it while that run is active (a repeat queues it again); a run that ended makes it moot.
     if (receipt.applied === "queued" && run !== null && ACTIVE_RUN_STATUSES.includes(run.status)) return { action: "enqueue" };
     return { action: "applied", receipt };
+}
+
+/**
+ * Bounds on a run's inbox, proposed defaults (D07): unclaimed messages a run
+ * holds, of them from one sender, and one sender's inputs to one workflow in
+ * the rate window.
+ */
+export const WORKFLOW_V2_INBOX_LIMITS: WorkflowInboxLimits = { maxUnconsumed: 100, maxUnconsumedPerSender: 20, maxPerSenderPerWindow: 60, windowSeconds: 600 };
+/** How long an unclaimed input stays eligible for a receive state: the default and the most (seconds). */
+export const WORKFLOW_V2_INPUT_TTL_SECONDS = 86_400;
+
+/** The receipt of send_workflow_input: the input as accepted, and the receive state that took it (now). */
+export interface WorkflowV2InputReceipt {
+    workflowSessionId: string;
+    runId: string;
+    messageId: string;
+    contract: string;
+    acceptedAt: string;
+    expiresAt: string;
+    claimedBy: { nodeExecutionId: string; stateId: string } | null;
+}
+
+/**
+ * send_workflow_input: give a run of a v2 workflow one typed input (R07,
+ * R08). The sender is the session the adapter names as the caller, never a
+ * field of the request, and it must be allowed (authority.ts): the parent,
+ * or a session that does not cross a user ownership boundary. The run is
+ * the one named, or the live run. Its pinned definition must have a receive
+ * state for the contract (an undeclared contract is refused as
+ * UNSUPPORTED_CONTRACT), and the payload must satisfy the contract's schema
+ * (INPUT_INVALID, nothing stored). The store accepts it once per (workflow,
+ * sender, operation id) and a waiting receive takes it in the same
+ * transaction (store.acceptInput); an input no receive waits for is kept,
+ * in the run's order, until one takes it or it expires. When a receive took
+ * it, the run's controller gets a wake (a hint; its backstop timer finds the
+ * result too); a repeat of the request sends the wake again.
+ */
+export async function sendWorkflowInputV2(
+    host: Pick<WorkflowV2Host, "catalog" | "store" | "duroxideClient">,
+    request: {
+        workflowSessionId: string;
+        senderSessionId: string;
+        runId?: string | null;
+        contract: string;
+        correlation?: JsonValue;
+        payload: JsonValue;
+        ttlSeconds?: number | null;
+        operationId: string;
+    },
+): Promise<StoredOperation<WorkflowV2InputReceipt>> {
+    requireOperationId(request.operationId);
+    const { workflowSessionId, senderSessionId } = request;
+    const definition = await host.store.readDefinition(workflowSessionId);
+    if (!definition) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `${workflowSessionId} is not a version 2 workflow.`);
+    if (definition.state === "deleted") throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow was deleted.");
+    const authority = await typedInputAuthority(host.catalog, host.store, workflowSessionId, senderSessionId);
+    if (authority === "unknown") throw new WorkflowStoreError("FORBIDDEN", "The sending session or the workflow session is not available.");
+    if (authority === "cross_owner") {
+        throw new WorkflowStoreError("FORBIDDEN", "This workflow belongs to another user; typed input across users needs a grant this release does not support.");
+    }
+    const runs = await host.store.listRuns(workflowSessionId);
+    const run = request.runId ? runs.find(item => item.runId === request.runId) : runs.find(item => item.mode === "live");
+    if (!run) throw new WorkflowStoreError("RUN_NOT_FOUND", request.runId ? `Run ${request.runId} is not a run of this workflow.` : "This workflow has no live run to give input to.");
+    if (typeof request.contract !== "string") throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "contract must name a contract, such as BuildEvent@1.");
+    const ir = await host.store.readRevisionIr(workflowSessionId, run.revision, run.irSha256);
+    const contract = ir.contracts?.[request.contract];
+    const received = new Set(Object.values(ir.nodes).flatMap(node => node.type === "messaging" ? [node.contract] : []));
+    if (!contract || !received.has(request.contract)) {
+        throw new WorkflowStoreError("UNSUPPORTED_CONTRACT", `This workflow does not receive contract '${request.contract}'.`, { receives: [...received].sort() });
+    }
+    let payloadText: string;
+    try { payloadText = boundedCanonicalJson(request.payload, "The input payload"); }
+    catch (error) {
+        if (error instanceof WorkflowJsonError) throw new WorkflowStoreError("INPUT_INVALID", error.message);
+        throw error;
+    }
+    const problems = schemaSetFor(run.irSha256, ir.schemaDefs).validate(contract.schema, request.payload);
+    if (problems.length) {
+        throw new WorkflowStoreError("INPUT_INVALID", `The payload does not match contract ${request.contract}.`,
+            problems.map(problem => ({ path: problem.path, message: problem.message })));
+    }
+    const correlationText = correlationTextOf(request.correlation === undefined || request.correlation === null ? {} : request.correlation);
+    if (correlationText === null) {
+        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `correlation must be a JSON object of at most ${WORKFLOW_V2_MAX_CORRELATION_BYTES} bytes.`);
+    }
+    const ttlSeconds = request.ttlSeconds ?? WORKFLOW_V2_INPUT_TTL_SECONDS;
+    if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > WORKFLOW_V2_INPUT_TTL_SECONDS) {
+        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `ttl_seconds must be an integer from 1 to ${WORKFLOW_V2_INPUT_TTL_SECONDS}.`);
+    }
+    const requestSha256 = jsonSha256({ kind: "input", runId: run.runId, contract: request.contract, correlation: correlationText, payload: payloadText, ttlSeconds });
+    const stored = await host.store.acceptInput({
+        workflowSessionId, runId: run.runId, messageId: randomUUID(), senderSessionId, operationId: request.operationId, requestSha256,
+        contract: request.contract, correlationText, payloadText, ttlSeconds, limits: WORKFLOW_V2_INBOX_LIMITS,
+    });
+    if (stored.claimed && ACTIVE_RUN_STATUSES.includes(stored.run.status)) {
+        await host.duroxideClient.enqueueEvent(stored.run.controllerInstanceId, WORKFLOW_COMMAND_QUEUE,
+            JSON.stringify({ type: "workflow-wake", runId: stored.run.runId, reason: "input" }));
+    }
+    const { message } = stored;
+    return {
+        receipt: {
+            workflowSessionId, runId: message.runId, messageId: message.messageId, contract: message.contract,
+            acceptedAt: message.acceptedAt.toISOString(), expiresAt: message.expiresAt.toISOString(),
+            claimedBy: stored.claimed ? { nodeExecutionId: stored.claimed.nodeExecutionId, stateId: stored.claimed.nodeId } : null,
+        },
+        replayed: stored.replayed,
+    };
 }
