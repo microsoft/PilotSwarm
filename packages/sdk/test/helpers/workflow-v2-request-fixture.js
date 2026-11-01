@@ -169,7 +169,8 @@ export async function holdSession(h, sessionId) {
     const client = await h.pool.connect();
     try {
         await client.query("BEGIN");
-        await client.query(`SELECT session_id FROM "${h.schema}".sessions WHERE session_id = $1 FOR UPDATE`, [sessionId]);
+        const { rows } = await client.query(`SELECT session_id FROM "${h.schema}".sessions WHERE session_id = $1 FOR UPDATE`, [sessionId]);
+        expect(rows).toEqual([{ session_id: sessionId }]);
     } catch (error) {
         try { await client.query("ROLLBACK"); } finally { client.release(); }
         throw error;
@@ -192,6 +193,23 @@ export async function observeBlocked(h, pid, holderPid) {
         if (row.blocked) return;
     }
     throw new Error("The real PostgreSQL transaction did not wait for the held session row.");
+}
+
+/** Failure diagnostics read only the fixture's three backends, before its held transaction is released. */
+export async function requestLockSnapshot(h, pids) {
+    const [sample] = await h.q(`SELECT pg_backend_pid() AS observer_pid,
+        (SELECT json_agg(activity ORDER BY pid) FROM (
+            SELECT pid, backend_xid::text AS xid, state, wait_event_type, wait_event, pg_blocking_pids(pid) AS blockers,
+                query
+            FROM pg_stat_activity WHERE pid = ANY($1::integer[])
+        ) activity) AS activity,
+        (SELECT json_agg(locks ORDER BY pid, locktype, mode, granted) FROM (
+            SELECT pid, locktype, mode, granted, relation::regclass::text AS relation, page, tuple,
+                transactionid::text AS xid, virtualxid, virtualtransaction
+            FROM pg_locks WHERE pid = ANY($1::integer[])
+                AND (locktype IN ('tuple', 'transactionid', 'virtualxid') OR relation = $2::regclass)
+        ) locks) AS locks`, [pids, `"${h.schema}".sessions`]);
+    return sample;
 }
 
 /** Fault-inject only the deciding reading; formatting and deadline arithmetic still execute on PostgreSQL. */

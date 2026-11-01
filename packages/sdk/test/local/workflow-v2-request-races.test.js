@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import {
-    requestFixture, REQUEST_ACTOR, REQUEST_TIMEOUT, checkpoint, reachedDuring, holdSession, observeBlocked, requestClock,
+    requestFixture, REQUEST_ACTOR, REQUEST_TIMEOUT, checkpoint, reachedDuring, holdSession, observeBlocked, requestClock, requestLockSnapshot,
 } from "../helpers/workflow-v2-request-fixture.js";
 import { canonicalJson, jsonSha256 } from "../../src/workflow/v2/json.ts";
 import { WORKFLOW_V2_MAX_REQUEST_OPERATIONS } from "../../src/workflow/v2/store.ts";
@@ -15,24 +15,47 @@ async function concurrentCalls(h, run, exchangeId, calls) {
     const holder = await holdSession(h, run.workflowSessionId);
     const atLock = checkpoint();
     const pids = [];
+    const locks = [];
+    const directControls = [];
     let work;
     let settled;
     h.control.hook = ({ sql, params, query, client }) => {
+        const mode = sql.includes("FOR NO KEY UPDATE") ? "NO KEY UPDATE" : sql.includes("FOR SHARE") ? "SHARE" : null;
+        const lock = mode && sql.includes(".sessions") ? { pid: client.processID, sessionId: params[0], mode, returned: false } : null;
+        if (lock) locks.push(lock);
         const result = query(sql, params);
         if (sql.includes(".sessions") && sql.includes("FOR NO KEY UPDATE") && params?.[0] === run.workflowSessionId) {
             pids.push(client.processID);
             if (pids.length === calls.length) atLock.enter();
         }
-        return result;
+        return lock ? result.then(rows => { lock.returned = true; return rows; }) : result;
     };
     try {
         work = calls.map(({ operationId, call }) => h.respond(exchangeId, operationId, call));
         settled = Promise.allSettled(work);
         await reachedDuring(atLock, settled, "both session-lock queries");
         expect(new Set(pids).size).toBe(calls.length);
-        for (const pid of pids) await observeBlocked(h, pid, holder.pid);
+        for (const pid of pids) {
+            await observeBlocked(h, pid, holder.pid);
+            directControls.push(pid);
+        }
         await holder.release();
         return await settled;
+    } catch (error) {
+        const sample = await requestLockSnapshot(h, [holder.pid, ...pids]);
+        const knownDirect = sample.activity?.find(item => pids.includes(item.pid) && item.blockers.includes(holder.pid));
+        if (knownDirect && !directControls.includes(knownDirect.pid)) {
+            await observeBlocked(h, knownDirect.pid, holder.pid);
+            directControls.push(knownDirect.pid);
+        }
+        console.info("workflow request lock diagnostic", JSON.stringify({
+            holderPid: holder.pid, responsePids: pids, directControls,
+            canonicalOrder: [run.workflowSessionId, h.parent].sort(),
+            requesterSessionId: run.workflowSessionId, actorSessionId: h.parent, dispatchedLocks: locks,
+            pool: { max: 4, total: h.pool.totalCount, idle: h.pool.idleCount, waiting: h.pool.waitingCount },
+            ...sample,
+        }));
+        throw error;
     } finally {
         h.control.hook = null;
         await holder.release();
