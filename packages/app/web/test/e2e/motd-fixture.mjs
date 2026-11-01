@@ -1,0 +1,57 @@
+import { startStubServer } from "./stub-server.mjs";
+
+const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
+const picture = { base64: PNG, contentType: "image/png", alt: "Main picture" };
+export const message = extra => ({ motdId: "1", fromAt: "2020-01-01T00:00:00Z", toAt: "2090-01-01T00:00:00Z",
+    bodyMd: "## Welcome\nUse the portal.", mobileBodyMd: null, imagePlacement: "above", hasImage: false,
+    hasMobileImage: false, createdBy: { subject: "admin" }, status: "live", dismissalCount: 0, ...extra });
+
+export async function fixture(page, { admin = true, current = message(), history = null } = {}) {
+    const stub = await startStubServer(0, { sessionCount: 1, admin });
+    const state = { current, history: history || (current ? [current] : []), calls: [], imageRequests: [],
+        reads: 0, failDismiss: false, failCreate: false };
+    await page.route("**/api/auth/me", route => route.fulfill({ json: { ok: true,
+        principal: { provider: "none", subject: "test", displayName: "Test User" },
+        authorization: { allowed: true, role: admin ? "admin" : "user" } } }));
+    await page.route("**/api/v1/management/**", async route => {
+        const request = route.request(), url = new URL(request.url());
+        if (!url.pathname.includes("/motd")) return route.fallback();
+        if (url.pathname.endsWith("/current")) {
+            state.reads++;
+            return route.fulfill({ json: { ok: true, result: state.current } });
+        }
+        if (url.pathname.endsWith("/image")) {
+            const id = url.pathname.split("/").at(-2);
+            const row = state.history.find(entry => entry.motdId === id) || (state.current?.motdId === id ? state.current : null);
+            if (!row) return route.fulfill({ status: 404, json: { ok: false, error: { code: "MOTD_NOT_FOUND", message: "Message not found" } } });
+            state.imageRequests.push(url.searchParams.get("mobile") === "true");
+            return route.fulfill({ json: { ok: true,
+                result: { ...picture, alt: url.searchParams.get("mobile") === "true" && row.hasMobileImage ? "Phone picture" : "Main picture" } } });
+        }
+        if (request.method() === "GET") {
+            const rows = admin ? state.history : state.history.map(({ createdBy, dismissalCount, ...row }) => row);
+            return route.fulfill({ json: { ok: true, result: rows } });
+        }
+        const input = request.method() === "POST" ? request.postDataJSON() || {} : {};
+        state.calls.push({ path: url.pathname, method: request.method(), input });
+        if (url.pathname.endsWith("/dismiss")) {
+            if (state.failDismiss) return route.fulfill({ status: 503, json: { ok: false, error: { code: "UNAVAILABLE", message: "Dismissal not saved" } } });
+            state.current = null;
+        } else if (!admin) {
+            return route.fulfill({ status: 403, json: { ok: false, error: { code: "MOTD_FORBIDDEN", message: "Message management requires admin" } } });
+        } else if (request.method() === "DELETE") {
+            const id = url.pathname.split("/").at(-1);
+            state.history = state.history.filter(m => m.motdId !== id);
+            if (state.current?.motdId === id) state.current = null;
+        } else {
+            if (state.failCreate) return route.fulfill({ status: 503, json: { ok: false, error: { code: "UNAVAILABLE", message: "Publication response uncertain" } } });
+            state.history.unshift(message({ ...input, motdId: "2", status: "scheduled" }));
+        }
+        return route.fulfill({ json: { ok: true, result: { motdId: "1", dismissed: true } } });
+    });
+    await page.goto(`http://127.0.0.1:${stub.port}`);
+    return { state, stop: async () => {
+        await page.close();
+        await new Promise(resolve => stub.server.close(resolve));
+    } };
+}

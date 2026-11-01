@@ -1,48 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { startStubServer } from "./stub-server.mjs";
-
-const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
-const picture = { base64: PNG, contentType: "image/png", alt: "Main picture" };
-const message = extra => ({ motdId: "1", fromAt: "2020-01-01T00:00:00Z", toAt: "2090-01-01T00:00:00Z",
-    bodyMd: "## Welcome\nUse the portal.", mobileBodyMd: null, imagePlacement: "above", hasImage: false,
-    hasMobileImage: false, createdBy: { subject: "admin" }, status: "live", dismissalCount: 0, ...extra });
-async function fixture(page, { admin = true, current = message(), history = null } = {}) {
-    const stub = await startStubServer(0, { sessionCount: 1, admin });
-    const state = { current, history: history || (current ? [current] : []), calls: [], imageRequests: [], reads: 0, failDismiss: false, failCreate: false };
-    await page.route("**/api/auth/me", route => route.fulfill({ json: { ok: true,
-        principal: { provider: "none", subject: "test", displayName: "Test User" },
-        authorization: { allowed: true, role: admin ? "admin" : "user" } } }));
-    await page.route("**/api/v1/management/**", async route => {
-        const request = route.request(), url = new URL(request.url());
-        if (!url.pathname.includes("/motd")) return route.fallback();
-        if (url.pathname.endsWith("/current")) {
-            state.reads++;
-            return route.fulfill({ json: { ok: true, result: state.current } });
-        }
-        if (url.pathname.endsWith("/image")) {
-            state.imageRequests.push(url.searchParams.get("mobile") === "true");
-            return route.fulfill({ json: { ok: true,
-                result: { ...picture, alt: url.searchParams.get("mobile") === "true" && state.current?.hasMobileImage ? "Phone picture" : "Main picture" } } });
-        }
-        if (request.method() === "GET") return route.fulfill({ json: { ok: true, result: state.history } });
-        const input = request.method() === "POST" ? request.postDataJSON() || {} : {};
-        state.calls.push({ path: url.pathname, method: request.method(), input });
-        if (url.pathname.endsWith("/dismiss")) {
-            if (state.failDismiss) return route.fulfill({ status: 503, json: { ok: false, error: { code: "UNAVAILABLE", message: "Dismissal not saved" } } });
-            state.current = null;
-        } else if (request.method() === "DELETE") {
-            const id = url.pathname.split("/").at(-1);
-            state.history = state.history.filter(m => m.motdId !== id);
-            if (state.current?.motdId === id) state.current = null;
-        } else {
-            if (state.failCreate) return route.fulfill({ status: 503, json: { ok: false, error: { code: "UNAVAILABLE", message: "Publication response uncertain" } } });
-            const created = message({ ...input, motdId: "2", status: "scheduled" }); state.history.unshift(created);
-        }
-        return route.fulfill({ json: { ok: true, result: { motdId: "1", dismissed: true } } });
-    });
-    await page.goto(`http://127.0.0.1:${stub.port}`);
-    return { state, stop: () => new Promise(resolve => stub.server.close(resolve)) };
-}
+import { fixture, message } from "./motd-fixture.mjs";
 const splash = page => page.getByRole("dialog", { name: "Message of the day", exact: true });
 async function openAdmin(page) {
     await page.getByRole("button", { name: "Admin console", exact: true }).click();
