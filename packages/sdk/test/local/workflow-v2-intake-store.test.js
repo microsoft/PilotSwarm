@@ -72,6 +72,7 @@ import {
 } from "../../src/workflow/v2/intake.ts";
 import { workflowLiveControllerInstanceId, workflowSendClientMessageId, workflowSendPrompt } from "../../src/workflow/v2/runtime.ts";
 import { nodeExecutionIdFor, WorkflowStore } from "../../src/workflow/v2/store.ts";
+import { readWorkflowV2View } from "../../src/workflow/v2/tools.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const ACTOR = { kind: "system", name: "workflow-v2-intake-store-test" };
@@ -942,6 +943,15 @@ describe("workflow v2 durable intake: the refusal transaction (store)", () => {
             }]);
             expect(await h.sessionRow(h.recipient)).toEqual(recipientBefore);
             expect((await h.sessionRow(run.workflowSessionId)).xmin).not.toBe(senderBefore.xmin);
+            // The sender sees the outcome in its read_workflow view, beside the delivery it never rewrites (design 5.6); a message
+            // with no outcome shows none.
+            const outboxView = async () => Object.fromEntries((await readWorkflowV2View(h.store, run.workflowSessionId, { runId: run.runId }))
+                .run.outbox.map(entry => [entry.exchangeId, entry]));
+            const viewed = await outboxView();
+            expect(viewed[full]).toMatchObject({ state: "pending", attempts: 1, deliveredAt: null, intakeOutcome: "refused_full",
+                intakeOutcomeAt: refused.settledAt });
+            expect(viewed[held]).not.toHaveProperty("intakeOutcome");
+            expect(viewed[held]).not.toHaveProperty("intakeOutcomeAt");
             // The same claim again: the final state, nothing written or projected; another claim: a duplicate.
             expect(await h.claim(envelope, "claim-1")).toEqual({ result: "refused_full", inserted: false });
             expect(await h.claim(envelope, "claim-2", "refuse")).toEqual({ result: "duplicate", state: "refused_full" });
@@ -955,6 +965,8 @@ describe("workflow v2 durable intake: the refusal transaction (store)", () => {
             expect(await refuseHeld("claim-3")).toEqual({ refused: true });
             expect(await h.store.readWorkflowIntake(held)).toMatchObject({ state: "refused_full", text: heldClaim.item.text });
             expect(await h.outboxIntake(held)).toMatchObject({ intake_outcome: "refused_full" });
+            expect((await outboxView())[held]).toMatchObject({ state: "pending", intakeOutcome: "refused_full",
+                intakeOutcomeAt: expect.stringMatching(EXACT_TIME) });
             expect(await refuseHeld("claim-3")).toEqual({ refused: false });
             await expectCode(refuseHeld("claim-3", "refused_size"), "WORKFLOW_STORE_CORRUPT");
             await expectCode(h.store.refuseHeldWorkflowIntake({ recipientSessionId: h.recipient, exchangeId: held, claimId: "claim-3", outcome: "cancelled" }),
@@ -981,6 +993,9 @@ describe("workflow v2 durable intake: the refusal transaction (store)", () => {
             }
             expect(await h.sessionRow(gone.workflowSessionId)).toEqual(goneBefore);
             expect((await h.catalog.getSessionEvents(gone.workflowSessionId, 0, 1000)).length).toBe(goneEvents);
+            for (const entry of (await readWorkflowV2View(h.store, gone.workflowSessionId, { runId: gone.runId })).run.outbox) {
+                expect(entry).not.toHaveProperty("intakeOutcome");
+            }
             expect((await h.events(h.recipient, INTAKE_REFUSED_RECIPIENT_EVENT)).map(event => event.data.exchangeId).slice(-2)).toEqual([goneFull, goneHeld]);
             expect(await h.sessionRow(h.recipient)).toEqual(recipientBefore);
 

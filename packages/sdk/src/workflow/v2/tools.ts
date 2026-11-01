@@ -315,6 +315,9 @@ export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId
     const nodes = selected ? await store.listNodeExecutions(selected.runId, 200) : [];
     const inbox = selected ? await store.listInbox(selected.runId, 50) : [];
     const outbox = selected ? await store.listOutbox(selected.runId, 50) : [];
+    // A recipient's later intake refusal of a delivered message (design 5.6), shown beside the delivery, which it never rewrites.
+    const intakeOutcomes: Map<string, { intakeOutcome: string; intakeOutcomeAt: string }> = selected
+        ? await store.listOutboxIntakeOutcomes(selected.runId) : new Map();
     // A paused run has settled once no state it admitted is still running.
     const pauseSettled = selected?.status === "paused" ? !await store.hasPendingNodes(selected.runId) : null;
     return {
@@ -357,6 +360,7 @@ export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId
                 createdAt: message.createdAt, deliveredAt: message.receipt?.deliveredAt ?? null, payloadPreview: previewJson(message.payload, 300),
                 ...(message.receipt?.input ? { inputMessageId: message.receipt.input.messageId, claimedBy: message.receipt.input.claimedBy?.nodeExecutionId ?? null } : {}),
                 ...(message.error !== null ? { errorPreview: previewJson(message.error, 500) } : {}),
+                ...(intakeOutcomes.has(message.exchangeId) ? { ...intakeOutcomes.get(message.exchangeId) } : {}),
             })),
         } : null,
     };

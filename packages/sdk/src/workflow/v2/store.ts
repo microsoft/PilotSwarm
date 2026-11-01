@@ -2930,6 +2930,26 @@ export class WorkflowStore {
         return rows[0] ? outboxFrom(rows[0]) : null;
     }
 
+    /**
+     * The intake outcomes of a run's outbox messages that have one, by
+     * exchange id (migration 0094; design 5.6): the recipient's intake refused
+     * the message after its delivery was recorded. Read apart from the
+     * message, whose state, attempts and receipt stay as the delivery
+     * recorded them.
+     */
+    async listOutboxIntakeOutcomes(runId: string): Promise<Map<string, { intakeOutcome: WorkflowIntakeRefusal; intakeOutcomeAt: string }>> {
+        const { rows } = await this.pool.query(
+            `SELECT exchange_id, intake_outcome, ${isoUtc("intake_outcome_at")} AS intake_outcome_at_iso FROM ${this.t.outbox}
+              WHERE run_id = $1 AND intake_outcome IS NOT NULL`, [runId]);
+        const outcomes = new Map<string, { intakeOutcome: WorkflowIntakeRefusal; intakeOutcomeAt: string }>();
+        for (const row of rows) {
+            const outcome = str(row, "intake_outcome");
+            if (outcome !== "refused_full" && outcome !== "refused_size") return corrupt(`Unknown intake outcome ${outcome}.`);
+            outcomes.set(str(row, "exchange_id"), { intakeOutcome: outcome, intakeOutcomeAt: str(row, "intake_outcome_at_iso") });
+        }
+        return outcomes;
+    }
+
     /** A request as it is now (its derived status, response, wake intent and bindings), or null for no such request. */
     async readRequest(exchangeId: string): Promise<WorkflowRequestView | null> {
         const { rows } = await this.pool.query(`SELECT ${REQUEST_COLUMNS} FROM ${this.t.requests} WHERE exchange_id = $1`, [exchangeId]);
