@@ -69,8 +69,10 @@ export const READ_WORKFLOW_TOOL_SPEC = {
     description:
         "Read a workflow child you created with spawn_workflow (v2): definition state, current revision and diagnostics, "
         + "the graph, runs, and the node executions of one run (default: the live run), with the run's open KV (kv, kvRevision) "
-        + "and, while it is paused, pausedFrom and pauseSettled (true once no state it admitted is still running), and the run's inbox of typed input "
-        + "(send_workflow_input: each message, its sender and the receive state that took it). Returns JSON. Reading changes nothing: "
+        + "and, while it is paused, pausedFrom and pauseSettled (true once no state it admitted is still running), the run's inbox of typed input "
+        + "(send_workflow_input: each message, its sender and the receive state that took it), and its outbox (each message a send state sent: "
+        + "its recipient, state pending, delivered or failed, and attempts; delivered means the recipient session's queue accepted it, "
+        + "not that it was read). Returns JSON. Reading changes nothing: "
         + "an active run whose controller can no longer end it shows run.controller.needsRecovery; use update_workflow operation recover.",
     parameters: {
         type: "object",
@@ -312,6 +314,7 @@ export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId
     if (options.runId && !selected) throw new WorkflowStoreError("RUN_NOT_FOUND", `Run ${options.runId} is not a run of this workflow.`);
     const nodes = selected ? await store.listNodeExecutions(selected.runId, 200) : [];
     const inbox = selected ? await store.listInbox(selected.runId, 50) : [];
+    const outbox = selected ? await store.listOutbox(selected.runId, 50) : [];
     // A paused run has settled once no state it admitted is still running.
     const pauseSettled = selected?.status === "paused" ? !await store.hasPendingNodes(selected.runId) : null;
     return {
@@ -347,6 +350,12 @@ export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId
                 messageId: message.messageId, contract: message.contract, senderSessionId: message.senderSessionId,
                 correlation: message.correlation, acceptedAt: message.acceptedAt, expiresAt: message.expiresAt,
                 claimedBy: message.consumedBy, claimedAt: message.consumedAt, payloadPreview: previewJson(message.payload, 300),
+            })),
+            outbox: outbox.map(message => ({
+                exchangeId: message.exchangeId, nodeExecutionId: message.nodeExecutionId, recipientSessionId: message.recipientSessionId,
+                contract: message.contract, state: message.state, attempts: message.attempts, createdAt: message.createdAt,
+                deliveredAt: message.receipt?.deliveredAt ?? null, payloadPreview: previewJson(message.payload, 300),
+                ...(message.error !== null ? { errorPreview: previewJson(message.error, 500) } : {}),
             })),
         } : null,
     };

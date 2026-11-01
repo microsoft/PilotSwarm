@@ -763,7 +763,7 @@ export async function sendWorkflowInputV2(
     if (typeof request.contract !== "string") throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "contract must name a contract, such as BuildEvent@1.");
     const ir = await host.store.readRevisionIr(workflowSessionId, run.revision, run.irSha256);
     const contract = ir.contracts?.[request.contract];
-    const received = new Set(Object.values(ir.nodes).flatMap(node => node.type === "messaging" ? [node.contract] : []));
+    const received = new Set(Object.values(ir.nodes).flatMap(node => node.type === "messaging" && node.mode === "receive" ? [node.contract] : []));
     if (!contract || !received.has(request.contract)) {
         throw new WorkflowStoreError("UNSUPPORTED_CONTRACT", `This workflow does not receive contract '${request.contract}'.`, { receives: [...received].sort() });
     }

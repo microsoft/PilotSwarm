@@ -400,7 +400,8 @@ states:
         expect(noReceive.diagnostics).toContainEqual(expect.objectContaining({ severity: "warning", code: "WORKFLOW_CONTRACT_UNUSED", path: "contracts.BuildEvent@1" }));
         const refusals = [
             [RECEIVER().replace("contract: BuildEvent@1\n", "contract: Other@1\n"), "WORKFLOW_CONTRACT_UNKNOWN", "states.await_build.contract"],
-            [RECEIVER().replace("mode: receive", "mode: send"), "WORKFLOW_FEATURE_UNSUPPORTED", "states.await_build.mode"],
+            // A send state needs a recipient (a receive's fields are not a send's); request is not supported yet.
+            [RECEIVER().replace("mode: receive", "mode: send"), "WORKFLOW_FIELD_REQUIRED", "states.await_build.recipient"],
             [RECEIVER().replace("mode: receive", "mode: request"), "WORKFLOW_FEATURE_UNSUPPORTED", "states.await_build.mode"],
             [RECEIVER().replace("received: got, ", ""), "WORKFLOW_ROUTE_MISSING", "states.await_build.transition.next"],
             [RECEIVER({ wait: false }).replace("received: got", "received: got, elapsed: timed_out"), "WORKFLOW_ROUTE_INVALID", "states.await_build.transition.next.elapsed"],

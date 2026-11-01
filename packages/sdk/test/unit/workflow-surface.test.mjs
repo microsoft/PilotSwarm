@@ -29,6 +29,8 @@ import {
     WORKFLOW_V2_EFFECT_VERSION,
     WORKFLOW_V2_NOTIFY_NAME,
     WORKFLOW_V2_NOTIFY_VERSION,
+    WORKFLOW_V2_SEND_NAME,
+    WORKFLOW_V2_SEND_VERSION,
     WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS,
 } from "../../dist/workflow/v2/runtime.js";
 
@@ -126,10 +128,10 @@ test("workflow v2 registers each orchestration's versions in ascending order, th
     // Only the current version runs this build's controller: no earlier history is replayed.
     const fenced = controllers.slice(0, WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS.length);
     assert.deepEqual(controllers.slice(fenced.length).map((entry) => [entry.version, entry.fn]), [[WORKFLOW_V2_CONTROLLER_VERSION, workflowV2Controller]]);
-    for (const version of ["1.4.0", "1.5.0", "1.6.0"]) {
+    for (const version of ["1.4.0", "1.5.0", "1.6.0", "1.7.0"]) {
         assert.ok(WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS.includes(version), `${version} is fenced: no test replays a history it wrote`);
     }
-    assert.equal(WORKFLOW_V2_CONTROLLER_VERSION, "1.7.0");
+    assert.equal(WORKFLOW_V2_CONTROLLER_VERSION, "1.8.0");
     // Each fenced version keeps its handler: it fails at once, naming its version and the way out.
     assert.ok(fenced.length > 0);
     for (const entry of fenced) {
@@ -138,6 +140,7 @@ test("workflow v2 registers each orchestration's versions in ascending order, th
     }
     assert.deepEqual(registered.filter((entry) => entry.name === WORKFLOW_V2_EFFECT_NAME).map((entry) => entry.version), [WORKFLOW_V2_EFFECT_VERSION]);
     assert.deepEqual(registered.filter((entry) => entry.name === WORKFLOW_V2_NOTIFY_NAME).map((entry) => entry.version), [WORKFLOW_V2_NOTIFY_VERSION]);
+    assert.deepEqual(registered.filter((entry) => entry.name === WORKFLOW_V2_SEND_NAME).map((entry) => entry.version), [WORKFLOW_V2_SEND_VERSION]);
 });
 
 test("script tools are the generic agent's data-plane tools, bound to the workflow session", async () => {
