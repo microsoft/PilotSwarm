@@ -14989,9 +14989,11 @@ function AdminSettingsTree({ controller, view }) {
     };
     const tree = view.settingsTree || [];
     const agentsIndex = tree.findIndex((row) => row.id === "agents");
-    const workersIndex = tree.findIndex((row) => row.id === "workers");
     const headEnd = agentsIndex >= 0 ? agentsIndex + 1 : 0;
-    const tailStart = workersIndex >= 0 ? workersIndex : tree.length;
+    // Only package groups and package rows scroll. The first section after
+    // them (Workers, Message of the day, or any later one) stays outside.
+    const nextSection = tree.findIndex((row, index) => index >= headEnd && row.kind !== "group" && row.kind !== "package");
+    const tailStart = nextSection >= 0 ? nextSection : tree.length;
     const filtering = query.trim().length > 0;
     const fields = [
         ["all", "All"],
