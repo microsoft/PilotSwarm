@@ -1,5 +1,5 @@
 import { test, expect } from "@playwright/test";
-import { fixture, message } from "../../../../web/test/e2e/motd-fixture.mjs";
+import { fixture, message } from "./motd-fixture.mjs";
 
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=";
 const source = extra => message({ motdId: "7", bodyMd: "## Original body\nEdit before publishing.", mobileBodyMd: "Short original",
@@ -10,11 +10,7 @@ async function openEditor(page, options = {}) {
     await page.getByRole("button", { name: options.admin === false ? "Settings" : "Admin console", exact: true }).click();
     await page.getByRole("button", { name: "Message of the day", exact: true }).click();
     await page.getByRole("region", { name: "Message of the day settings" }).waitFor();
-    return { ...f, stop: async () => {
-        // route.fetch uses the context's HTTP client, not only the page.
-        await page.request.dispose();
-        await f.stop();
-    } };
+    return f;
 }
 async function transferImage(page, target, { mobile = false, kind = "paste", name = "pasted.png", size = null, type = "image/png" } = {}) {
     if (mobile) {

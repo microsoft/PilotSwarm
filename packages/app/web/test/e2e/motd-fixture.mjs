@@ -61,6 +61,7 @@ export async function fixture(page, { admin = true, current = message(), history
     });
     await page.goto(`http://127.0.0.1:${stub.port}`);
     return { state, stop: async () => {
+        await page.request.dispose();
         await page.close();
         await new Promise(resolve => stub.server.close(resolve));
     } };
