@@ -19,6 +19,9 @@ import winampTheme from "./winamp.js";
 import rustTheme from "./rust.js";
 import duroxideTheme from "./duroxide.js";
 import spongebobTheme from "./spongebob.js";
+import hearthTheme from "./hearth.js";
+import stringLightsTheme from "./string-lights.js";
+import parcelTheme from "./parcel.js";
 
 // Themes are ordered by GROUP first, then alphabetically inside it — the
 // picker renders a heading whenever the group changes, so this sort IS the
@@ -57,6 +60,9 @@ const THEMES = Object.freeze([
     rustTheme,
     duroxideTheme,
     spongebobTheme,
+    hearthTheme,
+    stringLightsTheme,
+    parcelTheme,
 ].sort(byGroupThenLabel));
 
 const THEME_MAP = new Map(THEMES.map((theme) => [theme.id, theme]));

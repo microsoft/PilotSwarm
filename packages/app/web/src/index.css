@@ -78,6 +78,16 @@
   --ps-scrollbar-thumb: color-mix(in srgb, var(--ps-border) 56%, var(--ps-surface));
   --ps-scrollbar-thumb-hover: color-mix(in srgb, var(--ps-modal-selected-border) 42%, var(--ps-border));
 }
+/* Holiday themes spend their accent on the card rail. The default mix
+   pulls that color a third of the way toward the page text, which turns
+   gold into cream and cranberry into mud. These three keep the raw color. */
+:root[data-ps-theme="hearth"],
+:root[data-ps-theme="string-lights"],
+:root[data-ps-theme="parcel"] {
+  --ps-chat-card-accent: var(--ps-accent);
+  --ps-chat-card-success: var(--ps-success);
+  --ps-chat-card-warning: var(--ps-warning);
+}
 
 /* Native Copilot tasks stay anchored to dispatch, with live detail in place. */
 .ps-native-tasks { margin: 12px 0 18px; border: 1px solid var(--ps-border); border-radius: var(--ps-radius-md); background: var(--ps-chat-card-header); overflow: hidden; }

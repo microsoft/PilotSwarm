@@ -35,6 +35,9 @@ const ICON_THEMES = [
     { id: "doom", label: "DOOM" },
     { id: "winamp", label: "WinAMP" },
     { id: "duroxide", label: "Duroxide" },
+    { id: "hearth", label: "Hearth" },
+    { id: "string-lights", label: "String lights" },
+    { id: "parcel", label: "Parcel" },
 ];
 
 for (const { id, label } of ICON_THEMES) {
@@ -168,6 +171,18 @@ test("Duroxide's mark is ONE path, so nonzero can punch its holes", () => {
     assert.equal(icon.paths.length, 1, "all subpaths must live in one d string");
     const subpaths = icon.paths[0].d.match(/M/g) || [];
     assert.equal(subpaths.length, 4, "hexagon outer + inner, gear/arrow outer + bore");
+});
+
+test("the holiday themes keep Failed and Done off the page color", () => {
+    for (const id of ["hearth", "string-lights", "parcel"]) {
+        const theme = getTheme(id);
+        assert.notEqual(theme.page.background, theme.terminal.red, `${id} ground is not Failed`);
+        assert.notEqual(theme.page.background, theme.terminal.green, `${id} ground is not Done`);
+        assert.notEqual(theme.terminal.cyan, theme.terminal.red, `${id} accent is not Failed`);
+        assert.notEqual(theme.terminal.cyan, theme.terminal.green, `${id} accent is not Done`);
+    }
+    assert.notEqual(getTheme("parcel").terminal.red, getTheme("parcel").terminal.cyan,
+        "Parcel Failed must not share the ribbon");
 });
 
 test("Duroxide is a different theme from Rust, not a re-skin", () => {
