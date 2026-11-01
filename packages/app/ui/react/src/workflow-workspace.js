@@ -1,6 +1,6 @@
 import React from "react";
 import { useControllerSelector } from "./use-controller-state.js";
-import { layoutWorkflowGraph, workflowLogBounds, workflowNodeViews } from "../../core/src/workflow-view.js";
+import { layoutWorkflowGraph, workflowLogBounds, workflowNodeViews, workflowReadModelView } from "../../core/src/workflow-view.js";
 import { projectWorkflowV2 } from "../../core/src/workflow-v2-view.js";
 import { WorkflowV2Banners, WorkflowV2NoGraph, WorkflowV2NodeContent } from "./workflow-v2-panels.js";
 
@@ -15,22 +15,24 @@ function useWorkflowView(controller) {
     const view = useControllerSelector(controller, state => state.ui.workflowViews?.[sessionId]) || EMPTY_VIEW;
     const events = history?.events || EMPTY_EVENTS;
     const live = canvas?.dataPayload;
+    const selectedRunId = view.selectedRunId ?? null;
+    const sessionUpdatedAt = session?.updatedAt ?? null;
+    // New events, another run selection or a changed session row (a draft's new revision) ask for the read model again.
     React.useEffect(() => {
         controller.ensureWorkflowDefinition(sessionId);
-    }, [controller, sessionId, events]);
-    // `view.readModel` is the object readWorkflowV2View returns. Nothing in this
-    // file fetches it; a caller supplies it with ui/workflowView. The optional
-    // `view.readModelAfterSeq` is the highest event sequence the caller had loaded
-    // before it fetched that read model; it only lets older pause/resume events
-    // stop contradicting the snapshot.
-    const readModel = view.readModel ?? null;
+    }, [controller, sessionId, events, selectedRunId, sessionUpdatedAt]);
+    // `view.readModel` is the object readWorkflowV2View returns, fetched by the controller (ensureWorkflowReadModel)
+    // for the run selection it records; a model read for another run is not used. Its watermark (`readModelAfterSeq`)
+    // is the highest event sequence the controller had loaded before it fetched that read model; it only lets older
+    // pause/resume events stop contradicting the snapshot.
+    const { readModel, readModelAfterSeq, error: readError } = workflowReadModelView(view);
     const v2 = React.useMemo(() => {
         if (view.definition?.shape !== "v2" && !readModel) return null;
-        const projected = projectWorkflowV2({ definition: view.definition, readModel, events, readModelAfterSeq: view.readModelAfterSeq ?? null });
+        const projected = projectWorkflowV2({ definition: view.definition, readModel, events, readModelAfterSeq });
         // Only a legacy definition falls back to the legacy view. A v2 definition is never redrawn once the
         // read model says there is no graph (invalid or unavailable); the no-graph panel explains why.
         return !projected.definition && view.definition && view.definition.shape !== "v2" ? null : projected;
-    }, [view.definition, readModel, view.readModelAfterSeq, events]);
+    }, [view.definition, readModel, readModelAfterSeq, events]);
     const definition = v2 ? v2.definition : view.definition;
     const legacyNodes = React.useMemo(() => v2 ? [] : workflowNodeViews(view.definition, events, live), [v2, view.definition, events, live]);
     const nodes = v2 ? v2.nodes : legacyNodes;
@@ -46,7 +48,18 @@ function useWorkflowView(controller) {
         controller.dispatch({ type: "ui/sidePaneTab", tab: "canvas" });
         controller.dispatch({ type: "canvas/flip", sessionId, slot: 1 });
     };
-    return { sessionId, session, view, nodes, selected, select, live, status, v2, definition };
+    return { sessionId, session, view, nodes, selected, select, live, status, v2, definition, readError };
+}
+
+/** The read model's last failure for the selected run, beside the graph, with a Retry that asks again now. */
+function WorkflowReadError({ controller, sessionId, message }) {
+    if (!message) return null;
+    return React.createElement("div", { className: "ps-workflow-read-error", role: "alert",
+        style: { display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", fontSize: "0.8rem", color: "var(--ps-danger)",
+            borderBottom: "1px solid var(--ps-border)", overflowWrap: "anywhere" } },
+    React.createElement("span", { style: { flex: 1, minWidth: 0 } }, `The workflow's current state could not be read: ${message}`),
+    React.createElement("button", { type: "button", className: "ps-mini-button",
+        onClick: () => controller.ensureWorkflowReadModel(sessionId, { force: true }) }, "Retry"));
 }
 
 function Duration({ ms }) {
@@ -121,7 +134,7 @@ function WorkflowGraph({ definition, nodes, selected, select, banners }) {
 }
 
 export function WorkflowMainPane({ controller, log, icon, showFooter = true, onNodeSelected }) {
-    const { sessionId, session, view, nodes, selected, select, status, v2, definition } = useWorkflowView(controller);
+    const { sessionId, session, view, nodes, selected, select, status, v2, definition, readError } = useWorkflowView(controller);
     const splitRef = React.useRef(null);
     const dragRef = React.useRef(false);
     const [splitHeight, setSplitHeight] = React.useState(500);
@@ -147,6 +160,7 @@ export function WorkflowMainPane({ controller, log, icon, showFooter = true, onN
             React.createElement("span", { className: "ps-workflow-status" }, status),
             React.createElement("button", { type: "button", className: "ps-mini-button", disabled: !selected,
                 onClick: () => selectNode(selected.id) }, "Node details")),
+        React.createElement(WorkflowReadError, { controller, sessionId, message: readError }),
         React.createElement("div", { ref: splitRef, className: "ps-workflow-split",
             style: { gridTemplateRows: `minmax(150px, 1fr) 12px ${height}px` } },
             React.createElement("div", { className: "ps-workflow-graph-region" },

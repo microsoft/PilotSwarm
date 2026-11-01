@@ -80,7 +80,9 @@ describe("workflow v2 readWorkflow (direct management client)", () => {
             expect(await mgmt.readWorkflow(workflowSessionId)).toEqual(view);
 
             await refused(() => mgmt.readWorkflow(workflowSessionId, { runId: randomUUID() }), "RUN_NOT_FOUND", 404);
+            await refused(() => mgmt.readWorkflow(workflowSessionId, { runId: "" }), "INVALID_REQUEST", 400);
             await refused(() => mgmt.readWorkflow(workflowSessionId, { runId: "  " }), "INVALID_REQUEST", 400);
+            await refused(() => mgmt.readWorkflow(workflowSessionId, { runId: 5 }), "INVALID_REQUEST", 400);
             await refused(() => mgmt.readWorkflow(workflowSessionId, { runId: "r".repeat(257) }), "INVALID_REQUEST", 400);
             await refused(() => mgmt.readWorkflow(parent), "WORKFLOW_NOT_FOUND", 404);
             await refused(() => mgmt.readWorkflow(randomUUID()), "NOT_FOUND", 404);

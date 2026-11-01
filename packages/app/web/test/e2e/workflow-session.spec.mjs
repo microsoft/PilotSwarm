@@ -62,13 +62,15 @@ async function shot(page, name) {
     await page.screenshot({ path: path.join(SHOTS, `${name}.png`), fullPage: false });
 }
 
-async function routeApi(page, { onCreate, workflowEvents = WORKFLOW_EVENTS, onSocket = () => {}, workflowState = {} } = {}) {
+async function routeApi(page, { onCreate, workflowEvents = WORKFLOW_EVENTS, onSocket = () => {}, workflowState = {}, onReadWorkflow = null } = {}) {
     await page.routeWebSocket("**/api/v1/ws", onSocket);
     await page.route("**/api/v1/**", async (route) => {
         const req = route.request();
         const pathname = new URL(req.url()).pathname;
         const answer = (result) => route.fulfill({ json: { ok: true, result } });
         const sessions = SESSIONS.map(session => session.sessionId === WORKFLOW_ID ? { ...session, ...workflowState } : session);
+        // readWorkflow: a test that needs a v2 read model answers it; otherwise the stub answers as for a version 1 workflow.
+        if (onReadWorkflow && pathname.endsWith(`/sessions/${WORKFLOW_ID}/workflow`) && req.method() === "GET") return onReadWorkflow(route);
         if (pathname.endsWith("/models")) return answer([{ providerId: "test", modelName: "test-model", qualifiedName: "test:test-model" }]);
         if (pathname.endsWith("/providers")) return answer({ providers: [{ name: "test", typeId: "test", class: "shared", hasCredential: true, usableByMe: true }] });
         if (pathname.endsWith("/providers/status")) return answer({ providers: [] });
@@ -463,3 +465,64 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 
         expect(errors).toEqual([]);
     });
 }
+
+// READ-WIRE-02: a version 2 workflow whose authorized read model (GET /sessions/:id/workflow) cannot be read shows the
+// failure beside its graph, drawn from its events, and Retry reads it again at once, in a mounted browser.
+const V2_STATES = [
+    { id: "poll", type: "script", runtime: "node", timeoutSeconds: 300, outcomes: ["changed", "unchanged"],
+        next: { changed: "done", unchanged: "pause", failure: "failed" } },
+    { id: "pause", type: "wait", seconds: 30, outcomes: ["elapsed"], next: { elapsed: "poll" } },
+    { id: "done", type: "terminal", outcome: "succeeded" },
+    { id: "failed", type: "terminal", outcome: "failed" },
+];
+const V2_EVENTS = [{ sessionId: WORKFLOW_ID, seq: 1, eventType: "workflow.started", createdAt: new Date().toISOString(), data: {
+    runId: "run-1", mode: "live", revision: 1, definitionHash: "hash-1", irSha256: "ir-1", name: "watch-v2", version: "1.0.0",
+    initial: "poll", states: V2_STATES,
+} }];
+const V2_READ_MODEL = {
+    workflowId: WORKFLOW_ID,
+    definition: { state: "published", semver: "1.0.0", currentRevision: 1, publishedRevision: 1, publishedDefinitionHash: "hash-1" },
+    revision: { revision: 1, definitionHash: "hash-1", valid: true, irSha256: "ir-1", name: "watch-v2", diagnostics: [] },
+    graph: { revision: 1, initial: "poll", states: V2_STATES },
+    runs: [{ runId: "run-1", mode: "live", status: "running", revision: 1, outcome: null }],
+    run: { runId: "run-1", mode: "live", status: "running", outcome: null, terminalState: null, output: null, error: null, kvRevision: 1, kv: "{}",
+        nodeExecutions: [{ nodeExecutionId: "nx-poll-1", stateId: "poll", ordinal: 1, state: "completed", outcome: "changed",
+            resultKind: "business", winner: "controller", attempts: 0, kvRevision: 1 }],
+        inbox: [], outbox: [] },
+};
+
+test("a v2 workflow's read model failure is shown beside its graph, and Retry reads it again", async ({ page }) => {
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    let failReads = true;
+    let reads = 0;
+    await routeApi(page, {
+        workflowEvents: V2_EVENTS,
+        workflowState: { title: "Workflow: watch-v2", status: "running" },
+        onReadWorkflow: (route) => {
+            reads += 1;
+            return failReads
+                ? route.fulfill({ status: 503, json: { ok: false, error: { code: "SERVICE_UNAVAILABLE", message: "The workflow store is not reachable." } } })
+                : route.fulfill({ json: { ok: true, result: V2_READ_MODEL } });
+        },
+    });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+    const main = page.locator(".ps-workflow-main");
+    const graph = main.getByRole("group", { name: "Workflow graph" });
+    const alert = main.locator(".ps-workflow-read-error");
+    await expect(alert).toBeVisible();
+    await expect(alert).toHaveAttribute("role", "alert");
+    await expect(alert).toContainText("could not be read: The workflow store is not reachable.");
+    await expect(graph.locator(".ps-workflow-node")).toHaveCount(4);
+    await expect(graph).not.toContainText("Done · changed");
+    await shot(page, "v2-read-model-failed");
+    const failed = reads;
+    expect(failed).toBeGreaterThan(0);
+    failReads = false;
+    await alert.getByRole("button", { name: "Retry", exact: true }).click();
+    await expect(alert).toHaveCount(0);
+    await expect(graph).toContainText("Done · changed");
+    expect(reads).toBeGreaterThan(failed);
+    await shot(page, "v2-read-model-retried");
+    expect(errors).toEqual([]);
+});

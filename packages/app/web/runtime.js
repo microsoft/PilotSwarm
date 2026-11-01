@@ -723,11 +723,11 @@ export class PortalRuntime {
             case "getSessionWorkspace":
                 return this.transport.getSessionWorkspace(safeParams.sessionId);
             // Workflow v2: the read-only view of a workflow session, after the session:read gate above (its not-found
-            // privacy comes first). The run is looked up within the authorized workflow; nothing is changed.
+            // privacy comes first). Only an absent run is omitted: a run given, empty or not a string included, reaches the
+            // adapter's own validation unchanged. The run is looked up within the authorized workflow; nothing is changed.
             case "readWorkflow":
-                return this.transport.readWorkflow(safeParams.sessionId, {
-                    ...(safeParams.runId != null && safeParams.runId !== "" ? { runId: String(safeParams.runId) } : {}),
-                });
+                return this.transport.readWorkflow(safeParams.sessionId,
+                    safeParams.runId === undefined || safeParams.runId === null ? {} : { runId: safeParams.runId });
             // Session workspaces: the wait for the answer holds this request,
             // so the caller's timeout is bounded like the other long waits.
             case "setSessionWorkspace":

@@ -244,9 +244,10 @@ export class HttpApiTransport {
         return this.api.call("getSessionWorkspace", { sessionId });
     }
 
-    /** Workflow v2: the read-only view of a workflow session (readWorkflow, session:read; runId optional). */
+    /** Workflow v2: the read-only view of a workflow session (readWorkflow, session:read). Only an absent runId is omitted. */
     async readWorkflow(sessionId, options = {}) {
-        return this.api.call("readWorkflow", { sessionId, ...(options?.runId ? { runId: options.runId } : {}) });
+        const runId = options?.runId;
+        return this.api.call("readWorkflow", { sessionId, ...(runId === undefined || runId === null ? {} : { runId }) });
     }
 
     async setSessionWorkspace(sessionId, input = {}, options = {}) {

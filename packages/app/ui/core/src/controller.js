@@ -1755,6 +1755,24 @@ function providerPickerNote(provider, statusRow, now = Date.now()) {
     return { state: "under_limit", text: `${worst.pct}% of its ${worst.periodLabel.toLowerCase()} limit used` };
 }
 
+/**
+ * Whether the last workflow read model request (`attempt`) was for this
+ * identity: the same run selection and session row version, and at least
+ * the events loaded now (no history loaded matches only no history loaded).
+ */
+function workflowReadAttemptCurrent(attempt, identity) {
+    if (!attempt || (attempt.runId ?? null) !== identity.runId) return false;
+    if ((attempt.sessionUpdatedAt ?? null) !== identity.sessionUpdatedAt) return false;
+    if (identity.afterSeq === null) return attempt.afterSeq === null;
+    return Number.isSafeInteger(attempt.afterSeq) && attempt.afterSeq >= identity.afterSeq;
+}
+
+/** A read model failure as the workflow pane shows it: its message, at most 300 characters. */
+function boundedWorkflowReadError(error) {
+    const text = String(error?.message || error || "The request failed.");
+    return text.length > 300 ? `${text.slice(0, 299)}…` : text;
+}
+
 export class PilotSwarmUiController {
     constructor({ store, transport }) {
         this.store = store;
@@ -6236,65 +6254,89 @@ export class PilotSwarmUiController {
     /**
      * Workflow v2: load the authorized read model (readWorkflow, GET
      * /sessions/:id/workflow, session:read) into the workflow view as
-     * `readModel`, with `readModelAfterSeq`: the highest event sequence this
-     * session had loaded BEFORE the request (null when its history was not
-     * loaded). One request runs per session, and one more follows when events
-     * arrived meanwhile. A response is applied only while it is the session's
-     * newest request, for the same run selection, the session is still a
-     * workflow, and it is not older than the read model shown (by that
-     * watermark and by its definition revision); anything else is discarded.
-     * A transport without the operation keeps the event-only view. A session
-     * that is not a version 2 workflow is marked so and not asked again
-     * unless forced; another failure is kept as `readModelError` and the
-     * last read model stays.
+     * `readModel`, for the run selection it was asked for
+     * (`readModelRunId`: `selectedRunId`, null for the live run), with
+     * `readModelAfterSeq`: the highest event sequence this session had loaded
+     * BEFORE the request (null when its history was not loaded).
+     *
+     * A request is for one identity: the run selection, the loaded events and
+     * the session row's updatedAt (a draft's new revision changes the session
+     * row, not its events). Its result, whatever it is, is recorded as
+     * `readModelAttempt`, and a request for the same identity is not made
+     * again unless forced (Retry): nothing retries on its own, and new events,
+     * a session row change or another selection ask again, at most once
+     * each. A legacy (version 1) definition, known from the session's own
+     * workflow.started event, has no read model and is never asked for.
+     *
+     * One request runs per session; a call while it runs makes one follow-up
+     * after it. A response is the result of its own request only: when a
+     * newer request began, the run selection changed or the session is no
+     * longer a workflow, it is discarded, failures included, and the
+     * follow-up asks for the current selection without waiting for events. A
+     * model older than the one shown for the same selection (by its
+     * watermark or definition revision) is not applied. WORKFLOW_NOT_FOUND
+     * (the session is not, or not yet, a version 2 workflow: its definition
+     * commits after its session row) sets `readModelUnavailable` and shows no
+     * error; any other failure sets `readModelError` (bounded text) and keeps
+     * the last read model.
      */
     async ensureWorkflowReadModel(sessionId, { force = false } = {}) {
         if (!sessionId || typeof this.transport?.readWorkflow !== "function") return;
         const state = this.getState();
-        if (state.sessions.byId[sessionId]?.sessionKind !== "workflow") return;
+        const session = state.sessions.byId[sessionId];
+        if (session?.sessionKind !== "workflow") return;
         const view = state.ui.workflowViews?.[sessionId] || {};
-        if (view.readModelUnavailable && !force) return;
-        const history = state.history.bySessionId.get(sessionId);
-        const loadedSeq = history ? Number(history.lastSeq) || 0 : null;
-        if (!force && view.readModel && loadedSeq !== null && Number.isSafeInteger(view.readModelAfterSeq) && view.readModelAfterSeq >= loadedSeq) return;
+        if (view.definition && view.definition.shape !== "v2") return;
         if (!this.workflowReadModels) this.workflowReadModels = new Map();
-        const entry = this.workflowReadModels.get(sessionId) || { generation: 0, inFlight: null, again: false };
+        const entry = this.workflowReadModels.get(sessionId) || { generation: 0, inFlight: null, again: false, forceAgain: false };
         this.workflowReadModels.set(sessionId, entry);
         if (entry.inFlight) {
             entry.again = true;
+            if (force) entry.forceAgain = true;
             return entry.inFlight;
         }
+        const history = state.history.bySessionId.get(sessionId);
+        const identity = {
+            runId: view.selectedRunId ?? null,
+            afterSeq: history ? Number(history.lastSeq) || 0 : null,
+            sessionUpdatedAt: session.updatedAt ?? null,
+        };
+        if (!force && workflowReadAttemptCurrent(view.readModelAttempt, identity)) return;
         entry.generation += 1;
         const generation = entry.generation;
-        const runId = view.selectedRunId ?? null;
         const load = async () => {
+            let outcome;
             try {
-                const readModel = await this.transport.readWorkflow(sessionId, runId ? { runId } : {});
-                const now = this.getState();
-                const current = now.ui.workflowViews?.[sessionId] || {};
-                const shownRevision = Number(current.readModel?.definition?.currentRevision) || 0;
-                const stale = generation !== entry.generation
-                    || now.sessions.byId[sessionId]?.sessionKind !== "workflow"
-                    || (current.selectedRunId ?? null) !== runId
-                    || (loadedSeq !== null && Number.isSafeInteger(current.readModelAfterSeq) && current.readModelAfterSeq > loadedSeq)
-                    || (Number(readModel?.definition?.currentRevision) || 0) < shownRevision;
-                if (!stale) {
-                    this.dispatch({ type: "ui/workflowView", sessionId,
-                        view: { readModel, readModelAfterSeq: loadedSeq, readModelError: null, readModelUnavailable: false } });
-                }
+                outcome = { readModel: await this.transport.readWorkflow(sessionId, identity.runId !== null ? { runId: identity.runId } : {}) };
             } catch (error) {
-                if (generation === entry.generation) {
-                    this.dispatch({ type: "ui/workflowView", sessionId, view: error?.code === "WORKFLOW_NOT_FOUND"
-                        ? { readModelUnavailable: true, readModelError: null }
-                        : { readModelError: error?.message || String(error) } });
-                }
-            } finally {
-                entry.inFlight = null;
+                outcome = { error };
             }
-            if (entry.again) {
-                entry.again = false;
-                await this.ensureWorkflowReadModel(sessionId);
+            entry.inFlight = null;
+            const now = this.getState();
+            const current = now.ui.workflowViews?.[sessionId] || {};
+            const own = generation === entry.generation
+                && now.sessions.byId[sessionId]?.sessionKind === "workflow"
+                && (current.selectedRunId ?? null) === identity.runId;
+            if (own && outcome.error) {
+                this.dispatch({ type: "ui/workflowView", sessionId, view: outcome.error?.code === "WORKFLOW_NOT_FOUND"
+                    ? { readModelAttempt: identity, readModelUnavailable: true, readModelError: null }
+                    : { readModelAttempt: identity, readModelError: boundedWorkflowReadError(outcome.error) } });
+            } else if (own) {
+                const readModel = outcome.readModel;
+                const shown = (current.readModelRunId ?? null) === identity.runId ? current : null;
+                const older = shown !== null && shown.readModel != null && (
+                    (identity.afterSeq !== null && Number.isSafeInteger(shown.readModelAfterSeq) && shown.readModelAfterSeq > identity.afterSeq)
+                    || (Number(readModel?.definition?.currentRevision) || 0) < (Number(shown.readModel?.definition?.currentRevision) || 0));
+                this.dispatch({ type: "ui/workflowView", sessionId, view: older
+                    ? { readModelAttempt: identity }
+                    : { readModel, readModelRunId: identity.runId, readModelAfterSeq: identity.afterSeq, readModelAttempt: identity,
+                        readModelError: null, readModelUnavailable: false } });
             }
+            const again = entry.again || !own;
+            const forceAgain = entry.forceAgain;
+            entry.again = false;
+            entry.forceAgain = false;
+            if (again) await this.ensureWorkflowReadModel(sessionId, { force: forceAgain });
         };
         // Started after the assignment, so a transport that fails at once still clears the in-flight request.
         entry.inFlight = Promise.resolve().then(load);
@@ -6304,10 +6346,7 @@ export class PilotSwarmUiController {
     /** Discard any read model response still in flight for a session (a newer request, or none, will be applied). */
     invalidateWorkflowReadModel(sessionId) {
         const entry = this.workflowReadModels?.get(sessionId);
-        if (entry) {
-            entry.generation += 1;
-            entry.again = false;
-        }
+        if (entry) entry.generation += 1;
     }
 
     async ensureCanvasSnapshot(sessionId) {

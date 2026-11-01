@@ -189,3 +189,23 @@ export function workflowLogBounds(availableHeight, requested = 210) {
     const max = Math.max(min, Math.floor(availableHeight) - 162);
     return { min, max, height: Math.max(min, Math.min(max, requested)) };
 }
+
+/**
+ * The workflow view's v2 read model for its current run selection
+ * (`selectedRunId`, null for the live run): the model and its watermark only
+ * when they were read for that selection (a model read for another run is
+ * not shown), and the failure of that selection's last request, if any. A
+ * legacy (version 1) definition has no read model, so no failure is shown
+ * for it.
+ */
+export function workflowReadModelView(view = {}) {
+    const selection = view.selectedRunId ?? null;
+    const own = view.readModel != null && (view.readModelRunId ?? null) === selection;
+    const legacy = view.definition != null && view.definition.shape !== "v2";
+    const attempted = view.readModelAttempt != null && (view.readModelAttempt.runId ?? null) === selection;
+    return {
+        readModel: own ? view.readModel : null,
+        readModelAfterSeq: own && Number.isSafeInteger(view.readModelAfterSeq) ? view.readModelAfterSeq : null,
+        error: !legacy && attempted && typeof view.readModelError === "string" && view.readModelError ? view.readModelError : null,
+    };
+}

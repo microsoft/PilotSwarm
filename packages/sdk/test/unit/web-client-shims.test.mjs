@@ -73,6 +73,11 @@ const SHIM_CASES = [
     { call: (c) => c.listSessionShares("s1"), op: "listSessionShares", params: { sessionId: "s1" } },
     { call: (c) => c.listKnownUsers({ limit: 10 }), op: "listKnownUsers", params: { limit: 10 } },
     { call: (c) => c.listAuthzAudit({ limit: 5, sessionId: "s1" }), op: "listAuthzAudit", params: { limit: 5, sessionId: "s1" } },
+    // — workflow v2 read: only an absent run is left out; an empty one is sent for the server to refuse —
+    { call: (c) => c.readWorkflow("s1"), op: "readWorkflow", params: { sessionId: "s1" } },
+    { call: (c) => c.readWorkflow("s1", { runId: null }), op: "readWorkflow", params: { sessionId: "s1" } },
+    { call: (c) => c.readWorkflow("s1", { runId: "run-1" }), op: "readWorkflow", params: { sessionId: "s1", runId: "run-1" } },
+    { call: (c) => c.readWorkflow("s1", { runId: "" }), op: "readWorkflow", params: { sessionId: "s1", runId: "" } },
 ];
 
 test("every shim maps its positional arguments onto the right wire call", async () => {

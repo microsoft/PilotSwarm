@@ -6,12 +6,20 @@
  * workflow (and look up its run); the transport's readWorkflow is the human
  * read adapter, never the agent tool's parent-only path. A content-bearing
  * read by an admin outside the owner's visibility is audited as break-glass.
+ * Only an absent runId is omitted on the way: an empty, blank or non-string
+ * one reaches the adapter's validation (400) unchanged, through the actual
+ * HTTP route, and only after the gate (READ-WIRE-04).
  *
  * Run: node --test web/test/workflow-read-runtime.test.mjs
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import http from "node:http";
+import express from "express";
+import { NodeSdkTransport } from "pilotswarm/host";
+import { PilotSwarmManagementClient } from "pilotswarm-sdk";
 
+import { createApiRouter } from "../api/router.js";
 import { PortalRuntime } from "../runtime.js";
 
 test("readWorkflow is one GET session:read operation: the session in the path, an optional run in the query", async () => {
@@ -88,4 +96,87 @@ test("with the ownership switch off, readWorkflow behaves as every other session
     await runtime.call("readWorkflow", { sessionId: "s1" }, as("bob"));
     assert.deepEqual(calls, [["s1", {}]]);
     assert.ok(audits.some((entry) => entry.action === "readWorkflow" && entry.decision === "would_deny"));
+});
+
+/**
+ * The actual HTTP route, end to end in-process: the generated Express route, the real PortalRuntime gate, the real
+ * NodeSdkTransport.readWorkflow and the real PilotSwarmManagementClient.readWorkflow adapter (its runId validation and its
+ * session lookup), over a stand-in catalog (no database).
+ */
+async function routeHarness() {
+    const owner = { provider: "dev", subject: "alice" };
+    const adapterCalls = [];
+    const mgmt = {
+        _ensureStarted() {},
+        _catalog: {
+            getSession: async (sessionId) => (sessionId === "missing" ? null : { sessionId, sessionKind: "agent", deletedAt: null }),
+            workflowStore: () => ({}),
+        },
+        async readWorkflow(sessionId, options) {
+            adapterCalls.push([sessionId, options]);
+            return PilotSwarmManagementClient.prototype.readWorkflow.call(this, sessionId, options);
+        },
+    };
+    const runtime = new PortalRuntime({ store: "sqlite::memory:", mode: "local" });
+    runtime.start = async () => {};
+    runtime.authz = { ...runtime.authz, enforce: true };
+    runtime.transport = {
+        getSessionAccess: async (sessionId, viewer) => (sessionId === "missing" ? null : {
+            rootSessionId: sessionId, isSystem: false, visibility: "private", owner: { ...owner, displayName: "Alice" },
+            viewerIsOwner: viewer.provider === owner.provider && viewer.subject === owner.subject, viewerShareAccess: null,
+        }),
+        recordAuthzAudit: async () => {},
+        readWorkflow: (...args) => NodeSdkTransport.prototype.readWorkflow.apply({ mgmt }, args),
+    };
+    const requireAuth = (req, _res, next) => {
+        const subject = String(req.headers["x-test-user"] || "alice");
+        req.auth = { principal: { provider: "dev", subject }, authorization: { allowed: true, role: "user", reason: "test", matchedGroups: [] } };
+        next();
+    };
+    const app = express();
+    app.use(express.json());
+    app.use("/api/v1", createApiRouter({ runtime, requireAuth }));
+    const server = http.createServer(app);
+    await new Promise((resolve) => server.listen(0, resolve));
+    const base = `http://127.0.0.1:${server.address().port}/api/v1`;
+    const get = async (path, subject = "alice") => {
+        const response = await fetch(`${base}${path}`, { headers: { "x-test-user": subject } });
+        return { status: response.status, body: await response.json() };
+    };
+    return { runtime, adapterCalls, get, close: () => new Promise((resolve) => server.close(resolve)) };
+}
+
+test("the HTTP route keeps an explicit empty or blank runId for the adapter's validation, after the session gate", async () => {
+    const h = await routeHarness();
+    try {
+        // An explicit empty or blank run reaches the adapter unchanged and is refused there (400), not read as the live run.
+        for (const query of ["?runId=", "?runId=%20%20"]) {
+            const refused = await h.get(`/sessions/s1/workflow${query}`);
+            assert.equal(refused.status, 400, query);
+            assert.equal(refused.body.ok, false);
+            assert.equal(refused.body.error.code, "INVALID_REQUEST", query);
+        }
+        assert.deepEqual(h.adapterCalls, [["s1", { runId: "" }], ["s1", { runId: "  " }]]);
+        // An absent run is omitted: the adapter reads the session, which here is no version 2 workflow.
+        const agent = await h.get("/sessions/s1/workflow");
+        assert.equal(agent.status, 404);
+        assert.equal(agent.body.error.code, "WORKFLOW_NOT_FOUND");
+        assert.deepEqual(h.adapterCalls.at(-1), ["s1", {}]);
+        // The session gate decides first: someone who cannot read the session, or a session that does not exist, gets the
+        // same not-found, and the adapter is never asked, whatever the runId.
+        const before = h.adapterCalls.length;
+        for (const [path, subject] of [["/sessions/s1/workflow?runId=", "bob"], ["/sessions/s1/workflow", "bob"], ["/sessions/missing/workflow?runId=", "alice"]]) {
+            const hidden = await h.get(path, subject);
+            assert.equal(hidden.status, 404, path);
+            assert.equal(hidden.body.error.code, "NOT_FOUND", path);
+            assert.equal(hidden.body.error.message, "Session not found.", path);
+        }
+        assert.equal(h.adapterCalls.length, before);
+        // The dispatcher passes a non-string run as it is: the adapter refuses its type rather than reading a coerced id.
+        await assert.rejects(h.runtime.call("readWorkflow", { sessionId: "s1", runId: 5 }, { principal: { provider: "dev", subject: "alice" },
+            authorization: { role: "user" } }), (error) => error.code === "INVALID_REQUEST" && error.status === 400);
+        assert.deepEqual(h.adapterCalls.at(-1), ["s1", { runId: 5 }]);
+    } finally {
+        await h.close();
+    }
 });
