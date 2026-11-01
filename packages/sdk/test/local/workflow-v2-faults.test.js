@@ -457,52 +457,37 @@ states:
         } finally { await h.stop(); }
     });
 
-    it("fails a controller instance of a pre-release version visibly, and recover ends its run", { timeout: TIMEOUT }, async () => {
+    it("fails a controller instance of each pre-release version visibly, and recover ends its run", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv(), {});
         try {
             const parentId = randomUUID();
             await h.host.catalog.createSession(parentId, {});
             const context = { callerSessionId: parentId, host: h.host };
             const undispatched = { ...h.host, duroxideClient: { ...h.host.duroxideClient, startOrchestrationVersioned: async () => undefined } };
-            const id = randomUUID();
-            const created = await createWorkflowV2(undispatched, { workflowSessionId: id, parentSessionId: parentId, yaml: TWO_STEPS,
-                actor: ACTOR, operationId: "start", start: { inputs: {} } });
-            const { runId, controllerInstanceId } = created.receipt.run;
-            // As a pre-release build would have started it.
-            await h.client.startOrchestrationVersioned(controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME, { v: 2, workflowSessionId: id, runId }, "1.1.0");
-            const failed = await until(async () => {
-                const status = await h.client.getStatus(controllerInstanceId);
-                return status.status === "Failed" ? status : null;
-            }, "the pre-release controller to fail");
-            expect(failed.error).toContain("pre-release build");
-            expect((await h.store.readRun(runId)).status).toBe("admitted");
-            expect(await h.store.listNodeExecutions(runId)).toEqual([]);
-            const view = JSON.parse(await readWorkflowFromTool({ workflow_id: id }, context));
-            expect(view.run).toMatchObject({ status: "admitted", controller: { status: "Failed", needsRecovery: true } });
-            expect(view.run.controller.error).toContain("pre-release build");
-            const recovered = JSON.parse(await updateWorkflowFromTool({ workflow_id: id, operation: "recover", operation_id: "recover" }, context));
-            expect(recovered).toMatchObject({ ok: true, action: "ended", status: "failed" });
-            const run = await h.store.readRun(runId);
-            expect(run.terminalError).toMatchObject({ code: "controller_ended", details: { controllerStatus: "Failed" } });
-            expect(run.terminalError.details.controllerError).toContain("pre-release build");
-        } finally { await h.stop(); }
-    });
-
-    it("runs an instance of the compatible 1.4.0 controller version with this build's controller", { timeout: TIMEOUT }, async () => {
-        const h = await harness(getEnv(), {});
-        try {
-            const undispatched = { ...h.host, duroxideClient: { ...h.host.duroxideClient, startOrchestrationVersioned: async () => undefined } };
-            const id = randomUUID();
-            const created = await createWorkflowV2(undispatched, { workflowSessionId: id, parentSessionId: null, yaml: TWO_STEPS,
-                actor: ACTOR, operationId: "start", start: { inputs: {} } });
-            const { runId, controllerInstanceId } = created.receipt.run;
-            // As the previous build started it.
-            await h.client.startOrchestrationVersioned(controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME, { v: 2, workflowSessionId: id, runId }, "1.4.0");
-            const run = await finished(h, runId, 60_000);
-            expect(run.status, JSON.stringify(run)).toBe("completed");
-            expect(run.terminalOutput).toEqual({ n: 2 });
-            const controller = await h.client.waitForOrchestration(controllerInstanceId, 30_000);
-            expect(controller.status, JSON.stringify(controller)).toBe("Completed");
+            // 1.4.0 and 1.5.0 are fenced too: no test replays a history an earlier build wrote.
+            for (const version of ["1.1.0", "1.4.0", "1.5.0"]) {
+                const id = randomUUID();
+                const created = await createWorkflowV2(undispatched, { workflowSessionId: id, parentSessionId: parentId, yaml: TWO_STEPS,
+                    actor: ACTOR, operationId: "start", start: { inputs: {} } });
+                const { runId, controllerInstanceId } = created.receipt.run;
+                // As a pre-release build would have started it.
+                await h.client.startOrchestrationVersioned(controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME, { v: 2, workflowSessionId: id, runId }, version);
+                const failed = await until(async () => {
+                    const status = await h.client.getStatus(controllerInstanceId);
+                    return status.status === "Failed" ? status : null;
+                }, `the pre-release ${version} controller to fail`);
+                expect(failed.error).toContain(`version ${version}, written by a pre-release build`);
+                expect((await h.store.readRun(runId)).status, version).toBe("admitted");
+                expect(await h.store.listNodeExecutions(runId)).toEqual([]);
+                const view = JSON.parse(await readWorkflowFromTool({ workflow_id: id }, context));
+                expect(view.run, version).toMatchObject({ status: "admitted", controller: { status: "Failed", needsRecovery: true } });
+                expect(view.run.controller.error).toContain("pre-release build");
+                const recovered = JSON.parse(await updateWorkflowFromTool({ workflow_id: id, operation: "recover", operation_id: "recover" }, context));
+                expect(recovered, version).toMatchObject({ ok: true, action: "ended", status: "failed" });
+                const run = await h.store.readRun(runId);
+                expect(run.terminalError).toMatchObject({ code: "controller_ended", details: { controllerStatus: "Failed" } });
+                expect(run.terminalError.details.controllerError).toContain(`version ${version}, written by a pre-release build`);
+            }
         } finally { await h.stop(); }
     });
 

@@ -5,12 +5,16 @@
  *
  * - a wait is a durable timer in the workflow's controller, never a script
  *   sleep or an effect orchestration, and it passes its input on;
- * - its seconds are read once, when it is entered: its absolute deadline is
- *   stored then, a later KV change does not move it, and a bad value is
- *   invalid_input;
+ * - its seconds are read once, when it is entered: the store fixes its
+ *   absolute deadline in its own clock then, a later KV change does not move
+ *   it, and a bad value is invalid_input;
+ * - it elapses only once the store's clock reached the deadline: the store
+ *   refuses an early elapse and reports the time left, and a controller whose
+ *   clock runs ahead (fault injection) waits that time;
  * - the deadline survives a worker restart and continue-as-new;
  * - pause does not freeze it (the wait elapses while paused, and its
- *   successor is admitted after resume); a cancel ends a waiting run at once.
+ *   successor is admitted after resume); a cancel ends a waiting run at once,
+ *   and a later elapse keeps the cancellation.
  *
  * Wait states are not in the formal model (README "Model simplifications");
  * these regressions are their evidence. A deliberate outage window below is
@@ -19,6 +23,7 @@
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
+import pg from "pg";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { compileWorkflowV2, parseWorkflowIr, WORKFLOW_V2_IR_VERSION, WORKFLOW_V2_WAIT_IR_VERSION } from "../../src/workflow/v2/compiler.ts";
@@ -71,18 +76,37 @@ async function baseOf(env) {
     return { catalog, store: catalog.workflowStore(), provider, client: new Client(provider) };
 }
 
-/** A worker-equivalent registration; `refusals` lists runs whose admission the store refused for a pause. */
-async function harness(env, { base: shared, runtimeOptions, wakeBackstopMs = 500 } = {}) {
+/**
+ * A worker-equivalent registration. `refusals` lists runs whose admission the
+ * store refused for a pause; `elapses` lists the elapse activity's results;
+ * `beforeElapse` runs before each elapse activity (a fault-injection hook).
+ */
+async function harness(env, { base: shared, runtimeOptions, wakeBackstopMs = 500, beforeElapse } = {}) {
     const base = shared ?? await baseOf(env);
     const { catalog, store, provider, client } = base;
     const runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error", ...runtimeOptions });
     const refusals = [];
+    const elapses = [];
+    const wrap = (name, fn) => {
+        if (name === WORKFLOW_V2_ACTIVITIES.enter) {
+            return async (ctx, input) => {
+                const entered = await fn(ctx, input);
+                if (entered.admitted === false && entered.status === "paused") refusals.push(input.runId);
+                return entered;
+            };
+        }
+        if (name === WORKFLOW_V2_ACTIVITIES.elapse) {
+            return async (ctx, input) => {
+                if (beforeElapse) await beforeElapse(input);
+                const elapsed = await fn(ctx, input);
+                elapses.push(elapsed);
+                return elapsed;
+            };
+        }
+        return fn;
+    };
     registerWorkflowV2({
-        registerActivity: (name, fn) => runtime.registerActivity(name, name !== WORKFLOW_V2_ACTIVITIES.enter ? fn : async (ctx, input) => {
-            const entered = await fn(ctx, input);
-            if (entered.admitted === false && entered.status === "paused") refusals.push(input.runId);
-            return entered;
-        }),
+        registerActivity: (name, fn) => runtime.registerActivity(name, wrap(name, fn)),
         registerOrchestrationVersioned: (name, version, fn) => runtime.registerOrchestrationVersioned(name, version, fn),
     }, {
         store, catalog,
@@ -97,7 +121,7 @@ async function harness(env, { base: shared, runtimeOptions, wakeBackstopMs = 500
     await runtime.start();
     let running = true;
     return {
-        store, client, refusals, base,
+        store, client, refusals, elapses, base,
         host: { catalog, store, duroxideClient: client },
         async stopRuntime() {
             if (!running) return;
@@ -130,23 +154,33 @@ async function parentOf(h) {
     };
 }
 
-/** Start a NAP run with these vars and wait until its wait state is admitted; `startedAt` is this process's clock before the start. */
+/** Start a NAP run with these vars and wait until its wait state is admitted. */
 async function napEntered(h, parent, { vars, seconds } = {}) {
     const id = randomUUID();
-    const startedAt = Date.now();
     const created = await createWorkflowV2(h.host, { workflowSessionId: id, parentSessionId: parent.parentId, yaml: NAP(seconds),
         actor: ACTOR, operationId: "start", start: { inputs: {}, vars: vars ?? {} } });
     const { runId, controllerInstanceId } = created.receipt.run;
     const node = await until(async () => (await h.store.listNodeExecutions(runId))[0] ?? null, "the wait state's admission");
-    return { id, runId, controllerInstanceId, node, startedAt };
+    return { id, runId, controllerInstanceId, node };
 }
 
-/** Poll until the node has a result; returns the stored row and the local time it was first seen completed. */
+/** Poll until the node has a result; returns the stored row. */
 async function completion(store, nodeExecutionId, timeoutMs = 60_000) {
     return until(async () => {
         const node = await store.readNodeExecution(nodeExecutionId);
-        return node?.state === "completed" ? { node, seenAt: Date.now() } : null;
+        return node?.state === "completed" ? node : null;
     }, `${nodeExecutionId} to complete`, timeoutMs);
+}
+
+/**
+ * Every time below is the store's clock (PostgreSQL now()), read from the
+ * stored row: the deadline is fixed at the admission (deadline_at - entered_at
+ * is the wait's seconds exactly), and the elapse commits only at or after it
+ * (completed_at >= deadline_at). Lateness bounds also assume this worker's
+ * clock and the store's agree within a few milliseconds, as they do here.
+ */
+function lateness(node) {
+    return node.completedAt.getTime() - node.deadlineAt.getTime();
 }
 
 describe("workflow v2 wait states", () => {
@@ -180,18 +214,23 @@ describe("workflow v2 wait states", () => {
         const h = await harness(getEnv());
         try {
             const parent = await parentOf(h);
-            const { id, runId, node, startedAt } = await napEntered(h, parent, { seconds: "1" });
+            const { id, runId, node } = await napEntered(h, parent, { seconds: "1" });
             expect(node).toMatchObject({ nodeId: "nap", nodeType: "wait", effectAttempts: 0, input: { from: "start" } });
-            // The deadline is the admission time (this worker's clock) plus 1 s.
-            expect(node.deadlineAt.getTime()).toBeGreaterThanOrEqual(startedAt + 1_000);
+            // The deadline is the store's clock at the admission plus 1 s, exactly.
+            expect(node.deadlineAt.getTime() - node.enteredAt.getTime()).toBe(1_000);
             const view = await parent.read(id);
             expect(view.run.nodeExecutions[0]).toMatchObject({ stateId: "nap", deadline: node.deadlineAt.toISOString() });
             expect(view.graph.states).toContainEqual({ id: "nap", type: "wait", seconds: 1, outcomes: ["elapsed"], next: { elapsed: "after", invalid_input: "bad" } });
-            const { node: elapsed, seenAt } = await completion(h.store, node.nodeExecutionId);
-            expect(seenAt).toBeGreaterThanOrEqual(node.deadlineAt.getTime());
-            expect(elapsed).toMatchObject({ outcome: "elapsed", resultKind: "business", winner: "controller", output: { from: "start" }, effectAttempts: 0 });
+            const elapsed = await completion(h.store, node.nodeExecutionId);
+            // Never early in the store's clock; on time within the lateness bound.
+            expect(lateness(elapsed)).toBeGreaterThanOrEqual(0);
+            expect(lateness(elapsed)).toBeLessThan(2_000);
+            expect(elapsed).toMatchObject({ outcome: "elapsed", resultKind: "business", winner: "controller", output: { from: "start" }, effectAttempts: 0,
+                deadlineAt: node.deadlineAt });
             const run = await finished(h.store, runId);
             expect(run).toMatchObject({ status: "completed", terminalOutput: { woke: { from: "start" } } });
+            // The elapse that completed it reported nothing left (the run ended after that activity returned).
+            expect(h.elapses.at(-1)).toEqual({ notDue: [] });
             // No effect orchestration ever existed for the wait.
             expect((await h.client.getStatus(workflowEffectInstanceId(node.nodeExecutionId))).status).toBe("NotFound");
         } finally { await h.stop(); }
@@ -202,11 +241,13 @@ describe("workflow v2 wait states", () => {
         try {
             const parent = await parentOf(h);
             const { id, runId, node } = await napEntered(h, parent, { vars: { secs: 2 } });
+            expect(node.deadlineAt.getTime() - node.enteredAt.getTime()).toBe(2_000);
             expect(await parent.update(id, { operation: "set_vars", operation_id: "longer", set: { secs: 600 }, expected_kv_revision: 1 }))
                 .toMatchObject({ ok: true, kvRevision: 2 });
-            const { node: elapsed, seenAt } = await completion(h.store, node.nodeExecutionId, 30_000);
+            const elapsed = await completion(h.store, node.nodeExecutionId, 30_000);
             expect(elapsed.deadlineAt.getTime()).toBe(node.deadlineAt.getTime());
-            expect(seenAt - node.deadlineAt.getTime()).toBeLessThan(5_000);
+            expect(lateness(elapsed)).toBeGreaterThanOrEqual(0);
+            expect(lateness(elapsed)).toBeLessThan(5_000);
             expect((await finished(h.store, runId)).status).toBe("completed");
 
             // A KV value that is not an integer from 1 to 86400 is stored, and the wait that reads it fails at entry.
@@ -237,10 +278,11 @@ describe("workflow v2 wait states", () => {
             worker = await harness(getEnv(), { base, runtimeOptions });
             workers.push(worker);
             const afterRestart = await completion(base.store, restarted.node.nodeExecutionId);
-            // On time: a timer started again at the restart would elapse about 3 s late.
-            expect(afterRestart.seenAt).toBeGreaterThanOrEqual(restarted.node.deadlineAt.getTime());
-            expect(afterRestart.seenAt - restarted.node.deadlineAt.getTime()).toBeLessThan(2_000);
-            expect(afterRestart.node).toMatchObject({ outcome: "elapsed", deadlineAt: restarted.node.deadlineAt });
+            // On time in the store's clock: a timer started again at the restart would elapse about 3 s late.
+            expect(lateness(afterRestart)).toBeGreaterThanOrEqual(0);
+            expect(lateness(afterRestart)).toBeLessThan(2_000);
+            expect(afterRestart).toMatchObject({ outcome: "elapsed", deadlineAt: restarted.node.deadlineAt });
+            expect(restarted.node.deadlineAt.getTime() - restarted.node.enteredAt.getTime()).toBe(6_000);
             expect((await finished(base.store, restarted.runId)).status).toBe("completed");
             await worker.stopRuntime();
 
@@ -250,8 +292,9 @@ describe("workflow v2 wait states", () => {
             const continued = await napEntered(worker, parent, { seconds: "15" });
             const afterContinue = await completion(base.store, continued.node.nodeExecutionId);
             expect((await base.client.listExecutions(continued.controllerInstanceId)).length).toBeGreaterThanOrEqual(2);
-            expect(afterContinue.seenAt).toBeGreaterThanOrEqual(continued.node.deadlineAt.getTime());
-            expect(afterContinue.seenAt - continued.node.deadlineAt.getTime()).toBeLessThan(2_000);
+            expect(lateness(afterContinue)).toBeGreaterThanOrEqual(0);
+            expect(lateness(afterContinue)).toBeLessThan(2_000);
+            expect(afterContinue).toMatchObject({ outcome: "elapsed", deadlineAt: continued.node.deadlineAt });
             expect((await finished(base.store, continued.runId)).status).toBe("completed");
         } finally {
             for (const worker of workers) await worker.stop();
@@ -267,8 +310,9 @@ describe("workflow v2 wait states", () => {
             expect(await parent.update(id, { operation: "pause", operation_id: "pause" })).toMatchObject({ ok: true, status: "paused" });
             expect((await parent.read(id)).run).toMatchObject({ status: "paused", pauseSettled: false });
             // Pause does not freeze the deadline: the wait elapses on time while the run is paused.
-            const { node: elapsed, seenAt } = await completion(h.store, node.nodeExecutionId);
-            expect(seenAt - node.deadlineAt.getTime()).toBeLessThan(5_000);
+            const elapsed = await completion(h.store, node.nodeExecutionId);
+            expect(lateness(elapsed)).toBeGreaterThanOrEqual(0);
+            expect(lateness(elapsed)).toBeLessThan(5_000);
             expect(elapsed.outcome).toBe("elapsed");
             await until(async () => h.refusals.includes(runId), "the successor's admission refused for the pause");
             expect((await h.store.listNodeExecutions(runId)).map(item => item.nodeId)).toEqual(["nap"]);
@@ -280,18 +324,67 @@ describe("workflow v2 wait states", () => {
         } finally { await h.stop(); }
     });
 
-    it("ends a waiting run at once when it is cancelled", { timeout: TIMEOUT }, async () => {
+    it("ends a waiting run at once when it is cancelled; the store refuses an early elapse, and the cancellation keeps its node", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
             const parent = await parentOf(h);
             const { id, runId, controllerInstanceId, node } = await napEntered(h, parent, { seconds: "300" });
+            // Before its deadline the store elapses nothing: it reports the time left, and the wait stays pending.
+            const early = await h.store.elapseWait(node.nodeExecutionId);
+            expect(early).toMatchObject({ result: "not_due", node: { state: "pending", deadlineAt: node.deadlineAt } });
+            expect(early.remainingMs).toBeGreaterThan(0);
+            expect(early.remainingMs).toBeLessThanOrEqual(300_000);
+            expect(await h.store.readNodeExecution(node.nodeExecutionId)).toMatchObject({ state: "pending", completedAt: null });
             const askedAt = Date.now();
             expect(await parent.update(id, { operation: "cancel", operation_id: "cancel", reason: "not needed" })).toMatchObject({ ok: true });
             const run = await finished(h.store, runId, 30_000);
             expect(Date.now() - askedAt).toBeLessThan(30_000);
             expect(run).toMatchObject({ status: "cancelled", terminalError: { code: "cancelled", message: "not needed" } });
-            expect(await h.store.readNodeExecution(node.nodeExecutionId)).toMatchObject({ state: "completed", outcome: "cancelled", winner: "cancel" });
+            const cancelled = await h.store.readNodeExecution(node.nodeExecutionId);
+            expect(cancelled).toMatchObject({ state: "completed", outcome: "cancelled", winner: "cancel" });
+            // The first result stands: a later elapse changes nothing.
+            expect(await h.store.elapseWait(node.nodeExecutionId)).toMatchObject({ result: "decided", node: { outcome: "cancelled", winner: "cancel" } });
+            expect(await h.store.readNodeExecution(node.nodeExecutionId)).toEqual(cancelled);
             expect((await h.client.waitForOrchestration(controllerInstanceId, 30_000)).status).toBe("Completed");
         } finally { await h.stop(); }
+    });
+
+    it("never elapses before the store's clock reaches the deadline, even when the controller's clock runs ahead of it", { timeout: TIMEOUT }, async () => {
+        // Fault injection: after the controller read the deadline, the stored
+        // deadline moves 3 s later. To the controller this is a worker clock
+        // 3 s ahead of the store's; the first elapse waits until the move commits.
+        const env = getEnv();
+        let moved;
+        const movedCommitted = new Promise(resolve => { moved = resolve; });
+        const h = await harness(env, { beforeElapse: () => movedCommitted });
+        const db = new pg.Client({ connectionString: env.store });
+        try {
+            await db.connect();
+            const parent = await parentOf(h);
+            const { runId, node } = await napEntered(h, parent, { seconds: "1" });
+            const shifted = await db.query(
+                `UPDATE "${env.cmsSchema}".workflow_node_executions SET deadline_at = deadline_at + interval '3 seconds'
+                  WHERE node_execution_id = $1 AND state = 'pending' RETURNING deadline_at`, [node.nodeExecutionId]);
+            expect(shifted.rows).toHaveLength(1);
+            moved();
+            const elapsed = await completion(h.store, node.nodeExecutionId);
+            expect(elapsed.deadlineAt.getTime()).toBe(node.deadlineAt.getTime() + 3_000);
+            // It elapsed only once the store's clock reached the moved deadline, and then on time.
+            expect(lateness(elapsed)).toBeGreaterThanOrEqual(0);
+            expect(lateness(elapsed)).toBeLessThan(2_000);
+            expect(elapsed).toMatchObject({ outcome: "elapsed", winner: "controller" });
+            expect((await finished(h.store, runId)).status).toBe("completed");
+            // At the deadline it had read, the controller asked; the store refused and reported the time left
+            // (3 s, plus at most the difference between this worker's clock and the store's). The run ended
+            // after the elapse that completed the wait returned, which reported nothing left.
+            expect(h.elapses[0]).toEqual({ notDue: [{ nodeExecutionId: node.nodeExecutionId, remainingMs: expect.any(Number) }] });
+            expect(h.elapses[0].notDue[0].remainingMs).toBeGreaterThan(0);
+            expect(h.elapses[0].notDue[0].remainingMs).toBeLessThan(3_500);
+            expect(h.elapses.at(-1)).toEqual({ notDue: [] });
+        } finally {
+            moved();
+            await h.stop();
+            await db.end();
+        }
     });
 });

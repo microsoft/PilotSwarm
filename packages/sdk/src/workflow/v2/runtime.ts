@@ -57,34 +57,31 @@ import {
 
 export const WORKFLOW_V2_CONTROLLER_NAME = "workflow-v2-controller";
 /**
- * The controller's history shape. 1.5.0 reads its commands before every
+ * The controller's history shape. 1.6.0 reads its commands before every
  * admission, retries a run-ending write on durable timers, enters the
  * workflow's catch-all state at most once per run by any route (an
  * unhandled runtime error of a script, or a terminal's invalid output, goes
  * there while it has not run, and any later route to it fails the run),
  * waits while its run is paused (a refused admission of a paused run counts
  * no ordinal or step and is tried again after a resume), and runs wait
- * states on its own durable timers.
+ * states on its own durable timers. The store's clock decides when a wait
+ * elapses: a wait the store does not find due yet (this worker's clock runs
+ * ahead of it) waits the time the store reports.
  */
-export const WORKFLOW_V2_CONTROLLER_VERSION = "1.5.0";
-/**
- * Earlier controller versions whose histories this code replays exactly,
- * with the same handler: 1.4.0 made the same decisions for every workflow it
- * could run (wait states did not exist), and an instance of it moves to the
- * current version at its next continue-as-new.
- */
-export const WORKFLOW_V2_COMPATIBLE_CONTROLLER_VERSIONS: readonly string[] = ["1.4.0"];
+export const WORKFLOW_V2_CONTROLLER_VERSION = "1.6.0";
 /**
  * Controller versions written only by pre-release builds, in ascending order
  * (duroxide registers an orchestration's versions only in that order). Their
- * histories are not replayed (this code would make different decisions; 1.2.0
- * re-entered the catch-all state after an explicit route into it, and 1.3.0
- * ended its controller when an admission was refused for a pause); an
- * instance of one fails at once with this reason, so its run shows
- * needsRecovery and update_workflow recover ends it visibly. Its history and
- * rows are kept.
+ * histories are not replayed: this code would make different decisions
+ * (1.2.0 re-entered the catch-all state after an explicit route into it,
+ * 1.3.0 ended its controller when an admission was refused for a pause, and
+ * the elapse activity of 1.5.0 returned no result), and no test replays a
+ * history an earlier build wrote. An instance of one fails at once with this
+ * reason, so its run shows needsRecovery and update_workflow recover ends it
+ * visibly. Its history and rows are kept. Until the first release, a build
+ * replays only its own controller version.
  */
-export const WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS: readonly string[] = ["1.0.0", "1.1.0", "1.2.0", "1.3.0"];
+export const WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS: readonly string[] = ["1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0", "1.5.0"];
 export const WORKFLOW_V2_EFFECT_NAME = "workflow-v2-effect";
 export const WORKFLOW_V2_EFFECT_VERSION = "1.0.0";
 /**
@@ -336,6 +333,17 @@ function parseEnter(value: unknown): { admitted: true; nodeExecutionId: string; 
     const deadlineMs = entered.deadlineMs === undefined || entered.deadlineMs === null ? null : entered.deadlineMs;
     expect(deadlineMs === null || (typeof deadlineMs === "number" && Number.isSafeInteger(deadlineMs)), "enter deadline is invalid");
     return { admitted: true, nodeExecutionId: text(entered.nodeExecutionId, "nodeExecutionId"), state: entered.state, deadlineMs };
+}
+
+/** The waits the store did not find due yet, with the milliseconds it reported left (at least 1). */
+function parseElapse(value: unknown): Array<{ nodeExecutionId: string; remainingMs: number }> {
+    const elapsed = record(value, "elapse result");
+    expect(Array.isArray(elapsed.notDue), "elapse result is invalid");
+    return elapsed.notDue.map((item, index) => {
+        const wait = record(item, `not-due wait ${index}`);
+        expect(typeof wait.remainingMs === "number" && Number.isSafeInteger(wait.remainingMs) && wait.remainingMs >= 1, `not-due wait ${index} is invalid`);
+        return { nodeExecutionId: text(wait.nodeExecutionId, "nodeExecutionId"), remainingMs: wait.remainingMs };
+    });
 }
 
 function parseCollected(value: unknown): CollectedResult[] {
@@ -593,16 +601,28 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
 
         // 2. A wait whose deadline passed elapses (unless something else
         // decided its node first); then route every pending node execution
-        // that has a stored result.
-        const deadlines = state.cursors.flatMap(cursor => cursor.pending !== null && cursor.deadlineMs !== null
+        // that has a stored result. The deadline is the store's: this
+        // controller's clock only decides when to ask. A wait the store does
+        // not find due yet waits the time the store reports, from now.
+        const waits = () => state.cursors.flatMap(cursor => cursor.pending !== null && cursor.deadlineMs !== null
             ? [{ nodeExecutionId: cursor.pending, deadlineMs: cursor.deadlineMs }] : []);
         let now: number | null = null;
-        if (deadlines.length > 0) {
+        if (waits().length > 0) {
             const current = parseNow(yield ctx.utcNow());
             now = current;
-            const due = deadlines.filter(wait => wait.deadlineMs <= current).map(wait => wait.nodeExecutionId);
+            const due = waits().filter(wait => wait.deadlineMs <= current).map(wait => wait.nodeExecutionId);
             if (due.length > 0) {
-                yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.elapse, { runId: input.runId, nodeExecutionIds: due }, STORE_RETRY);
+                const notDue = parseElapse(yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.elapse,
+                    { runId: input.runId, nodeExecutionIds: due }, STORE_RETRY));
+                if (notDue.length > 0) {
+                    const reported = parseNow(yield ctx.utcNow());
+                    now = reported;
+                    for (const wait of notDue) {
+                        const owner = state.cursors.find(cursor => cursor.pending === wait.nodeExecutionId);
+                        expect(owner !== undefined && due.includes(wait.nodeExecutionId), `elapse reported ${wait.nodeExecutionId}, which it was not asked about`);
+                        owner.deadlineMs = reported + wait.remainingMs;
+                    }
+                }
             }
         }
         const pendingIds = state.cursors.flatMap(cursor => cursor.pending === null ? [] : [cursor.pending]);
@@ -655,7 +675,8 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
         // collects stored results even when every wake is lost. A message
         // already queued wins the race.
         publishStatus(ctx, input, plan, state, "running");
-        const nearest = now === null ? null : Math.min(...deadlines.map(wait => wait.deadlineMs)) - now;
+        const deadlines = waits();
+        const nearest = now === null || deadlines.length === 0 ? null : Math.min(...deadlines.map(wait => wait.deadlineMs)) - now;
         const timerMs = nearest === null ? plan.wakeBackstopMs : Math.max(1, Math.min(plan.wakeBackstopMs, nearest));
         const raced = parseRace(yield ctx.race(ctx.dequeueEvent(WORKFLOW_COMMAND_QUEUE), ctx.scheduleTimer(timerMs)));
         if (raced.index === 1) {
@@ -819,9 +840,6 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     for (const version of WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS) {
         runtime.registerOrchestrationVersioned(WORKFLOW_V2_CONTROLLER_NAME, version, unsupportedController(version));
     }
-    for (const version of WORKFLOW_V2_COMPATIBLE_CONTROLLER_VERSIONS) {
-        runtime.registerOrchestrationVersioned(WORKFLOW_V2_CONTROLLER_NAME, version, workflowV2Controller);
-    }
     runtime.registerOrchestrationVersioned(WORKFLOW_V2_CONTROLLER_NAME, WORKFLOW_V2_CONTROLLER_VERSION, workflowV2Controller);
     runtime.registerOrchestrationVersioned(WORKFLOW_V2_EFFECT_NAME, WORKFLOW_V2_EFFECT_VERSION, workflowV2Effect);
     runtime.registerOrchestrationVersioned(WORKFLOW_V2_NOTIFY_NAME, WORKFLOW_V2_NOTIFY_VERSION, workflowV2Notify);
@@ -936,7 +954,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
 
             let immediate: NodeResultInput | null = null;
             let value: JsonValue = null;
-            let deadlineAt: Date | null = null;
+            let waitFor: number | null = null;
             const arrived = await arrival(current, ir, kv, nodeId, predecessorId, arrivalRoute);
             if ("failure" in arrived) immediate = arrived.failure;
             else {
@@ -952,10 +970,11 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                     const problems = schemaSetFor(current.irSha256, ir.schemaDefs).validate(node.inputSchema, value);
                     if (problems.length) immediate = runtimeError("invalid_input", `Input does not match ${node.inputSchema}.`, problemsJson(problems));
                 }
-                // A wait's seconds are read once, here: its deadline is fixed at its admission.
+                // A wait's seconds are read once, here; the store fixes its
+                // deadline in its own clock when the admission commits.
                 if (!immediate && node.type === "wait") {
                     const seconds = waitSeconds(node.seconds, scopeFor(current, arrived.incoming, arrived.runtimeError, kv), `states.${nodeId}.seconds`);
-                    if (typeof seconds === "number") deadlineAt = new Date(Date.now() + seconds * 1_000);
+                    if (typeof seconds === "number") waitFor = seconds;
                     else immediate = seconds;
                 }
             }
@@ -969,7 +988,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             if (immediate) immediate = { ...immediate, winner: "controller" };
             const result = await store.enterNode({
                 runId, nodeExecutionId, scopeId, nodeId, ordinal, nodeType: node.type, predecessorId, arrivalRoute, inputText, kvRevision, immediate,
-                deadlineAt: immediate ? null : deadlineAt,
+                waitSeconds: immediate ? null : waitFor,
                 projection: {
                     sessionId: current.workflowSessionId,
                     events: [{ eventType: "workflow.state_started", data: {
@@ -1222,9 +1241,11 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     });
 
     /**
-     * Complete wait states whose deadline the controller's timer reached, as
-     * elapsed with the value they were given. The compare-and-swap keeps a
-     * result that won first (a cancellation or a deletion).
+     * Elapse the wait states whose deadline the controller's clock reached,
+     * as elapsed with the value they were given, once the store's clock has
+     * reached it too (store.elapseWait). Reports each wait the store does not
+     * find due yet, with the milliseconds left; a result that won first (a
+     * cancellation or a deletion) is kept.
      */
     runtime.registerActivity(WORKFLOW_V2_ACTIVITIES.elapse, async (_ctx, rawInput) => {
         const input = record(rawInput, "elapse input");
@@ -1232,23 +1253,24 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         expect(Array.isArray(input.nodeExecutionIds), "nodeExecutionIds is not a list");
         const ids = input.nodeExecutionIds.map((id, index) => text(id, `nodeExecutionIds[${index}]`));
         const run = await runOf(runId);
+        const notDue: Array<{ nodeExecutionId: string; remainingMs: number }> = [];
         for (const nodeExecutionId of ids) {
             const executed = await store.readNodeExecution(nodeExecutionId);
             if (!executed || executed.runId !== runId || executed.nodeType !== "wait") {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${nodeExecutionId} is not a wait state of run ${runId}.`);
             }
             if (executed.state !== "pending") continue;
-            const valueText = canonicalJson(executed.input);
-            await store.completeNode(nodeExecutionId, { outcome: WAIT_ELAPSED, resultKind: "business", valueText, winner: "controller" }, {
+            const elapsed = await store.elapseWait(nodeExecutionId, {
                 sessionId: run.workflowSessionId,
                 events: [{ eventType: "workflow.state_completed", data: {
                     runId, nodeExecutionId, stateId: executed.nodeId, step: executed.ordinal, outcome: WAIT_ELAPSED, resultKind: "business",
-                    outputPreview: jsonbSafeText(valueText, 1_000),
+                    outputPreview: jsonbSafeText(canonicalJson(executed.input), 1_000),
                 } }],
                 update: { touch: true },
             });
+            if (elapsed.result === "not_due") notDue.push({ nodeExecutionId, remainingMs: elapsed.remainingMs });
         }
-        return null;
+        return { notDue };
     });
 
     runtime.registerActivity(WORKFLOW_V2_ACTIVITIES.runScript, async (actx, rawInput) => {

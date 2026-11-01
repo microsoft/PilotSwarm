@@ -1,5 +1,5 @@
 import type { Pool, PoolClient } from "pg";
-import { parseDiagnostics, parseWorkflowIr, WORKFLOW_V2_API_VERSION, type WorkflowCompileResult, type WorkflowDiagnostic, type WorkflowIR } from "./compiler.js";
+import { parseDiagnostics, parseWorkflowIr, WAIT_ELAPSED, WORKFLOW_V2_API_VERSION, type WorkflowCompileResult, type WorkflowDiagnostic, type WorkflowIR } from "./compiler.js";
 import { canonicalJson, isJsonObject, isStorableText, jsonbSafeText, jsonbSafeValue, parseStoredJson, sha256Hex, type JsonValue } from "./json.js";
 
 /**
@@ -1018,8 +1018,12 @@ export class WorkflowStore {
         inputText: string;
         /** The KV revision the input was evaluated with; pinned on the node execution. */
         kvRevision: number;
-        /** A wait state's absolute deadline; null for other states and for one that failed at admission. */
-        deadlineAt: Date | null;
+        /**
+         * A wait state's seconds: its deadline is the store's clock at this
+         * admission plus these seconds (entered_at is the same clock reading).
+         * Null for other states and for one that failed at admission.
+         */
+        waitSeconds: number | null;
         immediate: NodeResultInput | null;
         projection?: SessionProjection;
     }): Promise<{ admitted: true; inserted: boolean; node: WorkflowNodeExecutionRow }
@@ -1043,18 +1047,26 @@ export class WorkflowStore {
             if (!live || !ADMITTING_RUN_STATUSES.includes(run.status)) return { admitted: false as const, reason: "inactive" as const, run };
             if (run.kvRevision !== input.kvRevision) return { admitted: false as const, reason: "kv_changed" as const, run };
             const immediate = input.immediate;
+            // A wait that is admitted pending has a whole number of seconds; nothing else has any.
+            const waits = input.nodeType === "wait" && immediate === null;
+            if (waits !== (input.waitSeconds !== null) || (input.waitSeconds !== null && !(Number.isSafeInteger(input.waitSeconds) && input.waitSeconds >= 1))) {
+                throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has invalid wait seconds.`);
+            }
+            // now() is the transaction's one clock reading: entered_at (its
+            // default) and deadline_at differ by exactly the wait's seconds.
             const { rows } = await client.query(
                 `INSERT INTO ${this.t.nodes}
                     (node_execution_id, run_id, scope_id, node_id, ordinal, node_type, predecessor_id, arrival_route, input, input_sha256,
                      state, outcome, result_kind, output, error, winner, completed_at, kv_revision, deadline_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, CASE WHEN $11 = 'completed' THEN now() END, $17, $18)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, CASE WHEN $11 = 'completed' THEN now() END, $17,
+                         now() + $18::integer * interval '1 second')
                  RETURNING *`,
                 [input.nodeExecutionId, input.runId, input.scopeId, input.nodeId, input.ordinal, input.nodeType, input.predecessorId,
                     input.arrivalRoute, input.inputText, inputSha256, immediate ? "completed" : "pending",
                     immediate?.outcome ?? null, immediate?.resultKind ?? null,
                     immediate?.resultKind === "business" ? immediate.valueText : null,
                     immediate?.resultKind === "runtime_error" ? immediate.valueText : null,
-                    immediate?.winner ?? null, input.kvRevision, input.deadlineAt],
+                    immediate?.winner ?? null, input.kvRevision, input.waitSeconds],
             );
             await this.project(client, input.projection);
             return { admitted: true as const, inserted: true, node: nodeFrom(rows[0]) };
@@ -1135,6 +1147,46 @@ export class WorkflowStore {
             const stored = await client.query(`SELECT * FROM ${this.t.nodes} WHERE node_execution_id = $1`, [nodeExecutionId]);
             if (!stored.rows[0]) throw new WorkflowStoreError("NODE_NOT_FOUND", `Node execution ${nodeExecutionId} does not exist.`);
             return { won: false, node: nodeFrom(stored.rows[0]) };
+        });
+    }
+
+    /**
+     * Elapse a pending wait state once the store's clock reached its
+     * deadline: the terminal compare-and-swap with outcome elapsed, the value
+     * it was given as its output and completed_at at or after deadline_at (one
+     * clock reading decides both). Before the deadline it changes nothing and
+     * reports the milliseconds left (at least 1). A result stored first, a
+     * cancellation or a deletion, is kept (decided).
+     */
+    async elapseWait(nodeExecutionId: string, projection?: SessionProjection): Promise<
+        { result: "elapsed" | "decided"; node: WorkflowNodeExecutionRow } | { result: "not_due"; remainingMs: number; node: WorkflowNodeExecutionRow }> {
+        return this.transaction(async client => {
+            const live = await this.lockLiveSession(client, await this.workflowOfNode(client, nodeExecutionId));
+            if (live) {
+                const { rows } = await client.query(
+                    `UPDATE ${this.t.nodes}
+                        SET state = 'completed', outcome = $2, result_kind = 'business', output = input, error = NULL,
+                            winner = 'controller', completed_at = now()
+                      WHERE node_execution_id = $1 AND state = 'pending' AND node_type = 'wait' AND deadline_at <= now()
+                      RETURNING *`,
+                    [nodeExecutionId, WAIT_ELAPSED],
+                );
+                if (rows[0]) {
+                    await this.project(client, projection);
+                    return { result: "elapsed" as const, node: nodeFrom(rows[0]) };
+                }
+            }
+            const { rows } = await client.query(
+                `SELECT *, GREATEST(1, CEIL(EXTRACT(EPOCH FROM (deadline_at - now())) * 1000))::bigint AS remaining_ms
+                   FROM ${this.t.nodes} WHERE node_execution_id = $1`, [nodeExecutionId]);
+            if (!rows[0]) throw new WorkflowStoreError("NODE_NOT_FOUND", `Node execution ${nodeExecutionId} does not exist.`);
+            const node = nodeFrom(rows[0]);
+            // The deletion that made the session not live also decided its pending work (migration 0086 trigger).
+            if (node.state === "completed" || !live) return { result: "decided" as const, node };
+            if (node.nodeType !== "wait" || node.deadlineAt === null) {
+                throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${nodeExecutionId} is not a pending wait with a deadline.`);
+            }
+            return { result: "not_due" as const, remainingMs: int(rows[0], "remaining_ms"), node };
         });
     }
 
