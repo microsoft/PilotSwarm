@@ -3,7 +3,7 @@ import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./comman
 import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
 import { parseAgentSourceLink } from "./repo-links.js";
 import { importPackageFilesFromLink, readImportedPackageName } from "./repo-import.js";
-import { MOTD_REFRESH_MS, canReadMotd, motdPrincipal, duplicateMotdDraft, motdDraftWindow } from "./motd.js";
+import { MOTD_REFRESH_MS, canReadMotd, motdPrincipal, duplicateMotdDraft, motdDraftWindow, createMotdDraft, motdLocalParts } from "./motd.js";
 import {
     appendEventToHistory,
     applyLiveTurnToHistory,
@@ -4039,7 +4039,12 @@ export class PilotSwarmUiController {
     }
     setMotdDraft(patch) {
         if (!this._featureIsAdmin() || this.getState().admin.motds.saving || this.getState().admin.motds.duplicatingId) return;
-        this.dispatch({ type: "admin/motds", patch: { draft: { ...this.getState().admin.motds.draft, ...patch }, error: null, notice: null } });
+        const current = this.getState().admin.motds.draft;
+        const next = { ...current, ...patch };
+        if (patch.startMode === "custom" && !next.startDate) next.startDate = motdLocalParts(Date.now()).date;
+        if (patch.endMode === "custom" && !next.endDate) next.endDate = motdLocalParts(Date.now() + 86_400_000).date;
+        if (["endMode", "endDate", "endTime"].some(key => patch[key] !== undefined && patch[key] !== current[key])) delete next.copiedEnd;
+        this.dispatch({ type: "admin/motds", patch: { draft: next, retry: null, error: null, notice: null } });
     }
     async duplicateAdminMotd(motdId) {
         const state = this.getState().admin.motds;
@@ -4118,27 +4123,33 @@ export class PilotSwarmUiController {
         const state = this.getState().admin.motds;
         const draft = state.draft;
         const window = motdDraftWindow(draft);
+        const fingerprint = JSON.stringify(draft);
+        const unchangedRetry = state.retry?.fingerprint === fingerprint;
         if ([draft.image, draft.mobileImage].some(picture => picture && !picture.alt?.trim())) {
             this.dispatch({ type: "admin/motds", patch: { error: "Picture alt text is required before publishing." } });
             return;
         }
-        if (!draft.bodyMd.trim() || !Number.isFinite(window.from) || !Number.isFinite(window.to) || window.to <= window.from) {
-            this.dispatch({ type: "admin/motds", patch: { error: "Enter a markdown body and an end time after the start time." } });
+        if (!draft.bodyMd.trim() || !["now", "custom"].includes(draft.startMode)
+            || !["never", "hour", "day", "week", "custom"].includes(draft.endMode)
+            || !Number.isFinite(window.from) || window.to !== null && (!Number.isFinite(window.to)
+                || !unchangedRetry && window.to <= Date.now() || window.to <= window.from)) {
+            this.dispatch({ type: "admin/motds", patch: { error: "Enter a markdown body and valid schedule. An end, if set, must be in the future and after the start." } });
             return;
         }
-        const input = { fromAt: new Date(window.from).toISOString(), toAt: new Date(window.to).toISOString(), bodyMd: draft.bodyMd,
+        const input = { ...(draft.startMode === "custom" ? { startsAt: new Date(window.from).toISOString() } : {}),
+            ...(window.to !== null ? { endsAt: new Date(window.to).toISOString() } : {}), bodyMd: draft.bodyMd,
             ...(draft.mobileBodyMd?.trim() ? { mobileBodyMd: draft.mobileBodyMd } : {}),
             imagePlacement: draft.imagePlacement, ...(draft.image ? { image: draft.image } : {}),
             ...(draft.mobileImage ? { mobileImage: draft.mobileImage } : {}) };
-        const fingerprint = JSON.stringify(input);
-        const retry = state.retry?.fingerprint === fingerprint ? state.retry : { fingerprint, requestId: globalThis.crypto.randomUUID() };
+        const retry = state.retry?.fingerprint === fingerprint ? state.retry
+            : { fingerprint, input, requestId: globalThis.crypto.randomUUID() };
         this._motdAdminReadSerial = (this._motdAdminReadSerial || 0) + 1;
         this.dispatch({ type: "admin/motds", patch: { saving: true, loading: false, error: null, retry } });
         try {
-            await this._motdRequest(signal => this.transport.createMotd({ ...input, requestId: retry.requestId }, { signal }), 60_000);
+            await this._motdRequest(signal => this.transport.createMotd({ ...retry.input, requestId: retry.requestId }, { signal }), 60_000);
             if (context !== this._motdContext() || !this._featureIsAdmin()) return;
             this.dispatch({ type: "admin/motds", patch: { retry: null, copyNotice: null, notice: "Message published.",
-                draft: { fromAt: "", toAt: "", bodyMd: "", mobileBodyMd: "", imagePlacement: "above" } } });
+                draft: createMotdDraft() } });
             await this.refreshAdminMotds({ afterMutation: true });
         } catch (error) {
             if (context === this._motdContext()) this.dispatch({ type: "admin/motds", patch: { error: error?.message || String(error) } });

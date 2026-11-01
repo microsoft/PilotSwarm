@@ -45,10 +45,8 @@ test("duplicate an older message, edit it and publish only the new message", asy
         await expect(page.getByLabel("Picture alt text", { exact: true })).toHaveValue("Source main alt");
         await expect(page.getByLabel("Mobile picture alt text", { exact: true })).toHaveValue("Source mobile alt");
         await expect(page.getByLabel("Picture placement", { exact: true })).toHaveValue("beside");
-        const times = await editor.evaluate(node => [...node.querySelectorAll('input[type="datetime-local"]')].map(field => Date.parse(field.value)));
-        expect(times[0] % 60_000).toBe(0);
-        expect(times[0]).toBeGreaterThan(start);
-        expect(times[1] - times[0]).toBe(Date.parse(source().toAt) - Date.parse(source().fromAt));
+        await expect(editor.getByRole("group", { name: "Starts", exact: true }).getByRole("radio", { name: "Now", exact: true })).toBeChecked();
+        await expect(editor.getByRole("group", { name: "Ends", exact: true }).getByRole("radio", { name: "At a time...", exact: true })).toBeChecked();
         expect(f.state.calls).toHaveLength(0);
         await page.getByLabel("Body (markdown)", { exact: true }).fill("## Edited copy\nPublish this one.");
         await page.getByRole("button", { name: "Publish", exact: true }).click();
@@ -57,6 +55,9 @@ test("duplicate an older message, edit it and publish only the new message", asy
         expect(f.state.calls[0].input.bodyMd).toBe("## Edited copy\nPublish this one.");
         expect(f.state.calls[0].input.image.alt).toBe("Source main alt");
         expect(f.state.calls[0].input.mobileImage.alt).toBe("Source mobile alt");
+        expect(f.state.calls[0].input.startsAt).toBeUndefined();
+        expect(Date.parse(f.state.calls[0].input.endsAt) - start).toBeGreaterThanOrEqual(Date.parse(source().toAt) - Date.parse(source().fromAt));
+        expect(Date.parse(f.state.calls[0].input.endsAt) - start).toBeLessThan(Date.parse(source().toAt) - Date.parse(source().fromAt) + 10_000);
         expect(f.state.history.find(row => row.motdId === "7").bodyMd).toBe(source().bodyMd);
     } finally { await f.stop(); }
 });
@@ -83,8 +84,7 @@ for (const kind of ["paste", "drop"]) {
             await expect(editor.getByAltText("main-paste.png")).toBeVisible();
             expect(await transferImage(page, editor, { kind, mobile: true, name: "mobile-paste.png" })).toBe(true);
             await expect(page.getByLabel("Mobile picture alt text", { exact: true })).toHaveValue("mobile-paste.png");
-            await page.getByLabel("From", { exact: true }).fill("2030-01-01T12:00");
-            await page.getByLabel("To", { exact: true }).fill("2030-01-02T12:00");
+            await page.getByRole("group", { name: "Ends", exact: true }).getByRole("radio", { name: "1 day", exact: true }).check();
             await page.getByLabel("Body (markdown)", { exact: true }).fill("Image notice");
             await page.getByLabel("Mobile picture alt text", { exact: true }).fill("");
             await page.getByRole("button", { name: "Publish", exact: true }).click();

@@ -130,13 +130,22 @@
 .ps-motd-field textarea { resize: vertical; font-family: var(--ps-mono); min-height: 220px; }
 .ps-motd-mobile-editor textarea { min-height: 100px; }
 .ps-motd-field input[type="file"] { padding: 5px; }
-.ps-motd-time-fields { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; }
-.ps-motd-time-fields input { min-height: 40px; font-family: system-ui, sans-serif; font-size: 14px; }
+.ps-motd-schedule-group { margin: 0 0 12px; padding: 0; border: 0; min-width: 0; }
+.ps-motd-schedule-group legend { font-weight: 600; margin-bottom: 7px; }
+.ps-motd-segments { display: flex; flex-wrap: wrap; gap: 6px; }
+.ps-motd-segments label { display: inline-flex; align-items: center; gap: 6px; padding: 8px 10px;
+  border: 1px solid var(--ps-border); border-radius: 7px; color: var(--ps-foreground); background: var(--ps-surface); cursor: pointer; }
+.ps-motd-segments label.is-selected { border-color: var(--ps-selection-background); background: var(--ps-highlight-background); color: var(--ps-highlight-foreground); }
+.ps-motd-segments label:focus-within { outline: 2px solid var(--ps-selection-background); outline-offset: 2px; }
+.ps-motd-segments input { margin: 0; accent-color: var(--ps-selection-background); }
+.ps-motd-at-time { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; margin: 10px 0; }
+.ps-motd-at-time input, .ps-motd-at-time select { min-height: 40px; font-family: system-ui, sans-serif; font-size: 14px; }
+.ps-motd-schedule-summary { margin: 6px 0 14px; font-size: 13px; line-height: 1.5; }
 @container motd-panel (min-width: 700px) {
   .ps-motd-admin-grid:not(.is-read-only) { grid-template-columns: minmax(240px, .8fr) minmax(0, 1.45fr); }
 }
 @container motd-editor (min-width: 560px) {
-  .ps-motd-time-fields { grid-template-columns: repeat(2, minmax(260px, 1fr)); }
+  .ps-motd-at-time { grid-template-columns: repeat(2, minmax(220px, 1fr)); }
 }
 .ps-motd-editor-thumb { width: 110px; max-height: 70px; object-fit: cover; border-radius: 6px; }
 .ps-motd-mobile-editor { margin: 10px 0; }

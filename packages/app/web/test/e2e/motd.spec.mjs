@@ -87,8 +87,10 @@ test("admin editor creates UTC windows, retries publication and deletes the curr
     const f = await fixture(page, { current: null, history: [message()] });
     try {
         await openAdmin(page);
-        await page.getByLabel("From", { exact: true }).fill("2030-01-01T12:00");
-        await page.getByLabel("To", { exact: true }).fill("2030-01-02T12:00");
+        await page.getByRole("group", { name: "Starts", exact: true }).getByRole("radio", { name: "At a time...", exact: true }).check();
+        await page.getByLabel("Start date", { exact: true }).fill("2030-01-01");
+        await page.getByLabel("Start time", { exact: true }).selectOption("12:00");
+        await page.getByRole("group", { name: "Ends", exact: true }).getByRole("radio", { name: "1 day", exact: true }).check();
         await page.getByLabel("Body (markdown)", { exact: true }).fill("## New message\nBody.");
         f.state.failCreate = true;
         await page.getByRole("button", { name: "Publish", exact: true }).click();
@@ -98,7 +100,7 @@ test("admin editor creates UTC windows, retries publication and deletes the curr
         await expect(page.getByRole("status").filter({ hasText: "Message published." })).toBeVisible();
         const calls = f.state.calls.filter(c => c.method === "POST");
         expect(calls).toHaveLength(2); expect(calls[0].input.requestId).toBe(calls[1].input.requestId);
-        expect(calls[1].input.fromAt).toMatch(/Z$/);
+        expect(calls[1].input.startsAt).toMatch(/Z$/);
         page.once("dialog", dialog => dialog.accept());
         await page.getByRole("button", { name: "Delete current message", exact: true }).click();
         await expect(page.getByText("No message is active today.")).toBeVisible();

@@ -1,5 +1,5 @@
 import React from "react";
-import { selectMotd, motdDraftWindow } from "../../core/src/motd.js";
+import { selectMotd, motdDraftWindow, motdStartsAt, motdEndsAt, motdScheduleSummary } from "../../core/src/motd.js";
 import { useControllerSelector } from "./use-controller-state.js";
 import { renderMarkdown } from "./workspace-markdown.js";
 import { IMAGE_PROMPT_ATTACHMENT_TYPES } from "../../core/src/controller.js";
@@ -13,7 +13,40 @@ function pictureUrl(image) {
 }
 function windowText(message) {
     const format = value => new Date(value).toLocaleString("en-GB", { timeZone: "UTC", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
-    return `${format(message.fromAt)} to ${format(message.toAt)} UTC`;
+    const end = motdEndsAt(message);
+    return `${format(motdStartsAt(message))} ${end == null ? "until replaced (No end)" : `to ${format(end)}`} UTC`;
+}
+export function MotdSchedulePicker({ controller, draft, busy }) {
+    const choices = (label, field, values) => React.createElement("fieldset", { className: "ps-motd-schedule-group", disabled: busy },
+        React.createElement("legend", null, label),
+        React.createElement("div", { className: "ps-motd-segments" }, values.map(([value, name]) =>
+            React.createElement("label", { key: value, className: draft[field] === value ? "is-selected" : "" },
+                React.createElement("input", { type: "radio", name: `motd-${field}`, value, checked: draft[field] === value,
+                    onChange: () => controller.setMotdDraft({ [field]: value }) }), name))));
+    const atTime = (label, prefix) => {
+        const times = Array.from({ length: 96 }, (_, index) => {
+            const value = `${String(Math.floor(index / 4)).padStart(2, "0")}:${String(index % 4 * 15).padStart(2, "0")}`;
+            return [value, new Date(`2000-01-01T${value}`).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })];
+        });
+        if (!times.some(([value]) => value === draft[`${prefix}Time`]))
+            times.push([draft[`${prefix}Time`], `${draft[`${prefix}Time`]} (copied)`]);
+        return React.createElement("div", { className: "ps-motd-at-time" },
+            React.createElement("label", { className: "ps-motd-field" }, `${label} date`,
+                React.createElement("input", { type: "date", "aria-label": `${label} date`, required: true, disabled: busy,
+                    value: draft[`${prefix}Date`], onChange: event => controller.setMotdDraft({ [`${prefix}Date`]: event.target.value }) })),
+            React.createElement("label", { className: "ps-motd-field" }, `${label} time`,
+                React.createElement("select", { "aria-label": `${label} time`, disabled: busy, value: draft[`${prefix}Time`],
+                    onChange: event => controller.setMotdDraft({ [`${prefix}Time`]: event.target.value }) },
+                    times.map(([value, name]) => React.createElement("option", { key: value, value }, name)))));
+    };
+    return React.createElement("div", { className: "ps-motd-schedule" },
+        choices("Starts", "startMode", [["now", "Now"], ["custom", "At a time..."]]),
+        draft.startMode === "custom" ? atTime("Start", "start") : null,
+        choices("Ends", "endMode", [["never", "Never - until replaced or deleted"], ["hour", "1 hour"], ["day", "1 day"],
+            ["week", "1 week"], ["custom", "At a time..."]]),
+        draft.endMode === "custom" ? atTime("End", "end") : null,
+        React.createElement("p", { className: "ps-motd-meta" }, `Your time zone: ${Intl.DateTimeFormat().resolvedOptions().timeZone}`),
+        React.createElement("p", { className: "ps-motd-schedule-summary" }, motdScheduleSummary(draft)));
 }
 export function MotdMarkdown({ body }) {
     const html = React.useMemo(() => typeof document === "undefined" ? null
@@ -92,9 +125,6 @@ export function MotdAdminPanel({ controller, state, images = {}, isAdmin, canRea
     if (!canRead) return null;
     const draft = state.draft;
     const busy = state.saving || state.loading || Boolean(state.duplicatingId) || reading;
-    const input = (label, field, type = "text") => React.createElement("label", { className: "ps-motd-field" }, label,
-        React.createElement("input", { type, ...(type === "datetime-local" ? { step: "any" } : {}), value: draft[field] || "", disabled: busy,
-            onChange: event => controller.setMotdDraft({ [field]: event.target.value }) }));
     const body = (label, field) => React.createElement("label", { className: "ps-motd-field" }, label,
         React.createElement("textarea", { ref: field === "bodyMd" ? bodyRef : undefined, "aria-label": label, value: draft[field] || "", rows: field === "bodyMd" ? 12 : 4,
             disabled: busy, onChange: event => controller.setMotdDraft({ [field]: event.target.value }) }));
@@ -183,8 +213,8 @@ export function MotdAdminPanel({ controller, state, images = {}, isAdmin, canRea
                 onDrop: event => { setDragOver(false); handleImageDrop(event, files => stagePictureFiles(files, pictureField(event))); },
                 onSubmit: event => { event.preventDefault(); void controller.createAdminMotd(); } },
                 React.createElement("h4", null, "New message"),
-                React.createElement("p", { className: "ps-motd-meta" }, "Enter times in your local time. They are stored in UTC. A later start time takes over."),
-                React.createElement("div", { className: "ps-motd-time-fields" }, input("From", "fromAt", "datetime-local"), input("To", "toAt", "datetime-local")),
+                React.createElement("p", { className: "ps-motd-meta" }, "The newest message takes over. Dates and times use your time zone."),
+                React.createElement(MotdSchedulePicker, { controller, draft, busy }),
                 state.copyNotice ? React.createElement("p", { role: "status", className: "ps-motd-meta" }, state.copyNotice) : null,
                 body("Body (markdown)", "bodyMd"),
                 picture("Picture", "image"),

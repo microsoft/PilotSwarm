@@ -23,8 +23,12 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1100, height: 800
                     await expect(panel.getByRole("heading", { name: "Today", exact: true })).toBeVisible();
                     await expect(panel.getByRole("button", { name: "Show splash again", exact: true }).first()).toBeVisible();
                     if (admin) {
-                        await page.getByLabel("From", { exact: true }).fill("2030-01-01T12:30");
-                        await page.getByLabel("To", { exact: true }).fill("2030-01-02T18:45");
+                        await page.getByRole("group", { name: "Starts", exact: true }).getByRole("radio", { name: "At a time...", exact: true }).check();
+                        await page.getByLabel("Start date", { exact: true }).fill("2030-01-01");
+                        await page.getByLabel("Start time", { exact: true }).selectOption("12:30");
+                        await page.getByRole("group", { name: "Ends", exact: true }).getByRole("radio", { name: "At a time...", exact: true }).check();
+                        await page.getByLabel("End date", { exact: true }).fill("2030-01-02");
+                        await page.getByLabel("End time", { exact: true }).selectOption("18:45");
                         await page.getByLabel("Body (markdown)", { exact: true }).fill("## A message for everyone\n\nThe editor uses the available pane width.\n\nBoth local date and time fields remain readable.");
                     } else {
                         await expect(panel.locator("form")).toHaveCount(0);
@@ -38,8 +42,8 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1100, height: 800
                             return { left: r.left, right: r.right, top: r.top, width: r.width, height: r.height };
                         };
                         const cards = root.querySelector(".ps-motd-admin-grid");
-                        const from = root.querySelector('input[type="datetime-local"]');
-                        const to = root.querySelectorAll('input[type="datetime-local"]')[1];
+                        const from = root.querySelector('input[type="date"]');
+                        const to = root.querySelectorAll('input[type="date"]')[1];
                         return { panel: rect(root), main: rect(root.closest(".ps-admin-main")), grid: rect(cards),
                             today: rect(cards.firstElementChild), editor: cards.querySelector("form") ? rect(cards.querySelector("form")) : null,
                             from: from ? { ...rect(from), clientWidth: from.clientWidth, scrollWidth: from.scrollWidth } : null,
@@ -55,12 +59,11 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1100, height: 800
                             expect(measurements.editor.width).toBeGreaterThan(measurements.today.width * 1.2);
                             expect(Math.abs(measurements.editor.right - measurements.grid.right)).toBeLessThanOrEqual(2);
                             for (const field of [measurements.from, measurements.to]) {
-                                expect(field.width).toBeGreaterThanOrEqual(260);
+                                expect(field.width).toBeGreaterThanOrEqual(220);
                                 expect(field.scrollWidth).toBeLessThanOrEqual(field.clientWidth + 1);
                             }
                             expect(measurements.body.height).toBeGreaterThanOrEqual(220);
-                            if (viewport.width === 1440) expect(Math.abs(measurements.from.top - measurements.to.top)).toBeLessThanOrEqual(2);
-                            else expect(measurements.to.top).toBeGreaterThan(measurements.from.top + measurements.from.height);
+                            expect(measurements.to.top).toBeGreaterThan(measurements.from.top + measurements.from.height);
                         } else {
                             expect(measurements.today.width).toBeGreaterThanOrEqual(measurements.grid.width - 2);
                         }

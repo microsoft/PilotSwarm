@@ -37,7 +37,8 @@ test("admin tab has today preview, editor, picture limits, history and both dele
     for (const text of ["Today", "Show splash again", "Phone view", "New message", "2 MB maximum", "Mobile version", "Previous messages", "Hidden by later message", "Publish"]) assert.ok(html.includes(text), text);
     assert.match(html, /Delete current message/); assert.match(html, /Delete message 2/);
     assert.match(html, /Duplicate current message/); assert.match(html, /Duplicate message 2/);
-    assert.match(html, /type="datetime-local"/);
+    assert.match(html, /Now|Never - until replaced or deleted/);
+    assert.doesNotMatch(html, /datetime-local/);
 });
 test("non-admin cannot render admin controls even with stale admin data", () => {
     const state = { ...createMotdAdminState(), today: message, history: [{ ...message, motdId: "9", status: "ended" }], expandedIds: ["9"] };

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { PilotSwarmUiController, appReducer, createStore, createInitialState, duplicateMotdDraft } from "../src/index.js";
+import { PilotSwarmUiController, appReducer, createStore, createInitialState, duplicateMotdDraft, motdDraftWindow } from "../src/index.js";
 import { imageFiles, clipboardImageFiles, handleImagePaste, handleImageDrop, hasFileDrag } from "../../react/src/image-transfer.js";
 
 const admin = { provider: "test", subject: "admin", isAdmin: true };
@@ -36,8 +36,10 @@ test("duplicate fills an editable draft with both bodies, placement, pictures, a
     assert.equal(state().draft.imagePlacement, "beside");
     assert.deepEqual(state().draft.image, main); assert.deepEqual(state().draft.mobileImage, mobile);
     assert.notEqual(state().draft.image, main); assert.notEqual(state().draft.mobileImage, mobile);
-    assert.equal(Date.parse(state().draft.fromAt), Date.parse("2026-11-01T20:11:00Z"));
-    assert.equal(Date.parse(state().draft.toAt) - Date.parse(state().draft.fromAt), Date.parse(source.toAt) - Date.parse(source.fromAt));
+    assert.equal(state().draft.startMode, "now"); assert.equal(state().draft.endMode, "custom");
+    const window = motdDraftWindow(state().draft, now);
+    assert.equal(window.from, now);
+    assert.equal(window.to - now, Date.parse(source.toAt) - Date.parse(source.fromAt));
     assert.equal(state().retry, null); assert.equal(state().draftFocusVersion, 1);
     assert.match(state().copyNotice, /Copied from message 7/);
     assert.deepEqual(calls, { create: [], remove: [], images: [] });
@@ -45,12 +47,20 @@ test("duplicate fills an editable draft with both bodies, placement, pictures, a
     controller.setMotdDraft({ bodyMd: "Edited draft" });
     assert.equal(source.bodyMd, "Source markdown");
 });
-test("From always uses the next whole minute, including when now is an exact minute", () => {
+test("Duplicate starts Now and preserves Never or exact duration presets", () => {
     const now = Date.parse("2026-11-01T20:10:00Z");
     const draft = duplicateMotdDraft({ ...source, hasImage: false, hasMobileImage: false, mobileBodyMd: null }, {}, now);
-    assert.equal(Date.parse(draft.fromAt), now + 60_000);
+    assert.equal(draft.startMode, "now");
     assert.equal(draft.mobileBodyMd, ""); assert.equal(draft.image, undefined);
     assert.equal(draft.mobileImage, undefined);
+    const never = duplicateMotdDraft({ ...source, toAt: null, hasImage: false, hasMobileImage: false }, {}, now);
+    assert.equal(never.endMode, "never"); assert.equal(motdDraftWindow(never, now).to, null);
+    for (const [mode, duration] of [["hour", 3_600_000], ["day", 86_400_000], ["week", 604_800_000]]) {
+        const copied = duplicateMotdDraft({ ...source, hasImage: false, hasMobileImage: false,
+            toAt: new Date(Date.parse(source.fromAt) + duration).toISOString() }, {}, now);
+        assert.equal(copied.endMode, mode);
+        assert.equal(motdDraftWindow(copied, now).to - now, duration);
+    }
 });
 test("duplicate loads only the missing picture and publishes only after an explicit Publish", async () => {
     const { controller, store, calls, state } = fixture();
@@ -106,14 +116,14 @@ test("unchanged duplicate dates preserve the exact duration through a DST repeat
         store.dispatch({ type: "admin/motds", patch: { today: foldSource, history: [foldSource] } });
         store.dispatch({ type: "motd/patch", patch: { images: { "7": { desktop: main, mobile } } } });
         await controller.duplicateAdminMotd("7");
-        assert.equal(state().draft.fromAt, state().draft.toAt, "the two instants occupy the repeated local hour");
+        assert.equal(state().draft.startMode, "now"); assert.equal(state().draft.endMode, "hour");
         await controller.createAdminMotd();
-        assert.equal(calls.create[0].fromAt, "2026-11-01T08:11:00.000Z");
-        assert.equal(calls.create[0].toAt, "2026-11-01T09:11:00.000Z");
+        assert.equal(calls.create[0].startsAt, undefined);
+        assert.equal(calls.create[0].endsAt, "2026-11-01T09:10:15.000Z");
         await controller.duplicateAdminMotd("7");
-        controller.setMotdDraft({ toAt: "2026-11-01T03:00:00.000" });
+        controller.setMotdDraft({ endMode: "custom", endDate: "2026-11-01", endTime: "03:00" });
         await controller.createAdminMotd();
-        assert.equal(calls.create[1].toAt, "2026-11-01T11:00:00.000Z", "an edited field uses the admin's new local time");
+        assert.equal(calls.create[1].endsAt, "2026-11-01T11:00:00.000Z", "an edited field uses the admin's new local time");
     } finally {
         if (prior === undefined) delete process.env.TZ; else process.env.TZ = prior;
     }

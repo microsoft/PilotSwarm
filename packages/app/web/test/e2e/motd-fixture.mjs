@@ -6,8 +6,8 @@ export const message = extra => ({ motdId: "1", fromAt: "2020-01-01T00:00:00Z", 
     bodyMd: "## Welcome\nUse the portal.", mobileBodyMd: null, imagePlacement: "above", hasImage: false,
     hasMobileImage: false, createdBy: { subject: "admin" }, status: "live", dismissalCount: 0, ...extra });
 
-export async function fixture(page, { admin = true, current = message(), history = null } = {}) {
-    const stub = await startStubServer(0, { sessionCount: 1, admin });
+export async function fixture(page, { admin = true, current = message(), history = null, themeId = null } = {}) {
+    const stub = await startStubServer(0, { sessionCount: 1, admin, themeId });
     const state = { current, history: history || (current ? [current] : []), calls: [], imageRequests: [],
         reads: 0, failDismiss: false, failCreate: false };
     const principal = { provider: "none", subject: "test", displayName: "Test User" };
@@ -23,7 +23,7 @@ export async function fixture(page, { admin = true, current = message(), history
     await page.route("**/api/v1/management/**", async route => {
         const request = route.request(), url = new URL(request.url());
         if (url.pathname.endsWith("/users/me/profile")) return route.fulfill({ json: { ok: true,
-            result: { ...principal, isAdmin: admin, profileSettings: {} } } });
+            result: { ...principal, isAdmin: admin, profileSettings: themeId ? { themeId } : {} } } });
         if (!url.pathname.includes("/motd")) return route.fallback();
         if (url.pathname.endsWith("/current")) {
             state.reads++;
@@ -55,7 +55,10 @@ export async function fixture(page, { admin = true, current = message(), history
             if (state.current?.motdId === id) state.current = null;
         } else {
             if (state.failCreate) return route.fulfill({ status: 503, json: { ok: false, error: { code: "UNAVAILABLE", message: "Publication response uncertain" } } });
-            state.history.unshift(message({ ...input, motdId: "2", status: "scheduled" }));
+            const fromAt = input.startsAt || input.fromAt || new Date().toISOString();
+            const toAt = input.endsAt || input.toAt || null;
+            state.history.unshift(message({ ...input, fromAt, toAt, startsAt: fromAt, endsAt: toAt,
+                motdId: "2", status: Date.parse(fromAt) > Date.now() ? "scheduled" : "live" }));
         }
         return route.fulfill({ json: { ok: true, result: { motdId: "1", dismissed: true } } });
     });
