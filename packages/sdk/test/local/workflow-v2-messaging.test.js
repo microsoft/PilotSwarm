@@ -10,7 +10,9 @@
  * - its optional wait races the message and the store decides: an input
  *   accepted before the deadline claims the receive in its own transaction,
  *   one accepted at or after it is late for it and stays for a later
- *   receive, and a wait that elapses first does not discard it;
+ *   receive, and a wait that elapses first does not discard it; a later
+ *   receive takes it at entry only while it is unexpired, however late
+ *   that entry is;
  * - a wrong sender, contract or correlation is not taken and does not move
  *   the deadline; an undeclared contract or an invalid payload stores
  *   nothing;
@@ -36,8 +38,9 @@
  * - each input is accepted once per (sender, operation id), and the inbox is
  *   bounded.
  *
- * Messaging is not yet in the formal models (README "Messaging"); these
- * regressions are its evidence.
+ * The receive model (docs/formal/workflow-v2, README "Receive model")
+ * checks these boundaries within its bounds; these regressions are their
+ * native evidence, and the rest's.
  */
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
@@ -121,6 +124,9 @@ states:
     transition: { next: { elapsed: await_build } }
   got: { type: terminal, outcome: succeeded, output: "\${input}" }
 `;
+
+/** As POLLER, with the receive's wait from the KV (seconds). */
+const KV_POLLER = POLLER.replace("    wait: { seconds: 1 }\n", '    wait: { seconds: "${kv.secs}" }\n');
 
 async function until(check, label, timeoutMs = 60_000) {
     const deadline = Date.now() + timeoutMs;
@@ -925,6 +931,77 @@ states:
         } finally {
             try { await h.stop(); } finally { await holding.pool.end(); }
         }
+    });
+
+    it("keeps an input late for a receive for the next receive, which takes it at entry only if it has not expired, however late that entry is", { timeout: TIMEOUT }, async () => {
+        expect(KV_POLLER).toContain('wait: { seconds: "${kv.secs}" }');
+        const entries = stopBefore("enterNode", (input, spec) => input.runId === spec.runId && input.nodeId === "await_build" && input.ordinal === 2);
+        const h = await harness(getEnv(), { wrapStore: entries.wrap });
+        try {
+            const parent = await sessionOf(h);
+            /**
+             * A poller whose receive waits 4 s, with its second receive's admission stopped before it reaches the
+             * store. An input with this ttl is given while the first receive still waits, after its stored deadline (fault
+             * injection: the stored deadline moves back after the controller read it, so the controller elapses the wait
+             * later, at its own time): late for that receive, it is kept. The first receive elapses, the 1 s gap passes and
+             * the second receive's admission is stopped.
+             */
+            const lateInput = async ttl => {
+                const run = await started(h, parent, KV_POLLER, { inputs: {}, vars: { secs: 4, gap: 1 }, dispatch: false });
+                const stop = entries.arm({ runId: run.runId });
+                await run.startController();
+                const first = await nodeAt(h.store, run.runId, "await_build", 1, "pending");
+                expect(first.deadlineAt.getTime() - first.enteredAt.getTime()).toBe(4_000);
+                await h.q(`UPDATE SCHEMA.workflow_node_executions SET deadline_at = clock_timestamp() - interval '1 second' WHERE node_execution_id = $1`,
+                    [first.nodeExecutionId]);
+                const late = await parent.send(run.id, { contract: "BuildEvent@1", payload: BUILD, ttl_seconds: ttl, operation_id: "late" });
+                expect(late, `ttl ${ttl}`).toMatchObject({ ok: true, claimedBy: null });
+                await within(stop.reached, 60_000, "the second receive's admission to be stopped");
+                expect(stop.input).toMatchObject({ runId: run.runId, nodeId: "await_build", ordinal: 2 });
+                expect((await nodesOf(h.store, run.runId)).filter(node => node.nodeId === "await_build").map(node => node.ordinal)).toEqual([1]);
+                expect(await h.store.readNodeExecution(first.nodeExecutionId)).toMatchObject({ state: "completed", outcome: "elapsed", winner: "controller" });
+                // The input was accepted at or after the first receive's (stored) deadline and before its wait elapsed, and nothing took it.
+                const [timing] = await h.q(`SELECT m.accepted_at >= n.deadline_at AS at_or_after_deadline, m.accepted_at < n.completed_at AS before_elapse,
+                        m.consumed_by IS NULL AS unclaimed
+                      FROM SCHEMA.workflow_inbox m, SCHEMA.workflow_node_executions n WHERE m.message_id = $1 AND n.node_execution_id = $2`,
+                    [late.messageId, first.nodeExecutionId]);
+                expect(timing, `ttl ${ttl}`).toEqual({ at_or_after_deadline: true, before_elapse: true, unclaimed: true });
+                return { run, late, stop };
+            };
+
+            // Control: the second receive's admission goes on at once, while the late input is unexpired: the entry takes
+            // it, at the entry's own reading.
+            const kept = await lateInput(60);
+            kept.stop.release();
+            expect(await finished(h.store, kept.run.runId)).toMatchObject({ status: "completed", terminalOutput: BUILD });
+            const taker = (await nodesOf(h.store, kept.run.runId)).find(node => node.nodeId === "await_build" && node.ordinal === 2);
+            expect(taker).toMatchObject({ state: "completed", outcome: "received", winner: "message", output: BUILD, deadlineAt: null });
+            const [entry] = await h.q(`SELECT m.consumed_by = n.node_execution_id AS taken_by_second, m.consumed_at = n.entered_at AS consumed_at_entry,
+                    n.completed_at = n.entered_at AS completed_at_entry, m.expires_at > n.entered_at AS unexpired_at_entry
+                  FROM SCHEMA.workflow_inbox m, SCHEMA.workflow_node_executions n WHERE m.message_id = $1 AND n.node_execution_id = $2`,
+                [kept.late.messageId, taker.nodeExecutionId]);
+            expect(entry).toEqual({ taken_by_second: true, consumed_at_entry: true, completed_at_entry: true, unexpired_at_entry: true });
+
+            // The second receive's admission is held until the store's clock is past the late input's expiry (a
+            // controller late to admit it): the entry does not take the expired input, and the receive waits.
+            const expiring = await lateInput(6);
+            await until(async () => (await h.q("SELECT clock_timestamp() > $1::timestamptz AS past", [expiring.late.expiresAt]))[0].past,
+                "the late input to expire");
+            expiring.stop.release();
+            const waiting = await nodeAt(h.store, expiring.run.runId, "await_build", 2, "pending");
+            expect(waiting.deadlineAt.getTime() - waiting.enteredAt.getTime()).toBe(4_000);
+            const [skipped] = await h.q(`SELECT n.entered_at >= m.expires_at AS entered_after_expiry, m.consumed_by IS NULL AS unclaimed
+                  FROM SCHEMA.workflow_inbox m, SCHEMA.workflow_node_executions n WHERE m.message_id = $1 AND n.node_execution_id = $2`,
+                [expiring.late.messageId, waiting.nodeExecutionId]);
+            expect(skipped).toEqual({ entered_after_expiry: true, unclaimed: true });
+            // A fresh input takes the waiting receive in its own acceptance; the expired one stays unclaimed.
+            const fresh = { buildId: 8, state: "succeeded" };
+            const now = await parent.send(expiring.run.id, { contract: "BuildEvent@1", payload: fresh, operation_id: "fresh" });
+            expect(now).toMatchObject({ ok: true, claimedBy: { nodeExecutionId: waiting.nodeExecutionId, stateId: "await_build" } });
+            expect(await finished(h.store, expiring.run.runId)).toMatchObject({ status: "completed", terminalOutput: fresh });
+            expect((await h.store.listInbox(expiring.run.runId)).map(message => [message.messageId, message.consumedBy]))
+                .toEqual([[expiring.late.messageId, null], [now.messageId, waiting.nodeExecutionId]]);
+        } finally { await h.stop(); }
     });
 
     it("takes input while paused without admitting anything until the run is resumed", { timeout: TIMEOUT }, async () => {
