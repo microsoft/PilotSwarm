@@ -1,4 +1,4 @@
-# Workflow messaging: durable recipient intake (design A, revision 3, amended)
+# Workflow messaging: durable recipient intake (design A, revision 3, amendment 2)
 
 Status: revised design checkpoint for review. Docs only; no code changes.
 Revision 2 (`e287ddb3`) revised `c92d7eb1` after the Grok review
@@ -9,7 +9,10 @@ Revision 3 is a focused delta for the review of revision 2
 N1 to N6, with the parent's qualifications); F5 and F8 stay closed as
 specified. The amendment corrects the three semantics that the GPT review
 of revision 3 left open (`wfv2-intake-design-0110b1f7-gpt-review.md`,
-SHA-256 `116a5311…`); its N1 and N2 closures stand. Source base:
+SHA-256 `116a5311…`); its N1 and N2 closures stand. Amendment 2 makes the
+three corrections of the parent review of the amendment
+(`wfv2-intake-design-d0ce569b-parent-review.md`, SHA-256 `1af65433…`);
+N1, N2, N5, F5 and F8 stay closed. Source base:
 `9fcbf377`; line numbers are at that commit (the session orchestration,
 client, worker and retry files are unchanged since `fa7c232f`). Dependency
 facts are pinned in section 1.
@@ -20,21 +23,33 @@ message id is among its 20 most recent ids. Design A gives a recipient on
 session orchestration 1.0.83 a durable intake record per exchange: the
 session admits each durable-mode exchange at most once, admits it from the
 sender's immutable outbox row and not from the queued bytes, keeps it in a
-bounded retained area when it has no room, binds it to one logical turn
-invocation before that invocation first carries it, and refuses it visibly
-when it cannot keep it. Exchanges outside durable mode keep today's
-semantics.
+bounded intake queue in its carried state (never in KV), binds it to one
+logical turn invocation before that invocation first carries it, and
+refuses it visibly when it cannot keep it. Exchanges outside durable mode
+keep today's semantics.
 
 ## 0. Finding resolution
+
+Amendment 2 (parent review of `d0ce569b`):
+
+| Finding | Resolution | Section |
+|---|---|---|
+| D0-P1: `sent` must be cumulative and the outcome rules ordered | `sent` means sent or possibly sent by any attempt and never returns to false. The transition rows are ordered and exclusive: a stop or cancel precedes a completed result; a retry that stops before its send, meets a gate or cannot hydrate after an earlier send ends `interrupted`, is never reset to unsent and never moves to another turn. | 5.5, 7, 9, 12 |
+| D0-P2: an unsent invocation must not loop | An unsent invocation is `ready` or `parked` with its cause. A parked one starts no turn; it rides only the next attempt that a named stimulus starts (the gate's own retry, a new message, a timer that runs a turn, a newly claimed item). The store-write wake never starts a turn or unparks. | 5.4, 5.5, 7, 9, 12 |
+| D0-P3: intake keys couple with later command keys | Intake writes no KV key or value. Its queue (references and `unclaimed` retries) and its invocation are orchestration state that continue-as-new carries, within byte and count caps, with room for one full invocation always free. KV holds only what the FIFO, the meta keys and command handling write under today's rules, so intake adds no key or value to the 150-key count; nothing is dropped, cleaned up or raised. No intake item is in the FIFO, so F4's FIFO parse change is withdrawn. | 5.1, 5.4, 5.7, 6, 7 |
+
+Amendment 2 moves every intake placement out of KV. Where a row below
+says KV, a key, a bucket, the FIFO or the retained area for an intake
+item, read the carried intake queue or invocation of 5.4 and 5.5.
 
 Amendment (GPT review of `0110b1f7`):
 
 | Finding | Resolution | Section |
 |---|---|---|
 | N1, N2 | Closed as design by the review; unchanged. | 4, 5.4 |
-| P1 (N3, N4): bind one logical invocation, not one final row mark | Logical admission is the binding of a claim to one invocation, persisted in KV and in the store before the invocation's first dispatch; the processing outcome is a separate, later record. An invocation's batch is fixed from its first send, rides only its own turn's retries after that, and is never attached to an unrelated turn. The worker composes the batch after any stash or bootstrap replacement and returns which invocation it sent; an adopted saved result carries the witness of the attempt that ran. A known stop before the send is `not_dispatched`; an unknown interruption or an error after a possible send is indeterminate, never success and never replayed. A failed settlement is retried as a settlement only. A cancel never proves that an earlier attempt did not process an item. Moves write both keys before any yield. | 2, 5.1, 5.2, 5.5, 6.1, 7 |
+| P1 (N3, N4): bind one logical invocation, not one final row mark | Logical admission is the binding of a claim to one invocation, persisted in KV and in the store before the invocation's first dispatch; the processing outcome is a separate, later record. An invocation's batch is fixed from its first send, rides only its own turn's retries after that, and is never attached to an unrelated turn. The worker composes the batch after any stash or bootstrap replacement and returns which invocation it sent; an adopted saved result carries the witness of the attempt that ran. A known stop before the send is `not_dispatched`; an unknown interruption or an error after a possible send is indeterminate, never success and never replayed. A failed settlement is retried as a settlement only. A cancel never proves that an earlier attempt did not process an item. Moves write both keys before any yield. (Amendment 2: carried state, cumulative `sent` and parking; D0-P1 to D0-P3.) | 2, 5.1, 5.2, 5.5, 6.1, 7 |
 | P2 (N5): use the existing authorized outbox view | `read_workflow` already returns the run's outbox (`tools.ts` 304-317, 354-360): the later intake outcome and its time are added to those entries; delivery state and receipt are unchanged; no new API. The recipient's projection is event-only under its SHARE lock. | 5.6 |
-| P2 (N6): account for the shared 150-key limit | Intake counts the instance's keys (`ctx.getKvAllKeys()`) before creating any of its keys, never leaves fewer than 16 free, refuses the item visibly instead, and deletes each of its keys when empty. No command key is ever removed. | 5.7 |
+| P2 (N6): account for the shared 150-key limit | Intake counts the instance's keys (`ctx.getKvAllKeys()`) before creating any of its keys, never leaves fewer than 16 free, refuses the item visibly instead, and deletes each of its keys when empty. No command key is ever removed. (Amendment 2: replaced by D0-P3; intake writes no KV.) | 5.7 |
 
 Revision 3:
 
@@ -84,6 +99,7 @@ Revision 2:
 | `workflowSendPrompt` text starts with `[SYSTEM: A workflow sent you a typed message. …]` and a JSON line. | `runtime.ts` 1097-1109 |
 | The session orchestration's KV keys: `fifo.0` to `fifo.19`, `meta.responseVersion`, `meta.commandVersion`, `response.latest`, and one `command.response.<id>` per handled command, which the orchestration never clears. | `queue.ts` 52-68; `types.ts` 1821-1827; `lifecycle.ts` 115-140 |
 | duroxide 0.1.32 (pinned below): at most 150 user KV keys per instance and 64 KiB per value, checked after each turn; a turn over either limit fails the orchestration. KV is per instance and survives continue-as-new; duroxide-pg from migration 0019 no longer deletes KV when it prunes executions. | `src/runtime/limits.rs` 39-48; duroxide-pg `migrations/0019_add_kv_last_updated.sql` (part 4) |
+| duroxide 0.1.32's other limits are 100 carried-forward events, 256 KiB of custom status, 5 worker tags and 256-byte tag names; none bounds an orchestration's input. The session already carries its pending prompt, budget stash, steers and tool actions in its continue-as-new input, and continues as new after 10 loop iterations or at 800 KiB of history. | `src/runtime/limits.rs` 9-37; `lifecycle.ts` 592-662; `state.ts` 435-437; `orchestration/runtime.ts` 247-266 |
 
 Dependency evidence (read as public source over HTTPS, nothing executed;
 the files and a manifest with their SHA-256 are retained as artifact
@@ -92,7 +108,7 @@ the files and a manifest with their SHA-256 are retained as artifact
 | Claim | Source and pin |
 |---|---|
 | The npm package | `package-lock.json` 7761-7773 pins `duroxide` 0.2.4; duroxide-node tag `v0.2.4` is commit `7722f193184af0f2b01095b72464607b97d92aa1`; its `Cargo.toml` (SHA-256 `ec0a6b91…`) requires `duroxide` 0.1.32 and `duroxide-pg` 0.1.38 (caret ranges; that repository has no `Cargo.lock`, so the binary's resolved versions are not proved by source; crates.io listed 0.1.32 and 0.1.38 as the latest on 2026-11-01). |
-| Limits | duroxide tag `v0.1.32`, commit `585c89c86f03956f799913cf0b98186452221e75`, `src/runtime/limits.rs` (SHA-256 `318468e8…`): `MAX_WORKER_TAGS` 5 (30), `MAX_KV_KEYS` 150 (43), `MAX_KV_VALUE_BYTES` 64 KiB (48). |
+| Limits | duroxide tag `v0.1.32`, commit `585c89c86f03956f799913cf0b98186452221e75`, `src/runtime/limits.rs` (SHA-256 `318468e8…`): `MAX_CARRY_FORWARD_EVENTS` 100 (14), `MAX_CUSTOM_STATUS_BYTES` 256 KiB (25), `MAX_WORKER_TAGS` 5 (30), `MAX_TAG_NAME_BYTES` 256 (37), `MAX_KV_KEYS` 150 (43), `MAX_KV_VALUE_BYTES` 64 KiB (48); the file has no other limit. |
 | KV across continue-as-new and pruning | KV survives continue-as-new: the session FIFO already relies on it, and duroxide's design text says so (`docs/proposals/orchestration-kv-store.md` at `585c89c8`, SHA-256 `0b84a787…`, 12, 391-400; design text, not a test). duroxide-pg tag `v0.1.38`, commit `54255d1664ca630fe9d3501502dfdba5dec455f9`: `migrations/0018_add_kv_store.sql` part 5 deleted KV on prune; `migrations/0019_add_kv_last_updated.sql` (SHA-256 `7075f5a3…`) part 4 removed that delete. |
 
 ## 2. Guarantee
@@ -117,10 +133,9 @@ For a durable-mode exchange (section 4) whose recipient runs 1.0.83:
   recipient's session ended, as for any queued work.
 - **Conditional progress.** While the store answers, the session runs and
   its turns are not held back (a budget or workspace gate retries on its
-  own timer; an item that no attempt has sent waits for the session's next
-  turn), a claimed copy is admitted unless it is cancelled or the session
-  ends; one that does not fit waits in the retained area and is moved into
-  the FIFO as room appears.
+  own timer; a parked invocation waits for its next stimulus, 5.5), a
+  claimed copy waits in the intake queue and is admitted unless it is
+  cancelled, refused for capacity or the session ends.
 
 Not given: exactly-once delivery, reading, model behavior or external
 effects (an invocation's retries may run the model again); proof that a
@@ -150,10 +165,12 @@ a read.
   sender's own function
   (`workflowSendPrompt`, `runtime.ts` 1097, one shared renderer) and returns
   `{text, textSha256, clientMessageId}`, where `clientMessageId` is
-  `workflowSendClientMessageId(wf, run, nx)`. The claim's result is
-  recorded in the orchestration's history, so a replay admits the same
-  bytes.
-- **The admitted item** is built only from that result: the canonical text,
+  `workflowSendClientMessageId(wf, run, nx)`. The claim that inserts the
+  row stores that text in it (5.1), and the bind returns the stored text
+  (5.5). Both results are recorded in the orchestration's history, so a
+  replay admits the same bytes, and a later renderer change cannot alter
+  an admitted text.
+- **The admitted item** is built only from those results: the canonical text,
   the canonical client id, the system sender
   `{kind: "system", display: "workflow message"}`, `bootstrap: false`, no
   required tool and no attachments. The queued `prompt`, `sender`,
@@ -231,21 +248,23 @@ a read.
 
 `workflow_intake`, one row per exchange (key: the exchange id; foreign key
 to the outbox): `recipient_session_id`, `workflow_session_id`, `run_id`,
-`envelope_sha256`, `text_sha256`, `claim_id`, `state`, `invocation_id`,
-`processing`, `cancel_requested`, counters (`duplicates`, `conflicts`),
-`created_at`, `updated_at`, `admitted_at`, `settled_at`, `reason`. States:
+`envelope_sha256`, `text`, `text_sha256`, `claim_id`, `state`,
+`invocation_id`, `processing`, `cancel_requested`, counters (`duplicates`,
+`conflicts`), `created_at`, `updated_at`, `admitted_at`, `settled_at`,
+`reason`. `text` is the canonical text (section 3), written once by the
+claim that inserts the row and never changed. States:
 `holding`, `admitted`, `cancelled`, `refused_full`, `refused_size`. Every
 state but `holding` is final. An `admitted` row names its invocation and
 has a separate `processing` value: `bound` until its invocation ends, then
 one final value of `completed`, `not_dispatched`, `interrupted` or
 `failed_indeterminate` (5.5).
 
-A **placement** is where the orchestration keeps a claimed item: the
-current pass's stash, a FIFO bucket (an item of kind `intake`, 1.0.83
-only) or the retained area (`held`), while the row is `holding`; and the
-invocation (5.5) once it is `admitted`. Each placed item carries `intake:
-{exchangeId, claimId, textSha256}`. An exchange has at most one placement,
-and only under its own claim (I2, I7).
+A **placement** is where the orchestration keeps a claimed item: a `held`
+entry of its intake queue (5.4) while the row is `holding`, and the
+invocation (5.5) once it is `admitted`. Both are orchestration state that
+continue-as-new carries, never KV, a stash, the FIFO or a merged prompt.
+An exchange has at most one placement, and only under its own claim (I2,
+I7).
 
 ### 5.2 Claim and settle (state-conditioned; one statement each)
 
@@ -253,7 +272,7 @@ Claim (`claimWorkflowIntake`, mode `accept` or `refuse`):
 
 | Row | Caller's claim | Result | Write |
 |---|---|---|---|
-| none; outbox durable and matching; mode `accept`; item within the cap (5.7) | `c` | `accepted` | insert `holding(c)` |
+| none; outbox durable and matching; mode `accept`; item within the cap (5.7) | `c` | `accepted` | insert `holding(c)` with the canonical text |
 | none; outbox durable and matching; mode `accept`; item over the cap | `c` | `refused_size` | insert `refused_size(c)` in the refusal transaction (5.6) |
 | none; outbox durable and matching; mode `refuse` | `c` | `refused_full` | insert `refused_full(c)` in the refusal transaction (5.6) |
 | `holding(c)` | `c`, either mode | `accepted` (the earlier call committed; its reply was lost) | none |
@@ -273,7 +292,7 @@ rows' state after it:
 
 | Settle | Write | Condition |
 |---|---|---|
-| bind (invocation `v`, claims `C`) | `state = 'admitted'`, `invocation_id = v`, `processing = 'bound'`, `admitted_at` | each row `holding` under its claim in `C`; a row already `admitted` under its claim with invocation `v` is the same result (a replay) |
+| bind (invocation `v`, claims `C`) | `state = 'admitted'`, `invocation_id = v`, `processing = 'bound'`, `admitted_at`; returns each row's stored `text` and `text_sha256` | each row `holding` under its claim in `C`; a row already `admitted` under its claim with invocation `v` is the same result (a replay) |
 | cancel (claim `c`) | `state = 'cancelled'` | `holding(c)` |
 | cancel (claim `c`, invocation `v` not yet sent) | `processing = 'not_dispatched'`, `reason = 'cancelled'` | `admitted(c)`, invocation `v`, `processing = 'bound'` |
 | cancel requested (claim `c`, invocation `v` possibly sent) | `cancel_requested = true` | `admitted(c)`, invocation `v`; the processing value is not changed |
@@ -291,7 +310,7 @@ dispatched for it.
 For a prompt message with `workflowIntake`, in drain and in the sweep:
 
 1. Shape and size check of the envelope (5.7). A bad shape or an envelope
-   over its cap is refused and recorded; nothing is written to KV, and
+   over its cap is refused and recorded; nothing is placed, and
    the message does not fall through to the ordinary path.
 2. `claimId := yield ctx.newGuid()`.
 3. `yield claimWorkflowIntake(...)` (critical, 5.4).
@@ -303,24 +322,26 @@ For a prompt message with `workflowIntake`, in drain and in the sweep:
 4. Cancel check on the canonical client id. Cancelled: drop as today and
    settle `cancelled`.
 5. The 20-id window is not consulted for an intake message; its canonical
-   id still enters the window when the item is stored.
-6. The item follows its own path's handling (section 6) and is placed
-   with its `intake` marker as an item of kind `intake`: never a prompt
-   item, never part of a merged prompt.
+   id still enters the window when the item is placed.
+6. The item follows its own path's handling (section 6) and, in the same
+   synchronous step, becomes a `held` entry of the intake queue (5.4):
+   never a prompt item, never in a stash, the FIFO or a merged prompt.
 
-The placement check reads the pass's stash, the FIFO, the retained area and
-the invocation, with no yield, before any placement.
+The placement check reads the intake queue and the invocation, with no
+yield, before any placement.
 
-### 5.4 The retained area, the wake and critical persistence
+### 5.4 The intake queue, the wake and critical persistence
 
-- **Retained area:** KV keys `intake.0` to `intake.7`, packed by bytes
-  (5.7). An entry is either `unclaimed {claimId, envelope, nextAttemptAt,
-  attempts}` or `held {canonical item}`, kept in arrival order. An
-  `unclaimed` entry stores the envelope only, never the queued prompt.
+- **Intake queue:** orchestration state that continue-as-new carries,
+  never KV (5.7). An entry is either `unclaimed {claimId, envelope,
+  nextAttemptAt, attempts}` or `held {exchangeId, claimId, textSha256,
+  clientMessageId}` (a reference; the text stays in the row, 5.1), kept in
+  arrival order. An `unclaimed` entry stores the envelope only, never the
+  queued prompt.
 - **Claim failure (F6, F9):** the claim activity retries transient store
   errors in-activity (1 s, 5 s, 15 s). A missing workflow store or
   exhausted retries make it throw; the orchestration catches that one
-  failure, keeps the message as `unclaimed` in the retained area with its
+  failure, keeps the message as `unclaimed` in the intake queue with its
   `claimId` and a due time (`ctx.utcNow()` plus 30 s, doubling to 15 min),
   and continues its loop (commands keep being serviced). A retry updates
   its entry in place (`attempts`, `nextAttemptAt`); it never adds one. A
@@ -336,26 +357,27 @@ the invocation, with no yield, before any placement.
   first. When the intake deadline wins, the armed timer stays armed (as
   when the digest window wins), and drain retries every due entry with its
   own claim id, oldest first, and a due bind or settlement as a store
-  write only. The due times and claim ids are KV values, so they survive
-  continue-as-new and a restart. No sleep, no busy loop, and no other
-  message is needed. A session with no intake due time runs exactly
-  today's drain.
-- **FIFO without room (F7):** an accepted canonical item that the FIFO
-  refuses at any of the four append sites (`queue.ts` 844, 1144, 1195,
-  1293) becomes `held` in the retained area, in the same synchronous step.
-  Each drain pass first moves `held` entries, oldest first, into the FIFO
-  while it has room; the FIFO gets room when `decide` takes work, so held
-  entries need no timer. In the FIFO an intake item has its own kind
-  (`intake`): it is not interactive, it stops a prompt merge as any other
-  kind does, and only the binding (5.5) takes it out.
-- **Area full:** an accepted item (the holder, with no placement) that
-  finds the FIFO and the area full is settled `refused_full` from
-  `holding` (5.6). An `unclaimed` message whose retry finds the area full
-  is claimed with mode `refuse` (5.2): a new row becomes `refused_full`; a
-  row the earlier call already took (`holding(c)`) returns `accepted`, and
-  the holder then settles it `refused_full` because it has no room. If
-  that write also cannot be made, the execution fails (the one fail-stop
-  case: a persistent store outage with the area full).
+  write only. The due times and claim ids are carried state, so they
+  survive continue-as-new and a restart (replay rebuilds them within an
+  execution). No sleep, no busy loop, and no other message is needed. The
+  wake never starts a turn and never makes a parked invocation eligible
+  (5.5). A session with no intake due time runs exactly today's drain.
+- **No FIFO (F7).** An accepted item is never appended, so none of the
+  four append sites (`queue.ts` 844, 1144, 1195, 1293) can lose it, and
+  a full FIFO does not matter to it. It waits as a `held` entry until the
+  binding (5.5) takes it, and needs no timer: `decide` forms the next
+  invocation from `held` entries whenever none exists, and a ready
+  invocation starts a turn when nothing else does (5.5).
+- **Queue full:** an accepted item (the holder, with no placement) that
+  finds every `held` entry taken (5.7) is settled `refused_full` from
+  `holding` (5.6). An `unclaimed` entry whose retry finds no free `held`
+  entry, and a message whose claim fails when every `unclaimed` entry is
+  taken, are claimed with mode `refuse` (5.2): a new row becomes
+  `refused_full`; a row the earlier call already took (`holding(c)`)
+  returns `accepted`, and the holder then settles it `refused_full`
+  because it has no room. If that write also cannot be made, the execution
+  fails (the one fail-stop case: a persistent store outage with the queue
+  full).
 - Claim and settle use the critical policy, never `recordSessionEvent`.
   Diagnostic events (duplicate, conflict, malformed) may stay best-effort;
   the row's counters are written by the claim itself.
@@ -365,22 +387,28 @@ the invocation, with no yield, before any placement.
 An **invocation** is the logical turn that carries a batch of admitted
 intake items: one or more model attempts of one turn (its own retries,
 across continue-as-new and restarts), never another turn. The session has
-at most one at a time, in the KV key `intake.invocation`:
-`{invocationId, items, sent, settle}`.
+at most one at a time, in its orchestration state carried by
+continue-as-new (5.7): `{invocationId, items, sent, parked, settle}`, where
+`items` holds each item's reference, its canonical text and its cancel
+flag.
 
-- **Binding (logical admission).** When `decide` starts a turn attempt
-  and no invocation exists, it may form one from the intake items in
-  arrival order (the FIFO's `intake` items, then `held` entries), within
-  the caps of 5.7: `invocationId := yield ctx.newGuid()`; then, in one
-  synchronous step after preflighting both resulting strings and the key
-  budget (5.7), it removes the items from their placements and writes
-  `intake.invocation` with `sent = false`; then one critical yield binds
-  the claims in the store (5.2, `admitted`, processing `bound`). That
-  binding is the admission, before the invocation's first dispatch. A
-  crash replays the same yields. A bind that cannot be made (a store
-  outage) keeps the invocation unsent with a due time on the N2 wake
-  (5.4); it is not dispatched until bound. New intake items never join an
-  existing invocation; they form the next one after it ends.
+- **Binding (logical admission).** Whenever no invocation exists and the
+  intake queue has `held` entries, `decide` forms one from them in arrival
+  order, within the caps of 5.7, before it starts its next turn attempt:
+  `invocationId := yield ctx.newGuid()`; then, in one synchronous step, it
+  removes the entries from the queue and records the invocation with
+  `sent = false`; then one critical yield binds the claims in the store
+  (5.2, `admitted`, processing `bound`) and returns their texts as the
+  claims stored them (5.1), each with its hash; a hash that differs from
+  the entry's `textSha256` is a broken invariant (the execution fails).
+  That binding is the admission, before the invocation's first dispatch.
+  The carried state always keeps room for one full invocation, its
+  metadata included (5.7), so forming one never fails or waits for room,
+  and a later cancel, park or settlement writes only fields inside that
+  room. A crash replays the same yields. A bind that cannot be made (a
+  store outage) keeps the invocation unsent with a due time on the N2
+  wake (5.4); it is not dispatched until bound. New intake items never
+  join an existing invocation; they form the next one after it ends.
 - **Dispatch.** A turn attempt carries an invocation in a field of its own
   (`intake: {invocationId, items}`), never inside the prompt: not the
   merged prompt, the budget stash, a retry's carried prompt or a pending
@@ -394,50 +422,75 @@ at most one at a time, in the KV key `intake.invocation`:
   result the worker commits, so a saved result that a retry adopts
   (`session-proxy.ts` 1766-1787) returns the witness of the attempt that
   ran.
-- **Which attempts carry it.** An unsent invocation (`sent = false`) rides
-  the session's next turn attempt, whatever started it: none of its items
-  has reached a model. When there is no other work, `decide` starts a turn
-  for it alone, with the session's internal system-turn prompt. The first
-  attempt that returns `sent: true`, or that throws (its send is unknown),
-  makes it `sent = true`; from then on only that turn's own retries carry
-  it (the retry's continue-as-new carry names the invocation), with the
-  same batch. No other turn carries it. A returned result whose witness
-  names another invocation is a broken invariant: the execution fails, and
-  nothing is settled.
+- **`sent` is cumulative.** It becomes true when an attempt that carried
+  the invocation returns a witness `sent: true`, returns no witness, or
+  throws, and it never becomes false again. It is false only while every
+  attempt that carried the invocation returned `sent: false`. A returned
+  result whose witness names another invocation is a broken invariant: the
+  execution fails, and nothing is settled.
+- **Who carries it.** A sent invocation rides only its own turn's retries
+  (the retry's continue-as-new carry names it), with the same batch. An
+  unsent one is `ready` (formed and bound, no attempt has carried it yet)
+  or `parked` with its cause. A ready one rides the session's next turn
+  attempt, whatever started it; when nothing else is queued, `decide`
+  starts one turn for it alone, with the session's internal system-turn
+  prompt. A parked one never starts a turn: it rides only the next attempt
+  that one of its resume stimuli starts (below). The N2 wake retries binds
+  and settlements as store writes only; it never starts a turn and never
+  unparks.
 - **Batch.** The items are fixed when the invocation is formed. Before it
   is sent, a tombstone may remove an item (below); nothing is ever added.
   From the first send the batch is immutable.
-- **End and processing outcome.** When the invocation's turn ends, one
-  critical yield settles every row of the batch with one outcome (5.2,
-  end), then `intake.invocation` is cleared in the same synchronous step;
-  other intake items are not touched:
+- **Transitions.** When an attempt that carried the invocation returns, or
+  its turn ends without one, `sent` is first updated from that attempt;
+  then the first matching row applies:
 
-  | How its turn ends | Invocation | Outcome |
-  |---|---|---|
-  | A result that is not `error` and not a gate refusal, witness `sent: true` | ends | `completed` |
-  | Budget or workspace gate refusal (witness `sent: false`; `turn.ts` 729-735, 1184, 1413) | stays unsent | none yet; the next eligible attempt carries it |
-  | Hydration give-up: no attempt ran (`turn.ts` 470-490) | stays unsent | none yet |
-  | `stopped` or `cancelled` with witness `sent: false` (a Stop before the send: `session-proxy.ts` 4307-4318, `managed-session.ts` 3945-3951) | ends | `not_dispatched`; no automatic repeat |
-  | `stopped` or `cancelled` with witness `sent: true`, or without a witness (`managed-session.ts` 1502-1535, `session-proxy.ts` 1674-1708, 4716) | ends | `interrupted`: indeterminate, no repeat |
-  | A thrown or `error` result with retries left (`turn.ts` 304-347) | rides the turn's retry | none yet |
-  | Retries exhausted, credential failure, non-retryable error (`turn.ts` 310-332, 628-633, 1609-1618), when the invocation was sent | ends | `failed_indeterminate`: it may have been processed; never replayed on another turn |
-  | The same, when no attempt sent it (every witness `sent: false`, none thrown) | stays unsent | none yet |
-  | The session ends (cancel, delete, done) | ends with the session | rows stay `admitted`, processing `bound` (section 2) |
+  | # | Event | `sent` | Next | Outcome |
+  |---|---|---|---|---|
+  | 1 | `stopped` or `cancelled` result (`session-proxy.ts` 4307-4318, 1674-1708, 4716; `managed-session.ts` 1502-1535, 3945-3951) | false | ends | `not_dispatched` |
+  | 2 | the same | true | ends | `interrupted` |
+  | 3 | gate refusal, budget or workspace (`turn.ts` 729-735, 1184, 1413) | false | parked: gate | — |
+  | 4 | the same | true | ends | `interrupted` |
+  | 5 | thrown or `error` result, and the turn retries (`turn.ts` 304-347) | either | stays with that turn's retry | — |
+  | 6 | retries exhausted, credential failure, non-retryable error (`turn.ts` 310-332, 628-633, 1609-1618) | false | parked: that cause | — |
+  | 7 | the same | true | ends | `failed_indeterminate` |
+  | 8 | any other result, this attempt's witness `sent: true` | true | ends | `completed` |
+  | 9 | any other result otherwise | true | ends | `interrupted` |
+  | 10 | the same | false | parked: not sent | — |
+  | 11 | hydration give-up before an attempt that would carry it (`turn.ts` 470-490) | false | parked: hydration | — |
+  | 12 | the same | true | ends | `interrupted` |
+  | 13 | the session ends (cancel, delete, done) | either | ends with the session | rows stay `admitted`, processing `bound` (section 2) |
 
-  `completed` means only that a turn which sent the items ended without an
-  error; it is not proof that a model read them.
+  So an invocation that one attempt sent and whose retry then stops before
+  its send, is refused by a gate or cannot hydrate ends `interrupted`
+  (rows 2, 4, 12); it is never reset to unsent and never moves to another
+  turn. `completed` means only that a turn which sent the items ended
+  without an error; it is not proof that a model read them. On an end, one
+  critical yield settles every row of the batch with the outcome (5.2,
+  end), then the invocation is cleared in the same synchronous step; other
+  intake items are not touched.
+- **Resume stimuli of a parked invocation:**
+
+  | Cause | Resumes on |
+  |---|---|
+  | gate | the gate's own retry attempt, on its existing timer, which runs a turn whether or not a prompt was stashed (budget: `turn.ts` 1663-1665; workspace: `lifecycle.ts` 951, 1132) |
+  | credential, non-retryable, exhausted, not sent, hydration | the next turn that a new stimulus starts: a message admitted from a person or a session (a prompt, an answer, a child update), a timer that runs a turn (cron, cron_at, wait), or a newly claimed intake item (one attempt per arrival) |
+
+  The attempt it rides applies the table again. A lasting failure therefore
+  repeats only once per new stimulus, never on its own.
 - **Settlement.** The end is a settlement, never a new attempt. If the end
-  settle fails after its retries, `intake.invocation` keeps
-  `settle: {outcome}` and a due time on the N2 wake (5.4), and the
-  settlement is retried as a settlement until it succeeds; no turn carries
-  an invocation that is waiting to be settled, and no model runs for it.
+  settle fails after its retries, the invocation keeps `settle: {outcome}`
+  and a due time on the N2 wake (5.4), and the settlement is retried as a
+  settlement until it succeeds; no turn carries an invocation that is
+  waiting to be settled, and no model runs for it.
 - **Cancels.** A tombstone for an item's canonical client id: while the
   invocation is unsent, the item is removed from the batch and settled
   `not_dispatched` (reason `cancelled`), in one synchronous step with the
   invocation's rewrite; once it was sent, the tombstone is recorded
   (`cancel_requested`) and changes nothing else, because a later cancel
   does not prove that an earlier attempt did not process the item. A
-  tombstone for an item still `holding` settles `cancelled` as before.
+  tombstone for a `held` item settles it `cancelled` and removes its
+  entry, at the latest when `decide` would bind it (6.1).
 - **Frozen versions** are unchanged; 1.0.82 and earlier keep their dispatch
   and stash behavior. 1.0.83's turns run under new activity names and a
   capability tag (section 8), because an older worker would ignore the
@@ -475,48 +528,48 @@ at most one at a time, in the KV key `intake.invocation`:
   (`tools.ts` 68-76), and a later intake outcome never rewrites it. A
   deleted source gets nothing, and its readers see the refusal nowhere.
 
-### 5.7 Byte caps and the shared key limit (N6)
+### 5.7 Byte caps; intake writes no KV (N6, D0-P3)
 
-Every cap is in UTF-8 bytes of the exact string written, wrappers and JSON
-escaping included. duroxide 0.1.32 fails an orchestration turn whose KV
-value is over 64 KiB, or whose instance has more than 150 keys: it counts
-every key of the instance's snapshot with this turn's sets and clears
-(`src/runtime/dispatchers/orchestration.rs` 170-188 at `585c89c8`).
+Intake writes no KV key and no KV value. Its queue (5.4) and its
+invocation (5.5) are orchestration state: replay rebuilds them within an
+execution, and continue-as-new carries them in its input, as the session
+already carries its pending prompt, budget stash and steers (section 1).
+No duroxide limit applies to that input; the caps below keep it small next
+to the session's own 800 KiB history check. Every cap is in UTF-8 bytes of
+the exact canonical JSON kept, escaping included.
 
 | What | Cap | Where checked | Over the cap |
 |---|---|---|---|
-| The queued envelope (the `workflowIntake` object, fixed fields) | 1 KiB of its canonical JSON | arrival step 1, before any KV write | malformed, refused and recorded |
-| One canonical item, in each form it can be stored in: a FIFO bucket, a retained `held` entry, or an invocation holding it alone (with the invocation's own fields) | 60 KiB for the largest form (the bound of `MAX_FIFO_ITEM_BYTES`, `isFifoItemTooLarge`) | the claim, in the store, on the exact item and the fixed shapes the orchestration stores; a verified outbox row is the only source of the item | `refused_size` (5.6) |
-| An `unclaimed` entry, as stored | 2 KiB | arrival, before writing it | the envelope is over its cap: malformed |
-| One retained-area key or the invocation key: the whole stored string, items and metadata (invocation id, `sent`, a pending settlement) | 60 KiB | before each write; an entry goes in only if the key's new string stays within the cap | the entry stays where it was (FIFO full: next key, or `refused_full`; the invocation full: the item waits for the next invocation) |
-| The retained area | 8 keys, so at most 480 KiB | — | `refused_full` |
+| The queued envelope (the `workflowIntake` object, fixed fields) | 1 KiB | arrival step 1, before anything is kept | malformed, refused and recorded |
+| One canonical item text, as the claim stores it (5.1) | 60 KiB, today's FIFO item bound (`MAX_FIFO_ITEM_BYTES`, `state.ts` 432) | the claim, in the store, on the exact rendered text | `refused_size` (5.6) |
+| An `unclaimed` entry | 2 KiB; at most 8 entries | arrival, before the entry is kept | an envelope over its cap is malformed; with no free entry, a claim in mode `refuse` (5.4) |
+| A `held` entry (a reference) | 512 B; at most 64 entries | the holder, before placing | no free entry: `refused_full` (5.4, 5.6) |
+| The invocation's items (each a reference, its text and its cancel flag) | 61 KiB together, so one item of the largest size always fits | forming it | the next `held` entry waits for the next invocation |
+| The invocation's other fields (id, `sent`, the parked cause, a pending settlement) | 1 KiB | forming it | not reachable: the fields have fixed shapes |
 
-The 60 KiB caps leave 4 KiB below the 64 KiB limit, measured on the final
-string, not on an item's share of it. The rendered text can be several
-times its 16 KiB payload: `promptSafeJson` escapes brackets, and storage
-escapes the JSON again. That is why the cap is on the stored string.
+So the carried intake state is at most 16 KiB of `unclaimed` entries,
+32 KiB of `held` entries and 62 KiB of invocation, 110 KiB in all. Room for
+one full invocation is part of that bound: forming one never fails or waits
+for room, and a later cancel, park or settlement changes only fields
+inside it. The rendered text can be several times its 16 KiB payload
+(`promptSafeJson` escapes brackets); that is why the cap is on the stored
+text.
 
-**Keys.** Intake can hold at most 9 keys: `intake.0` to `intake.7` and
-`intake.invocation`. Each is created only when needed and cleared as soon
-as it is empty. Before an intake write that would create a key, the
-orchestration counts the instance's keys (`ctx.getKvAllKeys()`,
-synchronous: duroxide-node `lib/duroxide.js` 735-737 at `7722f193`; the
-count includes everything continue-as-new carried). It creates the key
-only if at least 16 keys stay free after it (count + 1 ≤ 134); otherwise
-it does not create it, and the item that needed it is refused
-(`refused_full` for a claimed item, a `refuse` claim for an `unclaimed`
-one, 5.4), visibly and without failing the session. A batch that needs the
-invocation key when none can be created stays where it is, and the
-attempt runs without it.
-
-**Later commands.** Command handling is unchanged: it keeps writing one
-`command.response.<id>` key per handled command and never clears them
-(`lifecycle.ts` 132-140), against the same limit. Intake never takes the
-last 16 free keys and never deletes or compacts a command key; there is no
-command-history cleanup. A session whose command keys keep growing still
-reaches the existing limit, as today; while intake holds k of its keys,
-that happens k commands earlier. That growth, and its limit, are outside
-this design.
+**The shared key limit.** duroxide 0.1.32 fails an orchestration turn
+after which its instance has more than 150 user keys; it counts every key
+of the snapshot with the turn's sets and clears
+(`src/runtime/dispatchers/orchestration.rs` 170-188 at `585c89c8`). KV
+holds only what today's code writes: the FIFO's buckets for ordinary
+items, `meta.responseVersion`, `meta.commandVersion`, `response.latest`
+and one `command.response.<id>` per handled command, never cleared
+(`lifecycle.ts` 132-140). No intake entry, invocation or item is ever
+among them, so intake adds no key and no value to the count: in the
+review's case (133 keys, an intake item held, then 17 new commands) the
+session has 150 keys and stays valid, as it does without the item.
+Command handling is unchanged; no key, claim or command response is
+dropped, compacted or cleaned up, and the runtime cap is not raised. A
+session whose command keys keep growing reaches that limit as it does
+today; that growth is outside this design (section 13).
 
 ## 6. Paths
 
@@ -525,17 +578,18 @@ this design.
 | Site | Today | Intake addition |
 |---|---|---|
 | `drain-incoming`, `predispatch-incoming` (`queue.ts` 936, 1261) | cancel check consumes the tombstone | claim first (5.3); cancel only an accepted claim, then settle `cancelled` |
-| `drain-stash`, `predispatch-stash` (831, 1183) | tombstone drops a stashed prompt | settle `cancelled` |
-| `decide-fifo`, `decide-merge` (1443, 1365) | tombstone drops a queued prompt | an intake item is never popped as a prompt or merged; a tombstone for one still in the FIFO settles `cancelled` |
-| Append at a command, at the end of drain, at a command in the sweep, at the end of the sweep (844, 1144, 1195, 1293) | lost items reported | lost intake items become `held` (5.4) |
-| Dispatch (1431-1501) | pop, sweep, cancel check, merge, turn | after the merge has written its buckets and before the turn, the binding (5.5) moves intake items into a new invocation in one synchronous step: both keys written, after preflighting their strings and the key budget, before any yield; the merge's existing yields (`queue.ts` 1354-1378) and the command paths' (813-852, 1172-1201) never fall between the two writes, because no intake item is part of a merge or a stash; every attempt carries the invocation it may carry; its end is settled after the turn (5.5) |
-| The invocation (new) | — | a tombstone removes an unsent item (`not_dispatched`) or only records `cancel_requested` on a sent one (5.5) |
+| `drain-stash`, `predispatch-stash` (831, 1183) | tombstone drops a stashed prompt | none: an intake item is never stashed |
+| `decide-fifo`, `decide-merge` (1443, 1365) | tombstone drops a queued prompt | none: an intake item is never in the FIFO |
+| Append at a command, at the end of drain, at a command in the sweep, at the end of the sweep (844, 1144, 1195, 1293) | lost items reported | none: an intake item is never appended (5.4) |
+| Dispatch (1431-1501) and `decide` with nothing queued | pop, sweep, cancel check, merge, turn | after any merge and before the turn: one critical yield settles `cancelled` every `held` entry whose canonical id is cancelled; then the binding (5.5) moves `held` entries into a new invocation in one synchronous step of orchestration state, before its yields; the merge's yields (`queue.ts` 1354-1378) and the command paths' (813-852, 1172-1201) never fall inside that step; with nothing else queued, a ready invocation starts a turn of its own; every attempt carries the invocation it may carry; its end is settled after the turn (5.5) |
+| The intake queue and the invocation (new) | — | a tombstone settles a `held` item `cancelled`, removes an unsent invocation's item (`not_dispatched`) or only records `cancel_requested` on a sent one (5.5) |
 
 ### 6.2 Drain and sweep keep their semantics (F8)
 
 - **Drain:** an intake item takes the drain path for queued work: timer
-  release, the timer note, the child digest, give-back of carried work on
-  loss, and `settleQueuedWorkAfterDecide` when no turn starts. A timer note
+  release, the timer note, the child digest, give-back of carried work
+  when the item is cancelled or refused, and `settleQueuedWorkAfterDecide`
+  when no turn starts. A timer note
   that drain would append to a prompt's text (`queue.ts` 1007-1051) goes to
   the turn's system context (`pendingSystemPrompt`) for an intake item; the
   canonical text, its hash and its stored size never change.
@@ -546,11 +600,13 @@ this design.
 - Both claim before the cancel check; a `duplicate`, `conflict` or
   `unverified` result never calls `dropCancelledPrompt`.
 
-### 6.3 FIFO parsing
+### 6.3 Parsing
 
-In 1.0.83 a bucket (FIFO, retained area or invocation) that does not parse
-fails the execution with the key's name. It is never read as empty. The
-frozen 1.0.82 code is not changed.
+Intake state is never read from KV. In 1.0.83 a carried intake state (the
+intake fields of the continue-as-new input) that does not validate fails
+the execution with the field's name; it is never read as empty. FIFO
+bucket parsing is unchanged, because no intake item is in the FIFO, and
+the frozen 1.0.82 code is not changed.
 
 ## 7. Linearization and invariants
 
@@ -561,29 +617,28 @@ These are separate commits, not one transaction:
 | L1 | the sender's counting transaction, which fixes the mode (section 4) |
 | L2 | the sender's enqueue on `messages` |
 | L3 | the claim's store transaction (`holding(c)`) |
-| L4 | the orchestration's history commit that places the item: the FIFO or the retained area (KV) |
-| L5 | the history commit that moves it into an invocation (KV), then the bind's store transaction (`admitted`, processing `bound`): the logical admission |
+| L4 | the orchestration's history commit of the turn that handled the claim's result: the item is a `held` entry (carried state) |
+| L5 | the history commit of the turn that formed the invocation (carried state), then the bind's store transaction (`admitted`, processing `bound`): the logical admission |
 | L6 | each attempt's result in history, with its dispatch witness |
 | L7 | the end settlement's store transaction (the processing outcome), then the history commit that clears the invocation |
 
 Recovery between them is by replay: the dequeue, the claim id, the
 invocation id and each activity's result are in history; a lost reply
-re-runs the claim, the bind or the settlement with the same ids (5.2). Each
-move between the FIFO, the retained area and the invocation writes both
-keys in one synchronous step, with no yield between, so one history commit
-has both. This design assumes, as the FIFO already does, that the provider
-commits an orchestration turn's history and KV writes together (the source
-contract read in section 1; it is not proved here).
+re-runs the claim, the bind or the settlement with the same ids (5.2). A
+move between the intake queue and the invocation is one synchronous step
+of orchestration state, with no yield between, so it is in one history
+commit; replay rebuilds it and continue-as-new carries its result. Intake
+writes no KV, so it does not depend on the provider committing KV and
+history together.
 
 - **I1:** at most one claim per exchange is ever `admitted`, it is bound to
   one invocation, and a row's final state and final processing value never
   change.
 - **I2 (holding):** for `holding(c)`, claim `c` is in exactly one of: the
-  current pass's claim call, an `unclaimed` entry, or a placement (the
-  pass's stash, the FIFO, `held`), all rebuilt by replay; or the
-  recipient's orchestration has ended. For `admitted(c)` with processing
-  `bound`, the item is in the invocation its row names, or the
-  orchestration has ended.
+  current pass's claim call, an `unclaimed` entry, or a `held` entry, all
+  rebuilt by replay and carried by continue-as-new; or the recipient's
+  orchestration has ended. For `admitted(c)` with processing `bound`, the
+  item is in the invocation its row names, or the orchestration has ended.
 - **I3:** only the holder of `c` settles, and only from `holding`; only the
   invocation `v` ends rows bound to `v`, and only from `bound`.
 - **I4:** a row exists only for an exchange whose outbox row is in durable
@@ -598,16 +653,21 @@ contract read in section 1; it is not proved here).
   under its own claim.
 - **I8 (one invocation):** the attempts that carry an invocation's items
   are its unsent attempts (whose witnesses say they did not send it) and
-  then the attempts of the one turn whose attempt first sent it or threw;
-  no other attempt carries them, and its batch never grows and does not
-  change after its first send.
-- **I9 (truthful outcome):** `completed` only after a non-error result
-  whose witness says the invocation was sent; `not_dispatched` only when no
-  attempt sent it; any other end of a sent or possibly sent invocation is
+  then the attempts of the one turn whose attempt first sent it, possibly
+  sent it or threw; no other attempt carries them, and its batch never
+  grows and does not change after its first send.
+- **I9 (truthful outcome):** `sent` never returns to false; `completed`
+  only after a non-error result whose witness says the invocation was
+  sent; `not_dispatched` only when every attempt that carried it returned
+  `sent: false`; any other end of a sent or possibly sent invocation is
   `interrupted` or `failed_indeterminate`.
-- **I10 (bounds):** every KV value that intake code writes is at most
-  60 KiB as stored, the retained area has at most 8 keys, and intake never
-  creates a key that leaves fewer than 16 free.
+- **I10 (bounds):** intake writes no KV key or value; its carried state
+  stays within the caps of 5.7 (8 `unclaimed` and 64 `held` entries and one
+  invocation, 110 KiB in all), with room for one full invocation always
+  free.
+- **I11 (no self-loop):** a parked invocation starts no turn; only an
+  attempt that one of its resume stimuli (5.5) starts carries it, and the
+  wake writes only to the store.
 
 ## 8. Versions (F5)
 
@@ -618,8 +678,9 @@ contract read in section 1; it is not proved here).
    never of the live `orchestration/` files; registry entry; a freeze test
    copied from 1.0.81's with file hashes. No intake yield exists before
    this commit.
-2. **1.0.83 only:** the intake code, the retained area, the FIFO parsing
-   change and a continue-as-new floor: `versionedContinueAsNew` in 1.0.83
+2. **1.0.83 only:** the intake code, its carried state in the
+   continue-as-new input and a continue-as-new floor:
+   `versionedContinueAsNew` in 1.0.83
    never targets a version older than its own; if the live latest is
    older, it fails the execution with that reason instead of moving down.
    A unit test keeps `DURABLE_SESSION_LATEST_VERSION` at or above every
@@ -631,8 +692,9 @@ contract read in section 1; it is not proved here).
    existing `utcNow` and timer-race branch while an intake due time exists
    (one `utcNow`, one `scheduleTimer` raced with the dequeue, `queue.ts`
    744-781), and retries due claims, binds and settlements there. Forming
-   an invocation adds one `newGuid` and one bind; its end adds one
-   settlement. Arrival adds one `newGuid` and one claim per enveloped copy.
+   an invocation adds one `newGuid` and one bind; cancelling `held` entries
+   before it adds one settlement; its end adds one settlement. Arrival adds
+   one `newGuid` and one claim per enveloped copy.
    1.0.83 schedules its turn activities under new names (`runTurnV5`,
    `runTurnEpochV5`) whose input may carry `intake` and whose result
    carries `intakeDispatch`, with the request design's capability tag
@@ -660,39 +722,41 @@ contract read in section 1; it is not proved here).
 |---|---|---|
 | 1 | Crash before the claim | Replay claims the same copy with the same id. |
 | 2 | Claim committed, reply lost | The same id gets `accepted` again; one item. |
-| 3 | Crash after the claim's reply, before the KV write | Replay rebuilds the item from history. |
+| 3 | Crash after the claim's reply, before its turn's history commit | Replay rebuilds the item from history. |
 | 4 | A later copy after more than 20 other messages, after continue-as-new, after a restart | `duplicate`; not admitted. |
 | 5 | Two copies in one pass | The second is a `duplicate`. |
 | 6 | An older worker attempts a durable exchange | The outbox trigger refuses its counted attempt; no plain copy is queued. |
 | 7 | A `sendSessionEvent` object with a forged or copied envelope | The ingress refuses `workflowIntake`; behind it, the claim verifies the outbox and admits only the canonical render. A copy of a real envelope can at most claim the exchange with the real message. |
-| 8 | Store missing on the claiming worker, or a store outage | `unclaimed` in the retained area; retried with the same id; commands keep running. |
-| 9 | FIFO full | `held` in the retained area, moved in as room appears. |
-| 10 | Retained area full | `refused_full`, recorded and shown to the sender. |
-| 11 | Store outage with the retained area full | The execution fails (the one fail-stop case). |
-| 12 | Tombstone before the copy, in a pass, in the FIFO, in a merge, in the sweep | Claim, then drop and settle `cancelled`; later copies are duplicates; no duplicate consumes a tombstone. |
-| 13 | The sweep ends the session after a pop | The session ended; an intake item still in the FIFO stays `holding`, one in an invocation stays `admitted` with processing `bound`; the sender's next attempt, if any, finds the session ended. |
-| 14 | A FIFO, retained or invocation bucket that does not parse | The execution fails with the key's name. |
+| 8 | Store missing on the claiming worker, or a store outage | `unclaimed` in the intake queue; retried with the same id; commands keep running. |
+| 9 | FIFO full | No effect on an intake item: it is never in the FIFO; it waits as a `held` entry. |
+| 10 | Intake queue full (64 `held` entries) | `refused_full`, recorded and shown to a live sender. |
+| 11 | Store outage while every `unclaimed` entry is taken | The execution fails (the one fail-stop case). |
+| 12 | Tombstone before the copy, in a pass, for a `held` item, in the sweep | Claim, then drop and settle `cancelled`; later copies are duplicates; no duplicate consumes a tombstone. |
+| 13 | The sweep ends the session after a pop | The session ended; a `held` item stays `holding`, one in an invocation stays `admitted` with processing `bound`; the sender's next attempt, if any, finds the session ended. |
+| 14 | Carried intake state that does not validate | The execution fails with the field's name; FIFO parsing is unchanged. |
 | 15 | A stale claim or settle after `admitted`, `cancelled`, `refused_full` or `refused_size`, or an end settle for another invocation | No write (5.2); a wrong-state settle fails visibly and dispatches nothing. |
 | 16 | `legacy_window` exchange | Today's semantics; the receipt says so. |
 | 17 | An older build's count commits while the mode is unset | The row is legacy for ever; a later promotion to `durable` is refused by the trigger; its copies are plain. |
 | 18 | A copied envelope for a legacy exchange | `unverified`, recorded; never handled as an ordinary prompt; plain copies keep the 20-id window. |
 | 19 | The claim, a bind or a settlement fails while the session is idle | The retry deadline is in drain's race; it is retried at its due time with the same ids, as a store write only; a command during the wait is handled first. |
-| 20 | A budget or workspace gate refuses the attempt that carries an unsent invocation | Witness `sent: false`: the invocation stays unsent; a later eligible attempt carries it under the same binding. |
-| 21 | A hydration give-up, or a credential failure before any attempt sent the invocation | It stays unsent for the session's next turn; nothing loops. |
+| 20 | A budget or workspace gate refuses the attempt that carries an unsent invocation | Parked (gate): the gate's own retry attempt carries it under the same binding. After an earlier send: `interrupted`. |
+| 21 | A hydration give-up, a credential failure, a non-retryable error or exhausted retries before any attempt sent the invocation | Parked with that cause: it starts no turn and rides only the next attempt that a new stimulus starts (5.5), once per stimulus. After an earlier send: `interrupted` (hydration) or `failed_indeterminate`. |
 | 22 | A repeated `accepted` for the same claim (a lost reply, a retry of an `unclaimed` entry) | No second placement (I7). |
 | 23 | A refuse call finds `holding(c)` from an earlier call whose reply was lost | `accepted`; the holder has no room and settles `refused_full`. |
 | 24 | A refusal after the sending workflow was deleted | The recipient's row records it; the source is not touched and gets no event. |
 | 25 | A refusal and `beginDelivery` run at once | Same lock order (5.6); one waits for the other; no cycle. |
-| 26 | A canonical item over 60 KiB as stored | `refused_size`, shown to a live sender; nothing goes to KV; the execution continues. |
-| 27 | A malformed or oversize envelope | Refused and recorded; nothing goes to KV. |
+| 26 | A canonical item over 60 KiB as stored | `refused_size`, shown to a live sender; nothing is placed; the execution continues. |
+| 27 | A malformed or oversize envelope | Refused and recorded; nothing is placed. |
 | 28 | A turn that sent the invocation returns an error, or throws, with retries left | Only that turn's retry carries it, with the same batch; no other turn does. |
 | 29 | The same turn exhausts its retries, or fails for credentials or a non-retryable error | The invocation ends `failed_indeterminate`; it is never carried again. |
-| 30 | A Stop before the send (witness `sent: false`) | `not_dispatched`; not carried again. |
+| 30 | A Stop before the send (witness `sent: false`), with no earlier attempt that sent it | `not_dispatched`; not carried again. |
 | 31 | A Stop or a cancel after the send, or with no witness | `interrupted`; not carried again. |
 | 32 | A retry adopts the saved result of the attempt that threw | The saved witness names the same invocation and decides as above; items formed later are never in it. |
 | 33 | The end settlement fails | Retried as a settlement on the wake; no new model attempt. |
 | 34 | A tombstone for an item of an unsent invocation, or of a sent one | Unsent: removed from the batch, `not_dispatched`. Sent: `cancel_requested` only; the invocation's outcome stands. |
-| 35 | A session with 134 or more keys (for example 20 FIFO, 3 counters and 111 command responses) receives an intake item that needs a new key | The key is not created; the item is refused visibly; the session continues. |
+| 35 | A session at 133 keys (for example 20 FIFO, 3 counters and 110 command responses) holds an intake item while 17 new commands arrive | 150 keys, valid, as without the item: intake adds no key. An 18th command reaches 151 and fails the session, as it does today without intake. |
+| 36 | An attempt sends the invocation and throws or returns an error; its retry stops before its send (witness `sent: false`) | `interrupted` (`sent` stays true); never `not_dispatched` and never carried by another turn. |
+| 37 | Only a parked invocation is pending and no stimulus arrives | No turn starts; the wake retries only due store writes. |
 
 ## 10. Retention
 
@@ -716,23 +780,24 @@ Commits, each with DEV tests and independent review:
    `attempt_token`, `intake_outcome`, `intake_outcome_at`, the trigger),
    the locked mode decision in `beginDelivery`, store claim (both modes),
    settle, the refusal transaction and canonical render; store tests.
-3. Recipient intake in 1.0.83: both arrival paths, placement, the retained
-   area, the wake, the invocation (binding, dispatch witness, end and
-   settlement), the `runTurnV5` activities with the composed batch and the
-   witness, all sites, the byte caps and key accounting, the
-   continue-as-new floor, parse failures, the reserved key at the generic
-   ingress, the `read_workflow` outbox fields, fingerprints.
+3. Recipient intake in 1.0.83: both arrival paths, the intake queue and
+   its carried state, the wake, the invocation (binding, cumulative
+   witness, parking and resume stimuli, end and settlement), the
+   `runTurnV5` activities with the composed batch and the witness, all
+   sites, the byte caps, the continue-as-new floor, carried-state
+   validation, the reserved key at the generic ingress, the
+   `read_workflow` outbox fields, fingerprints.
 4. Sender: the capability, the envelope on durable rows, the receipt, the
    README.
 5. Formal model `WorkflowV2Intake.tla` for an agent recipient: copies,
    claims with lost replies, the refuse rows, one placement per claim, the
-   retained area, the wake as an action, logical invocations (binding,
-   unsent and sent attempts, error after a possible send, adoption of a
-   saved result, a Stop before the model, an unknown interruption,
-   settlement failure), tombstones, continue-as-new and session end;
-   mutations for each fix. It counts invocation bindings, not only final
-   row updates. History and KV committing together is an assumption of the
-   model, not a result. `WorkflowV2Send.tla` is not this model.
+   intake queue, the wake as an action, logical invocations (binding,
+   unsent and sent attempts with cumulative `sent`, error after a possible
+   send, a retry that stops before its send, adoption of a saved result, a
+   Stop before the model, an unknown interruption, parking and its
+   stimuli, settlement failure), tombstones, continue-as-new and session
+   end; mutations for each fix. It counts invocation bindings, not only
+   final row updates. `WorkflowV2Send.tla` is not this model.
 
 | Obligation | Test |
 |---|---|
@@ -744,24 +809,25 @@ Commits, each with DEV tests and independent review:
 | F2 | Queued text differs from the outbox: the admitted text is the render, also on replay; a generic event with `workflowIntake` is refused. |
 | More than 20 ids | A durable copy, 21 other prompts, the same copy: suppressed. Positive control: a legacy exchange admitted twice. |
 | N2, wake | Session idle, no other message, the store comes back: the same claim, bind or settlement is retried at its due time with no sleep in the orchestration; a command dequeued during the race is handled first; the due time survives continue-as-new; a session with no entry keeps today's yields. |
-| P1, retry and prompt | A gate refusal and a hydration give-up keep the invocation unsent and a later eligible attempt sends it; a returned error and a throw after the send, exhaustion and the next unrelated prompt never make a second invocation carry it, and an exhausted one ends `failed_indeterminate`; the bootstrap and budget-stash replacement cannot drop the batch; one invocation may run the model more than once. |
+| P1, retry and prompt | An attempt sends then throws, and separately returns an error; its retry stops before its send with witness `sent: false`: `interrupted`, never `not_dispatched`. A gate refusal and a hydration give-up on a retry after a send: `interrupted`; neither resets `sent` nor moves the batch to another turn. A throw, an error and exhaustion after the send, and the next unrelated prompt, never make another turn carry it; an exhausted one ends `failed_indeterminate`; the bootstrap and budget-stash replacement cannot drop the batch; one invocation may run the model more than once. |
+| P1, parking | Before any send: a gate refusal parks it and the gate's own retry sends it and completes it; a credential failure parks it with nothing else queued, and no turn starts while a due bind or settlement is retried by the wake (no-spontaneous-turn control); a person's message then starts one attempt that carries it and completes it (positive control); each newly claimed item starts one attempt while the failure lasts, never more. |
 | P1, adoption and settlement | A lost result and an adopted saved result keep the original batch and witness; a settlement failure repeats only the settlement; a witness for another invocation fails visibly; clearing removes only the batch's claims. |
-| P1, stop and cancel | A Stop before the model: `not_dispatched`; a Stop while the attempt runs and a cancel after a possible send: `interrupted`, with no fresh replay; a tombstone on an unsent item removes it, on a sent one records `cancel_requested` only; no duplicate consumes a tombstone. |
-| N4, placement | Two `accepted` results for one claim give one item; a refuse call never changes a `holding` row with a placement; a settle that finds another state fails visibly and dispatches nothing; a move writes both keys before any yield, also around the merge's and the commands' yields. |
+| P1, stop and cancel | A Stop before the model with no earlier send: `not_dispatched`; a Stop while the attempt runs and a cancel after a possible send: `interrupted`, with no fresh replay; a tombstone on a `held` item settles `cancelled`, on an unsent item removes it, on a sent one records `cancel_requested` only; no duplicate consumes a tombstone. |
+| N4, placement | Two `accepted` results for one claim give one item; a refuse call never changes a `holding` row with a placement; a settle that finds another state fails visibly and dispatches nothing; a move between the queue and the invocation is one synchronous step, also around the merge's and the commands' yields. |
 | N5, view and lock | `read_workflow` shows the later intake outcome in the run's outbox entry, separately from its delivery; `beginDelivery` and a refusal on the same exchange in both orders: one waits, no deadlock; two refusals to one recipient at once stay event-only on it; a deleted source gets no `project`, no event and no outbox annotation; the recipient's row records the refusal. |
-| N6, size and keys | An envelope over 1 KiB: malformed, nothing in KV; a rendered item over 60 KiB as stored: `refused_size`, the execution continues; packing keeps every intake key at or under 60 KiB; a retry rewrites its entry in place; at the exact key boundary (133 keys: created; 134: refused) and a legacy state with a full FIFO and 111 command keys, intake refuses visibly and the session continues; intake keys are deleted when empty; no command key is removed. |
-| F7 | FIFO full: the item is held and admitted later; area full: `refused_full`, visible to a live sender. |
+| N6, size and keys | An envelope over 1 KiB: malformed, nothing placed; a rendered item over 60 KiB as stored: `refused_size`, the execution continues; a retry rewrites its `unclaimed` entry in place; the 9th `unclaimed` and the 65th `held` entry are refused visibly; an invocation keeps its texts within 61 KiB and its other fields within 1 KiB. Keys: intake writes no KV key or value (the instance's keys and values are compared with and without intake items). Baseline positive control: 133 keys and 17 new commands, no intake item: 150 keys, valid. New case: the same with an intake item held, and again with an invocation bound and parked: 150 keys, valid; the item is still held or bound and every command response is present. Existing-limit control: an 18th command fails the session at 151 with and without intake, as today. |
+| F7 | A full FIFO does not affect an intake item; a full intake queue: `refused_full`, visible to a live sender. |
 | F8 | Sweep arrival: no timer release, no digest, no `utcNow`; claim before cancel on both paths. |
-| Cancels | Before arrival, in a pass, in the FIFO, in the sweep, in an unsent and in a sent invocation. |
-| Parse | Unparseable FIFO, retained and invocation buckets fail the execution with the key. |
-| CAN | Items, retained entries, the invocation (its batch, `sent` and a pending settlement) and rows survive continue-as-new; 1.0.82 inputs run on 1.0.83. |
+| Cancels | Before arrival, in a pass, for a `held` item, in the sweep, in an unsent and in a sent invocation. |
+| Parse | Carried intake state that does not validate fails the execution with the field; FIFO parsing is unchanged. |
+| CAN | The intake queue, the invocation (its batch, `sent`, the parked cause and a pending settlement) and rows survive continue-as-new, including one forced by the iteration cap; 1.0.82 inputs run on 1.0.83. |
 | Fingerprints | The declared 1.0.83 delta (section 8); the drive and ordinary-message goldens change only by the turn activity names. |
 | Baseline | Full suite and baseline are a separate grant. |
 
 ## 13. Remaining questions
 
-1. The retained area's size (8 keys), the invocation cap, the 1 KiB
-   envelope cap, the 16-key headroom and the claim backoff are proposals.
+1. The intake queue's caps (8 `unclaimed`, 64 `held`), the invocation
+   caps, the 1 KiB envelope cap and the claim backoff are proposals.
 2. A rendered message over the item cap is refused at the recipient
    (`refused_size`). The send state could refuse it at entry instead; that
    would change send admission and is not proposed here.
