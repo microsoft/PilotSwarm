@@ -465,6 +465,11 @@ Limits:
 - The controller version boundary is the run model's `ControllerDie`:
   pre-release versions fail at once and recover ends their runs. Replay of
   an earlier version's history is not claimed.
+- The controller ends between its activities, or while its elapse activity
+  runs (that activity may still commit after it: `ZombieElapse`). An enter
+  activity that a terminated controller had scheduled could also still
+  commit its row; the recover then decides that wait (no elapse was
+  scheduled for it). That interleaving is not modeled.
 
 ## Admission model
 
@@ -583,17 +588,19 @@ before begin is in the admission model.
 
 | Property | Meaning |
 |---|---|
-| `Inv_AcceptedCancelWins` | A cancel accepted before the run began wins: the run never runs (C1). |
+| `Inv_AcceptedCancelWins` | A cancel accepted before the run began wins: the run's work never runs to its end (C1). Its controller may begin it, then applies the queued cancel before it admits anything. |
+| `Inv_EndedBeforeBegin` | This commit ends such a run before its controller begins it: in the cancel's transaction (369beaf0), or at begin (31dc9888). |
 | `Inv_NoSelfNotice` | The parent is never told of a cancel it asked for (C2). |
 | `Inv_EndNamesRequester` | A before-begin end names its requester, recorded or attributed. |
 | `Inv_AttributionTruthful` | The named requester is the actual one. It holds under M1 only. |
-| `LifecycleSafety` | `TypeOK` and the four invariants above. |
+| `LifecycleSafety` | `TypeOK` and the five invariants above. |
 | `Live_OtherTold` | The parent is told of a run that another requester's cancel ended. |
 | `Live_OtherToldOnceStarted` | The same, at least when the run's controller starts after that end. |
 
 | Case | Mode | Checked | Expected |
 |---|---|---|---|
 | `lc-hd-safety` | this commit, an earlier build's receipt by the parent (M1), both requesters, every fault, A5 | `LifecycleSafety` | PASS |
+| `lc-hd-safety-fresh` | this commit, no earlier build's receipt, both requesters, every fault, A5 | `LifecycleSafety` | PASS |
 | `lc-hd-live-other` | this commit, both requesters, A5 | `Live_OtherTold` | PASS |
 | `lc-hd-live-other-started` | this commit, no repeat | `Live_OtherToldOnceStarted` | PASS |
 | `lc-lim-other-told-needs-repeat` | this commit, no repeat | `Live_OtherTold` | liveness violation: the stated limit (a notice lost after the commit stays lost when no controller starts and the requester does not repeat) |
@@ -609,6 +616,11 @@ Limits:
   client message id and the recent-id window are not modeled.
 - The provider's drop is conservative: any message queued before the
   instance's start is processed may be dropped.
+- No deletion here: the run model and the session command model have it.
+- `RunFinish` abstracts the run's own work. It needs an empty queue: the
+  controller polls its queue before each admission, so a command queued
+  before begin is applied first. The race of a late command with the
+  terminal's finish is the run model's (`PollCommand`, `CancelTx`).
 - A controller terminated between begin's commit and its notifier start
   loses that notice, as any externally terminated notification path does;
   the begin activity's own retries, and the controller's failure path

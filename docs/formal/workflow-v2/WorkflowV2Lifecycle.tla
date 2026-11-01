@@ -188,9 +188,12 @@ ApplyCmd ==
     /\ UNCHANGED <<rcpt, firstRcpt, endOp, acceptedNotBegun, dispatch, rdispatch, crashes, reqVars, notifier, selfNotice>>
 
 (* The run's own work ends it (abstracted); reportEnded tells the parent.  *)
+(* The controller polls its queue before it admits anything, so the work    *)
+(* starts only with no command queued (README "Lifecycle model": limits).  *)
 RunFinish ==
     /\ inst = "run"
     /\ status = "running"
+    /\ q = {}
     /\ status' = "completed"
     /\ endKind' = "finish"
     /\ notice' = TRUE
@@ -303,8 +306,14 @@ Spec == Init /\ [][Next]_vars /\ Fairness
 (* Properties                                                              *)
 (***************************************************************************)
 
-(* A cancel accepted before the run began wins: the run never runs (C1).   *)
-Inv_AcceptedCancelWins == acceptedNotBegun => status \notin {"running", "completed"}
+(* A cancel accepted before the run began wins: the run's work never runs   *)
+(* to its end (C1). Its controller may begin it, then applies the queued    *)
+(* cancel before it admits anything.                                       *)
+Inv_AcceptedCancelWins == acceptedNotBegun => status # "completed"
+
+(* This commit ends such a run before its controller begins it: in the      *)
+(* cancel's transaction (369beaf0), or at begin (31dc9888).                *)
+Inv_EndedBeforeBegin == acceptedNotBegun => status \notin {"running", "completed"}
 
 (* The parent is never told of a cancel it asked for (C2).                 *)
 Inv_NoSelfNotice == ~selfNotice
@@ -316,7 +325,8 @@ Inv_EndNamesRequester == endKind = "beforeBegin" => endReq # "null"
 Inv_AttributionTruthful == endKind = "beforeBegin" => endReq = endTruth
 
 LifecycleSafety ==
-    TypeOK /\ Inv_AcceptedCancelWins /\ Inv_NoSelfNotice /\ Inv_EndNamesRequester /\ Inv_AttributionTruthful
+    /\ TypeOK /\ Inv_AcceptedCancelWins /\ Inv_EndedBeforeBegin
+    /\ Inv_NoSelfNotice /\ Inv_EndNamesRequester /\ Inv_AttributionTruthful
 
 (* The parent is told of a run that another requester's cancel ended.      *)
 Live_OtherTold == (endKind \in {"beforeBegin", "cmd"} /\ endTruth = "other") ~> notice

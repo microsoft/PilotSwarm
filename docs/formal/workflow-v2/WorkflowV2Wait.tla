@@ -328,17 +328,15 @@ Resume ==
     /\ run' = "running"
     /\ UNCHANGED <<clk, deleted, pauses, rowVars, pc, admVars, ctrlDl, elVars, crashes, zombie>>
 
-(* The controller ends without ending its run. An open enter transaction    *)
-(* rolls back; an elapse activity it had scheduled may still run.           *)
+(* The controller ends without ending its run: between its activities, or   *)
+(* while its elapse activity runs, which may still commit after it. It does *)
+(* not end while its enter activity runs (README "Wait model": limits).     *)
 CtrlDie ==
     /\ ControllerDeath
-    /\ pc \notin {"done", "dead"}
+    /\ pc \in {"record", "waiting", "elapse", "elapseRecord", "collect", "pausedWait"}
     /\ pc' = "dead"
-    /\ tent' = FALSE
-    /\ tentAt' = NoTime
-    /\ tentDl' = NoTime
     /\ zombie' = (pc = "elapse")
-    /\ UNCHANGED <<clk, runVars, rowVars, evalAt, txAt, admRes, ctrlDl, elVars, crashes>>
+    /\ UNCHANGED <<clk, runVars, rowVars, admVars, ctrlDl, elVars, crashes>>
 
 (* That elapse activity's transaction, after its controller ended.          *)
 ZombieElapse ==
