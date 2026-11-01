@@ -1,0 +1,209 @@
+import { expect } from "vitest";
+import { randomUUID } from "node:crypto";
+import pg from "pg";
+import { PgSessionCatalog } from "../../src/cms.ts";
+import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
+import { canonicalJson } from "../../src/workflow/v2/json.ts";
+import { workflowLiveControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
+import { WorkflowStore, nodeExecutionIdFor } from "../../src/workflow/v2/store.ts";
+
+export const REQUEST_ACTOR = { kind: "system", name: "workflow-v2-request-regressions" };
+export const REQUEST_TIMEOUT = 120_000;
+
+const REQUESTS = `
+apiVersion: pilotswarm.dev/v2-draft
+kind: Workflow
+metadata: { name: request-regressions, version: "1.0.0" }
+initial: ask
+schemas:
+  Question: { type: object, required: [q], properties: { q: { type: string } }, additionalProperties: false }
+  Answer: { type: object, required: [approved], properties: { approved: { type: boolean } }, additionalProperties: false }
+contracts:
+  Approval@1:
+    schema: { $ref: "#/schemas/Question" }
+    response: { schema: { $ref: "#/schemas/Answer" } }
+states:
+  ask:
+    type: messaging
+    mode: request
+    recipient: { parent: true }
+    contract: Approval@1
+    input: { q: "ship?" }
+    timeoutSeconds: 3600
+    transition: { next: { responded: done, declined: blocked, failure: failed } }
+  done: { type: terminal, outcome: succeeded }
+  blocked: { type: terminal, outcome: blocked }
+  failed: { type: terminal, outcome: failed }
+`;
+
+/** A private real-client pool facade, as in workflow-v2-messaging.test.js. Hooks never replace store methods. */
+export async function openWorkflowStore(env, { initialize = true } = {}) {
+    const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+    try {
+        if (initialize) await catalog.initialize();
+    } catch (error) {
+        await catalog.close();
+        throw error;
+    }
+    const pool = new pg.Pool({ connectionString: env.store, max: 4, connectionTimeoutMillis: 10_000,
+        statement_timeout: 15_000, lock_timeout: 10_000 });
+    const control = { hook: null };
+    const wrapped = {
+        async connect() {
+            const client = await pool.connect();
+            const query = (text, params) => client.query(text, params);
+            return {
+                query(text, params) {
+                    const sql = typeof text === "string" ? text : text.text;
+                    return control.hook ? control.hook({ sql, params, query, client }) : query(text, params);
+                },
+                release: (...args) => client.release(...args),
+            };
+        },
+        query: (text, params) => pool.query(text, params),
+    };
+    const q = async (text, params = []) => (await pool.query(text.replaceAll("SCHEMA.", `"${env.cmsSchema}".`), params)).rows;
+    return {
+        catalog, pool, control, q, schema: env.cmsSchema, store: new WorkflowStore(wrapped, env.cmsSchema),
+        async stop() {
+            control.hook = null;
+            try { await catalog.close(); } finally { await pool.end(); }
+        },
+    };
+}
+
+export async function requestFixture(env) {
+    const h = await openWorkflowStore(env);
+    try {
+        const { q } = h;
+        const owner = { provider: "test", subject: `request-owner-${randomUUID()}` };
+        const parent = randomUUID();
+        await h.catalog.createSession(parent, { owner });
+        const compiled = compileWorkflowV2(REQUESTS, { enableRequests: true });
+        expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
+        const workflow = async () => {
+            const workflowSessionId = randomUUID();
+            const runId = randomUUID();
+            expect(await h.catalog.createWorkflowSessionV2(workflowSessionId, { parentSessionId: parent, owner,
+                creationConfig: { workflowV2: { requestSha256: "request-regressions" } } })).toEqual({ created: true });
+            await h.store.createDefinition({
+                workflowSessionId, parentSessionId: parent, notifyParent: false, yaml: REQUESTS, compiled,
+                actor: REQUEST_ACTOR, operationId: "create", requestSha256: "request-regressions", publish: true,
+                title: "Workflow: request regressions",
+                start: { runId, mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId),
+                    inputsText: "{}", kvText: "{}", testAgentMode: null },
+            });
+            return { workflowSessionId, runId };
+        };
+        const refusal = code => ({ result: { outcome: code, resultKind: "runtime_error",
+            valueText: canonicalJson({ code, message: code }), winner: "controller" } });
+        const entry = (run, { ordinal = 1, timeoutSeconds = 3600 } = {}) => ({
+            runId: run.runId, nodeExecutionId: nodeExecutionIdFor(run.runId, "root", "ask", ordinal),
+            scopeId: "root", nodeId: "ask", ordinal, nodeType: "messaging", predecessorId: null, arrivalRoute: null,
+            inputText: canonicalJson({ q: "ship?" }), kvRevision: 1, waitSeconds: null, immediate: null,
+            request: { recipient: parent, contract: "Approval@1", payloadText: canonicalJson({ q: "ship?" }), correlationText: "{}",
+                refused: { unavailable: refusal("unavailable"), forbidden: refusal("forbidden") },
+                timeoutSeconds, responseSchema: compiled.ir.contracts["Approval@1"].response.schema,
+                workflowRecipient: refusal("unsupported_contract") },
+        });
+        return Object.assign(h, {
+            parent, workflow, entry,
+            async admit(run, options) {
+                const input = entry(run, options);
+                const admitted = await h.store.enterNode(input);
+                expect(admitted).toMatchObject({ admitted: true, inserted: true, node: { state: "pending" } });
+                return input.nodeExecutionId;
+            },
+            respond: (exchangeId, operationId, call) => h.store.respondToRequest({ exchangeId, actorSessionId: parent, operationId, call }),
+            async binding(exchangeId, operationId) {
+                return (await q(`SELECT outcome, status, count, result_sha256 FROM SCHEMA.workflow_request_operations
+                    WHERE exchange_id = $1 AND operation_id = $2`, [exchangeId, operationId]))[0] ?? null;
+            },
+            async counts(exchangeId) {
+                return (await q(`SELECT
+                    (SELECT count(*)::int FROM SCHEMA.workflow_node_executions WHERE node_execution_id = $1 AND winner = 'response') AS decisions,
+                    (SELECT count(*)::int FROM SCHEMA.workflow_request_responses WHERE exchange_id = $1) AS responses,
+                    (SELECT count(*)::int FROM SCHEMA.workflow_response_wakes WHERE exchange_id = $1) AS wakes,
+                    count(*)::int AS operations,
+                    count(*) FILTER (WHERE outcome = 'decided')::int AS decided,
+                    count(*) FILTER (WHERE outcome = 'same')::int AS same,
+                    count(*) FILTER (WHERE outcome = 'conflict')::int AS conflict
+                    FROM SCHEMA.workflow_request_operations WHERE exchange_id = $1`, [exchangeId]))[0];
+            },
+            async snapshot(run, exchangeId) {
+                const [rows, events] = await Promise.all([
+                    q(`SELECT row_to_json(node)::text AS node, row_to_json(session)::text AS session,
+                        (SELECT row_to_json(req)::text FROM SCHEMA.workflow_requests req WHERE exchange_id = $1) AS request,
+                        (SELECT row_to_json(resp)::text FROM SCHEMA.workflow_request_responses resp WHERE exchange_id = $1) AS response,
+                        (SELECT row_to_json(wake)::text FROM SCHEMA.workflow_response_wakes wake WHERE exchange_id = $1) AS wake,
+                        (SELECT row_to_json(outbox)::text FROM SCHEMA.workflow_outbox outbox WHERE exchange_id = $1) AS outbox,
+                        COALESCE((SELECT json_agg(op ORDER BY operation_id)::text FROM SCHEMA.workflow_request_operations op
+                            WHERE exchange_id = $1), '[]') AS operations
+                        FROM SCHEMA.workflow_node_executions node JOIN SCHEMA.sessions session ON session.session_id = $2
+                        WHERE node.node_execution_id = $1`, [exchangeId, run.workflowSessionId]),
+                    h.catalog.getSessionEvents(run.workflowSessionId, 0, 1000),
+                ]);
+                return { ...rows[0], events };
+            },
+        });
+    } catch (error) {
+        await h.stop();
+        throw error;
+    }
+}
+
+export function checkpoint() {
+    let enter;
+    let release;
+    const reached = new Promise(resolve => { enter = resolve; });
+    const released = new Promise(resolve => { release = resolve; });
+    return { reached, released, enter, release };
+}
+
+/** Fail immediately if an operation finishes without reaching its expected query, rather than hanging on a missed hook. */
+export function reachedDuring(gate, work, label) {
+    return Promise.race([gate.reached, work.then(() => { throw new Error(`The operation never reached ${label}.`); })]);
+}
+
+export async function holdSession(h, sessionId) {
+    const client = await h.pool.connect();
+    try {
+        await client.query("BEGIN");
+        await client.query(`SELECT session_id FROM "${h.schema}".sessions WHERE session_id = $1 FOR UPDATE`, [sessionId]);
+    } catch (error) {
+        try { await client.query("ROLLBACK"); } finally { client.release(); }
+        throw error;
+    }
+    let released = false;
+    return {
+        pid: client.processID,
+        async release() {
+            if (released) return;
+            released = true;
+            try { await client.query("ROLLBACK"); } finally { client.release(); }
+        },
+    };
+}
+
+/** Bounded lock observation only: no wall-clock sleep, synthetic lock, or replacement transaction SQL. */
+export async function observeBlocked(h, pid, holderPid) {
+    for (let attempt = 0; attempt < 200; attempt += 1) {
+        const [row] = await h.q("SELECT $2::int = ANY(pg_blocking_pids($1::int)) AS blocked", [pid, holderPid]);
+        if (row.blocked) return;
+    }
+    throw new Error("The real PostgreSQL transaction did not wait for the held session row.");
+}
+
+/** Fault-inject only the deciding reading; formatting and deadline arithmetic still execute on PostgreSQL. */
+export function requestClock(h, exchangeId, offsetUs, onReading = () => {}) {
+    return async ({ sql, params, query }) => {
+        if (!sql.includes("WITH reading AS (SELECT clock_timestamp() AS at)")) return query(sql, params);
+        const result = await query(`WITH reading AS (
+            SELECT deadline_at + $2::integer * interval '1 microsecond' AS at
+            FROM "${h.schema}".workflow_requests WHERE exchange_id = $1)
+            SELECT at::text AS at, to_char(at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS at_iso FROM reading`,
+        [exchangeId, offsetUs]);
+        onReading(result.rows[0]);
+        return result;
+    };
+}
