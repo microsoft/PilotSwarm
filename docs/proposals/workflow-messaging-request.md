@@ -228,7 +228,10 @@ deletion trigger stays as it is.
   point: every later new operation is `REQUEST_EXPIRED` and bound
   `expired`, whatever its own reading. Every `expired` binding is written
   under the node's lock, so this is one committed state; the deciding
-  reading stays one reading, and the decision window is not reopened.
+  reading stays one reading, and the decision window is not reopened. The
+  store's transactions state READ COMMITTED in their `BEGIN`, never an
+  inherited level, so a call that read the request and then waited for the
+  requester's lock reads, after the wait, the binding the holder committed.
 - A repeat of an accepted response with the same operation id and the same
   result returns the stored receipt after the deadline too (a known
   operation, section 7); the decision window is not reopened.

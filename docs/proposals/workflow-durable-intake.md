@@ -264,8 +264,10 @@ id), written once by its first bind and never changed or deleted: its
 recipient and its complete membership (each exchange with its claim, in the
 bind's order). An admitted row's `invocation_id` refers to it. Every bind,
 end and cancel of an invocation first takes a transaction-scoped lock on
-its identity, so they serialize, the first bind included, and each is
-checked against the whole membership (5.2).
+its identity, in a transaction that states READ COMMITTED, so they
+serialize, the first bind included, each reads after the lock what the
+previous holder committed, and each is checked against the whole
+membership (5.2).
 
 A **placement** is where the orchestration keeps a claimed item: a `held`
 entry of its intake queue (5.4) while the row is `holding`, and the
@@ -304,7 +306,7 @@ rows' state after it:
 | cancel (claim `c`) | `state = 'cancelled'` | `holding(c)` |
 | cancel (claim `c`, invocation `v` not yet sent) | `processing = 'not_dispatched'`, `reason = 'cancelled'` | `c` a member of `v`; `admitted(c)`, invocation `v`, `processing = 'bound'` |
 | cancel requested (claim `c`, invocation `v` possibly sent) | `cancel_requested = true` | `c` a member of `v`; `admitted(c)`, invocation `v`; the processing value is not changed |
-| end (invocation `v`, outcome `o`, its batch) | `processing = o`, `settled_at`; `cancel_requested` for each item the batch marks | the batch is every member of `v` except those cancelled while unsent, which it must not name; every batch row still `bound`; a batch already at `o` is the same result when every cancel it marks was recorded |
+| end (invocation `v`, outcome `o`, its batch) | `processing = o`, `settled_at`; `cancel_requested` for each item the batch marks | the batch is every member of `v` except those cancelled while unsent, which it must not name (an empty batch when all were: nothing is written); every batch row still `bound`; a batch already at `o` is the same result when every cancel it marks was recorded |
 | `refused_full`, `refused_size` (claim `c`) | in the refusal transaction (5.6) | `holding(c)` |
 
 A settle by the holder removes or moves the placement in the same

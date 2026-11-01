@@ -882,10 +882,17 @@ function assertIntakeHolder(row: WorkflowIntakeRow, recipientSessionId: string, 
     if (row.claimId !== claimId) intakeBroken(row.exchangeId, `it is held under claim ${row.claimId}, not ${claimId}`);
 }
 
-/** The claims a bind or an end names: 1 to INTAKE_MAX_HELD distinct exchanges, each with its claim (and, for an end, its cancel flag). */
-function intakeBatch(raw: unknown, path: string, withCancelFlag: boolean): Array<{ exchangeId: string; claimId: string; cancelRequested: boolean }> {
-    if (!Array.isArray(raw) || raw.length === 0 || raw.length > INTAKE_MAX_HELD) {
-        throw new IntakeShapeError(path, `is not a list of 1 to ${INTAKE_MAX_HELD} items`);
+/**
+ * The claims a bind or an end names: distinct exchanges, each with its claim
+ * (and, for an end, its cancel flag); 1 to INTAKE_MAX_HELD of them, or none
+ * for an end (`allowEmpty`) whose invocation's members were all cancelled
+ * before it was sent. A bind always names at least one.
+ */
+function intakeBatch(raw: unknown, path: string, withCancelFlag: boolean, allowEmpty = false)
+    : Array<{ exchangeId: string; claimId: string; cancelRequested: boolean }> {
+    const least = allowEmpty ? 0 : 1;
+    if (!Array.isArray(raw) || raw.length < least || raw.length > INTAKE_MAX_HELD) {
+        throw new IntakeShapeError(path, `is not a list of ${least} to ${INTAKE_MAX_HELD} items`);
     }
     const keys = withCancelFlag ? ["exchangeId", "claimId", "cancelRequested"] : ["exchangeId", "claimId"];
     const seen = new Set<string>();
@@ -1524,11 +1531,22 @@ export class WorkflowStore {
         return str(rows[0], "workflow_session_id");
     }
 
+    /**
+     * Run `work` in one transaction at READ COMMITTED, stated in its BEGIN
+     * rather than inherited from the session, role or database default.
+     * Every transaction here takes its locks and then reads, and relies on
+     * each statement after a lock wait seeing what the lock's previous holder
+     * committed: READ COMMITTED takes a snapshot per statement, while an
+     * inherited REPEATABLE READ would keep the snapshot of the first
+     * statement, taken before the wait (a request's durable expiry and an
+     * invocation's serialization depend on this). A server that refuses the
+     * level fails the transaction; nothing falls back to another level.
+     */
     private async transaction<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
         const client = await this.pool.connect();
         let released = false;
         try {
-            await client.query("BEGIN");
+            await client.query("BEGIN ISOLATION LEVEL READ COMMITTED");
             const result = await work(client);
             await client.query("COMMIT");
             return result;
@@ -3410,12 +3428,18 @@ export class WorkflowStore {
         return rows[0] ? intakeInvocationFrom(invocationId, rows[0]) : null;
     }
 
-    /** lockIntakeInvocation for a write that needs the invocation bound, and the recipient's; otherwise a broken invariant. */
-    private async lockBoundIntakeInvocation(client: PoolClient, invocationId: string, recipientSessionId: string, exchangeId: string)
+    /**
+     * lockIntakeInvocation for a write that needs the invocation bound, and
+     * the recipient's; otherwise a broken invariant, named by `exchangeId`
+     * (or by the invocation, for an end that names no exchange).
+     */
+    private async lockBoundIntakeInvocation(client: PoolClient, invocationId: string, recipientSessionId: string, exchangeId: string | null)
         : Promise<IntakeInvocationRecord> {
+        const broken = (message: string): never => exchangeId !== null ? intakeBroken(exchangeId, message)
+            : corrupt(`Intake invocation ${invocationId}: ${message}`);
         const invocation = await this.lockIntakeInvocation(client, invocationId);
-        if (invocation === null) return intakeBroken(exchangeId, `invocation ${invocationId} was never bound`);
-        if (invocation.recipientSessionId !== recipientSessionId) return intakeBroken(exchangeId, `invocation ${invocationId} belongs to another recipient`);
+        if (invocation === null) return broken(`invocation ${invocationId} was never bound`);
+        if (invocation.recipientSessionId !== recipientSessionId) return broken(`invocation ${invocationId} belongs to another recipient`);
         return invocation;
     }
 
@@ -3699,6 +3723,12 @@ export class WorkflowStore {
      * A member left out (bound or ended), a non-member or a cancelled member
      * named, a batch partly ended or at another value, or a replay naming an
      * unrecorded cancel is a broken invariant and writes nothing.
+     *
+     * When every member was cancelled before the send, the batch is empty
+     * (only an end may name no exchange; a bind never does): the call checks
+     * the same way that the invocation was bound for this recipient and that
+     * each of its members is a cancelled-unsent row, and writes nothing, its
+     * retries alike. `ended` is true only for the call that settled rows.
      */
     async endWorkflowIntake(input: {
         recipientSessionId: string;
@@ -3712,9 +3742,9 @@ export class WorkflowStore {
         if (typeof outcome !== "string" || !(INTAKE_PROCESSING_OUTCOMES as readonly string[]).includes(outcome)) {
             throw new IntakeShapeError("outcome", `is not one of ${INTAKE_PROCESSING_OUTCOMES.join(", ")}`);
         }
-        const items = intakeBatch(input.items, "items", true);
+        const items = intakeBatch(input.items, "items", true, true);
         return this.transaction<{ ended: boolean }>(async client => {
-            const invocation = await this.lockBoundIntakeInvocation(client, invocationId, recipientSessionId, items[0].exchangeId);
+            const invocation = await this.lockBoundIntakeInvocation(client, invocationId, recipientSessionId, items[0]?.exchangeId ?? null);
             const memberClaims = new Map<string, string>(invocation.members.map(member => [member.exchangeId, member.claimId] as [string, string]));
             const rows = await this.lockIntakeRows(client, invocation.members.map(member => member.exchangeId), invocationId);
             for (const row of rows.values()) {

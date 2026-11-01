@@ -58,14 +58,18 @@
  * back, so once an operation of a pending request is bound expired, a later
  * new operation is expired too, whatever its own reading; known operations
  * replay, and a request with no expired binding is still decided by its one
- * reading. Only that reading is injected (requestClock).
+ * reading. Only that reading is injected (requestClock). A-ISO (CP6): a call
+ * that read the request and then waited on the requester's lock while an
+ * expired call committed is expired too, on a connection whose sessions
+ * default to REPEATABLE READ, because the store's transactions state READ
+ * COMMITTED (the level inside the call is read back).
  */
 import { describe, it, expect } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
 import pg from "pg";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { withClient } from "../helpers/local-workers.js";
-import { requestClock, requestFixture } from "../helpers/workflow-v2-request-fixture.js";
+import { checkpoint, reachedDuring, requestClock, requestFixture } from "../helpers/workflow-v2-request-fixture.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import {
     compileWorkflowV2, parseWorkflowIr, REQUEST_RESPONSE_SCHEMA_MAX_BYTES, WORKFLOW_V2_REQUEST_IR_VERSION, WORKFLOW_V2_SEND_IR_VERSION,
@@ -75,7 +79,7 @@ import { schemaReferences } from "../../src/workflow/v2/schema.ts";
 import { createWorkflowV2, updateWorkflowV2 } from "../../src/workflow/v2/service.ts";
 import { describeWorkflowV2State, workflowLiveControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
 import {
-    nodeExecutionIdFor, WORKFLOW_V2_MAX_REQUEST_OPERATIONS, WORKFLOW_V2_MAX_RESPONSE_BYTES,
+    nodeExecutionIdFor, WORKFLOW_V2_MAX_REQUEST_OPERATIONS, WORKFLOW_V2_MAX_RESPONSE_BYTES, WorkflowStore,
 } from "../../src/workflow/v2/store.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
@@ -1161,6 +1165,138 @@ describe("workflow v2 request states: durable expiry (store)", () => {
             expect(await h.counts(fresh)).toEqual({ decisions: 1, responses: 1, wakes: 1, operations: 2, decided: 1, same: 1, conflict: 0 });
         } finally {
             h.control.hook = null;
+            await h.stop();
+        }
+    });
+
+    // A-ISO (formal CP6): a response call reads its request before it waits for the requester's lock. Under an inherited
+    // REPEATABLE READ default, that first read would fix its snapshot before an expired call commits, and after the wait it would
+    // miss the expired binding and decide with its stepped-back reading, with no serialization error (the expired call writes
+    // only its binding). The store states READ COMMITTED in its BEGIN, so each statement after the wait reads what was committed.
+    it("keeps a request expired for a call that waited on the requester's lock while an expired call committed, at an inherited "
+        + "REPEATABLE READ default", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const h = await requestFixture(env);
+        const YES = { response: { approved: true } };
+        const EXPIRED = { kind: "refused", replayed: false, code: "REQUEST_EXPIRED", status: "pending", currentStatus: "pending" };
+        // A private pool whose sessions default to REPEATABLE READ, as a role or database default could make them; ended below.
+        const rrPool = new pg.Pool({ connectionString: env.store, max: 2, connectionTimeoutMillis: 10_000, statement_timeout: 15_000,
+            lock_timeout: 10_000 });
+        const connectRepeatableRead = async () => {
+            const client = await rrPool.connect();
+            try { await client.query("SET default_transaction_isolation TO 'repeatable read'"); } catch (error) { client.release(error); throw error; }
+            return client;
+        };
+        const rr = { hook: null };
+        const rrStore = new WorkflowStore({
+            async connect() {
+                const client = await connectRepeatableRead();
+                const query = (text, params) => client.query(text, params);
+                return {
+                    query(text, params) {
+                        const sql = typeof text === "string" ? text : text.text;
+                        return rr.hook ? rr.hook({ sql, params, query, client }) : query(text, params);
+                    },
+                    release: (...args) => client.release(...args),
+                };
+            },
+            query: (text, params) => rrPool.query(text, params),
+        }, env.cmsSchema);
+        const settle = promise => promise.then(value => ({ value }), error => ({ error }));
+        /** `waiterPid` waits for a lock `holderPid` holds: the lock graph for exactly that pair, read at most 1,000 times, no sleep. */
+        const blockedBy = async (waiterPid, holderPid) => {
+            for (let attempt = 0; attempt < 1_000; attempt += 1) {
+                const [row] = await h.q("SELECT $2::int = ANY(pg_blocking_pids($1::int)) AS blocked", [waiterPid, holderPid]);
+                if (row.blocked) return true;
+            }
+            return false;
+        };
+        const o1Commit = checkpoint();
+        let o1Settled = null;
+        let o2Settled = null;
+        try {
+            // Control: a connection of this pool inherits REPEATABLE READ, and a plain BEGIN runs at it.
+            const probe = await connectRepeatableRead();
+            try {
+                expect((await probe.query("SELECT current_setting('default_transaction_isolation') AS level")).rows[0].level).toBe("repeatable read");
+                await probe.query("BEGIN");
+                expect((await probe.query("SELECT current_setting('transaction_isolation') AS level")).rows[0].level).toBe("repeatable read");
+                await probe.query("ROLLBACK");
+            } finally { probe.release(); }
+
+            const run = await h.workflow();
+            const exchangeId = await h.admit(run);
+            // o1 (the fixture's store): its one reading is the deadline itself, so it is bound expired; its COMMIT is held.
+            let o1Pid = null;
+            const o1Clock = requestClock(h, exchangeId, 0);
+            h.control.hook = async context => {
+                if (context.sql === "COMMIT") {
+                    o1Pid = context.client.processID;
+                    o1Commit.enter();
+                    await o1Commit.released;
+                }
+                return o1Clock(context);
+            };
+            o1Settled = settle(h.respond(exchangeId, "o1", YES));
+            await reachedDuring(o1Commit, o1Settled, "o1's COMMIT");
+
+            // o2 (the REPEATABLE READ pool): it reads the request, then waits for the requester's lock that o1 holds; its one
+            // reading is a second before the deadline, as after the clock stepped back.
+            let o2Pid = null;
+            let o2Isolation = null;
+            let readBeforeLock = null;
+            let readRequest = false;
+            const o2Waits = checkpoint();
+            const o2Clock = requestClock(h, exchangeId, -1_000_000);
+            rr.hook = async context => {
+                o2Pid ??= context.client.processID;
+                if (/^BEGIN\b/.test(context.sql)) {
+                    const begun = await context.query(context.sql, context.params);
+                    o2Isolation = (await context.query("SELECT current_setting('transaction_isolation') AS level")).rows[0].level;
+                    return begun;
+                }
+                if (context.sql.includes(".sessions") && context.sql.includes("FOR NO KEY UPDATE") && readBeforeLock === null) {
+                    readBeforeLock = readRequest;
+                    o2Waits.enter();
+                }
+                if (context.sql.includes(".workflow_requests")) readRequest = true;
+                return o2Clock(context);
+            };
+            o2Settled = settle(rrStore.respondToRequest({ exchangeId, actorSessionId: h.parent, operationId: "o2", call: YES }));
+            await reachedDuring(o2Waits, o2Settled, "o2's lock on the requester's session");
+            expect(await blockedBy(o2Pid, o1Pid)).toBe(true);
+            o1Commit.release();
+            const [o1, o2] = [await o1Settled, await o2Settled];
+            h.control.hook = null;
+            rr.hook = null;
+            expect(o1.error, o1.error?.message).toBeUndefined();
+            expect(o2.error, o2.error?.message).toBeUndefined();
+            expect(readBeforeLock).toBe(true);
+            expect(o2Isolation).toBe("read committed");
+            expect(o1.value).toEqual(EXPIRED);
+            expect(o2.value).toEqual(EXPIRED);
+            for (const operationId of ["o1", "o2"]) {
+                expect(await h.binding(exchangeId, operationId)).toMatchObject({ outcome: "expired", status: "pending", count: 1 });
+            }
+            expect(await h.counts(exchangeId)).toEqual({ decisions: 0, responses: 0, wakes: 0, operations: 2, decided: 0, same: 0, conflict: 0 });
+            expect(await h.store.readNodeExecution(exchangeId)).toMatchObject({ state: "pending", output: null, winner: null });
+            expect((await h.catalog.getSessionEvents(run.workflowSessionId, 0, 1000))
+                .filter(event => event.eventType === "workflow.state_completed" && event.data?.exchangeId === exchangeId)).toHaveLength(0);
+
+            // Positive control: a fresh request on the same pool, with the same stepped-back reading and no expired binding, decides.
+            const fresh = await h.admit(run, { ordinal: 2 });
+            rr.hook = requestClock(h, fresh, -1_000_000);
+            expect(await rrStore.respondToRequest({ exchangeId: fresh, actorSessionId: h.parent, operationId: "w1", call: YES }))
+                .toMatchObject({ kind: "accepted", replayed: false, status: "responded" });
+            rr.hook = null;
+            expect(await h.counts(fresh)).toEqual({ decisions: 1, responses: 1, wakes: 1, operations: 1, decided: 1, same: 0, conflict: 0 });
+        } finally {
+            o1Commit.release();
+            h.control.hook = null;
+            rr.hook = null;
+            if (o1Settled) await o1Settled;
+            if (o2Settled) await o2Settled;
+            await rrPool.end();
             await h.stop();
         }
     });
