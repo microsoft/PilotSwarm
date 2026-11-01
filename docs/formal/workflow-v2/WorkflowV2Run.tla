@@ -10,7 +10,8 @@
 (* Graph: script state S routes "again" to S (at most MaxLoops times) and   *)
 (* "ok" to terminal T. "error" has no route: the run fails, or, with        *)
 (* CatchAll, goes once to the catch-all script state H ("ok" to T; an       *)
-(* unhandled "error" there fails the run).                                  *)
+(* unhandled "error" there fails the run). With ExplicitHandlerRoute, S     *)
+(* routes "error" to H by its own failure route instead.                    *)
 (*                                                                          *)
 (* An activity that writes the store is split into Exec (the store          *)
 (* transaction, which may run again after a crash) and Record (its result   *)
@@ -19,6 +20,11 @@
 (*                                                                          *)
 (* Fix switches select the code revision: all FALSE is reviewed commit      *)
 (* 63c8013b; all TRUE is the hardened commit named in README.md.           *)
+(*                                                                          *)
+(* Environment assumption A1 (CrashBudget): worker crashes inside the       *)
+(* script activities of one run are finite. The model bounds them by        *)
+(* MaxCrashes per run. Without A1 (df-unbounded-crashes) a crash can        *)
+(* interrupt every entry of a script, and the run never ends.              *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets
 
@@ -35,26 +41,36 @@ CONSTANTS
     EffectWatch,          \* fix: collection fails a pending node whose effect ended
     CommandPoll,          \* fix: the controller reads queued commands before every admission
     Recovery,             \* fix: an explicit recover ends a run whose controller ended without ending it
+    HandlerOnce,          \* fix: admitting H by any route uses its one entry (controller 1.3.0)
     CatchAll,             \* feature: the workflow declares a catch-all state H
+    ExplicitHandlerRoute, \* workflow: S routes its "error" to H explicitly (a failure route)
     ControllerDeath,      \* fault: the controller ends without ending its run
     Deletes,              \* environment: the workflow session may be deleted
+    CrashBudget,          \* environment assumption A1: worker crashes in a run are finite
+    MaxCrashes,           \* the bound of A1 in this model (crashes per run)
     NoCas                 \* deliberate fault: node completion is not a compare-and-swap
 
 ASSUME MaxLoops \in Nat
+ASSUME MaxCrashes \in Nat
 ASSUME {LoseWake, ControllerFaults, EffectFaults, Backstop, CancelStopFromStore,
         DeleteGuard, EntryFence, EndPending, EffectWatch, CommandPoll, Recovery,
-        CatchAll, ControllerDeath, Deletes, NoCas} \subseteq BOOLEAN
+        HandlerOnce, CatchAll, ExplicitHandlerRoute, ControllerDeath, Deletes,
+        CrashBudget, NoCas} \subseteq BOOLEAN
+ASSUME ExplicitHandlerRoute => CatchAll
 
 SOrd == 1..(MaxLoops + 1)
+(* Without HandlerOnce H can be admitted a second time (the 1.2.0 defect).  *)
+HOrd == 1..(IF HandlerOnce THEN 1 ELSE 2)
+HNodes == {<<"H", j>> : j \in HOrd}
 HNode == <<"H", 1>>
-SNodes == {<<"S", i>> : i \in SOrd} \cup (IF CatchAll THEN {HNode} ELSE {})
+SNodes == {<<"S", i>> : i \in SOrd} \cup (IF CatchAll THEN HNodes ELSE {})
 TNode == <<"T", 1>>
 NoNode == <<"none", 0>>
 NX == SNodes \cup {TNode}
 Active == {"admitted", "running"}
 Terminal == {"completed", "failed", "cancelled"}
 ScriptOutcomes(i) == {"ok", "error"} \cup (IF i <= MaxLoops THEN {"again"} ELSE {})
-NodeOutcomes(x) == IF x = HNode THEN {"ok", "error"} ELSE ScriptOutcomes(x[2])
+NodeOutcomes(x) == IF x[1] = "H" THEN {"ok", "error"} ELSE ScriptOutcomes(x[2])
 EffectEnded == {"done", "stopped", "failed"}
 
 VARIABLES
@@ -77,16 +93,17 @@ VARIABLES
     q,           \* the controller "messages" queue
     cancelSent,  \* the parent sent its cancel command
     deleteSent,  \* someone deleted the workflow session
-    notified     \* parent notification executions (bounded)
+    notified,    \* parent notification executions (bounded)
+    crashes      \* worker crashes inside this run's script activities (A1)
 
 storeVars == <<runStatus, nState, nWinner, nOutcome, events, sessionLive, defDeleted>>
 nodeVars == <<nState, nWinner, nOutcome>>
 ctrlVars == <<pc, cur, actRes, cancelStep, cancelIds>>
 effVars == <<eff, effRes, stopReq, wakeDup>>
-envVars == <<q, cancelSent, deleteSent, notified>>
+envVars == <<q, cancelSent, deleteSent, notified, crashes>>
 vars == <<storeVars, ctrlVars, effVars, envVars>>
 
-CurX == IF cur.node = "S" THEN <<"S", cur.ord>> ELSE IF cur.node = "H" THEN HNode ELSE TNode
+CurX == IF cur.node = "S" THEN <<"S", cur.ord>> ELSE IF cur.node = "H" THEN <<"H", cur.hord>> ELSE TNode
 
 (* Where the controller goes before it admits the next state.              *)
 NextAdmit == IF CommandPoll THEN "poll" ELSE "admit"
@@ -117,6 +134,7 @@ TypeOK ==
     /\ cur.node \in {"S", "H", "T"}
     /\ cur.caught \in BOOLEAN
     /\ cur.ord \in SOrd
+    /\ cur.hord \in {0} \cup HOrd
     /\ cur.pending \in NX \cup {NoNode}
     /\ cancelStep \in {"tx", "stop", "rec", "txRetry", "stopRetry", "recRetry"}
     /\ cancelIds \subseteq NX
@@ -128,6 +146,7 @@ TypeOK ==
     /\ cancelSent \in BOOLEAN
     /\ deleteSent \in BOOLEAN
     /\ notified \in 0..2
+    /\ crashes \in 0..MaxCrashes
 
 Init ==
     /\ runStatus = "admitted"
@@ -140,7 +159,7 @@ Init ==
     /\ sessionLive = TRUE
     /\ defDeleted = FALSE
     /\ pc = "undispatched"
-    /\ cur = [node |-> "S", ord |-> 1, pending |-> NoNode, caught |-> FALSE]
+    /\ cur = [node |-> "S", ord |-> 1, hord |-> 0, pending |-> NoNode, caught |-> FALSE]
     /\ actRes = "none"
     /\ cancelStep = "tx"
     /\ cancelIds = {}
@@ -152,6 +171,7 @@ Init ==
     /\ cancelSent = FALSE
     /\ deleteSent = FALSE
     /\ notified = 0
+    /\ crashes = 0
 
 -----------------------------------------------------------------------------
 (* Admission committed the run; dispatch starts the controller afterwards.  *)
@@ -238,14 +258,24 @@ CollectExec ==
                        /\ UNCHANGED storeVars
     /\ UNCHANGED <<pc, cur, cancelStep, cancelIds, effVars, envVars>>
 
+(* Where an "error" of the current state may go to H. From S with           *)
+(* ExplicitHandlerRoute it is S's own failure route; otherwise it is the    *)
+(* catch-all route, open while H has not run. HandlerOnce (1.3.0): admitting *)
+(* H by any route uses its one entry, and a later route to it fails the     *)
+(* run. Without it (1.2.0) only the catch-all route used the entry, so an   *)
+(* explicit entry left H's own unhandled error a second entry.              *)
+ExplicitToH == cur.node = "S" /\ ExplicitHandlerRoute
+ErrorToH == IF ExplicitToH THEN ~(HandlerOnce /\ cur.caught) ELSE ~cur.caught
+
 CollectRecord ==
     /\ pc = "collect"
     /\ actRes # "none"
     /\ CASE actRes = "nothing" -> (pc' = "wait" /\ cur' = cur)
          [] actRes = "again" -> (pc' = NextAdmit /\ cur' = [cur EXCEPT !.node = "S", !.ord = cur.ord + 1, !.pending = NoNode])
          [] actRes = "ok" -> (pc' = NextAdmit /\ cur' = [cur EXCEPT !.node = "T", !.pending = NoNode])
-         [] actRes = "error" /\ CatchAll /\ ~cur.caught ->
-                (pc' = NextAdmit /\ cur' = [cur EXCEPT !.node = "H", !.pending = NoNode, !.caught = TRUE])
+         [] actRes = "error" /\ CatchAll /\ ErrorToH ->
+                (pc' = NextAdmit /\ cur' = [cur EXCEPT !.node = "H", !.hord = cur.hord + 1, !.pending = NoNode,
+                                             !.caught = (IF ExplicitToH /\ ~HandlerOnce THEN cur.caught ELSE TRUE)])
          [] OTHER -> (pc' = "finishFail" /\ cur' = cur)
     /\ actRes' = "none"
     /\ UNCHANGED <<storeVars, cancelStep, cancelIds, effVars, envVars>>
@@ -259,7 +289,7 @@ PollCommand ==
               /\ q' = q
          ELSE /\ pc' = IF Head(q) = "cancel" THEN "cancel" ELSE "poll"
               /\ q' = Tail(q)
-    /\ UNCHANGED <<storeVars, cur, actRes, cancelStep, cancelIds, effVars, cancelSent, deleteSent, notified>>
+    /\ UNCHANGED <<storeVars, cur, actRes, cancelStep, cancelIds, effVars, cancelSent, deleteSent, notified, crashes>>
 
 (* Controller: race(dequeueEvent("messages"), timer). A queued message wins. *)
 
@@ -268,7 +298,7 @@ WaitMsg ==
     /\ q # <<>>
     /\ pc' = IF Head(q) = "cancel" THEN "cancel" ELSE "collect"
     /\ q' = Tail(q)
-    /\ UNCHANGED <<storeVars, cur, actRes, cancelStep, cancelIds, effVars, cancelSent, deleteSent, notified>>
+    /\ UNCHANGED <<storeVars, cur, actRes, cancelStep, cancelIds, effVars, cancelSent, deleteSent, notified, crashes>>
 
 WaitTimer ==
     /\ Backstop
@@ -320,7 +350,7 @@ NotifyExec ==
     /\ notified < 2
     /\ notified' = notified + 1
     /\ actRes' = "sent"
-    /\ UNCHANGED <<storeVars, pc, cur, cancelStep, cancelIds, effVars, q, cancelSent, deleteSent>>
+    /\ UNCHANGED <<storeVars, pc, cur, cancelStep, cancelIds, effVars, q, cancelSent, deleteSent, crashes>>
 
 NotifyRecord ==
     /\ pc = "notify"
@@ -476,11 +506,15 @@ EffStopDecided(x) ==
 (* crash inside the entry transaction rolls it back. A process the crashed  *)
 (* worker had started may outlive it; this model does not track such an     *)
 (* orphan (its effects are already-started effects, not a new entry).       *)
+(* A1 (CrashBudget): at most MaxCrashes crashes in this run; without it a   *)
+(* crash may interrupt every entry, which df-unbounded-crashes shows.       *)
 EffCrash(x) ==
     /\ EffectFaults
     /\ eff[x] \in {"claimed", "spawned", "running"}
+    /\ (CrashBudget => crashes < MaxCrashes)
+    /\ crashes' = IF CrashBudget THEN crashes + 1 ELSE crashes
     /\ eff' = [eff EXCEPT ![x] = "started"]
-    /\ UNCHANGED <<storeVars, ctrlVars, effRes, stopReq, wakeDup, envVars>>
+    /\ UNCHANGED <<storeVars, ctrlVars, effRes, stopReq, wakeDup, q, cancelSent, deleteSent, notified>>
 
 (* The effect orchestration ends without storing a result (its record      *)
 (* activity exhausted its retries, or it was terminated).                   *)
@@ -517,7 +551,7 @@ EffWake(x) ==
     /\ eff[x] = "recorded"
     /\ q' = IF runStatus \in Active THEN Append(q, "wake") ELSE q
     /\ eff' = [eff EXCEPT ![x] = "done"]
-    /\ UNCHANGED <<storeVars, ctrlVars, effRes, stopReq, wakeDup, cancelSent, deleteSent, notified>>
+    /\ UNCHANGED <<storeVars, ctrlVars, effRes, stopReq, wakeDup, cancelSent, deleteSent, notified, crashes>>
 
 (* A crash after the enqueue, before the wake result entered history.      *)
 EffWakeDup(x) ==
@@ -526,7 +560,7 @@ EffWakeDup(x) ==
     /\ runStatus \in Active
     /\ q' = Append(q, "wake")
     /\ wakeDup' = [wakeDup EXCEPT ![x] = 1]
-    /\ UNCHANGED <<storeVars, ctrlVars, eff, effRes, stopReq, cancelSent, deleteSent, notified>>
+    /\ UNCHANGED <<storeVars, ctrlVars, eff, effRes, stopReq, cancelSent, deleteSent, notified, crashes>>
 
 (* The wake activity exhausts its retries; the effect ends without a wake. *)
 EffWakeLost(x) ==
@@ -543,7 +577,7 @@ SendCancel ==
     /\ ~cancelSent
     /\ q' = Append(q, "cancel")
     /\ cancelSent' = TRUE
-    /\ UNCHANGED <<storeVars, ctrlVars, effVars, deleteSent, notified>>
+    /\ UNCHANGED <<storeVars, ctrlVars, effVars, deleteSent, notified, crashes>>
 
 (* Any deletion path soft-deletes the session row (cms_soft_delete_session).*)
 (* Hardened code: the 0085 trigger ends v2 work in that transaction.       *)
@@ -560,7 +594,7 @@ Delete ==
                         /\ EndPendingNodes("delete")
                    ELSE UNCHANGED <<runStatus, nodeVars>>
          ELSE UNCHANGED <<defDeleted, runStatus, nodeVars>>
-    /\ UNCHANGED <<events, ctrlVars, effVars, q, cancelSent, notified>>
+    /\ UNCHANGED <<events, ctrlVars, effVars, q, cancelSent, notified, crashes>>
 
 Controller ==
     \/ Dispatch \/ BeginExec \/ BeginRecord \/ AdmitExec \/ AdmitRecord \/ StartEffect
@@ -577,12 +611,14 @@ Effects ==
 
 Next == Controller \/ Effects \/ SendCancel \/ Delete
 
-(* Controller and normal effect steps are weakly fair. The cancel body may  *)
-(* crash once, so its steps are weakly fair too. A worker crash may repeat  *)
-(* a script, so the effect steps a crash disables are strongly fair (an     *)
-(* assumption: crashes do not recur forever). Recover is weakly fair: the   *)
-(* parent eventually recovers a run that needs it. Faults, cancel and       *)
-(* delete are environment actions without fairness.                         *)
+(* Fairness is the healthy-environment assumption A2: a step of the         *)
+(* controller or of an effect that stays enabled is eventually taken (the   *)
+(* worker runs, the store eventually accepts). It is weak everywhere. The   *)
+(* cancel body may crash once, so its steps are weakly fair too. Recover is *)
+(* weakly fair: A3, the parent eventually recovers a run that read_workflow *)
+(* shows as needing it. Faults, cancel and delete are environment actions  *)
+(* without fairness; A1 (CrashBudget) bounds the crashes that would         *)
+(* otherwise keep an entry from committing (df-unbounded-crashes).          *)
 Fairness ==
     /\ WF_vars(Dispatch) /\ WF_vars(BeginExec) /\ WF_vars(BeginRecord)
     /\ WF_vars(AdmitExec) /\ WF_vars(AdmitRecord) /\ WF_vars(StartEffect)
@@ -593,8 +629,8 @@ Fairness ==
     /\ WF_vars(CancelTx) /\ WF_vars(CancelStop) /\ WF_vars(CancelRecord)
     /\ WF_vars(PollCommand) /\ WF_vars(Recover)
     /\ \A x \in SNodes :
-          /\ WF_vars(EffClaim(x)) /\ WF_vars(EffCommit(x)) /\ SF_vars(EffLaunch(x)) /\ SF_vars(EffComplete(x))
-          /\ SF_vars(EffStopDecided(x)) /\ SF_vars(EffStopRequested(x))
+          /\ WF_vars(EffClaim(x)) /\ WF_vars(EffCommit(x)) /\ WF_vars(EffLaunch(x)) /\ WF_vars(EffComplete(x))
+          /\ WF_vars(EffStopDecided(x)) /\ WF_vars(EffStopRequested(x))
           /\ WF_vars(EffRecord(x)) /\ WF_vars(EffWake(x))
 
 Spec == Init /\ [][Next]_vars /\ Fairness
@@ -614,12 +650,15 @@ Inv_AdmissionOrder ==
     /\ \A i \in SOrd : (i > 1 /\ nState[<<"S", i>>] # "absent")
             => (nState[<<"S", i - 1>>] = "completed" /\ nOutcome[<<"S", i - 1>>] = "again")
     /\ nState[TNode] # "absent" =>
-            (\E i \in SOrd : nOutcome[<<"S", i>>] = "ok") \/ (CatchAll /\ nOutcome[HNode] = "ok")
+            (\E i \in SOrd : nOutcome[<<"S", i>>] = "ok") \/ (CatchAll /\ \E j \in HOrd : nOutcome[<<"H", j>>] = "ok")
 
-(* The catch-all state runs only after a state ended with an error it had   *)
-(* no route for, and at most once (Inv_EventsOnce counts its admissions).  *)
+(* The catch-all state runs only after a script state ended with an error   *)
+(* (by its own failure route or with no route for it).                     *)
 Inv_CatchAllAfterUnhandled ==
     CatchAll => (nState[HNode] # "absent" => \E i \in SOrd : nOutcome[<<"S", i>>] = "error")
+
+(* The catch-all state is admitted at most once per run, by any route.     *)
+Inv_CatchAllOnce == CatchAll => (\A j \in HOrd : (j > 1 => nState[<<"H", j>>] = "absent"))
 
 Inv_CancelWinner == \A x \in NX : nWinner[x] \in {"cancel", "delete"} => runStatus = "cancelled"
 
