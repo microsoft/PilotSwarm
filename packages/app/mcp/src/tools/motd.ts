@@ -37,10 +37,10 @@ export function registerMotdTools(server: McpServer, ctx: ServerContext) {
                     throw new MotdError("MOTD_FORBIDDEN", "Direct message management requires an explicit admin grant", 403);
                 switch (spec.kind) {
                     case "current": return jsonResult(await ctx.mgmt.getCurrentMotd(viewer));
-                    case "dismiss": return jsonResult(await ctx.mgmt.dismissMotd(viewer, args.motdId));
-                    case "delete": return jsonResult(await ctx.mgmt.deleteMotd(viewer, args.motdId));
-                    case "image": return jsonResult(await ctx.mgmt.getMotdImage(viewer, args.motdId, args.mobile));
-                    case "list": return jsonResult(await ctx.mgmt.listMotds(viewer, args.limit, args.before));
+                    case "dismiss": return jsonResult(await ctx.mgmt.dismissMotd(viewer, z.string().parse(args.motdId)));
+                    case "delete": return jsonResult(await ctx.mgmt.deleteMotd(viewer, z.string().parse(args.motdId)));
+                    case "image": return jsonResult(await ctx.mgmt.getMotdImage(viewer, z.string().parse(args.motdId), z.boolean().optional().parse(args.mobile)));
+                    case "list": return jsonResult(await ctx.mgmt.listMotds(viewer, z.number().optional().parse(args.limit), z.string().optional().parse(args.before)));
                     case "create": return jsonResult(await ctx.mgmt.createMotd(viewer, motdCreateInput(args)));
                 }
             }));
