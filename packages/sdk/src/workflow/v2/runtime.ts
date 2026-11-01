@@ -79,7 +79,8 @@ export const WORKFLOW_V2_CONTROLLER_VERSION = "1.6.0";
  * history an earlier build wrote. An instance of one fails at once with this
  * reason, so its run shows needsRecovery and update_workflow recover ends it
  * visibly. Its history and rows are kept. Until the first release, a build
- * replays only its own controller version.
+ * replays only its own controller version: this is a recovery policy, and
+ * replay of an earlier build's history remains an open requirement.
  */
 export const WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS: readonly string[] = ["1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0", "1.5.0"];
 export const WORKFLOW_V2_EFFECT_NAME = "workflow-v2-effect";
@@ -970,8 +971,8 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                     const problems = schemaSetFor(current.irSha256, ir.schemaDefs).validate(node.inputSchema, value);
                     if (problems.length) immediate = runtimeError("invalid_input", `Input does not match ${node.inputSchema}.`, problemsJson(problems));
                 }
-                // A wait's seconds are read once, here; the store fixes its
-                // deadline in its own clock when the admission commits.
+                // A wait's seconds are read once, here; the store counts them
+                // from its own clock when it accepts the admission (store.enterNode).
                 if (!immediate && node.type === "wait") {
                     const seconds = waitSeconds(node.seconds, scopeFor(current, arrived.incoming, arrived.runtimeError, kv), `states.${nodeId}.seconds`);
                     if (typeof seconds === "number") waitFor = seconds;

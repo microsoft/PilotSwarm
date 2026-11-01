@@ -999,12 +999,22 @@ export class WorkflowStore {
      * Admit one node execution of an active run. Idempotent: the identity is
      * derived from the history-selected (run, scope, node, ordinal), and a
      * retry must name the same predecessor and route, and the same input
-     * when it was evaluated with the same KV revision.
+     * when it was evaluated with the same KV revision. A retry returns the
+     * stored row, with its original entered_at and deadline_at.
      *
      * The admission pins the KV revision current at its commit: set_vars
      * locks this run row too, so each set_vars commits before or after the
      * admission. An admission whose input was evaluated with an earlier
      * revision is refused (kv_changed), and the caller evaluates it again.
+     *
+     * The admission is accepted when its insert runs: after the session and
+     * run locks and the live, status and KV guards. Its entered_at is one
+     * reading of the store's clock taken then (clock_timestamp(), read once
+     * in the inserting statement), and a wait's seconds count from that same
+     * reading. now() would be the transaction's start, before any lock wait,
+     * and a delay before the transaction does not count either. The insert
+     * and its events run between that reading and the commit; the seconds
+     * are not counted from the commit.
      */
     async enterNode(input: {
         runId: string;
@@ -1019,8 +1029,8 @@ export class WorkflowStore {
         /** The KV revision the input was evaluated with; pinned on the node execution. */
         kvRevision: number;
         /**
-         * A wait state's seconds: its deadline is the store's clock at this
-         * admission plus these seconds (entered_at is the same clock reading).
+         * A wait state's seconds: its deadline is the admission's accepted-entry
+         * reading of the store's clock (its entered_at) plus these seconds.
          * Null for other states and for one that failed at admission.
          */
         waitSeconds: number | null;
@@ -1052,14 +1062,17 @@ export class WorkflowStore {
             if (waits !== (input.waitSeconds !== null) || (input.waitSeconds !== null && !(Number.isSafeInteger(input.waitSeconds) && input.waitSeconds >= 1))) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has invalid wait seconds.`);
             }
-            // now() is the transaction's one clock reading: entered_at (its
-            // default) and deadline_at differ by exactly the wait's seconds.
+            // The accepted-entry clock reading: the CTE is evaluated once per
+            // statement, so entered_at, an immediate result's completed_at and
+            // a wait's deadline_at share it exactly.
             const { rows } = await client.query(
-                `INSERT INTO ${this.t.nodes}
+                `WITH accepted AS (SELECT clock_timestamp() AS at)
+                 INSERT INTO ${this.t.nodes}
                     (node_execution_id, run_id, scope_id, node_id, ordinal, node_type, predecessor_id, arrival_route, input, input_sha256,
-                     state, outcome, result_kind, output, error, winner, completed_at, kv_revision, deadline_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, CASE WHEN $11 = 'completed' THEN now() END, $17,
-                         now() + $18::integer * interval '1 second')
+                     state, outcome, result_kind, output, error, winner, entered_at, completed_at, kv_revision, deadline_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
+                         (SELECT at FROM accepted), CASE WHEN $11 = 'completed' THEN (SELECT at FROM accepted) END, $17,
+                         (SELECT at FROM accepted) + $18::integer * interval '1 second')
                  RETURNING *`,
                 [input.nodeExecutionId, input.runId, input.scopeId, input.nodeId, input.ordinal, input.nodeType, input.predecessorId,
                     input.arrivalRoute, input.inputText, inputSha256, immediate ? "completed" : "pending",
@@ -1153,10 +1166,12 @@ export class WorkflowStore {
     /**
      * Elapse a pending wait state once the store's clock reached its
      * deadline: the terminal compare-and-swap with outcome elapsed, the value
-     * it was given as its output and completed_at at or after deadline_at (one
-     * clock reading decides both). Before the deadline it changes nothing and
-     * reports the milliseconds left (at least 1). A result stored first, a
-     * cancellation or a deletion, is kept (decided).
+     * it was given as its output and completed_at at or after deadline_at.
+     * One reading of the store's clock, taken after the session lock, both
+     * decides and is stored (a CTE is evaluated once per statement), so a lock
+     * wait makes the elapse late, never early. Before the deadline it changes
+     * nothing and reports the milliseconds left (at least 1). A result stored
+     * first, a cancellation or a deletion, is kept (decided).
      */
     async elapseWait(nodeExecutionId: string, projection?: SessionProjection): Promise<
         { result: "elapsed" | "decided"; node: WorkflowNodeExecutionRow } | { result: "not_due"; remainingMs: number; node: WorkflowNodeExecutionRow }> {
@@ -1164,10 +1179,11 @@ export class WorkflowStore {
             const live = await this.lockLiveSession(client, await this.workflowOfNode(client, nodeExecutionId));
             if (live) {
                 const { rows } = await client.query(
-                    `UPDATE ${this.t.nodes}
+                    `WITH decided AS (SELECT clock_timestamp() AS at)
+                     UPDATE ${this.t.nodes}
                         SET state = 'completed', outcome = $2, result_kind = 'business', output = input, error = NULL,
-                            winner = 'controller', completed_at = now()
-                      WHERE node_execution_id = $1 AND state = 'pending' AND node_type = 'wait' AND deadline_at <= now()
+                            winner = 'controller', completed_at = (SELECT at FROM decided)
+                      WHERE node_execution_id = $1 AND state = 'pending' AND node_type = 'wait' AND deadline_at <= (SELECT at FROM decided)
                       RETURNING *`,
                     [nodeExecutionId, WAIT_ELAPSED],
                 );
@@ -1177,7 +1193,7 @@ export class WorkflowStore {
                 }
             }
             const { rows } = await client.query(
-                `SELECT *, GREATEST(1, CEIL(EXTRACT(EPOCH FROM (deadline_at - now())) * 1000))::bigint AS remaining_ms
+                `SELECT *, GREATEST(1, CEIL(EXTRACT(EPOCH FROM (deadline_at - clock_timestamp())) * 1000))::bigint AS remaining_ms
                    FROM ${this.t.nodes} WHERE node_execution_id = $1`, [nodeExecutionId]);
             if (!rows[0]) throw new WorkflowStoreError("NODE_NOT_FOUND", `Node execution ${nodeExecutionId} does not exist.`);
             const node = nodeFrom(rows[0]);

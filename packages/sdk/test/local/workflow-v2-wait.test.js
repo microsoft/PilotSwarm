@@ -8,6 +8,9 @@
  * - its seconds are read once, when it is entered: the store fixes its
  *   absolute deadline in its own clock then, a later KV change does not move
  *   it, and a bad value is invalid_input;
+ * - the seconds count from the store's clock reading when the admission is
+ *   accepted, after its locks and guards: neither a lock wait after its
+ *   transaction began nor a delay before it consumes them (W1);
  * - it elapses only once the store's clock reached the deadline: the store
  *   refuses an early elapse and reports the time left, and a controller whose
  *   clock runs ahead (fault injection) waits that time;
@@ -79,9 +82,10 @@ async function baseOf(env) {
 /**
  * A worker-equivalent registration. `refusals` lists runs whose admission the
  * store refused for a pause; `elapses` lists the elapse activity's results;
- * `beforeElapse` runs before each elapse activity (a fault-injection hook).
+ * `beforeElapse` runs before each elapse activity, and `wrapStore` wraps the
+ * store the runtime uses (fault-injection hooks).
  */
-async function harness(env, { base: shared, runtimeOptions, wakeBackstopMs = 500, beforeElapse } = {}) {
+async function harness(env, { base: shared, runtimeOptions, wakeBackstopMs = 500, beforeElapse, wrapStore } = {}) {
     const base = shared ?? await baseOf(env);
     const { catalog, store, provider, client } = base;
     const runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error", ...runtimeOptions });
@@ -109,7 +113,7 @@ async function harness(env, { base: shared, runtimeOptions, wakeBackstopMs = 500
         registerActivity: (name, fn) => runtime.registerActivity(name, wrap(name, fn)),
         registerOrchestrationVersioned: (name, version, fn) => runtime.registerOrchestrationVersioned(name, version, fn),
     }, {
-        store, catalog,
+        store: wrapStore ? wrapStore(store) : store, catalog,
         enabled: () => true,
         resolveToolBinding: async () => null,
         openToolExecutor: async () => { throw new Error("These workflows call no tools."); },
@@ -383,6 +387,117 @@ describe("workflow v2 wait states", () => {
             expect(h.elapses.at(-1)).toEqual({ notDue: [] });
         } finally {
             moved();
+            await h.stop();
+            await db.end();
+        }
+    });
+
+    it("counts a wait's seconds from the store's clock when its admission is accepted, after a lock wait longer than the wait", { timeout: TIMEOUT }, async () => {
+        // Fault injection: the admission's transaction begins, takes the
+        // session row and then waits 2.5 s for the run row, which this test
+        // holds without changing it. The wait is 1 s, so a deadline counted
+        // from the transaction's start (now()) would already be due when the
+        // row is inserted.
+        const env = getEnv();
+        let reached;
+        const atStore = new Promise(resolve => { reached = resolve; });
+        let release;
+        const locked = new Promise(resolve => { release = resolve; });
+        const h = await harness(env, {
+            wrapStore: (store) => {
+                const watched = Object.create(store);
+                watched.enterNode = async (input) => {
+                    if (input.nodeType === "wait") { reached(); await locked; }
+                    return store.enterNode(input);
+                };
+                return watched;
+            },
+        });
+        const holder = new pg.Client({ connectionString: env.store });
+        // Polled outside the holder's transaction: pg_stat_activity is fixed for the rest of a transaction once read.
+        const observer = new pg.Client({ connectionString: env.store });
+        try {
+            await holder.connect();
+            await observer.connect();
+            const parent = await parentOf(h);
+            const created = await createWorkflowV2(h.host, { workflowSessionId: randomUUID(), parentSessionId: parent.parentId, yaml: NAP("1"),
+                actor: ACTOR, operationId: "start", start: { inputs: {}, vars: {} } });
+            const { runId } = created.receipt.run;
+            await atStore;
+            const { pid: holderPid } = (await holder.query("SELECT pg_backend_pid() AS pid")).rows[0];
+            await holder.query("BEGIN");
+            const { rows: [held] } = await holder.query(
+                `SELECT status, kv_revision FROM "${env.cmsSchema}".workflow_runs WHERE run_id = $1 FOR UPDATE`, [runId]);
+            // The test holds the run as it is and changes nothing.
+            expect(held).toEqual({ status: "running", kv_revision: 1 });
+            release();
+            const blocked = await until(async () => (await observer.query(
+                "SELECT pid, xact_start FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))", [holderPid])).rows[0] ?? null,
+            "the admission's transaction to wait for the run row");
+            const heldFrom = Date.now();
+            await until(async () => Date.now() - heldFrom >= 2_500, "the lock window");
+            const { at: releasedAt } = (await holder.query("SELECT clock_timestamp() AS at")).rows[0];
+            await holder.query("ROLLBACK");
+
+            const node = await until(async () => (await h.store.listNodeExecutions(runId))[0] ?? null, "the wait state's admission");
+            // Accepted after the lock wait: its entry is the store's clock once it held the run row, not its transaction's start.
+            expect(node.enteredAt.getTime()).toBeGreaterThanOrEqual(releasedAt.getTime());
+            expect(node.enteredAt.getTime() - blocked.xact_start.getTime()).toBeGreaterThanOrEqual(2_500);
+            expect(node.deadlineAt.getTime() - node.enteredAt.getTime()).toBe(1_000);
+            // The admission pinned the unchanged KV revision; the run kept it to the end.
+            expect(node).toMatchObject({ nodeId: "nap", kvRevision: 1 });
+            const elapsed = await completion(h.store, node.nodeExecutionId);
+            expect(lateness(elapsed)).toBeGreaterThanOrEqual(0);
+            expect(lateness(elapsed)).toBeLessThan(2_000);
+            // Its whole second passed after the run row was released.
+            expect(elapsed.completedAt.getTime() - releasedAt.getTime()).toBeGreaterThanOrEqual(1_000);
+            expect(await finished(h.store, runId)).toMatchObject({ status: "completed", kvRevision: 1 });
+        } finally {
+            release();
+            // Close the holder first: it releases the run row if a check above failed while it was held.
+            await holder.end();
+            await observer.end();
+            await h.stop();
+        }
+    });
+
+    it("counts a wait's seconds from its accepted entry when its admission reaches the store late", { timeout: TIMEOUT }, async () => {
+        // Fault injection: the admission reaches the store 2.5 s after its
+        // seconds were read, before its transaction begins.
+        const env = getEnv();
+        const db = new pg.Client({ connectionString: env.store });
+        const clock = async () => (await db.query("SELECT clock_timestamp() AS at")).rows[0].at;
+        let readAt = null;
+        let reachedAt = null;
+        const h = await harness(env, {
+            wrapStore: (store) => {
+                const watched = Object.create(store);
+                watched.enterNode = async (input) => {
+                    if (input.nodeType === "wait" && readAt === null) {
+                        readAt = await clock();
+                        const from = Date.now();
+                        await until(async () => Date.now() - from >= 2_500, "the delay window");
+                        reachedAt = await clock();
+                    }
+                    return store.enterNode(input);
+                };
+                return watched;
+            },
+        });
+        try {
+            await db.connect();
+            const parent = await parentOf(h);
+            const { runId, node } = await napEntered(h, parent, { seconds: "1" });
+            expect(reachedAt.getTime() - readAt.getTime()).toBeGreaterThanOrEqual(2_500);
+            expect(node.enteredAt.getTime()).toBeGreaterThanOrEqual(reachedAt.getTime());
+            expect(node.deadlineAt.getTime() - node.enteredAt.getTime()).toBe(1_000);
+            const elapsed = await completion(h.store, node.nodeExecutionId);
+            expect(lateness(elapsed)).toBeGreaterThanOrEqual(0);
+            expect(lateness(elapsed)).toBeLessThan(2_000);
+            // Its whole second passed after the admission reached the store.
+            expect(elapsed.completedAt.getTime() - reachedAt.getTime()).toBeGreaterThanOrEqual(1_000);
+            expect((await finished(h.store, runId)).status).toBe("completed");
+        } finally {
             await h.stop();
             await db.end();
         }

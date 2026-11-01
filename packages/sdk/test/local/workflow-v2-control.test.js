@@ -26,7 +26,7 @@ import { evaluateBindingTemplate, parseBindingExpression, WorkflowBindingError }
 import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
 import { createWorkflowV2 } from "../../src/workflow/v2/service.ts";
 import { readWorkflowFromTool, updateWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
-import { registerWorkflowV2, WORKFLOW_V2_ACTIVITIES } from "../../src/workflow/v2/runtime.ts";
+import { registerWorkflowV2, WORKFLOW_V2_ACTIVITIES, workflowEffectInstanceId } from "../../src/workflow/v2/runtime.ts";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 const getEnv = useSuiteEnv(import.meta.url);
@@ -588,14 +588,19 @@ describe("workflow v2 bindings name any KV key", () => {
             expect(run.terminalOutput).toEqual({ seen: SEEN, quoted: "q", viaKv: "s", missing: "absent ?? here", fromInputs: 5 });
             expect(entriesOf(JSON.parse((await parent.read(typed.id)).run.kv))).toEqual(entriesOf(VARS));
 
-            // The same bindings with a value of the wrong type: the input contract refuses it before any script starts.
+            // The same bindings with a string where the contract wants an integer: op and opNull both name the
+            // key "a??b", whose value is now "1" (a present value is never replaced by a default). The input
+            // contract refuses both before any script starts.
             const wrong = await start({ ...VARS, [KEY.op]: "1" });
             const blocked = await finished(h, wrong.runId);
             expect(blocked, JSON.stringify(blocked)).toMatchObject({ status: "completed", terminalOutcome: "blocked", terminalNodeId: "bad",
                 terminalOutput: { code: "invalid_input", message: "Input does not match Seen." } });
-            expect(blocked.terminalOutput.details).toContainEqual(expect.objectContaining({ path: "/op" }));
+            expect(blocked.terminalOutput.details.map(problem => problem.path).sort()).toEqual(["/op", "/opNull"]);
             const [refused] = await h.store.listNodeExecutions(wrong.runId);
-            expect(refused).toMatchObject({ nodeId: "read", outcome: "invalid_input", resultKind: "runtime_error", winner: "controller", input: { ...SEEN, op: "1" } });
+            expect(refused).toMatchObject({ nodeId: "read", outcome: "invalid_input", resultKind: "runtime_error", winner: "controller", effectAttempts: 0 });
+            expect(refused.input).toEqual({ ...SEEN, op: "1", opNull: "1" });
+            // No effect orchestration was started for the refused state.
+            expect((await h.client.getStatus(workflowEffectInstanceId(refused.nodeExecutionId))).status).toBe("NotFound");
         } finally { await h.stop(); }
     });
 });
