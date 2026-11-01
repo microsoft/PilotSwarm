@@ -597,7 +597,7 @@ describe("workflow v2 run control on the real runtime", () => {
         }
     });
 
-    it("loses a command queued before its controller started (the PostgreSQL provider drops it), and a repeat of a cancel accepted that way ends the run", { timeout: TIMEOUT }, async () => {
+    it("loses a command queued before its controller started (the PostgreSQL provider drops it); a cancel accepted that way ends the run on its repeat or at its begin", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         const h = await harness(env);
         const db = new pg.Client({ connectionString: env.store });
@@ -670,6 +670,21 @@ describe("workflow v2 run control on the real runtime", () => {
             expect(await parent.update(y, { operation: "recover", operation_id: "recover" })).toMatchObject({ ok: true, action: "none", status: "cancelled" });
             expect(await h.store.listNodeExecutions(runY.runId)).toEqual([]);
             expect((await h.client.getStatus(runY.controllerInstanceId)).status).toBe("NotFound");
+
+            // The same earlier-build cancel, but nobody repeats it: a recover dispatches the run, and its begin finds
+            // the accepted cancel and ends the run instead of beginning it.
+            const z = randomUUID();
+            const runZ = await lost(z);
+            await db.query(`INSERT INTO "${env.cmsSchema}".workflow_operations (workflow_session_id, operation_id, kind, request_sha256, receipt)
+                VALUES ($1, $2, 'cancel', $3, $4)`, [z, "old", jsonSha256({ kind: "cancel", runId: runZ.runId, reason: "old cancel" }),
+                canonicalJson({ workflowSessionId: z, operation: "cancel", runId: runZ.runId, status: "admitted", kvRevision: 1 })]);
+            await dropped(runZ.controllerInstanceId);
+            expect(await parent.update(z, { operation: "recover", operation_id: "recover" })).toMatchObject({ ok: true, action: "dispatched" });
+            expect((await h.client.waitForOrchestration(runZ.controllerInstanceId, 30_000)).status).toBe("Completed");
+            expect(await h.store.readRun(runZ.runId)).toMatchObject({ status: "cancelled", terminalError: { code: "cancelled",
+                message: "Cancelled before it began", details: { command: "cancel", operationId: "old", beforeBegin: true, repaired: true } } });
+            expect(await h.store.listNodeExecutions(runZ.runId)).toEqual([]);
+            expect(await h.host.catalog.getSessionEvents(z, 0, 50, ["workflow.started"])).toEqual([]);
         } finally {
             await h.stop();
             await db.end();

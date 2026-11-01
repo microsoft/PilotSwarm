@@ -1115,12 +1115,31 @@ export class WorkflowStore {
         return runFrom(rows[0]);
     }
 
-    /** admitted -> running. Returns whether this call made the transition. */
+    /**
+     * admitted -> running. Returns whether this call made the transition.
+     * A cancel accepted for this run before it began still wins: an earlier
+     * build queued that cancel for a controller that may not have existed,
+     * and duroxide drops such a message, so a recover or a late dispatch
+     * could begin the run. Begin ends it instead (as the accepted cancel
+     * requires) and admits nothing. This build ends such a run when it
+     * accepts the cancel, so only earlier builds' receipts reach this.
+     */
     async beginRun(runId: string, projection?: SessionProjection): Promise<{ run: WorkflowRunRow; transitioned: boolean }> {
         return this.transaction(async client => {
             const live = await this.lockLiveSession(client, await this.workflowOfRun(client, runId));
             const run = await this.lockRun(client, runId);
             if (!live) return { run, transitioned: false };
+            if (runNotBegun(run)) {
+                const { rows: accepted } = await client.query(
+                    `SELECT operation_id FROM ${this.t.operations}
+                      WHERE workflow_session_id = $1 AND kind = 'cancel' AND (receipt::jsonb ->> 'runId') = $2
+                      ORDER BY created_at, operation_id LIMIT 1`, [run.workflowSessionId, runId]);
+                if (accepted[0]) {
+                    const ended = await this.cancelBeforeBegin(client, run, { workflowSessionId: run.workflowSessionId,
+                        operationId: str(accepted[0], "operation_id"), reason: "Cancelled before it began", requestedBy: null }, true);
+                    return { run: ended, transitioned: false };
+                }
+            }
             // A run paused before its controller began has begun now; it stays paused.
             if (run.status === "paused" && run.pausedFrom === "admitted") {
                 const { rows } = await client.query(
