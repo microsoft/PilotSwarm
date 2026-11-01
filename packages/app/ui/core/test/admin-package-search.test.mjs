@@ -92,3 +92,10 @@ test("matchAdminPackage reads only the loaded record", () => {
     assert.equal(matchAdminPackage(row, "Gus", "contributor").matched, true);
     assert.equal(matchAdminPackage(row, "Gus", "package").matched, false);
 });
+
+test("only package rows scroll; a section after the packages stays outside the scroller", async () => {
+    const { readFileSync } = await import("node:fs");
+    const webApp = readFileSync(new URL("../../react/src/web-app.js", import.meta.url), "utf8");
+    assert.match(webApp, /const nextSection = tree\.findIndex\(\(row, index\) => index >= headEnd && row\.kind !== "group" && row\.kind !== "package"\);/);
+    assert.doesNotMatch(webApp, /const tailStart = workersIndex >= 0/, "the scroller no longer ends at Workers by name");
+});
