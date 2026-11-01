@@ -1,6 +1,6 @@
-import { COMPUTE_ERROR_CODES, ComputeProviderRegistry, advertisedHostModels, isLoopbackAddress, normalizeAdvertisement, parseTargetModelRef, runtimeConnectionFor, runtimeEndpointKey, targetMayOfferHostModels, type ComputeAdvertisement, type ComputeFailure, type ComputeHostRef, type ComputePrincipal, type ComputeProvider, type ComputeReleaseReason, type ComputeRuntimeEndpoint, type ComputeTarget, type ComputeWorkspacePaths } from "./compute.js";
+import { COMPUTE_ERROR_CODES, ComputeProviderRegistry, DEFAULT_COMPUTE_LEASE_MS, advertisedHostModels, computeBindingKey, computeLeaseSchedule, isLoopbackAddress, normalizeAdvertisement, parseTargetModelRef, runtimeConnectionFor, runtimeEndpointKey, targetMayOfferHostModels, type ComputeAdvertisement, type ComputeFailure, type ComputeHostRef, type ComputePrincipal, type ComputeProvider, type ComputeReleaseReason, type ComputeRuntimeEndpoint, type ComputeTarget, type ComputeWorkspacePaths } from "./compute.js";
 import { REMOTE_SESSION_STATE_ROOT, RemoteRuntimeRequestHandler, WorkerDirectorySessionFs, askHostModels, redactProviderSecrets, remoteSessionGrant, type RemoteSessionGrant } from "./compute-runtime.js";
-import { ComputeRuntimeBridge } from "./compute-bridge.js";
+import { ComputeRuntimeBridge, openTcpPipe } from "./compute-bridge.js";
 import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, capabilityOwnership, parseCapabilityRef, resolveCapabilitySource, workspaceCapabilityHits, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
 import { bindCapabilities, nextCapabilityState, validatePackageRequest } from "./capability-runtime.js";
 import type { McpAllowlistAgent } from "./mcp-loader.js";
@@ -620,6 +620,18 @@ const COMPUTE_ADVERTISE_TIMEOUT_MS = 30_000;
  * the host, and a target's models rarely change within a turn.
  */
 const COMPUTE_ADVERTISE_REFRESH_MS = 10 * 60_000;
+/**
+ * Host leases. A worker takes a lease when it binds and renews it while it
+ * holds the binding, so a provider can read renewals that stop as "nobody
+ * is using this host" — which covers a worker that crashed or was taken
+ * away as well as one that let go properly. The lease is several times the
+ * renewal, so one slow renewal does not look like an absent worker.
+ */
+const COMPUTE_RENEW_TIMEOUT_MS = 15_000;
+/** The end-of-tree notice: its deadline, how many per sweep, and when to try again. */
+const COMPUTE_DONE_TIMEOUT_MS = 30_000;
+const COMPUTE_DONE_SWEEP_BATCH = 20;
+const COMPUTE_DONE_RETRY_MS = 5 * 60_000;
 
 /** A session's binding to a compute host on this worker. */
 interface ComputeBinding {
@@ -633,10 +645,26 @@ interface ComputeBinding {
     /** The session's workspace folders as the worker sees them. */
     workerPaths: string[];
     /**
-     * For a provider that opens its own connections: this binding's bridge
-     * on the worker's own machine. It lives and dies with the binding.
+     * Which host this is, across the sessions of a tree: the target, the
+     * host and which incarnation of it. Everything shared per host — the
+     * bridge, and so the address and the pooled client — hangs off this.
+     */
+    hostKey: string;
+    /**
+     * The bridge on the worker's own machine in front of this host's
+     * runtime, whether the provider opened the connection or PilotSwarm
+     * did. One per host, not per session: the sessions of a tree share a
+     * host, so they must share its address and its pooled client, exactly
+     * as they did when the provider's own address was used directly.
      */
     bridge?: ComputeRuntimeBridge;
+    /**
+     * The CMS row for this (tree, target, host), when the catalog keeps
+     * them. It is what the lease is renewed against and what the
+     * end-of-tree sweep later finds; several sessions of one tree share
+     * the same row.
+     */
+    bindingRowId?: string;
 }
 
 /**
@@ -852,8 +880,23 @@ export class SessionManager {
     private remoteGrants = new Map<string, { grant: RemoteSessionGrant; endpointKey: string; fingerprint: string; provider: unknown }>();
     /** Per session: the compute host it is bound to, for release. */
     private computeHosts = new Map<string, ComputeBinding>();
+    /**
+     * Per host: its bridge on this machine and the way to it as of the
+     * most recent connect. Shared by every session of a tree bound to that
+     * host, so they share one address and one pooled client; the bridge
+     * reads `reach` at each pipe it opens, so a host whose address or
+     * secret changes keeps its bridge while still being reached correctly.
+     */
+    private computeBridges = new Map<string, {
+        bridge: ComputeRuntimeBridge;
+        reach: Exclude<ComputeRuntimeEndpoint, { transport: "local" }>;
+    }>();
     /** Whether a provider may hand back a runtime address that is not on this machine. */
     private computeAllowNonLoopbackEndpoints = false;
+    /** Host leases: how long one is worth, and the timer that renews them. */
+    private computeLeaseMs = DEFAULT_COMPUTE_LEASE_MS;
+    private computeLeaseTimer: ReturnType<typeof setInterval> | null = null;
+    private computeLeaseRenewing = false;
     private unsubscribeFeatureFlags: (() => void) | null = null;
 
     /** Live in-memory session count — worker-registry health reporting. */
@@ -1324,13 +1367,16 @@ export class SessionManager {
         const sameHost = Boolean(previous && previous.host.id === bound.host.id && previous.host.incarnation === bound.host.incarnation);
         const binding: ComputeBinding = {
             provider, target, host: bound.host, rootSessionId, workerNodeId,
+            hostKey: computeBindingKey(target.id, bound.host),
             endpointKey: sameHost ? previous!.endpointKey : "",
             workerPaths: [workspace.cwd, ...(workspace.additionalDirectories ?? [])].filter((entry): entry is string => Boolean(entry)),
-            // The bridge belongs to the binding: the same host keeps its
-            // bridge, a replaced host gets a new one.
-            ...(sameHost && previous!.bridge && !previous!.bridge.isClosed ? { bridge: previous!.bridge } : {}),
         };
         this.computeHosts.set(sessionId, binding);
+        // Record the binding and take a lease on it. Several sessions of
+        // one tree share a host and so share one row; the row outlives
+        // this worker's memory of it, which is what lets a tree that ends
+        // while nothing has it loaded still be reported to its provider.
+        await this._recordComputeBinding(binding);
         const connected = await this._computeCall("connect", COMPUTE_CONNECT_TIMEOUT_MS,
             (signal) => provider.connect({ target, host: bound.host, sessionId, rootSessionId, workerNodeId, turnIndex, signal, workspace })).catch(async (error) => {
                 await this.releaseCompute(sessionId, "failed");
@@ -1345,18 +1391,24 @@ export class SessionManager {
             return fail(COMPUTE_ERROR_CODES.ENDPOINT_REFUSED,
                 "the compute provider returned a runtime address that is not on this machine; this worker accepts only local addresses");
         }
-        // A provider that opens its own connections gets a bridge on this
-        // machine, and the rest of the worker then sees an ordinary local
+        // Every runtime that is not the worker's own child process gets a
+        // bridge on this machine, and the rest of the worker then sees an
+        // ordinary local address. That is what makes the handshake
+        // uniform: it happens here, once per connection, for a provider
+        // that opened the connection and for one that only named an
         // address. Nothing below this line knows what the connection is
-        // made of.
+        // made of, or that it was proved.
         let endpoint: ComputeRuntimeEndpoint = connected.endpoint;
-        if (endpoint.transport === "pipe") {
+        if (endpoint.transport !== "local") {
             try {
                 endpoint = await this._bridgeEndpoint(binding, endpoint);
             } catch (error) {
                 await this.releaseCompute(sessionId, "failed");
-                return fail(COMPUTE_ERROR_CODES.UNAVAILABLE,
-                    `the connection to the compute host could not be prepared: ${String((error as Error)?.message ?? error)}`, 5_000);
+                const code = (error as { code?: string })?.code;
+                return typeof code === "string" && code.startsWith("COMPUTE_")
+                    ? fail(code, String((error as Error)?.message ?? error))
+                    : fail(COMPUTE_ERROR_CODES.UNAVAILABLE,
+                        `the connection to the compute host could not be prepared: ${String((error as Error)?.message ?? error)}`, 5_000);
             }
         }
         const endpointKey = runtimeEndpointKey(endpoint, bound.host);
@@ -1374,42 +1426,72 @@ export class SessionManager {
     }
 
     /**
-     * The local address standing in for a host whose provider opens its own
-     * connections. The binding's bridge is made once and kept: the same
-     * host keeps the same address, so its pooled client survives the turn.
-     * A replaced host arrives here with no bridge and gets a new one, and
+     * The local address standing in for a host's runtime, for every
+     * transport. The binding's bridge is made once and kept: the same host
+     * keeps the same address, so its pooled client survives the turn. A
+     * replaced host arrives here with no bridge and gets a new one, and
      * the new address gives it a fresh client.
      *
-     * The bridge asks the provider for a pipe per connection, so a broken
-     * connection is replaced by a fresh pipe rather than a dead one, and a
-     * provider that cannot open one fails the connection where it is seen.
+     * The bridge opens a pipe per connection — the provider's own code for
+     * a `pipe` provider, a TCP connection PilotSwarm makes for a `direct`
+     * one — so a broken connection is replaced by a fresh pipe rather than
+     * a dead one, and a connection that cannot be opened fails where it is
+     * seen. Over every pipe the worker and the host prove to each other
+     * that they hold this binding's secret before anything else crosses.
+     *
+     * A binding with no secret cannot be used: a remote runtime that
+     * cannot be recognized is exactly what the handshake exists to refuse.
      */
     private async _bridgeEndpoint(
         binding: ComputeBinding,
-        endpoint: Extract<ComputeRuntimeEndpoint, { transport: "pipe" }>,
+        endpoint: Exclude<ComputeRuntimeEndpoint, { transport: "local" }>,
     ): Promise<ComputeRuntimeEndpoint> {
         const { provider, target, host } = binding;
-        if (typeof provider.openConnection !== "function") {
+        if (endpoint.transport === "pipe" && typeof provider.openConnection !== "function") {
             throw new Error(`the compute provider "${provider.kind}" returned a connection it has no code to open`);
         }
-        const details = endpoint.details ?? {};
-        if (!binding.bridge || binding.bridge.isClosed) {
-            const bridge = new ComputeRuntimeBridge((signal) =>
-                provider.openConnection!({ target, host, details, signal }));
+        if (!endpoint.handshake) {
+            throw Object.assign(
+                new Error(`the compute provider "${provider.kind}" gave this binding no handshake secret, so the host at the other end cannot be recognized`),
+                { code: COMPUTE_ERROR_CODES.HANDSHAKE_FAILED });
+        }
+        // Kept per host rather than captured, so a later turn's address,
+        // details and secret are the ones the bridge uses, and so the
+        // sessions of a tree all reach their host the same way.
+        const key = binding.hostKey;
+        let entry = this.computeBridges.get(key);
+        if (entry && entry.bridge.isClosed) {
+            this.computeBridges.delete(key);
+            entry = undefined;
+        }
+        if (entry) {
+            entry.reach = endpoint;
+        } else {
+            const held = { reach: endpoint } as { bridge: ComputeRuntimeBridge; reach: typeof endpoint };
+            const bridge = new ComputeRuntimeBridge(
+                (signal) => held.reach.transport === "pipe"
+                    ? provider.openConnection!({ target, host, details: held.reach.details ?? {}, signal })
+                    : openTcpPipe((held.reach as Extract<ComputeRuntimeEndpoint, { transport: "uri" }>).address, signal),
+                { handshake: () => held.reach.handshake },
+            );
+            held.bridge = bridge;
             await bridge.start();
             try {
                 // Fail here, where a compute failure can be named, rather
-                // than leaving the SDK to report a connection that died on it.
+                // than leaving the SDK to report a connection that died on
+                // it — and before a prompt or a model request has moved.
                 await bridge.verify();
             } catch (error) {
                 await bridge.close().catch(() => { /* best effort */ });
                 throw error;
             }
-            binding.bridge = bridge;
+            entry = held;
+            this.computeBridges.set(key, held);
         }
+        binding.bridge = entry.bridge;
         return {
             transport: "uri",
-            address: binding.bridge.address,
+            address: entry.bridge.address,
             ...(endpoint.connectionToken ? { connectionToken: endpoint.connectionToken } : {}),
         };
     }
@@ -1528,21 +1610,31 @@ export class SessionManager {
                     };
                 }
                 let endpoint: ComputeRuntimeEndpoint = connected.endpoint;
-                if (endpoint.transport === "pipe") {
-                    if (typeof provider.openConnection !== "function") {
-                        return {
-                            ok: false, code: COMPUTE_ERROR_CODES.UNAVAILABLE,
-                            message: `the compute provider "${provider.kind}" returned a connection it has no code to open`,
-                        };
-                    }
-                    const details = endpoint.details ?? {};
-                    probeBridge = new ComputeRuntimeBridge((signal) =>
-                        provider.openConnection!({ target, host: bound.host, details, signal }));
-                    await probeBridge.start();
-                    endpoint = {
-                        transport: "uri", address: probeBridge.address,
-                        ...(endpoint.connectionToken ? { connectionToken: endpoint.connectionToken } : {}),
+                if (endpoint.transport !== "local") {
+                    // A probe takes the same path a turn does, bridge and
+                    // handshake included: a target that would refuse a
+                    // session must refuse its check too.
+                    // A probe's bridge is its own: it is keyed by the
+                    // probe's one-off session so it can never be taken for,
+                    // or taken over by, a real session's host.
+                    const probeBinding: ComputeBinding = {
+                        provider, target, host: bound.host, rootSessionId: sessionId,
+                        workerNodeId, endpointKey: "", workerPaths: [],
+                        hostKey: `probe\u001f${sessionId}`,
                     };
+                    try {
+                        endpoint = await this._bridgeEndpoint(probeBinding, endpoint);
+                    } catch (error) {
+                        const code = (error as { code?: string })?.code;
+                        return {
+                            ok: false,
+                            code: typeof code === "string" && code.startsWith("COMPUTE_") ? code : COMPUTE_ERROR_CODES.UNAVAILABLE,
+                            message: String((error as Error)?.message ?? error),
+                        };
+                    } finally {
+                        probeBridge = probeBinding.bridge;
+                        this.computeBridges.delete(probeBinding.hostKey);
+                    }
                 }
                 const advertisement = targetMayOfferHostModels(target, provider.capabilities)
                     ? await this._askTarget(provider, target, bound.host, endpoint)
@@ -1569,6 +1661,158 @@ export class SessionManager {
                 message: String((error as Error)?.message ?? error),
             };
         }
+    }
+
+    /**
+     * Write this binding to the CMS and take a lease on it. Best effort:
+     * a catalog that does not keep bindings, or a write that fails, must
+     * never stop a turn — the binding still works, it is only the report
+     * of it that is missing, and the next turn writes it again.
+     */
+    private async _recordComputeBinding(binding: ComputeBinding): Promise<void> {
+        const store = this.sessionCatalog?.computeBindings;
+        if (!store) return;
+        try {
+            const row = await store.record({
+                rootSessionId: binding.rootSessionId,
+                targetId: binding.target.id,
+                kind: binding.provider.kind,
+                host: binding.host,
+                workerNodeId: binding.workerNodeId,
+                leaseMs: this.computeLeaseMs,
+            });
+            binding.bindingRowId = row.bindingId;
+        } catch (error) {
+            emitSessionManagerTrace(binding.target.id,
+                `the compute binding for ${binding.rootSessionId} could not be recorded: ${String((error as Error)?.message ?? error)}`);
+        }
+    }
+
+    /**
+     * Compute providers: start renewing the leases this worker holds.
+     *
+     * One pass per timer, over the distinct bindings in memory. Each one
+     * tells its provider PilotSwarm is still using the host and pushes the
+     * lease out in the CMS. Bounded and best effort, and never inside a
+     * turn: a renewal that fails is a renewal that did not happen, which
+     * is exactly what the provider is meant to read it as.
+     */
+    startComputeLeases(options: { leaseMs?: number; renewMs?: number } = {}): void {
+        const schedule = computeLeaseSchedule(options);
+        this.computeLeaseMs = schedule.leaseMs;
+        const renewMs = schedule.renewMs;
+        if (this.computeLeaseTimer) return;
+        this.computeLeaseTimer = setInterval(() => {
+            if (this.computeLeaseRenewing) return;
+            this.computeLeaseRenewing = true;
+            void this.renewComputeLeases()
+                .catch(() => { /* best effort */ })
+                .finally(() => { this.computeLeaseRenewing = false; });
+        }, renewMs);
+        this.computeLeaseTimer.unref?.();
+    }
+
+    stopComputeLeases(): void {
+        if (this.computeLeaseTimer) {
+            clearInterval(this.computeLeaseTimer);
+            this.computeLeaseTimer = null;
+        }
+    }
+
+    /** One renewal pass. Exposed so a test can run it without waiting for the timer. */
+    async renewComputeLeases(): Promise<number> {
+        const store = this.sessionCatalog?.computeBindings;
+        const seen = new Set<string>();
+        const work: Array<Promise<boolean>> = [];
+        for (const binding of this.computeHosts.values()) {
+            const key = binding.bindingRowId ?? `${binding.rootSessionId}\0${binding.target.id}\0${binding.host.id}\0${binding.host.incarnation}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            work.push((async () => {
+                try {
+                    if (binding.provider.renew) {
+                        const answer = await this._computeCall("renew", COMPUTE_RENEW_TIMEOUT_MS,
+                            (signal) => binding.provider.renew!({
+                                target: binding.target, host: binding.host,
+                                rootSessionId: binding.rootSessionId, workerNodeId: binding.workerNodeId,
+                                leaseMs: this.computeLeaseMs, signal,
+                            }));
+                        if (!answer.ok) {
+                            emitSessionManagerTrace(binding.target.id,
+                                `the compute provider "${binding.provider.kind}" would not renew the lease on ${binding.host.id}: ${answer.message}`);
+                            return false;
+                        }
+                    }
+                    if (store && binding.bindingRowId) {
+                        await store.renew(binding.bindingRowId, binding.workerNodeId, this.computeLeaseMs);
+                    }
+                    return true;
+                } catch (error) {
+                    emitSessionManagerTrace(binding.target.id,
+                        `the lease on compute host ${binding.host.id} could not be renewed: ${String((error as Error)?.message ?? error)}`);
+                    return false;
+                }
+            })());
+        }
+        const results = await Promise.all(work);
+        return results.filter(Boolean).length;
+    }
+
+    /**
+     * Compute providers: tell providers about session trees that are
+     * finished with their hosts.
+     *
+     * Release covers a session leaving a host on a worker that is awake.
+     * This covers everything else — a tree that ended, failed or was
+     * deleted while no worker had it loaded, and one whose worker never
+     * came back. Rows are claimed one worker at a time
+     * (`FOR UPDATE SKIP LOCKED`) and stamped with the attempt, so a
+     * binding gets exactly one notice and a worker that dies mid-notice
+     * leaves it to be retried rather than lost.
+     *
+     * Exposed so a test can run a sweep without waiting for the timer.
+     */
+    async sweepFinishedComputeBindings(limit = COMPUTE_DONE_SWEEP_BATCH): Promise<number> {
+        const store = this.sessionCatalog?.computeBindings;
+        if (!store) return 0;
+        const workerNodeId = this.workspaceWorkerNodeId ?? os.hostname();
+        const claimed = await store.claimDone(workerNodeId, limit, COMPUTE_DONE_RETRY_MS);
+        let told = 0;
+        for (const row of claimed) {
+            const provider = this.computeProviders.get(row.kind);
+            if (!provider) {
+                // No provider for the kind on this worker: leave the row
+                // for a worker that has one rather than closing it here.
+                continue;
+            }
+            // The target may be gone — a deleted target is one of the ways
+            // a tree ends up here — so the provider gets what is left of
+            // it rather than nothing.
+            const target = await this.sessionCatalog?.computeTargets?.getById(row.targetId).catch(() => null)
+                ?? {
+                    id: row.targetId, name: "", kind: row.kind, class: "shared" as const,
+                    ownerUserId: null, displayName: null, config: {}, enabled: false,
+                };
+            try {
+                if (provider.done) {
+                    const answer = await this._computeCall("done", COMPUTE_DONE_TIMEOUT_MS,
+                        (signal) => provider.done!({
+                            target, host: row.hostRef, rootSessionId: row.rootSessionId,
+                            workerNodeId, reason: row.reason, signal,
+                        }));
+                    if (!answer.ok) {
+                        emitSessionManagerTrace(row.targetId,
+                            `the compute provider "${row.kind}" would not take the end-of-session notice for ${row.rootSessionId}: ${answer.message}`);
+                        continue;
+                    }
+                }
+                if (await store.markDone(row.bindingId)) told++;
+            } catch (error) {
+                emitSessionManagerTrace(row.targetId,
+                    `the end-of-session notice for ${row.rootSessionId} could not be given: ${String((error as Error)?.message ?? error)}`);
+            }
+        }
+        return told;
     }
 
     /** Run one provider call with a deadline; a provider that does not answer fails the call. */
@@ -1618,10 +1862,19 @@ export class SessionManager {
     private async _releaseBinding(sessionId: string, binding: ComputeBinding, reason: ComputeReleaseReason, keepGrant = false): Promise<void> {
         if (!keepGrant) this.remoteGrants.delete(sessionId);
         await this._retireEndpointIfUnused(binding.endpointKey);
-        // The bridge and every pipe through it go with the binding, after
-        // the clients that used it have gone.
-        if (binding.bridge && ![...this.computeHosts.values()].some((other) => other.bridge === binding.bridge)) {
+        // The bridge belongs to the host, so it goes only when the last
+        // session using that host has gone, and after the clients that
+        // were reaching it through the bridge.
+        if (binding.bridge && ![...this.computeHosts.values()].some((other) => other.hostKey === binding.hostKey)) {
+            this.computeBridges.delete(binding.hostKey);
             try { await binding.bridge.close(); } catch { /* best effort */ }
+        }
+        // The lease goes when the last session of the tree on this worker
+        // lets go of the host. The row stays: the tree may come back to
+        // the host, and only the end-of-tree notice closes a binding.
+        if (binding.bindingRowId
+            && ![...this.computeHosts.values()].some((other) => other.bindingRowId === binding.bindingRowId)) {
+            await this.sessionCatalog?.computeBindings?.release(binding.bindingRowId).catch(() => { /* best effort */ });
         }
         if (!binding.provider.release) return;
         try {
@@ -1662,6 +1915,15 @@ export class SessionManager {
     /** Compute providers: add one plug-in per compute type. */
     registerComputeProvider(provider: ComputeProvider, opts: { replace?: boolean } = {}): void {
         this.computeProviders.register(provider, opts);
+    }
+
+    /**
+     * Compute providers: the adapters for the registered provider
+     * services, replaced as a set each time the worker re-reads the
+     * register. A kind the worker was built with is never taken over.
+     */
+    setComputeServiceProviders(providers: ComputeProvider[]): void {
+        this.computeProviders.setServiceProviders(providers);
     }
 
     getComputeProviders(): ComputeProviderRegistry {

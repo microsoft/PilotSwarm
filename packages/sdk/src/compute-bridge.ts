@@ -1,29 +1,38 @@
 /**
- * The bridge in front of a provider that opens its own connections
- * (docs/proposals/compute-providers.md, "Transport contract").
+ * The bridge in front of every runtime that is not the worker's own child
+ * process (docs/proposals/compute-providers.md, "Transport contract").
  *
  * PilotSwarm's control plane sees a pipe and nothing else: a two-way byte
  * stream to one host's runtime. It does not know, and must never need to
- * know, what the pipe is made of. The code that makes one lives in the
- * provider and arrives with the installed provider — never with a
- * registered target.
+ * know, what the pipe is made of. For a provider that opens its own
+ * connections the code that makes one lives in the provider and arrives
+ * with the installed provider — never with a registered target. For a
+ * provider whose hosts are reachable at an address, PilotSwarm supplies
+ * that code itself (`openTcpPipe`), so there is one path and not two.
+ *
+ * Every remote connection goes through the bridge, which is what makes the
+ * handshake uniform: the bridge opens a pipe, proves to the host that it
+ * holds this binding's secret and makes the host prove the same, and only
+ * then joins the pipe to the connection the SDK made. A pipe that fails
+ * the handshake is destroyed and the connection dies carrying the reason.
  *
  * The runtime is driven through the Copilot SDK, which can only connect to
  * an address. So the bridge is the smallest thing that turns a pipe into
  * one: a listener on this machine that, for each connection it accepts,
- * asks the provider for a fresh pipe and joins the two. One bridge per
- * session binding, listening on loopback only, on a port the operating
- * system picks and that nothing outside the worker is told. Every
- * connection it accepts goes to that one binding's host and no other, and
- * it closes with the binding.
+ * asks for a fresh pipe and joins the two. One bridge per session binding,
+ * listening on loopback only, on a port the operating system picks and
+ * that nothing outside the worker is told. Every connection it accepts
+ * goes to that one binding's host and no other, and it closes with the
+ * binding.
  *
- * The bridge carries bytes and judges none of them. The runtime's own
- * connection token still travels inside the pipe and is still checked at
- * the far end, so reaching the bridge grants nothing — exactly as reaching
- * a runtime's own loopback port grants nothing today.
+ * Past the handshake the bridge carries bytes and judges none of them. The
+ * runtime's own connection token still travels inside the pipe and is
+ * still checked at the far end, so reaching the bridge grants nothing —
+ * exactly as reaching a runtime's own loopback port grants nothing today.
  */
-import { createServer, type AddressInfo, type Server, type Socket } from "node:net";
+import { connect as netConnect, createServer, type AddressInfo, type Server, type Socket } from "node:net";
 import type { Duplex } from "node:stream";
+import { COMPUTE_HANDSHAKE_TIMEOUT_MS, runWorkerHandshake, type ComputeHandshakeCredential } from "./compute-handshake.js";
 
 /** How long a pipe has to open before the attempt is abandoned. */
 export const COMPUTE_PIPE_OPEN_TIMEOUT_MS = 30_000;
@@ -33,6 +42,40 @@ export const COMPUTE_PIPE_OPEN_TIMEOUT_MS = 30_000;
  * open pipes without end.
  */
 export const COMPUTE_BRIDGE_MAX_CONNECTIONS = 8;
+
+/**
+ * The built-in way to open a pipe: a TCP connection to an address. It is
+ * what a provider whose hosts are reachable supplies instead of code —
+ * the provider returns an address and PilotSwarm connects to it — so that
+ * a reachable host and a host behind a provider's own connection travel
+ * exactly the same path from here on.
+ */
+export function openTcpPipe(address: string, signal: AbortSignal, timeoutMs = COMPUTE_PIPE_OPEN_TIMEOUT_MS): Promise<Duplex> {
+    const raw = String(address ?? "").trim();
+    const at = raw.lastIndexOf(":");
+    const port = at > 0 ? Number(raw.slice(at + 1)) : NaN;
+    if (!Number.isInteger(port) || port <= 0 || port > 65535) {
+        return Promise.reject(new Error(`"${address}" is not a runtime address`));
+    }
+    const host = raw.slice(0, at).replace(/^\[|\]$/g, "");
+    return new Promise<Duplex>((resolve, reject) => {
+        const socket = netConnect({ host, port, noDelay: true });
+        const give = (error: Error) => { socket.destroy(); reject(error); };
+        const timer = setTimeout(() => give(new Error(`nothing accepted at ${host}:${port} within ${timeoutMs} ms`)), timeoutMs);
+        const onAbort = () => { clearTimeout(timer); give(new Error("the attempt to reach the host was abandoned")); };
+        signal.addEventListener("abort", onAbort, { once: true });
+        socket.once("connect", () => {
+            clearTimeout(timer);
+            signal.removeEventListener("abort", onAbort);
+            resolve(socket);
+        });
+        socket.once("error", (error) => {
+            clearTimeout(timer);
+            signal.removeEventListener("abort", onAbort);
+            reject(error);
+        });
+    });
+}
 
 /**
  * A listener on this machine standing in for one host's runtime.
@@ -52,7 +95,20 @@ export class ComputeRuntimeBridge {
 
     constructor(
         private readonly openPipe: (signal: AbortSignal) => Promise<Duplex>,
-        private readonly options: { openTimeoutMs?: number; maxConnections?: number } = {},
+        private readonly options: {
+            openTimeoutMs?: number;
+            maxConnections?: number;
+            /**
+             * This binding's secret, for the mutual handshake the worker
+             * runs over every pipe before anything else crosses. A
+             * function is read at each open, so a binding that is
+             * re-connected keeps one bridge (and so one address, and so
+             * one pooled client) while the secret and the way to the host
+             * stay current.
+             */
+            handshake?: ComputeHandshakeCredential | (() => ComputeHandshakeCredential | undefined);
+            handshakeTimeoutMs?: number;
+        } = {},
     ) {}
 
     /** The address the SDK connects to. Meaningful only once `start` has resolved. */
@@ -107,11 +163,8 @@ export class ComputeRuntimeBridge {
             if (this.live.size >= (this.options.maxConnections ?? COMPUTE_BRIDGE_MAX_CONNECTIONS)) {
                 throw new Error("this compute bridge already carries as many connections as it will");
             }
-            pipe = await this.openWithDeadline();
+            pipe = await this.openProven();
             if (this.closed) throw new Error("the compute bridge is closed");
-            if (!pipe || typeof pipe.pipe !== "function" || typeof pipe.write !== "function") {
-                throw new Error("the compute provider did not return a two-way stream");
-            }
             this.join(socket, pipe);
         } catch (error) {
             // A connection that cannot be opened must fail where it can be
@@ -121,6 +174,36 @@ export class ComputeRuntimeBridge {
             try { pipe?.destroy(); } catch { /* already gone */ }
             socket.destroy(reason);
         }
+    }
+
+    /**
+     * One usable pipe: opened, shaped like a two-way stream, and with the
+     * handshake done. Nothing the bridge hands on has skipped this.
+     *
+     * The handshake comes first, before the pipe is joined to anything, so
+     * a host that cannot prove itself never sees a byte of the worker's
+     * traffic and the connection dies carrying the reason.
+     */
+    private async openProven(): Promise<Duplex> {
+        const pipe = await this.openWithDeadline();
+        if (!pipe || typeof pipe.pipe !== "function" || typeof pipe.write !== "function") {
+            try { (pipe as Duplex | undefined)?.destroy(); } catch { /* nothing to destroy */ }
+            throw new Error("the compute provider did not return a two-way stream");
+        }
+        const handshake = typeof this.options.handshake === "function"
+            ? this.options.handshake()
+            : this.options.handshake;
+        if (handshake) {
+            try {
+                await runWorkerHandshake(pipe, handshake, {
+                    timeoutMs: this.options.handshakeTimeoutMs ?? COMPUTE_HANDSHAKE_TIMEOUT_MS,
+                });
+            } catch (error) {
+                try { pipe.destroy(); } catch { /* already gone */ }
+                throw error;
+            }
+        }
+        return pipe;
     }
 
     /**
@@ -176,21 +259,21 @@ export class ComputeRuntimeBridge {
     }
 
     /**
-     * Prove the provider can reach the host, before the worker tells the
-     * SDK to connect. One pipe is opened and dropped.
+     * Prove the host can be reached and is the host this binding was
+     * given, before the worker tells the SDK to connect. One pipe is
+     * opened, handshaken and dropped.
      *
      * Without this, a host that cannot be reached shows up as whatever the
      * SDK makes of a connection that dies on it — a raw socket error with
      * nothing in it about compute. With it, the turn fails where every
-     * other compute failure is raised, saying what actually went wrong.
+     * other compute failure is raised, saying what actually went wrong,
+     * and a wrong secret fails the turn before a single prompt or model
+     * request leaves the worker.
      *
      * Once per bridge, so once per binding rather than once per turn.
      */
     async verify(): Promise<void> {
-        const pipe = await this.openWithDeadline();
-        if (!pipe || typeof pipe.pipe !== "function" || typeof pipe.write !== "function") {
-            throw new Error("the compute provider did not return a two-way stream");
-        }
+        const pipe = await this.openProven();
         try { pipe.destroy(); } catch { /* already gone */ }
     }
 

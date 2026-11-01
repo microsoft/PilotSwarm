@@ -70,8 +70,14 @@ test("one runtime per session tree, reached by address and token, with a scrubbe
     const connected = await provider.connect(connectReq(a.host));
     assert.equal(connected.ok, true);
     assert.equal(connected.endpoint.transport, "uri");
-    assert.equal(connected.endpoint.address, "127.0.0.1:41234");
+    // The address is the PilotSwarm host component in front of the
+    // runtime, never the runtime's own port: everything the worker sends
+    // goes through the handshake first.
+    assert.match(connected.endpoint.address, /^127\.0\.0\.1:\d+$/);
+    assert.notEqual(connected.endpoint.address, "127.0.0.1:41234");
     assert.match(connected.endpoint.connectionToken, /^[0-9a-f]{48}$/);
+    assert.equal(connected.endpoint.handshake.bindingId, a.host.incarnation);
+    assert.match(connected.endpoint.handshake.secret, /^[0-9a-f]{64}$/);
     assert.equal(connected.workspace.cwd, provider.hosts()[0].workDir);
 
     const envPath = path.join(provider.hosts()[0].workDir, "env.json");

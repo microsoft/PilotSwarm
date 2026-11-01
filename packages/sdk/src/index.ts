@@ -248,6 +248,11 @@ export {
     normalizeAdvertisement,
     targetMayOfferHostModels,
     advertisedHostModels,
+    computeHostKey,
+    computeBindingKey,
+    computeLeaseSchedule,
+    DEFAULT_COMPUTE_LEASE_MS,
+    DEFAULT_COMPUTE_LEASE_RENEW_MS,
 } from "./compute.js";
 export type {
     ComputeProvider,
@@ -272,12 +277,57 @@ export type {
     ComputeTransport,
     ComputePipe,
     ComputeOpenConnectionRequest,
+    ComputeRenewRequest,
+    ComputeDoneRequest,
 } from "./compute.js";
-export { ComputeRuntimeBridge, COMPUTE_PIPE_OPEN_TIMEOUT_MS, COMPUTE_BRIDGE_MAX_CONNECTIONS } from "./compute-bridge.js";
+export { ComputeRuntimeBridge, COMPUTE_PIPE_OPEN_TIMEOUT_MS, COMPUTE_BRIDGE_MAX_CONNECTIONS, openTcpPipe } from "./compute-bridge.js";
 export { createProcessComputeProvider, PROCESS_COMPUTE_KIND } from "./compute-process.js";
 export type { ProcessComputeProviderOptions } from "./compute-process.js";
 export { ComputeTargetStore, ComputeTargetError } from "./compute-target-store.js";
 export type { ComputeTargetRow, ComputeTargetModel } from "./compute-target-store.js";
+// The mutual handshake every remote runtime connection starts with.
+export {
+    COMPUTE_HANDSHAKE_VERSION,
+    COMPUTE_HANDSHAKE_TIMEOUT_MS,
+    COMPUTE_HANDSHAKE_MAX_FRAME_BYTES,
+    COMPUTE_HANDSHAKE_SECRET_MIN_CHARS,
+    COMPUTE_HANDSHAKE_FAILED,
+    ComputeHandshakeError,
+    newComputeHandshakeSecret,
+    isUsableHandshakeSecret,
+    computeHandshakeProof,
+    runWorkerHandshake,
+    runHostHandshake,
+} from "./compute-handshake.js";
+export type { ComputeHandshakeCredential } from "./compute-handshake.js";
+// The host component: the PilotSwarm end of the handshake, on the host.
+export { startComputeHost, COMPUTE_HOST_MAX_CONNECTIONS } from "./compute-host.js";
+export type { ComputeHostOptions, ComputeHostHandle } from "./compute-host.js";
+// Registered provider services: the protocol, the adapter and the helper
+// that serves an in-process provider as one.
+export {
+    COMPUTE_SERVICE_PROTOCOL_VERSION,
+    COMPUTE_SERVICE_PIPE_PATH,
+    COMPUTE_SERVICE_CALL_TIMEOUT_MS,
+    ComputeServiceClient,
+    ComputeServiceIdentityError,
+    checkComputeServiceUrl,
+    createRemoteComputeProvider,
+    createUnreachableComputeProvider,
+    buildComputeServiceProviders,
+    serveComputeProvider,
+} from "./compute-service.js";
+export type {
+    ComputeProviderService,
+    ComputeServiceIdentity,
+    ComputeServiceDescription,
+    ComputeServiceCredentials,
+    ServeComputeProviderOptions,
+    ComputeProviderServiceHandle,
+} from "./compute-service.js";
+export { ComputeServiceStore, ComputeBindingStore, ComputeServiceError } from "./compute-service-store.js";
+export type { ComputeBindingRow } from "./compute-service-store.js";
+export { openComputeWebSocket, serveComputeWebSocket, COMPUTE_WEBSOCKET_MAX_FRAME_BYTES } from "./compute-websocket.js";
 export {
     DEFAULT_WORKSPACE_FILE_MAX_BYTES,
     WORKSPACE_FILE_ERROR_CODES,

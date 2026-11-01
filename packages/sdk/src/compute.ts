@@ -17,6 +17,7 @@
 import { createHash } from "node:crypto";
 import type { Duplex } from "node:stream";
 import { RuntimeConnection } from "@github/copilot-sdk";
+import { COMPUTE_HANDSHAKE_FAILED, type ComputeHandshakeCredential } from "./compute-handshake.js";
 
 export const LOCAL_COMPUTE_KIND = "local";
 
@@ -60,6 +61,22 @@ export const COMPUTE_ERROR_CODES = {
     UNSUPPORTED: "COMPUTE_UNSUPPORTED",
     /** The provider returned a runtime address this worker does not accept. */
     ENDPOINT_REFUSED: "COMPUTE_ENDPOINT_REFUSED",
+    /**
+     * The worker and the host did not prove to each other that they hold
+     * this binding's secret, or the provider gave the worker no secret to
+     * prove it with. Nothing of the session crossed the connection.
+     */
+    HANDSHAKE_FAILED: COMPUTE_HANDSHAKE_FAILED,
+    /** The provider service a target's kind is served by could not be used. */
+    SERVICE_UNAVAILABLE: "COMPUTE_SERVICE_UNAVAILABLE",
+    /** The provider service did not present the identity its registration pins. */
+    SERVICE_IDENTITY: "COMPUTE_SERVICE_IDENTITY",
+    /** Refusals from the registered-services table (administrators only). */
+    SERVICE_INVALID: "COMPUTE_SERVICE_INVALID",
+    SERVICE_FORBIDDEN: "COMPUTE_SERVICE_FORBIDDEN",
+    SERVICE_NOT_FOUND: "COMPUTE_SERVICE_NOT_FOUND",
+    SERVICE_CONFLICT: "COMPUTE_SERVICE_CONFLICT",
+    SERVICE_IN_USE: "COMPUTE_SERVICE_IN_USE",
     /**
      * The session's model is one of the target's own, and the target no
      * longer offers it (or may not offer models at all).
@@ -216,11 +233,18 @@ export interface ComputeConnectRequest extends ComputeCall {
  * (`computeAllowNonLoopbackEndpoints`) when its network secures them. A
  * `pipe` endpoint satisfies that rule by construction — its bridge only
  * ever listens on this machine.
+ *
+ * Both remote transports carry `handshake`: this binding's id and secret,
+ * which the worker uses to prove itself to the host component and to make
+ * the host prove itself back, over every connection, before anything of
+ * the session crosses. The secret is fresh for every new binding, held
+ * only in the worker's memory, and never stored or logged. A remote
+ * endpoint without one cannot be used (COMPUTE_HANDSHAKE_FAILED).
  */
 export type ComputeRuntimeEndpoint =
     | { transport: "local" }
-    | { transport: "uri"; address: string; connectionToken?: string }
-    | { transport: "pipe"; connectionToken?: string; details?: Record<string, unknown> };
+    | { transport: "uri"; address: string; connectionToken?: string; handshake?: ComputeHandshakeCredential }
+    | { transport: "pipe"; connectionToken?: string; details?: Record<string, unknown>; handshake?: ComputeHandshakeCredential };
 
 export type ComputeConnectResult =
     | {
@@ -340,11 +364,59 @@ export interface ComputeProvider {
      */
     describeHost?(req: ComputeDescribeRequest): Promise<Omit<ComputeAdvertisement, "models">>;
     release?(req: ComputeReleaseRequest): Promise<void>;
+    /**
+     * PilotSwarm is still using this host, and asks for it to be held for
+     * `leaseMs` longer. Called on a timer, bounded and best effort, for as
+     * long as a worker holds the binding; renewals that stop mean nobody
+     * is using the host any more, whether a worker released it, crashed or
+     * was taken away. A provider that does not need the signal may leave
+     * it out, and a provider that refuses a renewal is saying the host is
+     * gone — the next turn will find that out through `connect`.
+     */
+    renew?(req: ComputeRenewRequest): Promise<{ ok: true } | ComputeFailure>;
+    /**
+     * This session tree is finished with the host. Exactly one notice is
+     * sent per binding, from whichever worker notices the tree has ended,
+     * including a tree that ended while no worker had it loaded, so a
+     * provider learns about hosts that no `release` would ever cover.
+     *
+     * It still does not mean destroy: what happens to a host nobody needs
+     * is the provider's decision alone. It must be safe to receive twice,
+     * since a worker can record the notice and then fail.
+     */
+    done?(req: ComputeDoneRequest): Promise<{ ok: true } | ComputeFailure>;
 }
 
 export interface ComputeDescribeRequest extends ComputeCall {
     target: ComputeTarget;
     host: ComputeHostRef;
+}
+
+/**
+ * PilotSwarm is still using this host. Sent on a timer for as long as a
+ * worker holds the binding; when the renewals stop, nobody is using it.
+ */
+export interface ComputeRenewRequest extends ComputeCall {
+    target: ComputeTarget;
+    host: ComputeHostRef;
+    /** Hosts are bound per (target, session tree). */
+    rootSessionId: string;
+    workerNodeId: string;
+    /** How long PilotSwarm is asking the host to be held for, from now. */
+    leaseMs: number;
+}
+
+/**
+ * This session tree is finished with the host: it ended, or it was
+ * deleted. Sent once per binding, from whichever worker notices, including
+ * for trees that ended while no worker had them loaded.
+ */
+export interface ComputeDoneRequest extends ComputeCall {
+    target: ComputeTarget;
+    host: ComputeHostRef;
+    rootSessionId: string;
+    workerNodeId: string;
+    reason: "ended" | "deleted";
 }
 
 /** The built-in provider: the runtime runs as the worker's child process, as today. */
@@ -361,9 +433,20 @@ export function createLocalComputeProvider(): ComputeProvider {
     };
 }
 
-/** The compute providers a worker has, by kind. `local` is always present. */
+/**
+ * The compute providers a worker has, by kind. `local` is always present.
+ *
+ * Two sorts live here. Providers built into the worker are registered once
+ * at start and stay. Providers that stand for a registered provider
+ * service come and go as an administrator changes the register, and are
+ * replaced as a set (`setServiceProviders`) each time the worker re-reads
+ * it. A service never shadows a provider the worker was built with: if
+ * both offer a kind, the built-in one answers.
+ */
 export class ComputeProviderRegistry {
     private readonly providers = new Map<string, ComputeProvider>();
+    /** The kinds currently answered by a registered provider service. */
+    private readonly fromServices = new Set<string>();
 
     constructor(providers: ComputeProvider[] = []) {
         this.register(createLocalComputeProvider());
@@ -389,10 +472,42 @@ export class ComputeProviderRegistry {
         if (transport === "direct" && typeof provider.openConnection === "function") {
             throw new Error(`compute provider "${provider.kind}" is reached directly, so it must not have openConnection`);
         }
-        if (this.providers.has(provider.kind) && !opts.replace) {
+        if (this.providers.has(provider.kind) && !opts.replace && !this.fromServices.has(provider.kind)) {
             throw new Error(`compute provider "${provider.kind}" is registered twice`);
         }
+        // A provider built into the worker takes the kind back from a service.
+        this.fromServices.delete(provider.kind);
         this.providers.set(provider.kind, provider);
+    }
+
+    /**
+     * Replace every provider that stands for a registered service with
+     * this set. Kinds that have gone from the register stop being served
+     * at once, which is what makes disabling a service take effect; kinds
+     * the worker was built with are left alone.
+     */
+    setServiceProviders(providers: ComputeProvider[]): void {
+        const next = new Set<string>();
+        for (const provider of providers) {
+            // Held to the same rules as a built-in provider, but a
+            // malformed one is skipped rather than thrown: one bad service
+            // must not stop the worker reading the rest of the register.
+            if (!COMPUTE_KIND_PATTERN.test(provider?.kind ?? "")) continue;
+            if (typeof provider.bind !== "function" || typeof provider.connect !== "function") continue;
+            const transport = provider.transport ?? "direct";
+            if (transport === "pipe" && typeof provider.openConnection !== "function") continue;
+            if (transport === "direct" && typeof provider.openConnection === "function") continue;
+            // A built-in provider wins: a registered service cannot take
+            // over a kind this worker already answers itself.
+            if (this.providers.has(provider.kind) && !this.fromServices.has(provider.kind)) continue;
+            this.providers.set(provider.kind, provider);
+            next.add(provider.kind);
+        }
+        for (const kind of this.fromServices) {
+            if (!next.has(kind)) this.providers.delete(kind);
+        }
+        this.fromServices.clear();
+        for (const kind of next) this.fromServices.add(kind);
     }
 
     get(kind: string): ComputeProvider | undefined {
@@ -401,6 +516,11 @@ export class ComputeProviderRegistry {
 
     kinds(): string[] {
         return [...this.providers.keys()].sort();
+    }
+
+    /** Which kinds are answered by a registered service rather than built in. */
+    serviceKinds(): string[] {
+        return [...this.fromServices].sort();
     }
 }
 
@@ -525,6 +645,57 @@ export function runtimeEndpointKey(endpoint: ComputeRuntimeEndpoint | undefined,
         .digest("hex")
         .slice(0, 32);
     return `uri\0${digest}`;
+}
+
+/**
+ * How a host is named across workers: the provider's id plus which
+ * incarnation, so a replaced host is a different binding.
+ *
+ * The two parts are joined with the unit separator, which a provider's own
+ * identifiers will not hold and which a text column can store — unlike
+ * NUL, which PostgreSQL refuses.
+ */
+export function computeHostKey(host: Pick<ComputeHostRef, "id" | "incarnation">): string {
+    return `${host.id}\u001f${host.incarnation}`;
+}
+
+/**
+ * One binding, as the worker holds it in memory: the target and the host,
+ * so that every session of a tree bound to the same host shares what
+ * belongs to that host and a replaced host gets its own.
+ */
+export function computeBindingKey(targetId: string, host: Pick<ComputeHostRef, "id" | "incarnation">): string {
+    return `${targetId}\u001f${computeHostKey(host)}`;
+}
+
+/**
+ * Host leases: how long one is worth and how often it is renewed.
+ *
+ * A worker renews while it holds a binding, so a provider reads renewals
+ * that stop as "nobody is using this host" — which covers a worker that
+ * crashed or was taken away as well as one that let go properly. The
+ * lease must therefore outlast more than one renewal: a single slow or
+ * failed renewal is not an absent worker. This clamps a caller's numbers
+ * to that rule rather than trusting them.
+ */
+export const DEFAULT_COMPUTE_LEASE_MS = 3 * 60_000;
+export const DEFAULT_COMPUTE_LEASE_RENEW_MS = 60_000;
+/** The shortest lease and renewal worth having; anything under is a mistake. */
+export const MIN_COMPUTE_LEASE_MS = 5_000;
+export const MIN_COMPUTE_LEASE_RENEW_MS = 1_000;
+
+export function computeLeaseSchedule(
+    options: { leaseMs?: number; renewMs?: number } = {},
+): { leaseMs: number; renewMs: number } {
+    const wantedLease = Number(options.leaseMs);
+    const leaseMs = Math.max(MIN_COMPUTE_LEASE_MS,
+        Number.isFinite(wantedLease) && wantedLease > 0 ? Math.trunc(wantedLease) : DEFAULT_COMPUTE_LEASE_MS);
+    const wantedRenew = Number(options.renewMs);
+    const asked = Math.max(MIN_COMPUTE_LEASE_RENEW_MS,
+        Number.isFinite(wantedRenew) && wantedRenew > 0 ? Math.trunc(wantedRenew) : DEFAULT_COMPUTE_LEASE_RENEW_MS);
+    // At least two renewals inside a lease, so one that is late or fails
+    // never reads as a worker that has gone.
+    return { leaseMs, renewMs: Math.max(MIN_COMPUTE_LEASE_RENEW_MS, Math.min(asked, Math.floor(leaseMs / 2))) };
 }
 
 /** Whether an endpoint address names this machine (localhost, 127.0.0.0/8 or ::1). */

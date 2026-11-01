@@ -19,6 +19,8 @@ import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import { COMPUTE_ERROR_CODES, type ComputeHostRef, type ComputeProvider } from "./compute.js";
+import { newComputeHandshakeSecret } from "./compute-handshake.js";
+import { startComputeHost, type ComputeHostHandle } from "./compute-host.js";
 
 export const PROCESS_COMPUTE_KIND = "process";
 
@@ -52,6 +54,15 @@ interface ProcessHost {
     workDir: string;
     sessions: Set<string>;
     exited: boolean;
+    /** The PilotSwarm host component in front of this runtime. */
+    component: ComputeHostHandle;
+    /** This binding's handshake secret. Fresh per host, never written down. */
+    bindingId: string;
+    secret: string;
+    /** When the lease the worker renews runs out, or 0 while nothing holds it. */
+    leaseUntil: number;
+    /** Set once the worker says this host's session tree is finished. */
+    doneAt: number;
 }
 
 /**
@@ -170,10 +181,32 @@ export function createProcessComputeProvider(options: ProcessComputeProviderOpti
         child.stderr!.removeAllListeners("data");
         child.stdout!.resume();
         child.stderr!.resume();
+        // The PilotSwarm host component goes in front of the runtime, as
+        // it would on a real host: the worker reaches the component, the
+        // two prove they hold this binding's secret, and only then does
+        // anything reach the runtime's own port. Here it runs in the
+        // provider's own process, which is honest for a provider that is
+        // not an isolation boundary to begin with; on a real host it is a
+        // separate program (`startComputeHost`, or the bin entry).
+        const bindingId = incarnation;
+        const secret = newComputeHandshakeSecret();
+        let component: ComputeHostHandle;
+        try {
+            component = await startComputeHost({
+                bindingId, secret,
+                listen: { host: "127.0.0.1", port: 0 },
+                runtimeAddress: `127.0.0.1:${port}`,
+            });
+        } catch (error) {
+            signalGroup(child, "SIGKILL");
+            cleanup();
+            throw error;
+        }
         const host: ProcessHost = {
             key,
             ref: { kind: PROCESS_COMPUTE_KIND, id: `${targetId}/${rootSessionId}`, incarnation, data: { port } },
             child, port, token, hostDir, homeDir, workDir, sessions: new Set(), exited: false,
+            component, bindingId, secret, leaseUntil: 0, doneAt: 0,
         };
         child.once("exit", () => {
             host.exited = true;
@@ -184,6 +217,7 @@ export function createProcessComputeProvider(options: ProcessComputeProviderOpti
 
     async function stop(host: ProcessHost): Promise<void> {
         if (hosts.get(host.key) === host) hosts.delete(host.key);
+        await host.component.close().catch(() => { /* best effort */ });
         if (!host.exited) {
             await new Promise<void>((resolve) => {
                 const timer = setTimeout(() => { signalGroup(host.child, "SIGKILL"); resolve(); }, 5_000);
@@ -240,9 +274,16 @@ export function createProcessComputeProvider(options: ProcessComputeProviderOpti
                 return { ok: false, code: COMPUTE_ERROR_CODES.UNAVAILABLE, message: `the runtime for host ${req.host.id} is not running`, retryAfterMs: 1_000 };
             }
             // Same machine: the worker's folders are valid paths for the host.
+            // The address is the host component's, never the runtime's own
+            // port: everything the worker sends goes through the handshake.
             return {
                 ok: true,
-                endpoint: { transport: "uri", address: `127.0.0.1:${host.port}`, connectionToken: host.token },
+                endpoint: {
+                    transport: "uri",
+                    address: host.component.address,
+                    connectionToken: host.token,
+                    handshake: { bindingId: host.bindingId, secret: host.secret },
+                },
                 workspace: { cwd: req.workspace.cwd ?? host.workDir, ...(req.workspace.additionalDirectories ? { additionalDirectories: req.workspace.additionalDirectories } : {}) },
             };
         },

@@ -85,14 +85,17 @@ function createPipeComputeProvider(inner, options = {}) {
         async connect(req) {
             const connected = await inner.connect(req);
             if (!connected.ok) return connected;
-            const { address, connectionToken } = connected.endpoint;
+            const { address, connectionToken, handshake } = connected.endpoint;
             if (options.failToOpen) {
-                return { ok: true, endpoint: { transport: "pipe", connectionToken, details: { unreachable: true } }, workspace: connected.workspace };
+                return { ok: true, endpoint: { transport: "pipe", connectionToken, handshake, details: { unreachable: true } }, workspace: connected.workspace };
             }
-            // Only this provider ever reads `details`.
+            // Only this provider ever reads `details`. The handshake is
+            // carried through unchanged: the worker proves itself to the
+            // host component at the far end of the connection, whatever
+            // the connection is made of.
             return {
                 ok: true,
-                endpoint: { transport: "pipe", connectionToken, details: { reach: address } },
+                endpoint: { transport: "pipe", connectionToken, handshake, details: { reach: address } },
                 workspace: connected.workspace,
             };
         },
