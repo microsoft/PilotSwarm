@@ -28,6 +28,7 @@ import {
     compileWorkflowV2, parseWorkflowIr, REQUEST_RESPONSE_SCHEMA_MAX_BYTES, WORKFLOW_V2_REQUEST_IR_VERSION, WORKFLOW_V2_SEND_IR_VERSION,
 } from "../../src/workflow/v2/compiler.ts";
 import { canonicalJson } from "../../src/workflow/v2/json.ts";
+import { schemaReferences } from "../../src/workflow/v2/schema.ts";
 import { createWorkflowV2, updateWorkflowV2 } from "../../src/workflow/v2/service.ts";
 import { describeWorkflowV2State } from "../../src/workflow/v2/runtime.ts";
 
@@ -89,6 +90,34 @@ ${response}states:
   done: { type: terminal, outcome: succeeded }
   failed: { type: terminal, outcome: failed }
 `;
+
+/** One receive state whose contract may declare a response. */
+const RECEIVER = ({ response = "" } = {}) => `
+apiVersion: pilotswarm.dev/v2-draft
+kind: Workflow
+metadata: { name: receiver, version: "1.0.0" }
+initial: listen
+${SCHEMAS}
+contracts:
+  Approval@1:
+    schema: { $ref: "#/schemas/Question" }
+${response}states:
+  listen:
+    type: messaging
+    mode: receive
+    contract: Approval@1
+    transition: { next: { received: done, failure: failed } }
+  done: { type: terminal, outcome: succeeded }
+  failed: { type: terminal, outcome: failed }
+`;
+
+const RESPONDING = `    response: { schema: { $ref: "#/schemas/Answer" } }\n`;
+
+/** A request workflow whose contract's response is the named schema, with extra declared schemas. */
+const WITH_RESPONSE_SCHEMA = (name, extraSchemas) => REQUESTER({
+    schemas: `${SCHEMAS}\n${extraSchemas}`,
+    response: `    response: { schema: { $ref: "#/schemas/${name}" } }\n`,
+});
 
 function errorsOf(result) {
     return result.diagnostics.filter(item => item.severity === "error");
@@ -162,16 +191,66 @@ describe("workflow v2 request states: compiler and IR 7", () => {
         expect(plain.ir.irVersion).toBe(WORKFLOW_V2_SEND_IR_VERSION);
         // A workflow without request states or responses is the same IR whether or not requests are enabled.
         expect(compileWorkflowV2(SENDER(), ENABLED).irSha256).toBe(plain.irSha256);
+        const plainReceive = compileWorkflowV2(RECEIVER());
+        expect(plainReceive.valid, JSON.stringify(plainReceive.diagnostics)).toBe(true);
+        expect(compileWorkflowV2(RECEIVER(), ENABLED).irSha256).toBe(plainReceive.irSha256);
 
-        const responding = `    response: { schema: { $ref: "#/schemas/Answer" } }\n`;
-        const sent = compileWorkflowV2(SENDER({ response: responding }), ENABLED);
+        const sent = compileWorkflowV2(SENDER({ response: RESPONDING }), ENABLED);
         expect(sent.valid, JSON.stringify(sent.diagnostics)).toBe(true);
         expect(sent.ir.irVersion).toBe(WORKFLOW_V2_REQUEST_IR_VERSION);
         expect(sent.ir.nodes.tell.mode).toBe("send");
         expect(sent.ir.contracts["Approval@1"]).toEqual({ schema: "Question", response: { schema: "Answer" } });
-        const disabled = compileWorkflowV2(SENDER({ response: responding }));
-        expect(disabled.valid).toBe(false);
-        expect(errorsOf(disabled)).toEqual([expect.objectContaining({ code: "WORKFLOW_FEATURE_UNSUPPORTED", path: "contracts.Approval@1.response" })]);
+        const received = compileWorkflowV2(RECEIVER({ response: RESPONDING }), ENABLED);
+        expect(received.valid, JSON.stringify(received.diagnostics)).toBe(true);
+        expect(received.ir.irVersion).toBe(WORKFLOW_V2_REQUEST_IR_VERSION);
+        expect(received.ir.nodes.listen.mode).toBe("receive");
+        expect(received.ir.contracts["Approval@1"]).toEqual({ schema: "Question", response: { schema: "Answer" } });
+        expect(parseWorkflowIr(storedForm(received.ir), { maxIrVersion: WORKFLOW_V2_REQUEST_IR_VERSION })).toEqual(received.ir);
+        storeError(() => parseWorkflowIr(storedForm(received.ir)));
+
+        for (const yaml of [SENDER({ response: RESPONDING }), RECEIVER({ response: RESPONDING })]) {
+            const disabled = compileWorkflowV2(yaml);
+            expect(disabled.valid).toBe(false);
+            expect(errorsOf(disabled)).toEqual([expect.objectContaining({ code: "WORKFLOW_FEATURE_UNSUPPORTED", path: "contracts.Approval@1.response" })]);
+        }
+    });
+
+    it("counts a response schema and the schemas it references in schema positions, each once", () => {
+        // Only $ref keywords in schema positions are references; the same text as data (const, enum, default, examples) is not.
+        expect(schemaReferences({
+            type: "object",
+            properties: { a: { $ref: "#/$defs/A" }, b: { type: "array", items: { $ref: "#/$defs/B/properties/x" } } },
+            allOf: [{ $ref: "#/$defs/A" }],
+            $defs: { inner: { $ref: "#/$defs/C" } },
+            const: { $ref: "#/$defs/D" }, enum: [{ $ref: "#/$defs/E" }], default: { $ref: "#/$defs/F" }, examples: [{ $ref: "#/$defs/G" }],
+        })).toEqual(["A", "B", "C"]);
+        expect(schemaReferences(true)).toEqual([]);
+
+        const limit = REQUEST_RESPONSE_SCHEMA_MAX_BYTES;
+        // {"description":"<n x>","type":"string"} is 34 + n bytes of canonical JSON.
+        const exact = n => `  Exact: { type: string, description: "${"x".repeat(n)}" }`;
+        const atLimit = compileWorkflowV2(WITH_RESPONSE_SCHEMA("Exact", exact(limit - 34)), ENABLED);
+        expect(atLimit.valid, JSON.stringify(atLimit.diagnostics)).toBe(true);
+        const overLimit = compileWorkflowV2(WITH_RESPONSE_SCHEMA("Exact", exact(limit - 33)), ENABLED);
+        expect(overLimit.diagnostics).toContainEqual(expect.objectContaining({ code: "WORKFLOW_SCHEMA_TOO_LARGE", path: "contracts.Approval@1.response.schema" }));
+
+        // A literal that looks like a reference adds nothing, even when it names a large declared schema.
+        const large = `  Large: { type: string, description: "${"x".repeat(limit)}" }`;
+        const literal = compileWorkflowV2(WITH_RESPONSE_SCHEMA("Literal", `${large}
+  Literal: { const: { $ref: "#/$defs/Large" }, examples: [{ $ref: "#/$defs/Large" }] }`), ENABLED);
+        expect(literal.valid, JSON.stringify(literal.diagnostics)).toBe(true);
+        // The same schema referenced in a schema position counts (the control).
+        const referenced = compileWorkflowV2(WITH_RESPONSE_SCHEMA("Holder", `${large}
+  Holder: { type: object, properties: { detail: { $ref: "#/schemas/Large" } } }`), ENABLED);
+        expect(referenced.diagnostics).toContainEqual(expect.objectContaining({ code: "WORKFLOW_SCHEMA_TOO_LARGE", path: "contracts.Approval@1.response.schema" }));
+
+        // A schema referenced twice counts once (5,034 + 5,034 bytes would be over the limit), and a recursive one ends.
+        const half = `  Half: { type: string, description: "${"x".repeat(5_000)}" }`;
+        const twice = compileWorkflowV2(WITH_RESPONSE_SCHEMA("Pair", `${half}
+  Pair: { type: object, properties: { a: { $ref: "#/schemas/Half" }, b: { $ref: "#/schemas/Half" } } }`), ENABLED);
+        expect(twice.valid, JSON.stringify(twice.diagnostics)).toBe(true);
+        const recursive = compileWorkflowV2(WITH_RESPONSE_SCHEMA("Tree", `  Tree: { type: object, properties: { child: { $ref: "#/schemas/Tree" } } }`), ENABLED);
+        expect(recursive.valid, JSON.stringify(recursive.diagnostics)).toBe(true);
     });
 
     it("refuses obsolete spellings, missing parts and oversize response schemas by name", () => {

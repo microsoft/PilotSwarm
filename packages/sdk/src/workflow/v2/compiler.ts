@@ -1,7 +1,7 @@
 import { parseDocument } from "yaml";
 import { parseBindingExpression, validateBindingTemplate, WorkflowBindingError } from "./bindings.js";
 import { canonicalJson, isJsonObject, isStorableText, sha256Hex, WorkflowJsonError, type JsonValue } from "./json.js";
-import { normalizeSchema, SCHEMA_NAME_PATTERN, WorkflowSchemaError, WorkflowSchemaSet } from "./schema.js";
+import { normalizeSchema, SCHEMA_NAME_PATTERN, schemaReferences, WorkflowSchemaError, WorkflowSchemaSet } from "./schema.js";
 
 /**
  * Workflow v2 compiler: YAML -> diagnostics and an immutable, hashed IR.
@@ -360,7 +360,8 @@ function schemaField(value: unknown, generatedName: string, path: string, schema
 
 /**
  * UTF-8 bytes of a definition's canonical JSON plus those of every
- * definition it references (#/$defs/<name>), each counted once.
+ * definition it references in a schema position (schemaReferences), each
+ * counted once; a literal value that looks like a reference is not one.
  */
 function schemaClosureBytes(defs: Record<string, JsonValue>, name: string): number {
     const seen = new Set<string>();
@@ -370,9 +371,8 @@ function schemaClosureBytes(defs: Record<string, JsonValue>, name: string): numb
         const next = pending.pop()!;
         if (seen.has(next) || !Object.hasOwn(defs, next)) continue;
         seen.add(next);
-        const text = canonicalJson(defs[next]);
-        bytes += Buffer.byteLength(text, "utf8");
-        for (const match of text.matchAll(/"\$ref":"#\/\$defs\/([^"/]+)/g)) pending.push(match[1]);
+        bytes += Buffer.byteLength(canonicalJson(defs[next]), "utf8");
+        pending.push(...schemaReferences(defs[next]));
     }
     return bytes;
 }

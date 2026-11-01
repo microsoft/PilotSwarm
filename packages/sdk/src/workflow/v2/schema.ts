@@ -74,6 +74,36 @@ export function normalizeSchema(schema: unknown, path: string): JsonValue {
     return Object.fromEntries(out);
 }
 
+/**
+ * The definitions a normalized schema references: the `$ref` keywords in its
+ * schema positions, the same subschema keywords normalizeSchema follows,
+ * each name once in first-seen order. The values of other keywords (const,
+ * enum, default, examples and annotations) are data, never references, even
+ * when they hold an object with a "$ref" member.
+ */
+export function schemaReferences(schema: JsonValue): string[] {
+    const names: string[] = [];
+    const visit = (value: JsonValue): void => {
+        if (!isJsonObject(value)) return;
+        for (const [key, item] of Object.entries(value)) {
+            if (key === "$ref") {
+                if (typeof item === "string" && item.startsWith("#/$defs/")) {
+                    const name = item.slice("#/$defs/".length).split("/")[0];
+                    if (!names.includes(name)) names.push(name);
+                }
+            } else if (SUBSCHEMA_KEYWORDS.has(key)) {
+                visit(item);
+            } else if (SUBSCHEMA_ARRAY_KEYWORDS.has(key)) {
+                if (Array.isArray(item)) for (const entry of item) visit(entry);
+            } else if (SUBSCHEMA_MAP_KEYWORDS.has(key)) {
+                if (isJsonObject(item)) for (const entry of Object.values(item)) visit(entry);
+            }
+        }
+    };
+    visit(schema);
+    return names;
+}
+
 function createAjv(): Ajv2020 {
     return new Ajv2020({
         allErrors: true,
