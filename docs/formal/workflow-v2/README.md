@@ -111,38 +111,38 @@ compare-and-swap.
 
 | Model action | Code | Boundary |
 |---|---|---|
-| `Init` | `S` `createDefinition` 949, `insertRun` 911 | Run row `admitted` committed with the definition and receipt. |
-| `Dispatch` | `V` `dispatchWorkflowV2Run` 122 | After admission commit; a deletion may commit before it. duroxide ignores a second start of an instance id (0.1.32 `WorkItemReader`). |
-| `BeginExec` / `BeginRecord` | `R` 543 (call), 1303 (activity); `S` `beginRun` 1493 | Session row lock, then run lock; `admitted -> running` only if the session is live. |
+| `Init` | `S` `createDefinition` 1125, `insertRun` 1087 | Run row `admitted` committed with the definition and receipt. |
+| `Dispatch` | `V` `dispatchWorkflowV2Run` 127 | After admission commit; a deletion may commit before it. duroxide ignores a second start of an instance id (0.1.32 `WorkItemReader`). |
+| `BeginExec` / `BeginRecord` | `R` 543 (call), 1330 (activity); `S` `beginRun` 1669 | Session row lock, then run lock; `admitted -> running` only if the session is live. |
 | `PollCommand` | `R` 567 (call), `takeQueuedCommand` 517 | `race(dequeue, 10 ms timer)` until the timer wins or a command is read; only when the next state is about to be admitted. |
-| `AdmitExec` / `AdmitRecord` | `R` 587 (call), 1348 (activity); `S` `enterNode` 1578 | Session and run locks; insert by deterministic id from history (scope, node, ordinal); idempotent on retry. Admitting the catch-all state sets `catchAllEntered` (601). |
+| `AdmitExec` / `AdmitRecord` | `R` 587 (call), 1375 (activity); `S` `enterNode` 1754 | Session and run locks; insert by deterministic id from history (scope, node, ordinal); idempotent on retry. Admitting the catch-all state sets `catchAllEntered` (601). |
 | `StartEffect` | `R` 640 | `ctx.startOrchestrationVersioned`; instance id derived from the node execution id. |
-| `CollectExec` / `CollectRecord` | `R` 691 (call), 1477 (activity), 1513 (effect watch), 698-723 (routing); `S` `readCompletedNodes` 2054 | Reads stored winners of the history-selected pending ids only. A route of the state wins (`ExplicitHandlerRoute` when it leads to `H`, and with `HandlerLoop` `R`'s failure route back to `H`); an unhandled runtime error goes to the catch-all state while it has not run. A route to the catch-all state after it ran fails the run (713-723). `catchAllEntered` is carried through continue-as-new. |
+| `CollectExec` / `CollectRecord` | `R` 691 (call), 1504 (activity), 1543 (effect watch), 698-723 (routing); `S` `readCompletedNodes` 2227 | Reads stored winners of the history-selected pending ids only. A route of the state wins (`ExplicitHandlerRoute` when it leads to `H`, and with `HandlerLoop` `R`'s failure route back to `H`); an unhandled runtime error goes to the catch-all state while it has not run. A route to the catch-all state after it ran fails the run (713-723). `catchAllEntered` is carried through continue-as-new. |
 | `WaitMsg` / `WaitTimer` | `R` 743 | One durable `race`; an already queued message wins; a wake is only a hint. |
-| `FinishExec` / `FinishFailExec` / `FinishRecord` | `R` 606-616 (terminal), 475 (`finishRun`), 454 (`persistently`), 1533 (activity), 1539 (no IR on the failure path); `S` `finishRun` 2244 | Session and run locks; run end, terminal node and pending nodes in one transaction. A failed attempt is retried on durable timers (about 30 minutes). A terminal's invalid output goes to the catch-all state while it has not run (1600); the model's `T` has no output, so this path is not modeled (see below). |
-| `NotifyExec` / `NotifyRecord` | `R` 467 (`reportEnded`), 532 (after a command), 1694 (activity) | At least once; stable client message id; reads no IR. |
-| `CancelTx` | `R` 527 (applyCommand), 1646 (activity); `S` `finishRun` 2244 | Run `cancelled` and pending nodes `winner = 'cancel'` in one transaction. |
-| `CancelStop` | `R` 1668; `S` `listCancelledNodeIds` 2047 | After the commit; not transactional with it. Sends a cancellation request (`cancelInstance`) only to effects that are still running; it is a request, not a stop. |
-| `CancelCrash` | `R` 1646 | Activity retry re-executes the whole body; the code's attempts are finite (store retry policy, then `persistently`); the model allows one crash, and running out is `ControllerFault`. |
+| `FinishExec` / `FinishFailExec` / `FinishRecord` | `R` 606-616 (terminal), 475 (`finishRun`), 454 (`persistently`), 1563 (activity), 1569 (no IR on the failure path); `S` `finishRun` 2440 | Session and run locks; run end, terminal node and pending nodes in one transaction. A failed attempt is retried on durable timers (about 30 minutes). A terminal's invalid output goes to the catch-all state while it has not run (1630); the model's `T` has no output, so this path is not modeled (see below). |
+| `NotifyExec` / `NotifyRecord` | `R` 467 (`reportEnded`), 532 (after a command), 1724 (activity) | At least once; stable client message id; reads no IR. |
+| `CancelTx` | `R` 527 (applyCommand), 1676 (activity); `S` `finishRun` 2440 | Run `cancelled` and pending nodes `winner = 'cancel'` in one transaction. |
+| `CancelStop` | `R` 1698; `S` `listCancelledNodeIds` 2220 | After the commit; not transactional with it. Sends a cancellation request (`cancelInstance`) only to effects that are still running; it is a request, not a stop. |
+| `CancelCrash` | `R` 1676 | Activity retry re-executes the whole body; the code's attempts are finite (store retry policy, then `persistently`); the model allows one crash, and running out is `ControllerFault`. |
 | `CancelRecord` | `R` 527 | Controller resumes with the recorded result. |
 | `ControllerFault` | `R` 495 (`workflowV2Controller`), 490 (`failRun`) | `controlRun` throws (an activity ran out of attempts, or a protocol fault), or the input does not parse but names the run; the run ends failed with the cause. |
-| `ControllerDie` | `R` 454 (the last attempt's failure propagates); `R` 1120 (pre-release versions 1.0.0 to 1.7.0 fail at once); or an external termination | The controller orchestration ends; its run stays active and `read_workflow` shows `needsRecovery`. |
-| `Recover` | `V` `recoverWorkflowV2Run` 257; `T` `recoverWorkflowFromTool` 267; `S` `finishRun` 2244 | Parent-authorized write. Run `failed` (`controller_ended`), pending nodes `winner = 'controller'` and the request's receipt in one transaction. Then the parent notification starts (`V` `notifyRecoveredRun` 193, `R` `workflowV2Notify` 792); the model has no notification property, so this step is not modeled. A run admitted but never dispatched is dispatched instead (not modeled; see below). |
-| `EffClaim` | `R` 778 (call), 1759 (activity), 1810; `S` `enterScript` 1781; `X` `start` 548, `enter` 605 | Session, run and node locks; enter only a pending node of an active run of a live session. With `EntryFence` the process starts inside the transaction (`spawned`), holding the session row lock. |
-| `EffCommit` / `EffCommitFail` | `S` `enterScript` 1781 (commit); `X` 605-625 (a failed commit stops and awaits the process, then the activity reports `execution_failed`) | The process exists before the commit; a failed commit kills it but cannot undo what it already did. |
+| `ControllerDie` | `R` 454 (the last attempt's failure propagates); `R` 1147 (pre-release versions 1.0.0 to 1.7.0 fail at once); or an external termination | The controller orchestration ends; its run stays active and `read_workflow` shows `needsRecovery`. |
+| `Recover` | `V` `recoverWorkflowV2Run` 262; `T` `recoverWorkflowFromTool` 267; `S` `finishRun` 2440 | Parent-authorized write. Run `failed` (`controller_ended`), pending nodes `winner = 'controller'` and the request's receipt in one transaction. Then the parent notification starts (`V` `notifyRecoveredRun` 198, `R` `workflowV2Notify` 792); the model has no notification property, so this step is not modeled. A run admitted but never dispatched is dispatched instead (not modeled; see below). |
+| `EffClaim` | `R` 778 (call), 1789 (activity), 1840; `S` `enterScript` 1957; `X` `start` 548, `enter` 605 | Session, run and node locks; enter only a pending node of an active run of a live session. With `EntryFence` the process starts inside the transaction (`spawned`), holding the session row lock. |
+| `EffCommit` / `EffCommitFail` | `S` `enterScript` 1957 (commit); `X` 605-625 (a failed commit stops and awaits the process, then the activity reports `execution_failed`) | The process exists before the commit; a failed commit kills it but cannot undo what it already did. |
 | `EffLaunch` | none in this commit; `159bdce5` `R` 852 (claim), 855 (binding read), 876 (runner) | Only without `EntryFence`: the process starts after the claim committed. |
-| `EffComplete` | `R` 1800-1822, `scriptResult` 2021 | Script result enters the effect history before it is stored. |
-| `EffStopDecided` | `R` 1790, 1812; `S` `isNodePending` 1806; `X` 574 | Liveness query every 1 s and the runner's 250 ms poll; it stops the script when its node is decided elsewhere, provided the store answers and the worker runs its timers. |
+| `EffComplete` | `R` 1830-1852, `scriptResult` 2026 | Script result enters the effect history before it is stored. |
+| `EffStopDecided` | `R` 1820, 1842; `S` `isNodePending` 1982; `X` 574 | Liveness query every 1 s and the runner's 250 ms poll; it stops the script when its node is decided elsewhere, provided the store answers and the worker runs its timers. |
 | `EffStopRequested` | duroxide cancellation of the effect instance; `X` 574 (`isCancelled`) | The effect acknowledges a stop request: its runner kills the script and it ends without storing a result. |
 | `EffCrash` | `R` 778 | Activity re-dispatch after a worker crash; a crash inside the entry transaction rolls it back. A script process of the crashed worker may outlive it (not modeled; see below). Bounded only by A1. |
 | `EffDie` | `R` 782 | Record activity exhausts retries, or the effect instance is terminated. |
-| `EffRecord` | `R` 782 (call), 1825 (activity); `S` `completeNode` 1815 | Session lock, then compare-and-swap from `pending`; loser reads the stored winner. |
-| `EffWake` / `EffWakeDup` / `EffWakeLost` | `R` 783 (call), 2002 (activity) | Enqueue to the controller queue only for an active run. |
-| `SendCancel` | `management-client.ts` `sendCommand`; `V` `controlWorkflowV2Run` 556 (update_workflow operation `cancel`) | Command enqueued to the controller queue of a run that has begun. A cancel of a run that has not begun ends it in its own transaction instead (`S` `recordRunCancelRequest` 1270), and a command queued for a controller that has not started is dropped by the provider; neither is in this model (see below). |
+| `EffRecord` | `R` 782 (call), 1855 (activity); `S` `completeNode` 1991 | Session lock, then compare-and-swap from `pending`; loser reads the stored winner. |
+| `EffWake` / `EffWakeDup` / `EffWakeLost` | `R` 783 (call), 2007 (activity) | Enqueue to the controller queue only for an active run. |
+| `SendCancel` | `management-client.ts` `sendCommand`; `V` `controlWorkflowV2Run` 561 (update_workflow operation `cancel`) | Command enqueued to the controller queue of a run that has begun. A cancel of a run that has not begun ends it in its own transaction instead (`S` `recordRunCancelRequest` 1446), and a command queued for a controller that has not started is dropped by the provider; neither is in this model (see below). |
 | `Delete` | `cms-migrations.ts` `cms_soft_delete_session`; `M` trigger 65-94 (0086), replaced in 0087 to also end paused runs | Soft delete, definition tombstone, run cancel and pending nodes `winner = 'delete'` in one transaction; waits for an entry transaction that holds the session row (`NoEntryInFlight`). |
 
 `Writable` in the model is the session-row check that `S` `lockLiveSession`
-(647) makes at the start of each locking transaction. Every v2 transaction
+(669) makes at the start of each locking transaction. Every v2 transaction
 takes locks in one order (session, definition, run, node), and deletion
 takes the session row first, so they serialize.
 
@@ -173,8 +173,8 @@ takes the session row first, so they serialize.
   (the lifecycle model has both): `Dispatch` is weakly fair, and
   `ControllerDie` cannot fire before it.
   The code stores that recover's receipt and its `workflow.recovered`
-  event before the start (`S` `recordRecoverDispatch` 882), and a repeat of
-  the request starts the controller again (`V` `dispatchRecoveredRun` 208;
+  event before the start (`S` `recordRecoverDispatch` 1058), and a repeat of
+  the request starts the controller again (`V` `dispatchRecoveredRun` 213;
   duroxide ignores a second start of an instance). The dispatch is at
   least once; the faults regressions check the receipt under a concurrent
   repeat and after an interruption before or after the start.
@@ -283,18 +283,34 @@ takes the session row first, so they serialize.
     its 20 most recent ids. Durable exactly-once acceptance by an agent
     session is not implemented yet.
   - To a workflow, an attempt gives the message to it as typed input
-    (`V` `sendWorkflowInputV2`) from the sending workflow's session, with
-    the exchange id as its operation id and the state's correlation: the
-    recipient's inbox accepts it once in that scope (a repeat returns the
-    stored acceptance), and a waiting receive state with the same
-    correlation takes it then. That is not end-to-end exactly-once
-    processing. An acceptance that an earlier attempt made and did not
-    record is found first (`S` `readAcceptedInput`) and recorded,
-    whatever happened to the recipient since. The recipient's rule, a
-    run that ended, no receive state for the contract or a payload its
-    contract refuses fail the state (`unavailable`, `forbidden`,
-    `unsupported_contract`); a full or rate-limited inbox fails only
-    that attempt.
+    (`V` `acceptSendAsWorkflowInputV2`) from the sending workflow's
+    session, with the exchange id as its operation id, the state's
+    correlation and the default ttl: the recipient's inbox accepts it once
+    in that scope (a repeat returns the stored acceptance), and a waiting
+    receive state with the same correlation takes it then. That is not
+    end-to-end exactly-once processing. The acceptance is bound to the
+    send (`S` `requireUndecidedSend`): it runs under the sending
+    workflow's session lock, which every write that decides the send's
+    state or message takes first, and it takes no fresh input once the
+    send is decided (a cancel or other end of the run, a deletion, a
+    recorded failure). So a decision commits wholly before the acceptance
+    (the recipient gets nothing) or wholly after it (the acceptance is
+    kept). Every place that decides the message records the recipient's
+    acceptance of it as the delivery when there is one (`S`
+    `sendAcceptanceIn`): the next attempt's begin, a failure (refusal,
+    exhausted attempts, a worker with execution disabled, the controller's
+    collection of an ended send orchestration) and the end of the sending
+    run, which decides such a message at once (delivered, the state
+    keeping the result the end gave it, or failed). Only an input whose
+    content is the message's (contract, correlation, payload, and the
+    request hash those give with its run and the default ttl) counts: any
+    other input under the message's id is not its delivery. The
+    recipient's rule, a run that ended, no receive state for the contract,
+    a payload its contract refuses or another input under the message's
+    id fail the state (`unavailable`, `forbidden`, `unsupported_contract`,
+    `delivery_failed`); a full or rate-limited inbox fails only that
+    attempt. A message of a deleted sending workflow stays pending until
+    an attempt of its send decides it.
   A worker where workflow execution is disabled (the gate a script's
   effect honors) delivers nothing: the state fails `unavailable` through
   the same first-winner update, and a cancel, a delivery recorded before
@@ -472,7 +488,7 @@ A case that exceeds its time or memory cap is VOID, not PASS.
 | C2: an earlier build's accepted cancel ended at begin (by a recover's dispatch, its first begin interrupted after its commit; or by a late original dispatch) records the parent as its requester (attributed from update_workflow) and tells no one; the parent's same-id repeat returns the stored receipt and is not reported to it; another requester's cancel whose request stopped after its commit, before the notifier, and was never repeated, is reported to the parent once (stable id) when the run's controller starts late, after that begin's own post-commit interruption | same file, "loses a command queued..." and "tells the parent of a run another requester's cancel ended before it began" |
 | C1: the PostgreSQL provider drops a command queued for an instance that has not started (seen in its tables: queue row gone, an execution row, no instance), so a later recover runs the whole run (no receipt: the negative control); a repeat of a cancel accepted that way by an earlier build ends the run that has not begun, returns its accept-time receipt and leaves the stored receipt unchanged, and another request with that id is refused; with no repeat, a recover's dispatch reaches begin, which finds the accepted cancel and ends the run, admitting nothing | same file, "loses a command queued before its controller started" |
 | Messaging receive: compile rules and IR version 5; input given before the receive was entered is taken in the run's order, an expired one is skipped, once per operation id (a repeat returns the acceptance's stored receipt unchanged, although a receive took the input since, and an input stored without a receipt is not repeated; another request with the id is refused), and refused after the run ended; one reading of the store's clock decides each entry and each acceptance, recorded exactly; an input accepted before the deadline claims the waiting receive in its own transaction, one accepted after a (fault-injected) earlier deadline is late and kept, and an input given while no receive waits is taken by the next receive, not the one that elapsed; an input late for a receive (the same fault injection) is kept, and the next receive takes it at its entry, or, when that entry's admission is held (fault injection) until the input expired, the entry does not take it and the receive waits for a fresh input (receive model `Wit_TimerWinKeepsInput`, `Wit_LateInputExpires`); the deadline to the microsecond (fault injection: an input accepted at its receive's deadline, or a microsecond after it, is late; one a microsecond before it wins); an entry held past the input's expiry (fault injection) still takes it at its own earlier reading; another sender or correlation is not taken, an undeclared contract or an invalid payload stores nothing, and the deadline does not move; input across users is refused, and so is input from a session of unknown, partial, blank or system ownership or of another identity (a workflow no user owns takes its parent's input only); a receive that names such a session, another user's, a deleted one or none fails on entry, and a receive from a deleted parent fails with unavailable without taking the parent's earlier input; the sender is decided in the store's transaction (fault injection: the store call is stopped after the receive was resolved, or after the send was checked, and the sender is deleted): a parent or named sender deleted then fails the receive with unavailable, with no deadline and no claim, and a fresh input from a sender deleted then is refused with nothing stored or recorded, with live controls and a repeat of a committed admission returned as stored; the store refuses a direct acceptance from another user, an unowned session, a missing or a deleted one; a paused run takes input without admitting anything until resumed; the per-sender inbox bound | `packages/sdk/test/local/workflow-v2-messaging.test.js` |
-| Messaging send: compile rules and IR version 6 (a recipient is required, an optional correlation, a receive's other fields are refused, `sent` is the one outcome, request is refused, a sent contract is used, IR 6 from before the correlation field reads as none); a message to the parent and to a session of the same user is accepted by the recipient's queue (a session-orchestration test double that reads its queue), with the system line, the message as untrusted JSON and one stable client message id; the prompt's JSON line parses to the exact message for root, nested and empty arrays, arrays of objects, bracket and angle-bracket text, NUL, lone surrogates and edge keys, with no raw bracket or angle bracket inside its strings (also as the recipient's queue held it); a worker where workflow execution is disabled (fault injection: the attempt is stopped as it reads its message, then the worker is disabled) reads no status and queues nothing, the state fails unavailable and the message is failed, a cancel decided first is kept, an enabled control delivers, and a delivery recorded or a workflow's acceptance made before the worker was disabled is kept; the receipt (exchange id, recipient, contract, payload hash, client message id, attempts, delivery time) is stored with the message and is the state's output; one reading of the store's clock is the delivery time, the message's decided time and the state's completed time, and the intent's time is the state's entry; a workflow that only sends a contract takes no input of it; the admission refuses another user's or an unowned session (forbidden) and a missing one (unavailable), with nothing stored or queued, and a message that does not match its contract or is over 16 KiB (invalid_input); a workflow of the same user is admitted as a workflow recipient and, when it takes no such message, refuses it at delivery (unsupported_contract); a message to a workflow is its typed input from the sending workflow with the exchange id as operation id, and a receive state with the same correlation takes it in its acceptance (fault injection: the delivery attempt fails after the inbox accepted it, and the next attempt finds that stored acceptance and records it without asking the receiver again: one input, one attempt; also when the receiver was deleted in between), another correlation is kept unclaimed and the receiver's wait elapses, a workflow whose run ended refuses it (unavailable) and another user's workflow is refused at the admission (forbidden); at delivery (fault injection: the status read is stopped) a recipient deleted after the entry is unavailable, and so is one whose session orchestration has ended or has none, with nothing queued, and a live control is delivered; at least once (fault injection): a failure after the queue accepted the message queues it again with the same id (attempts 2), and a failure after the record queues nothing; every attempt failing (time compressed as in the notification regressions: ten batches of five) ends with delivery_failed after 50 attempts; a cancel while the message is queued keeps the cancel and records the delivery, a cancel before the attempt queues nothing and fails the message, and a send orchestration terminated during its attempt makes the controller's collection fail the state | `packages/sdk/test/local/workflow-v2-send.test.js` |
+| Messaging send: compile rules and IR version 6 (a recipient is required, an optional correlation, a receive's other fields are refused, `sent` is the one outcome, request is refused, a sent contract is used, IR 6 from before the correlation field reads as none); a message to the parent and to a session of the same user is accepted by the recipient's queue (a session-orchestration test double that reads its queue), with the system line, the message as untrusted JSON and one stable client message id; the prompt's JSON line parses to the exact message for root, nested and empty arrays, arrays of objects, bracket and angle-bracket text, NUL, lone surrogates and edge keys, with no raw bracket or angle bracket inside its strings (also as the recipient's queue held it); a worker where workflow execution is disabled (fault injection: the attempt is stopped as it reads its message, then the worker is disabled) reads no status and queues nothing, the state fails unavailable and the message is failed, a cancel decided first is kept, an enabled control delivers, and a delivery recorded or a workflow's acceptance made before the worker was disabled is kept; the receipt (exchange id, recipient, contract, payload hash, client message id, attempts, delivery time) is stored with the message and is the state's output; one reading of the store's clock is the delivery time, the message's decided time and the state's completed time, and the intent's time is the state's entry; a workflow that only sends a contract takes no input of it; the admission refuses another user's or an unowned session (forbidden) and a missing one (unavailable), with nothing stored or queued, and a message that does not match its contract or is over 16 KiB (invalid_input); a workflow of the same user is admitted as a workflow recipient and, when it takes no such message, refuses it at delivery (unsupported_contract); a message to a workflow is its typed input from the sending workflow with the exchange id as operation id, and a receive state with the same correlation takes it in its acceptance (fault injection: the delivery attempt fails after the inbox accepted it, and the next attempt finds that stored acceptance and records it without asking the receiver again: one input, one attempt; also when the receiver was deleted in between), another correlation is kept unclaimed and the receiver's wait elapses, a workflow whose run ended refuses it (unavailable) and another user's workflow is refused at the admission (forbidden); at delivery (fault injection: the status read is stopped) a recipient deleted after the entry is unavailable, and so is one whose session orchestration has ended or has none, with nothing queued, and a live control is delivered; at least once (fault injection): a failure after the queue accepted the message queues it again with the same id (attempts 2), and a failure after the record queues nothing; every attempt failing (time compressed as in the notification regressions: ten batches of five) ends with delivery_failed after 50 attempts; a cancel while the message is queued keeps the cancel and records the delivery, a cancel before the attempt queues nothing and fails the message, and a send orchestration terminated during its attempt makes the controller's collection fail the state; a workflow recipient's acceptance is the delivery on every path that ends the attempts (fault injection: the attempt stops right after the recipient's commit and its send orchestration is terminated): the controller's collection records it (one input, its original accepted and expiry times and claim, one completion event and no failure event), also after the receiver was deleted, and a cancel of the sending run keeps the cancel while the end of the run records the acceptance; a cancel that commits while the attempt waits just before the recipient's acceptance fails the message and the recipient's store refuses the input (no input, no claim, no acceptance event), and in the opposite order the acceptance is kept and recorded with the cancel kept; only an input whose content is the message's is its delivery: the same message given under its id by a trusted caller of the typed-input service is recorded, another payload, correlation, contract or ttl under its id is not (the send fails delivery_failed, the input stays as given), also when given after the attempt began | `packages/sdk/test/local/workflow-v2-send.test.js` |
 | Concurrent creation, both orders, foreign and legacy rows, interrupted creation with another grant, the ordinary client and its handle | `packages/sdk/test/local/workflow-v2-admission.test.js` |
 | A schema recorded at 0085 gets 0086; IR version 1 revisions run as stored; creation records of earlier fingerprints are continued or replayed without rewriting, and another grant or owner is refused | `packages/sdk/test/local/workflow-v2-compat.test.js` |
 | A refused result whatever its text (empty error, empty marker) is `invalid_output`; a plain null is a valid result | `packages/sdk/test/local/workflow-v2-core.test.js` "treats an invalid marker as a refusal" and the strict-JSON probes |
@@ -524,21 +540,21 @@ wait is decided.
 
 | Wait action | Code | Boundary |
 |---|---|---|
-| `AdmEval` | `R` 1348 (activity), 1363 (a retry reads the stored row), 1376 (evaluation), 1404 (the seconds, read once) | Outside the transaction. a93c105c computed the deadline here from the worker's `Date.now()` (`EntryClock = "evaluation"`). |
-| `AdmBegin` / `AdmLock` | `S` `enterNode` 1578, `lockLiveSession` 647 | `now()` is the transaction's start (659dc63f counted from it); the session and run locks may wait for other transactions. |
-| `AdmInsert` / `AdmCommit` | `S` 1638 (inactive), 1714 (the insert) | One `clock_timestamp()` reading in the inserting statement, after the locks and the live, status and KV guards, is `entered_at` and the start of the seconds; the commit may come later. |
+| `AdmEval` | `R` 1375 (activity), 1390 (a retry reads the stored row), 1403 (evaluation), 1431 (the seconds, read once) | Outside the transaction. a93c105c computed the deadline here from the worker's `Date.now()` (`EntryClock = "evaluation"`). |
+| `AdmBegin` / `AdmLock` | `S` `enterNode` 1754, `lockLiveSession` 669 | `now()` is the transaction's start (659dc63f counted from it); the session and run locks may wait for other transactions. |
+| `AdmInsert` / `AdmCommit` | `S` 1814 (inactive), 1890 (the insert) | One `clock_timestamp()` reading in the inserting statement, after the locks and the live, status and KV guards, is `entered_at` and the start of the seconds; the commit may come later. |
 | `AdmRecord` | `R` 587 (call), 593 (paused refusal), 622 (the cursor's deadline) | The controller keeps the stored deadline in its cursor. |
 | `AdmCrash` / `ElapseCrash` | `R` 587, 677 (store retry policy) | A worker crash re-dispatches the activity; a committed admission is read back, an uncommitted one rolls back. |
 | `CtrlAsk` | `R` 675 | The controller's clock is `utcNow`, recorded in its history; it only decides when to ask. At `ClockCap`, which stands for every later time, a re-armed timer has fired (the clock paragraph above). |
-| `ElapseExec` / `ZombieElapse` | `R` 1733 (activity); `S` `elapseWait` 1850, 1860 (guard), 1870 (time left) | One reading of the store's clock after the session lock decides and is stored; compare-and-swap from pending; an activity may outlive its controller. |
+| `ElapseExec` / `ZombieElapse` | `R` 1763 (activity); `S` `elapseWait` 2026, 2036 (guard), 2046 (time left) | One reading of the store's clock after the session lock decides and is stored; compare-and-swap from pending; an activity may outlive its controller. |
 | `ElapseRecord` | `R` 677, 685 | A wait not yet due waits the reported time from the controller's clock. |
 | `CtrlCollect` / `Collect` / `Finish` | `R` 691 (collect), 698 (routing), 606 (terminal finish) | The next state's admission is refused for a paused or ended run. |
 | `CtrlCan` | `R` 555, 746 | The controller state, with each cursor's deadline, is the next execution's input. |
 | `PausedRetry` | `R` 651, 660 | The race of a command and the backstop timer; continue-as-new after idle waits. |
-| `ApplyCancel` | `R` 527, 1646; `S` `finishRun` 2244 | The run's end decides a pending wait in its transaction. |
+| `ApplyCancel` | `R` 527, 1676; `S` `finishRun` 2440 | The run's end decides a pending wait in its transaction. |
 | `Delete` | `migrations/workflow-v2-0087.ts` 58 | Soft delete ends the run and decides a pending wait in one transaction. |
-| `Pause` / `Resume` | `S` `setRunPaused` 1208 | Takes the session lock; a stored deadline does not change. |
-| `CtrlDie` / `Recover` | `V` `recoverWorkflowV2Run` 257; `S` `finishRun` 2244 | The controller ended; recover ends the run as failed and decides a pending wait. |
+| `Pause` / `Resume` | `S` `setRunPaused` 1384 | Takes the session lock; a stored deadline does not change. |
+| `CtrlDie` / `Recover` | `V` `recoverWorkflowV2Run` 262; `S` `finishRun` 2440 | The controller ended; recover ends the run as failed and decides a pending wait. |
 | `Tick` | none | The store's clock (PostgreSQL), assumed never to go back. |
 
 | Property | Meaning |
@@ -613,16 +629,16 @@ fairness of `Resume`). Without it a run may stay paused, as designed.
 
 | Admission action | Code | Boundary |
 |---|---|---|
-| `BeginTx` | `R` 543 (call), 544 (a run that is not active ends the controller); `S` `beginRun` 1493, 1513 (paused before begin) | Session and run locks; `admitted -> running`; a run paused before it began gets `paused_from` running. |
-| `Eval` | `R` 1348 (activity), 1376 (each evaluation reads the run's current revision) | Outside the transaction. |
-| `InsertTx` | `S` `enterNode` 1578: 1638 (inactive first), 1639 (`kv_changed`), 1714 (insert); `R` 1472 (`KV_CHANGING` after the last evaluation) | `set_vars` locks the run row too, so it commits before or after the admission. |
+| `BeginTx` | `R` 543 (call), 544 (a run that is not active ends the controller); `S` `beginRun` 1669, 1689 (paused before begin) | Session and run locks; `admitted -> running`; a run paused before it began gets `paused_from` running. |
+| `Eval` | `R` 1375 (activity), 1403 (each evaluation reads the run's current revision) | Outside the transaction. |
+| `InsertTx` | `S` `enterNode` 1754: 1814 (inactive first), 1815 (`kv_changed`), 1890 (insert); `R` 1499 (`KV_CHANGING` after the last evaluation) | `set_vars` locks the run row too, so it commits before or after the admission. |
 | `Record` | `R` 587 (call), 593 (paused refusal), 597 (ordinal and step only when stored) | A paused refusal is not an end. |
 | `NodeDone` / `Collect` | `R` 782 (the effect stores its result), 691 (collect) | Admitted work finishes while paused. |
-| `Finish` / `Fail` | `R` 606 (terminal), 495 (`controlRun` throws), 490; `S` `finishRun` 2244 | `KV_CHANGING` in every attempt ends the run as failed (`controller_error`). |
+| `Finish` / `Fail` | `R` 606 (terminal), 495 (`controlRun` throws), 490; `S` `finishRun` 2440 | `KV_CHANGING` in every attempt ends the run as failed (`controller_error`). |
 | `PausedWake` / `PausedTimer` | `R` 651 (race), 660 (continue-as-new) | A wake is a hint; the backstop timer finds a resume whose wake was lost; the next execution starts at the same admission and reads the pause from the store. |
-| `SendCancel` / `ApplyCmd` | `V` 585; `R` 567 (poll), 527 | A cancel of a run that has begun is queued for its controller. |
-| `Pause` / `Resume` | `S` `setRunPaused` 1208; `V` 606 (the wake) | `paused_from` records the status; the wake is sent only for a run that admits again. |
-| `SetVars` | `S` `setRunVars` 1156 | Session, definition and run locks; a new immutable revision. |
+| `SendCancel` / `ApplyCmd` | `V` 590; `R` 567 (poll), 527 | A cancel of a run that has begun is queued for its controller. |
+| `Pause` / `Resume` | `S` `setRunPaused` 1384; `V` 611 (the wake) | `paused_from` records the status; the wake is sent only for a run that admits again. |
+| `SetVars` | `S` `setRunVars` 1332 | Session, definition and run locks; a new immutable revision. |
 | `Delete` | `migrations/workflow-v2-0087.ts` 58; `workflow-v2-0086.ts` 80 | 0087 ends paused runs too; 0086 ended only admitted and running runs. |
 
 | Property | Meaning |
@@ -732,18 +748,18 @@ lost notice: a cancelled run is not active, so recover does not act on it
 
 | Lifecycle action | Code | Boundary |
 |---|---|---|
-| `DispatchSend` / `DispatchLose` | `V` `dispatchWorkflowV2Run` 122 | Skips a run that is not active; the start may never reach duroxide. |
+| `DispatchSend` / `DispatchLose` | `V` `dispatchWorkflowV2Run` 127 | Skips a run that is not active; the start may never reach duroxide. |
 | `Start` / `OrphanDrop` | duroxide 0.1.32; duroxide-pg 0.1.38 `provider.rs` 1132-1161, migrations 0025 and 0026 | A second start of an instance id is ignored; queue messages fetched for an instance with no row and no history are acknowledged, which deletes them. |
-| `BeginTx` | `S` `beginRun` 1493, 1501 (the earliest accepted cancel receipt), 1508 (requester attributed to the parent, M1) | Session and run locks, as the cancel's transaction takes. |
-| `BeginNotify` / `BeginRetry` | `R` 1303 (activity), 1266 (enabled and requester checks), 1323 (notifier start) | After the commit; the activity runs again until the start succeeds. A start that fails for good (`NotifyFaults`) fails the activity, and the controller takes its failure path (`CtlFallback`). |
+| `BeginTx` | `S` `beginRun` 1669, 1677 (the earliest accepted cancel receipt), 1684 (requester attributed to the parent, M1) | Session and run locks, as the cancel's transaction takes. |
+| `BeginNotify` / `BeginRetry` | `R` 1330 (activity), 1293 (enabled and requester checks), 1350 (notifier start) | After the commit; the activity runs again until the start succeeds. A start that fails for good (`NotifyFaults`) fails the activity, and the controller takes its failure path (`CtlFallback`). |
 | `ApplyCmd` / `RunFinish` | `R` 527, 532 (notify with the requester), 467 | The controller reports its run's end at least once. A delivery may record a skip and return (`AuthorityLoss`), or run out (`NotifyFaults`); then the controller takes its failure path. |
-| `CtlFallback` | `R` `workflowV2Controller` 495, `failRun` 490, `finishRun` 475; the finish activity 1533 returns a run that ended as it is | The run already ended (`Inv_FallbackAfterEnd`). `reportEnded` calls `notifyParent` once more, with no requester: the controller completes when that call returns, and fails when it runs out. |
-| `CancelTx` | `V` `controlWorkflowV2Run` 556, 581 (the requester: an agent's session, otherwise null); `S` `recordRunCancelRequest` 1270, `cancelBeforeBegin` 1302 | Session, definition and run locks; the receipt and the before-begin end in one transaction; a repeat ends a run that has not begun. |
-| `CancelFollow` / `CancelInterrupt` | `V` 585 (enqueue), `notifyCancelledBeforeBegin` 225 | After the commit; not transactional with it. A notifier start that fails for good is an error the request returns; its repeat with the operation id starts the notifier again (A5). |
-| `RecoverDispatch` / `RecoverEnd` / `RecoverNotify` | `V` `recoverWorkflowV2Run` 257, 285 (dispatch); `S` `recordRecoverDispatch` 882, `finishRun` 2244; `V` `notifyRecoveredRun` 193 | The dispatch receipt is stored before the start. The end commits before the notifier start, which may fail for good: an error the request returns, and the end stays. |
-| `CtrlDie` | `R` 454, 1120, or an external termination | The controller ends; its run stays as it is. |
-| `ZombieBeginTx` / `ZombieBeginNotify` | `R` 1303 (the begin activity) | duroxide does not stop an activity of an instance that ended: a begin activity in flight may still commit and start the notifier, and that start may fail for good, unseen (not fair). |
-| `NotifierRun` | `R` `workflowV2Notify` 792, `notifyParent` 1694, 1699 (enabled), 1701 (the requester the end names), 1703 (told or skipped already), 1705 (authority skip) | At least once, with the stable client message id. A delivery records a skip and returns when the parent's authority is gone (`AuthorityLoss`: the notifier completes), or runs out (`NotifyFaults`: the notifier fails). |
+| `CtlFallback` | `R` `workflowV2Controller` 495, `failRun` 490, `finishRun` 475; the finish activity 1563 returns a run that ended as it is | The run already ended (`Inv_FallbackAfterEnd`). `reportEnded` calls `notifyParent` once more, with no requester: the controller completes when that call returns, and fails when it runs out. |
+| `CancelTx` | `V` `controlWorkflowV2Run` 561, 586 (the requester: an agent's session, otherwise null); `S` `recordRunCancelRequest` 1446, `cancelBeforeBegin` 1478 | Session, definition and run locks; the receipt and the before-begin end in one transaction; a repeat ends a run that has not begun. |
+| `CancelFollow` / `CancelInterrupt` | `V` 590 (enqueue), `notifyCancelledBeforeBegin` 230 | After the commit; not transactional with it. A notifier start that fails for good is an error the request returns; its repeat with the operation id starts the notifier again (A5). |
+| `RecoverDispatch` / `RecoverEnd` / `RecoverNotify` | `V` `recoverWorkflowV2Run` 262, 290 (dispatch); `S` `recordRecoverDispatch` 1058, `finishRun` 2440; `V` `notifyRecoveredRun` 198 | The dispatch receipt is stored before the start. The end commits before the notifier start, which may fail for good: an error the request returns, and the end stays. |
+| `CtrlDie` | `R` 454, 1147, or an external termination | The controller ends; its run stays as it is. |
+| `ZombieBeginTx` / `ZombieBeginNotify` | `R` 1330 (the begin activity) | duroxide does not stop an activity of an instance that ended: a begin activity in flight may still commit and start the notifier, and that start may fail for good, unseen (not fair). |
+| `NotifierRun` | `R` `workflowV2Notify` 792, `notifyParent` 1724, 1729 (enabled), 1731 (the requester the end names), 1733 (told or skipped already), 1735 (authority skip) | At least once, with the stable client message id. A delivery records a skip and returns when the parent's authority is gone (`AuthorityLoss`: the notifier completes), or runs out (`NotifyFaults`: the notifier fails). |
 
 | Property | Meaning |
 |---|---|
@@ -855,11 +871,11 @@ stored and an ended run keeps its result (the session-commands regression
 | Session command action | Code | Boundary |
 |---|---|---|
 | `StartAtt` / `LoseFirst` | `session-proxy.ts` 1085 (`scheduleActivity`), 5862 | At least once: a worker crash redelivers the activity, and the redelivery may overlap the first attempt. |
-| `ReadLink` | `V` `applySessionCommandToWorkflowV2` 652; `S` `readSessionLink` 1409 | Before any lock; the caller's authority (a regression checks it) comes next. |
-| `StoreTx` | `S` `recordSessionCommand` 1352, 1383 (a repeat applies an accepted delete: `ReplayRepair`) | Session, definition and run locks; the receipt with the soft delete (trigger) or the before-begin end in one transaction; a repeat returns the receipt as stored. |
-| `DeletedChild` | `V` `deletedChild` 680, 685, 693; `S` `readOperationReceipt` 827 | Another request's receipt is refused; a delete removes the facts (idempotent). |
-| `After` / `Cleanup` / `Enqueue` | `V` 698 (facts cleanup), 703 (enqueue) | After the commit. |
-| `CtlBegin` / `RunEnd` / `CtlApply` / `CtlExit` | `S` `beginRun` 1493; `R` 527, 1681 | The first run end stands; a command queued for a controller that ended is not applied. |
+| `ReadLink` | `V` `applySessionCommandToWorkflowV2` 657; `S` `readSessionLink` 1585 | Before any lock; the caller's authority (a regression checks it) comes next. |
+| `StoreTx` | `S` `recordSessionCommand` 1528, 1559 (a repeat applies an accepted delete: `ReplayRepair`) | Session, definition and run locks; the receipt with the soft delete (trigger) or the before-begin end in one transaction; a repeat returns the receipt as stored. |
+| `DeletedChild` | `V` `deletedChild` 685, 690, 698; `S` `readOperationReceipt` 1003 | Another request's receipt is refused; a delete removes the facts (idempotent). |
+| `After` / `Cleanup` / `Enqueue` | `V` 703 (facts cleanup), 708 (enqueue) | After the commit. |
+| `CtlBegin` / `RunEnd` / `CtlApply` / `CtlExit` | `S` `beginRun` 1669; `R` 527, 1711 | The first run end stands; a command queued for a controller that ended is not applied. |
 | `DeleteOther` | `cms_soft_delete_session` and the 0087 trigger 58 | Another deletion path, with its facts cleanup. |
 
 | Property | Meaning |
@@ -942,17 +958,17 @@ ownership, exact identities, a parent in both records) are the regressions'
 
 | Receive action | Code | Boundary |
 |---|---|---|
-| `Resolve` | `R` `resolveReceive` 1165, called in the enter activity 1411; the refusals it carries 1196 | Before the admission's transaction: the definition's parent or the binding's session, frozen for this entry. It decides nothing about the sender; 6a2819f4 decided its authority here. |
-| `Admit` / `AdmitInsert` | `S` `enterNode` 1578, `lockInputSessions` 675 (680, the locks), 1665 (a refused sender), 1694 (the one reading), 1700 (the earliest eligible input) | The session rows in ascending session id (the sender's `FOR SHARE`), then the run. One reading decides the input taken, `entered_at`, `consumed_at` and the deadline. `AdmitInsert` is ba01ef8e's later insert only. |
-| `AdmitEnded` | `S` 1638 | A run that ended admits nothing; the controller ends. |
-| `SendCheck` | `V` `sendWorkflowInputV2` 758; `A` `decideTypedInputAuthority` 62 | The catalog's rows; an earlier refusal, and the only check of a repeat. |
-| `SendAccept` | `S` `acceptInput` 1913, 1950 (the sender), 1956 (the one reading), 1987 (the waiting receive, before its deadline), 2009 (the receipt) | One transaction under the session and run locks: the sender, `accepted_at`, `expires_at`, the claim and the receipt. The ghost `mDue` records whether a receive still waited at or after its deadline (the input is late for it). |
-| `Repeat` | `S` 1948 | The stored receipt, after the service's check allowed the sender. |
-| `Delete` | `cms-migrations.ts` `cms_soft_delete_session`; `S` 680 | Waits for a transaction that holds the sender's row lock; the workflow stays live. With `AdmitDecides`, not between ba01ef8e's selection and insert (the admission holds the sender's lock). |
-| `Elapse` | `R` 677 (call); `S` `elapseWait` 1850, 1860 (guard) | Compare-and-swap from pending at or after the deadline. |
+| `Resolve` | `R` `resolveReceive` 1192, called in the enter activity 1438; the refusals it carries 1223 | Before the admission's transaction: the definition's parent or the binding's session, frozen for this entry. It decides nothing about the sender; 6a2819f4 decided its authority here. |
+| `Admit` / `AdmitInsert` | `S` `enterNode` 1754, `lockInputSessions` 697 (702, the locks), 1841 (a refused sender), 1870 (the one reading), 1876 (the earliest eligible input) | The session rows in ascending session id (the sender's `FOR SHARE`), then the run. One reading decides the input taken, `entered_at`, `consumed_at` and the deadline. `AdmitInsert` is ba01ef8e's later insert only. |
+| `AdmitEnded` | `S` 1814 | A run that ended admits nothing; the controller ends. |
+| `SendCheck` | `V` `sendWorkflowInputV2` (`acceptTypedInput`) 784; `A` `decideTypedInputAuthority` 62 | The catalog's rows; an earlier refusal, and the only check of a repeat. |
+| `SendAccept` | `S` `acceptInput` 2097, 2136 (the sender), 2143 (the one reading), 2174 (the waiting receive, before its deadline), 2196 (the receipt) | One transaction under the session and run locks: the sender, `accepted_at`, `expires_at`, the claim and the receipt. The ghost `mDue` records whether a receive still waited at or after its deadline (the input is late for it). |
+| `Repeat` | `S` 2134 | The stored receipt, after the service's check allowed the sender. |
+| `Delete` | `cms-migrations.ts` `cms_soft_delete_session`; `S` 702 | Waits for a transaction that holds the sender's row lock; the workflow stays live. With `AdmitDecides`, not between ba01ef8e's selection and insert (the admission holds the sender's lock). |
+| `Elapse` | `R` 677 (call); `S` `elapseWait` 2026, 2036 (guard) | Compare-and-swap from pending at or after the deadline. |
 | `Collect` | `R` 691 (collect), 698 (routing) | Receive state 1 routes to receive state 2; a refusal routes to a failed terminal. |
-| `Cancel` | `R` 527; `S` `finishRun` 2244; `migrations/workflow-v2-0087.ts` 58 | The run's end decides a pending receive in its transaction. |
-| `Tick` | none | The store's clock (PostgreSQL `clock_timestamp()`), assumed never to go back. It advances freely to `MaxPre`; while a pending receive's deadline is ahead; and while the controller is late in a running run (a due wait not yet elapsed, a result not yet collected, receive state 2 not yet resolved or admitted), as long as each wait it has yet to begin still ends within `ClockCap`. With a wait, receive state 1 is admitted by `MaxPre` and receive state 2 by `ClockCap - Secs`; every deadline can still pass. An input kept unclaimed may expire during such a delay; the next entry skips it (`S` 1699). |
+| `Cancel` | `R` 527; `S` `finishRun` 2440; `migrations/workflow-v2-0087.ts` 58 | The run's end decides a pending receive in its transaction. |
+| `Tick` | none | The store's clock (PostgreSQL `clock_timestamp()`), assumed never to go back. It advances freely to `MaxPre`; while a pending receive's deadline is ahead; and while the controller is late in a running run (a due wait not yet elapsed, a result not yet collected, receive state 2 not yet resolved or admitted), as long as each wait it has yet to begin still ends within `ClockCap`. With a wait, receive state 1 is admitted by `MaxPre` and receive state 2 by `ClockCap - Secs`; every deadline can still pass. An input kept unclaimed may expire during such a delay; the next entry skips it (`S` 1875). |
 
 | Property | Meaning |
 |---|---|

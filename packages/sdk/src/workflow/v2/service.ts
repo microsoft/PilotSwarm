@@ -25,6 +25,8 @@ import {
     isKvKey,
     parseSessionCommandReceipt,
     runNotBegun,
+    typedInputRequestSha256,
+    WORKFLOW_V2_INPUT_TTL_SECONDS,
     WorkflowStoreError,
     type RunAdmission,
     type StoredOperation,
@@ -32,12 +34,15 @@ import {
     type WorkflowDefinitionReceipt,
     type WorkflowInboxLimits,
     type WorkflowInputReceipt,
+    type WorkflowOutboxMessage,
     type WorkflowRunCommandReceipt,
     type WorkflowRunRow,
     type WorkflowRunStatus,
     type WorkflowSessionCommandReceipt,
     type WorkflowStore,
 } from "./store.js";
+
+export { WORKFLOW_V2_INPUT_TTL_SECONDS } from "./store.js";
 
 /**
  * Workflow v2 commands shared by the agent tools, the SDK and (later) the
@@ -710,8 +715,6 @@ export async function applySessionCommandToWorkflowV2(
  * the rate window.
  */
 export const WORKFLOW_V2_INBOX_LIMITS: WorkflowInboxLimits = { maxUnconsumed: 100, maxUnconsumedPerSender: 20, maxPerSenderPerWindow: 60, windowSeconds: 600 };
-/** How long an unclaimed input stays eligible for a receive state: the default and the most (seconds). */
-export const WORKFLOW_V2_INPUT_TTL_SECONDS = 86_400;
 
 /**
  * send_workflow_input: give a run of a v2 workflow one typed input (R07,
@@ -735,19 +738,42 @@ export const WORKFLOW_V2_INPUT_TTL_SECONDS = 86_400;
  * wake (a hint; its backstop timer finds the result too); a repeat of the
  * request sends the wake again.
  */
-export async function sendWorkflowInputV2(
-    host: { catalog: Pick<SessionCatalog, "getSession">; store: WorkflowStore; duroxideClient: Pick<WorkflowV2Host["duroxideClient"], "enqueueEvent"> },
-    request: {
-        workflowSessionId: string;
-        senderSessionId: string;
-        runId?: string | null;
-        contract: string;
-        correlation?: JsonValue;
-        payload: JsonValue;
-        ttlSeconds?: number | null;
-        operationId: string;
-    },
-): Promise<StoredOperation<WorkflowInputReceipt>> {
+export async function sendWorkflowInputV2(host: TypedInputHost, request: TypedInputRequest): Promise<StoredOperation<WorkflowInputReceipt>> {
+    return acceptTypedInput(host, request, null);
+}
+
+/**
+ * A send state's message given to its workflow recipient as typed input,
+ * from the sending workflow: send_workflow_input's checks and acceptance with
+ * the message's frozen contract, correlation and payload, the exchange id as
+ * the operation id, the recipient's live run and the default ttl. The
+ * acceptance is bound to the send (store.acceptInput sendExchangeId): the
+ * recipient takes no fresh input for a send decided first (SEND_DECIDED), and
+ * a repeat of an acceptance made before is answered as any repeat. Only the
+ * send's delivery calls this; no public request carries that binding.
+ */
+export async function acceptSendAsWorkflowInputV2(host: TypedInputHost, message: WorkflowOutboxMessage): Promise<StoredOperation<WorkflowInputReceipt>> {
+    return acceptTypedInput(host, {
+        workflowSessionId: message.recipientSessionId, senderSessionId: message.workflowSessionId, runId: null, contract: message.contract,
+        correlation: message.correlation, payload: message.payload, ttlSeconds: null, operationId: message.exchangeId,
+    }, message.exchangeId);
+}
+
+type TypedInputHost = { catalog: Pick<SessionCatalog, "getSession">; store: WorkflowStore; duroxideClient: Pick<WorkflowV2Host["duroxideClient"], "enqueueEvent"> };
+
+interface TypedInputRequest {
+    workflowSessionId: string;
+    senderSessionId: string;
+    runId?: string | null;
+    contract: string;
+    correlation?: JsonValue;
+    payload: JsonValue;
+    ttlSeconds?: number | null;
+    operationId: string;
+}
+
+async function acceptTypedInput(host: TypedInputHost, request: TypedInputRequest, sendExchangeId: string | null)
+    : Promise<StoredOperation<WorkflowInputReceipt>> {
     requireOperationId(request.operationId);
     const { workflowSessionId, senderSessionId } = request;
     const definition = await host.store.readDefinition(workflowSessionId);
@@ -786,10 +812,11 @@ export async function sendWorkflowInputV2(
     if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds < 1 || ttlSeconds > WORKFLOW_V2_INPUT_TTL_SECONDS) {
         throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `ttl_seconds must be an integer from 1 to ${WORKFLOW_V2_INPUT_TTL_SECONDS}.`);
     }
-    const requestSha256 = jsonSha256({ kind: "input", runId: run.runId, contract: request.contract, correlation: correlationText, payload: payloadText, ttlSeconds });
+    const requestSha256 = typedInputRequestSha256({ runId: run.runId, contract: request.contract, correlationText, payloadText, ttlSeconds });
     const stored = await host.store.acceptInput({
         workflowSessionId, runId: run.runId, messageId: randomUUID(), senderSessionId, operationId: request.operationId, requestSha256,
         contract: request.contract, correlationText, payloadText, ttlSeconds, limits: WORKFLOW_V2_INBOX_LIMITS,
+        ...(sendExchangeId !== null ? { sendExchangeId } : {}),
     });
     if (stored.receipt.claimedBy && ACTIVE_RUN_STATUSES.includes(stored.run.status)) {
         await host.duroxideClient.enqueueEvent(stored.run.controllerInstanceId, WORKFLOW_COMMAND_QUEUE,

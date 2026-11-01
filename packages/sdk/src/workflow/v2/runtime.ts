@@ -970,7 +970,7 @@ function recipientRefusalResult(refusal: RecipientRefusal, recipient: string): N
 
 /**
  * The runtime error a send state records when a workflow recipient refused
- * its message as typed input (sendWorkflowInputV2), or null when the refusal
+ * its message as typed input (acceptSendAsWorkflowInputV2), or null when the refusal
  * may pass (the recipient's inbox is full or rate limited, or the store did
  * not answer): that attempt fails and the next one tries again.
  */
@@ -997,6 +997,9 @@ function typedInputRefusalResult(error: unknown, recipient: string): NodeResultI
         // The recipient holds another request under this exchange's id: no later attempt can be accepted.
         case "OPERATION_CONFLICT":
             return runtimeError("delivery_failed", `Workflow ${recipient} already accepted another input under this message's id: ${refused.message}`, details());
+        // The send was decided (a cancel, a deletion, a delivery failure) before the recipient accepted its message: nothing was given to it.
+        case "SEND_DECIDED":
+            return runtimeError("cancelled", `Workflow ${recipient} was given nothing: ${refused.message}`, details());
         default:
             return null;
     }
@@ -1023,6 +1026,30 @@ function sendFailedProjection(workflowSessionId: string, executed: WorkflowNodeE
             outcome: result.outcome, resultKind: result.resultKind, error: jsonbSafeText(result.valueText, 2_000),
         } }],
         update: { touch: true },
+    };
+}
+
+/**
+ * How a send state's delivery is recorded (store.recordDelivery, and a
+ * workflow recipient's acceptance that store.beginDelivery or
+ * store.failDelivery finds): its state, and the projection of the state's
+ * completion when the delivery decides it: one workflow.state_completed
+ * event.
+ */
+function sendDeliveredRecord(message: WorkflowOutboxMessage, executed: WorkflowNodeExecutionRow)
+    : { stateId: string; projection: (receipt: WorkflowSendReceipt) => SessionProjection } {
+    return {
+        stateId: executed.nodeId,
+        projection: receipt => ({
+            sessionId: message.workflowSessionId,
+            events: [{ eventType: "workflow.state_completed", data: {
+                runId: message.runId, nodeExecutionId: message.nodeExecutionId, stateId: executed.nodeId, step: executed.ordinal,
+                outcome: MESSAGE_SENT, resultKind: "business", exchangeId: receipt.exchangeId, recipientSessionId: receipt.recipientSessionId,
+                recipientKind: receipt.recipientKind, contract: receipt.contract, attempts: receipt.attempts,
+                ...(receipt.input !== null ? { inputMessageId: receipt.input.messageId } : {}),
+            } }],
+            update: { touch: true },
+        }),
     };
 }
 
@@ -1494,6 +1521,8 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 if (!executed || executed.runId !== runId || executed.state !== "pending") continue;
                 // A send state whose send orchestration ended without recording a
                 // delivery or its failure (terminated, or its last record failed).
+                // A workflow recipient's acceptance of the message, if there is
+                // one, is recorded as the delivery instead (store.failDelivery).
                 if (executed.nodeType === "messaging" && executed.receive === null) {
                     const sending = await client.getStatus(workflowSendInstanceId(nodeExecutionId));
                     if (!TERMINAL_ORCHESTRATION_STATUSES.includes(sending.status)) continue;
@@ -1505,7 +1534,8 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                         { sendStatus: sending.status, attempts: message.attempts, sendError: sending.error === undefined ? null : jsonbSafeText(sending.error, 2_000) }),
                         winner: "controller",
                     };
-                    const stored = await store.failDelivery(nodeExecutionId, result, sendFailedProjection(message.workflowSessionId, executed, result));
+                    const stored = await store.failDelivery(nodeExecutionId, result, sendFailedProjection(message.workflowSessionId, executed, result),
+                        sendDeliveredRecord(message, executed));
                     if (stored.node.state === "completed") rows.push(stored.node);
                     continue;
                 }
@@ -1845,55 +1875,44 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
 
     /** Record a send state's delivery (store.recordDelivery) with what its recipient accepted. */
     const recordSend = (message: WorkflowOutboxMessage, executed: WorkflowNodeExecutionRow,
-        delivery: { clientMessageId: string | null; input: WorkflowSendInputAcceptance | null }) =>
-        store.recordDelivery(message.nodeExecutionId, { stateId: executed.nodeId, ...delivery }, (receipt: WorkflowSendReceipt) => ({
-            sessionId: message.workflowSessionId,
-            events: [{ eventType: "workflow.state_completed", data: {
-                runId: message.runId, nodeExecutionId: message.nodeExecutionId, stateId: executed.nodeId, step: executed.ordinal,
-                outcome: MESSAGE_SENT, resultKind: "business", exchangeId: receipt.exchangeId, recipientSessionId: receipt.recipientSessionId,
-                recipientKind: receipt.recipientKind, contract: receipt.contract, attempts: receipt.attempts,
-                ...(receipt.input !== null ? { inputMessageId: receipt.input.messageId } : {}),
-            } }],
-            update: { touch: true },
-        }));
-    /** A workflow recipient's stored acceptance of a send state's message (made by an earlier attempt), or null. */
-    const acceptedInputOf = async (message: WorkflowOutboxMessage): Promise<WorkflowSendInputAcceptance | null> => {
-        if (message.recipientKind !== "workflow") return null;
-        const prior = await store.readAcceptedInput(message.recipientSessionId, message.workflowSessionId, message.exchangeId);
-        return prior === null ? null
-            : { messageId: prior.messageId, runId: prior.runId, acceptedAt: prior.acceptedAt, expiresAt: prior.expiresAt, claimedBy: prior.claimedBy };
+        delivery: { clientMessageId: string | null; input: WorkflowSendInputAcceptance | null }) => {
+        const record = sendDeliveredRecord(message, executed);
+        return store.recordDelivery(message.nodeExecutionId, { stateId: record.stateId, ...delivery }, record.projection);
     };
 
     /**
      * One delivery attempt of a send state's message (workflowV2Send). On a
      * worker where workflow execution is disabled (deps.enabled, the gate a
      * script's effect honors), nothing is delivered: the state fails
-     * unavailable through the store's first-winner update, unless a workflow
-     * recipient already accepted the message (that delivery is recorded), and
-     * a delivery recorded before, or a cancel, is kept. For an
-     * agent recipient, the session orchestration status is read first: one
-     * that has ended, or has none, would not read a queued message. Then the
-     * store decides under the session locks (beginDelivery): the state
-     * already decided, the recipient refused (or its session ended), or an
-     * attempt to count. A counted attempt delivers the message and records
-     * the delivery (recordDelivery): the message delivered with its receipt,
-     * and the state sent with the receipt as its output.
+     * unavailable through the store's first-winner update (store.failDelivery),
+     * and a delivery recorded before, a cancel, or a workflow recipient's
+     * acceptance of the message is kept. For an agent recipient, the session
+     * orchestration status is read first: one that has ended, or has none,
+     * would not read a queued message. Then the store decides under the
+     * session locks (beginDelivery): the message already decided, a workflow
+     * recipient's acceptance of it to record, the state already decided, the
+     * recipient refused (or its session ended), or an attempt to count. A
+     * counted attempt delivers the message and records the delivery
+     * (recordDelivery): the message delivered with its receipt, and the state
+     * sent with the receipt as its output.
      * - An agent session: the message is queued with the exchange's stable
      *   client message id. The status read and the enqueue are not one step:
      *   a session whose orchestration ends in between may never read the
      *   message. A failure after the queue accepted the message and before the
      *   record queues it again with the same id: delivery is at least once.
      * - A workflow: the message is given to it as typed input
-     *   (sendWorkflowInputV2) from this workflow's session, with the
-     *   exchange id as its operation id and the state's correlation: the
-     *   recipient's inbox accepts it once per exchange, and a repeat returns
-     *   the stored acceptance. An acceptance that an earlier attempt made and
-     *   did not record is found first (store.readAcceptedInput) and recorded,
-     *   whatever happened to the recipient since. A refusal that cannot pass
-     *   (the recipient's rule, no running run, no receive state for the
-     *   contract, a payload its contract refuses) fails the state, unless the
-     *   input was accepted after all; a full or rate-limited inbox fails this
-     *   attempt only.
+     *   (acceptSendAsWorkflowInputV2) from this workflow's session, with the
+     *   exchange id as its operation id, the state's correlation and the
+     *   default ttl, bound to this send: the recipient accepts it once, and
+     *   only while the send is undecided (a cancel or another decision that
+     *   commits first leaves nothing with the recipient). A refusal that
+     *   cannot pass (the recipient's rule, no running run, no receive state
+     *   for the contract, a payload its contract refuses, another input under
+     *   this message's id, the send decided first) ends the attempts through
+     *   store.failDelivery, which records the recipient's acceptance of this
+     *   message instead when there is one; a full or rate-limited inbox fails
+     *   this attempt only. Only an input whose content is this message's is
+     *   ever recorded as its delivery.
      */
     runtime.registerActivity(WORKFLOW_V2_ACTIVITIES.deliver, async (actx, rawInput) => {
         const input = parseEffectInput(rawInput);
@@ -1906,23 +1925,22 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         if (!client) throw new Error("Workflow send needs the durable client.");
         const queue = deps.sessionQueue ?? sessionQueueTransport(client);
         const recipient = message.recipientSessionId;
+        const delivered = sendDeliveredRecord(message, executed);
         const atDelivery = (decided: NodeResultInput) => {
             const result: NodeResultInput = { ...decided, winner: "delivery" };
             return { result, projection: sendFailedProjection(message.workflowSessionId, executed, result) };
         };
-        // A workflow recipient that accepted this message in an earlier attempt: that acceptance is the delivery.
-        const earlier = await acceptedInputOf(message);
-        if (earlier !== null) {
-            const recorded = await recordSend(message, executed, { clientMessageId: null, input: earlier });
-            return { kind: "delivered", won: recorded.won, outcome: recorded.node.outcome };
-        }
+        /** No delivery by this send; a workflow recipient's acceptance of the message is recorded instead (store.failDelivery). */
+        const fail = async (decided: NodeResultInput, kind: "disabled" | "refused") => {
+            const { result, projection } = atDelivery(decided);
+            const stored = await store.failDelivery(input.nodeExecutionId, result, projection, delivered);
+            return stored.delivered ? { kind: "delivered", won: stored.won, outcome: stored.node.outcome } : { kind, outcome: stored.node.outcome };
+        };
         // A worker where workflow execution is disabled delivers nothing: the state fails unavailable (first winner kept).
         if (!deps.enabled()) {
-            const { result, projection } = atDelivery(runtimeError("unavailable", `${WORKFLOW_V2_SEND_DISABLED_MESSAGE}${message.attempts > 0
+            return fail(runtimeError("unavailable", `${WORKFLOW_V2_SEND_DISABLED_MESSAGE}${message.attempts > 0
                 ? ` ${message.attempts} delivery attempts had begun before, so the recipient may have received the message.` : ""}`,
-            { sessionId: recipient, attempts: message.attempts }));
-            const failed = await store.failDelivery(input.nodeExecutionId, result, projection);
-            return { kind: "disabled", outcome: failed.node.outcome };
+            { sessionId: recipient, attempts: message.attempts }), "disabled");
         }
         const status = message.recipientKind === "agent" ? await queue.status(recipient) : null;
         const begun = await store.beginDelivery(input.nodeExecutionId, {
@@ -1931,6 +1949,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 forbidden: atDelivery(recipientRefusalResult("forbidden", recipient)),
             },
             ended: status !== null && ENDED_SESSION_STATUSES.includes(status) ? atDelivery(endedRecipientResult(recipient, status)) : null,
+            delivered,
         });
         if (begun.kind !== "deliver") return { kind: begun.kind, outcome: begun.node.outcome };
         let delivery: { clientMessageId: string | null; input: WorkflowSendInputAcceptance | null };
@@ -1943,12 +1962,9 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             delivery = { clientMessageId, input: null };
         } else {
             // Loaded here: the service imports this module.
-            const { sendWorkflowInputV2 } = await import("./service.js");
+            const { acceptSendAsWorkflowInputV2 } = await import("./service.js");
             try {
-                const accepted = await sendWorkflowInputV2({ catalog: deps.catalog, store, duroxideClient: client }, {
-                    workflowSessionId: recipient, senderSessionId: message.workflowSessionId, runId: null, contract: message.contract,
-                    correlation: message.correlation, payload: message.payload, ttlSeconds: null, operationId: message.exchangeId,
-                });
+                const accepted = await acceptSendAsWorkflowInputV2({ catalog: deps.catalog, store, duroxideClient: client }, begun.message);
                 const receipt = accepted.receipt;
                 delivery = { clientMessageId: null, input: {
                     messageId: receipt.messageId, runId: receipt.runId, acceptedAt: receipt.acceptedAt, expiresAt: receipt.expiresAt, claimedBy: receipt.claimedBy,
@@ -1956,14 +1972,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             } catch (error) {
                 const refusal = typedInputRefusalResult(error, recipient);
                 if (refusal === null) throw error;
-                // Accepted after all (by a concurrent attempt): that acceptance is the delivery.
-                const accepted = await acceptedInputOf(message);
-                if (accepted === null) {
-                    const { result, projection } = atDelivery(refusal);
-                    const failed = await store.failDelivery(input.nodeExecutionId, result, projection);
-                    return { kind: "refused", outcome: failed.node.outcome };
-                }
-                delivery = { clientMessageId: null, input: accepted };
+                return fail(refusal, "refused");
             }
         }
         const recorded = await recordSend(message, executed, delivery);
@@ -1983,11 +1992,6 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         if (!message || message.runId !== input.runId) throw new WorkflowStoreError("NODE_NOT_FOUND", `Send ${input.nodeExecutionId} has no outbox message.`);
         const executed = await store.readNodeExecution(input.nodeExecutionId);
         if (!executed) throw new WorkflowStoreError("NODE_NOT_FOUND", `Node execution ${input.nodeExecutionId} is missing.`);
-        const accepted = message.state === "pending" ? await acceptedInputOf(message) : null;
-        if (accepted !== null) {
-            const recorded = await recordSend(message, executed, { clientMessageId: null, input: accepted });
-            return { won: recorded.won, outcome: recorded.node.outcome };
-        }
         const result: NodeResultInput = {
             ...runtimeError("delivery_failed", `Every delivery attempt of this message failed (${message.attempts} attempts began`
                 + `${message.recipientKind === "agent" ? "; one whose queue call failed may still have queued it" : ""}). `
@@ -1995,8 +1999,9 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             { attempts: message.attempts, recipientSessionId: message.recipientSessionId }),
             winner: "delivery",
         };
-        const stored = await store.failDelivery(input.nodeExecutionId, result, sendFailedProjection(message.workflowSessionId, executed, result));
-        return { won: stored.won, outcome: stored.node.outcome };
+        const stored = await store.failDelivery(input.nodeExecutionId, result, sendFailedProjection(message.workflowSessionId, executed, result),
+            sendDeliveredRecord(message, executed));
+        return { delivered: stored.delivered, won: stored.won, outcome: stored.node.outcome };
     });
 
     runtime.registerActivity(WORKFLOW_V2_ACTIVITIES.wake, async (actx, rawInput) => {
