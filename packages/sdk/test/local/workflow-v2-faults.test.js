@@ -488,6 +488,24 @@ states:
         } finally { await h.stop(); }
     });
 
+    it("runs an instance of the compatible 1.4.0 controller version with this build's controller", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv(), {});
+        try {
+            const undispatched = { ...h.host, duroxideClient: { ...h.host.duroxideClient, startOrchestrationVersioned: async () => undefined } };
+            const id = randomUUID();
+            const created = await createWorkflowV2(undispatched, { workflowSessionId: id, parentSessionId: null, yaml: TWO_STEPS,
+                actor: ACTOR, operationId: "start", start: { inputs: {} } });
+            const { runId, controllerInstanceId } = created.receipt.run;
+            // As the previous build started it.
+            await h.client.startOrchestrationVersioned(controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME, { v: 2, workflowSessionId: id, runId }, "1.4.0");
+            const run = await finished(h, runId, 60_000);
+            expect(run.status, JSON.stringify(run)).toBe("completed");
+            expect(run.terminalOutput).toEqual({ n: 2 });
+            const controller = await h.client.waitForOrchestration(controllerInstanceId, 30_000);
+            expect(controller.status, JSON.stringify(controller)).toBe("Completed");
+        } finally { await h.stop(); }
+    });
+
     it("carries a pending state across continue-as-new without admitting or starting it again", { timeout: TIMEOUT }, async () => {
         // A 100 ms backstop makes 50 idle waits (the continue-as-new bound) pass while the script still runs.
         const h = await harness(getEnv(), {}, { wakeBackstopMs: 100 });

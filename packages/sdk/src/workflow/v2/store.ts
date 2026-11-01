@@ -3,7 +3,7 @@ import { parseDiagnostics, parseWorkflowIr, WORKFLOW_V2_API_VERSION, type Workfl
 import { canonicalJson, isJsonObject, isStorableText, jsonbSafeText, jsonbSafeValue, parseStoredJson, sha256Hex, type JsonValue } from "./json.js";
 
 /**
- * PostgreSQL persistence for workflow v2 (tables from migrations 0085 and 0087).
+ * PostgreSQL persistence for workflow v2 (tables from migrations 0085, 0087 and 0088).
  *
  * Every definition mutation runs in one transaction that first locks the
  * definition row (or creates it with INSERT ... ON CONFLICT, which waits for
@@ -153,6 +153,8 @@ export interface WorkflowNodeExecutionRow {
     effectAttempts: number;
     /** The KV revision pinned when this node execution was admitted (null before migration 0087). */
     kvRevision: number | null;
+    /** A wait state's absolute deadline, fixed at its admission (migration 0088); null for other states. */
+    deadlineAt: Date | null;
     enteredAt: Date;
     completedAt: Date | null;
 }
@@ -286,6 +288,7 @@ function nodeFrom(row: Row): WorkflowNodeExecutionRow {
         outcome: strOrNull(row, "outcome"), resultKind, output: jsonOrNull(row, "output"), error: jsonOrNull(row, "error"),
         hasOutput: row.output !== null && row.output !== undefined,
         winner: strOrNull(row, "winner"), effectAttempts: int(row, "effect_attempts"), kvRevision: intOrNull(row, "kv_revision"),
+        deadlineAt: dateOrNull(row, "deadline_at"),
         enteredAt: date(row, "entered_at"), completedAt: dateOrNull(row, "completed_at"),
     };
 }
@@ -1015,6 +1018,8 @@ export class WorkflowStore {
         inputText: string;
         /** The KV revision the input was evaluated with; pinned on the node execution. */
         kvRevision: number;
+        /** A wait state's absolute deadline; null for other states and for one that failed at admission. */
+        deadlineAt: Date | null;
         immediate: NodeResultInput | null;
         projection?: SessionProjection;
     }): Promise<{ admitted: true; inserted: boolean; node: WorkflowNodeExecutionRow }
@@ -1041,15 +1046,15 @@ export class WorkflowStore {
             const { rows } = await client.query(
                 `INSERT INTO ${this.t.nodes}
                     (node_execution_id, run_id, scope_id, node_id, ordinal, node_type, predecessor_id, arrival_route, input, input_sha256,
-                     state, outcome, result_kind, output, error, winner, completed_at, kv_revision)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, CASE WHEN $11 = 'completed' THEN now() END, $17)
+                     state, outcome, result_kind, output, error, winner, completed_at, kv_revision, deadline_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, CASE WHEN $11 = 'completed' THEN now() END, $17, $18)
                  RETURNING *`,
                 [input.nodeExecutionId, input.runId, input.scopeId, input.nodeId, input.ordinal, input.nodeType, input.predecessorId,
                     input.arrivalRoute, input.inputText, inputSha256, immediate ? "completed" : "pending",
                     immediate?.outcome ?? null, immediate?.resultKind ?? null,
                     immediate?.resultKind === "business" ? immediate.valueText : null,
                     immediate?.resultKind === "runtime_error" ? immediate.valueText : null,
-                    immediate?.winner ?? null, input.kvRevision],
+                    immediate?.winner ?? null, input.kvRevision, input.deadlineAt],
             );
             await this.project(client, input.projection);
             return { admitted: true as const, inserted: true, node: nodeFrom(rows[0]) };

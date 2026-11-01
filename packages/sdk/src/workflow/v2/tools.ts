@@ -295,6 +295,7 @@ export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId
             nodeExecutions: nodes.map(node => ({
                 nodeExecutionId: node.nodeExecutionId, stateId: node.nodeId, ordinal: node.ordinal, state: node.state,
                 outcome: node.outcome, resultKind: node.resultKind, winner: node.winner, attempts: node.effectAttempts, kvRevision: node.kvRevision,
+                ...(node.deadlineAt !== null ? { deadline: node.deadlineAt.toISOString() } : {}),
                 ...(node.resultKind === "business" ? { outputPreview: previewJson(node.output, 500) } : {}),
                 ...(node.resultKind === "runtime_error" ? { errorPreview: previewJson(node.error, 500) } : {}),
             })),

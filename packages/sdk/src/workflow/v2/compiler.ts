@@ -1,5 +1,5 @@
 import { parseDocument } from "yaml";
-import { validateBindingTemplate, WorkflowBindingError } from "./bindings.js";
+import { parseBindingExpression, validateBindingTemplate, WorkflowBindingError } from "./bindings.js";
 import { canonicalJson, isJsonObject, isStorableText, sha256Hex, WorkflowJsonError, type JsonValue } from "./json.js";
 import { normalizeSchema, SCHEMA_NAME_PATTERN, WorkflowSchemaError, WorkflowSchemaSet } from "./schema.js";
 
@@ -16,14 +16,22 @@ import { normalizeSchema, SCHEMA_NAME_PATTERN, WorkflowSchemaError, WorkflowSche
 export const WORKFLOW_V2_API_VERSION = "pilotswarm.dev/v2-draft";
 export const WORKFLOW_V2_KIND = "Workflow";
 /**
- * IR version this compiler writes. Stored IR is never rewritten or
- * recompiled; every earlier version is still read as stored:
+ * IR version this compiler writes for a workflow of script and terminal
+ * states. Stored IR is never rewritten or recompiled; every earlier version
+ * is still read as stored:
  * - 1: no root outputSchema (each succeeded terminal carries the contract it
  *   was compiled with) and no catchAll;
  * - 2: root outputSchema, no catchAll;
- * - 3: root outputSchema and catchAll.
+ * - 3: root outputSchema and catchAll;
+ * - 4: version 3 plus wait states (WORKFLOW_V2_WAIT_IR_VERSION), written
+ *   only for a workflow that has one, so other IR stays byte-identical.
  */
 export const WORKFLOW_V2_IR_VERSION = 3;
+export const WORKFLOW_V2_WAIT_IR_VERSION = 4;
+/** A wait state's seconds: an integer in this range, literal or bound. */
+export const WAIT_MAX_SECONDS = 86_400;
+/** The one business outcome of a wait state. */
+export const WAIT_ELAPSED = "elapsed";
 export const WORKFLOW_V2_MAX_YAML_BYTES = 256 * 1024;
 export const WORKFLOW_V2_MAX_NODES = 100;
 export const WORKFLOW_V2_DEFAULT_MAX_NODE_EXECUTIONS = 1_000;
@@ -39,7 +47,7 @@ export const RUNTIME_ERROR_CODES = [
 /** The catch route a runtime error takes when its own code has no route. */
 export const FAILURE_ROUTE = "failure";
 /** Node types this build compiles. Others are refused explicitly, never run differently. */
-export const SUPPORTED_NODE_TYPES = ["script", "terminal"] as const;
+export const SUPPORTED_NODE_TYPES = ["script", "wait", "terminal"] as const;
 const KNOWN_NODE_TYPES = ["script", "terminal", "wait", "messaging", "agent", "parallel", "join"];
 
 export type TerminalOutcome = typeof TERMINAL_OUTCOMES[number];
@@ -85,11 +93,24 @@ export interface WorkflowIRTerminal {
     outputSchema: string | null;
 }
 
-export type WorkflowIRNode = WorkflowIRScript | WorkflowIRTerminal;
+export interface WorkflowIRWait {
+    id: string;
+    type: "wait";
+    description: string | null;
+    /** An integer of seconds, or one whole-string binding evaluated and checked when the state is entered. */
+    seconds: number | string;
+    /** The value the wait passes on when it elapses; without an input binding, the value that arrived. */
+    hasInput: boolean;
+    input: JsonValue;
+    /** Route label -> target node: elapsed, and runtime routes (failure and error codes). */
+    next: Record<string, string>;
+}
+
+export type WorkflowIRNode = WorkflowIRScript | WorkflowIRWait | WorkflowIRTerminal;
 
 export interface WorkflowIR {
-    /** 1 and 2 are read-only earlier shapes (outputSchema and catchAll null when absent); 3 is written now. */
-    irVersion: 1 | 2 | 3;
+    /** 1 and 2 are read-only earlier shapes (outputSchema and catchAll null when absent); 3, or 4 with wait states, is written now. */
+    irVersion: 1 | 2 | 3 | 4;
     apiVersion: typeof WORKFLOW_V2_API_VERSION;
     name: string;
     version: string;
@@ -209,6 +230,37 @@ function schemaField(value: unknown, generatedName: string, path: string, schema
     }
 }
 
+/** A state's transition.next: route label -> target state. */
+function compileRoutes(raw: Record<string, unknown>, path: string, what: string, nodeIds: ReadonlySet<string>, diagnostics: Diagnostics): Record<string, string> {
+    const next: Record<string, string> = {};
+    if (!isJsonObject(raw.transition)) {
+        diagnostics.error("WORKFLOW_FIELD_REQUIRED", `${path}.transition`, `${what} needs transition.next.`);
+    } else {
+        checkKeys(raw.transition, ["next", "function"], `${path}.transition`, diagnostics);
+        if (raw.transition.function !== undefined) {
+            diagnostics.error("WORKFLOW_FEATURE_UNSUPPORTED", `${path}.transition.function`, "transition.function is not supported by this build yet; route on the state's outcome with transition.next.");
+        }
+        if (!isJsonObject(raw.transition.next) || Object.keys(raw.transition.next).length === 0) {
+            diagnostics.error("WORKFLOW_FIELD_REQUIRED", `${path}.transition.next`, "transition.next must map at least one route label to a state.");
+        } else {
+            for (const [label, target] of Object.entries(raw.transition.next)) {
+                if (!ID_PATTERN.test(label)) diagnostics.error("WORKFLOW_ROUTE_INVALID", `${path}.transition.next.${label}`, "route labels use a letter followed by letters, digits, '_' or '-'.");
+                if (typeof target !== "string" || !nodeIds.has(target)) {
+                    diagnostics.error("WORKFLOW_TARGET_UNKNOWN", `${path}.transition.next.${label}`, `route '${label}' targets unknown state '${String(target)}'.`);
+                } else next[label] = target;
+            }
+        }
+    }
+    return next;
+}
+
+function warnUnhandledFailure(path: string, next: Record<string, string>, hasCatchAll: boolean, diagnostics: Diagnostics): void {
+    if (!hasCatchAll && !Object.hasOwn(next, FAILURE_ROUTE) && !RUNTIME_ERROR_CODES.some(code => Object.hasOwn(next, code))) {
+        diagnostics.warning("WORKFLOW_FAILURE_UNHANDLED", `${path}.transition.next`,
+            "no failure route and no catchAll: a runtime error at this state (crash, timeout, invalid input or output) ends the run as failed.");
+    }
+}
+
 function compileScript(id: string, raw: Record<string, unknown>, nodeIds: ReadonlySet<string>, schemas: SchemaCollector, hasCatchAll: boolean, diagnostics: Diagnostics): WorkflowIRScript | null {
     const path = `states.${id}`;
     checkKeys(raw, ["type", "description", "runtime", "source", "timeoutSeconds", "input", "inputSchema", "outputSchema", "outcomes", "transition"], path, diagnostics);
@@ -229,25 +281,7 @@ function compileScript(id: string, raw: Record<string, unknown>, nodeIds: Readon
     const inputSchema = schemaField(raw.inputSchema, `node.${id}.input`, `${path}.inputSchema`, schemas, diagnostics);
     const outputSchema = schemaField(raw.outputSchema, `node.${id}.output`, `${path}.outputSchema`, schemas, diagnostics);
 
-    const next: Record<string, string> = {};
-    if (!isJsonObject(raw.transition)) {
-        diagnostics.error("WORKFLOW_FIELD_REQUIRED", `${path}.transition`, "a script needs transition.next.");
-    } else {
-        checkKeys(raw.transition, ["next", "function"], `${path}.transition`, diagnostics);
-        if (raw.transition.function !== undefined) {
-            diagnostics.error("WORKFLOW_FEATURE_UNSUPPORTED", `${path}.transition.function`, "transition.function is not supported by this build yet; route on the script's outcome with transition.next.");
-        }
-        if (!isJsonObject(raw.transition.next) || Object.keys(raw.transition.next).length === 0) {
-            diagnostics.error("WORKFLOW_FIELD_REQUIRED", `${path}.transition.next`, "transition.next must map at least one route label to a state.");
-        } else {
-            for (const [label, target] of Object.entries(raw.transition.next)) {
-                if (!ID_PATTERN.test(label)) diagnostics.error("WORKFLOW_ROUTE_INVALID", `${path}.transition.next.${label}`, "route labels use a letter followed by letters, digits, '_' or '-'.");
-                if (typeof target !== "string" || !nodeIds.has(target)) {
-                    diagnostics.error("WORKFLOW_TARGET_UNKNOWN", `${path}.transition.next.${label}`, `route '${label}' targets unknown state '${String(target)}'.`);
-                } else next[label] = target;
-            }
-        }
-    }
+    const next = compileRoutes(raw, path, "a script", nodeIds, diagnostics);
     let outcomes: string[];
     if (raw.outcomes !== undefined) {
         if (!isStringList(raw.outcomes) || raw.outcomes.length === 0 || !raw.outcomes.every(item => ID_PATTERN.test(item))
@@ -264,16 +298,55 @@ function compileScript(id: string, raw: Record<string, unknown>, nodeIds: Readon
         outcomes = Object.keys(next).filter(label => !isRuntimeRoute(label));
     }
     if (outcomes.length === 0) diagnostics.error("WORKFLOW_ROUTE_MISSING", `${path}.transition.next`, "a script needs at least one business outcome route.");
-    if (!hasCatchAll && !Object.hasOwn(next, FAILURE_ROUTE) && !RUNTIME_ERROR_CODES.some(code => Object.hasOwn(next, code))) {
-        diagnostics.warning("WORKFLOW_FAILURE_UNHANDLED", `${path}.transition.next`,
-            "no failure route and no catchAll: a runtime error at this state (crash, timeout, invalid output) ends the run as failed.");
-    }
+    warnUnhandledFailure(path, next, hasCatchAll, diagnostics);
     if (!source) return null;
     return {
         id, type: "script", description: optionalText(raw.description, `${path}.description`, diagnostics),
         source, timeoutSeconds, hasInput, input,
         inputSchema, outputSchema, outcomes, next,
     };
+}
+
+/**
+ * A wait state: a durable timer in the workflow's controller, never a
+ * script sleep. Its seconds are an integer or one binding (checked when the
+ * state is entered: invalid_input otherwise); it elapses with the value it
+ * was given as its output.
+ */
+function compileWait(id: string, raw: Record<string, unknown>, nodeIds: ReadonlySet<string>, hasCatchAll: boolean, diagnostics: Diagnostics): WorkflowIRWait | null {
+    const path = `states.${id}`;
+    checkKeys(raw, ["type", "description", "seconds", "input", "transition"], path, diagnostics);
+    let seconds: number | string | null = null;
+    const secondsMessage = `seconds must be an integer from 1 to ${WAIT_MAX_SECONDS}, or one \${...} binding that gives one.`;
+    if (typeof raw.seconds === "number") {
+        if (!Number.isInteger(raw.seconds) || raw.seconds < 1 || raw.seconds > WAIT_MAX_SECONDS) diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.seconds`, secondsMessage);
+        else seconds = raw.seconds;
+    } else if (typeof raw.seconds === "string") {
+        try {
+            if (parseBindingExpression(raw.seconds, `${path}.seconds`) === null) diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.seconds`, secondsMessage);
+            else seconds = raw.seconds;
+        } catch (error) {
+            if (!(error instanceof WorkflowBindingError)) throw error;
+            diagnostics.error(error.code, `${path}.seconds`, error.message);
+        }
+    } else {
+        diagnostics.error("WORKFLOW_FIELD_REQUIRED", `${path}.seconds`, secondsMessage);
+    }
+    const hasInput = Object.hasOwn(raw, "input");
+    const input = hasInput ? bindingValue(raw.input, `${path}.input`, diagnostics) : null;
+    const next = compileRoutes(raw, path, "a wait", nodeIds, diagnostics);
+    for (const label of Object.keys(next)) {
+        if (label !== WAIT_ELAPSED && !isRuntimeRoute(label)) {
+            diagnostics.error("WORKFLOW_ROUTE_INVALID", `${path}.transition.next.${label}`,
+                `a wait has one outcome, '${WAIT_ELAPSED}'; its other routes must be runtime error codes or '${FAILURE_ROUTE}'.`);
+        }
+    }
+    if (isJsonObject(raw.transition) && isJsonObject(raw.transition.next) && !Object.hasOwn(next, WAIT_ELAPSED)) {
+        diagnostics.error("WORKFLOW_ROUTE_MISSING", `${path}.transition.next`, `a wait needs an '${WAIT_ELAPSED}' route.`);
+    }
+    warnUnhandledFailure(path, next, hasCatchAll, diagnostics);
+    if (seconds === null) return null;
+    return { id, type: "wait", description: optionalText(raw.description, `${path}.description`, diagnostics), seconds, hasInput, input, next };
 }
 
 function compileTerminal(id: string, raw: Record<string, unknown>, schemas: SchemaCollector, diagnostics: Diagnostics): WorkflowIRTerminal | null {
@@ -298,11 +371,11 @@ function compileTerminal(id: string, raw: Record<string, unknown>, schemas: Sche
 function checkGraph(ir: { initial: string; catchAll: string | null; nodes: Record<string, WorkflowIRNode> }, diagnostics: Diagnostics): void {
     const successors = (id: string): string[] => {
         const node = ir.nodes[id];
-        return node && node.type === "script" ? Object.values(node.next) : [];
+        return node && node.type !== "terminal" ? Object.values(node.next) : [];
     };
     const reachable = new Set<string>();
-    // Any script may fail into the catch-all state, so it is reachable when declared.
-    const stack = ir.catchAll !== null && Object.values(ir.nodes).some(node => node.type === "script") ? [ir.initial, ir.catchAll] : [ir.initial];
+    // Any script or wait may fail into the catch-all state, so it is reachable when declared.
+    const stack = ir.catchAll !== null && Object.values(ir.nodes).some(node => node.type !== "terminal") ? [ir.initial, ir.catchAll] : [ir.initial];
     while (stack.length) {
         const id = stack.pop()!;
         if (reachable.has(id) || !ir.nodes[id]) continue;
@@ -436,6 +509,9 @@ export function compileWorkflowV2(yaml: string): WorkflowCompileResult {
             if (type === "script") {
                 const node = compileScript(id, rawNode, nodeIds, schemas, hasCatchAll, diagnostics);
                 if (node) nodes[id] = node;
+            } else if (type === "wait") {
+                const node = compileWait(id, rawNode, nodeIds, hasCatchAll, diagnostics);
+                if (node) nodes[id] = node;
             } else if (type === "terminal") {
                 const node = compileTerminal(id, rawNode, schemas, diagnostics);
                 if (node) nodes[id] = node;
@@ -472,7 +548,7 @@ export function compileWorkflowV2(yaml: string): WorkflowCompileResult {
     checkGraph({ initial, catchAll, nodes }, diagnostics);
     if (diagnostics.failed) return result(name, version, null);
     const ir: WorkflowIR = {
-        irVersion: WORKFLOW_V2_IR_VERSION,
+        irVersion: Object.values(nodes).some(node => node.type === "wait") ? WORKFLOW_V2_WAIT_IR_VERSION : WORKFLOW_V2_IR_VERSION,
         apiVersion: WORKFLOW_V2_API_VERSION,
         name, version,
         description: optionalText(root.description, "description", diagnostics),
@@ -545,8 +621,9 @@ export function parseDiagnostics(value: JsonValue): WorkflowDiagnostic[] {
 /** Read stored IR (already hash-verified) back with its declared shape. */
 export function parseWorkflowIr(value: JsonValue): WorkflowIR {
     need(isJsonObject(value), "stored IR is not an object");
-    need(value.irVersion === 1 || value.irVersion === 2 || value.irVersion === 3, `stored IR version ${String(value.irVersion)} is not supported by this worker`);
-    const irVersion: 1 | 2 | 3 = value.irVersion;
+    need(value.irVersion === 1 || value.irVersion === 2 || value.irVersion === 3 || value.irVersion === 4,
+        `stored IR version ${String(value.irVersion)} is not supported by this worker`);
+    const irVersion: 1 | 2 | 3 | 4 = value.irVersion;
     // A field a version introduced must be stated (null when absent) from that version on.
     const rootOutputSchema = irVersion === 1 && !Object.hasOwn(value, "outputSchema") ? null : value.outputSchema;
     const catchAll = irVersion < 3 && !Object.hasOwn(value, "catchAll") ? null : value.catchAll;
@@ -570,6 +647,12 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
                 hasInput: node.hasInput, input: node.input, inputSchema: node.inputSchema, outputSchema: node.outputSchema,
                 outcomes: node.outcomes, next: node.next,
             };
+        } else if (node.type === "wait") {
+            const seconds = node.seconds;
+            need(irVersion >= WORKFLOW_V2_WAIT_IR_VERSION && (typeof seconds === "number" || typeof seconds === "string")
+                && typeof node.hasInput === "boolean" && Object.hasOwn(node, "input") && stringMap(node.next),
+                `stored IR wait ${id} is invalid`);
+            nodes[id] = { id, type: "wait", description: node.description, seconds, hasInput: node.hasInput, input: node.input, next: node.next };
         } else if (node.type === "terminal") {
             need(isTerminalOutcome(node.outcome)
                 && nullableString(node.summary) && typeof node.hasOutput === "boolean" && Object.hasOwn(node, "output")

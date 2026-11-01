@@ -27,6 +27,7 @@ import {
     WORKFLOW_V2_CONTROLLER_VERSION,
     WORKFLOW_V2_EFFECT_NAME,
     WORKFLOW_V2_EFFECT_VERSION,
+    WORKFLOW_V2_COMPATIBLE_CONTROLLER_VERSIONS,
     WORKFLOW_V2_NOTIFY_NAME,
     WORKFLOW_V2_NOTIFY_VERSION,
     WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS,
@@ -108,11 +109,14 @@ test("workflow v2 registers each orchestration's versions in ascending order, th
     };
     registerWorkflowV2(runtime, { store: {} });
     const controllers = registered.filter((entry) => entry.name === WORKFLOW_V2_CONTROLLER_NAME);
-    assert.deepEqual(controllers.map((entry) => entry.version), [...WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS, WORKFLOW_V2_CONTROLLER_VERSION]);
-    assert.equal(controllers.at(-1).fn, workflowV2Controller);
+    assert.deepEqual(controllers.map((entry) => entry.version),
+        [...WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS, ...WORKFLOW_V2_COMPATIBLE_CONTROLLER_VERSIONS, WORKFLOW_V2_CONTROLLER_VERSION]);
+    // The current version and every compatible earlier one run this build's controller.
+    const fenced = controllers.slice(0, WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS.length);
+    for (const entry of controllers.slice(fenced.length)) assert.equal(entry.fn, workflowV2Controller, `${entry.version} replays with this build`);
     // Each fenced version keeps its handler: it fails at once, naming its version and the way out.
-    assert.ok(WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS.length > 0);
-    for (const entry of controllers.slice(0, -1)) {
+    assert.ok(fenced.length > 0);
+    for (const entry of fenced) {
         assert.throws(() => entry.fn().next(), (error) => error.message.includes(`version ${entry.version}, written by a pre-release build`)
             && error.message.includes("update_workflow operation recover"));
     }
