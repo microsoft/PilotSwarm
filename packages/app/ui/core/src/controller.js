@@ -3941,7 +3941,7 @@ export class PilotSwarmUiController {
         return images;
     }
     async refreshMotd() {
-        if (typeof this.transport.getCurrentMotd !== "function") return;
+        if (!this.getState().motd.portalEnabled || typeof this.transport.getCurrentMotd !== "function") return;
         const state = this.getState().motd;
         const now = Date.now();
         if (state.reading || state.readAt !== null && now - state.readAt < MOTD_REFRESH_MS) return;

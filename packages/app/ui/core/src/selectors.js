@@ -4862,7 +4862,7 @@ export function selectAdminConsole(state) {
     // hosts; `kind` drives affordances (section rows switch panes, package
     // rows select a package).
     const role = state.auth?.authorization?.role;
-    const motdAdmin = isAdmin && (!role || role === "admin" || role === "anonymous");
+    const motdAdmin = state.motd?.portalEnabled && isAdmin && (!role || role === "admin" || role === "anonymous");
     const section = ["providers", "packages", "workers", "features", ...(motdAdmin ? ["motd"] : [])].includes(admin.section) ? admin.section : "providers";
     const settingsTree = [
         { id: "providers", kind: "section", depth: 0, label: "Model Providers", selected: false },

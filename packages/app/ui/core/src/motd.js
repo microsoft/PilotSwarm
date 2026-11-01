@@ -1,6 +1,6 @@
 export const MOTD_REFRESH_MS = 30_000;
-export function createMotdState(generation = 0) {
-    return { generation, current: null, preview: null, previewMobile: false, images: {}, dismissed: [],
+export function createMotdState(generation = 0, portalEnabled = false) {
+    return { generation, portalEnabled, current: null, preview: null, previewMobile: false, images: {}, dismissed: [],
         pendingDismissals: [], reading: false, readAt: null, error: null };
 }
 export function createMotdAdminState() {

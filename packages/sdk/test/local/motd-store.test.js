@@ -125,4 +125,20 @@ describe.skipIf(!pool)("message SQL functions in isolated PostgreSQL", () => {
         expect(message).not.toHaveProperty("image");
         expect(await store.image(alice, message.motdId, true)).toEqual(png);
     });
+    it("accepts exactly 2 MB for each picture and rejects invalid table metadata", async () => {
+        const bytes = Buffer.alloc(2 * 1024 * 1024);
+        Buffer.from(png.base64, "base64").copy(bytes);
+        const image = { ...png, base64: bytes.toString("base64") };
+        const message = await store.create(admin, input({ image, mobileImage: image }));
+        expect(message).toMatchObject({ hasImage: true, hasMobileImage: true });
+        await expect(pool.query(`UPDATE "${schema}".motds SET image_alt = NULL WHERE motd_id = $1`, [message.motdId]))
+            .rejects.toMatchObject({ code: "23514" });
+    });
+    it("does not allow pre-dismissal of a future ID and acknowledges deletion races", async () => {
+        await store.dismiss(alice, "9223372036854775807");
+        expect((await pool.query(`SELECT * FROM "${schema}".motd_dismissals`)).rows).toHaveLength(0);
+        const message = await store.create(admin, input());
+        await store.delete(admin, message.motdId);
+        expect(await store.dismiss(alice, message.motdId)).toMatchObject({ dismissed: true });
+    });
 });

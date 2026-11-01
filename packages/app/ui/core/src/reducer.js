@@ -981,7 +981,7 @@ function baseReducer(state, action) {
                     ? { ...state.admin, features: clearFeatureIdentity(state.admin.features), motds: createMotdAdminState() } : state.admin,
                 motd: featurePrincipalKey(state.auth?.principal) !== featurePrincipalKey(action.principal)
                     || state.auth?.authorization?.role !== action.authorization?.role
-                    ? createMotdState((state.motd?.generation || 0) + 1) : state.motd,
+                    ? createMotdState((state.motd?.generation || 0) + 1, state.motd?.portalEnabled) : state.motd,
                 auth: {
                     principal: action.principal ?? null,
                     authorization: action.authorization ?? null,
@@ -2576,7 +2576,7 @@ function baseReducer(state, action) {
                 ...state,
                 motd: featurePrincipalKey(state.admin.profile) !== featurePrincipalKey(action.profile)
                     || Boolean(state.admin.profile?.isAdmin) !== Boolean(action.profile?.isAdmin)
-                    ? createMotdState((state.motd?.generation || 0) + 1) : state.motd,
+                    ? createMotdState((state.motd?.generation || 0) + 1, state.motd?.portalEnabled) : state.motd,
                 admin: {
                     ...state.admin,
                     loading: false,

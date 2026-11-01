@@ -7,6 +7,7 @@ const message = (id = "1", extra = {}) => ({ motdId: id, bodyMd: "Hello", fromAt
 const tick = () => new Promise(resolve => setImmediate(resolve));
 function setup(overrides = {}, profile = admin) {
     const store = createStore(appReducer, createInitialState({ mode: "remote" }));
+    store.dispatch({ type: "motd/patch", patch: { portalEnabled: true } });
     store.dispatch({ type: "admin/profile/loaded", profile });
     const transport = { getCurrentMotd: async () => message(), dismissMotd: async () => {},
         listMotds: async () => [message("1", { status: "live" })], ...overrides };
@@ -20,6 +21,14 @@ test("MoTD reads are throttled to 30 seconds and support expiry/deletion", async
     await controller.refreshMotd(); assert.equal(reads, 1);
     store.dispatch({ type: "motd/patch", patch: { readAt: Date.now() - 30_001 } });
     await controller.refreshMotd(); assert.equal(reads, 2); assert.equal(selectMotd(store.getState()).message, null);
+});
+test("a terminal controller does not poll or expose the browser-only MoTD tab", async () => {
+    let reads = 0;
+    const { controller, store } = setup({ getCurrentMotd: async () => { reads++; } });
+    store.dispatch({ type: "motd/patch", patch: { portalEnabled: false } });
+    await controller.refreshMotd();
+    assert.equal(reads, 0);
+    assert.ok(!selectAdminConsole(store.getState()).settingsTree.some(row => row.id === "motd"));
 });
 test("dismissal hides immediately, retries failure and never writes profile settings", async () => {
     let dismissals = 0, profileWrites = 0;

@@ -32,7 +32,8 @@ test("MCP registers and dispatches every message tool with lossless message IDs"
             assert.ok(!(await client.callTool({ name, arguments: args })).isError, name);
         }
         assert.equal(calls[1].args[1], "9007199254740993");
-        assert.deepEqual(calls[4].args, [{ principal: { provider: "test", subject: "admin" }, isAdmin: true }, request]);
+        assert.deepEqual(calls[4].args[0], { principal: { provider: "test", subject: "admin" }, isAdmin: true });
+        assert.deepEqual(JSON.parse(JSON.stringify(calls[4].args[1])), request);
         assert.equal((await client.callTool({ name: "create_motd", arguments: { bodyMd: "missing window" } })).isError, true);
         assert.equal(calls.length, 6);
     });

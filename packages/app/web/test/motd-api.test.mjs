@@ -37,7 +37,7 @@ test("MoTD routes reach the authenticated runtime and cannot spoof their viewer"
     await harness(async ({ admin, alice, calls, runtime }) => {
         const request = { fromAt: "2020-01-01T00:00:00Z", toAt: "2090-01-01T00:00:00Z", bodyMd: "Hello", requestId: "one" };
         await admin.call("createMotd", { ...request, isAdmin: false, principal: { provider: "fake", subject: "fake" } });
-        assert.deepEqual(calls[0], { method: "createMotd", args: [{ principal: { provider: "test", subject: "admin" }, isAdmin: true }, request] });
+        assert.deepEqual(calls[0], { method: "createMotd", args: [{ principal: { provider: "test", subject: "admin", email: null, displayName: null }, isAdmin: true }, request] });
         await alice.call("getCurrentMotd"); await alice.call("dismissMotd", { motdId: "1" });
         await alice.call("getMotdImage", { motdId: "1", mobile: true });
         await admin.call("listMotds", { limit: 2, before: "9" }); await admin.call("deleteMotd", { motdId: "1" });
@@ -69,7 +69,9 @@ test("create alone accepts two 2 MB base64 pictures within 6 MB; default and ove
 });
 test("HTTP transport uses the canonical operation names and parameters", async () => {
     const calls = [];
-    const transport = new HttpApiTransport({ api: { call: async (...args) => { calls.push(args); } } });
+    const api = new ApiClient({ apiUrl: "https://example.invalid" });
+    api.call = async (...args) => { calls.push(args); };
+    const transport = new HttpApiTransport({ api });
     await transport.getCurrentMotd(); await transport.dismissMotd("1"); await transport.getMotdImage("1", true);
     await transport.listMotds(2, "9"); await transport.createMotd({ bodyMd: "body" }); await transport.deleteMotd("1");
     assert.deepEqual(calls.map(c => c[0]), MOTD_OPERATION_SPECS.map(s => s.method));

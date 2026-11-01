@@ -15694,6 +15694,8 @@ export function createWebPilotSwarmController({ transport, mode = "remote", bran
         branding,
         docs,
     }));
+    // The browser owns the splash surface. The terminal notice is a later change.
+    store.dispatch({ type: "motd/patch", patch: { portalEnabled: true } });
     // Only the initial device default. A saved value for this device wins
     // when the profile loads, including an explicit mobile opt-out.
     store.dispatch({ type: "ui/touchScale", enabled: isNarrowViewport });
