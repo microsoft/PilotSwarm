@@ -81,6 +81,7 @@ export function MotdAdminPanel({ controller, state, images = {}, isAdmin, canRea
     const mobileRef = React.useRef(null);
     const handledFocusVersion = React.useRef(state.draftFocusVersion);
     React.useLayoutEffect(() => {
+        if (state.draftFocusVersion < handledFocusVersion.current) handledFocusVersion.current = state.draftFocusVersion;
         if (!isAdmin || state.draftFocusVersion <= handledFocusVersion.current || state.duplicatingId) return;
         handledFocusVersion.current = state.draftFocusVersion;
         setPictureError(null);
