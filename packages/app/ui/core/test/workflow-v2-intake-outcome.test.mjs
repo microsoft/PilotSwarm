@@ -53,7 +53,8 @@ test("the selected node panel shows a distinct recipient intake line beside an u
     assert.match(html, /Intake noted at<\/span><strong>2026-11-01T20:00:00.123456Z</);
     assert.match(html, /Delivery state<\/span><strong>delivered</);
     assert.match(html, /Attempts<\/span><strong>2</);
-    assert.match(html, /refused this message after it was delivered to its queue/);
+    assert.match(html, /intake refused this message\. This does not change the recorded delivery state or show that the recipient read or acted on it\./);
+    assert.ok(!html.includes("after it was delivered"));
     assert.match(html, /does not show that the recipient read, answered or acted on it/);
     assert.ok(!/Delivery to .* failed/.test(html));
     assert.match(panel(model(message({ intakeOutcome: "refused_size", intakeOutcomeAt: AT }))), /Refused · message too large/);
@@ -68,6 +69,17 @@ test("a pending or failed delivery with an annotation is shown as recorded, not 
     const html = panel(model(message({ state: "pending", attempts: 0, deliveredAt: null, intakeOutcome: "refused_full", intakeOutcomeAt: AT }), [row("notify", 1, "pending")]));
     assert.match(html, /Delivery state<\/span><strong>pending</);
     assert.match(html, /Refused · queue full/);
+    assert.match(html, /intake refused this message\. This does not change the recorded delivery state/);
+    assert.ok(!html.includes("was delivered to the queue") && !html.includes("after it was delivered") && !html.includes("Sent · queued"),
+        "a pending delivery's panel does not claim delivery");
+    assert.match(html, /Delivering Alert@1 to parent-1/);
+    const failedHtml = panel(model(message({ state: "failed", errorPreview: '{"code":"delivery_failed"}', intakeOutcome: "refused_size", intakeOutcomeAt: AT }),
+        [done("notify", 1, "delivery_failed", { resultKind: "runtime_error" })]));
+    assert.match(failedHtml, /Delivery state<\/span><strong>failed</);
+    assert.match(failedHtml, /Refused · message too large/);
+    assert.match(failedHtml, /Delivery to parent-1 failed/);
+    assert.ok(!failedHtml.includes("was delivered to the queue") && !failedHtml.includes("after it was delivered") && !failedHtml.includes("Sent · queued"),
+        "a failed delivery's panel does not claim delivery or completion");
     const failed = projectWorkflowV2({ readModel: model(message({ state: "failed", errorPreview: '{"code":"delivery_failed"}', intakeOutcome: "refused_size", intakeOutcomeAt: AT }),
         [done("notify", 1, "delivery_failed", { resultKind: "runtime_error" })]) });
     assert.equal(exec(failed).state, "failed");

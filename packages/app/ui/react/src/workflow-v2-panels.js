@@ -52,7 +52,7 @@ function IntakeOutcome({ intake }) {
             : `Unrecognized outcome${intake.raw ? ` · ${intake.raw}` : ""}`),
         row("Intake noted at", intake.at || "Time not recorded"),
         h("p", null, refused
-            ? "The recipient's intake refused this message after it was delivered to its queue. The delivery above is as recorded and is not changed by this."
+            ? "The recipient's intake refused this message. This does not change the recorded delivery state or show that the recipient read or acted on it."
             : "This intake note is not recognized, so it is not shown as a result. The delivery above is as recorded."));
 }
 
