@@ -1,132 +1,352 @@
-# Compute providers: running a session's GHCP runtime somewhere else
+# Compute providers: run a session's agent somewhere other than the worker
 
-Status: exploration. Nothing here is released; the exported interface is
-experimental and may change.
+**Status:** exploration on a feature branch, draft PR for discussion. Core is
+built on the branch; the remaining parts (provider services, the handshake,
+leases, clear failures, and the management surfaces) are being built now and
+are marked where they appear. **Date:** 2026-11-01, revision 1. This revision
+restructures the proposal to match `docs/proposals/session-workspaces.md`: a
+high-level design for a human reader first, then numbered sections.
 
-## The problem
+A session's agent runs on a host chosen for that session, not inside the
+worker that serves the turn. The worker stays the trusted side: it keeps the
+orchestration, the PilotSwarm tools, the model keys and the session's history.
+The agent runtime runs on a separate host and is driven over a connection
+whose two ends prove who they are. A **compute provider**, registered by an
+administrator, supplies the hosts. Nothing in the design names a cloud, a
+platform, a network product or a kind of machine; a provider can front a
+shared pool, a managed sandbox service, or a user's own machine.
 
-Today every session's GHCP runtime (the Copilot CLI: the agent loop and its
-built-in tools such as `bash`) runs as a child process of the PilotSwarm
-worker that claims the turn. The runtime inherits the worker's environment,
-so model-chosen code runs next to the worker's database, blob and model
-credentials. And every session runs on the same kind of machine.
+## High-level design
 
-We want sessions to run on a choice of compute, chosen per session, while
-keeping one rule:
+**The problem.** Every session's agent runtime — the part that runs
+model-chosen commands — runs as a child process of the worker that serves the
+turn. So model-chosen code runs next to the worker's database access and its
+credentials. And every session runs on the same kind of machine, whatever
+isolation or tools it needs.
 
-> **Invariant:** a GHCP runtime never runs in the same context (process,
-> container, VM or machine) as anything that can access the CMS or duroxide.
-> Commands and results may cross that boundary; database credentials and
-> network routes to the database never do.
+**The solution.** Keep the worker as the trusted side, and let the agent run
+on a separate host chosen per session. A compute provider, registered by an
+administrator, supplies hosts. The worker drives the agent over a connection;
+everything the agent sends back is checked by the worker.
 
-## Shape
+```mermaid
+flowchart LR
+  subgraph T["Trusted: PilotSwarm"]
+    DB[("CMS and orchestration")]
+    W["Worker<br/>orchestration, PilotSwarm tools,<br/>model keys, session state"]
+  end
+  P["Compute provider<br/>(registered service)"]
+  subgraph U["Untrusted: hosts"]
+    H1["Host<br/>agent runtime"]
+    H2["Host<br/>agent runtime"]
+  end
+  W --- DB
+  W -- "get / release a host" --> P
+  P -- "creates or pairs" --> H1
+  P -. "creates or pairs" .-> H2
+  W == "connection: both ends prove who they are,<br/>then tool calls, results, model requests" ==> H1
+```
 
-The worker stays trusted and keeps everything it has today: orchestrations,
-PilotSwarm tools, authorization, model credentials and session state. Only
-the GHCP runtime moves. The worker drives it remotely through the Copilot
-SDK connection; the runtime calls back over the same connection for
-PilotSwarm tools, model requests, session-state reads and writes, and
-permission requests.
+> **Rule:** an agent never runs where the CMS or orchestration state can be
+> reached. Commands and results cross that line; credentials and database
+> access never do.
 
-Nothing in this design names a platform. A compute type can be a container on
-separate machines, a managed sandbox service, a user's own machine, or an
-existing build pool. Each is a plug-in.
+The main ideas:
 
-## Terms
+- **A compute target** is a registered place to run: shared (`shared/<label>`)
+  or someone's own (`<owner>/<label>`). A session picks one when it is created
+  and keeps it.
+- **A compute provider** knows one kind of compute. It gets a host ready, says
+  how to reach it, and decides what happens to the host when PilotSwarm is
+  done with it.
+- **One host per session tree.** A parent session and its sub-agents share a
+  host.
+- **The connection is just a pipe.** Each provider has one way of being
+  reached. PilotSwarm needs only a two-way, ordered, reliable connection and
+  never learns what it is made of.
+- **Both ends prove who they are** before anything else crosses, with one
+  handshake PilotSwarm defines for every provider.
+- **Targets say what they offer,** for example models of their own. That
+  shapes the choices when a session is created. It never grants access.
+- **The worker keeps what must be trusted:** orchestration, PilotSwarm tools,
+  PilotSwarm's model keys and the session's history.
+
+**One turn**
+
+```text
+On the worker that runs the turn:
+1. Load the conversation (as today).
+2. Re-check that the session's owner may still use its target.
+3. Ask the provider for the tree's host. Keep a lease on it while in use.
+4. Open the connection; worker and host prove who they are.
+5. Start or resume the agent on the host. Its model requests come back to
+   the worker, which adds PilotSwarm's real keys; its session files are
+   written to the worker's folder for that session.
+6. The model runs the turn. PilotSwarm tools run in the worker.
+
+If step 2, 3 or 4 fails, the model is not called and the turn fails with
+a reason. The agent never falls back to running on the worker.
+```
+
+**Registering compute**
+
+| Who | Does what |
+|---|---|
+| An administrator | Registers a provider service. PilotSwarm and the provider learn to recognize each other. The provider declares its way of being reached and what it can do. |
+| An administrator | Registers a shared target (`shared/<label>`). |
+| A user | Registers a target of their own (`<owner>/<label>`). Only these may offer models of their own. |
+| PilotSwarm | Checks a new target once and records what it offers; refreshes that later. |
+| A user creating a session | Picks the target, then a model from that target's list. |
+
+**Who owns what**
+
+| Owner | Owns |
+|---|---|
+| PilotSwarm core | Targets and who may use them. The turn steps above. The connection bridge and the handshake. Model-key handling and session state. It has no cloud, network-product or host-type code. |
+| A compute provider | Getting, cleaning, reusing or discarding hosts. Its one way of being reached. Putting the handshake secret on its hosts. Any spare hosts kept ready for bursts. |
+| The deployment | Running the provider services, and the network between workers and hosts. |
+
+**What does not change**
+
+- A session without a target runs exactly as today: same tools, same prompt,
+  same steps. Only sessions that name a target see anything new.
+- No orchestration change in the built core. Migration 0084 is new and
+  additive. Clear failures (section 4.10) add one new orchestration version
+  when they land; ordinary sessions behave identically.
+
+**Main choices**
+
+| Chosen | Instead of | Why |
+|---|---|---|
+| Providers run as services outside the worker | Provider code inside every worker | The worker never holds the rights to create hosts. One service can keep a shared pool of spare hosts. |
+| A provider-opened pipe | Fixed transports built into PilotSwarm | Any medium works without PilotSwarm knowing it. |
+| One handshake defined by PilotSwarm | Each provider's own trust scheme | The worker checks every host the same way itself. |
+| The provider decides a host's fate | PilotSwarm deleting hosts | Some hosts are never removed; others are cleaned and reused. Only the provider knows. |
+| Names that include the owner | Free-form global names | Names never collide between people, and nobody can take a name administrators need. |
+
+For details, see section 3 (the parts and who owns what), 4 (the PilotSwarm
+design), 5 (the reference `process` provider), 6 (walkthroughs), 9 (decisions
+and open items) and 11 (what is built, being built and later).
+
+## Contents
+
+1. [Goal and scenarios](#1-goal-and-scenarios)
+2. [Terms](#2-terms)
+3. [Architecture and who owns what](#3-architecture-and-who-owns-what)
+4. [PilotSwarm design](#4-pilotswarm-design)
+5. [The `process` provider as the reference](#5-the-process-provider-as-the-reference)
+6. [Walkthroughs](#6-walkthroughs)
+7. [Corner cases](#7-corner-cases)
+8. [Test plan](#8-test-plan)
+9. [Decisions, verified facts and open items](#9-decisions-verified-facts-and-open-items)
+10. [Implementation map](#10-implementation-map)
+11. [Delivery plan](#11-delivery-plan)
+
+## 1. Goal and scenarios
+
+The one rule the whole design serves:
+
+> **Invariant:** an agent runtime never runs in the same place (process,
+> container, machine) as anything that can reach the CMS or the orchestration
+> state. Commands and results may cross that line; database credentials and
+> routes to the database never do.
+
+| # | Scenario |
+|---|---|
+| S1 | A session runs its agent on a host that is not the worker, chosen when the session is created and kept for the life of the session tree. |
+| S2 | A sub-agent runs on the same host as its parent. One host serves a whole session tree. |
+| S3 | A session moves to another worker and keeps going. The next worker reaches the same host, or is given a fresh one, without losing the conversation. |
+| S4 | An administrator registers compute everyone shares. A user registers compute of their own. |
+| S5 | A target says what it offers — for example models of its own. That shapes the targets and models a person is shown. |
+| S6 | A new kind of compute is added by registering a provider service, with no new code in the worker. |
+| S7 | When compute cannot be used, the person is told why, and a reason that retrying cannot fix stops the turn at once. |
+| S8 | Existing sessions, with no target, run exactly as they do today. |
+
+Not in scope for this work: creating hosts on demand (provisioning); a session
+whose sub-agents span more than one target; isolating session-state files
+between tenants beyond today's confinement; high availability of a provider
+service.
+
+Accepted, and stated here so nobody expects otherwise:
+
+- The agent runtime is untrusted: it runs model-chosen code. Everything it
+  sends back to the worker is checked in the worker.
+- A target's own description of itself (its advertisement) is untrusted. It
+  decides what options a person is shown; it never decides what anyone may do.
+- A worker can crash without telling a provider it is finished with a host, so
+  every provider still needs its own expiry. PilotSwarm's lease and done
+  notice reduce the cases, not remove them.
+- Today a connection is trusted because of where it goes and the runtime's own
+  token. The mutual handshake (section 4.5) is being built and is what makes
+  each end prove itself.
+
+## 2. Terms
+
+Defined before use, in the order the rest of the document needs them.
 
 | Term | Meaning |
 |---|---|
-| Compute type | A kind of place a runtime can run |
-| Compute provider | The worker plug-in for one compute type, identified by `kind` |
-| Compute target | A registered instance of a compute type, stored in the CMS. Users pick one per session |
-| Host | The concrete runtime a session tree is bound to |
+| Worker | The trusted PilotSwarm process that serves a turn. It holds the orchestration, the PilotSwarm tools, the model keys and the session's history. |
+| Agent runtime | The part that runs the agent loop and the model-chosen commands (such as a shell). Today it runs in the worker; this design lets it run on a host. Also "the runtime". |
+| Compute type | A kind of place a runtime can run. |
+| Compute provider | The code for one compute type, named by its `kind`. It gets a host ready and says how to reach it. |
+| Provider service | A compute provider that runs as its own service, outside the worker, registered by an administrator. The worker reaches it over HTTPS. |
+| Remote connector | The one built-in provider in the worker that forwards each provider call to a registered provider service. The worker needs no per-type code. |
+| Compute target | A registered instance of a compute type, stored in the CMS. A session picks one. Named `<owner>/<label>`. |
+| Host | The concrete place a session tree's runtime is bound to. Has an `id` and an `incarnation` that changes when it is replaced. |
+| Host component | A small PilotSwarm program on the host. It answers the handshake, then forwards the connection to the runtime's local port. |
+| Binding | One (target, session tree) pairing to a host. It carries a per-binding secret and a lease. |
+| Lease | A short-lived claim the worker renews while it uses a host. Renewals stop when the worker stops using the host (or crashes). |
+| Done notice | A one-time message to the provider that a session tree is finished with a host, sent even when the tree ended while not loaded anywhere. |
+| Pipe | A two-way, ordered, reliable byte stream to one host's runtime. Everything above the provider sees only a pipe. |
+| Transport | How a provider's pipe is made: `direct` (the host is reachable at an address) or `pipe` (the provider opens the connection itself). Exactly one per provider. |
+| Bridge | A loopback listener the worker runs, one per binding. It turns a provider-opened pipe into an address the runtime connection can dial. |
+| Handshake | One mutual proof PilotSwarm defines, run on every remote connection before any session traffic. Each end proves it holds the binding's secret. |
+| Endpoint | What `connect` returns: `uri` (an address the worker dials) or `pipe` (open the connection through the provider). |
+| Advertisement | A target's own description of what it offers (its capabilities), stored with the time it was last heard, bounded, and used only to shape options. |
+| Capabilities | What a target or provider offers. Provider capabilities are fixed in code; target capabilities are advertised and refreshed. |
+| Host models | Models a target serves with its own model access. They appear under `@<target>:<model>` names. Only a personal target may offer them. |
+| Probe | A check at registration — bind, connect, ask the runtime, release — that validates a target and records what it offers. |
+| Placeholder credentials | Per-session, per-binding random stand-ins the runtime holds instead of real model keys. The worker swaps them for real keys on each request. |
+| SessionFs | The session-state file surface the runtime reads and writes. It is confined to the worker's folder for that session. |
+| Permanent failure | A compute failure that retrying cannot fix (target gone, disabled, access lost, unsupported, handshake failed). It stops the turn at once. |
+| Temporary failure | A compute failure that may pass (host offline, no capacity, provider unreachable). It keeps today's retries, with a clear message. |
+| Session tree | A root session and all of its sub-agents. It runs on one target, fixed at the root. |
+| CMS | The session catalog database: sessions, events, and the new `compute_targets` table. |
 
-A session tree runs entirely on one compute target, fixed when its root
-session is created. The worker reads the target from the root session's
-record before every turn, so a sub-agent always runs where its tree runs,
-and nothing a client sends later can move a session. Whether a tree should
-ever span several targets is an open question.
+## 3. Architecture and who owns what
 
-## How compute gets registered and used
+```mermaid
+flowchart LR
+  subgraph T["Trusted: PilotSwarm worker"]
+    ORCH["Orchestration + PilotSwarm tools"]
+    RC["Remote connector"]
+    BR["Bridge (loopback, one per binding)"]
+    ORCH --- RC
+  end
+  PS["Provider service<br/>(registered)"]
+  subgraph HOST["Untrusted host"]
+    HCOMP["Host component"]
+    RT["Agent runtime"]
+    HCOMP --- RT
+  end
+  RC -- "describe / validate / bind / connect<br/>renew / done / release (HTTPS, /v1)" --> PS
+  PS -- "creates or pairs" --> HOST
+  BR == "handshake, then pass-through (pipe transport)" ==> HCOMP
+  RC -- "dial address (direct transport)" --> HCOMP
+  HCOMP -- "forward to local port" --> RT
+  RT -- "model requests, tool calls,<br/>session-state reads/writes" --> ORCH
+```
 
-1. **An administrator registers a provider.** PilotSwarm is told which
-   provider service to trust, and the provider is told how to recognize
-   PilotSwarm. The provider declares its one way of being reached and what
-   it can do.
-2. **Someone registers a target with that provider** — an administrator for
-   one everybody shares, a user for one of their own. Its name says who owns
-   it (`shared/…` or `<owner>/…`), and its settings hold no secrets.
-3. **PilotSwarm checks the new target once and records what it offers** —
-   for example models of its own, which only a personal target may offer.
-   That is what shapes the choices when a session is created.
-4. **A user creates a session**: they pick the target first, then a model
-   from that target's list.
-5. **Each turn**: PilotSwarm re-checks that the owner may still use the
-   target, asks the provider for a host, opens the connection, and the
-   worker and the host prove themselves to each other before anything else
-   crosses. PilotSwarm keeps a lease while it is using the host.
-6. **When a session tree is done with a host, PilotSwarm says so.** The
-   provider decides whether to keep it, clean it and reuse it, or replace
-   it. A reused host must carry nothing over from before.
+Every arrow is a call the design makes. A `direct` provider's host is reached
+at an address the worker dials; a `pipe` provider's connection is opened by the
+provider and joined through the bridge. Either way the host component answers
+the handshake first, then forwards to the runtime. The runtime's model
+requests and session-state access come back to the worker, which checks them.
 
-Steps 2, 4 and 5 are on this branch, minus the handshake. Step 1, the
-lease, the handshake and the end-of-session notice are not built yet.
+PilotSwarm core has no cloud, network-product or host-type code. In the split
+below, "the provider" is the code for one compute type (often a registered
+service), and "the deployment" is everything the operator runs: the provider
+services and the network between workers and hosts.
 
-## Compute targets (data)
+| Concern | Core supplies | The provider / deployment supplies | Where they meet |
+|---|---|---|---|
+| Registering a kind of compute | A table of trusted provider services and the identity to expect from each (**being built**) | A running service that answers `/v1` and declares its kind, transport and capabilities | `describe`, recorded at registration |
+| Registering a place to run | The `compute_targets` table, owner-qualified names, create/update/enable/disable/delete, resolve (**built**) | A `config` object the provider understands (no secrets) | `cms_compute_target_*` procedures |
+| Checking a target once | A probe: bind, connect, ask the runtime, release; stores the advertisement (**built**) | Answering the probe honestly | `describeHost` / the runtime's model list |
+| Getting a host for a tree | `bind` once per (target, tree), `connect` every turn, with deadlines (**built**) | Readying a host and saying how to reach it | `bind(req)`, `connect(req)` |
+| Reaching the host | A dialed address, or a bridge per binding for a provider-opened pipe (**built**); the remote connector to a service (**being built**) | `direct`: a reachable address. `pipe`: `openConnection(host, signal)` | the endpoint `connect` returns |
+| Proving each end | One mutual handshake on every remote connection; a host component that answers it (**being built**) | Putting the per-binding secret on the host; running the host component in front of the runtime | the handshake frames |
+| Model requests | Placeholder credentials in the runtime; a per-connection handler that swaps them for real keys and refuses anything else (**built**) | Nothing; the provider never sees a key | the request handler |
+| Session-state files | SessionFs confined to the worker's session folder (**built**) | `files` capability says whether the host shares the worker's files | the SessionFs provider |
+| Keeping a host in use | A lease the worker renews on a timer (**being built**) | An optional `renew`; the provider's own expiry as a backstop | `renew(req)` |
+| Finishing with a host | `release` per leaving session; a done notice when the tree ends, even unloaded (**release built; done notice being built**) | An optional `done`; deciding the host's fate | `release(req)`, `done(req)` |
+| Clear failures | Classifying each failure permanent or temporary; stopping a turn at once on a permanent one (**being built**) | A provider may mark its own failure permanent | the `ComputeFailure` shape |
+| Management surfaces | List, create, update, enable/disable, delete, list a target's models, and a worker-run probe, across the client, Web API and MCP (**being built**) | Nothing | the management client and API |
 
-Migration 0084 adds `compute_targets`, with the same ownership rules as
-model providers:
+How the two sides work together, end to end:
+
+```text
+Register
+ 1. [admin -> core]   Register a provider service: its address and the
+                      identity to expect. Core calls describe and records the
+                      kind, transport and capabilities.           (being built)
+ 2. [admin/user -> core]  Register a target of that kind. Core probes it once
+                      (bind, connect, ask the runtime, release) and stores what
+                      it offers.                                   (built)
+Create and run
+ 3. [user -> core]    Create a session naming the target; pick a model from
+                      its list. Core records the target's id.      (built)
+ 4. [core -> provider]  Each turn: re-check the owner may use the target; bind
+                      (once per tree) and connect; keep a lease.   (connect/bind
+                      built; lease being built)
+ 5. [core <-> host]   Open the connection; the handshake proves both ends; then
+                      the runtime runs the turn and its model requests come back
+                      to the worker.                               (connection
+                      built; handshake being built)
+Finish
+ 6. [core -> provider]  The session leaves a worker: release. The tree ends: a
+                      done notice, even if it ended unloaded. The provider keeps,
+                      cleans or discards the host.                 (release built;
+                      done notice being built)
+```
+
+## 4. PilotSwarm design
+
+### 4.1 Targets and names
+
+Migration 0084 adds `compute_targets`, with the same ownership rules model
+providers use. **(built)**
 
 | Class | Registered by | Visible to |
 |---|---|---|
 | `shared` | An administrator | Every signed-in user |
 | `personal` | A user, for themselves | Only that user (administrators included) |
 
-### Names say who owns a target
+Every target is named `<owner>/<label>`:
 
-Every target is named `<owner>/<label>`. For a target of someone's own the
-owner part is their sign-in address — `alice@example.com/gpu-sandbox` —
-and for one an administrator registers for everyone it is the reserved
-word `shared`, as in `shared/build-pool`.
+- For a target of someone's own, the owner part is their sign-in address, for
+  example `alice@example.com/gpu-sandbox`.
+- For a target an administrator registers for everyone, the owner part is the
+  reserved word `shared`, as in `shared/build-pool`.
 
 So two people can both have a target called `sandbox` without colliding,
-nobody can take a name administrators need, and nobody can name a target
-after someone else. PilotSwarm builds the owner part itself from whoever is
-signed in; whoever registers a target supplies only the label — which lets
-a provider suggest one from something it already knows is unique, such as
-a machine's own name. Labels are plain: letters, numbers, dot, dash and
-underscore, at most 64 characters. A registrant with no sign-in address on
-record is refused rather than given an invented owner part.
+nobody can take a name administrators need, and nobody can name a target after
+someone else. PilotSwarm builds the owner part itself from whoever is signed
+in; whoever registers a target supplies only the label — which lets a provider
+suggest one from something it already knows is unique, such as a machine's own
+name. Labels are plain: letters, numbers, dot, dash and underscore, at most 64
+characters. A registrant with no sign-in address on record is refused rather
+than given an invented owner part.
 
-Sessions always reference a target by its permanent id, so none of this
-changes once a session exists. When a name is looked up, a whole name is
-taken as it is, and a bare label is shorthand for the caller's own target,
-falling back to the shared target of that label.
+A target has a `name`, an `id` that is never reused, a `kind` (which provider
+handles it), an optional `displayName`, `enabled`, and a `config` object that
+PilotSwarm stores but never interprets. Only those who may manage a target see
+its `config`. **`config` is not a place for secrets** — a hash such as a
+pairing-code hash is allowed, a credential is not; providers get their
+credentials from the deployment. All rules live in the `cms_compute_target_*`
+procedures; the store only shapes rows and errors.
 
-A target has a `name`, an `id` that is never reused, a `kind` (which
-provider handles it), an optional `displayName`, `enabled`, and a `config`
-object that PilotSwarm stores but never interprets: it belongs to the
-provider of `kind`. Only those who may manage a target see its `config`.
-`config` is not a place for secrets. All rules live in the
-`cms_compute_target_*` procedures; `ComputeTargetStore` only shapes rows
-and errors.
+A session names its target at creation (`computeTarget`). The create
+transaction checks the target is shared or the owner's own, and enabled, and
+records the target's id with the name. System sessions may use shared targets
+only. Before every turn the worker resolves the target by that id and checks
+again that the tree's owner may use it. A deleted target leaves its sessions
+blocked; a new target with the same name is a different target and never takes
+them. When a name is looked up, a whole `<owner>/<label>` is taken as it is,
+and a bare label is shorthand for the caller's own target, falling back to the
+shared target of that label.
 
-A session names its target by name at creation (`computeTarget`). The
-create transaction checks that the target is shared or the owner's own,
-and enabled (`cms_compute_target_assert_session`), and records the target's
-id with the name. System sessions may use shared targets only. Before every
-turn the worker resolves the target by that id and checks again that the
-tree's owner may use it (`cms_compute_target_resolve_for_session`). A
-deleted target leaves its sessions blocked; a new target with the same name
-is a different target and never takes them.
+### 4.2 The provider interface
 
-## Compute providers (code)
+A provider is the code for one compute type. **(built; `renew` and `done` being
+built)**
 
 ```ts
 interface ComputeProvider {
   readonly kind: string;
   readonly capabilities: {
-    os: string[];                     // Node platform names
+    os: string[];                     // platform names the runtime can run on
     sandboxed: boolean;
     files: "worker-local" | "shared-mount" | "provider-api" | "none";
     offersModels?: boolean;           // can its hosts have model access of their own?
@@ -137,61 +357,93 @@ interface ComputeProvider {
   bind(req): Promise<{ ok: true; host: ComputeHostRef } | ComputeFailure>; // once per (target, tree)
   connect(req): Promise<ComputeConnectResult>;                             // every turn
   describeHost?(req): Promise<ComputeAdvertisement>;                       // what the host offers
+  renew?(req): Promise<void>;                                              // keep a lease alive  (being built)
+  done?(req): Promise<void>;                                               // the tree is finished (being built)
   release?(req): Promise<void>;                                            // once per leaving session
 }
 ```
 
 - Every call carries an `AbortSignal`, and the worker enforces a deadline
-  (bind 5 minutes, connect 2 minutes, release 30 seconds). A provider that
-  does not answer fails the call; it cannot hold a turn or a shutdown.
-- `validateTarget` runs before every bind with the tree's owner: may this
-  principal use what the target's config points at?
-- `bind` is idempotent per (target, session tree). `connect` runs before
-  every turn, possibly on another worker, and returns how to reach the
-  runtime and the session's folders as the host sees them.
-- A host has an `id` and an `incarnation` that changes whenever the host is
-  replaced. The worker keys its client pool by address, token, host and
-  incarnation (never the token itself), so a replaced host or a rotated
-  token gets a fresh client, and the old one is stopped when no session
-  uses it.
-- Endpoints are `local` (the worker starts the runtime itself, today's
-  behaviour) or `uri` (a runtime already listening). By default the worker
-  accepts only loopback addresses: a provider that reaches a host elsewhere
-  secures that path itself and hands back a local address. A worker can
-  accept other addresses (`computeAllowNonLoopbackEndpoints`) when its
-  network secures them.
-- Failures use the workspace provider shape (`code`, `message`,
-  `retryAfterMs`).
-- `release` is called once per session that leaves a host: `ended`,
-  `moved` (dehydrate), `evicted`, `shutdown`, or `failed` (bind succeeded
-  but connect did not, or the host was replaced). It carries the target,
-  host, session, tree and worker. It says PilotSwarm no longer needs the
-  host, never that it should be stopped or destroyed — see "Who decides
-  what happens to a host". Sessions of one tree share a host, so a host is
-  only free of PilotSwarm once no session uses it. A worker can crash
-  without releasing, so a provider also needs its own expiry.
-- The built-in `local` provider is always registered. Sessions without a
-  target run as today. Applications add providers with `computeProviders`
-  in the worker options or `worker.registerComputeProvider()`.
+  (bind 5 minutes, connect 2 minutes, release 30 seconds). A provider that does
+  not answer fails the call; it cannot hold a turn or a shutdown.
+- `validateTarget` asks, for the tree's owner: may this principal use what the
+  target's config points at? It runs before every bind.
+- `bind` is idempotent per (target, session tree). `connect` runs before every
+  turn, possibly on another worker, and returns how to reach the runtime and
+  the session's folders as the host sees them.
+- A host has an `id` and an `incarnation` that changes when the host is
+  replaced. The worker keys its connection pool by address, host and
+  incarnation, so a replaced host gets a fresh connection and the old one is
+  stopped when no session uses it.
+- An endpoint is `uri` (a runtime already listening, which the worker dials) or
+  `pipe` (opened through the provider). By default the worker dials only
+  loopback addresses: a provider that reaches a host elsewhere secures that
+  path itself. A worker can accept other addresses only when its network
+  secures them.
+- The built-in provider that runs each tree's runtime in a separate local
+  process (the `process` provider, section 5) is always available. Sessions
+  without a target run as today. Applications add providers in the worker
+  options or at runtime.
 
-## Transport contract
+### 4.3 Capabilities and host models
 
-Each provider has exactly one way of being reached, declared in its own
-code. A host never chooses, and a registered target never carries transport
-code: code arrives with the installed provider.
+A target advertises what it offers, and that shapes the choices a person is
+given: which targets to run a session on, and which models are available once
+one is chosen. The target is chosen first, the model after it. **(built)**
+
+| Kind | Where it comes from | Changes |
+|---|---|---|
+| Provider capabilities | Fixed in provider code; the same for every target of that kind | Only when the provider changes |
+| Target capabilities | Advertised by the target itself, stored with the time it was last heard | Refreshed whenever the worker reaches the host |
+
+**Advertised capabilities never authorize anything.** They come from a host,
+which is untrusted. They decide what is shown; what anyone may do is decided
+where it always was — in SQL for who may use a target, and in the worker for
+what a session may reach. The worker keeps only well-formed fields, bounds each
+one, and caps the whole advertisement (16 KiB), in the worker and again in the
+database.
+
+**Models a target offers itself.** A target may advertise models its host
+serves with its own model access. They appear beside PilotSwarm's catalog
+models under `@<target>:<model>` names, which cannot collide with a
+`provider:model` name because a provider name never starts with `@`. Two things
+follow from where such a model runs:
+
+- The host makes the call. Nothing of PilotSwarm's goes to it: no credentials,
+  no provider config, and no request routed back through the worker. A session
+  on one of these models gets a connection of its own with no request handler,
+  kept apart from any connection that carries credentials.
+- PilotSwarm's budgets and credentials do not cover it. It is the host's own
+  model access being spent.
+
+**Only a personal target may offer models** — a target belonging to one
+person, used by that person. A shared target never does, however it advertises
+itself. That rule is enforced when the advertisement is stored, and again in
+the worker before a turn runs.
+
+**Filling the list.** A probe validates a target and records what it offers.
+Every later connection refreshes the answer, throttled and bounded, and never
+allowed to fail a turn, so a host that cannot answer leaves the previous answer
+standing. A turn whose chosen model the target no longer offers fails with a
+clear reason and says to choose another.
+
+### 4.4 The transport contract and the bridge
+
+Each provider has exactly one way of being reached, declared in its own code. A
+host never chooses, and a registered target never carries transport code. **(built)**
 
 | `transport` | What the provider does |
 |---|---|
-| `direct` (default) | Its hosts are reachable at an address. `connect` returns a `uri` endpoint and the worker connects to it itself. The provider writes no transport code at all. |
+| `direct` (default) | Its hosts are reachable at an address. `connect` returns a `uri` endpoint and the worker dials it. The provider writes no transport code. |
 | `pipe` | The provider opens the connection itself, in `openConnection(host, signal)`. `connect` returns a `pipe` endpoint: the host's folders and whatever opaque details opening the connection needs — never an address. |
 
-A provider that says `pipe` must have `openConnection`, and one that says
-`direct` must not. The registry refuses anything else, so a provider whose
-declaration and code disagree never reaches a turn.
+A `pipe` provider must have `openConnection`; a `direct` provider must not. The
+registry refuses anything else, so a provider whose declaration and code
+disagree never reaches a turn.
 
 Everything above the provider sees only a pipe: a two-way byte stream to one
-host's runtime. It does not know, and must never need to know, what the pipe
-is made of.
+host's runtime. It does not know, and must never need to know, what the pipe is
+made of.
 
 **What the pipe must guarantee** (the provider's side):
 
@@ -199,7 +451,7 @@ is made of.
 |---|---|
 | Two-way | Bytes flow in both directions |
 | Ordered and reliable | Nothing lost, reordered or duplicated |
-| Interactive | Many round trips per turn, with output arriving as it is produced |
+| Interactive | Many round trips per turn, output arriving as it is produced |
 | Visibly broken | A broken pipe closes or errors; it never goes quiet and leaves a turn waiting |
 | Pointed at one host | It reaches that host's runtime and nothing else |
 | Protected end to end | Private and tamper-proof whenever what it crosses cannot be trusted. The worker cannot check this; it is the provider's work |
@@ -208,244 +460,430 @@ is made of.
 
 | | |
 |---|---|
-| One bridge per binding | Each session binding gets its own bridge, on the worker's own machine, on a port the operating system picks and nothing outside the worker is told |
-| Local only | The bridge listens on this machine alone, so a bridged connection satisfies the local-addresses rule by construction |
-| The token still counts | The runtime's connection token still travels inside the pipe and is still checked at the far end. Reaching the bridge grants nothing |
-| One pipe per connection | A pipe is used for its own host's runtime only, and never shared between connections |
-| Reconnect or fail clearly | A broken connection is replaced by a fresh pipe. A pipe that cannot be opened, or that takes too long, fails the turn with a coded error rather than hanging |
-| Closed on release | The bridge and every pipe through it close when the session leaves the host, and when the worker shuts down |
+| One bridge per binding | Each binding gets its own bridge, on the worker's own machine, on a port the operating system picks and nothing outside the worker is told |
+| Local only | The bridge listens on this machine alone, so a bridged connection meets the loopback rule by construction |
+| The token still counts | The runtime's own connection token still travels inside the pipe and is still checked at the far end. Reaching the bridge grants nothing |
+| One pipe per connection | A pipe serves its own host's runtime only, never shared between connections |
+| Reconnect or fail clearly | A broken connection is replaced by a fresh pipe. A pipe that cannot be opened, or that takes too long, fails the turn with a clear reason rather than hanging |
+| Closed on release | The bridge and every pipe through it close when the session leaves the host and when the worker shuts down |
 
-The Copilot SDK can only connect to an address, so the bridge is the smallest
+The runtime connection can only dial an address, so the bridge is the smallest
 thing that turns a pipe into one: a loopback listener that asks the provider
-for a fresh pipe per connection it accepts and joins the two. The client pool
-is keyed by that address, so a replaced bridge gets a fresh client.
+for a fresh pipe per connection and joins the two. Reusable transport code —
+anything that knows how a particular kind of connection is built — belongs in a
+package of its own, outside this core. None is built yet; only the seam is here.
 
-Reusable transport code — anything that knows how a particular kind of
-connection is built — belongs in a package of its own, outside this core.
+### 4.5 The handshake and the host component
 
-## Where providers run
+The pipe says nothing about who is on it. So before any session traffic flows,
+the worker and the host prove themselves to each other, with one handshake
+PilotSwarm defines — the same for every provider and every kind of connection.
+**(being built)**
 
-A provider that really makes hosts runs as its own service, outside the
-worker. An administrator registers each provider service in advance, and
-PilotSwarm deals only with services it was told about. The worker reaches
-any of them through a single generic connector built in once, so the worker
-itself never holds the rights to create or manage hosts, and a new compute
-type needs no new code in the worker. A provider service never reads
-PilotSwarm's database.
+- **Per-binding secret.** The provider's `connect` returns a `bindingId` and a
+  random `secret`, at least 32 bytes, fresh for every new binding. It is never
+  logged, never stored in the CMS, and kept only in worker memory for the
+  binding. Providers must never reuse it across trees.
+- **The proof.** The worker sends a hello with the protocol version, the
+  `bindingId` and a worker nonce. The host answers with a host nonce and a
+  proof over both nonces and the `bindingId`. The worker verifies, answers with
+  its own proof, and the host verifies. Then the stream is a plain pass-through
+  to the runtime. Frames are length-prefixed and size-bounded, with a deadline;
+  comparisons are constant-time. Any failure closes the connection, and the
+  turn fails with a clear "handshake failed" reason.
+- **The host component.** A small PilotSwarm program runs on the host, in front
+  of the runtime. It answers the handshake, then forwards the stream to the
+  runtime's local port. It ships in the SDK as a function and a command, so the
+  reference `process` provider can run the real handshake in tests.
+- **The runtime token still counts.** Inside the tunnel, the runtime's own
+  connection token is still used. The handshake proves the two ends; the token
+  still guards the runtime.
 
-Providers built into the worker stay, for tests and for cases simple enough
-not to need a service of their own — the `process` provider below is one.
+A machine that merely claims to be the host cannot take part, and neither can
+anything sitting in the middle of the connection. The provider's whole part is
+to put the secret on the host and hand the same secret to PilotSwarm; a
+reserved, ignored version field leaves room for provider extras later (see
+section 9, open items), which would add to the handshake and never replace it.
 
-Because a provider service owns the hosts, it is also the natural place to
-keep spare ones ready for bursts. PilotSwarm may later tell it how much
-demand there is per target, as plain counts; that is not built, and the
-design only leaves room for it.
+### 4.6 Every turn of a remote session
 
-None of this is in the branch yet: the connector, registration, and the
-trust between PilotSwarm and a provider service are still to come.
+**(built, except the handshake in step 4)**
 
-## Who decides what happens to a host
+1. The worker reads the tree's compute target from the root session's record,
+   re-checks it for the tree's owner, and picks the provider for its `kind`.
+2. The session's folders are made ready as today (worker paths).
+3. The compute provider binds the host (once per tree) and connects: an
+   endpoint plus the host's folder paths.
+4. The connection is opened — dialed for `direct`, through the bridge for
+   `pipe` — and the handshake proves both ends (**being built**).
+5. The worker builds or reuses a runtime connection per endpoint. A remote
+   connection gets no worker environment and no model keys; instead it gets:
+   - a request handler: every model request comes back to the worker, which
+     checks it against the session's grant and swaps placeholders for real
+     keys;
+   - a SessionFs provider: session-state files live in the worker's own session
+     folder, so dehydrate and hydrate are unchanged.
+6. The session is created or resumed with the host's working directory. The
+   model runs the turn; PilotSwarm tools run in the worker as external tools.
 
-PilotSwarm reports how it uses hosts, and nothing more. It holds a lease on
-a host while it is using one and keeps renewing it; if the renewals stop —
-because a worker crashed, say — the host is no longer in use. And it says
-when a session tree is finished with a host, including a tree that ends
-while it is not loaded in any worker.
-
-Finished never means destroy. What happens to a host nobody needs is the
-provider's decision alone: keep it, because some kinds are never taken
-away; clean it and hold it ready for the next workload; or discard it and
-make a fresh one, so there is still enough spare capacity.
-
-A host may take a new workload only with nothing left over from an earlier
-one — files, logins, running processes, secrets. The provider guarantees
-that, and PilotSwarm does its part by using a fresh secret for every new
-session tree on a host.
-
-Leases, and the end-of-session notice for trees that end while not loaded,
-are not built yet.
-
-## Proving who is at each end
-
-The pipe says nothing about who is on it. So before any session traffic
-flows, the worker and the host prove themselves to each other, with one
-handshake that PilotSwarm defines — the same for every provider and every
-kind of connection, rather than something each provider invents.
-
-Each side proves it holds a secret that only that host and PilotSwarm got
-from the provider. A machine that merely claims to be the host cannot take
-part, and neither can anything sitting in the middle of the connection. A
-small PilotSwarm component on the host answers the handshake. The provider's
-whole part is to put the secret on the host and hand the same secret to
-PilotSwarm.
-
-Open: a provider may still want more. Its platform may be able to say
-something stronger about a host, which would add to the handshake and never
-replace it; and a provider or a host may want to satisfy itself about
-PilotSwarm in turn, rather than only that whoever is calling holds the
-secret. Neither is decided, and neither is built — the handshake and the
-component on the host are both still to come.
-
-## Capabilities
-
-A compute target advertises what it offers, and that shapes the choices a
-person is given: which targets to run a session on, and which models are
-available once one is chosen. The target is chosen first, the model after
-it.
-
-| Kind | Where it comes from | Changes |
-|---|---|---|
-| Provider capabilities | Declared in provider code; the same for every target of that kind | Only when the provider changes |
-| Target capabilities | Advertised by the target itself and stored with the time it was last heard | Refreshed whenever the worker reaches the host |
-
-**Advertised capabilities are never used to authorize anything.** They come
-from a host, which is untrusted. They decide what is shown; what anyone may
-do is decided where it always was — in SQL for who may use a target, and in
-the worker for what a session may reach. The worker keeps only the
-well-formed parts of an advertisement, bounds every field, and caps the whole
-thing (16 KiB), in the worker and again in the database.
-
-### Models a target offers itself
-
-A target may advertise models of its own: models its host can serve with its
-own model access. They appear beside PilotSwarm's catalog models, under names
-of their own — `@<target>:<model>` — which cannot collide with a
-`provider:model` name because a provider name never starts with `@`. A
-session picks one like any other model.
-
-Two things follow from where such a model runs:
-
-- The host makes the call. Nothing of PilotSwarm's goes to it: no credentials,
-  no provider config, and no model request routed back through the worker. A
-  session on one of these models gets a client of its own with no request
-  handler, kept apart from any client that carries credentials.
-- PilotSwarm's budgets and credentials do not cover it. It is the host's own
-  model access being spent.
-
-**Only a personal target may offer models** — a target belonging to one
-person, used by that person. A shared target never does, however it
-advertises itself. That rule is enforced when the advertisement is stored,
-and again in the worker before a turn runs.
-
-### Filling the list
-
-A probe validates a target and records what it offers: bind, connect, ask the
-runtime what models it has, release. Every later connection refreshes the
-answer (throttled, bounded, and never allowed to fail a turn, so a host that
-cannot answer leaves the previous answer standing). A turn whose chosen model
-the target no longer offers fails with `COMPUTE_HOST_MODEL_UNAVAILABLE` and
-says to choose another.
-
-## Trust boundary
-
-The runtime is untrusted: it runs model-chosen code. What crosses back to
-the worker is checked there.
+The trust boundary, concern by concern:
 
 | Path | Rule |
 |---|---|
-| Model requests | The runtime's provider config carries per-session, per-binding random placeholders instead of credentials. Each pooled client has its own request handler, which serves only the sessions bound to that connection. A request must go to the session's model provider origin and path prefix, by `GET` or `POST`; then the worker swaps the placeholders for real credentials and sends it with redirects refused. Anything else is refused. WebSocket model transports are refused. |
-| Session state (SessionFs) | Paths are confined to the worker's directory for that session. Only the virtual root, the runtime's own `<home>/session-state/<id>` form and relative paths are accepted. No link inside the directory is followed. One write carries at most 64 MiB. |
-| Worker files named by tools | `write_artifact({fromFile})` and `read_artifact({toFile})` from a remote session may use only that session's workspace folders, and only when the provider says the host shares them with the worker (`worker-local`, `shared-mount`); otherwise none. |
+| Model requests | The runtime holds per-session, per-binding placeholders, not keys. Each pooled connection has its own request handler, serving only its sessions. A request must go to the session's model origin and path prefix, by `GET` or `POST`; the worker swaps placeholders for real keys and sends it with redirects refused. Anything else is refused. |
+| Session state (SessionFs) | Confined to the worker's folder for that session. Only the virtual root, the runtime's own session-state form and relative paths are accepted; no link inside is followed; one write carries at most 64 MiB. |
+| Worker files named by tools | Artifact file tools from a remote session may use only that session's workspace folders, and only when the provider says the host shares them with the worker; otherwise none. |
 | Skills and MCP servers | Not sent to a remote runtime: their configs are worker-local. |
-| GitHub Copilot models | Refused on a remote target: they authenticate inside the runtime with a GitHub token the worker holds. The exception is a model the target offers itself on a personal target, where the host signs for itself and the worker sends nothing. |
+| Runtime-authenticated models | A model that signs inside the runtime with a credential the worker holds is refused on a remote target. The exception is a model the target offers itself on a personal target, where the host signs for itself and the worker sends nothing. |
 
-## One remote turn
+### 4.7 Provider services and registration
 
-1. The worker reads the tree's compute target from the root session's
-   record, re-checks it for the tree's owner, and picks the provider for
-   its `kind`.
-2. Workspace providers attach the folders, as today (worker paths).
-3. The compute provider binds the host and connects: endpoint plus host
-   paths.
-4. The worker builds or reuses a Copilot client per endpoint (the client
-   pool gains an endpoint dimension). A remote client gets:
-   - no GitHub token and no worker environment;
-   - a request handler: every model request comes back to the worker,
-     which checks it against the session's grant;
-   - a SessionFs provider: session-state files live in the worker's own
-     session directory, so dehydrate and hydrate are unchanged.
-5. The session is created or resumed with the host's working directory and
-   additional directories. Model provider credentials in the session config
-   are per-session placeholders; the worker's request handler swaps them for
-   the real values on each request, and refuses a request whose placeholder
-   it cannot resolve.
-6. The turn runs; PilotSwarm tools execute in the worker as external tools.
+A provider that really makes hosts runs as its own service, outside the worker.
+**(being built)**
 
-## Testing without a cluster: the `process` provider
+- An administrator registers each provider service in advance: its base
+  address (`https:`; `http:` only on loopback, for tests) and the identity to
+  expect from it (a non-secret TLS server name and/or a certificate
+  fingerprint). PilotSwarm deals only with services it was told about.
+- The worker reaches any service through one generic **remote connector** built
+  in once, so the worker never holds the rights to create or manage hosts, and
+  a new compute type needs no new worker code. The protocol is HTTPS and JSON
+  on a versioned path (`/v1`): `describe`, `validate`, `bind`, `connect`,
+  `release`, `renew`, `done`, `describeHost`. Every request carries a deadline
+  and the worker's identity; answers use the `ComputeFailure` shape.
+- **Both ends recognize each other.** The worker authenticates to the service
+  with credentials from a deployment hook (nothing secret is stored in the
+  CMS), and checks the service's identity against what the administrator
+  registered, refusing otherwise. The service verifies the credential the
+  deployment's hook supplies. A `pipe` service's connection is opened to the
+  address its `connect` returned, with the same credentials.
+- Workers load the registered services at start and refresh them periodically,
+  the way model providers are refreshed. A service that is unreachable, or
+  whose identity does not match, makes its targets fail with a clear reason.
+- A provider service never reads PilotSwarm's database. Because it owns the
+  hosts, it is also the natural place to keep spare ones ready for bursts;
+  demand hints from PilotSwarm are left for later (section 9).
+- A helper exposes any in-process provider as a service over HTTPS, so the
+  reference `process` provider can be run as a registered service end to end in
+  tests.
+
+Providers built into the worker stay, for tests and for simple cases.
+
+### 4.8 Host lifecycle: leases, done, reuse
+
+PilotSwarm reports how it uses hosts, and nothing more. **(release built; the
+lease and done notice being built)**
+
+- **Lease.** The worker holds a lease on a host while it uses one and keeps
+  renewing it on a timer (for example renew every 60 s, lease 3 minutes),
+  calling the provider's optional `renew`. If the renewals stop — because a
+  worker crashed, say — the host is no longer in use.
+- **Release.** `release` is called once per session that leaves a host:
+  ended, moved (dehydrate), evicted, shutdown, or failed. Sessions of one tree
+  share a host, so a host is free of PilotSwarm only once no session uses it.
+  Release means PilotSwarm no longer needs the host for that session tree; it
+  never means destroy.
+- **Done notice.** A periodic sweep on workers finds bindings whose session
+  tree has ended — including trees that ended while not loaded in any worker —
+  and sends the provider a one-time `done`. It is idempotent.
+- **The provider decides the host's fate.** Keep it, because some kinds are
+  never taken away; clean it and hold it ready for the next workload; or
+  discard it and make a fresh one, to keep spare capacity. Only the provider
+  knows.
+- **The reuse rule.** A host may take a new workload only with nothing left
+  over from an earlier one — files, logins, running processes, secrets. The
+  provider guarantees that, and PilotSwarm does its part by using a fresh
+  handshake secret for every new binding on a host.
+
+The bindings table records, per binding, the tree, target, provider kind, an
+opaque provider-private host reference, the binding id, the worker, and the
+lease, release and done timestamps. It never holds secrets.
+
+### 4.9 Failures and their reasons
+
+Every compute failure carries a `code`, a human `message`, and an optional
+`retryAfterMs`, and is classified **permanent** or **temporary**. **(classification
+and the turn change being built)**
+
+| Kind | Meaning | Examples | What a turn does |
+|---|---|---|---|
+| Permanent | Retrying cannot help | target not found or gone, disabled, access lost, invalid, unsupported (including a model the target no longer offers), endpoint refused, no provider for the kind, handshake failed | Stops at once, no retries, with the clear reason; the session is ready for the next prompt |
+| Temporary | May pass later | host offline, no capacity, provider unreachable or slow | Keeps today's retries, with an accurate message such as "the host is offline: start it, then resend" |
+
+One module maps each built-in code to its permanent flag, a clear message and
+what the person can do. A provider may mark its own failure permanent; built-in
+codes are classified by the module, not by a provider. The permanent path is
+modelled on the existing non-retryable authentication-failure path, and the
+client surfaces a permanent compute failure at once instead of waiting for its
+timeout. Patient waiting for a host, and resuming on its own, may come later.
+Because it changes how a turn behaves, this adds one new orchestration version;
+ordinary sessions behave identically.
+
+### 4.10 APIs, events and errors
+
+Compute targets are exposed through every management surface the layering rule
+requires, the way model providers are, so a person manages targets from the
+client, the Web API and MCP alike. **(being built)**
+
+| Surface area | Operations |
+|---|---|
+| List and manage targets | List the viewer's targets; create shared (admin) or personal (owner); update; enable/disable; delete; list a target's model options |
+| Check a target | A worker runs the probe (the management client cannot bind hosts itself) and returns the recorded advertisement |
+| Create a session | Every surface accepts `computeTarget` (a full `<owner>/<label>` or `shared/<label>`, or the documented shorthand) |
+| Audit | Every mutation is audited the way provider mutations are |
+
+Admin operations live under the admin path and need the fleet-admin right; a
+user's own operations live under the self path. Provider-service registration
+surfaces come with the connector work, not here. Portal and TUI views for
+compute are out of scope for this work; that divergence is noted. The API
+reference docs are updated alongside; this proposal is not that reference.
+
+### 4.11 Compatibility
+
+The design is additive. A session without a target runs exactly as today: the
+runtime runs in the worker, with the same tools, the same prompt and the same
+steps. Migration 0084 only adds a table and its procedures; it changes no
+existing row. The built core adds no orchestration version. The clear-failures
+work (section 4.9) adds one new version and freezes the current latest exactly,
+so replay of old sessions is unchanged. There is no feature flag: the new
+behaviour appears only for a session that names a target.
+
+## 5. The `process` provider as the reference
 
 `createProcessComputeProvider()` (kind `process`) runs each session tree's
-runtime as a separate `copilot --headless` process on the worker's machine
-and returns its `127.0.0.1` address and a fresh connection token. It is not
-a sandbox. It exercises exactly the remote path a cluster provider uses, so
-the plumbing can be built and tested on a laptop or in CI. The runtime gets
-a scrubbed environment (its own home, `PATH`, the connection token, nothing
-from the worker) and leads its own process group, so stopping it stops the
-commands it started.
+runtime as a separate local process on the worker's machine and returns its
+loopback address and a fresh connection token. **(built)** It is not a sandbox.
+It exercises exactly the remote path a real provider uses, so the plumbing can
+be built and tested on a laptop or in CI. The runtime gets a scrubbed
+environment — its own home, a `PATH`, the connection token, nothing from the
+worker — and leads its own process group, so stopping it stops the commands it
+started. When the host component and handshake land (section 4.5), the
+`process` provider starts the component in front of its runtime, so tests run
+the real handshake.
 
-`test/local/compute-process-provider.test.js` drives it with the scripted
-model through real workers and PostgreSQL and checks:
+A local test drives it through real workers and PostgreSQL and checks:
 
 | Check | Result |
 |---|---|
-| A turn on a `process` target runs `bash` inside the separate runtime | the command sees the runtime's home, and no worker variables (`PS_TEST_DATABASE_URL`, `PG*`) |
-| The runtime holds only credential placeholders | every model request still carries the real key; no placeholder reaches the model |
-| Session state | written through SessionFs into the worker's own session folder (`events.jsonl`, `workspace.yaml`, `checkpoints/`) |
+| A turn on a `process` target runs a shell inside the separate runtime | the command sees the runtime's home, and none of the worker's variables |
+| The runtime holds only placeholders | every model request still carries the real key; no placeholder reaches the model |
+| Session state | written through SessionFs into the worker's own session folder |
 | A new worker with a new runtime | resumes the session from that folder; the next request carries the earlier turn |
 | Stop | the worker's shutdown releases the host; no runtime process is left |
 | A sub-agent | runs in its tree's runtime, though its own config names no target |
-| Refusals | an unknown target is refused at create; an unknown kind fails the turn; a runtime address that is not local fails the turn and releases the host |
+| Refusals | an unknown target is refused at create; an unknown kind fails the turn; an address that is not local fails the turn and releases the host |
 
-What the run showed about the runtime:
+What the runs showed, carried here so later work does not relearn it:
 
-- It writes session files under the SessionFs root, and also names some of
-  them by its own home (`<COPILOT_HOME>/session-state/<sessionId>/...`).
-  The worker's SessionFs maps both to the session folder.
-- It keeps a local `session-store.db` (SQLite) in its home. It is not
-  needed to resume: a new runtime with an empty home resumed the session.
-  The `process` provider keeps that home private and removes it with the
-  host.
-- A refusal at bind or connect is retried like any failed turn (15 s, then
-  30 s) before the session shows the error. Unknown or disabled targets
-  should fail at once; that needs a new orchestration version.
+- The runtime writes session files under the SessionFs root, and also names
+  some by its own home. The worker's SessionFs maps both to the session folder.
+- The runtime keeps a private local store in its home. It is not needed to
+  resume: a new runtime with an empty home resumed the session. The `process`
+  provider keeps that home private and removes it with the host.
+- A refusal at bind or connect is retried like any failed turn today. Stopping
+  at once on an unknown or disabled target needs the clear-failures work
+  (section 4.9).
 
-## Built on the branch
+## 6. Walkthroughs
 
-| Piece | Where |
+Three generic shapes, to show the one design covers them all. Each arrow is a
+call from section 3 or 4.
+
+### 6.1 A shared pool (direct transport)
+
+An administrator registers `shared/build-pool`. Its hosts sit in a pool the
+provider owns, each reachable at an address the worker can dial.
+
+```text
+Create:   admin registers the provider service and shared/build-pool;
+          core probes the pool once and records what it offers.      (probe: built;
+                                                                      service: being built)
+Turn:
+ 1. core re-checks the owner may use the target, binds a host from the pool,
+    and connects. The host is reachable, so connect returns a uri endpoint.
+ 2. core dials the address; the host component answers the handshake; the
+    runtime runs the turn. core holds a lease and renews it.
+ 3. a sub-agent of the same tree reuses the same host.
+Finish:   the tree ends; core sends a done notice; the provider cleans the host
+          and returns it to the pool, with nothing left over.
+```
+
+### 6.2 A sandbox service (pipe transport)
+
+A provider service creates a fresh sandbox per tree. The sandbox is not
+directly reachable; the service opens the connection itself.
+
+```text
+Create:   admin registers the sandbox provider service.              (being built)
+Turn:
+ 1. core binds; the service creates a sandbox and returns an opaque host
+    reference. connect returns a pipe endpoint and a per-binding secret.
+ 2. core runs a bridge on loopback and asks the service to openConnection; the
+    service joins the bridge to the sandbox. The host component answers the
+    handshake over the pipe; the runtime runs the turn.
+ 3. core keeps a lease; the service keeps the sandbox while the lease holds.
+Finish:   the tree ends; done notice; the service discards the sandbox and, to
+          keep a buffer, may start a fresh one.
+```
+
+### 6.3 A user's own machine that connects out (pipe transport)
+
+A user registers a machine of their own, `alice@example.com/desktop`. The
+machine sits behind a firewall and cannot be dialed; it connects out to the
+provider service, which bridges the connection in.
+
+```text
+Create:   the user registers the target; the provider proposes the label from
+          the machine's own name. core probes it once.               (probe: built)
+Turn:
+ 1. core binds and connects; because the machine dials out, connect returns a
+    pipe endpoint. The target is personal, so it may offer the machine's own
+    models under @alice@example.com/desktop:<model> names.
+ 2. core runs a bridge and openConnection pairs it with the machine's outbound
+    link; the host component answers the handshake; the runtime runs the turn.
+ 3. a turn on one of the machine's own models gets a connection with no request
+    handler and no credentials: the machine signs for itself, and PilotSwarm's
+    budgets do not apply.
+Finish:   the user stops using the target; release; the machine is the user's,
+          so the provider leaves it alone.
+```
+
+## 7. Corner cases
+
+| # | Case | Handling |
+|---|---|---|
+| K1 | A worker crashes mid-turn | The turn is redelivered and replayed. The lease stops being renewed, so the provider sees the host fall idle; the provider's own expiry is the backstop. |
+| K2 | A session moves to another worker | The next worker connects again — to the same host, or a fresh one the provider gives it — and resumes from the session folder. SessionFs lives in the worker's own storage, so hydrate is unchanged. |
+| K3 | A host is replaced | Its `incarnation` changes, so the worker builds a fresh connection and stops the old one once no session uses it. |
+| K4 | A target is deleted while sessions reference it | Those sessions are blocked with a clear reason. A new target with the same name is a different id and never takes them. |
+| K5 | A chosen model is withdrawn from a target | The turn fails with a clear reason and says to choose another; the previous advertisement stands if the host cannot answer a refresh. |
+| K6 | The connection breaks mid-turn | A fresh pipe replaces it. A pipe that cannot be opened, or is too slow, fails the turn with a clear reason rather than hanging. |
+| K7 | A session tree ends while not loaded anywhere | The done-notice sweep finds the binding and sends exactly one `done`. (**being built**) |
+| K8 | The handshake fails (wrong secret, a party in the middle, a replayed nonce, an oversized frame, a timeout) | The connection closes and the turn fails with a permanent "handshake failed" reason; the model is never called. (**being built**) |
+| K9 | A provider service is unreachable or its identity does not match | Its targets fail. An unreachable service is temporary; a mismatched identity is permanent. (**being built**) |
+| K10 | A remote runtime asks for a model it was not granted, or a different destination | The request handler refuses it; no placeholder is resolved and nothing is sent. |
+| K11 | A host shares no files with the worker | Artifact file tools that name worker files are refused for that session; only `worker-local` or `shared-mount` hosts allow them. |
+| K12 | A reused host carries state from before | Not allowed: the provider must hand over a clean host, and PilotSwarm uses a fresh secret per binding. |
+| K13 | A worker too old to drive remote runtimes | It should carry a capability tag so it never runs a remote session locally. (**open, section 9**) |
+
+## 8. Test plan
+
+Levels:
+
+| Level | What runs |
 |---|---|
-| Provider interface, registry, `local` provider, endpoint → SDK connection, transport rules, advertisement shaping, `@target:model` names | `packages/sdk/src/compute.ts` |
-| The bridge in front of a provider that opens its own connections | `packages/sdk/src/compute-bridge.ts` |
-| `compute_targets` and procedures | `packages/sdk/src/migrations/compute-targets-0084.ts`, `0084_diff.md` |
-| Target store; create-time check | `packages/sdk/src/compute-target-store.ts`, `cms.ts` |
-| `computeTarget` on the session config | `types.ts`, `client.ts` |
-| Credential placeholders, request handler, worker-backed SessionFs | `packages/sdk/src/compute-runtime.ts` |
-| `process` provider (separate local runtime, for tests and as the smallest example) | `packages/sdk/src/compute-process.ts` |
-| Remote client and turn wiring | `copilot-client.ts`, `session-manager.ts` |
-| Probe, advertisement refresh, model-of-the-target turns | `session-manager.ts` |
-| Model options for a target | `management-client.ts`, `compute-target-store.ts` |
-| Tests | `test/unit/compute-providers.test.mjs`, `test/unit/compute-runtime.test.mjs`, `test/unit/compute-process.test.mjs`, `test/unit/compute-capabilities.test.mjs`, `test/unit/compute-bridge.test.mjs`, `test/local/compute-targets.test.js`, `test/local/compute-process-provider.test.js`, `test/local/compute-bridge-provider.test.js` |
+| U | Unit tests, no runtime |
+| L | Local integration: real workers and PostgreSQL, the `process` provider, a scripted model |
+| Q | Qualification against a real provider service and a real host (later) |
 
-## Known gaps
+Every test must be able to fail. Break the rule on purpose once and see the
+test turn red; the specs say which break proves which rule. Tests run on Linux
+and Windows, so nothing may assume a path separator or a shell.
 
-| Gap | Note |
+| Area | Level | Checks |
+|---|---|---|
+| Targets and names (**built**) | U, L | Owner-qualified names; a bare label resolves to own then shared; a deleted target blocks its sessions; a reused name is a new target; admin-only registration enforced in SQL |
+| Provider interface and transport (**built**) | U | `direct` vs `pipe` validated; a declaration that disagrees with the code is refused; deadlines enforced |
+| Capabilities and host models (**built**) | U, L | Advertisement shaped, bounded and capped; only a personal target may offer models; a withdrawn model fails the turn clearly; a host-model turn uses a connection with no credentials |
+| Remote turn and trust boundary (**built**) | L | A turn runs in a separate runtime with none of the worker's environment; every model request carries the real key while the runtime holds only placeholders; a request to any other destination is refused; session state round-trips and resumes on a new worker |
+| The bridge (**built**) | U, L | A full turn through a provider-opened pipe; one bridge per binding on loopback; a broken pipe reconnects or fails clearly |
+| The handshake and host component (**being built**) | U, L | Success; wrong secret either side; a replayed nonce; a truncated or oversized frame; a timeout; constant-time compare; the host component forwards to the runtime; a wrong secret fails the turn with no model request |
+| Provider services and registration (**being built**) | U, L | The remote connector maps each call; a mismatched identity is refused; the `process` provider served as a registered service runs a full turn end to end |
+| Leases and done notices (**being built**) | U, L | The lease timer math; a lease renewed and recorded; a tree that ends while unloaded gets exactly one done notice |
+| Clear failures (**being built**) | U, L | Classification of each code; a deleted or unknown target makes the client reject within a few seconds with the clear reason and no retry; a temporary failure is retried with the clear message; existing orchestration and replay tests still pass |
+| Management surfaces (**being built**) | U, L | List, create, update, enable/disable, delete, list models, and the worker-run probe across the client, Web API and MCP; every mutation audited; surface-parity tests updated |
+
+## 9. Decisions, verified facts and open items
+
+**Decided (2026-11-01)**
+
+| Decision | Instead of |
 |---|---|
-| GitHub Copilot models on a remote target | Refused for now: they authenticate inside the runtime with a GitHub token the worker holds, which a remote runtime must not get. Needs per-request auth through the worker. A model the target offers itself is the exception and is allowed |
-| A turn on a model the target offers itself | **Unverified end to end.** The plumbing is built and tested — the name, the rules about which targets may offer models, the advertisement, the refusal when a model is withdrawn, and a client with no credentials and no request handler. What has not been run is a turn against a host that really has model access of its own, which needs such a host. Until then, treat it as designed and wired, not proven |
-| Who sees a target's advertisement | It is shown wherever the target is, which for a personal target is its owner alone. There is no review step: a host's own description of itself is shown as it stands (shaped and bounded), with the time it was last heard |
-| Bridge callers | The bridge is on loopback, on a port nothing outside the worker is told, and the runtime's token is still checked at the far end — but the bridge itself does not identify the process connecting to it. That is the same exposure a runtime's own loopback port already has. A stronger local check needs a transport the SDK can carry a handshake over |
-| Transport packages | Nothing reusable is built. Anything that knows how a particular kind of connection is made belongs outside this core; only the seam is here |
-| Provider services | The connector the worker would use to reach a registered provider service, the registration itself, and the trust between PilotSwarm and a provider are not built. Everything on the branch is an in-worker provider |
-| Demand hints | Telling a provider service how much demand there is per target, so it can keep spare hosts ready, is deferred. The design leaves room for it |
-| The handshake and the component on the host | The mutual handshake between worker and host, and the small PilotSwarm component on the host that answers it, are not built. Today a connection is trusted because of where it goes and the runtime's own token, not because the two ends proved themselves |
-| Skills and MCP servers on a remote target | Not sent: skill folders and MCP configs are worker-local (paths, commands, environment) |
-| PilotSwarm tools that read host files | Work only when the worker sees the same files (`worker-local`, `shared-mount`); others need a provider file API. Other worker-path tools besides artifacts still need the same review |
-| Clear reasons when compute can't be used | Today every bind or connect failure goes through the ordinary turn retry (three tries, then an error), whatever caused it. Decided for a follow-up: a failure retrying cannot fix — the target was removed or paused, or the person lost access — stops the turn at once and says why; one that may pass — the host is offline, there is no capacity, the provider cannot be reached — keeps the retries but says what is happening and what to do about it. Waiting patiently for a host and resuming on its own may come later. It changes how turns behave, so it needs its own change |
-| Leases, and the end-of-session notice for sessions that end while not loaded | Bindings live in worker memory, so a session that ends while not loaded anywhere, or a worker that crashes, tells the provider nothing and providers need their own expiry. The lease PilotSwarm renews while it uses a host, and the notice that a session tree is finished with one, would close this |
-| Transport security | Non-local runtime addresses are refused by default. A provider that reaches a host elsewhere must secure the path (and authenticate the host) itself, whether it hands back a local address or opens the connection in its own code |
-| Provider secrets | `config` must not hold secrets. A separate secret reference, resolved only in the worker, is not built |
-| SessionFs quotas | One write is capped; total size and file count per session are not |
-| Routing capability tag | Workers that can drive remote runtimes should declare a tag so older workers never run remote sessions locally |
-| Admin and user surfaces | Protocol operations, MCP tools and portal for registering targets, probing one, and picking a target and then a model at session creation. The direct management client can list a target's model options today; web mode cannot |
-| Turn survival across a worker crash | Depends on whether the runtime keeps a turn when its client disconnects and on `resumeSession` reattaching. Unverified |
-| SessionFs path layout | Verified with the `process` provider for ordinary turns, dehydrate and resume. Not yet checked: checkpoints under compaction, large files, a Windows runtime |
-| SQL tools on remote sessions | Need SessionFs SQLite support |
-| Provisioning | Out of scope here: targets are assumed to exist. A compute provisioner can create hosts on demand later |
+| The runtime runs on a host, never where the CMS or orchestration can be reached | Running the runtime next to the worker's credentials |
+| One host per session tree, fixed at the root session | A session picking compute per turn, or sub-agents on different hosts |
+| Providers run as registered services outside the worker, reached through one generic connector | Provider code inside every worker |
+| Admins pre-register each provider service as the trust anchor | The worker trusting any service it can reach |
+| One transport per provider: `direct` or `pipe` | A provider mixing transports, or PilotSwarm choosing |
+| Everything above the provider sees only a pipe | Core knowing the medium |
+| One mutual handshake PilotSwarm defines for every connection, answered by a host component | Each provider inventing its own trust scheme |
+| A per-binding secret, fresh for every binding, never stored in the CMS | A per-host or per-target secret |
+| The provider decides a host's fate; PilotSwarm only reports use (a lease) and finish (a done notice) | PilotSwarm deleting hosts; release meaning destroy |
+| A host is reusable only with nothing left over | Trusting a host to be clean |
+| Owner-qualified names (`<owner>/<label>`, `shared/<label>`); sessions reference a permanent id | Free-form global names |
+| Targets advertise capabilities (untrusted, for options only); target chosen before model | Capabilities granting access; model chosen first |
+| Only a personal target may offer its own models, under `@<target>:<model>` names | Any target offering models |
+| Target `config` holds no secrets; providers get credentials from the deployment | A secret reference in the config |
+| Clear failures: permanent stops the turn at once, temporary keeps retries; one new orchestration version | Every failure going through the ordinary turn retry |
+
+**Verified on the branch (with the `process` provider, real workers and PostgreSQL)**
+
+| Check | Result |
+|---|---|
+| A turn runs in a separate runtime with none of the worker's environment | Holds |
+| Placeholders in the runtime, real keys only in the worker; other destinations refused | Holds |
+| Session state round-trips through SessionFs and resumes on a new worker | Holds |
+| A sub-agent runs in its tree's runtime | Holds |
+| A full turn through a provider-opened pipe and the bridge | Holds |
+| Owner-qualified names, shorthand resolution, and the deleted/reused-name rules | Hold |
+
+**Unverified (designed and wired, not proven)**
+
+| Item | Why |
+|---|---|
+| A turn on a model a target offers itself | The names, rules, advertisement, refusal-on-withdrawal and credential-free connection are built and tested, but no turn has run against a host that really has its own model access. Treat as designed, not proven. |
+| A turn surviving a worker crash | Depends on whether the runtime keeps a turn when its connection drops and on resume reattaching. |
+| SessionFs under compaction, large files, or a non-Linux runtime | Checked for ordinary turns, dehydrate and resume only. |
+
+**Open items**
+
+| Item | State |
+|---|---|
+| Provider extras | A provider may want to add stronger evidence about a host (additive to the handshake, never replacing it), or to verify PilotSwarm itself in turn. Not decided, not built; a reserved handshake field leaves room. |
+| Demand hints | Telling a provider service how much demand there is per target, so it can size spare capacity. Deferred; the design leaves room. |
+| A secret reference for a provider that needs per-user credentials | Deferred (secrets option A for now: none in the config). |
+| A tree spanning more than one target | An open question; today a tree runs on exactly one. |
+| A routing capability tag so older workers never run remote sessions locally | To do. |
+| Portal and TUI views for compute | Out of scope for this work; noted as a divergence from the other surfaces. |
+| Provisioning (creating hosts on demand) | Out of scope; a compute provisioner can come later. |
+| SessionFs quotas (total size and file count per session), and SQL tools on remote sessions | To do. |
+
+## 10. Implementation map
+
+Paths are under `packages/sdk/src` unless noted. Rows marked **built** exist on
+the branch; **being built** rows are the work in flight (sections 4.5, 4.7–4.10).
+
+| File / area | Change | State |
+|---|---|---|
+| `compute.ts` | Provider interface, registry, the always-available local/process provider, endpoint-to-connection, transport rules, advertisement shaping, `@target:model` names | built |
+| `compute-bridge.ts` | The loopback bridge in front of a provider that opens its own connections | built |
+| `migrations/compute-targets-0084.ts`, `0084_diff.md` | `compute_targets` and its procedures (extended in place; never edit 0083 or older) | built |
+| `compute-target-store.ts`, `cms.ts` | The target store; the create-time check | built |
+| `types.ts`, `client.ts` | `computeTarget` on the session config | built |
+| `compute-runtime.ts` | Placeholder credentials, the request handler, worker-backed SessionFs | built |
+| `compute-process.ts` | The `process` provider | built |
+| `copilot-client.ts`, `session-manager.ts` | The remote connection and turn wiring; probe, advertisement refresh, host-model turns | built |
+| `management-client.ts` | A target's model options (direct client today) | built |
+| The handshake module and the host component (SDK function and command) | Section 4.5 | being built |
+| The remote connector and the provider-service protocol; provider-service registration and mutual identity; the in-process-provider-as-service helper | Section 4.7 | being built |
+| The lease timer and the done-notice sweep; the bindings table | Section 4.8 | being built |
+| The failure-classification module; the orchestration version and client surfacing | Section 4.9 | being built |
+| The management client, Web API, MCP tools and the worker-run probe; surface-parity tests and the API reference docs | Section 4.10 | being built |
+
+## 11. Delivery plan
+
+| Stage | Scope | State |
+|---|---|---|
+| Core | Targets and names; the provider interface and transport; capabilities and host models; the remote turn and trust boundary; the bridge; the `process` reference provider | **built** in the draft PR |
+| Provider services | The remote connector, the `/v1` protocol, registration and mutual identity, the in-process-as-service helper | **being built** |
+| The handshake | The mutual handshake and the host component, run for real by the `process` provider | **being built** |
+| Host lifecycle | Leases and renewals; the done notice for trees that end while unloaded | **being built** |
+| Clear failures | Permanent vs temporary; stop the turn at once on a permanent one; client surfacing; one new orchestration version | **being built** |
+| Management surfaces | Targets and the probe across the client, Web API and MCP; audit; API reference docs | **being built** |
+| Later | Provider extras; demand hints; a secret reference; portal and TUI views; provisioning; multi-target trees; SessionFs quotas and remote SQL tools | **later** |
+
+The built core proves the path end to end on a laptop and in CI through the
+`process` provider. The being-built stages add the parts a real, out-of-worker
+provider needs: a trusted service to talk to, a handshake that proves both
+ends, a lease and a finish notice, clear reasons when compute cannot be used,
+and the surfaces to manage it all. The later items are known and deferred, not
+forgotten.
