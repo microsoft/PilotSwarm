@@ -3,7 +3,7 @@ import type { SessionCatalog } from "../../cms.js";
 import type { SessionOwnerInfo } from "../../types.js";
 import type { WorkflowToolBinding } from "../tool-policy.js";
 import { compileWorkflowV2, declaredSemver, WORKFLOW_V2_API_VERSION, type WorkflowCompileResult } from "./compiler.js";
-import { boundedCanonicalJson, canonicalJson, isJsonObject, isStorableText, jsonSha256, type JsonValue } from "./json.js";
+import { boundedCanonicalJson, canonicalJson, isJsonObject, isStorableText, jsonbSafeText, jsonSha256, type JsonValue } from "./json.js";
 import { schemaSetFor } from "./schema.js";
 import {
     WORKFLOW_V2_CONTROLLER_NAME,
@@ -32,7 +32,10 @@ import {
 export interface WorkflowV2Host {
     catalog: Pick<SessionCatalog, "getSession" | "getSessionCreationConfig" | "createWorkflowSessionV2">;
     store: WorkflowStore;
-    duroxideClient: { startOrchestrationVersioned(instanceId: string, name: string, input: unknown, version: string): Promise<void> };
+    duroxideClient: {
+        startOrchestrationVersioned(instanceId: string, name: string, input: unknown, version: string): Promise<void>;
+        getStatus(instanceId: string): Promise<{ status: string; error?: string }>;
+    };
 }
 
 export interface CreateWorkflowV2Request {
@@ -95,6 +98,45 @@ export async function dispatchWorkflowV2Run(host: WorkflowV2Host, receipt: Workf
     if (!run || !ACTIVE_RUN_STATUSES.includes(run.status)) return;
     const input: ControllerInput = { v: 2, workflowSessionId: receipt.workflowSessionId, runId: admitted.runId };
     await host.duroxideClient.startOrchestrationVersioned(admitted.controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME, input, WORKFLOW_V2_CONTROLLER_VERSION);
+}
+
+/** duroxide statuses after which an orchestration does no more work. */
+const ENDED_ORCHESTRATION_STATUSES: readonly string[] = ["Completed", "Failed", "Terminated"];
+
+/**
+ * Bring an active run in line with its controller, for a reader of the run:
+ * - admitted with no controller instance (the dispatch after admission was
+ *   lost): dispatch it again (the start is idempotent);
+ * - the controller ended, or its instance is gone, while the run is still
+ *   active (its finalization retries ran out, or it was terminated): end the
+ *   run as failed with the controller's state, visibly. Pending node
+ *   executions lose to that end, so a running script's liveness check stops it.
+ * A run that is not active, or whose controller is still running, is left as it is.
+ */
+export async function reconcileWorkflowV2Run(host: Pick<WorkflowV2Host, "store" | "duroxideClient">, runId: string): Promise<void> {
+    const run = await host.store.readRun(runId);
+    if (!run || !ACTIVE_RUN_STATUSES.includes(run.status)) return;
+    const controller = await host.duroxideClient.getStatus(run.controllerInstanceId);
+    if (controller.status === "NotFound" && run.status === "admitted") {
+        const input: ControllerInput = { v: 2, workflowSessionId: run.workflowSessionId, runId: run.runId };
+        await host.duroxideClient.startOrchestrationVersioned(run.controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME, input, WORKFLOW_V2_CONTROLLER_VERSION);
+        return;
+    }
+    if (controller.status !== "NotFound" && !ENDED_ORCHESTRATION_STATUSES.includes(controller.status)) return;
+    const message = controller.status === "NotFound"
+        ? "The workflow controller no longer exists; the run cannot continue."
+        : `The workflow controller ended (${controller.status}) without ending the run.`;
+    const controllerError = controller.error === undefined ? null : jsonbSafeText(controller.error, 2_000);
+    await host.store.finishRun({
+        runId: run.runId, status: "failed", terminalNodeId: null, terminalOutcome: null, outputText: null,
+        errorText: canonicalJson({ code: "controller_ended", message, details: { controllerStatus: controller.status, controllerError } }),
+        endPending: { winner: "controller", message: "The workflow run ended before this state finished." },
+        projection: {
+            sessionId: run.workflowSessionId,
+            events: [{ eventType: "workflow.failed", data: { runId: run.runId, code: "controller_ended", controllerStatus: controller.status, error: message } }],
+            update: { state: "failed", lastError: message, touch: true },
+        },
+    });
 }
 
 /** Create a workflow child: a draft by default; optionally published and started atomically. */

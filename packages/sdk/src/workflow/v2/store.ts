@@ -668,6 +668,17 @@ export class WorkflowStore {
         return rows[0] ? revisionFrom(rows[0]) : null;
     }
 
+    /**
+     * A revision's name and version as plain columns, without parsing its IR
+     * or diagnostics, so a run can end and report itself even when its IR
+     * cannot be read.
+     */
+    async readRevisionLabel(workflowSessionId: string, revision: number): Promise<{ name: string | null; semver: string | null } | null> {
+        const { rows } = await this.pool.query(
+            `SELECT name, semver FROM ${this.t.revisions} WHERE workflow_session_id = $1 AND revision = $2`, [workflowSessionId, revision]);
+        return rows[0] ? { name: strOrNull(rows[0], "name"), semver: strOrNull(rows[0], "semver") } : null;
+    }
+
     /** The IR of a valid revision, verified against its stored hash. */
     async readRevisionIr(workflowSessionId: string, revision: number, expectedIrSha256?: string): Promise<WorkflowIR> {
         const { rows } = await this.pool.query(

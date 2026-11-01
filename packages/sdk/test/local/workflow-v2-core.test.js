@@ -100,6 +100,23 @@ states:
   done: { type: terminal, outcome: succeeded, output: "\${input}" }
 `;
 
+/** A workflow whose 'work' state fails with no route of its own; `handler` is the catch-all state's definition. */
+const CATCH_ALL = (handler, workSource = "process.exit(3);") => `
+apiVersion: pilotswarm.dev/v2-draft
+kind: Workflow
+metadata: { name: catch-all, version: "1.0.0" }
+initial: work
+catchAll: handler
+states:
+  work:
+    type: script
+    source: |
+      ${workSource}
+    transition: { next: { ok: done } }
+${handler}
+  done: { type: terminal, outcome: succeeded, output: "\${input}" }
+`;
+
 function host(client) {
     return { catalog: client._catalog, store: client._catalog.workflowStore(), duroxideClient: client.duroxideClient };
 }
@@ -201,6 +218,38 @@ describe("workflow v2 compiler and values", () => {
         expect(accept.valid && reject.valid, JSON.stringify([accept.diagnostics, reject.diagnostics])).toBe(true);
         expect(schemaSetFor(accept.irSha256, accept.ir.schemaDefs).validate(accept.ir.inputsSchema, { anything: 1 })).toEqual([]);
         expect(schemaSetFor(reject.irSha256, reject.ir.schemaDefs).validate(reject.ir.inputsSchema, {})).not.toEqual([]);
+    });
+
+    it("compiles a workflow-wide catch-all state and refuses an undeclared or initial one", () => {
+        const terminal = compileWorkflowV2(CATCH_ALL('  handler: { type: terminal, outcome: blocked, output: "${input}" }'));
+        expect(terminal.valid, JSON.stringify(terminal.diagnostics)).toBe(true);
+        expect(terminal.ir.irVersion).toBe(3);
+        expect(terminal.ir.catchAll).toBe("handler");
+        // With a catch-all, a state without a failure route is not warned about; without one it is.
+        expect(terminal.diagnostics.map(item => item.code)).not.toContain("WORKFLOW_FAILURE_UNHANDLED");
+        const without = compileWorkflowV2(CATCH_ALL('  handler: { type: terminal, outcome: blocked, output: "${input}" }').replace("catchAll: handler\n", ""));
+        expect(without.valid).toBe(true);
+        expect(without.ir.catchAll).toBeNull();
+        expect(without.diagnostics.map(item => item.code)).toContain("WORKFLOW_FAILURE_UNHANDLED");
+        // Reachable only as the catch-all, the handler is not reported unreachable.
+        expect(terminal.diagnostics.map(item => item.code)).not.toContain("WORKFLOW_STATE_UNREACHABLE");
+        for (const [yaml, path] of [
+            [CATCH_ALL('  handler: { type: terminal, outcome: blocked }').replace("catchAll: handler", "catchAll: nowhere"), "catchAll"],
+            [CATCH_ALL('  handler: { type: terminal, outcome: blocked }').replace("catchAll: handler", "catchAll: work"), "catchAll"],
+            [CATCH_ALL('  handler: { type: terminal, outcome: blocked }').replace("catchAll: handler", "catchAll: [handler]"), "catchAll"],
+        ]) {
+            const result = compileWorkflowV2(yaml);
+            expect(result.valid).toBe(false);
+            expect(result.diagnostics).toContainEqual(expect.objectContaining({ code: "WORKFLOW_CATCH_ALL_INVALID", path }));
+        }
+        // The catch-all must itself be able to finish; it does not make a looping graph finishable.
+        const stuck = compileWorkflowV2(CATCH_ALL(`  handler:
+    type: script
+    source: |
+      await setResult("again", {});
+    transition: { next: { again: handler } }`));
+        expect(stuck.valid).toBe(false);
+        expect(stuck.diagnostics).toContainEqual(expect.objectContaining({ code: "WORKFLOW_NO_TERMINAL_PATH", path: "states.handler" }));
     });
 
     it("keeps the workflow output contract beside a terminal's own schema", () => {
@@ -573,6 +622,62 @@ states:
                     expect(probe).toMatchObject({ nodeId: "probe", resultKind: "business", outcome: "ok", output: expected.output });
                 }
             }
+        });
+    });
+
+    it("routes an unhandled runtime error to the catch-all state once; a handled error and business routes do not use it", { timeout: TIMEOUT }, async () => {
+        await withClient(getEnv(), { worker: { workflowScripts: { enabled: true } } }, async (client) => {
+            const h = host(client);
+            const start = (name, yaml) => createWorkflowV2(h, { workflowSessionId: randomUUID(), parentSessionId: null, yaml,
+                actor: ACTOR, operationId: name, start: { inputs: {} } });
+
+            // An error with no route of its own reaches the catch-all terminal with its error envelope.
+            const caught = await start("caught", CATCH_ALL('  handler: { type: terminal, outcome: blocked, output: "${input}" }'));
+            const caughtRun = await finishedRun(h, caught.receipt.run.runId);
+            expect(caughtRun, JSON.stringify(caughtRun)).toMatchObject({ status: "completed", terminalOutcome: "blocked", terminalNodeId: "handler" });
+            expect(caughtRun.terminalOutput).toMatchObject({ code: "execution_failed", details: { exitCode: 3 } });
+            const caughtNodes = await h.store.listNodeExecutions(caughtRun.runId);
+            expect(caughtNodes.map(node => [node.nodeId, node.arrivalRoute, node.outcome])).toEqual([
+                ["work", null, "execution_failed"], ["handler", "@catchAll", "blocked"],
+            ]);
+            const started = (await events(client, caught.receipt.workflowSessionId))
+                .filter(event => event.eventType === "workflow.state_started" && event.data.stateId === "handler");
+            expect(started.map(event => event.data)).toEqual([expect.objectContaining({ catchAll: true, failedNodeExecutionId: caughtNodes[0].nodeExecutionId })]);
+
+            // A catch-all script that fails without a route of its own is not entered again: the run fails.
+            const failing = await start("handler-fails", CATCH_ALL(`  handler:
+    type: script
+    source: |
+      process.exit(5);
+    transition: { next: { ok: done } }`));
+            const failingRun = await finishedRun(h, failing.receipt.run.runId);
+            expect(failingRun.status, JSON.stringify(failingRun)).toBe("failed");
+            expect(failingRun.terminalError).toMatchObject({ code: "execution_failed" });
+            expect(failingRun.terminalError.message).toContain("catch-all state already ran");
+            const failingNodes = await h.store.listNodeExecutions(failingRun.runId);
+            expect(failingNodes.map(node => [node.nodeId, node.ordinal, node.outcome])).toEqual([
+                ["work", 1, "execution_failed"], ["handler", 1, "execution_failed"],
+            ]);
+
+            // A catch-all script that recovers routes on to a normal terminal.
+            const recovered = await start("handler-recovers", CATCH_ALL(`  handler:
+    type: script
+    source: |
+      await setResult("ok", { recovered: context.input.code });
+    transition: { next: { ok: done } }`));
+            const recoveredRun = await finishedRun(h, recovered.receipt.run.runId);
+            expect(recoveredRun).toMatchObject({ status: "completed", terminalOutcome: "succeeded", terminalOutput: { recovered: "execution_failed" } });
+
+            // A state's own failure route wins over the catch-all, and business outcomes never use it.
+            const handled = await start("handled", CATCH_ALL('  handler: { type: terminal, outcome: blocked, output: "${input}" }')
+                .replace("transition: { next: { ok: done } }", "transition: { next: { ok: done, failure: own } }")
+                .replace("  done: {", '  own: { type: terminal, outcome: failed, output: "${input}" }\n  done: {'));
+            const handledRun = await finishedRun(h, handled.receipt.run.runId);
+            expect(handledRun).toMatchObject({ status: "failed", terminalOutcome: "failed", terminalNodeId: "own" });
+            const fine = await start("fine", CATCH_ALL('  handler: { type: terminal, outcome: blocked, output: "${input}" }', 'await setResult("ok", { fine: true });'));
+            const fineRun = await finishedRun(h, fine.receipt.run.runId);
+            expect(fineRun).toMatchObject({ status: "completed", terminalOutcome: "succeeded", terminalOutput: { fine: true } });
+            expect((await h.store.listNodeExecutions(fineRun.runId)).map(node => node.nodeId)).toEqual(["work", "done"]);
         });
     });
 

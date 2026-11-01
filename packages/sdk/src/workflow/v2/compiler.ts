@@ -16,12 +16,14 @@ import { normalizeSchema, SCHEMA_NAME_PATTERN, WorkflowSchemaError, WorkflowSche
 export const WORKFLOW_V2_API_VERSION = "pilotswarm.dev/v2-draft";
 export const WORKFLOW_V2_KIND = "Workflow";
 /**
- * IR version this compiler writes. Version 1 (written before the workflow
- * output contract moved to the IR root) is still read: it has no root
- * outputSchema, and each succeeded terminal carries the contract it was
- * compiled with. Stored IR is never rewritten or recompiled.
+ * IR version this compiler writes. Stored IR is never rewritten or
+ * recompiled; every earlier version is still read as stored:
+ * - 1: no root outputSchema (each succeeded terminal carries the contract it
+ *   was compiled with) and no catchAll;
+ * - 2: root outputSchema, no catchAll;
+ * - 3: root outputSchema and catchAll.
  */
-export const WORKFLOW_V2_IR_VERSION = 2;
+export const WORKFLOW_V2_IR_VERSION = 3;
 export const WORKFLOW_V2_MAX_YAML_BYTES = 256 * 1024;
 export const WORKFLOW_V2_MAX_NODES = 100;
 export const WORKFLOW_V2_DEFAULT_MAX_NODE_EXECUTIONS = 1_000;
@@ -86,8 +88,8 @@ export interface WorkflowIRTerminal {
 export type WorkflowIRNode = WorkflowIRScript | WorkflowIRTerminal;
 
 export interface WorkflowIR {
-    /** 1: read-only legacy shape (outputSchema always null); 2: written now. */
-    irVersion: 1 | 2;
+    /** 1 and 2 are read-only earlier shapes (outputSchema and catchAll null when absent); 3 is written now. */
+    irVersion: 1 | 2 | 3;
     apiVersion: typeof WORKFLOW_V2_API_VERSION;
     name: string;
     version: string;
@@ -97,6 +99,12 @@ export interface WorkflowIR {
     inputsSchema: string | null;
     /** The workflow's output contract; every succeeded terminal's output must satisfy it. */
     outputSchema: string | null;
+    /**
+     * The state a runtime error goes to when its own state has no route for
+     * it (no route for its code and no failure route). It is entered at most
+     * once per run; an unhandled error after that fails the run.
+     */
+    catchAll: string | null;
     limits: { maxNodeExecutions: number };
     schemaDefs: Record<string, JsonValue>;
     nodes: Record<string, WorkflowIRNode>;
@@ -201,7 +209,7 @@ function schemaField(value: unknown, generatedName: string, path: string, schema
     }
 }
 
-function compileScript(id: string, raw: Record<string, unknown>, nodeIds: ReadonlySet<string>, schemas: SchemaCollector, diagnostics: Diagnostics): WorkflowIRScript | null {
+function compileScript(id: string, raw: Record<string, unknown>, nodeIds: ReadonlySet<string>, schemas: SchemaCollector, hasCatchAll: boolean, diagnostics: Diagnostics): WorkflowIRScript | null {
     const path = `states.${id}`;
     checkKeys(raw, ["type", "description", "runtime", "source", "timeoutSeconds", "input", "inputSchema", "outputSchema", "outcomes", "transition"], path, diagnostics);
     if (raw.runtime !== undefined && raw.runtime !== "node") {
@@ -256,9 +264,9 @@ function compileScript(id: string, raw: Record<string, unknown>, nodeIds: Readon
         outcomes = Object.keys(next).filter(label => !isRuntimeRoute(label));
     }
     if (outcomes.length === 0) diagnostics.error("WORKFLOW_ROUTE_MISSING", `${path}.transition.next`, "a script needs at least one business outcome route.");
-    if (!Object.hasOwn(next, FAILURE_ROUTE) && !RUNTIME_ERROR_CODES.some(code => Object.hasOwn(next, code))) {
+    if (!hasCatchAll && !Object.hasOwn(next, FAILURE_ROUTE) && !RUNTIME_ERROR_CODES.some(code => Object.hasOwn(next, code))) {
         diagnostics.warning("WORKFLOW_FAILURE_UNHANDLED", `${path}.transition.next`,
-            "no failure route: a runtime error at this state (crash, timeout, invalid output) ends the run as failed.");
+            "no failure route and no catchAll: a runtime error at this state (crash, timeout, invalid output) ends the run as failed.");
     }
     if (!source) return null;
     return {
@@ -287,13 +295,14 @@ function compileTerminal(id: string, raw: Record<string, unknown>, schemas: Sche
     };
 }
 
-function checkGraph(ir: { initial: string; nodes: Record<string, WorkflowIRNode> }, diagnostics: Diagnostics): void {
+function checkGraph(ir: { initial: string; catchAll: string | null; nodes: Record<string, WorkflowIRNode> }, diagnostics: Diagnostics): void {
     const successors = (id: string): string[] => {
         const node = ir.nodes[id];
         return node && node.type === "script" ? Object.values(node.next) : [];
     };
     const reachable = new Set<string>();
-    const stack = [ir.initial];
+    // Any script may fail into the catch-all state, so it is reachable when declared.
+    const stack = ir.catchAll !== null && Object.values(ir.nodes).some(node => node.type === "script") ? [ir.initial, ir.catchAll] : [ir.initial];
     while (stack.length) {
         const id = stack.pop()!;
         if (reachable.has(id) || !ir.nodes[id]) continue;
@@ -303,7 +312,8 @@ function checkGraph(ir: { initial: string; nodes: Record<string, WorkflowIRNode>
     for (const id of Object.keys(ir.nodes)) {
         if (!reachable.has(id)) diagnostics.warning("WORKFLOW_STATE_UNREACHABLE", `states.${id}`, `state '${id}' is not reachable from initial.`);
     }
-    // Every reachable state must be able to reach a terminal.
+    // Every reachable state must be able to reach a terminal through its own
+    // routes; the catch-all is an error path, not a way to finish.
     const canFinish = new Set(Object.values(ir.nodes).filter(node => node.type === "terminal").map(node => node.id));
     let changed = true;
     while (changed) {
@@ -347,7 +357,7 @@ export function compileWorkflowV2(yaml: string): WorkflowCompileResult {
     }
     if (!isJsonObject(parsed)) { diagnostics.error("WORKFLOW_FIELD_INVALID", "$", "a workflow document must be a mapping."); return result(null, null, null); }
     const root: Record<string, unknown> = parsed;
-    checkKeys(root, ["apiVersion", "kind", "metadata", "description", "inputs", "outputSchema", "initial", "initialInput", "limits", "schemas", "states"], "$", diagnostics);
+    checkKeys(root, ["apiVersion", "kind", "metadata", "description", "inputs", "outputSchema", "initial", "initialInput", "limits", "catchAll", "schemas", "states"], "$", diagnostics);
     if (root.apiVersion !== WORKFLOW_V2_API_VERSION) diagnostics.error("WORKFLOW_API_VERSION", "apiVersion", `apiVersion must be '${WORKFLOW_V2_API_VERSION}'.`);
     if (root.kind !== WORKFLOW_V2_KIND) diagnostics.error("WORKFLOW_KIND", "kind", `kind must be '${WORKFLOW_V2_KIND}'.`);
 
@@ -408,6 +418,7 @@ export function compileWorkflowV2(yaml: string): WorkflowCompileResult {
     }
     const initialInput = Object.hasOwn(root, "initialInput") ? bindingValue(root.initialInput, "initialInput", diagnostics) : null;
 
+    const hasCatchAll = typeof root.catchAll === "string";
     const nodes: Record<string, WorkflowIRNode> = {};
     if (!isJsonObject(root.states)) {
         diagnostics.error("WORKFLOW_FIELD_REQUIRED", "states", "states must map state ids to states.");
@@ -423,7 +434,7 @@ export function compileWorkflowV2(yaml: string): WorkflowCompileResult {
             if (!isJsonObject(rawNode)) { diagnostics.error("WORKFLOW_FIELD_INVALID", path, "a state must be a mapping."); continue; }
             const type = rawNode.type;
             if (type === "script") {
-                const node = compileScript(id, rawNode, nodeIds, schemas, diagnostics);
+                const node = compileScript(id, rawNode, nodeIds, schemas, hasCatchAll, diagnostics);
                 if (node) nodes[id] = node;
             } else if (type === "terminal") {
                 const node = compileTerminal(id, rawNode, schemas, diagnostics);
@@ -441,6 +452,14 @@ export function compileWorkflowV2(yaml: string): WorkflowCompileResult {
     } else if (nodes[initial]?.type === "terminal") {
         diagnostics.error("WORKFLOW_INITIAL_INVALID", "initial", "initial must not be a terminal state.");
     }
+    let catchAll: string | null = null;
+    if (root.catchAll !== undefined) {
+        if (typeof root.catchAll !== "string" || !(isJsonObject(root.states) && Object.hasOwn(root.states, root.catchAll))) {
+            diagnostics.error("WORKFLOW_CATCH_ALL_INVALID", "catchAll", `catchAll must name a declared state (got '${String(root.catchAll)}').`);
+        } else if (root.catchAll === initial) {
+            diagnostics.error("WORKFLOW_CATCH_ALL_INVALID", "catchAll", "catchAll must not be the initial state.");
+        } else catchAll = root.catchAll;
+    }
 
     if (!diagnostics.failed) {
         try { new WorkflowSchemaSet(schemas.defs).compileAll(); }
@@ -450,7 +469,7 @@ export function compileWorkflowV2(yaml: string): WorkflowCompileResult {
         }
     }
     if (diagnostics.failed || !name || !version) return result(name, version, null);
-    checkGraph({ initial, nodes }, diagnostics);
+    checkGraph({ initial, catchAll, nodes }, diagnostics);
     if (diagnostics.failed) return result(name, version, null);
     const ir: WorkflowIR = {
         irVersion: WORKFLOW_V2_IR_VERSION,
@@ -461,6 +480,7 @@ export function compileWorkflowV2(yaml: string): WorkflowCompileResult {
         initialInput,
         inputsSchema,
         outputSchema: rootOutputSchema,
+        catchAll,
         limits: { maxNodeExecutions },
         schemaDefs: schemas.defs,
         nodes,
@@ -525,14 +545,15 @@ export function parseDiagnostics(value: JsonValue): WorkflowDiagnostic[] {
 /** Read stored IR (already hash-verified) back with its declared shape. */
 export function parseWorkflowIr(value: JsonValue): WorkflowIR {
     need(isJsonObject(value), "stored IR is not an object");
-    need(value.irVersion === 1 || value.irVersion === 2, `stored IR version ${String(value.irVersion)} is not supported by this worker`);
-    const irVersion: 1 | 2 = value.irVersion;
-    // Version 1 has no root contract; version 2 must state it (null when absent).
+    need(value.irVersion === 1 || value.irVersion === 2 || value.irVersion === 3, `stored IR version ${String(value.irVersion)} is not supported by this worker`);
+    const irVersion: 1 | 2 | 3 = value.irVersion;
+    // A field a version introduced must be stated (null when absent) from that version on.
     const rootOutputSchema = irVersion === 1 && !Object.hasOwn(value, "outputSchema") ? null : value.outputSchema;
+    const catchAll = irVersion < 3 && !Object.hasOwn(value, "catchAll") ? null : value.catchAll;
     need(value.apiVersion === WORKFLOW_V2_API_VERSION, "stored IR has a different apiVersion");
     need(typeof value.name === "string" && typeof value.version === "string" && typeof value.initial === "string"
-        && nullableString(value.description) && nullableString(value.inputsSchema) && nullableString(rootOutputSchema),
-        "stored IR header is invalid");
+        && nullableString(value.description) && nullableString(value.inputsSchema) && nullableString(rootOutputSchema)
+        && nullableString(catchAll), "stored IR header is invalid");
     need(isJsonObject(value.limits) && typeof value.limits.maxNodeExecutions === "number", "stored IR limits are invalid");
     need(isJsonObject(value.schemaDefs) && isJsonObject(value.nodes), "stored IR schemas or nodes are invalid");
     need(Object.hasOwn(value, "initialInput"), "stored IR has no initialInput");
@@ -562,10 +583,11 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
         }
     }
     need(Object.hasOwn(nodes, value.initial), "stored IR initial state is missing");
+    need(catchAll === null || Object.hasOwn(nodes, catchAll), "stored IR catch-all state is missing");
     return {
         irVersion, apiVersion: WORKFLOW_V2_API_VERSION, name: value.name, version: value.version,
         description: value.description, initial: value.initial, initialInput: value.initialInput,
-        inputsSchema: value.inputsSchema, outputSchema: rootOutputSchema, limits: { maxNodeExecutions: value.limits.maxNodeExecutions },
+        inputsSchema: value.inputsSchema, outputSchema: rootOutputSchema, catchAll, limits: { maxNodeExecutions: value.limits.maxNodeExecutions },
         schemaDefs: value.schemaDefs, nodes,
     };
 }

@@ -7,9 +7,9 @@
  *   the current catalog initializes; its rows are kept and the trigger acts on
  *   them.
  * - An immutable revision compiled to IR version 1 (no root outputSchema;
- *   each succeeded terminal carries the contract it was compiled with) is read
- *   and run as stored: its text and hash are not rewritten and its YAML is not
- *   recompiled.
+ *   each succeeded terminal carries the contract it was compiled with) or
+ *   version 2 (no catchAll) is read and run as stored: its text and hash are
+ *   not rewritten and its YAML is not recompiled.
  */
 import { describe, it, expect, afterAll } from "vitest";
 import { createRequire } from "node:module";
@@ -65,7 +65,7 @@ async function until(check, label, timeoutMs = 60_000) {
 
 /** The IR an earlier build (IR version 1) compiled from the same YAML: the root contract merged into succeeded terminals. */
 function versionOneIr(ir) {
-    const { outputSchema, ...rest } = ir;
+    const { outputSchema, catchAll: _catchAll, ...rest } = ir;
     const nodes = Object.fromEntries(Object.entries(ir.nodes).map(([id, node]) => [id,
         node.type === "terminal" && node.outcome === "succeeded" ? { ...node, outputSchema: node.outputSchema ?? outputSchema } : node]));
     return { ...rest, irVersion: 1, nodes };
@@ -156,18 +156,24 @@ describe("workflow v2 data from an earlier build", () => {
         await runtime.start();
         try {
             const compiled = compileWorkflowV2(CONTRACT);
-            expect(compiled.ir.irVersion).toBe(2);
+            expect(compiled.ir.irVersion).toBe(3);
             expect(compiled.ir.outputSchema).toBe("workflow.output");
+            expect(compiled.ir.catchAll).toBeNull();
             const old = versionOneIr(compiled.ir);
             expect(old.outputSchema).toBeUndefined();
             expect(old.nodes.done.outputSchema).toBe("workflow.output");
             const oldIrText = canonicalJson(old);
             const oldIrSha256 = sha256Hex(oldIrText);
 
-            // Decoding: version 1 has no root contract; version 2 must state it.
-            expect(parseWorkflowIr(JSON.parse(oldIrText))).toMatchObject({ irVersion: 1, outputSchema: null });
+            // Decoding: version 1 has no root contract and no catch-all; version 2 states the contract
+            // but no catch-all; version 3 must state both.
+            expect(parseWorkflowIr(JSON.parse(oldIrText))).toMatchObject({ irVersion: 1, outputSchema: null, catchAll: null });
+            const { catchAll: _noCatchAll, ...versionTwo } = { ...compiled.ir, irVersion: 2 };
+            expect(parseWorkflowIr(versionTwo)).toMatchObject({ irVersion: 2, outputSchema: "workflow.output", catchAll: null });
             const { outputSchema: _dropped, ...withoutRoot } = compiled.ir;
             expect(() => parseWorkflowIr(withoutRoot)).toThrow("stored IR header is invalid");
+            const { catchAll: _droppedCatchAll, ...withoutCatchAll } = compiled.ir;
+            expect(() => parseWorkflowIr(withoutCatchAll)).toThrow("stored IR header is invalid");
 
             const id = randomUUID();
             const claimed = await catalog.createWorkflowSessionV2(id, { parentSessionId: null, owner: null,

@@ -55,12 +55,14 @@ import {
 
 export const WORKFLOW_V2_CONTROLLER_NAME = "workflow-v2-controller";
 /**
- * The controller's history shape. 1.1.0 waits with race(message, backstop
- * timer) and records the backstop in its plan; 1.0.0 histories (pre-release
- * builds) had neither and are not replayed by this code: an instance of an
- * unregistered version is refused by the runtime, never re-interpreted.
+ * The controller's history shape. 1.2.0 reads its commands before every
+ * admission, retries a run-ending write on durable timers and may route an
+ * unhandled runtime error to the workflow's catch-all state. Histories of the
+ * pre-release shapes 1.0.0 and 1.1.0 were never deployed; this code does not
+ * replay them (the runtime refuses an instance of an unregistered version
+ * rather than re-interpreting it).
  */
-export const WORKFLOW_V2_CONTROLLER_VERSION = "1.1.0";
+export const WORKFLOW_V2_CONTROLLER_VERSION = "1.2.0";
 export const WORKFLOW_V2_EFFECT_NAME = "workflow-v2-effect";
 export const WORKFLOW_V2_EFFECT_VERSION = "1.0.0";
 /** Node admissions per controller execution before continue-as-new bounds history. */
@@ -71,6 +73,18 @@ export const WORKFLOW_V2_IDLE_WAITS_PER_EXECUTION = 50;
 export const WORKFLOW_V2_DEFAULT_WAKE_BACKSTOP_MS = 30_000;
 /** Default interval of a running script's check that its node is still undecided. */
 export const WORKFLOW_V2_DEFAULT_LIVENESS_MS = 1_000;
+/** A command read before an admission waits at most this long when the queue is empty (the session orchestration's idiom). */
+export const WORKFLOW_V2_COMMAND_POLL_MS = 10;
+/**
+ * Attempts of a run-ending write (the finish and the parent notification).
+ * Each attempt runs the activity with the store retry policy; attempts are
+ * separated by these durable delays, so a store outage of about half an hour
+ * still ends the run. After the last attempt the controller fails and a
+ * reader of the run ends it (reconcileWorkflowV2Run).
+ */
+export const WORKFLOW_V2_FINALIZE_DELAYS_MS: readonly number[] = [1_000, 5_000, 15_000, 30_000, 60_000, 120_000, 300_000, 600_000, 600_000];
+/** The arrival route of the workflow's catch-all state (not a valid route label, so it never collides with one). */
+export const CATCH_ALL_ROUTE = "@catchAll";
 export const ROOT_SCOPE = "root";
 /** duroxide statuses after which an orchestration does no more work. */
 const TERMINAL_ORCHESTRATION_STATUSES: readonly string[] = ["Completed", "Failed", "Terminated"];
@@ -120,6 +134,8 @@ export interface ControllerState {
     steps: number;
     ordinals: Record<string, number>;
     cursors: ControllerCursor[];
+    /** The catch-all state was entered; it is entered at most once per run. */
+    catchAllEntered: boolean;
 }
 
 export interface ControllerInput {
@@ -137,6 +153,8 @@ export interface ControllerPlan {
     maxNodeExecutions: number;
     /** Recorded in history, so a changed worker default never alters a replay. */
     wakeBackstopMs: number;
+    /** The state an unhandled runtime error routes to, once per run; null without one. */
+    catchAll: string | null;
     nodes: Record<string, { type: "script" | "terminal"; next: Record<string, string> }>;
 }
 
@@ -203,10 +221,12 @@ function parseControllerState(value: unknown): ControllerState {
         expect(typeof ordinal === "number" && Number.isSafeInteger(ordinal), `ordinal ${key} is invalid`);
         parsedOrdinals[key] = ordinal;
     }
+    expect(state.catchAllEntered === undefined || typeof state.catchAllEntered === "boolean", "catchAllEntered is not a boolean");
     return {
         irSha256: text(state.irSha256, "irSha256"),
         steps: state.steps,
         ordinals: parsedOrdinals,
+        catchAllEntered: state.catchAllEntered === true,
         cursors: state.cursors.map((cursor, index) => {
             const item = record(cursor, `cursor ${index}`);
             return {
@@ -233,9 +253,11 @@ function parsePlan(value: unknown): ControllerPlan {
         for (const [label, target] of Object.entries(next)) routes[label] = text(target, `route ${label}`);
         parsed[id] = { type: item.type, next: routes };
     }
+    const catchAll = plan.catchAll === undefined ? null : textOrNull(plan.catchAll, "catchAll");
+    expect(catchAll === null || Object.hasOwn(parsed, catchAll), "plan catch-all state is missing");
     return {
         name: text(plan.name, "name"), version: text(plan.version, "version"), initial: text(plan.initial, "initial"),
-        maxNodeExecutions: plan.maxNodeExecutions, wakeBackstopMs: plan.wakeBackstopMs, nodes: parsed,
+        maxNodeExecutions: plan.maxNodeExecutions, wakeBackstopMs: plan.wakeBackstopMs, catchAll, nodes: parsed,
     };
 }
 
@@ -301,28 +323,88 @@ function publishStatus(ctx: OrchestrationContext, input: ControllerInput, plan: 
     }));
 }
 
+/**
+ * Run a store activity that must not be lost: each attempt uses the store
+ * retry policy, and attempts are separated by durable timers. The last
+ * failure propagates.
+ */
+function* persistently(ctx: OrchestrationContext, name: string, input: unknown): Generator<ScheduledTask, unknown, unknown> {
+    for (let attempt = 0; ; attempt += 1) {
+        try {
+            return yield ctx.scheduleActivityWithRetryTyped(name, input, STORE_RETRY);
+        } catch (error) {
+            if (attempt >= WORKFLOW_V2_FINALIZE_DELAYS_MS.length) throw error;
+            ctx.traceWarn(`[workflow-v2] ${name} attempt ${attempt + 1} failed; retrying: ${workflowErrorMessage(error)}`);
+            yield ctx.scheduleTimer(WORKFLOW_V2_FINALIZE_DELAYS_MS[attempt]);
+        }
+    }
+}
+
 function* finishRun(
     ctx: OrchestrationContext,
-    input: ControllerInput,
+    runId: string,
     request: { terminalNodeExecutionId: string } | { failure: { nodeId: string | null; nodeExecutionId: string | null; code: string; message: string } },
 ): Generator<ScheduledTask, ControllerResult, unknown> {
-    const result = parseResult(yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.finish, { runId: input.runId, ...request }, STORE_RETRY));
-    yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.notifyParent, { runId: input.runId }, STORE_RETRY);
+    const result = parseResult(yield* persistently(ctx, WORKFLOW_V2_ACTIVITIES.finish, { runId, ...request }));
+    yield* persistently(ctx, WORKFLOW_V2_ACTIVITIES.notifyParent, { runId });
     ctx.setCustomStatus(JSON.stringify({ status: result.status === "failed" ? "failed" : result.status === "cancelled" ? "cancelled" : "completed",
-        sessionKind: "workflow", workflow: { v: 2, runId: input.runId, outcome: result.outcome } }));
+        sessionKind: "workflow", workflow: { v: 2, runId, outcome: result.outcome } }));
     return result;
 }
 
+/**
+ * The controller's technical failure path: a store, protocol or input fault
+ * ends the run as failed with its cause. This is not the workflow's catch-all
+ * state (a business route for unhandled node errors); it never runs workflow
+ * code.
+ */
+function* failRun(ctx: OrchestrationContext, runId: string, message: string): Generator<ScheduledTask, ControllerResult, unknown> {
+    ctx.traceError(`[workflow-v2] run=${runId} controller error: ${message}`);
+    return yield* finishRun(ctx, runId, { failure: { nodeId: null, nodeExecutionId: null, code: "controller_error", message } });
+}
+
 export function* workflowV2Controller(ctx: OrchestrationContext, rawInput: unknown): Generator<ScheduledTask, ControllerResult | null, unknown> {
-    const input = parseControllerInput(rawInput);
+    let input: ControllerInput;
+    try {
+        input = parseControllerInput(rawInput);
+    } catch (error) {
+        // Fail closed: when the input still names a run, that run ends visibly.
+        const runId = isRecord(rawInput) && typeof rawInput.runId === "string" ? rawInput.runId : null;
+        if (runId === null) throw error;
+        return yield* failRun(ctx, runId, `The controller input is invalid: ${workflowErrorMessage(error)}`);
+    }
     try {
         return yield* controlRun(ctx, input);
     } catch (error) {
-        // A store or protocol fault ends the run as failed with the cause; it is never left "running".
-        const message = workflowErrorMessage(error);
-        ctx.traceWarn(`[workflow-v2] run=${input.runId} controller error: ${message}`);
-        return yield* finishRun(ctx, input, { failure: { nodeId: null, nodeExecutionId: null, code: "controller_error", message } });
+        return yield* failRun(ctx, input.runId, workflowErrorMessage(error));
     }
+}
+
+/**
+ * Read every message already queued, without waiting for more: the first
+ * lifecycle command, or null when the queue is empty. Wakes ahead of a
+ * command are only hints and are dropped, so they never hide it.
+ */
+function* takeQueuedCommand(ctx: OrchestrationContext): Generator<ScheduledTask, NonNullable<ReturnType<typeof parseWorkflowCommand>> | null, unknown> {
+    for (;;) {
+        const polled = parseRace(yield ctx.race(ctx.dequeueEvent(WORKFLOW_COMMAND_QUEUE), ctx.scheduleTimer(WORKFLOW_V2_COMMAND_POLL_MS)));
+        if (polled.index === 1) return null;
+        const command = parseWorkflowCommand(polled.value);
+        if (command) return command;
+    }
+}
+
+/** Apply one lifecycle command (cancel, done or delete) and end the controller. */
+function* applyCommand(ctx: OrchestrationContext, input: ControllerInput, command: NonNullable<ReturnType<typeof parseWorkflowCommand>>): Generator<ScheduledTask, ControllerResult, unknown> {
+    const ended = parseResult(yield* persistently(ctx, WORKFLOW_V2_ACTIVITIES.cancel, {
+        runId: input.runId, command: command.cmd, reason: command.reason ?? null, requestedBy: command.requestedBy ?? null,
+    }));
+    if (command.cmd !== "delete") {
+        yield* persistently(ctx, WORKFLOW_V2_ACTIVITIES.notifyParent, { runId: input.runId, requestedBy: command.requestedBy ?? null });
+    }
+    ctx.setCustomStatus(JSON.stringify({ status: ended.status === "cancelled" ? "cancelled" : ended.status === "failed" ? "failed" : "completed",
+        sessionKind: "workflow", workflow: { v: 2, runId: input.runId, outcome: ended.outcome } }));
+    return ended;
 }
 
 function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generator<ScheduledTask, ControllerResult | null, unknown> {
@@ -332,7 +414,7 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
         const begun = parseBegin(yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.begin, { runId: input.runId }, STORE_RETRY));
         if (!ACTIVE_RUN_STATUSES.includes(begun.status)) return { runId: input.runId, status: begun.status, outcome: begun.outcome };
         restored = {
-            irSha256: begun.irSha256, steps: 0, ordinals: {},
+            irSha256: begun.irSha256, steps: 0, ordinals: {}, catchAllEntered: false,
             cursors: [{ scopeId: ROOT_SCOPE, nodeId: begun.initial, predecessorId: null, arrivalRoute: null, pending: null }],
         };
     }
@@ -347,13 +429,23 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
     };
 
     for (;;) {
+        // 0. Commands first. A command queued before this read ends the run
+        // before anything else is admitted, however quickly states complete;
+        // one that arrives later is read here or while waiting. Whichever
+        // run-ending transaction commits first (finish, cancel or deletion)
+        // decides the run; a command read after that changes nothing.
+        if (state.cursors.some(cursor => cursor.pending === null)) {
+            const command = yield* takeQueuedCommand(ctx);
+            if (command) return yield* applyCommand(ctx, input, command);
+        }
+
         // 1. Admit the next node of every cursor that is not waiting on work.
         for (const cursor of state.cursors) {
             if (cursor.pending !== null) continue;
             const node: ControllerPlan["nodes"][string] | undefined = plan.nodes[cursor.nodeId];
             expect(node !== undefined, `plan has no state ${cursor.nodeId}`);
             if (state.steps >= plan.maxNodeExecutions) {
-                return yield* finishRun(ctx, input, { failure: {
+                return yield* finishRun(ctx, input.runId, { failure: {
                     nodeId: cursor.nodeId, nodeExecutionId: null, code: "limit_exceeded",
                     message: `The run reached its limit of ${plan.maxNodeExecutions} node executions.`,
                 } });
@@ -369,7 +461,7 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
                 predecessorId: cursor.predecessorId, arrivalRoute: cursor.arrivalRoute,
             }, STORE_RETRY));
             if (!entered.admitted) return { runId: input.runId, status: entered.status, outcome: entered.outcome };
-            if (node.type === "terminal") return yield* finishRun(ctx, input, { terminalNodeExecutionId: entered.nodeExecutionId });
+            if (node.type === "terminal") return yield* finishRun(ctx, input.runId, { terminalNodeExecutionId: entered.nodeExecutionId });
             cursor.pending = entered.nodeExecutionId;
             if (entered.state === "pending") {
                 yield ctx.startOrchestrationVersioned(WORKFLOW_V2_EFFECT_NAME, WORKFLOW_V2_EFFECT_VERSION,
@@ -387,15 +479,24 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
                 const owner = state.cursors.find(item => item.pending === result.nodeExecutionId);
                 expect(owner !== undefined, `collected ${result.nodeExecutionId} is not pending`);
                 const route = selectRoute(plan.nodes[owner.nodeId].next, result);
-                if (route === null) {
-                    return yield* finishRun(ctx, input, { failure: {
+                if (route !== null) {
+                    owner.nodeId = plan.nodes[owner.nodeId].next[route];
+                    owner.arrivalRoute = route;
+                } else if (result.resultKind === "runtime_error" && plan.catchAll !== null && !state.catchAllEntered) {
+                    // The workflow's catch-all state handles an error no route of
+                    // its state handles, once per run: an unhandled error after
+                    // it was entered (in it or anywhere else) fails the run.
+                    state.catchAllEntered = true;
+                    owner.nodeId = plan.catchAll;
+                    owner.arrivalRoute = CATCH_ALL_ROUTE;
+                } else {
+                    const handled = plan.catchAll !== null && result.resultKind === "runtime_error" ? " The workflow's catch-all state already ran in this run." : "";
+                    return yield* finishRun(ctx, input.runId, { failure: {
                         nodeId: owner.nodeId, nodeExecutionId: result.nodeExecutionId, code: result.outcome,
-                        message: `State '${owner.nodeId}' ended with ${result.resultKind === "business" ? "undeclared outcome" : "runtime error"} '${result.outcome}' and has no route for it.`,
+                        message: `State '${owner.nodeId}' ended with ${result.resultKind === "business" ? "undeclared outcome" : "runtime error"} '${result.outcome}' and has no route for it.${handled}`,
                     } });
                 }
-                owner.nodeId = plan.nodes[owner.nodeId].next[route];
                 owner.predecessorId = result.nodeExecutionId;
-                owner.arrivalRoute = route;
                 owner.pending = null;
             }
             if (admittedThisExecution >= WORKFLOW_V2_ADMISSIONS_PER_EXECUTION) return yield* continueAsNew();
@@ -413,16 +514,7 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
             continue;
         }
         const command = parseWorkflowCommand(raced.value);
-        if (command) {
-            const ended = parseResult(yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.cancel, {
-                runId: input.runId, command: command.cmd, reason: command.reason ?? null, requestedBy: command.requestedBy ?? null,
-            }, STORE_RETRY));
-            if (command.cmd !== "delete") {
-                yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.notifyParent, { runId: input.runId, requestedBy: command.requestedBy ?? null }, STORE_RETRY);
-            }
-            ctx.setCustomStatus(JSON.stringify({ status: "cancelled", sessionKind: "workflow", workflow: { v: 2, runId: input.runId } }));
-            return ended;
-        }
+        if (command) return yield* applyCommand(ctx, input, command);
         // A wake (or any other message) only prompts the next collection.
     }
 }
@@ -553,7 +645,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         inputs: run.inputs, input: incoming, kv: {}, runtime: { error: runtimeErrorValue },
     });
     /** The value arriving at a node from its exact predecessor (or the initial input). */
-    const arrival = async (run: WorkflowRunRow, ir: WorkflowIR, predecessorId: string | null, arrivalRoute: string | null)
+    const arrival = async (run: WorkflowRunRow, ir: WorkflowIR, nodeId: string, predecessorId: string | null, arrivalRoute: string | null)
         : Promise<{ incoming: JsonValue; runtimeError: JsonValue } | { failure: NodeResultInput }> => {
         if (predecessorId === null) {
             try {
@@ -571,7 +663,10 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         if (predecessor.outcome === null) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Predecessor ${predecessorId} has no outcome.`);
         const expectedRoute = selectRoute(predecessorNode.type === "script" ? predecessorNode.next : {},
             { outcome: predecessor.outcome, resultKind: predecessor.resultKind });
-        if (expectedRoute !== arrivalRoute) {
+        // An unhandled runtime error may arrive at the workflow's catch-all state.
+        const caught = arrivalRoute === CATCH_ALL_ROUTE && expectedRoute === null && predecessor.resultKind === "runtime_error"
+            && ir.catchAll === nodeId;
+        if (expectedRoute !== arrivalRoute && !caught) {
             throw new WorkflowStoreError("NONDETERMINISTIC_ADMISSION", `Route ${String(arrivalRoute)} does not match the stored result of ${predecessorId}.`);
         }
         return predecessor.resultKind === "business"
@@ -603,7 +698,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         for (const node of Object.values(ir.nodes)) nodes[node.id] = { type: node.type, next: node.type === "script" ? node.next : {} };
         const plan: ControllerPlan = {
             name: ir.name, version: ir.version, initial: ir.initial, maxNodeExecutions: ir.limits.maxNodeExecutions,
-            wakeBackstopMs: deps.wakeBackstopMs ?? WORKFLOW_V2_DEFAULT_WAKE_BACKSTOP_MS, nodes,
+            wakeBackstopMs: deps.wakeBackstopMs ?? WORKFLOW_V2_DEFAULT_WAKE_BACKSTOP_MS, catchAll: ir.catchAll, nodes,
         };
         return plan;
     });
@@ -624,7 +719,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
 
         let immediate: NodeResultInput | null = null;
         let value: JsonValue = null;
-        const arrived = await arrival(run, ir, predecessorId, arrivalRoute);
+        const arrived = await arrival(run, ir, nodeId, predecessorId, arrivalRoute);
         if ("failure" in arrived) immediate = arrived.failure;
         else {
             value = arrived.incoming;
@@ -654,6 +749,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 sessionId: run.workflowSessionId,
                 events: [{ eventType: "workflow.state_started", data: {
                     runId, nodeExecutionId, stateId: nodeId, scopeId, ordinal, type: node.type, step: ordinal,
+                    ...(arrivalRoute === CATCH_ALL_ROUTE ? { catchAll: true, failedNodeExecutionId: predecessorId } : {}),
                     ...(immediate ? { immediateOutcome: immediate.outcome } : {}),
                 } }],
                 update: { touch: true },
@@ -704,8 +800,10 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     runtime.registerActivity(WORKFLOW_V2_ACTIVITIES.finish, async (_ctx, rawInput) => {
         const input = record(rawInput, "finish input");
         const run = await runOf(text(input.runId, "runId"));
-        const ir = await irOf(run);
         if (!ACTIVE_RUN_STATUSES.includes(run.status)) return { runId: run.runId, status: run.status, outcome: run.terminalOutcome };
+        // A failure ends the run from its row alone: it must succeed even when
+        // the pinned IR cannot be read (that may be why the run is failing).
+        const label = await store.readRevisionLabel(run.workflowSessionId, run.revision);
         let status: "completed" | "failed" | "cancelled";
         let terminalNodeId: string | null;
         let terminalOutcome: string | null = null;
@@ -714,6 +812,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         let terminalNode: { nodeExecutionId: string; result: NodeResultInput } | null = null;
         let summary: string | null = null;
         if (typeof input.terminalNodeExecutionId === "string") {
+            const ir = await irOf(run);
             const executed = await store.readNodeExecution(input.terminalNodeExecutionId);
             if (!executed || executed.runId !== run.runId) throw new WorkflowStoreError("NODE_NOT_FOUND", "Terminal node execution is missing.");
             const node = nodeOf(ir, executed.nodeId);
@@ -763,7 +862,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             projection: {
                 sessionId: run.workflowSessionId,
                 events: [{ eventType, data: {
-                    runId: run.runId, name: ir.name, stateId: terminalNodeId, outcome: terminalOutcome,
+                    runId: run.runId, name: label?.name ?? null, stateId: terminalNodeId, outcome: terminalOutcome,
                     ...(summary ? { summary } : {}),
                     ...(outputText !== null ? { outputPreview: jsonbSafeText(outputText, 1_000) } : {}),
                     ...(errorText !== null ? { error: jsonbSafeText(errorText, 2_000) } : {}),
@@ -813,6 +912,15 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         return { runId: run.runId, status: ended.run.status, outcome: ended.run.terminalOutcome };
     });
 
+    /**
+     * Tell the parent that the run ended, at least once: a crash after the
+     * parent's queue accepted the message and before this activity recorded
+     * it sends it again, always with the same client message id. The
+     * parent's session drops a repeated id while it is among its 20 most
+     * recent ids (RECENT_CLIENT_MESSAGE_ID_LIMIT); delivery is not otherwise
+     * exactly once. This reads no IR, so a run whose IR cannot be read is
+     * still reported.
+     */
     runtime.registerActivity(WORKFLOW_V2_ACTIVITIES.notifyParent, async (_ctx, rawInput) => {
         const input = record(rawInput, "notify input");
         const run = await runOf(text(input.runId, "runId"));
@@ -827,9 +935,10 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 data: { runId: run.runId, reason: "Parent authority is no longer available" } }]);
             return null;
         }
-        const ir = await irOf(run);
+        const label = await store.readRevisionLabel(run.workflowSessionId, run.revision);
         const data = {
-            sessionId: run.workflowSessionId, runId: run.runId, name: jsonbSafeText(ir.name, 200), version: ir.version,
+            sessionId: run.workflowSessionId, runId: run.runId,
+            name: label?.name ? jsonbSafeText(label.name, 200) : null, version: label?.semver ?? null,
             status: run.status, outcome: run.terminalOutcome, stateId: run.terminalNodeId,
             output: run.terminalOutput === null ? null : previewJson(run.terminalOutput, 1_000),
             error: run.terminalError === null ? null : previewJson(run.terminalError, 1_000),

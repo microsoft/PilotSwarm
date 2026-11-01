@@ -2,7 +2,7 @@ import type { SessionOwnerInfo } from "../../types.js";
 import type { WorkflowToolBinding } from "../tool-policy.js";
 import { assertJsonValue, isJsonObject, jsonbSafeText, previewJson, type JsonValue } from "./json.js";
 import { describeWorkflowV2States } from "./runtime.js";
-import { createWorkflowV2, updateWorkflowV2, type WorkflowV2Command, type WorkflowV2Host } from "./service.js";
+import { createWorkflowV2, reconcileWorkflowV2Run, updateWorkflowV2, type WorkflowV2Command, type WorkflowV2Host } from "./service.js";
 import { diagnosticsJson, WorkflowStoreError, type WorkflowActor, type WorkflowDefinitionReceipt, type WorkflowStore } from "./store.js";
 
 /**
@@ -182,6 +182,8 @@ export async function readWorkflowFromTool(args: Record<string, unknown>, contex
     try {
         const workflowSessionId = requiredString(args, "workflow_id");
         await authorizeParent(context.host, workflowSessionId, context.callerSessionId);
+        // A run whose controller can no longer end it is ended (or re-dispatched) before it is shown.
+        for (const run of await context.host.store.listRuns(workflowSessionId)) await reconcileWorkflowV2Run(context.host, run.runId);
         const view = await readWorkflowV2View(context.host.store, workflowSessionId, {
             runId: optionalString(args, "run_id"), includeYaml: args.include_yaml === true,
         });

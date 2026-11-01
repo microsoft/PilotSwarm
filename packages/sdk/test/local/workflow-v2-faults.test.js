@@ -8,8 +8,11 @@
  * Live_Terminates (lost wake: rv-terminates-lost-wake; effect death:
  * rv-terminates-effect-death; both hd-liveness), Live_CancelStops (crash
  * after the cancel commit, before the stop request: rv-cancel-stops,
- * hd-liveness) and Prop_NoScriptAfterDelete (a deletion that commits while
- * the effect prepares its script: df-no-entry-fence, hd-safety).
+ * hd-liveness), Prop_NoScriptAfterDelete (a deletion that commits while
+ * the effect prepares its script: df-no-entry-fence, hd-safety), and the
+ * controller's fail-closed finalization, continue-as-new with a pending
+ * state, at-least-once parent notification and the command-read boundary
+ * (README "Regressions").
  */
 import { describe, it, expect } from "vitest";
 import { createServer } from "node:http";
@@ -18,7 +21,10 @@ import { randomUUID } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { createWorkflowV2 } from "../../src/workflow/v2/service.ts";
-import { registerWorkflowV2, WORKFLOW_V2_ACTIVITIES, workflowEffectInstanceId } from "../../src/workflow/v2/runtime.ts";
+import { readWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
+import {
+    registerWorkflowV2, WORKFLOW_V2_ACTIVITIES, WORKFLOW_V2_CONTROLLER_NAME, WORKFLOW_V2_CONTROLLER_VERSION, workflowEffectInstanceId,
+} from "../../src/workflow/v2/runtime.ts";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 const getEnv = useSuiteEnv(import.meta.url);
@@ -89,8 +95,8 @@ async function until(check, label, timeoutMs = 60_000, diagnose = async () => nu
     throw new Error(`timed out waiting for ${label}: ${JSON.stringify(last)}; diagnosis: ${JSON.stringify(await diagnose())}`);
 }
 
-/** A worker-equivalent registration with one activity wrapped by `wrap`. */
-async function harness(env, wrap, options = {}) {
+/** A worker-equivalent registration with one activity wrapped by `wrap` (and, optionally, its store wrapped by `wrapStore`). */
+async function harness(env, wrap, { wrapStore, ...options } = {}) {
     const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
     await catalog.initialize();
     const store = catalog.workflowStore();
@@ -102,7 +108,7 @@ async function harness(env, wrap, options = {}) {
         registerOrchestrationVersioned: (name, version, fn) => runtime.registerOrchestrationVersioned(name, version, fn),
     };
     registerWorkflowV2(registrar, {
-        store,
+        store: wrapStore ? wrapStore(store) : store,
         catalog,
         enabled: () => true,
         resolveToolBinding: async () => null,
@@ -309,5 +315,257 @@ states:
             await h.stop();
             await probe.close();
         }
+    });
+
+    it("ends a run as failed with its cause when its IR cannot be read, even after the first finish attempts fail", { timeout: 240_000 }, async () => {
+        let blocked = null;
+        let failedFinishes = 0;
+        const h = await harness(getEnv(), {
+            // The first five failure finishes fail: one whole attempt of the store retry policy.
+            [WORKFLOW_V2_ACTIVITIES.finish]: (fn) => async (ctx, input) => {
+                if (input?.failure && failedFinishes < 5) { failedFinishes += 1; throw new Error("injected store fault while finishing"); }
+                return fn(ctx, input);
+            },
+        }, {
+            // The pinned IR of the blocked workflow cannot be read (as if its stored IR were damaged).
+            wrapStore: (store) => {
+                const faulty = Object.create(store);
+                faulty.readRevisionIr = async (workflowSessionId, ...rest) => {
+                    if (workflowSessionId === blocked) throw new Error("injected IR read fault");
+                    return store.readRevisionIr(workflowSessionId, ...rest);
+                };
+                return faulty;
+            },
+        });
+        try {
+            blocked = randomUUID();
+            const created = await createWorkflowV2(h.host, { workflowSessionId: blocked, parentSessionId: null, yaml: TWO_STEPS,
+                actor: ACTOR, operationId: "start", start: { inputs: {} } });
+            const run = await finished(h, created.receipt.run.runId, 200_000);
+            expect(run.status, JSON.stringify(run)).toBe("failed");
+            expect(run.terminalError).toMatchObject({ code: "controller_error" });
+            expect(run.terminalError.message).toContain("injected IR read fault");
+            expect(failedFinishes).toBe(5);
+            const controller = await h.client.waitForOrchestration(created.receipt.run.controllerInstanceId, 30_000);
+            expect(controller.status, JSON.stringify(controller)).toBe("Completed");
+            expect(await h.store.listNodeExecutions(run.runId)).toEqual([]);
+            const events = await h.host.catalog.getSessionEvents(blocked, 0, 50, ["workflow.failed"]);
+            expect(events).toHaveLength(1);
+            expect(events[0].data).toMatchObject({ runId: run.runId, name: "two-steps" });
+        } finally { await h.stop(); }
+    });
+
+    it("ends a run as failed when its controller starts with input it cannot parse", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv(), {});
+        try {
+            // Admit the run without dispatching it, then start its controller with damaged input that still names the run.
+            const undispatched = { ...h.host, duroxideClient: { ...h.host.duroxideClient, startOrchestrationVersioned: async () => undefined } };
+            const id = randomUUID();
+            const created = await createWorkflowV2(undispatched, { workflowSessionId: id, parentSessionId: null, yaml: TWO_STEPS,
+                actor: ACTOR, operationId: "start", start: { inputs: {} } });
+            const { runId, controllerInstanceId } = created.receipt.run;
+            expect((await h.store.readRun(runId)).status).toBe("admitted");
+            await h.client.startOrchestrationVersioned(controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME,
+                { v: 1, workflowSessionId: id, runId }, WORKFLOW_V2_CONTROLLER_VERSION);
+            const run = await finished(h, runId, 60_000);
+            expect(run.status).toBe("failed");
+            expect(run.terminalError).toMatchObject({ code: "controller_error" });
+            expect(run.terminalError.message).toContain("controller input is invalid");
+            const controller = await h.client.waitForOrchestration(controllerInstanceId, 30_000);
+            expect(controller.status, JSON.stringify(controller)).toBe("Completed");
+        } finally { await h.stop(); }
+    });
+
+    it("ends a run whose controller was terminated, and dispatches an admitted run nobody started, when the parent reads it", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv(), {});
+        try {
+            const parentId = randomUUID();
+            await h.host.catalog.createSession(parentId, {});
+            const read = async (id) => JSON.parse(await readWorkflowFromTool({ workflow_id: id }, { callerSessionId: parentId, host: h.host }));
+
+            // A terminated controller: the run is still active until a reader ends it.
+            const slowId = randomUUID();
+            const slow = await createWorkflowV2(h.host, { workflowSessionId: slowId, parentSessionId: parentId, yaml: SLOW,
+                actor: ACTOR, operationId: "start", start: { inputs: {} } });
+            const node = await until(async () => {
+                const [first] = await h.store.listNodeExecutions(slow.receipt.run.runId);
+                return first?.effectAttempts >= 1 ? first : null;
+            }, "the script to start");
+            await h.client.cancelInstance(slow.receipt.run.controllerInstanceId, "terminated by the test");
+            await until(async () => (await h.client.getStatus(slow.receipt.run.controllerInstanceId)).status === "Failed", "the controller to end");
+            expect((await h.store.readRun(slow.receipt.run.runId)).status).toBe("running");
+            const view = await read(slowId);
+            expect(view.ok, JSON.stringify(view)).toBe(true);
+            expect(view.run).toMatchObject({ status: "failed" });
+            const ended = await h.store.readRun(slow.receipt.run.runId);
+            expect(ended.terminalError).toMatchObject({ code: "controller_ended", details: { controllerStatus: "Failed" } });
+            expect(await h.store.readNodeExecution(node.nodeExecutionId)).toMatchObject({ state: "completed", outcome: "cancelled", winner: "controller" });
+            // The running script stops through its liveness check.
+            const effect = await h.client.waitForOrchestration(workflowEffectInstanceId(node.nodeExecutionId), 30_000);
+            expect(effect.status, JSON.stringify(effect)).toBe("Completed");
+
+            // An admitted run whose dispatch was lost: the reader dispatches it, and it then runs to its end.
+            const lostId = randomUUID();
+            const undispatched = { ...h.host, duroxideClient: { ...h.host.duroxideClient, startOrchestrationVersioned: async () => undefined } };
+            const lost = await createWorkflowV2(undispatched, { workflowSessionId: lostId, parentSessionId: parentId, yaml: TWO_STEPS,
+                actor: ACTOR, operationId: "start", start: { inputs: {} } });
+            expect((await h.client.getStatus(lost.receipt.run.controllerInstanceId)).status).toBe("NotFound");
+            expect((await read(lostId)).ok).toBe(true);
+            const run = await finished(h, lost.receipt.run.runId, 60_000);
+            expect(run.status, JSON.stringify(run)).toBe("completed");
+            expect(run.terminalOutput).toEqual({ n: 2 });
+        } finally { await h.stop(); }
+    });
+
+    it("carries a pending state across continue-as-new without admitting or starting it again", { timeout: TIMEOUT }, async () => {
+        // A 100 ms backstop makes 50 idle waits (the continue-as-new bound) pass while the script still runs.
+        const h = await harness(getEnv(), {}, { wakeBackstopMs: 100 });
+        try {
+            const yaml = `
+apiVersion: pilotswarm.dev/v2-draft
+kind: Workflow
+metadata: { name: long-wait, version: "1.0.0" }
+initial: wait
+states:
+  wait:
+    type: script
+    source: |
+      await new Promise(resolve => setTimeout(resolve, 12_000));
+      await setResult("ok", { waited: true });
+    transition: { next: { ok: done } }
+  done: { type: terminal, outcome: succeeded, output: "\${input}" }
+`;
+            const created = await createWorkflowV2(h.host, { workflowSessionId: randomUUID(), parentSessionId: null, yaml,
+                actor: ACTOR, operationId: "start", start: { inputs: {} } });
+            const { runId, controllerInstanceId } = created.receipt.run;
+            const executions = await until(async () => {
+                const ids = await h.client.listExecutions(controllerInstanceId);
+                const [node] = await h.store.listNodeExecutions(runId);
+                return ids.length >= 2 && node?.state === "pending" ? ids : null;
+            }, "continue-as-new while the script runs", 30_000);
+            expect(executions.length).toBeGreaterThanOrEqual(2);
+            const run = await finished(h, runId, 60_000);
+            expect(run.status, JSON.stringify(run)).toBe("completed");
+            expect(run.terminalOutput).toEqual({ waited: true });
+            const nodes = await h.store.listNodeExecutions(runId);
+            expect(nodes.map(node => [node.nodeId, node.ordinal, node.effectAttempts, node.winner])).toEqual([
+                ["wait", 1, 1, "effect"], ["done", 1, 0, "controller"],
+            ]);
+            expect(await h.client.listExecutions(workflowEffectInstanceId(nodes[0].nodeExecutionId))).toEqual([1]);
+        } finally { await h.stop(); }
+    });
+
+    it("notifies the parent at least once with one stable message id when it crashes after the parent accepted the message", { timeout: TIMEOUT }, async () => {
+        const sent = [];
+        const h = await harness(getEnv(), {}, {
+            authorizeParentNotification: async () => true,
+            notifyParent: async (parentSessionId, prompt, sender, clientMessageId) => {
+                sent.push({ parentSessionId, prompt, clientMessageId });
+                // The parent's queue accepted the message; the activity crashes before it records that.
+                if (sent.length === 1) throw new Error("injected crash after the parent enqueue");
+            },
+        });
+        try {
+            const parentId = randomUUID();
+            await h.host.catalog.createSession(parentId, {});
+            const id = randomUUID();
+            const created = await createWorkflowV2(h.host, { workflowSessionId: id, parentSessionId: parentId, yaml: TWO_STEPS,
+                actor: ACTOR, operationId: "start", start: { inputs: {} } });
+            const run = await finished(h, created.receipt.run.runId, 60_000);
+            expect(run.status).toBe("completed");
+            await h.client.waitForOrchestration(created.receipt.run.controllerInstanceId, 30_000);
+            expect(sent).toHaveLength(2);
+            expect(sent[1]).toEqual(sent[0]);
+            expect(sent[0]).toMatchObject({ parentSessionId: parentId, clientMessageId: `workflow:${id}:${run.runId}:terminal` });
+            const recorded = await h.host.catalog.getSessionEvents(id, 0, 50, ["workflow.parent_notified"]);
+            expect(recorded).toHaveLength(1);
+        } finally { await h.stop(); }
+    });
+
+    it("takes a cancel that arrives after a result's wake before it admits the next state", { timeout: TIMEOUT }, async () => {
+        let target = null;
+        let cancels = 0;
+        const h = await harness(getEnv(), {
+            // When the collection returns the first state's stored result (its wake was already read),
+            // the parent's cancel reaches the queue: wake first, cancel second.
+            [WORKFLOW_V2_ACTIVITIES.collect]: (fn) => async (ctx, input) => {
+                const rows = await fn(ctx, input);
+                if (target && rows.length > 0 && cancels === 0) {
+                    cancels += 1;
+                    await h.client.enqueueEvent(target, "messages", JSON.stringify({ type: "cmd", cmd: "cancel", id: "cancel-behind-wake", args: { reason: "after the wake" } }));
+                }
+                return rows;
+            },
+        });
+        try {
+            const yaml = `
+apiVersion: pilotswarm.dev/v2-draft
+kind: Workflow
+metadata: { name: cancel-behind-wake, version: "1.0.0" }
+initial: first
+states:
+  first:
+    type: script
+    source: |
+      await setResult("ok", { n: 1 });
+    transition: { next: { ok: done } }
+  done: { type: terminal, outcome: succeeded, output: "\${input}" }
+`;
+            const id = randomUUID();
+            target = `session-${id}`;
+            const created = await createWorkflowV2(h.host, { workflowSessionId: id, parentSessionId: null, yaml,
+                actor: ACTOR, operationId: "start", start: { inputs: {} } });
+            const run = await finished(h, created.receipt.run.runId, 60_000);
+            expect(cancels).toBe(1);
+            expect(run.status, JSON.stringify(run)).toBe("cancelled");
+            expect(run.terminalError).toMatchObject({ code: "cancelled", message: "after the wake" });
+            // The first state's result stands; the terminal state was never admitted.
+            const nodes = await h.store.listNodeExecutions(run.runId);
+            expect(nodes.map(node => [node.nodeId, node.state, node.winner])).toEqual([["first", "completed", "effect"]]);
+        } finally { await h.stop(); }
+    });
+
+    it("takes a queued cancel within one step of a long chain of states that complete at admission", { timeout: TIMEOUT }, async () => {
+        let target = null;
+        let entered = 0;
+        const h = await harness(getEnv(), {
+            [WORKFLOW_V2_ACTIVITIES.enter]: (fn) => async (ctx, input) => {
+                entered += 1;
+                if (target && entered === 30) {
+                    await h.client.enqueueEvent(target, "messages", JSON.stringify({ type: "cmd", cmd: "cancel", id: "cancel-in-chain", args: { reason: "during the chain" } }));
+                }
+                return fn(ctx, input);
+            },
+        });
+        try {
+            // Every admission of 'spin' fails its input contract at once (no script runs) and routes back to it.
+            const yaml = `
+apiVersion: pilotswarm.dev/v2-draft
+kind: Workflow
+metadata: { name: immediate-chain, version: "1.0.0" }
+initialInput: { n: 1 }
+limits: { maxNodeExecutions: 400 }
+initial: spin
+states:
+  spin:
+    type: script
+    inputSchema: { type: string }
+    source: |
+      await setResult("ok", {});
+    transition: { next: { ok: done, invalid_input: spin } }
+  done: { type: terminal, outcome: succeeded }
+`;
+            const id = randomUUID();
+            target = `session-${id}`;
+            const created = await createWorkflowV2(h.host, { workflowSessionId: id, parentSessionId: null, yaml,
+                actor: ACTOR, operationId: "start", start: { inputs: {} } });
+            const run = await finished(h, created.receipt.run.runId, 90_000);
+            expect(run.status, JSON.stringify(run)).toBe("cancelled");
+            expect(run.terminalError).toMatchObject({ code: "cancelled", message: "during the chain" });
+            const nodes = await h.store.listNodeExecutions(run.runId, 500);
+            expect(nodes.length).toBeGreaterThanOrEqual(30);
+            expect(nodes.length).toBeLessThanOrEqual(31);
+            expect(nodes.every(node => node.nodeId === "spin" && node.outcome === "invalid_input" && node.winner === "controller")).toBe(true);
+        } finally { await h.stop(); }
     });
 });

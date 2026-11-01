@@ -8,7 +8,9 @@
 (* README.md maps every action to its code and transaction boundary.       *)
 (*                                                                          *)
 (* Graph: script state S routes "again" to S (at most MaxLoops times) and   *)
-(* "ok" to terminal T. "error" has no route, so the run fails.              *)
+(* "ok" to terminal T. "error" has no route: the run fails, or, with        *)
+(* CatchAll, goes once to the catch-all script state H ("ok" to T; an       *)
+(* unhandled "error" there fails the run).                                  *)
 (*                                                                          *)
 (* An activity that writes the store is split into Exec (the store          *)
 (* transaction, which may run again after a crash) and Record (its result   *)
@@ -31,20 +33,28 @@ CONSTANTS
     EntryFence,           \* fix: the script process starts inside the entry transaction
     EndPending,           \* fix: every run end completes its pending node executions
     EffectWatch,          \* fix: collection fails a pending node whose effect ended
+    CommandPoll,          \* fix: the controller reads queued commands before every admission
+    Reconciler,           \* fix: a reader ends a run whose controller ended without ending it
+    CatchAll,             \* feature: the workflow declares a catch-all state H
+    ControllerDeath,      \* fault: the controller ends without ending its run
+    Deletes,              \* environment: the workflow session may be deleted
     NoCas                 \* deliberate fault: node completion is not a compare-and-swap
 
 ASSUME MaxLoops \in Nat
 ASSUME {LoseWake, ControllerFaults, EffectFaults, Backstop, CancelStopFromStore,
-        DeleteGuard, EntryFence, EndPending, EffectWatch, NoCas} \subseteq BOOLEAN
+        DeleteGuard, EntryFence, EndPending, EffectWatch, CommandPoll, Reconciler,
+        CatchAll, ControllerDeath, Deletes, NoCas} \subseteq BOOLEAN
 
 SOrd == 1..(MaxLoops + 1)
-SNodes == {<<"S", i>> : i \in SOrd}
+HNode == <<"H", 1>>
+SNodes == {<<"S", i>> : i \in SOrd} \cup (IF CatchAll THEN {HNode} ELSE {})
 TNode == <<"T", 1>>
 NoNode == <<"none", 0>>
 NX == SNodes \cup {TNode}
 Active == {"admitted", "running"}
 Terminal == {"completed", "failed", "cancelled"}
 ScriptOutcomes(i) == {"ok", "error"} \cup (IF i <= MaxLoops THEN {"again"} ELSE {})
+NodeOutcomes(x) == IF x = HNode THEN {"ok", "error"} ELSE ScriptOutcomes(x[2])
 EffectEnded == {"done", "stopped", "failed"}
 
 VARIABLES
@@ -76,7 +86,10 @@ effVars == <<eff, effRes, stopReq, wakeDup>>
 envVars == <<q, cancelSent, deleteSent, notified>>
 vars == <<storeVars, ctrlVars, effVars, envVars>>
 
-CurX == IF cur.node = "S" THEN <<"S", cur.ord>> ELSE TNode
+CurX == IF cur.node = "S" THEN <<"S", cur.ord>> ELSE IF cur.node = "H" THEN HNode ELSE TNode
+
+(* Where the controller goes before it admits the next state.              *)
+NextAdmit == IF CommandPoll THEN "poll" ELSE "admit"
 
 (* A store transition the hardened code makes under the session row lock.  *)
 Writable == sessionLive \/ ~DeleteGuard
@@ -94,9 +107,10 @@ TypeOK ==
     /\ nOutcome \in [NX -> {"none", "again", "ok", "error", "cancelled", "succeeded"}]
     /\ sessionLive \in BOOLEAN
     /\ defDeleted \in BOOLEAN
-    /\ pc \in {"undispatched", "begin", "admit", "start", "collect", "wait", "finish", "finishFail",
+    /\ pc \in {"undispatched", "begin", "poll", "admit", "start", "collect", "wait", "finish", "finishFail", "dead",
                "notify", "cancel", "done"}
-    /\ cur.node \in {"S", "T"}
+    /\ cur.node \in {"S", "H", "T"}
+    /\ cur.caught \in BOOLEAN
     /\ cur.ord \in SOrd
     /\ cur.pending \in NX \cup {NoNode}
     /\ cancelStep \in {"tx", "stop", "rec"}
@@ -121,7 +135,7 @@ Init ==
     /\ sessionLive = TRUE
     /\ defDeleted = FALSE
     /\ pc = "undispatched"
-    /\ cur = [node |-> "S", ord |-> 1, pending |-> NoNode]
+    /\ cur = [node |-> "S", ord |-> 1, pending |-> NoNode, caught |-> FALSE]
     /\ actRes = "none"
     /\ cancelStep = "tx"
     /\ cancelIds = {}
@@ -157,7 +171,7 @@ BeginExec ==
 BeginRecord ==
     /\ pc = "begin"
     /\ actRes # "none"
-    /\ pc' = IF actRes \in Active THEN "admit" ELSE "done"
+    /\ pc' = IF actRes \in Active THEN NextAdmit ELSE "done"
     /\ actRes' = "none"
     /\ UNCHANGED <<storeVars, cur, cancelStep, cancelIds, effVars, envVars>>
 
@@ -222,11 +236,24 @@ CollectRecord ==
     /\ pc = "collect"
     /\ actRes # "none"
     /\ CASE actRes = "nothing" -> (pc' = "wait" /\ cur' = cur)
-         [] actRes = "again" -> (pc' = "admit" /\ cur' = [node |-> "S", ord |-> cur.ord + 1, pending |-> NoNode])
-         [] actRes = "ok" -> (pc' = "admit" /\ cur' = [node |-> "T", ord |-> cur.ord, pending |-> NoNode])
+         [] actRes = "again" -> (pc' = NextAdmit /\ cur' = [cur EXCEPT !.node = "S", !.ord = cur.ord + 1, !.pending = NoNode])
+         [] actRes = "ok" -> (pc' = NextAdmit /\ cur' = [cur EXCEPT !.node = "T", !.pending = NoNode])
+         [] actRes = "error" /\ CatchAll /\ ~cur.caught ->
+                (pc' = NextAdmit /\ cur' = [cur EXCEPT !.node = "H", !.pending = NoNode, !.caught = TRUE])
          [] OTHER -> (pc' = "finishFail" /\ cur' = cur)
     /\ actRes' = "none"
     /\ UNCHANGED <<storeVars, cancelStep, cancelIds, effVars, envVars>>
+
+(* Controller: before each admission, read every queued message without   *)
+(* waiting (takeQueuedCommand). A cancel ends the run; a wake is dropped.  *)
+PollCommand ==
+    /\ pc = "poll"
+    /\ IF q = <<>>
+         THEN /\ pc' = "admit"
+              /\ q' = q
+         ELSE /\ pc' = IF Head(q) = "cancel" THEN "cancel" ELSE "poll"
+              /\ q' = Tail(q)
+    /\ UNCHANGED <<storeVars, cur, actRes, cancelStep, cancelIds, effVars, cancelSent, deleteSent, notified>>
 
 (* Controller: race(dequeueEvent("messages"), timer). A queued message wins. *)
 
@@ -342,11 +369,31 @@ CancelRecord ==
 (* catch in workflowV2Controller ends the run through the failure finish.   *)
 ControllerFault ==
     /\ ControllerFaults
-    /\ pc \in {"begin", "admit", "start", "collect", "wait", "cancel"}
+    /\ pc \in {"begin", "poll", "admit", "start", "collect", "wait", "cancel"}
     /\ pc' = "finishFail"
     /\ actRes' = "none"
     /\ cancelStep' = "tx"
     /\ UNCHANGED <<storeVars, cur, cancelIds, effVars, envVars>>
+
+(* The controller orchestration ends without ending its run: it was        *)
+(* terminated, or its finalization retries ran out.                         *)
+ControllerDie ==
+    /\ ControllerDeath
+    /\ pc \notin {"undispatched", "done", "dead"}
+    /\ pc' = "dead"
+    /\ UNCHANGED <<storeVars, cur, actRes, cancelStep, cancelIds, effVars, envVars>>
+
+(* A reader of the run (reconcileWorkflowV2Run) ends a run whose            *)
+(* controller ended, in one store transaction with its pending nodes.      *)
+Reconcile ==
+    /\ Reconciler
+    /\ pc = "dead"
+    /\ runStatus \in Active
+    /\ Writable
+    /\ runStatus' = "failed"
+    /\ EndPendingNodes("controller")
+    /\ events' = [events EXCEPT !.ended = @ + 1]
+    /\ UNCHANGED <<sessionLive, defDeleted, ctrlVars, effVars, envVars>>
 
 -----------------------------------------------------------------------------
 (* Effect orchestration per script node execution x                        *)
@@ -379,7 +426,7 @@ EffLaunch(x) ==
 (* The script returns a result; it enters the effect history.             *)
 EffComplete(x) ==
     /\ eff[x] = "running"
-    /\ \E r \in ScriptOutcomes(x[2]) : effRes' = [effRes EXCEPT ![x] = r]
+    /\ \E r \in NodeOutcomes(x) : effRes' = [effRes EXCEPT ![x] = r]
     /\ eff' = [eff EXCEPT ![x] = "ran"]
     /\ UNCHANGED <<storeVars, ctrlVars, stopReq, wakeDup, envVars>>
 
@@ -455,6 +502,7 @@ SendCancel ==
 (* Any deletion path soft-deletes the session row (cms_soft_delete_session).*)
 (* Hardened code: the 0085 trigger ends v2 work in that transaction.       *)
 Delete ==
+    /\ Deletes
     /\ ~deleteSent
     /\ deleteSent' = TRUE
     /\ sessionLive' = FALSE
@@ -472,6 +520,7 @@ Controller ==
     \/ CollectExec \/ CollectRecord \/ WaitMsg \/ WaitTimer
     \/ FinishExec \/ FinishFailExec \/ FinishRecord \/ NotifyExec \/ NotifyRecord
     \/ CancelTx \/ CancelStop \/ CancelCrash \/ CancelRecord \/ ControllerFault
+    \/ PollCommand \/ ControllerDie \/ Reconcile
 
 Effects ==
     \E x \in SNodes :
@@ -491,6 +540,7 @@ Fairness ==
     /\ WF_vars(FinishExec) /\ WF_vars(FinishFailExec) /\ WF_vars(FinishRecord)
     /\ WF_vars(NotifyExec) /\ WF_vars(NotifyRecord)
     /\ WF_vars(CancelTx) /\ SF_vars(CancelStop) /\ SF_vars(CancelRecord)
+    /\ WF_vars(PollCommand) /\ WF_vars(Reconcile)
     /\ \A x \in SNodes :
           /\ WF_vars(EffClaim(x)) /\ SF_vars(EffLaunch(x)) /\ SF_vars(EffComplete(x)) /\ SF_vars(EffStopDecided(x))
           /\ WF_vars(EffRecord(x)) /\ WF_vars(EffWake(x))
@@ -511,7 +561,13 @@ Inv_TerminalNoPending == runStatus \in Terminal => \A x \in NX : nState[x] # "pe
 Inv_AdmissionOrder ==
     /\ \A i \in SOrd : (i > 1 /\ nState[<<"S", i>>] # "absent")
             => (nState[<<"S", i - 1>>] = "completed" /\ nOutcome[<<"S", i - 1>>] = "again")
-    /\ nState[TNode] # "absent" => \E i \in SOrd : nOutcome[<<"S", i>>] = "ok"
+    /\ nState[TNode] # "absent" =>
+            (\E i \in SOrd : nOutcome[<<"S", i>>] = "ok") \/ (CatchAll /\ nOutcome[HNode] = "ok")
+
+(* The catch-all state runs only after a state ended with an error it had   *)
+(* no route for, and at most once (Inv_EventsOnce counts its admissions).  *)
+Inv_CatchAllAfterUnhandled ==
+    CatchAll => (nState[HNode] # "absent" => \E i \in SOrd : nOutcome[<<"S", i>>] = "error")
 
 Inv_CancelWinner == \A x \in NX : nWinner[x] \in {"cancel", "delete"} => runStatus = "cancelled"
 
@@ -524,6 +580,7 @@ CoreSafety ==
     /\ TypeOK
     /\ Inv_EventsOnce
     /\ Inv_AdmissionOrder
+    /\ Inv_CatchAllAfterUnhandled
     /\ Inv_CancelWinner
     /\ Inv_CompletedHasTerminal
     /\ Inv_NeverRouteCancelled
