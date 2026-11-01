@@ -132,7 +132,7 @@ test("1.0.83 is the frozen 1.0.82 plus the intake: the files it does not change 
     // Its new imports are the intake modules only (and node:crypto for the text hash).
     const frozen = new Set(tsFiles("orchestration_1_0_82").flatMap(name => importsOf(read(`orchestration_1_0_82/${name}`))));
     const added = new Set(tsFiles("orchestration_1_0_83").flatMap(name => importsOf(read(`orchestration_1_0_83/${name}`))).filter(s => !frozen.has(s)));
-    assert.deepEqual([...added].sort(), ["../workflow/v2/intake.js", "../workflow/v2/json.js", "./intake-state.js", "node:crypto"]);
+    assert.deepEqual([...added].sort(), ["../workflow/v2/intake.js", "./intake-state.js", "node:crypto"]);
 });
 
 // ─── Every continue-as-new goes through versionedContinueAsNew ──

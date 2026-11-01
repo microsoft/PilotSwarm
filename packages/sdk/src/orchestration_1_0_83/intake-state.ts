@@ -21,11 +21,13 @@
  */
 import { createHash } from "node:crypto";
 import type { OrchestrationInput } from "../types.js";
-import { isStorableText } from "../workflow/v2/json.js";
 import {
+    INTAKE_MAX_CLIENT_MESSAGE_ID_LENGTH,
+    INTAKE_MAX_HELD,
     INTAKE_MAX_INVOCATION_ITEMS_BYTES,
     IntakeShapeError,
     intakeBoundItem,
+    intakeClientMessageId,
     intakeExchangeId,
     intakeId,
     intakeItemBytes,
@@ -42,13 +44,13 @@ export { IntakeShapeError };
 /** At most this many messages wait for a claim the store could not take (design 5.4, 5.7). */
 export const INTAKE_MAX_UNCLAIMED = 8;
 export const INTAKE_MAX_UNCLAIMED_ENTRY_BYTES = 2 * 1024;
-/** At most this many claimed items wait for an invocation (design 5.4, 5.7). */
-export const INTAKE_MAX_HELD = 64;
+/** At most this many claimed items wait for an invocation (design 5.4, 5.7); shared with the store's bind. */
+export { INTAKE_MAX_HELD };
 export const INTAKE_MAX_HELD_ENTRY_BYTES = 512;
 /** The invocation's fields other than its items (design 5.7). */
 export const INTAKE_MAX_INVOCATION_FIELDS_BYTES = 1024;
-/** The longest client message id an item keeps. */
-export const INTAKE_MAX_CLIENT_MESSAGE_ID_LENGTH = 512;
+/** The longest client message id an item keeps; shared with the store's claim. */
+export { INTAKE_MAX_CLIENT_MESSAGE_ID_LENGTH };
 /** The carried form's version. */
 export const INTAKE_STATE_FORMAT = 1;
 
@@ -155,10 +157,7 @@ function booleanOf(raw: unknown, path: string): boolean {
 }
 
 function clientMessageIdOf(raw: unknown, path: string): string {
-    if (typeof raw !== "string" || raw.length === 0 || raw.length > INTAKE_MAX_CLIENT_MESSAGE_ID_LENGTH || !isStorableText(raw)) {
-        throw new IntakeShapeError(path, `is not a client message id of 1 to ${INTAKE_MAX_CLIENT_MESSAGE_ID_LENGTH} characters`);
-    }
-    return raw;
+    return intakeClientMessageId(raw, path);
 }
 
 function retryOf(raw: unknown, path: string): IntakeRetry {

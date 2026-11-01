@@ -9,9 +9,14 @@ import {
 } from "./json.js";
 import { decideRequestAuthority, decideTypedInputAuthority, TYPED_INPUT_REFUSALS, type AuthoritySession, type TypedInputAuthority } from "./authority.js";
 import { schemaSetFor, WorkflowSchemaSet, type SchemaProblem } from "./schema.js";
+import {
+    INTAKE_MAX_HELD, INTAKE_PROCESSING_OUTCOMES, INTAKE_REFUSED_RECIPIENT_EVENT, INTAKE_REFUSED_WORKFLOW_EVENT, intakeBoundItem, intakeClientMessageId,
+    intakeEnvelopeSha256, intakeExchangeId, intakeId, intakeItemBytes, intakeItemFitsAlone, intakeObject, intakeTextWithinCap, IntakeShapeError,
+    parseIntakeEnvelope, type IntakeEnvelope, type IntakeProcessingOutcome,
+} from "./intake.js";
 
 /**
- * PostgreSQL persistence for workflow v2 (tables from migrations 0085 and 0087 to 0093).
+ * PostgreSQL persistence for workflow v2 (tables from migrations 0085 and 0087 to 0094).
  *
  * Every definition mutation runs in one transaction that first locks the
  * definition row (or creates it with INSERT ... ON CONFLICT, which waits for
@@ -695,6 +700,216 @@ export function parseSendReceipt(value: JsonValue): WorkflowSendReceipt {
     };
 }
 
+// ─── Durable recipient intake (migration 0094; design workflow-durable-intake.md 3, 4, 5.1, 5.2, 5.6, 5.7) ──
+
+/** An intake row's state: holding until one final state (design 5.1). */
+export type WorkflowIntakeState = "holding" | "admitted" | "cancelled" | "refused_full" | "refused_size";
+/** An admitted row's processing: bound until its invocation ends, then one final value (design 5.5). */
+export type WorkflowIntakeProcessing = "bound" | IntakeProcessingOutcome;
+/** The final states a refusal writes (design 5.6). */
+export type WorkflowIntakeRefusal = "refused_full" | "refused_size";
+
+const INTAKE_STATES: readonly WorkflowIntakeState[] = ["holding", "admitted", "cancelled", "refused_full", "refused_size"];
+const INTAKE_PROCESSING: readonly WorkflowIntakeProcessing[] = ["bound", ...INTAKE_PROCESSING_OUTCOMES];
+
+function isIntakeState(value: string): value is WorkflowIntakeState {
+    return (INTAKE_STATES as readonly string[]).includes(value);
+}
+function isIntakeProcessing(value: string): value is WorkflowIntakeProcessing {
+    return (INTAKE_PROCESSING as readonly string[]).includes(value);
+}
+
+/** One exchange's intake row (migration 0094), as stored. Times are exact (ISO 8601 UTC with microseconds). */
+export interface WorkflowIntakeRow {
+    exchangeId: string;
+    recipientSessionId: string;
+    workflowSessionId: string;
+    runId: string;
+    envelopeSha256: string;
+    /** The canonical text, written once by the claim that inserted the row; null only on a row that claim inserted refused. */
+    text: string | null;
+    textSha256: string;
+    claimId: string;
+    state: WorkflowIntakeState;
+    /** The invocation an admitted row is bound to; null otherwise. */
+    invocationId: string | null;
+    /** An admitted row's processing; null otherwise. */
+    processing: WorkflowIntakeProcessing | null;
+    cancelRequested: boolean;
+    duplicates: number;
+    conflicts: number;
+    createdAt: string;
+    updatedAt: string;
+    admittedAt: string | null;
+    settledAt: string | null;
+    reason: string | null;
+}
+
+const INTAKE_COLUMNS = `exchange_id, recipient_session_id, workflow_session_id, run_id, envelope_sha256, text, text_sha256, claim_id, state,
+    invocation_id, processing, cancel_requested, duplicates, conflicts, ${isoUtc("created_at")} AS created_at_iso,
+    ${isoUtc("updated_at")} AS updated_at_iso, ${isoUtc("admitted_at")} AS admitted_at_iso, ${isoUtc("settled_at")} AS settled_at_iso, reason`;
+
+function intakeFrom(row: Row): WorkflowIntakeRow {
+    const state = str(row, "state");
+    if (!isIntakeState(state)) return corrupt(`Unknown intake state ${state}.`);
+    const processing = strOrNull(row, "processing");
+    if (processing !== null && !isIntakeProcessing(processing)) return corrupt(`Unknown intake processing ${processing}.`);
+    return {
+        exchangeId: str(row, "exchange_id"), recipientSessionId: str(row, "recipient_session_id"), workflowSessionId: str(row, "workflow_session_id"),
+        runId: str(row, "run_id"), envelopeSha256: str(row, "envelope_sha256"), text: strOrNull(row, "text"), textSha256: str(row, "text_sha256"),
+        claimId: str(row, "claim_id"), state, invocationId: strOrNull(row, "invocation_id"), processing,
+        cancelRequested: bool(row, "cancel_requested"), duplicates: int(row, "duplicates"), conflicts: int(row, "conflicts"),
+        createdAt: str(row, "created_at_iso"), updatedAt: str(row, "updated_at_iso"), admittedAt: strOrNull(row, "admitted_at_iso"),
+        settledAt: strOrNull(row, "settled_at_iso"), reason: strOrNull(row, "reason"),
+    };
+}
+
+/** What the claim renders an item from (design section 3): the immutable outbox row and its send state, as the sender renders it. */
+export interface WorkflowIntakeRenderSource {
+    workflowSessionId: string;
+    runId: string;
+    nodeExecutionId: string;
+    stateId: string;
+    contract: string;
+    correlation: JsonValue;
+    payload: JsonValue;
+}
+
+/**
+ * The sender's own renderer, given by the caller (runtime.ts
+ * workflowSendPrompt and workflowSendClientMessageId): the store does not
+ * import the runtime.
+ */
+export type WorkflowIntakeRender = (source: WorkflowIntakeRenderSource) => { text: string; clientMessageId: string };
+
+/** An accepted claim's item (design section 3), built only from the canonical render and the stored row. */
+export interface WorkflowIntakeItem {
+    exchangeId: string;
+    claimId: string;
+    text: string;
+    textSha256: string;
+    clientMessageId: string;
+    /** The exact UTF-8 bytes of the item's JSON as an invocation carries it (intakeItemBytes); it always fits one invocation alone. */
+    itemBytes: number;
+}
+
+/**
+ * A claim's result (design 5.2). `inserted` is true only for the call that
+ * inserted the row; a repeated call of the same claim gets the row's state
+ * again and writes nothing (an accepted one returns the stored text).
+ */
+export type WorkflowIntakeClaimResult =
+    | { result: "accepted"; inserted: boolean; item: WorkflowIntakeItem }
+    | { result: "admitted" | "cancelled"; inserted: false }
+    | { result: WorkflowIntakeRefusal; inserted: boolean }
+    | { result: "duplicate" | "conflict"; state: WorkflowIntakeState }
+    | { result: "unverified"; reason: string };
+
+/** A bound item's stored text (design 5.5): the bind returns these in the caller's order. */
+export interface WorkflowIntakeBoundText {
+    exchangeId: string;
+    claimId: string;
+    text: string;
+    textSha256: string;
+}
+
+/** A broken intake invariant (design 5.2): the execution fails with the exchange, and nothing is written. */
+function intakeBroken(exchangeId: string, message: string): never {
+    throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Intake of exchange ${exchangeId}: ${message}`, { exchangeId });
+}
+
+/** An exchange's outbox row as a claim or a refusal reads it under its lock, with its send state's id. */
+interface IntakeOutboxRow {
+    exchangeId: string;
+    nodeExecutionId: string;
+    workflowSessionId: string;
+    runId: string;
+    mode: string;
+    recipientSessionId: string;
+    /** Rows before migration 0092 have none: an agent session. */
+    recipientKind: string;
+    contract: string;
+    payloadText: string;
+    payloadSha256: string;
+    correlationText: string | null;
+    intakeMode: string | null;
+    stateId: string;
+}
+
+/** The render source of an outbox row: the message as the sender renders it (outboxFrom's payload and correlation, the state's id). */
+function intakeRenderSource(outbox: IntakeOutboxRow): WorkflowIntakeRenderSource {
+    return {
+        workflowSessionId: outbox.workflowSessionId, runId: outbox.runId, nodeExecutionId: outbox.nodeExecutionId, stateId: outbox.stateId,
+        contract: outbox.contract, correlation: outbox.correlationText === null ? {} : parseStoredJson(outbox.correlationText, "correlation"),
+        payload: parseStoredJson(outbox.payloadText, "payload"),
+    };
+}
+
+/**
+ * Why an envelope does not verify against its outbox row (design sections 3
+ * and 4), or null when it does: the row is a send to an agent session in
+ * durable mode, and names the envelope's workflow, run, recipient (the
+ * claiming session), contract and payload hash; and the envelope's hash is
+ * its fields' hash. A row with no mode or in legacy_window mode never
+ * verifies, whatever else matches.
+ */
+function intakeMismatch(outbox: IntakeOutboxRow, envelope: IntakeEnvelope, recipientSessionId: string): string | null {
+    if (outbox.mode !== "send") return "the exchange is not a send state's message";
+    if (outbox.intakeMode !== "durable") return "the exchange is not in durable intake mode";
+    if (outbox.recipientKind !== "agent") return "the exchange is not to an agent session";
+    if (outbox.recipientSessionId !== recipientSessionId || envelope.recipientSessionId !== recipientSessionId) {
+        return "the envelope names another recipient";
+    }
+    if (outbox.workflowSessionId !== envelope.workflowSessionId || outbox.runId !== envelope.runId || outbox.contract !== envelope.contract
+        || outbox.payloadSha256 !== envelope.payloadSha256) {
+        return "the envelope does not name its message";
+    }
+    if (intakeEnvelopeSha256(envelope) !== envelope.envelopeSha256) return "the envelope's hash is not the hash of its fields";
+    return null;
+}
+
+/** The item of a holding row, from its stored text: a repeated accepted claim returns what the first one stored (design 5.2). */
+function heldIntakeItem(row: WorkflowIntakeRow, clientMessageId: string): WorkflowIntakeItem {
+    if (row.text === null || sha256Hex(row.text) !== row.textSha256) return intakeBroken(row.exchangeId, "its stored text does not match its hash");
+    const itemBytes = intakeItemBytes(intakeBoundItem({ exchangeId: row.exchangeId, claimId: row.claimId, textSha256: row.textSha256, clientMessageId },
+        row.text));
+    return { exchangeId: row.exchangeId, claimId: row.claimId, text: row.text, textSha256: row.textSha256, clientMessageId, itemBytes };
+}
+
+/** Only the holder settles (design 5.2, I3): the row is the recipient's, under the caller's claim. */
+function assertIntakeHolder(row: WorkflowIntakeRow, recipientSessionId: string, claimId: string): void {
+    if (row.recipientSessionId !== recipientSessionId) intakeBroken(row.exchangeId, "it belongs to another recipient");
+    if (row.claimId !== claimId) intakeBroken(row.exchangeId, `it is held under claim ${row.claimId}, not ${claimId}`);
+}
+
+/** The claims a bind or an end names: 1 to INTAKE_MAX_HELD distinct exchanges, each with its claim (and, for an end, its cancel flag). */
+function intakeBatch(raw: unknown, path: string, withCancelFlag: boolean): Array<{ exchangeId: string; claimId: string; cancelRequested: boolean }> {
+    if (!Array.isArray(raw) || raw.length === 0 || raw.length > INTAKE_MAX_HELD) {
+        throw new IntakeShapeError(path, `is not a list of 1 to ${INTAKE_MAX_HELD} items`);
+    }
+    const keys = withCancelFlag ? ["exchangeId", "claimId", "cancelRequested"] : ["exchangeId", "claimId"];
+    const seen = new Set<string>();
+    return raw.map((item: unknown, index: number) => {
+        const value = intakeObject(item, `${path}[${index}]`, keys);
+        const exchangeId = intakeExchangeId(value.exchangeId, `${path}[${index}].exchangeId`);
+        if (seen.has(exchangeId)) throw new IntakeShapeError(`${path}[${index}].exchangeId`, "names an exchange twice");
+        seen.add(exchangeId);
+        const cancelRequested = withCancelFlag ? value.cancelRequested : false;
+        if (typeof cancelRequested !== "boolean") throw new IntakeShapeError(`${path}[${index}].cancelRequested`, "is not a boolean");
+        return { exchangeId, claimId: intakeId(value.claimId, `${path}[${index}].claimId`), cancelRequested };
+    });
+}
+
+/** The renderer's result, checked: a storable text and a client message id an item may keep. */
+function renderedIntake(render: WorkflowIntakeRender, source: WorkflowIntakeRenderSource): { text: string; clientMessageId: string } {
+    const rendered: unknown = render(source);
+    const text = isJsonObject(rendered) ? rendered.text : undefined;
+    if (!isJsonObject(rendered) || typeof text !== "string" || text.length === 0 || !isStorableText(text)) {
+        throw new WorkflowStoreError("WORKFLOW_INTAKE_RENDER_INVALID", `The renderer gave no storable text for exchange ${source.nodeExecutionId}.`);
+    }
+    return { text, clientMessageId: intakeClientMessageId(rendered.clientMessageId, "render.clientMessageId") };
+}
+
 /** A request's immutable record (migration 0093), with exact times. */
 interface WorkflowRequestRecord {
     exchangeId: string;
@@ -984,7 +1199,7 @@ export function nodeExecutionIdFor(runId: string, scopeId: string, nodeId: strin
 export class WorkflowStore {
     private readonly t: {
         definitions: string; revisions: string; operations: string; runs: string; nodes: string; kvRevisions: string; inbox: string; outbox: string;
-        requests: string; requestResponses: string; requestOperations: string; responseWakes: string;
+        requests: string; requestResponses: string; requestOperations: string; responseWakes: string; intake: string;
         sessions: string; sessionOwners: string; users: string; recordEvents: string; updateSession: string; softDeleteSession: string;
     };
 
@@ -995,7 +1210,7 @@ export class WorkflowStore {
             operations: `${s}.workflow_operations`, runs: `${s}.workflow_runs`, nodes: `${s}.workflow_node_executions`,
             kvRevisions: `${s}.workflow_kv_revisions`, inbox: `${s}.workflow_inbox`, outbox: `${s}.workflow_outbox`,
             requests: `${s}.workflow_requests`, requestResponses: `${s}.workflow_request_responses`,
-            requestOperations: `${s}.workflow_request_operations`, responseWakes: `${s}.workflow_response_wakes`,
+            requestOperations: `${s}.workflow_request_operations`, responseWakes: `${s}.workflow_response_wakes`, intake: `${s}.workflow_intake`,
             sessions: `${s}.sessions`, sessionOwners: `${s}.session_owners`, users: `${s}.users`,
             recordEvents: `${s}.cms_record_events`, updateSession: `${s}.cms_update_session`,
             softDeleteSession: `${s}.cms_soft_delete_session`,
@@ -3122,6 +3337,412 @@ export class WorkflowStore {
             const node = completed[0] ? nodeFrom(completed[0]) : await this.nodeIn(client, nodeExecutionId);
             return { delivered: false, won: Boolean(completed[0]), node, message: failed[0] ? outboxFrom(failed[0]) : pending };
         });
+    }
+
+    // ─── Durable recipient intake (migration 0094; inactive: no runtime calls these yet) ──
+
+    /** One reading of the store's clock, as text that later statements of the transaction read back exactly. */
+    private async clockIn(client: PoolClient): Promise<string> {
+        const { rows } = await client.query("SELECT clock_timestamp()::text AS at");
+        return str(rows[0], "at");
+    }
+
+    /** An exchange's outbox row FOR UPDATE, with its intake columns and its send state's id; null when there is none. */
+    private async intakeOutboxIn(client: PoolClient, exchangeId: string): Promise<IntakeOutboxRow | null> {
+        const { rows } = await client.query(
+            `SELECT exchange_id, node_execution_id, workflow_session_id, run_id, mode, recipient_session_id, recipient_kind, contract, payload,
+                    payload_sha256, correlation, intake_mode
+               FROM ${this.t.outbox} WHERE exchange_id = $1 FOR UPDATE`, [exchangeId]);
+        const row = rows[0];
+        if (!row) return null;
+        const nodeExecutionId = str(row, "node_execution_id");
+        return {
+            exchangeId: str(row, "exchange_id"), nodeExecutionId, workflowSessionId: str(row, "workflow_session_id"), runId: str(row, "run_id"),
+            mode: str(row, "mode"), recipientSessionId: str(row, "recipient_session_id"), recipientKind: strOrNull(row, "recipient_kind") ?? "agent",
+            contract: str(row, "contract"), payloadText: str(row, "payload"), payloadSha256: str(row, "payload_sha256"),
+            correlationText: strOrNull(row, "correlation"), intakeMode: strOrNull(row, "intake_mode"),
+            stateId: (await this.nodeIn(client, nodeExecutionId)).nodeId,
+        };
+    }
+
+    /**
+     * The session pair, then the outbox row, of an exchange to
+     * `recipientSessionId`, in beginDelivery's lock order (design 5.6):
+     * lockSessionPair (the sending workflow's session row FOR NO KEY UPDATE
+     * and the recipient's FOR SHARE, ascending session id), then the outbox
+     * row FOR UPDATE. The pair is read from the outbox row's immutable
+     * columns before any lock. Null when the exchange has no outbox message
+     * or names another recipient: nothing is locked or read for it.
+     */
+    private async lockIntakeExchange(client: PoolClient, exchangeId: string, recipientSessionId: string)
+        : Promise<{ outbox: IntakeOutboxRow; sender: AuthoritySession | null; recipient: AuthoritySession | null } | null> {
+        const { rows: found } = await client.query(
+            `SELECT workflow_session_id, recipient_session_id FROM ${this.t.outbox} WHERE exchange_id = $1`, [exchangeId]);
+        if (!found[0] || str(found[0], "recipient_session_id") !== recipientSessionId) return null;
+        const locked = await this.lockSessionPair(client, str(found[0], "workflow_session_id"), recipientSessionId);
+        const outbox = await this.intakeOutboxIn(client, exchangeId);
+        if (!outbox) return corrupt(`Exchange ${exchangeId} lost its outbox message under its lock.`);
+        return { outbox, sender: locked.workflow, recipient: locked.other };
+    }
+
+    /** The intake rows of `exchangeIds` and of `invocationId` (when given), FOR UPDATE in exchange id order; a missing named row is broken. */
+    private async lockIntakeRows(client: PoolClient, exchangeIds: readonly string[], invocationId: string | null = null)
+        : Promise<Map<string, WorkflowIntakeRow>> {
+        const { rows } = await client.query(
+            `SELECT ${INTAKE_COLUMNS} FROM ${this.t.intake}
+              WHERE exchange_id = ANY($1::text[]) OR ($2::text IS NOT NULL AND invocation_id = $2::text)
+              ORDER BY exchange_id FOR UPDATE`, [[...exchangeIds], invocationId]);
+        const found = new Map<string, WorkflowIntakeRow>();
+        for (const row of rows) {
+            const intake = intakeFrom(row);
+            found.set(intake.exchangeId, intake);
+        }
+        for (const exchangeId of exchangeIds) if (!found.has(exchangeId)) intakeBroken(exchangeId, "it has no intake row");
+        return found;
+    }
+
+    /** One locked intake row that must exist. */
+    private async lockIntakeRow(client: PoolClient, exchangeId: string): Promise<WorkflowIntakeRow> {
+        const row = (await this.lockIntakeRows(client, [exchangeId])).get(exchangeId);
+        return row ?? intakeBroken(exchangeId, "it has no intake row");
+    }
+
+    /**
+     * The refusal transaction's writes (design 5.6), made after
+     * lockIntakeExchange locked the session pair and the outbox row, and
+     * with the intake row locked or known absent: the row is inserted refused
+     * by a claim (its text is not stored, its hash is), or moved from holding
+     * to refused by its holder. With the sending workflow live, the outbox row
+     * gets its intake outcome, from unset only, and the workflow's session
+     * one event and a touch (its row is held FOR NO KEY UPDATE); with it
+     * deleted or missing, neither, and nothing is projected on it. The
+     * recipient's session gets one event and nothing else: its row is held
+     * only FOR SHARE and is never updated or touched. The outbox row's
+     * delivery state, attempts and receipt are not changed.
+     */
+    private async refuseIntakeIn(client: PoolClient, refusal: {
+        outbox: IntakeOutboxRow;
+        sender: AuthoritySession | null;
+        recipient: AuthoritySession | null;
+        recipientSessionId: string;
+        claimId: string;
+        outcome: WorkflowIntakeRefusal;
+        /** A claim's new row (its envelope and text hashes), or null for the holder's settle of its holding row. */
+        insert: { envelopeSha256: string; textSha256: string } | null;
+    }): Promise<void> {
+        const { outbox, outcome } = refusal;
+        const at = await this.clockIn(client);
+        if (refusal.insert) {
+            await client.query(
+                `INSERT INTO ${this.t.intake} (exchange_id, recipient_session_id, workflow_session_id, run_id, envelope_sha256, text, text_sha256,
+                        claim_id, state, created_at, updated_at, settled_at)
+                 VALUES ($1, $2, $3, $4, $5, NULL, $6, $7, $8, $9::timestamptz, $9::timestamptz, $9::timestamptz)`,
+                [outbox.exchangeId, refusal.recipientSessionId, outbox.workflowSessionId, outbox.runId, refusal.insert.envelopeSha256,
+                    refusal.insert.textSha256, refusal.claimId, outcome, at]);
+        } else {
+            const { rowCount } = await client.query(
+                `UPDATE ${this.t.intake} SET state = $2, settled_at = $3::timestamptz, updated_at = $3::timestamptz
+                  WHERE exchange_id = $1 AND state = 'holding' AND claim_id = $4`, [outbox.exchangeId, outcome, at, refusal.claimId]);
+            if (rowCount !== 1) intakeBroken(outbox.exchangeId, "it changed under its lock");
+        }
+        if (refusal.sender !== null && !refusal.sender.deleted) {
+            const { rows: annotated } = await client.query(
+                `UPDATE ${this.t.outbox} SET intake_outcome = $2, intake_outcome_at = $3::timestamptz
+                  WHERE exchange_id = $1 AND intake_outcome IS NULL RETURNING exchange_id`, [outbox.exchangeId, outcome, at]);
+            if (!annotated[0]) intakeBroken(outbox.exchangeId, "its message already has an intake outcome");
+            await this.project(client, { sessionId: outbox.workflowSessionId, update: { touch: true }, events: [{
+                eventType: INTAKE_REFUSED_WORKFLOW_EVENT, data: {
+                    runId: outbox.runId, nodeExecutionId: outbox.nodeExecutionId, stateId: outbox.stateId, exchangeId: outbox.exchangeId,
+                    recipientSessionId: refusal.recipientSessionId, outcome,
+                },
+            }] });
+        }
+        if (refusal.recipient !== null) {
+            await this.project(client, { sessionId: refusal.recipientSessionId, events: [{
+                eventType: INTAKE_REFUSED_RECIPIENT_EVENT, data: {
+                    workflowSessionId: outbox.workflowSessionId, runId: outbox.runId, exchangeId: outbox.exchangeId, outcome,
+                },
+            }] });
+        }
+    }
+
+    /**
+     * Claim an exchange for its recipient (design 5.2). One transaction:
+     * lockIntakeExchange (the session pair, then the outbox row), then the
+     * intake row. In this order:
+     * - an exchange with no outbox message, or whose message is to another
+     *   recipient, is unverified: nothing is locked, written or reported;
+     * - an existing row: an envelope other than the row's (its hash differs,
+     *   or does not hash its fields) is a conflict, another claim a duplicate,
+     *   each counted on the row; the same claim gets the row's state and
+     *   nothing is written: holding is accepted again with the stored text
+     *   (an earlier call committed and its reply was lost), in either mode;
+     * - no row: the message must verify (intakeMismatch), or the claim is
+     *   unverified and nothing is written;
+     * - then the item is rendered from the outbox row with the caller's
+     *   renderer (the sender's own; the store does not import the runtime). A
+     *   claim in mode refuse inserts refused_full, and one in mode accept
+     *   whose text is over INTAKE_MAX_TEXT_BYTES or whose item would not fit
+     *   one invocation alone inserts refused_size, both in the refusal
+     *   transaction (refuseIntakeIn); otherwise the row is inserted
+     *   holding(claim) with the canonical text, and the item returned with its
+     *   exact size.
+     */
+    async claimWorkflowIntake(input: {
+        recipientSessionId: string;
+        envelope: IntakeEnvelope;
+        claimId: string;
+        mode: "accept" | "refuse";
+        render: WorkflowIntakeRender;
+    }): Promise<WorkflowIntakeClaimResult> {
+        const envelope = parseIntakeEnvelope(input.envelope, "envelope");
+        const claimId = intakeId(input.claimId, "claimId");
+        const recipientSessionId = intakeId(input.recipientSessionId, "recipientSessionId");
+        const mode: unknown = input.mode;
+        if (mode !== "accept" && mode !== "refuse") throw new IntakeShapeError("mode", "is not accept or refuse");
+        if (typeof input.render !== "function") throw new IntakeShapeError("render", "is not a function");
+        return this.transaction<WorkflowIntakeClaimResult>(async client => {
+            const locked = await this.lockIntakeExchange(client, envelope.exchangeId, recipientSessionId);
+            if (!locked) return { result: "unverified", reason: "the exchange has no message to this session" };
+            const { outbox } = locked;
+            const { rows: existing } = await client.query(
+                `SELECT ${INTAKE_COLUMNS} FROM ${this.t.intake} WHERE exchange_id = $1 FOR UPDATE`, [outbox.exchangeId]);
+            if (existing[0]) {
+                const row = intakeFrom(existing[0]);
+                if (row.recipientSessionId !== recipientSessionId) return intakeBroken(row.exchangeId, "its row names another recipient than its message");
+                const counter = envelope.envelopeSha256 !== row.envelopeSha256 || intakeEnvelopeSha256(envelope) !== envelope.envelopeSha256
+                    ? "conflicts" as const : row.claimId !== claimId ? "duplicates" as const : null;
+                if (counter !== null) {
+                    await client.query(
+                        `UPDATE ${this.t.intake} SET ${counter} = ${counter} + 1, updated_at = clock_timestamp() WHERE exchange_id = $1`, [row.exchangeId]);
+                    return { result: counter === "conflicts" ? "conflict" : "duplicate", state: row.state };
+                }
+                if (row.state === "holding") {
+                    const { clientMessageId } = renderedIntake(input.render, intakeRenderSource(outbox));
+                    return { result: "accepted", inserted: false, item: heldIntakeItem(row, clientMessageId) };
+                }
+                if (row.state === "admitted" || row.state === "cancelled") return { result: row.state, inserted: false };
+                return { result: row.state, inserted: false };
+            }
+            const reason = intakeMismatch(outbox, envelope, recipientSessionId);
+            if (reason !== null) return { result: "unverified", reason };
+            const rendered = renderedIntake(input.render, intakeRenderSource(outbox));
+            const textSha256 = sha256Hex(rendered.text);
+            const itemBytes = intakeItemBytes(intakeBoundItem(
+                { exchangeId: outbox.exchangeId, claimId, textSha256, clientMessageId: rendered.clientMessageId }, rendered.text));
+            const refusal: WorkflowIntakeRefusal | null = mode === "refuse" ? "refused_full"
+                : intakeTextWithinCap(rendered.text) && intakeItemFitsAlone(itemBytes) ? null : "refused_size";
+            if (refusal !== null) {
+                await this.refuseIntakeIn(client, { ...locked, recipientSessionId, claimId, outcome: refusal,
+                    insert: { envelopeSha256: envelope.envelopeSha256, textSha256 } });
+                return { result: refusal, inserted: true };
+            }
+            const at = await this.clockIn(client);
+            await client.query(
+                `INSERT INTO ${this.t.intake} (exchange_id, recipient_session_id, workflow_session_id, run_id, envelope_sha256, text, text_sha256,
+                        claim_id, state, created_at, updated_at)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'holding', $9::timestamptz, $9::timestamptz)`,
+                [outbox.exchangeId, recipientSessionId, outbox.workflowSessionId, outbox.runId, envelope.envelopeSha256, rendered.text, textSha256,
+                    claimId, at]);
+            return { result: "accepted", inserted: true, item: {
+                exchangeId: outbox.exchangeId, claimId, text: rendered.text, textSha256, clientMessageId: rendered.clientMessageId, itemBytes,
+            } };
+        });
+    }
+
+    /**
+     * Bind held claims to an invocation (design 5.2, 5.5): the logical
+     * admission. Every named row is the recipient's under its claim, and
+     * either all are holding (each becomes admitted, bound to the invocation,
+     * processing bound) or all are already admitted to this invocation (a
+     * replay: nothing is written). Any other row, or a batch found partly
+     * bound, is a broken invariant. Returns each row's stored text and hash
+     * in the caller's order.
+     */
+    async bindWorkflowIntake(input: { recipientSessionId: string; invocationId: string; items: ReadonlyArray<{ exchangeId: string; claimId: string }> })
+        : Promise<{ bound: boolean; items: WorkflowIntakeBoundText[] }> {
+        const recipientSessionId = intakeId(input.recipientSessionId, "recipientSessionId");
+        const invocationId = intakeId(input.invocationId, "invocationId");
+        const items = intakeBatch(input.items, "items", false);
+        return this.transaction<{ bound: boolean; items: WorkflowIntakeBoundText[] }>(async client => {
+            const rows = await this.lockIntakeRows(client, items.map(item => item.exchangeId));
+            const named = items.map(item => {
+                const row = rows.get(item.exchangeId) ?? intakeBroken(item.exchangeId, "it has no intake row");
+                assertIntakeHolder(row, recipientSessionId, item.claimId);
+                if (row.state !== "holding" && (row.state !== "admitted" || row.invocationId !== invocationId)) {
+                    intakeBroken(row.exchangeId, `it is ${row.state}${row.invocationId === null ? "" : ` for invocation ${row.invocationId}`}, `
+                        + `not holding or bound to invocation ${invocationId}`);
+                }
+                return row;
+            });
+            const holding = named.filter(row => row.state === "holding");
+            if (holding.length > 0 && holding.length < named.length) {
+                intakeBroken(holding[0].exchangeId, `it is holding while the rest of invocation ${invocationId}'s batch is bound`);
+            }
+            if (holding.length > 0) {
+                const at = await this.clockIn(client);
+                const { rowCount } = await client.query(
+                    `UPDATE ${this.t.intake}
+                        SET state = 'admitted', invocation_id = $2, processing = 'bound', admitted_at = $3::timestamptz, updated_at = $3::timestamptz
+                      WHERE exchange_id = ANY($1::text[]) AND state = 'holding'`, [holding.map(row => row.exchangeId), invocationId, at]);
+                if (rowCount !== holding.length) return corrupt(`Invocation ${invocationId}'s batch changed under its locks.`);
+            }
+            return { bound: holding.length > 0, items: named.map(row => {
+                if (row.text === null || sha256Hex(row.text) !== row.textSha256) return intakeBroken(row.exchangeId, "its stored text does not match its hash");
+                return { exchangeId: row.exchangeId, claimId: row.claimId, text: row.text, textSha256: row.textSha256 };
+            }) };
+        });
+    }
+
+    /**
+     * End an invocation (design 5.2, 5.5): its batch's rows, each the
+     * recipient's under its claim and bound to it, move together from
+     * processing bound to `outcome`, with settled_at, and the items whose
+     * cancel flag is set record cancel_requested. A batch already at
+     * `outcome` is the same end (a replay; nothing is written). A row of the
+     * batch at another value, a batch found partly ended, or a row of the
+     * invocation still bound but missing from the batch is a broken
+     * invariant. Rows of the invocation that a cancel already settled
+     * (cancelUnsentWorkflowIntake) are not part of its batch.
+     */
+    async endWorkflowIntake(input: {
+        recipientSessionId: string;
+        invocationId: string;
+        outcome: IntakeProcessingOutcome;
+        items: ReadonlyArray<{ exchangeId: string; claimId: string; cancelRequested: boolean }>;
+    }): Promise<{ ended: boolean }> {
+        const recipientSessionId = intakeId(input.recipientSessionId, "recipientSessionId");
+        const invocationId = intakeId(input.invocationId, "invocationId");
+        const outcome: unknown = input.outcome;
+        if (typeof outcome !== "string" || !(INTAKE_PROCESSING_OUTCOMES as readonly string[]).includes(outcome)) {
+            throw new IntakeShapeError("outcome", `is not one of ${INTAKE_PROCESSING_OUTCOMES.join(", ")}`);
+        }
+        const items = intakeBatch(input.items, "items", true);
+        return this.transaction<{ ended: boolean }>(async client => {
+            const rows = await this.lockIntakeRows(client, items.map(item => item.exchangeId), invocationId);
+            const batch = new Set(items.map(item => item.exchangeId));
+            let ended = 0;
+            for (const item of items) {
+                const row = rows.get(item.exchangeId) ?? intakeBroken(item.exchangeId, "it has no intake row");
+                assertIntakeHolder(row, recipientSessionId, item.claimId);
+                if (row.state !== "admitted" || row.invocationId !== invocationId) intakeBroken(row.exchangeId, `it is not bound to invocation ${invocationId}`);
+                if (row.processing === outcome) ended += 1;
+                else if (row.processing !== "bound") intakeBroken(row.exchangeId, `its processing is ${row.processing}, not bound or ${outcome}`);
+            }
+            if (ended > 0 && ended < items.length) intakeBroken(items[0].exchangeId, `invocation ${invocationId}'s batch is partly ended`);
+            for (const row of rows.values()) {
+                if (row.invocationId === invocationId && row.processing === "bound" && !batch.has(row.exchangeId)) {
+                    intakeBroken(row.exchangeId, `it is bound to invocation ${invocationId} but missing from its end`);
+                }
+            }
+            if (ended === items.length) return { ended: false };
+            const at = await this.clockIn(client);
+            const { rowCount } = await client.query(
+                `UPDATE ${this.t.intake}
+                    SET processing = $3, settled_at = $4::timestamptz, updated_at = $4::timestamptz,
+                        cancel_requested = cancel_requested OR exchange_id = ANY($5::text[])
+                  WHERE exchange_id = ANY($1::text[]) AND invocation_id = $2 AND processing = 'bound'`,
+                [items.map(item => item.exchangeId), invocationId, outcome, at, items.filter(item => item.cancelRequested).map(item => item.exchangeId)]);
+            if (rowCount !== items.length) return corrupt(`Invocation ${invocationId}'s batch changed under its locks.`);
+            return { ended: true };
+        });
+    }
+
+    /** Cancel a held claim (design 5.2): holding(claim) becomes cancelled. Already cancelled under it: the same (nothing written). */
+    async cancelHeldWorkflowIntake(input: { recipientSessionId: string; exchangeId: string; claimId: string }): Promise<{ cancelled: boolean }> {
+        const recipientSessionId = intakeId(input.recipientSessionId, "recipientSessionId");
+        const exchangeId = intakeExchangeId(input.exchangeId, "exchangeId");
+        const claimId = intakeId(input.claimId, "claimId");
+        return this.transaction<{ cancelled: boolean }>(async client => {
+            const row = await this.lockIntakeRow(client, exchangeId);
+            assertIntakeHolder(row, recipientSessionId, claimId);
+            if (row.state === "cancelled") return { cancelled: false };
+            if (row.state !== "holding") return intakeBroken(exchangeId, `it is ${row.state}, not holding`);
+            const at = await this.clockIn(client);
+            await client.query(
+                `UPDATE ${this.t.intake} SET state = 'cancelled', settled_at = $2::timestamptz, updated_at = $2::timestamptz
+                  WHERE exchange_id = $1 AND state = 'holding'`, [exchangeId, at]);
+            return { cancelled: true };
+        });
+    }
+
+    /**
+     * Cancel an item of an invocation not yet sent (design 5.2, 5.5): admitted
+     * to that invocation with processing bound becomes not_dispatched, reason
+     * cancelled. Already so: the same (nothing written).
+     */
+    async cancelUnsentWorkflowIntake(input: { recipientSessionId: string; exchangeId: string; claimId: string; invocationId: string })
+        : Promise<{ cancelled: boolean }> {
+        const recipientSessionId = intakeId(input.recipientSessionId, "recipientSessionId");
+        const exchangeId = intakeExchangeId(input.exchangeId, "exchangeId");
+        const claimId = intakeId(input.claimId, "claimId");
+        const invocationId = intakeId(input.invocationId, "invocationId");
+        return this.transaction<{ cancelled: boolean }>(async client => {
+            const row = await this.lockIntakeRow(client, exchangeId);
+            assertIntakeHolder(row, recipientSessionId, claimId);
+            if (row.state !== "admitted" || row.invocationId !== invocationId) return intakeBroken(exchangeId, `it is not bound to invocation ${invocationId}`);
+            if (row.processing === "not_dispatched" && row.reason === "cancelled") return { cancelled: false };
+            if (row.processing !== "bound") return intakeBroken(exchangeId, `its processing is ${row.processing}, not bound`);
+            const at = await this.clockIn(client);
+            await client.query(
+                `UPDATE ${this.t.intake} SET processing = 'not_dispatched', reason = 'cancelled', settled_at = $2::timestamptz, updated_at = $2::timestamptz
+                  WHERE exchange_id = $1 AND processing = 'bound'`, [exchangeId, at]);
+            return { cancelled: true };
+        });
+    }
+
+    /**
+     * Record a cancel of an item whose invocation was possibly sent (design
+     * 5.2, 5.5): cancel_requested becomes true; its processing is not changed.
+     * Already recorded: the same (nothing written).
+     */
+    async requestCancelWorkflowIntake(input: { recipientSessionId: string; exchangeId: string; claimId: string; invocationId: string })
+        : Promise<{ recorded: boolean }> {
+        const recipientSessionId = intakeId(input.recipientSessionId, "recipientSessionId");
+        const exchangeId = intakeExchangeId(input.exchangeId, "exchangeId");
+        const claimId = intakeId(input.claimId, "claimId");
+        const invocationId = intakeId(input.invocationId, "invocationId");
+        return this.transaction<{ recorded: boolean }>(async client => {
+            const row = await this.lockIntakeRow(client, exchangeId);
+            assertIntakeHolder(row, recipientSessionId, claimId);
+            if (row.state !== "admitted" || row.invocationId !== invocationId) return intakeBroken(exchangeId, `it is not bound to invocation ${invocationId}`);
+            if (row.cancelRequested) return { recorded: false };
+            await client.query(
+                `UPDATE ${this.t.intake} SET cancel_requested = true, updated_at = clock_timestamp() WHERE exchange_id = $1`, [exchangeId]);
+            return { recorded: true };
+        });
+    }
+
+    /**
+     * Refuse a held claim (design 5.2, 5.4, 5.6): holding(claim) becomes
+     * `outcome` in the refusal transaction (lockIntakeExchange, then the
+     * intake row; refuseIntakeIn). Already refused so under it: the same
+     * (nothing written).
+     */
+    async refuseHeldWorkflowIntake(input: { recipientSessionId: string; exchangeId: string; claimId: string; outcome: WorkflowIntakeRefusal })
+        : Promise<{ refused: boolean }> {
+        const recipientSessionId = intakeId(input.recipientSessionId, "recipientSessionId");
+        const exchangeId = intakeExchangeId(input.exchangeId, "exchangeId");
+        const claimId = intakeId(input.claimId, "claimId");
+        const outcome: unknown = input.outcome;
+        if (outcome !== "refused_full" && outcome !== "refused_size") throw new IntakeShapeError("outcome", "is not refused_full or refused_size");
+        return this.transaction<{ refused: boolean }>(async client => {
+            const locked = await this.lockIntakeExchange(client, exchangeId, recipientSessionId);
+            if (!locked) return intakeBroken(exchangeId, "it has no message to this session");
+            const row = await this.lockIntakeRow(client, exchangeId);
+            assertIntakeHolder(row, recipientSessionId, claimId);
+            if (row.state === outcome) return { refused: false };
+            if (row.state !== "holding") return intakeBroken(exchangeId, `it is ${row.state}, not holding`);
+            await this.refuseIntakeIn(client, { ...locked, recipientSessionId, claimId, outcome, insert: null });
+            return { refused: true };
+        });
+    }
+
+    /** An exchange's intake row as stored, or null. */
+    async readWorkflowIntake(exchangeId: string): Promise<WorkflowIntakeRow | null> {
+        if (!storableId(exchangeId)) return null;
+        const { rows } = await this.pool.query(`SELECT ${INTAKE_COLUMNS} FROM ${this.t.intake} WHERE exchange_id = $1`, [exchangeId]);
+        return rows[0] ? intakeFrom(rows[0]) : null;
     }
 
     /**

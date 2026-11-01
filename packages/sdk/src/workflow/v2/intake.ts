@@ -1,17 +1,17 @@
 /**
  * Durable recipient intake (design docs/proposals/workflow-durable-intake.md,
  * revision 3 with amendment 2): the wire-level pieces that the sender, the
- * store's claim and the recipient orchestration (1.0.83) share. Nothing
- * calls this yet: no worker sends an envelope and no registered
- * orchestration reads one (the intake is inactive; decision
- * intake-inactive-implementation).
+ * store's claim and the recipient orchestration (1.0.83) share. The intake
+ * is inactive (decision intake-inactive-implementation): no worker sends an
+ * envelope, no registered orchestration reads one, and only tests call the
+ * store's intake methods.
  *
  * Every size here is in UTF-8 bytes of the exact JSON text that is kept
  * (JSON.stringify of the plain value, escaping included), measured the same
  * way by the claim, which refuses an item that would not fit, and by the
  * orchestration, which selects a batch from those sizes before it binds it.
  */
-import { isJsonObject, isStorableText, utf8ByteLength } from "./json.js";
+import { canonicalJson, isJsonObject, isStorableText, sha256Hex, utf8ByteLength } from "./json.js";
 
 /** The largest canonical text of one intake item, as the claim stores it (the session FIFO's item bound, MAX_FIFO_ITEM_BYTES). */
 export const INTAKE_MAX_TEXT_BYTES = 60 * 1024;
@@ -21,6 +21,19 @@ export const INTAKE_MAX_INVOCATION_ITEMS_BYTES = 61 * 1024;
 export const INTAKE_MAX_ENVELOPE_BYTES = 1024;
 /** The longest id (claim, invocation, session, run) that intake keeps. */
 export const INTAKE_MAX_ID_LENGTH = 128;
+/** At most this many claimed items wait for an invocation, so an invocation binds at most this many (design 5.4, 5.7). */
+export const INTAKE_MAX_HELD = 64;
+/** The longest client message id an item keeps. */
+export const INTAKE_MAX_CLIENT_MESSAGE_ID_LENGTH = 512;
+
+/** How an admitted item's processing ended (design 5.5); `not_dispatched` only when no attempt sent it. */
+export const INTAKE_PROCESSING_OUTCOMES = ["completed", "not_dispatched", "interrupted", "failed_indeterminate"] as const;
+export type IntakeProcessingOutcome = typeof INTAKE_PROCESSING_OUTCOMES[number];
+
+/** The event a refusal projects on the sending workflow's session when that session is live (design 5.6). */
+export const INTAKE_REFUSED_WORKFLOW_EVENT = "workflow.message_refused";
+/** The event a refusal records on the recipient's session: an event only, its session row untouched (design 5.6). */
+export const INTAKE_REFUSED_RECIPIENT_EVENT = "session.workflow_message_refused";
 
 const EXCHANGE_ID = /^nx-[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
@@ -73,6 +86,14 @@ export function intakeExchangeId(raw: unknown, path: string): string {
     return raw;
 }
 
+/** A client message id: 1 to INTAKE_MAX_CLIENT_MESSAGE_ID_LENGTH characters of storable text. */
+export function intakeClientMessageId(raw: unknown, path: string): string {
+    if (typeof raw !== "string" || raw.length === 0 || raw.length > INTAKE_MAX_CLIENT_MESSAGE_ID_LENGTH || !isStorableText(raw)) {
+        throw new IntakeShapeError(path, `is not a client message id of 1 to ${INTAKE_MAX_CLIENT_MESSAGE_ID_LENGTH} characters`);
+    }
+    return raw;
+}
+
 /** A sha256 digest: 64 lowercase hex digits. */
 export function intakeSha256(raw: unknown, path: string): string {
     if (typeof raw !== "string" || !SHA256.test(raw)) throw new IntakeShapeError(path, "is not a sha256 digest");
@@ -97,6 +118,20 @@ export function parseIntakeEnvelope(raw: unknown, path: string): IntakeEnvelope 
         throw new IntakeShapeError(path, `is over ${INTAKE_MAX_ENVELOPE_BYTES} bytes`);
     }
     return envelope;
+}
+
+/**
+ * The hash an envelope carries (design section 3): sha256 of the canonical
+ * JSON of every other field (the exchange, its workflow, run, recipient,
+ * contract and payload hash, and the version). The sender computes it from
+ * the outbox row; the claim recomputes it and admits nothing whose hash is
+ * not this one.
+ */
+export function intakeEnvelopeSha256(fields: Omit<IntakeEnvelope, "envelopeSha256">): string {
+    return sha256Hex(canonicalJson({
+        v: fields.v, exchangeId: fields.exchangeId, workflowSessionId: fields.workflowSessionId, runId: fields.runId,
+        recipientSessionId: fields.recipientSessionId, contract: fields.contract, payloadSha256: fields.payloadSha256,
+    }));
 }
 
 /** What identifies an admitted item, without its text. */
