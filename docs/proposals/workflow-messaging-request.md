@@ -1,4 +1,4 @@
-# Workflow messaging: request and reply (design, revision 3)
+# Workflow messaging: request and reply (design, revision 3, amended)
 
 Status: revised design checkpoint for review. Docs only; no code changes.
 Revision 2 (`f9e04db8`) revised `72f1e701` after the parent review
@@ -20,6 +20,18 @@ adds a durable wake intent, and fixes the deadline rule, the responder's
 identity, idempotency and compatibility.
 
 ## 0. Finding resolution
+
+Amendment to revision 3 (parent review of `14e7ffe5`,
+`wfv2-request-design-14e7ffe5-parent-review.md`, SHA-256 `70f1989e…`, and
+decision `pse/wfv2/decisions/request-foundation-phase`):
+
+| Note | Resolution | Section |
+|---|---|---|
+| Phase | A disabled compiler and storage foundation proceeds now. Runtime activation (admission, tool registration, the dispatcher, Vr, request execution) stays gated. Publication and start keep refusing a definition with a request state until that gate is resolved; the compiler alone exposes nothing. | 8.4, 11 |
+| Historical requester authorization | The global typed-input rule is unchanged. A response call is authorized by a request-specific rule on retained rows under the canonical session locks, which allows a soft-deleted requester for a read-only answer only: a replay of a known operation or `REQUEST_CLOSED`. A new decision still needs the live requester and the global rule. Anything the rule cannot establish is the uniform `REQUEST_NOT_FOUND`. | 4.2, 6, 7 |
+| Wake abandonment lock order | Abandonment locks the requester's session row first, then the wake row; a deleted requester gets no event and no session touch. Settled rows stay durable; there is no queue-wide retention policy. | 5 |
+| Dependency evidence | Exact public source files with commits and SHA-256, retained as artifact `wfv2-dependency-evidence-r1.tgz` (SHA-256 `49f25ecb…`); nothing executed. | 8.2 |
+| Orchestration routing | Activity tags do not route orchestration items. An older worker can poison a new-version orchestration item even while capable workers run. Activation needs an enforced all-capable orchestration serving set for the lifetime of those histories, or a supported orchestration routing; neither is claimed here. | 8.2, 8.4, 10 |
 
 Revision 3:
 
@@ -178,10 +190,11 @@ deletion trigger stays as it is.
   that row waits for it. The node is `responded`; the trigger skips
   completed nodes. A soft delete of the responder waits in the same way on
   its `FOR SHARE` lock.
-- Deletion, then response: the node is `cancelled` (winner `delete`); the
-  response finds it decided: `REQUEST_CLOSED` (status `cancelled`). If the
-  responder is the deleted session's peer, the call is still authenticated
-  and authorized first (section 6).
+- Deletion, then response: the node is `cancelled` (winner `delete`). The
+  call passes the request rule on the retained rows (section 6) and gets
+  the read-only `REQUEST_CLOSED` (status `cancelled`), or the replay of
+  its known operation; it binds nothing and changes nothing. A call that
+  the rule refuses gets `REQUEST_NOT_FOUND`.
 - Deletion with the delivery child ended, with the request delivered but
   unanswered, and repeated deletion: the trigger acts on the first soft
   delete only (`OLD.deleted_at IS NULL`, `migrations/workflow-v2-0087.ts`
@@ -270,12 +283,18 @@ the result after the resume (T028).
   row, or it was settled. A duplicate enqueue (a lost acknowledgement, a
   reclaim after an enqueue) is harmless: the controller treats a wake as a
   hint and collects idempotently.
-- **Abandonment.** A pass that finds a due row with 100 attempts sets
-  `abandoned` and `settled_at` and writes one
-  `workflow.response_wake_abandoned` event, in one transaction under the
-  row lock. No other path abandons, so there is one event. Abandonment is
+- **Abandonment.** A pass that finds a due row with 100 attempts abandons
+  it in its own transaction, in the source-before-wake order: it locks
+  the requester's session row (`FOR NO KEY UPDATE`, as the response
+  transaction does), then the wake row `FOR UPDATE` with the condition
+  that it is still unsettled with 100 attempts, sets `abandoned` and
+  `settled_at`, and, only if the requester is live, projects one
+  `workflow.response_wake_abandoned` event on it. A deleted requester gets
+  no event and no session touch; the wake row still records the outcome.
+  No other path abandons, so there is at most one event. Abandonment is
   visible in the read view and separate from the response, which stays
-  accepted; the controller's backstop still collects the node.
+  accepted; the controller's backstop still collects the node. Leasing and
+  the other completions lock only wake rows and touch no session.
 - **Settled rows never change.** `dispatched`, `moot` and `abandoned` are
   final; no update condition matches them.
 - **Who dispatches.** After its commit the responding worker leases that
@@ -318,22 +337,39 @@ the result after the resume (T028).
   `lockInputSessions(requester, actor)`: the requester's session row
   `FOR NO KEY UPDATE` and the actor's `FOR SHARE`, in ascending session
   id, before any run, node or request-record lock (`store.ts` 697-703).
-  On what it reads after the locks: the request exists, the actor is its
-  frozen responder, the actor's row is live, a credential is not revoked
-  (its revocation row is read `FOR SHARE` after the session locks), and
-  the authority rule allows the actor now. Any failure returns
-  `REQUEST_NOT_FOUND`; the transaction rolls back with no row, no event,
-  no receipt and no structural, field or schema diagnostic.
+  On what it reads after the locks it applies the **request rule**: the
+  request exists; the actor is its frozen responder; the actor's row is
+  live; a credential is not revoked (its revocation row is read
+  `FOR SHARE` after the session locks); the requester's session row and
+  its definition are still retained (a soft-deleted requester is allowed
+  here, a purged one is not); and the actor is the requester's trusted
+  parent in both of them, or both sessions have the same user owner key
+  (`userOwnerKey`, `authority.ts` 53-59) on the rows as they are now. It
+  is the global rule (`decideTypedInputAuthority`, `authority.ts` 62-75)
+  without its requirement that the requester be live; the global rule
+  itself is unchanged. Any failure returns `REQUEST_NOT_FOUND`; the
+  transaction rolls back with no row, no event, no receipt and no
+  structural, field or schema diagnostic.
 - Then exactly one branch runs (section 7):
   - **Replay** of an operation already bound for this request returns its
     stored outcome or `OPERATION_CONFLICT`. Its outcome does not depend on
     the deadline or the request's state, and it never decides again. It
-    is reached only through the target authorization above, so a deleted
-    session, a revoked credential or an actor that lost its authority
-    cannot read a receipt by knowing an old operation id, its own
-    included. The stored decision itself stands.
+    is reached only through the request rule, so a deleted actor, a
+    revoked credential or an actor that lost its authority cannot read a
+    receipt by knowing an old operation id, its own included. The stored
+    decision itself stands.
   - **New decision** for an operation not yet bound: validation, the
-    deadline reading and the state rule.
+    deadline reading and the state rule. With a deleted requester there
+    is no new decision: the call gets `REQUEST_CLOSED` (the node is
+    `cancelled`, winner `delete`) and nothing is bound.
+- **Deleted requester: read-only.** Every answer for a soft-deleted
+  requester is read-only: a replay returns the stored outcome without
+  updating `last_at` or `count`, and nothing touches the requester's
+  session. Privacy result: only the frozen responder, still related to
+  the requester by retained parent links or ownership, learns that the
+  request closed, or gets back its own stored receipt; every other
+  caller, and every caller once the requester's rows are purged, gets
+  `REQUEST_NOT_FOUND`.
 - A response may commit before the delivery is recorded: the request row
   exists from entry, and the delivery record later marks only the message
   delivered.
@@ -344,8 +380,10 @@ Order of checks in a response call:
 
 1. Authenticate (section 6). Failure: the entry point's authentication
    error; nothing read or written.
-2. Target authorization under the session locks (section 6). Failure:
-   `REQUEST_NOT_FOUND`; nothing written, nothing diagnosed.
+2. Target authorization under the session locks, by the request rule
+   (section 6). Failure: `REQUEST_NOT_FOUND`; nothing written, nothing
+   diagnosed. A soft-deleted requester makes every later step read-only
+   (section 6).
 3. Structure: exactly one of `response` or `decline` is present
    (presence, not truthiness: `response: null` is a response whose value
    is `null`). The value must be a JSON value (`assertJsonValue`) whose
@@ -472,13 +510,31 @@ a response and a decline never collide.
   writes nothing: the explicit failure of an incapable worker, never a
   decision.
 - duroxide 0.1.32 cannot route orchestration items by tag. An older
-  worker that fetches a 1.9.0, 1.1.0 or `workflow-v2-request` item does
-  not have it registered: duroxide abandons it with backoff (1 s doubling
-  to 60 s) for a capable worker, and poisons it after its maximum
-  attempts. Every orchestration version has had this exposure (session
-  1.0.81, `docs/architecture/orchestration/design.md` 545-551). The
-  rollout rule (8.4) keeps capable workers present; a poisoned controller
-  is visible (`needsRecovery`), and `recover` ends its run.
+  worker that fetches a 1.9.0, 1.1.0, `workflow-v2-request` or Vr item
+  does not have it registered: duroxide abandons it with backoff (1 s
+  doubling to 60 s) and poisons it after its maximum attempts (10 by
+  default). An older worker can win every one of those fetches, so the
+  item can be poisoned while capable workers are running, not only after
+  they are all gone. Every new orchestration version has had this
+  exposure (session 1.0.81, `docs/architecture/orchestration/design.md`
+  545-551). A poisoned controller is visible (`needsRecovery`) and
+  `recover` ends its run, but that is recovery, not proof of no loss. The
+  activation gate (8.4) addresses it; the activity tag does not.
+- Evidence, read as public source over HTTPS and retained in artifact
+  `wfv2-dependency-evidence-r1.tgz` (SHA-256 `49f25ecb…`, with a manifest
+  of each file's SHA-256); nothing was executed. These are the declared
+  source pins; which crate versions the installed binary resolved is not
+  proved by them.
+
+  | Claim | Source |
+  |---|---|
+  | npm `duroxide` 0.2.4 | PilotSwarm `package-lock.json` 7761-7773 |
+  | It requires duroxide 0.1.32 and duroxide-pg 0.1.38 | duroxide-node `v0.2.4` (`7722f193…`) `Cargo.toml` 10-11; no `Cargo.lock` in that repository |
+  | `withTag` and `workerTagFilter` (`defaultAnd`, `tags`, `any`, `none`) | duroxide-node `lib/duroxide.d.ts` 294-311, `lib/duroxide.js` 286, 305, 1089-1101 |
+  | At most 5 worker tags | duroxide `v0.1.32` (`585c89c8…`) `src/runtime/limits.rs` 30 |
+  | A filter without the tag never fetches tagged work | duroxide-pg `v0.1.38` (`54255d16…`) `migrations/0016_add_activity_tags.sql` 91-93, 110-112; `src/provider.rs` 626-641; duroxide `docs/proposals/activity-tags.md` 659 (design text) |
+  | An unregistered orchestration is abandoned with backoff, then poisoned | duroxide `src/runtime/dispatchers/orchestration.rs` 550-560, 723-745; `src/runtime/mod.rs` 364-365 (`max_attempts` 10) |
+  | An unregistered activity is abandoned, then poisoned | duroxide `src/runtime/dispatchers/worker.rs` 382-384, 513-514 |
 
 ### 8.3 The responder's tool
 
@@ -497,22 +553,43 @@ a response and a decline never collide.
   recipient version ships first, Vr is that version or a later one; this
   design needs only its turn tag.
 
-### 8.4 Deployment setting and rollout
+### 8.4 Deployment setting, activation gate and rollout
 
-- A deployment setting turns request states on. It is an admission
-  switch, not the fence (8.2 and 8.3 are the fence). While it is off or
-  cannot be read, publication of an IR 7 definition is refused and a
-  request state's entry fails with `unsupported_contract`
+- **Phase now: disabled foundation.** This phase builds the compiler (IR
+  7), the types, the additive tables and the store transactions and read
+  views, with tests. It registers no response tool, dispatcher, 1.9.0
+  controller, Vr or request execution path, and it admits nothing: the
+  publication and run-start paths refuse a definition with a request
+  state (or a contract that declares a response) with an explicit
+  diagnostic, whatever the compiler accepts, and the worker's IR reader
+  keeps refusing IR 7 at plan and start. Nothing in this phase is
+  reachable from a published definition.
+- **Activation gate.** Turning request states on needs, first, one of:
+  (a) an enforced serving-set fence, under which every worker that
+  fetches orchestration items from the store is request-capable before
+  any admission and stays so for the lifetime of every 1.9.0, 1.1.0,
+  `workflow-v2-request` and Vr history; or (b) a supported, verified
+  orchestration routing mechanism in the dependency. This design claims
+  neither, adds no dependency feature, and treats an advertisement or a
+  flag as no proof. duroxide's provider capability filter selects by the
+  duroxide runtime version that started an execution, not by application
+  capability, so it is not (b) as it stands. Activity-tag tests and
+  unregistered-orchestration tests are kept separate. The recipient's
+  observed version (8.3) is also no guarantee without (a) or (b).
+- **The deployment setting.** After the gate, a deployment setting turns
+  request states on. It is an admission switch, not the fence. While it
+  is off or cannot be read, publication of an IR 7 definition is refused
+  and a request state's entry fails with `unsupported_contract`
   (`{capability: "workflow_request"}`). Requests already pending are not
   affected: delivery, responses, wakes, observation and deadlines
   continue.
 - Older builds refuse IR 7 wherever they read it (`compiler.ts` 866-869)
   and do not know controller 1.9.0; they never reinterpret either.
-- Rollback: retain request-capable workers until 1.9.0 runs, request
-  deliveries, unsettled wakes and Vr sessions drain, unless a separately
-  authorized coordinated rollback restores both code and durable state
-  (the 1.0.81 rule). Without a capable worker, tagged work waits and
-  resumes when one returns; no older worker decides anything.
+- Rollback: retain request-capable workers as the gate requires, until
+  1.9.0 runs, request deliveries, unsettled wakes and Vr sessions drain,
+  unless a separately authorized coordinated rollback restores both code
+  and durable state (the 1.0.81 rule). Tagged activity work waits for a
+  capable worker; orchestration items depend on the gate.
 
 ### 8.5 Collection and intake
 
@@ -539,8 +616,10 @@ a response and a decline never collide.
   changes nothing but its own new binding, or the `last_at` and `count`
   of its known one.
 - **Q4 responder:** only the frozen responder, authenticated by its host
-  or a scoped credential and still allowed, can decide; a replay needs the
-  same current authorization.
+  or a scoped credential and allowed by the global rule with a live
+  requester, can decide; a replay or a closed answer needs the request
+  rule on the retained rows (section 6), and with a deleted requester it
+  is read-only.
 - **Q5 identity:** the request id is stable for the occurrence; the
   response record and receipt are immutable; every admitted operation
   keeps one binding to its result identity and outcome; a repeat returns
@@ -563,7 +642,8 @@ a response and a decline never collide.
 | 1 | The response commits; the tool's reply is lost; the agent repeats | Same operation: the stored receipt. |
 | 2 | Response and deadline close together | Each transaction's one reading decides under the session lock; the first compare-and-swap stays. |
 | 3 | Response before the delivery record | Accepted; the record marks only the message. |
-| 4 | Response after the run's cancel or deletion | `REQUEST_CLOSED` (`cancelled`); the operation is bound `closed`. |
+| 4 | Response after the run's cancel | `REQUEST_CLOSED` (`cancelled`); the operation is bound `closed`. |
+| 4a | Response after the requester's deletion | The request rule on the retained rows: the read-only `REQUEST_CLOSED` or the replay of a known operation, nothing bound; otherwise `REQUEST_NOT_FOUND` (section 6). |
 | 5 | Delivery fails after a response won | The failure's compare-and-swap finds the node decided. |
 | 6 | The responder is deleted or revoked while the request waits | Observed (4.4): `unavailable` or `forbidden`; or `timed_out` within the last backstop period. |
 | 7 | The requesting workflow is deleted | The trigger cancels the node in the delete's transaction; the status is `cancelled` at once. |
@@ -575,27 +655,30 @@ a response and a decline never collide.
 | 13 | A wake holder stalls; another reclaims and dispatches; the first then fails | Its update matches no row; `dispatched` stays. |
 | 14 | The lifecycle read fails or finds no instance | A retry with backoff, never `moot`. |
 | 15 | A new operation when 50 are bound | `OPERATION_LIMIT`; nothing written; known operations still replay. |
-| 16 | An older worker runs beside capable ones | It never fetches tagged work; its read of a request row fails explicitly and writes nothing. |
-| 17 | Every capable worker is removed | Tagged work waits; 1.9.0 items are abandoned with backoff and can be poisoned (visible; `recover`); no older worker decides. |
+| 16 | An older worker runs beside capable ones | It never fetches tagged activity work; its read of a request row fails explicitly and writes nothing; it can still fetch, abandon and poison new-version orchestration items, which is why activation needs the gate (8.4). |
+| 17 | Every capable worker is removed | Tagged activity work waits; orchestration items are abandoned with backoff and can be poisoned (visible; `recover`); no older worker decides. |
 
 ## 11. Plan and coverage
 
-Commits, each with DEV tests and independent review:
+Commits, each with DEV tests and independent review. Commits 1 and 2 are
+the disabled foundation of 8.4 and proceed now; commits 3 and 4 wait for
+the activation gate.
 
 1. Compiler and IR 7: the request state, response contracts, the
    diagnostics for obsolete spellings, the frozen timeout binding (compile
-   tests).
+   tests); publication and run start refuse a request definition.
 2. Records and store: the migration, the request at entry, the response
    transaction with its record, operation binding and wake intent, the
-   derived status, the request-aware elapse, the observation (store and
-   native tests).
-3. Versions and routing: 1.8.0 frozen with its literal target, 1.9.0,
-   the effect, notify and send orchestrations at 1.1.0,
+   derived status, the request rule, the read views (store and native
+   tests that call the store directly). The request-aware elapse and the
+   observation come with commit 3, where a controller calls them.
+3. Versions and routing (gated): 1.8.0 frozen with its literal target,
+   1.9.0, the effect, notify and send orchestrations at 1.1.0,
    `workflow-v2-request` 1.0.0, the worker tag, session version Vr with
    tagged turns (replay and routing tests).
-4. Tool and dispatch: `respond_session_request`, the wake lease and pass
-   loop, the capability checks, the read view (native tests with an agent
-   test double that calls the tool).
+4. Tool and dispatch (gated): `respond_session_request`, the wake lease
+   and pass loop, abandonment, the capability checks (native tests with
+   an agent test double that calls the tool).
 5. Formal model `WorkflowV2Request.tla`: the single compare-and-swap among
    response, deadline, observation, run end, deletion and delivery
    failure; late and duplicate calls; operation bindings; the wake lease
@@ -617,11 +700,13 @@ Commits, each with DEV tests and independent review:
 | New | Wake: crash after commit before dispatch; lost enqueue acknowledgement; duplicate wakes; paused and delayed controller; moot and abandoned rows. |
 | New | Wake lease: a reclaim between enqueue and completion by two workers; the old holder's failure after the new holder's success; a duplicate abandonment attempt (one event); an unknown or failed lifecycle read (not moot); the requester deleted after the response; a replay after the wake settled (no new or changed wake). |
 | New | Operation identity: A/X, B/X, B/Y; repeated expired and closed operations with changed content; response versus decline identity; the 50th binding; a new operation at the limit; a known replay at the limit; the winner unchanged in every case. |
-| New | Authorization: wrong actor, revoked credential, deleted responder and lost authority, each with a new and with the winner's old operation id: no receipt, no diagnostic, no binding, no event. |
+| New | Authorization: wrong actor, revoked credential, deleted responder and lost authority, each with a new and with the winner's old operation id: no receipt, no diagnostic, no binding, no event. Requester soft-deleted before and after a response: the frozen, still related responder gets the read-only `REQUEST_CLOSED` or its receipt with no counter change; any other caller, and every caller after the requester's rows are purged, gets `REQUEST_NOT_FOUND`. |
+| New | Abandonment: source-before-wake lock order against a concurrent response transaction; a deleted requester gets no event and no session touch; one event at most. |
 | New | JSON: `null`, `false`, root and nested arrays, NUL, lone high and low surrogates, paired surrogates and special keys (`__proto__`, `constructor`, empty) through validation, storage, hashing and replay. |
 | New | Orphan and corrupt combinations fail explicitly. |
 | New | Versions: retained 1.8.0 histories before and after a continue-as-new boundary replay with unchanged schedules, arguments and target 1.8.0; new runs start at 1.9.0; legacy activity names keep their input and output meaning. |
-| New | Routing: an older worker (three tags, the same names registered) beside a capable one; request delivery, delivery failure and 1.9.0 activities run only on the capable one; with only the older worker they wait, nothing is consumed, and they complete when a capable worker starts; old IR 1 to 6 sends complete unchanged; a responder below Vr or with an unreadable version fails `unsupported_contract`; the setting turned off stops new entries and leaves pending requests working. |
+| New | Routing: an older worker (three tags, the same names registered) beside a capable one; request delivery, delivery failure and 1.9.0 activities run only on the capable one; with only the older worker they wait, nothing is consumed, and they complete when a capable worker starts; old IR 1 to 6 sends complete unchanged; a responder below Vr or with an unreadable version fails `unsupported_contract`; the setting turned off stops new entries and leaves pending requests working. A separate test fetches an unregistered new-version orchestration item on an older worker and shows the abandon-then-poison behavior that the gate must exclude. |
+| New | Disabled foundation: a request definition compiles to IR 7, and publication and run start refuse it; IR 1 to 6 compile and run unchanged. |
 
 ## 12. Open items
 
