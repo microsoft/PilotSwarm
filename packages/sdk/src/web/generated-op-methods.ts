@@ -1148,8 +1148,8 @@ export interface ManagementOps {
     listModels(params?: Record<string, never>): Promise<any>;
 
     /**
-     * List messages, overlap status and dismissal counts. [admin]
-     * @remarks `GET /management/motd` — access: `fleet:admin`
+     * Read message history and overlap status. Creator identity and dismissal counts are admin-only.
+     * @remarks `GET /management/motd` — access: `authed`
      */
     listMotds(params: {
         limit?: number;
