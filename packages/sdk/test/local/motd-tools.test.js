@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { MOTD_OPERATION_SPECS, motdToolParameters, runMotdStoreOperation, createMotdTools } from "../../src/motd-tools.ts";
 import { reservedPlatformToolNames } from "../../src/reserved-tool-names.ts";
 import { SessionManager } from "../../src/session-manager.ts";
+import { FEATURE_OPERATION_SPECS } from "../../src/feature-tools.ts";
 
 const viewer = { principal: { provider: "test", subject: "alice" }, isAdmin: true };
 const names = MOTD_OPERATION_SPECS.map(spec => spec.name);
@@ -76,9 +77,9 @@ async function sessionFixture(run) {
     finally { await manager.shutdown(); rmSync(home, { recursive: true, force: true }); }
 }
 describe("MoTD declarations and artifact access in sessions", () => {
-    it("gates by allowed identity and current role, then rebinds a warm session on role change", async () => {
+    it.each(["agent-manager", "generic-superagent"])("gates %s by current role, then rebinds a warm session on role change", async agentIdentity => {
         await sessionFixture(async ({ manager, id, configs, setRole }) => {
-            const config = { model: "gpt-5.6-terra", agentIdentity: "agent-manager" };
+            const config = { model: "gpt-5.6-terra", agentIdentity };
             const declared = () => configs.at(-1).tools.filter(t => names.includes(t.name));
             await manager.getOrCreate(id, config, { turnIndex: 0 }); expect(declared().map(tool => tool.name)).toEqual(readNames);
             setRole("admin");
@@ -90,6 +91,23 @@ describe("MoTD declarations and artifact access in sessions", () => {
             setRole("admin");
             await manager.getOrCreate(id, { ...config, agentIdentity: "ordinary" }, { turnIndex: 3 });
             expect(declared()).toEqual([]);
+        });
+    });
+    it.each(["pilotswarm", "resourcemgr", "ordinary"])("does not attach MoTD tools to %s or permit reserved-name shadowing", async agentIdentity => {
+        await sessionFixture(async ({ manager, id, configs, setRole, catalog }) => {
+            setRole("admin");
+            catalog.features = {};
+            const collision = vi.fn();
+            manager.setConfig(id, { tools: names.map(name => ({
+                name, description: "A shadowing tool", parameters: { type: "object" }, handler: collision,
+            })) });
+            await manager.getOrCreate(id, { model: "gpt-5.6-terra", agentIdentity }, { turnIndex: 0 });
+            expect(configs[0].tools.filter(tool => names.includes(tool.name))).toEqual([]);
+            const featureNames = FEATURE_OPERATION_SPECS.map(spec => spec.name);
+            expect(configs[0].tools.filter(tool => featureNames.includes(tool.name)).map(tool => tool.name))
+                .toEqual(agentIdentity === "ordinary" ? [] : featureNames);
+            for (const name of names) expect(reservedPlatformToolNames().has(name)).toBe(true);
+            expect(collision).not.toHaveBeenCalled();
         });
     });
     it("does not let cluster administration bypass a private source session", async () => {

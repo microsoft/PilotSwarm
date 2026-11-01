@@ -2358,7 +2358,7 @@ export class SessionManager {
             && (await this._resolveFeatureViewer(sessionId)).isAdmin
             ? createFeatureTools(this.sessionCatalog.features, () => this._resolveFeatureViewer(sessionId)) : [];
         const motdViewer = this.sessionCatalog?.motds
-            && ["resourcemgr", "pilotswarm", "agent-manager", "generic-superagent"].includes(effectiveSerializableConfig.agentIdentity ?? "")
+            && ["agent-manager", "generic-superagent"].includes(effectiveSerializableConfig.agentIdentity ?? "")
             ? await this._resolveFeatureViewer(sessionId) : null;
         const motdTools = this.sessionCatalog?.motds && motdViewer
             ? createMotdTools(this.sessionCatalog.motds, () => this._resolveFeatureViewer(sessionId), async (image, viewer) => {
