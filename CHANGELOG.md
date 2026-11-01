@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+**Provider request headers.** A provider type in the model catalog may set
+`headers`: fixed HTTP headers sent on every model request, for endpoints that
+need a header besides the credential. Shared and personal instances inherit
+them and cannot change them. Values are plain strings: `env:` references,
+credential headers and headers the HTTP client owns are refused at catalog
+load, because a personal instance may point the type at its own `baseUrl`.
+Not allowed on `github` providers. Catalogs without `headers` are unchanged.
+
 **Canvas refusal reporting.** Canvas tools return structured failures for
 refusals, unavailable bridges and invalid arguments instead of successful
 results containing error text. Refusal reasons and recovery guidance remain

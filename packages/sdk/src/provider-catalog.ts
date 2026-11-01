@@ -18,7 +18,8 @@
  */
 import type { ModelProviderConfig, ModelProvidersFile, ResolvedProvider } from "./model-providers.js";
 import {
-    effectiveWireApi, ModelProviderRegistry, providerTypeUsesWorkloadIdentity, resolveEnvValue, toSdkProviderType,
+    effectiveWireApi, ModelProviderRegistry, providerHeaders, providerTypeUsesWorkloadIdentity, resolveEnvValue,
+    toSdkProviderType,
 } from "./model-providers.js";
 import type { DefaultTuple, ProviderCredential, ProviderStore } from "./provider-store.js";
 import { WORKLOAD_IDENTITY_KIND } from "./provider-store.js";
@@ -423,6 +424,8 @@ export function resolveProviderCredential(
     // A model may set its own request format; the type's value is the fallback.
     const descriptor = types.getDescriptor(`${type.id}:${modelName}`);
     const wireApi = effectiveWireApi(type, descriptor);
+    // Always the type's: the row has no headers of its own.
+    const headers = providerHeaders(type);
 
     return {
         providerId: credential.name,
@@ -436,6 +439,7 @@ export function resolveProviderCredential(
             ...(wireApi ? { wireApi } : {}),
             ...(workloadIdentity ? {} : { apiKey }),
             ...(sdkType === "azure" ? { azure: { apiVersion: apiVersion ?? "2024-10-21" } } : {}),
+            ...(headers ? { headers } : {}),
         },
     } as ResolvedProvider;
 }
