@@ -1301,16 +1301,18 @@ export interface SessionPolicy {
 export interface PilotSwarmWorkerOptions {
     store: string;
     /**
-     * Script states in workflow sessions. Off unless enabled here or with
-     * `PILOTSWARM_WORKFLOW_SCRIPTS=1`: a workflow's scripts run as child
-     * processes on the worker (without the worker's environment), so an
-     * operator opts in. A worker with them off still runs the controller and
-     * fails each new workflow that has script states at its start, with a
-     * clear message. `executables` overrides the program per runtime (env
-     * `PILOTSWARM_WORKFLOW_PYTHON`, `PILOTSWARM_WORKFLOW_PWSH`).
+     * Workflow sessions. Off unless `stateTypes` (or the env
+     * `PILOTSWARM_WORKFLOW_STATE_TYPES`, a comma-separated list) names the
+     * state types this worker runs: today `script`. An empty, unset or
+     * malformed list (an empty or unknown entry) turns workflows off.
+     * `wait` and `terminal` states run nothing and are never listed. Script
+     * states run as child processes on the worker (without the worker's
+     * environment), so an operator opts in. `executables` overrides the
+     * program per runtime (env `PILOTSWARM_WORKFLOW_PYTHON`,
+     * `PILOTSWARM_WORKFLOW_PWSH`). Set the same list on every worker.
      */
-    workflowScripts?: {
-        enabled?: boolean;
+    workflows?: {
+        stateTypes?: string[];
         executables?: Partial<Record<"node" | "python" | "powershell", string>>;
     };
     /**

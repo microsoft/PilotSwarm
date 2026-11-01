@@ -379,7 +379,7 @@ new PilotSwarmWorker({
     waitThreshold: 30,       // seconds — waits above this become durable timers
     workerNodeId: "pod-1",   // identifier for this worker (default: hostname)
     turnTimeoutMs: 1_200_000, // explicit override; 0 disables the cap
-    workflowScripts: { enabled: false }, // run workflow script states (env PILOTSWARM_WORKFLOW_SCRIPTS=1)
+    workflows: { stateTypes: [] }, // workflow state types to run, e.g. ["script"] (env PILOTSWARM_WORKFLOW_STATE_TYPES=script)
 
     // Blob storage for session dehydration
     blobConnectionString: string,   // Azure Storage connection string
@@ -843,14 +843,13 @@ desired state rather than maintain a second long-lived configuration source.
 | `npm run worker` | Headless worker process |
 | `npm run db:reset` | Reset database schemas |
 
-## Workflow scripts
+## Workflows
 
-Off by default: a workflow's script states run as processes on the worker.
-See [Workflow sessions](../building/workflow-sessions.md).
+Off by default. See [Workflow sessions](../building/workflow-sessions.md).
 
 | Variable | Default | Effect |
 |---|---|---|
-| `PILOTSWARM_WORKFLOW_SCRIPTS` | off | `1` runs workflow script states on this worker. The `workflowScripts.enabled` option wins. |
+| `PILOTSWARM_WORKFLOW_STATE_TYPES` | unset (off) | Comma-separated state types this worker runs; today `script`. Unset, blank or malformed (an unknown or empty entry) turns workflows off. `wait` and `terminal` are never listed. The `workflows.stateTypes` option wins. Set the same list on every worker. |
 | `PILOTSWARM_WORKFLOW_PYTHON` | `python3` | The Python program for `runtime: python`. |
 | `PILOTSWARM_WORKFLOW_PWSH` | `pwsh` | The PowerShell 7 program for `runtime: powershell`. |
 | `PILOTSWARM_WORKFLOW_MIN_WAIT_SECONDS` | `60` | The shortest `wait` state a workflow may declare, in seconds (at least 1). For development and tests; set it on clients and workers alike. |

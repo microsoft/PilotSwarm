@@ -1,14 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { systemChildAgentUUID } from "../agent-loader.js";
 import type { WorkflowSessionConfig, SessionOwnerInfo } from "../types.js";
-import { WORKFLOW_SCRIPTS_DISABLED_MESSAGE } from "./activities.js";
-import { compileWorkflow, validateWorkflowInputs, workflowHasWaits } from "./compiler.js";
+import { compileWorkflow, validateWorkflowInputs, workflowHasWaits, workflowNotRunnableReason, WORKFLOWS_DISABLED_MESSAGE } from "./compiler.js";
 import type { SpawnWorkflowToolArgs } from "./tool-spec.js";
 
 export interface SpawnWorkflowDeps {
     /** The agent session calling spawn_workflow; it becomes the workflow's parent. */
     parentSessionId: string;
-    enabled: () => boolean;
+    /** The workflow state types this worker runs; empty when workflows are off. */
+    stateTypes: () => ReadonlySet<string>;
     getSession: (sessionId: string) => Promise<{ title?: string | null; state?: string | null } | null>;
     resolveOwner: () => Promise<SessionOwnerInfo | null>;
     createWorkflowSession: (config: WorkflowSessionConfig & { notifyParent?: boolean }) => Promise<{ sessionId: string; workflowName: string }>;
@@ -36,8 +36,9 @@ export async function spawnWorkflowFromTool(
     deps: SpawnWorkflowDeps,
 ): Promise<string> {
     try {
-        if (!deps.enabled()) {
-            return `[SYSTEM: spawn_workflow refused — ${WORKFLOW_SCRIPTS_DISABLED_MESSAGE}]`;
+        const allowed = deps.stateTypes();
+        if (allowed.size === 0) {
+            return `[SYSTEM: spawn_workflow refused — ${WORKFLOWS_DISABLED_MESSAGE}]`;
         }
         let workflowName: string;
         let loops = false;
@@ -46,6 +47,8 @@ export async function spawnWorkflowFromTool(
             validateWorkflowInputs(compiled, args.inputs ?? {});
             workflowName = compiled.name;
             loops = workflowHasWaits(compiled);
+            const notRunnable = workflowNotRunnableReason(compiled, allowed);
+            if (notRunnable) return `[SYSTEM: spawn_workflow refused — ${notRunnable}]`;
         } catch (error) {
             return `[SYSTEM: spawn_workflow refused — the workflow is not valid: ${error instanceof Error ? error.message : String(error)} `
                 + "Fix it and call spawn_workflow again.]";

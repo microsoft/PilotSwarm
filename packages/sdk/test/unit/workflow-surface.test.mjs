@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { ManagedSession } from "../../dist/managed-session.js";
 import { SessionManager } from "../../dist/session-manager.js";
 import { findReservedPackageToolName } from "../../dist/reserved-tool-names.js";
-import { resolveWorkflowScriptSettings } from "../../dist/worker.js";
+import { resolveWorkflowSettings } from "../../dist/worker.js";
 import {
     buildParentNotification,
     compileWorkflow,
@@ -139,14 +139,27 @@ test("script tools are the generic agent's data-plane tools, bound to the workfl
     assert.equal(stored[0].sessionId, "wf-session");
 });
 
-test("workflow scripts are off unless an operator turns them on", () => {
-    assert.equal(resolveWorkflowScriptSettings(undefined, {}).enabled, false);
-    assert.equal(resolveWorkflowScriptSettings(undefined, { PILOTSWARM_WORKFLOW_SCRIPTS: "1" }).enabled, true);
-    assert.equal(resolveWorkflowScriptSettings(undefined, { PILOTSWARM_WORKFLOW_SCRIPTS: "true" }).enabled, true);
-    assert.equal(resolveWorkflowScriptSettings({ enabled: false }, { PILOTSWARM_WORKFLOW_SCRIPTS: "1" }).enabled, false);
-    assert.equal(resolveWorkflowScriptSettings({ enabled: true }, {}).enabled, true);
+test("workflows run only the state types an operator lists; unset, blank or malformed turns them off", () => {
+    const types = (config, env) => [...resolveWorkflowSettings(config, env).stateTypes];
+    assert.deepEqual(types(undefined, {}), []);
+    assert.deepEqual(types(undefined, { PILOTSWARM_WORKFLOW_STATE_TYPES: "" }), []);
+    assert.deepEqual(types(undefined, { PILOTSWARM_WORKFLOW_STATE_TYPES: "  ,  " }), []);
+    assert.deepEqual(types(undefined, { PILOTSWARM_WORKFLOW_STATE_TYPES: "script" }), ["script"]);
+    assert.deepEqual(types(undefined, { PILOTSWARM_WORKFLOW_STATE_TYPES: " Script , script " }), ["script"]);
+    // Malformed: an unknown or empty entry turns workflows off and says why.
+    for (const value of ["scrpit", "script,agent", "script,,", "1", "true"]) {
+        const settings = resolveWorkflowSettings(undefined, { PILOTSWARM_WORKFLOW_STATE_TYPES: value });
+        assert.equal(settings.stateTypes.size, 0, value);
+        assert.match(settings.problem, /PILOTSWARM_WORKFLOW_STATE_TYPES lists .*; this worker runs only 'script'\. Workflows are off until the list is fixed\./, value);
+    }
+    // The old switch does nothing.
+    assert.deepEqual(types(undefined, { PILOTSWARM_WORKFLOW_SCRIPTS: "1" }), []);
+    // The worker option wins over the environment.
+    assert.deepEqual(types({ stateTypes: [] }, { PILOTSWARM_WORKFLOW_STATE_TYPES: "script" }), []);
+    assert.deepEqual(types({ stateTypes: ["script"] }, {}), ["script"]);
+    assert.match(resolveWorkflowSettings({ stateTypes: ["script", "agent"] }, {}).problem, /^workflows\.stateTypes lists 'agent'/);
     assert.deepEqual(
-        resolveWorkflowScriptSettings({ executables: { powershell: "/opt/pwsh" } }, { PILOTSWARM_WORKFLOW_PYTHON: "/usr/bin/python3.12" }).executables,
+        resolveWorkflowSettings({ executables: { powershell: "/opt/pwsh" } }, { PILOTSWARM_WORKFLOW_PYTHON: "/usr/bin/python3.12" }).executables,
         { python: "/usr/bin/python3.12", powershell: "/opt/pwsh" },
     );
 });
@@ -201,7 +214,7 @@ function spawnDeps(overrides = {}) {
         sessions,
         deps: {
             parentSessionId: "parent-agent",
-            enabled: () => true,
+            stateTypes: () => new Set(["script"]),
             getSession: async (id) => sessions.get(id) ?? null,
             resolveOwner: async () => ({ provider: "dev", subject: "alice" }),
             createWorkflowSession: async (config) => {
@@ -260,9 +273,15 @@ test("spawn_workflow is idempotent per key, and per tool call without one", asyn
 });
 
 test("spawn_workflow refuses when workflows are off or the YAML is wrong, without creating anything", async () => {
-    const off = spawnDeps({ enabled: () => false });
-    assert.match(await spawnWorkflowFromTool({ yaml: yaml() }, {}, off.deps), /refused — Workflow scripts are disabled on this worker/);
+    const off = spawnDeps({ stateTypes: () => new Set() });
+    assert.match(await spawnWorkflowFromTool({ yaml: yaml() }, {}, off.deps), /refused — Workflows are not enabled on this worker/);
     assert.equal(off.created.length, 0);
+
+    // A worker that runs other state types refuses a workflow with script states, naming the type.
+    const noScripts = spawnDeps({ stateTypes: () => new Set(["agent"]) });
+    assert.match(await spawnWorkflowFromTool({ yaml: yaml() }, {}, noScripts.deps),
+        /refused — This workflow uses state type 'script', which this worker does not run\. An operator adds it to PILOTSWARM_WORKFLOW_STATE_TYPES/);
+    assert.equal(noScripts.created.length, 0);
 
     const bad = spawnDeps();
     const text = await spawnWorkflowFromTool({ yaml: yaml().replace("type: script", "type: agent") }, {}, bad.deps);

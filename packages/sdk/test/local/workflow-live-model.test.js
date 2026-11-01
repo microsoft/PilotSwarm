@@ -57,7 +57,7 @@ function waitIsInLoop(workflow) {
 describe.skipIf(!live)("a real model writes polling as one workflow", () => {
     it("starts one workflow with a wait loop and sets no cron", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
-        await withClient(env, { worker: { workflowScripts: { enabled: true } } }, async (client) => {
+        await withClient(env, { worker: { workflows: { stateTypes: ["script"] } } }, async (client) => {
             const mgmt = await createManagementClient(env);
             try {
                 const session = await client.createSession({});

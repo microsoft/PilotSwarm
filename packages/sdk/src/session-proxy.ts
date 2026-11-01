@@ -2688,7 +2688,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
              */
             spawnWorkflow: async (args: SpawnWorkflowToolArgs, call?: { toolCallId?: string }) => spawnWorkflowFromTool(args, call, {
                 parentSessionId: input.sessionId,
-                enabled: () => sessionManager.workflowScriptsEnabled,
+                stateTypes: () => sessionManager.workflowStateTypes,
                 getSession: async (id) => catalog ? catalog.getSession(id) : null,
                 resolveOwner: async () => catalog
                     ? resolveEffectiveSpawnOwner((id) => catalog!.getSession(id), input.sessionId)

@@ -44,6 +44,7 @@ import {
     registerWorkflowActivities,
     WORKFLOW_SESSION_ORCHESTRATION_NAME,
     WORKFLOW_SESSION_ORCHESTRATION_REGISTRY,
+    WORKFLOW_RUNNABLE_STATE_TYPES,
 } from "./workflow/index.js";
 import fs from "node:fs";
 import os from "node:os";
@@ -138,19 +139,39 @@ export function resolveDuroxideLockOptions(
     return options;
 }
 
-/** @internal Workflow script switch and runtimes: explicit option > deployment env > off. */
-export function resolveWorkflowScriptSettings(
-    config: PilotSwarmWorkerOptions["workflowScripts"],
+/**
+ * @internal The workflow state types this worker runs, and the script
+ * runtimes: explicit option > deployment env > none. Unset, empty or
+ * malformed (an empty or unknown entry) means no workflows; `problem` says
+ * why a malformed list was ignored.
+ */
+export function resolveWorkflowSettings(
+    config: PilotSwarmWorkerOptions["workflows"],
     env: Record<string, string | undefined> = process.env,
-): { enabled: boolean; executables: Partial<Record<"node" | "python" | "powershell", string>> } {
-    const flag = String(env.PILOTSWARM_WORKFLOW_SCRIPTS ?? "").trim().toLowerCase();
-    const enabled = config?.enabled ?? (flag === "1" || flag === "true" || flag === "yes");
+): { stateTypes: ReadonlySet<string>; executables: Partial<Record<"node" | "python" | "powershell", string>>; problem?: string } {
     const executables: Partial<Record<"node" | "python" | "powershell", string>> = {
         ...(env.PILOTSWARM_WORKFLOW_PYTHON ? { python: env.PILOTSWARM_WORKFLOW_PYTHON } : {}),
         ...(env.PILOTSWARM_WORKFLOW_PWSH ? { powershell: env.PILOTSWARM_WORKFLOW_PWSH } : {}),
         ...(config?.executables ?? {}),
     };
-    return { enabled, executables };
+    const source = config?.stateTypes !== undefined ? "workflows.stateTypes" : "PILOTSWARM_WORKFLOW_STATE_TYPES";
+    const raw: unknown[] = config?.stateTypes !== undefined
+        ? (Array.isArray(config.stateTypes) ? config.stateTypes : [config.stateTypes])
+        : String(env.PILOTSWARM_WORKFLOW_STATE_TYPES ?? "").split(",");
+    const entries = raw.map((entry) => (typeof entry === "string" ? entry.trim().toLowerCase() : ""));
+    if (entries.every((entry) => entry === "")) return { stateTypes: new Set(), executables };
+    const known = new Set<string>(WORKFLOW_RUNNABLE_STATE_TYPES);
+    const bad = entries.filter((entry) => !known.has(entry));
+    if (bad.length) {
+        const shown = bad.map((entry) => (entry ? `'${entry}'` : "an empty entry")).join(", ");
+        return {
+            stateTypes: new Set(),
+            executables,
+            problem: `${source} lists ${shown}; this worker runs only ${WORKFLOW_RUNNABLE_STATE_TYPES.map((t) => `'${t}'`).join(", ")}. `
+                + "Workflows are off until the list is fixed.",
+        };
+    }
+    return { stateTypes: new Set(entries), executables };
 }
 
 /** @internal Resolve the worker-wide turn cap: explicit option > deployment env > SDK default. */
@@ -973,14 +994,15 @@ export class PilotSwarmWorker {
         }
 
         // Workflow sessions: a sibling controller orchestration. It is
-        // registered on every worker so that a workflow started where scripts
-        // are off fails with a clear message instead of waiting.
-        const workflowScriptSettings = resolveWorkflowScriptSettings(this.config.workflowScripts);
-        this.sessionManager.workflowScriptsEnabled = workflowScriptSettings.enabled;
+        // registered on every worker so that a workflow started where its
+        // state types are off fails with a clear message instead of waiting.
+        const workflowSettings = resolveWorkflowSettings(this.config.workflows);
+        if (workflowSettings.problem) console.warn(`[PilotSwarmWorker] ${workflowSettings.problem}`);
+        this.sessionManager.workflowStateTypes = workflowSettings.stateTypes;
         const workflowClient = new Client(this._provider);
         registerWorkflowActivities(this.runtime, {
             catalog: this._catalog,
-            enabled: () => workflowScriptSettings.enabled,
+            stateTypes: () => workflowSettings.stateTypes,
             canvas: createWorkflowCanvasPublisher({
                 catalog: this._catalog,
                 artifactStore: this.artifactStore,
@@ -999,7 +1021,7 @@ export class PilotSwarmWorker {
                     JSON.stringify({ prompt, sender }),
                 );
             },
-            runnerOptions: { executables: workflowScriptSettings.executables },
+            runnerOptions: { executables: workflowSettings.executables },
         });
         for (const registration of WORKFLOW_SESSION_ORCHESTRATION_REGISTRY) {
             this.runtime.registerOrchestrationVersioned(
@@ -1008,7 +1030,7 @@ export class PilotSwarmWorker {
                 registration.handler,
             );
         }
-        trace(`[worker] workflow scripts ${workflowScriptSettings.enabled ? "enabled" : "disabled"}`);
+        trace(`[worker] workflow state types: ${[...workflowSettings.stateTypes].join(", ") || "none (workflows off)"}`);
 
         // Auto-register sweeper tools if CMS is available
         if (this._catalog) {

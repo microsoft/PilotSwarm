@@ -237,20 +237,22 @@ between two states stops the next one.
 
 ## Running workflows (operators)
 
-Scripts run as child processes **on the worker**, so script states are
-**off** until an operator turns them on:
+Workflows are **off** until an operator lists the state types a worker runs.
+Script states run as child processes **on the worker**, so `script` is an
+explicit choice:
 
 | Setting | Effect |
 |---|---|
-| `PILOTSWARM_WORKFLOW_SCRIPTS=1` or `new PilotSwarmWorker({ workflowScripts: { enabled: true } })` | Run workflow script states on this worker. |
-| `PILOTSWARM_WORKFLOW_PYTHON`, `PILOTSWARM_WORKFLOW_PWSH`, or `workflowScripts.executables` | The program for a runtime. Defaults: this worker's Node, `python3`, `pwsh`. |
+| `PILOTSWARM_WORKFLOW_STATE_TYPES=script` or `new PilotSwarmWorker({ workflows: { stateTypes: ["script"] } })` | Run workflows with script states on this worker. Later state types join the list, for example `script,agent,question`. |
+| Unset, blank or malformed | Workflows are off. A malformed list (an unknown or empty entry) is ignored with a warning in the worker log. `wait` and `terminal` states run nothing and are never listed. |
+| `PILOTSWARM_WORKFLOW_PYTHON`, `PILOTSWARM_WORKFLOW_PWSH`, or `workflows.executables` | The program for a runtime. Defaults: this worker's Node, `python3`, `pwsh`. |
 | `PILOTSWARM_WORKFLOW_MIN_WAIT_SECONDS` | The shortest wait a document may declare (default 60). Lower it only for development and tests; set the same value on clients and workers, because both check documents. |
 
-Turn scripts on for **every** worker of a deployment: any worker may run any
-state. A worker with scripts off still runs the controller, so a workflow
-with script states fails there at its start, or at its next script state,
-with a message that names the setting instead of waiting. Agents on such a
-worker are not shown `spawn_workflow`.
+Set the **same list on every worker** of a deployment: any worker may run any
+state. A worker that does not run a workflow's state types still runs the
+controller, so the workflow fails there at its start, or at that state, with a
+message that names the type and the setting instead of waiting. Agents on a
+worker with workflows off are not shown `spawn_workflow`.
 
 Each running script state holds one of the worker's activity slots
 (`PILOTSWARM_WORKER_CONCURRENCY`, 2 by default) for as long as its script

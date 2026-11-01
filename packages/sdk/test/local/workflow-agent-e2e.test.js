@@ -84,7 +84,7 @@ describe("agent-driven script workflows", () => {
         const env = getEnv();
         await withScriptedModel(env, {
             respond,
-            worker: { workflowScripts: { enabled: true } },
+            worker: { workflows: { stateTypes: ["script"] } },
         }, async ({ client, model, qualifiedModel }) => {
             const mgmt = await createManagementClient(env);
             try {
@@ -130,11 +130,11 @@ describe("agent-driven script workflows", () => {
         });
     });
 
-    it("a worker with script workflows off does not show spawn_workflow to the model", { timeout: TIMEOUT }, async () => {
+    it("a worker with workflows off does not show spawn_workflow to the model", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
         await withScriptedModel(env, {
             respond: () => ({ content: "ok" }),
-            worker: { workflowScripts: { enabled: false } },
+            worker: { workflows: { stateTypes: [] } },
         }, async ({ client, model, qualifiedModel }) => {
             const session = await client.createSession({ model: qualifiedModel, owner: OWNER });
             await session.sendAndWait("list your tools", TIMEOUT);
@@ -209,7 +209,7 @@ describe("agent-driven polling workflows", () => {
         };
         await withScriptedModel(env, {
             respond: respondPoll,
-            worker: { workflowScripts: { enabled: true } },
+            worker: { workflows: { stateTypes: ["script"] } },
         }, async ({ client, model, qualifiedModel }) => {
             const mgmt = await createManagementClient(env);
             try {

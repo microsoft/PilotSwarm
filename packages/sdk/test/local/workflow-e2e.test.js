@@ -69,7 +69,7 @@ async function waitForTerminal(mgmt, sessionId, timeoutMs = 90_000) {
 describe("script workflow sessions (worker + client + PostgreSQL)", () => {
     it("runs the graph durably, gives scripts the session's tools, and records an execution log", async () => {
         const env = getEnv();
-        await withClient(env, { worker: { workflowScripts: { enabled: true } } }, async (client) => {
+        await withClient(env, { worker: { workflows: { stateTypes: ["script"] } } }, async (client) => {
             const mgmt = await createManagementClient(env);
             try {
                 await expect(client.createWorkflowSession({ yaml: WORKFLOW.replace("type: script", "type: agent") }))
@@ -131,9 +131,9 @@ describe("script workflow sessions (worker + client + PostgreSQL)", () => {
         });
     });
 
-    it("fails the workflow with a clear reason when the worker has script workflows off", async () => {
+    it("fails the workflow with a clear reason when the worker has workflows off", async () => {
         const env = getEnv();
-        await withClient(env, { worker: { workflowScripts: { enabled: false } } }, async (client) => {
+        await withClient(env, { worker: { workflows: { stateTypes: [] } } }, async (client) => {
             const mgmt = await createManagementClient(env);
             try {
                 const { sessionId } = await client.createWorkflowSession({ yaml: WORKFLOW, inputs: { run: "off" } });
@@ -141,7 +141,7 @@ describe("script workflow sessions (worker + client + PostgreSQL)", () => {
                 expect(view.status).toBe("failed");
                 const events = await mgmt.getSessionEvents(sessionId);
                 const failed = events.find((event) => event.eventType === "workflow.failed");
-                expect(failed.data.error).toMatch(/Workflow scripts are disabled on this worker/);
+                expect(failed.data.error).toMatch(/Workflows are not enabled on this worker\. An operator enables them by listing the state types to run in PILOTSWARM_WORKFLOW_STATE_TYPES/);
                 expect(events.some((event) => event.eventType === "workflow.state_started")).toBe(false);
             } finally {
                 await mgmt.stop?.();
@@ -167,7 +167,7 @@ states:
     transition: { next: { success: done } }
   done: { type: terminal, outcome: succeeded }
 `;
-        await withClient(env, { worker: { workflowScripts: { enabled: true } } }, async (client) => {
+        await withClient(env, { worker: { workflows: { stateTypes: ["script"] } } }, async (client) => {
             const mgmt = await createManagementClient(env);
             try {
                 const waitForEvent = async (sessionId, type) => {
@@ -233,7 +233,7 @@ states:
 `;
         await withClient(env, {
             worker: {
-                workflowScripts: { enabled: true },
+                workflows: { stateTypes: ["script"] },
                 mcpServers: { calc: { command: process.execPath, args: [calc], tools: ["add"] } },
             },
         }, async (client) => {
@@ -350,7 +350,7 @@ ${hasPwsh
 `;
         const env = getEnv();
         await withClient(env, {
-            worker: { workflowScripts: { enabled: true, executables: { powershell: pwshExecutable } } },
+            worker: { workflows: { stateTypes: ["script"], executables: { powershell: pwshExecutable } } },
         }, async (client) => {
             const mgmt = await createManagementClient(env);
             try {
@@ -461,7 +461,7 @@ states:
 
     it("checks, waits and checks again until it finds work, then handles it and ends", { timeout: 120_000 }, async () => {
         const env = getEnv();
-        await withClient(env, { worker: { workflowScripts: { enabled: true } } }, async (client) => {
+        await withClient(env, { worker: { workflows: { stateTypes: ["script"] } } }, async (client) => {
             const mgmt = await createManagementClient(env);
             try {
                 const run = `poll-${Math.random().toString(36).slice(2)}`;
@@ -494,7 +494,7 @@ states:
             .replace("found: handle, idle: sleep", "found: sleep, idle: sleep")
             .replace(/  finished:[\s\S]*$/, "")
             .replace("seconds: 1", "seconds: 2");
-        await withClient(env, { worker: { workflowScripts: { enabled: true } } }, async (client) => {
+        await withClient(env, { worker: { workflows: { stateTypes: ["script"] } } }, async (client) => {
             const mgmt = await createManagementClient(env);
             try {
                 const { sessionId } = await client.createWorkflowSession({ yaml, inputs: { run: `forever-${Math.random().toString(36).slice(2)}` } });

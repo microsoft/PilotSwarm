@@ -76,8 +76,6 @@ export interface WorkflowWaitInput {
     stateId: string;
     step: number;
     state: WorkflowWaitState;
-    /** When the wait started, in epoch milliseconds (orchestration time). */
-    startedAt: number;
     /** The occurrence this clock wait last waited for, if any. */
     lastOccurrenceKey?: string;
     visit: number;
@@ -87,6 +85,13 @@ export interface WorkflowWaitInput {
 export interface WorkflowWaitResult {
     until: number;
     occurrenceKey?: string;
+    /**
+     * The activity's clock as it returned. The timer is created in the turn
+     * that receives this answer, so the time left is measured from here
+     * rather than from a separate clock read, which a worker restart could
+     * leave seconds stale (a duroxide timer counts from when it is created).
+     */
+    now?: number;
 }
 
 export interface WorkflowRunStateResult {
@@ -292,17 +297,15 @@ export function* workflowSessionOrchestration_1_0_0(
                 sinceWait = 0;
                 visits[state.id] = (visits[state.id] ?? 0) + 1;
                 publish(ctx, { status: "running", sessionKind: "workflow", workflow: { name: workflow.name, stateId: state.id, step } });
-                const startedAt: number = yield ctx.utcNow();
-                // The activity works out the end (for a clock wait, the next
-                // time `at` in its zone) and records it, so a replay or a
-                // change in time-zone data cannot move it.
+                // The activity works out the end from its own clock (for a clock
+                // wait, the next time `at` in its zone) and records it, so a
+                // replay or a change in time-zone data cannot move it.
                 const timing: WorkflowWaitResult = yield ctx.scheduleActivityTyped(WORKFLOW_ACTIVITIES.wait, {
                     sessionId: input.sessionId,
                     workflowName: workflow.name,
                     stateId: state.id,
                     step,
                     state,
-                    startedAt,
                     ...(occurrences[state.id] ? { lastOccurrenceKey: occurrences[state.id] } : {}),
                     visit: visits[state.id],
                 } satisfies WorkflowWaitInput);
@@ -310,12 +313,11 @@ export function* workflowSessionOrchestration_1_0_0(
                 if (timing.occurrenceKey) occurrences[state.id] = timing.occurrenceKey;
                 publish(ctx, { status: "running", sessionKind: "workflow", workflow: { name: workflow.name, stateId: state.id, step, waitingUntil: until } });
                 // The timer races the command queue, so cancel, complete and
-                // delete end a run that is waiting. It ends at `until`, however
-                // long the activity above or a worker restart took.
-                while (true) {
-                    const now: number = yield ctx.utcNow();
-                    const remainingMs = until - now;
-                    if (remainingMs <= 0) break;
+                // delete end a run that is waiting. It is created in this same
+                // turn, timed from the activity's own clock, so a restart while
+                // waiting resumes it with its original end.
+                let remainingMs: number = typeof timing.now === "number" ? until - timing.now : until - (yield ctx.utcNow());
+                while (remainingMs > 0) {
                     const raced = yield ctx.race(ctx.scheduleTimer(remainingMs), ctx.dequeueEvent(WORKFLOW_COMMAND_QUEUE));
                     if (raced?.index === 0) break;
                     const command = parseWorkflowCommand(raced?.value);
@@ -330,6 +332,8 @@ export function* workflowSessionOrchestration_1_0_0(
                         });
                     }
                     ctx.traceWarn?.(`[workflow] session=${input.sessionId} ignored a non-command message at wait ${state.id}`);
+                    const now: number = yield ctx.utcNow();
+                    remainingMs = until - now;
                 }
                 stateId = resolveTransition(workflow, state.id, WORKFLOW_WAIT_OUTCOME);
                 continue;

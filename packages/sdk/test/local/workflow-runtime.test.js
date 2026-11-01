@@ -8,7 +8,10 @@
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createRequire } from "node:module";
 import { spawnSync } from "node:child_process";
-import { compileWorkflow } from "../../src/workflow/compiler.js";
+import { compileWorkflow, WORKFLOWS_DISABLED_MESSAGE } from "../../src/workflow/compiler.js";
+
+// The state types a worker with script workflows on runs.
+const SCRIPTS = new Set(["script"]);
 import { runScriptNode, SCRIPT_NODE_MAX_OUTPUT_BYTES } from "../../src/workflow/runner.js";
 import {
     WORKFLOW_SESSION_ORCHESTRATION_NAME,
@@ -194,7 +197,7 @@ async function runWorkflow(yaml, { deps = {}, inputs = {}, parentSessionId, extr
     const notifications = [];
     const fullDeps = {
         catalog,
-        enabled: () => true,
+        stateTypes: () => SCRIPTS,
         resolveTools: async () => new Map(),
         notifyParent: async (parent, prompt, sender) => { notifications.push({ parent, prompt, sender }); },
         ...deps,
@@ -433,15 +436,26 @@ states:
         expect(routed.status.output).toMatchObject({ status: "completed", outcome: "succeeded", output: { recoveredFrom: 7 }, steps: 2 });
     });
 
-    it("fails without running a script when the worker has script workflows disabled", async () => {
+    it("fails without running a script when the worker has workflows off", async () => {
         let ran = false;
         const { status, catalog } = await runWorkflow(BRANCHING_YAML, {
-            deps: { enabled: () => false, runNode: async () => { ran = true; throw new Error("must not run"); } },
+            deps: { stateTypes: () => new Set(), runNode: async () => { ran = true; throw new Error("must not run"); } },
         });
         expect(ran).toBe(false);
         expect(status.output).toMatchObject({ status: "failed", workflowName: null, steps: 0 });
-        expect(status.output.error).toBe(WORKFLOW_SCRIPTS_DISABLED_MESSAGE);
+        expect(status.output.error).toBe(WORKFLOWS_DISABLED_MESSAGE);
         expect(catalog.events.map((event) => event.eventType)).toEqual(["workflow.failed"]);
+    });
+
+    it("fails without running a script when the worker runs other state types but not script", async () => {
+        let ran = false;
+        const { status } = await runWorkflow(BRANCHING_YAML, {
+            deps: { stateTypes: () => new Set(["agent"]), runNode: async () => { ran = true; throw new Error("must not run"); } },
+        });
+        expect(ran).toBe(false);
+        expect(status.output).toMatchObject({ status: "failed", steps: 0 });
+        expect(status.output.error).toBe(WORKFLOW_SCRIPTS_DISABLED_MESSAGE);
+        expect(status.output.error).toMatch(/uses state type 'script', which this worker does not run\. An operator adds it to PILOTSWARM_WORKFLOW_STATE_TYPES/);
     });
 
     it("fails cleanly when the YAML is not a valid script workflow", async () => {
@@ -467,7 +481,7 @@ states:
         const ok = (output) => ({ outcome: "success", output, resultSource: "reported", exitCode: 0, durationMs: 0, stdoutTail: "", stderrTail: "", toolCalls: [] });
         let releaseHang;
         const firstRuntime = await startRuntime(provider, {
-            catalog, enabled: () => true, resolveTools: async () => new Map(), notifyParent: async () => {},
+            catalog, stateTypes: () => SCRIPTS, resolveTools: async () => new Map(), notifyParent: async () => {},
             runNode: async (request) => {
                 ran.push(`rt1:${request.node.id}`);
                 if (request.node.id === "first") return ok({ from: "first" });
@@ -488,7 +502,7 @@ states:
         await firstRuntime.shutdown(100);
 
         const secondRuntime = await startRuntime(provider, {
-            catalog, enabled: () => true, resolveTools: async () => new Map(), notifyParent: async () => {},
+            catalog, stateTypes: () => SCRIPTS, resolveTools: async () => new Map(), notifyParent: async () => {},
             runNode: async (request) => {
                 ran.push(`rt2:${request.node.id}`);
                 return ok({ second: true, prior: request.priorOutput });
@@ -536,7 +550,7 @@ async function startLongWorkflow({ runNode, parentSessionId = "parent-1" } = {})
     const deleted = [];
     const runtime = await startRuntime(provider, {
         catalog,
-        enabled: () => true,
+        stateTypes: () => SCRIPTS,
         resolveTools: async () => new Map(),
         notifyParent: async (parent, prompt) => { notifications.push({ parent, prompt }); },
         deleteSession: async (id) => { deleted.push(id); },
@@ -735,7 +749,7 @@ describe("workflow live canvas (duroxide)", () => {
             const provider = await SqliteProvider.inMemory();
             const catalog = fakeCatalog();
             const runtime = await startRuntime(provider, {
-                catalog, canvas, enabled: () => true, resolveTools: async () => new Map(), notifyParent: async () => {},
+                catalog, canvas, stateTypes: () => SCRIPTS, resolveTools: async () => new Map(), notifyParent: async () => {},
                 runNode: async (request) => {
                     if (request.node.id === "first") return okResult(null);
                     while (!request.isCancelled?.()) await new Promise((r) => setTimeout(r, 20));
@@ -949,7 +963,7 @@ states:
         const catalog = fakeCatalog();
         const notifications = [];
         const runtime = await startRuntime(provider, {
-            catalog, enabled: () => true, resolveTools: async () => new Map(),
+            catalog, stateTypes: () => SCRIPTS, resolveTools: async () => new Map(),
             notifyParent: async (parent, prompt) => { notifications.push({ parent, prompt }); },
             runNode: async () => okResult(null),
         });
@@ -988,7 +1002,7 @@ states:
         const provider = await SqliteProvider.inMemory();
         const catalog = fakeCatalog();
         const runtime = await startRuntime(provider, {
-            catalog, enabled: () => true, resolveTools: async () => new Map(), notifyParent: async () => {},
+            catalog, stateTypes: () => SCRIPTS, resolveTools: async () => new Map(), notifyParent: async () => {},
             runNode: async () => okResult(null),
         });
         try {
@@ -1031,12 +1045,12 @@ metadata: { name: restart-wait, version: "1" }
 initial: first
 states:
   first: { type: script, runtime: node, source: stub, completion: { outcomes: [success] }, transition: { next: { success: nap } } }
-  nap: { type: wait, seconds: 5, transition: { next: second } }
+  nap: { type: wait, seconds: 8, transition: { next: second } }
   second: { type: script, runtime: node, source: stub, completion: { outcomes: [success] }, transition: { next: { success: done } } }
   done: { type: terminal, outcome: succeeded, output: "\${states.second.result}" }
 `;
         const deps = (label) => ({
-            catalog, enabled: () => true, resolveTools: async () => new Map(), notifyParent: async () => {},
+            catalog, stateTypes: () => SCRIPTS, resolveTools: async () => new Map(), notifyParent: async () => {},
             runNode: async (request) => { ran.push(`${label}:${request.node.id}`); return okResult({ by: label, prior: request.priorOutput }); },
         });
         // A short lock lets the second runtime take over work the first held when it stopped.
@@ -1051,7 +1065,7 @@ states:
         expect(waitsOf(catalog)[0].data.until).toBe(until);
         await firstRuntime.shutdown(100);
         // The worker is gone for most of the wait.
-        await new Promise((r) => setTimeout(r, 3_000));
+        await new Promise((r) => setTimeout(r, 6_000));
         const secondRuntime = await startRuntime(provider, deps("rt2"), { workerLockTimeoutMs: 1_000 });
         try {
             const status = await client.waitForOrchestration(instanceId, 30_000);
@@ -1059,7 +1073,7 @@ states:
             expect(status.output).toMatchObject({ status: "completed", steps: 3, output: { by: "rt2", prior: { by: "rt1", prior: null } } });
             expect(ran).toEqual(["rt1:first", "rt2:second"]);
             expect(waitsOf(catalog)).toHaveLength(1);
-            // The timer kept its original end: a wait restarted after the 3 s outage would end 3 s or more after it.
+            // The timer kept its original end: a wait restarted after the 6 s outage would end 6 s or more after it.
             expect(finishedAt - until, `finished ${finishedAt - until} ms after the wait's end`).toBeLessThan(2_000);
             expect(finishedAt).toBeGreaterThanOrEqual(until - 50);
         } finally {

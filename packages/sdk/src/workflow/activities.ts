@@ -1,5 +1,12 @@
 import type { SessionCatalog } from "../cms.js";
-import { compileWorkflow, describeWorkflowWait, validateWorkflowInputs, workflowUsesScripts, type CompiledWorkflow } from "./compiler.js";
+import {
+    compileWorkflow,
+    describeWorkflowWait,
+    validateWorkflowInputs,
+    workflowNotRunnableReason,
+    workflowStateTypesDisabledMessage,
+    type CompiledWorkflow,
+} from "./compiler.js";
 import { workflowWaitUntil, type ScriptToolCall } from "./executor.js";
 import {
     WORKFLOW_ACTIVITIES,
@@ -33,8 +40,11 @@ export interface WorkflowActivityDeps {
     catalog: (Pick<SessionCatalog, "updateSession" | "recordEvents"> & Partial<Pick<SessionCatalog, "getSessionEvents" | "getSessionEventsBefore">>) | null;
     /** Draws and updates the live execution canvas. Absent: no canvas. */
     canvas?: WorkflowCanvasPublisher | null;
-    /** Whether this worker runs workflow scripts. A workflow with script states fails at its start where it is off. */
-    enabled: () => boolean;
+    /**
+     * The workflow state types this worker runs (PILOTSWARM_WORKFLOW_STATE_TYPES).
+     * A workflow that uses a type not in it fails at its start, or at that state.
+     */
+    stateTypes: () => ReadonlySet<string>;
     /** The tools a script in this workflow session may call, by name. */
     resolveTools: (sessionId: string) => Promise<Map<string, ScriptToolHandler>>;
     /** The MCP servers a script may call as `<server>/<tool>`. Absent: none. */
@@ -50,9 +60,8 @@ export interface WorkflowActivityDeps {
     nextClockTime?: Parameters<typeof workflowWaitUntil>[3];
 }
 
-export const WORKFLOW_SCRIPTS_DISABLED_MESSAGE =
-    "Workflow scripts are disabled on this worker. An operator enables them with PILOTSWARM_WORKFLOW_SCRIPTS=1 "
-    + "(or the worker option workflowScripts.enabled), because scripts run as processes on the worker.";
+/** Why a script state does not run on a worker without 'script' in its state types. */
+export const WORKFLOW_SCRIPTS_DISABLED_MESSAGE = workflowStateTypesDisabledMessage(["script"]);
 
 const PREVIEW_CHARS = 1_000;
 
@@ -152,7 +161,8 @@ export function registerWorkflowActivities(runtime: any, deps: WorkflowActivityD
         input: { sessionId: string; yaml: string; inputs?: Record<string, unknown> },
     ): Promise<WorkflowBeginResult> => {
         const workflow = compileWorkflow(input.yaml);
-        if (workflowUsesScripts(workflow) && !deps.enabled()) throw new Error(WORKFLOW_SCRIPTS_DISABLED_MESSAGE);
+        const notRunnable = workflowNotRunnableReason(workflow, deps.stateTypes());
+        if (notRunnable) throw new Error(notRunnable);
         validateWorkflowInputs(workflow, input.inputs ?? {});
         await deps.catalog?.updateSession(input.sessionId, { state: "running", lastError: null, lastActiveAt: new Date() })
             .catch(() => undefined);
@@ -176,7 +186,7 @@ export function registerWorkflowActivities(runtime: any, deps: WorkflowActivityD
         activityCtx: any,
         input: WorkflowRunStateInput,
     ): Promise<WorkflowRunStateResult> => {
-        if (!deps.enabled()) throw new Error(WORKFLOW_SCRIPTS_DISABLED_MESSAGE);
+        if (!deps.stateTypes().has("script")) throw new Error(WORKFLOW_SCRIPTS_DISABLED_MESSAGE);
         await record(deps, input.sessionId, "workflow.state_started", {
             stateId: input.stateId,
             runtime: input.node.runtime,
@@ -273,7 +283,9 @@ export function registerWorkflowActivities(runtime: any, deps: WorkflowActivityD
         _ctx: any,
         input: WorkflowWaitInput,
     ): Promise<WorkflowWaitResult> => {
-        const timing = workflowWaitUntil(input.state, input.startedAt, input.lastOccurrenceKey, deps.nextClockTime);
+        // The wait starts now: its end is worked out here and recorded with
+        // the activity's result, which the orchestration times its timer from.
+        const timing = workflowWaitUntil(input.state, Date.now(), input.lastOccurrenceKey, deps.nextClockTime);
         await record(deps, input.sessionId, "workflow.state_waiting", {
             stateId: input.stateId,
             step: input.step,
@@ -285,7 +297,7 @@ export function registerWorkflowActivities(runtime: any, deps: WorkflowActivityD
         });
         await deps.catalog?.updateSession(input.sessionId, { lastActiveAt: new Date() }).catch(() => undefined);
         await refreshCanvas(deps, input.sessionId);
-        return { until: timing.until, ...(timing.occurrenceKey ? { occurrenceKey: timing.occurrenceKey } : {}) };
+        return { until: timing.until, ...(timing.occurrenceKey ? { occurrenceKey: timing.occurrenceKey } : {}), now: Date.now() };
     });
 
     runtime.registerActivity(WORKFLOW_ACTIVITIES.finish, async (

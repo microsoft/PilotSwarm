@@ -461,7 +461,39 @@ export function workflowHasWaits(workflow: CompiledWorkflow): boolean {
     return Object.values(workflow.states).some((state) => state.type === "wait");
 }
 
-/** Whether a compiled workflow has script states (they need the worker's script switch). */
+/** Whether a compiled workflow has script states. */
 export function workflowUsesScripts(workflow: CompiledWorkflow): boolean {
     return Object.values(workflow.states).some((state) => state.type === "script");
+}
+
+/**
+ * State types an operator turns on with PILOTSWARM_WORKFLOW_STATE_TYPES. Only
+ * types that run something are listed; `wait` and `terminal` run nothing and
+ * are always allowed. New types join this list as they ship.
+ */
+export const WORKFLOW_RUNNABLE_STATE_TYPES = ["script"] as const;
+export type WorkflowRunnableStateType = typeof WORKFLOW_RUNNABLE_STATE_TYPES[number];
+
+/** The runnable state types a workflow uses, in a stable order. */
+export function workflowRunnableStateTypes(workflow: CompiledWorkflow): WorkflowRunnableStateType[] {
+    const used = new Set(Object.values(workflow.states).map((state) => state.type as string));
+    return WORKFLOW_RUNNABLE_STATE_TYPES.filter((type) => used.has(type));
+}
+
+/** Why this worker will not run the workflow, or null when it will. */
+export function workflowNotRunnableReason(workflow: CompiledWorkflow, allowed: ReadonlySet<string>): string | null {
+    if (allowed.size === 0) return WORKFLOWS_DISABLED_MESSAGE;
+    const missing = workflowRunnableStateTypes(workflow).filter((type) => !allowed.has(type));
+    return missing.length ? workflowStateTypesDisabledMessage(missing) : null;
+}
+
+export const WORKFLOWS_DISABLED_MESSAGE =
+    "Workflows are not enabled on this worker. An operator enables them by listing the state types to run in "
+    + "PILOTSWARM_WORKFLOW_STATE_TYPES (for example 'script'), or the worker option workflows.stateTypes.";
+
+export function workflowStateTypesDisabledMessage(types: readonly string[]): string {
+    const list = types.map((type) => `'${type}'`).join(", ");
+    return `This workflow uses state type${types.length === 1 ? "" : "s"} ${list}, which this worker does not run. `
+        + `An operator adds ${types.length === 1 ? "it" : "them"} to PILOTSWARM_WORKFLOW_STATE_TYPES (or the worker option workflows.stateTypes)`
+        + (types.includes("script") ? "; script states run as processes on the worker." : ".");
 }

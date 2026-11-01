@@ -890,7 +890,13 @@ export class SessionManager {
      */
     artifactStore: import("./session-store.js").ArtifactStore | null = null;
     /** Whether this worker runs workflow scripts; set by the worker at start. */
-    workflowScriptsEnabled = false;
+    /** The workflow state types this worker runs; empty when workflows are off. Set by the worker. */
+    workflowStateTypes: ReadonlySet<string> = new Set();
+
+    /** Whether this worker runs workflows at all. */
+    get workflowsEnabled(): boolean {
+        return this.workflowStateTypes.size > 0;
+    }
 
     /** Store full config (with tools/hooks) for a session. Called by PilotSwarmClient. */
     setConfig(sessionId: string, config: ManagedSessionConfig): void {
@@ -2216,13 +2222,13 @@ export class SessionManager {
             // workflow's wait loop, which costs no model turns. A deployment
             // turns workflows on for all its workers or none, so every session
             // in it sees the same wording.
-            .map((tool: any) => (this.workflowScriptsEnabled && !isTunerSession ? workflowAwareSchedulingTool(tool) : tool));
+            .map((tool: any) => (this.workflowsEnabled && !isTunerSession ? workflowAwareSchedulingTool(tool) : tool));
         const readOnlyTunerSubAgentToolNames = new Set(["check_agents", "list_sessions"]);
         const subAgentTools = ManagedSession.subAgentToolDefs(workspaceTools ? { workspaceTools: true } : undefined)
             .filter((tool: any) => !isTunerSession || readOnlyTunerSubAgentToolNames.has(tool.name))
-            // Declared only where it can work: a worker with workflow scripts
-            // off would refuse every call, so the model is not shown it.
-            .filter((tool: any) => tool.name !== "spawn_workflow" || this.workflowScriptsEnabled);
+            // Declared only where it can work: a worker with workflows off
+            // would refuse every call, so the model is not shown it.
+            .filter((tool: any) => tool.name !== "spawn_workflow" || this.workflowsEnabled);
         const factTools = this._createSessionFactTools({
             agentIdentity: effectiveSerializableConfig.agentIdentity,
             isCrawler: effectiveSerializableConfig.isCrawler === true || effectiveSerializableConfig.isHarvester === true,
