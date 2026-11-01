@@ -426,6 +426,41 @@ export class WorkflowStore {
         );
     }
 
+    /**
+     * The stored receipt of an operation that is not a definition change
+     * (recover), or null. Throws OPERATION_CONFLICT when the id was used for a
+     * different request.
+     */
+    async readOperationReceipt(workflowSessionId: string, operationId: string, kind: string, requestSha256: string): Promise<JsonValue | null> {
+        const { rows } = await this.pool.query(
+            `SELECT kind, request_sha256, receipt FROM ${this.t.operations} WHERE workflow_session_id = $1 AND operation_id = $2`,
+            [workflowSessionId, operationId],
+        );
+        if (!rows[0]) return null;
+        if (str(rows[0], "kind") !== kind || str(rows[0], "request_sha256") !== requestSha256) {
+            throw new WorkflowStoreError("OPERATION_CONFLICT", `Operation ${operationId} was already used for a different request.`,
+                { operationId, storedKind: str(rows[0], "kind") });
+        }
+        return parseStoredJson(str(rows[0], "receipt"), "receipt");
+    }
+
+    /**
+     * Store an operation's receipt once. When the same id was stored first
+     * (a concurrent repeat of the request), that receipt is returned instead.
+     */
+    async recordOperationReceipt(workflowSessionId: string, operationId: string, kind: string, requestSha256: string, receipt: JsonValue)
+        : Promise<StoredOperation<JsonValue>> {
+        const { rows } = await this.pool.query(
+            `INSERT INTO ${this.t.operations} (workflow_session_id, operation_id, kind, request_sha256, receipt) VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (workflow_session_id, operation_id) DO NOTHING RETURNING operation_id`,
+            [workflowSessionId, operationId, kind, requestSha256, canonicalJson(receipt)],
+        );
+        if (rows[0]) return { receipt, replayed: false };
+        const stored = await this.readOperationReceipt(workflowSessionId, operationId, kind, requestSha256);
+        if (stored === null) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Operation ${operationId} has no stored receipt.`);
+        return { receipt: stored, replayed: true };
+    }
+
     private async insertRevision(client: PoolClient, workflowSessionId: string, revision: number, yaml: string, compiled: WorkflowCompileResult, actor: WorkflowActor): Promise<void> {
         await client.query(
             `INSERT INTO ${this.t.revisions}
@@ -888,12 +923,29 @@ export class WorkflowStore {
         endPending: { winner: "cancel" | "controller"; message: string };
         /** Terminal node execution to complete (first) in the same transaction. */
         terminalNode?: { nodeExecutionId: string; result: NodeResultInput } | null;
+        /**
+         * An operation receipt (recover) stored in the same transaction when
+         * this call ends the run. When the operation id already has a receipt,
+         * nothing changes and OPERATION_CONFLICT is thrown; the caller reads
+         * that receipt.
+         */
+        receipt?: { operationId: string; kind: string; requestSha256: string; value: JsonValue } | null;
         projection?: SessionProjection;
     }): Promise<{ ended: boolean; run: WorkflowRunRow }> {
         return this.transaction(async client => {
             const live = await this.lockLiveSession(client, await this.workflowOfRun(client, input.runId));
             const run = await this.lockRun(client, input.runId);
             if (!live || !ACTIVE_RUN_STATUSES.includes(run.status)) return { ended: false, run };
+            if (input.receipt) {
+                const recorded = await client.query(
+                    `INSERT INTO ${this.t.operations} (workflow_session_id, operation_id, kind, request_sha256, receipt) VALUES ($1, $2, $3, $4, $5)
+                     ON CONFLICT (workflow_session_id, operation_id) DO NOTHING RETURNING operation_id`,
+                    [run.workflowSessionId, input.receipt.operationId, input.receipt.kind, input.receipt.requestSha256, canonicalJson(input.receipt.value)]);
+                if (!recorded.rows[0]) {
+                    throw new WorkflowStoreError("OPERATION_CONFLICT", `Operation ${input.receipt.operationId} already has a receipt.`,
+                        { operationId: input.receipt.operationId });
+                }
+            }
             const { rows } = await client.query(
                 `UPDATE ${this.t.runs}
                     SET status = $2, terminal_node_id = $3, terminal_outcome = $4, terminal_output = $5, terminal_error = $6,

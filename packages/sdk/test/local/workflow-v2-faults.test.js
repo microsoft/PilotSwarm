@@ -6,13 +6,16 @@
  *
  * Model cases: docs/formal/workflow-v2/WorkflowV2Run.tla, properties
  * Live_Terminates (lost wake: rv-terminates-lost-wake; effect death:
- * rv-terminates-effect-death; both hd-liveness), Live_CancelStops (crash
- * after the cancel commit, before the stop request: rv-cancel-stops,
- * hd-liveness), Prop_NoScriptAfterDelete (a deletion that commits while
- * the effect prepares its script: df-no-entry-fence, hd-safety), and the
- * controller's fail-closed finalization, continue-as-new with a pending
- * state, at-least-once parent notification and the command-read boundary
- * (README "Regressions").
+ * rv-terminates-effect-death; both hd-liveness), Prop_CancelAsksLiveEffects
+ * (a crash after the cancel commit, before the stop request: rv-cancel-stops),
+ * Prop_NoScriptAfterDelete (a deletion that commits while the effect
+ * prepares its script: df-no-entry-fence, hd-safety), worker crashes inside
+ * the entry transaction followed by a healthy worker (the model's crash
+ * assumption, README "Assumptions"), explicit recovery (hd-controller-death,
+ * df-no-recovery), and the controller's fail-closed
+ * finalization, continue-as-new with a pending state, at-least-once parent
+ * notification (also of a run that a recover ended), recover receipts and
+ * the command-read boundary (README "Regressions").
  */
 import { describe, it, expect } from "vitest";
 import { createServer } from "node:http";
@@ -24,6 +27,7 @@ import { createWorkflowV2 } from "../../src/workflow/v2/service.ts";
 import { readWorkflowFromTool, updateWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
 import {
     registerWorkflowV2, WORKFLOW_V2_ACTIVITIES, WORKFLOW_V2_CONTROLLER_NAME, WORKFLOW_V2_CONTROLLER_VERSION, workflowEffectInstanceId,
+    workflowNotifyInstanceId,
 } from "../../src/workflow/v2/runtime.ts";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
@@ -96,13 +100,13 @@ async function until(check, label, timeoutMs = 60_000, diagnose = async () => nu
 }
 
 /** A worker-equivalent registration with one activity wrapped by `wrap` (and, optionally, its store wrapped by `wrapStore`). */
-async function harness(env, wrap, { wrapStore, ...options } = {}) {
+async function harness(env, wrap, { wrapStore, runtimeOptions, ...options } = {}) {
     const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
     await catalog.initialize();
     const store = catalog.workflowStore();
     const provider = await PostgresProvider.connectWithSchema(env.store, env.duroxideSchema);
     const client = new Client(provider);
-    const runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error" });
+    const runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error", ...runtimeOptions });
     const registrar = {
         registerActivity: (name, fn) => runtime.registerActivity(name, wrap[name] ? wrap[name](fn) : fn),
         registerOrchestrationVersioned: (name, version, fn) => runtime.registerOrchestrationVersioned(name, version, fn),
@@ -120,11 +124,18 @@ async function harness(env, wrap, { wrapStore, ...options } = {}) {
         ...options,
     });
     await runtime.start();
+    let running = true;
     return {
         store, client,
         host: { catalog, store, duroxideClient: client },
-        async stop() {
+        /** Stop this worker's runtime (as if the worker died); its store stays open for work it abandoned. */
+        async stopRuntime() {
+            if (!running) return;
+            running = false;
             await runtime.shutdown(100);
+        },
+        async stop() {
+            await this.stopRuntime();
             await catalog.close();
         },
     };
@@ -616,5 +627,169 @@ states:
             expect(nodes.length).toBeLessThanOrEqual(31);
             expect(nodes.every(node => node.nodeId === "spin" && node.outcome === "invalid_input" && node.winner === "controller")).toBe(true);
         } finally { await h.stop(); }
+    });
+
+    it("notifies the parent when a recover ends a run whose controller ended, and keeps each recover request's receipt", { timeout: TIMEOUT }, async () => {
+        const sent = [];
+        const h = await harness(getEnv(), {}, {
+            authorizeParentNotification: async () => true,
+            notifyParent: async (parentSessionId, prompt, sender, clientMessageId) => { sent.push({ parentSessionId, prompt, clientMessageId }); },
+        });
+        try {
+            const parentId = randomUUID();
+            await h.host.catalog.createSession(parentId, {});
+            const id = randomUUID();
+            const context = { callerSessionId: parentId, host: h.host };
+            const recover = async (operationId) => JSON.parse(await updateWorkflowFromTool({ workflow_id: id, operation: "recover", operation_id: operationId }, context));
+            const created = await createWorkflowV2(h.host, { workflowSessionId: id, parentSessionId: parentId, yaml: SLOW, notifyParent: true,
+                actor: ACTOR, operationId: "start", start: { inputs: {} } });
+            const { runId, controllerInstanceId } = created.receipt.run;
+            await until(async () => (await h.store.listNodeExecutions(runId))[0]?.effectAttempts >= 1, "the script to start");
+            await h.client.cancelInstance(controllerInstanceId, "terminated by the test");
+            await until(async () => (await h.client.getStatus(controllerInstanceId)).status === "Failed", "the controller to end");
+            expect(sent).toEqual([]);
+
+            const first = await recover("recover-1");
+            expect(first, JSON.stringify(first)).toMatchObject({ ok: true, replayed: false, runId, action: "ended", status: "failed" });
+            const notifier = await h.client.waitForOrchestration(workflowNotifyInstanceId(runId), 30_000);
+            expect(notifier.status, JSON.stringify(notifier)).toBe("Completed");
+            expect(sent).toHaveLength(1);
+            expect(sent[0]).toMatchObject({ parentSessionId: parentId, clientMessageId: `workflow:${id}:${runId}:terminal` });
+            expect(sent[0].prompt).toContain('"status":"failed"');
+            expect(sent[0].prompt).toContain("controller_ended");
+
+            // Repeating a request returns its receipt; a new request finds nothing to do; neither notifies again.
+            expect(await recover("recover-1")).toEqual({ ...first, replayed: true });
+            expect(await recover("recover-2")).toMatchObject({ ok: true, replayed: false, action: "none", status: "failed" });
+            expect(await recover("recover-2")).toMatchObject({ ok: true, replayed: true, action: "none", status: "failed" });
+            // An operation id that another request used is refused.
+            expect(await recover("start")).toMatchObject({ ok: false, error: { code: "OPERATION_CONFLICT" } });
+            expect((await h.client.waitForOrchestration(workflowNotifyInstanceId(runId), 30_000)).status).toBe("Completed");
+            expect(sent).toHaveLength(1);
+            expect(await h.host.catalog.getSessionEvents(id, 0, 50, ["workflow.parent_notified"])).toHaveLength(1);
+            expect(await h.store.readRun(runId)).toMatchObject({ status: "failed", terminalError: { code: "controller_ended" } });
+        } finally { await h.stop(); }
+    });
+
+    it("refuses a read or a recover that selects a run of another workflow before it changes anything", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv(), {});
+        try {
+            const parentId = randomUUID();
+            await h.host.catalog.createSession(parentId, {});
+            const context = { callerSessionId: parentId, host: h.host };
+            // Two admitted runs whose dispatch was lost: any start of their controllers would show.
+            const undispatched = { ...h.host, duroxideClient: { ...h.host.duroxideClient, startOrchestrationVersioned: async () => undefined } };
+            const lostId = randomUUID();
+            const lost = await createWorkflowV2(undispatched, { workflowSessionId: lostId, parentSessionId: parentId, yaml: TWO_STEPS,
+                actor: ACTOR, operationId: "start", start: { inputs: {} } });
+            const otherId = randomUUID();
+            const other = await createWorkflowV2(undispatched, { workflowSessionId: otherId, parentSessionId: parentId, yaml: TWO_STEPS,
+                actor: ACTOR, operationId: "start", start: { inputs: {} } });
+            for (const runId of [other.receipt.run.runId, "no-such-run"]) {
+                const read = JSON.parse(await readWorkflowFromTool({ workflow_id: lostId, run_id: runId }, context));
+                expect(read, JSON.stringify(read)).toMatchObject({ ok: false, error: { code: "RUN_NOT_FOUND" } });
+                const recovered = JSON.parse(await updateWorkflowFromTool({ workflow_id: lostId, operation: "recover", operation_id: `recover-${runId}`, run_id: runId }, context));
+                expect(recovered, JSON.stringify(recovered)).toMatchObject({ ok: false, error: { code: "RUN_NOT_FOUND" } });
+            }
+            for (const [workflowId, receipt] of [[lostId, lost.receipt], [otherId, other.receipt]]) {
+                expect((await h.client.getStatus(receipt.run.controllerInstanceId)).status).toBe("NotFound");
+                expect((await h.store.readRun(receipt.run.runId)).status).toBe("admitted");
+                expect(await h.host.catalog.getSessionEvents(workflowId, 0, 50, ["workflow.recovered", "workflow.failed"])).toEqual([]);
+            }
+            // The right selection reads the run and still changes nothing.
+            const view = JSON.parse(await readWorkflowFromTool({ workflow_id: lostId, run_id: lost.receipt.run.runId }, context));
+            expect(view.run).toMatchObject({ runId: lost.receipt.run.runId, status: "admitted", controller: { status: "NotFound", needsRecovery: true } });
+            expect((await h.client.getStatus(lost.receipt.run.controllerInstanceId)).status).toBe("NotFound");
+            expect((await h.store.readRun(lost.receipt.run.runId)).status).toBe("admitted");
+        } finally { await h.stop(); }
+    });
+
+    it("runs a script once, on a healthy worker, after one and after two worker crashes inside its entry transaction", { timeout: 240_000 }, async () => {
+        const probe = await probeServer();
+        const yaml = `
+apiVersion: pilotswarm.dev/v2-draft
+kind: Workflow
+metadata: { name: entry-crash, version: "1.0.0" }
+initial: act
+states:
+  act:
+    type: script
+    source: |
+      await fetch("${probe.url}/start");
+      await setResult("ok", { done: true });
+    transition: { next: { ok: done } }
+  done: { type: terminal, outcome: succeeded, output: "\${input}" }
+`;
+        const workers = [];
+        const abandoned = [];
+        const crashes = [];
+        // Short locks: work a stopped worker held is taken by the next worker within seconds.
+        const runtimeOptions = { workerLockTimeoutMs: 1_000, orchestratorLockTimeoutMs: 2_000 };
+        /** A worker that crashes inside the first script entry it makes: the process started, the entry transaction rolled back. */
+        const crashingWorker = async (name) => {
+            let armed = true;
+            const worker = await harness(getEnv(), {}, {
+                runtimeOptions,
+                wrapStore: (store) => {
+                    const crashing = Object.create(store);
+                    crashing.enterScript = async (nodeExecutionId, start) => {
+                        if (!armed) return store.enterScript(nodeExecutionId, start);
+                        armed = false;
+                        const hits = probe.count("/start");
+                        const crash = new Error("injected worker crash inside the entry transaction");
+                        let thrown = null;
+                        try {
+                            await store.enterScript(nodeExecutionId, attempt => { start(attempt); throw crash; });
+                        } catch (error) {
+                            thrown = error;
+                        }
+                        // The started process is outside the transaction; its external effect happens anyway.
+                        await until(async () => probe.count("/start") > hits, `the process of ${name}'s crashed entry to act`);
+                        crashes.push({ worker: name, rolledBack: thrown === crash });
+                        // The worker is gone: this entry never returns to its activity.
+                        return new Promise(resolve => abandoned.push(() => resolve({ entered: false, attempt: 0 })));
+                    };
+                    return crashing;
+                },
+            });
+            workers.push(worker);
+            return worker;
+        };
+        try {
+            for (const crashCount of [1, 2]) {
+                crashes.length = 0;
+                const hitsBefore = probe.count("/start");
+                let worker = await crashingWorker("crash-1");
+                const created = await createWorkflowV2(worker.host, { workflowSessionId: randomUUID(), parentSessionId: null, yaml,
+                    actor: ACTOR, operationId: "start", start: { inputs: {} } });
+                const runId = created.receipt.run.runId;
+                for (let index = 1; index <= crashCount; index += 1) {
+                    await until(async () => crashes.length === index, `crash ${index} of ${crashCount}`);
+                    // The crashed entry committed nothing: no attempt, no result, and the run goes on.
+                    const [node] = await worker.store.listNodeExecutions(runId);
+                    expect(node).toMatchObject({ nodeId: "act", state: "pending", effectAttempts: 0, winner: null });
+                    expect((await worker.store.readRun(runId)).status).toBe("running");
+                    await worker.stopRuntime();
+                    worker = index < crashCount ? await crashingWorker(`crash-${index + 1}`) : await harness(getEnv(), {});
+                    if (index === crashCount) workers.push(worker);
+                }
+                const run = await finished(worker, runId, 60_000);
+                expect(run.status, JSON.stringify(run)).toBe("completed");
+                expect(run.terminalOutput).toEqual({ done: true });
+                expect(crashes).toEqual(Array.from({ length: crashCount }, (_, index) => ({ worker: `crash-${index + 1}`, rolledBack: true })));
+                const nodes = await worker.store.listNodeExecutions(runId);
+                expect(nodes.map(node => [node.nodeId, node.effectAttempts, node.winner, node.outcome])).toEqual([
+                    ["act", 1, "effect", "ok"], ["done", 0, "controller", "succeeded"],
+                ]);
+                // At least once: each crashed entry's process acted, and the committed entry acted once.
+                expect(probe.count("/start") - hitsBefore).toBe(crashCount + 1);
+                await worker.stopRuntime();
+            }
+        } finally {
+            for (const worker of workers) await worker.stopRuntime();
+            for (const release of abandoned) release();
+            for (const worker of workers) await worker.stop();
+            await probe.close();
+        }
     });
 });

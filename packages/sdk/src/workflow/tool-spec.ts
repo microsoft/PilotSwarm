@@ -64,8 +64,8 @@ export const SPAWN_WORKFLOW_TOOL_SPEC = {
         + "A v2 script reports its result with await setResult(outcome, output) (or a final stdout line {\"outcome\": ..., \"output\": ...}); "
         + "values must be plain JSON (no NaN, Infinity, undefined, getters, Date or class instances), otherwise the state fails with invalid_output; "
         + "a script that exits non-zero without reporting a result fails with execution_failed. "
-        + "An optional root catchAll: <state> names the state that a runtime error goes to when its own state has no route for it (no route for its code and no failure route); "
-        + "it runs at most once per run, and an unhandled error after that fails the run.",
+        + "An optional root catchAll: <state> names the state that a runtime error goes to when its own state has no route for it (no route for its code and no failure route), "
+        + "including a terminal state's invalid output; it runs at most once per run, by any route, and an unhandled error after that, or another route into it, fails the run.",
     parameters: {
         type: "object",
         properties: {

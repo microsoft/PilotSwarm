@@ -17,9 +17,10 @@ export const UPDATE_WORKFLOW_TOOL_SPEC = {
         + "publish (expected_revision + definition_hash of the exact reviewed revision; does not start), "
         + "publish_and_start (publish fields + inputs), start (definition_hash + inputs; one live run per workflow child), "
         + "or recover (run_id optional, default the live run): when read_workflow shows needsRecovery, a run whose controller ended "
-        + "without ending it is ended as failed (controller_ended), and a run admitted but never started is started; otherwise nothing changes. "
-        + "operation_id makes the call idempotent: repeating it returns the original receipt; reusing it for a different request fails "
-        + "(recover is idempotent by itself). Published definitions never change; a new version needs a new workflow child. Returns JSON.",
+        + "without ending it is ended as failed (controller_ended) and its parent is notified as for any end, and a run admitted but never "
+        + "started is started; otherwise nothing changes. "
+        + "operation_id makes every operation idempotent: repeating it returns the original receipt; reusing it for a different request fails. "
+        + "Published definitions never change; a new version needs a new workflow child. Returns JSON.",
     parameters: {
         type: "object",
         properties: {
@@ -132,16 +133,18 @@ export function parseUpdateWorkflowArgs(args: Record<string, unknown>): { workfl
 /** update_workflow operation recover: act on a run that read_workflow shows as needing recovery. */
 async function recoverWorkflowFromTool(args: Record<string, unknown>, context: { callerSessionId: string; host: WorkflowToolHost }): Promise<string> {
     const workflowSessionId = requiredString(args, "workflow_id");
-    requiredString(args, "operation_id");
+    const operationId = requiredString(args, "operation_id");
     await authorizeParent(context.host, workflowSessionId, context.callerSessionId);
     const runs = await context.host.store.listRuns(workflowSessionId);
     const requested = optionalString(args, "run_id");
     const run = requested ? runs.find(item => item.runId === requested) : runs.find(item => item.mode === "live");
     if (!run) throw new WorkflowStoreError("RUN_NOT_FOUND", requested ? `Run ${requested} is not a run of this workflow.` : "This workflow has no live run.");
-    const recovered = await recoverWorkflowV2Run(context.host, run.runId, context.callerSessionId);
+    const recovered = await recoverWorkflowV2Run(context.host, run.runId, { requestedBy: context.callerSessionId, operationId });
+    const receipt = recovered.receipt;
     return payload({
-        ok: true, workflowId: workflowSessionId, operation: "recover", runId: recovered.runId, action: recovered.action, status: recovered.status,
-        controller: { status: recovered.controller.status, error: recovered.controller.error, needsRecovery: recovered.controller.needsRecovery },
+        ok: true, workflowId: workflowSessionId, operation: "recover", replayed: recovered.replayed,
+        runId: receipt.runId, action: receipt.action, status: receipt.status,
+        controller: { status: receipt.controller.status, error: receipt.controller.error, needsRecovery: receipt.controller.needsRecovery },
     });
 }
 

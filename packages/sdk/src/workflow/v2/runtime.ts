@@ -55,20 +55,32 @@ import {
 
 export const WORKFLOW_V2_CONTROLLER_NAME = "workflow-v2-controller";
 /**
- * The controller's history shape. 1.2.0 reads its commands before every
- * admission, retries a run-ending write on durable timers and may route an
- * unhandled runtime error to the workflow's catch-all state.
+ * The controller's history shape. 1.3.0 reads its commands before every
+ * admission, retries a run-ending write on durable timers, and enters the
+ * workflow's catch-all state at most once per run by any route: an
+ * unhandled runtime error of a script, or a terminal's invalid output, goes
+ * there while it has not run, and any later route to it fails the run.
  */
-export const WORKFLOW_V2_CONTROLLER_VERSION = "1.2.0";
+export const WORKFLOW_V2_CONTROLLER_VERSION = "1.3.0";
 /**
- * Controller versions written only by pre-release builds. Their histories are
- * not replayed (this code would make different decisions); an instance of
- * one fails at once with this reason, so its run shows needsRecovery and
- * update_workflow recover ends it visibly. Its history and rows are kept.
+ * Controller versions written only by pre-release builds, in ascending order
+ * (duroxide registers an orchestration's versions only in that order). Their
+ * histories are not replayed (this code would make different decisions; 1.2.0
+ * re-entered the catch-all state after an explicit route into it); an
+ * instance of one fails at once with this reason, so its run shows
+ * needsRecovery and update_workflow recover ends it visibly. Its history and
+ * rows are kept.
  */
-export const WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS: readonly string[] = ["1.0.0", "1.1.0"];
+export const WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS: readonly string[] = ["1.0.0", "1.1.0", "1.2.0"];
 export const WORKFLOW_V2_EFFECT_NAME = "workflow-v2-effect";
 export const WORKFLOW_V2_EFFECT_VERSION = "1.0.0";
+/**
+ * Delivers the terminal notification of a run that update_workflow recover
+ * ended (its controller had already ended), with the controller's
+ * at-least-once notification activity and stable client message id.
+ */
+export const WORKFLOW_V2_NOTIFY_NAME = "workflow-v2-notify";
+export const WORKFLOW_V2_NOTIFY_VERSION = "1.0.0";
 /** Node admissions per controller execution before continue-as-new bounds history. */
 export const WORKFLOW_V2_ADMISSIONS_PER_EXECUTION = 25;
 /** Idle waits (backstop timers that found nothing) per controller execution before continue-as-new. */
@@ -123,6 +135,10 @@ export function workflowEffectInstanceId(nodeExecutionId: string): string {
     return `wfx-${nodeExecutionId}`;
 }
 
+export function workflowNotifyInstanceId(runId: string): string {
+    return `wfn-${runId}`;
+}
+
 // ─── Values exchanged with orchestrations (identifiers and labels only) ──
 
 export interface ControllerCursor {
@@ -139,7 +155,7 @@ export interface ControllerState {
     steps: number;
     ordinals: Record<string, number>;
     cursors: ControllerCursor[];
-    /** The catch-all state was entered; it is entered at most once per run. */
+    /** The catch-all state was admitted (by any route); it is admitted at most once per run. */
     catchAllEntered: boolean;
 }
 
@@ -158,7 +174,7 @@ export interface ControllerPlan {
     maxNodeExecutions: number;
     /** Recorded in history, so a changed worker default never alters a replay. */
     wakeBackstopMs: number;
-    /** The state an unhandled runtime error routes to, once per run; null without one. */
+    /** The state an unhandled runtime error (or a terminal's invalid output) routes to, once per run; null without one. */
     catchAll: string | null;
     nodes: Record<string, { type: "script" | "terminal"; next: Record<string, string> }>;
 }
@@ -304,6 +320,18 @@ function parseResult(value: unknown): ControllerResult {
     return { runId: text(result.runId, "runId"), status: result.status, outcome: textOrNull(result.outcome, "outcome") };
 }
 
+/**
+ * The finish of a terminal state: the run ended (or had already ended), or
+ * the terminal's output failed its contract and the error goes to the
+ * catch-all state instead (only when the controller offered that route).
+ */
+function parseTerminalFinish(value: unknown): { routed: false; result: ControllerResult } | { routed: true; nodeExecutionId: string; code: string } {
+    const finished = record(value, "finish result");
+    if (finished.routed === undefined) return { routed: false, result: parseResult(value) };
+    const routed = record(finished.routed, "finish route");
+    return { routed: true, nodeExecutionId: text(routed.nodeExecutionId, "nodeExecutionId"), code: text(routed.code, "code") };
+}
+
 /** The route a stored result takes: its business outcome, or its error code, or the failure catch; null when unhandled. */
 export function selectRoute(next: Record<string, string>, result: { outcome: string; resultKind: "business" | "runtime_error" }): string | null {
     if (result.resultKind === "business") return Object.hasOwn(next, result.outcome) ? result.outcome : null;
@@ -345,16 +373,22 @@ function* persistently(ctx: OrchestrationContext, name: string, input: unknown):
     }
 }
 
-function* finishRun(
-    ctx: OrchestrationContext,
-    runId: string,
-    request: { terminalNodeExecutionId: string } | { failure: { nodeId: string | null; nodeExecutionId: string | null; code: string; message: string } },
-): Generator<ScheduledTask, ControllerResult, unknown> {
-    const result = parseResult(yield* persistently(ctx, WORKFLOW_V2_ACTIVITIES.finish, { runId, ...request }));
+/** Tell the parent that the run ended (at least once) and publish its final status. */
+function* reportEnded(ctx: OrchestrationContext, runId: string, result: ControllerResult): Generator<ScheduledTask, ControllerResult, unknown> {
     yield* persistently(ctx, WORKFLOW_V2_ACTIVITIES.notifyParent, { runId });
     ctx.setCustomStatus(JSON.stringify({ status: result.status === "failed" ? "failed" : result.status === "cancelled" ? "cancelled" : "completed",
         sessionKind: "workflow", workflow: { v: 2, runId, outcome: result.outcome } }));
     return result;
+}
+
+/** End the run as failed with a cause that is not a terminal state's result. */
+function* finishRun(
+    ctx: OrchestrationContext,
+    runId: string,
+    request: { failure: { nodeId: string | null; nodeExecutionId: string | null; code: string; message: string } },
+): Generator<ScheduledTask, ControllerResult, unknown> {
+    const result = parseResult(yield* persistently(ctx, WORKFLOW_V2_ACTIVITIES.finish, { runId, ...request }));
+    return yield* reportEnded(ctx, runId, result);
 }
 
 /**
@@ -445,6 +479,7 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
         }
 
         // 1. Admit the next node of every cursor that is not waiting on work.
+        let rerouted = false;
         for (const cursor of state.cursors) {
             if (cursor.pending !== null) continue;
             const node: ControllerPlan["nodes"][string] | undefined = plan.nodes[cursor.nodeId];
@@ -460,13 +495,31 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
             state.ordinals[key] = ordinal;
             state.steps += 1;
             admittedThisExecution += 1;
+            // Admitting the catch-all state, by any route, uses its one entry in this run.
+            if (cursor.nodeId === plan.catchAll) state.catchAllEntered = true;
             publishStatus(ctx, input, plan, state, "running");
             const entered = parseEnter(yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.enter, {
                 runId: input.runId, scopeId: cursor.scopeId, nodeId: cursor.nodeId, ordinal,
                 predecessorId: cursor.predecessorId, arrivalRoute: cursor.arrivalRoute,
             }, STORE_RETRY));
             if (!entered.admitted) return { runId: input.runId, status: entered.status, outcome: entered.outcome };
-            if (node.type === "terminal") return yield* finishRun(ctx, input.runId, { terminalNodeExecutionId: entered.nodeExecutionId });
+            if (node.type === "terminal") {
+                // While the catch-all state has not run, a terminal whose output
+                // fails its contract hands that error to it instead of failing
+                // the run. A business outcome (failed included) always ends the run.
+                const catchAll = !state.catchAllEntered ? plan.catchAll : null;
+                const finished = parseTerminalFinish(yield* persistently(ctx, WORKFLOW_V2_ACTIVITIES.finish, {
+                    runId: input.runId, terminalNodeExecutionId: entered.nodeExecutionId, ...(catchAll !== null ? { routeOutputErrors: true } : {}),
+                }));
+                if (!finished.routed) return yield* reportEnded(ctx, input.runId, finished.result);
+                expect(catchAll !== null && finished.nodeExecutionId === entered.nodeExecutionId, "finish routed an output error the controller did not offer");
+                state.catchAllEntered = true;
+                cursor.nodeId = catchAll;
+                cursor.predecessorId = entered.nodeExecutionId;
+                cursor.arrivalRoute = CATCH_ALL_ROUTE;
+                rerouted = true;
+                continue;
+            }
             cursor.pending = entered.nodeExecutionId;
             if (entered.state === "pending") {
                 yield ctx.startOrchestrationVersioned(WORKFLOW_V2_EFFECT_NAME, WORKFLOW_V2_EFFECT_VERSION,
@@ -474,6 +527,8 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
                     { runId: input.runId, nodeExecutionId: entered.nodeExecutionId, controllerInstanceId: ctx.instanceId });
             }
         }
+        // A terminal's output error went to the catch-all state: admit that next.
+        if (rerouted) continue;
 
         // 2. Route every pending node execution that has a stored result.
         const pendingIds = state.cursors.flatMap(cursor => cursor.pending === null ? [] : [cursor.pending]);
@@ -483,24 +538,36 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
             for (const result of collected) {
                 const owner = state.cursors.find(item => item.pending === result.nodeExecutionId);
                 expect(owner !== undefined, `collected ${result.nodeExecutionId} is not pending`);
-                const route = selectRoute(plan.nodes[owner.nodeId].next, result);
-                if (route !== null) {
-                    owner.nodeId = plan.nodes[owner.nodeId].next[route];
-                    owner.arrivalRoute = route;
-                } else if (result.resultKind === "runtime_error" && plan.catchAll !== null && !state.catchAllEntered) {
-                    // The workflow's catch-all state handles an error no route of
-                    // its state handles, once per run: an unhandled error after
-                    // it was entered (in it or anywhere else) fails the run.
-                    state.catchAllEntered = true;
-                    owner.nodeId = plan.catchAll;
-                    owner.arrivalRoute = CATCH_ALL_ROUTE;
-                } else {
+                const next = plan.nodes[owner.nodeId].next;
+                const route = selectRoute(next, result);
+                let target: { nodeId: string; arrivalRoute: string } | null = null;
+                if (route !== null) target = { nodeId: next[route], arrivalRoute: route };
+                else if (result.resultKind === "runtime_error" && plan.catchAll !== null && !state.catchAllEntered) {
+                    // The workflow's catch-all state handles an error that no
+                    // route of its state handles.
+                    target = { nodeId: plan.catchAll, arrivalRoute: CATCH_ALL_ROUTE };
+                }
+                if (target === null) {
                     const handled = plan.catchAll !== null && result.resultKind === "runtime_error" ? " The workflow's catch-all state already ran in this run." : "";
                     return yield* finishRun(ctx, input.runId, { failure: {
                         nodeId: owner.nodeId, nodeExecutionId: result.nodeExecutionId, code: result.outcome,
                         message: `State '${owner.nodeId}' ended with ${result.resultKind === "business" ? "undeclared outcome" : "runtime error"} '${result.outcome}' and has no route for it.${handled}`,
                     } });
                 }
+                if (target.nodeId === plan.catchAll) {
+                    // The catch-all state runs at most once per run, whichever
+                    // route leads to it.
+                    if (state.catchAllEntered) {
+                        return yield* finishRun(ctx, input.runId, { failure: {
+                            nodeId: owner.nodeId, nodeExecutionId: result.nodeExecutionId, code: result.outcome,
+                            message: `State '${owner.nodeId}' ended with ${result.resultKind === "business" ? "outcome" : "runtime error"} '${result.outcome}'; `
+                                + `its route '${target.arrivalRoute}' leads to the catch-all state '${plan.catchAll}', which already ran in this run.`,
+                        } });
+                    }
+                    state.catchAllEntered = true;
+                }
+                owner.nodeId = target.nodeId;
+                owner.arrivalRoute = target.arrivalRoute;
                 owner.predecessorId = result.nodeExecutionId;
                 owner.pending = null;
             }
@@ -553,6 +620,17 @@ export function* workflowV2Effect(ctx: OrchestrationContext, rawInput: unknown):
     }
     yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.recordEffectResult, { ...input, outcome: result }, STORE_RETRY);
     yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.wake, input, STORE_RETRY);
+    return null;
+}
+
+/**
+ * The terminal notification of a run that update_workflow recover ended
+ * after its controller had ended: the controller's own notification
+ * activity, with its retries and its stable client message id.
+ */
+export function* workflowV2Notify(ctx: OrchestrationContext, rawInput: unknown): Generator<ScheduledTask, null, unknown> {
+    const runId = text(record(rawInput, "notify input").runId, "runId");
+    yield* persistently(ctx, WORKFLOW_V2_ACTIVITIES.notifyParent, { runId });
     return null;
 }
 
@@ -647,6 +725,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     }
     runtime.registerOrchestrationVersioned(WORKFLOW_V2_CONTROLLER_NAME, WORKFLOW_V2_CONTROLLER_VERSION, workflowV2Controller);
     runtime.registerOrchestrationVersioned(WORKFLOW_V2_EFFECT_NAME, WORKFLOW_V2_EFFECT_VERSION, workflowV2Effect);
+    runtime.registerOrchestrationVersioned(WORKFLOW_V2_NOTIFY_NAME, WORKFLOW_V2_NOTIFY_VERSION, workflowV2Notify);
 
     const runOf = async (runId: string): Promise<WorkflowRunRow> => {
         const run = await store.readRun(runId);
@@ -830,42 +909,77 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         let terminalNode: { nodeExecutionId: string; result: NodeResultInput } | null = null;
         let summary: string | null = null;
         if (typeof input.terminalNodeExecutionId === "string") {
+            // Set only while the run's catch-all state has not run (controller 1.3.0).
+            const routeOutputErrors = input.routeOutputErrors === true;
             const ir = await irOf(run);
             const executed = await store.readNodeExecution(input.terminalNodeExecutionId);
             if (!executed || executed.runId !== run.runId) throw new WorkflowStoreError("NODE_NOT_FOUND", "Terminal node execution is missing.");
             const node = nodeOf(ir, executed.nodeId);
             if (node.type !== "terminal") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${executed.nodeId} is not terminal.`);
             terminalNodeId = node.id;
-            const predecessor = executed.predecessorId ? await store.readNodeExecution(executed.predecessorId) : null;
-            const errorValue = predecessor?.resultKind === "runtime_error" ? predecessor.error : null;
-            try {
-                const output = node.hasOutput ? evaluateBindingTemplate(node.output, scopeFor(run, executed.input, errorValue), `states.${node.id}.output`) : null;
-                // A terminal's own schema adds to the workflow contract; it never replaces it.
-                const contracts = [node.outputSchema, node.outcome === "succeeded" ? ir.outputSchema : null]
-                    .filter((name): name is string => name !== null);
-                const schemas = schemaSetFor(run.irSha256, ir.schemaDefs);
-                const failed = contracts.map(name => ({ name, problems: schemas.validate(name, output) })).filter(item => item.problems.length > 0);
-                if (failed.length) {
-                    status = "failed";
-                    errorText = envelopeText({ code: "invalid_output", message: `Final output does not match ${failed.map(item => item.name).join(" and ")}.`,
-                        details: failed.map(item => ({ schema: item.name, problems: problemsJson(item.problems) })) });
-                } else {
-                    status = terminalStatus(node.outcome);
-                    terminalOutcome = node.outcome;
-                    outputText = boundedCanonicalJson(output, "Workflow output");
-                    summary = node.summary;
+            if (executed.state === "completed") {
+                // A terminal is completed before its finish only by an error: its
+                // admission's (its incoming value could not be stored), or the
+                // output error an earlier attempt of this finish routed to the
+                // catch-all state.
+                if (executed.resultKind !== "runtime_error" || executed.outcome === null) {
+                    throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Terminal ${executed.nodeExecutionId} has a business result while its run is active.`);
                 }
-            } catch (error) {
-                if (!(error instanceof WorkflowBindingError) && !(error instanceof WorkflowJsonError)) throw error;
+                if (routeOutputErrors) return { runId: run.runId, routed: { nodeExecutionId: executed.nodeExecutionId, code: executed.outcome } };
                 status = "failed";
-                errorText = envelopeText({ code: "invalid_output", message: error.message });
+                errorText = canonicalJson(executed.error);
+            } else {
+                const predecessor = executed.predecessorId ? await store.readNodeExecution(executed.predecessorId) : null;
+                const errorValue = predecessor?.resultKind === "runtime_error" ? predecessor.error : null;
+                try {
+                    const output = node.hasOutput ? evaluateBindingTemplate(node.output, scopeFor(run, executed.input, errorValue), `states.${node.id}.output`) : null;
+                    // A terminal's own schema adds to the workflow contract; it never replaces it.
+                    const contracts = [node.outputSchema, node.outcome === "succeeded" ? ir.outputSchema : null]
+                        .filter((name): name is string => name !== null);
+                    const schemas = schemaSetFor(run.irSha256, ir.schemaDefs);
+                    const failed = contracts.map(name => ({ name, problems: schemas.validate(name, output) })).filter(item => item.problems.length > 0);
+                    if (failed.length) {
+                        status = "failed";
+                        errorText = envelopeText({ code: "invalid_output", message: `Final output does not match ${failed.map(item => item.name).join(" and ")}.`,
+                            details: failed.map(item => ({ schema: item.name, problems: problemsJson(item.problems) })) });
+                    } else {
+                        status = terminalStatus(node.outcome);
+                        terminalOutcome = node.outcome;
+                        outputText = boundedCanonicalJson(output, "Workflow output");
+                        summary = node.summary;
+                    }
+                } catch (error) {
+                    if (!(error instanceof WorkflowBindingError) && !(error instanceof WorkflowJsonError)) throw error;
+                    status = "failed";
+                    errorText = envelopeText({ code: "invalid_output", message: error.message });
+                }
+                terminalNode = {
+                    nodeExecutionId: executed.nodeExecutionId,
+                    result: outputText !== null
+                        ? { outcome: node.outcome, resultKind: "business", valueText: outputText, winner: "controller" }
+                        : { outcome: "invalid_output", resultKind: "runtime_error", valueText: errorText ?? envelopeText({ code: "invalid_output", message: "Final output is invalid." }), winner: "controller" },
+                };
+                if (outputText === null && routeOutputErrors) {
+                    // The terminal's output error is stored as its result, and the
+                    // run goes on to the workflow's catch-all state.
+                    const stored = await store.completeNode(executed.nodeExecutionId, terminalNode.result, {
+                        sessionId: run.workflowSessionId,
+                        events: [{ eventType: "workflow.state_failed", data: {
+                            runId: run.runId, nodeExecutionId: executed.nodeExecutionId, stateId: node.id, step: executed.ordinal,
+                            outcome: terminalNode.result.outcome, resultKind: "runtime_error",
+                            error: jsonbSafeText(terminalNode.result.valueText, 2_000), catchAll: ir.catchAll,
+                        } }],
+                        update: { touch: true },
+                    });
+                    // A cancellation or deletion that committed first decided the run.
+                    const after = await runOf(run.runId);
+                    if (!ACTIVE_RUN_STATUSES.includes(after.status)) return { runId: after.runId, status: after.status, outcome: after.terminalOutcome };
+                    if (stored.node.resultKind !== "runtime_error" || stored.node.outcome === null) {
+                        throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Terminal ${executed.nodeExecutionId} has a business result while its run is active.`);
+                    }
+                    return { runId: run.runId, routed: { nodeExecutionId: executed.nodeExecutionId, code: stored.node.outcome } };
+                }
             }
-            terminalNode = {
-                nodeExecutionId: executed.nodeExecutionId,
-                result: outputText !== null
-                    ? { outcome: node.outcome, resultKind: "business", valueText: outputText, winner: "controller" }
-                    : { outcome: "invalid_output", resultKind: "runtime_error", valueText: errorText ?? envelopeText({ code: "invalid_output", message: "Final output is invalid." }), winner: "controller" },
-            };
         } else {
             const failure = record(input.failure, "failure");
             status = "failed";

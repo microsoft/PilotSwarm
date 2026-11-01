@@ -27,6 +27,8 @@ import {
     WORKFLOW_V2_CONTROLLER_VERSION,
     WORKFLOW_V2_EFFECT_NAME,
     WORKFLOW_V2_EFFECT_VERSION,
+    WORKFLOW_V2_NOTIFY_NAME,
+    WORKFLOW_V2_NOTIFY_VERSION,
     WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS,
 } from "../../dist/workflow/v2/runtime.js";
 
@@ -110,6 +112,7 @@ test("workflow v2 registers each orchestration's versions in ascending order, th
             && error.message.includes("update_workflow operation recover"));
     }
     assert.deepEqual(registered.filter((entry) => entry.name === WORKFLOW_V2_EFFECT_NAME).map((entry) => entry.version), [WORKFLOW_V2_EFFECT_VERSION]);
+    assert.deepEqual(registered.filter((entry) => entry.name === WORKFLOW_V2_NOTIFY_NAME).map((entry) => entry.version), [WORKFLOW_V2_NOTIFY_VERSION]);
 });
 
 test("script tools are the generic agent's data-plane tools, bound to the workflow session", async () => {

@@ -8,7 +8,10 @@ import { schemaSetFor } from "./schema.js";
 import {
     WORKFLOW_V2_CONTROLLER_NAME,
     WORKFLOW_V2_CONTROLLER_VERSION,
+    WORKFLOW_V2_NOTIFY_NAME,
+    WORKFLOW_V2_NOTIFY_VERSION,
     workflowLiveControllerInstanceId,
+    workflowNotifyInstanceId,
     type ControllerInput,
 } from "./runtime.js";
 import {
@@ -127,46 +130,129 @@ export async function inspectWorkflowV2Controller(host: Pick<WorkflowV2Host, "du
     };
 }
 
+/** The receipt of update_workflow operation recover. */
+export interface WorkflowV2RecoverReceipt {
+    runId: string;
+    action: "none" | "dispatched" | "ended";
+    status: WorkflowRunStatus;
+    controller: WorkflowV2ControllerView;
+}
+
+function recoverReceiptJson(receipt: WorkflowV2RecoverReceipt): JsonValue {
+    return {
+        runId: receipt.runId, action: receipt.action, status: receipt.status,
+        controller: { status: receipt.controller.status, error: receipt.controller.error, needsRecovery: receipt.controller.needsRecovery },
+    };
+}
+
+const RUN_STATUSES: readonly WorkflowRunStatus[] = [...ACTIVE_RUN_STATUSES, "completed", "failed", "cancelled"];
+
+function parseRecoverReceipt(value: JsonValue): WorkflowV2RecoverReceipt {
+    const corrupt = () => new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "Stored recover receipt has an invalid shape.");
+    if (!isJsonObject(value)) throw corrupt();
+    const { runId, action, status, controller } = value;
+    const parsedAction = action === "none" || action === "dispatched" || action === "ended" ? action : null;
+    const parsedStatus = RUN_STATUSES.find(item => item === status);
+    if (typeof runId !== "string" || parsedAction === null || parsedStatus === undefined || !isJsonObject(controller)) throw corrupt();
+    const { status: controllerStatus, error, needsRecovery } = controller;
+    if (typeof controllerStatus !== "string" || typeof needsRecovery !== "boolean") throw corrupt();
+    if (error !== null && typeof error !== "string") throw corrupt();
+    return { runId, action: parsedAction, status: parsedStatus, controller: { status: controllerStatus, error, needsRecovery } };
+}
+
+/**
+ * Deliver the terminal notification of a run that a recover ended: its
+ * controller had already ended, so nothing else reports it. The notifier
+ * orchestration runs the controller's notification activity (at least once,
+ * stable client message id); starting it again for the same run is ignored
+ * by duroxide, so a repeated recover only makes sure it was started.
+ */
+async function notifyRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxideClient">, run: WorkflowRunRow): Promise<void> {
+    if (run.mode !== "live" || run.status !== "failed" || !isJsonObject(run.terminalError) || run.terminalError.code !== "controller_ended") return;
+    const definition = await host.store.readDefinition(run.workflowSessionId);
+    if (!definition?.parentSessionId || !definition.notifyParent) return;
+    await host.duroxideClient.startOrchestrationVersioned(workflowNotifyInstanceId(run.runId), WORKFLOW_V2_NOTIFY_NAME,
+        { runId: run.runId }, WORKFLOW_V2_NOTIFY_VERSION);
+}
+
 /**
  * Recover an active run whose controller can no longer end it, on an
  * explicit request (update_workflow operation recover):
  * - admitted with no controller instance (the dispatch after admission was
- *   lost): dispatch it again (the start is idempotent);
+ *   lost): dispatch it again (duroxide ignores a second start of an instance);
  * - the controller ended, or its instance is gone, while the run is still
  *   active (its finalization attempts ran out, it was terminated, or its
  *   history is from an unsupported pre-release controller): end the run as
- *   failed with the controller's state. Pending node executions lose to that
+ *   failed with the controller's state, and notify the parent of that end
+ *   when the workflow asked for it. Pending node executions lose to that
  *   end, so a running script's liveness check stops it.
- * A run that is not active, or whose controller is still running, is left as it is.
+ * A run that is not active, or whose controller is still running, is left as
+ * it is. The operation id makes the request idempotent: its receipt is
+ * stored (with the run's end, when it ends the run), and a repeat returns it.
  */
-export async function recoverWorkflowV2Run(host: Pick<WorkflowV2Host, "store" | "duroxideClient">, runId: string, requestedBy: string | null)
-    : Promise<{ runId: string; action: "none" | "dispatched" | "ended"; status: WorkflowRunStatus; controller: WorkflowV2ControllerView }> {
+export async function recoverWorkflowV2Run(host: Pick<WorkflowV2Host, "store" | "duroxideClient">, runId: string,
+    request: { requestedBy: string | null; operationId: string }): Promise<StoredOperation<WorkflowV2RecoverReceipt>> {
+    requireOperationId(request.operationId);
     const run = await host.store.readRun(runId);
     if (!run) throw new WorkflowStoreError("RUN_NOT_FOUND", `Workflow run ${runId} does not exist.`);
+    const workflowSessionId = run.workflowSessionId;
+    const requestSha256 = jsonSha256({ kind: "recover", runId });
+    const replay = async (stored: JsonValue): Promise<StoredOperation<WorkflowV2RecoverReceipt>> => {
+        const current = await host.store.readRun(runId);
+        if (current) await notifyRecoveredRun(host, current);
+        return { receipt: parseRecoverReceipt(stored), replayed: true };
+    };
+    const prior = await host.store.readOperationReceipt(workflowSessionId, request.operationId, "recover", requestSha256);
+    if (prior !== null) return replay(prior);
+
     const controller = await inspectWorkflowV2Controller(host, run);
-    if (!controller.needsRecovery) return { runId, action: "none", status: run.status, controller };
-    if (controller.status === "NotFound" && run.status === "admitted") {
-        const input: ControllerInput = { v: 2, workflowSessionId: run.workflowSessionId, runId: run.runId };
+    let receipt: WorkflowV2RecoverReceipt = { runId, action: "none", status: run.status, controller };
+    if (controller.needsRecovery && controller.status === "NotFound" && run.status === "admitted") {
+        const input: ControllerInput = { v: 2, workflowSessionId, runId };
         await host.duroxideClient.startOrchestrationVersioned(run.controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME, input, WORKFLOW_V2_CONTROLLER_VERSION);
-        await host.store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.recovered",
-            data: { runId: run.runId, action: "dispatched", requestedBy } }]);
-        return { runId, action: "dispatched", status: run.status, controller };
+        await host.store.recordSessionEvents(workflowSessionId, [{ eventType: "workflow.recovered",
+            data: { runId, action: "dispatched", requestedBy: request.requestedBy } }]);
+        receipt = { runId, action: "dispatched", status: run.status, controller };
+    } else if (controller.needsRecovery) {
+        const message = controller.status === "NotFound"
+            ? "The workflow controller no longer exists; the run cannot continue."
+            : `The workflow controller ended (${controller.status}) without ending the run.`;
+        const ending: WorkflowV2RecoverReceipt = { runId, action: "ended", status: "failed", controller };
+        let ended: { ended: boolean; run: WorkflowRunRow };
+        try {
+            ended = await host.store.finishRun({
+                runId, status: "failed", terminalNodeId: null, terminalOutcome: null, outputText: null,
+                errorText: canonicalJson({ code: "controller_ended", message,
+                    details: { controllerStatus: controller.status, controllerError: controller.error, requestedBy: request.requestedBy } }),
+                endPending: { winner: "controller", message: "The workflow run ended before this state finished." },
+                receipt: { operationId: request.operationId, kind: "recover", requestSha256, value: recoverReceiptJson(ending) },
+                projection: {
+                    sessionId: workflowSessionId,
+                    events: [{ eventType: "workflow.failed", data: {
+                        runId, code: "controller_ended", controllerStatus: controller.status, error: message, requestedBy: request.requestedBy,
+                    } }],
+                    update: { state: "failed", lastError: message, touch: true },
+                },
+            });
+        } catch (error) {
+            // The id was recorded meanwhile: a concurrent repeat (its receipt
+            // is returned) or another request (OPERATION_CONFLICT).
+            if (!(error instanceof WorkflowStoreError) || error.code !== "OPERATION_CONFLICT") throw error;
+            const stored = await host.store.readOperationReceipt(workflowSessionId, request.operationId, "recover", requestSha256);
+            if (stored === null) throw error;
+            return replay(stored);
+        }
+        if (ended.ended) {
+            await notifyRecoveredRun(host, ended.run);
+            return { receipt: ending, replayed: false };
+        }
+        receipt = { runId, action: "none", status: ended.run.status, controller };
     }
-    const message = controller.status === "NotFound"
-        ? "The workflow controller no longer exists; the run cannot continue."
-        : `The workflow controller ended (${controller.status}) without ending the run.`;
-    const ended = await host.store.finishRun({
-        runId: run.runId, status: "failed", terminalNodeId: null, terminalOutcome: null, outputText: null,
-        errorText: canonicalJson({ code: "controller_ended", message,
-            details: { controllerStatus: controller.status, controllerError: controller.error, requestedBy } }),
-        endPending: { winner: "controller", message: "The workflow run ended before this state finished." },
-        projection: {
-            sessionId: run.workflowSessionId,
-            events: [{ eventType: "workflow.failed", data: { runId: run.runId, code: "controller_ended", controllerStatus: controller.status, error: message, requestedBy } }],
-            update: { state: "failed", lastError: message, touch: true },
-        },
-    });
-    return { runId, action: ended.ended ? "ended" : "none", status: ended.run.status, controller };
+    const stored = await host.store.recordOperationReceipt(workflowSessionId, request.operationId, "recover", requestSha256, recoverReceiptJson(receipt));
+    if (stored.replayed) return replay(stored.receipt);
+    // A run an earlier recover ended: make sure its notification was started.
+    await notifyRecoveredRun(host, run);
+    return { receipt, replayed: false };
 }
 
 /**

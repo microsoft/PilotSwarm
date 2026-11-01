@@ -705,6 +705,94 @@ states:
         });
     });
 
+    it("enters the catch-all state at most once by any route, and hands it a terminal's invalid output", { timeout: TIMEOUT }, async () => {
+        await withClient(getEnv(), { worker: { workflowScripts: { enabled: true } } }, async (client) => {
+            const h = host(client);
+            const start = (name, yaml) => createWorkflowV2(h, { workflowSessionId: randomUUID(), parentSessionId: null, yaml,
+                actor: ACTOR, operationId: name, start: { inputs: {} } });
+            const failingHandler = `  handler:
+    type: script
+    source: |
+      process.exit(5);
+    transition: { next: { ok: done } }`;
+
+            // An explicit failure route into the catch-all state uses its one entry:
+            // the handler's own unhandled error fails the run instead of entering it again.
+            const explicit = await start("explicit", CATCH_ALL(failingHandler)
+                .replace("transition: { next: { ok: done } }", "transition: { next: { ok: done, failure: handler } }"));
+            const explicitRun = await finishedRun(h, explicit.receipt.run.runId);
+            expect(explicitRun.status, JSON.stringify(explicitRun)).toBe("failed");
+            expect(explicitRun.terminalError).toMatchObject({ code: "execution_failed" });
+            expect(explicitRun.terminalError.message).toContain("catch-all state already ran");
+            const explicitNodes = await h.store.listNodeExecutions(explicitRun.runId);
+            expect(explicitNodes.map(node => [node.nodeId, node.ordinal, node.arrivalRoute, node.outcome])).toEqual([
+                ["work", 1, null, "execution_failed"], ["handler", 1, "failure", "execution_failed"],
+            ]);
+            expect(explicitRun.terminalError.details).toEqual({ nodeExecutionId: explicitNodes[1].nodeExecutionId });
+
+            // After the catch-all state ran, another route into it fails the run.
+            const again = await start("route-back", CATCH_ALL(`  handler:
+    type: script
+    source: |
+      await setResult("ok", {});
+    transition: { next: { ok: retry } }
+  retry:
+    type: script
+    source: |
+      process.exit(4);
+    transition: { next: { ok: done, failure: handler } }`));
+            const againRun = await finishedRun(h, again.receipt.run.runId);
+            expect(againRun.status, JSON.stringify(againRun)).toBe("failed");
+            expect(againRun.terminalError.message).toContain("which already ran in this run");
+            expect((await h.store.listNodeExecutions(againRun.runId)).map(node => [node.nodeId, node.ordinal, node.outcome])).toEqual([
+                ["work", 1, "execution_failed"], ["handler", 1, "ok"], ["retry", 1, "execution_failed"],
+            ]);
+
+            // A terminal whose output fails its schema is a runtime error: its envelope goes to the catch-all state once.
+            const INVALID_TERMINAL = (handler) => `
+apiVersion: pilotswarm.dev/v2-draft
+kind: Workflow
+metadata: { name: invalid-terminal, version: "1.0.0" }
+initial: work
+catchAll: handler
+states:
+  work:
+    type: script
+    source: |
+      await setResult("ok", {});
+    transition: { next: { ok: done } }
+  done: { type: terminal, outcome: succeeded, output: 7, outputSchema: { type: string } }
+${handler}
+`;
+            const routed = await start("terminal-error", INVALID_TERMINAL('  handler: { type: terminal, outcome: blocked, output: "${input}" }'));
+            const routedRun = await finishedRun(h, routed.receipt.run.runId);
+            expect(routedRun, JSON.stringify(routedRun)).toMatchObject({ status: "completed", terminalOutcome: "blocked", terminalNodeId: "handler" });
+            expect(routedRun.terminalOutput).toMatchObject({ code: "invalid_output" });
+            const routedNodes = await h.store.listNodeExecutions(routedRun.runId);
+            expect(routedNodes.map(node => [node.nodeId, node.arrivalRoute, node.resultKind, node.outcome, node.winner])).toEqual([
+                ["work", null, "business", "ok", "effect"],
+                ["done", "ok", "runtime_error", "invalid_output", "controller"],
+                ["handler", "@catchAll", "business", "blocked", "controller"],
+            ]);
+            expect(routedNodes[1].error).toEqual(routedRun.terminalOutput);
+            expect(routedNodes[2].predecessorId).toBe(routedNodes[1].nodeExecutionId);
+            const routedEvents = await events(client, routed.receipt.workflowSessionId);
+            expect(routedEvents.filter(event => event.eventType === "workflow.state_failed").map(event => event.data))
+                .toEqual([expect.objectContaining({ stateId: "done", outcome: "invalid_output", catchAll: "handler" })]);
+            expect(count(routedEvents, "workflow.completed")).toBe(1);
+            expect(count(routedEvents, "workflow.failed")).toBe(0);
+
+            // The catch-all terminal's own invalid output ends the run as failed; it is not entered again.
+            const twice = await start("terminal-error-twice", INVALID_TERMINAL("  handler: { type: terminal, outcome: blocked, output: 8, outputSchema: { type: string } }"));
+            const twiceRun = await finishedRun(h, twice.receipt.run.runId);
+            expect(twiceRun.status, JSON.stringify(twiceRun)).toBe("failed");
+            expect(twiceRun).toMatchObject({ terminalNodeId: "handler", terminalOutcome: null, terminalError: { code: "invalid_output" } });
+            expect((await h.store.listNodeExecutions(twiceRun.runId)).map(node => [node.nodeId, node.ordinal, node.outcome])).toEqual([
+                ["work", 1, "ok"], ["done", 1, "invalid_output"], ["handler", 1, "invalid_output"],
+            ]);
+        });
+    });
+
     it("cancels a running script node once: the stored winner is the cancellation, not a late result", { timeout: TIMEOUT }, async () => {
         await withClient(getEnv(), { worker: { workflowScripts: { enabled: true } } }, async (client) => {
             const h = host(client);
