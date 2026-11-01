@@ -136,17 +136,21 @@ describe("process compute provider", () => {
             await expect(client.createSession({ model: qualifiedModel, computeTarget: "missing-target" }))
                 .rejects.toThrow(/COMPUTE_TARGET_NOT_FOUND|no compute target/);
             const session = await client.createSession({ model: qualifiedModel, computeTarget: "nowhere" });
-            // The refusal fails the turn; the session shows it as its error.
+            // The refusal fails the turn, and the session records why.
             // (Today the turn is then retried like any failed turn.)
             await session.send("hello");
-            let info;
-            for (let i = 0; i < 60; i++) {
-                info = await session.getInfo();
-                if (info.status === "error" && info.error) break;
-                await new Promise((resolve) => setTimeout(resolve, 1_000));
+            const catalog = await createCatalog(env);
+            let failure;
+            try {
+                for (let i = 0; i < 60 && !failure; i++) {
+                    const events = await catalog.getSessionEvents(session.sessionId, 0, 200);
+                    failure = events.find((event) => /COMPUTE_KIND_UNKNOWN/.test(JSON.stringify(event.data ?? {})));
+                    if (!failure) await new Promise((resolve) => setTimeout(resolve, 1_000));
+                }
+            } finally {
+                await catalog.close?.();
             }
-            expect(info.status).toBe("error");
-            expect(info.error).toMatch(/COMPUTE_KIND_UNKNOWN/);
+            expect(failure, "a session event names the refusal").toBeTruthy();
             expect(model.sessionRequests()).toHaveLength(0);
         });
     });
