@@ -75,6 +75,7 @@ import { MODEL_EVENT_TYPES_RECORDED_WHEN_LOGGING, modelEventLoggingEnabled } fro
 import type { NativeTasksPayload } from "./native-task-observer.js";
 import { spawnWorkflowFromTool } from "./workflow/spawn.js";
 import { readWorkflowFromTool, updateWorkflowFromTool, type WorkflowToolHost } from "./workflow/v2/tools.js";
+import { applySessionCommandToWorkflowV2 } from "./workflow/v2/service.js";
 import type { SpawnWorkflowToolArgs } from "./workflow/tool-spec.js";
 
 const SYSTEM_AGENT_IDS = new Set(["pilotswarm", "sweeper", "resourcemgr", "facts-manager"]);
@@ -5845,6 +5846,25 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         input: { sessionId: string; command: any },
     ): Promise<void> => {
         activityCtx.traceInfo(`[sendCommandToSession] session=${input.sessionId} cmd=${input.command?.cmd}`);
+        // A v2 workflow child may have no controller to read a queued command
+        // (its run has not begun, and duroxide drops a queue message for an
+        // instance that has not started; or it has no run): the v2 store
+        // applies cancel, done and delete for the child's own parent, and
+        // queues it only for a run whose controller began it. Every other
+        // target keeps the queued command. The activity's input and result
+        // are unchanged.
+        if (catalog?.workflowStore) {
+            const facts = factStore ?? null;
+            const applied = await applySessionCommandToWorkflowV2({
+                store: catalog.workflowStore(),
+                deleteSessionFacts: facts ? (sessionId: string) => facts.deleteSessionFactsForSession(sessionId) : null,
+            }, { callerInstanceId: String(activityCtx.instanceId ?? ""), targetSessionId: input.sessionId, command: input.command });
+            if (applied.action === "applied") {
+                const how = applied.receipt ? `${applied.receipt.applied}, ${applied.receipt.status ?? "no run"}` : "already deleted";
+                activityCtx.traceInfo(`[sendCommandToSession] ${input.command?.cmd} for workflow ${input.sessionId}: ${how}`);
+                return;
+            }
+        }
         if (!storeUrl) throw new Error("No storeUrl — cannot create PilotSwarmClient");
 
         const sdkClient = new PilotSwarmClient(internalClientConfig());

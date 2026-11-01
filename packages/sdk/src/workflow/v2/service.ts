@@ -29,6 +29,7 @@ import {
     type WorkflowRunCommandReceipt,
     type WorkflowRunRow,
     type WorkflowRunStatus,
+    type WorkflowSessionCommandReceipt,
     type WorkflowStore,
 } from "./store.js";
 
@@ -595,4 +596,85 @@ export async function controlWorkflowV2Run(
         }
     }
     return stored;
+}
+
+/** The operation id prefix of a receipt that a parent session's lifecycle command stored. */
+export const SESSION_COMMAND_OPERATION_PREFIX = "session-command:";
+
+/** A lifecycle command a durable session sends to one of its children (cancel_agent, delete_agent, the shutdown cascade). */
+function parseSessionLifecycleCommand(raw: unknown): { cmd: "cancel" | "done" | "delete"; id: string; reason: string | null; requestedBy: string | null } | null {
+    if (!isJsonObject(raw) || raw.type !== "cmd") return null;
+    const { cmd, id, args, requestedBy } = raw;
+    if (cmd !== "cancel" && cmd !== "done" && cmd !== "delete") return null;
+    if (typeof id !== "string" || !id.trim()) return null;
+    const reason = isJsonObject(args) && typeof args.reason === "string" && args.reason.trim() ? args.reason.trim() : null;
+    return { cmd, id, reason, requestedBy: typeof requestedBy === "string" && requestedBy ? requestedBy : null };
+}
+
+/**
+ * A lifecycle command (cancel, done or delete) that a parent's durable
+ * session sends to a child through the sendCommandToSession activity. The
+ * command waits in the child orchestration's queue, but a v2 workflow child
+ * may have no controller to read it: its live run has not begun (duroxide
+ * drops a queue message for an instance that has not started), or it has no
+ * run. So, for a v2 workflow child only:
+ * - the caller is the session of the orchestration that runs the activity
+ *   (its instance id `session-<id>`, set by the runtime), never the
+ *   command's requestedBy alone; it must be the child's parent in both its
+ *   session row and its definition, and a requestedBy must name it too;
+ * - the store applies the command once per operation id
+ *   (SESSION_COMMAND_OPERATION_PREFIX plus the command's id, which the
+ *   orchestration derives deterministically), in one transaction
+ *   (store.recordSessionCommand): cancel and done end a run that has not
+ *   begun (done keeps its "Stopped" meaning); delete soft-deletes the child,
+ *   and the deletion trigger tombstones it and ends its run in that
+ *   transaction; for a run that has begun, its controller applies the
+ *   queued command;
+ * - a retry of the activity replays the receipt (and queues the command
+ *   again while that run is active); another request with that id fails.
+ * Every other target (an ordinary agent session, a legacy workflow) returns
+ * "enqueue": the caller queues the command as before.
+ */
+export async function applySessionCommandToWorkflowV2(
+    host: { store: WorkflowStore; deleteSessionFacts?: ((sessionId: string) => Promise<unknown>) | null },
+    request: { callerInstanceId: string; targetSessionId: string; command: unknown },
+): Promise<{ action: "enqueue" } | { action: "applied"; receipt: WorkflowSessionCommandReceipt | null }> {
+    const command = parseSessionLifecycleCommand(request.command);
+    if (!command) return { action: "enqueue" };
+    const link = await host.store.readSessionLink(request.targetSessionId);
+    if (!link || link.sessionKind !== "workflow") return { action: "enqueue" };
+    const definition = await host.store.readDefinition(request.targetSessionId);
+    if (!definition) return { action: "enqueue" };
+    const caller = request.callerInstanceId.startsWith("session-") ? request.callerInstanceId.slice("session-".length) : null;
+    if (!caller || link.parentSessionId !== caller || definition.parentSessionId !== caller || (command.requestedBy !== null && command.requestedBy !== caller)) {
+        throw new WorkflowStoreError("FORBIDDEN", `Only the session that created workflow ${request.targetSessionId} may send it ${command.cmd}.`);
+    }
+    const workflowSessionId = request.targetSessionId;
+    const operationId = `${SESSION_COMMAND_OPERATION_PREFIX}${command.id}`;
+    const requestSha256 = jsonSha256({ kind: `session-${command.cmd}`, reason: command.reason });
+    if (link.deleted) {
+        // Deleted already. When it was this command's delete, finish what follows its commit (the facts cleanup).
+        const prior = await host.store.readOperationReceipt(workflowSessionId, operationId, `session-${command.cmd}`, requestSha256);
+        if (prior !== null && command.cmd === "delete" && host.deleteSessionFacts) await host.deleteSessionFacts(workflowSessionId);
+        return { action: "applied", receipt: null };
+    }
+    let stored: Awaited<ReturnType<WorkflowStore["recordSessionCommand"]>>;
+    try {
+        stored = await host.store.recordSessionCommand({
+            workflowSessionId, operationId, requestSha256, command: command.cmd,
+            reason: command.reason ?? (command.cmd === "done" ? "Stopped" : command.cmd === "delete" ? "Deleted" : "Cancelled"), requestedBy: caller,
+        });
+    } catch (error) {
+        // Deleted between the read above and this transaction: nothing is left to apply.
+        if (error instanceof WorkflowStoreError && error.code === "WORKFLOW_DELETED") return { action: "applied", receipt: null };
+        throw error;
+    }
+    const { receipt, run } = stored;
+    if (receipt.applied === "queued") {
+        // The run's controller applies it; queue it while that run is active (a repeat queues it again).
+        if (run !== null && ACTIVE_RUN_STATUSES.includes(run.status)) return { action: "enqueue" };
+        return { action: "applied", receipt };
+    }
+    if (receipt.applied === "store" && command.cmd === "delete" && host.deleteSessionFacts) await host.deleteSessionFacts(workflowSessionId);
+    return { action: "applied", receipt };
 }

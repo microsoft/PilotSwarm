@@ -339,7 +339,7 @@ export function nodeExecutionIdFor(runId: string, scopeId: string, nodeId: strin
 export class WorkflowStore {
     private readonly t: {
         definitions: string; revisions: string; operations: string; runs: string; nodes: string; kvRevisions: string;
-        sessions: string; recordEvents: string; updateSession: string;
+        sessions: string; recordEvents: string; updateSession: string; softDeleteSession: string;
     };
 
     constructor(private readonly pool: Pool, readonly schema: string) {
@@ -349,6 +349,7 @@ export class WorkflowStore {
             operations: `${s}.workflow_operations`, runs: `${s}.workflow_runs`, nodes: `${s}.workflow_node_executions`,
             kvRevisions: `${s}.workflow_kv_revisions`,
             sessions: `${s}.sessions`, recordEvents: `${s}.cms_record_events`, updateSession: `${s}.cms_update_session`,
+            softDeleteSession: `${s}.cms_soft_delete_session`,
         };
     }
 
@@ -944,7 +945,9 @@ export class WorkflowStore {
      * whose command did not end the run.
      */
     private async cancelBeforeBegin(client: PoolClient, run: WorkflowRunRow,
-        input: { workflowSessionId: string; operationId: string; reason: string; requestedBy: string | null }, repaired: boolean): Promise<WorkflowRunRow> {
+        input: { workflowSessionId: string; operationId: string; reason: string; requestedBy: string | null; command?: "cancel" | "done" },
+        repaired: boolean): Promise<WorkflowRunRow> {
+        const command = input.command ?? "cancel";
         const marks: { [key: string]: JsonValue } = repaired
             ? { beforeBegin: true, operationId: input.operationId, repaired: true }
             : { beforeBegin: true, operationId: input.operationId };
@@ -954,7 +957,7 @@ export class WorkflowStore {
                     paused_from = NULL, updated_at = now(), finished_at = now()
               WHERE run_id = $1 RETURNING *`,
             [run.runId, canonicalJson({ code: "cancelled", message: jsonbSafeText(input.reason, 4_000), details: {
-                command: "cancel", requestedBy: input.requestedBy, ...marks,
+                command, requestedBy: input.requestedBy, ...marks,
             } })]);
         // No node execution exists before begin; one that did would lose to the cancel, as when the controller cancels.
         await client.query(
@@ -964,9 +967,81 @@ export class WorkflowStore {
               WHERE run_id = $1 AND state = 'pending'`,
             [run.runId, canonicalJson({ code: "cancelled", message: "The workflow run was cancelled." })]);
         await this.project(client, { sessionId: input.workflowSessionId, events: [{ eventType: "workflow.cancelled", data: {
-            runId: run.runId, reason: jsonbSafeText(input.reason, 500), command: "cancel", ...marks,
+            runId: run.runId, reason: jsonbSafeText(input.reason, 500), command, ...marks,
         } }], update: { state: "cancelled", lastError: jsonbSafeText(input.reason, 500), touch: true } });
         return runFrom(rows[0]);
+    }
+
+    /**
+     * Apply a lifecycle command (cancel, done or delete) that a parent's
+     * durable session sent to its v2 workflow child, once per operation id,
+     * in one transaction under the session, definition and run locks:
+     * - cancel or done of a live run that has not begun ends it here, as
+     *   update_workflow cancel does (done is cancel with its "Stopped" reason);
+     * - delete of a child whose live run has not begun, has ended, or that
+     *   has no run (a draft) soft-deletes the child here: the deletion trigger
+     *   (migrations 0086, 0087) tombstones the definition and ends any active
+     *   run in this same transaction;
+     * - for a run that has begun, its controller (which began it) applies the
+     *   command: the receipt says "queued", and the caller queues it;
+     * - cancel or done with no active run has nothing to apply ("none").
+     * The receipt (kind session-<command>) records how it was applied and the
+     * run as it was accepted; it is stored once, and a repeat returns it.
+     */
+    async recordSessionCommand(input: {
+        workflowSessionId: string;
+        operationId: string;
+        requestSha256: string;
+        command: "cancel" | "done" | "delete";
+        reason: string;
+        requestedBy: string;
+    }): Promise<{ receipt: WorkflowSessionCommandReceipt; replayed: boolean; run: WorkflowRunRow | null }> {
+        return this.transaction(async client => {
+            if (!await this.lockLiveSession(client, input.workflowSessionId)) throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow was deleted.");
+            await this.lockDefinition(client, input.workflowSessionId);
+            const kind = `session-${input.command}`;
+            const { rows: priorRows } = await client.query(
+                `SELECT kind, request_sha256, receipt FROM ${this.t.operations} WHERE workflow_session_id = $1 AND operation_id = $2`,
+                [input.workflowSessionId, input.operationId]);
+            if (priorRows[0] && (str(priorRows[0], "kind") !== kind || str(priorRows[0], "request_sha256") !== input.requestSha256)) {
+                throw new WorkflowStoreError("OPERATION_CONFLICT", `Operation ${input.operationId} was already used for a different request.`,
+                    { operationId: input.operationId, storedKind: str(priorRows[0], "kind") });
+            }
+            const { rows: liveRows } = await client.query(
+                `SELECT * FROM ${this.t.runs} WHERE workflow_session_id = $1 AND mode = 'live' ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
+                [input.workflowSessionId]);
+            let run = liveRows[0] ? runFrom(liveRows[0]) : null;
+            if (priorRows[0]) return { receipt: parseSessionCommandReceipt(parseStoredJson(str(priorRows[0], "receipt"), "receipt")), replayed: true, run };
+            const begun = run !== null && ACTIVE_RUN_STATUSES.includes(run.status) && !runNotBegun(run);
+            let applied: WorkflowSessionCommandReceipt["applied"];
+            let status: string | null = run?.status ?? null;
+            if (begun) {
+                applied = "queued";
+            } else if (input.command === "delete") {
+                // Locks held: the session row (this soft delete updates it), the definition and the run, which the trigger updates.
+                await client.query(`SELECT ${this.t.softDeleteSession}($1)`, [input.workflowSessionId]);
+                if (run) run = runFrom((await client.query(`SELECT * FROM ${this.t.runs} WHERE run_id = $1`, [run.runId])).rows[0]);
+                applied = "store";
+                status = "deleted";
+            } else if (run !== null && runNotBegun(run)) {
+                run = await this.cancelBeforeBegin(client, run, { ...input, command: input.command }, false);
+                applied = "store";
+                status = run.status;
+            } else {
+                applied = "none";
+            }
+            const receipt: WorkflowSessionCommandReceipt = { workflowSessionId: input.workflowSessionId, command: input.command, applied, runId: run?.runId ?? null, status };
+            await this.recordReceipt(client, input.workflowSessionId, input.operationId, kind, input.requestSha256, receipt);
+            return { receipt, replayed: false, run };
+        });
+    }
+
+    /** A session row's kind and parent, and whether it is deleted (cms_get_session hides deleted rows). */
+    async readSessionLink(sessionId: string): Promise<{ sessionKind: string | null; parentSessionId: string | null; deleted: boolean } | null> {
+        const { rows } = await this.pool.query(
+            `SELECT session_kind, parent_session_id, deleted_at FROM ${this.t.sessions} WHERE session_id = $1`, [sessionId]);
+        if (!rows[0]) return null;
+        return { sessionKind: strOrNull(rows[0], "session_kind"), parentSessionId: strOrNull(rows[0], "parent_session_id"), deleted: rows[0].deleted_at !== null };
     }
 
     /** Record transcript events outside a transition (notifications, cleanup requests). */
@@ -1356,6 +1431,29 @@ export interface WorkflowRunCommandReceipt {
     /** The run status after the command (cancel: when it was accepted; the controller applies it). */
     status: WorkflowRunStatus;
     kvRevision: number;
+}
+
+/** The receipt of a parent session's lifecycle command to its v2 workflow child (recordSessionCommand). */
+export interface WorkflowSessionCommandReceipt {
+    workflowSessionId: string;
+    command: "cancel" | "done" | "delete";
+    /** In the store (the child's run had not begun, or a delete), by the run's controller (queued), or nothing to apply. */
+    applied: "store" | "queued" | "none";
+    runId: string | null;
+    /** The run's status as the command was accepted, after the store applied it; "deleted" for a delete applied in the store. */
+    status: string | null;
+}
+
+function parseSessionCommandReceipt(value: JsonValue): WorkflowSessionCommandReceipt {
+    const invalid = () => new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "Stored session command receipt has an invalid shape.");
+    if (!isJsonObject(value)) throw invalid();
+    const { workflowSessionId, command, applied, runId, status } = value;
+    if (typeof workflowSessionId !== "string" || (command !== "cancel" && command !== "done" && command !== "delete")
+        || (applied !== "store" && applied !== "queued" && applied !== "none")
+        || (runId !== null && typeof runId !== "string") || (status !== null && typeof status !== "string")) {
+        throw invalid();
+    }
+    return { workflowSessionId, command, applied, runId, status };
 }
 
 function parseRunCommandReceipt(value: JsonValue): WorkflowRunCommandReceipt {
