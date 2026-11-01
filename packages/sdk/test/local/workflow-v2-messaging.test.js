@@ -19,7 +19,10 @@
  *   unknown, partial, blank or system ownership on either side grants
  *   nothing, and another identity is refused; a receive may not name such a
  *   sender (forbidden), nor a deleted one, its parent included
- *   (unavailable), even when that sender's earlier input waits;
+ *   (unavailable), even when that sender's earlier input waits; the store
+ *   decides the sender in the transaction that admits the receive or
+ *   accepts a fresh input, so a sender deleted after the receive was
+ *   resolved, or after the send was checked, is refused there;
  * - one reading of the store's clock decides each acceptance and each
  *   entry, compared and recorded exactly (microseconds): an input accepted
  *   at its receive's deadline is late, one a microsecond earlier wins; a
@@ -47,6 +50,7 @@ import {
 } from "../../src/workflow/v2/compiler.ts";
 import { canonicalJson, sha256Hex } from "../../src/workflow/v2/json.ts";
 import { WorkflowStore } from "../../src/workflow/v2/store.ts";
+import { TYPED_INPUT_REFUSALS } from "../../src/workflow/v2/authority.ts";
 import { createWorkflowV2, WORKFLOW_V2_INBOX_LIMITS } from "../../src/workflow/v2/service.ts";
 import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
 import {
@@ -132,12 +136,14 @@ async function until(check, label, timeoutMs = 60_000) {
 /**
  * A worker-equivalent registration with one durable provider; `refusals` lists runs whose admission was refused for a pause.
  * With `storePool`, the runtime's store runs on that pool (a test pool that can hold a statement); tool calls use the catalog's.
+ * With `wrapStore`, the runtime's store is the one it returns for that store (a test store that can stop a method).
  */
-async function harness(env, { wakeBackstopMs = 500, storePool = null } = {}) {
+async function harness(env, { wakeBackstopMs = 500, storePool = null, wrapStore = null } = {}) {
     const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
     await catalog.initialize();
     const store = catalog.workflowStore();
-    const runtimeStore = storePool ? new WorkflowStore(storePool, env.cmsSchema) : store;
+    const baseStore = storePool ? new WorkflowStore(storePool, env.cmsSchema) : store;
+    const runtimeStore = wrapStore ? wrapStore(baseStore) : baseStore;
     const provider = await PostgresProvider.connectWithSchema(env.store, env.duroxideSchema);
     const client = new Client(provider);
     const runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error" });
@@ -213,6 +219,50 @@ function holdingPool(env) {
         release: (...args) => client.release(...args),
     });
     return { hold, pool: { connect: async () => holding(await pool.connect()), query: (text, params) => pool.query(text, params), end: () => pool.end() } };
+}
+
+/** `promise`'s value, or an error after `ms`. */
+async function within(promise, ms, label) {
+    let timer;
+    try {
+        return await Promise.race([promise, new Promise((_, reject) => {
+            timer = setTimeout(() => reject(new Error(`timed out waiting for ${label}`)), ms);
+        })]);
+    } finally { clearTimeout(timer); }
+}
+
+/**
+ * Stop a store method before it runs (fault injection). `wrap(store)` gives a store whose `method`, called with an
+ * input that `matches` the armed stop's spec, waits until the test releases the stop and then calls the real method:
+ * nothing of that call has reached the database while it waits. `arm(spec)` arms one stop, which stops one call; the
+ * stop records the call's input.
+ */
+function stopBefore(method, matches) {
+    let armed = null;
+    return {
+        wrap(store) {
+            const wrapped = Object.create(store);
+            wrapped[method] = async input => {
+                const stop = armed !== null && matches(input, armed.spec) ? armed : null;
+                if (stop) {
+                    armed = null;
+                    stop.input = input;
+                    stop.reach();
+                    await stop.released;
+                }
+                return store[method](input);
+            };
+            return wrapped;
+        },
+        arm(spec) {
+            let reach;
+            let release;
+            const reached = new Promise(resolve => { reach = resolve; });
+            const released = new Promise(resolve => { release = resolve; });
+            armed = { spec, input: null, reach, reached, released, release };
+            return armed;
+        },
+    };
 }
 
 async function finished(store, runId, timeoutMs = 60_000) {
@@ -643,6 +693,135 @@ states:
             expect(await other.send(live.id, { contract: "BuildEvent@1", correlation: { buildId: 7 }, payload: BUILD, operation_id: "now" }))
                 .toMatchObject({ ok: true, claimedBy: { nodeExecutionId: waiting.nodeExecutionId } });
             expect(await finished(h.store, live.runId)).toMatchObject({ status: "completed", terminalOutput: BUILD });
+        } finally { await h.stop(); }
+    });
+
+    it("decides a receive's sender in its admission: a sender deleted after the receive was resolved and before it was admitted fails it", { timeout: TIMEOUT }, async () => {
+        const entries = stopBefore("enterNode", (input, spec) => input.runId === spec.runId && input.nodeId === "await_build");
+        const h = await harness(getEnv(), { wrapStore: entries.wrap });
+        try {
+            /** Start `run` (not dispatched yet) and stop its receive's admission: the receive was resolved, its admission's transaction has not started. */
+            const stoppedAt = async (run, from) => {
+                const stop = entries.arm({ runId: run.runId });
+                await run.startController();
+                await within(stop.reached, 60_000, "the receive's admission to be stopped");
+                expect(stop.input.receive).toMatchObject({ contract: "BuildEvent@1", from, correlationText: canonicalJson({ buildId: 7 }) });
+                expect(await nodesOf(h.store, run.runId)).toEqual([]);
+                return stop;
+            };
+            // The parent selector: the parent gave an input before the run began, and is deleted after its receive was
+            // resolved, before its admission. The admission decides that the parent is not available: the receive
+            // fails at once, with no spec and no deadline, and the parent's input is not taken.
+            const parent = await sessionOf(h);
+            const run = await started(h, parent, PARENT_RECEIVER, { dispatch: false });
+            const before = await parent.send(run.id, { contract: "BuildEvent@1", correlation: { buildId: 7 }, payload: BUILD, operation_id: "before" });
+            expect(before).toMatchObject({ ok: true, claimedBy: null });
+            const stop = await stoppedAt(run, parent.sessionId);
+            await h.catalog.softDeleteSession(parent.sessionId);
+            expect(await h.catalog.getSession(parent.sessionId)).toBeNull();
+            stop.release();
+            expect(await finished(h.store, run.runId)).toMatchObject({ status: "failed",
+                terminalOutput: { code: "unavailable", details: { sessionId: parent.sessionId } } });
+            const [entered] = await nodesOf(h.store, run.runId);
+            expect(entered).toMatchObject({ nodeId: "await_build", state: "completed", outcome: "unavailable", resultKind: "runtime_error",
+                winner: "controller", receive: null, deadlineAt: null });
+            expect((await h.store.listInbox(run.runId)).map(message => [message.messageId, message.consumedBy])).toEqual([[before.messageId, null]]);
+            // Its started event records the refusal the admission decided.
+            const stateEvents = await h.catalog.getSessionEvents(run.id, 0, 200, ["workflow.state_started"]);
+            expect(stateEvents.map(event => event.data).filter(data => data.stateId === "await_build")).toEqual([expect.objectContaining({
+                nodeExecutionId: entered.nodeExecutionId, immediateOutcome: "unavailable" })]);
+
+            // A named sender, a session of the workflow's user that gave an input, deleted the same way.
+            const alice = { provider: "test", subject: `alice-${randomUUID()}` };
+            const owner = await sessionOf(h, alice);
+            const reporter = await sessionOf(h, alice);
+            const named = await started(h, owner, RECEIVER({ from: true }), { vars: { secs: 60, reporter: reporter.sessionId }, owner: alice, dispatch: false });
+            const given = await reporter.send(named.id, { contract: "BuildEvent@1", correlation: { buildId: 7 }, payload: BUILD, operation_id: "given" });
+            expect(given).toMatchObject({ ok: true, claimedBy: null });
+            const namedStop = await stoppedAt(named, reporter.sessionId);
+            expect(namedStop.input.waitSeconds).toBe(60);
+            await h.catalog.softDeleteSession(reporter.sessionId);
+            namedStop.release();
+            expect(await finished(h.store, named.runId)).toMatchObject({ status: "failed",
+                terminalOutput: { code: "unavailable", details: { sessionId: reporter.sessionId } } });
+            expect((await nodesOf(h.store, named.runId))[0]).toMatchObject({ outcome: "unavailable", winner: "controller", receive: null, deadlineAt: null });
+            expect((await h.store.listInbox(named.runId)).map(message => message.consumedBy)).toEqual([null]);
+
+            // Control: the same stop and no deletion: the receive takes its live parent's earlier input.
+            const liveParent = await sessionOf(h);
+            const live = await started(h, liveParent, PARENT_RECEIVER, { dispatch: false });
+            const earlier = await liveParent.send(live.id, { contract: "BuildEvent@1", correlation: { buildId: 7 }, payload: BUILD, operation_id: "earlier" });
+            const liveStop = await stoppedAt(live, liveParent.sessionId);
+            liveStop.release();
+            expect(await finished(h.store, live.runId)).toMatchObject({ status: "completed", terminalOutput: BUILD });
+            const [took] = await nodesOf(h.store, live.runId);
+            expect(took).toMatchObject({ outcome: "received", winner: "message", output: BUILD,
+                receive: { contract: "BuildEvent@1", from: liveParent.sessionId, correlation: { buildId: 7 } } });
+            expect((await h.store.listInbox(live.runId)).map(message => [message.messageId, message.consumedBy])).toEqual([[earlier.messageId, took.nodeExecutionId]]);
+            // A repeat of that committed admission returns it as stored, after its sender was deleted too.
+            await h.catalog.softDeleteSession(liveParent.sessionId);
+            const repeated = await h.store.enterNode(liveStop.input);
+            expect(repeated).toMatchObject({ admitted: true, inserted: false, node: { nodeExecutionId: took.nodeExecutionId, outcome: "received",
+                receive: { from: liveParent.sessionId }, completedAt: took.completedAt } });
+        } finally { await h.stop(); }
+    });
+
+    it("decides a fresh input's sender in its acceptance: a sender deleted after the send was checked and before it was accepted is refused, and nothing is stored", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const accepts = stopBefore("acceptInput", (input, spec) => input.workflowSessionId === spec.workflowSessionId);
+            const host = { ...h.host, store: accepts.wrap(h.store) };
+            const sendAs = async (sessionId, workflowId, args) => JSON.parse(await sendWorkflowInputFromTool({ workflow_id: workflowId, ...args },
+                { callerSessionId: sessionId, host }));
+            const alice = { provider: "test", subject: `alice-${randomUUID()}` };
+            const parent = await sessionOf(h, alice);
+            const run = await started(h, parent, RECEIVER({ wait: false }), { owner: alice });
+            const waiting = await nodeAt(h.store, run.runId, "await_build", 1, "pending");
+            const events = await inputEvents(h, run.id);
+            // The send passed the service's check (the parent is live) and is stopped before its acceptance's
+            // transaction; the parent is deleted; the acceptance refuses it.
+            const stop = accepts.arm({ workflowSessionId: run.id });
+            const sending = sendAs(parent.sessionId, run.id, { contract: "BuildEvent@1", correlation: { buildId: 7 }, payload: BUILD, operation_id: "x" });
+            await within(stop.reached, 30_000, "the acceptance to be stopped");
+            expect(stop.input).toMatchObject({ workflowSessionId: run.id, senderSessionId: parent.sessionId, operationId: "x" });
+            await h.catalog.softDeleteSession(parent.sessionId);
+            stop.release();
+            expect(await sending).toMatchObject({ ok: false, error: { code: "FORBIDDEN", message: TYPED_INPUT_REFUSALS.unavailable } });
+            expect(await h.store.listInbox(run.runId)).toEqual([]);
+            expect(await inputEvents(h, run.id)).toEqual(events);
+            expect(await h.store.readNodeExecution(waiting.nodeExecutionId)).toMatchObject({ state: "pending" });
+
+            // Control: the same stop and no deletion: a session of the workflow's user is accepted, and the receive takes it.
+            const colleague = await sessionOf(h, alice);
+            const liveStop = accepts.arm({ workflowSessionId: run.id });
+            const accepted = sendAs(colleague.sessionId, run.id, { contract: "BuildEvent@1", correlation: { buildId: 7 }, payload: BUILD, operation_id: "y" });
+            await within(liveStop.reached, 30_000, "the acceptance to be stopped");
+            liveStop.release();
+            expect(await accepted).toMatchObject({ ok: true, replayed: false, claimedBy: { nodeExecutionId: waiting.nodeExecutionId } });
+            expect(await finished(h.store, run.runId)).toMatchObject({ status: "completed", terminalOutput: BUILD });
+
+            // The acceptance decides with the same rule as the service, called directly: another user's session, a
+            // session of unknown ownership, a missing one and a deleted one are refused, and nothing is stored;
+            // the workflow's parent is accepted.
+            const owner = await sessionOf(h, alice);
+            const second = await started(h, owner, RECEIVER({ wait: false }), { owner: alice });
+            await nodeAt(h.store, second.runId, "await_build", 1, "pending");
+            const bob = await sessionOf(h, { provider: "test", subject: `bob-${randomUUID()}` });
+            const nobody = await sessionOf(h);
+            const direct = (senderSessionId, operationId) => h.store.acceptInput({
+                workflowSessionId: second.id, runId: second.runId, messageId: randomUUID(), senderSessionId, operationId,
+                requestSha256: sha256Hex(operationId), contract: "BuildEvent@1", correlationText: canonicalJson({ buildId: 7 }),
+                payloadText: canonicalJson(BUILD), ttlSeconds: 60, limits: WORKFLOW_V2_INBOX_LIMITS,
+            });
+            for (const [senderSessionId, refusal] of [[bob.sessionId, "forbidden"], [nobody.sessionId, "forbidden"], [randomUUID(), "unavailable"],
+                [parent.sessionId, "unavailable"]]) {
+                await expect(direct(senderSessionId, "direct"), `${refusal} ${senderSessionId}`).rejects
+                    .toMatchObject({ code: "FORBIDDEN", message: TYPED_INPUT_REFUSALS[refusal] });
+            }
+            expect(await h.store.listInbox(second.runId)).toEqual([]);
+            expect(await direct(owner.sessionId, "direct")).toMatchObject({ replayed: false, receipt: { senderSessionId: owner.sessionId,
+                claimedBy: { stateId: "await_build" } } });
+            expect(await finished(h.store, second.runId)).toMatchObject({ status: "completed", terminalOutput: BUILD });
         } finally { await h.stop(); }
     });
 

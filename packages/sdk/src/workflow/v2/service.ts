@@ -4,7 +4,7 @@ import type { SessionOwnerInfo } from "../../types.js";
 import type { WorkflowToolBinding } from "../tool-policy.js";
 import { compileWorkflowV2, declaredSemver, WORKFLOW_V2_API_VERSION, type WorkflowCompileResult } from "./compiler.js";
 import { boundedCanonicalJson, canonicalJson, isJsonObject, isStorableText, jsonbSafeText, jsonSha256, WorkflowJsonError, type JsonValue } from "./json.js";
-import { typedInputAuthority } from "./authority.js";
+import { TYPED_INPUT_REFUSALS, typedInputAuthority } from "./authority.js";
 import { schemaSetFor } from "./schema.js";
 import {
     correlationTextOf,
@@ -719,7 +719,10 @@ export const WORKFLOW_V2_INPUT_TTL_SECONDS = 86_400;
  * field of the request, and it must be allowed (authority.ts): the
  * workflow's live parent, or a live session of the same user as the
  * workflow (both owned by that user; unknown or system ownership grants
- * nothing). The run is
+ * nothing). That is checked here on the catalog's rows, and a fresh input
+ * again under the session locks when it is accepted, so a sender deleted
+ * in between is refused; a repeat is answered only when the check here
+ * allows its sender. The run is
  * the one named, or the live run. Its pinned definition must have a receive
  * state for the contract (an undeclared contract is refused as
  * UNSUPPORTED_CONTRACT), and the payload must satisfy the contract's schema
@@ -750,12 +753,10 @@ export async function sendWorkflowInputV2(
     const definition = await host.store.readDefinition(workflowSessionId);
     if (!definition) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `${workflowSessionId} is not a version 2 workflow.`);
     if (definition.state === "deleted") throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow was deleted.");
+    // An earlier refusal on the catalog's rows; a fresh input is decided again
+    // when it is accepted, under the session locks (store.acceptInput).
     const authority = await typedInputAuthority(host.catalog, host.store, workflowSessionId, senderSessionId);
-    if (authority === "unavailable") throw new WorkflowStoreError("FORBIDDEN", "The sending session or the workflow session is not available.");
-    if (authority === "forbidden") {
-        throw new WorkflowStoreError("FORBIDDEN", "Only the workflow's parent, or a session of the same user as the workflow, may give it input; "
-            + "a session with unknown or system ownership, or of another user, may not.");
-    }
+    if (authority !== "allowed") throw new WorkflowStoreError("FORBIDDEN", TYPED_INPUT_REFUSALS[authority]);
     const runs = await host.store.listRuns(workflowSessionId);
     const run = request.runId ? runs.find(item => item.runId === request.runId) : runs.find(item => item.mode === "live");
     if (!run) throw new WorkflowStoreError("RUN_NOT_FOUND", request.runId ? `Run ${request.runId} is not a run of this workflow.` : "This workflow has no live run to give input to.");

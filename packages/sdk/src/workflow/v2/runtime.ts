@@ -7,7 +7,6 @@ import { WORKFLOW_SCRIPTS_DISABLED_MESSAGE } from "../activities.js";
 import type { WorkflowToolBinding } from "../tool-policy.js";
 import type { WorkflowToolExecutor } from "../tool-executor.js";
 import { evaluateBindingTemplate, WorkflowBindingError, type BindingScope } from "./bindings.js";
-import { typedInputAuthority } from "./authority.js";
 import {
     FAILURE_ROUTE,
     RECEIVE_RECEIVED,
@@ -800,6 +799,12 @@ interface ReceiveSpec {
     from: string | null;
     /** Canonical JSON of the correlation object a message must carry. */
     correlationText: string;
+    /**
+     * With a sender: the runtime errors the admission records when that
+     * sender, as the store decides under its session locks, is not
+     * available or may not give this workflow input (store.enterNode).
+     */
+    refused: Readonly<Record<"unavailable" | "forbidden", NodeResultInput>> | null;
 }
 
 /** The most a correlation object may take as canonical JSON. */
@@ -920,11 +925,14 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     /**
      * A receive state's sender, correlation and contract, resolved when it
      * is entered. The parent selector names the definition's parent; a
-     * named session is the binding's value. Either way the sender must be
-     * live and may give this workflow typed input (authority.ts, the rule of
-     * send_workflow_input), otherwise the state fails with unavailable or
-     * forbidden at once, so it never waits for a sender that cannot send. A
-     * correlation is a JSON object of at most WORKFLOW_V2_MAX_CORRELATION_BYTES.
+     * named session is the binding's value. Whether that sender is live and
+     * may give this workflow typed input (authority.ts, the rule of
+     * send_workflow_input) is decided by the admission itself, under the
+     * session locks (store.enterNode): otherwise the state fails with
+     * unavailable or forbidden at once, so it never waits for a sender that
+     * could not send when it was admitted, even one deleted after this
+     * resolution. A correlation is a JSON object of at most
+     * WORKFLOW_V2_MAX_CORRELATION_BYTES.
      */
     const resolveReceive = async (node: WorkflowIRMessaging, run: WorkflowRunRow, scope: BindingScope)
         : Promise<{ spec: ReceiveSpec } | { failure: NodeResultInput }> => {
@@ -957,17 +965,12 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             }
             from = named;
         }
-        if (from !== null) {
-            const authority = await typedInputAuthority(deps.catalog, store, run.workflowSessionId, from);
-            if (authority === "unavailable") {
-                return { failure: runtimeError("unavailable", `Session ${from} does not exist or was deleted; it cannot send this input.`, { sessionId: from }) };
-            }
-            if (authority === "forbidden") {
-                return { failure: runtimeError("forbidden", `Session ${from} may not give this workflow input: only its parent, or a session of the same user `
-                    + "as the workflow, may (unknown or system ownership grants nothing).", { sessionId: from }) };
-            }
-        }
-        return { spec: { contract: node.contract, from, correlationText } };
+        const refused = from === null ? null : {
+            unavailable: runtimeError("unavailable", `Session ${from} does not exist or was deleted; it cannot send this input.`, { sessionId: from }),
+            forbidden: runtimeError("forbidden", `Session ${from} may not give this workflow input: only its parent, or a session of the same user `
+                + "as the workflow, may (unknown or system ownership grants nothing).", { sessionId: from }),
+        };
+        return { spec: { contract: node.contract, from, correlationText, refused } };
     };
     /** The value arriving at a node from its exact predecessor (or the initial input). */
     /**
@@ -1133,19 +1136,29 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 inputText = canonicalJson(null);
             }
             if (immediate) immediate = { ...immediate, winner: "controller" };
+            const projectionFor = (decided: NodeResultInput | null): SessionProjection => ({
+                sessionId: current.workflowSessionId,
+                events: [{ eventType: "workflow.state_started", data: {
+                    runId, nodeExecutionId, stateId: nodeId, scopeId, ordinal, type: node.type, step: ordinal, kvRevision,
+                    ...(arrivalRoute === CATCH_ALL_ROUTE ? { catchAll: true, failedNodeExecutionId: predecessorId } : {}),
+                    ...(decided ? { immediateOutcome: decided.outcome } : {}),
+                } }],
+                update: { touch: true },
+            });
+            // A refused sender fails the state as any immediate result does (the controller decides it).
+            const refusal = (decided: NodeResultInput) => {
+                const refused: NodeResultInput = { ...decided, winner: "controller" };
+                return { result: refused, projection: projectionFor(refused) };
+            };
             const result = await store.enterNode({
                 runId, nodeExecutionId, scopeId, nodeId, ordinal, nodeType: node.type, predecessorId, arrivalRoute, inputText, kvRevision, immediate,
                 waitSeconds: immediate ? null : waitFor,
-                receive: immediate ? null : receive,
-                projection: {
-                    sessionId: current.workflowSessionId,
-                    events: [{ eventType: "workflow.state_started", data: {
-                        runId, nodeExecutionId, stateId: nodeId, scopeId, ordinal, type: node.type, step: ordinal, kvRevision,
-                        ...(arrivalRoute === CATCH_ALL_ROUTE ? { catchAll: true, failedNodeExecutionId: predecessorId } : {}),
-                        ...(immediate ? { immediateOutcome: immediate.outcome } : {}),
-                    } }],
-                    update: { touch: true },
+                receive: immediate || !receive ? null : {
+                    contract: receive.contract, from: receive.from, correlationText: receive.correlationText,
+                    refused: receive.refused === null ? null
+                        : { unavailable: refusal(receive.refused.unavailable), forbidden: refusal(receive.refused.forbidden) },
                 },
+                projection: projectionFor(immediate),
             });
             if (result.admitted) {
                 return { admitted: true, nodeExecutionId, state: result.node.state,

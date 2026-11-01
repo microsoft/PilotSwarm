@@ -1,6 +1,7 @@
 import type { Pool, PoolClient } from "pg";
 import { parseDiagnostics, parseWorkflowIr, RECEIVE_RECEIVED, WAIT_ELAPSED, WORKFLOW_V2_API_VERSION, type WorkflowCompileResult, type WorkflowDiagnostic, type WorkflowIR } from "./compiler.js";
 import { canonicalJson, isJsonObject, isStorableText, jsonbSafeText, jsonbSafeValue, parseStoredJson, sha256Hex, type JsonValue } from "./json.js";
+import { decideTypedInputAuthority, TYPED_INPUT_REFUSALS, type AuthoritySession, type TypedInputAuthority } from "./authority.js";
 
 /**
  * PostgreSQL persistence for workflow v2 (tables from migrations 0085 and 0087 to 0089).
@@ -253,6 +254,15 @@ function strOrNull(row: Row, column: string): string | null {
     if (value === null || value === undefined) return null;
     return str(row, column);
 }
+/** A session row with its owner (session_owners, users), as the catalog reads it: an owner needs both provider and subject. */
+function authoritySessionFrom(row: Row): AuthoritySession {
+    const provider = strOrNull(row, "owner_provider");
+    const subject = strOrNull(row, "owner_subject");
+    return {
+        deleted: row.deleted_at !== null, isSystem: row.is_system === true, sessionKind: strOrNull(row, "session_kind"),
+        parentSessionId: strOrNull(row, "parent_session_id"), owner: provider && subject ? { provider, subject } : null,
+    };
+}
 function int(row: Row, column: string): number {
     const value = row[column];
     const parsed = typeof value === "string" ? Number(value) : value;
@@ -447,7 +457,7 @@ export function nodeExecutionIdFor(runId: string, scopeId: string, nodeId: strin
 export class WorkflowStore {
     private readonly t: {
         definitions: string; revisions: string; operations: string; runs: string; nodes: string; kvRevisions: string; inbox: string;
-        sessions: string; recordEvents: string; updateSession: string; softDeleteSession: string;
+        sessions: string; sessionOwners: string; users: string; recordEvents: string; updateSession: string; softDeleteSession: string;
     };
 
     constructor(private readonly pool: Pool, readonly schema: string) {
@@ -456,7 +466,8 @@ export class WorkflowStore {
             definitions: `${s}.workflow_definitions`, revisions: `${s}.workflow_revisions`,
             operations: `${s}.workflow_operations`, runs: `${s}.workflow_runs`, nodes: `${s}.workflow_node_executions`,
             kvRevisions: `${s}.workflow_kv_revisions`, inbox: `${s}.workflow_inbox`,
-            sessions: `${s}.sessions`, recordEvents: `${s}.cms_record_events`, updateSession: `${s}.cms_update_session`,
+            sessions: `${s}.sessions`, sessionOwners: `${s}.session_owners`, users: `${s}.users`,
+            recordEvents: `${s}.cms_record_events`, updateSession: `${s}.cms_update_session`,
             softDeleteSession: `${s}.cms_soft_delete_session`,
         };
     }
@@ -471,6 +482,56 @@ export class WorkflowStore {
         const { rows } = await client.query(
             `SELECT deleted_at FROM ${this.t.sessions} WHERE session_id = $1 FOR NO KEY UPDATE`, [workflowSessionId]);
         return Boolean(rows[0]) && rows[0].deleted_at === null;
+    }
+
+    /**
+     * Lock the workflow's session row and a typed-input sender's, then decide
+     * the sender's authority (authority.ts) on what this transaction reads
+     * after both locks are held: an input's acceptance and a receive's
+     * admission decide here, not on an earlier read. The session rows are
+     * locked in ascending session id order, before any definition, run or
+     * node row: the workflow's FOR NO KEY UPDATE (as lockLiveSession), the
+     * sender's FOR SHARE. A soft delete of the sender (an update of its row)
+     * that committed before the lock is read; one that did not waits until
+     * this transaction ends. So each deletion of the sender takes effect
+     * wholly before or wholly after this decision: the lock is its
+     * linearization point. Only rows that the locks found count (a session
+     * created after its lock was missing is missing here too). Both sessions
+     * and their owners are then read in one statement, so the decision sees
+     * one committed state of session_owners and users: an owner is assigned
+     * once (first assignment wins), and only the merge of a placeholder user
+     * into its real user re-points owners, in one transaction. The
+     * definition's parent is never updated. PostgreSQL detects a lock cycle
+     * with a writer that locks both rows in another order and aborts one
+     * transaction: an admission is then retried by its activity, and a send
+     * may be repeated with its operation id.
+     */
+    private async lockInputSessions(client: PoolClient, workflowSessionId: string, senderSessionId: string)
+        : Promise<{ live: boolean; authority: TypedInputAuthority }> {
+        const locked = new Set<string>();
+        for (const sessionId of [...new Set([workflowSessionId, senderSessionId])].sort()) {
+            const { rows } = await client.query(
+                `SELECT 1 FROM ${this.t.sessions} WHERE session_id = $1 FOR ${sessionId === workflowSessionId ? "NO KEY UPDATE" : "SHARE"}`, [sessionId]);
+            if (rows[0]) locked.add(sessionId);
+        }
+        const { rows } = await client.query(
+            `SELECT s.session_id, s.deleted_at, s.is_system, s.session_kind, s.parent_session_id,
+                    u.provider AS owner_provider, u.subject AS owner_subject
+               FROM ${this.t.sessions} s
+               LEFT JOIN ${this.t.sessionOwners} so ON so.session_id = s.session_id
+               LEFT JOIN ${this.t.users} u ON u.user_id = so.user_id
+              WHERE s.session_id = ANY($1::text[])`, [[...locked]]);
+        const found = new Map<string, AuthoritySession>(rows.map(row => [str(row, "session_id"), authoritySessionFrom(row)] as [string, AuthoritySession]));
+        const workflow = found.get(workflowSessionId) ?? null;
+        const { rows: definitions } = await client.query(
+            `SELECT parent_session_id FROM ${this.t.definitions} WHERE workflow_session_id = $1`, [workflowSessionId]);
+        return {
+            live: workflow !== null && !workflow.deleted,
+            authority: decideTypedInputAuthority({
+                workflow, definition: definitions[0] ? { parentSessionId: strOrNull(definitions[0], "parent_session_id") } : null,
+                sender: found.get(senderSessionId) ?? null, senderSessionId,
+            }),
+        };
     }
 
     private async requireLiveSession(client: PoolClient, workflowSessionId: string): Promise<void> {
@@ -1308,6 +1369,14 @@ export class WorkflowStore {
      * can claim it (acceptInput). Its deciding reading of the store's clock
      * is taken once after the locks and guards; selection, entered_at,
      * completed_at, the deadline and consumed_at all use it exactly.
+     *
+     * A receive that names a sender locks the workflow's and the sender's
+     * session rows (lockInputSessions) and decides there whether that
+     * sender may give this workflow input: a sender deleted before this
+     * transaction, missing, or without authority fails the receive at once
+     * with the refusal the receive carries (no spec, deadline or claim). A
+     * retry of a committed admission returns it as stored, whatever
+     * happened to its sender since.
      */
     async enterNode(input: {
         runId: string;
@@ -1328,15 +1397,31 @@ export class WorkflowStore {
          * A receive state that races a wait has them too.
          */
         waitSeconds: number | null;
-        /** What a receive state accepts (null for other states and for one that failed at admission). */
-        receive?: { contract: string; from: string | null; correlationText: string } | null;
+        /**
+         * What a receive state accepts (null for other states and for one
+         * that failed at admission). A receive with a sender (from) also
+         * carries what the admission records instead when that sender, as
+         * decided under the session locks (lockInputSessions), is not
+         * available or may not give this workflow input: an immediate result
+         * and its projection, by refusal.
+         */
+        receive?: {
+            contract: string;
+            from: string | null;
+            correlationText: string;
+            refused: Readonly<Record<Exclude<TypedInputAuthority, "allowed">, { result: NodeResultInput; projection?: SessionProjection }>> | null;
+        } | null;
         immediate: NodeResultInput | null;
         projection?: SessionProjection;
     }): Promise<{ admitted: true; inserted: boolean; node: WorkflowNodeExecutionRow }
         | { admitted: false; reason: "inactive" | "kv_changed"; run: WorkflowRunRow }> {
         const inputSha256 = sha256Hex(input.inputText);
         return this.transaction(async client => {
-            const live = await this.lockLiveSession(client, await this.workflowOfRun(client, input.runId));
+            const workflowSessionId = await this.workflowOfRun(client, input.runId);
+            const sender = input.receive?.from ?? null;
+            const decided = sender === null ? null : await this.lockInputSessions(client, workflowSessionId, sender);
+            const live = decided === null ? await this.lockLiveSession(client, workflowSessionId) : decided.live;
+            const senderAuthority = decided === null ? null : decided.authority;
             const run = await this.lockRun(client, input.runId);
             const existing = await client.query(`SELECT * FROM ${this.t.nodes} WHERE node_execution_id = $1`, [input.nodeExecutionId]);
             if (existing.rows[0]) {
@@ -1352,10 +1437,12 @@ export class WorkflowStore {
             // A paused run admits nothing new; a deleted or ended one admits nothing at all.
             if (!live || !ADMITTING_RUN_STATUSES.includes(run.status)) return { admitted: false as const, reason: "inactive" as const, run };
             if (run.kvRevision !== input.kvRevision) return { admitted: false as const, reason: "kv_changed" as const, run };
-            const immediate = input.immediate;
-            const receive = input.receive ?? null;
-            // A receive spec belongs to a receive state admitted without an immediate result.
-            if ((receive !== null) !== (input.nodeType === "messaging" && immediate === null)) {
+            let immediate = input.immediate;
+            let receive = input.receive ?? null;
+            // A receive spec belongs to a receive state admitted without an
+            // immediate result, and has refusals exactly when it names a sender.
+            if ((receive !== null) !== (input.nodeType === "messaging" && immediate === null)
+                || (receive !== null && (receive.from === null) !== (receive.refused === null))) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has an invalid receive spec.`);
             }
             // A wait admitted pending has a whole number of seconds; a receive may
@@ -1365,6 +1452,20 @@ export class WorkflowStore {
             if ((waits && input.waitSeconds === null) || (!mayWait && input.waitSeconds !== null)
                 || (input.waitSeconds !== null && !(Number.isSafeInteger(input.waitSeconds) && input.waitSeconds >= 1))) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has invalid wait seconds.`);
+            }
+            // The receive's sender, decided under the session locks: one that
+            // was deleted, is missing or may not send fails the receive now,
+            // with no spec, no deadline and no claim. A sender deleted after
+            // this transaction does not change the admission it committed.
+            let waitSeconds = input.waitSeconds;
+            let projection = input.projection;
+            if (receive !== null && senderAuthority !== null && senderAuthority !== "allowed") {
+                if (receive.refused === null) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has an invalid receive spec.`);
+                const refusal = receive.refused[senderAuthority];
+                immediate = refusal.result;
+                projection = refusal.projection;
+                receive = null;
+                waitSeconds = null;
             }
             // A receive decides at one reading of the store's clock, taken here,
             // after the locks and guards, and kept as exact SQL text (a
@@ -1409,11 +1510,10 @@ export class WorkflowStore {
                     result?.outcome ?? null, result?.resultKind ?? null,
                     result?.resultKind === "business" ? result.valueText : null,
                     result?.resultKind === "runtime_error" ? result.valueText : null,
-                    result?.winner ?? null, input.kvRevision, claim ? null : input.waitSeconds,
+                    result?.winner ?? null, input.kvRevision, claim ? null : waitSeconds,
                     receive?.contract ?? null, receive?.from ?? null, receive?.correlationText ?? null, decidedAt],
             );
             const node = nodeFrom(rows[0]);
-            let projection = input.projection;
             if (claim) {
                 const { rows: claimed } = await client.query(
                     `UPDATE ${this.t.inbox} SET consumed_by = $2, consumed_at = $3::timestamptz WHERE message_id = $1 AND consumed_by IS NULL RETURNING message_id`,
@@ -1557,7 +1657,11 @@ export class WorkflowStore {
     /**
      * Accept one typed input for a run, once per (workflow, sender, operation
      * id), in one transaction under the session and run locks (the order an
-     * admission takes them). One reading of the store's clock, taken after
+     * admission takes them). A fresh input is accepted only when its sender
+     * may give this workflow input as this transaction decides it, under the
+     * workflow's and the sender's session locks (lockInputSessions): a
+     * sender deleted before then is refused (FORBIDDEN), and nothing is
+     * stored or recorded. One reading of the store's clock, taken after
      * the locks and kept as exact SQL text (a JavaScript Date keeps only
      * milliseconds), decides everything here: the inbox bounds, the input's
      * accepted_at and expires_at, and whether a waiting receive takes it.
@@ -1575,7 +1679,9 @@ export class WorkflowStore {
      * The acceptance's receipt is stored with the input and never rewritten:
      * a repeat of the request returns it as stored, whatever happened to the
      * input since (listInbox shows that); another request with the id is
-     * refused. A deleted workflow takes no input, and a repeat to it is
+     * refused. Whether a repeat is answered at all is the caller's policy
+     * (sendWorkflowInputV2 checks its sender first); this does not decide it
+     * again. A deleted workflow takes no input, and a repeat to it is
      * refused too. The inbox bounds are checked before anything is stored.
      */
     async acceptInput(input: {
@@ -1595,7 +1701,8 @@ export class WorkflowStore {
             throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Message ${input.messageId} has an invalid ttl.`);
         }
         return this.transaction(async client => {
-            if (!await this.lockLiveSession(client, input.workflowSessionId)) throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow was deleted.");
+            const decided = await this.lockInputSessions(client, input.workflowSessionId, input.senderSessionId);
+            if (!decided.live) throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow was deleted.");
             const { rows: priorRows } = await client.query(
                 `SELECT run_id, request_sha256, receipt FROM ${this.t.inbox}
                   WHERE workflow_session_id = $1 AND sender_session_id = $2 AND operation_id = $3`,
@@ -1614,6 +1721,7 @@ export class WorkflowStore {
                 if (!runRows[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Input ${input.operationId} names a missing run.`);
                 return { receipt: parseInputReceipt(parseStoredJson(receiptText, "receipt")), replayed: true, run: runFrom(runRows[0]) };
             }
+            if (decided.authority !== "allowed") throw new WorkflowStoreError("FORBIDDEN", TYPED_INPUT_REFUSALS[decided.authority]);
             const run = await this.lockRun(client, input.runId);
             if (run.workflowSessionId !== input.workflowSessionId) throw new WorkflowStoreError("RUN_NOT_FOUND", `Run ${input.runId} is not a run of this workflow.`);
             if (!ACTIVE_RUN_STATUSES.includes(run.status)) {
