@@ -75,7 +75,6 @@ export class WebPilotSwarmClient {
             computeTarget: config?.computeTarget,
             groupId: config?.groupId,
             ...(config?.workspace != null ? { workspace: config.workspace } : {}),
-            ...(config?.computeTarget != null ? { computeTarget: config.computeTarget } : {}),
         });
         return new WebPilotSwarmSession(view.sessionId, this._api, config?.onUserInputRequest);
     }
@@ -89,7 +88,6 @@ export class WebPilotSwarmClient {
         splashMobile?: string;
         initialPrompt?: string;
         groupId?: string | null;
-        computeTarget?: string | null;
         computeTarget?: string | null;
         /** Session workspaces: the working folder, { root, folder? }. */
         workspace?: { root: string; folder?: string } | null;

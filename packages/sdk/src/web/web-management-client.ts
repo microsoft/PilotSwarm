@@ -875,19 +875,41 @@ export class WebPilotSwarmManagementClient {
         return this.ops.listComputeTargets();
     }
 
-    async createComputeTarget(_viewer: unknown, input: Record<string, unknown>): Promise<any> {
+    async createComputeTarget(_viewer: unknown, input: {
+        name?: string;
+        label?: string;
+        kind: string;
+        displayName?: string | null;
+        config?: Record<string, unknown> | null;
+    }): Promise<any> {
         return this.ops.createComputeTarget(input);
     }
 
-    async createMyComputeTarget(_viewer: unknown, input: Record<string, unknown>): Promise<any> {
+    async createMyComputeTarget(_viewer: unknown, input: {
+        name?: string;
+        label?: string;
+        kind: string;
+        displayName?: string | null;
+        config?: Record<string, unknown> | null;
+    }): Promise<any> {
         return this.ops.createMyComputeTarget(input);
     }
 
-    async updateComputeTarget(_viewer: unknown, input: Record<string, unknown>): Promise<any> {
+    async updateComputeTarget(_viewer: unknown, input: {
+        name: string;
+        displayName?: string | null;
+        config?: Record<string, unknown> | null;
+        enabled?: boolean | null;
+    }): Promise<any> {
         return this.ops.updateComputeTarget(input);
     }
 
-    async updateMyComputeTarget(_viewer: unknown, input: Record<string, unknown>): Promise<any> {
+    async updateMyComputeTarget(_viewer: unknown, input: {
+        name: string;
+        displayName?: string | null;
+        config?: Record<string, unknown> | null;
+        enabled?: boolean | null;
+    }): Promise<any> {
         return this.ops.updateMyComputeTarget(input);
     }
 

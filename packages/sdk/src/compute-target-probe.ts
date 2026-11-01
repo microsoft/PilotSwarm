@@ -23,7 +23,7 @@ export function withoutComputeTargetConfig(
     };
 }
 
-export function computeTargetProbeOrchestration(ctx: any, input: ComputeTargetProbeInput) {
+export function computeTargetProbeOrchestration(ctx: any, input: ComputeTargetProbeInput): Generator<any, any, any> {
     return (function* () {
         return yield ctx.scheduleActivity(COMPUTE_TARGET_PROBE_ACTIVITY, input);
     })();
