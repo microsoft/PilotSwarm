@@ -976,17 +976,22 @@ export class WorkflowStore {
      * Apply a lifecycle command (cancel, done or delete) that a parent's
      * durable session sent to its v2 workflow child, once per operation id,
      * in one transaction under the session, definition and run locks:
+     * - delete soft-deletes the child here, whatever its run is doing: the
+     *   deletion trigger (migrations 0086, 0087) tombstones the definition
+     *   and ends an active run in this same transaction (its pending nodes
+     *   lose to the deletion, and a running script's liveness check stops
+     *   it); a run that already ended keeps its result. A delete never waits
+     *   in a queue, where a run that ended first would leave it unapplied;
      * - cancel or done of a live run that has not begun ends it here, as
      *   update_workflow cancel does (done is cancel with its "Stopped" reason);
-     * - delete of a child whose live run has not begun, has ended, or that
-     *   has no run (a draft) soft-deletes the child here: the deletion trigger
-     *   (migrations 0086, 0087) tombstones the definition and ends any active
-     *   run in this same transaction;
-     * - for a run that has begun, its controller (which began it) applies the
-     *   command: the receipt says "queued", and the caller queues it;
+     * - cancel or done of a run that has begun is for its controller (which
+     *   began it): the receipt says "queued", and the caller queues it; a run
+     *   that ends first makes it moot (the first run end stands);
      * - cancel or done with no active run has nothing to apply ("none").
      * The receipt (kind session-<command>) records how it was applied and the
-     * run as it was accepted; it is stored once, and a repeat returns it.
+     * run as it was accepted; it is stored once and never rewritten. A repeat
+     * returns it; a repeat of an accepted delete whose child is still live
+     * (an earlier head queued deletes) deletes the child now.
      */
     async recordSessionCommand(input: {
         workflowSessionId: string;
@@ -1011,18 +1016,26 @@ export class WorkflowStore {
                 `SELECT * FROM ${this.t.runs} WHERE workflow_session_id = $1 AND mode = 'live' ORDER BY created_at DESC LIMIT 1 FOR UPDATE`,
                 [input.workflowSessionId]);
             let run = liveRows[0] ? runFrom(liveRows[0]) : null;
-            if (priorRows[0]) return { receipt: parseSessionCommandReceipt(parseStoredJson(str(priorRows[0], "receipt"), "receipt")), replayed: true, run };
+            // Locks held: the session row (the soft delete updates it), the definition and the run, which the trigger updates.
+            const softDelete = async (): Promise<void> => {
+                await client.query(`SELECT ${this.t.softDeleteSession}($1)`, [input.workflowSessionId]);
+                if (run) run = runFrom((await client.query(`SELECT * FROM ${this.t.runs} WHERE run_id = $1`, [run.runId])).rows[0]);
+            };
+            if (priorRows[0]) {
+                const prior = parseSessionCommandReceipt(parseStoredJson(str(priorRows[0], "receipt"), "receipt"));
+                // An accepted delete holds whatever the run did since; the session is live here, so it was not applied yet.
+                if (prior.command === "delete") await softDelete();
+                return { receipt: prior, replayed: true, run };
+            }
             const begun = run !== null && ACTIVE_RUN_STATUSES.includes(run.status) && !runNotBegun(run);
             let applied: WorkflowSessionCommandReceipt["applied"];
             let status: string | null = run?.status ?? null;
-            if (begun) {
-                applied = "queued";
-            } else if (input.command === "delete") {
-                // Locks held: the session row (this soft delete updates it), the definition and the run, which the trigger updates.
-                await client.query(`SELECT ${this.t.softDeleteSession}($1)`, [input.workflowSessionId]);
-                if (run) run = runFrom((await client.query(`SELECT * FROM ${this.t.runs} WHERE run_id = $1`, [run.runId])).rows[0]);
+            if (input.command === "delete") {
+                await softDelete();
                 applied = "store";
                 status = "deleted";
+            } else if (begun) {
+                applied = "queued";
             } else if (run !== null && runNotBegun(run)) {
                 run = await this.cancelBeforeBegin(client, run, { ...input, command: input.command }, false);
                 applied = "store";

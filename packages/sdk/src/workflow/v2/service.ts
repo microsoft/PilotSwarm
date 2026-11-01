@@ -625,13 +625,16 @@ function parseSessionLifecycleCommand(raw: unknown): { cmd: "cancel" | "done" | 
  * - the store applies the command once per operation id
  *   (SESSION_COMMAND_OPERATION_PREFIX plus the command's id, which the
  *   orchestration derives deterministically), in one transaction
- *   (store.recordSessionCommand): cancel and done end a run that has not
- *   begun (done keeps its "Stopped" meaning); delete soft-deletes the child,
- *   and the deletion trigger tombstones it and ends its run in that
- *   transaction; for a run that has begun, its controller applies the
- *   queued command;
- * - a retry of the activity replays the receipt (and queues the command
- *   again while that run is active); another request with that id fails.
+ *   (store.recordSessionCommand): delete always soft-deletes the child (the
+ *   deletion trigger tombstones it and ends an active run in that
+ *   transaction; a run that already ended keeps its result), then its facts
+ *   are removed; cancel and done end a run that has not begun (done keeps
+ *   its "Stopped" meaning), and for a run that has begun its controller
+ *   applies the queued command;
+ * - a retry of the activity replays the receipt: it queues a cancel or done
+ *   again while that run is active, and applies an accepted delete whose
+ *   child is still live, then the facts cleanup; another request with that
+ *   id fails.
  * Every other target (an ordinary agent session, a legacy workflow) returns
  * "enqueue": the caller queues the command as before.
  */
@@ -670,11 +673,12 @@ export async function applySessionCommandToWorkflowV2(
         throw error;
     }
     const { receipt, run } = stored;
-    if (receipt.applied === "queued") {
-        // The run's controller applies it; queue it while that run is active (a repeat queues it again).
-        if (run !== null && ACTIVE_RUN_STATUSES.includes(run.status)) return { action: "enqueue" };
+    if (command.cmd === "delete") {
+        // The store deleted the child in this call (or a repeat found an accepted delete and applied it): remove its facts.
+        if (host.deleteSessionFacts) await host.deleteSessionFacts(workflowSessionId);
         return { action: "applied", receipt };
     }
-    if (receipt.applied === "store" && command.cmd === "delete" && host.deleteSessionFacts) await host.deleteSessionFacts(workflowSessionId);
+    // A cancel or done for the run's controller: queue it while that run is active (a repeat queues it again); a run that ended makes it moot.
+    if (receipt.applied === "queued" && run !== null && ACTIVE_RUN_STATUSES.includes(run.status)) return { action: "enqueue" };
     return { action: "applied", receipt };
 }

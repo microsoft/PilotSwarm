@@ -5848,11 +5848,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         activityCtx.traceInfo(`[sendCommandToSession] session=${input.sessionId} cmd=${input.command?.cmd}`);
         // A v2 workflow child may have no controller to read a queued command
         // (its run has not begun, and duroxide drops a queue message for an
-        // instance that has not started; or it has no run): the v2 store
-        // applies cancel, done and delete for the child's own parent, and
-        // queues it only for a run whose controller began it. Every other
-        // target keeps the queued command. The activity's input and result
-        // are unchanged.
+        // instance that has not started; or it has no run): for the child's
+        // own parent, the v2 store applies delete always, and cancel and done
+        // unless a controller began the run (those are queued for it). Every
+        // other target keeps the queued command. The activity's input and
+        // result are unchanged.
         if (catalog?.workflowStore) {
             const facts = factStore ?? null;
             const applied = await applySessionCommandToWorkflowV2({
