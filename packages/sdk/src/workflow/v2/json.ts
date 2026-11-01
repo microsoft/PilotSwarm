@@ -95,6 +95,16 @@ export function jsonSha256(value: unknown): string {
     return sha256Hex(canonicalJson(value));
 }
 
+/**
+ * sha256 of the canonical text of `{kind, value}`, built from the value's
+ * canonical text (`valueText`, already validated): the same bytes as
+ * jsonSha256({kind, value}), but the envelope adds no nesting level, so a
+ * value at the full WORKFLOW_JSON_MAX_DEPTH keeps its identity.
+ */
+export function kindValueSha256(kind: string, valueText: string): string {
+    return sha256Hex(`{"kind":${JSON.stringify(kind)},"value":${valueText}}`);
+}
+
 /** Canonical text bounded by `maxBytes`; the error names what was too large. */
 export function boundedCanonicalJson(value: unknown, what: string, maxBytes = WORKFLOW_PAYLOAD_MAX_BYTES): string {
     const text = canonicalJson(value);

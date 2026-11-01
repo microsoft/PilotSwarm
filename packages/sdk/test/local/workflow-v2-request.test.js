@@ -43,9 +43,19 @@
  *   special keys) are kept exactly;
  * - request rows, responses and bindings never change except a binding's
  *   repeat counters, a settled wake never changes, and none is deleted.
+ *
+ * The independent review of the store (RQF-1 to RQF-4), each on the real
+ * store: a response's identity is hashed from its canonical text, so a value
+ * at the full JSON depth keeps it; the admission and every new decision use
+ * the response schema that the state's contract declares in the pinned
+ * definition, and anything else is store corruption; inspection and every
+ * response path, a known operation's replay included, check a request's
+ * committed state whole (its node, run, message, response, receipt, winning
+ * binding and wake intent); and the request rule comes before the operation
+ * id and the call, so every refused caller gets the same REQUEST_NOT_FOUND.
  */
 import { describe, it, expect } from "vitest";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import pg from "pg";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { withClient } from "../helpers/local-workers.js";
@@ -53,7 +63,7 @@ import { PgSessionCatalog } from "../../src/cms.ts";
 import {
     compileWorkflowV2, parseWorkflowIr, REQUEST_RESPONSE_SCHEMA_MAX_BYTES, WORKFLOW_V2_REQUEST_IR_VERSION, WORKFLOW_V2_SEND_IR_VERSION,
 } from "../../src/workflow/v2/compiler.ts";
-import { canonicalJson, jsonSha256 } from "../../src/workflow/v2/json.ts";
+import { canonicalJson, jsonSha256, kindValueSha256 } from "../../src/workflow/v2/json.ts";
 import { schemaReferences } from "../../src/workflow/v2/schema.ts";
 import { createWorkflowV2, updateWorkflowV2 } from "../../src/workflow/v2/service.ts";
 import { describeWorkflowV2State, workflowLiveControllerInstanceId } from "../../src/workflow/v2/runtime.ts";
@@ -481,22 +491,28 @@ async function requestHarness(env) {
         return { workflowSessionId, runId };
     };
     const refusal = (code) => ({ result: { outcome: code, resultKind: "runtime_error", valueText: canonicalJson({ code, message: code }), winner: "controller" } });
-    /** Admit request state `nodeId` (ordinal `ordinal`) of a run to `recipient`. */
-    const admit = async (run, recipient, { nodeId = "ask", ordinal = 1, timeoutSeconds = 3600, payload = { q: "ship?" } } = {}) => {
+    /**
+     * Enter request state `nodeId` (ordinal `ordinal`) of a run for `recipient`, with the spec the compiled definition
+     * gives unless `contract` or `responseSchema` overrides it (a spec no runtime would pass).
+     */
+    const enter = (run, recipient, { nodeId = "ask", ordinal = 1, timeoutSeconds = 3600, payload = { q: "ship?" }, contract, responseSchema } = {}) => {
         const node = compiled.ir.nodes[nodeId];
-        const nodeExecutionId = nodeExecutionIdFor(run.runId, "root", nodeId, ordinal);
-        const admitted = await store.enterNode({
-            runId: run.runId, nodeExecutionId, scopeId: "root", nodeId, ordinal, nodeType: "messaging", predecessorId: null, arrivalRoute: null,
-            inputText: canonicalJson(payload), kvRevision: 1, waitSeconds: null, immediate: null,
+        return store.enterNode({
+            runId: run.runId, nodeExecutionId: nodeExecutionIdFor(run.runId, "root", nodeId, ordinal), scopeId: "root", nodeId, ordinal,
+            nodeType: "messaging", predecessorId: null, arrivalRoute: null, inputText: canonicalJson(payload), kvRevision: 1, waitSeconds: null, immediate: null,
             request: {
-                recipient, contract: node.contract, payloadText: canonicalJson(payload), correlationText: "{}",
+                recipient, contract: contract ?? node.contract, payloadText: canonicalJson(payload), correlationText: "{}",
                 refused: { unavailable: refusal("unavailable"), forbidden: refusal("forbidden") },
-                timeoutSeconds, responseSchema: compiled.ir.contracts[node.contract].response.schema,
+                timeoutSeconds, responseSchema: responseSchema ?? compiled.ir.contracts[node.contract].response.schema,
                 workflowRecipient: refusal("unsupported_contract"),
             },
         });
+    };
+    /** Admit request state `nodeId` (ordinal `ordinal`) of a run to `recipient`. */
+    const admit = async (run, recipient, options = {}) => {
+        const admitted = await enter(run, recipient, options);
         expect(admitted.admitted).toBe(true);
-        return { exchangeId: nodeExecutionId, node: admitted.node };
+        return { exchangeId: nodeExecutionIdFor(run.runId, "root", options.nodeId ?? "ask", options.ordinal ?? 1), node: admitted.node };
     };
     const respond = (exchangeId, actorSessionId, operationId, call) => store.respondToRequest({ exchangeId, actorSessionId, operationId, call });
     const operations = async (exchangeId) => Number((await q("SELECT count(*)::int AS n FROM SCHEMA.workflow_request_operations WHERE exchange_id = $1",
@@ -504,8 +520,17 @@ async function requestHarness(env) {
     const binding = async (exchangeId, operationId) => (await q(
         "SELECT result_sha256, outcome, status, count FROM SCHEMA.workflow_request_operations WHERE exchange_id = $1 AND operation_id = $2",
         [exchangeId, operationId]))[0] ?? null;
+    /** Run one statement with migration 0093's guard trigger on `table` off: a committed fixture the store's own writes never make. */
+    const withoutGuard = async (table, text, params = []) => {
+        await q(`ALTER TABLE SCHEMA.${table} DISABLE TRIGGER ${table}_guard`);
+        try { return await q(text, params); } finally { await q(`ALTER TABLE SCHEMA.${table} ENABLE TRIGGER ${table}_guard`); }
+    };
+    /** The requester's workflow.state_completed events for one request. */
+    const stateCompleted = async (workflowSessionId, exchangeId) => (await catalog.getSessionEvents(workflowSessionId, 0, 1000))
+        .filter(event => event.eventType === "workflow.state_completed" && event.data?.exchangeId === exchangeId).length;
     return {
-        catalog, store, q, alice, bob, parent, peer, stranger, compiled, session, workflow, admit, respond, operations, binding,
+        catalog, store, q, alice, bob, parent, peer, stranger, compiled, session, workflow, enter, admit, respond, operations, binding, withoutGuard,
+        stateCompleted,
         async stop() { await catalog.close(); await direct.end(); },
     };
 }
@@ -762,6 +787,241 @@ describe("workflow v2 request states: records and the response transaction (stor
                 winner = 'controller', completed_at = now() WHERE node_execution_id = $1`, [other.exchangeId]);
             await expectCode(h.store.readRequest(other.exchangeId), "WORKFLOW_STORE_CORRUPT");
             await expectCode(h.respond(other.exchangeId, h.parent, "x", { response: { approved: true } }), "WORKFLOW_STORE_CORRUPT");
+        } finally { await h.stop(); }
+    });
+});
+
+/** The independent review of the store (RQF-1 to RQF-4): each finding's real-store oracle. */
+describe("workflow v2 request states: the store's review corrections", () => {
+    const X = { approved: true };
+
+    it("keeps a response at the full JSON depth: its identity is hashed from its canonical text (RQF-1)", { timeout: TIMEOUT }, async () => {
+        const h = await requestHarness(getEnv());
+        try {
+            const run = await h.workflow();
+            const nest = depth => {
+                let value = null;
+                for (let level = 0; level < depth; level += 1) value = [value];
+                return value;
+            };
+            // The identity is the sha256 of the exact canonical text {"kind":...,"value":...}, computed here on its own.
+            const envelope = (kind, value) => createHash("sha256").update(`{"kind":"${kind}","value":${canonicalJson(value)}}`, "utf8").digest("hex");
+            expect(envelope("response", nest(63))).toBe(jsonSha256({ kind: "response", value: nest(63) }));
+            expect(kindValueSha256("decline", canonicalJson({ reason: "no" }))).toBe(jsonSha256({ kind: "decline", value: { reason: "no" } }));
+            expect(kindValueSha256("response", canonicalJson(nest(64)))).toBe(envelope("response", nest(64)));
+            for (const [ordinal, depth] of [[1, 63], [2, 64]]) {
+                const value = nest(depth);
+                const { exchangeId } = await h.admit(run, h.parent, { nodeId: "free", ordinal, payload: null });
+                const decided = await h.respond(exchangeId, h.parent, `deep-${depth}`, { response: value });
+                expect(decided, `depth ${depth}`).toMatchObject({ kind: "accepted", replayed: false, status: "responded",
+                    receipt: { resultSha256: envelope("response", value) } });
+                expect(await h.respond(exchangeId, h.parent, `deep-${depth}`, { response: value }), `depth ${depth}`).toEqual({ ...decided, replayed: true });
+                const view = await h.store.readRequest(exchangeId);
+                expect(view.response.resultSha256).toBe(envelope("response", value));
+                expect(canonicalJson(view.response.value)).toBe(canonicalJson(value));
+                expect(view.wake).toMatchObject({ state: "pending" });
+            }
+            // One level deeper is not a workflow JSON value: refused, and nothing is written.
+            const { exchangeId } = await h.admit(run, h.parent, { nodeId: "free", ordinal: 3, payload: null });
+            await expectCode(h.respond(exchangeId, h.parent, "deep-65", { response: nest(65) }), "RESPONSE_INVALID");
+            expect(await h.store.readRequest(exchangeId)).toMatchObject({ status: "pending", response: null, wake: null, operations: 0 });
+            expect(await h.stateCompleted(run.workflowSessionId, exchangeId)).toBe(0);
+        } finally { await h.stop(); }
+    });
+
+    it("freezes the response schema that the state's contract declares in the pinned definition (RQF-2)", { timeout: TIMEOUT }, async () => {
+        const h = await requestHarness(getEnv());
+        try {
+            const run = await h.workflow();
+            // The admission refuses a spec that is not its state's: another schema of the definition, an unknown schema,
+            // or a contract that is not the state's. Nothing is stored.
+            for (const [ordinal, spec] of [
+                [1, { contract: "Approval@1", responseSchema: "Any" }],
+                [2, { contract: "Approval@1", responseSchema: "Nope" }],
+                [3, { contract: "Free@1", responseSchema: "Any" }],
+            ]) {
+                const exchangeId = nodeExecutionIdFor(run.runId, "root", "ask", ordinal);
+                await expectCode(h.enter(run, h.parent, { ordinal, ...spec }), "WORKFLOW_STORE_CORRUPT");
+                expect(await h.store.readNodeExecution(exchangeId), JSON.stringify(spec)).toBeNull();
+                expect(await h.store.readOutboxMessage(exchangeId)).toBeNull();
+                expect(await h.store.readRequest(exchangeId)).toBeNull();
+            }
+            // Positive controls: Approval@1 answered against Answer, Free@1 with any JSON, and a strict decline.
+            const ask = await h.admit(run, h.parent, { ordinal: 4 });
+            expect(await h.store.readRequest(ask.exchangeId)).toMatchObject({ contract: "Approval@1", responseSchema: "Answer" });
+            await expectCode(h.respond(ask.exchangeId, h.parent, "bad", { response: null }), "RESPONSE_INVALID");
+            expect(await h.respond(ask.exchangeId, h.parent, "ok", { response: X })).toMatchObject({ kind: "accepted", status: "responded" });
+            const free = await h.admit(run, h.parent, { nodeId: "free", ordinal: 5, payload: null });
+            expect(await h.respond(free.exchangeId, h.parent, "ok", { response: null })).toMatchObject({ kind: "accepted", status: "responded" });
+            const declined = await h.admit(run, h.parent, { ordinal: 6 });
+            expect(await h.respond(declined.exchangeId, h.parent, "no", { decline: { reason: "not now" } })).toMatchObject({ kind: "accepted", status: "declined" });
+            // A committed record whose schema is another schema of the definition decides nothing, for a response or a
+            // decline: it is store corruption, never validation against that other schema.
+            const tampered = await h.admit(run, h.parent, { ordinal: 7 });
+            await h.withoutGuard("workflow_requests", "UPDATE SCHEMA.workflow_requests SET response_schema = 'Any' WHERE exchange_id = $1", [tampered.exchangeId]);
+            for (const call of [{ response: null }, { response: X }, { decline: { reason: "no" } }]) {
+                await expectCode(h.respond(tampered.exchangeId, h.parent, "t", call), "WORKFLOW_STORE_CORRUPT");
+            }
+            expect(await h.operations(tampered.exchangeId)).toBe(0);
+            expect(await h.store.readNodeExecution(tampered.exchangeId)).toMatchObject({ state: "pending" });
+            expect(await h.stateCompleted(run.workflowSessionId, tampered.exchangeId)).toBe(0);
+        } finally { await h.stop(); }
+    });
+
+    it("refuses a stored request that contradicts itself, on inspection and on every response path (RQF-3)", { timeout: TIMEOUT }, async () => {
+        const h = await requestHarness(getEnv());
+        try {
+            const run = await h.workflow();
+            const other = await h.workflow();
+            let ordinal = 0;
+            const decided = async () => {
+                ordinal += 1;
+                const { exchangeId } = await h.admit(run, h.parent, { ordinal });
+                expect(await h.respond(exchangeId, h.parent, "w", { response: X })).toMatchObject({ kind: "accepted", replayed: false });
+                return exchangeId;
+            };
+            // Committed rows that the store's one transaction never writes: each contradicts one part of a decided request.
+            const corruptions = [
+                ["no wake intent", id => h.withoutGuard("workflow_response_wakes", "DELETE FROM SCHEMA.workflow_response_wakes WHERE exchange_id = $1", [id])],
+                ["a wake intent of another run", id => h.withoutGuard("workflow_response_wakes",
+                    "UPDATE SCHEMA.workflow_response_wakes SET run_id = $2 WHERE exchange_id = $1", [id, other.runId])],
+                ["no winning binding", id => h.withoutGuard("workflow_request_operations",
+                    "DELETE FROM SCHEMA.workflow_request_operations WHERE exchange_id = $1 AND operation_id = 'w'", [id])],
+                ["a second winning binding", id => h.q(`INSERT INTO SCHEMA.workflow_request_operations
+                        (exchange_id, operation_id, actor_session_id, result_sha256, outcome, status, first_at, last_at)
+                    SELECT exchange_id, 'w2', actor_session_id, result_sha256, outcome, status, first_at, last_at
+                      FROM SCHEMA.workflow_request_operations WHERE exchange_id = $1 AND operation_id = 'w'`, [id])],
+                ["an identity that is not its value's", async id => {
+                    const wrong = "0".repeat(64);
+                    await h.withoutGuard("workflow_request_responses",
+                        "UPDATE SCHEMA.workflow_request_responses SET result_sha256 = $2, receipt = replace(receipt, result_sha256, $2) WHERE exchange_id = $1",
+                        [id, wrong]);
+                    await h.withoutGuard("workflow_request_operations",
+                        "UPDATE SCHEMA.workflow_request_operations SET result_sha256 = $2 WHERE exchange_id = $1", [id, wrong]);
+                }],
+                ["a node output that is not the response", id => h.q(
+                    "UPDATE SCHEMA.workflow_node_executions SET output = 'false' WHERE node_execution_id = $1", [id])],
+                ["a node completion that is not the decision's reading", id => h.q(
+                    "UPDATE SCHEMA.workflow_node_executions SET completed_at = completed_at + interval '1 microsecond' WHERE node_execution_id = $1", [id])],
+                ["a response by another session", id => h.withoutGuard("workflow_request_responses",
+                    "UPDATE SCHEMA.workflow_request_responses SET actor_session_id = $2 WHERE exchange_id = $1", [id, h.peer])],
+                ["a receipt for another run", id => h.withoutGuard("workflow_request_responses",
+                    "UPDATE SCHEMA.workflow_request_responses SET receipt = replace(receipt, $2, $3) WHERE exchange_id = $1", [id, run.runId, other.runId])],
+                ["a receipt for another responder", id => h.withoutGuard("workflow_request_responses",
+                    "UPDATE SCHEMA.workflow_request_responses SET receipt = replace(receipt, $2, $3) WHERE exchange_id = $1", [id, h.parent, h.peer])],
+                ["a record of another run", id => h.withoutGuard("workflow_requests",
+                    "UPDATE SCHEMA.workflow_requests SET run_id = $2 WHERE exchange_id = $1", [id, other.runId])],
+                ["a record of another workflow", id => h.withoutGuard("workflow_requests",
+                    "UPDATE SCHEMA.workflow_requests SET workflow_session_id = $2 WHERE exchange_id = $1", [id, other.workflowSessionId])],
+                ["a message intent to another responder", id => h.q(
+                    "UPDATE SCHEMA.workflow_outbox SET recipient_session_id = $2 WHERE exchange_id = $1", [id, h.peer])],
+            ];
+            for (const [name, corruptIt] of corruptions) {
+                const exchangeId = await decided();
+                await corruptIt(exchangeId);
+                const before = { operations: await h.operations(exchangeId), winner: await h.binding(exchangeId, "w") };
+                await expectCode(h.store.readRequest(exchangeId), "WORKFLOW_STORE_CORRUPT");
+                // The known operation's replay, a new response and a new decline all refuse, and nothing is written.
+                await expectCode(h.respond(exchangeId, h.parent, "w", { response: X }), "WORKFLOW_STORE_CORRUPT");
+                await expectCode(h.respond(exchangeId, h.parent, "fresh", { response: X }), "WORKFLOW_STORE_CORRUPT");
+                await expectCode(h.respond(exchangeId, h.parent, "fresh", { decline: { reason: "no" } }), "WORKFLOW_STORE_CORRUPT");
+                expect({ operations: await h.operations(exchangeId), winner: await h.binding(exchangeId, "w") }, name).toEqual(before);
+                // Every other caller still learns nothing, corruption included.
+                await expectCode(h.respond(exchangeId, h.stranger, "w", { response: X }), "REQUEST_NOT_FOUND");
+            }
+            // A winning binding without a response, on a request still pending.
+            ordinal += 1;
+            const pending = await h.admit(run, h.parent, { ordinal });
+            await h.q(`INSERT INTO SCHEMA.workflow_request_operations (exchange_id, operation_id, actor_session_id, result_sha256, outcome, status, first_at, last_at)
+                VALUES ($1, 'ghost', $2, $3, 'decided', 'responded', clock_timestamp(), clock_timestamp())`,
+                [pending.exchangeId, h.parent, kindValueSha256("response", canonicalJson(X))]);
+            await expectCode(h.store.readRequest(pending.exchangeId), "WORKFLOW_STORE_CORRUPT");
+            await expectCode(h.respond(pending.exchangeId, h.parent, "ghost", { response: X }), "WORKFLOW_STORE_CORRUPT");
+            await expectCode(h.respond(pending.exchangeId, h.parent, "fresh", { response: X }), "WORKFLOW_STORE_CORRUPT");
+            expect(await h.store.readNodeExecution(pending.exchangeId)).toMatchObject({ state: "pending" });
+
+            // A well-formed decided request still replays after its deadline, its run's end and its requester's deletion,
+            // with no second wake intent.
+            const ended = await h.workflow();
+            const short = await h.admit(ended, h.parent, { timeoutSeconds: 1 });
+            const won = await h.respond(short.exchangeId, h.parent, "w", { response: X });
+            await new Promise(resolve => setTimeout(resolve, 1_100));
+            const replayed = { ...won, replayed: true };
+            expect(await h.respond(short.exchangeId, h.parent, "w", { response: X })).toEqual(replayed);
+            await h.store.finishRun({ runId: ended.runId, status: "cancelled", terminalNodeId: null, terminalOutcome: null, outputText: null,
+                errorText: canonicalJson({ code: "cancelled", message: "cancelled by the test" }), endPending: { winner: "cancel", message: "cancelled by the test" } });
+            expect(await h.respond(short.exchangeId, h.parent, "w", { response: X })).toEqual(replayed);
+            await h.catalog.softDeleteSession(ended.workflowSessionId);
+            expect(await h.respond(short.exchangeId, h.parent, "w", { response: X })).toEqual(replayed);
+            expect(await h.store.readRequest(short.exchangeId)).toMatchObject({ status: "responded", response: { receipt: won.receipt }, operations: 1 });
+            expect((await h.q("SELECT count(*)::int AS n FROM SCHEMA.workflow_response_wakes WHERE exchange_id = $1", [short.exchangeId]))[0].n).toBe(1);
+        } finally { await h.stop(); }
+    });
+
+    it("refuses every caller but the responder before it reads the operation id or the call (RQF-4)", { timeout: TIMEOUT }, async () => {
+        const h = await requestHarness(getEnv());
+        try {
+            const run = await h.workflow();
+            const { exchangeId } = await h.admit(run, h.parent);
+            const won = await h.respond(exchangeId, h.parent, "A", { response: X });
+            // A responder deleted after it answered its own request.
+            const leaving = await h.session(h.alice);
+            const leavingRun = await h.workflow(h.alice, leaving);
+            const theirs = await h.admit(leavingRun, leaving);
+            await h.respond(theirs.exchangeId, leaving, "L", { response: X });
+            await h.catalog.softDeleteSession(leaving);
+
+            const badOperationIds = ["", "   ", "x".repeat(257), "a\u0000b", "\ud800", 42, null, undefined];
+            const badCalls = [{}, null, [], "response", { response: X, decline: { reason: "no" } }, { response: undefined }, { nonsense: 1 }];
+            const unauthorized = [
+                [`nx-${"0".repeat(40)}`, h.parent], [exchangeId, h.stranger], [exchangeId, h.peer], [exchangeId, randomUUID()],
+                [theirs.exchangeId, leaving],
+                // Ids that no stored row can hold.
+                [42, h.parent], ["nx-\u0000", h.parent], [exchangeId, null], [exchangeId, "a\u0000"],
+            ];
+            const observed = async () => {
+                const [requester] = await h.q("SELECT last_active_at FROM SCHEMA.sessions WHERE session_id = $1", [run.workflowSessionId]);
+                return {
+                    operations: [await h.operations(exchangeId), await h.operations(theirs.exchangeId)],
+                    bindings: [await h.binding(exchangeId, "A"), await h.binding(theirs.exchangeId, "L")],
+                    events: (await h.catalog.getSessionEvents(run.workflowSessionId, 0, 1000)).length,
+                    touched: requester.last_active_at,
+                };
+            };
+            const before = await observed();
+            for (const [id, actor] of unauthorized) {
+                for (const operationId of [...badOperationIds, "A", "L", "fresh"]) {
+                    await expectCode(h.respond(id, actor, operationId, { response: X }), "REQUEST_NOT_FOUND");
+                }
+                for (const call of badCalls) await expectCode(h.respond(id, actor, "A", call), "REQUEST_NOT_FOUND");
+            }
+            expect(await observed()).toEqual(before);
+            // The responder gets the diagnostics meant for it, and nothing is bound.
+            for (const operationId of badOperationIds) {
+                await expectCode(h.respond(exchangeId, h.parent, operationId, { response: X }), "WORKFLOW_COMMAND_INVALID");
+            }
+            for (const call of badCalls) await expectCode(h.respond(exchangeId, h.parent, "A", call), "RESPONSE_INVALID");
+            expect(await observed()).toEqual(before);
+            expect(await h.respond(exchangeId, h.parent, "A", { response: X })).toEqual({ ...won, replayed: true });
+
+            // Authority is decided on the rows as they are now. A named session of the same user is a responder; once that
+            // relationship is gone it is refused like any other caller, with its old or a new operation id. The parent stays
+            // related through the parent link. A purged requester refuses everyone.
+            const named = await h.admit(run, h.peer, { ordinal: 2 });
+            const namedWon = await h.respond(named.exchangeId, h.peer, "N", { response: X });
+            expect(namedWon).toMatchObject({ kind: "accepted", replayed: false, receipt: { responderSessionId: h.peer } });
+            expect(await h.respond(named.exchangeId, h.peer, "N", { response: X })).toEqual({ ...namedWon, replayed: true });
+            await h.q("DELETE FROM SCHEMA.session_owners WHERE session_id = $1", [h.peer]);
+            for (const operationId of ["N", "N2"]) {
+                await expectCode(h.respond(named.exchangeId, h.peer, operationId, { response: X }), "REQUEST_NOT_FOUND");
+            }
+            await h.q("DELETE FROM SCHEMA.session_owners WHERE session_id = $1", [h.parent]);
+            expect(await h.respond(exchangeId, h.parent, "A", { response: X })).toEqual({ ...won, replayed: true });
+            await h.q("DELETE FROM SCHEMA.sessions WHERE session_id = $1", [run.workflowSessionId]);
+            for (const operationId of ["A", "A2"]) {
+                await expectCode(h.respond(exchangeId, h.parent, operationId, { response: X }), "REQUEST_NOT_FOUND");
+            }
+            expect(await h.binding(exchangeId, "A2")).toBeNull();
         } finally { await h.stop(); }
     });
 });
