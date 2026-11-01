@@ -1,17 +1,27 @@
 /**
  * Workflow v2 admission at the session-row creation boundary, on real
- * PostgreSQL through the production entry points: createWorkflowV2 and the
- * catalog's createSession call that legacy workflows and agent sessions use.
+ * PostgreSQL through the production entry points: createWorkflowV2, the
+ * catalog's createSession call that legacy workflows and agent sessions use,
+ * and the ordinary PilotSwarmClient (createSession and its session handle).
  *
  * A v2 creation claims the session row exclusively. It never changes a row
  * another creator made (legacy workflow, agent session, a different v2
  * request), whether that row existed first or was inserted concurrently.
+ * No other creator can take a workflow's id: the catalog refuses it, so the
+ * ordinary client returns no handle, and a send on a workflow session starts
+ * and enqueues nothing at session-<id>, which the workflow controller owns.
  */
 import { describe, it, expect } from "vitest";
+import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
+import { registerScriptedProvider } from "../helpers/scripted-workers.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
+import { PilotSwarmClient, PilotSwarmSession } from "../../src/client.ts";
 import { createWorkflowV2 } from "../../src/workflow/v2/service.ts";
+import { registerWorkflowV2 } from "../../src/workflow/v2/runtime.ts";
+
+const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 
 const getEnv = useSuiteEnv(import.meta.url);
 const TIMEOUT = 120_000;
@@ -72,6 +82,8 @@ async function snapshot(h, id) {
     ]);
     return {
         kind: row?.sessionKind ?? null, title: row?.title ?? null, parent: row?.parentSessionId ?? null,
+        owner: row?.owner ? { provider: row.owner.provider, subject: row.owner.subject } : null,
+        root: row?.rootSessionId ?? null, state: row?.state ?? null, orchestrationId: row?.orchestrationId ?? null,
         creation, definition: definition ? { state: definition.state, revision: definition.currentRevision } : null,
     };
 }
@@ -112,9 +124,39 @@ describe("workflow v2 admission at the session creation boundary", () => {
             const legacyAfterV2 = randomUUID();
             await v2Create(h, legacyAfterV2);
             const v2Before = await snapshot(h, legacyAfterV2);
-            await legacyCreate(h, legacyAfterV2);
+            await expect(legacyCreate(h, legacyAfterV2)).rejects.toMatchObject({ code: "SESSION_EXISTS" });
+            await expect(h.catalog.createSession(legacyAfterV2, { owner: OWNER })).rejects.toMatchObject({ code: "SESSION_EXISTS" });
             expect(await snapshot(h, legacyAfterV2)).toEqual(v2Before);
             expect(v2Before.creation.workflowAdmission).toBeUndefined();
+            expect(v2Before.owner).toEqual(OWNER);
+            expect(v2Before.root).toBe(h.parentId);
+
+            // A legacy workflow's retry still meets its own row; an ordinary creator is refused.
+            const legacyAgain = randomUUID();
+            await legacyCreate(h, legacyAgain);
+            const legacyRow = await snapshot(h, legacyAgain);
+            await legacyCreate(h, legacyAgain);
+            await expect(h.catalog.createSession(legacyAgain, { owner: OWNER })).rejects.toMatchObject({ code: "SESSION_EXISTS" });
+            expect(await snapshot(h, legacyAgain)).toEqual(legacyRow);
+        } finally { await h.catalog.close(); }
+    });
+
+    it("refuses the second creator in both orders, whichever kind comes first", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const legacyFirst = randomUUID();
+            await legacyCreate(h, legacyFirst);
+            const legacyState = await snapshot(h, legacyFirst);
+            await expect(v2Create(h, legacyFirst)).rejects.toMatchObject({ code: "SESSION_EXISTS" });
+            expect(await snapshot(h, legacyFirst)).toEqual(legacyState);
+            expect(legacyState).toMatchObject({ kind: "workflow", owner: OWNER, root: h.parentId, definition: null });
+
+            const v2First = randomUUID();
+            await v2Create(h, v2First);
+            const v2State = await snapshot(h, v2First);
+            await expect(legacyCreate(h, v2First)).rejects.toMatchObject({ code: "SESSION_EXISTS" });
+            expect(await snapshot(h, v2First)).toEqual(v2State);
+            expect(v2State).toMatchObject({ kind: "workflow", owner: OWNER, root: h.parentId, definition: { state: "draft", revision: 1 } });
         } finally { await h.catalog.close(); }
     });
 
@@ -134,14 +176,17 @@ describe("workflow v2 admission at the session creation boundary", () => {
                 const isV2 = Boolean(state.creation.workflowV2);
                 const isLegacy = Boolean(state.creation.workflowAdmission);
                 expect(isV2 !== isLegacy, JSON.stringify(state)).toBe(true);
-                expect(legacy.status, String(legacy.reason)).toBe("fulfilled");
+                expect(state).toMatchObject({ owner: OWNER, root: h.parentId });
                 if (isV2) {
                     outcomes.v2 += 1;
                     expect(v2.status).toBe("fulfilled");
+                    expect(legacy.status).toBe("rejected");
+                    expect(legacy.reason.code).toBe("SESSION_EXISTS");
                     expect(state.definition).toEqual({ state: "draft", revision: 1 });
                     expect(state.title).toBe("Workflow: v2");
                 } else {
                     outcomes.legacy += 1;
+                    expect(legacy.status, String(legacy.reason)).toBe("fulfilled");
                     expect(v2.status).toBe("rejected");
                     expect(v2.reason.code).toBe("SESSION_EXISTS");
                     expect(state.definition).toBeNull();
@@ -186,5 +231,122 @@ describe("workflow v2 admission at the session creation boundary", () => {
                 expect((await snapshot(h, id)).definition).toEqual({ state: "draft", revision: 1 });
             }
         } finally { await h.catalog.close(); }
+    });
+
+    it("continues an interrupted creation only for the same request and tool grant", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const grant = (tools) => ({
+                policy: "node-parent-tools-v1", parentSessionId: h.parentId, owner: OWNER, config: {},
+                capabilities: { selections: [] }, tools: tools.map(name => ({ name, schemaHash: `${name}-schema` })),
+                sourceRevisions: {}, excludedTools: [], boundAgentFingerprint: "fingerprint",
+            });
+            const original = grant(["read_facts"]);
+            const larger = grant(["read_facts", "store_fact"]);
+            // The process stops after the session claim commits and before the definition exists.
+            let crash = true;
+            const store = Object.create(h.store);
+            store.createDefinition = async (input) => {
+                if (crash) { crash = false; throw new Error("injected crash after the session claim"); }
+                return h.store.createDefinition(input);
+            };
+            const crashing = { ...h.host, store };
+            const id = randomUUID();
+            const request = (binding) => ({ workflowSessionId: id, parentSessionId: h.parentId, owner: OWNER, yaml: DRAFT("granted"),
+                actor: ACTOR, operationId: "create", binding });
+            await expect(createWorkflowV2(crashing, request(original))).rejects.toThrow("injected crash after the session claim");
+            const interrupted = await snapshot(h, id);
+            expect(interrupted).toMatchObject({ kind: "workflow", definition: null, owner: OWNER, root: h.parentId });
+            expect(interrupted.creation.workflowToolBinding).toEqual(original);
+
+            // A retry with another grant is another request: refused, nothing changes.
+            await expect(createWorkflowV2(crashing, request(larger))).rejects.toMatchObject({ code: "WORKFLOW_EXISTS" });
+            expect(await snapshot(h, id)).toEqual(interrupted);
+
+            // The same request finishes the creation with its original grant, once.
+            const finished = await createWorkflowV2(crashing, request(original));
+            expect(finished.replayed).toBe(false);
+            const replay = await createWorkflowV2(crashing, request(original));
+            expect(replay).toEqual({ receipt: finished.receipt, replayed: true });
+            const done = await snapshot(h, id);
+            expect(done.definition).toEqual({ state: "draft", revision: 1 });
+            expect(done.creation.workflowToolBinding).toEqual(original);
+        } finally { await h.catalog.close(); }
+    });
+
+    it("gives an ordinary client no handle on a workflow's id and starts nothing there; an ordinary id still dispatches", { timeout: 180_000 }, async () => {
+        const env = getEnv();
+        const h = await harness(env);
+        const modelProvidersPath = await registerScriptedProvider(env, "http://127.0.0.1:9/never-called");
+        const provider = await PostgresProvider.connectWithSchema(env.store, env.duroxideSchema);
+        const duroxide = new Client(provider);
+        // A worker-equivalent registration runs one v2 workflow to its end; it is stopped before the
+        // ordinary client acts, so nothing could hide an ordinary orchestration started afterwards.
+        const runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error" });
+        registerWorkflowV2(runtime, {
+            store: h.store, catalog: h.catalog, enabled: () => true,
+            resolveToolBinding: async () => null,
+            openToolExecutor: async () => { throw new Error("This workflow calls no tools."); },
+            authorizeParentNotification: async () => false,
+            notifyParent: async () => { throw new Error("This workflow has no parent to notify."); },
+            deleteSession: async (sessionId) => h.catalog.softDeleteSession(sessionId),
+            wakeBackstopMs: 500,
+        });
+        await runtime.start();
+        const client = new PilotSwarmClient({
+            store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema, modelProvidersPath,
+        });
+        let runtimeStopped = false;
+        try {
+            const live = { ...h.host, duroxideClient: duroxide };
+            const draftId = randomUUID();
+            await v2Create(h, draftId, "draft-only");
+            const finishedId = randomUUID();
+            const finished = await createWorkflowV2(live, { workflowSessionId: finishedId, parentSessionId: h.parentId, owner: OWNER,
+                yaml: DRAFT("finished"), actor: ACTOR, operationId: "run", start: { inputs: {} } });
+            const controller = await duroxide.waitForOrchestration(finished.receipt.run.controllerInstanceId, 60_000);
+            expect(controller.status, JSON.stringify(controller)).toBe("Completed");
+            expect((await h.store.readRun(finished.receipt.run.runId)).status).toBe("completed");
+            await runtime.shutdown(100);
+            runtimeStopped = true;
+            await client.start();
+
+            const observe = async (id) => {
+                const status = await duroxide.getStatus(`session-${id}`);
+                const events = await h.catalog.getSessionEvents(id, 0, 200);
+                return {
+                    row: await snapshot(h, id),
+                    orchestration: { status: status.status, output: status.output ?? null },
+                    events: events.map(event => event.eventType),
+                };
+            };
+            for (const id of [draftId, finishedId]) {
+                const before = await observe(id);
+                await expect(client.createSession({ sessionId: id })).rejects.toMatchObject({ code: "SESSION_EXISTS" });
+                // A handle made by hand is refused before it starts, updates or enqueues anything.
+                await expect(new PilotSwarmSession(id, client).send("hello")).rejects.toMatchObject({ code: "WORKFLOW_SESSION_NOT_CONVERSATIONAL" });
+                expect(await observe(id), id).toEqual(before);
+            }
+            const draft = await observe(draftId);
+            expect(draft.orchestration.status).toBe("NotFound");
+            expect(draft.row).toMatchObject({ kind: "workflow", orchestrationId: null });
+            const done = await observe(finishedId);
+            expect(done.row).toMatchObject({ kind: "workflow", orchestrationId: `session-${finishedId}` });
+            expect(done.events).not.toContain("session.model_resolved");
+
+            // Positive control: an ordinary id gets a handle whose send starts and enqueues its own session.
+            const ordinaryId = randomUUID();
+            const handle = await client.createSession({ sessionId: ordinaryId });
+            expect(handle.sessionId).toBe(ordinaryId);
+            expect((await client._catalog.getSession(ordinaryId)).sessionKind).toBe("agent");
+            await handle.send("hello");
+            const dispatched = await client._catalog.getSession(ordinaryId);
+            expect(dispatched).toMatchObject({ orchestrationId: `session-${ordinaryId}`, state: "running" });
+            expect((await duroxide.getStatus(`session-${ordinaryId}`)).status).not.toBe("NotFound");
+        } finally {
+            await client.stop();
+            if (!runtimeStopped) await runtime.shutdown(100);
+            await h.catalog.close();
+        }
     });
 });

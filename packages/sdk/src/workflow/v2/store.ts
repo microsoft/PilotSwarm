@@ -775,23 +775,28 @@ export class WorkflowStore {
     }
 
     /**
-     * Claim a script start for a pending node execution of an active run of a
-     * live workflow, counting the attempt, in one transaction under the
-     * session, run and node locks. A deletion or cancellation that committed
-     * first makes the claim fail; one that commits later finds the node
-     * claimed and is honored by the running effect's liveness check.
+     * The entry boundary of a script. In one transaction under the session,
+     * run and node locks: count the attempt of a pending node execution of an
+     * active run of a live workflow, and start the script while the locks are
+     * held (`start` runs synchronously inside the transaction). A deletion or
+     * cancellation therefore commits either first, and the script never
+     * starts, or after the script started, and the running script's liveness
+     * check stops it. No script starts after a deletion or cancellation commits.
      */
-    async claimScriptEntry(nodeExecutionId: string): Promise<{ claimed: boolean; attempt: number }> {
+    async enterScript(nodeExecutionId: string, start: (attempt: number) => void): Promise<{ entered: boolean; attempt: number }> {
         return this.transaction(async client => {
             const workflowSessionId = await this.workflowOfNode(client, nodeExecutionId);
-            if (!await this.lockLiveSession(client, workflowSessionId)) return { claimed: false, attempt: 0 };
+            if (!await this.lockLiveSession(client, workflowSessionId)) return { entered: false, attempt: 0 };
             const { rows: nodes } = await client.query(`SELECT run_id FROM ${this.t.nodes} WHERE node_execution_id = $1`, [nodeExecutionId]);
             const run = await this.lockRun(client, str(nodes[0], "run_id"));
-            if (!ACTIVE_RUN_STATUSES.includes(run.status)) return { claimed: false, attempt: 0 };
+            if (!ACTIVE_RUN_STATUSES.includes(run.status)) return { entered: false, attempt: 0 };
             const { rows } = await client.query(
                 `UPDATE ${this.t.nodes} SET effect_attempts = effect_attempts + 1
                   WHERE node_execution_id = $1 AND state = 'pending' RETURNING effect_attempts`, [nodeExecutionId]);
-            return rows[0] ? { claimed: true, attempt: int(rows[0], "effect_attempts") } : { claimed: false, attempt: 0 };
+            if (!rows[0]) return { entered: false, attempt: 0 };
+            const attempt = int(rows[0], "effect_attempts");
+            start(attempt);
+            return { entered: true, attempt };
         });
     }
 

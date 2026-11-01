@@ -28,13 +28,14 @@ CONSTANTS
     Backstop,             \* fix: the controller re-collects on a durable timer
     CancelStopFromStore,  \* fix: cancel stops every cancel-won effect, from the store
     DeleteGuard,          \* fix: deletion trigger, session-locked writes, entry claim, liveness stop
+    EntryFence,           \* fix: the script process starts inside the entry transaction
     EndPending,           \* fix: every run end completes its pending node executions
     EffectWatch,          \* fix: collection fails a pending node whose effect ended
     NoCas                 \* deliberate fault: node completion is not a compare-and-swap
 
 ASSUME MaxLoops \in Nat
 ASSUME {LoseWake, ControllerFaults, EffectFaults, Backstop, CancelStopFromStore,
-        DeleteGuard, EndPending, EffectWatch, NoCas} \subseteq BOOLEAN
+        DeleteGuard, EntryFence, EndPending, EffectWatch, NoCas} \subseteq BOOLEAN
 
 SOrd == 1..(MaxLoops + 1)
 SNodes == {<<"S", i>> : i \in SOrd}
@@ -100,7 +101,7 @@ TypeOK ==
     /\ cur.pending \in NX \cup {NoNode}
     /\ cancelStep \in {"tx", "stop", "rec"}
     /\ cancelIds \subseteq NX
-    /\ eff \in [SNodes -> {"absent", "started", "running", "ran", "recorded", "done", "stopped", "failed"}]
+    /\ eff \in [SNodes -> {"absent", "started", "claimed", "running", "ran", "recorded", "done", "stopped", "failed"}]
     /\ effRes \in [SNodes -> {"none", "again", "ok", "error", "skip"}]
     /\ stopReq \in [SNodes -> BOOLEAN]
     /\ wakeDup \in [SNodes -> 0..1]
@@ -319,7 +320,7 @@ CancelStop ==
                     THEN {x \in SNodes : nWinner[x] = "cancel"}
                     ELSE cancelIds \cap SNodes
        IN /\ stopReq' = [x \in SNodes |-> stopReq[x] \/ x \in ids]
-          /\ eff' = [x \in SNodes |-> IF x \in ids /\ eff[x] \in {"started", "running", "ran", "recorded"}
+          /\ eff' = [x \in SNodes |-> IF x \in ids /\ eff[x] \in {"started", "claimed", "running", "ran", "recorded"}
                                         THEN "stopped" ELSE eff[x]]
     /\ cancelStep' = "rec"
     /\ UNCHANGED <<storeVars, pc, cur, actRes, cancelIds, effRes, wakeDup, envVars>>
@@ -351,18 +352,29 @@ ControllerFault ==
 (* Effect orchestration per script node execution x                        *)
 
 (* runScript activity entry. Reviewed code: skip only a completed node.     *)
-(* Hardened code: store.claimScriptEntry under session, run and node locks. *)
+(* DeleteGuard: the entry checks the node, run and session under the        *)
+(* session, run and node locks. EntryFence: the script process starts in    *)
+(* that same transaction (store.enterScript). Without it the entry commits  *)
+(* first and the process starts later (EffLaunch), unchecked.               *)
 EffClaim(x) ==
     /\ eff[x] = "started"
     /\ LET entry == IF DeleteGuard
                       THEN nState[x] = "pending" /\ runStatus \in Active /\ sessionLive
                       ELSE nState[x] # "completed"
        IN IF entry
-            THEN /\ eff' = [eff EXCEPT ![x] = "running"]
+            THEN /\ eff' = [eff EXCEPT ![x] = IF EntryFence THEN "running" ELSE "claimed"]
                  /\ UNCHANGED effRes
             ELSE /\ eff' = [eff EXCEPT ![x] = "ran"]
                  /\ effRes' = [effRes EXCEPT ![x] = "skip"]
     /\ UNCHANGED <<storeVars, ctrlVars, stopReq, wakeDup, envVars>>
+
+(* Without EntryFence (reviewed 159bdce5): after the claim committed, the   *)
+(* activity resolves the tool binding and then spawns the script, with no   *)
+(* check in between; a deletion or cancellation may commit meanwhile.       *)
+EffLaunch(x) ==
+    /\ eff[x] = "claimed"
+    /\ eff' = [eff EXCEPT ![x] = "running"]
+    /\ UNCHANGED <<storeVars, ctrlVars, effRes, stopReq, wakeDup, envVars>>
 
 (* The script returns a result; it enters the effect history.             *)
 EffComplete(x) ==
@@ -383,7 +395,7 @@ EffStopDecided(x) ==
 (* A worker crash re-dispatches runScript: the script may run again.       *)
 EffCrash(x) ==
     /\ EffectFaults
-    /\ eff[x] = "running"
+    /\ eff[x] \in {"claimed", "running"}
     /\ eff' = [eff EXCEPT ![x] = "started"]
     /\ UNCHANGED <<storeVars, ctrlVars, effRes, stopReq, wakeDup, envVars>>
 
@@ -391,7 +403,7 @@ EffCrash(x) ==
 (* activity exhausted its retries, or it was terminated).                   *)
 EffDie(x) ==
     /\ EffectFaults
-    /\ eff[x] \in {"started", "running", "ran"}
+    /\ eff[x] \in {"started", "claimed", "running", "ran"}
     /\ eff' = [eff EXCEPT ![x] = "failed"]
     /\ UNCHANGED <<storeVars, ctrlVars, effRes, stopReq, wakeDup, envVars>>
 
@@ -463,7 +475,7 @@ Controller ==
 
 Effects ==
     \E x \in SNodes :
-        \/ EffClaim(x) \/ EffComplete(x) \/ EffStopDecided(x) \/ EffCrash(x) \/ EffDie(x)
+        \/ EffClaim(x) \/ EffLaunch(x) \/ EffComplete(x) \/ EffStopDecided(x) \/ EffCrash(x) \/ EffDie(x)
         \/ EffRecord(x) \/ EffWake(x) \/ EffWakeDup(x) \/ EffWakeLost(x)
 
 Next == Controller \/ Effects \/ SendCancel \/ Delete
@@ -480,7 +492,7 @@ Fairness ==
     /\ WF_vars(NotifyExec) /\ WF_vars(NotifyRecord)
     /\ WF_vars(CancelTx) /\ SF_vars(CancelStop) /\ SF_vars(CancelRecord)
     /\ \A x \in SNodes :
-          /\ WF_vars(EffClaim(x)) /\ SF_vars(EffComplete(x)) /\ SF_vars(EffStopDecided(x))
+          /\ WF_vars(EffClaim(x)) /\ SF_vars(EffLaunch(x)) /\ SF_vars(EffComplete(x)) /\ SF_vars(EffStopDecided(x))
           /\ WF_vars(EffRecord(x)) /\ WF_vars(EffWake(x))
 
 Spec == Init /\ [][Next]_vars /\ Fairness
@@ -546,6 +558,6 @@ Live_ControllerDone == <>(pc = "done")
 Live_EffectsQuiesce == <>[](\A x \in SNodes : eff[x] \in {"absent"} \cup EffectEnded)
 
 Live_CancelStops ==
-    \A x \in SNodes : (nWinner[x] = "cancel" /\ eff[x] \in {"started", "running"}) ~> stopReq[x]
+    \A x \in SNodes : (nWinner[x] = "cancel" /\ eff[x] \in {"started", "claimed", "running"}) ~> stopReq[x]
 
 =============================================================================

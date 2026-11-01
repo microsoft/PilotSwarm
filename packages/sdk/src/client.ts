@@ -67,6 +67,14 @@ function throwIfAborted(signal: AbortSignal | undefined, message: string): void 
     }
 }
 
+/** A workflow session runs a workflow graph; it has no conversation to send to. */
+function workflowNotConversationalError(sessionId: string): Error {
+    return Object.assign(
+        new Error(`Session ${sessionId.slice(0, 8)} is a workflow session; it runs a workflow graph and does not accept chat messages.`),
+        { code: "WORKFLOW_SESSION_NOT_CONVERSATIONAL", status: 409 },
+    );
+}
+
 /**
  * PilotSwarmClient — pure client-side session handle.
  *
@@ -350,8 +358,9 @@ export class PilotSwarmClient {
                 contextTier: resolved.context as ManagedSessionConfig["contextTier"],
             } : {}),
         };
+        let fullConfig: ManagedSessionConfig | undefined;
         if (config || resolved) {
-            const fullConfig: ManagedSessionConfig = {
+            fullConfig = {
                 model: resolvedConfig.model,
                 reasoningEffort: resolvedConfig.reasoningEffort,
                 contextTier: resolvedConfig.contextTier,
@@ -373,15 +382,16 @@ export class PilotSwarmClient {
                 toolNames: resolvedConfig.toolNames,
                 ...(workspace ? { workspace } : {}),
             };
-            this.sessionConfigs.set(sessionId, fullConfig);
         }
 
         // CMS: write session record (state=pending, no orchestration yet).
         // The creation config is persisted alongside it (migration 0072) so
         // the orchestration start can rebuild it on ANY process — the
-        // in-memory map above only covers the process that ran this create.
+        // in-memory map below only covers the process that ran this create.
         // JSON round-trip strips undefined fields for clean JSONB.
-        const configForRow = this.sessionConfigs.get(sessionId);
+        // The catalog refuses a workflow session's id (SESSION_EXISTS), so
+        // nothing below runs for it: no local config, no events, no handle.
+        const configForRow = fullConfig ?? this.sessionConfigs.get(sessionId);
         await this._catalog.createSession(sessionId, {
             model: resolvedConfig.model,
             reasoningEffort: resolvedConfig.reasoningEffort ?? undefined,
@@ -399,6 +409,7 @@ export class PilotSwarmClient {
                 }
                 : null,
         });
+        if (fullConfig) this.sessionConfigs.set(sessionId, fullConfig);
         if (resolved) {
             await this._catalog.recordEvents(sessionId, [{
                 eventType: "session.model_resolved",
@@ -928,6 +939,11 @@ export class PilotSwarmClient {
                     return null;
                 })
                 : null;
+            // A workflow session (live or deleted) owns session-<id> for its
+            // workflow controller; a conversation turn never starts or enqueues there.
+            if (cmsRow?.sessionKind === "workflow" || stored?.workflowAdmission || stored?.workflowV2) {
+                throw workflowNotConversationalError(sessionId);
+            }
             const { bootstrapNestingLevel: storedDepth, ...storedSessionConfig } = stored ?? {};
             bootstrapNestingLevel = storedDepth;
             if (stored && !fullConfig) {

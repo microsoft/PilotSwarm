@@ -15,7 +15,13 @@ import { normalizeSchema, SCHEMA_NAME_PATTERN, WorkflowSchemaError, WorkflowSche
 
 export const WORKFLOW_V2_API_VERSION = "pilotswarm.dev/v2-draft";
 export const WORKFLOW_V2_KIND = "Workflow";
-export const WORKFLOW_V2_IR_VERSION = 1;
+/**
+ * IR version this compiler writes. Version 1 (written before the workflow
+ * output contract moved to the IR root) is still read: it has no root
+ * outputSchema, and each succeeded terminal carries the contract it was
+ * compiled with. Stored IR is never rewritten or recompiled.
+ */
+export const WORKFLOW_V2_IR_VERSION = 2;
 export const WORKFLOW_V2_MAX_YAML_BYTES = 256 * 1024;
 export const WORKFLOW_V2_MAX_NODES = 100;
 export const WORKFLOW_V2_DEFAULT_MAX_NODE_EXECUTIONS = 1_000;
@@ -80,7 +86,8 @@ export interface WorkflowIRTerminal {
 export type WorkflowIRNode = WorkflowIRScript | WorkflowIRTerminal;
 
 export interface WorkflowIR {
-    irVersion: typeof WORKFLOW_V2_IR_VERSION;
+    /** 1: read-only legacy shape (outputSchema always null); 2: written now. */
+    irVersion: 1 | 2;
     apiVersion: typeof WORKFLOW_V2_API_VERSION;
     name: string;
     version: string;
@@ -518,10 +525,13 @@ export function parseDiagnostics(value: JsonValue): WorkflowDiagnostic[] {
 /** Read stored IR (already hash-verified) back with its declared shape. */
 export function parseWorkflowIr(value: JsonValue): WorkflowIR {
     need(isJsonObject(value), "stored IR is not an object");
-    need(value.irVersion === WORKFLOW_V2_IR_VERSION, `stored IR version ${String(value.irVersion)} is not supported by this worker`);
+    need(value.irVersion === 1 || value.irVersion === 2, `stored IR version ${String(value.irVersion)} is not supported by this worker`);
+    const irVersion: 1 | 2 = value.irVersion;
+    // Version 1 has no root contract; version 2 must state it (null when absent).
+    const rootOutputSchema = irVersion === 1 && !Object.hasOwn(value, "outputSchema") ? null : value.outputSchema;
     need(value.apiVersion === WORKFLOW_V2_API_VERSION, "stored IR has a different apiVersion");
     need(typeof value.name === "string" && typeof value.version === "string" && typeof value.initial === "string"
-        && nullableString(value.description) && nullableString(value.inputsSchema) && nullableString(value.outputSchema),
+        && nullableString(value.description) && nullableString(value.inputsSchema) && nullableString(rootOutputSchema),
         "stored IR header is invalid");
     need(isJsonObject(value.limits) && typeof value.limits.maxNodeExecutions === "number", "stored IR limits are invalid");
     need(isJsonObject(value.schemaDefs) && isJsonObject(value.nodes), "stored IR schemas or nodes are invalid");
@@ -553,9 +563,9 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
     }
     need(Object.hasOwn(nodes, value.initial), "stored IR initial state is missing");
     return {
-        irVersion: WORKFLOW_V2_IR_VERSION, apiVersion: WORKFLOW_V2_API_VERSION, name: value.name, version: value.version,
+        irVersion, apiVersion: WORKFLOW_V2_API_VERSION, name: value.name, version: value.version,
         description: value.description, initial: value.initial, initialInput: value.initialInput,
-        inputsSchema: value.inputsSchema, outputSchema: value.outputSchema, limits: { maxNodeExecutions: value.limits.maxNodeExecutions },
+        inputsSchema: value.inputsSchema, outputSchema: rootOutputSchema, limits: { maxNodeExecutions: value.limits.maxNodeExecutions },
         schemaDefs: value.schemaDefs, nodes,
     };
 }

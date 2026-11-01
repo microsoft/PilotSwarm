@@ -6,11 +6,13 @@
  *
  * Model cases: docs/formal/workflow-v2/WorkflowV2Run.tla, properties
  * Live_Terminates (lost wake: rv-terminates-lost-wake; effect death:
- * rv-terminates-effect-death; both hd-liveness) and Live_CancelStops (crash
+ * rv-terminates-effect-death; both hd-liveness), Live_CancelStops (crash
  * after the cancel commit, before the stop request: rv-cancel-stops,
- * hd-liveness).
+ * hd-liveness) and Prop_NoScriptAfterDelete (a deletion that commits while
+ * the effect prepares its script: df-no-entry-fence, hd-safety).
  */
 import { describe, it, expect } from "vitest";
+import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
@@ -122,6 +124,30 @@ async function harness(env, wrap, options = {}) {
     };
 }
 
+/** A loopback server that counts the external effects scripts attempt. */
+async function probeServer() {
+    const hits = [];
+    const server = createServer((req, res) => {
+        hits.push(req.url);
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end("{}");
+    });
+    await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
+    return {
+        url: `http://127.0.0.1:${server.address().port}`,
+        count: (path) => hits.filter(hit => hit === path).length,
+        close: () => new Promise(resolve => { server.closeAllConnections(); server.close(resolve); }),
+    };
+}
+
+/** A gate the test opens; `reached` resolves when code arrives at it. */
+function gate() {
+    let arrive, open;
+    const reached = new Promise(resolve => { arrive = resolve; });
+    const opened = new Promise(resolve => { open = resolve; });
+    return { reached, arrive: () => arrive(), wait: () => opened, open: () => open() };
+}
+
 async function finished(h, runId, timeoutMs) {
     return until(async () => {
         const run = await h.store.readRun(runId);
@@ -219,5 +245,69 @@ describe("workflow v2 fault boundaries on the real runtime", () => {
             const stored = await h.store.readNodeExecution(node.nodeExecutionId);
             expect(stored).toMatchObject({ state: "completed", outcome: "cancelled", winner: "cancel" });
         } finally { await h.stop(); }
+    });
+
+    it("starts no script once a deletion commits before its entry, even while its effect prepares it", { timeout: TIMEOUT }, async () => {
+        const probe = await probeServer();
+        let current = null;
+        // The effect waits here after it read its node and before its entry.
+        const h = await harness(getEnv(), {}, {
+            resolveToolBinding: async () => {
+                const waiting = current;
+                if (waiting) { waiting.arrive(); await waiting.wait(); }
+                return null;
+            },
+        });
+        const yaml = `
+apiVersion: pilotswarm.dev/v2-draft
+kind: Workflow
+metadata: { name: entry-probe, version: "1.0.0" }
+initial: act
+states:
+  act:
+    type: script
+    source: |
+      await fetch("${probe.url}/start");
+      await setResult("ok", {});
+    transition: { next: { ok: done } }
+  done: { type: terminal, outcome: succeeded }
+`;
+        try {
+            // Positive control: the same pause without a deletion; the script then starts and finishes.
+            current = gate();
+            const control = await createWorkflowV2(h.host, { workflowSessionId: randomUUID(), parentSessionId: null, yaml,
+                actor: ACTOR, operationId: "control", start: { inputs: {} } });
+            await current.reached;
+            expect(probe.count("/start")).toBe(0);
+            current.open();
+            const controlRun = await finished(h, control.receipt.run.runId, 60_000);
+            expect(controlRun.status, JSON.stringify(controlRun)).toBe("completed");
+            expect(probe.count("/start")).toBe(1);
+            const [controlNode] = await h.store.listNodeExecutions(controlRun.runId);
+            expect(controlNode.effectAttempts).toBe(1);
+
+            // The deletion commits (softDeleteSession returns after its commit) while the effect waits.
+            current = gate();
+            const id = randomUUID();
+            const started = await createWorkflowV2(h.host, { workflowSessionId: id, parentSessionId: null, yaml,
+                actor: ACTOR, operationId: "deleted", start: { inputs: {} } });
+            await current.reached;
+            const [node] = await h.store.listNodeExecutions(started.receipt.run.runId);
+            expect(node).toMatchObject({ state: "pending", effectAttempts: 0 });
+            await h.host.catalog.softDeleteSession(id);
+            current.open();
+            const effect = await h.client.waitForOrchestration(workflowEffectInstanceId(node.nodeExecutionId), 30_000);
+            expect(effect.status, JSON.stringify(effect)).toBe("Completed");
+            expect(probe.count("/start")).toBe(1);
+            expect(await h.store.readNodeExecution(node.nodeExecutionId)).toMatchObject({
+                state: "completed", outcome: "cancelled", winner: "delete", effectAttempts: 0,
+            });
+            expect((await h.store.readRun(started.receipt.run.runId)).status).toBe("cancelled");
+            expect((await h.store.readDefinition(id)).state).toBe("deleted");
+        } finally {
+            current?.open();
+            await h.stop();
+            await probe.close();
+        }
     });
 });

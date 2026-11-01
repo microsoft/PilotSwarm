@@ -20,8 +20,12 @@ const STREAM_TAIL_BYTES = 16 * 1024;
 /** Environment variables a script inherits from the worker. Everything else is dropped. */
 const INHERITED_ENV = ["PATH", "LANG", "LC_ALL", "TZ", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT"];
 
-/** "none": a strict-JSON script exited without a valid setResult. */
-export type ScriptResultSource = "reported" | "stdout" | "exit" | "timeout" | "cancelled" | "none";
+/**
+ * "invalid": a strict-JSON script reported a result that is not plain JSON
+ * (through setResult, the endpoint or its final stdout line). "not_started":
+ * the caller's entry boundary refused to start the script.
+ */
+export type ScriptResultSource = "reported" | "stdout" | "exit" | "timeout" | "cancelled" | "invalid" | "not_started";
 
 const CANCEL_POLL_MS = 250;
 
@@ -50,13 +54,24 @@ export interface RunScriptNodeRequest {
     /** The JSON the script reads as `context`; absent: the legacy context built from the fields above. */
     context?: Record<string, unknown>;
     /**
-     * Workflow v2: results and tool arguments must be plain JSON. The script's
-     * setResult/callTool reject NaN, Infinity, undefined, functions, symbols
-     * and non-plain objects (no toJSON conversion); the endpoint re-checks
-     * parsed bodies (1e400 parses to Infinity); only setResult completes the
-     * node (no stdout or exit-code result). Legacy runs leave this unset.
+     * Workflow v2: results and tool arguments must be plain JSON. setResult
+     * and callTool encode their value from one read of its own data
+     * properties and refuse NaN, Infinity, undefined, functions, symbols,
+     * accessors, holes, extra array properties and non-plain objects; no
+     * toJSON hook runs. The endpoint re-checks parsed bodies (1e400 parses to
+     * Infinity) and a final stdout result line is checked the same way. A
+     * result that fails these checks is reported as resultSource "invalid";
+     * the result channels and their precedence are the legacy runner's.
      */
     strictJson?: boolean;
+    /**
+     * Workflow v2 entry boundary. When set, the runner calls it with `start`,
+     * which starts the script process with the given context (its stdin).
+     * The caller calls `start` at most once, synchronously, while it holds
+     * the locks that order this entry against a deletion or cancellation, and
+     * resolves whether it did. Without it, the script starts at once.
+     */
+    enter?: (start: (context: Record<string, unknown>) => void) => Promise<boolean>;
 }
 
 export interface RunScriptNodeResult {
@@ -68,6 +83,8 @@ export interface RunScriptNodeResult {
     stdoutTail: string;
     stderrTail: string;
     toolCalls: ScriptToolCallRecord[];
+    /** Why the reported result is not plain JSON (resultSource "invalid"). */
+    problem?: string;
 }
 
 export interface ScriptRunnerOptions {
@@ -93,58 +110,133 @@ async function callTool(name, args = {}) { return __psPost("/tool", { name, argu
 async function setResult(outcome, output = null) { await __psPost("/result", { outcome, output }); }
 `;
 
-/** Workflow v2 prelude: plain-JSON values are checked before they are serialized. */
+/**
+ * Workflow v2 prelude. setResult and callTool encode a value in one pass over
+ * its own data properties, reading each property once, so the text sent is
+ * exactly the value that was checked: no getter, Proxy trap or toJSON hook
+ * can change it between the check and the encoding. The intrinsics are
+ * captured before the script runs. A result that cannot be encoded is still
+ * reported (as invalid), so the node fails with invalid_output, and the
+ * script then sees the error.
+ */
 const NODE_STRICT_PRELUDE = `import { readFileSync as __psReadFileSync } from "node:fs";
 import { createRequire as __psCreateRequire } from "node:module";
 const require = __psCreateRequire(import.meta.url);
 const context = JSON.parse(__psReadFileSync(0, "utf8") || "{}");
-function __psAssertJson(value, path, depth) {
+const __psStringify = JSON.stringify;
+const __psOwnKeys = Reflect.ownKeys;
+const __psOwnProperty = Reflect.getOwnPropertyDescriptor;
+const __psPrototypeOf = Reflect.getPrototypeOf;
+const __psApply = Reflect.apply;
+const __psHasOwn = Object.hasOwn;
+const __psIsArray = Array.isArray;
+const __psIsFinite = Number.isFinite;
+const __psCharCodeAt = String.prototype.charCodeAt;
+const __psString = String;
+const __psObjectPrototype = Object.prototype;
+const __psArrayPrototype = Array.prototype;
+const __psFetch = globalThis.fetch;
+const __psEndpoint = process.env.PILOTSWARM_WORKFLOW_ENDPOINT;
+const __psToken = process.env.PILOTSWARM_WORKFLOW_TOKEN;
+function __psIsIndex(key, length) {
+    if (typeof key !== "string" || key.length === 0 || key.length > 10) return false;
+    if (key.length > 1 && __psApply(__psCharCodeAt, key, [0]) === 48) return false;
+    let value = 0;
+    for (let position = 0; position < key.length; position += 1) {
+        const code = __psApply(__psCharCodeAt, key, [position]);
+        if (code < 48 || code > 57) return false;
+        value = value * 10 + (code - 48);
+    }
+    return value < length;
+}
+function __psDataValue(property, path) {
+    if (!property) throw new TypeError(path + ": the property changed while it was read");
+    if (__psHasOwn(property, "get") || __psHasOwn(property, "set") || !__psHasOwn(property, "value")) {
+        throw new TypeError(path + ": accessors are not JSON");
+    }
+    return property.value;
+}
+function __psEncode(value, path, depth) {
     if (depth > 64) throw new TypeError(path + ": nesting exceeds 64 levels");
-    if (value === null || typeof value === "boolean" || typeof value === "string") return;
-    if (typeof value === "number") {
-        if (!Number.isFinite(value)) throw new TypeError(path + ": numbers must be finite (got " + String(value) + ")");
-        return;
+    if (value === null) return "null";
+    const type = typeof value;
+    if (type === "boolean") return value ? "true" : "false";
+    if (type === "string") return __psStringify(value);
+    if (type === "number") {
+        if (!__psIsFinite(value)) throw new TypeError(path + ": numbers must be finite (got " + __psString(value) + ")");
+        return __psStringify(value);
     }
-    if (Array.isArray(value)) {
-        for (let index = 0; index < value.length; index += 1) {
-            if (!(index in value)) throw new TypeError(path + "[" + index + "]: sparse arrays are not JSON");
-            __psAssertJson(value[index], path + "[" + index + "]", depth + 1);
+    if (type !== "object") throw new TypeError(path + ": " + (value === undefined ? "undefined" : type) + " is not a JSON value");
+    const keys = __psOwnKeys(value);
+    if (__psIsArray(value)) {
+        if (__psPrototypeOf(value) !== __psArrayPrototype) throw new TypeError(path + ": only plain arrays are JSON");
+        const length = __psDataValue(__psOwnProperty(value, "length"), path + ".length");
+        if (typeof length !== "number" || !(length >= 0)) throw new TypeError(path + ": array length is not plain data");
+        let elements = 0;
+        for (let position = 0; position < keys.length; position += 1) {
+            const key = keys[position];
+            if (key === "length") continue;
+            if (!__psIsIndex(key, length)) {
+                throw new TypeError(path + ": an array may hold only its elements (found " + __psString(key) + ")");
+            }
+            elements += 1;
         }
-        return;
+        if (elements !== length) throw new TypeError(path + ": sparse arrays are not JSON");
+        let text = "[";
+        for (let index = 0; index < length; index += 1) {
+            const itemPath = path + "[" + index + "]";
+            const item = __psDataValue(__psOwnProperty(value, __psString(index)), itemPath);
+            text += (index === 0 ? "" : ",") + __psEncode(item, itemPath, depth + 1);
+        }
+        return text + "]";
     }
-    if (typeof value === "object") {
-        const prototype = Object.getPrototypeOf(value);
-        if (prototype !== Object.prototype && prototype !== null) {
-            throw new TypeError(path + ": only plain objects are JSON (got " + (value.constructor?.name ?? "object") + ")");
-        }
-        for (const key of Reflect.ownKeys(value)) {
-            if (typeof key === "symbol") throw new TypeError(path + ": symbol keys are not JSON");
-            const descriptor = Object.getOwnPropertyDescriptor(value, key);
-            if (descriptor.get || descriptor.set) throw new TypeError(path + "." + key + ": accessors are not JSON");
-            __psAssertJson(descriptor.value, path + "." + key, depth + 1);
-        }
-        return;
+    const prototype = __psPrototypeOf(value);
+    if (prototype !== __psObjectPrototype && prototype !== null) {
+        const constructor = __psOwnProperty(prototype, "constructor");
+        const name = constructor && typeof constructor.value === "function" && typeof constructor.value.name === "string"
+            ? constructor.value.name : "object";
+        throw new TypeError(path + ": only plain objects are JSON (got " + name + ")");
     }
-    throw new TypeError(path + ": " + (value === undefined ? "undefined" : typeof value) + " is not a JSON value");
+    let text = "{";
+    let first = true;
+    for (let position = 0; position < keys.length; position += 1) {
+        const key = keys[position];
+        if (typeof key === "symbol") throw new TypeError(path + ": symbol keys are not JSON");
+        const keyPath = path + "." + key;
+        const property = __psOwnProperty(value, key);
+        const item = __psDataValue(property, keyPath);
+        if (!property.enumerable) throw new TypeError(keyPath + ": non-enumerable properties are not JSON");
+        text += (first ? "" : ",") + __psStringify(key) + ":" + __psEncode(item, keyPath, depth + 1);
+        first = false;
+    }
+    return text + "}";
 }
 async function __psPost(route, body) {
-    const response = await fetch(process.env.PILOTSWARM_WORKFLOW_ENDPOINT + route, {
+    const response = await __psFetch(__psEndpoint + route, {
         method: "POST",
-        headers: { "content-type": "application/json", authorization: "Bearer " + process.env.PILOTSWARM_WORKFLOW_TOKEN },
-        body: JSON.stringify(body),
+        headers: { "content-type": "application/json", authorization: "Bearer " + __psToken },
+        body,
     });
     const payload = await response.json();
     if (!payload.ok) throw new Error(payload.error);
     return payload.result;
 }
 async function callTool(name, args = {}) {
-    __psAssertJson(args, "arguments", 0);
-    return __psPost("/tool", { name, arguments: args });
+    if (typeof name !== "string") throw new TypeError("callTool needs a tool name string");
+    if (args === null || typeof args !== "object" || __psIsArray(args)) throw new TypeError("arguments must be a JSON object");
+    return __psPost("/tool", '{"name":' + __psStringify(name) + ',"arguments":' + __psEncode(args, "arguments", 0) + "}");
 }
 async function setResult(outcome, output = null) {
-    if (typeof outcome !== "string" || !outcome.trim()) throw new TypeError("setResult needs a non-empty outcome string");
-    __psAssertJson(output, "output", 0);
-    await __psPost("/result", { outcome, output });
+    let body;
+    try {
+        if (typeof outcome !== "string" || outcome.length === 0) throw new TypeError("setResult needs a non-empty outcome string");
+        body = '{"outcome":' + __psStringify(outcome) + ',"output":' + __psEncode(output, "output", 0) + "}";
+    } catch (error) {
+        const problem = error instanceof Error ? error.message : __psString(error);
+        const reported = typeof outcome === "string" ? outcome : "";
+        return __psPost("/result", '{"outcome":' + __psStringify(reported) + ',"invalid":' + __psStringify(problem) + "}");
+    }
+    await __psPost("/result", body);
 }
 `;
 
@@ -328,7 +420,7 @@ export async function runScriptNode(
     const toolCalls: ScriptToolCallRecord[] = [];
     let admittedToolCalls = 0;
     let acceptingToolCalls = true;
-    let reported: { outcome: string; output: unknown } | null = null;
+    let reported: { outcome: string; output: unknown; invalid?: string } | null = null;
 
     const server = http.createServer(async (req, res) => {
         const reply = (status: number, body: unknown) => {
@@ -343,18 +435,28 @@ export async function runScriptNode(
         try { body = await readBody(req); }
         catch (error) { reply(400, { ok: false, error: errorText(error) }); return; }
 
+        if (req.url === "/result" && request.strictJson) {
+            // A refused result is still the script's latest result: the node
+            // fails with invalid_output instead of running on without one.
+            const outcome = typeof body?.outcome === "string" ? body.outcome : "";
+            const problem = typeof body?.invalid === "string" ? body.invalid
+                : !outcome.trim() ? "outcome must be a non-empty string"
+                : strictJsonProblem(Object.hasOwn(body, "output") ? body.output : null, "output");
+            if (problem) {
+                reported = { outcome, output: null, invalid: problem };
+                reply(400, { ok: false, error: problem });
+                return;
+            }
+            reported = { outcome, output: Object.hasOwn(body, "output") ? body.output : null };
+            reply(200, { ok: true, result: null });
+            return;
+        }
         if (req.url === "/result") {
             if (typeof body?.outcome !== "string" || !body.outcome.trim()) {
                 reply(400, { ok: false, error: "outcome must be a non-empty string" });
                 return;
             }
-            const output = Object.hasOwn(body, "output") ? body.output : null;
-            const problem = request.strictJson ? strictJsonProblem(output, "output") : null;
-            if (problem) {
-                reply(400, { ok: false, error: problem });
-                return;
-            }
-            reported = { outcome: body.outcome, output };
+            reported = { outcome: body.outcome, output: Object.hasOwn(body, "output") ? body.output : null };
             reply(200, { ok: true, result: null });
             return;
         }
@@ -427,66 +529,105 @@ export async function runScriptNode(
         let timedOut = false;
         let cancelled = false;
         let toolCancellation: Promise<void> | undefined;
+        const launch: { exited: Promise<number | null> | null; stop: (() => void) | null } = { exited: null, stop: null };
 
-        const exitCode = await new Promise<number | null>((resolve, reject) => {
-            const args = request.guardedNode
-                ? ["--permission", `--allow-fs-read=${workDir}`, `--allow-fs-write=${workDir}`, scriptPath]
-                : runtime.args(scriptPath);
-            const child = spawn(executable, args, {
-                cwd: workDir,
-                env,
-                stdio: ["pipe", "pipe", "pipe"],
-                windowsHide: true,
-            });
-            const stop = () => {
-                acceptingToolCalls = false;
-                if (!killProcessTree(child.pid)) child.kill("SIGKILL");
-                if (request.cancelTools && !toolCancellation) {
-                    toolCancellation = request.cancelTools();
-                    // Awaited below; observe rejection now to avoid an unhandled rejection.
-                    void toolCancellation.catch(() => undefined);
-                }
-            };
-            const timer = setTimeout(() => {
-                timedOut = true;
-                stop();
-            }, node.timeoutSeconds * 1000);
-            const cancelWatch = request.isCancelled
-                ? setInterval(() => {
-                    if (!cancelled && request.isCancelled!()) {
-                        cancelled = true;
-                        stop();
+        // Starts the script process. Synchronous: an entry boundary calls it
+        // while it holds the locks that order the start.
+        const start = (context: Record<string, unknown>): void => {
+            if (launch.exited) throw new WorkflowExecutionError(`Script state '${node.id}' was started twice.`);
+            launch.exited = new Promise<number | null>((resolve, reject) => {
+                const args = request.guardedNode
+                    ? ["--permission", `--allow-fs-read=${workDir}`, `--allow-fs-write=${workDir}`, scriptPath]
+                    : runtime.args(scriptPath);
+                const child = spawn(executable, args, {
+                    cwd: workDir,
+                    env,
+                    stdio: ["pipe", "pipe", "pipe"],
+                    windowsHide: true,
+                });
+                const stop = () => {
+                    acceptingToolCalls = false;
+                    if (!killProcessTree(child.pid)) child.kill("SIGKILL");
+                    if (request.cancelTools && !toolCancellation) {
+                        toolCancellation = request.cancelTools();
+                        // Awaited below; observe rejection now to avoid an unhandled rejection.
+                        void toolCancellation.catch(() => undefined);
                     }
-                }, CANCEL_POLL_MS)
-                : null;
-            const settle = () => {
-                clearTimeout(timer);
-                if (cancelWatch) clearInterval(cancelWatch);
-            };
-            child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
-            child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
-            child.on("error", (error: NodeJS.ErrnoException) => {
-                settle();
-                reject(error.code === "ENOENT"
-                    ? new WorkflowExecutionError(
-                        `Script state '${node.id}' needs the ${node.runtime} runtime, but '${executable}' is not installed on this worker.`,
-                    )
-                    : error);
+                };
+                launch.stop = stop;
+                const timer = setTimeout(() => {
+                    timedOut = true;
+                    stop();
+                }, node.timeoutSeconds * 1000);
+                const cancelWatch = request.isCancelled
+                    ? setInterval(() => {
+                        if (!cancelled && request.isCancelled!()) {
+                            cancelled = true;
+                            stop();
+                        }
+                    }, CANCEL_POLL_MS)
+                    : null;
+                const settle = () => {
+                    clearTimeout(timer);
+                    if (cancelWatch) clearInterval(cancelWatch);
+                };
+                child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+                child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
+                child.on("error", (error: NodeJS.ErrnoException) => {
+                    settle();
+                    reject(error.code === "ENOENT"
+                        ? new WorkflowExecutionError(
+                            `Script state '${node.id}' needs the ${node.runtime} runtime, but '${executable}' is not installed on this worker.`,
+                        )
+                        : error);
+                });
+                child.on("close", (code) => {
+                    settle();
+                    resolve(code);
+                });
+                child.stdin.on("error", () => { /* the script may exit without reading its context */ });
+                child.stdin.end(JSON.stringify(context));
             });
-            child.on("close", (code) => {
-                settle();
-                resolve(code);
-            });
-            child.stdin.on("error", () => { /* the script may exit without reading its context */ });
-            child.stdin.end(JSON.stringify(request.context ?? {
+        };
+
+        if (request.enter) {
+            let entered: boolean;
+            try {
+                entered = await request.enter(start);
+            } catch (error) {
+                // The entry failed after the script started (its commit did not
+                // complete): stop the script before reporting the failure.
+                if (launch.exited) {
+                    launch.stop?.();
+                    await Promise.allSettled([launch.exited]);
+                }
+                throw error;
+            }
+            if (entered !== Boolean(launch.exited)) {
+                if (launch.exited) {
+                    launch.stop?.();
+                    await Promise.allSettled([launch.exited]);
+                }
+                throw new WorkflowExecutionError(`Script state '${node.id}': the entry boundary ${entered ? "did not start the script" : "started the script but refused it"}.`);
+            }
+            if (!entered) {
+                return {
+                    outcome: "", output: null, resultSource: "not_started", exitCode: null, durationMs: Date.now() - startedAt,
+                    stdoutTail: "", stderrTail: "", toolCalls,
+                };
+            }
+        } else {
+            start(request.context ?? {
                 sessionId: request.sessionId,
                 workflow: request.workflowName,
                 node: node.id,
                 step: request.step,
                 inputs: request.inputs,
                 input: request.priorOutput ?? null,
-            }));
-        });
+            });
+        }
+        if (!launch.exited) throw new WorkflowExecutionError(`Script state '${node.id}' did not start.`);
+        const exitCode = await launch.exited;
         acceptingToolCalls = false;
         if (toolCancellation) {
             try { await toolCancellation; }
@@ -512,21 +653,28 @@ export async function runScriptNode(
         if (timedOut) {
             return { ...common, outcome: "timeout", output: { timeoutSeconds: node.timeoutSeconds }, resultSource: "timeout" };
         }
-        const finalReport = reported as { outcome: string; output: unknown } | null;
+        const finalReport = reported as { outcome: string; output: unknown; invalid?: string } | null;
         if (request.strictJson) {
-            // Only an accepted setResult completes the node, and only on a clean exit.
-            if (exitCode !== 0) {
-                return { ...common, outcome: "failure", output: { exitCode, stderr: stderrTail.trim().slice(-4_096) }, resultSource: "exit" };
+            // The legacy channels and precedence, with every value checked:
+            // the last setResult, else a final stdout result line, else the exit code.
+            if (finalReport?.invalid !== undefined) {
+                return { ...common, outcome: finalReport.outcome, output: null, resultSource: "invalid", problem: finalReport.invalid };
             }
-            if (!finalReport) return { ...common, outcome: "", output: null, resultSource: "none" };
-            return { ...common, outcome: finalReport.outcome, output: finalReport.output, resultSource: "reported" };
-        }
-        if (finalReport) {
-            return { ...common, outcome: finalReport.outcome, output: boundedOutput(node.id, finalReport.output), resultSource: "reported" };
-        }
-        const fromStdout = lastJsonResultLine(stdoutTail);
-        if (fromStdout) {
-            return { ...common, outcome: fromStdout.outcome, output: boundedOutput(node.id, fromStdout.output), resultSource: "stdout" };
+            if (finalReport) return { ...common, outcome: finalReport.outcome, output: finalReport.output, resultSource: "reported" };
+            const line = lastJsonResultLine(stdoutTail);
+            if (line) {
+                const problem = strictJsonProblem(line.output, "output");
+                if (problem) return { ...common, outcome: line.outcome, output: null, resultSource: "invalid", problem };
+                return { ...common, outcome: line.outcome, output: line.output, resultSource: "stdout" };
+            }
+        } else {
+            if (finalReport) {
+                return { ...common, outcome: finalReport.outcome, output: boundedOutput(node.id, finalReport.output), resultSource: "reported" };
+            }
+            const fromStdout = lastJsonResultLine(stdoutTail);
+            if (fromStdout) {
+                return { ...common, outcome: fromStdout.outcome, output: boundedOutput(node.id, fromStdout.output), resultSource: "stdout" };
+            }
         }
         if (exitCode === 0) {
             const text = stdoutTail.trim();

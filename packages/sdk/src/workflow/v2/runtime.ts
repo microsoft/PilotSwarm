@@ -54,7 +54,13 @@ import {
  */
 
 export const WORKFLOW_V2_CONTROLLER_NAME = "workflow-v2-controller";
-export const WORKFLOW_V2_CONTROLLER_VERSION = "1.0.0";
+/**
+ * The controller's history shape. 1.1.0 waits with race(message, backstop
+ * timer) and records the backstop in its plan; 1.0.0 histories (pre-release
+ * builds) had neither and are not replayed by this code: an instance of an
+ * unregistered version is refused by the runtime, never re-interpreted.
+ */
+export const WORKFLOW_V2_CONTROLLER_VERSION = "1.1.0";
 export const WORKFLOW_V2_EFFECT_NAME = "workflow-v2-effect";
 export const WORKFLOW_V2_EFFECT_VERSION = "1.0.0";
 /** Node admissions per controller execution before continue-as-new bounds history. */
@@ -802,7 +808,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.cancel_requested", data: { runId: run.runId, effects: requested } }]);
         }
         // Soft-deleting the session tombstones the definition in the same
-        // transaction (migration 0085 trigger), whichever path deletes it.
+        // transaction (migration 0086 trigger), whichever path deletes it.
         if (command === "delete") await deps.deleteSession(run.workflowSessionId);
         return { runId: run.runId, status: ended.run.status, outcome: ended.run.terminalOutcome };
     });
@@ -846,12 +852,8 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         const node = nodeOf(ir, executed.nodeId);
         if (node.type !== "script") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${executed.nodeId} is not a script state.`);
         if (!deps.enabled()) return { kind: "result", result: runtimeError("unavailable", WORKFLOW_SCRIPTS_DISABLED_MESSAGE) };
-        // The claim is the script's entry boundary: a deletion or cancellation
-        // committed first refuses it; one committed later stops the script
-        // through the liveness check below.
-        const claim = await store.claimScriptEntry(executed.nodeExecutionId);
-        if (!claim.claimed) return { kind: "completed" };
-        const attempt = claim.attempt;
+        // Everything the script needs is prepared before its entry, so the
+        // entry decision and the process start are one step (store.enterScript).
         const binding = await deps.resolveToolBinding(run.workflowSessionId);
         const tools: { executor: WorkflowToolExecutor | null } = { executor: null };
         const callTool = async (call: ScriptToolCall): Promise<unknown> => {
@@ -859,8 +861,14 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             tools.executor ??= await deps.openToolExecutor(run.workflowSessionId, binding, executed.ordinal);
             return tools.executor.call(call.name, call.arguments);
         };
-        // A failed check leaves the script running; its result still has to win
-        // the node's compare-and-swap, so a late result cannot override a decision.
+        const scriptContext = (attempt: number): Record<string, unknown> => ({
+            sessionId: run.workflowSessionId, workflowSessionId: run.workflowSessionId, runId: run.runId, mode: run.mode,
+            workflow: ir.name, version: ir.version, node: node.id, nodeExecutionId: executed.nodeExecutionId,
+            step: executed.ordinal, attempt, inputs: run.inputs, input: executed.input, kv: {},
+        });
+        // A deletion or cancellation that commits after the entry stops the
+        // started script through this check. A failed check leaves it running;
+        // its result still has to win the node's compare-and-swap.
         let decidedElsewhere = false;
         let checking = false;
         const liveness = setInterval(() => {
@@ -883,13 +891,9 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 callTool,
                 guardedNode: true,
                 strictJson: true,
+                enter: async start => (await store.enterScript(executed.nodeExecutionId, attempt => start(scriptContext(attempt)))).entered,
                 cancelTools: async () => { if (tools.executor) await tools.executor.close(); },
                 isCancelled: () => actx.isCancelled() || decidedElsewhere,
-                context: {
-                    sessionId: run.workflowSessionId, workflowSessionId: run.workflowSessionId, runId: run.runId, mode: run.mode,
-                    workflow: ir.name, version: ir.version, node: node.id, nodeExecutionId: executed.nodeExecutionId,
-                    step: executed.ordinal, attempt, inputs: run.inputs, input: executed.input, kv: {},
-                },
             }, deps.runnerOptions);
         } catch (error) {
             return { kind: "result", result: runtimeError("execution_failed", workflowErrorMessage(error)) };
@@ -897,7 +901,8 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             clearInterval(liveness);
             if (tools.executor) await tools.executor.close();
         }
-        if (decidedElsewhere) return { kind: "completed" };
+        // Not started: the node was decided, or its run or session ended, before entry.
+        if (ran.resultSource === "not_started" || decidedElsewhere) return { kind: "completed" };
         return { kind: "result", result: scriptResult(node, run, ir, ran) };
     });
 
@@ -935,16 +940,21 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     });
 }
 
-/** Map a script runner result to the node's typed result. */
+/**
+ * Map a script runner result to the node's typed result. The channels are
+ * the runner's (setResult, then a final stdout result line, then the exit
+ * code); a value that is not plain JSON is invalid_output, a crash without a
+ * result is execution_failed.
+ */
 function scriptResult(node: WorkflowIRScript, run: WorkflowRunRow, ir: WorkflowIR, result: RunScriptNodeResult): NodeResultInput {
-    if (result.resultSource === "cancelled") return runtimeError("cancelled", "The script was cancelled.");
+    if (result.resultSource === "cancelled" || result.resultSource === "not_started") return runtimeError("cancelled", "The script was cancelled.");
     if (result.resultSource === "timeout") return runtimeError("timed_out", `The script ran past its ${node.timeoutSeconds}s timeout.`, { timeoutSeconds: node.timeoutSeconds });
-    if (result.exitCode !== 0) {
+    if (result.resultSource === "invalid") {
+        return runtimeError("invalid_output", `The script's result is not plain JSON: ${result.problem ?? "invalid value"}.`);
+    }
+    if (result.resultSource === "exit" && result.exitCode !== 0) {
         return runtimeError("execution_failed", `The script exited with code ${String(result.exitCode)}.`,
             { exitCode: result.exitCode, stderr: jsonbSafeText(result.stderrTail.trim().slice(-4_096)) });
-    }
-    if (result.resultSource !== "reported") {
-        return runtimeError("invalid_output", "The script exited without an accepted setResult(outcome, output) call.");
     }
     if (!node.outcomes.includes(result.outcome)) {
         return runtimeError("invalid_output", `The script reported undeclared outcome '${jsonbSafeText(result.outcome, 100)}' (declared: ${node.outcomes.join(", ")}).`);

@@ -235,44 +235,93 @@ function runProbe(source, strictJson) {
 }
 
 describe("workflow v2 script results are plain JSON before any serialization", () => {
-    const rejected = [
+    // setResult refuses the value and still reports it, so the node fails with invalid_output.
+    const refused = [
         ["NaN", 'await setResult("ok", { n: NaN });', "numbers must be finite"],
         ["Infinity", 'await setResult("ok", { n: Infinity });', "numbers must be finite"],
         ["undefined", 'await setResult("ok", { a: undefined });', "undefined is not a JSON value"],
-        ["toJSON on a class", 'await setResult("ok", { d: new Date(0) });', "only plain objects are JSON (got Date)"],
-        ["own toJSON function", 'await setResult("ok", { toJSON() { return 1; } });', "function is not a JSON value"],
-        ["tool arguments", 'await callTool("x", { n: NaN });', "numbers must be finite"],
+        ["a class instance with toJSON", 'await setResult("ok", { d: new Date(0) });', "only plain objects are JSON (got Date)"],
+        ["an own toJSON function", 'await setResult("ok", { toJSON() { return 1; } });', "function is not a JSON value"],
+        ["an object accessor", 'await setResult("ok", Object.defineProperty({}, "x", { enumerable: true, get() { return 1; } }));', "accessors are not JSON"],
+        ["an array element accessor that changes after its check",
+            'let reads = 0; const a = []; Object.defineProperty(a, "0", { enumerable: true, configurable: true, get() { return reads++ === 0 ? 1 : Infinity; } }); await setResult("ok", a);',
+            "accessors are not JSON"],
+        ["an array with its own toJSON", 'const a = [1]; a.toJSON = () => null; await setResult("ok", a);', "an array may hold only its elements"],
+        ["an array with an extra property", 'const a = [1]; a.note = "x"; await setResult("ok", a);', "an array may hold only its elements"],
+        ["a sparse array", 'await setResult("ok", [1, , 3]);', "sparse arrays are not JSON"],
+        ["an array subclass", 'class List extends Array {} await setResult("ok", List.from([1]));', "only plain arrays are JSON"],
+        ["a non-enumerable property", 'await setResult("ok", Object.defineProperty({}, "hidden", { value: 1 }));', "non-enumerable properties are not JSON"],
+        ["an empty outcome", 'await setResult("", {});', "non-empty outcome"],
     ];
-    for (const [label, source, message] of rejected) {
-        it(`rejects ${label} in the script before it is sent`, { timeout: 60_000 }, async () => {
-            const result = await runProbe(source, true);
-            expect(result.resultSource, JSON.stringify(result)).toBe("exit");
+    for (const [label, source, message] of refused) {
+        it(`reports ${label} as an invalid result`, { timeout: 60_000 }, async () => {
+            const result = await runProbe(`${source}\n`, true);
+            expect(result.resultSource, JSON.stringify(result)).toBe("invalid");
+            expect(result.problem).toContain(message);
+            expect(result.output).toBeNull();
+            // The script saw the refusal as an error.
             expect(result.exitCode).not.toBe(0);
             expect(result.stderrTail).toContain(message);
         });
     }
 
-    it("rejects a non-finite number posted directly to the endpoint (1e400 parses to Infinity)", { timeout: 60_000 }, async () => {
+    it("refuses non-JSON tool arguments in the script before any call is sent", { timeout: 60_000 }, async () => {
+        const calls = [];
+        const result = await runScriptNode({
+            sessionId: "strict-json-probe", workflowName: "probe", step: 1, inputs: {}, priorOutput: null,
+            node: scriptNode('try { await callTool("x", { n: NaN }); } catch (error) { await setResult("ok", { refused: error.message }); }'),
+            callTool: async (call) => { calls.push(call); return null; },
+            guardedNode: true, strictJson: true,
+        });
+        expect(result.resultSource, JSON.stringify(result)).toBe("reported");
+        expect(result.output.refused).toContain("numbers must be finite");
+        expect(calls).toEqual([]);
+    });
+
+    it("ignores inherited toJSON hooks and encodes the value's own data", { timeout: 60_000 }, async () => {
         const result = await runProbe(`
+Object.prototype.toJSON = function () { return "object hook"; };
+Array.prototype.toJSON = function () { return "array hook"; };
+await setResult("ok", { list: [1, [2, { k: "v" }]], empty: [], nulls: [null, null] });`, true);
+        expect(result.resultSource, JSON.stringify(result)).toBe("reported");
+        expect(result.output).toEqual({ list: [1, [2, { k: "v" }]], empty: [], nulls: [null, null] });
+    });
+
+    it("keeps dense arrays, nested values, escaped NUL and lone surrogates exact", { timeout: 60_000 }, async () => {
+        const result = await runProbe('await setResult("ok", { s: "a\\u0000b\\ud800c", n: 1.5, z: -0, nested: [null, true, { k: "v" }, [[], [0, ""]]], a: Array.from({ length: 3 }, (_, i) => i) });', true);
+        expect(result.resultSource, JSON.stringify(result)).toBe("reported");
+        expect(result.output).toEqual({ s: "a\u0000b\ud800c", n: 1.5, z: 0, nested: [null, true, { k: "v" }, [[], [0, ""]]], a: [0, 1, 2] });
+    });
+
+    it("refuses a non-finite number posted directly to the endpoint (1e400 parses to Infinity)", { timeout: 60_000 }, async () => {
+        const raw = `
 const response = await fetch(process.env.PILOTSWARM_WORKFLOW_ENDPOINT + "/result", {
     method: "POST",
     headers: { "content-type": "application/json", authorization: "Bearer " + process.env.PILOTSWARM_WORKFLOW_TOKEN },
     body: '{"outcome":"ok","output":1e400}',
-});
-await setResult("ok", { status: response.status, body: await response.json() });`, true);
-        expect(result.resultSource, JSON.stringify(result)).toBe("reported");
-        expect(result.output).toEqual({ status: 400, body: { ok: false, error: "output: numbers must be finite" } });
+});`;
+        const alone = await runProbe(`${raw}\nconsole.error(JSON.stringify(await response.json()));`, true);
+        expect(alone.resultSource, JSON.stringify(alone)).toBe("invalid");
+        expect(alone.problem).toBe("output: numbers must be finite");
+        expect(alone.stderrTail).toContain('"ok":false');
+        // A later valid setResult is the script's result.
+        const corrected = await runProbe(`${raw}\nawait setResult("ok", { status: response.status, body: await response.json() });`, true);
+        expect(corrected.resultSource, JSON.stringify(corrected)).toBe("reported");
+        expect(corrected.output).toEqual({ status: 400, body: { ok: false, error: "output: numbers must be finite" } });
     });
 
-    it("does not take a result from stdout or the exit code", { timeout: 60_000 }, async () => {
-        const result = await runProbe('console.log(\'{"outcome":"ok","output":1e400}\');', true);
-        expect(result).toMatchObject({ resultSource: "none", exitCode: 0, output: null });
-    });
-
-    it("keeps escaped NUL, lone surrogates and plain values exact", { timeout: 60_000 }, async () => {
-        const result = await runProbe('await setResult("ok", { s: "a\\u0000b\\ud800c", n: 1.5, nested: [null, true, { k: "v" }] });', true);
-        expect(result.resultSource, JSON.stringify(result)).toBe("reported");
-        expect(result.output).toEqual({ s: "a\u0000b\ud800c", n: 1.5, nested: [null, true, { k: "v" }] });
+    it("takes a final stdout result line or the exit code as before, checking stdout values", { timeout: 60_000 }, async () => {
+        const valid = await runProbe('console.log(\'{"outcome":"ok","output":{"n":7}}\');', true);
+        expect(valid).toMatchObject({ resultSource: "stdout", outcome: "ok", output: { n: 7 }, exitCode: 0 });
+        const invalid = await runProbe('console.log(\'{"outcome":"ok","output":1e400}\');', true);
+        expect(invalid).toMatchObject({ resultSource: "invalid", outcome: "ok", output: null, problem: "output: numbers must be finite" });
+        const exited = await runProbe('console.log("plain text");', true);
+        expect(exited).toMatchObject({ resultSource: "exit", outcome: "success", output: "plain text", exitCode: 0 });
+        const crashed = await runProbe('process.exit(3);', true);
+        expect(crashed).toMatchObject({ resultSource: "exit", outcome: "failure", exitCode: 3 });
+        // A reported result stands even when the script exits non-zero afterwards.
+        const reportedThenCrashed = await runProbe('await setResult("ok", { n: 1 }); process.exit(2);', true);
+        expect(reportedThenCrashed).toMatchObject({ resultSource: "reported", outcome: "ok", output: { n: 1 }, exitCode: 2 });
     });
 
     it("leaves the legacy runner's conversions unchanged when strict JSON is off", { timeout: 60_000 }, async () => {
@@ -483,14 +532,18 @@ describe("workflow v2 store and controller on PostgreSQL", () => {
         });
     });
 
-    it("completes a state only from an accepted setResult: non-JSON or missing results become typed errors", { timeout: TIMEOUT }, async () => {
+    it("routes non-JSON results to invalid_output and keeps the stdout and exit-code channels", { timeout: TIMEOUT }, async () => {
         await withClient(getEnv(), { worker: { workflowScripts: { enabled: true } } }, async (client) => {
             const h = host(client);
             const cases = [
-                ["stdout-1e400", 'console.log(\'{"outcome":"ok","output":1e400}\');', "invalid_output"],
-                ["nan", 'await setResult("ok", { n: NaN });', "execution_failed"],
+                ["stdout-1e400", 'console.log(\'{"outcome":"ok","output":1e400}\');', { code: "invalid_output" }],
+                ["nan", 'await setResult("ok", { n: NaN });', { code: "invalid_output" }],
+                ["array-getter", 'const a = []; Object.defineProperty(a, "0", { enumerable: true, get() { return 1; } }); await setResult("ok", { a });', { code: "invalid_output" }],
+                ["crash", 'process.exit(4);', { code: "execution_failed" }],
+                ["stdout-valid", 'console.log(\'{"outcome":"ok","output":{"n":7}}\');', { output: { n: 7 } }],
+                ["reported-then-exit", 'await setResult("ok", { n: 1 }); process.exit(2);', { output: { n: 1 } }],
             ];
-            for (const [name, source, code] of cases) {
+            for (const [name, source, expected] of cases) {
                 const yaml = `
 apiVersion: pilotswarm.dev/v2-draft
 kind: Workflow
@@ -509,10 +562,16 @@ states:
                 const started = await createWorkflowV2(h, { workflowSessionId: randomUUID(), parentSessionId: null, yaml,
                     actor: ACTOR, operationId: name, start: { inputs: {} } });
                 const run = await finishedRun(h, started.receipt.run.runId);
-                expect(run.terminalOutcome, `${name}: ${JSON.stringify(run)}`).toBe("blocked");
-                expect(run.terminalOutput.code).toBe(code);
                 const [probe] = await h.store.listNodeExecutions(run.runId);
-                expect(probe).toMatchObject({ nodeId: "probe", resultKind: "runtime_error", outcome: code, output: null });
+                if (expected.code) {
+                    expect(run.terminalOutcome, `${name}: ${JSON.stringify(run)}`).toBe("blocked");
+                    expect(run.terminalOutput.code).toBe(expected.code);
+                    expect(probe).toMatchObject({ nodeId: "probe", resultKind: "runtime_error", outcome: expected.code, output: null });
+                } else {
+                    expect(run.terminalOutcome, `${name}: ${JSON.stringify(run)}`).toBe("succeeded");
+                    expect(run.terminalOutput).toEqual(expected.output);
+                    expect(probe).toMatchObject({ nodeId: "probe", resultKind: "business", outcome: "ok", output: expected.output });
+                }
             }
         });
     });

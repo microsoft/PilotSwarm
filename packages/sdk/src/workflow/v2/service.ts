@@ -109,6 +109,9 @@ export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWork
         kind: "create", yamlSha256: compiled.yamlSha256, publish, start: request.start ? { inputs: startInputs } : null,
         parentSessionId: request.parentSessionId, notifyParent: request.notifyParent !== false,
         owner: request.owner ? { provider: request.owner.provider, subject: request.owner.subject } : null,
+        // The tool grant is part of the request: a retry with another grant is
+        // another request, so it can never continue (or be told it created) this one.
+        binding: request.binding ? jsonSha256(JSON.parse(JSON.stringify(request.binding))) : null,
     });
     // A deleted workflow keeps its definition tombstone; its id is never reused.
     const tombstone = await host.store.readDefinition(request.workflowSessionId);
