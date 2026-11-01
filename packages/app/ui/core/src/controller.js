@@ -4131,8 +4131,8 @@ export class PilotSwarmUiController {
         }
         if (!draft.bodyMd.trim() || !["now", "custom"].includes(draft.startMode)
             || !["never", "hour", "day", "week", "custom"].includes(draft.endMode)
-            || !Number.isFinite(window.from) || window.to !== null && (!Number.isFinite(window.to)
-                || !unchangedRetry && window.to <= Date.now() || window.to <= window.from)) {
+            || !unchangedRetry && (!Number.isFinite(window.from) || window.to !== null
+                && (!Number.isFinite(window.to) || window.to <= Date.now() || window.to <= window.from))) {
             this.dispatch({ type: "admin/motds", patch: { error: "Enter a markdown body and valid schedule. An end, if set, must be in the future and after the start." } });
             return;
         }

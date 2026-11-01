@@ -84,7 +84,7 @@ for (const kind of ["paste", "drop"]) {
             await expect(editor.getByAltText("main-paste.png")).toBeVisible();
             expect(await transferImage(page, editor, { kind, mobile: true, name: "mobile-paste.png" })).toBe(true);
             await expect(page.getByLabel("Mobile picture alt text", { exact: true })).toHaveValue("mobile-paste.png");
-            await page.getByRole("group", { name: "Ends", exact: true }).getByRole("radio", { name: "1 day", exact: true }).check();
+            await page.getByRole("group", { name: "Ends", exact: true }).getByRole("radio", { name: "1 day", exact: true }).locator("..").click();
             await page.getByLabel("Body (markdown)", { exact: true }).fill("Image notice");
             await page.getByLabel("Mobile picture alt text", { exact: true }).fill("");
             await page.getByRole("button", { name: "Publish", exact: true }).click();

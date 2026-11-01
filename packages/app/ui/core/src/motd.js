@@ -25,7 +25,11 @@ export function duplicateMotdDraft(message, pictures, now) {
     const duration = end == null ? null : Date.parse(end) - Date.parse(motdStartsAt(message));
     if (!Number.isFinite(now) || duration !== null && (!Number.isFinite(duration) || duration <= 0))
         throw new Error("The source message has an invalid time window.");
-    const preset = Object.keys(MOTD_DURATIONS).find(key => MOTD_DURATIONS[key] === duration);
+    // A Now preset's end is chosen before the server stamps creation time.
+    const serverStart = Date.parse(motdStartsAt(message)) === Date.parse(message.createdAt);
+    const preset = duration === null ? undefined
+        : Object.keys(MOTD_DURATIONS).find(key => MOTD_DURATIONS[key] === duration
+            || serverStart && Math.abs(MOTD_DURATIONS[key] - duration) < 60_000);
     const parts = duration === null ? {} : motdLocalParts(now + duration);
     const image = (variant, alt) => {
         const picture = pictures[variant];

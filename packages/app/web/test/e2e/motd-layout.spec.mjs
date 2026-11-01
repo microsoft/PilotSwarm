@@ -23,10 +23,10 @@ for (const viewport of [{ width: 1440, height: 900 }, { width: 1100, height: 800
                     await expect(panel.getByRole("heading", { name: "Today", exact: true })).toBeVisible();
                     await expect(panel.getByRole("button", { name: "Show splash again", exact: true }).first()).toBeVisible();
                     if (admin) {
-                        await page.getByRole("group", { name: "Starts", exact: true }).getByRole("radio", { name: "At a time...", exact: true }).check();
+                        await page.getByRole("group", { name: "Starts", exact: true }).getByRole("radio", { name: "At a time...", exact: true }).locator("..").click();
                         await page.getByLabel("Start date", { exact: true }).fill("2030-01-01");
                         await page.getByLabel("Start time", { exact: true }).selectOption("12:30");
-                        await page.getByRole("group", { name: "Ends", exact: true }).getByRole("radio", { name: "At a time...", exact: true }).check();
+                        await page.getByRole("group", { name: "Ends", exact: true }).getByRole("radio", { name: "At a time...", exact: true }).locator("..").click();
                         await page.getByLabel("End date", { exact: true }).fill("2030-01-02");
                         await page.getByLabel("End time", { exact: true }).selectOption("18:45");
                         await page.getByLabel("Body (markdown)", { exact: true }).fill("## A message for everyone\n\nThe editor uses the available pane width.\n\nBoth local date and time fields remain readable.");

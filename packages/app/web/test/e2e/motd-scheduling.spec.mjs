@@ -19,6 +19,11 @@ test("Now and Never defaults publish without either time", async ({ page }) => {
         await expect(page.locator(".ps-motd-schedule-summary")).toHaveText("Shows now until replaced or deleted.");
         await expect(page.locator('input[type="date"],input[type="datetime-local"]')).toHaveCount(0);
         await page.getByLabel("Body (markdown)", { exact: true }).fill("No end announcement");
+        await page.getByRole("button", { name: "Preview", exact: true }).click();
+        const preview = page.getByRole("dialog", { name: "Message of the day preview", exact: true });
+        await expect(preview).toContainText("until replaced (No end)");
+        await expect(preview).not.toContainText("Invalid Date");
+        await preview.getByRole("button", { name: "Close preview", exact: true }).click();
         await page.getByRole("button", { name: "Publish", exact: true }).click();
         await expect(page.getByRole("status").filter({ hasText: "Message published." })).toBeVisible();
         expect(f.state.calls[0].input.startsAt).toBeUndefined();
@@ -30,13 +35,17 @@ test("custom dates and 15-minute time selects work with the keyboard and show th
     const f = await open(page);
     try {
         const now = starts(page).getByRole("radio", { name: "Now", exact: true });
-        await now.focus(); await page.keyboard.press("ArrowRight");
+        await now.focus();
+        expect(await now.evaluate(node => ({ clip: getComputedStyle(node).clipPath, width: node.offsetWidth })))
+            .toEqual({ clip: "inset(50%)", width: 1 });
+        expect(await now.locator("..").evaluate(node => getComputedStyle(node).outlineWidth)).toBe("2px");
+        await page.keyboard.press("ArrowRight");
         await expect(starts(page).getByRole("radio", { name: "At a time...", exact: true })).toBeChecked();
         await page.getByLabel("Start date", { exact: true }).fill("2030-11-02");
         const startTime = page.getByLabel("Start time", { exact: true });
         await startTime.selectOption("09:00"); await startTime.focus(); await page.keyboard.press("ArrowDown");
         await expect(startTime).toHaveValue("09:15");
-        await ends(page).getByRole("radio", { name: "At a time...", exact: true }).check();
+        await ends(page).getByRole("radio", { name: "At a time...", exact: true }).locator("..").click();
         await page.getByLabel("End date", { exact: true }).fill("2030-11-08");
         await page.getByLabel("End time", { exact: true }).selectOption("18:00");
         expect(await startTime.locator("option").count()).toBe(96);
@@ -56,7 +65,7 @@ test("each relative preset sends the exact length and Duplicate preserves it", a
         await page.getByRole("button", { name: "Duplicate message 1", exact: true }).click();
         await expect(ends(page).getByRole("radio", { name: "1 day", exact: true })).toBeChecked();
         for (const name of ["1 hour", "1 day", "1 week"]) {
-            await ends(page).getByRole("radio", { name, exact: true }).check();
+            await ends(page).getByRole("radio", { name, exact: true }).locator("..").click();
             await expect(page.locator(".ps-motd-schedule-summary")).toContainText("Shows now until");
             await page.getByLabel("Body (markdown)", { exact: true }).fill(`Preset ${name}`);
             const before = Date.now();
@@ -67,6 +76,9 @@ test("each relative preset sends the exact length and Duplicate preserves it", a
             const length = { "1 hour": 3_600_000, "1 day": 86_400_000, "1 week": 604_800_000 }[name];
             expect(Date.parse(request.endsAt) - before).toBeGreaterThanOrEqual(length);
             expect(Date.parse(request.endsAt) - before).toBeLessThan(length + 10_000);
+            const saved = f.state.history[0];
+            await page.getByRole("button", { name: `Duplicate message ${saved.motdId}`, exact: true }).click();
+            await expect(ends(page).getByRole("radio", { name, exact: true })).toBeChecked();
         }
         expect(f.state.calls).toHaveLength(3);
     } finally { await f.stop(); }

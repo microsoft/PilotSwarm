@@ -21,7 +21,7 @@ export function MotdSchedulePicker({ controller, draft, busy }) {
         React.createElement("legend", null, label),
         React.createElement("div", { className: "ps-motd-segments" }, values.map(([value, name]) =>
             React.createElement("label", { key: value, className: draft[field] === value ? "is-selected" : "" },
-                React.createElement("input", { type: "radio", name: `motd-${field}`, value, checked: draft[field] === value,
+                React.createElement("input", { type: "radio", className: "ps-sr-only", name: `motd-${field}`, value, checked: draft[field] === value,
                     onChange: () => controller.setMotdDraft({ [field]: value }) }), name))));
     const atTime = (label, prefix) => {
         const times = Array.from({ length: 96 }, (_, index) => {
@@ -102,7 +102,7 @@ function draftMessage(draft) {
     const window = motdDraftWindow(draft);
     return { motdId: "draft", bodyMd: draft.bodyMd, mobileBodyMd: draft.mobileBodyMd || null,
         fromAt: Number.isFinite(window.from) ? new Date(window.from).toISOString() : new Date().toISOString(),
-        toAt: Number.isFinite(window.to) ? new Date(window.to).toISOString() : new Date().toISOString(),
+        toAt: window.to === null ? null : Number.isFinite(window.to) ? new Date(window.to).toISOString() : new Date().toISOString(),
         imagePlacement: draft.imagePlacement, pictures: { desktop: draft.image, mobile: draft.mobileImage } };
 }
 export function MotdAdminPanel({ controller, state, images = {}, isAdmin, canRead = isAdmin, mobile = false }) {

@@ -9,7 +9,7 @@ export const message = extra => ({ motdId: "1", fromAt: "2020-01-01T00:00:00Z", 
 export async function fixture(page, { admin = true, current = message(), history = null, themeId = null } = {}) {
     const stub = await startStubServer(0, { sessionCount: 1, admin, themeId });
     const state = { current, history: history || (current ? [current] : []), calls: [], imageRequests: [],
-        reads: 0, failDismiss: false, failCreate: false };
+        reads: 0, nextId: 2, failDismiss: false, failCreate: false };
     const principal = { provider: "none", subject: "test", displayName: "Test User" };
     const authorization = { allowed: true, role: admin ? "admin" : "user" };
     await page.route("**/api/v1/bootstrap", async route => {
@@ -58,7 +58,8 @@ export async function fixture(page, { admin = true, current = message(), history
             const fromAt = input.startsAt || input.fromAt || new Date().toISOString();
             const toAt = input.endsAt || input.toAt || null;
             state.history.unshift(message({ ...input, fromAt, toAt, startsAt: fromAt, endsAt: toAt,
-                motdId: "2", status: Date.parse(fromAt) > Date.now() ? "scheduled" : "live" }));
+                createdAt: input.startsAt || input.fromAt ? new Date().toISOString() : fromAt,
+                motdId: String(state.nextId++), status: Date.parse(fromAt) > Date.now() ? "scheduled" : "live" }));
         }
         return route.fulfill({ json: { ok: true, result: { motdId: "1", dismissed: true } } });
     });

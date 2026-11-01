@@ -87,10 +87,10 @@ test("admin editor creates UTC windows, retries publication and deletes the curr
     const f = await fixture(page, { current: null, history: [message()] });
     try {
         await openAdmin(page);
-        await page.getByRole("group", { name: "Starts", exact: true }).getByRole("radio", { name: "At a time...", exact: true }).check();
+        await page.getByRole("group", { name: "Starts", exact: true }).getByRole("radio", { name: "At a time...", exact: true }).locator("..").click();
         await page.getByLabel("Start date", { exact: true }).fill("2030-01-01");
         await page.getByLabel("Start time", { exact: true }).selectOption("12:00");
-        await page.getByRole("group", { name: "Ends", exact: true }).getByRole("radio", { name: "1 day", exact: true }).check();
+        await page.getByRole("group", { name: "Ends", exact: true }).getByRole("radio", { name: "1 day", exact: true }).locator("..").click();
         await page.getByLabel("Body (markdown)", { exact: true }).fill("## New message\nBody.");
         f.state.failCreate = true;
         await page.getByRole("button", { name: "Publish", exact: true }).click();
