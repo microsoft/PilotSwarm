@@ -80,7 +80,9 @@ test("one runtime per session tree, reached by address and token, with a scrubbe
     assert.equal(env.PS_SECRET_FOR_TEST, undefined);
     assert.equal(env.COPILOT_CONNECTION_TOKEN, connected.endpoint.connectionToken);
     assert.equal(env.COPILOT_HOME, provider.hosts()[0].homeDir);
-    assert.equal(fs.statSync(provider.hosts()[0].homeDir).mode & 0o077, 0, "the runtime's home is private");
+    if (process.platform !== "win32") {
+        assert.equal(fs.statSync(provider.hosts()[0].homeDir).mode & 0o077, 0, "the runtime's home is private");
+    }
 
     const otherTree = await provider.bind(bindReq("s3", "tree-2"));
     const otherKind = await provider.bind(bindReq("s4", "tree-1", otherTarget));

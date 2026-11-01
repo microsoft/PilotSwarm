@@ -81,6 +81,16 @@ function baseRuntimeEnv(homeDir: string): Record<string, string> {
 
 const OUTPUT_TAIL_BYTES = 4_096;
 
+/**
+ * Best effort: a process that just exited can still hold its folders for a
+ * moment on some platforms, and a failed cleanup must not fail a release.
+ */
+function removeHostDir(dir: string): void {
+    try {
+        fs.rmSync(dir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    } catch { /* left for the OS temp cleaner */ }
+}
+
 export function createProcessComputeProvider(options: ProcessComputeProviderOptions = {}): ComputeProvider & {
     /** Test and diagnostic view: the live hosts. */
     hosts(): Array<{ targetId: string; rootSessionId: string; pid: number | undefined; port: number; homeDir: string; workDir: string; sessions: string[] }>;
@@ -117,7 +127,7 @@ export function createProcessComputeProvider(options: ProcessComputeProviderOpti
         const child: ChildProcess = /\.[cm]?js$/.test(cliPath)
             ? spawn(process.execPath, [cliPath, ...args], spawnOptions)
             : spawn(cliPath, args, spawnOptions);
-        const cleanup = () => fs.rmSync(hostDir, { recursive: true, force: true });
+        const cleanup = () => removeHostDir(hostDir);
         let port: number;
         try {
             port = await new Promise<number>((resolve, reject) => {
@@ -174,7 +184,7 @@ export function createProcessComputeProvider(options: ProcessComputeProviderOpti
             });
         }
         // The runtime's home holds conversation data; it goes with the host.
-        fs.rmSync(host.hostDir, { recursive: true, force: true });
+        removeHostDir(host.hostDir);
     }
 
     function live(ref: ComputeHostRef): ProcessHost | undefined {

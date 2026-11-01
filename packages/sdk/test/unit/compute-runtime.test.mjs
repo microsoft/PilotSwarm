@@ -151,8 +151,13 @@ test("SessionFs never follows a link inside the session directory", async (t) =>
     fs.mkdirSync(dir);
     fs.mkdirSync(outside);
     fs.writeFileSync(path.join(outside, "secret.txt"), "secret");
-    fs.symlinkSync(path.join(outside, "secret.txt"), path.join(dir, "file-link"));
-    fs.symlinkSync(outside, path.join(dir, "dir-link"));
+    try {
+        fs.symlinkSync(path.join(outside, "secret.txt"), path.join(dir, "file-link"), "file");
+        fs.symlinkSync(outside, path.join(dir, "dir-link"), process.platform === "win32" ? "junction" : "dir");
+    } catch (error) {
+        if (error.code === "EPERM") return t.skip("this account cannot create links");
+        throw error;
+    }
     const sfs = new WorkerDirectorySessionFs(dir);
     await assert.rejects(sfs.readFile(`${REMOTE_SESSION_STATE_ROOT}/file-link`), /crosses a link/);
     await assert.rejects(sfs.readFile(`${REMOTE_SESSION_STATE_ROOT}/dir-link/secret.txt`), /crosses a link/);
