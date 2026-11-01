@@ -12,6 +12,7 @@ import { normalizeCapabilityState, type CapabilityState } from "./capability-cat
 import { randomUUID } from "crypto";
 import { runCmsMigrations } from "./cms-migrator.js";
 import { ProviderStore } from "./provider-store.js";
+import { ComputeTargetStore } from "./compute-target-store.js";
 import { FeatureStore } from "./feature-store.js";
 import { systemSessionProtectedError, type SessionOwnerInfo, type SessionSummaryState, type TurnControlKind, type TurnControlAddResult, type TurnStartResult, type TurnLookInput, type TurnLookRow, type TurnEndKind, type TurnEndResult, type TurnControl, type TurnStartRecord } from "./types.js";
 import type { MessageSender } from "./message-sender.js";
@@ -975,6 +976,8 @@ export interface SessionCatalog {
      */
     readonly providers?: ProviderStore;
     readonly features?: FeatureStore;
+    /** Compute targets (migration 0084). Optional, like providers. See compute-target-store.ts. */
+    readonly computeTargets?: ComputeTargetStore;
 
     /** Per-slot canvas cache (migration 0045); optional so test doubles need not implement it. */
     upsertSessionCanvas?(sessionId: string, slot: number, name: string | null, latestRev: number, sizeBytes: number | null): Promise<void>;
@@ -1627,6 +1630,7 @@ export class PgSessionCatalog implements SessionCatalog {
     private sql: ReturnType<typeof sqlForSchema>;
     private _providers: ProviderStore;
     readonly features: FeatureStore;
+    readonly computeTargets: ComputeTargetStore;
     /** Connection settings of the pool, without pool-only fields: reused for the turn-control LISTEN client. */
     private listenConfig: Record<string, unknown> | null = null;
 
@@ -1635,6 +1639,7 @@ export class PgSessionCatalog implements SessionCatalog {
         this.sql = sqlForSchema(schema);
         this._providers = new ProviderStore(pool, schema);
         this.features = new FeatureStore(pool, schema);
+        this.computeTargets = new ComputeTargetStore(pool, schema);
     }
 
     /**
@@ -1750,6 +1755,13 @@ export class PgSessionCatalog implements SessionCatalog {
         const providerModel = opts?.model ?? null;
         const validateProviderModel = Boolean(providerModel && opts?.modelResolutionSource)
             && await this.supportsProviderSessionModelValidation();
+        const computeTarget = typeof opts?.creationConfig?.computeTarget === "string"
+            ? opts.creationConfig.computeTarget as string : null;
+        if (computeTarget && !await this.supportsComputeTargets()) {
+            throw Object.assign(
+                new Error("COMPUTE_TARGET_NOT_FOUND: this deployment has no compute targets yet"),
+                { code: "COMPUTE_TARGET_NOT_FOUND", status: 400 });
+        }
         const client = await this.pool.connect();
         try {
             await client.query("BEGIN");
@@ -1757,6 +1769,14 @@ export class PgSessionCatalog implements SessionCatalog {
                 await client.query(
                     `SELECT "${this.sql.schema}".cms_provider_assert_session_model($1,$2,$3,$4)`,
                     [providerModel, opts?.owner?.provider ?? null, opts?.owner?.subject ?? null, opts?.isSystem ?? false],
+                );
+            }
+            if (computeTarget) {
+                // Same rule as the model check above: the target must be shared or
+                // the owner's own, and enabled. A refusal aborts the create.
+                await client.query(
+                    `SELECT "${this.sql.schema}".cms_compute_target_assert_session($1,$2,$3,$4)`,
+                    [computeTarget, opts?.owner?.provider ?? null, opts?.owner?.subject ?? null, opts?.isSystem ?? false],
                 );
             }
             const baseArgs = [sessionId, opts?.model ?? null, opts?.reasoningEffort ?? null, opts?.parentSessionId ?? null, opts?.isSystem ?? false, opts?.agentId ?? null, opts?.splash ?? null, null];
@@ -1839,6 +1859,8 @@ export class PgSessionCatalog implements SessionCatalog {
             await client.query("COMMIT");
         } catch (err) {
             await client.query("ROLLBACK").catch(() => {});
+            const refusal = /^(COMPUTE_TARGET_[A-Z_]+):\s*(.*)$/s.exec(String((err as any)?.message ?? ""));
+            if (refusal) throw Object.assign(new Error(`${refusal[1]}: ${refusal[2].trim()}`), { code: refusal[1], status: 400 });
             throw err;
         } finally {
             client.release();
@@ -1883,6 +1905,19 @@ export class PgSessionCatalog implements SessionCatalog {
         );
         this._providerSessionModelValidationSupported = Boolean(rows[0]?.supported);
         return this._providerSessionModelValidationSupported;
+    }
+
+    private _computeTargetsSupported: boolean | null = null;
+
+    /** Whether the DB has migration 0084's compute targets. Cached per catalog instance. */
+    private async supportsComputeTargets(): Promise<boolean> {
+        if (this._computeTargetsSupported !== null) return this._computeTargetsSupported;
+        const { rows } = await this.pool.query(
+            `SELECT to_regprocedure($1) IS NOT NULL AS supported`,
+            [`"${this.sql.schema}".cms_compute_target_assert_session(text,text,text,boolean)`],
+        );
+        this._computeTargetsSupported = Boolean(rows[0]?.supported);
+        return this._computeTargetsSupported;
     }
 
     /** Whether the DB has migration 0029's 10-arg cms_create_session overload. Cached per catalog instance. */

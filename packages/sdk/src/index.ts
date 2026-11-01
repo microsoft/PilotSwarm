@@ -229,6 +229,37 @@ export {
 // Session workspaces
 export { validateWorkspaceText, sameWorkspace, sameWorkingFolder, mergeWorkspaceChange, MAX_WORKSPACE_EXTRAS } from "./workspace-check.js";
 export { createBuiltInWorkspaceProvider, combineWorkspaceProviders, applyWorkspaceDefaults } from "./workspace.js";
+// Compute providers and compute targets
+export {
+    LOCAL_COMPUTE_KIND,
+    COMPUTE_ERROR_CODES,
+    COMPUTE_KIND_PATTERN,
+    COMPUTE_TARGET_NAME_PATTERN,
+    ComputeProviderRegistry,
+    createLocalComputeProvider,
+    validateComputeTargetName,
+    runtimeConnectionFor,
+    runtimeEndpointKey,
+} from "./compute.js";
+export type {
+    ComputeProvider,
+    ComputeCapabilities,
+    ComputeTarget,
+    ComputeTargetClass,
+    ComputePrincipal,
+    ComputeHostRef,
+    ComputeHostState,
+    ComputeFailure,
+    ComputeValidateRequest,
+    ComputeBindRequest,
+    ComputeConnectRequest,
+    ComputeConnectResult,
+    ComputeRuntimeEndpoint,
+    ComputeWorkspacePaths,
+    ComputeReleaseReason,
+} from "./compute.js";
+export { ComputeTargetStore, ComputeTargetError } from "./compute-target-store.js";
+export type { ComputeTargetRow } from "./compute-target-store.js";
 export {
     DEFAULT_WORKSPACE_FILE_MAX_BYTES,
     WORKSPACE_FILE_ERROR_CODES,

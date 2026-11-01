@@ -1,3 +1,4 @@
+import { LOCAL_COMPUTE_KIND, type ComputeProvider } from "./compute.js";
 import { capabilityHash, type CapabilitySource } from "./capability-catalog.js";
 import { AGENT_HANDOFF_CAPABILITY, TURN_CONTROL_CAPABILITY, WORKSPACE_CAPABILITY } from "./activity-routing.js";
 import { resolveNativeSubagents } from "./native-subagents.js";
@@ -442,6 +443,9 @@ export class PilotSwarmWorker {
         this.sessionManager.setWorkspaceProvider(options.workspaceProvider
             ?? (options.workspaceRoots?.length ? createBuiltInWorkspaceProvider(options.workspaceRoots) : null),
         this.config.workerNodeId ?? undefined);
+        for (const provider of options.computeProviders ?? []) {
+            this.sessionManager.registerComputeProvider(provider, { replace: provider.kind === LOCAL_COMPUTE_KIND });
+        }
     }
 
     private _startProviderPolling(): void {
@@ -566,6 +570,15 @@ export class PilotSwarmWorker {
      */
     setWorkspaceProvider(provider: WorkspaceProvider | null): void {
         this.sessionManager.setWorkspaceProvider(provider, this.config.workerNodeId ?? undefined);
+    }
+
+    /**
+     * Compute providers: add the plug-in for one compute type. Sessions whose
+     * compute target has this `kind` run their GHCP runtime through it.
+     * Throws when the kind is already registered, unless `replace` is set.
+     */
+    registerComputeProvider(provider: ComputeProvider, opts: { replace?: boolean } = {}): void {
+        this.sessionManager.registerComputeProvider(provider, opts);
     }
 
     /** Store full config (with tools/hooks) for a session. */

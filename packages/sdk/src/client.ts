@@ -23,6 +23,7 @@ import type {
     SessionWorkspace,
 } from "./types.js";
 import { validateWorkspaceText } from "./workspace-check.js";
+import { validateComputeTargetName } from "./compute.js";
 import type { SessionCatalog, SessionEvent, SessionVisibility, SessionRow } from "./cms.js";
 import type { MessageSender } from "./message-sender.js";
 import { normalizeMessageSender } from "./message-sender.js";
@@ -115,6 +116,8 @@ export function projectSerializableSessionConfig(
         // Session workspaces: present only when set, so a session without one
         // projects exactly as before.
         ...(fullConfig?.workspace ? { workspace: fullConfig.workspace } : {}),
+        // Compute target: present only when set, like the workspace.
+        ...(fullConfig?.computeTarget ? { computeTarget: fullConfig.computeTarget } : {}),
     };
 }
 
@@ -223,6 +226,17 @@ export class PilotSwarmClient {
             workspace = checked.workspace;
         }
 
+        // Compute target: the name shape is checked here; whether the owner
+        // may use it is checked in the create transaction (cms.ts).
+        let computeTarget: string | undefined;
+        if (config?.computeTarget !== undefined && config?.computeTarget !== null && config.computeTarget !== "") {
+            const checked = validateComputeTargetName(config.computeTarget);
+            if (!checked.ok) {
+                throw Object.assign(new Error(`${checked.code}: ${checked.message}`), { code: checked.code, status: 400 });
+            }
+            computeTarget = checked.name;
+        }
+
         const sessionId = config?.sessionId ?? crypto.randomUUID();
         const resolved = await this._resolveCreationModel(config ?? {}, false);
         const { workspace: _rawWorkspace, ...configWithoutWorkspace } = config ?? {};
@@ -256,6 +270,7 @@ export class PilotSwarmClient {
                 waitThreshold: resolvedConfig.waitThreshold ?? this.config.waitThreshold,
                 toolNames: resolvedConfig.toolNames,
                 ...(workspace ? { workspace } : {}),
+                ...(computeTarget ? { computeTarget } : {}),
             };
             this.sessionConfigs.set(sessionId, fullConfig);
         }
@@ -330,6 +345,8 @@ export class PilotSwarmClient {
         visibility?: SessionVisibility | null;
         /** Session workspaces: the working folder, { root, folder? }. */
         workspace?: SessionWorkspace | { root: string; folder?: string } | null;
+        /** The compute target the session runs on; absent runs it on the worker. */
+        computeTarget?: string | null;
     }): Promise<PilotSwarmSession> {
         // Validate the agent exists and is non-system
         const allowed = this._allowedAgentNames;
@@ -352,6 +369,7 @@ export class PilotSwarmClient {
             groupId: opts?.groupId ?? null,
             visibility: opts?.visibility ?? null,
             ...(opts?.workspace != null ? { workspace: opts.workspace } : {}),
+            ...(opts?.computeTarget ? { computeTarget: opts.computeTarget } : {}),
         });
 
         // Set agent metadata in CMS (agentId + prefixed title)

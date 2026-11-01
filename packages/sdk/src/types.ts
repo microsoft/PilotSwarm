@@ -600,6 +600,12 @@ export interface SerializableSessionConfig {
      * The attach path is per-turn data and is never written to config.
      */
     workspace?: SessionWorkspace;
+    /**
+     * The compute target the session's GHCP runtime runs on (compute
+     * providers, docs/proposals/compute-providers.md). Fixed at creation.
+     * Absent: the worker runs the runtime itself, as before.
+     */
+    computeTarget?: string;
     /** Wait threshold in seconds. Waits shorter than this sleep in-process. */
     waitThreshold?: number;
     /** Internal: bound definition lookup key. New static bindings retain namespace:name; published bindings use name plus packageId. */
@@ -1413,6 +1419,14 @@ export interface PilotSwarmWorkerOptions {
      * by the built-in provider (`path` = root path + folder, adopts nothing).
      */
     workspaceRoots?: WorkspaceRoot[];
+
+    /**
+     * Compute providers: worker plug-ins, one per compute type, that place a
+     * session's GHCP runtime on a registered compute target. The built-in
+     * `local` provider (today's child-process runtime) is always present.
+     * Can also be added later with `registerComputeProvider()`.
+     */
+    computeProviders?: import("./compute.js").ComputeProvider[];
 
     /** Optional session state store. When set, enables durable session dehydration without Azure Blob Storage. */
     sessionStore?: SessionStateStore;

@@ -1,3 +1,4 @@
+import { ComputeProviderRegistry, type ComputeProvider } from "./compute.js";
 import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, capabilityOwnership, parseCapabilityRef, resolveCapabilitySource, workspaceCapabilityHits, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
 import { bindCapabilities, nextCapabilityState, validatePackageRequest } from "./capability-runtime.js";
 import type { McpAllowlistAgent } from "./mcp-loader.js";
@@ -798,6 +799,8 @@ export class SessionManager {
     private workspaceProvider: WorkspaceProvider | null = null;
     /** The worker's own ID, for releases this manager starts itself (eviction). */
     private workspaceWorkerNodeId: string | undefined;
+    /** Compute providers by kind; `local` is always present. */
+    private computeProviders = new ComputeProviderRegistry();
     private unsubscribeFeatureFlags: (() => void) | null = null;
 
     /** Live in-memory session count — worker-registry health reporting. */
@@ -1184,6 +1187,15 @@ export class SessionManager {
 
     getWorkspaceProvider(): WorkspaceProvider | null {
         return this.workspaceProvider;
+    }
+
+    /** Compute providers: add one plug-in per compute type. */
+    registerComputeProvider(provider: ComputeProvider, opts: { replace?: boolean } = {}): void {
+        this.computeProviders.register(provider, opts);
+    }
+
+    getComputeProviders(): ComputeProviderRegistry {
+        return this.computeProviders;
     }
 
     /** Session turn control: set by the worker after it starts the hub. */
