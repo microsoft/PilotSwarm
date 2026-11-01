@@ -700,7 +700,7 @@ describe("workflow v2 run control on the real runtime", () => {
             // The earlier receipt records no requester; update_workflow, the only entry point that wrote such receipts,
             // admits only the parent, so the end attributes the cancel to the parent and does not tell the parent.
             const stableId = (workflowId, runId) => `workflow:${workflowId}:${runId}:terminal`;
-            const earlierCancel = async (id, run) => {
+            const seedEarlierCancel = async (id, run) => {
                 await db.query(`INSERT INTO "${env.cmsSchema}".workflow_operations (workflow_session_id, operation_id, kind, request_sha256, receipt)
                     VALUES ($1, $2, 'cancel', $3, $4)`, [id, "old", jsonSha256({ kind: "cancel", runId: run.runId, reason: "old cancel" }),
                     canonicalJson({ workflowSessionId: id, operation: "cancel", runId: run.runId, status: "admitted", kvRevision: 1 })]);
@@ -723,7 +723,7 @@ describe("workflow v2 run control on the real runtime", () => {
             };
             const z = randomUUID();
             const runZ = await lost(z);
-            await earlierCancel(z, runZ);
+            await seedEarlierCancel(z, runZ);
             // Its first begin is interrupted after the transaction that ended the run; the retry ends nothing twice.
             interruptBeginOf = runZ.runId;
             expect(await parent.update(z, { operation: "recover", operation_id: "recover" })).toMatchObject({ ok: true, action: "dispatched" });
@@ -731,7 +731,7 @@ describe("workflow v2 run control on the real runtime", () => {
             expect(interruptBeginOf).toBeNull();
             const w = randomUUID();
             const runW = await lost(w);
-            await earlierCancel(w, runW);
+            await seedEarlierCancel(w, runW);
             await h.client.startOrchestrationVersioned(runW.controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME, { v: 2, workflowSessionId: w, runId: runW.runId },
                 WORKFLOW_V2_CONTROLLER_VERSION);
             await endedByBegin(w, runW);
