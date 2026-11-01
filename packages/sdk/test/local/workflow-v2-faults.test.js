@@ -27,6 +27,7 @@ import { describe, it, expect } from "vitest";
 import { createServer } from "node:http";
 import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
+import pg from "pg";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { controlWorkflowV2Run, createWorkflowV2 } from "../../src/workflow/v2/service.ts";
@@ -182,16 +183,29 @@ function gate() {
     return { reached, arrive: () => arrive(), wait: () => opened, open: () => open() };
 }
 
+/** The production finalize schedule (runtime.ts): nine durable delays between ten batches, about 29 minutes. */
+const PRODUCTION_FINALIZE_DELAYS_MS = [1_000, 5_000, 15_000, 30_000, 60_000, 120_000, 300_000, 600_000, 600_000];
+
 /**
- * Shorten the delays between the controller's finalize batches (fault injection on time): in production nine durable
- * delays, about 29 minutes, separate ten batches of the store retry policy's five attempts; with `delays`, a delivery
- * that always fails runs out in seconds. Each batch still makes its five attempts. Returns the restore, to call after
- * the runtime stopped.
+ * Compress the controller's finalize schedule in time only (fault injection): each of its nine delays becomes
+ * `delayMs`, so a delivery that always fails still runs ten batches of the store retry policy's five attempts (50), in
+ * seconds instead of about 29 minutes. It first checks that the schedule is the production one, so no earlier test
+ * left it changed. The returned restore puts the production values back and checks them; call it after every runtime
+ * of the test stopped. This changes the module that the test's runtime runs; the tests of this file run one at a time.
  */
-function shortenFinalizeSchedule(delays) {
-    const production = [...WORKFLOW_V2_FINALIZE_DELAYS_MS];
-    WORKFLOW_V2_FINALIZE_DELAYS_MS.splice(0, WORKFLOW_V2_FINALIZE_DELAYS_MS.length, ...delays);
-    return () => { WORKFLOW_V2_FINALIZE_DELAYS_MS.splice(0, WORKFLOW_V2_FINALIZE_DELAYS_MS.length, ...production); };
+function compressFinalizeSchedule(delayMs) {
+    expect([...WORKFLOW_V2_FINALIZE_DELAYS_MS]).toEqual(PRODUCTION_FINALIZE_DELAYS_MS);
+    WORKFLOW_V2_FINALIZE_DELAYS_MS.fill(delayMs);
+    return () => {
+        WORKFLOW_V2_FINALIZE_DELAYS_MS.splice(0, WORKFLOW_V2_FINALIZE_DELAYS_MS.length, ...PRODUCTION_FINALIZE_DELAYS_MS);
+        expect([...WORKFLOW_V2_FINALIZE_DELAYS_MS]).toEqual(PRODUCTION_FINALIZE_DELAYS_MS);
+    };
+}
+
+/** An operation receipt's stored row, as stored: kind, request hash, receipt text and creation time. */
+async function receiptRow(db, schema, workflowId, operationId) {
+    return (await db.query(`SELECT kind, request_sha256, receipt, created_at FROM "${schema}".workflow_operations
+        WHERE workflow_session_id = $1 AND operation_id = $2`, [workflowId, operationId])).rows;
 }
 
 /** The parent notifications a workflow recorded: [event type, run id]. */
@@ -742,13 +756,16 @@ states:
             // The controller's own report: the run completes; the delivery records a skip and returns; the controller completes.
             const done = await notifying(h, parentId, TWO_STEPS);
             expect(await finished(h, done.runId, 60_000)).toMatchObject({ status: "completed", terminalOutput: { n: 2 } });
-            expect((await h.client.waitForOrchestration(done.controllerInstanceId, 30_000)).status).toBe("Completed");
+            const doneController = await h.client.waitForOrchestration(done.controllerInstanceId, 30_000);
+            expect(doneController.status, JSON.stringify(doneController)).toBe("Completed");
+            expect(doneController.output).toEqual({ runId: done.runId, status: "completed", outcome: "succeeded" });
             expect(await notificationsOf(h, done.id)).toEqual([["workflow.parent_notification_skipped", done.runId]]);
             // The notifier, started by a recover: its delivery records a skip, and it completes; it does not fail.
             const slow = await notifying(h, parentId, SLOW);
             await recoverEnded(h, parentId, slow);
             const notifier = await h.client.waitForOrchestration(workflowNotifyInstanceId(slow.runId), 30_000);
             expect(notifier.status, JSON.stringify(notifier)).toBe("Completed");
+            expect(notifier.output ?? null).toBeNull();
             expect(await notificationsOf(h, slow.id)).toEqual([["workflow.parent_notification_skipped", slow.runId]]);
             expect(await h.store.readRun(slow.runId)).toMatchObject({ status: "failed", terminalError: { code: "controller_ended" } });
             expect(sent).toEqual([]);
@@ -763,12 +780,14 @@ states:
         } finally { await h.stop(); }
     });
 
-    it("fails the notifier when a delivery runs out, and the controller after its failure path's one more delivery runs out; the run's end is kept", { timeout: 180_000 }, async () => {
+    it("fails the notifier when a delivery runs out, and the controller after its failure path's one more delivery runs out; the run's end is kept", { timeout: 240_000 }, async () => {
+        const env = getEnv();
         const attempts = [];
-        const restore = shortenFinalizeSchedule([10, 10]);
+        const restore = compressFinalizeSchedule(10);
+        const db = new pg.Pool({ connectionString: env.store, max: 1 });
         let h = null;
         try {
-            h = await harness(getEnv(), {}, {
+            h = await harness(env, {}, {
                 authorizeParentNotification: async () => true,
                 notifyParent: async (parentSessionId, prompt, sender, clientMessageId) => {
                     attempts.push(clientMessageId);
@@ -777,42 +796,50 @@ states:
             });
             const parentId = randomUUID();
             await h.host.catalog.createSession(parentId, {});
-            // The controller's report runs out: three batches of five attempts. Its failure path keeps the completed run
-            // (the finish returns the run as it ended) and delivers once more, which runs out too: the controller fails.
+            // The controller's report runs out: ten batches of five attempts. Its failure path keeps the completed run
+            // (the finish returns the run as it ended) and delivers once more, ten batches again: the controller fails.
             const done = await notifying(h, parentId, TWO_STEPS);
             const ended = await finished(h, done.runId, 60_000);
             expect(ended).toMatchObject({ status: "completed", terminalOutput: { n: 2 } });
-            const controller = await h.client.waitForOrchestration(done.controllerInstanceId, 120_000);
+            const controller = await h.client.waitForOrchestration(done.controllerInstanceId, 150_000);
             expect(controller.status, JSON.stringify(controller)).toBe("Failed");
             expect(JSON.stringify(controller)).toContain("injected: the parent's session does not take the message");
             const doneId = `workflow:${done.id}:${done.runId}:terminal`;
-            expect(attempts.filter(id => id === doneId)).toHaveLength(30);
+            expect(attempts.filter(id => id === doneId)).toHaveLength(100);
             expect(await h.store.readRun(done.runId)).toEqual(ended);
             expect(await notificationsOf(h, done.id)).toEqual([]);
 
-            // The notifier of a run a recover ended: its delivery runs out (three batches of five attempts), and it fails.
+            // The notifier of a run a recover ended: its delivery runs out (ten batches of five attempts), and it fails.
+            // The run's end and the recover's receipt stay as stored.
             const slow = await notifying(h, parentId, SLOW);
             await recoverEnded(h, parentId, slow);
             const failedRun = await h.store.readRun(slow.runId);
-            const notifier = await h.client.waitForOrchestration(workflowNotifyInstanceId(slow.runId), 120_000);
+            const recoverReceipt = await receiptRow(db, env.cmsSchema, slow.id, "recover");
+            expect(recoverReceipt).toHaveLength(1);
+            const notifier = await h.client.waitForOrchestration(workflowNotifyInstanceId(slow.runId), 150_000);
             expect(notifier.status, JSON.stringify(notifier)).toBe("Failed");
-            expect(attempts.filter(id => id === `workflow:${slow.id}:${slow.runId}:terminal`)).toHaveLength(15);
+            expect(attempts.filter(id => id === `workflow:${slow.id}:${slow.runId}:terminal`)).toHaveLength(50);
             expect(await h.store.readRun(slow.runId)).toEqual(failedRun);
             expect(failedRun).toMatchObject({ status: "failed", terminalError: { code: "controller_ended" } });
+            expect(await receiptRow(db, env.cmsSchema, slow.id, "recover")).toEqual(recoverReceipt);
             expect(await notificationsOf(h, slow.id)).toEqual([]);
         } finally {
-            try { if (h) await h.stop(); } finally { restore(); }
+            try { if (h) await h.stop(); } finally {
+                try { await db.end(); } finally { restore(); }
+            }
         }
     });
 
-    it("takes the controller's failure path when a begin's notifier start runs out: its delivery tells the parent, or runs out too; the run's end is kept", { timeout: 180_000 }, async () => {
+    it("takes the controller's failure path when a begin's notifier start runs out: its delivery tells the parent, or runs out too; the run's end is kept", { timeout: 240_000 }, async () => {
         const sent = [];
         const beginStarts = new Map();
         const failDelivery = new Set();
-        const restore = shortenFinalizeSchedule([10, 10]);
+        const env = getEnv();
+        const restore = compressFinalizeSchedule(10);
+        const db = new pg.Pool({ connectionString: env.store, max: 1 });
         let h = null;
         try {
-            h = await harness(getEnv(), {
+            h = await harness(env, {
                 // Fault injection: the begin activity of a run listed here cannot start the notifier (its client refuses).
                 [WORKFLOW_V2_ACTIVITIES.begin]: (fn) => async (ctx, input) => {
                     if (!beginStarts.has(input?.runId)) return fn(ctx, input);
@@ -850,42 +877,48 @@ states:
                     .rejects.toThrow("injected: interrupted before the notifier started");
                 const ended = await h.store.readRun(run.runId);
                 expect(ended).toMatchObject({ status: "cancelled", terminalError: { details: { requestedBy: null, operationId: "cancel-n", beforeBegin: true } } });
+                const receipt = await receiptRow(db, env.cmsSchema, run.id, "cancel-n");
+                expect(receipt).toHaveLength(1);
                 const clientMessageId = `workflow:${run.id}:${run.runId}:terminal`;
                 if (deliveryFails) failDelivery.add(clientMessageId);
                 beginStarts.set(run.runId, 0);
                 await h.client.startOrchestrationVersioned(run.controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME,
                     { v: 2, workflowSessionId: run.id, runId: run.runId }, WORKFLOW_V2_CONTROLLER_VERSION);
-                return { ...run, ended, clientMessageId };
+                return { ...run, ended, receipt, clientMessageId };
             };
-            /** The run is as the cancel ended it: nothing began, and the notifier never started. */
+            /** The run and the cancel's receipt are as the cancel stored them: nothing began, and the notifier never started. */
             const unchanged = async (run) => {
                 expect(await h.store.readRun(run.runId)).toEqual(run.ended);
+                expect(await receiptRow(db, env.cmsSchema, run.id, "cancel-n")).toEqual(run.receipt);
                 expect(await h.store.listNodeExecutions(run.runId)).toEqual([]);
                 expect(await h.host.catalog.getSessionEvents(run.id, 0, 50, ["workflow.started"])).toEqual([]);
                 expect((await h.client.getStatus(workflowNotifyInstanceId(run.runId))).status).toBe("NotFound");
             };
 
             // The begin activity runs out its five attempts; the controller's failure path keeps the cancelled run and
-            // delivers: the parent is told once, and the controller completes.
+            // delivers: the parent is told once, and the controller completes with the run's cancelled result.
             const told = await cancelledBeforeBegin();
             const toldController = await h.client.waitForOrchestration(told.controllerInstanceId, 60_000);
             expect(toldController.status, JSON.stringify(toldController)).toBe("Completed");
+            expect(toldController.output).toEqual({ runId: told.runId, status: "cancelled", outcome: told.ended.terminalOutcome });
             expect(beginStarts.get(told.runId)).toBe(5);
             expect(sent.filter(item => item.clientMessageId === told.clientMessageId)).toEqual([{ parentSessionId: parentId, clientMessageId: told.clientMessageId }]);
             expect(await notificationsOf(h, told.id)).toEqual([["workflow.parent_notified", told.runId]]);
             await unchanged(told);
 
-            // The same, and the failure path's delivery runs out too (three batches of five attempts): the controller fails.
+            // The same, and the failure path's delivery runs out too (ten batches of five attempts): the controller fails.
             const lost = await cancelledBeforeBegin({ deliveryFails: true });
-            const lostController = await h.client.waitForOrchestration(lost.controllerInstanceId, 120_000);
+            const lostController = await h.client.waitForOrchestration(lost.controllerInstanceId, 150_000);
             expect(lostController.status, JSON.stringify(lostController)).toBe("Failed");
             expect(JSON.stringify(lostController)).toContain("injected: the parent's session does not take the message");
             expect(beginStarts.get(lost.runId)).toBe(5);
-            expect(sent.filter(item => item.clientMessageId === lost.clientMessageId)).toHaveLength(15);
+            expect(sent.filter(item => item.clientMessageId === lost.clientMessageId)).toHaveLength(50);
             expect(await notificationsOf(h, lost.id)).toEqual([]);
             await unchanged(lost);
         } finally {
-            try { if (h) await h.stop(); } finally { restore(); }
+            try { if (h) await h.stop(); } finally {
+                try { await db.end(); } finally { restore(); }
+            }
         }
     });
 

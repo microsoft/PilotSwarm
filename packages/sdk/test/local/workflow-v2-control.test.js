@@ -36,8 +36,8 @@ import { canonicalJson, jsonSha256 } from "../../src/workflow/v2/json.ts";
 import { controlWorkflowV2Run, createWorkflowV2 } from "../../src/workflow/v2/service.ts";
 import { readWorkflowFromTool, updateWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
 import {
-    registerWorkflowV2, WORKFLOW_V2_ACTIVITIES, WORKFLOW_V2_CONTROLLER_NAME, WORKFLOW_V2_CONTROLLER_VERSION, workflowEffectInstanceId,
-    workflowNotifyInstanceId,
+    registerWorkflowV2, WORKFLOW_V2_ACTIVITIES, WORKFLOW_V2_ADMISSION_EVALUATIONS, WORKFLOW_V2_CONTROLLER_NAME, WORKFLOW_V2_CONTROLLER_VERSION,
+    WORKFLOW_V2_STORE_RETRY, workflowEffectInstanceId, workflowNotifyInstanceId,
 } from "../../src/workflow/v2/runtime.ts";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
@@ -885,6 +885,57 @@ describe("workflow v2 run control on the real runtime", () => {
             expect(first.output).toEqual({ kv: { mode: "b" }, input: { mode: "b" } });
             const started = await h.host.catalog.getSessionEvents(id, 0, 50, ["workflow.state_started"]);
             expect(started.map(event => [event.data.stateId, event.data.kvRevision])).toEqual([["first", 2], ["done", 2]]);
+        } finally { await h.stop(); }
+    });
+
+    it("ends the run as failed with KV_CHANGING when set_vars commits during every evaluation of every attempt of one admission", { timeout: TIMEOUT }, async () => {
+        // The production budget this checks: five evaluations per attempt, five attempts of the store retry policy.
+        expect([WORKFLOW_V2_ADMISSION_EVALUATIONS, WORKFLOW_V2_STORE_RETRY.maxAttempts]).toEqual([5, 5]);
+        let target = null;
+        let change = null;
+        const reads = [];
+        const changes = [];
+        // Fault injection: before each evaluation of the target run's first admission reaches the store, a set_vars
+        // commits, so the store refuses the admission for the revision it was evaluated with (kv_changed).
+        const h = await harness(getEnv(), {
+            wrapStore: (store) => {
+                const watched = Object.create(store);
+                watched.enterNode = async (input) => {
+                    if (input.runId === target && input.nodeId === "first") {
+                        reads.push(input.kvRevision);
+                        changes.push(await change(input.kvRevision, reads.length));
+                    }
+                    return store.enterNode(input);
+                };
+                return watched;
+            },
+        });
+        try {
+            const parent = await parentOf(h);
+            const id = randomUUID();
+            const undispatched = { ...h.host, duroxideClient: { ...h.host.duroxideClient, startOrchestrationVersioned: async () => undefined } };
+            const created = await createWorkflowV2(undispatched, { workflowSessionId: id, parentSessionId: parent.parentId, yaml: ONE_STATE,
+                actor: ACTOR, operationId: "start", start: { inputs: {}, vars: { mode: "a" } } });
+            const { runId, controllerInstanceId } = created.receipt.run;
+            change = (revision, n) => parent.update(id, { operation: "set_vars", operation_id: `change-${n}`, set: { mode: `m${n}` },
+                expected_kv_revision: revision });
+            target = runId;
+            await h.client.startOrchestrationVersioned(controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME, { v: 2, workflowSessionId: id, runId },
+                WORKFLOW_V2_CONTROLLER_VERSION);
+            const run = await finished(h, runId);
+            expect(run.status, JSON.stringify(run)).toBe("failed");
+            expect(run.terminalError).toMatchObject({ code: "controller_error" });
+            expect(run.terminalError.message).toContain("changed during each of 5 evaluations of state 'first'");
+            // Twenty-five evaluations, each with the revision the one before it changed: five attempts of five.
+            expect(reads).toEqual(Array.from({ length: 25 }, (_, index) => index + 1));
+            expect(changes.map(changed => [changed.ok, changed.kvRevision])).toEqual(Array.from({ length: 25 }, (_, index) => [true, index + 2]));
+            // Nothing was admitted, and the controller ended the run through its failure path.
+            expect(await h.store.listNodeExecutions(runId)).toEqual([]);
+            expect(await h.host.catalog.getSessionEvents(id, 0, 50, ["workflow.state_started"])).toEqual([]);
+            const controller = await h.client.waitForOrchestration(controllerInstanceId, 30_000);
+            expect(controller.status, JSON.stringify(controller)).toBe("Completed");
+            expect(controller.output).toEqual({ runId, status: "failed", outcome: null });
+            expect(await h.store.readRun(runId)).toMatchObject({ status: "failed", kvRevision: 26 });
         } finally { await h.stop(); }
     });
 });
