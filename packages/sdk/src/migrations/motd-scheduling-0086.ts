@@ -96,7 +96,7 @@ BEGIN
     END IF;
     -- Hash the requested optional times, not the server-resolved creation time.
     v_metadata := p_input - 'startsAt' - 'endsAt' - 'fromAt' - 'toAt'
-        || jsonb_build_object('fromAt', v_start, 'toAt', v_end);
+        || jsonb_build_object('fromAt', extract(epoch FROM v_start), 'toAt', extract(epoch FROM v_end));
     v_hash := md5(jsonb_build_array(v_metadata, encode(p_image, 'base64'), encode(p_mobile_image, 'base64'))::TEXT);
     PERFORM pg_advisory_xact_lock(hashtextextended(p_input->>'requestId', 8401));
     SELECT * INTO v_existing FROM ${s}.motds WHERE request_id = p_input->>'requestId';

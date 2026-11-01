@@ -137,4 +137,21 @@ describe.skipIf(!url)("optional schedules and upgrade in real PostgreSQL", () =>
             await expect(upgraded.delete(reader, existing.motdId)).rejects.toMatchObject({ status: 403 });
         }, "0085");
     });
+    it("reuses a receipt across SQL connection time zones, even after a committed finite end expires", async () => {
+        await fixture(async ({ pool, schema }) => {
+            const client = await pool.connect();
+            try {
+                const body = input({ startsAt: "2020-01-01T00:00:00Z", endsAt: "2090-01-01T00:00:00Z" });
+                const call = () => client.query(`SELECT "${schema}".cms_motd_create('test','admin',true,$1,NULL,NULL) AS result`, [body]);
+                await client.query("SET TimeZone='UTC'");
+                const first = (await call()).rows[0].result;
+                await client.query("SET TimeZone='America/Los_Angeles'");
+                const retry = (await call()).rows[0].result;
+                expect(retry.motdId).toBe(first.motdId);
+                await client.query(`UPDATE "${schema}".motds SET to_at = now() - interval '1 hour' WHERE motd_id = $1`, [first.motdId]);
+                expect((await call()).rows[0].result.motdId).toBe(first.motdId);
+                await client.query("RESET TimeZone");
+            } finally { client.release(); }
+        });
+    });
 });
