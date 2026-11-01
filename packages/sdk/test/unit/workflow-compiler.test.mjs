@@ -263,8 +263,20 @@ test("limits on ids, timeouts, document size and YAML strictness", () => {
         "${states.collect.result.value}");
 });
 
+test("state ids and outcomes may not be names every object inherits", () => {
+    rejects(VALID.replace(/\bcollect\b/g, "constructor"), /states\.constructor uses a reserved name/);
+    rejects(VALID.replace("outcomes: [found, empty]", "outcomes: [found, toString]").replace("empty: nothing", "toString: nothing"),
+        /uses the reserved name 'toString'/);
+});
+
+test("only the results a terminal output reads are kept while a run goes on", () => {
+    assert.deepEqual(compileWorkflow(VALID).resultStates, ["collect"]);
+    assert.deepEqual(compileWorkflow(VALID.replace(/    output:\n      value: .*\n      label: .*\n/, "")).resultStates, []);
+});
+
 test("inputs are checked against the declared schema", () => {
     const compiled = compileWorkflow(VALID);
+    assert.throws(() => validateWorkflowInputs(compiled, { pattern: "p", blob: "x".repeat(300 * 1024) }), /Inputs must be JSON of at most 262144 bytes/);
     validateWorkflowInputs(compiled, { pattern: "metrics/%", limit: 5, extra: true });
     assert.throws(() => validateWorkflowInputs(compiled, {}), /Input 'pattern' is required/);
     assert.throws(() => validateWorkflowInputs(compiled, { pattern: 3 }), /must be of type string/);

@@ -125,6 +125,13 @@ describe("script workflow sessions (worker + client + PostgreSQL)", () => {
                 expect(again.sessionId).toBe(sessionId);
                 const after = await mgmt.getSessionEvents(sessionId);
                 expect(after.filter((event) => event.eventType === "workflow.started")).toHaveLength(1);
+
+                // After the session is deleted, the same id starts a new run instead of reviving a dead row.
+                await mgmt.deleteSession(sessionId, "start over");
+                expect(await mgmt.getSession(sessionId)).toBeNull();
+                await client.createWorkflowSession({ sessionId, yaml: WORKFLOW, inputs: { run: "second" } });
+                const rerun = await waitForTerminal(mgmt, sessionId);
+                expect(rerun.status).toBe("completed");
             } finally {
                 await mgmt.stop?.();
             }
@@ -188,6 +195,14 @@ states:
                     detail: "workflow sessions have no turns; cancel the session to stop the run",
                 });
                 expect((await mgmt.getSession(first.sessionId)).status).toBe("running");
+                // Anything but cancel, complete and delete is refused, so it cannot stop the script and run it again.
+                await expect(mgmt.sendCommand(first.sessionId, { cmd: "set_model", id: "m-1", args: { model: "x" } }))
+                    .rejects.toMatchObject({ code: "WORKFLOW_SESSION_NOT_CONVERSATIONAL" });
+                await expect(mgmt.setSessionWorkspace(first.sessionId, { expectedRevision: 0, workspace: null }))
+                    .rejects.toMatchObject({ code: "WORKFLOW_SESSION_NOT_CONVERSATIONAL" });
+                await mgmt.cancelPendingMessage(first.sessionId, ["client-1"]);
+                await client.cancelPendingMessage(first.sessionId, ["client-2"]);
+                await new Promise((r) => setTimeout(r, 1_500));
                 expect(await mgmt.getSessionEvents(first.sessionId, 0, 200, ["workflow.state_cancelled", "workflow.state_started"]))
                     .toHaveLength(1);
                 const started = Date.now();
@@ -203,6 +218,13 @@ states:
                 await waitForEvent(second.sessionId, "workflow.state_started");
                 await mgmt.deleteSession(second.sessionId, "cleanup");
                 expect(await mgmt.getSession(second.sessionId)).toBeNull();
+
+                // Deleting through the SDK client ends the run the same way: the script stops and the end is recorded.
+                const third = await client.createWorkflowSession({ yaml: LONG });
+                await waitForEvent(third.sessionId, "workflow.state_started");
+                await client.deleteSession(third.sessionId);
+                const thirdEnd = (await waitForEvent(third.sessionId, "workflow.cancelled"))[0];
+                expect(thirdEnd.data).toMatchObject({ deleted: true });
             } finally {
                 await mgmt.stop?.();
             }

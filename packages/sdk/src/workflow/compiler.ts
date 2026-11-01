@@ -98,6 +98,12 @@ export interface CompiledWorkflow {
     inputs: Record<string, WorkflowInputDeclaration>;
     configuration: JsonObject;
     states: Record<string, WorkflowState>;
+    /**
+     * The states whose result a terminal `output` reads. Only their latest
+     * results are kept while a run goes on. Absent in graphs compiled before
+     * this field existed: keep every result.
+     */
+    resultStates?: string[];
 }
 
 export interface CompileWorkflowOptions {
@@ -142,9 +148,23 @@ function requireText(value: unknown, path: string): string {
     return value.trim();
 }
 
+/**
+ * Names an object inherits (`constructor`, `toString`, `__proto__`, ...).
+ * State ids and outcomes become object keys, so these are refused.
+ */
+function isReservedName(name: string): boolean {
+    return name === "__proto__" || name in Object.prototype;
+}
+
+/** The most JSON a run's `inputs` may hold; inputs are carried into every state. */
+export const WORKFLOW_MAX_INPUTS_BYTES = 256 * 1024;
+
 function requireOutcomes(value: unknown, path: string): string[] {
     if (!Array.isArray(value) || value.length === 0) fail(`${path} must list at least one outcome.`);
     const outcomes = value.map((item, index) => requireText(item, `${path}[${index}]`));
+    for (const outcome of outcomes) {
+        if (isReservedName(outcome)) fail(`${path} uses the reserved name '${outcome}'; choose another outcome name.`);
+    }
     if (new Set(outcomes).size !== outcomes.length) fail(`${path} must not repeat an outcome.`);
     return outcomes;
 }
@@ -190,6 +210,18 @@ function parseExpression(value: string, path: string): string[] | null {
         fail(`${path} expression '${value}' must use states.<stateId>.result.`, "WORKFLOW_EXPRESSION_UNSUPPORTED");
     }
     return segments;
+}
+
+/** The state ids that `${states.<id>.result...}` expressions in a template read. */
+function collectResultStates(value: unknown, into: Set<string>): void {
+    if (typeof value === "string") {
+        const match = EXACT_EXPRESSION.exec(value);
+        const segments = match?.[1].split(".").map((segment) => segment.trim());
+        if (segments?.[0] === "states" && segments[1]) into.add(segments[1]);
+        return;
+    }
+    if (Array.isArray(value)) value.forEach((item) => collectResultStates(item, into));
+    else if (isObject(value)) Object.values(value).forEach((item) => collectResultStates(item, into));
 }
 
 function validateTemplate(value: unknown, path: string, stateIds: ReadonlySet<string>): void {
@@ -243,6 +275,11 @@ export function resolveWorkflowTemplate(
 
 /** Check a run's inputs against the declared `inputs` schema. Undeclared inputs pass through. */
 export function validateWorkflowInputs(workflow: CompiledWorkflow, inputs: Record<string, unknown>): void {
+    let inputsBytes = Infinity;
+    try { inputsBytes = Buffer.byteLength(JSON.stringify(inputs ?? {}), "utf8"); } catch { /* not JSON */ }
+    if (inputsBytes > WORKFLOW_MAX_INPUTS_BYTES) {
+        fail(`Inputs must be JSON of at most ${WORKFLOW_MAX_INPUTS_BYTES} bytes; store larger data as an artifact or fact and pass its key.`, "WORKFLOW_INPUT_INVALID");
+    }
     for (const [name, declaration] of Object.entries(workflow.inputs)) {
         const value = inputs[name];
         if (value === undefined || value === null) {
@@ -428,6 +465,7 @@ export function compileWorkflow(yaml: string, options: CompileWorkflowOptions = 
     const stateIds = new Set(entries.map(([id]) => id));
     for (const id of stateIds) {
         if (!STATE_ID_PATTERN.test(id)) fail(`states.${id} must use a letter followed by up to 63 letters, digits, '_' or '-'.`);
+        if (isReservedName(id)) fail(`states.${id} uses a reserved name; choose another state id.`);
     }
     const initial = requireText(root.initial, "initial");
     if (!stateIds.has(initial)) fail(`initial references unknown state '${initial}'.`);
@@ -453,7 +491,11 @@ export function compileWorkflow(yaml: string, options: CompileWorkflowOptions = 
         fail("states must include a terminal state, or a wait state for a workflow that runs until it is cancelled.");
     }
 
-    return { name, version, initial, inputs, configuration, states };
+    const resultStates = new Set<string>();
+    for (const state of values) {
+        if (state.type === "terminal" && state.hasOutput) collectResultStates(state.output, resultStates);
+    }
+    return { name, version, initial, inputs, configuration, states, resultStates: [...resultStates] };
 }
 
 /** Whether a compiled workflow has a wait state (it can run until cancelled). */

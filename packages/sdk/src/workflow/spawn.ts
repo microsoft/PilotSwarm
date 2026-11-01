@@ -55,7 +55,10 @@ export async function spawnWorkflowFromTool(
         }
         const workflowSessionId = workflowChildSessionId(deps.parentSessionId, args.key, call?.toolCallId);
         const existing = await deps.getSession(workflowSessionId).catch(() => null);
-        if (existing) {
+        // A "pending" row is a create whose start may not have gone through
+        // (the worker sets the state when the run begins). Creating again is
+        // idempotent, so it is retried instead of reported as started.
+        if (existing && existing.state !== "pending") {
             return `[SYSTEM: spawn_workflow found the existing workflow session ${workflowSessionId} for this key `
                 + `("${existing.title ?? workflowName}", state ${existing.state ?? "unknown"}). Nothing new was started; pass a different key for another run.]`;
         }
@@ -79,6 +82,9 @@ export async function spawnWorkflowFromTool(
                 : "You will not be told when it ends; check it with read_session_info or list_sessions. ")
             + "The user can follow each step in the portal, under this session.]";
     } catch (error) {
+        if ((error as any)?.code === "WORKFLOW_SESSION_ENDING") {
+            return `[SYSTEM: spawn_workflow refused — ${(error as Error).message} Pass a different key for a new run.]`;
+        }
         return `[SYSTEM: spawn_workflow failed — ${error instanceof Error ? error.message : String(error)}]`;
     }
 }

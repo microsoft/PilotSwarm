@@ -7886,6 +7886,11 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: "Select a session before switching model" });
             return;
         }
+        if (session.sessionKind === "workflow") {
+            this._onSwitchModelApplied = null;
+            this.dispatch({ type: "ui/status", text: "Workflow sessions run no model; there is nothing to switch." });
+            return;
+        }
         if (typeof this.transport.setSessionModel !== "function") {
             this._onSwitchModelApplied = null;
             this.dispatch({ type: "ui/status", text: "Model switching is not supported by this transport" });

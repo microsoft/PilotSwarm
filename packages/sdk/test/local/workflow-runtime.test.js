@@ -23,6 +23,7 @@ import {
     registerWorkflowActivities,
     WORKFLOW_SCRIPTS_DISABLED_MESSAGE,
 } from "../../src/workflow/activities.js";
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -129,6 +130,65 @@ describe("script runner", () => {
         await expect(run(node("n", "node", `
             await setResult("success", "x".repeat(${SCRIPT_NODE_MAX_OUTPUT_BYTES + 10}));
         `))).rejects.toThrow(/limit is/);
+    });
+
+    it("reads a final JSON result line longer than the 16 KB stdout tail, and refuses one past the output limit", async () => {
+        const big = await run(node("n", "node", `
+            console.log("noise");
+            console.log(JSON.stringify({ outcome: "found", output: { text: "y".repeat(40000) } }));
+        `, { found: "done" }));
+        expect(big).toMatchObject({ outcome: "found", resultSource: "stdout" });
+        expect(big.output.text).toHaveLength(40000);
+        await expect(run(node("n", "node", `
+            console.log(JSON.stringify({ outcome: "found", output: "z".repeat(${SCRIPT_NODE_MAX_OUTPUT_BYTES + 100 * 1024}) }));
+        `, { found: "done" }))).rejects.toThrow(/final line longer than/);
+    });
+
+    it("counts tool calls before they run, so concurrent calls cannot pass the limit", async () => {
+        let admitted = 0;
+        const result = await run(node("n", "node", `
+            const settled = await Promise.allSettled(Array.from({ length: 501 }, (_, i) => callTool("slow", { i })));
+            await setResult("success", { ok: settled.filter((r) => r.status === "fulfilled").length, refused: settled.filter((r) => r.status === "rejected").length });
+        `), {
+            callTool: async () => { admitted += 1; await new Promise((r) => setTimeout(r, 200)); return null; },
+        });
+        expect(admitted).toBe(500);
+        expect(result.output).toEqual({ ok: 500, refused: 1 });
+    });
+
+    it.skipIf(process.platform === "win32")("a background process the script leaves holding its output cannot keep the state running, and is killed", async () => {
+        const marker = `pilotswarm-orphan-${Math.random().toString(36).slice(2)}`;
+        const started = Date.now();
+        // The script starts a child that inherits stdout and outlives it, then exits.
+        const result = await run(node("n", "node", `
+            const { spawn } = await import("node:child_process");
+            const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)", "${marker}"], { stdio: "inherit" });
+            child.unref();
+            await setResult("success", { pid: child.pid });
+        `, { success: "done" }, 30));
+        expect(result.outcome).toBe("success");
+        expect(Date.now() - started).toBeLessThan(10_000);
+        await new Promise((r) => setTimeout(r, 300));
+        // Killed means gone, or a zombie waiting to be reaped (a container's
+        // pid 1 may never reap it).
+        const running = (pid) => {
+            try { process.kill(pid, 0); } catch { return false; }
+            try {
+                const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf8");
+                return stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3) !== "Z";
+            } catch { return true; }
+        };
+        expect(running(result.output.pid), "the background process was killed with the state").toBe(false);
+
+        // The same on timeout: the script is stuck and its child holds the output.
+        const stuckStarted = Date.now();
+        const stuck = await run(node("n", "node", `
+            const { spawn } = await import("node:child_process");
+            spawn(process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { stdio: "inherit" });
+            await new Promise(() => setInterval(() => {}, 1000));
+        `, { success: "done" }, 1));
+        expect(stuck).toMatchObject({ outcome: "timeout", resultSource: "timeout" });
+        expect(Date.now() - stuckStarted).toBeLessThan(10_000);
     });
 
     it("names the missing runtime when its executable is not installed", async () => {
@@ -1147,3 +1207,34 @@ states:
         expect(resting.status.output).toMatchObject({ status: "completed", steps: 14 });
     });
 });
+
+describe("workflow finish (duroxide)", () => {
+    it("retries the end of a run when telling the parent fails, and records the end once", async () => {
+        let attempts = 0;
+        const notified = [];
+        const { status, catalog } = await runWorkflow(`
+apiVersion: pilotswarm.dev/v1alpha1
+kind: Workflow
+metadata: { name: notify-retry, version: "1" }
+initial: only
+states:
+  only: { type: script, runtime: node, source: stub, completion: { outcomes: [success] }, transition: { next: { success: done } } }
+  done: { type: terminal, outcome: succeeded }
+`, {
+            parentSessionId: "parent-1",
+            deps: {
+                runNode: async () => okResult(null),
+                notifyParent: async (parent, prompt) => {
+                    attempts += 1;
+                    if (attempts === 1) throw new Error("queue unavailable");
+                    notified.push({ parent, prompt });
+                },
+            },
+        });
+        expect(status.output).toMatchObject({ status: "completed", outcome: "succeeded" });
+        expect(attempts).toBe(2);
+        expect(notified).toEqual([{ parent: "parent-1", prompt: expect.stringMatching(/ended at state 'done' with outcome succeeded/) }]);
+        expect(catalog.events.filter((e) => e.eventType === "workflow.completed")).toHaveLength(1);
+    }, 30_000);
+});
+

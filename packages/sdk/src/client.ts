@@ -205,6 +205,22 @@ export class PilotSwarmClient {
             throw Object.assign(new Error(`Session ${sessionId} already exists and is not a workflow session.`), { code: "SESSION_EXISTS", status: 409 });
         }
         if (!existing) {
+            // The id may belong to a deleted session whose run is still on
+            // record. A finished run is cleared so this id starts a new one;
+            // a run still going (a delete in progress) is refused.
+            const prior = await this.duroxideClient.getStatus(orchestrationId).catch(() => null);
+            const priorStatus = prior?.status;
+            if (priorStatus === "Running") {
+                throw Object.assign(
+                    new Error(`Session ${sessionId} was deleted, but its workflow run has not ended yet. Try again shortly, or use another id.`),
+                    { code: "WORKFLOW_SESSION_ENDING", status: 409 },
+                );
+            }
+            if (priorStatus && priorStatus !== "NotFound" && priorStatus !== "Unknown") {
+                await this.duroxideClient.deleteInstance(orchestrationId, true);
+            }
+        }
+        if (!existing) {
             await this._catalog.createSession(sessionId, {
                 sessionKind: "workflow",
                 ...(config.parentSessionId ? { parentSessionId: config.parentSessionId } : {}),
@@ -227,8 +243,10 @@ export class PilotSwarmClient {
             input,
             WORKFLOW_SESSION_LATEST_VERSION,
         );
+        // The worker sets the state when the run begins and ends; writing
+        // "running" here could overwrite a run that already ended.
         if (!existing || existing.state === "pending") {
-            await this._catalog.updateSession(sessionId, { orchestrationId, state: "running", lastActiveAt: new Date() });
+            await this._catalog.updateSession(sessionId, { orchestrationId, lastActiveAt: new Date() });
         }
         return { sessionId, workflowName };
     }
@@ -646,6 +664,7 @@ export class PilotSwarmClient {
         this.sessionConfigs.delete(sessionId);
         this.parentSessionIds.delete(sessionId);
         this.nestingLevels.delete(sessionId);
+        const isWorkflow = (await this._catalog.getSession(sessionId).catch(() => null))?.sessionKind === "workflow";
 
         // CMS: soft-delete (source of truth)
         await this._catalog.softDeleteSession(sessionId);
@@ -658,11 +677,23 @@ export class PilotSwarmClient {
             }
         }
 
-        // Duroxide: cancel orchestration (best effort)
+        // Duroxide: cancel orchestration (best effort). A workflow is sent its
+        // delete command instead, so it stops its script, records how it
+        // ended and tells its parent, as a delete from anywhere else does.
         const orchestrationId = `session-${sessionId}`;
         if (this.duroxideClient) {
             try {
-                await this.duroxideClient.cancelInstance(orchestrationId, "Session deleted");
+                const running = isWorkflow && (await this.duroxideClient.getStatus(orchestrationId).catch(() => null))?.status === "Running";
+                if (running) {
+                    await this.duroxideClient.enqueueEvent(orchestrationId, "messages", JSON.stringify({
+                        type: "cmd",
+                        cmd: "delete",
+                        id: `delete-${crypto.randomUUID()}`,
+                        args: { reason: "Session deleted" },
+                    }));
+                } else {
+                    await this.duroxideClient.cancelInstance(orchestrationId, "Session deleted");
+                }
             } catch {}
         }
         this.activeOrchestrations.delete(sessionId);
@@ -677,6 +708,9 @@ export class PilotSwarmClient {
         const ids = (clientMessageIds || []).filter((id): id is string => typeof id === "string" && Boolean(id));
         if (ids.length === 0) return;
         if (!this.duroxideClient) return;
+        // A workflow session has no pending chat messages; any message on its
+        // queue would stop its running script.
+        if ((await this._catalog?.getSession(sessionId).catch(() => null))?.sessionKind === "workflow") return;
         const orchestrationId = `session-${sessionId}`;
         await this.duroxideClient.enqueueEvent(
             orchestrationId,

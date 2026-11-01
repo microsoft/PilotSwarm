@@ -113,7 +113,8 @@ export interface HourlyTokenBucketRow {
 /** A row in the sessions table. */
 export interface SessionRow {
     sessionId: string;
-    sessionKind: import("./types.js").SessionKind;
+    /** "workflow" for a workflow session; absent or "agent" for an agent session. */
+    sessionKind?: import("./types.js").SessionKind;
     orchestrationId: string | null;
     title: string | null;
     titleLocked: boolean;

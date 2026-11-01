@@ -102,7 +102,7 @@ export function resolveTransition(workflow: CompiledWorkflow, stateId: string, o
         if (outcome !== WORKFLOW_WAIT_OUTCOME) throw new WorkflowExecutionError(`Wait state '${stateId}' has only the outcome '${WORKFLOW_WAIT_OUTCOME}'.`);
         return state.next[WORKFLOW_WAIT_OUTCOME];
     }
-    const target = state.next[outcome];
+    const target = Object.hasOwn(state.next, outcome) ? state.next[outcome] : undefined;
     if (target === undefined) {
         throw new WorkflowExecutionError(
             `Script state '${stateId}' returned undeclared outcome '${outcome}' (declared: ${state.outcomes.join(", ")}).`,

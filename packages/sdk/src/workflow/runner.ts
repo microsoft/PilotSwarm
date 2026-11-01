@@ -15,6 +15,10 @@ export const SCRIPT_NODE_MAX_OUTPUT_BYTES = 256 * 1024;
 export const SCRIPT_NODE_MAX_TOOL_CALLS = 500;
 const RPC_MAX_BODY_BYTES = 1024 * 1024;
 const STREAM_TAIL_BYTES = 16 * 1024;
+/** Longest final stdout line read as a JSON result: the output limit plus room for the wrapper. */
+const RESULT_LINE_MAX_BYTES = SCRIPT_NODE_MAX_OUTPUT_BYTES + 64 * 1024;
+/** How long the runner waits for the script's output to close after the script exits. */
+const OUTPUT_DRAIN_MS = 2_000;
 
 /** Environment variables a script inherits from the worker. Everything else is dropped. */
 const INHERITED_ENV = ["PATH", "LANG", "LC_ALL", "TZ", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT"];
@@ -144,6 +148,59 @@ class StreamTail {
     }
 }
 
+/**
+ * The last non-blank line of a stream, kept whole up to RESULT_LINE_MAX_BYTES,
+ * so a JSON result longer than the telemetry tail is still read. A longer
+ * line is remembered as too long rather than cut.
+ */
+class LastLine {
+    private current: Buffer[] = [];
+    private size = 0;
+    private overflow = false;
+    private firstByte: number | null = null;
+    private last: { text: string; tooLong: boolean; startsWithBrace: boolean } | null = null;
+    push(chunk: Buffer): void {
+        let start = 0;
+        for (let i = 0; i < chunk.length; i += 1) {
+            if (chunk[i] !== 0x0a) continue;
+            this.append(chunk.subarray(start, i));
+            this.endLine();
+            start = i + 1;
+        }
+        this.append(chunk.subarray(start));
+    }
+    private append(part: Buffer): void {
+        if (part.length === 0) return;
+        if (this.firstByte === null) {
+            const nonSpace = part.findIndex((byte) => byte !== 0x20 && byte !== 0x09 && byte !== 0x0d);
+            if (nonSpace >= 0) this.firstByte = part[nonSpace];
+        }
+        if (this.overflow) return;
+        if (this.size + part.length > RESULT_LINE_MAX_BYTES) {
+            this.overflow = true;
+            this.current = [];
+            this.size = 0;
+            return;
+        }
+        this.current.push(part);
+        this.size += part.length;
+    }
+    private endLine(): void {
+        const text = this.overflow ? "" : Buffer.concat(this.current).toString("utf8").trim();
+        if (text || this.overflow) {
+            this.last = { text, tooLong: this.overflow, startsWithBrace: this.firstByte === 0x7b };
+        }
+        this.current = [];
+        this.size = 0;
+        this.overflow = false;
+        this.firstByte = null;
+    }
+    final(): { text: string; tooLong: boolean; startsWithBrace: boolean } | null {
+        if (this.size > 0 || this.overflow) this.endLine();
+        return this.last;
+    }
+}
+
 function toJsonSafe(value: unknown): unknown {
     if (value === undefined) return null;
     return JSON.parse(JSON.stringify(value));
@@ -161,9 +218,7 @@ function boundedOutput(nodeId: string, output: unknown): unknown {
     return safe;
 }
 
-function lastJsonResultLine(stdout: string): { outcome: string; output: unknown } | null {
-    const lines = stdout.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
-    const last = lines.at(-1);
+function lastJsonResultLine(last: string | undefined): { outcome: string; output: unknown } | null {
     if (!last || !last.startsWith("{")) return null;
     try {
         const parsed = JSON.parse(last);
@@ -230,6 +285,7 @@ export async function runScriptNode(
     const startedAt = Date.now();
     const token = randomBytes(32).toString("hex");
     const toolCalls: ScriptToolCallRecord[] = [];
+    let toolCallsAdmitted = 0;
     let reported: { outcome: string; output: unknown } | null = null;
 
     const server = http.createServer(async (req, res) => {
@@ -257,10 +313,12 @@ export async function runScriptNode(
         if (req.url === "/tool") {
             const name = typeof body?.name === "string" ? body.name.trim() : "";
             if (!name) { reply(400, { ok: false, error: "name is required" }); return; }
-            if (toolCalls.length >= SCRIPT_NODE_MAX_TOOL_CALLS) {
+            // Counted before the call runs, so concurrent calls cannot pass the limit.
+            if (toolCallsAdmitted >= SCRIPT_NODE_MAX_TOOL_CALLS) {
                 reply(429, { ok: false, error: `a node may make at most ${SCRIPT_NODE_MAX_TOOL_CALLS} tool calls` });
                 return;
             }
+            toolCallsAdmitted += 1;
             const args = body?.arguments && typeof body.arguments === "object" && !Array.isArray(body.arguments)
                 ? body.arguments as Record<string, unknown>
                 : {};
@@ -309,18 +367,37 @@ export async function runScriptNode(
         });
 
         const stdout = new StreamTail();
+        const stdoutLastLine = new LastLine();
         const stderr = new StreamTail();
         let timedOut = false;
         let cancelled = false;
 
         const exitCode = await new Promise<number | null>((resolve, reject) => {
+            // On POSIX the script leads its own process group, so everything
+            // it starts, including background processes that outlive it, can
+            // be killed together.
+            const ownGroup = process.platform !== "win32";
             const child = spawn(executable, runtime.args(scriptPath), {
                 cwd: workDir,
                 env,
                 stdio: ["pipe", "pipe", "pipe"],
                 windowsHide: true,
+                detached: ownGroup,
             });
-            const stop = () => { if (!killProcessTree(child.pid)) child.kill("SIGKILL"); };
+            const killGroup = () => {
+                if (!ownGroup || !child.pid) return;
+                try { process.kill(-child.pid, "SIGKILL"); } catch { /* the group is gone */ }
+            };
+            let exited: number | null | undefined;
+            // Never signal by pid after the script exited: the pid may already
+            // belong to another process.
+            const stop = () => {
+                if (exited !== undefined) return;
+                killGroup();
+                if (!killProcessTree(child.pid)) child.kill("SIGKILL");
+            };
+            let drainTimer: NodeJS.Timeout | null = null;
+            let resolved = false;
             const timer = setTimeout(() => {
                 timedOut = true;
                 stop();
@@ -336,8 +413,15 @@ export async function runScriptNode(
             const settle = () => {
                 clearTimeout(timer);
                 if (cancelWatch) clearInterval(cancelWatch);
+                if (drainTimer) clearTimeout(drainTimer);
             };
-            child.stdout.on("data", (chunk: Buffer) => stdout.push(chunk));
+            const finish = (code: number | null) => {
+                if (resolved) return;
+                resolved = true;
+                settle();
+                resolve(code);
+            };
+            child.stdout.on("data", (chunk: Buffer) => { stdout.push(chunk); stdoutLastLine.push(chunk); });
             child.stderr.on("data", (chunk: Buffer) => stderr.push(chunk));
             child.on("error", (error: NodeJS.ErrnoException) => {
                 settle();
@@ -347,10 +431,22 @@ export async function runScriptNode(
                     )
                     : error);
             });
-            child.on("close", (code) => {
-                settle();
-                resolve(code);
+            // The state ends when the script exits. Anything it left running
+            // dies with it, and its output is read for at most OUTPUT_DRAIN_MS
+            // more, so a background process holding the pipes cannot keep the
+            // state, its timeout or a cancel waiting.
+            child.on("exit", (code) => {
+                exited = code;
+                clearTimeout(timer);
+                if (cancelWatch) clearInterval(cancelWatch);
+                killGroup();
+                drainTimer = setTimeout(() => {
+                    child.stdout.destroy();
+                    child.stderr.destroy();
+                    finish(code);
+                }, OUTPUT_DRAIN_MS);
             });
+            child.on("close", (code) => finish(exited !== undefined ? exited : code));
             child.stdin.on("error", () => { /* the script may exit without reading its context */ });
             child.stdin.end(JSON.stringify({
                 sessionId: request.sessionId,
@@ -381,7 +477,14 @@ export async function runScriptNode(
         if (finalReport) {
             return { ...common, outcome: finalReport.outcome, output: boundedOutput(node.id, finalReport.output), resultSource: "reported" };
         }
-        const fromStdout = lastJsonResultLine(stdoutTail);
+        const lastLine = stdoutLastLine.final();
+        if (lastLine?.tooLong && lastLine.startsWithBrace) {
+            throw new WorkflowExecutionError(
+                `Script state '${node.id}' printed a final line longer than ${RESULT_LINE_MAX_BYTES} bytes; a result's output may be at most `
+                + `${SCRIPT_NODE_MAX_OUTPUT_BYTES} bytes. Store large results as an artifact or fact and pass its key instead.`,
+            );
+        }
+        const fromStdout = lastJsonResultLine(lastLine?.text);
         if (fromStdout) {
             return { ...common, outcome: fromStdout.outcome, output: boundedOutput(node.id, fromStdout.output), resultSource: "stdout" };
         }

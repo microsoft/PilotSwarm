@@ -272,6 +272,24 @@ test("spawn_workflow is idempotent per key, and per tool call without one", asyn
     assert.match(again, /found the existing workflow session .* state running\)\. Nothing new was started/);
 });
 
+test("spawn_workflow retries a create whose start did not go through, and explains a key whose run is still ending", async () => {
+    // A pending row: the session was written but its run may not have started.
+    const pending = spawnDeps();
+    const id = workflowChildSessionId("parent-agent", "nightly");
+    pending.sessions.set(id, { title: "Workflow: limits", state: "pending" });
+    const text = await spawnWorkflowFromTool({ yaml: yaml(), key: "nightly" }, { toolCallId: "c1" }, pending.deps);
+    assert.equal(pending.created.length, 1, "the idempotent create runs again");
+    assert.match(text, /started workflow session/);
+
+    const ending = spawnDeps({
+        createWorkflowSession: async () => {
+            throw Object.assign(new Error("Session x was deleted, but its workflow run has not ended yet. Try again shortly, or use another id."), { code: "WORKFLOW_SESSION_ENDING" });
+        },
+    });
+    assert.match(await spawnWorkflowFromTool({ yaml: yaml(), key: "nightly" }, { toolCallId: "c2" }, ending.deps),
+        /refused — Session x was deleted, but its workflow run has not ended yet\..* Pass a different key for a new run\./);
+});
+
 test("spawn_workflow refuses when workflows are off or the YAML is wrong, without creating anything", async () => {
     const off = spawnDeps({ stateTypes: () => new Set() });
     assert.match(await spawnWorkflowFromTool({ yaml: yaml() }, {}, off.deps), /refused — Workflows are not enabled on this worker/);

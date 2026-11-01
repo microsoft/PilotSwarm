@@ -162,10 +162,12 @@ Helpers, one set per runtime:
 
 If a script reports nothing, its result comes from the last stdout line when
 that is a JSON object with a string `outcome`; otherwise exit code 0 is
-outcome `success` (output: stdout), any other exit code is `failure` (output:
-`{ exitCode, stderr }`), and running past the timeout is `timeout`. Route
-`failure` and `timeout` in `next` to handle them; otherwise they fail the
-workflow.
+outcome `success` (output: the last 16 KB of stdout), any other exit code is
+`failure` (output: `{ exitCode, stderr }`), and running past the timeout is
+`timeout`. Route `failure` and `timeout` in `next` to handle them; otherwise
+they fail the workflow. A state ends when its script exits: any process the
+script started that is still running is killed then (on Linux and macOS, the
+whole process group).
 
 ## Tools a script can call
 
@@ -201,9 +203,10 @@ JavaScript `Error`, a PowerShell error), so the script can catch it.
   once. The agent receives the result as a system message when the workflow
   ends. A user can describe the steps in words; the agent writes the YAML.
 - **On a schedule:** ask an agent to repeat it ("every night at 2, run ...").
-  The agent sets `cron`/`cron_at` and calls `spawn_workflow` on each wake-up;
-  each run is its own child workflow session. Pass `key` to make a call
-  idempotent (the same key returns the same workflow session).
+  The agent writes one workflow that loops through a `wait` state (a clock
+  time with `at`, or `seconds`) and calls `spawn_workflow` once; see
+  [Polling and repeating work](#polling-and-repeating-work). Pass `key` only to
+  guard against a repeated call: the same key names the same workflow session.
 - **From the portal:** New session → *Workflow* (in the agent chooser
   beside *Generic Session*, or *Workflow instead* in the model step).
   The editor starts with a working example.
@@ -266,8 +269,12 @@ Isolation, in this version:
   variables. It reaches PilotSwarm only through a loopback endpoint guarded
   by a per-run token.
 - It is **not** a sandbox: the script runs as the worker's OS user, with its
-  network access. Turn scripts on only where every user who can create a
-  session may run code on the worker.
+  network access. Whatever that user can read, the script can read too,
+  including the worker's own process environment and that of other running
+  scripts (for example through `/proc` on Linux), so a script can reach the
+  worker's credentials and act as another workflow that is running at the
+  same time. Turn scripts on only where every user who can create a session
+  may run code on the worker.
 
 ## Durability
 
@@ -279,7 +286,10 @@ and the state that was running is run again from its start. Write scripts so
 that running one twice is safe. A wait is a durable timer in the
 orchestration's history: its end time is worked out once, when it starts,
 and recorded, so a restarted worker resumes it where it was and later
-time-zone data cannot move it. A cancel ends a run that is waiting. The orchestration continues as new every
+time-zone data cannot move it. One exception: duroxide timers count from when
+they are created, so a restart in the moment between working out the end and
+creating the timer makes that wait end late by the length of the outage. A
+wait never ends early. A cancel ends a run that is waiting. The orchestration continues as new every
 20 states to keep its history small.
 
 ## Testing

@@ -305,7 +305,12 @@ export function registerWorkflowActivities(runtime: any, deps: WorkflowActivityD
         input: WorkflowFinishInput,
     ): Promise<null> => {
         const stopped = input.status === "cancelled" && input.outcome === undefined || input.status === "deleted";
-        await record(deps, input.sessionId, END_EVENT[input.status], {
+        // This activity is retried when a required effect below fails; the
+        // end is recorded once.
+        const recorded = typeof deps.catalog?.getSessionEvents === "function"
+            ? await deps.catalog.getSessionEvents(input.sessionId, 0, 1, [END_EVENT[input.status]]).catch(() => [])
+            : [];
+        if (!recorded.length) await record(deps, input.sessionId, END_EVENT[input.status], {
             name: input.workflowName,
             steps: input.steps,
             ...(input.stateId ? { stateId: input.stateId } : {}),
@@ -317,8 +322,12 @@ export function registerWorkflowActivities(runtime: any, deps: WorkflowActivityD
             ...(input.status === "deleted" ? { deleted: true } : {}),
         });
         if (input.status !== "deleted") await refreshCanvas(deps, input.sessionId);
+        // The session's end state, its removal and the parent's wake-up are
+        // required: a failure throws, and the controller retries this
+        // activity. Each is safe to repeat; the wake-up comes last, so it is
+        // sent again only if sending it failed.
         if (input.status === "deleted") {
-            await deps.deleteSession?.(input.sessionId).catch(() => undefined);
+            await deps.deleteSession?.(input.sessionId);
         } else {
             await deps.catalog?.updateSession(input.sessionId, {
                 state: input.status,
@@ -326,7 +335,7 @@ export function registerWorkflowActivities(runtime: any, deps: WorkflowActivityD
                     ? (input.error ?? input.summary ?? "Workflow failed")
                     : stopped ? (input.reason ?? "Cancelled") : null,
                 lastActiveAt: new Date(),
-            }).catch(() => undefined);
+            });
         }
         // A parent that stopped its own workflow does not need to be told.
         const parentAsked = Boolean(input.requestedBy) && input.requestedBy === input.parentSessionId;
@@ -335,7 +344,7 @@ export function registerWorkflowActivities(runtime: any, deps: WorkflowActivityD
                 input.parentSessionId,
                 buildParentNotification(input),
                 { kind: "system", display: `workflow ${input.workflowName ?? input.sessionId.slice(0, 8)}` },
-            ).catch(() => undefined);
+            );
         }
         return null;
     });

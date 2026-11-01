@@ -246,6 +246,8 @@ test("a workflow session takes no steering, no Stop and no regeneration", async 
     assert.equal(canStopSessionTurn({ sessionId: "a-1", status: "running" }), true);
     await controller.stopActiveSessionTurn();
     assert.match(store.getState().ui.statusText || "", /Workflow sessions have no turns; cancel the session/);
+    await controller.openSwitchModelPicker();
+    assert.match(store.getState().ui.statusText || "", /Workflow sessions run no model; there is nothing to switch/);
     await controller.regenerateActiveSession({ confirmed: true });
     assert.match(store.getState().ui.statusText || "", /Workflow sessions run a workflow graph/);
 });

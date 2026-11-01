@@ -107,6 +107,9 @@ export interface WorkflowRunStateResult {
  */
 export type WorkflowEndStatus = "completed" | "failed" | "cancelled" | "deleted";
 
+/** Waits before retrying a failed finish (end state, delete, parent wake-up). */
+export const WORKFLOW_FINISH_RETRY_DELAYS_MS = [2_000, 15_000, 60_000, 300_000] as const;
+
 /** The command queue every session listens on; management and parents send `{ type: "cmd" }` here. */
 export const WORKFLOW_COMMAND_QUEUE = "messages";
 
@@ -213,15 +216,31 @@ export function* workflowSessionOrchestration_1_0_0(
     const occurrences: Record<string, string> = { ...(input.resume?.occurrences ?? {}) };
     const spinLimit = input.maxScriptRunsBetweenWaits ?? WORKFLOW_MAX_SCRIPT_RUNS_BETWEEN_WAITS;
 
+    let finishGaveUp = false;
     const finish = function* (result: Omit<WorkflowFinishInput, "sessionId" | "parentSessionId" | "notifyParent">) {
         // The end is recorded first, so a reader that sees the final status
-        // also finds the end event in the session's log.
-        yield ctx.scheduleActivityTyped(WORKFLOW_ACTIVITIES.finish, {
+        // also finds the end event in the session's log. Its effects (end
+        // state, delete, parent wake-up) are retried a few times before the
+        // run gives up and fails.
+        const finishInput = {
             sessionId: input.sessionId,
             ...(input.parentSessionId ? { parentSessionId: input.parentSessionId } : {}),
             notifyParent,
             ...result,
-        } satisfies WorkflowFinishInput);
+        } satisfies WorkflowFinishInput;
+        for (let attempt = 0; ; attempt += 1) {
+            try {
+                yield ctx.scheduleActivityTyped(WORKFLOW_ACTIVITIES.finish, finishInput);
+                break;
+            } catch (error) {
+                if (attempt >= WORKFLOW_FINISH_RETRY_DELAYS_MS.length) {
+                    finishGaveUp = true;
+                    throw error;
+                }
+                ctx.traceWarn?.(`[workflow] session=${input.sessionId} finish attempt ${attempt + 1} failed: ${workflowErrorMessage(error)}`);
+                yield ctx.scheduleTimer(WORKFLOW_FINISH_RETRY_DELAYS_MS[attempt]);
+            }
+        }
         publish(ctx, {
             status: result.status === "deleted" ? "cancelled" : result.status,
             sessionKind: "workflow",
@@ -314,8 +333,10 @@ export function* workflowSessionOrchestration_1_0_0(
                 publish(ctx, { status: "running", sessionKind: "workflow", workflow: { name: workflow.name, stateId: state.id, step, waitingUntil: until } });
                 // The timer races the command queue, so cancel, complete and
                 // delete end a run that is waiting. It is created in this same
-                // turn, timed from the activity's own clock, so a restart while
-                // waiting resumes it with its original end.
+                // turn, timed from the activity's own clock. Once created it
+                // keeps its end across a restart; a restart in the moment
+                // before it is created delays the end by the outage (duroxide
+                // timers are relative), and never makes it early.
                 let remainingMs: number = typeof timing.now === "number" ? until - timing.now : until - (yield ctx.utcNow());
                 while (remainingMs > 0) {
                     const raced = yield ctx.race(ctx.scheduleTimer(remainingMs), ctx.dequeueEvent(WORKFLOW_COMMAND_QUEUE));
@@ -365,9 +386,9 @@ export function* workflowSessionOrchestration_1_0_0(
             if (raced?.index === 1) {
                 const command = parseWorkflowCommand(raced.value);
                 if (!command) {
-                    // Workflow sessions take no other messages; the senders
-                    // refuse them. One that slips through stopped the script,
-                    // so the same state runs again from its start.
+                    // Workflow sessions take no other messages; every sender
+                    // refuses them. One that slips through (a raw queue write)
+                    // stopped the script, so the state runs again from its start.
                     ctx.traceWarn?.(`[workflow] session=${input.sessionId} ignored a non-command message at state ${state.id}`);
                     step -= 1;
                     sinceWait -= 1;
@@ -386,11 +407,14 @@ export function* workflowSessionOrchestration_1_0_0(
             const raw = typeof raced?.value === "string" ? JSON.parse(raced.value) : raced?.value;
             const result = requireScriptResult(state.id, raw);
             const target = resolveTransition(workflow, state.id, result.outcome);
-            results[state.id] = result.output;
+            if (!workflow.resultStates || workflow.resultStates.includes(state.id)) results[state.id] = result.output;
             priorOutput = result.output;
             stateId = target;
         }
     } catch (error) {
+        // Ending the run itself kept failing: the orchestration fails, and
+        // the session status follows it.
+        if (finishGaveUp) throw error;
         const message = workflowErrorMessage(error);
         ctx.traceWarn?.(`[workflow] session=${input.sessionId} failed: ${message}`);
         return yield* finish({
