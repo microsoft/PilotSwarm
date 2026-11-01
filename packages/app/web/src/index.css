@@ -142,24 +142,6 @@
 .ps-motd-dialog.is-phone-preview .ps-motd-footer { flex-direction: column-reverse; align-items: stretch; }
 .ps-motd-dialog.is-phone-preview .ps-motd-button { margin: 0; width: 100%; }
 .ps-motd-dialog.is-phone-preview .ps-motd-window { text-align: center; }
-@media (max-width: 920px) {
-  .ps-motd-dialog { width: calc(100vw - 24px); max-height: calc(100dvh - 32px); margin: auto 12px 12px; border-radius: 18px; }
-  .ps-motd-splash { max-height: calc(100dvh - 32px); }
-  .ps-motd-copy { padding: 14px 18px 4px; }
-  .ps-motd-markdown h1, .ps-motd-markdown h2 { font-size: 20px; }
-  .ps-motd-content.is-beside { display: block; }
-  .ps-motd-content.is-beside > .ps-motd-picture, .ps-motd-content.is-background > .ps-motd-picture { position: static; height: auto; min-height: 0; aspect-ratio: 3 / 1; }
-  .ps-motd-content.is-background::before { display: none; }
-  .ps-motd-footer { flex-direction: column-reverse; align-items: stretch; padding: 10px 18px 16px; }
-  .ps-motd-button { margin: 0; padding: 12px 18px; width: 100%; font-size: 15px; }
-  .ps-motd-window { text-align: center; }
-  .ps-motd-admin-grid { grid-template-columns: minmax(0, 1fr); }
-  .ps-motd-history-row { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
-  .ps-motd-history-title { grid-column: 1; grid-row: 1; }
-  .ps-motd-history-row > .ps-motd-meta { grid-column: 1; grid-row: 2; }
-  .ps-motd-history-row > button { grid-column: 2; grid-row: 1 / span 3; }
-}
-
 /* Native Copilot tasks stay anchored to dispatch, with live detail in place. */
 .ps-native-tasks { margin: 12px 0 18px; border: 1px solid var(--ps-border); border-radius: var(--ps-radius-md); background: var(--ps-chat-card-header); overflow: hidden; }
 .ps-native-tasks-header { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; padding: 10px 13px; }
@@ -11190,4 +11172,23 @@ textarea.ps-link-input {
     padding-right: 0;
     justify-content: center;
   }
+}
+
+/* Keep the existing phone type-scale rules ahead of feature-specific sheets. */
+@media (max-width: 920px) {
+  .ps-motd-dialog { width: calc(100vw - 24px); max-height: calc(100dvh - 32px); margin: auto 12px 12px; border-radius: 18px; }
+  .ps-motd-splash { max-height: calc(100dvh - 32px); }
+  .ps-motd-copy { padding: 14px 18px 4px; }
+  .ps-motd-markdown h1, .ps-motd-markdown h2 { font-size: 20px; }
+  .ps-motd-content.is-beside { display: block; }
+  .ps-motd-content.is-beside > .ps-motd-picture, .ps-motd-content.is-background > .ps-motd-picture { position: static; height: auto; min-height: 0; aspect-ratio: 3 / 1; }
+  .ps-motd-content.is-background::before { display: none; }
+  .ps-motd-footer { flex-direction: column-reverse; align-items: stretch; padding: 10px 18px 16px; }
+  .ps-motd-button { margin: 0; padding: 12px 18px; width: 100%; font-size: 15px; }
+  .ps-motd-window { text-align: center; }
+  .ps-motd-admin-grid { grid-template-columns: minmax(0, 1fr); }
+  .ps-motd-history-row { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+  .ps-motd-history-title { grid-column: 1; grid-row: 1; }
+  .ps-motd-history-row > .ps-motd-meta { grid-column: 1; grid-row: 2; }
+  .ps-motd-history-row > button { grid-column: 2; grid-row: 1 / span 3; }
 }
