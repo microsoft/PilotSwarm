@@ -1140,9 +1140,8 @@ export interface SessionCatalog {
     // ── Writes (called from client, before duroxide calls) ───
 
     /**
-     * Insert a new session. No-op if an ordinary session already exists. A
-     * workflow session's id is refused with SESSION_EXISTS (409) unless the
-     * call is a legacy workflow creation retry, which re-reads its admission.
+     * Insert a new session. No-op if the session already exists; a workflow
+     * session's row (creation config, kind, owner) is never changed.
      */
     createSession(sessionId: string, opts?: {
         sessionKind?: import("./types.js").SessionKind;
@@ -1848,23 +1847,17 @@ export class PgSessionCatalog implements SessionCatalog {
             }
 
             if (await this.supportsCreationConfig()) {
-                // The create procedure locks even a conflicting row. A workflow
-                // session's row belongs to its workflow creator and keeps its first
-                // grant/input. Only a legacy workflow creation retry may meet its own
-                // row here (it re-reads and verifies its admission); every other
-                // creator is refused, so no caller gets a handle on the workflow's id.
+                // The create procedure locks even a conflicting row. Keep a workflow's
+                // first grant/input immutable across concurrent creates and retries.
+                // The caller learns the row is not its own by reading it back
+                // (PilotSwarmClient.createSession refuses a workflow session's id).
                 const { rows } = await client.query(
                     `SELECT creation_config FROM "${this.sql.schema}".sessions WHERE session_id = $1 FOR UPDATE`,
                     [sessionId],
                 );
-                const existing = rows[0]?.creation_config;
-                if (existing?.workflowAdmission && !existing.workflowV2 && opts?.sessionKind === "workflow") {
+                if (rows[0]?.creation_config?.workflowAdmission || rows[0]?.creation_config?.workflowV2) {
                     await client.query("ROLLBACK");
                     return;
-                }
-                if (existing?.workflowAdmission || existing?.workflowV2) {
-                    throw Object.assign(new Error(`Session ${sessionId} already exists as a workflow session; nothing was changed.`),
-                        { code: "SESSION_EXISTS", status: 409 });
                 }
             }
 

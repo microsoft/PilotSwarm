@@ -7,9 +7,10 @@
  * A v2 creation claims the session row exclusively. It never changes a row
  * another creator made (legacy workflow, agent session, a different v2
  * request), whether that row existed first or was inserted concurrently.
- * No other creator can take a workflow's id: the catalog refuses it, so the
- * ordinary client returns no handle, and a send on a workflow session starts
- * and enqueues nothing at session-<id>, which the workflow controller owns.
+ * No other creator can take a workflow's id: the catalog leaves the row
+ * unchanged (as it always has), the ordinary client reads it back and returns
+ * no handle, and a send on a workflow session starts and enqueues nothing at
+ * session-<id>, which the workflow controller owns.
  */
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
@@ -20,6 +21,8 @@ import { PgSessionCatalog } from "../../src/cms.ts";
 import { PilotSwarmClient, PilotSwarmSession } from "../../src/client.ts";
 import { createWorkflowV2 } from "../../src/workflow/v2/service.ts";
 import { registerWorkflowV2 } from "../../src/workflow/v2/runtime.ts";
+import { DURABLE_SESSION_ORCHESTRATION_NAME } from "../../src/orchestration-registry.ts";
+import { DURABLE_SESSION_LATEST_VERSION } from "../../src/orchestration-version.ts";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
 
@@ -124,24 +127,24 @@ describe("workflow v2 admission at the session creation boundary", () => {
             const legacyAfterV2 = randomUUID();
             await v2Create(h, legacyAfterV2);
             const v2Before = await snapshot(h, legacyAfterV2);
-            await expect(legacyCreate(h, legacyAfterV2)).rejects.toMatchObject({ code: "SESSION_EXISTS" });
-            await expect(h.catalog.createSession(legacyAfterV2, { owner: OWNER })).rejects.toMatchObject({ code: "SESSION_EXISTS" });
+            await legacyCreate(h, legacyAfterV2);
+            await h.catalog.createSession(legacyAfterV2, { owner: OWNER, creationConfig: { replace: true } });
             expect(await snapshot(h, legacyAfterV2)).toEqual(v2Before);
             expect(v2Before.creation.workflowAdmission).toBeUndefined();
             expect(v2Before.owner).toEqual(OWNER);
             expect(v2Before.root).toBe(h.parentId);
 
-            // A legacy workflow's retry still meets its own row; an ordinary creator is refused.
+            // A legacy workflow's retry and an ordinary catalog creator both leave a legacy workflow row as it was.
             const legacyAgain = randomUUID();
             await legacyCreate(h, legacyAgain);
             const legacyRow = await snapshot(h, legacyAgain);
             await legacyCreate(h, legacyAgain);
-            await expect(h.catalog.createSession(legacyAgain, { owner: OWNER })).rejects.toMatchObject({ code: "SESSION_EXISTS" });
+            await h.catalog.createSession(legacyAgain, { owner: OWNER, creationConfig: { replace: true } });
             expect(await snapshot(h, legacyAgain)).toEqual(legacyRow);
         } finally { await h.catalog.close(); }
     });
 
-    it("refuses the second creator in both orders, whichever kind comes first", { timeout: TIMEOUT }, async () => {
+    it("keeps the first creator's row in both orders, whichever kind comes first", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
             const legacyFirst = randomUUID();
@@ -154,7 +157,7 @@ describe("workflow v2 admission at the session creation boundary", () => {
             const v2First = randomUUID();
             await v2Create(h, v2First);
             const v2State = await snapshot(h, v2First);
-            await expect(legacyCreate(h, v2First)).rejects.toMatchObject({ code: "SESSION_EXISTS" });
+            await legacyCreate(h, v2First);
             expect(await snapshot(h, v2First)).toEqual(v2State);
             expect(v2State).toMatchObject({ kind: "workflow", owner: OWNER, root: h.parentId, definition: { state: "draft", revision: 1 } });
         } finally { await h.catalog.close(); }
@@ -177,16 +180,15 @@ describe("workflow v2 admission at the session creation boundary", () => {
                 const isLegacy = Boolean(state.creation.workflowAdmission);
                 expect(isV2 !== isLegacy, JSON.stringify(state)).toBe(true);
                 expect(state).toMatchObject({ owner: OWNER, root: h.parentId });
+                // The catalog's legacy create never fails on an existing row; it leaves the row unchanged.
+                expect(legacy.status, String(legacy.reason)).toBe("fulfilled");
                 if (isV2) {
                     outcomes.v2 += 1;
                     expect(v2.status).toBe("fulfilled");
-                    expect(legacy.status).toBe("rejected");
-                    expect(legacy.reason.code).toBe("SESSION_EXISTS");
                     expect(state.definition).toEqual({ state: "draft", revision: 1 });
                     expect(state.title).toBe("Workflow: v2");
                 } else {
                     outcomes.legacy += 1;
-                    expect(legacy.status, String(legacy.reason)).toBe("fulfilled");
                     expect(v2.status).toBe("rejected");
                     expect(v2.reason.code).toBe("SESSION_EXISTS");
                     expect(state.definition).toBeNull();
@@ -280,10 +282,10 @@ describe("workflow v2 admission at the session creation boundary", () => {
         const modelProvidersPath = await registerScriptedProvider(env, "http://127.0.0.1:9/never-called");
         const provider = await PostgresProvider.connectWithSchema(env.store, env.duroxideSchema);
         const duroxide = new Client(provider);
-        // A worker-equivalent registration runs one v2 workflow to its end; it is stopped before the
-        // ordinary client acts, so nothing could hide an ordinary orchestration started afterwards.
-        const runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error" });
-        registerWorkflowV2(runtime, {
+        // A worker-equivalent registration runs one v2 workflow to its end. It stops before the
+        // ordinary client acts: no session runtime runs while the client is observed.
+        const v2Runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error" });
+        registerWorkflowV2(v2Runtime, {
             store: h.store, catalog: h.catalog, enabled: () => true,
             resolveToolBinding: async () => null,
             openToolExecutor: async () => { throw new Error("This workflow calls no tools."); },
@@ -292,11 +294,11 @@ describe("workflow v2 admission at the session creation boundary", () => {
             deleteSession: async (sessionId) => h.catalog.softDeleteSession(sessionId),
             wakeBackstopMs: 500,
         });
-        await runtime.start();
+        await v2Runtime.start();
         const client = new PilotSwarmClient({
             store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema, modelProvidersPath,
         });
-        let runtimeStopped = false;
+        const running = { v2: true, observer: null };
         try {
             const live = { ...h.host, duroxideClient: duroxide };
             const draftId = randomUUID();
@@ -307,9 +309,25 @@ describe("workflow v2 admission at the session creation boundary", () => {
             const controller = await duroxide.waitForOrchestration(finished.receipt.run.controllerInstanceId, 60_000);
             expect(controller.status, JSON.stringify(controller)).toBe("Completed");
             expect((await h.store.readRun(finished.receipt.run.runId)).status).toBe("completed");
-            await runtime.shutdown(100);
-            runtimeStopped = true;
+            await v2Runtime.shutdown(100);
+            running.v2 = false;
             await client.start();
+
+            // Caller evidence: every durable write the real client makes, forwarded unchanged to its real client.
+            const writes = [];
+            const real = client.duroxideClient;
+            const WRITES = new Set(["startOrchestration", "startOrchestrationVersioned", "enqueueEvent", "raiseEvent", "cancelInstance", "deleteInstance"]);
+            client.duroxideClient = new Proxy(real, {
+                get(target, property) {
+                    const value = Reflect.get(target, property, target);
+                    if (typeof value !== "function") return value;
+                    if (!WRITES.has(property)) return value.bind(target);
+                    return async (...args) => {
+                        writes.push([property, args[0], args[1]]);
+                        return value.apply(target, args);
+                    };
+                },
+            });
 
             const observe = async (id) => {
                 const status = await duroxide.getStatus(`session-${id}`);
@@ -320,19 +338,20 @@ describe("workflow v2 admission at the session creation boundary", () => {
                     events: events.map(event => event.eventType),
                 };
             };
-            for (const id of [draftId, finishedId]) {
-                const before = await observe(id);
+            const workflowIds = [draftId, finishedId];
+            const before = {};
+            for (const id of workflowIds) {
+                before[id] = await observe(id);
                 await expect(client.createSession({ sessionId: id })).rejects.toMatchObject({ code: "SESSION_EXISTS" });
                 // A handle made by hand is refused before it starts, updates or enqueues anything.
                 await expect(new PilotSwarmSession(id, client).send("hello")).rejects.toMatchObject({ code: "WORKFLOW_SESSION_NOT_CONVERSATIONAL" });
-                expect(await observe(id), id).toEqual(before);
+                expect(await observe(id), id).toEqual(before[id]);
             }
-            const draft = await observe(draftId);
-            expect(draft.orchestration.status).toBe("NotFound");
-            expect(draft.row).toMatchObject({ kind: "workflow", orchestrationId: null });
-            const done = await observe(finishedId);
-            expect(done.row).toMatchObject({ kind: "workflow", orchestrationId: `session-${finishedId}` });
-            expect(done.events).not.toContain("session.model_resolved");
+            expect(writes).toEqual([]);
+            expect(before[draftId].orchestration.status).toBe("NotFound");
+            expect(before[draftId].row).toMatchObject({ kind: "workflow", orchestrationId: null });
+            expect(before[finishedId].row).toMatchObject({ kind: "workflow", orchestrationId: `session-${finishedId}` });
+            expect(before[finishedId].events).not.toContain("session.model_resolved");
 
             // Positive control: an ordinary id gets a handle whose send starts and enqueues its own session.
             const ordinaryId = randomUUID();
@@ -340,12 +359,34 @@ describe("workflow v2 admission at the session creation boundary", () => {
             expect(handle.sessionId).toBe(ordinaryId);
             expect((await client._catalog.getSession(ordinaryId)).sessionKind).toBe("agent");
             await handle.send("hello");
-            const dispatched = await client._catalog.getSession(ordinaryId);
-            expect(dispatched).toMatchObject({ orchestrationId: `session-${ordinaryId}`, state: "running" });
-            expect((await duroxide.getStatus(`session-${ordinaryId}`)).status).not.toBe("NotFound");
+            expect(writes).toEqual([
+                ["startOrchestrationVersioned", `session-${ordinaryId}`, DURABLE_SESSION_ORCHESTRATION_NAME],
+                ["enqueueEvent", `session-${ordinaryId}`, "messages"],
+            ]);
+            expect(await client._catalog.getSession(ordinaryId)).toMatchObject({ orchestrationId: `session-${ordinaryId}`, state: "running" });
+
+            // Runtime evidence: the provider holds that start and that message for that instance. No
+            // session runtime ran yet, so the instance does not exist until one takes the start. An
+            // observer registered under the session orchestration's name takes it and reports what it got.
+            const observer = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error" });
+            observer.registerOrchestrationVersioned(DURABLE_SESSION_ORCHESTRATION_NAME, DURABLE_SESSION_LATEST_VERSION, function* (ctx, input) {
+                const message = yield ctx.dequeueEvent("messages");
+                const started = typeof input === "string" ? JSON.parse(input) : input;
+                return { sessionId: started.sessionId, message: typeof message === "string" ? JSON.parse(message) : message };
+            });
+            await observer.start();
+            running.observer = observer;
+            const taken = await duroxide.waitForOrchestration(`session-${ordinaryId}`, 30_000);
+            expect(taken.status, JSON.stringify(taken)).toBe("Completed");
+            const output = typeof taken.output === "string" ? JSON.parse(taken.output) : taken.output;
+            expect(output).toMatchObject({ sessionId: ordinaryId, message: { prompt: "hello" } });
+            // The same runtime would have taken a start for a workflow id too; none existed.
+            expect((await duroxide.getStatus(`session-${draftId}`)).status).toBe("NotFound");
+            expect(await observe(finishedId)).toEqual(before[finishedId]);
         } finally {
             await client.stop();
-            if (!runtimeStopped) await runtime.shutdown(100);
+            if (running.v2) await v2Runtime.shutdown(100);
+            if (running.observer) await running.observer.shutdown(100);
             await h.catalog.close();
         }
     });

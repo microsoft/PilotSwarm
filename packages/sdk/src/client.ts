@@ -389,8 +389,8 @@ export class PilotSwarmClient {
         // the orchestration start can rebuild it on ANY process — the
         // in-memory map below only covers the process that ran this create.
         // JSON round-trip strips undefined fields for clean JSONB.
-        // The catalog refuses a workflow session's id (SESSION_EXISTS), so
-        // nothing below runs for it: no local config, no events, no handle.
+        // A workflow session's id is refused below, before any local config,
+        // event or handle exists for it.
         const configForRow = fullConfig ?? this.sessionConfigs.get(sessionId);
         await this._catalog.createSession(sessionId, {
             model: resolvedConfig.model,
@@ -409,6 +409,17 @@ export class PilotSwarmClient {
                 }
                 : null,
         });
+        // The catalog leaves a workflow session's row unchanged (a legacy
+        // workflow retry relies on that). Reading it back tells this caller the
+        // id is not an ordinary session it may hold a handle on.
+        const [createdRow, createdConfig] = await Promise.all([
+            this._catalog.getSession(sessionId),
+            this._catalog.getSessionCreationConfig ? this._catalog.getSessionCreationConfig(sessionId) : Promise.resolve(null),
+        ]);
+        if (createdRow?.sessionKind === "workflow" || createdConfig?.workflowAdmission || createdConfig?.workflowV2) {
+            throw Object.assign(new Error(`Session ${sessionId} already exists as a workflow session; no session was created.`),
+                { code: "SESSION_EXISTS", status: 409 });
+        }
         if (fullConfig) this.sessionConfigs.set(sessionId, fullConfig);
         if (resolved) {
             await this._catalog.recordEvents(sessionId, [{
