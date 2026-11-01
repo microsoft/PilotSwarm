@@ -225,3 +225,16 @@ test("Duroxide is a different theme from Rust, not a re-skin", () => {
     assert.ok(sat(dx.terminal.cyan) < sat(rust.terminal.cyan),
         `duroxide accent should be the more muted pigment (${sat(dx.terminal.cyan).toFixed(2)} vs ${sat(rust.terminal.cyan).toFixed(2)})`);
 });
+
+test("Hearth's garland lights twinkle one at a time, and stand still when motion is reduced", async () => {
+    const { readFileSync } = await import("node:fs");
+    const css = readFileSync(new URL("../../../web/src/index.css", import.meta.url), "utf8");
+    const start = css.indexOf(':root[data-ps-theme="hearth"] .portal-header::before {');
+    const rule = css.slice(start, css.indexOf("}", start));
+    const svg = decodeURIComponent(rule.slice(rule.indexOf("data:image/svg+xml,") + 19, rule.indexOf('")')));
+    const durations = [...svg.matchAll(/<animate attributeName="opacity"[^>]*dur="([\d.]+)s"/g)].map((m) => m[1]);
+    assert.ok(new Set(durations).size >= 6, `each light keeps its own rhythm: ${[...new Set(durations)].join(", ")}`);
+    const reduced = css.slice(css.lastIndexOf("@media (prefers-reduced-motion: reduce)"));
+    assert.match(reduced, /:root\[data-ps-theme="hearth"\] \.portal-header::before \{\s*background: url\("data:image\/svg\+xml,/);
+    assert.doesNotMatch(reduced.slice(0, reduced.indexOf("\n}\n")), /%3Canimate/, "the reduced-motion strand has no animation");
+});
