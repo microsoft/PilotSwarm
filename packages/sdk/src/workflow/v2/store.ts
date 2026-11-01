@@ -945,12 +945,13 @@ export class WorkflowStore {
      * whose command did not end the run.
      */
     private async cancelBeforeBegin(client: PoolClient, run: WorkflowRunRow,
-        input: { workflowSessionId: string; operationId: string; reason: string; requestedBy: string | null; command?: "cancel" | "done" },
+        input: { workflowSessionId: string; operationId: string; reason: string; requestedBy: string | null; command?: "cancel" | "done"; attributedFrom?: string },
         repaired: boolean): Promise<WorkflowRunRow> {
         const command = input.command ?? "cancel";
-        const marks: { [key: string]: JsonValue } = repaired
-            ? { beforeBegin: true, operationId: input.operationId, repaired: true }
-            : { beforeBegin: true, operationId: input.operationId };
+        const marks: { [key: string]: JsonValue } = { beforeBegin: true, operationId: input.operationId };
+        if (repaired) marks.repaired = true;
+        // requestedBy was not recorded with the request; it is attributed from the entry point named here.
+        if (input.attributedFrom !== undefined) marks.attributedFrom = input.attributedFrom;
         const { rows } = await client.query(
             `UPDATE ${this.t.runs}
                 SET status = 'cancelled', terminal_node_id = NULL, terminal_outcome = NULL, terminal_output = NULL, terminal_error = $2,
@@ -1123,6 +1124,15 @@ export class WorkflowStore {
      * could begin the run. Begin ends it instead (as the accepted cancel
      * requires) and admits nothing. This build ends such a run when it
      * accepts the cancel, so only earlier builds' receipts reach this.
+     *
+     * Those receipts record no requester, and they stay as stored. Every
+     * build that wrote one (ae02665a to 183bb0b0) wrote it only through the
+     * update_workflow tool, which admits only the workflow's parent (its
+     * session row and its definition), and the service is not exported from
+     * the package. So the requester is the workflow's parent: the run's
+     * terminal error records it with attributedFrom "update_workflow", an
+     * attribution from that entry point, not a recorded value. A receipt
+     * written some other way (a test) is attributed the same way.
      */
     async beginRun(runId: string, projection?: SessionProjection): Promise<{ run: WorkflowRunRow; transitioned: boolean }> {
         return this.transaction(async client => {
@@ -1135,8 +1145,11 @@ export class WorkflowStore {
                       WHERE workflow_session_id = $1 AND kind = 'cancel' AND (receipt::jsonb ->> 'runId') = $2
                       ORDER BY created_at, operation_id LIMIT 1`, [run.workflowSessionId, runId]);
                 if (accepted[0]) {
+                    const { rows: definitions } = await client.query(
+                        `SELECT parent_session_id FROM ${this.t.definitions} WHERE workflow_session_id = $1`, [run.workflowSessionId]);
                     const ended = await this.cancelBeforeBegin(client, run, { workflowSessionId: run.workflowSessionId,
-                        operationId: str(accepted[0], "operation_id"), reason: "Cancelled before it began", requestedBy: null }, true);
+                        operationId: str(accepted[0], "operation_id"), reason: "Cancelled before it began",
+                        requestedBy: definitions[0] ? strOrNull(definitions[0], "parent_session_id") : null, attributedFrom: "update_workflow" }, true);
                     return { run: ended, transitioned: false };
                 }
             }
@@ -1476,7 +1489,7 @@ export interface WorkflowSessionCommandReceipt {
     status: string | null;
 }
 
-function parseSessionCommandReceipt(value: JsonValue): WorkflowSessionCommandReceipt {
+export function parseSessionCommandReceipt(value: JsonValue): WorkflowSessionCommandReceipt {
     const invalid = () => new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "Stored session command receipt has an invalid shape.");
     if (!isJsonObject(value)) throw invalid();
     const { workflowSessionId, command, applied, runId, status } = value;

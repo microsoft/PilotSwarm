@@ -20,7 +20,11 @@
  * - only the child's parent may send them, and a requestedBy must name the
  *   sender;
  * - each command's receipt is keyed by its deterministic command id: a retry
- *   replays it, another request with that id is refused.
+ *   replays it, another request with that id is refused;
+ * - a retry that read the child live and then finds it deleted by the first
+ *   attempt (which stopped after its commit, before the facts cleanup) takes
+ *   the same receipt-bound path as a retry that finds it deleted: it
+ *   completes the cleanup, or refuses a changed request with that id.
  * Every session here is a disposable fixture of this file's own schemas.
  */
 import { describe, it, expect } from "vitest";
@@ -75,7 +79,7 @@ async function until(check, label, timeoutMs = 60_000) {
  * ordinary agent child's orchestration that returns the first message of
  * its queue.
  */
-async function harness(env, { factStore } = {}) {
+async function harness(env, { factStore, wrapActivityStore } = {}) {
     const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
     await catalog.initialize();
     const store = catalog.workflowStore();
@@ -93,7 +97,10 @@ async function harness(env, { factStore } = {}) {
         wakeBackstopMs: 500,
     });
     const activities = new Map();
-    registerActivities({ registerActivity: (name, fn) => activities.set(name, fn) }, {}, null, undefined, catalog, undefined,
+    // The catalog the activity reads its v2 store from; a test may wrap that store (fault injection, gates).
+    const activityStore = wrapActivityStore ? wrapActivityStore(store) : null;
+    const activityCatalog = activityStore ? Object.assign(Object.create(catalog), { workflowStore: () => activityStore }) : catalog;
+    registerActivities({ registerActivity: (name, fn) => activities.set(name, fn) }, {}, null, undefined, activityCatalog, undefined,
         env.store, env.cmsSchema, { duroxideSchema: env.duroxideSchema, factsSchema: env.factsSchema },
         undefined, undefined, undefined, undefined, factStore ?? null);
     runtime.registerActivity("sendCommandToSession", activities.get("sendCommandToSession"));
@@ -116,6 +123,12 @@ async function harness(env, { factStore } = {}) {
     const host = { catalog, store, duroxideClient: client };
     return {
         catalog, store, client, host,
+        /**
+         * The registered sendCommandToSession activity run once more with this input, as duroxide runs an activity
+         * again (a redelivery, which can overlap the first attempt), with the scheduling instance's id in its context.
+         */
+        redeliver: (parentSessionId, input) => activities.get("sendCommandToSession")(
+            { instanceId: `session-${parentSessionId}`, traceInfo: () => undefined }, input),
         /** Send these commands from the parent session's own orchestration instance; one result per command. */
         async send(parentSessionId, items) {
             const instanceId = `session-${parentSessionId}`;
@@ -379,6 +392,102 @@ describe("a parent session's lifecycle commands to a v2 workflow child", () => {
             // Interrupted: its repeat applied it; the run's own result and the stored receipt are unchanged.
             expect(await h.store.readRun(interrupted.runId)).toEqual(interruptedRun);
             expect(await receiptRows(interrupted.id, "delete-5-iiii")).toEqual(before);
+        } finally {
+            await h.stop();
+            await db.end();
+            await factStore.close();
+        }
+    });
+
+    it("completes a delete's facts cleanup on a retry that read the child live before that delete committed, and refuses a changed request with its id", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const factStore = await PgFactStore.create(env.store, env.factsSchema);
+        await factStore.initialize();
+        // Fault injection: the first facts cleanup is lost (the attempt stops after its delete committed).
+        let loseCleanup = true;
+        const facts = Object.create(factStore);
+        facts.deleteSessionFactsForSession = async (sessionId) => {
+            if (loseCleanup) {
+                loseCleanup = false;
+                throw new Error("injected: interrupted after the delete committed, before its facts cleanup");
+            }
+            return factStore.deleteSessionFactsForSession(sessionId);
+        };
+        // A gate: the next read of this child's link returns it, then waits until the test opens the gate.
+        let linkGate = null;
+        const h = await harness(env, {
+            factStore: facts,
+            wrapActivityStore: (store) => {
+                const watched = Object.create(store);
+                watched.readSessionLink = async (sessionId) => {
+                    const link = await store.readSessionLink(sessionId);
+                    const held = linkGate;
+                    if (held && held.sessionId === sessionId) { linkGate = null; held.arrive(); await held.wait(); }
+                    return link;
+                };
+                return watched;
+            },
+        });
+        const db = new pg.Client({ connectionString: env.store });
+        try {
+            await db.connect();
+            const liveFacts = async (id) => Number((await db.query(
+                `SELECT count(*) AS n FROM "${env.factsSchema}".facts WHERE session_id = $1 AND deleted_at IS NULL`, [id])).rows[0].n);
+            const receiptRows = async (id, commandId) => (await db.query(`SELECT kind, request_sha256, receipt, created_at FROM "${env.cmsSchema}".workflow_operations
+                WHERE workflow_session_id = $1 AND operation_id = $2`, [id, `${SESSION_COMMAND_OPERATION_PREFIX}${commandId}`])).rows;
+            const begunChild = async (parentId) => {
+                const id = randomUUID();
+                const run = (await createWorkflowV2(h.host, { workflowSessionId: id, parentSessionId: parentId, yaml: LONG_WAIT, actor: ACTOR,
+                    operationId: "start", start: { inputs: {} } })).receipt.run;
+                await until(async () => (await h.store.listNodeExecutions(run.runId))[0] ?? null, "the child's wait state");
+                await factStore.storeFact({ key: `test/${id}`, value: { child: id }, sessionId: id });
+                return { id, ...run };
+            };
+            const gateFor = (sessionId) => {
+                let arrive, open;
+                const reached = new Promise(resolve => { arrive = resolve; });
+                const opened = new Promise(resolve => { open = resolve; });
+                linkGate = { sessionId, arrive: () => arrive(), wait: () => opened };
+                return { reached, open: () => open() };
+            };
+
+            // The retry reads the child's link (live) and waits; the first attempt then deletes the child and stops before
+            // its facts cleanup; the retry continues, finds the child deleted when the store takes its session lock, and
+            // completes the cleanup under the same receipt.
+            const parentId = randomUUID();
+            await h.catalog.createSession(parentId, {});
+            const child = await begunChild(parentId);
+            const command = lifecycle("delete", "delete-7-aaaa", parentId);
+            const gate = gateFor(child.id);
+            const retry = h.redeliver(parentId, { sessionId: child.id, command });
+            await gate.reached;
+            expect(await h.send(parentId, [{ sessionId: child.id, command }]))
+                .toEqual([{ ok: false, error: expect.stringContaining("injected: interrupted after the delete committed") }]);
+            expect(await h.catalog.getSession(child.id)).toBeNull();
+            const accepted = await receiptRows(child.id, "delete-7-aaaa");
+            expect(accepted.map(row => [row.kind, JSON.parse(row.receipt).applied])).toEqual([["session-delete", "store"]]);
+            expect(await liveFacts(child.id)).toBe(1);
+            gate.open();
+            await retry;
+            expect(await liveFacts(child.id)).toBe(0);
+            expect(await receiptRows(child.id, "delete-7-aaaa")).toEqual(accepted);
+            expect(await h.store.readDefinition(child.id)).toMatchObject({ state: "deleted" });
+            expect(await h.store.readRun(child.runId)).toMatchObject({ status: "cancelled", terminalError: { message: "The workflow session was deleted." } });
+            expect((await h.store.listNodeExecutions(child.runId)).map(node => [node.nodeId, node.winner])).toEqual([["nap", "delete"]]);
+
+            // The same race with a changed request under that command id: the retry is refused, and nothing changes.
+            const otherParentId = randomUUID();
+            await h.catalog.createSession(otherParentId, {});
+            const other = await begunChild(otherParentId);
+            const changedGate = gateFor(other.id);
+            const changed = h.redeliver(otherParentId, { sessionId: other.id, command: lifecycle("delete", "delete-7-bbbb", otherParentId, "another reason") });
+            await changedGate.reached;
+            expect(await h.send(otherParentId, [{ sessionId: other.id, command: lifecycle("delete", "delete-7-bbbb", otherParentId) }])).toEqual([{ ok: true }]);
+            const otherReceipt = await receiptRows(other.id, "delete-7-bbbb");
+            changedGate.open();
+            await expect(changed).rejects.toThrow("already used for a different request");
+            expect(await receiptRows(other.id, "delete-7-bbbb")).toEqual(otherReceipt);
+            expect(await liveFacts(other.id)).toBe(0);
         } finally {
             await h.stop();
             await db.end();

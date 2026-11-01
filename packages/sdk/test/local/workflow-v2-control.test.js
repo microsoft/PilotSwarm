@@ -12,6 +12,11 @@
  *   recover of such a run whose dispatch was lost;
  * - a cancel of a run that has not begun ends it at once (C1): duroxide
  *   drops a command queued for a controller instance that has not started;
+ *   an earlier build's accepted cancel ends the run at its repeat or at its
+ *   begin, attributed to the parent (the only entry point that wrote such
+ *   receipts admits only the parent), and the parent is not told of its own
+ *   cancel; another requester's cancel is reported to the parent at least
+ *   once, by the cancel's request or by the run's begin (C2);
  * - bindings that name any KV key: `??`, quotes, backslashes, `${` and `}`
  *   inside a JSON-string key or default are data, in a typed script input
  *   and a typed terminal output.
@@ -599,7 +604,23 @@ describe("workflow v2 run control on the real runtime", () => {
 
     it("loses a command queued before its controller started (the PostgreSQL provider drops it); a cancel accepted that way ends the run on its repeat or at its begin", { timeout: TIMEOUT }, async () => {
         const env = getEnv();
-        const h = await harness(env);
+        // Fault injection: the begin of the run named here is interrupted once, after its transaction commits.
+        let interruptBeginOf = null;
+        const h = await harness(env, {
+            notify: true,
+            wrapStore: (store) => {
+                const watched = Object.create(store);
+                watched.beginRun = async (runId, projection) => {
+                    const begun = await store.beginRun(runId, projection);
+                    if (interruptBeginOf === runId) {
+                        interruptBeginOf = null;
+                        throw new Error("injected: interrupted after the begin transaction committed");
+                    }
+                    return begun;
+                };
+                return watched;
+            },
+        });
         const db = new pg.Client({ connectionString: env.store });
         try {
             await db.connect();
@@ -671,24 +692,110 @@ describe("workflow v2 run control on the real runtime", () => {
             expect(await h.store.listNodeExecutions(runY.runId)).toEqual([]);
             expect((await h.client.getStatus(runY.controllerInstanceId)).status).toBe("NotFound");
 
-            // The same earlier-build cancel, but nobody repeats it: a recover dispatches the run, and its begin finds
-            // the accepted cancel and ends the run instead of beginning it.
+            // The parent's repeat repaired runY: it asked for the cancel, so it is not told of it.
+            expect((await h.client.getStatus(workflowNotifyInstanceId(runY.runId))).status).toBe("NotFound");
+
+            // The same earlier-build cancel, but nobody repeats it: a recover dispatches the run (z), or the original
+            // dispatch arrives late (w), and begin finds the accepted cancel and ends the run instead of beginning it.
+            // The earlier receipt records no requester; update_workflow, the only entry point that wrote such receipts,
+            // admits only the parent, so the end attributes the cancel to the parent and does not tell the parent.
+            const stableId = (workflowId, runId) => `workflow:${workflowId}:${runId}:terminal`;
+            const earlierCancel = async (id, run) => {
+                await db.query(`INSERT INTO "${env.cmsSchema}".workflow_operations (workflow_session_id, operation_id, kind, request_sha256, receipt)
+                    VALUES ($1, $2, 'cancel', $3, $4)`, [id, "old", jsonSha256({ kind: "cancel", runId: run.runId, reason: "old cancel" }),
+                    canonicalJson({ workflowSessionId: id, operation: "cancel", runId: run.runId, status: "admitted", kvRevision: 1 })]);
+                await dropped(run.controllerInstanceId);
+            };
+            const endedByBegin = async (id, run) => {
+                expect((await h.client.waitForOrchestration(run.controllerInstanceId, 30_000)).status).toBe("Completed");
+                expect(await h.store.readRun(run.runId)).toMatchObject({ status: "cancelled", terminalError: { code: "cancelled",
+                    message: "Cancelled before it began", details: { command: "cancel", requestedBy: parent.parentId, attributedFrom: "update_workflow",
+                        operationId: "old", beforeBegin: true, repaired: true } } });
+                expect(await h.store.listNodeExecutions(run.runId)).toEqual([]);
+                expect(await h.host.catalog.getSessionEvents(id, 0, 50, ["workflow.started"])).toEqual([]);
+                expect(await h.host.catalog.getSessionEvents(id, 0, 50, ["workflow.cancelled"])).toHaveLength(1);
+                // The parent's own repeat of that cancel returns the stored receipt and is not reported to it either.
+                expect(await parent.update(id, { operation: "cancel", operation_id: "old", reason: "old cancel" }))
+                    .toEqual({ ok: true, workflowId: id, operation: "cancel", replayed: true, runId: run.runId, status: "admitted", kvRevision: 1 });
+                expect((await h.client.getStatus(workflowNotifyInstanceId(run.runId))).status).toBe("NotFound");
+                expect(h.notified.filter(item => item.clientMessageId === stableId(id, run.runId))).toEqual([]);
+                expect(await h.host.catalog.getSessionEvents(id, 0, 50, ["workflow.parent_notified", "workflow.parent_notification_skipped"])).toEqual([]);
+            };
             const z = randomUUID();
             const runZ = await lost(z);
-            await db.query(`INSERT INTO "${env.cmsSchema}".workflow_operations (workflow_session_id, operation_id, kind, request_sha256, receipt)
-                VALUES ($1, $2, 'cancel', $3, $4)`, [z, "old", jsonSha256({ kind: "cancel", runId: runZ.runId, reason: "old cancel" }),
-                canonicalJson({ workflowSessionId: z, operation: "cancel", runId: runZ.runId, status: "admitted", kvRevision: 1 })]);
-            await dropped(runZ.controllerInstanceId);
+            await earlierCancel(z, runZ);
+            // Its first begin is interrupted after the transaction that ended the run; the retry ends nothing twice.
+            interruptBeginOf = runZ.runId;
             expect(await parent.update(z, { operation: "recover", operation_id: "recover" })).toMatchObject({ ok: true, action: "dispatched" });
-            expect((await h.client.waitForOrchestration(runZ.controllerInstanceId, 30_000)).status).toBe("Completed");
-            expect(await h.store.readRun(runZ.runId)).toMatchObject({ status: "cancelled", terminalError: { code: "cancelled",
-                message: "Cancelled before it began", details: { command: "cancel", operationId: "old", beforeBegin: true, repaired: true } } });
-            expect(await h.store.listNodeExecutions(runZ.runId)).toEqual([]);
-            expect(await h.host.catalog.getSessionEvents(z, 0, 50, ["workflow.started"])).toEqual([]);
+            await endedByBegin(z, runZ);
+            expect(interruptBeginOf).toBeNull();
+            const w = randomUUID();
+            const runW = await lost(w);
+            await earlierCancel(w, runW);
+            await h.client.startOrchestrationVersioned(runW.controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME, { v: 2, workflowSessionId: w, runId: runW.runId },
+                WORKFLOW_V2_CONTROLLER_VERSION);
+            await endedByBegin(w, runW);
         } finally {
             await h.stop();
             await db.end();
         }
+    });
+
+    it("tells the parent of a run another requester's cancel ended before it began when its controller starts, after an interruption at each step", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        // Fault injection: the begin of the run named here is interrupted once, after its transaction commits.
+        let interruptBeginOf = null;
+        const h = await harness(env, {
+            notify: true,
+            wrapStore: (store) => {
+                const watched = Object.create(store);
+                watched.beginRun = async (runId, projection) => {
+                    const begun = await store.beginRun(runId, projection);
+                    if (interruptBeginOf === runId) {
+                        interruptBeginOf = null;
+                        throw new Error("injected: interrupted after the begin transaction committed");
+                    }
+                    return begun;
+                };
+                return watched;
+            },
+        });
+        try {
+            const parent = await parentOf(h);
+            const id = randomUUID();
+            const undispatched = { ...h.host, duroxideClient: { ...h.host.duroxideClient, startOrchestrationVersioned: async () => undefined } };
+            const { runId, controllerInstanceId } = (await createWorkflowV2(undispatched, { workflowSessionId: id, parentSessionId: parent.parentId,
+                yaml: TWO_STATES, actor: ACTOR, operationId: "start", start: { inputs: {} } })).receipt.run;
+            // Another requester's cancel commits; its request stops before it starts the notifier, and it is never repeated.
+            const notifierStartFails = { ...h.host, duroxideClient: { ...h.host.duroxideClient, startOrchestrationVersioned: async (instanceId, ...rest) => {
+                if (instanceId === workflowNotifyInstanceId(runId)) throw new Error("injected: interrupted before the notifier started");
+                return h.host.duroxideClient.startOrchestrationVersioned(instanceId, ...rest);
+            } } };
+            await expect(controlWorkflowV2Run(notifierStartFails, id, { operation: "cancel", runId: null, reason: "stop it" },
+                { actor: { kind: "system", name: "workflow-v2-control-test-user" }, operationId: "cancel-n" }))
+                .rejects.toThrow("injected: interrupted before the notifier started");
+            const ended = await h.store.readRun(runId);
+            expect(ended).toMatchObject({ status: "cancelled", terminalError: { details: { requestedBy: null, operationId: "cancel-n", beforeBegin: true } } });
+            expect((await h.client.getStatus(workflowNotifyInstanceId(runId))).status).toBe("NotFound");
+            expect(h.notified).toEqual([]);
+
+            // The original dispatch arrives late. Its begin changes nothing, is interrupted after its transaction, and its
+            // retry starts the notifier: the parent is told once, with the stable client message id.
+            interruptBeginOf = runId;
+            await h.client.startOrchestrationVersioned(controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME, { v: 2, workflowSessionId: id, runId },
+                WORKFLOW_V2_CONTROLLER_VERSION);
+            expect((await h.client.waitForOrchestration(controllerInstanceId, 30_000)).status).toBe("Completed");
+            expect(interruptBeginOf).toBeNull();
+            expect((await h.client.waitForOrchestration(workflowNotifyInstanceId(runId), 30_000)).status).toBe("Completed");
+            const told = h.notified.filter(item => item.clientMessageId === `workflow:${id}:${runId}:terminal`);
+            expect(told.length).toBeGreaterThanOrEqual(1);
+            expect(told.every(item => item.parentSessionId === parent.parentId)).toBe(true);
+            expect(await h.host.catalog.getSessionEvents(id, 0, 50, ["workflow.parent_notified"])).toHaveLength(1);
+            // The run is as the cancel ended it; nothing began.
+            expect(await h.store.readRun(runId)).toEqual(ended);
+            expect(await h.store.listNodeExecutions(runId)).toEqual([]);
+            expect(await h.host.catalog.getSessionEvents(id, 0, 50, ["workflow.started"])).toEqual([]);
+        } finally { await h.stop(); }
     });
 
     it("keeps any valid KV key, \"__proto__\" and \"constructor\" included, as plain data through every update", { timeout: TIMEOUT }, async () => {

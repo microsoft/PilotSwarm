@@ -797,6 +797,19 @@ function waitSeconds(seconds: number | string, scope: BindingScope, path: string
     return value;
 }
 
+/** Whether a run was ended before it began by an accepted cancel (its terminal error says so). */
+function cancelledBeforeBegin(run: WorkflowRunRow): boolean {
+    const error = run.terminalError;
+    return run.status === "cancelled" && isJsonObject(error) && isJsonObject(error.details) && error.details.beforeBegin === true;
+}
+
+/** The session recorded (or attributed) as the requester of the cancel that ended a run before it began, or null. */
+function cancelRequester(run: WorkflowRunRow): string | null {
+    const error = run.terminalError;
+    const requestedBy = isJsonObject(error) && isJsonObject(error.details) ? error.details.requestedBy : null;
+    return typeof requestedBy === "string" ? requestedBy : null;
+}
+
 function runtimeError(code: RuntimeErrorCode, message: string, details?: JsonValue): NodeResultInput {
     return { outcome: code, resultKind: "runtime_error", valueText: envelopeText({ code, message, ...(details !== undefined ? { details } : {}) }), winner: "effect" };
 }
@@ -860,6 +873,17 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         inputs: run.inputs, input: incoming, kv: isJsonObject(kv) ? kv : {}, runtime: { error: runtimeErrorValue },
     });
     /** The value arriving at a node from its exact predecessor (or the initial input). */
+    /**
+     * Whether the parent is to be told of a run that an accepted cancel ended
+     * before it began: a live run of a workflow with a parent that asked to be
+     * notified, unless that parent requested the cancel (the controller's rule).
+     */
+    const parentToldOfCancelBeforeBegin = async (run: WorkflowRunRow): Promise<boolean> => {
+        if (run.mode !== "live" || run.status !== "cancelled" || !cancelledBeforeBegin(run)) return false;
+        const definition = await store.readDefinition(run.workflowSessionId);
+        if (!definition?.parentSessionId || !definition.notifyParent) return false;
+        return cancelRequester(run) !== definition.parentSessionId;
+    };
     /** The KV a node execution was admitted with (an execution from before KV revisions sees an empty map). */
     const kvOf = (runId: string, revision: number | null): Promise<JsonValue> => revision === null ? Promise.resolve({}) : store.readKv(runId, revision);
     const arrival = async (run: WorkflowRunRow, ir: WorkflowIR, kv: JsonValue, nodeId: string, predecessorId: string | null, arrivalRoute: string | null)
@@ -891,7 +915,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             : { incoming: predecessor.error, runtimeError: predecessor.error };
     };
 
-    runtime.registerActivity(WORKFLOW_V2_ACTIVITIES.begin, async (_ctx, rawInput) => {
+    runtime.registerActivity(WORKFLOW_V2_ACTIVITIES.begin, async (actx, rawInput) => {
         const runId = text(record(rawInput, "begin input").runId, "runId");
         const run = await runOf(runId);
         const ir = await irOf(run);
@@ -903,6 +927,19 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             } }],
             update: { state: "running", lastError: null, touch: true },
         });
+        // A run that an accepted cancel ended before it began (this begin's
+        // repair, or the cancel's own transaction) ended without a controller
+        // to report it, and the request that ended it may have stopped before
+        // it started the notifier. Its parent is told now by the controller's
+        // rule (not when the parent asked for the cancel). This activity is
+        // retried until the start succeeds; the notifier's instance id is
+        // stable, so a second start is ignored, and it notifies at least once
+        // with the stable client message id.
+        if (await parentToldOfCancelBeforeBegin(begun.run)) {
+            const client = actx.getClient();
+            if (!client) throw new Error("Workflow begin needs the durable client.");
+            await client.startOrchestrationVersioned(workflowNotifyInstanceId(runId), WORKFLOW_V2_NOTIFY_NAME, { runId }, WORKFLOW_V2_NOTIFY_VERSION);
+        }
         return { status: begun.run.status, irSha256: run.irSha256, initial: ir.initial, outcome: begun.run.terminalOutcome };
     });
 
@@ -1217,7 +1254,9 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         const requestedBy = input.requestedBy === undefined ? null : textOrNull(input.requestedBy, "requestedBy");
         const definition = await store.readDefinition(run.workflowSessionId);
         if (!definition?.parentSessionId || !definition.notifyParent || run.mode !== "live") return null;
-        if (requestedBy && requestedBy === definition.parentSessionId) return null;
+        // The command's requester; for a run a cancel ended before it began, the requester its end records.
+        const endedBy = requestedBy ?? (cancelledBeforeBegin(run) ? cancelRequester(run) : null);
+        if (endedBy && endedBy === definition.parentSessionId) return null;
         const prior = await deps.catalog.getSessionEvents(run.workflowSessionId, 0, 50, ["workflow.parent_notified", "workflow.parent_notification_skipped"]);
         if (prior.some(event => isJsonObject(event.data) && event.data.runId === run.runId)) return null;
         if (!await deps.authorizeParentNotification(run.workflowSessionId, definition.parentSessionId)) {

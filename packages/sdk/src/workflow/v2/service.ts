@@ -20,6 +20,7 @@ import {
     ADMITTING_RUN_STATUSES,
     checkedKvText,
     isKvKey,
+    parseSessionCommandReceipt,
     runNotBegun,
     WorkflowStoreError,
     type RunAdmission,
@@ -209,16 +210,21 @@ async function dispatchRecoveredRun(host: Pick<WorkflowV2Host, "duroxideClient">
  * Report a run that this cancel request ended before it began (no controller
  * ran it), by the controller's rule: the parent is told unless it asked for
  * the cancel itself, through the notifier orchestration (stable client
- * message id, at least once). A repeat of the request only makes sure the
- * notifier was started; a run ended by anything else is left alone.
+ * message id, at least once). The requester is the one the run's end
+ * records (or attributes, for an earlier build's cancel that begin ended);
+ * a repeat sent by the parent itself is not reported to it either. A repeat
+ * only makes sure the notifier was started; a run ended by anything else
+ * is left alone. The begin activity starts the same notifier when the
+ * run's controller starts (workflow-v2-controller begin).
  */
-async function notifyCancelledBeforeBegin(host: Pick<WorkflowV2Host, "store" | "duroxideClient">, run: WorkflowRunRow, operationId: string): Promise<void> {
+async function notifyCancelledBeforeBegin(host: Pick<WorkflowV2Host, "store" | "duroxideClient">, run: WorkflowRunRow, operationId: string,
+    callerSessionId: string | null): Promise<void> {
     const error = run.terminalError;
     const details = isJsonObject(error) && isJsonObject(error.details) ? error.details : null;
     if (run.mode !== "live" || run.status !== "cancelled" || !details || details.beforeBegin !== true || details.operationId !== operationId) return;
     const definition = await host.store.readDefinition(run.workflowSessionId);
     if (!definition?.parentSessionId || !definition.notifyParent) return;
-    if (details.requestedBy === definition.parentSessionId) return;
+    if (details.requestedBy === definition.parentSessionId || callerSessionId === definition.parentSessionId) return;
     await host.duroxideClient.startOrchestrationVersioned(workflowNotifyInstanceId(run.runId), WORKFLOW_V2_NOTIFY_NAME,
         { runId: run.runId }, WORKFLOW_V2_NOTIFY_VERSION);
 }
@@ -577,7 +583,7 @@ export async function controlWorkflowV2Run(
         } else {
             // The run has ended. When this request ended it before it began, its parent is told by the
             // controller's rule; for any other end this does nothing.
-            await notifyCancelledBeforeBegin(host, stored.run, context.operationId);
+            await notifyCancelledBeforeBegin(host, stored.run, context.operationId, requestedBy);
         }
         return { receipt: stored.receipt, replayed: stored.replayed };
     }
@@ -655,12 +661,23 @@ export async function applySessionCommandToWorkflowV2(
     const workflowSessionId = request.targetSessionId;
     const operationId = `${SESSION_COMMAND_OPERATION_PREFIX}${command.id}`;
     const requestSha256 = jsonSha256({ kind: `session-${command.cmd}`, reason: command.reason });
-    if (link.deleted) {
-        // Deleted already. When it was this command's delete, finish what follows its commit (the facts cleanup).
+    /**
+     * The child is deleted: found deleted, or deleted after the link was read
+     * (by this command's own earlier attempt, a retry that overlapped it, or
+     * another path) and seen when the store took its session lock. Both cases
+     * take this one path. A receipt under this operation id for another
+     * request is refused (OPERATION_CONFLICT). The child's run has ended (the
+     * deletion ended it), which is what a cancel or done asks for; a delete
+     * also removes the child's facts, as every deletion path does (it is
+     * idempotent), so an attempt lost after its commit and before this
+     * cleanup is completed here.
+     */
+    const deletedChild = async (): Promise<{ action: "applied"; receipt: WorkflowSessionCommandReceipt | null }> => {
         const prior = await host.store.readOperationReceipt(workflowSessionId, operationId, `session-${command.cmd}`, requestSha256);
-        if (prior !== null && command.cmd === "delete" && host.deleteSessionFacts) await host.deleteSessionFacts(workflowSessionId);
-        return { action: "applied", receipt: null };
-    }
+        if (command.cmd === "delete" && host.deleteSessionFacts) await host.deleteSessionFacts(workflowSessionId);
+        return { action: "applied", receipt: prior === null ? null : parseSessionCommandReceipt(prior) };
+    };
+    if (link.deleted) return deletedChild();
     let stored: Awaited<ReturnType<WorkflowStore["recordSessionCommand"]>>;
     try {
         stored = await host.store.recordSessionCommand({
@@ -668,8 +685,7 @@ export async function applySessionCommandToWorkflowV2(
             reason: command.reason ?? (command.cmd === "done" ? "Stopped" : command.cmd === "delete" ? "Deleted" : "Cancelled"), requestedBy: caller,
         });
     } catch (error) {
-        // Deleted between the read above and this transaction: nothing is left to apply.
-        if (error instanceof WorkflowStoreError && error.code === "WORKFLOW_DELETED") return { action: "applied", receipt: null };
+        if (error instanceof WorkflowStoreError && error.code === "WORKFLOW_DELETED") return deletedChild();
         throw error;
     }
     const { receipt, run } = stored;
