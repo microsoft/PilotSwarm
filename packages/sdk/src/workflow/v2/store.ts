@@ -1125,14 +1125,15 @@ export class WorkflowStore {
      * requires) and admits nothing. This build ends such a run when it
      * accepts the cancel, so only earlier builds' receipts reach this.
      *
-     * Those receipts record no requester, and they stay as stored. Every
-     * build that wrote one (ae02665a to 183bb0b0) wrote it only through the
-     * update_workflow tool, which admits only the workflow's parent (its
-     * session row and its definition), and the service is not exported from
-     * the package. So the requester is the workflow's parent: the run's
-     * terminal error records it with attributedFrom "update_workflow", an
-     * attribution from that entry point, not a recorded value. A receipt
-     * written some other way (a test) is attributed the same way.
+     * Those receipts record no requester, and they stay as stored. Under
+     * migration assumption M1 (docs/formal/workflow-v2/README.md) such a
+     * receipt was written through the update_workflow tool, which admits
+     * only the workflow's parent; M1 rests on the code paths of the builds
+     * that wrote these receipts (ae02665a to 183bb0b0), not on the receipt's
+     * bytes. The run's terminal error records the parent as requestedBy with
+     * attributedFrom "update_workflow": an attributed value, not a recorded
+     * one. A receipt written any other way (a test, direct SQL) is attributed
+     * the same way, and the parent is then not told of that cancel.
      */
     async beginRun(runId: string, projection?: SessionProjection): Promise<{ run: WorkflowRunRow; transitioned: boolean }> {
         return this.transaction(async client => {

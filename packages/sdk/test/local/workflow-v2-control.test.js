@@ -13,10 +13,10 @@
  * - a cancel of a run that has not begun ends it at once (C1): duroxide
  *   drops a command queued for a controller instance that has not started;
  *   an earlier build's accepted cancel ends the run at its repeat or at its
- *   begin, attributed to the parent (the only entry point that wrote such
- *   receipts admits only the parent), and the parent is not told of its own
- *   cancel; another requester's cancel is reported to the parent at least
- *   once, by the cancel's request or by the run's begin (C2);
+ *   begin, attributed to the parent under migration assumption M1 (README),
+ *   and the parent is not told of that cancel; another requester's cancel is
+ *   reported to the parent at least once, by the cancel's request or by the
+ *   run's begin (C2);
  * - bindings that name any KV key: `??`, quotes, backslashes, `${` and `}`
  *   inside a JSON-string key or default are data, in a typed script input
  *   and a typed terminal output.
@@ -697,8 +697,8 @@ describe("workflow v2 run control on the real runtime", () => {
 
             // The same earlier-build cancel, but nobody repeats it: a recover dispatches the run (z), or the original
             // dispatch arrives late (w), and begin finds the accepted cancel and ends the run instead of beginning it.
-            // The earlier receipt records no requester; update_workflow, the only entry point that wrote such receipts,
-            // admits only the parent, so the end attributes the cancel to the parent and does not tell the parent.
+            // The earlier receipt records no requester. Under migration assumption M1 (README: update_workflow, which admits
+            // only the parent, wrote such receipts) the end attributes the cancel to the parent and does not tell the parent.
             const stableId = (workflowId, runId) => `workflow:${workflowId}:${runId}:terminal`;
             const seedEarlierCancel = async (id, run) => {
                 await db.query(`INSERT INTO "${env.cmsSchema}".workflow_operations (workflow_session_id, operation_id, kind, request_sha256, receipt)

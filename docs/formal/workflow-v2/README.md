@@ -33,6 +33,28 @@ script activity, as often as workers crash. A1 states what the liveness
 results need from the platform. The regressions run one and two crashes
 inside the entry transaction, then a healthy worker.
 
+### Migration assumption M1
+
+Builds ae02665a to 183bb0b0 stored a `cancel` receipt for a run that had
+not begun without ending the run, and the receipt records no requester.
+Begin (from 31dc9888) ends such a run, and from b1d1d4b9 it records the
+workflow's parent as `requestedBy` with `attributedFrom: "update_workflow"`,
+so the parent is not told of a cancel it is assumed to have sent. That is
+an assumption, M1, not identity read from the receipt, whose bytes stay
+as stored: such a receipt was written through the `update_workflow` tool
+by the workflow's parent. It rests on code paths only. In each of those
+builds, `recordRunCancelRequest` is called only by `controlWorkflowV2Run`;
+outside tests, `controlWorkflowV2Run` is called only by
+`updateWorkflowFromTool`, after `authorizeParent` checks that the caller is
+the parent in the workflow's session row and its definition; and the
+package's `exports` map (`.`, `./api`, `./package.json`) and `src/index.ts`
+do not export `workflow/v2`. A receipt written any other way (a test that
+calls the service with another actor, direct SQL, a tool outside this
+repository) is attributed the same way, and then the parent is not told
+of that cancel. From 369beaf0 a cancel of a run that has not begun ends
+the run in the receipt's transaction and records its actual requester, so
+M1 applies only to receipts those earlier builds wrote.
+
 ## Switches
 
 Each fix switch selects one code change. All fix switches FALSE is the
@@ -75,30 +97,30 @@ compare-and-swap.
 |---|---|---|
 | `Init` | `S` `createDefinition` 594, `insertRun` 556 | Run row `admitted` committed with the definition and receipt. |
 | `Dispatch` | `V` `dispatchWorkflowV2Run` 117 | After admission commit; a deletion may commit before it. duroxide ignores a second start of an instance id (0.1.32 `WorkItemReader`). |
-| `BeginExec` / `BeginRecord` | `R` 495 (call), 918 (activity); `S` `beginRun` 1137 | Session row lock, then run lock; `admitted -> running` only if the session is live. |
+| `BeginExec` / `BeginRecord` | `R` 495 (call), 918 (activity); `S` `beginRun` 1138 | Session row lock, then run lock; `admitted -> running` only if the session is live. |
 | `PollCommand` | `R` 519 (call), `takeQueuedCommand` 469 | `race(dequeue, 10 ms timer)` until the timer wins or a command is read; only when the next state is about to be admitted. |
-| `AdmitExec` / `AdmitRecord` | `R` 539 (call), 960 (activity); `S` `enterNode` 1193 | Session and run locks; insert by deterministic id from history (scope, node, ordinal); idempotent on retry. Admitting the catch-all state sets `catchAllEntered` (553). |
+| `AdmitExec` / `AdmitRecord` | `R` 539 (call), 960 (activity); `S` `enterNode` 1194 | Session and run locks; insert by deterministic id from history (scope, node, ordinal); idempotent on retry. Admitting the catch-all state sets `catchAllEntered` (553). |
 | `StartEffect` | `R` 579 | `ctx.startOrchestrationVersioned`; instance id derived from the node execution id. |
-| `CollectExec` / `CollectRecord` | `R` 630 (call), 1052 (activity), 1070 (effect watch), 637-662 (routing); `S` `readCompletedNodes` 1391 | Reads stored winners of the history-selected pending ids only. A route of the state wins (`ExplicitHandlerRoute` when it leads to `H`); an unhandled runtime error goes to the catch-all state while it has not run. A route to the catch-all state after it ran fails the run (652-662). `catchAllEntered` is carried through continue-as-new. |
+| `CollectExec` / `CollectRecord` | `R` 630 (call), 1052 (activity), 1070 (effect watch), 637-662 (routing); `S` `readCompletedNodes` 1392 | Reads stored winners of the history-selected pending ids only. A route of the state wins (`ExplicitHandlerRoute` when it leads to `H`); an unhandled runtime error goes to the catch-all state while it has not run. A route to the catch-all state after it ran fails the run (652-662). `catchAllEntered` is carried through continue-as-new. |
 | `WaitMsg` / `WaitTimer` | `R` 682 | One durable `race`; an already queued message wins; a wake is only a hint. |
-| `FinishExec` / `FinishFailExec` / `FinishRecord` | `R` 558-568 (terminal), 427 (`finishRun`), 406 (`persistently`), 1090 (activity), 1096 (no IR on the failure path); `S` `finishRun` 1403 | Session and run locks; run end, terminal node and pending nodes in one transaction. A failed attempt is retried on durable timers (about 30 minutes). A terminal's invalid output goes to the catch-all state while it has not run (1157); the model's `T` has no output, so this path is not modeled (see below). |
+| `FinishExec` / `FinishFailExec` / `FinishRecord` | `R` 558-568 (terminal), 427 (`finishRun`), 406 (`persistently`), 1090 (activity), 1096 (no IR on the failure path); `S` `finishRun` 1404 | Session and run locks; run end, terminal node and pending nodes in one transaction. A failed attempt is retried on durable timers (about 30 minutes). A terminal's invalid output goes to the catch-all state while it has not run (1157); the model's `T` has no output, so this path is not modeled (see below). |
 | `NotifyExec` / `NotifyRecord` | `R` 419 (`reportEnded`), 484 (after a command), 1251 (activity) | At least once; stable client message id; reads no IR. |
-| `CancelTx` | `R` 479 (applyCommand), 1203 (activity); `S` `finishRun` 1403 | Run `cancelled` and pending nodes `winner = 'cancel'` in one transaction. |
-| `CancelStop` | `R` 1225; `S` `listCancelledNodeIds` 1384 | After the commit; not transactional with it. Sends a cancellation request (`cancelInstance`) only to effects that are still running; it is a request, not a stop. |
+| `CancelTx` | `R` 479 (applyCommand), 1203 (activity); `S` `finishRun` 1404 | Run `cancelled` and pending nodes `winner = 'cancel'` in one transaction. |
+| `CancelStop` | `R` 1225; `S` `listCancelledNodeIds` 1385 | After the commit; not transactional with it. Sends a cancellation request (`cancelInstance`) only to effects that are still running; it is a request, not a stop. |
 | `CancelCrash` | `R` 1203 | Activity retry re-executes the whole body; the code's attempts are finite (store retry policy, then `persistently`); the model allows one crash, and running out is `ControllerFault`. |
 | `CancelRecord` | `R` 479 | Controller resumes with the recorded result. |
 | `ControllerFault` | `R` 447 (`workflowV2Controller`), 442 (`failRun`) | `controlRun` throws (an activity ran out of attempts, or a protocol fault), or the input does not parse but names the run; the run ends failed with the cause. |
 | `ControllerDie` | `R` 406 (the last attempt's failure propagates); `R` 843 (pre-release versions 1.0.0 to 1.5.0 fail at once); or an external termination | The controller orchestration ends; its run stays active and `read_workflow` shows `needsRecovery`. |
-| `Recover` | `V` `recoverWorkflowV2Run` 252; `T` `recoverWorkflowFromTool` 224; `S` `finishRun` 1403 | Parent-authorized write. Run `failed` (`controller_ended`), pending nodes `winner = 'controller'` and the request's receipt in one transaction. Then the parent notification starts (`V` `notifyRecoveredRun` 188, `R` `workflowV2Notify` 731); the model has no notification property, so this step is not modeled. A run admitted but never dispatched is dispatched instead (not modeled; see below). |
-| `EffClaim` | `R` 717 (call), 1316 (activity), 1367; `S` `enterScript` 1283; `X` `start` 548, `enter` 605 | Session, run and node locks; enter only a pending node of an active run of a live session. With `EntryFence` the process starts inside the transaction (`spawned`), holding the session row lock. |
-| `EffCommit` / `EffCommitFail` | `S` `enterScript` 1283 (commit); `X` 605-625 (a failed commit stops and awaits the process, then the activity reports `execution_failed`) | The process exists before the commit; a failed commit kills it but cannot undo what it already did. |
+| `Recover` | `V` `recoverWorkflowV2Run` 252; `T` `recoverWorkflowFromTool` 224; `S` `finishRun` 1404 | Parent-authorized write. Run `failed` (`controller_ended`), pending nodes `winner = 'controller'` and the request's receipt in one transaction. Then the parent notification starts (`V` `notifyRecoveredRun` 188, `R` `workflowV2Notify` 731); the model has no notification property, so this step is not modeled. A run admitted but never dispatched is dispatched instead (not modeled; see below). |
+| `EffClaim` | `R` 717 (call), 1316 (activity), 1367; `S` `enterScript` 1284; `X` `start` 548, `enter` 605 | Session, run and node locks; enter only a pending node of an active run of a live session. With `EntryFence` the process starts inside the transaction (`spawned`), holding the session row lock. |
+| `EffCommit` / `EffCommitFail` | `S` `enterScript` 1284 (commit); `X` 605-625 (a failed commit stops and awaits the process, then the activity reports `execution_failed`) | The process exists before the commit; a failed commit kills it but cannot undo what it already did. |
 | `EffLaunch` | none in this commit; `159bdce5` `R` 852 (claim), 855 (binding read), 876 (runner) | Only without `EntryFence`: the process starts after the claim committed. |
 | `EffComplete` | `R` 1357-1379, `scriptResult` 1422 | Script result enters the effect history before it is stored. |
-| `EffStopDecided` | `R` 1347, 1369; `S` `isNodePending` 1308; `X` 574 | Liveness query every 1 s and the runner's 250 ms poll; it stops the script when its node is decided elsewhere, provided the store answers and the worker runs its timers. |
+| `EffStopDecided` | `R` 1347, 1369; `S` `isNodePending` 1309; `X` 574 | Liveness query every 1 s and the runner's 250 ms poll; it stops the script when its node is decided elsewhere, provided the store answers and the worker runs its timers. |
 | `EffStopRequested` | duroxide cancellation of the effect instance; `X` 574 (`isCancelled`) | The effect acknowledges a stop request: its runner kills the script and it ends without storing a result. |
 | `EffCrash` | `R` 717 | Activity re-dispatch after a worker crash; a crash inside the entry transaction rolls it back. A script process of the crashed worker may outlive it (not modeled; see below). Bounded only by A1. |
 | `EffDie` | `R` 721 | Record activity exhausts retries, or the effect instance is terminated. |
-| `EffRecord` | `R` 721 (call), 1382 (activity); `S` `completeNode` 1317 | Session lock, then compare-and-swap from `pending`; loser reads the stored winner. |
+| `EffRecord` | `R` 721 (call), 1382 (activity); `S` `completeNode` 1318 | Session lock, then compare-and-swap from `pending`; loser reads the stored winner. |
 | `EffWake` / `EffWakeDup` / `EffWakeLost` | `R` 722 (call), 1403 (activity) | Enqueue to the controller queue only for an active run. |
 | `SendCancel` | `management-client.ts` `sendCommand`; `V` `controlWorkflowV2Run` 551 (update_workflow operation `cancel`) | Command enqueued to the controller queue of a run that has begun. A cancel of a run that has not begun ends it in its own transaction instead (`S` `recordRunCancelRequest` 915), and a command queued for a controller that has not started is dropped by the provider; neither is in this model (see below). |
 | `Delete` | `cms-migrations.ts` `cms_soft_delete_session`; `M` trigger 65-94 (0086), replaced in 0087 to also end paused runs | Soft delete, definition tombstone, run cancel and pending nodes `winner = 'delete'` in one transaction; waits for an entry transaction that holds the session row (`NoEntryInFlight`). |
