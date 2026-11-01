@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readdirSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isAlias, isMap, isScalar, isSeq, LineCounter, parseDocument } from 'yaml';
@@ -12,7 +13,7 @@ function yamlFiles(directory) {
   });
 }
 
-function pinnedUses(text, file) {
+function pinnedUses(text, file, localReferences = []) {
   const lineCounter = new LineCounter();
   const document = parseDocument(text, { version: '1.2', uniqueKeys: true, keepSourceTokens: true, lineCounter });
   assert.equal(document.errors.length, 0, `${file}: ${document.errors.map(error => error.message).join('\n')}`);
@@ -38,7 +39,15 @@ function pinnedUses(text, file) {
     const scalar = resolve(source);
     assert(isScalar(scalar) && typeof scalar.value === 'string', `${file}: uses must be a string`);
     const reference = scalar.value;
-    if (reference.startsWith('./')) return;
+    if (reference.startsWith('./')) {
+      localReferences.push(reference.slice(2));
+      return;
+    }
+    if (reference.startsWith('$/')) {
+      assert(!reference.includes('@'), `${file}: same-repository $/ references cannot have an @ref suffix`);
+      localReferences.push(reference.slice(2));
+      return;
+    }
     const location = `${file}:${lineCounter.linePos(source.range[0]).line}`;
     assert.match(reference, /^[\w.-]+\/[\w./-]+@[0-9a-f]{40}$/,
       `${location}: remote uses must have a full lowercase commit SHA`);
@@ -48,11 +57,17 @@ function pinnedUses(text, file) {
       `${location}: remote uses must have a full version comment`);
     references.push(reference);
   };
+  const inspectStepList = (node, key) => {
+    const steps = resolve(node);
+    assert(isSeq(steps), `${file}: ${key} must be a YAML sequence`);
+    for (const item of steps.items) {
+      const step = mapping(item);
+      inspectUses(step);
+      if (step.has('parallel')) inspectStepList(step.get('parallel', true), 'parallel');
+    }
+  };
   const inspectSteps = owner => {
-    if (!owner.has('steps')) return;
-    const steps = resolve(owner.get('steps', true));
-    assert(isSeq(steps), `${file}: steps must be a YAML sequence`);
-    for (const step of steps.items) inspectUses(mapping(step));
+    if (owner.has('steps')) inspectStepList(owner.get('steps', true), 'steps');
   };
   const root = mapping(document.contents);
   if (root.has('jobs')) {
@@ -64,7 +79,7 @@ function pinnedUses(text, file) {
   }
   if (root.has('runs')) {
     const runs = mapping(root.get('runs', true));
-    if (resolve(runs.get('using', true))?.value === 'composite') inspectSteps(runs);
+    inspectSteps(runs);
   }
   return references;
 }
@@ -154,10 +169,79 @@ test('aliases cannot hide mutable calls and invalid or unsupported mappings fail
     /merge keys are not supported/);
 });
 
+test('parallel step groups are validated', () => {
+  const sha = 'a'.repeat(40);
+  const block = `- parallel:\n    - uses: example/action@${sha} # v1.2.3\n    - run: echo ok`;
+  assert.deepEqual(pinnedUses(workflow(block), 'fixture.yml'), [`example/action@${sha}`]);
+  for (const step of [
+    '- parallel:\n    - uses: actions/checkout@v5',
+    '- parallel: [ { uses: actions/checkout@v5 } ]',
+    '- parallel:\n    - parallel:\n        - uses: actions/checkout@v5',
+  ]) {
+    assert.throws(() => pinnedUses(workflow(step), 'fixture.yml'), /full lowercase commit SHA/, step);
+  }
+  assert.throws(() => pinnedUses(workflow(`- parallel:\n    - uses: example/action@${sha}`), 'fixture.yml'),
+    /full version comment/);
+  assert.throws(() => pinnedUses(workflow('- parallel: { uses: actions/checkout@v5 }'), 'fixture.yml'),
+    /parallel must be a YAML sequence/);
+});
+
+test('composite steps are validated regardless of the using value casing', () => {
+  for (const using of ['composite', 'Composite', 'COMPOSITE']) {
+    const composite = `runs:\n  using: ${using}\n  steps:\n    - uses: actions/checkout@v5\n`;
+    assert.throws(() => pinnedUses(composite, 'action.yml'), /full lowercase commit SHA/, using);
+  }
+});
+
+test('same-repository $/ references are local and cannot carry a ref', () => {
+  const locals = [];
+  const steps = '- uses: $/.github/actions/deploy-azure\n- uses: ./.github/actions/provider-tests';
+  assert.deepEqual(pinnedUses(workflow(steps), 'fixture.yml', locals), []);
+  assert.deepEqual(locals, ['.github/actions/deploy-azure', '.github/actions/provider-tests']);
+  const reusable = 'jobs:\n  build:\n    uses: $/.github/workflows/build.yml\n';
+  assert.deepEqual(pinnedUses(reusable, 'fixture.yml'), []);
+  assert.throws(() => pinnedUses(workflow('- uses: $/.github/actions/deploy-azure@main'), 'fixture.yml'),
+    /cannot have an @ref suffix/);
+});
+
+function localActionFiles(repository, references) {
+  return references.flatMap(reference => {
+    const target = join(repository, reference);
+    return ['action.yml', 'action.yaml'].map(name => join(target, name)).filter(path => existsSync(path));
+  });
+}
+
+test('local actions outside .github/actions are discovered from their references', () => {
+  const repository = mkdtempSync(join(tmpdir(), 'action-pins-'));
+  try {
+    for (const [directory, name] of [['tools/deploy', 'action.yml'], ['', 'action.yaml']]) {
+      mkdirSync(join(repository, directory), { recursive: true });
+      writeFileSync(join(repository, directory, name), 'runs:\n  using: composite\n  steps:\n    - uses: actions/checkout@v5\n');
+    }
+    const files = localActionFiles(repository, ['tools/deploy', '', 'missing']);
+    assert.deepEqual(files, [join(repository, 'tools/deploy', 'action.yml'), join(repository, 'action.yaml')]);
+    for (const file of files) {
+      assert.throws(() => pinnedUses(readFileSync(file, 'utf8'), file), /full lowercase commit SHA/, file);
+    }
+  } finally {
+    rmSync(repository, { recursive: true, force: true });
+  }
+});
+
 test('workflow and composite action references are versioned SHA pins with consistent Azure login revisions', () => {
   const github = fileURLToPath(new URL('../..', import.meta.url));
-  const files = ['workflows', 'actions'].flatMap(directory => yamlFiles(join(github, directory)));
-  const references = files.flatMap(file => pinnedUses(readFileSync(file, 'utf8'), file));
+  const repository = fileURLToPath(new URL('../../..', import.meta.url));
+  const pending = ['workflows', 'actions'].flatMap(directory => yamlFiles(join(github, directory)));
+  const scanned = new Set();
+  const references = [];
+  while (pending.length > 0) {
+    const file = pending.shift();
+    if (scanned.has(file)) continue;
+    scanned.add(file);
+    const locals = [];
+    references.push(...pinnedUses(readFileSync(file, 'utf8'), file, locals));
+    pending.push(...localActionFiles(repository, locals));
+  }
   assert(references.length > 0, 'No remote action references were scanned');
   const loginPins = references.filter(reference => reference.startsWith('azure/login@'));
   assert(loginPins.length > 0, 'No Azure login references were scanned');
