@@ -142,12 +142,14 @@ export async function reconcileWorkflowV2Run(host: Pick<WorkflowV2Host, "store" 
 /**
  * Digests of one creation request, by the version of the fingerprint that
  * recorded it. A claim marker or receipt is never rewritten; a retry is
- * compared with the digest its record used, and the fields that digest did
- * not cover are compared with the stored row instead.
+ * compared with the digest its record used, and the stored owner, parent
+ * and first grant must match the request as well.
  * - 1 (c218d1bc..87549e10): content, parent and notification; the claim
  *   marker held no digest.
- * - 2 (159bdce5, ba30c8c2): version 1 plus the owner.
- * - 3 (3a7ca2dd on): version 2 plus the tool grant; the marker states it.
+ * - 2 (159bdce5, ba30c8c2): version 1 plus the owner; the marker held the
+ *   digest without stating its version.
+ * - 3: version 2 plus the tool grant. 3a7ca2dd..547d1bf5 wrote it without
+ *   stating the version; from 3833ba61 on the marker states `fingerprint: 3`.
  */
 export const WORKFLOW_V2_CREATE_FINGERPRINT = 3;
 
@@ -220,10 +222,13 @@ export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWork
         const ownerMatches = sameOwner(row.owner, request.owner);
         let sameRequest: boolean;
         if (marker.fingerprint === WORKFLOW_V2_CREATE_FINGERPRINT) {
-            sameRequest = marker.requestSha256 === fingerprints.v3 && marker.operationId === request.operationId;
+            sameRequest = marker.requestSha256 === fingerprints.v3 && marker.operationId === request.operationId && grantMatches && ownerMatches;
         } else if (marker.fingerprint === undefined && typeof marker.requestSha256 === "string") {
-            sameRequest = marker.requestSha256 === fingerprints.v2 && marker.operationId === request.operationId && grantMatches;
-            acceptedRequestSha256 = [fingerprints.v3, fingerprints.v2];
+            // An unstated version is version 2 or version 3: accept only the
+            // digest this request has under one of them.
+            const asVersion = marker.requestSha256 === fingerprints.v3 ? 3 : marker.requestSha256 === fingerprints.v2 ? 2 : null;
+            sameRequest = asVersion !== null && marker.operationId === request.operationId && grantMatches && ownerMatches;
+            acceptedRequestSha256 = asVersion === 2 ? [fingerprints.v3, fingerprints.v2] : [fingerprints.v3];
         } else if (marker.fingerprint === undefined && marker.requestSha256 === undefined && marker.operationId === undefined) {
             sameRequest = grantMatches && ownerMatches;
             acceptedRequestSha256 = [fingerprints.v3, fingerprints.v1];

@@ -11,7 +11,8 @@
  *   version 2 (no catchAll) is read and run as stored: its text and hash are
  *   not rewritten and its YAML is not recompiled.
  * - A creation claim or receipt written with an earlier create fingerprint
- *   (159bdce5: digest with the owner, no grant; c218d1bc..87549e10: no digest
+ *   (3a7ca2dd..547d1bf5: digest with owner and grant, version not stated;
+ *   159bdce5: digest with the owner, no grant; c218d1bc..87549e10: no digest
  *   on the claim) is continued or replayed for the same request, without
  *   rewriting it, and refused for a request with another grant or owner.
  */
@@ -223,6 +224,9 @@ describe("workflow v2 data from an earlier build", () => {
         const content = (parentSessionId) => ({ kind: "create", yamlSha256: compiled.yamlSha256, publish: false, start: null, parentSessionId, notifyParent: true });
         const v1 = (parentSessionId) => jsonSha256(content(parentSessionId));
         const v2 = (parentSessionId, owner) => jsonSha256({ ...content(parentSessionId), owner: { provider: owner.provider, subject: owner.subject } });
+        // 3a7ca2dd..547d1bf5 (service.ts, createWorkflowV2): owner and grant digest, marker without a version.
+        const v3 = (parentSessionId, owner, binding) => jsonSha256({ ...content(parentSessionId), owner: { provider: owner.provider, subject: owner.subject },
+            binding: binding ? jsonSha256(JSON.parse(JSON.stringify(binding))) : null });
         const host = { catalog, store, duroxideClient: { startOrchestrationVersioned: async () => { throw new Error("A draft is never dispatched."); } } };
         const create = (id, parentSessionId, owner, binding) => createWorkflowV2(host, {
             workflowSessionId: id, parentSessionId, owner, yaml: DRAFT, actor: ACTOR, operationId: "create", ...(binding ? { binding } : {}),
@@ -274,6 +278,33 @@ describe("workflow v2 data from an earlier build", () => {
             await expect(create(draft875, parentId, OTHER, null)).rejects.toMatchObject({ code: "WORKFLOW_EXISTS" });
             await expect(create(draft875, parentId, OWNER, g1)).rejects.toMatchObject({ code: "WORKFLOW_EXISTS" });
             expect(await receiptRow(draft875)).toEqual(before875);
+
+            // 3a7ca2dd..547d1bf5: an interrupted claim and a complete draft whose marker holds the
+            // version 3 digest without stating it.
+            const interrupted547 = randomUUID();
+            const marker547 = { apiVersion: WORKFLOW_V2_API_VERSION, requestSha256: v3(parentId, OWNER, g1), operationId: "create" };
+            expect(await catalog.createWorkflowSessionV2(interrupted547, { parentSessionId: parentId, owner: OWNER,
+                creationConfig: { workflowV2: marker547, workflowToolBinding: g1 } })).toEqual({ created: true });
+            await expect(create(interrupted547, parentId, OWNER, g2)).rejects.toMatchObject({ code: "WORKFLOW_EXISTS" });
+            await expect(create(interrupted547, parentId, OTHER, g1)).rejects.toMatchObject({ code: "WORKFLOW_EXISTS" });
+            expect(await store.readDefinition(interrupted547)).toBeNull();
+            const continued547 = await create(interrupted547, parentId, OWNER, g1);
+            expect(continued547.replayed).toBe(false);
+            expect(await create(interrupted547, parentId, OWNER, g1)).toEqual({ receipt: continued547.receipt, replayed: true });
+            expect((await catalog.getSessionCreationConfig(interrupted547)).workflowV2).toEqual(marker547);
+
+            const draft547 = randomUUID();
+            await catalog.createWorkflowSessionV2(draft547, { parentSessionId: parentId, owner: OWNER,
+                creationConfig: { workflowV2: { ...marker547 }, workflowToolBinding: g1 } });
+            const stored547 = await store.createDefinition({ workflowSessionId: draft547, parentSessionId: parentId, notifyParent: true, yaml: DRAFT,
+                compiled, actor: ACTOR, operationId: "create", requestSha256: v3(parentId, OWNER, g1), publish: false, start: null, title: "Workflow: compat-draft" });
+            const before547 = await receiptRow(draft547);
+            expect(before547.request_sha256).toBe(v3(parentId, OWNER, g1));
+            expect(await create(draft547, parentId, OWNER, g1)).toEqual({ receipt: stored547.receipt, replayed: true });
+            await expect(create(draft547, parentId, OWNER, g2)).rejects.toMatchObject({ code: "WORKFLOW_EXISTS" });
+            await expect(create(draft547, parentId, OWNER, null)).rejects.toMatchObject({ code: "WORKFLOW_EXISTS" });
+            expect(await receiptRow(draft547)).toEqual(before547);
+            expect((await catalog.getSessionCreationConfig(draft547)).workflowV2).toEqual(marker547);
 
             // The current fingerprint: the marker states its version, and a changed grant is another request.
             const current = randomUUID();
