@@ -238,9 +238,22 @@ export function createCopilotClient(
     options: CopilotClientOptions,
     provider?: unknown,
     toolCatalog?: ToolCatalogCapability | ToolCatalogPolicyResolver,
+    remote?: {
+        /** How to reach a runtime that is not the worker's child process (compute providers). */
+        connection: RuntimeConnection;
+        /** Required for a remote runtime: model credentials stay in the worker. */
+        requestHandler: CopilotRequestHandler;
+    },
 ): CopilotClient {
     if (toolCatalog && !needsByokRequestCompatibility(provider)) {
         throw new Error("toolCatalog requires an OpenAI-compatible Chat Completions provider.");
+    }
+    if (remote) {
+        // A remote runtime gets no GitHub token and no environment from the
+        // worker: the SDK refuses gitHubToken over a URI, and env would only
+        // describe the worker anyway.
+        const { gitHubToken: _token, env: _env, ...rest } = options;
+        return new CopilotClient({ ...rest, connection: remote.connection, requestHandler: remote.requestHandler });
     }
     return new CopilotClient({
         ...options,

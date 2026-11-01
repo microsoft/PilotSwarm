@@ -1,4 +1,5 @@
-import { ComputeProviderRegistry, type ComputeProvider } from "./compute.js";
+import { COMPUTE_ERROR_CODES, ComputeProviderRegistry, runtimeConnectionFor, runtimeEndpointKey, type ComputeHostRef, type ComputeProvider, type ComputeReleaseReason, type ComputeRuntimeEndpoint, type ComputeWorkspacePaths } from "./compute.js";
+import { REMOTE_SESSION_STATE_ROOT, RemoteRuntimeRequestHandler, WorkerDirectorySessionFs, redactProviderSecrets, type RemoteSecretMap } from "./compute-runtime.js";
 import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, capabilityOwnership, parseCapabilityRef, resolveCapabilitySource, workspaceCapabilityHits, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
 import { bindCapabilities, nextCapabilityState, validatePackageRequest } from "./capability-runtime.js";
 import type { McpAllowlistAgent } from "./mcp-loader.js";
@@ -598,6 +599,8 @@ function folderReleaseRequest(
  * a NUL, so the separator cannot occur inside one.
  */
 const WORKSPACE_ROOT_CLIENT_SEPARATOR = "\0workspace-root:";
+/** Compute providers: a pool key part naming a remote runtime endpoint (runtimeEndpointKey). */
+const COMPUTE_CLIENT_SEPARATOR = "\0compute:";
 
 /**
  * Session workspaces: how long a release may spend cancelling tasks and
@@ -801,6 +804,12 @@ export class SessionManager {
     private workspaceWorkerNodeId: string | undefined;
     /** Compute providers by kind; `local` is always present. */
     private computeProviders = new ComputeProviderRegistry();
+    /** Remote runtime endpoints by runtimeEndpointKey, so a pool key can rebuild its client. */
+    private computeEndpoints = new Map<string, ComputeRuntimeEndpoint>();
+    /** Per remote session: credential placeholders the request handler swaps back. */
+    private remoteSecrets = new Map<string, RemoteSecretMap>();
+    /** Per session: the compute host it is bound to, for release. */
+    private computeHosts = new Map<string, { provider: ComputeProvider; host: ComputeHostRef }>();
     private unsubscribeFeatureFlags: (() => void) | null = null;
 
     /** Live in-memory session count — worker-registry health reporting. */
@@ -1189,6 +1198,61 @@ export class SessionManager {
         return this.workspaceProvider;
     }
 
+    /**
+     * Compute providers: bind and connect the session's compute target before
+     * a turn. Null when the session has no target. Throws a coded error when
+     * the target is gone, disabled, of an unknown kind, or unavailable.
+     */
+    private async _prepareCompute(
+        sessionId: string,
+        config: ManagedSessionConfig,
+        workspaceAttach: ManagedSessionConfig["workspaceAttach"] | undefined,
+        catalogRow: any,
+        turnIndex: number,
+    ): Promise<{ endpoint: ComputeRuntimeEndpoint; workspace: ComputeWorkspacePaths } | null> {
+        const name = config.computeTarget;
+        if (!name) {
+            this.computeHosts.delete(sessionId);
+            return null;
+        }
+        const fail = (code: string, message: string, retryAfterMs?: number): never => {
+            throw Object.assign(new Error(`${code}: ${message}`), { code, ...(retryAfterMs ? { retryAfterMs } : {}) });
+        };
+        const store = this.sessionCatalog?.computeTargets;
+        if (!store) fail(COMPUTE_ERROR_CODES.NOT_FOUND, `compute target "${name}" cannot be resolved: no catalog`);
+        const target = await store!.resolve(name);
+        if (!target) return fail(COMPUTE_ERROR_CODES.NOT_FOUND, `there is no compute target named "${name}"`);
+        if (!target.enabled) fail(COMPUTE_ERROR_CODES.DISABLED, `the compute target "${name}" is disabled`);
+        const provider = this.computeProviders.get(target.kind);
+        if (!provider) fail(COMPUTE_ERROR_CODES.KIND_UNKNOWN, `this worker has no compute provider of kind "${target.kind}"`);
+        const workerNodeId = this.workspaceWorkerNodeId ?? os.hostname();
+        const owner = catalogRow?.owner?.provider && catalogRow?.owner?.subject
+            ? { provider: catalogRow.owner.provider, subject: catalogRow.owner.subject, email: catalogRow.owner.email ?? null }
+            : null;
+        const rootSessionId = catalogRow?.rootSessionId || sessionId;
+        const bound = await provider!.bind({ target, sessionId, rootSessionId, owner, workerNodeId });
+        if (!bound.ok) return fail(bound.code, bound.message, bound.retryAfterMs);
+        const workspace: ComputeWorkspacePaths = {
+            ...(workspaceAttach?.path ?? config.workingDirectory ? { cwd: workspaceAttach?.path ?? config.workingDirectory } : {}),
+            ...(workspaceAttach?.extras?.length ? { additionalDirectories: workspaceAttach.extras.map((extra) => extra.path) } : {}),
+        };
+        const connected = await provider!.connect({ target, host: bound.host, sessionId, rootSessionId, workerNodeId, turnIndex, workspace });
+        if (!connected.ok) return fail(connected.code, connected.message, connected.retryAfterMs);
+        this.computeHosts.set(sessionId, { provider: provider!, host: bound.host });
+        return { endpoint: connected.endpoint, workspace: connected.workspace };
+    }
+
+    /** Compute providers: tell the provider a session no longer needs its host here. Best effort. */
+    async releaseCompute(sessionId: string, reason: ComputeReleaseReason): Promise<void> {
+        const bound = this.computeHosts.get(sessionId);
+        this.computeHosts.delete(sessionId);
+        this.remoteSecrets.delete(sessionId);
+        if (!bound?.provider.release) return;
+        try {
+            await bound.provider.release({ host: bound.host, reason });
+        } catch { /* best effort */ }
+    }
+
     /** Compute providers: add one plug-in per compute type. */
     registerComputeProvider(provider: ComputeProvider, opts: { replace?: boolean } = {}): void {
         this.computeProviders.register(provider, opts);
@@ -1320,7 +1384,7 @@ export class SessionManager {
      * It may not be started yet: create and resume sessions on it through
      * `_createCopilotSession` / `_resumeCopilotSession`.
      */
-    private async ensureClient(tokenOverride?: string, byokOpenAi = false, workspaceRoot?: string): Promise<CopilotClient> {
+    private async ensureClient(tokenOverride?: string, byokOpenAi = false, workspaceRoot?: string, endpoint?: ComputeRuntimeEndpoint): Promise<CopilotClient> {
         // Resolve the effective token: explicit override > worker default >
         // first registry github provider's resolved token. The override is
         // how per-user GitHub Copilot keys (cms.users.github_copilot_key)
@@ -1338,10 +1402,37 @@ export class SessionManager {
             }
         }
 
+        const remote = endpoint && endpoint.transport !== "local" ? endpoint : undefined;
+        const endpointKey = remote ? runtimeEndpointKey(remote) : "";
         const clientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (token || "")
-            + (workspaceRoot ? WORKSPACE_ROOT_CLIENT_SEPARATOR + workspaceRoot : "");
+            + (workspaceRoot ? WORKSPACE_ROOT_CLIENT_SEPARATOR + workspaceRoot : "")
+            + (remote ? COMPUTE_CLIENT_SEPARATOR + endpointKey : "");
         const existing = this.clients.get(clientKey);
         if (existing) return existing;
+        if (remote) this.computeEndpoints.set(endpointKey, remote);
+
+        const toolCatalogResolver = byokOpenAi ? (request: Request, context: { sessionId?: string }, model: string) => {
+            const config = context.sessionId ? this.sessionConfigs.get(context.sessionId) : undefined;
+            if (!config) return undefined;
+            // Policy lookup must never fail the model request itself: a model
+            // removed by a catalog reload (or an unparsable URL) keeps the
+            // catalog unchanged and lets the provider answer.
+            try {
+                const registry = this.workerDefaults.modelProviders;
+                const descriptor = registry?.getDescriptor(this.normalizeModelRef(config.model));
+                if (!descriptor?.toolCatalog || descriptor.modelName !== model) return undefined;
+                const resolved = registry?.resolve(descriptor.qualifiedName);
+                if (!resolved?.sdkProvider || !needsByokRequestCompatibility(resolved.sdkProvider)) return undefined;
+                const provider = applyReasoningEffortToProviderConfig(resolved.sdkProvider, descriptor, config.reasoningEffort);
+                const endpointUrl = new URL(provider.baseUrl);
+                const target = new URL(request.url);
+                if (target.origin !== endpointUrl.origin
+                    || !target.pathname.startsWith(endpointUrl.pathname.replace(/\/+$/, "") + "/")) return undefined;
+                return descriptor.toolCatalog;
+            } catch {
+                return undefined;
+            }
+        } : undefined;
 
         const created = createCopilotClient({
             ...(token ? { gitHubToken: token } : {}),
@@ -1363,27 +1454,12 @@ export class SessionManager {
                 ...process.env,
                 COPILOT_HOME: path.dirname(this.sessionStateDir),
             },
-        }, byokOpenAi ? { type: "openai" } : undefined, byokOpenAi ? (request, context, model) => {
-            const config = context.sessionId ? this.sessionConfigs.get(context.sessionId) : undefined;
-            if (!config) return undefined;
-            // Policy lookup must never fail the model request itself: a model
-            // removed by a catalog reload (or an unparsable URL) keeps the
-            // catalog unchanged and lets the provider answer.
-            try {
-                const registry = this.workerDefaults.modelProviders;
-                const descriptor = registry?.getDescriptor(this.normalizeModelRef(config.model));
-                if (!descriptor?.toolCatalog || descriptor.modelName !== model) return undefined;
-                const resolved = registry?.resolve(descriptor.qualifiedName);
-                if (!resolved?.sdkProvider || !needsByokRequestCompatibility(resolved.sdkProvider)) return undefined;
-                const provider = applyReasoningEffortToProviderConfig(resolved.sdkProvider, descriptor, config.reasoningEffort);
-                const endpoint = new URL(provider.baseUrl);
-                const target = new URL(request.url);
-                if (target.origin !== endpoint.origin
-                    || !target.pathname.startsWith(endpoint.pathname.replace(/\/+$/, "") + "/")) return undefined;
-                return descriptor.toolCatalog;
-            } catch {
-                return undefined;
-            }
+            // Compute providers: a remote runtime keeps its session state in
+            // this worker's session directory through SessionFs.
+            ...(remote ? { sessionFs: { initialCwd: "/", sessionStatePath: REMOTE_SESSION_STATE_ROOT, conventions: "posix" as const } } : {}),
+        }, byokOpenAi ? { type: "openai" } : undefined, toolCatalogResolver, remote ? {
+            connection: runtimeConnectionFor(remote),
+            requestHandler: new RemoteRuntimeRequestHandler((sessionId) => sessionId ? this.remoteSecrets.get(sessionId) : undefined, toolCatalogResolver),
         } : undefined);
         this.clients.set(clientKey, created);
         return created;
@@ -1508,12 +1584,22 @@ export class SessionManager {
     private async ensureClientForKey(key: string): Promise<CopilotClient> {
         const cached = this.clients.get(key);
         if (cached) return cached;
+        const computeAt = key.indexOf(COMPUTE_CLIENT_SEPARATOR);
+        let endpoint: ComputeRuntimeEndpoint | undefined;
+        if (computeAt >= 0) {
+            endpoint = this.computeEndpoints.get(key.slice(computeAt + COMPUTE_CLIENT_SEPARATOR.length));
+            if (!endpoint) {
+                throw Object.assign(new Error("COMPUTE_UNAVAILABLE: the remote runtime for this session is not known on this worker"),
+                    { code: COMPUTE_ERROR_CODES.UNAVAILABLE });
+            }
+            key = key.slice(0, computeAt);
+        }
         const rootAt = key.indexOf(WORKSPACE_ROOT_CLIENT_SEPARATOR);
         const workspaceRoot = rootAt >= 0 ? key.slice(rootAt + WORKSPACE_ROOT_CLIENT_SEPARATOR.length) || undefined : undefined;
         const base = rootAt >= 0 ? key.slice(0, rootAt) : key;
         return base.startsWith(BYOK_CLIENT_PREFIX)
-            ? this.ensureClient(base.slice(BYOK_CLIENT_PREFIX.length) || undefined, true, workspaceRoot)
-            : this.ensureClient(base || undefined, false, workspaceRoot);
+            ? this.ensureClient(base.slice(BYOK_CLIENT_PREFIX.length) || undefined, true, workspaceRoot, endpoint)
+            : this.ensureClient(base || undefined, false, workspaceRoot, endpoint);
     }
 
     private async _ensureClientForSession(sessionId: string): Promise<CopilotClient> {
@@ -1713,6 +1799,7 @@ export class SessionManager {
                         try { await existing.destroy(); } catch {}
                         this._forgetWarmSession(sessionId);
                     }
+                    await this.releaseCompute(sessionId, "evicted");
                     if (!dirExists) {
                         this.sessionLastTouchedAt.delete(sessionId);
                         reclaimed++;
@@ -2151,9 +2238,33 @@ export class SessionManager {
                 { code: "GHCP_KEY_MISSING", status: 400 },
             );
         }
+        // Compute providers: where this session's GHCP runtime runs. Null for
+        // a session without a compute target: the worker's own child process.
+        const compute = await this._prepareCompute(sessionId, config, workspaceAttach, catalogRow, turnIndex ?? 0);
+        const remoteEndpoint = compute && compute.endpoint.transport !== "local" ? compute.endpoint : undefined;
+        if (remoteEndpoint && !resolvedProviderConfig.provider) {
+            // GitHub Copilot models authenticate inside the runtime with a
+            // GitHub token. A remote runtime must not hold one, and per-request
+            // auth for them through the worker is not built yet.
+            throw Object.assign(
+                new Error("COMPUTE_UNSUPPORTED: GitHub Copilot models cannot run on a remote compute target yet; choose a model from a configured provider"),
+                { code: "COMPUTE_UNSUPPORTED", status: 400 },
+            );
+        }
+        // The provider config the runtime sees: on a remote host, credentials
+        // are placeholders the worker's request handler swaps back.
+        let sessionProviderConfig: typeof resolvedProviderConfig = resolvedProviderConfig;
+        if (remoteEndpoint) {
+            const redacted = redactProviderSecrets(resolvedProviderConfig.provider as Record<string, any>, sessionId);
+            this.remoteSecrets.set(sessionId, redacted.secrets);
+            sessionProviderConfig = { ...resolvedProviderConfig, provider: redacted.provider } as typeof resolvedProviderConfig;
+        } else {
+            this.remoteSecrets.delete(sessionId);
+        }
         const byokOpenAi = needsByokRequestCompatibility(resolvedProviderConfig.provider);
         const desiredClientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (userGithubToken || "")
-            + (workspaceAttach ? WORKSPACE_ROOT_CLIENT_SEPARATOR + workspaceAttach.root : "");
+            + (workspaceAttach ? WORKSPACE_ROOT_CLIENT_SEPARATOR + workspaceAttach.root : "")
+            + (remoteEndpoint ? COMPUTE_CLIENT_SEPARATOR + runtimeEndpointKey(remoteEndpoint) : "");
         const previousClientKey = this.sessionClientKeys.get(sessionId);
         if (previousClientKey !== undefined && previousClientKey !== desiredClientKey) {
             // The credential or native/BYOK transport changed since we last
@@ -2173,7 +2284,7 @@ export class SessionManager {
                 this._forgetWarmSession(sessionId);
             }
         }
-        const client = await this.ensureClient(userGithubToken, byokOpenAi, workspaceAttach?.root);
+        const client = await this.ensureClient(userGithubToken, byokOpenAi, workspaceAttach?.root, remoteEndpoint);
         this.sessionClientKeys.set(sessionId, desiredClientKey);
         const sessionDir = path.join(this.sessionStateDir, sessionId);
 
@@ -2665,15 +2776,21 @@ export class SessionManager {
             // Session workspaces: after a clear the folder stays explicit, or
             // the resume falls back to the checkout the CLI session was
             // created in (review R1).
-            workingDirectory: workspaceAttach?.path ?? config.workingDirectory
+            // Compute providers: a remote host sees the folders at its own paths.
+            workingDirectory: remoteEndpoint ? compute!.workspace.cwd
+                : workspaceAttach?.path ?? config.workingDirectory
                 ?? (config.workspaceCleared ? process.cwd() : undefined),
             // Session workspaces (section 4.10): the extra folders attached
             // for this turn. The CLI lists them to the model and keeps them
             // only until a cold resume, so they are passed every time. Not in
             // the fingerprint: a new handle would stop running shells.
-            ...(workspaceAttach?.extras?.length
-                ? { additionalDirectories: workspaceAttach.extras.map((extra) => extra.path) }
-                : {}),
+            ...(remoteEndpoint
+                ? (compute!.workspace.additionalDirectories?.length ? { additionalDirectories: compute!.workspace.additionalDirectories } : {})
+                : workspaceAttach?.extras?.length
+                    ? { additionalDirectories: workspaceAttach.extras.map((extra) => extra.path) }
+                    : {}),
+            // Compute providers: session state stays in this worker's directory.
+            ...(remoteEndpoint ? { createSessionFsProvider: () => new WorkerDirectorySessionFs(path.join(this.sessionStateDir, sessionId)) } : {}),
             // Session workspaces: repo hooks never run, and the repo's
             // instruction files load only when the provider adopts them. A
             // cleared session keeps hooks off.
@@ -2712,12 +2829,15 @@ export class SessionManager {
                 excludedBuiltinAgents: NATIVE_BUILTIN_AGENTS,
             } : {}),
             // Custom LLM provider — resolve from registry or legacy single provider
-            ...resolvedProviderConfig,
+            ...sessionProviderConfig,
             // Pass loaded skills and agents from worker defaults; MCP servers
             // are the bound agent's own resolved map (see above).
-            ...(sessionSkillDirectories.length && { skillDirectories: sessionSkillDirectories }),
+            // Compute providers: skill folders and MCP server configs are
+            // worker-local (paths, commands, env), so a remote runtime does not
+            // get them yet.
+            ...(!remoteEndpoint && sessionSkillDirectories.length && { skillDirectories: sessionSkillDirectories }),
             ...(!nativeEnabled && this.workerDefaults.customAgents?.length && { customAgents: this.workerDefaults.customAgents }),
-            ...(Object.keys(effectiveMcpServers).length > 0 && { mcpServers: effectiveMcpServers }),
+            ...(!remoteEndpoint && Object.keys(effectiveMcpServers).length > 0 && { mcpServers: effectiveMcpServers }),
         };
 
         let copilotSession: CopilotSession;
