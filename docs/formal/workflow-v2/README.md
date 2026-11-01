@@ -1,4 +1,18 @@
-# Workflow v2 run model
+# Workflow v2 formal models
+
+Five TLA+ modules model workflow v2 as the code in
+`packages/sdk/src/workflow/v2` implements it in the same commit as this
+file. Each is small and checks one group of boundaries; each has cases
+with expected PASS and expected violations (earlier code revisions,
+deliberate faults and witnesses).
+
+| Module | Checks | Section |
+|---|---|---|
+| `WorkflowV2Run.tla` | One run: controller, effects, store transitions, crashes, wakes, cancellation, deletion, controller death and recover, the catch-all state | this section to "Regressions" |
+| `WorkflowV2Wait.tla` | A wait state: the accepted-entry clock (W1), the store's elapse guard against skewed controller clocks, the first result kept, the deadline across retries and continue-as-new, pause | "Wait model" |
+| `WorkflowV2Admission.tla` | Admission under the open KV and pause: the revision current at commit, KV_CHANGING, refusals, ordinals, the paused wait and its backstop, begin of a run paused before it began, the deletion trigger | "Admission model" |
+| `WorkflowV2Lifecycle.tla` | Start of a run and cancels before begin: lost and skipped dispatch, the provider's drop, begin honoring an accepted cancel (C1), its requester and who is told (C2, M1), recover | "Lifecycle model" |
+| `WorkflowV2SessionCommands.tla` | A parent session's cancel and delete for a v2 child through `sendCommandToSession`: receipts, redelivery, conflicts, the deleted-child path (D2) and deletes applied in the store (D1) | "Session command model" |
 
 `WorkflowV2Run.tla` models one workflow v2 run as the code in
 `packages/sdk/src/workflow/v2` implements it: the controller orchestration,
@@ -59,8 +73,8 @@ M1 applies only to receipts those earlier builds wrote.
 
 Each fix switch selects one code change. All fix switches FALSE is the
 reviewed commit `63c8013b`; all TRUE is this commit. `CatchAll`,
-`ControllerDeath` and `Deletes` select the workflow and environment, not a
-code revision.
+`ExplicitHandlerRoute`, `HandlerLoop`, `ControllerDeath`, `Deletes` and the
+crash budget select the workflow and environment, not a code revision.
 
 | Constant | Kind | Code |
 |---|---|---|
@@ -76,6 +90,7 @@ code revision.
 | `HandlerOnce` | fix | Controller 1.3.0 and later: admitting the catch-all state by any route uses its one entry, and a later route to it fails the run. Without it (1.2.0), only the catch-all route used the entry: after an explicit route into the state, its own unhandled error entered it a second time. |
 | `CatchAll` | workflow | The workflow declares a catch-all state `H` (a script); an unhandled `error` goes there once. |
 | `ExplicitHandlerRoute` | workflow | `S` routes its `error` to `H` by its own failure route (`failure: H`). Requires `CatchAll`. |
+| `HandlerLoop` | workflow | `H` routes its `ok` to a script state `R`, whose own failure route leads back to `H`; `R` routes `ok` to `T`. Requires `CatchAll`. |
 | `ControllerDeath` | fault | The controller orchestration ends without ending its run: it was terminated, or its finalization attempts ran out. |
 | `Deletes` | environment | The workflow session may be deleted. FALSE isolates the reviewed-mode liveness counterexamples from deletion. |
 | `CrashBudget`, `MaxCrashes` | environment assumption | A1: at most `MaxCrashes` worker crashes in this run's script activities. FALSE leaves crashes unbounded (all safety cases, and `df-unbounded-crashes`). |
@@ -101,7 +116,7 @@ compare-and-swap.
 | `PollCommand` | `R` 519 (call), `takeQueuedCommand` 469 | `race(dequeue, 10 ms timer)` until the timer wins or a command is read; only when the next state is about to be admitted. |
 | `AdmitExec` / `AdmitRecord` | `R` 539 (call), 960 (activity); `S` `enterNode` 1194 | Session and run locks; insert by deterministic id from history (scope, node, ordinal); idempotent on retry. Admitting the catch-all state sets `catchAllEntered` (553). |
 | `StartEffect` | `R` 579 | `ctx.startOrchestrationVersioned`; instance id derived from the node execution id. |
-| `CollectExec` / `CollectRecord` | `R` 630 (call), 1052 (activity), 1070 (effect watch), 637-662 (routing); `S` `readCompletedNodes` 1392 | Reads stored winners of the history-selected pending ids only. A route of the state wins (`ExplicitHandlerRoute` when it leads to `H`); an unhandled runtime error goes to the catch-all state while it has not run. A route to the catch-all state after it ran fails the run (652-662). `catchAllEntered` is carried through continue-as-new. |
+| `CollectExec` / `CollectRecord` | `R` 630 (call), 1052 (activity), 1070 (effect watch), 637-662 (routing); `S` `readCompletedNodes` 1392 | Reads stored winners of the history-selected pending ids only. A route of the state wins (`ExplicitHandlerRoute` when it leads to `H`, and with `HandlerLoop` `R`'s failure route back to `H`); an unhandled runtime error goes to the catch-all state while it has not run. A route to the catch-all state after it ran fails the run (652-662). `catchAllEntered` is carried through continue-as-new. |
 | `WaitMsg` / `WaitTimer` | `R` 682 | One durable `race`; an already queued message wins; a wake is only a hint. |
 | `FinishExec` / `FinishFailExec` / `FinishRecord` | `R` 558-568 (terminal), 427 (`finishRun`), 406 (`persistently`), 1090 (activity), 1096 (no IR on the failure path); `S` `finishRun` 1404 | Session and run locks; run end, terminal node and pending nodes in one transaction. A failed attempt is retried on durable timers (about 30 minutes). A terminal's invalid output goes to the catch-all state while it has not run (1157); the model's `T` has no output, so this path is not modeled (see below). |
 | `NotifyExec` / `NotifyRecord` | `R` 419 (`reportEnded`), 484 (after a command), 1251 (activity) | At least once; stable client message id; reads no IR. |
@@ -135,21 +150,30 @@ takes the session row first, so they serialize.
 - One cursor (no parallel branches): the first slice has none.
 - The catch-all state is one script state `H`. `S` reaches it by the
   catch-all route or, with `ExplicitHandlerRoute`, by its own failure route.
-  `HNodes` has a second ordinal only without `HandlerOnce`, so the 1.2.0
-  re-entry is a state the checker can reach (`df-handler-reentry`).
-  `Inv_CatchAllOnce` states "at most once"; the code enforces it with
-  `catchAllEntered`.
+  With `HandlerLoop`, `H` routes its `ok` to a script state `R`, whose own
+  failure route leads back to `H`; `R` runs at most once here (a bound of
+  the model). `HNodes` has the ordinals 1 to 3 in every mode: `H` can be
+  entered from `S`, by the catch-all route and from `R`, so a second
+  admission is a state the checker can reach wherever the code would make
+  it (`df-handler-reentry`, `df-handler-loop-reentry`), and a PASS of
+  `Inv_CatchAllOnce` is not vacuous. Before this revision (07156798) `HNodes`
+  had one ordinal with `HandlerOnce`, so that PASS was vacuous and the
+  explicit and catch-all graphs were identical. `Wit_NoHandlerRouteBack`
+  (expected to be violated) shows that `R`'s error reaches the routing step
+  whose failure route leads back to `H`. `Inv_CatchAllOnce` states "at most
+  once"; the code enforces it with `catchAllEntered`.
 - The terminal `T` has no output, so a terminal's invalid output, which the
   code sends to the catch-all state once, is not modeled; the core
   regressions check it on the real runtime.
 - `Recover` does not model the parent notification that follows it; no
   property here covers notification. A regression checks it.
 - A lost dispatch (the controller start after admission never reaches
-  duroxide) and the recover that dispatches it again are not modeled:
-  `Dispatch` is weakly fair, and `ControllerDie` cannot fire before it.
+  duroxide) and the recover that dispatches it again are not modeled here
+  (the lifecycle model has both): `Dispatch` is weakly fair, and
+  `ControllerDie` cannot fire before it.
   The code stores that recover's receipt and its `workflow.recovered`
-  event before the start (`S` `recordRecoverDispatch` 526), and a repeat of
-  the request starts the controller again (`V` `dispatchRecoveredRun` 201;
+  event before the start (`S` `recordRecoverDispatch` 527), and a repeat of
+  the request starts the controller again (`V` `dispatchRecoveredRun` 203;
   duroxide ignores a second start of an instance). The dispatch is at
   least once; the faults regressions check the receipt under a concurrent
   repeat and after an interruption before or after the start.
@@ -169,81 +193,29 @@ takes the session row first, so they serialize.
   model does not track such orphans.
 - External effects of a started script happen at least once (a crash
   re-runs the script) and are never rolled back.
-- Pause, resume and the run's open KV are not modeled. In the code a paused
-  run is active (it can be cancelled, deleted and recovered, and work it
-  already admitted finishes) but admits no new state: `S` `enterNode` refuses
-  it, and the controller waits for a resume (545, 590).
-  Each state pins the KV revision current when its admission commits:
-  set_vars and the admission both lock the run row, and an admission
-  evaluated with an older revision is refused and evaluated again
-  (`S` `enterNode`, `kv_changed`). A state already admitted keeps its
-  revision. Without pause, the
-  code's admitting statuses equal the model's `Active`, so the modeled
-  actions keep their mapping. The control regressions check pause, resume
-  and KV on the real runtime.
-- Wait states are not modeled. A wait is a durable timer of the controller
-  itself (no effect orchestration): its seconds are read once at admission.
-  They count from the accepted entry: one reading of the store's clock
-  taken in the inserting statement, after the admission's session and run
-  locks and its live, status and KV guards (`S` `enterNode`:
-  `clock_timestamp()` once, as `entered_at`; `deadline_at` is that reading
-  plus the seconds). A delay before the transaction or while it waits for
-  its locks does not consume the wait (W1). `now()`, the transaction's
-  start, is not used. The insert and its events run between the reading and
-  the commit, so the seconds are not promised from commit visibility. A
-  retried admission returns the stored row with its original times. The
-  controller asks when its own clock reaches the deadline; the store
-  elapses it with a compare-and-swap only when its clock, read once after
-  the session lock, has reached it (`S` `elapseWait`: `deadline_at <=` that
-  reading, `completed_at` the same reading), and otherwise reports the time
-  left, which the controller waits (`R` `parseElapse`). So a wait never
-  completes before its deadline in the store's clock, whatever the worker
-  clocks say; a worker clock behind the store's makes it late by that
-  difference. The assumption: the store's clock does not go back between
-  the admission and the elapse. The controller carries the deadline through
-  continue-as-new. A cancel, a deletion or a recover ends a waiting run as
-  it ends a run with a pending script, and the compare-and-swap keeps the
-  first result. The wait regressions check it with the stored times.
+- Pause, resume and the run's open KV are not modeled here; the admission
+  model has them ("Admission model"). In the code a paused run is active
+  (it can be cancelled, deleted and recovered, and work it already admitted
+  finishes) but admits no new state: `S` `enterNode` refuses it, and the
+  controller waits for a resume (545, 590). Without pause, the code's
+  admitting statuses equal this model's `Active`, so the modeled actions
+  keep their mapping.
+- Wait states are not modeled here; the wait model has them ("Wait
+  model").
 - A command queued for a controller instance that has not started is
-  dropped: duroxide-pg 0.1.38 (the provider in duroxide-node 0.2.4, whose
-  native binary embeds it) fetches the batch of an instance with no
-  instance row and no history as orchestration `Unknown` and acknowledges
-  a batch of only queue messages with no history, which deletes it
-  (`provider.rs` 1132-1161; migrations 0025 and 0026). In this model a
-  cancel sent before the run begins waits in the queue (`SendCancel` at any
-  time), which the provider does not guarantee. The code never relies on
-  it: a cancel through update_workflow of a run that has not begun ends the
-  run in its own transaction (`S` `recordRunCancelRequest`), which locks
-  the session and run rows as begin does, and begin then admits nothing.
-  A cancel that an earlier build accepted that way (queued, possibly
-  dropped) still wins: its repeat ends the run, and so does begin itself
-  when it finds the accepted cancel's receipt (`S` `beginRun`), so a
-  recover or a late dispatch cannot run the run. Such a receipt records no
-  requester and stays as stored; the only entry point that wrote it
-  (update_workflow, ae02665a to 183bb0b0) admits only the workflow's
-  parent, so begin records the parent as the requester with
-  `attributedFrom: "update_workflow"`. A run that a cancel ended before it
-  began has no controller to report it: the cancel's request starts the
-  notifier, and the run's begin starts it too when the controller starts
-  later (the request may have stopped after its commit), unless the parent
-  asked for the cancel; the notifier tells the parent at least once with
-  the stable client message id.
-  A parent session's lifecycle commands (cancel_agent, delete_agent and its
-  shutdown cascade send cancel, done or delete through the
-  `sendCommandToSession` activity in `session-proxy.ts`) to a v2 child are
-  applied by the store (`S` `recordSessionCommand`, for the child's parent
-  as the runtime names the caller): cancel and done end a run that has not
-  begun, and a cancel or done for a run that has begun is queued for its
-  controller (a run that ends first makes it moot). A delete is always
-  applied in the store, whatever the run is doing: the deletion trigger
-  ends an active run in that transaction (as for any deletion: `Delete`),
-  a run that already ended keeps its result, and a repeat of an accepted
-  delete whose child is still live applies it. The control model
-  (planned) has the drop, the before-begin end, the receipt repeat, the
-  session commands, the run's own end before a delete, and both orders
-  against begin.
-- Continue-as-new is not modeled. It carries the exact controller state
-  (cursor, ordinals, steps); the 30-step loop regression checks it.
+  dropped by the provider (see the lifecycle model). In this model a cancel
+  sent before the run begins waits in the queue (`SendCancel` at any time),
+  which the provider does not guarantee. The code never relies on it: a
+  cancel of a run that has not begun ends the run in its own transaction
+  (`S` `recordRunCancelRequest`), begin ends a run that has an accepted
+  cancel receipt (`S` `beginRun`), and a parent session's lifecycle
+  commands to a v2 child are applied in the store (`S`
+  `recordSessionCommand`). The lifecycle model and the session command
+  model check these paths.
+- Continue-as-new is not modeled here. It carries the exact controller
+  state (cursor, ordinals, steps, `catchAllEntered`); the 30-step loop
+  regression checks it. The wait model checks the cursor's deadline across
+  it, and the admission model a pause across it.
 - The controller is one sequential process; activity retries are Exec steps
   repeated before Record.
 - Promptness is not modeled. Liveness says that something eventually
@@ -281,6 +253,7 @@ takes the session row first, so they serialize.
 | `Prop_TombstonePermanent` | A deleted definition stays deleted. |
 | `Inv_CatchAllAfterUnhandled` (in `CoreSafety`) | The catch-all state is admitted only after a script state ended with an error (by its own failure route, or with no route for it). |
 | `Inv_CatchAllOnce` | The catch-all state is admitted at most once per run, by any route. |
+| `Wit_NoHandlerRouteBack` | Witness, expected to be violated with `HandlerLoop`: `R`'s error reaches the routing step whose own failure route leads back to `H`. |
 | `Live_Terminates` | The run eventually ends. |
 | `Live_ControllerDone` | The controller eventually finishes. |
 | `Live_EffectsQuiesce` | Every effect eventually ends for good. |
@@ -324,6 +297,16 @@ seconds.
 | `df-no-recovery` | this commit without `Recovery` | controller death, no deletion | 2 | `Live_Terminates` | liveness violation |
 | `df-unbounded-crashes` | `hd-liveness` without A1 | wake loss, effect faults | no | the same four as `hd-liveness` | liveness violation |
 | `df-handler-reentry` | this commit without `HandlerOnce` (controller 1.2.0), explicit route to the catch-all state | none | no | `Inv_CatchAllOnce` | safety violation |
+| `hd-catchall-loop-safety` | this commit, catch-all route, `H` `ok` to `R`, `R` `error` back to `H` (`MaxLoops = 0`) | all except controller death | no | all safety, `Inv_CatchAllOnce` | PASS |
+| `hd-catchall-loop-explicit-safety` | as `hd-catchall-loop-safety` with the explicit route from `S` to `H` | the same | no | the same | PASS |
+| `hd-catchall-loop-live-terminates` | as `hd-catchall-loop-safety` | wake loss, effect faults | 1 | `Live_Terminates` | PASS |
+| `df-handler-loop-reentry` | `hd-catchall-loop-safety` without `HandlerOnce` (controller 1.2.0) | none | no | `Inv_CatchAllOnce` | safety violation |
+| `wit-handler-route-back` | as `hd-catchall-loop-safety` | none | no | `Wit_NoHandlerRouteBack` | safety violation (witness) |
+
+The `hd-catchall-loop-*` cases and their twins use `MaxLoops = 0` (`S` has
+no "again"), which keeps the larger graph near the size of the catch-all
+cases. Every case before them keeps its constants with `HandlerLoop =
+FALSE`; there the new ordinals of `H` and the state `R` stay absent.
 
 The four `hd-catchall-live-*` cases have the constants, fairness and bounds
 of `hd-catchall-liveness`, which stays; each checks one of its properties,
@@ -341,12 +324,16 @@ DEV receipts for this commit, not in this file.
 
 ## Commands
 
-Run from this folder with the TLA+ tools jar (`tla2tools.jar`):
+Run from this folder with the TLA+ tools jar (`tla2tools.jar`). Each case
+names its module by its prefix: `wait-` and `wit-wait-` cases are for
+`WorkflowV2Wait.tla`, `adm-` for `WorkflowV2Admission.tla`, `lc-` for
+`WorkflowV2Lifecycle.tla`, `cmd-` for `WorkflowV2SessionCommands.tla`, and
+every other case for `WorkflowV2Run.tla`.
 
 ```sh
-java -cp tla2tools.jar tla2sany.SANY WorkflowV2Run.tla
+java -cp tla2tools.jar tla2sany.SANY <module>.tla
 java -XX:+UseParallelGC -Xmx8g -cp tla2tools.jar tlc2.TLC -workers 4 -deadlock \
-    -config <case>.cfg -metadir states/<case> WorkflowV2Run.tla
+    -config <case>.cfg -metadir states/<case> <module>.tla
 ```
 
 `-deadlock` turns deadlock checking off: a finished run is a final state.
@@ -391,3 +378,289 @@ A case that exceeds its time or memory cap is VOID, not PASS.
 | A schema recorded at 0085 gets 0086; IR version 1 revisions run as stored; creation records of earlier fingerprints are continued or replayed without rewriting, and another grant or owner is refused | `packages/sdk/test/local/workflow-v2-compat.test.js` |
 | A refused result whatever its text (empty error, empty marker) is `invalid_output`; a plain null is a valid result | `packages/sdk/test/local/workflow-v2-core.test.js` "treats an invalid marker as a refusal" and the strict-JSON probes |
 | Exactly-once events, continue-as-new state, cancel winner, strict JSON, contracts | `packages/sdk/test/local/workflow-v2-core.test.js` |
+
+## Wait model
+
+`WorkflowV2Wait.tla` models one wait state of a run whose controller began
+it: its admission, its deadline, the controller's timer and the store's
+elapse, and the transactions that may decide the wait first (a cancel that
+the controller applies, a deletion, a recover after the controller ended,
+whose last elapse activity may still run). After the wait, the terminal
+state ends the run. `clk` is the store's clock in whole seconds; the
+controller and the workers read `clk` plus 1, 0 or -1 (`ClockOffset`).
+The store's clock advances freely to `MaxPre` while the wait is not stored
+(a delay before the transaction, a lock wait, the time between the insert
+and its commit), then while a timer of the store or of the controller is
+still ahead; `ClockCap` bounds it. The code and the model assume that the
+store's clock does not go back between the admission and the elapse.
+
+| Constant | Kind | Code |
+|---|---|---|
+| `EntryClock` | revision | What the deadline counts from: `"evaluation"`, the worker's `Date.now()` when the activity read the seconds (a93c105c); `"begin"`, the transaction's `now()` (659dc63f); `"accepted"`, one `clock_timestamp()` reading in the inserting statement, after the locks and the guards (183bb0b0 and this commit). |
+| `StoreElapseGuard` | fix | 659dc63f: the store elapses a wait only when its own clock reached the deadline, and otherwise reports the time left. Without it (a93c105c) the controller's timer decided. |
+| `Cas` | deliberate fault when FALSE | The elapse is a compare-and-swap from pending. |
+| `CanKeepsDeadline` | deliberate fault when FALSE | Continue-as-new carries the cursor's deadline. |
+| `ElapseWhilePaused` | deliberate fault when FALSE | The store elapses a wait of a paused run: a pause does not freeze the deadline. |
+| `Pauses`, `Cancels`, `Deletes` | environment | The parent pauses the run (once) and resumes it, or cancels it; the session is deleted. |
+| `ControllerDeath` | fault | The controller ends without ending its run; the parent recovers it (A3). |
+| `MaxCrashes` | assumption A1 | Worker crashes in the enter and elapse activities. |
+| `Secs`, `MaxPre`, `ClockOffset` | bounds | The wait's seconds; the clock bound while the wait is not stored; the controller's clock against the store's. |
+
+| Wait action | Code | Boundary |
+|---|---|---|
+| `AdmEval` | `R` 960 (activity), 975 (a retry reads the stored row), 988 (evaluation), 1014 (the seconds, read once) | Outside the transaction. a93c105c computed the deadline here from the worker's `Date.now()` (`EntryClock = "evaluation"`). |
+| `AdmBegin` / `AdmLock` | `S` `enterNode` 1194, `lockLiveSession` 362 | `now()` is the transaction's start (659dc63f counted from it); the session and run locks may wait for other transactions. |
+| `AdmInsert` / `AdmCommit` | `S` 1232 (inactive), 1244 (the insert) | One `clock_timestamp()` reading in the inserting statement, after the locks and the live, status and KV guards, is `entered_at` and the start of the seconds; the commit may come later. |
+| `AdmRecord` | `R` 539 (call), 545 (paused refusal), 574 (the cursor's deadline) | The controller keeps the stored deadline in its cursor. |
+| `AdmCrash` / `ElapseCrash` | `R` 539, 616 (store retry policy) | A worker crash re-dispatches the activity; a committed admission is read back, an uncommitted one rolls back. |
+| `CtrlAsk` | `R` 614 | The controller's clock is `utcNow`, recorded in its history; it only decides when to ask. |
+| `ElapseExec` / `ZombieElapse` | `R` 1290 (activity); `S` `elapseWait` 1351, 1361 (guard), 1371 (time left) | One reading of the store's clock after the session lock decides and is stored; compare-and-swap from pending; an activity may outlive its controller. |
+| `ElapseRecord` | `R` 616, 624 | A wait not yet due waits the reported time from the controller's clock. |
+| `CtrlCollect` / `Collect` / `Finish` | `R` 630 (collect), 637 (routing), 558 (terminal finish) | The next state's admission is refused for a paused or ended run. |
+| `CtrlCan` | `R` 507, 685 | The controller state, with each cursor's deadline, is the next execution's input. |
+| `PausedRetry` | `R` 590, 599 | The race of a command and the backstop timer; continue-as-new after idle waits. |
+| `ApplyCancel` | `R` 479, 1203; `S` `finishRun` 1404 | The run's end decides a pending wait in its transaction. |
+| `Delete` | `migrations/workflow-v2-0087.ts` 58 | Soft delete ends the run and decides a pending wait in one transaction. |
+| `Pause` / `Resume` | `S` `setRunPaused` 853 | Takes the session lock; a stored deadline does not change. |
+| `CtrlDie` / `Recover` | `V` `recoverWorkflowV2Run` 252; `S` `finishRun` 1404 | The controller ended; recover ends the run as failed and decides a pending wait. |
+| `Tick` | none | The store's clock (PostgreSQL), assumed never to go back. |
+
+| Property | Meaning |
+|---|---|
+| `Inv_NotEarly` | A wait elapses no earlier than its seconds after its accepted entry, in the store's clock. |
+| `Inv_RunEndDecidesWait` | A run that ended has no pending wait. |
+| `Inv_ExitEndedRun` | The controller ends only with its run. |
+| `WaitSafety` | `TypeOK` and the three invariants above. |
+| `Prop_DeadlineFixed`, `Prop_EntryFixed` | The stored deadline and entry never change (enter retries, continue-as-new). |
+| `Prop_FirstResultKept` | The first stored result is kept. |
+| `Live_WaitDecided` | A pending wait is eventually decided, also while its run stays paused. |
+| `Wit_FromVisibility` | Witness, expected to be violated: the seconds count from the accepted entry, not from the commit. |
+
+`Secs = 2`, `MaxPre = 3`. The safety cases allow every environment action
+and one crash; each violation case turns off what its counterexample does
+not need.
+
+| Case | Mode | Checked | Expected |
+|---|---|---|---|
+| `wait-hd-safety` | this commit, controller clock ahead | `WaitSafety`, the three `Prop_` properties | PASS |
+| `wait-hd-safety-behind` | this commit, controller clock behind | the same | PASS |
+| `wait-hd-liveness` | this commit, controller clock ahead; the run may stay paused | `Live_WaitDecided` | PASS |
+| `wait-rv-a93c105c` | deadline from the worker's clock at evaluation, no store guard | `Inv_NotEarly` | safety violation |
+| `wait-rv-659dc63f` | deadline from the transaction's `now()`, store guard, clocks equal | `Inv_NotEarly` | safety violation (W1: a lock wait) |
+| `wait-df-no-store-guard` | this commit without the store guard, controller clock ahead | `Inv_NotEarly` | safety violation |
+| `wait-df-no-cas` | this commit without the compare-and-swap; an elapse activity outlives its controller after recover | `Prop_FirstResultKept` | safety violation |
+| `wait-df-can-drops-deadline` | this commit with continue-as-new dropping the cursor's deadline | `Live_WaitDecided` | liveness violation |
+| `wait-df-frozen-while-paused` | this commit with the store refusing to elapse a paused run's wait | `Live_WaitDecided` | liveness violation |
+| `wit-wait-from-visibility` | this commit, clocks equal | `Wit_FromVisibility` | safety violation (witness) |
+
+Limits:
+
+- One wait and one cursor. The controller chooses the due waits with
+  `utcNow` recorded in its history, so replay repeats the choice; the store
+  decides. Replay itself is not modeled.
+- The seconds are a constant: their binding is evaluated once, with the KV
+  revision the admission pins (the admission model).
+- Whole seconds; the store reports at least 1 s left (the code: at least
+  1 ms).
+- The controller version boundary is the run model's `ControllerDie`:
+  pre-release versions fail at once and recover ends their runs. Replay of
+  an earlier version's history is not claimed.
+
+## Admission model
+
+`WorkflowV2Admission.tla` models the admissions of one run under its open KV
+and pause: the controller begins the run, admits state 1 (a script), and
+after its result admits state `Steps` (the terminal), which ends the run.
+Each admission evaluates its input with the run's current KV revision and
+is accepted only while the run admits and that revision is still current.
+set_vars, pause (also before begin), resume (its wake may be lost), a
+cancel and a deletion may come at any time. KV revisions are numbers; the
+KV contents are not modeled.
+
+| Constant | Kind | Code |
+|---|---|---|
+| `KvCheck` | fix | 69e2667b: `S` `enterNode` refuses an admission evaluated with a revision that is no longer current (`kv_changed`). Without it (499541be) the admission pinned the revision read before its transaction. |
+| `PauseGuard`, `InactiveFirst`, `PausedRefusalWaits`, `PausedBackstop`, `CountOnAdmitted`, `BeginMarksBegun` | deliberate faults when FALSE | A paused run admits nothing; the inactive refusal comes before the KV check; a paused refusal waits for the resume; the paused wait races a backstop timer; the ordinal counts only a stored admission; begin of a run paused before it began records `paused_from` running. |
+| `TriggerEndsPaused` | migration | 0087 ends a paused run on deletion; FALSE is the 0086 trigger, which 0087 replaced when it added pause. |
+| `LoseWake` | fault | A resume's wake is lost. |
+| `PauseBeforeBegin`, `Cancels`, `Deletes` | environment | A pause before the controller begins the run; a cancel after begin; deletion. |
+| `Steps`, `MaxKv`, `MaxEvals`, `MaxAttempts`, `MaxPauses` | bounds | States; KV revisions; evaluations per enter attempt and enter attempts (the code: 5 and 5); pause commands. |
+
+Assumption A4, for liveness only: a paused run is eventually resumed (weak
+fairness of `Resume`). Without it a run may stay paused, as designed.
+
+| Admission action | Code | Boundary |
+|---|---|---|
+| `BeginTx` | `R` 495 (call), 496 (a run that is not active ends the controller); `S` `beginRun` 1138, 1158 (paused before begin) | Session and run locks; `admitted -> running`; a run paused before it began gets `paused_from` running. |
+| `Eval` | `R` 960 (activity), 988 (each evaluation reads the run's current revision) | Outside the transaction. |
+| `InsertTx` | `S` `enterNode` 1194: 1232 (inactive first), 1233 (`kv_changed`), 1244 (insert); `R` 1047 (`KV_CHANGING` after the last evaluation) | `set_vars` locks the run row too, so it commits before or after the admission. |
+| `Record` | `R` 539 (call), 545 (paused refusal), 549 (ordinal and step only when stored) | A paused refusal is not an end. |
+| `NodeDone` / `Collect` | `R` 721 (the effect stores its result), 630 (collect) | Admitted work finishes while paused. |
+| `Finish` / `Fail` | `R` 558 (terminal), 447 (`controlRun` throws), 442; `S` `finishRun` 1404 | `KV_CHANGING` in every attempt ends the run as failed (`controller_error`). |
+| `PausedWake` / `PausedTimer` | `R` 590 (race), 599 (continue-as-new) | A wake is a hint; the backstop timer finds a resume whose wake was lost; the next execution starts at the same admission and reads the pause from the store. |
+| `SendCancel` / `ApplyCmd` | `V` 580; `R` 519 (poll), 479 | A cancel of a run that has begun is queued for its controller. |
+| `Pause` / `Resume` | `S` `setRunPaused` 853; `V` 601 (the wake) | `paused_from` records the status; the wake is sent only for a run that admits again. |
+| `SetVars` | `S` `setRunVars` 801 | Session, definition and run locks; a new immutable revision. |
+| `Delete` | `migrations/workflow-v2-0087.ts` 58; `workflow-v2-0086.ts` 80 | 0087 ends paused runs too; 0086 ended only admitted and running runs. |
+
+| Property | Meaning |
+|---|---|
+| `Inv_AdmitOnlyAdmitting` | A state is admitted only while the run admits (never while paused). |
+| `Inv_PinCurrent` | Each admission pins the KV revision current when it is inserted. |
+| `Inv_KvRefusalAdmitting` | `kv_changed` is returned only for a run that admits: inactive wins. |
+| `Inv_OrdinalCountsAdmissions` | A refusal uses no ordinal. |
+| `Inv_AdmissionOrder` | A state is admitted after its predecessor completed. |
+| `Inv_PausedFrom` | `paused` exactly when `paused_from` is set (the 0087 check constraint). |
+| `Inv_ExitEndedRun` | Pause is not an end: the controller ends only with its run. |
+| `Inv_DeletedNotActive` | A deleted workflow has no active run. |
+| `Inv_BegunStaysBegun` | A run its controller began is never again a run that has not begun. |
+| `AdmissionSafety` | `TypeOK` and every invariant above. |
+| `Live_Terminates`, `Live_ControllerDone` | The run ends; the controller ends. |
+
+`Steps = 2`, `MaxKv = 3`, `MaxEvals = 2`, `MaxAttempts = 1`, `MaxPauses = 2`:
+two set_vars during the two evaluations of one attempt reach `KV_CHANGING`
+and the run's failure.
+
+| Case | Mode | Checked | Expected |
+|---|---|---|---|
+| `adm-hd-safety` | this commit, every environment action, lost wakes | `AdmissionSafety` | PASS |
+| `adm-hd-liveness` | this commit, lost wakes, A4 | `Live_Terminates`, `Live_ControllerDone` | PASS |
+| `adm-rv-499541be` | no KV check at commit | `Inv_PinCurrent` | safety violation |
+| `adm-df-no-pause-guard` | a paused run admits | `Inv_AdmitOnlyAdmitting` | safety violation |
+| `adm-df-kv-before-inactive` | the KV check before the inactive refusal | `Inv_KvRefusalAdmitting` | safety violation |
+| `adm-df-paused-refusal-exits` | the controller ends on a paused refusal | `Inv_ExitEndedRun` | safety violation |
+| `adm-df-refusal-counts-ordinal` | a refusal counts the ordinal | `Inv_OrdinalCountsAdmissions` | safety violation |
+| `adm-df-begin-keeps-admitted` | begin leaves `paused_from` admitted | `Inv_BegunStaysBegun` | safety violation |
+| `adm-df-trigger-0086` | the 0086 deletion trigger | `Inv_DeletedNotActive` | safety violation |
+| `adm-df-no-paused-backstop` | no backstop timer in the paused wait, lost wakes | `Live_Terminates` | liveness violation |
+| `adm-hd-liveness-wake-kept` | no backstop timer, no lost wake (positive control) | `Live_Terminates` | PASS |
+
+Limits:
+
+- Crashes and the idempotent retry of an admission are the run model's
+  (`AdmitExec`); here an enter attempt runs to its result.
+- The command poll that drops a wake ahead of a command is not modeled: a
+  stale wake only adds one refused attempt.
+- Continue-as-new while paused is the paused retry: the next execution
+  starts at the same admission and reads the pause from the store.
+
+## Lifecycle model
+
+`WorkflowV2Lifecycle.tla` models the start of a live run and the cancels
+that can come before its controller begins it: the dispatch after
+admission (lost, or skipped for a run that already ended), duroxide's
+start, the provider's drop of queue messages for an instance that has not
+started, the controller's begin, the parent's recover, `update_workflow`
+cancel by the parent or by another requester, a cancel receipt that an
+earlier build stored, and who is told that the run ended. Another
+requester is a service caller that is not the parent; `update_workflow`
+admits only the parent, so no production entry point sends one. Pause
+before begin is in the admission model.
+
+| Constant | Kind | Code |
+|---|---|---|
+| `CancelEndsBeforeBegin` | fix | 369beaf0: a cancel ends a run that has not begun in its own transaction, also on a repeat. Before (ae02665a to 183bb0b0) the receipt was stored and the command queued. |
+| `BeginHonorsReceipt` | fix | 31dc9888: begin ends a run that has not begun and has an accepted cancel receipt. |
+| `C2Fix` | fix | b1d1d4b9: begin names the parent as that receipt's requester (M1) and starts the notifier for a requester that is not the parent; the cancel service and `notifyParent` do not report the parent's own cancel to it. |
+| `LegacyWriter` | migration | The requester of a receipt that an earlier build stored without ending the run: `"none"`, `"parent"` (M1 holds) or `"other"` (M1 does not hold). |
+| `Cancellers` | environment | Who sends a cancel. |
+| `LoseDispatch`, `Interrupts`, `ControllerDeath` | faults | The start after admission never reaches duroxide; a cancel request stops after its commit, and the begin activity runs again after its commit; the controller ends without ending its run. |
+| `DropOrphans` | provider | duroxide-pg drops queue messages of an instance with no row and no history. |
+| `Repeats`, `Recovery` | assumptions A5 and A3 | A requester repeats an interrupted cancel with its operation id, and the repeat completes; the parent recovers a run that needs it. |
+
+| Lifecycle action | Code | Boundary |
+|---|---|---|
+| `DispatchSend` / `DispatchLose` | `V` `dispatchWorkflowV2Run` 117 | Skips a run that is not active; the start may never reach duroxide. |
+| `Start` / `OrphanDrop` | duroxide 0.1.32; duroxide-pg 0.1.38 `provider.rs` 1132-1161, migrations 0025 and 0026 | A second start of an instance id is ignored; queue messages fetched for an instance with no row and no history are acknowledged, which deletes them. |
+| `BeginTx` | `S` `beginRun` 1138, 1146 (the earliest accepted cancel receipt), 1153 (requester attributed to the parent, M1) | Session and run locks, as the cancel's transaction takes. |
+| `BeginNotify` / `BeginRetry` | `R` 918 (activity), 881, 938 (notifier start) | After the commit; the activity runs again until the start succeeds. |
+| `ApplyCmd` / `RunFinish` | `R` 479, 484 (notify with the requester), 419 | The controller reports its run's end at least once. |
+| `CancelTx` | `V` `controlWorkflowV2Run` 551; `S` `recordRunCancelRequest` 915, `cancelBeforeBegin` 947 | Session, definition and run locks; the receipt and the before-begin end in one transaction; a repeat ends a run that has not begun. |
+| `CancelFollow` / `CancelInterrupt` | `V` 580 (enqueue), `notifyCancelledBeforeBegin` 220 | After the commit; not transactional with it. |
+| `RecoverDispatch` / `RecoverEnd` | `V` `recoverWorkflowV2Run` 252, 280 (dispatch); `S` `recordRecoverDispatch` 527, `finishRun` 1404; `V` `notifyRecoveredRun` 188 | The dispatch receipt is stored before the start. |
+| `CtrlDie` | `R` 406, 843, or an external termination | The controller ends; its run stays as it is. |
+| `NotifierRun` | `R` `workflowV2Notify` 731, `notifyParent` 1251, 1258 (the requester the end names) | At least once, with the stable client message id. |
+
+| Property | Meaning |
+|---|---|
+| `Inv_AcceptedCancelWins` | A cancel accepted before the run began wins: the run never runs (C1). |
+| `Inv_NoSelfNotice` | The parent is never told of a cancel it asked for (C2). |
+| `Inv_EndNamesRequester` | A before-begin end names its requester, recorded or attributed. |
+| `Inv_AttributionTruthful` | The named requester is the actual one. It holds under M1 only. |
+| `LifecycleSafety` | `TypeOK` and the four invariants above. |
+| `Live_OtherTold` | The parent is told of a run that another requester's cancel ended. |
+| `Live_OtherToldOnceStarted` | The same, at least when the run's controller starts after that end. |
+
+| Case | Mode | Checked | Expected |
+|---|---|---|---|
+| `lc-hd-safety` | this commit, an earlier build's receipt by the parent (M1), both requesters, every fault, A5 | `LifecycleSafety` | PASS |
+| `lc-hd-live-other` | this commit, both requesters, A5 | `Live_OtherTold` | PASS |
+| `lc-hd-live-other-started` | this commit, no repeat | `Live_OtherToldOnceStarted` | PASS |
+| `lc-lim-other-told-needs-repeat` | this commit, no repeat | `Live_OtherTold` | liveness violation: the stated limit (a notice lost after the commit stays lost when no controller starts and the requester does not repeat) |
+| `lc-rv-183bb0b0` | the cancel is queued and dropped | `Inv_AcceptedCancelWins` | safety violation (C1) |
+| `lc-rv-369beaf0` | an earlier build's receipt and a late start | `Inv_AcceptedCancelWins` | safety violation |
+| `lc-rv-31dc9888` | begin's repair records no requester; the parent repeats | `Inv_NoSelfNotice` | safety violation (C2) |
+| `lc-rv-31dc9888-live-other-started` | 31dc9888, no repeat | `Live_OtherToldOnceStarted` | liveness violation (C2) |
+| `lc-df-m1-broken` | this commit with an earlier build's receipt by another requester | `Inv_AttributionTruthful` | safety violation |
+
+Limits:
+
+- `notice` records that the parent was told at least once; the stable
+  client message id and the recent-id window are not modeled.
+- The provider's drop is conservative: any message queued before the
+  instance's start is processed may be dropped.
+- A controller terminated between begin's commit and its notifier start
+  loses that notice, as any externally terminated notification path does;
+  the begin activity's own retries, and the controller's failure path
+  (`failRun`, then `notifyParent`), report it.
+
+## Session command model
+
+`WorkflowV2SessionCommands.tla` models one lifecycle command (cancel or
+delete; done takes cancel's path) that a parent's durable session sends to
+its v2 workflow child through the `sendCommandToSession` activity. The
+activity is at least once: attempt 1 may stop after any step, and attempt
+2 is its redelivery, which may overlap it. Attempt 3 is a different
+request that reuses the command's id. The child's controller may begin its
+run, end it, and apply a queued command, and another path may delete the
+child.
+
+| Constant | Kind | Code |
+|---|---|---|
+| `DeleteInStore` | fix | 0f373abc: every delete is applied in the store, and a repeat applies an accepted delete whose child is live. Before (9fda34bd) a begun run's delete was queued for its controller. |
+| `DeletedChildPath` | fix | b1d1d4b9: a deleted child, seen by the link read or by the transaction, gets the receipt check and a delete's facts cleanup. Before (31dc9888) only the link path read the receipt, and the transaction path answered applied with neither. |
+| `Command`, `Conflict`, `OtherDelete` | environment | The command; a different request with its id; another deletion path. |
+
+| Session command action | Code | Boundary |
+|---|---|---|
+| `StartAtt` / `LoseFirst` | `session-proxy.ts` 1085 (`scheduleActivity`), 5858 | At least once: a worker crash redelivers the activity, and the redelivery may overlap the first attempt. |
+| `ReadLink` | `V` `applySessionCommandToWorkflowV2` 647; `S` `readSessionLink` 1054 | Before any lock; the caller's authority (a regression checks it) comes next. |
+| `StoreTx` | `S` `recordSessionCommand` 997, 1028 (a repeat applies an accepted delete) | Session, definition and run locks; the receipt with the soft delete (trigger) or the before-begin end in one transaction. |
+| `DeletedChild` | `V` `deletedChild` 675, 680, 688; `S` `readOperationReceipt` 472 | Another request's receipt is refused; a delete removes the facts (idempotent). |
+| `After` / `Cleanup` / `Enqueue` | `V` 693 (facts cleanup), 698 (enqueue) | After the commit. |
+| `CtlBegin` / `RunEnd` / `CtlApply` / `CtlExit` | `S` `beginRun` 1138; `R` 479, 1238 | The first run end stands; a command queued for a controller that ended is not applied. |
+| `DeleteOther` | `cms_soft_delete_session` and the 0087 trigger 58 | Another deletion path, with its facts cleanup. |
+
+| Property | Meaning |
+|---|---|
+| `Inv_DeleteAnswerClean` | An attempt that answers applied for the delete has deleted the child and removed its facts. |
+| `Inv_ConflictRefused` | A request whose id holds another request's receipt is refused. |
+| `Inv_CancelBeforeBeginWins` | A cancel accepted before the run began wins. |
+| `CommandSafety` | `TypeOK` and the three invariants above. |
+| `Live_DeleteTakesEffect` | An accepted delete takes effect: the child is deleted and its facts are removed, whatever its run does. |
+
+| Case | Mode | Checked | Expected |
+|---|---|---|---|
+| `cmd-hd-delete` | this commit, delete, overlapping redelivery, a conflicting request, another deletion | `CommandSafety`, `Live_DeleteTakesEffect` | PASS |
+| `cmd-hd-cancel` | this commit, cancel, the same environment | `CommandSafety` | PASS |
+| `cmd-rv-9fda34bd` | a begun run's delete is queued, and the run ends first | `Live_DeleteTakesEffect` | liveness violation (D1) |
+| `cmd-rv-31dc9888` | the transaction path answers applied without the cleanup | `Inv_DeleteAnswerClean` | safety violation (D2) |
+| `cmd-rv-31dc9888-conflict` | the transaction path answers applied without the receipt check | `Inv_ConflictRefused` | safety violation (D2) |
+
+Limits:
+
+- One interruption: attempt 1 may stop, and its redelivery completes.
+- The caller's authority is checked before the store (a regression checks
+  it); the model's commands come from the parent.
+- The cancel activity's delete of a queued delete (9fda34bd) is modeled as
+  removing the facts too, which only helps that revision.

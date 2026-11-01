@@ -11,7 +11,9 @@
 (* "ok" to terminal T. "error" has no route: the run fails, or, with        *)
 (* CatchAll, goes once to the catch-all script state H ("ok" to T; an       *)
 (* unhandled "error" there fails the run). With ExplicitHandlerRoute, S     *)
-(* routes "error" to H by its own failure route instead.                    *)
+(* routes "error" to H by its own failure route instead. With HandlerLoop,  *)
+(* H routes "ok" to a script state R, whose own failure route leads back    *)
+(* to H; R "ok" goes to T.                                                  *)
 (*                                                                          *)
 (* An activity that writes the store is split into Exec (the store          *)
 (* transaction, which may run again after a crash) and Record (its result   *)
@@ -44,6 +46,7 @@ CONSTANTS
     HandlerOnce,          \* fix: admitting H by any route uses its one entry (controller 1.3.0)
     CatchAll,             \* feature: the workflow declares a catch-all state H
     ExplicitHandlerRoute, \* workflow: S routes its "error" to H explicitly (a failure route)
+    HandlerLoop,          \* workflow: H "ok" goes to R, and R routes its "error" back to H
     ControllerDeath,      \* fault: the controller ends without ending its run
     Deletes,              \* environment: the workflow session may be deleted
     CrashBudget,          \* environment assumption A1: worker crashes in a run are finite
@@ -54,23 +57,28 @@ ASSUME MaxLoops \in Nat
 ASSUME MaxCrashes \in Nat
 ASSUME {LoseWake, ControllerFaults, EffectFaults, Backstop, CancelStopFromStore,
         DeleteGuard, EntryFence, EndPending, EffectWatch, CommandPoll, Recovery,
-        HandlerOnce, CatchAll, ExplicitHandlerRoute, ControllerDeath, Deletes,
+        HandlerOnce, CatchAll, ExplicitHandlerRoute, HandlerLoop, ControllerDeath, Deletes,
         CrashBudget, NoCas} \subseteq BOOLEAN
 ASSUME ExplicitHandlerRoute => CatchAll
+ASSUME HandlerLoop => CatchAll
 
 SOrd == 1..(MaxLoops + 1)
-(* Without HandlerOnce H can be admitted a second time (the 1.2.0 defect).  *)
-HOrd == 1..(IF HandlerOnce THEN 1 ELSE 2)
+(* Every ordinal of H that any route could reach is in the domain, in every *)
+(* mode, so Inv_CatchAllOnce can fail wherever a second admission happens.  *)
+(* H is entered at most from S (one error), from R (R runs once here) and   *)
+(* by the catch-all route (once): three entries bound every mode.           *)
+HOrd == 1..3
 HNodes == {<<"H", j>> : j \in HOrd}
 HNode == <<"H", 1>>
-SNodes == {<<"S", i>> : i \in SOrd} \cup (IF CatchAll THEN HNodes ELSE {})
+RNode == <<"R", 1>>
+SNodes == {<<"S", i>> : i \in SOrd} \cup (IF CatchAll THEN HNodes ELSE {}) \cup (IF HandlerLoop THEN {RNode} ELSE {})
 TNode == <<"T", 1>>
 NoNode == <<"none", 0>>
 NX == SNodes \cup {TNode}
 Active == {"admitted", "running"}
 Terminal == {"completed", "failed", "cancelled"}
 ScriptOutcomes(i) == {"ok", "error"} \cup (IF i <= MaxLoops THEN {"again"} ELSE {})
-NodeOutcomes(x) == IF x[1] = "H" THEN {"ok", "error"} ELSE ScriptOutcomes(x[2])
+NodeOutcomes(x) == IF x[1] \in {"H", "R"} THEN {"ok", "error"} ELSE ScriptOutcomes(x[2])
 EffectEnded == {"done", "stopped", "failed"}
 
 VARIABLES
@@ -103,7 +111,10 @@ effVars == <<eff, effRes, stopReq, wakeDup>>
 envVars == <<q, cancelSent, deleteSent, notified, crashes>>
 vars == <<storeVars, ctrlVars, effVars, envVars>>
 
-CurX == IF cur.node = "S" THEN <<"S", cur.ord>> ELSE IF cur.node = "H" THEN <<"H", cur.hord>> ELSE TNode
+CurX == CASE cur.node = "S" -> <<"S", cur.ord>>
+          [] cur.node = "H" -> <<"H", cur.hord>>
+          [] cur.node = "R" -> RNode
+          [] OTHER -> TNode
 
 (* Where the controller goes before it admits the next state.              *)
 NextAdmit == IF CommandPoll THEN "poll" ELSE "admit"
@@ -131,7 +142,7 @@ TypeOK ==
     /\ defDeleted \in BOOLEAN
     /\ pc \in {"undispatched", "begin", "poll", "admit", "start", "collect", "wait", "finish", "finishFail", "dead",
                "notify", "cancel", "done"}
-    /\ cur.node \in {"S", "H", "T"}
+    /\ cur.node \in {"S", "H", "R", "T"}
     /\ cur.caught \in BOOLEAN
     /\ cur.ord \in SOrd
     /\ cur.hord \in {0} \cup HOrd
@@ -259,20 +270,26 @@ CollectExec ==
     /\ UNCHANGED <<pc, cur, cancelStep, cancelIds, effVars, envVars>>
 
 (* Where an "error" of the current state may go to H. From S with           *)
-(* ExplicitHandlerRoute it is S's own failure route; otherwise it is the    *)
-(* catch-all route, open while H has not run. HandlerOnce (1.3.0): admitting *)
-(* H by any route uses its one entry, and a later route to it fails the     *)
-(* run. Without it (1.2.0) only the catch-all route used the entry, so an   *)
-(* explicit entry left H's own unhandled error a second entry.              *)
-ExplicitToH == cur.node = "S" /\ ExplicitHandlerRoute
+(* ExplicitHandlerRoute, and from R, it is the state's own failure route;   *)
+(* otherwise it is the catch-all route, open while H has not run.          *)
+(* HandlerOnce (1.3.0): admitting H by any route uses its one entry, and a  *)
+(* later route to it fails the run. Without it (1.2.0) only the catch-all   *)
+(* route used the entry, so an explicit entry left H's own unhandled error  *)
+(* a second entry, and an explicit route back to H entered it again.        *)
+ExplicitToH == (cur.node = "S" /\ ExplicitHandlerRoute) \/ cur.node = "R"
 ErrorToH == IF ExplicitToH THEN ~(HandlerOnce /\ cur.caught) ELSE ~cur.caught
+
+(* Where "ok" goes: from H to R with HandlerLoop, otherwise to T. R runs at *)
+(* most once here (a bound of the model): a later "ok" of H, which only a   *)
+(* second entry of H can produce (no HandlerOnce), goes to T.               *)
+OkToR == HandlerLoop /\ cur.node = "H" /\ nState[RNode] = "absent"
 
 CollectRecord ==
     /\ pc = "collect"
     /\ actRes # "none"
     /\ CASE actRes = "nothing" -> (pc' = "wait" /\ cur' = cur)
          [] actRes = "again" -> (pc' = NextAdmit /\ cur' = [cur EXCEPT !.node = "S", !.ord = cur.ord + 1, !.pending = NoNode])
-         [] actRes = "ok" -> (pc' = NextAdmit /\ cur' = [cur EXCEPT !.node = "T", !.pending = NoNode])
+         [] actRes = "ok" -> (pc' = NextAdmit /\ cur' = [cur EXCEPT !.node = (IF OkToR THEN "R" ELSE "T"), !.pending = NoNode])
          [] actRes = "error" /\ CatchAll /\ ErrorToH ->
                 (pc' = NextAdmit /\ cur' = [cur EXCEPT !.node = "H", !.hord = cur.hord + 1, !.pending = NoNode,
                                              !.caught = (IF ExplicitToH /\ ~HandlerOnce THEN cur.caught ELSE TRUE)])
@@ -650,7 +667,10 @@ Inv_AdmissionOrder ==
     /\ \A i \in SOrd : (i > 1 /\ nState[<<"S", i>>] # "absent")
             => (nState[<<"S", i - 1>>] = "completed" /\ nOutcome[<<"S", i - 1>>] = "again")
     /\ nState[TNode] # "absent" =>
-            (\E i \in SOrd : nOutcome[<<"S", i>>] = "ok") \/ (CatchAll /\ \E j \in HOrd : nOutcome[<<"H", j>>] = "ok")
+            \/ \E i \in SOrd : nOutcome[<<"S", i>>] = "ok"
+            \/ CatchAll /\ \E j \in HOrd : nOutcome[<<"H", j>>] = "ok"
+            \/ HandlerLoop /\ nOutcome[RNode] = "ok"
+    /\ HandlerLoop => (nState[RNode] # "absent" => \E j \in HOrd : nOutcome[<<"H", j>>] = "ok")
 
 (* The catch-all state runs only after a script state ended with an error   *)
 (* (by its own failure route or with no route for it).                     *)
@@ -659,6 +679,11 @@ Inv_CatchAllAfterUnhandled ==
 
 (* The catch-all state is admitted at most once per run, by any route.     *)
 Inv_CatchAllOnce == CatchAll => (\A j \in HOrd : (j > 1 => nState[<<"H", j>>] = "absent"))
+
+(* Witness, expected to be violated: R's error reaches the routing step     *)
+(* whose own failure route leads back to H, so a PASS of Inv_CatchAllOnce   *)
+(* with HandlerLoop covers that route and is not vacuous.                   *)
+Wit_NoHandlerRouteBack == ~(pc = "collect" /\ cur.node = "R" /\ actRes = "error")
 
 Inv_CancelWinner == \A x \in NX : nWinner[x] \in {"cancel", "delete"} => runStatus = "cancelled"
 
