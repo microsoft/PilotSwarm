@@ -1,5 +1,6 @@
 import { normalizeSessionSortMode, normalizeSessionUsage, reconcileSessionSort } from "./session-sort.js";
 import { normalizeMoa } from "./moa.js";
+import { normalizeThemeSound } from "./theme-sound.js";
 import { retainSessionWarnings } from "./session-errors.js";
 import { buildSessionTree, isManuallyOrderableSession } from "./session-tree.js";
 import { FOCUS_REGIONS } from "./commands.js";
@@ -1013,6 +1014,14 @@ function baseReducer(state, action) {
             if (Boolean(action.enabled) === Boolean(state.ui.touchScale)) return state;
             return { ...state, ui: { ...state.ui, touchScale: Boolean(action.enabled) } };
 
+        case "ui/themeSound": {
+            const next = normalizeThemeSound(action.themeSound);
+            if (!next) return state;
+            const current = state.ui.themeSound;
+            if (current && current.on === next.on && current.volume === next.volume) return state;
+            return { ...state, ui: { ...state.ui, themeSound: next } };
+        }
+
         case "ui/chatReading": {
             const next = normalizeChatReading(action.reading);
             if (!next) return state;
@@ -1057,6 +1066,9 @@ function baseReducer(state, action) {
                 && typeof settings.touchScale === "boolean";
             const nextChatReading = Object.prototype.hasOwnProperty.call(settings, "chatReading")
                 ? normalizeChatReading(settings.chatReading)
+                : null;
+            const nextThemeSound = Object.prototype.hasOwnProperty.call(settings, "themeSound")
+                ? normalizeThemeSound(settings.themeSound)
                 : null;
             const hasSessionDetailCollapsed = Object.prototype.hasOwnProperty.call(settings, "sessionDetailCollapsed")
                 && typeof settings.sessionDetailCollapsed === "boolean";
@@ -1160,6 +1172,7 @@ function baseReducer(state, action) {
                     themeId: hasTheme ? settings.themeId.trim() : selection.ui.themeId,
                     touchScale: hasTouchScale ? settings.touchScale : selection.ui.touchScale,
                     chatReading: nextChatReading || selection.ui.chatReading,
+                    themeSound: nextThemeSound || selection.ui.themeSound,
                     sessionDetailCollapsed: hasSessionDetailCollapsed
                         ? settings.sessionDetailCollapsed
                         : selection.ui.sessionDetailCollapsed,

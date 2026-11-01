@@ -3,6 +3,7 @@ import { ChatCallLine } from "./chat-call-line.js";
 import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
 import { NativeTaskCard } from "./native-task-card.js";
+import { themeSoundPlayer } from "./theme-sound-player.js";
 import { WorkspacePane, WORKSPACE_CHANGED_EVENT, announceWorkspaceChange, downloadBase64, workspaceToolActivity } from "./workspace-pane.js";
 // createPortal is only invoked by browser-only surfaces (tooltips, toolbar
 // slots, and viewport-level dialogs); the import itself is side-effect-free
@@ -82,6 +83,7 @@ import {
     defaultOwnerFilterForPrincipal,
     normalizeStoredLayoutAdjustments,
     normalizeChatReading,
+    normalizeThemeSound,
     normalizeStoredSessionViews,
     normalizeStoredPinnedSessionIds,
     normalizeStoredSessionOrder,
@@ -361,6 +363,11 @@ function normalizeProfileSettings(settings) {
         const chatReading = normalizeChatReading(candidate.chatReading);
         if (chatReading) normalized.chatReading = chatReading;
     }
+    // Desktop only, carried through a phone save like chatReading.
+    if (hasOwn(candidate, "themeSound")) {
+        const themeSound = normalizeThemeSound(candidate.themeSound);
+        if (themeSound) normalized.themeSound = themeSound;
+    }
     if (hasOwn(candidate, "sessionOwnerFilter") && candidate.sessionOwnerFilter && typeof candidate.sessionOwnerFilter === "object") {
         const storedFilter = candidate.sessionOwnerFilter;
         // Profiles saved before the "Shared with me" bucket existed have no
@@ -482,7 +489,7 @@ function profileViewState(root) {
     };
 }
 
-function profileSettingsFromViewState(state, preservedOtherTouchScale = null, preservedRightPaneMode = null, preservedDesktopPanes = null, preservedChatReading = null) {
+function profileSettingsFromViewState(state, preservedOtherTouchScale = null, preservedRightPaneMode = null, preservedDesktopPanes = null, preservedChatReading = null, preservedThemeSound = null) {
     return normalizeProfileSettings({
         ...(state.moa ? { moa: state.moa } : {}),
         themeId: state.themeId,
@@ -552,6 +559,9 @@ function profileSettingsFromViewState(state, preservedOtherTouchScale = null, pr
         ...(isNarrowViewport()
             ? (preservedChatReading ? { chatReading: preservedChatReading } : {})
             : { chatReading: state.chatReading }),
+        ...(isNarrowViewport()
+            ? (preservedThemeSound ? { themeSound: preservedThemeSound } : {})
+            : (state.themeSound ? { themeSound: state.themeSound } : {})),
     });
 }
 
@@ -664,6 +674,9 @@ function materializeProfileSettings(remoteSettings, defaults) {
         // synthesize one: an omitted key leaves the current value alone.
         ...(!isNarrowViewport() && hasOwn(normalizedRemote, "chatReading")
             ? { chatReading: normalizedRemote.chatReading }
+            : {}),
+        ...(!isNarrowViewport() && hasOwn(normalizedRemote, "themeSound")
+            ? { themeSound: normalizedRemote.themeSound }
             : {}),
         // Read back for the same reason as touchScale above: written but never
         // merged means the fold state resets on every reload. No default here
@@ -14578,13 +14591,54 @@ function formatAdminPrincipalLabel(principal) {
     return [provider, subject].filter(Boolean).join(":") || "user";
 }
 
+function ThemeSoundControl({ setting, theme, onChange }) {
+    const value = setting || { on: false, volume: 35 };
+    const set = (patch) => onChange({ ...value, ...patch });
+    return React.createElement("div", { className: "ps-reading-control is-stacked ps-theme-sound-control" },
+        React.createElement("label", { className: "ps-reading-switch" },
+            React.createElement("input", {
+                type: "checkbox",
+                role: "switch",
+                checked: value.on,
+                "aria-checked": value.on,
+                onChange: (event) => {
+                    // Inside the click, so the browser allows the sound to start.
+                    if (event.target.checked) themeSoundPlayer().prime();
+                    set({ on: event.target.checked });
+                },
+            }),
+            "Theme sounds"),
+        React.createElement("label", { className: "ps-reading-width" },
+            React.createElement("span", null, "Volume"),
+            React.createElement("input", {
+                type: "range",
+                min: 0,
+                max: 100,
+                step: 5,
+                value: value.volume,
+                "aria-label": "Theme sound volume",
+                onChange: (event) => set({ volume: Number(event.target.value) }),
+            }),
+            React.createElement("span", null, String(value.volume))),
+        theme?.sound
+            ? null
+            : React.createElement("p", { className: "ps-admin-console__hint" }, "This theme has no sound."));
+}
+
 function AppearanceSettingsPane({ controller }) {
     const reading = useControllerSelector(controller, (state) => state.ui.chatReading);
+    const themeSound = useControllerSelector(controller, (state) => state.ui.themeSound);
+    const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     return React.createElement("section", { className: "ps-appearance", "aria-label": "Appearance" },
         React.createElement("h3", null, "Appearance"),
         React.createElement(ChatReadingControl, {
             reading,
             onChange: (next) => controller.dispatch({ type: "ui/chatReading", reading: next }),
+        }),
+        React.createElement(ThemeSoundControl, {
+            setting: themeSound,
+            theme: getTheme(themeId),
+            onChange: (next) => controller.dispatch({ type: "ui/themeSound", themeSound: next }),
         }));
 }
 
@@ -15950,6 +16004,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         themeId: rootState.ui.themeId,
         touchScale: Boolean(rootState.ui.touchScale),
         chatReading: rootState.ui.chatReading,
+        themeSound: rootState.ui.themeSound,
         sessionDetailCollapsed: Boolean(rootState.ui.sessionDetailCollapsed),
         agentPickerUsage: rootState.ui.agentPickerUsage,
         ownerFilter: rootState.sessions.ownerFilter,
@@ -16012,6 +16067,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     const desktopPanesRef = React.useRef(null);
     // Desktop column, preserved across a phone save. There is no phone slot.
     const desktopChatReadingRef = React.useRef(null);
+    const desktopThemeSoundRef = React.useRef(null);
     const profileSettingsSaveTimerRef = React.useRef(null);
     const profileSettingsPollTimerRef = React.useRef(null);
     const profileSettingsPollInFlightRef = React.useRef(false);
@@ -16192,6 +16248,9 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                 if (remoteNormalized.chatReading) {
                     desktopChatReadingRef.current = remoteNormalized.chatReading;
                 }
+                if (remoteNormalized.themeSound) {
+                    desktopThemeSoundRef.current = remoteNormalized.themeSound;
+                }
                 defaultProfileSettingsRef.current = buildDefaultProfileSettingsFromState(
                     controller.getState(), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current,
                 );
@@ -16206,7 +16265,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                 );
                 const settingsJson = JSON.stringify(settings);
                 const currentSettingsBeforeApply = profileSettingsFromViewState(
-                    profileViewState(controller.getState()), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current, desktopChatReadingRef.current,
+                    profileViewState(controller.getState()), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current, desktopChatReadingRef.current, desktopThemeSoundRef.current,
                 );
                 const currentSettingsBeforeApplyJson = JSON.stringify(currentSettingsBeforeApply);
                 const hasUnpersistedLocalChange = profileSettingsHydratedRef.current
@@ -16251,7 +16310,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                 // remote state by definition and there is nothing to lose).
                 if (!profileSettingsHydratedRef.current || !hasPendingLocalWrite) {
                     const currentSettings = profileSettingsFromViewState(
-                        profileViewState(controller.getState()), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current, desktopChatReadingRef.current,
+                        profileViewState(controller.getState()), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current, desktopChatReadingRef.current, desktopThemeSoundRef.current,
                     );
                     lastProfileSettingsJsonRef.current = JSON.stringify(currentSettings);
                 }
@@ -16286,7 +16345,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
 
     React.useEffect(() => {
         if (!profileSettingsHydratedRef.current) return undefined;
-        const settings = profileSettingsFromViewState(state, otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current, desktopChatReadingRef.current);
+        const settings = profileSettingsFromViewState(state, otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current, desktopChatReadingRef.current, desktopThemeSoundRef.current);
         const settingsJson = JSON.stringify(settings);
         if (lastProfileSettingsJsonRef.current === settingsJson) return undefined;
         lastProfileSettingsJsonRef.current = settingsJson;
@@ -16310,12 +16369,25 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                 });
         }, 400);
         return undefined;
-    }, [controller, state.moa, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.sidePaneTab, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.sessionSortMode, state.sessionUsedAt, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale, state.chatReading]);
+    }, [controller, state.moa, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.sidePaneTab, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.sessionSortMode, state.sessionUsedAt, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale, state.chatReading, state.themeSound]);
 
     React.useEffect(() => {
         applyDocumentTheme(state.themeId);
         applyTouchScale(state.touchScale);
     }, [state.themeId, state.touchScale]);
+
+    // The theme's ambient sound, if it has one and the person turned sounds on.
+    // Desktop only; the phone has no Appearance settings.
+    React.useEffect(() => {
+        const theme = getTheme(state.themeId);
+        const setting = state.themeSound || {};
+        themeSoundPlayer().update({
+            sound: theme?.sound || null,
+            enabled: setting.on === true && !isNarrowViewport(),
+            volume: (Number(setting.volume) || 0) / 100,
+        });
+    }, [state.themeId, state.themeSound]);
+    React.useEffect(() => () => themeSoundPlayer().update({ enabled: false }), []);
 
     React.useEffect(() => {
         const reading = state.chatReading;

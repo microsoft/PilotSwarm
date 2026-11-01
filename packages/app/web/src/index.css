@@ -78,16 +78,6 @@
   --ps-scrollbar-thumb: color-mix(in srgb, var(--ps-border) 56%, var(--ps-surface));
   --ps-scrollbar-thumb-hover: color-mix(in srgb, var(--ps-modal-selected-border) 42%, var(--ps-border));
 }
-/* Holiday themes spend their accent on the card rail. The default mix
-   pulls that color a third of the way toward the page text, which turns
-   gold into cream and cranberry into mud. These three keep the raw color. */
-:root[data-ps-theme="hearth"],
-:root[data-ps-theme="string-lights"],
-:root[data-ps-theme="parcel"] {
-  --ps-chat-card-accent: var(--ps-accent);
-  --ps-chat-card-success: var(--ps-success);
-  --ps-chat-card-warning: var(--ps-warning);
-}
 
 /* Native Copilot tasks stay anchored to dispatch, with live detail in place. */
 .ps-native-tasks { margin: 12px 0 18px; border: 1px solid var(--ps-border); border-radius: var(--ps-radius-md); background: var(--ps-chat-card-header); overflow: hidden; }
@@ -11541,5 +11531,202 @@ textarea.ps-link-input {
     padding-left: 0;
     padding-right: 0;
     justify-content: center;
+  }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   HEARTH — a dark walnut room lit by the fire in the top-left corner.
+   Scoped to [data-ps-theme="hearth"]. The fireplace is the mark in the
+   header; its light falls across the banner and the room from that corner.
+   The room is walnut with a fine grain and a faint wood figure, both generated
+   noise like Duroxide's felt, so nothing is fetched and nothing bands.
+   Every movement here stops when the person asks for reduced motion.
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root[data-ps-theme="hearth"] {
+  --hearth-fire: 255, 138, 46;
+  --hearth-brass: #c08a3e;
+}
+
+:root[data-ps-theme="hearth"] body {
+  background-color: var(--ps-page-background);
+  background-image:
+    radial-gradient(ellipse 90vw 80vh at 0% 0%, rgba(var(--hearth-fire), 0.2), rgba(var(--hearth-fire), 0.07) 40%, rgba(var(--hearth-fire), 0) 72%),
+    url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22220%22%20height%3D%22220%22%3E%3Cfilter%20id%3D%22n%22%3E%3CfeTurbulence%20type%3D%22fractalNoise%22%20baseFrequency%3D%220.85%22%20numOctaves%3D%224%22%20seed%3D%227%22%20stitchTiles%3D%22stitch%22%2F%3E%3CfeColorMatrix%20type%3D%22saturate%22%20values%3D%220%22%2F%3E%3C%2Ffilter%3E%3Crect%20width%3D%22220%22%20height%3D%22220%22%20filter%3D%22url%28%23n%29%22%20opacity%3D%220.5%22%2F%3E%3C%2Fsvg%3E"),
+    url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22640%22%20height%3D%22320%22%3E%3Cfilter%20id%3D%22w%22%3E%3CfeTurbulence%20type%3D%22fractalNoise%22%20baseFrequency%3D%220.0035%200.11%22%20numOctaves%3D%223%22%20seed%3D%225%22%20stitchTiles%3D%22stitch%22%2F%3E%3CfeColorMatrix%20type%3D%22saturate%22%20values%3D%220%22%2F%3E%3C%2Ffilter%3E%3Crect%20width%3D%22640%22%20height%3D%22320%22%20filter%3D%22url%28%23w%29%22%20opacity%3D%220.55%22%2F%3E%3C%2Fsvg%3E");
+  background-blend-mode: normal, soft-light, soft-light;
+  background-repeat: no-repeat, repeat, repeat;
+  background-attachment: fixed, scroll, scroll;
+}
+
+/* The fire's light on the room. Screen only lifts, so text never darkens, and
+   it sits under menus and dialogs. It flickers slowly, and a little faster
+   and brighter while the fire can be heard. */
+:root[data-ps-theme="hearth"] body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background: radial-gradient(circle at 26px 26px, rgba(255, 170, 80, 0.22), rgba(var(--hearth-fire), 0.08) 22%, rgba(var(--hearth-fire), 0) 48%);
+  mix-blend-mode: screen;
+  animation: hearth-firelight 7s ease-in-out infinite;
+}
+:root[data-ps-theme="hearth"][data-ps-theme-sound="playing"] body::after {
+  filter: brightness(1.3);
+  animation-duration: 2.8s;
+}
+
+/* Panes let a little of the room through, so the light reaches them. */
+:root[data-ps-theme="hearth"] .ps-panel {
+  background-color: color-mix(in srgb, var(--ps-surface) 90%, transparent);
+  background-image: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22220%22%20height%3D%22220%22%3E%3Cfilter%20id%3D%22n%22%3E%3CfeTurbulence%20type%3D%22fractalNoise%22%20baseFrequency%3D%220.85%22%20numOctaves%3D%224%22%20seed%3D%227%22%20stitchTiles%3D%22stitch%22%2F%3E%3CfeColorMatrix%20type%3D%22saturate%22%20values%3D%220%22%2F%3E%3C%2Ffilter%3E%3Crect%20width%3D%22220%22%20height%3D%22220%22%20filter%3D%22url%28%23n%29%22%20opacity%3D%220.5%22%2F%3E%3C%2Fsvg%3E");
+  background-blend-mode: soft-light;
+}
+
+/* The banner: firelight from the mark, and a 14px band at its foot for the
+   mantel and the garland. Nothing hangs over the panes. */
+:root[data-ps-theme="hearth"] .portal-header {
+  position: relative;
+  padding-bottom: 22px;
+  border-bottom: 0;
+  backdrop-filter: none;
+  background:
+    radial-gradient(ellipse 560px 150px at 34px 24px, rgba(var(--hearth-fire), 0.36), rgba(var(--hearth-fire), 0.1) 45%, rgba(var(--hearth-fire), 0) 78%),
+    color-mix(in srgb, var(--ps-page-background) 92%, transparent);
+}
+:root[data-ps-theme="hearth"] .portal-header::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 14px;
+  pointer-events: none;
+  background:
+    url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22120%22%20height%3D%229%22%20viewBox%3D%220%200%20120%209%22%3E%3Cpath%20d%3D%22M0%201Q60%2013%20120%201%22%20fill%3D%22none%22%20stroke%3D%22%231d5a33%22%20stroke-width%3D%226%22%20stroke-linecap%3D%22round%22%2F%3E%3Cpath%20d%3D%22M0%201Q60%2013%20120%201%22%20fill%3D%22none%22%20stroke%3D%22%232c7a45%22%20stroke-width%3D%224.5%22%20stroke-dasharray%3D%223%203.5%22%20stroke-linecap%3D%22round%22%2F%3E%3Cpath%20d%3D%22M0%201Q60%2013%20120%201%22%20fill%3D%22none%22%20stroke%3D%22%2356b06f%22%20stroke-width%3D%221.4%22%20stroke-dasharray%3D%221%206%22%20stroke-linecap%3D%22round%22%2F%3E%3Ccircle%20cx%3D%2257%22%20cy%3D%226.6%22%20r%3D%221.8%22%20fill%3D%22%23ff5f56%22%2F%3E%3Ccircle%20cx%3D%2262%22%20cy%3D%227.2%22%20r%3D%221.8%22%20fill%3D%22%23ff5f56%22%2F%3E%3Ccircle%20cx%3D%2259.6%22%20cy%3D%224.8%22%20r%3D%221.8%22%20fill%3D%22%23e2453d%22%2F%3E%3Ccircle%20cx%3D%220%22%20cy%3D%221.2%22%20r%3D%222.2%22%20fill%3D%22%23c08a3e%22%2F%3E%3Ccircle%20cx%3D%22120%22%20cy%3D%221.2%22%20r%3D%222.2%22%20fill%3D%22%23c08a3e%22%2F%3E%3C%2Fsvg%3E") repeat-x 0 5px / 120px 9px,
+    linear-gradient(to bottom, var(--hearth-brass) 0 1.5px, #4a3218 1.5px 5px, #2a1b0c 5px 6px, transparent 6px);
+}
+:root[data-ps-theme="hearth"] .portal-header::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 14px;
+  z-index: 1;
+  pointer-events: none;
+  background: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%22120%22%20height%3D%229%22%20viewBox%3D%220%200%20120%209%22%3E%3Ccircle%20cx%3D%2231%22%20cy%3D%225.2%22%20r%3D%223%22%20fill%3D%22%23ffcb3d%22%20opacity%3D%220.28%22%2F%3E%3Ccircle%20cx%3D%2231%22%20cy%3D%225.2%22%20r%3D%221.4%22%20fill%3D%22%23ffd36b%22%2F%3E%3Ccircle%20cx%3D%2289%22%20cy%3D%225.2%22%20r%3D%223%22%20fill%3D%22%23ffcb3d%22%20opacity%3D%220.28%22%2F%3E%3Ccircle%20cx%3D%2289%22%20cy%3D%225.2%22%20r%3D%221.4%22%20fill%3D%22%23ffd36b%22%2F%3E%3C%2Fsvg%3E") repeat-x 0 5px / 120px 9px;
+  animation: hearth-twinkle 2.8s ease-in-out infinite;
+}
+
+/* The fireplace mark glows, and a few embers drift up from it. */
+:root[data-ps-theme="hearth"] .portal-logo-frame {
+  border: 1px solid var(--hearth-brass);
+  box-shadow: 0 0 14px rgba(var(--hearth-fire), 0.5), 0 0 3px rgba(var(--hearth-fire), 0.65);
+  animation: hearth-frame-glow 2.9s ease-in-out infinite;
+}
+:root[data-ps-theme="hearth"] .portal-header-brand {
+  position: relative;
+}
+:root[data-ps-theme="hearth"] .portal-header-brand::before,
+:root[data-ps-theme="hearth"] .portal-header-brand::after {
+  content: "";
+  position: absolute;
+  left: 30px;
+  top: 8px;
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: #ffb648;
+  box-shadow: 6px 5px 0 -0.3px #ff9a3c, -4px 9px 0 -0.4px #ffcf7a;
+  opacity: 0;
+  pointer-events: none;
+  animation: hearth-ember 5.2s linear infinite;
+}
+:root[data-ps-theme="hearth"] .portal-header-brand::after {
+  left: 20px;
+  top: 14px;
+  animation-duration: 6.1s;
+  animation-delay: 2.6s;
+}
+
+/* Chat card rails keep the raw candle amber instead of the default wash
+   toward the page text, which would turn it to cream. */
+:root[data-ps-theme="hearth"] {
+  --ps-chat-card-accent: var(--ps-accent);
+  --ps-chat-card-success: var(--ps-success);
+  --ps-chat-card-warning: var(--ps-warning);
+}
+
+@keyframes hearth-firelight {
+  0%, 100% { opacity: 0.85; }
+  18% { opacity: 1; }
+  31% { opacity: 0.78; }
+  52% { opacity: 0.95; }
+  70% { opacity: 0.82; }
+  86% { opacity: 1; }
+}
+@keyframes hearth-twinkle {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+@keyframes hearth-frame-glow {
+  0%, 100% { box-shadow: 0 0 14px rgba(var(--hearth-fire), 0.5), 0 0 3px rgba(var(--hearth-fire), 0.65); }
+  40% { box-shadow: 0 0 20px rgba(var(--hearth-fire), 0.62), 0 0 4px rgba(var(--hearth-fire), 0.75); }
+  70% { box-shadow: 0 0 11px rgba(var(--hearth-fire), 0.42), 0 0 3px rgba(var(--hearth-fire), 0.6); }
+}
+@keyframes hearth-ember {
+  0% { transform: translate(0, 0); opacity: 0; }
+  12% { opacity: 0.9; }
+  100% { transform: translate(9px, -16px); opacity: 0; }
+}
+
+/* Theme marks may name a small movement (see THEME_ICON_MOTIONS in App.jsx).
+   Generic, so any theme can use them. */
+.portal-logo-theme .ps-icon-motion-flame,
+.portal-logo-theme .ps-icon-motion-flame-core {
+  transform-box: fill-box;
+  transform-origin: 50% 100%;
+}
+.portal-logo-theme .ps-icon-motion-glow {
+  transform-box: fill-box;
+  transform-origin: 50% 50%;
+  animation: ps-icon-glow 2.3s ease-in-out infinite;
+}
+.portal-logo-theme .ps-icon-motion-flame {
+  animation: ps-icon-flame 1.7s ease-in-out infinite;
+}
+.portal-logo-theme .ps-icon-motion-flame-core {
+  animation: ps-icon-flame-core 1.1s ease-in-out infinite;
+}
+@keyframes ps-icon-flame {
+  0%, 100% { transform: scale(1, 1) skewX(0deg); }
+  22% { transform: scale(0.95, 1.06) skewX(-3deg); }
+  48% { transform: scale(1.04, 0.96) skewX(2deg); }
+  74% { transform: scale(0.98, 1.04) skewX(-1deg); }
+}
+@keyframes ps-icon-flame-core {
+  0%, 100% { transform: scale(1, 1); }
+  35% { transform: scale(0.9, 1.12); }
+  70% { transform: scale(1.06, 0.92); }
+}
+@keyframes ps-icon-glow {
+  0%, 100% { opacity: 0.75; transform: scale(1); }
+  50% { opacity: 1; transform: scale(1.08); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root[data-ps-theme="hearth"] body::after,
+  :root[data-ps-theme="hearth"] .portal-header::before,
+  :root[data-ps-theme="hearth"] .portal-logo-frame,
+  .portal-logo-theme .ps-icon-motion-flame,
+  .portal-logo-theme .ps-icon-motion-flame-core,
+  .portal-logo-theme .ps-icon-motion-glow {
+    animation: none;
+  }
+  :root[data-ps-theme="hearth"] .portal-header-brand::before,
+  :root[data-ps-theme="hearth"] .portal-header-brand::after {
+    animation: none;
+    display: none;
   }
 }

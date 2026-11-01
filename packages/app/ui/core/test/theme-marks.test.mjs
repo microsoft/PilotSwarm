@@ -36,8 +36,6 @@ const ICON_THEMES = [
     { id: "winamp", label: "WinAMP" },
     { id: "duroxide", label: "Duroxide" },
     { id: "hearth", label: "Hearth" },
-    { id: "string-lights", label: "String lights" },
-    { id: "parcel", label: "Parcel" },
 ];
 
 for (const { id, label } of ICON_THEMES) {
@@ -173,16 +171,39 @@ test("Duroxide's mark is ONE path, so nonzero can punch its holes", () => {
     assert.equal(subpaths.length, 4, "hexagon outer + inner, gear/arrow outer + bore");
 });
 
-test("the holiday themes keep Failed and Done off the page color", () => {
-    for (const id of ["hearth", "string-lights", "parcel"]) {
-        const theme = getTheme(id);
-        assert.notEqual(theme.page.background, theme.terminal.red, `${id} ground is not Failed`);
-        assert.notEqual(theme.page.background, theme.terminal.green, `${id} ground is not Done`);
-        assert.notEqual(theme.terminal.cyan, theme.terminal.red, `${id} accent is not Failed`);
-        assert.notEqual(theme.terminal.cyan, theme.terminal.green, `${id} accent is not Done`);
+test("Hearth keeps Failed and Done off the page color and the accent", () => {
+    const theme = getTheme("hearth");
+    assert.notEqual(theme.page.background, theme.terminal.red, "the ground is not Failed");
+    assert.notEqual(theme.page.background, theme.terminal.green, "the ground is not Done");
+    assert.notEqual(theme.terminal.cyan, theme.terminal.red, "the accent is not Failed");
+    assert.notEqual(theme.terminal.cyan, theme.terminal.green, "the accent is not Done");
+    assert.ok(contrast(theme.terminal.cyan, theme.terminal.background) >= 4.5, "candle amber reads on the walnut");
+    assert.ok(contrast(theme.tui.border, theme.terminal.background) >= 3, "the copper frame divides");
+});
+
+test("Hearth's mark moves only by named motions, and its sound is described as data", () => {
+    const { icon, sound } = getTheme("hearth");
+    const motions = icon.paths.map((path) => path.motion).filter(Boolean);
+    assert.deepEqual([...new Set(motions)].sort(), ["flame", "flame-core", "glow"]);
+    for (const path of icon.paths) {
+        assert.ok(path.motion === undefined || /^[a-z-]+$/.test(path.motion), "a motion is a plain name");
     }
-    assert.notEqual(getTheme("parcel").terminal.red, getTheme("parcel").terminal.cyan,
-        "Parcel Failed must not share the ribbon");
+    assert.equal(sound.id, "fire");
+    assert.equal(sound.everySeconds, 30);
+    assert.equal(sound.playSeconds, 10);
+});
+
+test("only Hearth remains of the holiday themes", () => {
+    assert.equal(getTheme("parcel"), null);
+    assert.equal(getTheme("string-lights"), null);
+    assert.ok(listThemes().some((entry) => entry.id === "hearth"));
+});
+
+test("themes without a sound carry null, not a default", () => {
+    for (const entry of listThemes()) {
+        if (entry.id === "hearth") continue;
+        assert.equal(getTheme(entry.id).sound, null, `${entry.id} has no sound`);
+    }
 });
 
 test("Duroxide is a different theme from Rust, not a re-skin", () => {
