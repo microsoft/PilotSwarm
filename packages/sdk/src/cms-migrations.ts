@@ -16,6 +16,7 @@ import { turnControlMigration } from "./migrations/turn-control-0082.js";
 import { turnControlConvertMigration } from "./migrations/turn-control-0083.js";
 import { workflowV2Migration } from "./migrations/workflow-v2-0085.js";
 import { workflowV2SessionLifecycleMigration } from "./migrations/workflow-v2-0086.js";
+import { workflowV2KvPauseMigration } from "./migrations/workflow-v2-0087.js";
 
 function workflowSessionKindMigration(schema: string): string {
     const s = `"${schema}"`;
@@ -435,6 +436,7 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0084", name: "workflow_session_kind", sql: workflowSessionKindMigration(schema) },
         { version: "0085", name: "workflow_v2", sql: workflowV2Migration(schema) },
         { version: "0086", name: "workflow_v2_session_lifecycle", sql: workflowV2SessionLifecycleMigration(schema) },
+        { version: "0087", name: "workflow_v2_kv_pause", sql: workflowV2KvPauseMigration(schema) },
     ];
 }
 

@@ -55,23 +55,26 @@ import {
 
 export const WORKFLOW_V2_CONTROLLER_NAME = "workflow-v2-controller";
 /**
- * The controller's history shape. 1.3.0 reads its commands before every
- * admission, retries a run-ending write on durable timers, and enters the
- * workflow's catch-all state at most once per run by any route: an
+ * The controller's history shape. 1.4.0 reads its commands before every
+ * admission, retries a run-ending write on durable timers, enters the
+ * workflow's catch-all state at most once per run by any route (an
  * unhandled runtime error of a script, or a terminal's invalid output, goes
- * there while it has not run, and any later route to it fails the run.
+ * there while it has not run, and any later route to it fails the run), and
+ * waits while its run is paused: a refused admission of a paused run counts
+ * no ordinal or step and is tried again after a resume.
  */
-export const WORKFLOW_V2_CONTROLLER_VERSION = "1.3.0";
+export const WORKFLOW_V2_CONTROLLER_VERSION = "1.4.0";
 /**
  * Controller versions written only by pre-release builds, in ascending order
  * (duroxide registers an orchestration's versions only in that order). Their
  * histories are not replayed (this code would make different decisions; 1.2.0
- * re-entered the catch-all state after an explicit route into it); an
+ * re-entered the catch-all state after an explicit route into it, and 1.3.0
+ * ended its controller when an admission was refused for a pause); an
  * instance of one fails at once with this reason, so its run shows
  * needsRecovery and update_workflow recover ends it visibly. Its history and
  * rows are kept.
  */
-export const WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS: readonly string[] = ["1.0.0", "1.1.0", "1.2.0"];
+export const WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS: readonly string[] = ["1.0.0", "1.1.0", "1.2.0", "1.3.0"];
 export const WORKFLOW_V2_EFFECT_NAME = "workflow-v2-effect";
 export const WORKFLOW_V2_EFFECT_VERSION = "1.0.0";
 /**
@@ -221,7 +224,7 @@ function textOrNull(value: unknown, what: string): string | null {
 }
 
 function isRunStatus(value: unknown): value is WorkflowRunStatus {
-    return value === "admitted" || value === "running" || value === "completed" || value === "failed" || value === "cancelled";
+    return value === "admitted" || value === "running" || value === "paused" || value === "completed" || value === "failed" || value === "cancelled";
 }
 
 function parseControllerInput(value: unknown): ControllerInput {
@@ -480,6 +483,7 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
 
         // 1. Admit the next node of every cursor that is not waiting on work.
         let rerouted = false;
+        let paused = false;
         for (const cursor of state.cursors) {
             if (cursor.pending !== null) continue;
             const node: ControllerPlan["nodes"][string] | undefined = plan.nodes[cursor.nodeId];
@@ -492,17 +496,22 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
             }
             const key = `${cursor.scopeId}/${cursor.nodeId}`;
             const ordinal = (state.ordinals[key] ?? 0) + 1;
-            state.ordinals[key] = ordinal;
-            state.steps += 1;
-            admittedThisExecution += 1;
-            // Admitting the catch-all state, by any route, uses its one entry in this run.
-            if (cursor.nodeId === plan.catchAll) state.catchAllEntered = true;
             publishStatus(ctx, input, plan, state, "running");
             const entered = parseEnter(yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.enter, {
                 runId: input.runId, scopeId: cursor.scopeId, nodeId: cursor.nodeId, ordinal,
                 predecessorId: cursor.predecessorId, arrivalRoute: cursor.arrivalRoute,
             }, STORE_RETRY));
-            if (!entered.admitted) return { runId: input.runId, status: entered.status, outcome: entered.outcome };
+            if (!entered.admitted) {
+                // A paused run admits nothing until it is resumed; an ended one is done.
+                if (entered.status === "paused") { paused = true; break; }
+                return { runId: input.runId, status: entered.status, outcome: entered.outcome };
+            }
+            // The ordinal and the step count only once the admission is stored.
+            state.ordinals[key] = ordinal;
+            state.steps += 1;
+            admittedThisExecution += 1;
+            // Admitting the catch-all state, by any route, uses its one entry in this run.
+            if (cursor.nodeId === plan.catchAll) state.catchAllEntered = true;
             if (node.type === "terminal") {
                 // While the catch-all state has not run, a terminal whose output
                 // fails its contract hands that error to it instead of failing
@@ -529,6 +538,22 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
         }
         // A terminal's output error went to the catch-all state: admit that next.
         if (rerouted) continue;
+
+        // 1a. Paused: wait for a resume (its wake, or the backstop timer that
+        // tries the admission again) or a lifecycle command. Results of work
+        // admitted before the pause are kept and routed after the resume.
+        if (paused) {
+            // Session statuses have no "paused"; the run status (read_workflow) says paused.
+            publishStatus(ctx, input, plan, state, "waiting");
+            const raced = parseRace(yield ctx.race(ctx.dequeueEvent(WORKFLOW_COMMAND_QUEUE), ctx.scheduleTimer(plan.wakeBackstopMs)));
+            if (raced.index === 0) {
+                const command = parseWorkflowCommand(raced.value);
+                if (command) return yield* applyCommand(ctx, input, command);
+            }
+            idleWaits += 1;
+            if (idleWaits >= WORKFLOW_V2_IDLE_WAITS_PER_EXECUTION) return yield* continueAsNew();
+            continue;
+        }
 
         // 2. Route every pending node execution that has a stored result.
         const pendingIds = state.cursors.flatMap(cursor => cursor.pending === null ? [] : [cursor.pending]);
@@ -738,15 +763,17 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         if (!node) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Pinned definition has no state ${nodeId}.`);
         return node;
     };
-    const scopeFor = (run: WorkflowRunRow, incoming: JsonValue, runtimeErrorValue: JsonValue): BindingScope => ({
-        inputs: run.inputs, input: incoming, kv: {}, runtime: { error: runtimeErrorValue },
+    const scopeFor = (run: WorkflowRunRow, incoming: JsonValue, runtimeErrorValue: JsonValue, kv: JsonValue): BindingScope => ({
+        inputs: run.inputs, input: incoming, kv: isJsonObject(kv) ? kv : {}, runtime: { error: runtimeErrorValue },
     });
     /** The value arriving at a node from its exact predecessor (or the initial input). */
-    const arrival = async (run: WorkflowRunRow, ir: WorkflowIR, nodeId: string, predecessorId: string | null, arrivalRoute: string | null)
+    /** The KV a node execution was admitted with (an execution from before KV revisions sees an empty map). */
+    const kvOf = (runId: string, revision: number | null): Promise<JsonValue> => revision === null ? Promise.resolve({}) : store.readKv(runId, revision);
+    const arrival = async (run: WorkflowRunRow, ir: WorkflowIR, kv: JsonValue, nodeId: string, predecessorId: string | null, arrivalRoute: string | null)
         : Promise<{ incoming: JsonValue; runtimeError: JsonValue } | { failure: NodeResultInput }> => {
         if (predecessorId === null) {
             try {
-                return { incoming: evaluateBindingTemplate(ir.initialInput, scopeFor(run, null, null), "initialInput"), runtimeError: null };
+                return { incoming: evaluateBindingTemplate(ir.initialInput, scopeFor(run, null, null, kv), "initialInput"), runtimeError: null };
             } catch (error) {
                 if (error instanceof WorkflowBindingError) return { failure: runtimeError("invalid_input", error.message) };
                 throw error;
@@ -813,15 +840,28 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         const ir = await irOf(run);
         const node = nodeOf(ir, nodeId);
         const nodeExecutionId = nodeExecutionIdFor(runId, scopeId, nodeId, ordinal);
+        // A retry after the admission committed returns that admission: its
+        // input was evaluated with the KV revision it pinned, whatever changed since.
+        const admitted = await store.readNodeExecution(nodeExecutionId);
+        if (admitted) {
+            if (admitted.runId !== runId || admitted.scopeId !== scopeId || admitted.nodeId !== nodeId || admitted.ordinal !== ordinal
+                || admitted.predecessorId !== predecessorId || admitted.arrivalRoute !== arrivalRoute) {
+                throw new WorkflowStoreError("NONDETERMINISTIC_ADMISSION", `Node execution ${nodeExecutionId} was admitted with different coordinates.`);
+            }
+            return { admitted: true, nodeExecutionId, state: admitted.state };
+        }
+        // The input is evaluated with the run's current KV revision, which the admission pins.
+        const kvRevision = run.kvRevision;
+        const kv = await store.readKv(runId, kvRevision);
 
         let immediate: NodeResultInput | null = null;
         let value: JsonValue = null;
-        const arrived = await arrival(run, ir, nodeId, predecessorId, arrivalRoute);
+        const arrived = await arrival(run, ir, kv, nodeId, predecessorId, arrivalRoute);
         if ("failure" in arrived) immediate = arrived.failure;
         else {
             value = arrived.incoming;
             if (node.type === "script" && node.hasInput) {
-                try { value = evaluateBindingTemplate(node.input, scopeFor(run, arrived.incoming, arrived.runtimeError), `states.${nodeId}.input`); }
+                try { value = evaluateBindingTemplate(node.input, scopeFor(run, arrived.incoming, arrived.runtimeError, kv), `states.${nodeId}.input`); }
                 catch (error) {
                     if (!(error instanceof WorkflowBindingError)) throw error;
                     immediate = runtimeError("invalid_input", error.message);
@@ -841,11 +881,11 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         }
         if (immediate) immediate = { ...immediate, winner: "controller" };
         const result = await store.enterNode({
-            runId, nodeExecutionId, scopeId, nodeId, ordinal, nodeType: node.type, predecessorId, arrivalRoute, inputText, immediate,
+            runId, nodeExecutionId, scopeId, nodeId, ordinal, nodeType: node.type, predecessorId, arrivalRoute, inputText, kvRevision, immediate,
             projection: {
                 sessionId: run.workflowSessionId,
                 events: [{ eventType: "workflow.state_started", data: {
-                    runId, nodeExecutionId, stateId: nodeId, scopeId, ordinal, type: node.type, step: ordinal,
+                    runId, nodeExecutionId, stateId: nodeId, scopeId, ordinal, type: node.type, step: ordinal, kvRevision,
                     ...(arrivalRoute === CATCH_ALL_ROUTE ? { catchAll: true, failedNodeExecutionId: predecessorId } : {}),
                     ...(immediate ? { immediateOutcome: immediate.outcome } : {}),
                 } }],
@@ -909,7 +949,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         let terminalNode: { nodeExecutionId: string; result: NodeResultInput } | null = null;
         let summary: string | null = null;
         if (typeof input.terminalNodeExecutionId === "string") {
-            // Set only while the run's catch-all state has not run (controller 1.3.0).
+            // Set only while the run's catch-all state has not run (controller 1.3.0 and later).
             const routeOutputErrors = input.routeOutputErrors === true;
             const ir = await irOf(run);
             const executed = await store.readNodeExecution(input.terminalNodeExecutionId);
@@ -932,7 +972,9 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 const predecessor = executed.predecessorId ? await store.readNodeExecution(executed.predecessorId) : null;
                 const errorValue = predecessor?.resultKind === "runtime_error" ? predecessor.error : null;
                 try {
-                    const output = node.hasOutput ? evaluateBindingTemplate(node.output, scopeFor(run, executed.input, errorValue), `states.${node.id}.output`) : null;
+                    const output = node.hasOutput
+                        ? evaluateBindingTemplate(node.output, scopeFor(run, executed.input, errorValue, await kvOf(run.runId, executed.kvRevision)), `states.${node.id}.output`)
+                        : null;
                     // A terminal's own schema adds to the workflow contract; it never replaces it.
                     const contracts = [node.outputSchema, node.outcome === "succeeded" ? ir.outputSchema : null]
                         .filter((name): name is string => name !== null);
@@ -1102,10 +1144,12 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             tools.executor ??= await deps.openToolExecutor(run.workflowSessionId, binding, executed.ordinal);
             return tools.executor.call(call.name, call.arguments);
         };
+        // The script sees the KV snapshot its node execution pinned at admission.
+        const scriptKv = await kvOf(run.runId, executed.kvRevision);
         const scriptContext = (attempt: number): Record<string, unknown> => ({
             sessionId: run.workflowSessionId, workflowSessionId: run.workflowSessionId, runId: run.runId, mode: run.mode,
             workflow: ir.name, version: ir.version, node: node.id, nodeExecutionId: executed.nodeExecutionId,
-            step: executed.ordinal, attempt, inputs: run.inputs, input: executed.input, kv: {},
+            step: executed.ordinal, attempt, inputs: run.inputs, input: executed.input, kv: scriptKv,
         });
         // A deletion or cancellation that commits after the entry stops the
         // started script through this check. A failed check leaves it running;

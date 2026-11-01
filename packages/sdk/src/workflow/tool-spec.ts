@@ -57,10 +57,11 @@ export const SPAWN_WORKFLOW_TOOL_SPEC = {
         + "The workflow is your child: stop it with cancel_agent or delete_agent; it takes no messages.\n"
         + "Version 2 (apiVersion: pilotswarm.dev/v2-draft) adds review before execution: spawn_workflow saves a DRAFT that runs nothing "
         + "(state: published publishes revision 1; add start: true to also start its one live run). Drafts may be invalid and come back with diagnostics. "
-        + "Use update_workflow to replace the draft, publish the exact reviewed definitionHash, start, or recover a run that read_workflow shows as needsRecovery; "
+        + "Use update_workflow to replace the draft, publish the exact reviewed definitionHash, start, set_vars (the run's open KV, read as context.kv), "
+        + "pause, resume or cancel the run, or recover a run that read_workflow shows as needsRecovery; "
         + "read_workflow shows definition, graph and runs and changes nothing. "
         + "V2 states: script (source, optional input binding, inputSchema/outputSchema, transition.next routes; runtime errors route by code or 'failure') "
-        + "and terminal (outcome, output binding). Bindings are whole-string ${inputs.x}, ${input.x} or ${runtime.error}; schemas are JSON Schema 2020-12 under schemas, referenced as {$ref: '#/schemas/Name'}. "
+        + "and terminal (outcome, output binding). Bindings are whole-string ${inputs.x}, ${input.x}, ${kv.x} (the KV snapshot the state was admitted with) or ${runtime.error}; schemas are JSON Schema 2020-12 under schemas, referenced as {$ref: '#/schemas/Name'}. "
         + "A v2 script reports its result with await setResult(outcome, output) (or a final stdout line {\"outcome\": ..., \"output\": ...}); "
         + "values must be plain JSON (no NaN, Infinity, undefined, getters, Date or class instances), otherwise the state fails with invalid_output; "
         + "a script that exits non-zero without reporting a result fails with execution_failed. "
@@ -96,6 +97,10 @@ export const SPAWN_WORKFLOW_TOOL_SPEC = {
                 type: "boolean",
                 description: "v2 only, with state: published: also start the live run with inputs.",
             },
+            vars: {
+                type: "object",
+                description: "v2 only, with start: the live run's initial open KV map (any keys, JSON values); states read it as context.kv or ${kv.key}.",
+            },
         },
         required: ["yaml"],
     },
@@ -110,4 +115,6 @@ export interface SpawnWorkflowToolArgs {
     state?: "draft" | "published";
     /** v2 documents only, with state: published. */
     start?: boolean;
+    /** v2 documents only, with start: the run's initial open KV. */
+    vars?: Record<string, unknown>;
 }

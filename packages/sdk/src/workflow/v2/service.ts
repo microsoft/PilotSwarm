@@ -14,13 +14,19 @@ import {
     workflowNotifyInstanceId,
     type ControllerInput,
 } from "./runtime.js";
+import { WORKFLOW_COMMAND_QUEUE } from "../orchestration.js";
 import {
     ACTIVE_RUN_STATUSES,
+    ADMITTING_RUN_STATUSES,
+    checkedKvText,
+    isKvKey,
+    runNotBegun,
     WorkflowStoreError,
     type RunAdmission,
     type StoredOperation,
     type WorkflowActor,
     type WorkflowDefinitionReceipt,
+    type WorkflowRunCommandReceipt,
     type WorkflowRunRow,
     type WorkflowRunStatus,
     type WorkflowStore,
@@ -40,6 +46,7 @@ export interface WorkflowV2Host {
     duroxideClient: {
         startOrchestrationVersioned(instanceId: string, name: string, input: unknown, version: string): Promise<void>;
         getStatus(instanceId: string): Promise<{ status: string; error?: string }>;
+        enqueueEvent(instanceId: string, queueName: string, data: string): Promise<void>;
     };
 }
 
@@ -53,7 +60,8 @@ export interface CreateWorkflowV2Request {
     /** Publish revision 1 now (requires a valid definition). */
     publish?: boolean;
     /** Start the live run now (requires publish). */
-    start?: { inputs: JsonValue } | null;
+    /** inputs: static run inputs; vars: the initial open KV map (revision 1). */
+    start?: { inputs: JsonValue; vars?: { [key: string]: JsonValue } } | null;
     notifyParent?: boolean;
     /** Host-captured tool grant for scripts; never from YAML or a public payload. */
     binding?: WorkflowToolBinding | null;
@@ -83,11 +91,19 @@ function validateRunInputs(compiled: WorkflowCompileResult, inputs: JsonValue): 
     }
 }
 
-function liveAdmission(workflowSessionId: string, inputs: JsonValue): RunAdmission {
+function liveAdmission(workflowSessionId: string, inputs: JsonValue, vars: { [key: string]: JsonValue } | null): RunAdmission {
     return {
         runId: randomUUID(), mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId),
-        inputsText: boundedCanonicalJson(inputs, "Workflow inputs"), testAgentMode: null,
+        inputsText: boundedCanonicalJson(inputs, "Workflow inputs"), kvText: checkedKvText(vars ?? {}), testAgentMode: null,
     };
+}
+
+/**
+ * Initial KV as part of a request digest: absent when empty, so a request
+ * without vars keeps the digest earlier builds recorded for it.
+ */
+function varsDigestPart(vars: { [key: string]: JsonValue } | null | undefined): { vars?: string } {
+    return vars && Object.keys(vars).length > 0 ? { vars: canonicalJson(vars) } : {};
 }
 
 /**
@@ -177,13 +193,13 @@ async function notifyRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxide
 
 /**
  * Start the controller of a run whose recover receipt says it was
- * dispatched, while the run is still admitted (nothing has begun it). The
+ * dispatched, while its controller has not begun it. The
  * receipt was stored first, so a repeat of the request reaches this again
  * after an interruption; duroxide ignores a second start of an instance, and
  * the run's stored controller instance id never changes.
  */
 async function dispatchRecoveredRun(host: Pick<WorkflowV2Host, "duroxideClient">, run: WorkflowRunRow): Promise<void> {
-    if (run.status !== "admitted") return;
+    if (!runNotBegun(run)) return;
     const input: ControllerInput = { v: 2, workflowSessionId: run.workflowSessionId, runId: run.runId };
     await host.duroxideClient.startOrchestrationVersioned(run.controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME, input, WORKFLOW_V2_CONTROLLER_VERSION);
 }
@@ -191,10 +207,11 @@ async function dispatchRecoveredRun(host: Pick<WorkflowV2Host, "duroxideClient">
 /**
  * Recover an active run whose controller can no longer end it, on an
  * explicit request (update_workflow operation recover):
- * - admitted with no controller instance (the dispatch after admission was
- *   lost): dispatch it again. The receipt and the workflow.recovered event
- *   are stored before the start, so the receipt of a request that started
- *   the controller always says dispatched; a repeat starts it again;
+ * - not begun (admitted, or paused before it began) with no controller
+ *   instance (the dispatch after admission was lost): dispatch it again.
+ *   The receipt and the workflow.recovered event are stored before the
+ *   start, so the receipt of a request that started the controller always
+ *   says dispatched; a repeat starts it again;
  * - the controller ended, or its instance is gone, while the run is still
  *   active (its finalization attempts ran out, it was terminated, or its
  *   history is from an unsupported pre-release controller): end the run as
@@ -235,7 +252,7 @@ export async function recoverWorkflowV2Run(host: Pick<WorkflowV2Host, "store" | 
 
     const controller = await inspectWorkflowV2Controller(host, run);
     let receipt: WorkflowV2RecoverReceipt = { runId, action: "none", status: run.status, controller };
-    if (controller.needsRecovery && controller.status === "NotFound" && run.status === "admitted") {
+    if (controller.needsRecovery && controller.status === "NotFound" && runNotBegun(run)) {
         const dispatching: WorkflowV2RecoverReceipt = { runId, action: "dispatched", status: run.status, controller };
         let intent: { recorded: boolean; run: WorkflowRunRow };
         try {
@@ -311,7 +328,7 @@ export const WORKFLOW_V2_CREATE_FINGERPRINT = 3;
 
 function createFingerprints(request: CreateWorkflowV2Request, yamlSha256: string, publish: boolean, startInputs: JsonValue): { v1: string; v2: string; v3: string } {
     const content = {
-        kind: "create", yamlSha256, publish, start: request.start ? { inputs: startInputs } : null,
+        kind: "create", yamlSha256, publish, start: request.start ? { inputs: startInputs, ...varsDigestPart(request.start.vars) } : null,
         parentSessionId: request.parentSessionId, notifyParent: request.notifyParent !== false,
     };
     const owner = request.owner ? { provider: request.owner.provider, subject: request.owner.subject } : null;
@@ -341,6 +358,8 @@ export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWork
     const publish = request.publish === true || Boolean(request.start);
     const startInputs = request.start ? request.start.inputs : null;
     if (request.start) validateRunInputs(compiled, request.start.inputs);
+    // Built before anything is written: inputs or vars over their limits refuse the request without a claim.
+    const admission = request.start ? liveAdmission(request.workflowSessionId, request.start.inputs, request.start.vars ?? null) : null;
     const fingerprints = createFingerprints(request, compiled.yamlSha256, publish, startInputs);
     const requestSha256 = fingerprints.v3;
     // Digests a stored receipt of this request may carry (receipts are never rewritten).
@@ -407,7 +426,7 @@ export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWork
         requestSha256,
         acceptedRequestSha256,
         publish,
-        start: request.start ? liveAdmission(request.workflowSessionId, request.start.inputs) : null,
+        start: admission,
         title: `Workflow: ${compiled.name ?? "draft"}`,
     });
     await dispatchWorkflowV2Run(host, stored.receipt);
@@ -417,8 +436,8 @@ export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWork
 export type WorkflowV2Command =
     | { operation: "replace_definition"; yaml: string; expectedRevision: number }
     | { operation: "publish"; expectedRevision: number; definitionHash: string }
-    | { operation: "publish_and_start"; expectedRevision: number; definitionHash: string; inputs: JsonValue }
-    | { operation: "start"; definitionHash: string; inputs: JsonValue };
+    | { operation: "publish_and_start"; expectedRevision: number; definitionHash: string; inputs: JsonValue; vars?: { [key: string]: JsonValue } }
+    | { operation: "start"; definitionHash: string; inputs: JsonValue; vars?: { [key: string]: JsonValue } };
 
 /** Apply one typed definition-lifecycle command with idempotency by operation id. */
 export async function updateWorkflowV2(
@@ -458,8 +477,9 @@ export async function updateWorkflowV2(
             workflowSessionId, expectedRevision: command.expectedRevision, definitionHash: command.definitionHash,
             operationId: context.operationId,
             requestSha256: jsonSha256({ kind: command.operation, expectedRevision: command.expectedRevision, definitionHash: command.definitionHash,
-                ...(startInputs ? { inputs: canonicalJson(startInputs.value) } : {}) }),
-            start: startInputs ? liveAdmission(workflowSessionId, startInputs.value) : null,
+                ...(startInputs ? { inputs: canonicalJson(startInputs.value) } : {}),
+                ...(command.operation === "publish_and_start" ? varsDigestPart(command.vars) : {}) }),
+            start: startInputs ? liveAdmission(workflowSessionId, startInputs.value, command.operation === "publish_and_start" ? command.vars ?? null : null) : null,
         });
     } else {
         const definition = await host.store.readDefinition(workflowSessionId);
@@ -473,10 +493,83 @@ export async function updateWorkflowV2(
         }
         stored = await host.store.startLive({
             workflowSessionId, definitionHash: command.definitionHash, operationId: context.operationId,
-            requestSha256: jsonSha256({ kind: "start", definitionHash: command.definitionHash, inputs: canonicalJson(command.inputs) }),
-            start: liveAdmission(workflowSessionId, command.inputs),
+            requestSha256: jsonSha256({ kind: "start", definitionHash: command.definitionHash, inputs: canonicalJson(command.inputs), ...varsDigestPart(command.vars) }),
+            start: liveAdmission(workflowSessionId, command.inputs, command.vars ?? null),
         });
     }
     if (stored.receipt.run) await dispatchWorkflowV2Run(host, stored.receipt);
+    return stored;
+}
+
+export type WorkflowV2RunCommand =
+    | { operation: "set_vars"; runId: string | null; set: { [key: string]: JsonValue }; delete: string[]; expectedKvRevision: number }
+    | { operation: "pause" | "resume" | "cancel"; runId: string | null; reason: string | null };
+
+/** The run a run command targets: the named run of this workflow, or its live run. */
+async function commandRun(host: Pick<WorkflowV2Host, "store">, workflowSessionId: string, runId: string | null): Promise<WorkflowRunRow> {
+    const runs = await host.store.listRuns(workflowSessionId);
+    const run = runId ? runs.find(item => item.runId === runId) : runs.find(item => item.mode === "live");
+    if (!run) throw new WorkflowStoreError("RUN_NOT_FOUND", runId ? `Run ${runId} is not a run of this workflow.` : "This workflow has no live run.");
+    return run;
+}
+
+/**
+ * Apply one run command with idempotency by operation id:
+ * - set_vars: one atomic set/delete batch on the run's open KV at the
+ *   expected revision (null is a value; deletion is explicit);
+ * - pause / resume: stop or restart admitting node executions (admitted work
+ *   finishes; a cancel, a deletion and KV updates still apply while paused);
+ * - cancel: send the run's controller its cancel command. The receipt says
+ *   the command was accepted, not that the run has ended: the first
+ *   run-ending transaction decides, and read_workflow shows the result.
+ */
+export async function controlWorkflowV2Run(
+    host: Pick<WorkflowV2Host, "store" | "duroxideClient">,
+    workflowSessionId: string,
+    command: WorkflowV2RunCommand,
+    context: { actor: WorkflowActor; operationId: string },
+): Promise<StoredOperation<WorkflowRunCommandReceipt>> {
+    requireOperationId(context.operationId);
+    const run = await commandRun(host, workflowSessionId, command.runId);
+    if (command.operation === "set_vars") {
+        for (const key of [...Object.keys(command.set), ...command.delete]) {
+            if (!isKvKey(key)) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "KV keys are 1-128 characters of valid text.");
+        }
+        if (new Set(command.delete).size !== command.delete.length || command.delete.some(key => Object.hasOwn(command.set, key))) {
+            throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "delete must list distinct keys that set does not also name.");
+        }
+        return host.store.setRunVars({
+            workflowSessionId, runId: run.runId, set: command.set, delete: command.delete, expectedRevision: command.expectedKvRevision,
+            operationId: context.operationId, actor: context.actor,
+            requestSha256: jsonSha256({ kind: "set_vars", runId: run.runId, set: canonicalJson(command.set), delete: [...command.delete].sort(),
+                expectedRevision: command.expectedKvRevision }),
+        });
+    }
+    const requestSha256 = jsonSha256({ kind: command.operation, runId: run.runId, reason: command.reason });
+    if (command.operation === "cancel") {
+        const stored = await host.store.recordRunCancelRequest({ workflowSessionId, runId: run.runId, operationId: context.operationId, requestSha256 });
+        if (ACTIVE_RUN_STATUSES.includes(stored.run.status)) {
+            await host.duroxideClient.enqueueEvent(stored.run.controllerInstanceId, WORKFLOW_COMMAND_QUEUE, JSON.stringify({
+                type: "cmd", cmd: "cancel", id: `cancel-${context.operationId}`,
+                args: { reason: command.reason ?? "Cancelled by its parent" },
+                requestedBy: context.actor.kind === "agent" ? context.actor.sessionId : null,
+            }));
+        }
+        return { receipt: stored.receipt, replayed: stored.replayed };
+    }
+    const stored = await host.store.setRunPaused({
+        workflowSessionId, runId: run.runId, pause: command.operation === "pause", operationId: context.operationId,
+        requestSha256, actor: context.actor, reason: command.reason,
+    });
+    // Resume: tell the waiting controller at once (its backstop timer would
+    // also find it). The resume is stored first, so a repeat of the request
+    // sends this hint again; a wake changes nothing by itself.
+    if (command.operation === "resume") {
+        const current = await host.store.readRun(run.runId);
+        if (current && ADMITTING_RUN_STATUSES.includes(current.status)) {
+            await host.duroxideClient.enqueueEvent(run.controllerInstanceId, WORKFLOW_COMMAND_QUEUE,
+                JSON.stringify({ type: "workflow-wake", runId: run.runId, reason: "resume" }));
+        }
+    }
     return stored;
 }

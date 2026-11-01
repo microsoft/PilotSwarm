@@ -1,9 +1,9 @@
 import type { Pool, PoolClient } from "pg";
 import { parseDiagnostics, parseWorkflowIr, WORKFLOW_V2_API_VERSION, type WorkflowCompileResult, type WorkflowDiagnostic, type WorkflowIR } from "./compiler.js";
-import { canonicalJson, isJsonObject, jsonbSafeText, jsonbSafeValue, parseStoredJson, sha256Hex, type JsonValue } from "./json.js";
+import { canonicalJson, isJsonObject, isStorableText, jsonbSafeText, jsonbSafeValue, parseStoredJson, sha256Hex, type JsonValue } from "./json.js";
 
 /**
- * PostgreSQL persistence for workflow v2 (tables from migration 0085).
+ * PostgreSQL persistence for workflow v2 (tables from migrations 0085 and 0087).
  *
  * Every definition mutation runs in one transaction that first locks the
  * definition row (or creates it with INSERT ... ON CONFLICT, which waits for
@@ -19,9 +19,20 @@ export type WorkflowActor =
     | { kind: "system"; name: string };
 
 export type WorkflowDefinitionState = "draft" | "published" | "deleted";
-export type WorkflowRunStatus = "admitted" | "running" | "completed" | "failed" | "cancelled";
+export type WorkflowRunStatus = "admitted" | "running" | "paused" | "completed" | "failed" | "cancelled";
 export type WorkflowRunMode = "live" | "test";
-export const ACTIVE_RUN_STATUSES: readonly WorkflowRunStatus[] = ["admitted", "running"];
+/** A run that has not ended: it can still be cancelled, deleted, recovered and finish its admitted work. */
+export const ACTIVE_RUN_STATUSES: readonly WorkflowRunStatus[] = ["admitted", "running", "paused"];
+/** A run that may admit a new node execution (a paused run admits none). */
+export const ADMITTING_RUN_STATUSES: readonly WorkflowRunStatus[] = ["admitted", "running"];
+
+/** A run whose controller has not begun it: admitted, or paused before it began. */
+export function runNotBegun(run: { status: WorkflowRunStatus; pausedFrom: "admitted" | "running" | null }): boolean {
+    return run.status === "admitted" || (run.status === "paused" && run.pausedFrom === "admitted");
+}
+
+/** Open KV limits (design D07: proposed defaults, enforced on every update). */
+export const WORKFLOW_V2_KV_LIMITS = { maxKeys: 1_000, maxKeyLength: 128, maxValueBytes: 256 * 1024, maxTotalBytes: 1024 * 1024 } as const;
 
 export class WorkflowStoreError extends Error {
     constructor(readonly code: string, message: string, readonly details: JsonValue = null) {
@@ -112,6 +123,11 @@ export interface WorkflowRunRow {
     createdAt: Date;
     updatedAt: Date;
     finishedAt: Date | null;
+    /** The current open KV map and its revision (each revision is also kept immutably). */
+    kv: JsonValue;
+    kvRevision: number;
+    /** While paused: the status a resume returns to. */
+    pausedFrom: "admitted" | "running" | null;
 }
 
 export type NodeResultKind = "business" | "runtime_error";
@@ -135,6 +151,8 @@ export interface WorkflowNodeExecutionRow {
     hasOutput: boolean;
     winner: string | null;
     effectAttempts: number;
+    /** The KV revision pinned when this node execution was admitted (null before migration 0087). */
+    kvRevision: number | null;
     enteredAt: Date;
     completedAt: Date | null;
 }
@@ -225,7 +243,7 @@ function revisionFrom(row: Row): WorkflowRevisionRow {
     };
 }
 
-const RUN_STATUSES: readonly WorkflowRunStatus[] = ["admitted", "running", "completed", "failed", "cancelled"];
+const RUN_STATUSES: readonly WorkflowRunStatus[] = ["admitted", "running", "paused", "completed", "failed", "cancelled"];
 function isRunStatus(value: string): value is WorkflowRunStatus {
     return (RUN_STATUSES as readonly string[]).includes(value);
 }
@@ -245,7 +263,14 @@ function runFrom(row: Row): WorkflowRunRow {
         terminalNodeId: strOrNull(row, "terminal_node_id"), terminalOutcome: strOrNull(row, "terminal_outcome"),
         terminalOutput: jsonOrNull(row, "terminal_output"), terminalError: jsonOrNull(row, "terminal_error"),
         createdAt: date(row, "created_at"), updatedAt: date(row, "updated_at"), finishedAt: dateOrNull(row, "finished_at"),
+        kv: parseStoredJson(str(row, "kv"), "kv"), kvRevision: int(row, "kv_revision"), pausedFrom: pausedFromOf(row),
     };
+}
+
+function pausedFromOf(row: Row): "admitted" | "running" | null {
+    const value = strOrNull(row, "paused_from");
+    if (value !== null && value !== "admitted" && value !== "running") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Unknown paused_from ${value}.`);
+    return value;
 }
 
 function nodeFrom(row: Row): WorkflowNodeExecutionRow {
@@ -260,7 +285,7 @@ function nodeFrom(row: Row): WorkflowNodeExecutionRow {
         input: parseStoredJson(str(row, "input"), "input"), inputSha256: str(row, "input_sha256"), state,
         outcome: strOrNull(row, "outcome"), resultKind, output: jsonOrNull(row, "output"), error: jsonOrNull(row, "error"),
         hasOutput: row.output !== null && row.output !== undefined,
-        winner: strOrNull(row, "winner"), effectAttempts: int(row, "effect_attempts"),
+        winner: strOrNull(row, "winner"), effectAttempts: int(row, "effect_attempts"), kvRevision: intOrNull(row, "kv_revision"),
         enteredAt: date(row, "entered_at"), completedAt: dateOrNull(row, "completed_at"),
     };
 }
@@ -310,7 +335,7 @@ export function nodeExecutionIdFor(runId: string, scopeId: string, nodeId: strin
 
 export class WorkflowStore {
     private readonly t: {
-        definitions: string; revisions: string; operations: string; runs: string; nodes: string;
+        definitions: string; revisions: string; operations: string; runs: string; nodes: string; kvRevisions: string;
         sessions: string; recordEvents: string; updateSession: string;
     };
 
@@ -319,6 +344,7 @@ export class WorkflowStore {
         this.t = {
             definitions: `${s}.workflow_definitions`, revisions: `${s}.workflow_revisions`,
             operations: `${s}.workflow_operations`, runs: `${s}.workflow_runs`, nodes: `${s}.workflow_node_executions`,
+            kvRevisions: `${s}.workflow_kv_revisions`,
             sessions: `${s}.sessions`, recordEvents: `${s}.cms_record_events`, updateSession: `${s}.cms_update_session`,
         };
     }
@@ -486,9 +512,10 @@ export class WorkflowStore {
     }
 
     /**
-     * The intent of a recover that dispatches an admitted run, stored before
-     * the dispatch: its receipt and its projection in one transaction, only
-     * while the run is still admitted and its session is live. The caller
+     * The intent of a recover that dispatches a run its controller never
+     * began (admitted, or paused before it began), stored before the
+     * dispatch: its receipt and its projection in one transaction, only
+     * while the run is still not begun and its session is live. The caller
      * starts the controller after this commits, and a repeat of the request
      * starts it again (duroxide ignores a second start of an instance), so
      * the stored receipt never disagrees with the dispatch its request made.
@@ -498,7 +525,7 @@ export class WorkflowStore {
         return this.transaction(async client => {
             const live = await this.lockLiveSession(client, await this.workflowOfRun(client, input.runId));
             const run = await this.lockRun(client, input.runId);
-            if (!live || run.status !== "admitted") return { recorded: false, run };
+            if (!live || !runNotBegun(run)) return { recorded: false, run };
             await this.insertReceiptOnce(client, run.workflowSessionId, input.receipt);
             await this.project(client, input.projection);
             return { recorded: true, run };
@@ -534,11 +561,13 @@ export class WorkflowStore {
         }
         await client.query(
             `INSERT INTO ${this.t.runs}
-                (run_id, workflow_session_id, mode, revision, yaml_sha256, ir_sha256, inputs, controller_instance_id, status, test_agent_mode, start_operation_id)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'admitted', $9, $10)`,
+                (run_id, workflow_session_id, mode, revision, yaml_sha256, ir_sha256, inputs, controller_instance_id, status, test_agent_mode, start_operation_id, kv, kv_revision)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'admitted', $9, $10, $11, 1)`,
             [start.runId, definition.workflowSessionId, start.mode, revision.revision, revision.yamlSha256, revision.irSha256,
-                start.inputsText, start.controllerInstanceId, start.mode === "test" ? start.testAgentMode : null, operationId],
+                start.inputsText, start.controllerInstanceId, start.mode === "test" ? start.testAgentMode : null, operationId, start.kvText],
         );
+        await client.query(`INSERT INTO ${this.t.kvRevisions} (run_id, revision, kv, operation_id) VALUES ($1, 1, $2, $3)`,
+            [start.runId, start.kvText, operationId]);
         if (start.mode === "live") {
             await client.query(`SELECT ${this.t.updateSession}($1, $2)`,
                 [definition.workflowSessionId, JSON.stringify({ orchestrationId: start.controllerInstanceId })]);
@@ -739,6 +768,146 @@ export class WorkflowStore {
         });
     }
 
+    /** The open KV map of a run at one revision (immutable). */
+    async readKv(runId: string, revision: number): Promise<JsonValue> {
+        const { rows } = await this.pool.query(`SELECT kv FROM ${this.t.kvRevisions} WHERE run_id = $1 AND revision = $2`, [runId, revision]);
+        if (!rows[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Run ${runId} has no KV revision ${revision}.`);
+        return parseStoredJson(str(rows[0], "kv"), "kv");
+    }
+
+    /** A stored run-command receipt (set_vars, pause, resume, cancel), when the request matches. */
+    private async priorRunCommand(client: PoolClient, workflowSessionId: string, operationId: string, kind: string, requestSha256: string): Promise<WorkflowRunCommandReceipt | null> {
+        const { rows } = await client.query(
+            `SELECT kind, request_sha256, receipt FROM ${this.t.operations} WHERE workflow_session_id = $1 AND operation_id = $2`,
+            [workflowSessionId, operationId]);
+        if (!rows[0]) return null;
+        if (str(rows[0], "kind") !== kind || str(rows[0], "request_sha256") !== requestSha256) {
+            throw new WorkflowStoreError("OPERATION_CONFLICT", `Operation ${operationId} was already used for a different request.`,
+                { operationId, storedKind: str(rows[0], "kind") });
+        }
+        return parseRunCommandReceipt(parseStoredJson(str(rows[0], "receipt"), "receipt"));
+    }
+
+    /**
+     * Apply one atomic set/delete batch to a run's open KV at the expected
+     * revision. The result is a new immutable revision; a node admitted later
+     * pins it, one already admitted keeps its own. Limits apply to the whole
+     * resulting map; nothing is applied when any limit or the revision fails.
+     */
+    async setRunVars(input: {
+        workflowSessionId: string;
+        runId: string;
+        set: { [key: string]: JsonValue };
+        delete: string[];
+        expectedRevision: number;
+        operationId: string;
+        requestSha256: string;
+        actor: WorkflowActor;
+    }): Promise<StoredOperation<WorkflowRunCommandReceipt>> {
+        return this.transaction(async client => {
+            if (!await this.lockLiveSession(client, input.workflowSessionId)) throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow was deleted.");
+            await this.lockDefinition(client, input.workflowSessionId);
+            const prior = await this.priorRunCommand(client, input.workflowSessionId, input.operationId, "set_vars", input.requestSha256);
+            if (prior) return { receipt: prior, replayed: true };
+            const run = await this.lockRun(client, input.runId);
+            if (run.workflowSessionId !== input.workflowSessionId) throw new WorkflowStoreError("RUN_NOT_FOUND", `Run ${input.runId} is not a run of this workflow.`);
+            if (!ACTIVE_RUN_STATUSES.includes(run.status)) {
+                throw new WorkflowStoreError("RUN_ENDED", `Run ${run.runId} has ended (${run.status}); its KV no longer changes.`, { status: run.status });
+            }
+            if (run.kvRevision !== input.expectedRevision) {
+                throw new WorkflowStoreError("KV_REVISION_CONFLICT", `The run's KV is at revision ${run.kvRevision}, not ${input.expectedRevision}.`,
+                    { kvRevision: run.kvRevision });
+            }
+            const current = isJsonObject(run.kv) ? run.kv : {};
+            const next: { [key: string]: JsonValue } = {};
+            for (const [key, value] of Object.entries(current)) if (!input.delete.includes(key)) next[key] = value;
+            for (const [key, value] of Object.entries(input.set)) next[key] = value;
+            const kvText = checkedKvText(next);
+            const revision = run.kvRevision + 1;
+            await client.query(`UPDATE ${this.t.runs} SET kv = $2, kv_revision = $3, updated_at = now() WHERE run_id = $1`, [run.runId, kvText, revision]);
+            await client.query(`INSERT INTO ${this.t.kvRevisions} (run_id, revision, kv, operation_id) VALUES ($1, $2, $3, $4)`,
+                [run.runId, revision, kvText, input.operationId]);
+            await this.project(client, { sessionId: input.workflowSessionId, events: [{ eventType: "workflow.vars_set", data: {
+                runId: run.runId, kvRevision: revision, set: Object.keys(input.set), deleted: input.delete, actor: actorJson(input.actor),
+            } }], update: { touch: true } });
+            const receipt: WorkflowRunCommandReceipt = { workflowSessionId: input.workflowSessionId, operation: "set_vars", runId: run.runId, status: run.status, kvRevision: revision };
+            await this.recordReceipt(client, input.workflowSessionId, input.operationId, "set_vars", input.requestSha256, receipt);
+            return { receipt, replayed: false };
+        });
+    }
+
+    /**
+     * Pause or resume a run. A paused run admits no new node execution; work
+     * already admitted finishes and its result is kept, and a cancel, a
+     * deletion and KV updates still apply. Resume returns to the status the
+     * run was paused from.
+     */
+    async setRunPaused(input: {
+        workflowSessionId: string;
+        runId: string;
+        pause: boolean;
+        operationId: string;
+        requestSha256: string;
+        actor: WorkflowActor;
+        reason: string | null;
+    }): Promise<StoredOperation<WorkflowRunCommandReceipt>> {
+        const kind = input.pause ? "pause" : "resume";
+        return this.transaction(async client => {
+            if (!await this.lockLiveSession(client, input.workflowSessionId)) throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow was deleted.");
+            await this.lockDefinition(client, input.workflowSessionId);
+            const prior = await this.priorRunCommand(client, input.workflowSessionId, input.operationId, kind, input.requestSha256);
+            if (prior) return { receipt: prior, replayed: true };
+            const run = await this.lockRun(client, input.runId);
+            if (run.workflowSessionId !== input.workflowSessionId) throw new WorkflowStoreError("RUN_NOT_FOUND", `Run ${input.runId} is not a run of this workflow.`);
+            if (!ACTIVE_RUN_STATUSES.includes(run.status)) {
+                throw new WorkflowStoreError("RUN_ENDED", `Run ${run.runId} has ended (${run.status}).`, { status: run.status });
+            }
+            let rows: Row[];
+            if (input.pause) {
+                if (run.status === "paused") throw new WorkflowStoreError("RUN_ALREADY_PAUSED", `Run ${run.runId} is already paused.`);
+                ({ rows } = await client.query(
+                    `UPDATE ${this.t.runs} SET status = 'paused', paused_from = status, updated_at = now() WHERE run_id = $1 RETURNING *`, [run.runId]));
+            } else {
+                if (run.status !== "paused") throw new WorkflowStoreError("RUN_NOT_PAUSED", `Run ${run.runId} is not paused (${run.status}).`, { status: run.status });
+                ({ rows } = await client.query(
+                    `UPDATE ${this.t.runs} SET status = paused_from, paused_from = NULL, updated_at = now() WHERE run_id = $1 RETURNING *`, [run.runId]));
+            }
+            const updated = runFrom(rows[0]);
+            await this.project(client, { sessionId: input.workflowSessionId, events: [{
+                eventType: input.pause ? "workflow.paused" : "workflow.resumed",
+                data: { runId: run.runId, actor: actorJson(input.actor), ...(input.reason ? { reason: jsonbSafeText(input.reason, 500) } : {}) },
+            }], update: { state: updated.status === "paused" ? "waiting" : updated.status === "admitted" ? "pending" : "running", touch: true } });
+            const receipt: WorkflowRunCommandReceipt = { workflowSessionId: input.workflowSessionId, operation: kind, runId: run.runId, status: updated.status, kvRevision: updated.kvRevision };
+            await this.recordReceipt(client, input.workflowSessionId, input.operationId, kind, input.requestSha256, receipt);
+            return { receipt, replayed: false };
+        });
+    }
+
+    /**
+     * Record that a cancel command was accepted for a run; the controller
+     * applies it. The run is returned as it is now, so the caller sends the
+     * command while the run is active, on a replay too: a crash after this
+     * receipt and before the send must not lose it.
+     */
+    async recordRunCancelRequest(input: {
+        workflowSessionId: string;
+        runId: string;
+        operationId: string;
+        requestSha256: string;
+    }): Promise<StoredOperation<WorkflowRunCommandReceipt> & { run: WorkflowRunRow }> {
+        return this.transaction(async client => {
+            if (!await this.lockLiveSession(client, input.workflowSessionId)) throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow was deleted.");
+            await this.lockDefinition(client, input.workflowSessionId);
+            const prior = await this.priorRunCommand(client, input.workflowSessionId, input.operationId, "cancel", input.requestSha256);
+            const run = await this.lockRun(client, input.runId);
+            if (run.workflowSessionId !== input.workflowSessionId) throw new WorkflowStoreError("RUN_NOT_FOUND", `Run ${input.runId} is not a run of this workflow.`);
+            if (prior) return { receipt: prior, replayed: true, run };
+            const receipt: WorkflowRunCommandReceipt = { workflowSessionId: input.workflowSessionId, operation: "cancel", runId: run.runId, status: run.status, kvRevision: run.kvRevision };
+            await this.recordReceipt(client, input.workflowSessionId, input.operationId, "cancel", input.requestSha256, receipt);
+            return { receipt, replayed: false, run };
+        });
+    }
+
     /** Record transcript events outside a transition (notifications, cleanup requests). */
     async recordSessionEvents(sessionId: string, events: SessionEventRecord[]): Promise<void> {
         if (events.length === 0) return;
@@ -803,6 +972,14 @@ export class WorkflowStore {
             const live = await this.lockLiveSession(client, await this.workflowOfRun(client, runId));
             const run = await this.lockRun(client, runId);
             if (!live) return { run, transitioned: false };
+            // A run paused before its controller began has begun now; it stays paused.
+            if (run.status === "paused" && run.pausedFrom === "admitted") {
+                const { rows } = await client.query(
+                    `UPDATE ${this.t.runs} SET paused_from = 'running', updated_at = now() WHERE run_id = $1 RETURNING *`, [runId]);
+                // The session row shows a paused workflow as waiting (the session statuses have no "paused").
+                await this.project(client, projection ? { ...projection, update: { ...projection.update, state: "waiting" } } : undefined);
+                return { run: runFrom(rows[0]), transitioned: true };
+            }
             if (run.status !== "admitted") return { run, transitioned: false };
             const { rows } = await client.query(
                 `UPDATE ${this.t.runs} SET status = 'running', updated_at = now() WHERE run_id = $1 RETURNING *`, [runId]);
@@ -826,6 +1003,8 @@ export class WorkflowStore {
         predecessorId: string | null;
         arrivalRoute: string | null;
         inputText: string;
+        /** The KV revision the input was evaluated with; pinned on the node execution. */
+        kvRevision: number;
         immediate: NodeResultInput | null;
         projection?: SessionProjection;
     }): Promise<{ admitted: true; inserted: boolean; node: WorkflowNodeExecutionRow } | { admitted: false; run: WorkflowRunRow }> {
@@ -842,20 +1021,21 @@ export class WorkflowStore {
                 }
                 return { admitted: true as const, inserted: false, node };
             }
-            if (!live || !ACTIVE_RUN_STATUSES.includes(run.status)) return { admitted: false as const, run };
+            // A paused run admits nothing new; a deleted or ended one admits nothing at all.
+            if (!live || !ADMITTING_RUN_STATUSES.includes(run.status)) return { admitted: false as const, run };
             const immediate = input.immediate;
             const { rows } = await client.query(
                 `INSERT INTO ${this.t.nodes}
                     (node_execution_id, run_id, scope_id, node_id, ordinal, node_type, predecessor_id, arrival_route, input, input_sha256,
-                     state, outcome, result_kind, output, error, winner, completed_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, CASE WHEN $11 = 'completed' THEN now() END)
+                     state, outcome, result_kind, output, error, winner, completed_at, kv_revision)
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, CASE WHEN $11 = 'completed' THEN now() END, $17)
                  RETURNING *`,
                 [input.nodeExecutionId, input.runId, input.scopeId, input.nodeId, input.ordinal, input.nodeType, input.predecessorId,
                     input.arrivalRoute, input.inputText, inputSha256, immediate ? "completed" : "pending",
                     immediate?.outcome ?? null, immediate?.resultKind ?? null,
                     immediate?.resultKind === "business" ? immediate.valueText : null,
                     immediate?.resultKind === "runtime_error" ? immediate.valueText : null,
-                    immediate?.winner ?? null],
+                    immediate?.winner ?? null, input.kvRevision],
             );
             await this.project(client, input.projection);
             return { admitted: true as const, inserted: true, node: nodeFrom(rows[0]) };
@@ -897,6 +1077,13 @@ export class WorkflowStore {
             start(attempt);
             return { entered: true, attempt };
         });
+    }
+
+    /** Whether a run has a node execution that still awaits its result. */
+    async hasPendingNodes(runId: string): Promise<boolean> {
+        const { rows } = await this.pool.query(
+            `SELECT EXISTS (SELECT 1 FROM ${this.t.nodes} WHERE run_id = $1 AND state = 'pending') AS pending`, [runId]);
+        return rows[0]?.pending === true;
     }
 
     /** Whether a node execution still awaits its result (a running script's liveness check). */
@@ -984,7 +1171,7 @@ export class WorkflowStore {
             const { rows } = await client.query(
                 `UPDATE ${this.t.runs}
                     SET status = $2, terminal_node_id = $3, terminal_outcome = $4, terminal_output = $5, terminal_error = $6,
-                        updated_at = now(), finished_at = now()
+                        paused_from = NULL, updated_at = now(), finished_at = now()
                   WHERE run_id = $1 RETURNING *`,
                 [input.runId, input.status, input.terminalNodeId, input.terminalOutcome, input.outputText, input.errorText]);
             if (input.terminalNode) {
@@ -1015,7 +1202,62 @@ export interface RunAdmission {
     mode: WorkflowRunMode;
     controllerInstanceId: string;
     inputsText: string;
+    /** The initial open KV map as canonical JSON text (revision 1). */
+    kvText: string;
     testAgentMode: "mocked" | "real" | null;
+}
+
+/** The receipt of a run command (set_vars, pause, resume, cancel). */
+export interface WorkflowRunCommandReceipt {
+    workflowSessionId: string;
+    operation: string;
+    runId: string;
+    /** The run status after the command (cancel: when it was accepted; the controller applies it). */
+    status: WorkflowRunStatus;
+    kvRevision: number;
+}
+
+function parseRunCommandReceipt(value: JsonValue): WorkflowRunCommandReceipt {
+    const invalid = () => new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "Stored run command receipt has an invalid shape.");
+    if (!isJsonObject(value)) throw invalid();
+    const { workflowSessionId, operation, runId, status, kvRevision } = value;
+    if (typeof workflowSessionId !== "string" || typeof operation !== "string" || typeof runId !== "string"
+        || typeof status !== "string" || !isRunStatus(status) || typeof kvRevision !== "number") {
+        throw invalid();
+    }
+    return { workflowSessionId, operation, runId, status, kvRevision };
+}
+
+function actorJson(actor: WorkflowActor): JsonValue {
+    if (actor.kind === "agent") return { kind: "agent", sessionId: actor.sessionId };
+    if (actor.kind === "user") return { kind: "user", provider: actor.provider, subject: actor.subject };
+    return { kind: "system", name: actor.name };
+}
+
+/** A KV key: 1-128 characters of storable text. */
+export function isKvKey(key: string): boolean {
+    return key.length >= 1 && key.length <= WORKFLOW_V2_KV_LIMITS.maxKeyLength && isStorableText(key);
+}
+
+/** The canonical text of a whole KV map within the limits, or KV_LIMIT. */
+export function checkedKvText(kv: { [key: string]: JsonValue }): string {
+    const keys = Object.keys(kv);
+    if (keys.length > WORKFLOW_V2_KV_LIMITS.maxKeys) {
+        throw new WorkflowStoreError("KV_LIMIT", `The KV map would hold ${keys.length} keys; the limit is ${WORKFLOW_V2_KV_LIMITS.maxKeys}.`);
+    }
+    for (const key of keys) {
+        if (!isKvKey(key)) throw new WorkflowStoreError("KV_LIMIT", `KV keys are 1-${WORKFLOW_V2_KV_LIMITS.maxKeyLength} characters of valid text.`, { key: jsonbSafeText(key, 200) });
+        const bytes = Buffer.byteLength(canonicalJson(kv[key]), "utf8");
+        if (bytes > WORKFLOW_V2_KV_LIMITS.maxValueBytes) {
+            throw new WorkflowStoreError("KV_LIMIT", `The value of '${jsonbSafeText(key, 200)}' is ${bytes} bytes; the limit is ${WORKFLOW_V2_KV_LIMITS.maxValueBytes}.`);
+        }
+    }
+    const text = canonicalJson(kv);
+    const total = Buffer.byteLength(text, "utf8");
+    if (total > WORKFLOW_V2_KV_LIMITS.maxTotalBytes) {
+        throw new WorkflowStoreError("KV_LIMIT", `The KV map would be ${total} bytes; the limit is ${WORKFLOW_V2_KV_LIMITS.maxTotalBytes}.`);
+    }
+    return text;
 }
 
 function assertNotDeleted(definition: WorkflowDefinitionRow): void {

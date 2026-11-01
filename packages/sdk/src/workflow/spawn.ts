@@ -59,8 +59,8 @@ export async function spawnWorkflowFromTool(
                 host: await deps.workflowV2Host(),
             });
         }
-        if (args.state !== undefined || args.start !== undefined) {
-            return "[SYSTEM: spawn_workflow refused — state and start apply to apiVersion pilotswarm.dev/v2-draft workflows only.]";
+        if (args.state !== undefined || args.start !== undefined || args.vars !== undefined) {
+            return "[SYSTEM: spawn_workflow refused — state, start and vars apply to apiVersion pilotswarm.dev/v2-draft workflows only.]";
         }
         let workflowName: string;
         try {

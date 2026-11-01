@@ -3,9 +3,10 @@
  * on real PostgreSQL and the real durable runtime:
  *
  * - A schema migrated only up to 0085 (as an earlier build recorded it) gets
- *   the exclusive-creation function and the deletion trigger from 0086 when
- *   the current catalog initializes; its rows are kept and the trigger acts on
- *   them.
+ *   the exclusive-creation function and the deletion trigger from 0086, and
+ *   the open KV and pause columns from 0087, when the current catalog
+ *   initializes; its rows are kept (an earlier run gets an empty KV at
+ *   revision 1) and the trigger acts on them.
  * - An immutable revision compiled to IR version 1 (no root outputSchema;
  *   each succeeded terminal carries the contract it was compiled with) or
  *   version 2 (no catchAll) is read and run as stored: its text and hash are
@@ -120,11 +121,15 @@ describe("workflow v2 data from an earlier build", () => {
         try {
             await catalog.initialize();
             const after = (await q("SELECT version FROM SCHEMA.schema_migrations ORDER BY version")).rows.map(row => row.version);
-            expect(after).toEqual([...before, "0086"]);
+            expect(after).toEqual([...before, "0086", "0087"]);
             expect(await has()).toEqual({ fn: 1, trigger: 1 });
             const store = catalog.workflowStore();
             expect((await store.readDefinition(id)).state).toBe("published");
-            expect((await store.readRun(runId)).status).toBe("running");
+            // 0087: the earlier run gets an empty open KV at revision 1 (kept as an immutable revision);
+            // its earlier node execution pinned no revision.
+            expect(await store.readRun(runId)).toMatchObject({ status: "running", kv: {}, kvRevision: 1, pausedFrom: null });
+            expect(await store.readKv(runId, 1)).toEqual({});
+            expect((await store.readNodeExecution("nx-earlier")).kvRevision).toBeNull();
 
             // Exclusive creation now works on this schema, and never takes an existing row.
             const fresh = randomUUID();
@@ -188,7 +193,7 @@ describe("workflow v2 data from an earlier build", () => {
                 workflowSessionId: id, parentSessionId: null, notifyParent: false, yaml: CONTRACT,
                 compiled: { ...compiled, ir: old, irSha256: oldIrSha256 },
                 actor: ACTOR, operationId: "create", requestSha256: "earlier", publish: true,
-                start: { runId: randomUUID(), mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(id), inputsText: "{}", testAgentMode: null },
+                start: { runId: randomUUID(), mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(id), inputsText: "{}", kvText: "{}", testAgentMode: null },
                 title: "Workflow: old-contract",
             });
             await dispatchWorkflowV2Run({ catalog, store, duroxideClient: client }, stored.receipt);

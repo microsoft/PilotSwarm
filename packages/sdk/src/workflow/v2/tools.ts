@@ -2,8 +2,25 @@ import type { SessionOwnerInfo } from "../../types.js";
 import type { WorkflowToolBinding } from "../tool-policy.js";
 import { assertJsonValue, isJsonObject, jsonbSafeText, previewJson, type JsonValue } from "./json.js";
 import { describeWorkflowV2States } from "./runtime.js";
-import { createWorkflowV2, inspectWorkflowV2Controller, recoverWorkflowV2Run, updateWorkflowV2, type WorkflowV2Command, type WorkflowV2Host } from "./service.js";
-import { ACTIVE_RUN_STATUSES, diagnosticsJson, WorkflowStoreError, type WorkflowActor, type WorkflowDefinitionReceipt, type WorkflowStore } from "./store.js";
+import {
+    controlWorkflowV2Run,
+    createWorkflowV2,
+    inspectWorkflowV2Controller,
+    recoverWorkflowV2Run,
+    updateWorkflowV2,
+    type WorkflowV2Command,
+    type WorkflowV2Host,
+    type WorkflowV2RunCommand,
+} from "./service.js";
+import {
+    ACTIVE_RUN_STATUSES,
+    diagnosticsJson,
+    WorkflowStoreError,
+    type WorkflowActor,
+    type WorkflowDefinitionReceipt,
+    type WorkflowRunCommandReceipt,
+    type WorkflowStore,
+} from "./store.js";
 
 /**
  * Agent tool adapters for workflow v2. Each returns one JSON payload; the
@@ -15,23 +32,32 @@ export const UPDATE_WORKFLOW_TOOL_SPEC = {
         "Change a workflow child you created with spawn_workflow (apiVersion pilotswarm.dev/v2-draft). "
         + "operation: replace_definition (yaml + expected_revision; drafts only, same metadata.version), "
         + "publish (expected_revision + definition_hash of the exact reviewed revision; does not start), "
-        + "publish_and_start (publish fields + inputs), start (definition_hash + inputs; one live run per workflow child), "
+        + "publish_and_start (publish fields + inputs, optional vars), start (definition_hash + inputs, optional vars; one live run per workflow child), "
+        + "set_vars (set: {key: JSON value} and/or delete: [keys], expected_kv_revision from read_workflow; one atomic batch on the run's open KV; "
+        + "null is a value, deletion is explicit; a state admitted later reads it as context.kv or ${kv.key}, one already admitted keeps its snapshot), "
+        + "pause (the run admits no new state; work already running finishes and its result is kept), resume (a paused run only), "
+        + "cancel (asks the run's controller to cancel it; read_workflow shows when it has ended), "
         + "or recover (run_id optional, default the live run): when read_workflow shows needsRecovery, a run whose controller ended "
         + "without ending it is ended as failed (controller_ended) and its parent is notified as for any end, and a run admitted but never "
-        + "started is started; otherwise nothing changes. "
+        + "started is started; otherwise nothing changes. run_id names the run for set_vars, pause, resume, cancel and recover (default the live run). "
         + "operation_id makes every operation idempotent: repeating it returns the original receipt; reusing it for a different request fails. "
         + "Published definitions never change; a new version needs a new workflow child. Returns JSON.",
     parameters: {
         type: "object",
         properties: {
             workflow_id: { type: "string", description: "The workflow session id from spawn_workflow." },
-            operation: { type: "string", enum: ["replace_definition", "publish", "publish_and_start", "start", "recover"] },
+            operation: { type: "string", enum: ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel", "recover"] },
             operation_id: { type: "string", description: "Idempotency id for this change." },
             yaml: { type: "string", description: "replace_definition: the complete new Workflow YAML." },
             expected_revision: { type: "integer", description: "replace_definition/publish: the draft revision you reviewed." },
             definition_hash: { type: "string", description: "publish/start: the yamlSha256 of the reviewed revision." },
             inputs: { type: "object", description: "publish_and_start/start: static run inputs checked against inputs.schema." },
-            run_id: { type: "string", description: "recover: the run to recover; default the live run." },
+            vars: { type: "object", description: "publish_and_start/start: the run's initial open KV map (any keys, JSON values)." },
+            set: { type: "object", description: "set_vars: keys to set, with their JSON values." },
+            delete: { type: "array", items: { type: "string" }, description: "set_vars: keys to delete." },
+            expected_kv_revision: { type: "integer", description: "set_vars: the run's kvRevision you read." },
+            reason: { type: "string", description: "pause/resume/cancel: an optional short reason." },
+            run_id: { type: "string", description: "set_vars/pause/resume/cancel/recover: the run; default the live run." },
         },
         required: ["workflow_id", "operation", "operation_id"],
     },
@@ -40,7 +66,8 @@ export const UPDATE_WORKFLOW_TOOL_SPEC = {
 export const READ_WORKFLOW_TOOL_SPEC = {
     description:
         "Read a workflow child you created with spawn_workflow (v2): definition state, current revision and diagnostics, "
-        + "the graph, runs, and the node executions of one run (default: the live run). Returns JSON. Reading changes nothing: "
+        + "the graph, runs, and the node executions of one run (default: the live run), with the run's open KV (kv, kvRevision) "
+        + "and, while it is paused, pausedFrom and pauseSettled (true once no state it admitted is still running). Returns JSON. Reading changes nothing: "
         + "an active run whose controller can no longer end it shows run.controller.needsRecovery; use update_workflow operation recover.",
     parameters: {
         type: "object",
@@ -115,19 +142,81 @@ function inputsArg(args: Record<string, unknown>): JsonValue {
     return value;
 }
 
+/** An optional JSON object of open KV entries (vars, set). */
+function kvObjectArg(args: Record<string, unknown>, name: string): { [key: string]: JsonValue } | null {
+    const value = args[name];
+    if (value === undefined || value === null) return null;
+    if (!isJsonObject(value)) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `${name} must be a JSON object.`);
+    assertJsonValue(value, name);
+    return value;
+}
+
+function kvRevisionArg(args: Record<string, unknown>): number {
+    const value = args.expected_kv_revision;
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
+        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "expected_kv_revision must be a positive integer (the run's kvRevision from read_workflow).");
+    }
+    return value;
+}
+
+function deleteKeysArg(args: Record<string, unknown>): string[] {
+    const value = args.delete;
+    if (value === undefined || value === null) return [];
+    if (!Array.isArray(value) || value.some(key => typeof key !== "string")) {
+        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "delete must be a list of keys.");
+    }
+    return value.map(String);
+}
+
 /** Parse update_workflow arguments into a typed command. */
 export function parseUpdateWorkflowArgs(args: Record<string, unknown>): { workflowSessionId: string; operationId: string; command: WorkflowV2Command } {
     const workflowSessionId = requiredString(args, "workflow_id");
     const operationId = requiredString(args, "operation_id");
     const operation = args.operation;
     let command: WorkflowV2Command;
+    const vars = kvObjectArg(args, "vars");
+    if (vars !== null && operation !== "publish_and_start" && operation !== "start") {
+        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "vars applies to publish_and_start and start only; use set_vars on a run.");
+    }
     if (operation === "replace_definition") command = { operation, yaml: requiredString(args, "yaml"), expectedRevision: revisionArg(args) };
     else if (operation === "publish") command = { operation, expectedRevision: revisionArg(args), definitionHash: requiredString(args, "definition_hash") };
     else if (operation === "publish_and_start") {
-        command = { operation, expectedRevision: revisionArg(args), definitionHash: requiredString(args, "definition_hash"), inputs: inputsArg(args) };
-    } else if (operation === "start") command = { operation, definitionHash: requiredString(args, "definition_hash"), inputs: inputsArg(args) };
-    else throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "operation must be replace_definition, publish, publish_and_start, start or recover.");
+        command = { operation, expectedRevision: revisionArg(args), definitionHash: requiredString(args, "definition_hash"), inputs: inputsArg(args),
+            ...(vars !== null ? { vars } : {}) };
+    } else if (operation === "start") {
+        command = { operation, definitionHash: requiredString(args, "definition_hash"), inputs: inputsArg(args), ...(vars !== null ? { vars } : {}) };
+    } else {
+        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID",
+            "operation must be replace_definition, publish, publish_and_start, start, set_vars, pause, resume, cancel or recover.");
+    }
     return { workflowSessionId, operationId, command };
+}
+
+const RUN_COMMANDS: ReadonlySet<string> = new Set(["set_vars", "pause", "resume", "cancel"]);
+
+/** Parse the update_workflow arguments of a run command. */
+export function parseRunCommandArgs(args: Record<string, unknown>): { workflowSessionId: string; operationId: string; command: WorkflowV2RunCommand } {
+    const workflowSessionId = requiredString(args, "workflow_id");
+    const operationId = requiredString(args, "operation_id");
+    const runId = optionalString(args, "run_id");
+    const operation = args.operation;
+    if (operation === "set_vars") {
+        const set: { [key: string]: JsonValue } = kvObjectArg(args, "set") ?? {};
+        const keys = deleteKeysArg(args);
+        if (Object.keys(set).length === 0 && keys.length === 0) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "set_vars needs set or delete.");
+        return { workflowSessionId, operationId, command: { operation, runId, set, delete: keys, expectedKvRevision: kvRevisionArg(args) } };
+    }
+    if (operation === "pause" || operation === "resume" || operation === "cancel") {
+        const reason = optionalString(args, "reason");
+        if (reason !== null && reason.length > 500) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "reason must be at most 500 characters.");
+        return { workflowSessionId, operationId, command: { operation, runId, reason } };
+    }
+    throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "operation must be set_vars, pause, resume or cancel.");
+}
+
+function runCommandJson(receipt: WorkflowRunCommandReceipt, replayed: boolean): { [key: string]: JsonValue } {
+    return { workflowId: receipt.workflowSessionId, operation: receipt.operation, replayed, runId: receipt.runId,
+        status: receipt.status, kvRevision: receipt.kvRevision };
 }
 
 /** update_workflow operation recover: act on a run that read_workflow shows as needing recovery. */
@@ -151,9 +240,15 @@ async function recoverWorkflowFromTool(args: Record<string, unknown>, context: {
 export async function updateWorkflowFromTool(args: Record<string, unknown>, context: { callerSessionId: string; host: WorkflowToolHost }): Promise<string> {
     try {
         if (args.operation === "recover") return await recoverWorkflowFromTool(args, context);
+        const actor: WorkflowActor = { kind: "agent", sessionId: context.callerSessionId };
+        if (typeof args.operation === "string" && RUN_COMMANDS.has(args.operation)) {
+            const { workflowSessionId, operationId, command } = parseRunCommandArgs(args);
+            await authorizeParent(context.host, workflowSessionId, context.callerSessionId);
+            const stored = await controlWorkflowV2Run(context.host, workflowSessionId, command, { actor, operationId });
+            return payload({ ok: true, ...runCommandJson(stored.receipt, stored.replayed) });
+        }
         const { workflowSessionId, operationId, command } = parseUpdateWorkflowArgs(args);
         await authorizeParent(context.host, workflowSessionId, context.callerSessionId);
-        const actor: WorkflowActor = { kind: "agent", sessionId: context.callerSessionId };
         const stored = await updateWorkflowV2(context.host, workflowSessionId, command, { actor, operationId });
         return payload({ ok: true, ...receiptJson(stored.receipt, stored.replayed) });
     } catch (error) {
@@ -174,6 +269,8 @@ export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId
     const selected = options.runId ? runs.find(run => run.runId === options.runId) : runs.find(run => run.mode === "live");
     if (options.runId && !selected) throw new WorkflowStoreError("RUN_NOT_FOUND", `Run ${options.runId} is not a run of this workflow.`);
     const nodes = selected ? await store.listNodeExecutions(selected.runId, 200) : [];
+    // A paused run has settled once no state it admitted is still running.
+    const pauseSettled = selected?.status === "paused" ? !await store.hasPendingNodes(selected.runId) : null;
     return {
         workflowId: workflowSessionId,
         definition: {
@@ -189,12 +286,15 @@ export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId
         runs: runs.map(run => ({ runId: run.runId, mode: run.mode, status: run.status, revision: run.revision, outcome: run.terminalOutcome })),
         run: selected ? {
             runId: selected.runId, mode: selected.mode, status: selected.status, outcome: selected.terminalOutcome,
+            ...(selected.pausedFrom !== null ? { pausedFrom: selected.pausedFrom, pauseSettled } : {}),
             terminalState: selected.terminalNodeId,
             output: selected.terminalOutput === null ? null : previewJson(selected.terminalOutput, 2_000),
             error: selected.terminalError === null ? null : previewJson(selected.terminalError, 2_000),
+            kvRevision: selected.kvRevision,
+            kv: previewJson(selected.kv, 4_000),
             nodeExecutions: nodes.map(node => ({
                 nodeExecutionId: node.nodeExecutionId, stateId: node.nodeId, ordinal: node.ordinal, state: node.state,
-                outcome: node.outcome, resultKind: node.resultKind, winner: node.winner, attempts: node.effectAttempts,
+                outcome: node.outcome, resultKind: node.resultKind, winner: node.winner, attempts: node.effectAttempts, kvRevision: node.kvRevision,
                 ...(node.resultKind === "business" ? { outputPreview: previewJson(node.output, 500) } : {}),
                 ...(node.resultKind === "runtime_error" ? { errorPreview: previewJson(node.error, 500) } : {}),
             })),
@@ -223,7 +323,7 @@ export async function readWorkflowFromTool(args: Record<string, unknown>, contex
 
 /** spawn_workflow for a v2 document: a draft by default, or published (and started) when asked. */
 export async function spawnWorkflowV2FromTool(
-    args: { yaml: string; inputs?: Record<string, unknown>; notify_on_completion?: boolean; key?: string; state?: string; start?: boolean },
+    args: { yaml: string; inputs?: Record<string, unknown>; vars?: Record<string, unknown>; notify_on_completion?: boolean; key?: string; state?: string; start?: boolean },
     context: {
         callerSessionId: string;
         workflowSessionId: string;
@@ -241,10 +341,12 @@ export async function spawnWorkflowV2FromTool(
         if (args.start === true && !publish) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "start needs state: published.");
         const inputs = args.inputs === undefined ? {} : args.inputs;
         if (!isJsonObject(inputs)) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "inputs must be a JSON object.");
+        const vars = kvObjectArg({ vars: args.vars }, "vars");
+        if (vars !== null && args.start !== true) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "vars needs start: true (they are the run's initial KV).");
         const stored = await createWorkflowV2(context.host, {
             workflowSessionId: context.workflowSessionId, parentSessionId: context.callerSessionId, owner: context.owner,
             yaml: args.yaml, actor: { kind: "agent", sessionId: context.callerSessionId }, operationId: context.operationId,
-            publish, start: args.start === true ? { inputs } : null, notifyParent: args.notify_on_completion !== false,
+            publish, start: args.start === true ? { inputs, ...(vars !== null ? { vars } : {}) } : null, notifyParent: args.notify_on_completion !== false,
             binding: context.binding,
         });
         return payload({
