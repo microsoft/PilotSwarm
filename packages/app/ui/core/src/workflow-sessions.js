@@ -68,10 +68,15 @@ function formatClock(ms) {
     }
 }
 
+/** "10 min" for a timed wait, "for daily at 02:00 America/Los_Angeles" for a clock wait. */
+function waitLength(data) {
+    return data.at ? `for ${data.schedule ?? "a clock time"}` : formatSeconds(data.seconds);
+}
+
 function waitText(data) {
     const until = formatClock(data.until);
     const visit = Number(data.visit) > 1 ? ` (wait ${data.visit})` : "";
-    return `${data.stateId ?? "?"} waiting ${formatSeconds(data.seconds)}${until ? `, until ${until}` : ""}${visit}`;
+    return `${data.stateId ?? "?"} waiting ${waitLength(data)}${until ? `, until ${until}` : ""}${visit}`;
 }
 
 function formatNext(next) {
@@ -112,7 +117,7 @@ export function formatWorkflowEventText(event) {
                 lines.push("", "| State | Type | Outcome → next |", "|---|---|---|");
                 for (const state of states) {
                     const type = state?.type === "terminal" ? "terminal"
-                        : state?.type === "wait" ? `wait (${formatSeconds(state?.seconds)})`
+                        : state?.type === "wait" ? `wait (${state?.at ? state?.schedule ?? "clock time" : formatSeconds(state?.seconds)})`
                             : `script (${state?.runtime ?? "?"})`;
                     const next = state?.type === "terminal" ? `ends: ${state.outcome ?? "?"}` : formatNext(state?.next);
                     lines.push(`| ${cell(state?.id)} | ${cell(type)} | ${cell(next)} |`);
@@ -138,7 +143,7 @@ export function formatWorkflowEventText(event) {
         case "workflow.state_waiting": {
             const until = formatClock(data.until);
             const visit = Number(data.visit) > 1 ? ` This is wait ${data.visit}.` : "";
-            return `⏸ Step ${data.step ?? "?"}: ${code(data.stateId)} waiting ${formatSeconds(data.seconds)}${until ? `, until ${until}` : ""}.${visit}`;
+            return `⏸ Step ${data.step ?? "?"}: ${code(data.stateId)} waiting ${waitLength(data)}${until ? `, until ${until}` : ""}.${visit}`;
         }
         case "workflow.completed": {
             const lines = [endedAtTerminal(data, "■")];

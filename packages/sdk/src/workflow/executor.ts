@@ -1,3 +1,4 @@
+import { computeCronAtNextFire } from "../cron-at.js";
 import {
     resolveWorkflowTemplate,
     WORKFLOW_WAIT_OUTCOME,
@@ -13,6 +14,31 @@ import {
  * cancelled; one that loops without waiting fails here.
  */
 export const WORKFLOW_MAX_SCRIPT_RUNS_BETWEEN_WAITS = 1_000;
+
+/** When a wait that starts at `afterMs` ends. */
+export interface WorkflowWaitTiming {
+    until: number;
+    /** For a clock wait: which occurrence it waits for (keeps a DST fall-back hour from firing twice). */
+    occurrenceKey?: string;
+    /** For a clock wait: the local wall-clock time it ends, with its zone. */
+    localTime?: string;
+}
+
+/**
+ * The end of a wait that starts at `afterMs`: `seconds` later, or the next
+ * clock time `at` strictly after it (the `cron_at` rules, DST included).
+ * Call it from an activity, so a replay reuses the recorded answer.
+ */
+export function workflowWaitUntil(
+    state: WorkflowWaitState,
+    afterMs: number,
+    lastOccurrenceKey?: string,
+    nextFire: typeof computeCronAtNextFire = computeCronAtNextFire,
+): WorkflowWaitTiming {
+    if (!state.at) return { until: afterMs + (state.seconds ?? 0) * 1000 };
+    const fire = nextFire(state.at, afterMs, lastOccurrenceKey);
+    return { until: fire.nextFireAtMs, occurrenceKey: fire.occurrenceKey, localTime: fire.localTime };
+}
 
 /** The failure for a run that ran too many script states without a wait. */
 export function workflowSpinError(workflowName: string, limit: number): string {

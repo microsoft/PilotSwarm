@@ -7,7 +7,7 @@
  * The state is folded from the session's own `workflow.*` events, so every
  * activity computes it the same way and a late or repeated tick is harmless.
  */
-import type { CompiledWorkflow } from "./compiler.js";
+import { describeWorkflowWait, type CompiledWorkflow, type WorkflowWaitAt } from "./compiler.js";
 
 export const WORKFLOW_CANVAS_SLOT = 1;
 export const WORKFLOW_CANVAS_NAME = "Workflow";
@@ -44,6 +44,16 @@ function clip(value: unknown): string | undefined {
     const text = typeof value === "string" ? value : JSON.stringify(value);
     if (!text || text === "null") return undefined;
     return text.length > PREVIEW_CHARS ? `${text.slice(0, PREVIEW_CHARS)}…` : text;
+}
+
+/** A clock wait in a few characters, for a graph node: "daily 02:00", "Mon 09:30", "day 1 06:00", "hourly :15". */
+export function shortWaitAt(at: WorkflowWaitAt): string {
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const time = `${pad(at.hour ?? 0)}:${pad(at.minute)}`;
+    if (at.hour === undefined) return `hourly :${pad(at.minute)}`;
+    if (at.dayOfWeek !== undefined) return `${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"][at.dayOfWeek]} ${time}`;
+    if (at.dayOfMonth !== undefined) return `day ${at.dayOfMonth} ${time}`;
+    return `daily ${time}`;
 }
 
 /** Fold a workflow session's events, oldest first, into the canvas state. */
@@ -210,7 +220,7 @@ export function buildWorkflowCanvasHtml(workflow: CompiledWorkflow, initial: Wor
         nodes: Object.values(workflow.states).map((n) => n.type === "script"
             ? { id: n.id, type: "script", runtime: n.runtime, next: n.next }
             : n.type === "wait"
-                ? { id: n.id, type: "wait", seconds: n.seconds, next: n.next }
+                ? { id: n.id, type: "wait", seconds: n.seconds, ...(n.at ? { at: shortWaitAt(n.at) } : {}), schedule: describeWorkflowWait(n), next: n.next }
                 : { id: n.id, type: "terminal", outcome: n.outcome, next: {} }),
     };
     return `<!doctype html>
@@ -368,10 +378,10 @@ export function buildWorkflowCanvasHtml(workflow: CompiledWorkflow, initial: Wor
     var g = el("g", { "class": cls, transform: "translate(" + p.x + "," + p.y + ")" }, nodeLayer);
     el("rect", { width: W, height: H, rx: terminal ? H / 2 : 8 }, g);
     var t = el("text", { x: terminal ? 18 : 10, y: 19 }, g); t.textContent = n.id.length > 22 ? n.id.slice(0, 21) + "…" : n.id;
-    var label = terminal ? "ends · " + n.outcome : n.type === "wait" ? "wait · " + secs(n.seconds) : n.runtime;
+    var label = terminal ? "ends · " + n.outcome : n.type === "wait" ? (n.at ? "wait · " + n.at : "wait · " + secs(n.seconds)) : n.runtime;
     var sub = el("text", { x: terminal ? 18 : 10, y: 36, "class": "sub" }, g); sub.textContent = label;
     var runs = el("text", { x: W - 10, y: 19, "text-anchor": "end", "class": "runs" }, g);
-    var title = el("title", {}, g); title.textContent = n.id;
+    var title = el("title", {}, g); title.textContent = n.type === "wait" && n.schedule ? n.id + " · " + n.schedule : n.id;
     nodeEls[n.id] = { g: g, sub: sub, runs: runs, base: cls, runtime: label, terminal: terminal };
   });
 

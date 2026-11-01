@@ -887,6 +887,17 @@ describe("workflow wait states (duroxide)", () => {
     });
 
     const waitsOf = (catalog) => catalog.events.filter((e) => e.eventType === "workflow.state_waiting");
+    // The wait's end is published once the wait step has recorded it and the timer is set.
+    const waitingStatus = async (client, instanceId) => {
+        const deadline = Date.now() + 20_000;
+        while (Date.now() < deadline) {
+            const raw = (await client.getStatus(instanceId))?.customStatus;
+            const status = raw ? JSON.parse(raw) : null;
+            if (status?.workflow?.waitingUntil) return status;
+            await new Promise((r) => setTimeout(r, 20));
+        }
+        throw new Error("timed out waiting for the run to be waiting");
+    };
 
     it("a polling loop waits between checks, crosses continue-as-new, and runs every state exactly as the graph says", async () => {
         const yaml = `
@@ -956,10 +967,8 @@ states:
   nap: { type: wait, seconds: 600, transition: { next: first } }
 `,
             }, WORKFLOW_SESSION_LATEST_VERSION);
-            const deadline = Date.now() + 20_000;
-            while (!waitsOf(catalog).length && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+            const waiting = await waitingStatus(client, instanceId);
             expect(waitsOf(catalog)).toHaveLength(1);
-            const waiting = JSON.parse((await client.getStatus(instanceId)).customStatus);
             expect(waiting).toMatchObject({ status: "running", workflow: { stateId: "nap", step: 2 } });
             expect(waiting.workflow.waitingUntil).toBe(waitsOf(catalog)[0].data.until);
 
@@ -1037,9 +1046,9 @@ states:
         await client.startOrchestrationVersioned(instanceId, WORKFLOW_SESSION_ORCHESTRATION_NAME, {
             sessionId: "restart-wait", yaml, inputs: {},
         }, WORKFLOW_SESSION_LATEST_VERSION);
-        const deadline = Date.now() + 20_000;
-        while (!waitsOf(catalog).length && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
-        const until = waitsOf(catalog)[0].data.until;
+        // Stop the first worker once the run is waiting on its timer.
+        const until = (await waitingStatus(client, instanceId)).workflow.waitingUntil;
+        expect(waitsOf(catalog)[0].data.until).toBe(until);
         await firstRuntime.shutdown(100);
         // The worker is gone for most of the wait.
         await new Promise((r) => setTimeout(r, 3_000));
@@ -1056,6 +1065,45 @@ states:
         } finally {
             await secondRuntime.shutdown(100);
         }
+    });
+
+    it("a clock wait ends at the recorded next clock time and passes the last occurrence on, so a DST hour is not repeated", async () => {
+        const yaml = `
+apiVersion: pilotswarm.dev/v1alpha1
+kind: Workflow
+metadata: { name: nightly, version: "1" }
+initial: nightly
+states:
+  nightly: { type: wait, at: { hour: 2, minute: 0, tz: America/Los_Angeles }, transition: { next: report } }
+  report: { type: script, runtime: node, source: stub, completion: { outcomes: [again, stop] }, transition: { next: { again: nightly, stop: done } } }
+  done: { type: terminal, outcome: succeeded }
+`;
+        const calls = [];
+        let reports = 0;
+        const { status, catalog, custom } = await runWorkflow(yaml, {
+            deps: {
+                // A fake clock: "the next 02:00" is 800 ms after the wait starts.
+                nextClockTime: (at, afterMs, lastOccurrenceKey) => {
+                    calls.push({ at, afterMs, lastOccurrenceKey });
+                    return { nextFireAtMs: afterMs + 800, occurrenceKey: `occ-${calls.length}`, localTime: `night ${calls.length}`, skippedOccurrences: 0 };
+                },
+                runNode: async () => { reports += 1; return { ...okResult(null), outcome: reports < 2 ? "again" : "stop" }; },
+            },
+        });
+        expect(status.output).toMatchObject({ status: "completed", steps: 4 });
+        expect(calls.map((c) => [c.at, c.lastOccurrenceKey])).toEqual([
+            [{ minute: 0, hour: 2, tz: "America/Los_Angeles" }, undefined],
+            [{ minute: 0, hour: 2, tz: "America/Los_Angeles" }, "occ-1"],
+        ]);
+        const waits = waitsOf(catalog);
+        expect(waits.map((e) => [e.data.stateId, e.data.schedule, e.data.localTime, e.data.until - calls[waits.indexOf(e)].afterMs])).toEqual([
+            ["nightly", "daily at 02:00 America/Los_Angeles", "night 1", 800],
+            ["nightly", "daily at 02:00 America/Los_Angeles", "night 2", 800],
+        ]);
+        // The run waited for each recorded end before going on.
+        const reportStarts = catalog.events.filter((e) => e.eventType === "workflow.state_started");
+        expect(reportStarts).toHaveLength(2);
+        expect(custom).toMatchObject({ status: "completed" });
     });
 
     it("a loop of script states that never waits fails at the limit; waiting resets the count", async () => {

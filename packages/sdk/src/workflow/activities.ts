@@ -1,6 +1,6 @@
 import type { SessionCatalog } from "../cms.js";
-import { compileWorkflow, validateWorkflowInputs, workflowUsesScripts, type CompiledWorkflow } from "./compiler.js";
-import type { ScriptToolCall } from "./executor.js";
+import { compileWorkflow, describeWorkflowWait, validateWorkflowInputs, workflowUsesScripts, type CompiledWorkflow } from "./compiler.js";
+import { workflowWaitUntil, type ScriptToolCall } from "./executor.js";
 import {
     WORKFLOW_ACTIVITIES,
     type WorkflowBeginResult,
@@ -8,6 +8,7 @@ import {
     type WorkflowRunStateInput,
     type WorkflowRunStateResult,
     type WorkflowWaitInput,
+    type WorkflowWaitResult,
 } from "./orchestration.js";
 import { runScriptNode, type RunScriptNodeResult, type ScriptRunnerOptions } from "./runner.js";
 import { parseScriptMcpToolName, ScriptMcpConnections } from "./mcp.js";
@@ -45,6 +46,8 @@ export interface WorkflowActivityDeps {
     runnerOptions?: ScriptRunnerOptions;
     /** Replaceable for tests. */
     runNode?: typeof runScriptNode;
+    /** Replaceable for tests: the next clock time of a clock wait (default: the cron_at rules). */
+    nextClockTime?: Parameters<typeof workflowWaitUntil>[3];
 }
 
 export const WORKFLOW_SCRIPTS_DISABLED_MESSAGE =
@@ -129,7 +132,7 @@ export function describeStates(workflow: CompiledWorkflow): Array<Record<string,
     return Object.values(workflow.states).map((state) => state.type === "script"
         ? { id: state.id, type: "script", runtime: state.runtime, timeoutSeconds: state.timeoutSeconds, next: state.next }
         : state.type === "wait"
-            ? { id: state.id, type: "wait", seconds: state.seconds, next: state.next }
+            ? { id: state.id, type: "wait", ...(state.at ? { at: state.at } : { seconds: state.seconds }), schedule: describeWorkflowWait(state), next: state.next }
             : { id: state.id, type: "terminal", outcome: state.outcome });
 }
 
@@ -269,17 +272,20 @@ export function registerWorkflowActivities(runtime: any, deps: WorkflowActivityD
     runtime.registerActivity(WORKFLOW_ACTIVITIES.wait, async (
         _ctx: any,
         input: WorkflowWaitInput,
-    ): Promise<null> => {
+    ): Promise<WorkflowWaitResult> => {
+        const timing = workflowWaitUntil(input.state, input.startedAt, input.lastOccurrenceKey, deps.nextClockTime);
         await record(deps, input.sessionId, "workflow.state_waiting", {
             stateId: input.stateId,
             step: input.step,
-            seconds: input.seconds,
-            until: input.until,
+            ...(input.state.at ? { at: input.state.at } : { seconds: input.state.seconds }),
+            schedule: describeWorkflowWait(input.state),
+            until: timing.until,
+            ...(timing.localTime ? { localTime: timing.localTime } : {}),
             visit: input.visit,
         });
         await deps.catalog?.updateSession(input.sessionId, { lastActiveAt: new Date() }).catch(() => undefined);
         await refreshCanvas(deps, input.sessionId);
-        return null;
+        return { until: timing.until, ...(timing.occurrenceKey ? { occurrenceKey: timing.occurrenceKey } : {}) };
     });
 
     runtime.registerActivity(WORKFLOW_ACTIVITIES.finish, async (

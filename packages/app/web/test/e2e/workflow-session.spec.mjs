@@ -287,6 +287,7 @@ states:
     completion: { outcomes: [done] }
     transition: { next: { done: sleep } }
   sleep: { type: wait, seconds: 600, transition: { next: check } }
+  nightly: { type: wait, at: { hour: 2, minute: 0, tz: UTC }, transition: { next: check } }
 `;
 
 test("a polling workflow's canvas shows the wait, when it ends, and how many times it looped", async ({ page }) => {
@@ -337,6 +338,9 @@ test("a polling workflow's canvas shows the wait, when it ends, and how many tim
     await expect(frame.locator("g.node.done .runs")).toHaveText("×3");
     await expect(frame.locator("#steps tr").first().locator("td").nth(2)).toContainText("waiting until ");
     await expect(frame.locator("g.edge.taken")).toHaveCount(2);
+    // A clock wait reads as its schedule, in full on hover.
+    await expect(frame.locator("g.node.wait:not(.waiting) .sub")).toHaveText("wait · daily 02:00");
+    await expect(frame.locator("g.node.wait:not(.waiting) title")).toHaveText("nightly · daily at 02:00 UTC");
     await shot(page, "8-live-canvas-waiting");
     expect(errors).toEqual([]);
 });

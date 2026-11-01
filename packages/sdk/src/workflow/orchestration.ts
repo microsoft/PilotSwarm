@@ -1,4 +1,10 @@
-import { WORKFLOW_WAIT_OUTCOME, type CompiledWorkflow, type WorkflowScriptState, type WorkflowTerminalOutcome } from "./compiler.js";
+import {
+    WORKFLOW_WAIT_OUTCOME,
+    type CompiledWorkflow,
+    type WorkflowScriptState,
+    type WorkflowTerminalOutcome,
+    type WorkflowWaitState,
+} from "./compiler.js";
 import {
     requireScriptResult,
     resolveTransition,
@@ -31,6 +37,8 @@ export interface WorkflowResumePoint {
     sinceWait?: number;
     /** How many times each state has run, for the views' loop counters. */
     visits?: Record<string, number>;
+    /** The last occurrence each clock wait waited for (DST fall-back guard). */
+    occurrences?: Record<string, string>;
 }
 
 export interface WorkflowOrchestrationInput {
@@ -67,10 +75,18 @@ export interface WorkflowWaitInput {
     workflowName: string;
     stateId: string;
     step: number;
-    seconds: number;
-    /** When the wait ends, in epoch milliseconds (orchestration time). */
-    until: number;
+    state: WorkflowWaitState;
+    /** When the wait started, in epoch milliseconds (orchestration time). */
+    startedAt: number;
+    /** The occurrence this clock wait last waited for, if any. */
+    lastOccurrenceKey?: string;
     visit: number;
+}
+
+/** The wait activity's answer: when the wait ends (recorded, so a replay reuses it). */
+export interface WorkflowWaitResult {
+    until: number;
+    occurrenceKey?: string;
 }
 
 export interface WorkflowRunStateResult {
@@ -189,6 +205,7 @@ export function* workflowSessionOrchestration_1_0_0(
     let sinceWait = input.resume?.sinceWait ?? 0;
     const results: Record<string, unknown> = { ...(input.resume?.results ?? {}) };
     const visits: Record<string, number> = { ...(input.resume?.visits ?? {}) };
+    const occurrences: Record<string, string> = { ...(input.resume?.occurrences ?? {}) };
     const spinLimit = input.maxScriptRunsBetweenWaits ?? WORKFLOW_MAX_SCRIPT_RUNS_BETWEEN_WAITS;
 
     const finish = function* (result: Omit<WorkflowFinishInput, "sessionId" | "parentSessionId" | "notifyParent">) {
@@ -264,7 +281,7 @@ export function* workflowSessionOrchestration_1_0_0(
                     ...(input.parentSessionId ? { parentSessionId: input.parentSessionId } : {}),
                     ...(input.notifyParent !== undefined ? { notifyParent: input.notifyParent } : {}),
                     ...(input.maxScriptRunsBetweenWaits !== undefined ? { maxScriptRunsBetweenWaits: input.maxScriptRunsBetweenWaits } : {}),
-                    resume: { workflow, stateId: stateId!, priorOutput, step, results, sinceWait, visits },
+                    resume: { workflow, stateId: stateId!, priorOutput, step, results, sinceWait, visits, occurrences },
                 } satisfies WorkflowOrchestrationInput, WORKFLOW_SESSION_LATEST_VERSION);
                 return null;
             }
@@ -274,18 +291,24 @@ export function* workflowSessionOrchestration_1_0_0(
                 stepsThisExecution += 1;
                 sinceWait = 0;
                 visits[state.id] = (visits[state.id] ?? 0) + 1;
+                publish(ctx, { status: "running", sessionKind: "workflow", workflow: { name: workflow.name, stateId: state.id, step } });
                 const startedAt: number = yield ctx.utcNow();
-                const until = startedAt + state.seconds * 1000;
-                publish(ctx, { status: "running", sessionKind: "workflow", workflow: { name: workflow.name, stateId: state.id, step, waitingUntil: until } });
-                yield ctx.scheduleActivityTyped(WORKFLOW_ACTIVITIES.wait, {
+                // The activity works out the end (for a clock wait, the next
+                // time `at` in its zone) and records it, so a replay or a
+                // change in time-zone data cannot move it.
+                const timing: WorkflowWaitResult = yield ctx.scheduleActivityTyped(WORKFLOW_ACTIVITIES.wait, {
                     sessionId: input.sessionId,
                     workflowName: workflow.name,
                     stateId: state.id,
                     step,
-                    seconds: state.seconds,
-                    until,
+                    state,
+                    startedAt,
+                    ...(occurrences[state.id] ? { lastOccurrenceKey: occurrences[state.id] } : {}),
                     visit: visits[state.id],
                 } satisfies WorkflowWaitInput);
+                const until = timing.until;
+                if (timing.occurrenceKey) occurrences[state.id] = timing.occurrenceKey;
+                publish(ctx, { status: "running", sessionKind: "workflow", workflow: { name: workflow.name, stateId: state.id, step, waitingUntil: until } });
                 // The timer races the command queue, so cancel, complete and
                 // delete end a run that is waiting. It ends at `until`, however
                 // long the activity above or a worker restart took.

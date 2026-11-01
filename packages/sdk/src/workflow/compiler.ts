@@ -1,4 +1,5 @@
 import { parseDocument } from "yaml";
+import { describeCronAt, normalizeCronAtInput } from "../cron-at.js";
 
 /**
  * Workflow definitions.
@@ -57,11 +58,28 @@ export interface WorkflowTerminalState {
     output?: unknown;
 }
 
-/** A durable timer: no process runs and no model is called while it waits. */
+/**
+ * A clock time to wait for, in the fields the agent `cron_at` tool uses:
+ * `minute` alone is hourly; with `hour`, daily; add `dayOfWeek` (0-6,
+ * Sunday 0) for weekly or `dayOfMonth` (1-31) for monthly. `tz` is an IANA zone.
+ */
+export interface WorkflowWaitAt {
+    minute: number;
+    hour?: number;
+    dayOfWeek?: number;
+    dayOfMonth?: number;
+    tz: string;
+}
+
+/**
+ * A durable timer: no process runs and no model is called while it waits.
+ * It waits either `seconds`, or until the next clock time `at`.
+ */
 export interface WorkflowWaitState {
     id: string;
     type: "wait";
-    seconds: number;
+    seconds?: number;
+    at?: WorkflowWaitAt;
     /** `{ elapsed: <state id> }`: where the run goes when the time has passed. */
     next: Record<typeof WORKFLOW_WAIT_OUTCOME, string>;
 }
@@ -273,11 +291,59 @@ function compileScriptState(id: string, state: JsonObject, stateIds: ReadonlySet
     };
 }
 
+const WAIT_AT_KEYS = new Set(["minute", "hour", "day_of_week", "day_of_month", "tz"]);
+
+function compileWaitAt(value: unknown, path: string): WorkflowWaitAt {
+    const raw = requireObject(value, path);
+    for (const key of Object.keys(raw)) {
+        if (!WAIT_AT_KEYS.has(key)) fail(`${path}.${key} is not a field of a clock wait; use minute, hour, day_of_week, day_of_month and tz.`);
+    }
+    for (const key of ["minute", "hour", "day_of_week", "day_of_month"]) {
+        if (raw[key] !== undefined && typeof raw[key] !== "number") fail(`${path}.${key} must be a number.`);
+    }
+    const normalized = normalizeCronAtInput({
+        minute: raw.minute as number | undefined,
+        hour: raw.hour as number | undefined,
+        day_of_week: raw.day_of_week as number | undefined,
+        day_of_month: raw.day_of_month as number | undefined,
+        tz: typeof raw.tz === "string" ? raw.tz : undefined,
+        reason: "workflow wait",
+    });
+    if (!normalized.ok) fail(normalized.error.replace(/^cron_at /, `${path} `).replace(/cron_at /g, ""));
+    const { minute, hour, dayOfWeek, dayOfMonth, tz } = normalized.schedule;
+    return {
+        minute,
+        ...(hour !== undefined ? { hour } : {}),
+        ...(dayOfWeek !== undefined ? { dayOfWeek } : {}),
+        ...(dayOfMonth !== undefined ? { dayOfMonth } : {}),
+        tz,
+    };
+}
+
+/** How a wait reads in the views: "10 min", or "daily at 02:00 America/Los_Angeles". */
+export function describeWorkflowWait(state: Pick<WorkflowWaitState, "seconds" | "at">): string {
+    if (state.at) return describeCronAt(state.at);
+    const seconds = state.seconds ?? 0;
+    if (seconds > 0 && seconds % 86_400 === 0) return `${seconds / 86_400} d`;
+    if (seconds > 0 && seconds % 3_600 === 0) return `${seconds / 3_600} h`;
+    if (seconds > 0 && seconds % 60 === 0) return `${seconds / 60} min`;
+    return `${seconds} s`;
+}
+
 function compileWaitState(id: string, state: JsonObject, stateIds: ReadonlySet<string>, minSeconds: number): WorkflowWaitState {
     const path = `states.${id}`;
-    const seconds = state.seconds;
-    if (typeof seconds !== "number" || !Number.isInteger(seconds) || seconds < minSeconds || seconds > WORKFLOW_WAIT_MAX_SECONDS) {
-        fail(`${path}.seconds must be an integer from ${minSeconds} to ${WORKFLOW_WAIT_MAX_SECONDS}.`);
+    const hasSeconds = state.seconds !== undefined;
+    const hasAt = state.at !== undefined;
+    if (hasSeconds === hasAt) fail(`${path} must declare exactly one of seconds or at.`);
+    let timing: { seconds: number } | { at: WorkflowWaitAt };
+    if (hasAt) {
+        timing = { at: compileWaitAt(state.at, `${path}.at`) };
+    } else {
+        const seconds = state.seconds;
+        if (typeof seconds !== "number" || !Number.isInteger(seconds) || seconds < minSeconds || seconds > WORKFLOW_WAIT_MAX_SECONDS) {
+            fail(`${path}.seconds must be an integer from ${minSeconds} to ${WORKFLOW_WAIT_MAX_SECONDS}.`);
+        }
+        timing = { seconds };
     }
     if (state.completion !== undefined) fail(`${path} is a wait state; it has no completion outcomes (its one outcome is '${WORKFLOW_WAIT_OUTCOME}').`);
     const transition = requireObject(state.transition, `${path}.transition`);
@@ -297,7 +363,7 @@ function compileWaitState(id: string, state: JsonObject, stateIds: ReadonlySet<s
     }
     if (!stateIds.has(target)) fail(`${path}.transition.next references unknown state '${target}'.`);
     if (target === id) fail(`${path}.transition.next must lead to another state.`);
-    return { id, type: "wait", seconds, next: { [WORKFLOW_WAIT_OUTCOME]: target } as WorkflowWaitState["next"] };
+    return { id, type: "wait", ...timing, next: { [WORKFLOW_WAIT_OUTCOME]: target } as WorkflowWaitState["next"] };
 }
 
 function compileTerminalState(id: string, state: JsonObject, name: string, stateIds: ReadonlySet<string>): WorkflowTerminalState {

@@ -48,6 +48,8 @@ test("spawn_workflow is declared for agent sessions and carries the YAML contrac
     // Models are steered to put polling inside the workflow, not on an agent timer.
     assert.match(tool.description, /call spawn_workflow ONCE\. Do not use cron or cron_at for it/);
     assert.match(tool.description, /each cron wake-up costs a model turn/);
+    assert.match(tool.description, /every night at 02:00 do Z/);
+    assert.match(tool.description, /at: \{ hour: 2, minute: 0, tz: America\/Los_Angeles \}/);
     assert.equal(tool.description, SPAWN_WORKFLOW_TOOL_SPEC.description);
 });
 
@@ -269,6 +271,7 @@ import {
     parseScriptMcpToolName,
     parseWorkflowCommand,
     scriptMcpResult,
+    shortWaitAt,
 } from "../../dist/workflow/index.js";
 import { createScriptSessionTools } from "../../dist/workflow/session-tools.js";
 
@@ -362,6 +365,25 @@ test("a wait shows as waiting with its end time, counts its loops, and settles w
     assert.equal(cancelled.reason, "no longer needed");
 });
 
+test("a clock wait reads in a few characters on the graph, and in full on hover", () => {
+    assert.equal(shortWaitAt({ minute: 0, hour: 2, tz: "UTC" }), "daily 02:00");
+    assert.equal(shortWaitAt({ minute: 30, hour: 9, dayOfWeek: 1, tz: "UTC" }), "Mon 09:30");
+    assert.equal(shortWaitAt({ minute: 0, hour: 6, dayOfMonth: 1, tz: "UTC" }), "day 1 06:00");
+    assert.equal(shortWaitAt({ minute: 15, tz: "UTC" }), "hourly :15");
+    const workflow = compileWorkflow(`
+apiVersion: pilotswarm.dev/v1alpha1
+kind: Workflow
+metadata: { name: nightly, version: "1" }
+initial: nightly
+states:
+  nightly: { type: wait, at: { hour: 2, minute: 0, tz: America/Los_Angeles }, transition: { next: report } }
+  report: { type: script, runtime: node, source: x, completion: { outcomes: [done] }, transition: { next: { done: nightly } } }
+`);
+    const html = buildWorkflowCanvasHtml(workflow, foldWorkflowCanvasState([], workflow));
+    assert.match(html, /"type":"wait","at":"daily 02:00","schedule":"daily at 02:00 America\/Los_Angeles"/);
+    assert.match(html, /"wait · " \+ n\.at/);
+});
+
 test("the canvas page draws wait states and shows when a wait ends", () => {
     const workflow = compileWorkflow(`
 apiVersion: pilotswarm.dev/v1alpha1
@@ -378,7 +400,7 @@ states:
   sleep: { type: wait, seconds: 600, transition: { next: check } }
 `);
     const html = buildWorkflowCanvasHtml(workflow, foldWorkflowCanvasState([], workflow));
-    assert.match(html, /"type":"wait","seconds":600,"next":\{"elapsed":"check"\}/);
+    assert.match(html, /"type":"wait","seconds":600,"schedule":"10 min","next":\{"elapsed":"check"\}/);
     assert.match(html, /"wait · " \+ secs\(n\.seconds\)/);
     assert.match(html, /waiting until " \+ clock\(state\.waitingUntil\)/);
 });

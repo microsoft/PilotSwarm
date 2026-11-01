@@ -92,6 +92,16 @@ test("a wait state reads as waiting, with its length, end time and loop count", 
     assert.match(notice.summary, /^sleep waiting 10 min, until .+ \(wait 2\)$/);
     assert.equal(isWorkflowEvent(waiting), true);
     assert.equal(formatWorkflowEventText(event("workflow.state_waiting", { stateId: "nap", step: 1, seconds: 90, until, visit: 1 })).includes("This is wait"), false);
+
+    // A clock wait names its schedule.
+    const nightly = { stateId: "nightly", step: 2, at: { minute: 0, hour: 2, tz: "America/Los_Angeles" }, schedule: "daily at 02:00 America/Los_Angeles", until, visit: 1 };
+    assert.match(formatWorkflowEventText(event("workflow.state_waiting", nightly)), /^⏸ Step 2: `nightly` waiting for daily at 02:00 America\/Los_Angeles, until .+\.$/);
+    assert.match(describeWorkflowEvent(event("workflow.state_waiting", nightly)).summary, /^nightly waiting for daily at 02:00 America\/Los_Angeles, until /);
+    const clockGraph = formatWorkflowEventText(event("workflow.started", {
+        name: "nightly", version: "1", initial: "nightly",
+        states: [{ id: "nightly", type: "wait", at: nightly.at, schedule: nightly.schedule, next: { elapsed: "report" } }],
+    }));
+    assert.match(clockGraph, /\| nightly \| wait \(daily at 02:00 America\/Los_Angeles\) \| elapsed → report \|/);
 });
 
 test("the graph and the result are cards; each step is a one-line notice", () => {

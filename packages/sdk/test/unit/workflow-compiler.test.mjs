@@ -10,7 +10,8 @@ import {
     workflowHasWaits,
     workflowMinWaitSeconds,
 } from "../../dist/workflow/compiler.js";
-import { executeWorkflow, WorkflowExecutionError } from "../../dist/workflow/executor.js";
+import { executeWorkflow, WorkflowExecutionError, workflowWaitUntil } from "../../dist/workflow/executor.js";
+import { describeWorkflowWait } from "../../dist/workflow/compiler.js";
 
 const VALID = `
 apiVersion: pilotswarm.dev/v1alpha1
@@ -151,13 +152,56 @@ test("wait state rules", () => {
     rejects(POLL.replace("seconds: 600", "seconds: 59"), /seconds must be an integer from 60 to 604800/);
     rejects(POLL.replace("seconds: 600", `seconds: ${WORKFLOW_WAIT_MAX_SECONDS + 1}`), /seconds must be an integer from 60/);
     rejects(POLL.replace("seconds: 600", "seconds: 90.5"), /seconds must be an integer/);
-    rejects(POLL.replace("    seconds: 600\n", ""), /seconds must be an integer/);
     rejects(POLL.replace("transition: { next: check }", "transition: { next: nowhere }"), /references unknown state 'nowhere'/);
     rejects(POLL.replace("transition: { next: check }", "transition: { next: sleep }"), /must lead to another state/);
     rejects(POLL.replace("transition: { next: check }", "transition: { next: { done: check } }"), /must be a state id, or \{ elapsed: <state id> \}/);
     rejects(POLL.replace("transition: { next: check }", "transition: { handler: { module: m, export: e } }"), /handler is not supported yet/, "WORKFLOW_TRANSITION_HANDLER_UNSUPPORTED");
     rejects(POLL.replace("    seconds: 600\n", "    seconds: 600\n    completion: { outcomes: [elapsed] }\n"), /wait state; it has no completion outcomes/);
     rejects(POLL.replace("transition: { next: check }", "next: check"), /use transition.next/, "WORKFLOW_INLINE_TRANSITION_UNSUPPORTED");
+});
+
+test("a clock wait takes the cron_at fields and is checked by the same rules", () => {
+    const at = (fields) => POLL.replace("    seconds: 600\n", `    at: ${fields}\n`);
+    assert.deepEqual(compileWorkflow(at("{ hour: 2, minute: 0, tz: America/Los_Angeles }")).states.sleep,
+        { id: "sleep", type: "wait", at: { minute: 0, hour: 2, tz: "America/Los_Angeles" }, next: { elapsed: "check" } });
+    assert.deepEqual(compileWorkflow(at("{ hour: 9, minute: 30, day_of_week: 1, tz: UTC }")).states.sleep.at, { minute: 30, hour: 9, dayOfWeek: 1, tz: "UTC" });
+    assert.deepEqual(compileWorkflow(at("{ hour: 6, minute: 0, day_of_month: 1, tz: UTC }")).states.sleep.at, { minute: 0, hour: 6, dayOfMonth: 1, tz: "UTC" });
+    assert.deepEqual(compileWorkflow(at("{ minute: 15, tz: UTC }")).states.sleep.at, { minute: 15, tz: "UTC" });
+
+    rejects(POLL.replace("    seconds: 600\n", "    seconds: 600\n    at: { hour: 2, minute: 0, tz: UTC }\n"), /exactly one of seconds or at/);
+    rejects(POLL.replace("    seconds: 600\n", ""), /exactly one of seconds or at/);
+    rejects(at("{ hour: 2, minute: 0 }"), /states\.sleep\.at requires 'tz'/);
+    rejects(at("{ hour: 2, minute: 0, tz: Mars/Olympus }"), /not a recognized IANA timezone: Mars\/Olympus/);
+    rejects(at("{ hour: 24, minute: 0, tz: UTC }"), /'hour' must be 0-23/);
+    rejects(at("{ minute: 0, day_of_week: 1, tz: UTC }"), /require 'hour'/);
+    rejects(at("{ hour: 1, minute: 0, day_of_week: 1, day_of_month: 2, tz: UTC }"), /cannot combine 'day_of_week' and 'day_of_month'/);
+    rejects(at("{ hour: '2', minute: 0, tz: UTC }"), /states\.sleep\.at\.hour must be a number/);
+    rejects(at("{ hour: 2, minute: 0, tz: UTC, max_fires: 3 }"), /max_fires is not a field of a clock wait/);
+
+    assert.equal(describeWorkflowWait({ at: { minute: 0, hour: 2, tz: "America/Los_Angeles" } }), "daily at 02:00 America/Los_Angeles");
+    assert.equal(describeWorkflowWait({ seconds: 600 }), "10 min");
+    assert.equal(describeWorkflowWait({ seconds: 90 }), "90 s");
+});
+
+test("a clock wait ends at the next such time after it starts, across zones, weekdays and months", () => {
+    const wait = (at) => ({ id: "w", type: "wait", at, next: { elapsed: "x" } });
+    const utc = (iso) => Date.parse(iso);
+    // 02:00 in Los Angeles is 10:00 UTC in winter (PST) and 09:00 UTC in summer (PDT).
+    assert.equal(workflowWaitUntil(wait({ minute: 0, hour: 2, tz: "America/Los_Angeles" }), utc("2026-01-15T12:00:00Z")).until, utc("2026-01-16T10:00:00Z"));
+    assert.equal(workflowWaitUntil(wait({ minute: 0, hour: 2, tz: "America/Los_Angeles" }), utc("2026-07-15T12:00:00Z")).until, utc("2026-07-16T09:00:00Z"));
+    // Strictly after: starting at exactly 02:00 waits for the next day's.
+    assert.equal(workflowWaitUntil(wait({ minute: 0, hour: 2, tz: "UTC" }), utc("2026-03-01T02:00:00Z")).until, utc("2026-03-02T02:00:00Z"));
+    // Monday 09:30 UTC, from Saturday 31 October 2026.
+    assert.equal(workflowWaitUntil(wait({ minute: 30, hour: 9, dayOfWeek: 1, tz: "UTC" }), utc("2026-10-31T12:00:00Z")).until, utc("2026-11-02T09:30:00Z"));
+    // The 1st of the month at 06:00, from mid-November.
+    assert.equal(workflowWaitUntil(wait({ minute: 0, hour: 6, dayOfMonth: 1, tz: "UTC" }), utc("2026-11-15T00:00:00Z")).until, utc("2026-12-01T06:00:00Z"));
+    // Hourly at :15.
+    assert.equal(workflowWaitUntil(wait({ minute: 15, tz: "UTC" }), utc("2026-11-01T10:20:00Z")).until, utc("2026-11-01T11:15:00Z"));
+    const timed = workflowWaitUntil({ id: "w", type: "wait", seconds: 600, next: { elapsed: "x" } }, 1_000);
+    assert.deepEqual(timed, { until: 601_000 });
+    const clock = workflowWaitUntil(wait({ minute: 0, hour: 2, tz: "UTC" }), utc("2026-01-15T12:00:00Z"));
+    assert.equal(typeof clock.occurrenceKey, "string");
+    assert.match(clock.localTime, /^2026-01-16T02:00:00 UTC$/);
 });
 
 test("the shortest wait is 60 seconds unless development lowers it", () => {

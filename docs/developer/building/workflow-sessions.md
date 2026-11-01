@@ -11,7 +11,7 @@ This version runs three state types:
 | Type | What it does |
 |---|---|
 | `script` | Runs one Python, Node or PowerShell script. The script can call the same tools an agent session has; it reports an outcome, which picks the next state. |
-| `wait` | Waits a fixed time on a durable timer, then goes to its next state. No process runs and no model is called while it waits. This is how a workflow polls or repeats. |
+| `wait` | Waits a fixed time, or until a clock time such as 02:00 every day, on a durable timer, then goes to its next state. No process runs and no model is called while it waits. This is how a workflow polls or repeats. |
 | `terminal` | Ends the run with an outcome: `succeeded`, `blocked`, `failed` or `cancelled`, an optional summary and an optional output. |
 
 Other state types of the workflow language (`agent`, `question`, `action`,
@@ -80,7 +80,8 @@ states:
 | Terminal output | `output` may hold values that are exactly one `${inputs.x}`, `${configuration.x}` or `${states.<id>.result...}` expression (the latest output of that state). Inside a `{ }` flow mapping, quote it: `output: { total: "${states.sum.result}" }`. |
 | Session status | A terminal outcome `succeeded` or `blocked` ends the session `completed`; `failed` ends it `failed`; `cancelled` ends it `cancelled`. |
 | Size limits | YAML at most 256 KB. Each state's output at most 256 KB of JSON: store larger data as a fact or artifact and pass its key. |
-| Wait states | `seconds` is a whole number from 60 to 604,800 (7 days); `transition: { next: <state id> }` (or `{ next: { elapsed: <state id> } }`). A wait has no `completion`. The script after a wait receives, as `context.input`, the output of the script before it. |
+| Wait states | Exactly one of `seconds` (a whole number from 60 to 604,800, which is 7 days) or `at` (a clock time, below); `transition: { next: <state id> }` (or `{ next: { elapsed: <state id> } }`). A wait has no `completion`. The script after a wait receives, as `context.input`, the output of the script before it. |
+| Clock waits | `at` takes the fields of the agent `cron_at` tool: `minute`, `hour`, `day_of_week` (0-6, Sunday 0) or `day_of_month` (1-31), and `tz` (an IANA zone, required). `minute` alone is hourly; with `hour`, daily; add a day for weekly or monthly. The wait ends at the next such time **after** it starts, with the same daylight-saving rules as `cron_at`. |
 | Run limit | At most 1,000 script-state executions between two waits. A loop that waits may run until it is cancelled; a loop of scripts with no wait fails, so it cannot spin. |
 
 ## Polling and repeating work
@@ -111,6 +112,15 @@ states:
     type: wait
     seconds: 600
     transition: { next: check }
+```
+
+For "every night at 02:00", use a clock wait instead of `seconds`:
+
+```yaml
+  nightly:
+    type: wait
+    at: { hour: 2, minute: 0, tz: America/Los_Angeles }
+    transition: { next: run-report }
 ```
 
 An agent writes this once and calls `spawn_workflow` once. After that the
@@ -260,8 +270,9 @@ and every state's result are recorded in its history, so a worker restart
 resumes at the state that was running: finished states are never run again,
 and the state that was running is run again from its start. Write scripts so
 that running one twice is safe. A wait is a durable timer in the
-orchestration's history: a restarted worker resumes it where it was, and a
-cancel ends a run that is waiting. The orchestration continues as new every
+orchestration's history: its end time is worked out once, when it starts,
+and recorded, so a restarted worker resumes it where it was and later
+time-zone data cannot move it. A cancel ends a run that is waiting. The orchestration continues as new every
 20 states to keep its history small.
 
 ## Testing
