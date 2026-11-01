@@ -139,6 +139,42 @@ export async function reconcileWorkflowV2Run(host: Pick<WorkflowV2Host, "store" 
     });
 }
 
+/**
+ * Digests of one creation request, by the version of the fingerprint that
+ * recorded it. A claim marker or receipt is never rewritten; a retry is
+ * compared with the digest its record used, and the fields that digest did
+ * not cover are compared with the stored row instead.
+ * - 1 (c218d1bc..87549e10): content, parent and notification; the claim
+ *   marker held no digest.
+ * - 2 (159bdce5, ba30c8c2): version 1 plus the owner.
+ * - 3 (3a7ca2dd on): version 2 plus the tool grant; the marker states it.
+ */
+export const WORKFLOW_V2_CREATE_FINGERPRINT = 3;
+
+function createFingerprints(request: CreateWorkflowV2Request, yamlSha256: string, publish: boolean, startInputs: JsonValue): { v1: string; v2: string; v3: string } {
+    const content = {
+        kind: "create", yamlSha256, publish, start: request.start ? { inputs: startInputs } : null,
+        parentSessionId: request.parentSessionId, notifyParent: request.notifyParent !== false,
+    };
+    const owner = request.owner ? { provider: request.owner.provider, subject: request.owner.subject } : null;
+    // The tool grant is part of the request: a retry with another grant is
+    // another request, so it can never continue (or be told it created) this one.
+    const binding = request.binding ? jsonSha256(JSON.parse(JSON.stringify(request.binding))) : null;
+    return { v1: jsonSha256(content), v2: jsonSha256({ ...content, owner }), v3: jsonSha256({ ...content, owner, binding }) };
+}
+
+/** The same tool grant: both absent, or the same JSON (the stored copy went through JSONB). */
+function sameGrant(stored: unknown, requested: WorkflowToolBinding | null | undefined): boolean {
+    const storedGrant = stored === undefined || stored === null ? null : canonicalJson(JSON.parse(JSON.stringify(stored)));
+    const requestedGrant = requested ? canonicalJson(JSON.parse(JSON.stringify(requested))) : null;
+    return storedGrant === requestedGrant;
+}
+
+function sameOwner(stored: SessionOwnerInfo | null | undefined, requested: SessionOwnerInfo | null | undefined): boolean {
+    if (!stored || !requested) return !stored && !requested;
+    return stored.provider === requested.provider && stored.subject === requested.subject;
+}
+
 /** Create a workflow child: a draft by default; optionally published and started atomically. */
 export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWorkflowV2Request): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
     requireOperationId(request.operationId);
@@ -147,14 +183,10 @@ export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWork
     const publish = request.publish === true || Boolean(request.start);
     const startInputs = request.start ? request.start.inputs : null;
     if (request.start) validateRunInputs(compiled, request.start.inputs);
-    const requestSha256 = jsonSha256({
-        kind: "create", yamlSha256: compiled.yamlSha256, publish, start: request.start ? { inputs: startInputs } : null,
-        parentSessionId: request.parentSessionId, notifyParent: request.notifyParent !== false,
-        owner: request.owner ? { provider: request.owner.provider, subject: request.owner.subject } : null,
-        // The tool grant is part of the request: a retry with another grant is
-        // another request, so it can never continue (or be told it created) this one.
-        binding: request.binding ? jsonSha256(JSON.parse(JSON.stringify(request.binding))) : null,
-    });
+    const fingerprints = createFingerprints(request, compiled.yamlSha256, publish, startInputs);
+    const requestSha256 = fingerprints.v3;
+    // Digests a stored receipt of this request may carry (receipts are never rewritten).
+    let acceptedRequestSha256: string[] = [requestSha256];
     // A deleted workflow keeps its definition tombstone; its id is never reused.
     const tombstone = await host.store.readDefinition(request.workflowSessionId);
     if (tombstone?.state === "deleted") throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow id was deleted and cannot be reused.");
@@ -165,7 +197,7 @@ export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWork
         parentSessionId: request.parentSessionId,
         owner: request.owner ?? null,
         creationConfig: {
-            workflowV2: { apiVersion: WORKFLOW_V2_API_VERSION, requestSha256, operationId: request.operationId },
+            workflowV2: { apiVersion: WORKFLOW_V2_API_VERSION, fingerprint: WORKFLOW_V2_CREATE_FINGERPRINT, requestSha256, operationId: request.operationId },
             ...(request.binding ? { workflowToolBinding: request.binding } : {}),
         },
     });
@@ -182,7 +214,23 @@ export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWork
             throw new WorkflowStoreError("SESSION_EXISTS",
                 `Session ${request.workflowSessionId} already exists and is not this parent's v2 workflow; nothing was changed.`);
         }
-        if (marker.requestSha256 !== requestSha256 || marker.operationId !== request.operationId) {
+        // Compare with the fingerprint the claim recorded; what it did not
+        // cover (the owner, the first grant) must match the stored row.
+        const grantMatches = sameGrant(creation?.workflowToolBinding, request.binding);
+        const ownerMatches = sameOwner(row.owner, request.owner);
+        let sameRequest: boolean;
+        if (marker.fingerprint === WORKFLOW_V2_CREATE_FINGERPRINT) {
+            sameRequest = marker.requestSha256 === fingerprints.v3 && marker.operationId === request.operationId;
+        } else if (marker.fingerprint === undefined && typeof marker.requestSha256 === "string") {
+            sameRequest = marker.requestSha256 === fingerprints.v2 && marker.operationId === request.operationId && grantMatches;
+            acceptedRequestSha256 = [fingerprints.v3, fingerprints.v2];
+        } else if (marker.fingerprint === undefined && marker.requestSha256 === undefined && marker.operationId === undefined) {
+            sameRequest = grantMatches && ownerMatches;
+            acceptedRequestSha256 = [fingerprints.v3, fingerprints.v1];
+        } else {
+            throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Workflow ${request.workflowSessionId} has a creation record this build cannot read.`);
+        }
+        if (!sameRequest) {
             throw new WorkflowStoreError("WORKFLOW_EXISTS",
                 `Workflow ${request.workflowSessionId} was created by a different request; use another key for another workflow.`);
         }
@@ -196,6 +244,7 @@ export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWork
         actor: request.actor,
         operationId: request.operationId,
         requestSha256,
+        acceptedRequestSha256,
         publish,
         start: request.start ? liveAdmission(request.workflowSessionId, request.start.inputs) : null,
         title: `Workflow: ${compiled.name ?? "draft"}`,

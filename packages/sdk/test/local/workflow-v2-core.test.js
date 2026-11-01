@@ -301,6 +301,12 @@ describe("workflow v2 script results are plain JSON before any serialization", (
         ["an array subclass", 'class List extends Array {} await setResult("ok", List.from([1]));', "only plain arrays are JSON"],
         ["a non-enumerable property", 'await setResult("ok", Object.defineProperty({}, "hidden", { value: 1 }));', "non-enumerable properties are not JSON"],
         ["an empty outcome", 'await setResult("", {});', "non-empty outcome"],
+        // A script's trap may throw an error with an empty message; the refusal is still reported.
+        ["a proxy whose trap throws an empty error", 'await setResult("ok", new Proxy({}, { ownKeys() { throw new Error(""); } }));',
+            "the value cannot be encoded as plain JSON"],
+        // The class name is read without running the script's getter.
+        ["a class whose name getter throws an empty error", 'class Odd { static get name() { throw new Error(""); } } await setResult("ok", new Odd());',
+            "only plain objects are JSON (got object)"],
     ];
     for (const [label, source, message] of refused) {
         it(`reports ${label} as an invalid result`, { timeout: 60_000 }, async () => {
@@ -357,6 +363,22 @@ const response = await fetch(process.env.PILOTSWARM_WORKFLOW_ENDPOINT + "/result
         const corrected = await runProbe(`${raw}\nawait setResult("ok", { status: response.status, body: await response.json() });`, true);
         expect(corrected.resultSource, JSON.stringify(corrected)).toBe("reported");
         expect(corrected.output).toEqual({ status: 400, body: { ok: false, error: "output: numbers must be finite" } });
+    });
+
+    it("treats an invalid marker as a refusal whatever its text, and a plain null as a valid result", { timeout: 60_000 }, async () => {
+        const marked = await runProbe(`
+const response = await fetch(process.env.PILOTSWARM_WORKFLOW_ENDPOINT + "/result", {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: "Bearer " + process.env.PILOTSWARM_WORKFLOW_TOKEN },
+    body: '{"outcome":"ok","invalid":""}',
+});
+console.error("status " + response.status);`, true);
+        expect(marked).toMatchObject({ resultSource: "invalid", outcome: "ok", output: null, exitCode: 0,
+            problem: "the script reported a result it could not encode" });
+        expect(marked.stderrTail).toContain("status 400");
+        const valid = await runProbe('await setResult("ok", null);', true);
+        expect(valid).toMatchObject({ resultSource: "reported", outcome: "ok", output: null, exitCode: 0 });
+        expect(valid.problem).toBeUndefined();
     });
 
     it("takes a final stdout result line or the exit code as before, checking stdout values", { timeout: 60_000 }, async () => {
@@ -590,6 +612,8 @@ describe("workflow v2 store and controller on PostgreSQL", () => {
                 ["array-getter", 'const a = []; Object.defineProperty(a, "0", { enumerable: true, get() { return 1; } }); await setResult("ok", { a });', { code: "invalid_output" }],
                 ["crash", 'process.exit(4);', { code: "execution_failed" }],
                 ["stdout-valid", 'console.log(\'{"outcome":"ok","output":{"n":7}}\');', { output: { n: 7 } }],
+                ["marked-empty", 'await fetch(process.env.PILOTSWARM_WORKFLOW_ENDPOINT + "/result", { method: "POST", headers: { "content-type": "application/json", authorization: "Bearer " + process.env.PILOTSWARM_WORKFLOW_TOKEN }, body: \'{"outcome":"ok","invalid":""}\' });', { code: "invalid_output" }],
+                ["valid-null", 'await setResult("ok", null);', { output: null }],
                 ["reported-then-exit", 'await setResult("ok", { n: 1 }); process.exit(2);', { output: { n: 1 } }],
             ];
             for (const [name, source, expected] of cases) {

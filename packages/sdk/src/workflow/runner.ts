@@ -192,9 +192,10 @@ function __psEncode(value, path, depth) {
     }
     const prototype = __psPrototypeOf(value);
     if (prototype !== __psObjectPrototype && prototype !== null) {
+        // The class name is read as a data property only, so no getter of the script runs here.
         const constructor = __psOwnProperty(prototype, "constructor");
-        const name = constructor && typeof constructor.value === "function" && typeof constructor.value.name === "string"
-            ? constructor.value.name : "object";
+        const named = constructor && typeof constructor.value === "function" ? __psOwnProperty(constructor.value, "name") : undefined;
+        const name = named && __psHasOwn(named, "value") && typeof named.value === "string" && named.value ? named.value : "object";
         throw new TypeError(path + ": only plain objects are JSON (got " + name + ")");
     }
     let text = "{";
@@ -226,13 +227,21 @@ async function callTool(name, args = {}) {
     if (args === null || typeof args !== "object" || __psIsArray(args)) throw new TypeError("arguments must be a JSON object");
     return __psPost("/tool", '{"name":' + __psStringify(name) + ',"arguments":' + __psEncode(args, "arguments", 0) + "}");
 }
+function __psProblem(error) {
+    // A script's trap or getter may throw anything, even an empty message;
+    // the refusal it causes must still be reported as one.
+    let text = "";
+    try { text = error instanceof Error ? __psString(error.message) : __psString(error); }
+    catch { text = ""; }
+    return text || "the value cannot be encoded as plain JSON";
+}
 async function setResult(outcome, output = null) {
     let body;
     try {
         if (typeof outcome !== "string" || outcome.length === 0) throw new TypeError("setResult needs a non-empty outcome string");
         body = '{"outcome":' + __psStringify(outcome) + ',"output":' + __psEncode(output, "output", 0) + "}";
     } catch (error) {
-        const problem = error instanceof Error ? error.message : __psString(error);
+        const problem = __psProblem(error);
         const reported = typeof outcome === "string" ? outcome : "";
         return __psPost("/result", '{"outcome":' + __psStringify(reported) + ',"invalid":' + __psStringify(problem) + "}");
     }
@@ -438,11 +447,14 @@ export async function runScriptNode(
         if (req.url === "/result" && request.strictJson) {
             // A refused result is still the script's latest result: the node
             // fails with invalid_output instead of running on without one.
+            // The marker's presence refuses the result, whatever its text.
             const outcome = typeof body?.outcome === "string" ? body.outcome : "";
-            const problem = typeof body?.invalid === "string" ? body.invalid
+            const marked = body !== null && typeof body === "object" && Object.hasOwn(body, "invalid");
+            const problem: string | null = marked
+                ? (typeof body.invalid === "string" && body.invalid.trim() ? body.invalid : "the script reported a result it could not encode")
                 : !outcome.trim() ? "outcome must be a non-empty string"
                 : strictJsonProblem(Object.hasOwn(body, "output") ? body.output : null, "output");
-            if (problem) {
+            if (problem !== null) {
                 reported = { outcome, output: null, invalid: problem };
                 reply(400, { ok: false, error: problem });
                 return;

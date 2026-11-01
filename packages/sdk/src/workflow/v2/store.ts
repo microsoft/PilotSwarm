@@ -398,14 +398,21 @@ export class WorkflowStore {
         return definitionFrom(rows[0]);
     }
 
-    /** A stored receipt for this operation, or null. Throws OPERATION_CONFLICT for a different request with the same id. */
-    private async priorReceipt(client: PoolClient, workflowSessionId: string, operationId: string, kind: string, requestSha256: string): Promise<WorkflowDefinitionReceipt | null> {
+    /**
+     * A stored receipt for this operation, or null. Throws OPERATION_CONFLICT
+     * for a different request with the same id. A receipt keeps the request
+     * digest it was written with; `requestSha256` may list the digests of
+     * every fingerprint version that describes this same request
+     * (WORKFLOW_V2_CREATE_FINGERPRINT in service.ts).
+     */
+    private async priorReceipt(client: PoolClient, workflowSessionId: string, operationId: string, kind: string, requestSha256: string | readonly string[]): Promise<WorkflowDefinitionReceipt | null> {
+        const accepted: readonly string[] = typeof requestSha256 === "string" ? [requestSha256] : requestSha256;
         const { rows } = await client.query(
             `SELECT kind, request_sha256, receipt FROM ${this.t.operations} WHERE workflow_session_id = $1 AND operation_id = $2`,
             [workflowSessionId, operationId],
         );
         if (!rows[0]) return null;
-        if (str(rows[0], "kind") !== kind || str(rows[0], "request_sha256") !== requestSha256) {
+        if (str(rows[0], "kind") !== kind || !accepted.includes(str(rows[0], "request_sha256"))) {
             throw new WorkflowStoreError("OPERATION_CONFLICT", `Operation ${operationId} was already used for a different request.`,
                 { operationId, storedKind: str(rows[0], "kind") });
         }
@@ -481,6 +488,8 @@ export class WorkflowStore {
         actor: WorkflowActor;
         operationId: string;
         requestSha256: string;
+        /** Digests a stored receipt of this same request may carry (earlier fingerprint versions); default: requestSha256. */
+        acceptedRequestSha256?: readonly string[];
         publish: boolean;
         start: RunAdmission | null;
         /** Session title, written with the definition under the session lock. */
@@ -503,7 +512,7 @@ export class WorkflowStore {
             );
             if (!created.rows[0]) {
                 await this.lockDefinition(client, input.workflowSessionId);
-                const prior = await this.priorReceipt(client, input.workflowSessionId, input.operationId, "create", input.requestSha256);
+                const prior = await this.priorReceipt(client, input.workflowSessionId, input.operationId, "create", input.acceptedRequestSha256 ?? input.requestSha256);
                 if (prior) return { receipt: prior, replayed: true };
                 throw new WorkflowStoreError("WORKFLOW_EXISTS", `Workflow ${input.workflowSessionId} already exists with a different creation request.`);
             }
