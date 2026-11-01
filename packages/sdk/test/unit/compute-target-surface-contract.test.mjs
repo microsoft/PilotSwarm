@@ -14,7 +14,7 @@ const principal = { provider: "test", subject: "user-1", email: "owner@example.c
 const viewer = { principal, isAdmin: false };
 const personalTarget = {
     id: "target-1",
-    name: "owner@example.com/devbox",
+    name: "owner@example.com/my-machine",
     kind: "pool",
     class: "personal",
     ownerUserId: 4,
@@ -72,7 +72,7 @@ function recordingServer() {
 
 test("target probes dispatch a durable worker activity using only target id and caller identity", async () => {
     const { client, calls } = managementClient();
-    const result = await client.probeMyComputeTarget(viewer, "devbox");
+    const result = await client.probeMyComputeTarget(viewer, "my-machine");
     assert.equal(result.ok, true);
 
     const start = calls.find((call) => call.method === "startOrchestration");
