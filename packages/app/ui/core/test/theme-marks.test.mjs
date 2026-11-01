@@ -234,7 +234,9 @@ test("Hearth's garland lights twinkle one at a time, and stand still when motion
     const svg = decodeURIComponent(rule.slice(rule.indexOf("data:image/svg+xml,") + 19, rule.indexOf('")')));
     const durations = [...svg.matchAll(/<animate attributeName="opacity"[^>]*dur="([\d.]+)s"/g)].map((m) => m[1]);
     assert.ok(new Set(durations).size >= 6, `each light keeps its own rhythm: ${[...new Set(durations)].join(", ")}`);
-    const reduced = css.slice(css.lastIndexOf("@media (prefers-reduced-motion: reduce)"));
+    const blocks = css.split("@media (prefers-reduced-motion: reduce)").slice(1).map((b) => b.slice(0, b.indexOf("\n}\n")));
+    const reduced = blocks.find((b) => b.includes(':root[data-ps-theme="hearth"] .portal-header::before'));
+    assert.ok(reduced, "a reduced-motion rule covers the strand");
     assert.match(reduced, /:root\[data-ps-theme="hearth"\] \.portal-header::before \{\s*background: url\("data:image\/svg\+xml,/);
-    assert.doesNotMatch(reduced.slice(0, reduced.indexOf("\n}\n")), /%3Canimate/, "the reduced-motion strand has no animation");
+    assert.doesNotMatch(reduced, /%3Canimate/, "the reduced-motion strand has no animation");
 });
