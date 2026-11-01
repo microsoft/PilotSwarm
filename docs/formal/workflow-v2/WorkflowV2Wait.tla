@@ -11,7 +11,11 @@
 (* state ends the run.                                                      *)
 (*                                                                          *)
 (* clk is the store's clock in whole seconds; it never goes back. The       *)
-(* controller and the workers read clk + Skew.                              *)
+(* controller and the workers read clk + Skew. ClockCap stands for every    *)
+(* time from ClockCap on: every stored deadline in these bounds is before   *)
+(* it, so the store decides the same way at every later time, and a        *)
+(* controller timer set for a later time has fired there (README "Wait     *)
+(* model": the clock).                                                     *)
 (***************************************************************************)
 EXTENDS Integers
 
@@ -28,13 +32,14 @@ CONSTANTS
     Cancels,           \* environment: the parent may cancel the run
     Deletes,           \* environment: the workflow session may be deleted
     ControllerDeath,   \* fault: the controller ends without ending its run; the parent recovers it
+    ResumeFair,        \* environment: a paused run is eventually resumed (a control for the paused cases)
     MaxCrashes         \* assumption A1: worker crashes inside the enter and elapse activities
 
 ASSUME Secs \in Nat /\ Secs >= 2
 ASSUME ClockOffset \in {"behind", "equal", "ahead"}
 ASSUME MaxPre \in Nat /\ MaxCrashes \in Nat
 ASSUME EntryClock \in {"evaluation", "begin", "accepted"}
-ASSUME {StoreElapseGuard, Cas, CanKeepsDeadline, ElapseWhilePaused, Pauses, Cancels, Deletes, ControllerDeath} \subseteq BOOLEAN
+ASSUME {StoreElapseGuard, Cas, CanKeepsDeadline, ElapseWhilePaused, Pauses, Cancels, Deletes, ControllerDeath, ResumeFair} \subseteq BOOLEAN
 
 NoTime == -1
 (* The controller's and the workers' clock minus the store's, in seconds.  *)
@@ -42,7 +47,8 @@ Skew == CASE ClockOffset = "ahead" -> 1
           [] ClockOffset = "behind" -> -1
           [] OTHER -> 0
 AbsSkew == IF Skew < 0 THEN -Skew ELSE Skew
-(* No step needs the store's clock past this bound (README "Wait model").  *)
+(* Every stored deadline and the controller's first ask are at or before  *)
+(* this time (README "Wait model": the clock).                             *)
 ClockCap == MaxPre + Secs + 2 * AbsSkew + 1
 Times == {NoTime} \cup 0..(2 * ClockCap)
 Active == {"running", "paused"}
@@ -199,11 +205,12 @@ AdmCrash ==
     /\ UNCHANGED <<clk, runVars, rowVars, evalAt, txAt, ctrlDl, elVars, zombie>>
 
 (* The cursor's timer fired and the controller's clock (utcNow, recorded in *)
-(* its history) reached the cursor's deadline: ask the store.               *)
+(* its history) reached the cursor's deadline: ask the store. At ClockCap   *)
+(* (every later time) a timer set for a later time has fired too.           *)
 CtrlAsk ==
     /\ pc = "waiting"
     /\ ctrlDl # NoTime
-    /\ clk + Skew >= ctrlDl
+    /\ (clk + Skew >= ctrlDl \/ clk = ClockCap)
     /\ pc' = "elapse"
     /\ UNCHANGED <<clk, runVars, rowVars, admVars, ctrlDl, elVars, crashes, zombie>>
 
@@ -376,13 +383,15 @@ Next ==
     \/ Delete \/ Pause \/ Resume \/ CtrlDie \/ ZombieElapse \/ Recover \/ Tick
 
 (* Weak fairness of every controller step, the zombie activity, recover     *)
-(* (A3) and the clock. Pause, resume, cancel, deletion, crashes, death and  *)
-(* continue-as-new are not fair: a run may stay paused.                     *)
+(* (A3) and the clock. Pause, cancel, deletion, crashes, death and          *)
+(* continue-as-new are not fair, and resume only with ResumeFair: a run may *)
+(* stay paused.                                                             *)
 Fairness ==
     /\ WF_vars(AdmEval) /\ WF_vars(AdmBegin) /\ WF_vars(AdmLock) /\ WF_vars(AdmInsert)
     /\ WF_vars(AdmCommit) /\ WF_vars(AdmRecord) /\ WF_vars(CtrlAsk) /\ WF_vars(CtrlCollect)
     /\ WF_vars(ElapseExec) /\ WF_vars(ElapseRecord) /\ WF_vars(Collect) /\ WF_vars(Finish)
     /\ WF_vars(PausedRetry) /\ WF_vars(ZombieElapse) /\ WF_vars(Recover) /\ WF_vars(Tick)
+    /\ WF_vars(ResumeFair /\ Resume)
 
 Spec == Init /\ [][Next]_vars /\ Fairness
 

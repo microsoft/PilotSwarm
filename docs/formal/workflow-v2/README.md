@@ -9,10 +9,10 @@ deliberate faults and witnesses).
 | Module | Checks | Section |
 |---|---|---|
 | `WorkflowV2Run.tla` | One run: controller, effects, store transitions, crashes, wakes, cancellation, deletion, controller death and recover, the catch-all state | this section to "Regressions" |
-| `WorkflowV2Wait.tla` | A wait state: the accepted-entry clock (W1), the store's elapse guard against skewed controller clocks, the first result kept, the deadline across retries and continue-as-new, pause | "Wait model" |
+| `WorkflowV2Wait.tla` | A wait state: the accepted-entry clock (W1), the store's elapse guard against skewed controller clocks, the first result kept, the deadline across retries and continue-as-new, pause, with a finite clock that stands for all later time at its bound | "Wait model" |
 | `WorkflowV2Admission.tla` | Admission under the open KV and pause: the revision current at commit, KV_CHANGING, refusals, ordinals, the paused wait and its backstop, begin of a run paused before it began, the deletion trigger | "Admission model" |
-| `WorkflowV2Lifecycle.tla` | Start of a run and cancels before begin: lost and skipped dispatch, the provider's drop, begin honoring an accepted cancel (C1), its requester and who is told (C2, M1), recover | "Lifecycle model" |
-| `WorkflowV2SessionCommands.tla` | A parent session's cancel and delete for a v2 child through `sendCommandToSession`: receipts, redelivery, conflicts, the deleted-child path (D2) and deletes applied in the store (D1) | "Session command model" |
+| `WorkflowV2Lifecycle.tla` | Start of a run and cancels before begin: lost and skipped dispatch, the provider's drop, begin honoring an accepted cancel (C1), its recorded (nullable) requester and who is told (C2, M1), notification eligibility and failure (A6), recover | "Lifecycle model" |
+| `WorkflowV2SessionCommands.tla` | A parent session's cancel and delete for a v2 child through `sendCommandToSession`: receipts, redelivery, conflicts, the deleted-child path (D2), deletes applied in the store (D1) and the repeat of an earlier build's queued delete | "Session command model" |
 
 `WorkflowV2Run.tla` models one workflow v2 run as the code in
 `packages/sdk/src/workflow/v2` implements it: the controller orchestration,
@@ -347,8 +347,9 @@ DEV receipts for this commit, not in this file.
 Run from this folder with the TLA+ tools jar (`tla2tools.jar`). Each case
 names its module by its prefix: `wait-` and `wit-wait-` cases are for
 `WorkflowV2Wait.tla`, `adm-` for `WorkflowV2Admission.tla`, `lc-` for
-`WorkflowV2Lifecycle.tla`, `cmd-` for `WorkflowV2SessionCommands.tla`, and
-every other case for `WorkflowV2Run.tla`.
+`WorkflowV2Lifecycle.tla`, `cmd-` and `wit-cmd-` for
+`WorkflowV2SessionCommands.tla`, and every other case for
+`WorkflowV2Run.tla`.
 
 ```sh
 java -cp tla2tools.jar tla2sany.SANY <module>.tla
@@ -412,8 +413,24 @@ controller and the workers read `clk` plus 1, 0 or -1 (`ClockOffset`).
 The store's clock advances freely to `MaxPre` while the wait is not stored
 (a delay before the transaction, a lock wait, the time between the insert
 and its commit), then while a timer of the store or of the controller is
-still ahead; `ClockCap` bounds it. The code and the model assume that the
-store's clock does not go back between the admission and the elapse.
+still ahead. The code and the model assume that the store's clock does not
+go back between the admission and the elapse.
+
+The clock: `clk` stops at `ClockCap` (`MaxPre + Secs + 2 * |offset| + 1`),
+and `ClockCap` stands for every time from `ClockCap` on. Every stored
+deadline in these bounds is before `ClockCap`, and so is the controller's
+first ask, so the store decides the same way at every later time (it
+elapses a pending wait unless the run is deleted, or paused in the
+`ElapseWhilePaused = FALSE` fault, and it reports at least 1 s left). A
+controller timer that a not-due answer re-arms for a later time has fired
+by some later time; at `ClockCap` the controller may therefore ask again
+(`CtrlAsk`). Without that rule the be9aa9b3 model let the clock saturate
+during repeated not-due answers while the run was paused, and after a
+resume no fair step was enabled (`wait-df-frozen-while-paused`, finding
+`be9aa9b3-wait-clock-saturation`): a stall caused by the bound, not by the
+pause. With the rule, a wait of a paused run stalls only while the run stays
+paused, and `wait-df-frozen-while-paused-resumed` checks that a resumed run's
+wait is decided.
 
 | Constant | Kind | Code |
 |---|---|---|
@@ -424,6 +441,7 @@ store's clock does not go back between the admission and the elapse.
 | `ElapseWhilePaused` | deliberate fault when FALSE | The store elapses a wait of a paused run: a pause does not freeze the deadline. |
 | `Pauses`, `Cancels`, `Deletes` | environment | The parent pauses the run (once) and resumes it, or cancels it; the session is deleted. |
 | `ControllerDeath` | fault | The controller ends without ending its run; the parent recovers it (A3). |
+| `ResumeFair` | environment | A paused run is eventually resumed (weak fairness of `Resume`); a control for the paused cases. |
 | `MaxCrashes` | assumption A1 | Worker crashes in the enter and elapse activities. |
 | `Secs`, `MaxPre`, `ClockOffset` | bounds | The wait's seconds; the clock bound while the wait is not stored; the controller's clock against the store's. |
 
@@ -434,7 +452,7 @@ store's clock does not go back between the admission and the elapse.
 | `AdmInsert` / `AdmCommit` | `S` 1292 (inactive), 1325 (the insert) | One `clock_timestamp()` reading in the inserting statement, after the locks and the live, status and KV guards, is `entered_at` and the start of the seconds; the commit may come later. |
 | `AdmRecord` | `R` 546 (call), 552 (paused refusal), 581 (the cursor's deadline) | The controller keeps the stored deadline in its cursor. |
 | `AdmCrash` / `ElapseCrash` | `R` 546, 629 (store retry policy) | A worker crash re-dispatches the activity; a committed admission is read back, an uncommitted one rolls back. |
-| `CtrlAsk` | `R` 627 | The controller's clock is `utcNow`, recorded in its history; it only decides when to ask. |
+| `CtrlAsk` | `R` 627 | The controller's clock is `utcNow`, recorded in its history; it only decides when to ask. At `ClockCap`, which stands for every later time, a re-armed timer has fired (the clock paragraph above). |
 | `ElapseExec` / `ZombieElapse` | `R` 1395 (activity); `S` `elapseWait` 1452, 1462 (guard), 1472 (time left) | One reading of the store's clock after the session lock decides and is stored; compare-and-swap from pending; an activity may outlive its controller. |
 | `ElapseRecord` | `R` 629, 637 | A wait not yet due waits the reported time from the controller's clock. |
 | `CtrlCollect` / `Collect` / `Finish` | `R` 643 (collect), 650 (routing), 565 (terminal finish) | The next state's admission is refused for a paused or ended run. |
@@ -471,7 +489,8 @@ not need.
 | `wait-df-no-store-guard` | this commit without the store guard, controller clock ahead | `Inv_NotEarly` | safety violation |
 | `wait-df-no-cas` | this commit without the compare-and-swap; an elapse activity outlives its controller after recover | `Prop_FirstResultKept` | safety violation |
 | `wait-df-can-drops-deadline` | this commit with continue-as-new dropping the cursor's deadline | `Live_WaitDecided` | liveness violation |
-| `wait-df-frozen-while-paused` | this commit with the store refusing to elapse a paused run's wait | `Live_WaitDecided` | liveness violation |
+| `wait-df-frozen-while-paused` | this commit with the store refusing to elapse a paused run's wait | `Live_WaitDecided` | liveness violation (the run stays paused) |
+| `wait-df-frozen-while-paused-resumed` | as `wait-df-frozen-while-paused`, and a paused run is eventually resumed | `Live_WaitDecided` | PASS (control: the stall needs a run that stays paused, not the clock bound) |
 | `wit-wait-from-visibility` | this commit, clocks equal | `Wit_FromVisibility` | safety violation (witness) |
 
 Limits:
@@ -576,21 +595,41 @@ Limits:
 that can come before its controller begins it: the dispatch after
 admission (lost, or skipped for a run that already ended), duroxide's
 start, the provider's drop of queue messages for an instance that has not
-started, the controller's begin, the parent's recover, `update_workflow`
-cancel by the parent or by another requester, a cancel receipt that an
-earlier build stored, and who is told that the run ended. Another
-requester is a service caller that is not the parent; `update_workflow`
-admits only the parent, so no production entry point sends one. Pause
-before begin is in the admission model.
+started, the controller's begin, the parent's recover, a cancel by the
+parent, by another agent session (`other`) or by a system actor (`system`),
+a cancel receipt that an earlier build stored, and who is told that the run
+ended. A cancel records its requester as `controlWorkflowV2Run` does: an
+agent's session id, or null for any other actor (`Rec`); the model keeps
+the actual requester (`endTruth`) apart from that recorded, nullable value
+(`endReq`). `update_workflow` admits only the parent, so `other` and
+`system` are service callers, not production entry points; the system actor
+is the input of the control regression "tells the parent of a run another
+requester's cancel ended before it began" (finding
+`be9aa9b3-lifecycle-requester`). Pause before begin is in the admission
+model.
+
+Assumption A6 (notification), for the liveness cases that need it: the
+workflow has a parent and asked to be told (`NotifyEnabled`), the parent's
+authority to receive it holds, and each notifier start and delivery
+succeeds within its retry budget (the begin activity's store retry policy;
+the notifier's and the controller's `persistently` batches), so no
+notification fails for good (`NotifyFaults = FALSE`). Without A6 the model
+lets a start or a delivery fail for good (`NotifyFaults`): the notifier
+ends `failed`, the controller fails, or the request returns an error, and
+`noticeLost` records it; a workflow that did not ask is never told. A3
+(recover) does not repair a lost notice: a cancelled run is not active, so
+recover does not act on it (finding `be9aa9b3-notification-assumptions`).
 
 | Constant | Kind | Code |
 |---|---|---|
 | `CancelEndsBeforeBegin` | fix | 369beaf0: a cancel ends a run that has not begun in its own transaction, also on a repeat. Before (ae02665a to 183bb0b0) the receipt was stored and the command queued. |
 | `BeginHonorsReceipt` | fix | 31dc9888: begin ends a run that has not begun and has an accepted cancel receipt. |
 | `C2Fix` | fix | b1d1d4b9: begin names the parent as that receipt's requester (M1) and starts the notifier for a requester that is not the parent; the cancel service and `notifyParent` do not report the parent's own cancel to it. |
-| `LegacyWriter` | migration | The requester of a receipt that an earlier build stored without ending the run: `"none"`, `"parent"` (M1 holds) or `"other"` (M1 does not hold). |
-| `Cancellers` | environment | Who sends a cancel. |
-| `LoseDispatch`, `Interrupts`, `ControllerDeath` | faults | The start after admission never reaches duroxide; a cancel request stops after its commit, and the begin activity runs again after its commit; the controller ends without ending its run. |
+| `LegacyWriter` | migration | Who wrote a receipt that an earlier build stored without ending the run: `"none"`, `"parent"` (M1 holds), or `"other"` or `"system"` (M1 does not hold). |
+| `Cancellers` | environment | Who sends a cancel: `parent`, `other` (another agent session) and `system` (a non-agent actor; requester null). |
+| `LoseDispatch`, `Interrupts`, `ControllerDeath` | faults | The start after admission never reaches duroxide; a cancel request stops after its commit, and the begin activity runs again after its commit; the controller ends without ending its run, and a begin activity it scheduled may still commit and start the notifier afterwards (`ZombieBeginTx`, `ZombieBeginNotify`, not fair). |
+| `NotifyEnabled` | workflow | The workflow has a parent and asked to be told (`notifyParent`). |
+| `NotifyFaults` | fault | A notifier start or a delivery fails for good: retries exhausted, or the parent's authority gone (a skip). A6 is `NotifyEnabled` and not `NotifyFaults`. |
 | `DropOrphans` | provider | duroxide-pg drops queue messages of an instance with no row and no history. |
 | `Repeats`, `Recovery` | assumptions A5 and A3 | A requester repeats an interrupted cancel with its operation id, and the repeat completes; the parent recovers a run that needs it. |
 
@@ -599,32 +638,40 @@ before begin is in the admission model.
 | `DispatchSend` / `DispatchLose` | `V` `dispatchWorkflowV2Run` 121 | Skips a run that is not active; the start may never reach duroxide. |
 | `Start` / `OrphanDrop` | duroxide 0.1.32; duroxide-pg 0.1.38 `provider.rs` 1132-1161, migrations 0025 and 0026 | A second start of an instance id is ignored; queue messages fetched for an instance with no row and no history are acknowledged, which deletes them. |
 | `BeginTx` | `S` `beginRun` 1187, 1195 (the earliest accepted cancel receipt), 1202 (requester attributed to the parent, M1) | Session and run locks, as the cancel's transaction takes. |
-| `BeginNotify` / `BeginRetry` | `R` 1010 (activity), 973, 1030 (notifier start) | After the commit; the activity runs again until the start succeeds. |
-| `ApplyCmd` / `RunFinish` | `R` 486, 491 (notify with the requester), 426 | The controller reports its run's end at least once. |
-| `CancelTx` | `V` `controlWorkflowV2Run` 555; `S` `recordRunCancelRequest` 964, `cancelBeforeBegin` 996 | Session, definition and run locks; the receipt and the before-begin end in one transaction; a repeat ends a run that has not begun. |
+| `BeginNotify` / `BeginRetry` | `R` 1010 (activity), 973 (enabled and requester checks), 1030 (notifier start) | After the commit; the activity runs again until the start succeeds, or fails the controller when it fails for good (`NotifyFaults`). |
+| `ApplyCmd` / `RunFinish` | `R` 486, 491 (notify with the requester), 426 | The controller reports its run's end at least once; a delivery may fail for good (`NotifyFaults`), and then the controller fails. |
+| `CancelTx` | `V` `controlWorkflowV2Run` 555, 580 (the requester: an agent's session, otherwise null); `S` `recordRunCancelRequest` 964, `cancelBeforeBegin` 996 | Session, definition and run locks; the receipt and the before-begin end in one transaction; a repeat ends a run that has not begun. |
 | `CancelFollow` / `CancelInterrupt` | `V` 584 (enqueue), `notifyCancelledBeforeBegin` 224 | After the commit; not transactional with it. |
 | `RecoverDispatch` / `RecoverEnd` | `V` `recoverWorkflowV2Run` 256, 284 (dispatch); `S` `recordRecoverDispatch` 576, `finishRun` 1637; `V` `notifyRecoveredRun` 192 | The dispatch receipt is stored before the start. |
 | `CtrlDie` | `R` 413, 888, or an external termination | The controller ends; its run stays as it is. |
-| `NotifierRun` | `R` `workflowV2Notify` 744, `notifyParent` 1356, 1363 (the requester the end names) | At least once, with the stable client message id. |
+| `ZombieBeginTx` / `ZombieBeginNotify` | `R` 1010 (the begin activity) | duroxide does not stop an activity of an instance that ended: a begin activity in flight may still commit and start the notifier (not fair). |
+| `NotifierRun` | `R` `workflowV2Notify` 744, `notifyParent` 1356, 1361 (enabled), 1363 (the requester the end names), 1367 (authority skip) | At least once, with the stable client message id; a delivery may fail for good, or be skipped when the parent's authority is gone (`NotifyFaults`). |
 
 | Property | Meaning |
 |---|---|
 | `Inv_AcceptedCancelWins` | A cancel accepted before the run began wins: the run's work never runs to its end (C1). Its controller may begin it, then applies the queued cancel before it admits anything. |
 | `Inv_EndedBeforeBegin` | This commit ends such a run before its controller begins it: in the cancel's transaction (369beaf0), or at begin (31dc9888). |
 | `Inv_NoSelfNotice` | The parent is never told of a cancel it asked for (C2). |
-| `Inv_EndNamesRequester` | A before-begin end names its requester, recorded or attributed. |
-| `Inv_AttributionTruthful` | The named requester is the actual one. It holds under M1 only. |
-| `LifecycleSafety` | `TypeOK` and the five invariants above. |
-| `Live_OtherTold` | The parent is told of a run that another requester's cancel ended. |
-| `Live_OtherToldOnceStarted` | The same, at least when the run's controller starts after that end. |
+| `Inv_EndNamesRequester` | A before-begin end records no requester (null) exactly when a system actor asked: an agent's cancel, and a legacy receipt under `C2Fix`, name a session. |
+| `Inv_AttributionTruthful` | The recorded requester is the one that asked (null for a system actor). For a legacy receipt it holds under M1 only. |
+| `Inv_NoticeEnabled` | The parent is told only when the workflow asked for it. |
+| `LifecycleSafety` | `TypeOK` and the six invariants above. |
+| `Live_OtherTold` | The parent is told of a run that a requester other than the parent (an agent or a system actor) ended with its cancel. Needs A5 and A6. |
+| `Live_OtherToldOnceStarted` | The same, at least when the run's controller starts after a before-begin end. Needs A6, not A5. |
+| `Live_OtherToldOrFailed` | Without A6: the parent is told, or a notification visibly failed for good. Needs A5. |
 
 | Case | Mode | Checked | Expected |
 |---|---|---|---|
-| `lc-hd-safety` | this commit, an earlier build's receipt by the parent (M1), both requesters, every fault, A5 | `LifecycleSafety` | PASS |
-| `lc-hd-safety-fresh` | this commit, no earlier build's receipt, both requesters, every fault, A5 | `LifecycleSafety` | PASS |
-| `lc-hd-live-other` | this commit, both requesters, A5 | `Live_OtherTold` | PASS |
-| `lc-hd-live-other-started` | this commit, no repeat | `Live_OtherToldOnceStarted` | PASS |
-| `lc-lim-other-told-needs-repeat` | this commit, no repeat | `Live_OtherTold` | liveness violation: the stated limit (a notice lost after the commit stays lost when no controller starts and the requester does not repeat) |
+| `lc-hd-safety` | this commit, an earlier build's receipt by the parent (M1), the parent, another agent and a system actor, every fault including `NotifyFaults` and controller death, A5 | `LifecycleSafety` | PASS |
+| `lc-hd-safety-fresh` | the same with no earlier build's receipt | `LifecycleSafety` | PASS |
+| `lc-hd-notify-disabled` | as `lc-hd-safety`, and the workflow asked not to be told | `LifecycleSafety` | PASS |
+| `lc-hd-live-other` | this commit, the parent and another agent, A5, A6 | `Live_OtherTold` | PASS |
+| `lc-hd-live-other-started` | the same, no repeat | `Live_OtherToldOnceStarted` | PASS |
+| `lc-hd-live-system` | this commit, the parent and a system actor (requester null), A5, A6 | `Live_OtherTold` | PASS |
+| `lc-hd-live-system-started` | the same, no repeat (the control regression's input) | `Live_OtherToldOnceStarted` | PASS |
+| `lc-hd-notify-faults-qualified` | this commit, the parent and another agent, A5, without A6 | `Live_OtherToldOrFailed` | PASS |
+| `lc-lim-notify-faults` | the same | `Live_OtherTold` | liveness violation: the stated limit (A6 is needed for a notice) |
+| `lc-lim-other-told-needs-repeat` | this commit, A6, no repeat | `Live_OtherTold` | liveness violation: the stated limit (a notice lost after the commit stays lost when no controller starts and the requester does not repeat) |
 | `lc-rv-183bb0b0` | the cancel is queued and dropped | `Inv_AcceptedCancelWins` | safety violation (C1) |
 | `lc-rv-369beaf0` | an earlier build's receipt and a late start | `Inv_AcceptedCancelWins` | safety violation |
 | `lc-rv-31dc9888` | begin's repair records no requester; the parent repeats | `Inv_NoSelfNotice` | safety violation (C2) |
@@ -634,18 +681,29 @@ before begin is in the admission model.
 Limits:
 
 - `notice` records that the parent was told at least once; the stable
-  client message id and the recent-id window are not modeled.
+  client message id, the recent-id window, the dedup by session events and
+  the full receipt and terminal payload bytes are not modeled (the control
+  regressions compare them).
 - The provider's drop is conservative: any message queued before the
   instance's start is processed may be dropped.
 - No deletion here: the run model and the session command model have it.
+- `CancelFollow` decides the enqueue from the run's current status; the code
+  uses the run its transaction returned. They differ only when the run
+  ended between the commit and the follow-up, where the code enqueues a
+  command that no controller applies (a moot enqueue, omitted here).
+- A begin whose notifier start fails for good (`NotifyFaults`) fails the
+  controller, whose failure path (`failRun`, then `notifyParent`) tries the
+  delivery once more; the model records the failure (`noticeLost`) and
+  omits that extra delivery.
 - `RunFinish` abstracts the run's own work. It needs an empty queue: the
   controller polls its queue before each admission, so a command queued
   before begin is applied first. The race of a late command with the
   terminal's finish is the run model's (`PollCommand`, `CancelTx`).
-- A controller terminated between begin's commit and its notifier start
-  loses that notice, as any externally terminated notification path does;
-  the begin activity's own retries, and the controller's failure path
-  (`failRun`, then `notifyParent`), report it.
+- A controller terminated before or during begin may leave its begin
+  activity running: it may still commit, and then start the notifier
+  (`ZombieBeginTx`, `ZombieBeginNotify`), or never complete. A notice lost
+  that way is not repaired by recover (A3); the liveness cases exclude
+  controller death.
 
 ## Session command model
 
@@ -656,11 +714,21 @@ activity is at least once: attempt 1 may stop after any step, and attempt
 2 is its redelivery, which may overlap it. Attempt 3 is a different
 request that reuses the command's id. The child's controller may begin its
 run, end it, and apply a queued command, and another path may delete the
-child.
+child. With `Legacy`, the run starts from history: an earlier build
+(9fda34bd) stored this delete's receipt as queued for a begun run, its
+attempt stopped before the command was applied (the command may wait in the
+queue when the run is still running), the child is live, and its run is
+running or already completed. Attempt 2 is this build's same-id repeat,
+which must delete the child and remove its facts while the receipt stays as
+stored and an ended run keeps its result (the session-commands regression
+"applies an accepted delete whatever its child's run did since"; finding
+`be9aa9b3-command-legacy-receipt`).
 
 | Constant | Kind | Code |
 |---|---|---|
-| `DeleteInStore` | fix | 0f373abc: every delete is applied in the store, and a repeat applies an accepted delete whose child is live. Before (9fda34bd) a begun run's delete was queued for its controller. |
+| `DeleteInStore` | fix | 0f373abc: every new delete is applied in the store. Before (9fda34bd) a begun run's delete was queued for its controller. |
+| `ReplayRepair` | fix | 0f373abc: a repeat of an accepted delete whose child is live deletes it (`S` `recordSessionCommand`, the replay branch). FALSE alone is a deliberate fault. |
+| `Legacy` | history | `"none"`, or an earlier build's queued delete receipt with the run `"running"` or `"ended"`. |
 | `DeletedChildPath` | fix | b1d1d4b9: a deleted child, seen by the link read or by the transaction, gets the receipt check and a delete's facts cleanup. Before (31dc9888) only the link path read the receipt, and the transaction path answered applied with neither. |
 | `Command`, `Conflict`, `OtherDelete` | environment | The command; a different request with its id; another deletion path. |
 
@@ -668,7 +736,7 @@ child.
 |---|---|---|
 | `StartAtt` / `LoseFirst` | `session-proxy.ts` 1085 (`scheduleActivity`), 5862 | At least once: a worker crash redelivers the activity, and the redelivery may overlap the first attempt. |
 | `ReadLink` | `V` `applySessionCommandToWorkflowV2` 651; `S` `readSessionLink` 1103 | Before any lock; the caller's authority (a regression checks it) comes next. |
-| `StoreTx` | `S` `recordSessionCommand` 1046, 1077 (a repeat applies an accepted delete) | Session, definition and run locks; the receipt with the soft delete (trigger) or the before-begin end in one transaction. |
+| `StoreTx` | `S` `recordSessionCommand` 1046, 1077 (a repeat applies an accepted delete: `ReplayRepair`) | Session, definition and run locks; the receipt with the soft delete (trigger) or the before-begin end in one transaction; a repeat returns the receipt as stored. |
 | `DeletedChild` | `V` `deletedChild` 679, 684, 692; `S` `readOperationReceipt` 521 | Another request's receipt is refused; a delete removes the facts (idempotent). |
 | `After` / `Cleanup` / `Enqueue` | `V` 697 (facts cleanup), 702 (enqueue) | After the commit. |
 | `CtlBegin` / `RunEnd` / `CtlApply` / `CtlExit` | `S` `beginRun` 1187; `R` 486, 1343 | The first run end stands; a command queued for a controller that ended is not applied. |
@@ -680,13 +748,22 @@ child.
 | `Inv_ConflictRefused` | A request whose id holds another request's receipt is refused. |
 | `Inv_CancelBeforeBeginWins` | A cancel accepted before the run began wins. |
 | `CommandSafety` | `TypeOK` and the three invariants above. |
+| `Prop_ReceiptImmutable` | A stored receipt is never rewritten: the repeat that applies an earlier build's queued delete leaves it queued. |
+| `Prop_RunEndKept` | The run's first end stands: deleting a child whose run ended keeps that run's result. |
 | `Live_DeleteTakesEffect` | An accepted delete takes effect: the child is deleted and its facts are removed, whatever its run does. |
+| `Wit_ReplayRepair` | Witness, expected to be violated: the replay repair branch is reached. |
 
 | Case | Mode | Checked | Expected |
 |---|---|---|---|
-| `cmd-hd-delete` | this commit, delete, overlapping redelivery, a conflicting request, another deletion | `CommandSafety` | PASS |
+| `cmd-hd-delete` | this commit, delete, overlapping redelivery, a conflicting request, another deletion | `CommandSafety`, `Prop_ReceiptImmutable`, `Prop_RunEndKept` | PASS |
 | `cmd-hd-delete-live` | the same | `Live_DeleteTakesEffect` | PASS |
-| `cmd-hd-cancel` | this commit, cancel, the same environment | `CommandSafety` | PASS |
+| `cmd-hd-cancel` | this commit, cancel, the same environment | `CommandSafety`, `Prop_ReceiptImmutable`, `Prop_RunEndKept` | PASS |
+| `cmd-hd-legacy-running` | this commit, an earlier build's queued delete receipt, the run running, its same-id repeat, a conflicting request, another deletion | `CommandSafety`, `Prop_ReceiptImmutable`, `Prop_RunEndKept` | PASS |
+| `cmd-hd-legacy-ended` | the same, the run already completed | the same | PASS |
+| `cmd-hd-legacy-running-live` | as `cmd-hd-legacy-running` | `Live_DeleteTakesEffect` | PASS |
+| `cmd-hd-legacy-ended-live` | as `cmd-hd-legacy-ended` | `Live_DeleteTakesEffect` | PASS |
+| `wit-cmd-legacy-repair` | this commit, the queued receipt, the run completed | `Wit_ReplayRepair` | safety violation (witness) |
+| `cmd-df-no-replay-repair` | the same without the replay repair only | `Live_DeleteTakesEffect` | liveness violation |
 | `cmd-rv-9fda34bd` | a begun run's delete is queued, and the run ends first | `Live_DeleteTakesEffect` | liveness violation (D1) |
 | `cmd-rv-31dc9888` | the transaction path answers applied without the cleanup | `Inv_DeleteAnswerClean` | safety violation (D2) |
 | `cmd-rv-31dc9888-conflict` | the transaction path answers applied without the receipt check | `Inv_ConflictRefused` | safety violation (D2) |
@@ -698,3 +775,10 @@ Limits:
   it); the model's commands come from the parent.
 - The cancel activity's delete of a queued delete (9fda34bd) is modeled as
   removing the facts too, which only helps that revision.
+- `After` decides the enqueue from the run's current status; the code uses
+  the run its transaction returned (a moot enqueue for a run that ended
+  meanwhile is omitted, as in the lifecycle model).
+- The receipt is two digests and an applied label; its bytes, kind field,
+  creation time, the terminal payload and node winners, a facts cleanup
+  that fails and later fact writers are not modeled (the session-commands
+  regressions compare the stored rows).

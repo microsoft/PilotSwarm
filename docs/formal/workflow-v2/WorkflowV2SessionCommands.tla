@@ -9,7 +9,10 @@
 (* is a different request that reuses the command's id. The child's        *)
 (* controller may begin its run, end it, and apply a queued command, and   *)
 (* another path may delete the child. The command (done takes cancel's     *)
-(* path) is a constant.                                                    *)
+(* path) is a constant. With Legacy, an earlier build (9fda34bd) accepted  *)
+(* this delete as queued for a begun run and its attempt stopped before    *)
+(* the command was applied; the child is still live, its run running or   *)
+(* already ended, and attempt 2 is this build's same-id repeat.            *)
 (***************************************************************************)
 EXTENDS Integers
 
@@ -17,11 +20,15 @@ CONSTANTS
     Command,          \* "cancel" or "delete"
     Conflict,         \* environment: attempt 3, a different request with the command's id
     OtherDelete,      \* environment: another path deletes the child (with its facts)
-    DeleteInStore,    \* fix 0f373abc: every delete is applied in the store; FALSE is 9fda34bd (a begun run's delete was queued)
-    DeletedChildPath  \* fix b1d1d4b9: a deleted child, however seen, gets the receipt check and a delete's facts cleanup; FALSE is 31dc9888
+    DeleteInStore,    \* fix 0f373abc: every new delete is applied in the store; FALSE is 9fda34bd (a begun run's delete was queued)
+    ReplayRepair,     \* fix 0f373abc: a repeat of an accepted delete whose child is live deletes it; FALSE is a deliberate fault
+    DeletedChildPath, \* fix b1d1d4b9: a deleted child, however seen, gets the receipt check and a delete's facts cleanup; FALSE is 31dc9888
+    Legacy            \* history: "none", or an earlier build's queued delete receipt with the run "running" or "ended"
 
 ASSUME Command \in {"cancel", "delete"}
-ASSUME {Conflict, OtherDelete, DeleteInStore, DeletedChildPath} \subseteq BOOLEAN
+ASSUME {Conflict, OtherDelete, DeleteInStore, ReplayRepair, DeletedChildPath} \subseteq BOOLEAN
+ASSUME Legacy \in {"none", "running", "ended"}
+ASSUME Legacy # "none" => Command = "delete"
 
 Atts == {1, 2, 3}
 Digest(a) == IF a = 3 THEN "d2" ELSE "d1"
@@ -39,11 +46,12 @@ VARIABLES
     ares,         \* each attempt's receipt (applied) after its transaction
     aout,         \* each attempt's answer: "none", "applied", "enqueue", "refused"
     acceptedNotBegun, \* ghost: a cancel was accepted for a run that had not begun
-    conflictApplied   \* ghost: an attempt answered applied or enqueue for a request whose id has another receipt
+    conflictApplied,  \* ghost: an attempt answered applied or enqueue for a request whose id has another receipt
+    repaired          \* ghost: a repeat of an accepted delete deleted the live child (the replay repair branch)
 
 rcptVars == <<rcptDigest, rcptApplied>>
 attVars == <<apc, ares, aout>>
-ghostVars == <<acceptedNotBegun, conflictApplied>>
+ghostVars == <<acceptedNotBegun, conflictApplied, repaired>>
 vars == <<deleted, facts, status, ctl, queued, rcptVars, attVars, ghostVars>>
 
 Steps == {"idle", "link", "tx", "deletedPath", "deletedPath2", "after", "cleanup", "enqueue", "returned", "refused", "lost"}
@@ -61,12 +69,26 @@ TypeOK ==
     /\ aout \in [Atts -> {"none", "applied", "enqueue", "refused"}]
     /\ acceptedNotBegun \in BOOLEAN
     /\ conflictApplied \in BOOLEAN
+    /\ repaired \in BOOLEAN
 
+(* Without Legacy: a live child whose run has not begun, and no receipt.    *)
+(* With Legacy: the earlier build's receipt (d1, queued) is stored, its     *)
+(* attempt (1) stopped, the child is live and its run is running (the       *)
+(* command may be queued) or already completed.                            *)
 Init ==
-    /\ deleted = FALSE /\ facts = "present" /\ status = "admitted" /\ ctl = "notBegun" /\ queued = FALSE
-    /\ rcptDigest = "none" /\ rcptApplied = "none"
-    /\ apc = [a \in Atts |-> "idle"] /\ ares = [a \in Atts |-> "none"] /\ aout = [a \in Atts |-> "none"]
-    /\ acceptedNotBegun = FALSE /\ conflictApplied = FALSE
+    /\ deleted = FALSE /\ facts = "present"
+    /\ status = CASE Legacy = "running" -> "running"
+                 [] Legacy = "ended" -> "completed"
+                 [] OTHER -> "admitted"
+    /\ ctl = CASE Legacy = "running" -> "running"
+              [] Legacy = "ended" -> "done"
+              [] OTHER -> "notBegun"
+    /\ queued \in (IF Legacy = "running" THEN BOOLEAN ELSE {FALSE})
+    /\ rcptDigest = IF Legacy = "none" THEN "none" ELSE "d1"
+    /\ rcptApplied = IF Legacy = "none" THEN "none" ELSE "queued"
+    /\ apc = [a \in Atts |-> IF a = 1 /\ Legacy # "none" THEN "lost" ELSE "idle"]
+    /\ ares = [a \in Atts |-> "none"] /\ aout = [a \in Atts |-> "none"]
+    /\ acceptedNotBegun = FALSE /\ conflictApplied = FALSE /\ repaired = FALSE
 
 (* Attempt 1 starts; attempt 2, its redelivery, may start any time after    *)
 (* it; attempt 3 exists only with Conflict.                                 *)
@@ -86,8 +108,8 @@ ReadLink(a) ==
 (* S recordSessionCommand: one transaction under the session, definition    *)
 (* and run locks. A deleted session fails it (WORKFLOW_DELETED); a receipt  *)
 (* of another request fails it (OPERATION_CONFLICT); a repeat returns the   *)
-(* stored receipt and applies an accepted delete whose child is live        *)
-(* (DeleteInStore). A new delete soft-deletes the child (the trigger ends   *)
+(* stored receipt, as stored, and applies an accepted delete whose child is *)
+(* live (ReplayRepair). A new delete soft-deletes the child (the trigger ends *)
 (* an active run); a new cancel ends a run that has not begun, is queued    *)
 (* for a run that has begun, and has nothing to apply otherwise.            *)
 TxConflict(a) == rcptDigest \notin {"none", Digest(a)}
@@ -102,7 +124,7 @@ SoftDeletes(a) ==
     /\ ~TxConflict(a)
     /\ Command = "delete"
     /\ \/ TxFresh(a) /\ NewApplied = "store"
-       \/ TxReplay(a) /\ DeleteInStore
+       \/ TxReplay(a) /\ ReplayRepair
 CancelsNow(a) == TxFresh(a) /\ Command = "cancel" /\ status = "admitted"
 
 StoreTx(a) ==
@@ -119,6 +141,7 @@ StoreTx(a) ==
                                     [] OTHER -> "after")]
     /\ aout' = [aout EXCEPT ![a] = IF ~deleted /\ TxConflict(a) THEN "refused" ELSE aout[a]]
     /\ acceptedNotBegun' = (acceptedNotBegun \/ CancelsNow(a))
+    /\ repaired' = (repaired \/ (TxReplay(a) /\ SoftDeletes(a)))
     /\ UNCHANGED <<facts, ctl, queued, conflictApplied>>
 
 (* V applySessionCommandToWorkflowV2 for a deleted child: "deletedPath" is  *)
@@ -138,7 +161,7 @@ DeletedChild(a) ==
     /\ apc' = [apc EXCEPT ![a] = IF DcConflict(a) THEN "refused" ELSE "returned"]
     /\ aout' = [aout EXCEPT ![a] = IF DcConflict(a) THEN "refused" ELSE "applied"]
     /\ conflictApplied' = (conflictApplied \/ (~DcConflict(a) /\ TxConflict(a)))
-    /\ UNCHANGED <<deleted, status, ctl, queued, rcptVars, ares, acceptedNotBegun>>
+    /\ UNCHANGED <<deleted, status, ctl, queued, rcptVars, ares, acceptedNotBegun, repaired>>
 
 (* After the transaction. 0f373abc and later: a delete removes the facts;  *)
 (* a cancel queued for an active run is enqueued; otherwise the receipt is  *)
@@ -258,6 +281,17 @@ Inv_ConflictRefused == ~conflictApplied
 Inv_CancelBeforeBeginWins == acceptedNotBegun => status \notin {"running", "completed"}
 
 CommandSafety == TypeOK /\ Inv_DeleteAnswerClean /\ Inv_ConflictRefused /\ Inv_CancelBeforeBeginWins
+
+(* A stored receipt is never rewritten: a repeat that applies an earlier   *)
+(* build's queued delete leaves it queued.                                  *)
+Prop_ReceiptImmutable == [][(rcptDigest # "none" => (rcptDigest' = rcptDigest /\ rcptApplied' = rcptApplied))]_vars
+
+(* The run's first end stands: a delete of a child whose run ended keeps    *)
+(* that run's result.                                                      *)
+Prop_RunEndKept == [][(status \in {"completed", "cancelled"} => status' = status)]_vars
+
+(* Witness, expected to be violated: the replay repair branch is reached.   *)
+Wit_ReplayRepair == ~repaired
 
 (* An accepted delete takes effect: the child is deleted and its facts are  *)
 (* removed, whatever its run does.                                          *)
