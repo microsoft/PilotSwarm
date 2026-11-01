@@ -13,6 +13,7 @@ import { randomUUID } from "crypto";
 import { runCmsMigrations } from "./cms-migrator.js";
 import { ProviderStore } from "./provider-store.js";
 import { ComputeTargetStore } from "./compute-target-store.js";
+import { ComputeBindingStore, ComputeServiceStore } from "./compute-service-store.js";
 import { FeatureStore } from "./feature-store.js";
 import { systemSessionProtectedError, type SessionOwnerInfo, type SessionSummaryState, type TurnControlKind, type TurnControlAddResult, type TurnStartResult, type TurnLookInput, type TurnLookRow, type TurnEndKind, type TurnEndResult, type TurnControl, type TurnStartRecord } from "./types.js";
 import type { MessageSender } from "./message-sender.js";
@@ -978,6 +979,10 @@ export interface SessionCatalog {
     readonly features?: FeatureStore;
     /** Compute targets (migration 0084). Optional, like providers. See compute-target-store.ts. */
     readonly computeTargets?: ComputeTargetStore;
+    /** Registered provider services (migration 0084). See compute-service-store.ts. */
+    readonly computeServices?: ComputeServiceStore;
+    /** Host bindings and their leases (migration 0084). See compute-service-store.ts. */
+    readonly computeBindings?: ComputeBindingStore;
 
     /** Per-slot canvas cache (migration 0045); optional so test doubles need not implement it. */
     upsertSessionCanvas?(sessionId: string, slot: number, name: string | null, latestRev: number, sizeBytes: number | null): Promise<void>;
@@ -1631,6 +1636,8 @@ export class PgSessionCatalog implements SessionCatalog {
     private _providers: ProviderStore;
     readonly features: FeatureStore;
     readonly computeTargets: ComputeTargetStore;
+    readonly computeServices: ComputeServiceStore;
+    readonly computeBindings: ComputeBindingStore;
     /** Connection settings of the pool, without pool-only fields: reused for the turn-control LISTEN client. */
     private listenConfig: Record<string, unknown> | null = null;
 
@@ -1640,6 +1647,8 @@ export class PgSessionCatalog implements SessionCatalog {
         this._providers = new ProviderStore(pool, schema);
         this.features = new FeatureStore(pool, schema);
         this.computeTargets = new ComputeTargetStore(pool, schema);
+        this.computeServices = new ComputeServiceStore(pool, schema);
+        this.computeBindings = new ComputeBindingStore(pool, schema);
     }
 
     /**

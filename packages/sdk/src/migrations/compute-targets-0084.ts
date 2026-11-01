@@ -1,5 +1,6 @@
 /**
- * Migration 0084 — compute targets.
+ * Migration 0084 — compute targets, the provider services that serve them,
+ * and the host bindings PilotSwarm holds.
  * See docs/proposals/compute-providers.md and migrations/0084_diff.md.
  *
  * A compute target is a registered place where a session's GHCP runtime can
@@ -27,7 +28,21 @@
  * users see and is never used to decide who may do what. Only personal
  * targets may advertise models.
  *
- * Additive: one table and its procedures; no session column changes.
+ * A provider that is not built into the worker runs as its own service,
+ * outside it. `compute_provider_services` is the list an administrator
+ * registers: where each service is, what identity a worker must see from
+ * it, and what it last said it serves. It holds nothing secret — the
+ * credential a worker presents comes from a deployment hook, never from
+ * here — and only administrators may read or change it.
+ *
+ * `compute_bindings` is what PilotSwarm is using right now: one row per
+ * (session tree, target, host). A worker renews its lease while it holds
+ * a binding, so renewals that stop mean nobody is using the host; and a
+ * sweep finds bindings whose session tree has ended, including trees that
+ * ended while no worker had them loaded, so the provider is told once.
+ * Neither table ever holds a handshake secret.
+ *
+ * Additive: three tables and their procedures; no session column changes.
  */
 /**
  * The most a stored advertisement may take. A migration's SQL must keep
@@ -284,6 +299,16 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql STABLE;
 
+-- Worker side, with no session behind it: the target with this id,
+-- whoever owns it. Used where the worker is acting for PilotSwarm itself
+-- rather than for a user — telling a provider a session tree it no longer
+-- knows about is finished with a host. Trusted caller; nothing that
+-- answers a user goes through it.
+CREATE OR REPLACE FUNCTION ${s}.cms_compute_target_by_id(p_target_id UUID)
+RETURNS SETOF ${s}.compute_targets AS $$
+    SELECT ct.* FROM ${s}.compute_targets ct WHERE ct.target_id = p_target_id;
+$$ LANGUAGE sql STABLE;
+
 -- Worker side: store what a target advertises. The worker has already kept
 -- only the well-formed parts, but the advertisement comes from a host, so
 -- the two rules that matter are repeated here, where nothing can skip them:
@@ -312,6 +337,354 @@ BEGIN
                advertised_at = now()
          WHERE ct.target_id = p_target_id
         RETURNING ct.*;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+-- ---------------------------------------------------------------------
+-- Registered provider services
+--
+-- A provider that needs rights on whatever it makes hosts out of runs as
+-- its own service. An administrator registers it here first: this row is
+-- the trust anchor, and a worker will not talk to a service that is not in
+-- it. Only administrators may see or change the list.
+--
+-- Nothing secret is stored. How a worker proves itself to a service comes
+-- from a deployment hook at call time. How a worker recognizes the service
+-- is what is stored: the TLS server name its certificate must be good for,
+-- a SHA-256 fingerprint of that certificate, or both. A service that
+-- answers without the registered identity is not that service.
+--
+-- The kinds, transport, capabilities and protocol version are not
+-- registered by hand: they are what the service last said about itself in
+-- its describe answer, with the time it said it.
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS ${s}.compute_provider_services (
+    name             TEXT PRIMARY KEY,
+    service_id       UUID NOT NULL UNIQUE
+                     DEFAULT md5(random()::text || clock_timestamp()::text)::uuid,
+    base_url         TEXT NOT NULL,
+    expected_server_name TEXT,
+    certificate_sha256   TEXT,
+    enabled          BOOLEAN NOT NULL DEFAULT TRUE,
+    kinds            TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+    transport        TEXT NOT NULL DEFAULT 'direct'
+                     CHECK (transport IN ('direct','pipe')),
+    capabilities     JSONB,
+    protocol_version INTEGER,
+    described_at     TIMESTAMPTZ,
+    registered_by    BIGINT,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT compute_services_name_shape CHECK (
+        name ~ '^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$'),
+    -- https everywhere. Plain http is accepted only for a service on the
+    -- same machine, which is what the tests use and a deployment never is.
+    CONSTRAINT compute_services_url_shape CHECK (
+        base_url ~ '^https://[^ ]+$'
+        OR base_url ~ '^http://(localhost|127\\.[0-9.]+|\\[::1\\])(:[0-9]+)?(/.*)?$'),
+    CONSTRAINT compute_services_fingerprint_shape CHECK (
+        certificate_sha256 IS NULL OR certificate_sha256 ~ '^[0-9a-f]{64}$'),
+    CONSTRAINT compute_services_capabilities_object CHECK (
+        capabilities IS NULL OR jsonb_typeof(capabilities) = 'object')
+);
+
+CREATE INDEX IF NOT EXISTS compute_services_kinds
+    ON ${s}.compute_provider_services USING GIN (kinds);
+
+-- Only an administrator sees or changes the register.
+CREATE OR REPLACE FUNCTION ${s}.cms_compute_service_assert_admin(p_is_admin BOOLEAN)
+RETURNS VOID AS $$
+BEGIN
+    IF NOT COALESCE(p_is_admin, FALSE) THEN
+        RAISE EXCEPTION 'COMPUTE_SERVICE_FORBIDDEN: only an administrator can work with registered provider services';
+    END IF;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_compute_service_create(
+    p_name TEXT, p_base_url TEXT, p_server_name TEXT, p_certificate_sha256 TEXT,
+    p_actor BIGINT, p_is_admin BOOLEAN
+) RETURNS SETOF ${s}.compute_provider_services AS $$
+DECLARE
+    v_name TEXT := NULLIF(BTRIM(p_name), '');
+    v_url  TEXT := NULLIF(BTRIM(p_base_url), '');
+BEGIN
+    PERFORM ${s}.cms_compute_service_assert_admin(p_is_admin);
+    IF v_name IS NULL THEN
+        RAISE EXCEPTION 'COMPUTE_SERVICE_INVALID: a provider service needs a name';
+    END IF;
+    IF v_url IS NULL THEN
+        RAISE EXCEPTION 'COMPUTE_SERVICE_INVALID: a provider service needs a URL';
+    END IF;
+    -- An identity is what makes the registration a trust anchor; without
+    -- one the worker would believe whatever answered at the URL.
+    IF COALESCE(NULLIF(BTRIM(p_server_name), ''), NULLIF(BTRIM(lower(p_certificate_sha256)), '')) IS NULL THEN
+        RAISE EXCEPTION 'COMPUTE_SERVICE_INVALID: register the identity the worker must see from the service: its TLS server name, a certificate fingerprint, or both';
+    END IF;
+    IF EXISTS (SELECT 1 FROM ${s}.compute_provider_services cs WHERE cs.name = v_name) THEN
+        RAISE EXCEPTION 'COMPUTE_SERVICE_CONFLICT: the name "%" is already taken', v_name;
+    END IF;
+    INSERT INTO ${s}.compute_provider_services
+        (name, base_url, expected_server_name, certificate_sha256, registered_by)
+    VALUES (v_name, v_url, NULLIF(BTRIM(p_server_name), ''),
+            NULLIF(BTRIM(lower(p_certificate_sha256)), ''), p_actor);
+    RETURN QUERY SELECT cs.* FROM ${s}.compute_provider_services cs WHERE cs.name = v_name;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+-- NULL arguments keep the current value. Changing the URL or the identity
+-- makes the service say again what it serves, from wherever it now
+-- answers: the capabilities and protocol version it declared are cleared.
+--
+-- The kinds it last served are kept. They are not a permission and decide
+-- nothing: they are what lets a worker say clearly why a target cannot
+-- run — "the service that serves this kind is not usable, and here is
+-- why" — instead of the useless "this worker has no provider of that
+-- kind". The next successful describe replaces them.
+CREATE OR REPLACE FUNCTION ${s}.cms_compute_service_update(
+    p_name TEXT, p_base_url TEXT, p_server_name TEXT, p_certificate_sha256 TEXT,
+    p_enabled BOOLEAN, p_actor BIGINT, p_is_admin BOOLEAN
+) RETURNS SETOF ${s}.compute_provider_services AS $$
+DECLARE v_moved BOOLEAN;
+BEGIN
+    PERFORM ${s}.cms_compute_service_assert_admin(p_is_admin);
+    IF NOT EXISTS (SELECT 1 FROM ${s}.compute_provider_services cs WHERE cs.name = p_name) THEN
+        RAISE EXCEPTION 'COMPUTE_SERVICE_NOT_FOUND: there is no provider service named "%"', p_name;
+    END IF;
+    v_moved := p_base_url IS NOT NULL OR p_server_name IS NOT NULL OR p_certificate_sha256 IS NOT NULL;
+    UPDATE ${s}.compute_provider_services cs
+       SET base_url = COALESCE(NULLIF(BTRIM(p_base_url), ''), cs.base_url),
+           expected_server_name = CASE WHEN p_server_name IS NULL THEN cs.expected_server_name
+                                       ELSE NULLIF(BTRIM(p_server_name), '') END,
+           certificate_sha256 = CASE WHEN p_certificate_sha256 IS NULL THEN cs.certificate_sha256
+                                     ELSE NULLIF(BTRIM(lower(p_certificate_sha256)), '') END,
+           enabled = COALESCE(p_enabled, cs.enabled),
+           capabilities = CASE WHEN v_moved THEN NULL ELSE cs.capabilities END,
+           protocol_version = CASE WHEN v_moved THEN NULL ELSE cs.protocol_version END,
+           described_at = CASE WHEN v_moved THEN NULL ELSE cs.described_at END,
+           updated_at = now()
+     WHERE cs.name = p_name;
+    IF (SELECT COALESCE(cs.expected_server_name, cs.certificate_sha256)
+          FROM ${s}.compute_provider_services cs WHERE cs.name = p_name) IS NULL THEN
+        RAISE EXCEPTION 'COMPUTE_SERVICE_INVALID: a provider service always keeps an identity the worker must see';
+    END IF;
+    RETURN QUERY SELECT cs.* FROM ${s}.compute_provider_services cs WHERE cs.name = p_name;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+-- Refused while any target names one of the kinds this service serves:
+-- deleting it would leave those targets with nowhere to run.
+CREATE OR REPLACE FUNCTION ${s}.cms_compute_service_delete(
+    p_name TEXT, p_actor BIGINT, p_is_admin BOOLEAN
+) RETURNS BOOLEAN AS $$
+DECLARE v_row ${s}.compute_provider_services;
+BEGIN
+    PERFORM ${s}.cms_compute_service_assert_admin(p_is_admin);
+    SELECT * INTO v_row FROM ${s}.compute_provider_services cs WHERE cs.name = p_name;
+    IF NOT FOUND THEN
+        RAISE EXCEPTION 'COMPUTE_SERVICE_NOT_FOUND: there is no provider service named "%"', p_name;
+    END IF;
+    IF EXISTS (SELECT 1 FROM ${s}.compute_targets ct WHERE ct.kind = ANY (v_row.kinds)) THEN
+        RAISE EXCEPTION 'COMPUTE_SERVICE_IN_USE: compute targets still use "%"; remove them first', p_name;
+    END IF;
+    DELETE FROM ${s}.compute_provider_services cs WHERE cs.name = p_name;
+    RETURN TRUE;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+CREATE OR REPLACE FUNCTION ${s}.cms_compute_service_list(p_is_admin BOOLEAN)
+RETURNS SETOF ${s}.compute_provider_services AS $$
+BEGIN
+    PERFORM ${s}.cms_compute_service_assert_admin(p_is_admin);
+    RETURN QUERY SELECT cs.* FROM ${s}.compute_provider_services cs ORDER BY cs.name;
+END;
+$$ LANGUAGE plpgsql STABLE;
+
+-- Worker side: every enabled service, to build the adapters from. Trusted
+-- caller; it is the same list an administrator sees, minus nothing,
+-- because the register holds nothing secret.
+CREATE OR REPLACE FUNCTION ${s}.cms_compute_service_enabled()
+RETURNS SETOF ${s}.compute_provider_services AS $$
+    SELECT cs.* FROM ${s}.compute_provider_services cs
+     WHERE cs.enabled ORDER BY cs.name;
+$$ LANGUAGE sql STABLE;
+
+-- Worker side: record what a service said about itself when asked.
+CREATE OR REPLACE FUNCTION ${s}.cms_compute_service_record_description(
+    p_service_id UUID, p_kinds TEXT[], p_transport TEXT,
+    p_capabilities JSONB, p_protocol_version INTEGER
+) RETURNS SETOF ${s}.compute_provider_services AS $$
+BEGIN
+    IF p_transport IS NOT NULL AND p_transport NOT IN ('direct','pipe') THEN
+        RAISE EXCEPTION 'COMPUTE_SERVICE_INVALID: a provider service is reached one way, direct or pipe';
+    END IF;
+    IF p_capabilities IS NOT NULL AND jsonb_typeof(p_capabilities) <> 'object' THEN
+        RAISE EXCEPTION 'COMPUTE_SERVICE_INVALID: capabilities must be a JSON object';
+    END IF;
+    RETURN QUERY
+        UPDATE ${s}.compute_provider_services cs
+           SET kinds = COALESCE(p_kinds, ARRAY[]::TEXT[]),
+               transport = COALESCE(p_transport, cs.transport),
+               capabilities = p_capabilities,
+               protocol_version = p_protocol_version,
+               described_at = now(),
+               updated_at = now()
+         WHERE cs.service_id = p_service_id
+        RETURNING cs.*;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+-- ---------------------------------------------------------------------
+-- Host bindings: what PilotSwarm is using, and what it has finished with
+--
+-- One row per (session tree, target, host). A worker writes it when it
+-- binds and renews the lease while it holds the binding, so a provider can
+-- read "renewals stopped" as "nobody is using this host". released_at
+-- says a worker let go of it; done_at says the session tree is finished
+-- with it for good, which is the notice a provider gets exactly once.
+--
+-- Release never means destroy, and neither does done: what happens to a
+-- host nobody needs is the provider's decision alone. No handshake secret
+-- is ever written here; host_ref is the provider's own handle and
+-- PilotSwarm does not read inside it.
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS ${s}.compute_bindings (
+    binding_id      UUID PRIMARY KEY
+                    DEFAULT md5(random()::text || clock_timestamp()::text)::uuid,
+    root_session_id TEXT NOT NULL,
+    target_id       UUID NOT NULL,
+    kind            TEXT NOT NULL,
+    -- The provider's own name for the host and which incarnation of it,
+    -- so a replaced host is a different binding.
+    host_key        TEXT NOT NULL,
+    host_ref        JSONB NOT NULL,
+    worker_node_id  TEXT NOT NULL,
+    leased_until    TIMESTAMPTZ,
+    released_at     TIMESTAMPTZ,
+    done_at         TIMESTAMPTZ,
+    done_attempt_at TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    CONSTRAINT compute_bindings_host_ref_object CHECK (
+        jsonb_typeof(host_ref) = 'object'),
+    CONSTRAINT compute_bindings_one_per_host UNIQUE (root_session_id, target_id, host_key)
+);
+
+CREATE INDEX IF NOT EXISTS compute_bindings_unfinished
+    ON ${s}.compute_bindings (root_session_id) WHERE done_at IS NULL;
+
+-- Worker side, at bind: write the binding and take a lease on it.
+CREATE OR REPLACE FUNCTION ${s}.cms_compute_binding_record(
+    p_root_session_id TEXT, p_target_id UUID, p_kind TEXT, p_host_key TEXT,
+    p_host_ref JSONB, p_worker_node_id TEXT, p_lease_ms BIGINT
+) RETURNS SETOF ${s}.compute_bindings AS $$
+BEGIN
+    IF p_host_ref IS NULL OR jsonb_typeof(p_host_ref) <> 'object' THEN
+        RAISE EXCEPTION 'COMPUTE_BINDING_INVALID: a binding needs the provider''s handle for the host';
+    END IF;
+    RETURN QUERY
+    INSERT INTO ${s}.compute_bindings
+        (root_session_id, target_id, kind, host_key, host_ref, worker_node_id, leased_until)
+    VALUES (p_root_session_id, p_target_id, p_kind, p_host_key, p_host_ref, p_worker_node_id,
+            now() + make_interval(secs => GREATEST(COALESCE(p_lease_ms, 0), 0) / 1000.0))
+    ON CONFLICT (root_session_id, target_id, host_key) DO UPDATE
+        SET host_ref = EXCLUDED.host_ref,
+            worker_node_id = EXCLUDED.worker_node_id,
+            leased_until = EXCLUDED.leased_until,
+            released_at = NULL,
+            updated_at = now()
+    RETURNING ${s}.compute_bindings.*;
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+-- Worker side, on the lease timer. A binding already finished with is not
+-- revived: a renewal after the done notice does nothing.
+CREATE OR REPLACE FUNCTION ${s}.cms_compute_binding_renew(
+    p_binding_id UUID, p_worker_node_id TEXT, p_lease_ms BIGINT
+) RETURNS BOOLEAN AS $$
+DECLARE v_hit BOOLEAN;
+BEGIN
+    UPDATE ${s}.compute_bindings cb
+       SET leased_until = now() + make_interval(secs => GREATEST(COALESCE(p_lease_ms, 0), 0) / 1000.0),
+           worker_node_id = COALESCE(NULLIF(BTRIM(p_worker_node_id), ''), cb.worker_node_id),
+           released_at = NULL,
+           updated_at = now()
+     WHERE cb.binding_id = p_binding_id AND cb.done_at IS NULL
+    RETURNING TRUE INTO v_hit;
+    RETURN COALESCE(v_hit, FALSE);
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+-- Worker side, at release: this worker is no longer using the host. The
+-- row stays, because the session tree may still come back to it; only the
+-- done notice closes a binding.
+CREATE OR REPLACE FUNCTION ${s}.cms_compute_binding_release(p_binding_id UUID)
+RETURNS BOOLEAN AS $$
+DECLARE v_hit BOOLEAN;
+BEGIN
+    UPDATE ${s}.compute_bindings cb
+       SET released_at = now(), leased_until = NULL, updated_at = now()
+     WHERE cb.binding_id = p_binding_id AND cb.done_at IS NULL
+    RETURNING TRUE INTO v_hit;
+    RETURN COALESCE(v_hit, FALSE);
+END;
+$$ LANGUAGE plpgsql VOLATILE;
+
+-- The sweep. Bindings whose session tree has ended — a terminal state, a
+-- deleted row, or no row at all — and that nobody has finished telling the
+-- provider about. Claimed with FOR UPDATE SKIP LOCKED and stamped with the
+-- attempt, so two workers never take the same row and a worker that dies
+-- mid-notice leaves it to be retried after p_retry_after_ms.
+CREATE OR REPLACE FUNCTION ${s}.cms_compute_binding_claim_done(
+    p_worker_node_id TEXT, p_limit INTEGER, p_retry_after_ms BIGINT
+) RETURNS TABLE(
+    binding_id UUID, root_session_id TEXT, target_id UUID, kind TEXT,
+    host_ref JSONB, reason TEXT
+) AS $$
+    WITH ready AS (
+        SELECT cb.binding_id,
+               CASE WHEN ss.session_id IS NULL OR ss.deleted_at IS NOT NULL
+                    THEN 'deleted' ELSE 'ended' END AS reason
+          FROM ${s}.compute_bindings cb
+          LEFT JOIN ${s}.sessions ss ON ss.session_id = cb.root_session_id
+         WHERE cb.done_at IS NULL
+           AND (cb.done_attempt_at IS NULL
+                OR cb.done_attempt_at < now() - make_interval(secs => GREATEST(COALESCE(p_retry_after_ms, 0), 0) / 1000.0))
+           AND (ss.session_id IS NULL
+                OR ss.deleted_at IS NOT NULL
+                OR ss.state IN ('completed', 'failed', 'error', 'cancelled'))
+         ORDER BY cb.updated_at
+         LIMIT GREATEST(COALESCE(p_limit, 1), 1)
+           FOR UPDATE OF cb SKIP LOCKED
+    )
+    UPDATE ${s}.compute_bindings cb
+       SET done_attempt_at = now(),
+           worker_node_id = COALESCE(NULLIF(BTRIM(p_worker_node_id), ''), cb.worker_node_id),
+           updated_at = now()
+      FROM ready
+     WHERE cb.binding_id = ready.binding_id
+    RETURNING cb.binding_id, cb.root_session_id, cb.target_id, cb.kind, cb.host_ref, ready.reason;
+$$ LANGUAGE sql VOLATILE;
+
+-- The bindings of one session tree, newest last.
+CREATE OR REPLACE FUNCTION ${s}.cms_compute_binding_list(p_root_session_id TEXT)
+RETURNS SETOF ${s}.compute_bindings AS $$
+    SELECT cb.* FROM ${s}.compute_bindings cb
+     WHERE cb.root_session_id = p_root_session_id
+     ORDER BY cb.created_at;
+$$ LANGUAGE sql STABLE;
+
+-- The provider has been told. Idempotent: the first notice sets the time
+-- and every later one leaves it alone, so a binding is reported once.
+CREATE OR REPLACE FUNCTION ${s}.cms_compute_binding_mark_done(p_binding_id UUID)
+RETURNS BOOLEAN AS $$
+DECLARE v_hit BOOLEAN;
+BEGIN
+    UPDATE ${s}.compute_bindings cb
+       SET done_at = now(), leased_until = NULL, updated_at = now()
+     WHERE cb.binding_id = p_binding_id AND cb.done_at IS NULL
+    RETURNING TRUE INTO v_hit;
+    RETURN COALESCE(v_hit, FALSE);
 END;
 $$ LANGUAGE plpgsql VOLATILE;
 `;

@@ -1437,6 +1437,44 @@ export interface PilotSwarmWorkerOptions {
      */
     computeAllowNonLoopbackEndpoints?: boolean;
 
+    /**
+     * Compute providers: how this deployment proves PilotSwarm to a
+     * registered provider service. Called per service and per call, so a
+     * short-lived credential can be minted fresh, and it returns request
+     * headers the service checks however the two sides agreed.
+     *
+     * Nothing secret is stored in the CMS: the register says where a
+     * service is and what identity the worker must see from it, and this
+     * hook supplies everything else. A worker without the hook reaches
+     * only services that need no credential, which in practice means none.
+     */
+    computeServiceCredentials?: import("./compute-service.js").ComputeServiceCredentials;
+
+    /**
+     * Compute providers: how often the worker re-reads the registered
+     * provider services and asks each what it serves. Default 5 minutes.
+     * Follows the model-provider reconciliation: a service an
+     * administrator just registered starts serving without a restart.
+     */
+    computeServiceRefreshMs?: number;
+
+    /**
+     * Compute providers: how long a lease on a host is worth, and how
+     * often the worker renews the ones it holds. Defaults: a lease of 3
+     * minutes, renewed every 60 seconds. Renewals that stop are how a
+     * provider learns nobody is using a host any more.
+     */
+    computeLeaseMs?: number;
+    computeLeaseRenewMs?: number;
+
+    /**
+     * Compute providers: how often this worker looks for bindings whose
+     * session tree has ended and tells their provider, including trees
+     * that ended while no worker had them loaded. Default 60 seconds; 0
+     * turns the sweep off on this worker.
+     */
+    computeDoneSweepMs?: number;
+
     /** Optional session state store. When set, enables durable session dehydration without Azure Blob Storage. */
     sessionStore?: SessionStateStore;
 
