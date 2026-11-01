@@ -50,7 +50,10 @@ export const INTAKE_MAX_UNCLAIMED = 8;
 export const INTAKE_MAX_UNCLAIMED_ENTRY_BYTES = 2 * 1024;
 /** At most this many claimed items wait for an invocation (design 5.4, 5.7); shared with the store's bind. */
 export { INTAKE_MAX_HELD };
-/** A held entry's cap, its cancel latch at its largest included, so a later cancel always fits. */
+/**
+ * A held entry's cap, measured as placed (its cancel flag unset, a byte longer than set), the same on admission and on
+ * restore, so a later cancel always fits.
+ */
 export const INTAKE_MAX_HELD_ENTRY_BYTES = 512;
 /** The invocation's fields other than its items (design 5.7). */
 export const INTAKE_MAX_INVOCATION_FIELDS_BYTES = 1024;
@@ -81,9 +84,6 @@ export interface IntakeRetry {
 export interface IntakeLatch {
     retry: IntakeRetry | null;
 }
-
-/** The largest latch, for caps that must hold whatever a latch's retry becomes. */
-export const INTAKE_LARGEST_LATCH: IntakeLatch = { retry: { attempts: Number.MAX_SAFE_INTEGER, nextAttemptAtMs: Number.MAX_SAFE_INTEGER } };
 
 /**
  * A message whose claim the store could not take; only its envelope is kept,
@@ -117,8 +117,10 @@ export interface IntakeSettlingEntry {
  * claim stored the text in the item's row). `itemBytes` is the exact size of
  * its bound form, measured when it was claimed, so a batch is chosen before
  * its bind and never found too large after it (condition C1). `cancel`
- * latches a tombstone that named it: it is never bound, and its cancel is
- * written, and retried on the wake, until made.
+ * latches a tombstone that named it: it is never bound, and the held cancels
+ * are written together, and retried on the wake (heldCancelRetry), until
+ * made. The flag is all a cancel adds to the entry, so its cap is measured
+ * on the entry as it is placed.
  */
 export interface IntakeHeldEntry {
     kind: "held";
@@ -127,7 +129,7 @@ export interface IntakeHeldEntry {
     textSha256: string;
     clientMessageId: string;
     itemBytes: number;
-    cancel: IntakeLatch | null;
+    cancel: boolean;
 }
 
 export type IntakeQueueEntry = IntakeUnclaimedEntry | IntakeSettlingEntry | IntakeHeldEntry;
@@ -172,6 +174,11 @@ export interface IntakeInvocation {
 export interface IntakeState {
     queue: IntakeQueueEntry[];
     invocation: IntakeInvocation | null;
+    /**
+     * The retry of the latched held cancels' one write after it failed (they
+     * are written together); null when it is due now or none is latched.
+     */
+    heldCancelRetry: IntakeRetry | null;
 }
 
 /** The continue-as-new input as 1.0.83 writes and reads it: OrchestrationInput with the carried intake. */
@@ -182,10 +189,11 @@ export interface CarriedIntakeState {
     v: typeof INTAKE_STATE_FORMAT;
     queue: IntakeQueueEntry[];
     invocation: IntakeInvocation | null;
+    heldCancelRetry: IntakeRetry | null;
 }
 
 export function emptyIntakeState(): IntakeState {
-    return { queue: [], invocation: null };
+    return { queue: [], invocation: null, heldCancelRetry: null };
 }
 
 function bytes(value: unknown): number {
@@ -216,9 +224,12 @@ function latchOf(raw: unknown, path: string): IntakeLatch {
     return { retry: value.retry === null ? null : retryOf(value.retry, `${path}.retry`) };
 }
 
-/** A held entry's size against its cap: its JSON with its cancel latch at its largest, so a later cancel never takes it over the cap. */
+/**
+ * A held entry's size against its cap, the same on admission and on restore:
+ * its JSON as placed (cancel false, a byte longer than when cancelled).
+ */
 export function intakeHeldEntryCapBytes(entry: IntakeHeldEntry): number {
-    return bytes({ ...entry, cancel: INTAKE_LARGEST_LATCH });
+    return bytes({ ...entry, cancel: false });
 }
 
 function entryOf(raw: unknown, path: string): IntakeQueueEntry {
@@ -250,7 +261,7 @@ function entryOf(raw: unknown, path: string): IntakeQueueEntry {
             textSha256: intakeSha256(value.textSha256, `${path}.textSha256`),
             clientMessageId: clientMessageIdOf(value.clientMessageId, `${path}.clientMessageId`),
             itemBytes: integerOf(value.itemBytes, `${path}.itemBytes`, 1),
-            cancel: value.cancel === null ? null : latchOf(value.cancel, `${path}.cancel`),
+            cancel: booleanOf(value.cancel, `${path}.cancel`),
         };
         if (!intakeItemFitsAlone(entry.itemBytes)) throw new IntakeShapeError(`${path}.itemBytes`, "is over what one invocation holds");
         if (intakeHeldEntryCapBytes(entry) > INTAKE_MAX_HELD_ENTRY_BYTES) throw new IntakeShapeError(path, `is over ${INTAKE_MAX_HELD_ENTRY_BYTES} bytes`);
@@ -371,12 +382,13 @@ function invocationOf(raw: unknown, path: string): IntakeInvocation {
  */
 export function restoreIntakeState(raw: unknown, path = "$.intake"): IntakeState {
     if (raw === undefined) return emptyIntakeState();
-    const value = intakeObject(raw, path, ["v", "queue", "invocation"]);
+    const value = intakeObject(raw, path, ["v", "queue", "invocation", "heldCancelRetry"]);
     if (value.v !== INTAKE_STATE_FORMAT) throw new IntakeShapeError(`${path}.v`, `is not ${INTAKE_STATE_FORMAT}`);
     const rawQueue = value.queue;
     if (!Array.isArray(rawQueue)) throw new IntakeShapeError(`${path}.queue`, "is not a list");
     const queue = rawQueue.map((entry: unknown, index: number) => entryOf(entry, `${path}.queue[${index}]`));
     const invocation = value.invocation === null ? null : invocationOf(value.invocation, `${path}.invocation`);
+    const heldCancelRetry = value.heldCancelRetry === null ? null : retryOf(value.heldCancelRetry, `${path}.heldCancelRetry`);
     const waiting = queue.filter(entry => entry.kind !== "held").length;
     if (waiting > INTAKE_MAX_UNCLAIMED) throw new IntakeShapeError(`${path}.queue`, `has more than ${INTAKE_MAX_UNCLAIMED} unclaimed or settling entries`);
     if (queue.length - waiting > INTAKE_MAX_HELD) throw new IntakeShapeError(`${path}.queue`, `has more than ${INTAKE_MAX_HELD} held entries`);
@@ -401,11 +413,14 @@ export function restoreIntakeState(raw: unknown, path = "$.intake"): IntakeState
         }
         settling.add(entry.exchangeId);
     });
+    if (heldCancelRetry !== null && !queue.some(entry => entry.kind === "held" && entry.cancel)) {
+        throw new IntakeShapeError(`${path}.heldCancelRetry`, "is set with no held entry whose cancel is latched");
+    }
     if (queue.length === 0 && invocation === null) throw new IntakeShapeError(path, "is carried but empty");
-    return { queue, invocation };
+    return { queue, invocation, heldCancelRetry };
 }
 
-/** Nothing waits and no invocation exists. */
+/** Nothing waits and no invocation exists (so no held cancel is pending either). */
 export function intakeStateIsEmpty(state: IntakeState): boolean {
     return state.queue.length === 0 && state.invocation === null;
 }
@@ -418,8 +433,12 @@ export function intakeStateIsEmpty(state: IntakeState): boolean {
  */
 export function carryIntakeState(state: IntakeState): CarriedIntakeState | undefined {
     if (intakeStateIsEmpty(state)) return undefined;
-    const restored = restoreIntakeState(JSON.parse(JSON.stringify({ v: INTAKE_STATE_FORMAT, queue: state.queue, invocation: state.invocation })));
-    const carried: CarriedIntakeState = { v: INTAKE_STATE_FORMAT, queue: restored.queue, invocation: restored.invocation };
+    const restored = restoreIntakeState(JSON.parse(JSON.stringify({
+        v: INTAKE_STATE_FORMAT, queue: state.queue, invocation: state.invocation, heldCancelRetry: state.heldCancelRetry,
+    })));
+    const carried: CarriedIntakeState = {
+        v: INTAKE_STATE_FORMAT, queue: restored.queue, invocation: restored.invocation, heldCancelRetry: restored.heldCancelRetry,
+    };
     return carried;
 }
 
@@ -441,7 +460,7 @@ export function selectIntakeBatch(queue: readonly IntakeQueueEntry[]): IntakeHel
     const batch: IntakeHeldEntry[] = [];
     const sizes: number[] = [];
     for (const entry of queue) {
-        if (entry.kind !== "held" || entry.cancel !== null) continue;
+        if (entry.kind !== "held" || entry.cancel) continue;
         if (intakeItemsBytes([...sizes, entry.itemBytes]) > INTAKE_MAX_INVOCATION_ITEMS_BYTES) break;
         batch.push(entry);
         sizes.push(entry.itemBytes);

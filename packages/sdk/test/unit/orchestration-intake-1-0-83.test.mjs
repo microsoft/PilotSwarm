@@ -27,8 +27,8 @@ import { DURABLE_SESSION_ORCHESTRATION_REGISTRY } from "../../dist/orchestration
 import { createInitialState, deriveOptions } from "../../dist/orchestration_1_0_83/state.js";
 import { continueInput, continueInputWithPrompt, versionedContinueAsNew } from "../../dist/orchestration_1_0_83/lifecycle.js";
 import {
-    INTAKE_MAX_HELD, INTAKE_MAX_UNCLAIMED, IntakeShapeError, assertIntakeContinueAsNewTarget, carriedIntakeBytes, carryIntakeState,
-    restoreIntakeState, selectIntakeBatch,
+    INTAKE_MAX_HELD, INTAKE_MAX_HELD_ENTRY_BYTES, INTAKE_MAX_UNCLAIMED, IntakeShapeError, assertIntakeContinueAsNewTarget, carriedIntakeBytes,
+    carryIntakeState, intakeHeldEntryCapBytes, restoreIntakeState, selectIntakeBatch,
 } from "../../dist/orchestration_1_0_83/intake-state.js";
 import {
     INTAKE_MAX_INVOCATION_ITEMS_BYTES, INTAKE_MAX_TEXT_BYTES, intakeBoundItem, intakeItemBytes, intakeItemFitsAlone, intakeItemsBytes,
@@ -69,7 +69,7 @@ function ref(n, text) {
     return { exchangeId: exchange(n), claimId: `claim-${n}`, textSha256: sha256(text), clientMessageId: `workflow:${WF}:${RUN}:send:${exchange(n)}` };
 }
 
-function held(n, text, cancel = null) {
+function held(n, text, cancel = false) {
     const r = ref(n, text);
     return { kind: "held", ...r, itemBytes: intakeItemBytes(intakeBoundItem(r, text)), cancel };
 }
@@ -112,9 +112,12 @@ function unboundInvocation(texts, first = 100) {
 const TEXT_A = "[SYSTEM: A workflow sent you a typed message.]\n{\"note\":\"ship it\"}";
 const TEXT_B = "[SYSTEM: A workflow sent you a typed message.]\n{\"note\":\"héllo 日本 😀 \\\"quoted\\\"\"}";
 
-function carried({ queue = [], invocation = null } = {}) {
-    return { v: 1, queue, invocation };
+function carried({ queue = [], invocation = null, heldCancelRetry = null } = {}) {
+    return { v: 1, queue, invocation, heldCancelRetry };
 }
+
+/** The restored state a carried form stands for. */
+const stateOf = carriedForm => ({ queue: carriedForm.queue, invocation: carriedForm.invocation, heldCancelRetry: carriedForm.heldCancelRetry });
 
 const VALID = carried({ queue: [unclaimed(1), held(2, TEXT_A)], invocation: boundInvocation([TEXT_B], { sent: true }) });
 
@@ -209,7 +212,7 @@ const INPUT = { sessionId: "44444444-4444-4444-8444-444444444444", config: { mod
 
 test("versionedContinueAsNew carries the intake state whatever built the input, and adds nothing when it is empty", () => {
     const withIntake = runtimeFor({ ...INPUT, intake: VALID });
-    assert.deepEqual(withIntake.state.intake, { queue: VALID.queue, invocation: VALID.invocation });
+    assert.deepEqual(withIntake.state.intake, stateOf(VALID));
     for (const build of [
         runtime => continueInput(runtime),
         runtime => continueInputWithPrompt(runtime, "Continue on another model.", { requiredTool: "x" }),
@@ -257,8 +260,8 @@ test("1.0.83 never continues as new to an older or unreadable version, and stops
 // ─── Restore: absent is empty, invalid fails with its path ──
 
 test("createInitialState restores the intake state: absent is empty, a valid one is kept, an invalid one fails with its path", () => {
-    assert.deepEqual(createInitialState(INPUT, deriveOptions(INPUT)).intake, { queue: [], invocation: null });
-    assert.deepEqual(createInitialState({ ...INPUT, intake: VALID }, deriveOptions(INPUT)).intake, { queue: VALID.queue, invocation: VALID.invocation });
+    assert.deepEqual(createInitialState(INPUT, deriveOptions(INPUT)).intake, { queue: [], invocation: null, heldCancelRetry: null });
+    assert.deepEqual(createInitialState({ ...INPUT, intake: VALID }, deriveOptions(INPUT)).intake, stateOf(VALID));
     assert.throws(() => createInitialState({ ...INPUT, intake: { ...VALID, v: 2 } }, deriveOptions(INPUT)),
         error => error instanceof IntakeShapeError && error.path === "$.intake.v");
     assert.throws(() => createInitialState({ ...INPUT, intake: null }, deriveOptions(INPUT)),
@@ -323,11 +326,12 @@ const INVALID = [
         items: [{ ...s.invocation.items[0], cancelRequested: true }] } }), "$.intake.invocation.items[0].cancelRequested"],
     ["an unclaimed cancel that is not a boolean", s => ({ ...s, queue: [{ ...s.queue[0], cancel: "yes" }] }), "$.intake.queue[0].cancel"],
     ["an unclaimed entry without its cancel", s => ({ ...s, queue: [{ ...s.queue[0], cancel: undefined }] }), "$.intake.queue[0].cancel"],
-    ["a held cancel latch with a retry of no attempt", s => ({ ...s, queue: [{ ...s.queue[1], cancel: { retry: { attempts: 0, nextAttemptAtMs: 1 } } }] }),
-        "$.intake.queue[0].cancel.retry.attempts"],
-    ["a held cancel latch with an unknown field", s => ({ ...s, queue: [{ ...s.queue[1], cancel: { retry: null, extra: 1 } }] }), "$.intake.queue[0].cancel"],
-    // Within 512 bytes as it is, but not once its cancel is latched: a later cancel must always fit.
-    ["a held entry over its cap once latched", s => ({ ...s, queue: [{ ...s.queue[1], clientMessageId: "c".repeat(250) }] }), "$.intake.queue[0]"],
+    ["a held cancel that is not a boolean", s => ({ ...s, queue: [{ ...s.queue[1], cancel: { retry: null } }] }), "$.intake.queue[0].cancel"],
+    ["a held entry without its cancel", s => ({ ...s, queue: [{ ...s.queue[1], cancel: undefined }] }), "$.intake.queue[0].cancel"],
+    ["a held cancel retry with no latched held entry", s => ({ ...s, heldCancelRetry: { attempts: 1, nextAttemptAtMs: 9 } }), "$.intake.heldCancelRetry"],
+    ["a held cancel retry with a negative due time", s => ({ ...s, queue: [{ ...s.queue[1], cancel: true }], heldCancelRetry: { attempts: 1, nextAttemptAtMs: -1 } }),
+        "$.intake.heldCancelRetry.nextAttemptAtMs"],
+    ["a missing held cancel retry field", s => ({ v: 1, queue: s.queue, invocation: s.invocation }), "$.intake.heldCancelRetry"],
     ["a settling entry with another outcome", s => ({ ...s, queue: [settling(5, { outcome: "admitted" })] }), "$.intake.queue[0].outcome"],
     ["a settling entry with a negative due time", s => ({ ...s, queue: [settling(5, { retry: { attempts: 1, nextAttemptAtMs: -1 } })] }),
         "$.intake.queue[0].retry.nextAttemptAtMs"],
@@ -355,8 +359,8 @@ const INVALID = [
 ];
 
 test("a carried intake state is checked whole: each malformed part fails with its path, and nothing is read as empty", () => {
-    assert.deepEqual(restoreIntakeState(undefined), { queue: [], invocation: null });
-    assert.deepEqual(restoreIntakeState(JSON.parse(JSON.stringify(VALID))), { queue: VALID.queue, invocation: VALID.invocation });
+    assert.deepEqual(restoreIntakeState(undefined), { queue: [], invocation: null, heldCancelRetry: null });
+    assert.deepEqual(restoreIntakeState(JSON.parse(JSON.stringify(VALID))), stateOf(VALID));
     for (const [name, change, path] of INVALID) {
         const raw = JSON.parse(JSON.stringify(change(structuredClone(VALID)) ?? null));
         assert.throws(() => restoreIntakeState(raw), error => {
@@ -393,11 +397,15 @@ test("a carried intake state is checked whole: each malformed part fails with it
     for (const queue of [
         [settling(5), held(2, TEXT_A)],
         [settling(5, { outcome: "refused_full", retry: { attempts: 3, nextAttemptAtMs: 9 } }), settling(6, { outcome: "refused_size" })],
-        [held(2, TEXT_A, { retry: null }), held(3, TEXT_A, { retry: { attempts: 2, nextAttemptAtMs: 9 } })],
+        [held(2, TEXT_A, true), held(3, TEXT_A)],
         [unclaimed(1, true), unclaimed(2)],
     ]) {
         assert.deepEqual(restoreIntakeState(JSON.parse(JSON.stringify(carried({ queue })))).queue, queue);
     }
+    // The latched held cancels' one write, failed, with its retry at its largest.
+    const worst = { attempts: Number.MAX_SAFE_INTEGER, nextAttemptAtMs: Number.MAX_SAFE_INTEGER };
+    const latchedHeld = carried({ queue: [held(2, TEXT_A, true), held(3, TEXT_A, true)], heldCancelRetry: worst });
+    assert.deepEqual(restoreIntakeState(JSON.parse(JSON.stringify(latchedHeld))), stateOf(latchedHeld));
     // An unclaimed copy of an exchange that is already placed, or settling, may still wait (its claim will find the row).
     assert.doesNotThrow(() => restoreIntakeState(carried({ queue: [unclaimed(2), held(2, TEXT_A)] })));
     assert.doesNotThrow(() => restoreIntakeState(carried({ queue: [unclaimed(5), settling(5)] })));
@@ -465,6 +473,21 @@ test("a batch is the longest arrival-order run of held items that fits one invoc
     const largest = sized(8, INTAKE_MAX_INVOCATION_ITEMS_BYTES - 2);
     assert.deepEqual(selectIntakeBatch([largest, tiny]), [largest]);
     // A held entry whose cancel is latched is never bound: it is passed over, and the run goes on after it.
-    assert.deepEqual(selectIntakeBatch([{ ...largest, cancel: { retry: null } }, tiny]), [tiny]);
-    assert.deepEqual(selectIntakeBatch([{ ...tiny, cancel: { retry: { attempts: 1, nextAttemptAtMs: 9 } } }]), []);
+    assert.deepEqual(selectIntakeBatch([{ ...largest, cancel: true }, tiny]), [tiny]);
+    assert.deepEqual(selectIntakeBatch([{ ...tiny, cancel: true }]), []);
+});
+
+test("a held reference's cap is measured the same on admission and restore, as placed: 512 bytes fit, cancelled or not; 513 do not", () => {
+    // An entry's cap bytes grow one for one with its client id; the one at exactly 512 restores, latched or not.
+    const withId = length => ({ ...held(2, TEXT_A), clientMessageId: "c".repeat(length) });
+    const fits = INTAKE_MAX_HELD_ENTRY_BYTES - (intakeHeldEntryCapBytes(withId(1)) - 1);
+    assert.equal(intakeHeldEntryCapBytes(withId(fits)), INTAKE_MAX_HELD_ENTRY_BYTES);
+    assert.equal(bytes(withId(fits)), INTAKE_MAX_HELD_ENTRY_BYTES);
+    assert.equal(bytes({ ...withId(fits), cancel: true }), INTAKE_MAX_HELD_ENTRY_BYTES - 1);
+    assert.equal(intakeHeldEntryCapBytes({ ...withId(fits), cancel: true }), INTAKE_MAX_HELD_ENTRY_BYTES);
+    for (const entry of [withId(fits), { ...withId(fits), cancel: true }]) {
+        assert.deepEqual(restoreIntakeState(JSON.parse(JSON.stringify(carried({ queue: [entry] })))).queue, [entry]);
+    }
+    assert.throws(() => restoreIntakeState(JSON.parse(JSON.stringify(carried({ queue: [withId(fits + 1)] })))),
+        error => error instanceof IntakeShapeError && error.path === "$.intake.queue[0]");
 });

@@ -140,6 +140,16 @@ function unclaimedEntry(state: IntakeState, claimId: string): IntakeUnclaimedEnt
     return entry;
 }
 
+/** The state with another queue; everything else carried as it is. */
+function withQueue(state: IntakeState, queue: IntakeQueueEntry[]): IntakeState {
+    return { ...state, queue };
+}
+
+/** The state with another invocation; everything else carried as it is. */
+function withInvocation(state: IntakeState, invocation: IntakeInvocation | null): IntakeState {
+    return { ...state, invocation };
+}
+
 /** The state with the unclaimed entry of `claimId` replaced in its arrival position, or removed (null). */
 function withUnclaimed(state: IntakeState, claimId: string, replacement: IntakeQueueEntry | null): IntakeState {
     const queue: IntakeQueueEntry[] = [];
@@ -147,7 +157,7 @@ function withUnclaimed(state: IntakeState, claimId: string, replacement: IntakeQ
         if (entry.kind !== "unclaimed" || entry.claimId !== claimId) queue.push(entry);
         else if (replacement !== null) queue.push(replacement);
     }
-    return { queue, invocation: state.invocation };
+    return withQueue(state, queue);
 }
 
 function claimInUse(state: IntakeState, claimId: string): boolean {
@@ -398,7 +408,7 @@ function keepUnclaimed(state: IntakeState, call: IntakeClaimCall, context: Intak
     const entry: IntakeUnclaimedEntry = { kind: "unclaimed", claimId: call.claimId, envelope: call.envelope, retry, cancel: cancelled };
     // Not reachable: an envelope within its 1 KiB cap and an id within its length always fit the entry's 2 KiB.
     if (jsonBytes(entry) > INTAKE_MAX_UNCLAIMED_ENTRY_BYTES) throw new IntakeInvariantError(call.envelope.exchangeId, "its unclaimed entry is over its cap");
-    return { state: { queue: [...state.queue, entry], invocation: state.invocation }, decision: { kind: "unclaimed", claimId: call.claimId, retry } };
+    return { state: withQueue(state, [...state.queue, entry]), decision: { kind: "unclaimed", claimId: call.claimId, retry } };
 }
 
 function failStop(state: IntakeState, exchangeId: string): IntakeStep<IntakeFailStop> {
@@ -422,9 +432,12 @@ function dropRetried(state: IntakeState, call: IntakeClaimCall): IntakeState {
  * only when the exchange has no placement (I7), whatever the call's mode: a
  * call in mode refuse answered accepted found its own earlier holding row,
  * and the holder refuses it only when it has no room. A retried entry that
- * becomes held keeps its arrival position. A copy whose cancel was latched
- * while it waited, or that a tombstone names now, is settled cancelled; that
- * decision and a refusal are latched as a settling entry before the write.
+ * becomes held keeps its arrival position. A copy that a tombstone names now,
+ * or whose message (its exchange and canonical client id) has a cancel
+ * latched on a waiting copy, is settled cancelled; that decision and a
+ * refusal are latched as a settling entry before the write. A waiting copy's
+ * envelope is not verified until its claim is answered, so a latch passes
+ * only between copies of one message, never by exchange alone.
  */
 export function applyIntakeClaim(state: IntakeState, call: IntakeClaimCall, outcome: { result: unknown } | { failed: true }, context: IntakeClaimContext)
     : IntakeStep<IntakeClaimDecision> {
@@ -435,28 +448,33 @@ export function applyIntakeClaim(state: IntakeState, call: IntakeClaimCall, outc
         return call.mode === "accept" ? { state, decision: { kind: "claim_refuse" } } : failStop(state, call.envelope.exchangeId);
     }
     const result = parseIntakeClaimResult(outcome.result, call);
-    // A cancel latched on any waiting copy of this exchange holds for every copy of it here, whatever the tombstones say now.
+    // A retried copy whose cancel was latched passes it on to the other copies of its own message when it leaves.
     const exchangeId = call.envelope.exchangeId;
-    const latchedCancel = state.queue.some(entry => entry.kind === "unclaimed" && entry.cancel && entry.envelope.exchangeId === exchangeId);
-    const keepLatch = (next: IntakeState): IntakeState => (latchedCancel ? latchCopies(next, (_, copyExchangeId) => copyExchangeId === exchangeId) : next);
-    if (result.result !== "accepted") return { state: keepLatch(dropRetried(state, call)), decision: { kind: "recorded", result } };
+    const canonical = intakeEnvelopeClientMessageId(call.envelope);
+    const ownLatch = call.source === "unclaimed" && unclaimedEntry(state, call.claimId).cancel;
+    const passOn = (next: IntakeState): IntakeState => (ownLatch
+        ? latchCopies(next, (clientMessageId, copyExchangeId) => copyExchangeId === exchangeId && clientMessageId === canonical) : next);
+    if (result.result !== "accepted") return { state: passOn(dropRetried(state, call)), decision: { kind: "recorded", result } };
     const { item } = result;
     const decidedUnder = intakePlacementClaim(state, item.exchangeId) ?? settlingFor(state, item.exchangeId)?.claimId ?? null;
     if (decidedUnder !== null) {
         if (decidedUnder !== item.claimId) {
             throw new IntakeInvariantError(item.exchangeId, `it is placed or settling under claim ${decidedUnder}, but its row holds claim ${item.claimId}`);
         }
-        return { state: keepLatch(dropRetried(state, call)), decision: { kind: "already_placed" } };
+        return { state: passOn(dropRetried(state, call)), decision: { kind: "already_placed" } };
     }
+    // The item's client id is its exchange's canonical one (parseIntakeClaimResult): only a waiting copy of the same message counts.
+    const inherited = state.queue.some(entry => entry.kind === "unclaimed" && entry.cancel && entry.envelope.exchangeId === item.exchangeId
+        && intakeEnvelopeClientMessageId(entry.envelope) === item.clientMessageId);
     const entry: IntakeHeldEntry = {
         kind: "held", exchangeId: item.exchangeId, claimId: item.claimId, textSha256: item.textSha256, clientMessageId: item.clientMessageId,
-        itemBytes: item.itemBytes, cancel: null,
+        itemBytes: item.itemBytes, cancel: false,
     };
-    const decided: IntakeHolderOutcome | null = latchedCancel || context.isCancelled(item.clientMessageId) ? "cancelled"
+    const decided: IntakeHolderOutcome | null = inherited || context.isCancelled(item.clientMessageId) ? "cancelled"
         : intakeHeldEntryCapBytes(entry) > INTAKE_MAX_HELD_ENTRY_BYTES ? "refused_size"
             : heldCount(state) >= INTAKE_MAX_HELD ? "refused_full" : null;
     if (decided === null) {
-        const placed = call.source === "unclaimed" ? withUnclaimed(state, call.claimId, entry) : { queue: [...state.queue, entry], invocation: state.invocation };
+        const placed = call.source === "unclaimed" ? withUnclaimed(state, call.claimId, entry) : withQueue(state, [...state.queue, entry]);
         return { state: placed, decision: { kind: "held", entry } };
     }
     const settling: IntakeSettlingEntry = { kind: "settling", exchangeId: item.exchangeId, claimId: item.claimId, outcome: decided, retry: null };
@@ -465,7 +483,7 @@ export function applyIntakeClaim(state: IntakeState, call: IntakeClaimCall, outc
     });
     // Latched before the write: in the copy's own waiting entry, else in a free one.
     if (call.source === "unclaimed") return { state: withUnclaimed(state, call.claimId, settling), decision: settle(true) };
-    if (waitingCount(state) < INTAKE_MAX_UNCLAIMED) return { state: { queue: [...state.queue, settling], invocation: state.invocation }, decision: settle(true) };
+    if (waitingCount(state) < INTAKE_MAX_UNCLAIMED) return { state: withQueue(state, [...state.queue, settling]), decision: settle(true) };
     return { state, decision: settle(false) };
 }
 
@@ -486,10 +504,10 @@ export function applyIntakeHolderSettle(state: IntakeState, settle: Pick<IntakeH
     if (entry === undefined || entry.claimId !== settle.claimId) {
         throw new IntakeInvariantError(settle.exchangeId, `no holder settle is latched under claim ${settle.claimId}`);
     }
-    if (settled) return { state: { queue: state.queue.filter(candidate => candidate !== entry), invocation: state.invocation }, decision: { kind: "settled" } };
+    if (settled) return { state: withQueue(state, state.queue.filter(candidate => candidate !== entry)), decision: { kind: "settled" } };
     const retry = intakeRetryAfterFailure(entry.retry, nowMs);
     const queue: IntakeQueueEntry[] = state.queue.map(candidate => (candidate === entry ? { ...entry, retry } : candidate));
-    return { state: { queue, invocation: state.invocation }, decision: { kind: "settle_retry", retry } };
+    return { state: withQueue(state, queue), decision: { kind: "settle_retry", retry } };
 }
 
 // ─── Cancels: a tombstone latched once (design 5.5, review INTAKE-MACHINE-01, 03) ──
@@ -497,19 +515,20 @@ export function applyIntakeHolderSettle(state: IntakeState, settle: Pick<IntakeH
 /**
  * Latch the cancel of every copy in the state that `names` picks, by its
  * canonical client message id (an unclaimed copy's is its envelope's) and its
- * exchange: an unclaimed entry's cancel, a held entry's cancel (due now), and
- * an invocation item's cancelRequested, with the invocation's cancel write
- * due now once it is bound (before its bind the cancel waits for it; its rows
- * are not admitted yet). An unsent invocation that is ending was never
- * dispatched: nothing is latched on it. Returns `state` itself when nothing is
- * newly latched.
+ * exchange: an unclaimed entry's cancel, a held entry's cancel (written with
+ * the other latched held cancels: due now unless their write is waiting for
+ * its retry), and an invocation item's cancelRequested, with the
+ * invocation's cancel write due now once it is bound (before its bind the
+ * cancel waits for it; its rows are not admitted yet). An unsent invocation
+ * that is ending was never dispatched: nothing is latched on it. Returns
+ * `state` itself when nothing is newly latched.
  */
 function latchCopies(state: IntakeState, names: (clientMessageId: string, exchangeId: string) => boolean): IntakeState {
     const queue: IntakeQueueEntry[] = state.queue.map((entry): IntakeQueueEntry => {
         if (entry.kind === "unclaimed" && !entry.cancel && names(intakeEnvelopeClientMessageId(entry.envelope), entry.envelope.exchangeId)) {
             return { ...entry, cancel: true };
         }
-        if (entry.kind === "held" && entry.cancel === null && names(entry.clientMessageId, entry.exchangeId)) return { ...entry, cancel: { retry: null } };
+        if (entry.kind === "held" && !entry.cancel && names(entry.clientMessageId, entry.exchangeId)) return { ...entry, cancel: true };
         return entry;
     });
     let invocation = state.invocation;
@@ -525,7 +544,7 @@ function latchCopies(state: IntakeState, names: (clientMessageId: string, exchan
         }
     }
     const queueChanged = queue.some((entry, index) => entry !== state.queue[index]);
-    return queueChanged || invocation !== state.invocation ? { queue, invocation } : state;
+    return queueChanged || invocation !== state.invocation ? { ...state, queue, invocation } : state;
 }
 
 /**
@@ -554,18 +573,18 @@ function invocationWrite(invocation: IntakeInvocation | null): { kind: "bind" | 
 /**
  * The earliest due time of the intake's store writes, the third deadline of
  * drain's race: an unclaimed entry's claim, a settling entry's holder settle,
- * a latched held cancel, and the invocation's bind, cancel write or end (the
- * end waits for the cancel write). A write that has no due time yet is due
- * now (0). Null when no write waits: drain then runs exactly as today. A
- * cancel needs no other stimulus to be made (review INTAKE-MACHINE-02).
+ * the latched held cancels' write, and the invocation's bind, cancel write or
+ * end (the end waits for the cancel write). A write that has no due time yet
+ * is due now (0). Null when no write waits: drain then runs exactly as today.
+ * A cancel needs no other stimulus to be made (review INTAKE-MACHINE-02).
  */
 export function intakeDueAtMs(state: IntakeState): number | null {
     const times: number[] = [];
     for (const entry of state.queue) {
         if (entry.kind === "unclaimed") times.push(entry.retry.nextAttemptAtMs);
         else if (entry.kind === "settling") times.push(entry.retry?.nextAttemptAtMs ?? 0);
-        else if (entry.cancel !== null) times.push(entry.cancel.retry?.nextAttemptAtMs ?? 0);
     }
+    if (state.queue.some(entry => entry.kind === "held" && entry.cancel)) times.push(state.heldCancelRetry?.nextAttemptAtMs ?? 0);
     const write = invocationWrite(state.invocation);
     if (write !== null) times.push(write.dueAtMs);
     return times.length === 0 ? null : Math.min(...times);
@@ -588,7 +607,7 @@ export type IntakeDueWork =
 
 /**
  * The writes due at `nowMs`, in order: unclaimed claims and holder settles
- * oldest first, then the due latched held cancels, then the invocation's
+ * oldest first, then the latched held cancels together, then the invocation's
  * write. Store writes only: no turn, no unparking. Each is reported back as
  * made or failed (its retry then doubles); a failure never drops a latch.
  */
@@ -603,11 +622,11 @@ export function intakeDueWork(state: IntakeState, nowMs: number): IntakeDueWork[
             if ((entry.retry?.nextAttemptAtMs ?? 0) <= now) {
                 work.push({ kind: "holder_settle", exchangeId: entry.exchangeId, claimId: entry.claimId, outcome: entry.outcome });
             }
-        } else if (entry.cancel !== null && (entry.cancel.retry?.nextAttemptAtMs ?? 0) <= now) {
+        } else if (entry.cancel) {
             heldCancels.push({ exchangeId: entry.exchangeId, claimId: entry.claimId });
         }
     }
-    if (heldCancels.length > 0) work.push({ kind: "cancel_held", items: heldCancels });
+    if (heldCancels.length > 0 && (state.heldCancelRetry?.nextAttemptAtMs ?? 0) <= now) work.push({ kind: "cancel_held", items: heldCancels });
     const write = invocationWrite(state.invocation);
     if (write !== null && write.dueAtMs <= now) {
         if (write.kind === "bind") work.push({ kind: "bind" });
@@ -619,41 +638,42 @@ export function intakeDueWork(state: IntakeState, nowMs: number): IntakeDueWork[
 
 // ─── Held entries and the binding (design 5.5, 6.1) ──────────
 
-/** The held entries named, each of whose cancel must be latched. */
+/** The held entries named (at least one), each of whose cancel must be latched. */
 function latchedHeld(state: IntakeState, exchangeIds: readonly string[]): Set<string> {
+    if (exchangeIds.length === 0) throw new IntakeInvariantError(null, "a held cancel write is reported that names no entry");
     const named = new Set(exchangeIds);
     for (const exchangeId of named) {
-        if (!state.queue.some(entry => entry.kind === "held" && entry.exchangeId === exchangeId && entry.cancel !== null)) {
+        if (!state.queue.some(entry => entry.kind === "held" && entry.exchangeId === exchangeId && entry.cancel)) {
             throw new IntakeInvariantError(exchangeId, "its cancel was written, but it is not a held entry whose cancel is latched");
         }
     }
     return named;
 }
 
-/** The latched cancels of these held entries were written (settle cancel_held): they leave the queue. */
+/**
+ * The latched cancels of these held entries were written (settle
+ * cancel_held): they leave the queue, and any other latched held cancel is
+ * due now.
+ */
 export function applyIntakeHeldCancelled(state: IntakeState, exchangeIds: readonly string[]): IntakeState {
     const done = latchedHeld(state, exchangeIds);
-    return { queue: state.queue.filter(entry => entry.kind !== "held" || !done.has(entry.exchangeId)), invocation: state.invocation };
+    return { ...state, queue: state.queue.filter(entry => entry.kind !== "held" || !done.has(entry.exchangeId)), heldCancelRetry: null };
 }
 
 /**
- * The write of these latched held cancels failed after its retries (or
- * committed and its answer was lost): each stays latched, never bound, due
- * again on the wake; a repeated cancel of a cancelled row is the same result.
+ * The latched held cancels' write failed after its retries (or committed and
+ * its answer was lost): each stays latched, never bound, and the write is due
+ * again on the wake at its doubled retry; a repeated cancel of a cancelled
+ * row is the same result.
  */
 export function applyIntakeHeldCancelFailure(state: IntakeState, exchangeIds: readonly string[], nowMs: number): IntakeState {
-    const failed = latchedHeld(state, exchangeIds);
-    const now = clockMs(nowMs);
-    const queue = state.queue.map((entry): IntakeQueueEntry => {
-        if (entry.kind !== "held" || entry.cancel === null || !failed.has(entry.exchangeId)) return entry;
-        return { ...entry, cancel: { retry: intakeRetryAfterFailure(entry.cancel.retry, now) } };
-    });
-    return { queue, invocation: state.invocation };
+    latchedHeld(state, exchangeIds);
+    return { ...state, heldCancelRetry: intakeRetryAfterFailure(state.heldCancelRetry, nowMs) };
 }
 
 /** Whether decide forms an invocation now: none exists, and a held entry whose cancel is not latched waits. */
 export function intakeCanForm(state: IntakeState): boolean {
-    return state.invocation === null && state.queue.some(entry => entry.kind === "held" && entry.cancel === null);
+    return state.invocation === null && state.queue.some(entry => entry.kind === "held" && !entry.cancel);
 }
 
 /**
@@ -681,7 +701,7 @@ export function formIntakeInvocation(state: IntakeState, invocationId: string): 
         itemBytes: batch.map(entry => entry.itemBytes),
         bound: false, sent: false, parked: null, bindRetry: null, settle: null, cancelWrite: null,
     };
-    return { queue: state.queue.filter(entry => !taken.has(entry.claimId)), invocation };
+    return { ...state, queue: state.queue.filter(entry => !taken.has(entry.claimId)), invocation };
 }
 
 function unboundInvocation(state: IntakeState): IntakeInvocation {
@@ -729,14 +749,14 @@ export function applyIntakeBound(state: IntakeState, raw: unknown): IntakeState 
         return { ...item, text };
     });
     const cancelWrite = items.some(item => item.cancelRequested) ? { retry: null } : null;
-    return { queue: state.queue, invocation: { ...invocation, items, bound: true, bindRetry: null, cancelWrite } };
+    return withInvocation(state, { ...invocation, items, bound: true, bindRetry: null, cancelWrite });
 }
 
 /** The bind failed after its retries: the invocation stays unsent and unbound, its bind due on the wake (design 5.5); nothing carries it. */
 export function applyIntakeBindFailure(state: IntakeState, nowMs: number): IntakeStep<{ kind: "bind_retry"; retry: IntakeRetry }> {
     const invocation = unboundInvocation(state);
     const retry = intakeRetryAfterFailure(invocation.bindRetry, nowMs);
-    return { state: { queue: state.queue, invocation: { ...invocation, bindRetry: retry } }, decision: { kind: "bind_retry", retry } };
+    return { state: withInvocation(state, { ...invocation, bindRetry: retry }), decision: { kind: "bind_retry", retry } };
 }
 
 // ─── Who carries it (design 5.5) ─────────────────────────────
@@ -808,7 +828,7 @@ export function carryIntakeInvocation(state: IntakeState, start: IntakeAttemptSt
     if (carries && !invocation.sent && invocation.items.some(item => item.cancelRequested)) carries = false;
     if (!carries) return { state, carry: null };
     const next: IntakeInvocation = { ...invocation, parked: null };
-    return { state: { queue: state.queue, invocation: next }, carry: intakeTurnPayload(next) };
+    return { state: withInvocation(state, next), carry: intakeTurnPayload(next) };
 }
 
 /**
@@ -934,7 +954,7 @@ export function applyIntakeAttempt(state: IntakeState, invocationId: string, dis
     if (step.next === "end") next = { ...invocation, sent, parked: null, settle: { outcome: step.outcome, retry: null } };
     else if (step.next === "parked") next = { ...invocation, sent, parked: step.cause };
     else next = { ...invocation, sent, parked: null };
-    return { state: { queue: state.queue, invocation: next }, decision: step };
+    return { state: withInvocation(state, next), decision: step };
 }
 
 // ─── The end and its settlement (design 5.2, 5.5) ────────────
@@ -965,12 +985,19 @@ export function intakeEndCall(state: IntakeState)
     };
 }
 
-/** The end was settled (now, or found settled: a replay): the invocation is cleared in the same step; other intake entries are untouched. */
+/**
+ * The end was settled (now, or found settled: a replay): the invocation is
+ * cleared in the same step; other intake entries are untouched. Wiring
+ * precondition (review of 813de112, not wired yet): with a cancel latched
+ * while the end was in flight, this and applyIntakeEndFailure refuse; the
+ * wiring keeps the end's answer, makes the cancel write first, and then
+ * reconciles the end with its flag set, so no answer is lost.
+ */
 export function applyIntakeEnded(state: IntakeState, raw: unknown): IntakeState {
     endingInvocation(state);
     const value = intakeObject(raw, "end", ["ended"]);
     if (typeof value.ended !== "boolean") throw new IntakeShapeError("end.ended", "is not a boolean");
-    return { queue: state.queue, invocation: null };
+    return withInvocation(state, null);
 }
 
 /** The end settlement failed after its retries: it is retried as a settlement on the wake, never as a new attempt (design 5.5). */
@@ -978,7 +1005,7 @@ export function applyIntakeEndFailure(state: IntakeState, nowMs: number): Intake
     const invocation = endingInvocation(state);
     const retry = intakeRetryAfterFailure(invocation.settle.retry, nowMs);
     return {
-        state: { queue: state.queue, invocation: { ...invocation, settle: { outcome: invocation.settle.outcome, retry } } },
+        state: withInvocation(state, { ...invocation, settle: { outcome: invocation.settle.outcome, retry } }),
         decision: { kind: "settle_retry", retry },
     };
 }
@@ -1011,17 +1038,22 @@ export function intakeInvocationCancelCall(state: IntakeState): { kind: "unsent"
  * their sizes, in the same step; when none is left the invocation ends
  * not_dispatched with an empty batch, whose end names no exchange. Sent: the
  * cancels are recorded; the items keep their flags for the end to name.
+ * Wiring precondition (review of 813de112, not wired yet): this clears every
+ * item latched now, so the wiring either latches nothing between the call
+ * (intakeInvocationCancelCall) and this report, or makes the report name the
+ * call's items; an item latched in between is never acknowledged by a write
+ * that did not name it.
  */
 export function applyIntakeInvocationCancelled(state: IntakeState): IntakeState {
     const invocation = cancellingInvocation(state);
-    if (invocation.sent) return { queue: state.queue, invocation: { ...invocation, cancelWrite: null } };
+    if (invocation.sent) return withInvocation(state, { ...invocation, cancelWrite: null });
     const keep = invocation.items.map(item => !item.cancelRequested);
     const items = invocation.items.filter((_, index) => keep[index]);
     const itemBytes = invocation.itemBytes.filter((_, index) => keep[index]);
     const next: IntakeInvocation = items.length > 0
         ? { ...invocation, items, itemBytes, cancelWrite: null }
         : { ...invocation, items, itemBytes, cancelWrite: null, parked: null, settle: { outcome: "not_dispatched", retry: null } };
-    return { queue: state.queue, invocation: next };
+    return withInvocation(state, next);
 }
 
 /**
@@ -1032,5 +1064,5 @@ export function applyIntakeInvocationCancelled(state: IntakeState): IntakeState 
 export function applyIntakeInvocationCancelFailure(state: IntakeState, nowMs: number): IntakeStep<{ kind: "cancel_retry"; retry: IntakeRetry }> {
     const invocation = cancellingInvocation(state);
     const retry = intakeRetryAfterFailure(invocation.cancelWrite.retry, nowMs);
-    return { state: { queue: state.queue, invocation: { ...invocation, cancelWrite: { retry } } }, decision: { kind: "cancel_retry", retry } };
+    return { state: withInvocation(state, { ...invocation, cancelWrite: { retry } }), decision: { kind: "cancel_retry", retry } };
 }

@@ -70,7 +70,7 @@ function frozen(value) {
     return value;
 }
 
-const EMPTY = frozen({ queue: [], invocation: null });
+const EMPTY = frozen({ queue: [], invocation: null, heldCancelRetry: null });
 
 function envelope(n, { wf = WF, run = RUN } = {}) {
     return {
@@ -90,7 +90,7 @@ const accepted = (n, claimId, options = {}, inserted = true) => ({ result: { res
 const FAILED = { failed: true };
 
 /** The held entry an accepted item becomes. */
-function heldOf(claimed, cancel = null) {
+function heldOf(claimed, cancel = false) {
     return {
         kind: "held", exchangeId: claimed.exchangeId, claimId: claimed.claimId, textSha256: claimed.textSha256,
         clientMessageId: claimed.clientMessageId, itemBytes: claimed.itemBytes, cancel,
@@ -107,7 +107,7 @@ const ctx = (isCancelled = none, nowMs = NOW) => ({ nowMs, isCancelled });
 function continued(state) {
     const carried = carryIntakeState(state);
     const restored = restoreIntakeState(carried === undefined ? undefined : JSON.parse(JSON.stringify(carried)));
-    assert.deepEqual(restored, { queue: state.queue, invocation: state.invocation });
+    assert.deepEqual(restored, { queue: state.queue, invocation: state.invocation, heldCancelRetry: state.heldCancelRetry });
     return frozen(restored);
 }
 
@@ -213,7 +213,7 @@ test("arrival step 1: an envelope with its shape is claimed in mode accept; a ma
 test("an accepted claim becomes a held entry in arrival order; every other answer is recorded and changes nothing", () => {
     const first = arrive(EMPTY, 1, accepted(1, "claim-1"));
     assert.deepEqual(first.decision, { kind: "held", entry: heldOf(item(1, "claim-1")) });
-    assert.deepEqual(first.state, { queue: [heldOf(item(1, "claim-1"))], invocation: null });
+    assert.deepEqual(first.state, { queue: [heldOf(item(1, "claim-1"))], invocation: null, heldCancelRetry: null });
     continued(first.state);
     // An earlier call's committed row whose reply was lost (inserted false) is held the same way.
     const second = arrive(first.state, 2, accepted(2, "claim-2", {}, false));
@@ -282,16 +282,17 @@ test("one placement per exchange (I7): a placement or settling entry under anoth
     const both = frozen({
         queue: [{ kind: "unclaimed", claimId: "claim-1", envelope: envelope(1), retry: { attempts: 1, nextAttemptAtMs: NOW }, cancel: false }, heldOf(placed)],
         invocation: null,
+        heldCancelRetry: null,
     });
     const step = applyIntakeClaim(both, intakeUnclaimedRetryCall(both, "claim-1"), frozen({ result: { result: "accepted", inserted: false, item: placed } }), ctx());
     assert.deepEqual(step.decision, { kind: "already_placed" });
-    assert.deepEqual(step.state, { queue: [heldOf(placed)], invocation: null });
+    assert.deepEqual(step.state, { queue: [heldOf(placed)], invocation: null, heldCancelRetry: null });
 });
 
 test("arrival step 4 and the held cap: a cancelled copy, a full queue and an oversize reference are decided once, latched before the write", () => {
     const cancelled = arrive(EMPTY, 1, accepted(1, "claim-1"), ctx(cancelling(1)));
     assert.deepEqual(cancelled.decision, { kind: "settle_holder", exchangeId: exchange(1), claimId: "claim-1", outcome: "cancelled", latched: true });
-    assert.deepEqual(cancelled.state, { queue: [settlingOf(1, "claim-1", "cancelled")], invocation: null });
+    assert.deepEqual(cancelled.state, { queue: [settlingOf(1, "claim-1", "cancelled")], invocation: null, heldCancelRetry: null });
     continued(cancelled.state);
     // The tombstone is asked about only for an accepted copy without a placement: a recorded answer never consults it.
     let asked = 0;
@@ -306,7 +307,8 @@ test("arrival step 4 and the held cap: a cancelled copy, a full queue and an ove
     assert.deepEqual(refused.state.queue, [...full.queue, settlingOf(1, "claim-1", "refused_full")]);
     continued(refused.state);
 
-    // A held reference is at most 512 bytes with its cancel latch at its largest; its canonical client id grows with the run's id.
+    // A held reference is at most 512 bytes as placed (its cancel flag unset, a byte longer than set), measured the same on
+    // admission and on restore; its canonical client id grows with the run's id.
     const ids = runLength => ({ wf: "w".repeat(100), run: "r".repeat(runLength) });
     const size = runLength => intakeHeldEntryCapBytes(heldOf(item(1, "claim-1", { ids: ids(runLength) })));
     let fits = 1;
@@ -423,7 +425,7 @@ test("a holder's latched settle survives a failed write, a lost answer, continue
     const lost = continued(applyIntakeHolderSettle(next, { ...due, latched: true }, false, NOW + 30_000).state);
     assert.deepEqual(lost.queue[0].retry, { attempts: 2, nextAttemptAtMs: NOW + 90_000 });
     const done = applyIntakeHolderSettle(lost, { ...due, latched: true }, true, NOW + 90_000);
-    assert.deepEqual(done, { state: { queue: [], invocation: null }, decision: { kind: "settled" } });
+    assert.deepEqual(done, { state: { queue: [], invocation: null, heldCancelRetry: null }, decision: { kind: "settled" } });
     assert.equal(carryIntakeState(done.state), undefined);
     // Only the latched entry's own claim is reported.
     assert.throws(() => applyIntakeHolderSettle(next, { exchangeId: exchange(1), claimId: "claim-x", latched: true }, true, NOW), IntakeInvariantError);
@@ -446,20 +448,58 @@ test("a tombstone latched on a waiting copy holds after it is gone: its claim se
     // Another copy of the exchange accepted while the latched one still waits (its claim never committed): cancelled too.
     const sibling = applyIntakeClaim(next, frozen(intakeArrivalClaimCall(next, "claim-1b", envelope(1))), frozen(accepted(1, "claim-1b")), ctx());
     assert.equal(sibling.decision.outcome, "cancelled");
-    // A copy held before (under another claim) is latched when the latched copy's claim finds the row held by it.
+    // A copy held before (under another claim) is latched when the latched copy's claim finds the row held by it: the same message
+    // (its exchange and canonical client id), so the cancel passes on.
     const heldFirst = arrive(next, 2, accepted(2, "claim-2"));
     const copyHeld = { ...heldFirst.state, queue: [...heldFirst.state.queue, { ...heldOf(item(1, "claim-1b")) }] };
     const answered = applyIntakeClaim(frozen(copyHeld), intakeUnclaimedRetryCall(copyHeld, "claim-1"),
         frozen({ result: { result: "duplicate", state: "holding" } }), ctx());
     assert.deepEqual(answered.state.queue.map(entry => [entry.kind, entry.claimId, entry.cancel]),
-        [["held", "claim-2", null], ["held", "claim-1b", { retry: null }]]);
+        [["held", "claim-2", false], ["held", "claim-1b", true]]);
     continued(answered.state);
+});
+
+test("a latch passes only between copies of one message: a waiting copy with another canonical id cancels nothing else (review of 813de112, P2)", () => {
+    // A copy of exchange 1 whose envelope names another run: shape-valid, unverified, its canonical id B is not the genuine A.
+    const other = { run: "33333333-3333-4333-8333-000000000000" };
+    const idB = clientId(1, other);
+    assert.notEqual(idB, clientId(1));
+    // Its claim fails while a tombstone names B: B's cancel is latched on that waiting copy.
+    const forged = frozen(applyIntakeClaim(EMPTY, frozen(intakeArrivalClaimCall(EMPTY, "claim-f", envelope(1, other))), FAILED,
+        ctx(id => id === idB)).state);
+    assert.equal(forged.queue[0].cancel, true);
+    // The genuine copy (id A, no tombstone) is accepted next: it is held, not cancelled.
+    const genuine = applyIntakeClaim(forged, frozen(intakeArrivalClaimCall(forged, "claim-1", envelope(1))), frozen(accepted(1, "claim-1")), ctx());
+    assert.deepEqual(genuine.decision, { kind: "held", entry: heldOf(item(1, "claim-1")) });
+    // The forged copy then retires (its claim is answered conflict, unverified or duplicate): the held genuine copy stays uncancelled.
+    const placed = frozen(genuine.state);
+    for (const result of [
+        { result: "conflict", state: "holding" }, { result: "unverified", reason: "the exchange's message names another run" },
+        { result: "duplicate", state: "holding" },
+    ]) {
+        const retired = applyIntakeClaim(placed, intakeUnclaimedRetryCall(placed, "claim-f"), frozen({ result }), ctx());
+        assert.deepEqual(retired.state.queue, [heldOf(item(1, "claim-1"))], JSON.stringify(result));
+        assert.equal(intakeCanForm(retired.state), true);
+    }
+    // Nor does it reach an invocation item of the genuine message.
+    const boundGenuine = frozen({ ...bound([1]), queue: [forged.queue[0]] });
+    const retiredBound = applyIntakeClaim(boundGenuine, intakeUnclaimedRetryCall(boundGenuine, "claim-f"),
+        frozen({ result: { result: "duplicate", state: "admitted" } }), ctx());
+    assert.equal(retiredBound.state.invocation.items[0].cancelRequested, false);
+    assert.equal(retiredBound.state.invocation.cancelWrite, null);
+    // A waiting copy of the genuine message (id A) still passes its cancel on to the held genuine copy; the forged copy still waits.
+    const sameMessage = frozen({ ...placed, queue: [...placed.queue, { kind: "unclaimed", claimId: "claim-1c", envelope: envelope(1),
+        retry: { attempts: 1, nextAttemptAtMs: NOW }, cancel: true }] });
+    const passed = applyIntakeClaim(sameMessage, intakeUnclaimedRetryCall(sameMessage, "claim-1c"),
+        frozen({ result: { result: "duplicate", state: "holding" } }), ctx());
+    assert.deepEqual(passed.state.queue, [forged.queue[0], heldOf(item(1, "claim-1"), true)]);
+    continued(passed.state);
 });
 
 test("a held cancel is latched once, never bound, and written on the wake until made, through failures, lost answers and continue-as-new", () => {
     const state = holding([1, 2, 3]);
     const latched = latch(state, 2);
-    assert.deepEqual(latched.queue.map(entry => entry.cancel), [null, { retry: null }, null]);
+    assert.deepEqual(latched.queue.map(entry => entry.cancel), [false, true, false]);
     assert.equal(latchIntakeCancels(latched, cancelling(2)), latched);
     // Due now, with no other stimulus.
     assert.equal(intakeDueAtMs(latched), 0);
@@ -468,23 +508,61 @@ test("a held cancel is latched once, never bound, and written on the wake until 
     const formed = formIntakeInvocation(latched, "inv-1");
     assert.deepEqual(formed.invocation.items.map(entry => entry.exchangeId), [exchange(1), exchange(3)]);
     assert.deepEqual(formed.queue, [latched.queue[1]]);
-    // The write fails (or commits with its answer lost): the latch stays, due again; continue-as-new; the tombstone is gone.
+    // The write fails (or commits with its answer lost): the latch stays, the write is due again; continue-as-new; the
+    // tombstone is gone.
     const failed = continued(applyIntakeHeldCancelFailure(latched, [exchange(2)], NOW));
-    assert.deepEqual(failed.queue[1].cancel, { retry: { attempts: 1, nextAttemptAtMs: NOW + 30_000 } });
+    assert.equal(failed.queue[1].cancel, true);
+    assert.deepEqual(failed.heldCancelRetry, { attempts: 1, nextAttemptAtMs: NOW + 30_000 });
     assert.equal(latchIntakeCancels(failed, none), failed);
-    const onlyLatched = continued(applyIntakeHeldCancelFailure(frozen({ queue: [failed.queue[1]], invocation: null }), [exchange(2)], NOW + 30_000));
+    const onlyLatched = continued(applyIntakeHeldCancelFailure(frozen({ queue: [failed.queue[1]], invocation: null, heldCancelRetry: failed.heldCancelRetry }),
+        [exchange(2)], NOW + 30_000));
+    assert.deepEqual(onlyLatched.heldCancelRetry, { attempts: 2, nextAttemptAtMs: NOW + 90_000 });
     assert.equal(intakeCanForm(onlyLatched), false);
+    assert.equal(intakeDueAtMs(onlyLatched), NOW + 90_000);
     assert.deepEqual(intakeDueWork(onlyLatched, NOW + 89_999), []);
     assert.deepEqual(intakeDueWork(onlyLatched, NOW + 90_000), [{ kind: "cancel_held", items: [{ exchangeId: exchange(2), claimId: "claim-2" }] }]);
-    assert.deepEqual(applyIntakeHeldCancelled(onlyLatched, [exchange(2)]), { queue: [], invocation: null });
-    // A multi-item write that committed in part and failed: every item stays latched and is written again whole.
+    assert.deepEqual(applyIntakeHeldCancelled(onlyLatched, [exchange(2)]), { queue: [], invocation: null, heldCancelRetry: null });
+    // A cancel latched while the write waits for its retry joins that write; a multi-item write that committed in part and
+    // failed: every item stays latched and is written again whole.
+    const joined = latch(failed, 3);
+    assert.deepEqual(intakeDueWork(joined, NOW + 29_999), []);
+    assert.deepEqual(intakeDueWork(joined, NOW + 30_000), [{ kind: "cancel_held", items: [2, 3].map(n => ({ exchangeId: exchange(n), claimId: `claim-${n}` })) }]);
     const two = latch(holding([1, 2]), 1, 2);
     const partial = continued(applyIntakeHeldCancelFailure(two, [exchange(1), exchange(2)], NOW));
     assert.deepEqual(intakeDueWork(partial, NOW + 30_000), [{ kind: "cancel_held", items: [1, 2].map(n => ({ exchangeId: exchange(n), claimId: `claim-${n}` })) }]);
-    assert.deepEqual(applyIntakeHeldCancelled(partial, [exchange(1), exchange(2)]), { queue: [], invocation: null });
-    // Only latched held entries are reported.
+    assert.deepEqual(applyIntakeHeldCancelled(partial, [exchange(1), exchange(2)]), { queue: [], invocation: null, heldCancelRetry: null });
+    // Only latched held entries are reported, at least one.
     assert.throws(() => applyIntakeHeldCancelled(latched, [exchange(1)]), IntakeInvariantError);
     assert.throws(() => applyIntakeHeldCancelFailure(latched, [exchange(9)], NOW), IntakeInvariantError);
+    assert.throws(() => applyIntakeHeldCancelled(latched, []), IntakeInvariantError);
+    assert.throws(() => applyIntakeHeldCancelFailure(latched, [], NOW), IntakeInvariantError);
+});
+
+test("an ordinary held reference (UUID workflow and run, GUID claim) fits 512 bytes with room, latched or not; its worst retry carries (review of 813de112, P1)", () => {
+    const guid = n => `${String(n).padStart(8, "0")}-4444-4444-8444-444444444444`;
+    const claimed = item(1, guid(1));
+    assert.equal(guid(1).length, 36);
+    assert.equal(claimed.clientMessageId.length, 131);
+    assert.equal(claimed.itemBytes, 497);
+    const entry = heldOf(claimed);
+    assert.equal(Buffer.byteLength(JSON.stringify(entry), "utf8"), 386);
+    assert.equal(Buffer.byteLength(JSON.stringify({ ...entry, cancel: true }), "utf8"), 385);
+    // The claim admits it by the same measure restore checks.
+    assert.equal(intakeHeldEntryCapBytes(entry), 386);
+    assert.equal(intakeHeldEntryCapBytes({ ...entry, cancel: true }), 386);
+    const call = intakeArrivalClaimCall(EMPTY, guid(1), envelope(1));
+    assert.deepEqual(applyIntakeClaim(EMPTY, frozen(call), frozen({ result: { result: "accepted", inserted: true, item: claimed } }), ctx()).decision,
+        { kind: "held", entry });
+    // Sixty-four of them, every one latched, their write failed with the largest retry: carried and restored whole.
+    let full = EMPTY;
+    for (const n of range(1, INTAKE_MAX_HELD)) {
+        full = applyIntakeClaim(full, frozen(intakeArrivalClaimCall(full, guid(n), envelope(n))), frozen(accepted(n, guid(n))), ctx()).state;
+    }
+    const latchedAll = latch(full, ...range(1, INTAKE_MAX_HELD));
+    assert.ok(latchedAll.queue.every(held => held.cancel));
+    const worst = frozen({ ...latchedAll, heldCancelRetry: { attempts: Number.MAX_SAFE_INTEGER, nextAttemptAtMs: Number.MAX_SAFE_INTEGER } });
+    continued(worst);
+    assert.ok(Buffer.byteLength(JSON.stringify(carryIntakeState(worst).queue), "utf8") <= INTAKE_MAX_HELD * INTAKE_MAX_HELD_ENTRY_BYTES);
 });
 
 // ─── The wake (review INTAKE-MACHINE-02) ─────────────────────
@@ -814,7 +892,7 @@ test("the end is a settlement: its batch with cancel flags, cleared once settled
     const next = continued(failed.state);
     assert.deepEqual(applyIntakeEndFailure(next, NOW + 30_000).state.invocation.settle.retry, { attempts: 2, nextAttemptAtMs: NOW + 90_000 });
     const ended = applyIntakeEnded(next, frozen({ ended: true }));
-    assert.deepEqual(ended, { queue: ending.queue, invocation: null });
+    assert.deepEqual(ended, { queue: ending.queue, invocation: null, heldCancelRetry: null });
     assert.equal(ended.queue[0].exchangeId, exchange(3));
     continued(ended);
     // A replay (found settled) clears it the same way; the held item forms the next invocation.
@@ -867,7 +945,7 @@ test("a bound unsent item's cancel is latched, never carried, and removed by the
     assert.deepEqual(empty.invocation.settle, { outcome: "not_dispatched", retry: null });
     assert.deepEqual(intakeEndCall(empty), { invocationId: "inv-1", outcome: "not_dispatched", items: [] });
     continued(empty);
-    assert.deepEqual(applyIntakeEnded(empty, { ended: false }), { queue: [], invocation: null });
+    assert.deepEqual(applyIntakeEnded(empty, { ended: false }), { queue: [], invocation: null, heldCancelRetry: null });
     // A parked unsent invocation emptied the same way is no longer parked.
     const parked = frozen(attempt(unsentCarried(), witness(false), { kind: "failed", cause: "credential" }).state);
     const emptied = applyIntakeInvocationCancelled(latch(parked, 1));
@@ -950,6 +1028,6 @@ test("a pass end to end: copies claimed, a duplicate recorded, one invocation bo
     assert.deepEqual(done.decision, { next: "end", outcome: "completed" });
     assert.deepEqual(intakeEndCall(done.state).items.map(entry => entry.exchangeId), [exchange(1), exchange(2)]);
     const settled = applyIntakeEnded(frozen(done.state), frozen({ ended: true }));
-    assert.deepEqual(settled, { queue: [], invocation: null });
+    assert.deepEqual(settled, { queue: [], invocation: null, heldCancelRetry: null });
     assert.equal(carryIntakeState(settled), undefined);
 });
