@@ -2,6 +2,7 @@ import { normalizeSessionSortMode, normalizeSessionUsage } from "../../core/src/
 import { ChatCallLine } from "./chat-call-line.js";
 import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
+import { MotdOverlay, MotdAdminPanel } from "./motd.js";
 import { NativeTaskCard } from "./native-task-card.js";
 import { WorkspacePane, WORKSPACE_CHANGED_EVENT, announceWorkspaceChange, downloadBase64, workspaceToolActivity } from "./workspace-pane.js";
 // createPortal is only invoked by browser-only surfaces (tooltips, toolbar
@@ -14495,12 +14496,17 @@ function formatAdminPrincipalLabel(principal) {
 function AdminConsolePanel({ controller, mobile = false }) {
     const view = useControllerSelector(controller, selectAdminConsole, shallowEqualObject);
     const features = useControllerSelector(controller, state => state.admin.features);
+    const motds = useControllerSelector(controller, state => state.admin.motds);
+    const motdImages = useControllerSelector(controller, state => state.motd.images);
     const featureWorkers = useControllerSelector(controller, state => state.admin.workers);
     const featureRole = useControllerSelector(controller, state => state.auth?.authorization?.role);
     const packages = view.packages || {};
     const showPackages = view.section === "packages";
     const showWorkers = view.section === "workers";
     const showFeatures = view.section === "features";
+    const showMotd = view.section === "motd";
+    const motdSection = React.createElement(MotdAdminPanel, { controller, state: motds, images: motdImages,
+        isAdmin: view.isAdmin && (!featureRole || featureRole === "admin" || featureRole === "anonymous") });
     const featureSection = React.createElement(FeatureFlagsPanel, { controller, features,
         workers: featureWorkers?.list || [], workersError: featureWorkers?.error,
         isAdmin: view.isAdmin && (!featureRole || featureRole === "admin" || featureRole === "anonymous") });
@@ -14652,7 +14658,7 @@ function AdminConsolePanel({ controller, mobile = false }) {
             body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree,
                 React.createElement(AdminWorkersPane, { controller, view }));
         } else {
-            body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree, showFeatures ? featureSection : providerSection);
+            body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree, showMotd ? motdSection : showFeatures ? featureSection : providerSection);
         }
         return React.createElement("div", { className: "ps-admin-console is-mobile" },
             header,
@@ -14681,7 +14687,7 @@ function AdminConsolePanel({ controller, mobile = false }) {
                     "aria-label": "Resize settings column",
                 })),
             React.createElement("div", { className: "ps-admin-main" },
-                showPackages ? detail : showWorkers ? React.createElement(AdminWorkersPane, { controller, view }) : showFeatures ? featureSection : providerSection),
+                showPackages ? detail : showWorkers ? React.createElement(AdminWorkersPane, { controller, view }) : showMotd ? motdSection : showFeatures ? featureSection : providerSection),
             workspacePane),
         dialog,
         createProviderDialog);
@@ -14777,6 +14783,8 @@ function AdminSettingsTree({ controller, view }) {
                         controller.setAdminModelProviderPage("shared");
                     } else if (row.id === "features") {
                         controller.setAdminSection("features");
+                    } else if (row.id === "motd") {
+                        controller.setAdminSection("motd");
                     } else {
                         controller.setAdminSection(row.id === "agents" ? "packages" : "workers");
                     }
@@ -16466,7 +16474,8 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
 
     if (suspended) return React.createElement(ControllerContext.Provider, { value: controller },
         React.createElement(Toolbar, { controller, mobile: false, moa, viewNavigation }),
-        React.createElement(ModalLayer, { controller }));
+        React.createElement(ModalLayer, { controller }),
+        React.createElement(MotdOverlay, { controller, mobile }));
     return React.createElement(ControllerContext.Provider, { value: controller },
         React.createElement("div", { ref: viewportRef, className: "ps-web-shell" },
         // The phone's toolbar carries its NAVIGATION (the three view modes,
@@ -16509,7 +16518,8 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         mobile && filesFullscreenActive
             ? React.createElement(MobileArtifactOverlay, { controller })
             : null,
-        React.createElement(ModalLayer, { controller })));
+        React.createElement(ModalLayer, { controller }),
+        React.createElement(MotdOverlay, { controller, mobile })));
 }
 
 // Browser hosts may compose these existing surfaces with isolated controllers.
