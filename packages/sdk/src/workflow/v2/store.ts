@@ -891,16 +891,33 @@ export class WorkflowStore {
     }
 
     /**
-     * Record that a cancel command was accepted for a run; the controller
-     * applies it. The run is returned as it is now, so the caller sends the
-     * command while the run is active, on a replay too: a crash after this
-     * receipt and before the send must not lose it.
+     * Record that a cancel command was accepted for a run. A run that has not
+     * begun (admitted, or paused before its controller began it) is ended
+     * here, at once, as cancelled, with this request's operation id in its
+     * terminal error: its controller may not exist yet, and duroxide drops a
+     * queue message sent to an instance that has not started, so a command
+     * could be lost. The run end, its projection and the receipt commit in
+     * one transaction. A controller that starts later finds the run ended at
+     * begin (begin and this transaction both lock the session row, then the
+     * run row). A run that has begun is returned as it is: its controller,
+     * which began it, applies the command, and the caller sends it while the
+     * run is active, on a replay too (a crash after this receipt and before
+     * the send must not lose it).
+     *
+     * The receipt is the accept-time result: the run's status and KV revision
+     * when the cancel was accepted. It is stored once and never rewritten; a
+     * repeat returns it as stored, and read_workflow shows the run as it is
+     * now. A repeat of a cancel accepted by an earlier build, for a run that
+     * still has not begun (its command may have been dropped), ends the run
+     * now, as that accepted cancel requires; its receipt stays as stored.
      */
     async recordRunCancelRequest(input: {
         workflowSessionId: string;
         runId: string;
         operationId: string;
         requestSha256: string;
+        reason: string;
+        requestedBy: string | null;
     }): Promise<StoredOperation<WorkflowRunCommandReceipt> & { run: WorkflowRunRow }> {
         return this.transaction(async client => {
             if (!await this.lockLiveSession(client, input.workflowSessionId)) throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow was deleted.");
@@ -908,11 +925,48 @@ export class WorkflowStore {
             const prior = await this.priorRunCommand(client, input.workflowSessionId, input.operationId, "cancel", input.requestSha256);
             const run = await this.lockRun(client, input.runId);
             if (run.workflowSessionId !== input.workflowSessionId) throw new WorkflowStoreError("RUN_NOT_FOUND", `Run ${input.runId} is not a run of this workflow.`);
-            if (prior) return { receipt: prior, replayed: true, run };
-            const receipt: WorkflowRunCommandReceipt = { workflowSessionId: input.workflowSessionId, operation: "cancel", runId: run.runId, status: run.status, kvRevision: run.kvRevision };
+            if (prior) {
+                // The request hash names the run, so the stored receipt is this run's.
+                const current = runNotBegun(run) ? await this.cancelBeforeBegin(client, run, input, true) : run;
+                return { receipt: prior, replayed: true, run: current };
+            }
+            const current = runNotBegun(run) ? await this.cancelBeforeBegin(client, run, input, false) : run;
+            const receipt: WorkflowRunCommandReceipt = { workflowSessionId: input.workflowSessionId, operation: "cancel", runId: run.runId, status: current.status, kvRevision: current.kvRevision };
             await this.recordReceipt(client, input.workflowSessionId, input.operationId, "cancel", input.requestSha256, receipt);
-            return { receipt, replayed: false, run };
+            return { receipt, replayed: false, run: current };
         });
+    }
+
+    /**
+     * End a run that has not begun as cancelled, inside the caller's
+     * transaction (which holds the session and run locks), with its
+     * projection. `repaired` marks a repeat of a cancel accepted earlier
+     * whose command did not end the run.
+     */
+    private async cancelBeforeBegin(client: PoolClient, run: WorkflowRunRow,
+        input: { workflowSessionId: string; operationId: string; reason: string; requestedBy: string | null }, repaired: boolean): Promise<WorkflowRunRow> {
+        const marks: { [key: string]: JsonValue } = repaired
+            ? { beforeBegin: true, operationId: input.operationId, repaired: true }
+            : { beforeBegin: true, operationId: input.operationId };
+        const { rows } = await client.query(
+            `UPDATE ${this.t.runs}
+                SET status = 'cancelled', terminal_node_id = NULL, terminal_outcome = NULL, terminal_output = NULL, terminal_error = $2,
+                    paused_from = NULL, updated_at = now(), finished_at = now()
+              WHERE run_id = $1 RETURNING *`,
+            [run.runId, canonicalJson({ code: "cancelled", message: jsonbSafeText(input.reason, 4_000), details: {
+                command: "cancel", requestedBy: input.requestedBy, ...marks,
+            } })]);
+        // No node execution exists before begin; one that did would lose to the cancel, as when the controller cancels.
+        await client.query(
+            `UPDATE ${this.t.nodes}
+                SET state = 'completed', outcome = 'cancelled', result_kind = 'runtime_error', error = $2, output = NULL,
+                    winner = 'cancel', completed_at = now()
+              WHERE run_id = $1 AND state = 'pending'`,
+            [run.runId, canonicalJson({ code: "cancelled", message: "The workflow run was cancelled." })]);
+        await this.project(client, { sessionId: input.workflowSessionId, events: [{ eventType: "workflow.cancelled", data: {
+            runId: run.runId, reason: jsonbSafeText(input.reason, 500), command: "cancel", ...marks,
+        } }], update: { state: "cancelled", lastError: jsonbSafeText(input.reason, 500), touch: true } });
+        return runFrom(rows[0]);
     }
 
     /** Record transcript events outside a transition (notifications, cleanup requests). */

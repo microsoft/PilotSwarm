@@ -205,6 +205,24 @@ async function dispatchRecoveredRun(host: Pick<WorkflowV2Host, "duroxideClient">
 }
 
 /**
+ * Report a run that this cancel request ended before it began (no controller
+ * ran it), by the controller's rule: the parent is told unless it asked for
+ * the cancel itself, through the notifier orchestration (stable client
+ * message id, at least once). A repeat of the request only makes sure the
+ * notifier was started; a run ended by anything else is left alone.
+ */
+async function notifyCancelledBeforeBegin(host: Pick<WorkflowV2Host, "store" | "duroxideClient">, run: WorkflowRunRow, operationId: string): Promise<void> {
+    const error = run.terminalError;
+    const details = isJsonObject(error) && isJsonObject(error.details) ? error.details : null;
+    if (run.mode !== "live" || run.status !== "cancelled" || !details || details.beforeBegin !== true || details.operationId !== operationId) return;
+    const definition = await host.store.readDefinition(run.workflowSessionId);
+    if (!definition?.parentSessionId || !definition.notifyParent) return;
+    if (details.requestedBy === definition.parentSessionId) return;
+    await host.duroxideClient.startOrchestrationVersioned(workflowNotifyInstanceId(run.runId), WORKFLOW_V2_NOTIFY_NAME,
+        { runId: run.runId }, WORKFLOW_V2_NOTIFY_VERSION);
+}
+
+/**
  * Recover an active run whose controller can no longer end it, on an
  * explicit request (update_workflow operation recover):
  * - not begun (admitted, or paused before it began) with no controller
@@ -547,13 +565,18 @@ export async function controlWorkflowV2Run(
     }
     const requestSha256 = jsonSha256({ kind: command.operation, runId: run.runId, reason: command.reason });
     if (command.operation === "cancel") {
-        const stored = await host.store.recordRunCancelRequest({ workflowSessionId, runId: run.runId, operationId: context.operationId, requestSha256 });
+        const reason = command.reason ?? "Cancelled by its parent";
+        const requestedBy = context.actor.kind === "agent" ? context.actor.sessionId : null;
+        const stored = await host.store.recordRunCancelRequest({ workflowSessionId, runId: run.runId, operationId: context.operationId, requestSha256,
+            reason, requestedBy });
         if (ACTIVE_RUN_STATUSES.includes(stored.run.status)) {
             await host.duroxideClient.enqueueEvent(stored.run.controllerInstanceId, WORKFLOW_COMMAND_QUEUE, JSON.stringify({
-                type: "cmd", cmd: "cancel", id: `cancel-${context.operationId}`,
-                args: { reason: command.reason ?? "Cancelled by its parent" },
-                requestedBy: context.actor.kind === "agent" ? context.actor.sessionId : null,
+                type: "cmd", cmd: "cancel", id: `cancel-${context.operationId}`, args: { reason }, requestedBy,
             }));
+        } else {
+            // The run has ended. When this request ended it before it began, its parent is told by the
+            // controller's rule; for any other end this does nothing.
+            await notifyCancelledBeforeBegin(host, stored.run, context.operationId);
         }
         return { receipt: stored.receipt, replayed: stored.replayed };
     }

@@ -36,11 +36,12 @@ export const UPDATE_WORKFLOW_TOOL_SPEC = {
         + "set_vars (set: {key: JSON value} and/or delete: [keys], expected_kv_revision from read_workflow; one atomic batch on the run's open KV; "
         + "null is a value, deletion is explicit; a state admitted later reads it as context.kv, ${kv.key} or ${kv[\"any key\"]}, one already admitted keeps its snapshot), "
         + "pause (the run admits no new state; work already running finishes and its result is kept), resume (a paused run only), "
-        + "cancel (asks the run's controller to cancel it; read_workflow shows when it has ended), "
+        + "cancel (a run that has not begun ends at once; otherwise its controller is asked to cancel it and read_workflow shows when it has ended), "
         + "or recover (run_id optional, default the live run): when read_workflow shows needsRecovery, a run whose controller ended "
         + "without ending it is ended as failed (controller_ended) and its parent is notified as for any end, and a run admitted but never "
         + "started is started; otherwise nothing changes. run_id names the run for set_vars, pause, resume, cancel and recover (default the live run). "
         + "operation_id makes every operation idempotent: repeating it returns the original receipt; reusing it for a different request fails. "
+        + "A run command's receipt (status, kvRevision) is the run as the command was accepted; read_workflow shows the run now. "
         + "Published definitions never change; a new version needs a new workflow child. Returns JSON.",
     parameters: {
         type: "object",
