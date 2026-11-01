@@ -640,10 +640,12 @@ function unsupportedController(version: string) {
 
 export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: WorkflowV2RuntimeDeps): void {
     const { store } = deps;
-    runtime.registerOrchestrationVersioned(WORKFLOW_V2_CONTROLLER_NAME, WORKFLOW_V2_CONTROLLER_VERSION, workflowV2Controller);
+    // duroxide accepts an orchestration's versions only in ascending order:
+    // the fenced pre-release versions first, the version new runs use last.
     for (const version of WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS) {
         runtime.registerOrchestrationVersioned(WORKFLOW_V2_CONTROLLER_NAME, version, unsupportedController(version));
     }
+    runtime.registerOrchestrationVersioned(WORKFLOW_V2_CONTROLLER_NAME, WORKFLOW_V2_CONTROLLER_VERSION, workflowV2Controller);
     runtime.registerOrchestrationVersioned(WORKFLOW_V2_EFFECT_NAME, WORKFLOW_V2_EFFECT_VERSION, workflowV2Effect);
 
     const runOf = async (runId: string): Promise<WorkflowRunRow> => {

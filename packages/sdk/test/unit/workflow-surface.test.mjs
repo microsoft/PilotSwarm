@@ -20,6 +20,15 @@ import {
     workflowChildSessionId,
 } from "../../dist/workflow/index.js";
 import { OPERATIONS } from "../../api/src/protocol.js";
+import {
+    registerWorkflowV2,
+    workflowV2Controller,
+    WORKFLOW_V2_CONTROLLER_NAME,
+    WORKFLOW_V2_CONTROLLER_VERSION,
+    WORKFLOW_V2_EFFECT_NAME,
+    WORKFLOW_V2_EFFECT_VERSION,
+    WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS,
+} from "../../dist/workflow/v2/runtime.js";
 
 const yaml = (stateExtra = "", stateId = "only") => `
 apiVersion: pilotswarm.dev/v1alpha1
@@ -70,6 +79,37 @@ test("workflow v2 tools are declared beside spawn_workflow with typed operations
     assert.ok(read.description.includes("Reading changes nothing"), "read_workflow promises a pure read");
     assert.ok(read.description.includes("needsRecovery") && read.description.includes("update_workflow operation recover"),
         "read_workflow points to recover instead of acting itself");
+});
+
+/** True when semantic version a is later than b. */
+function laterVersion(a, b) {
+    const [x, y] = [a, b].map((version) => version.split(".").map(Number));
+    for (let i = 0; i < 3; i += 1) if (x[i] !== y[i]) return x[i] > y[i];
+    return false;
+}
+
+test("workflow v2 registers each orchestration's versions in ascending order, the version new runs use last", () => {
+    const registered = [];
+    const runtime = {
+        registerActivity: () => {},
+        registerOrchestrationVersioned: (name, version, fn) => {
+            // duroxide refuses a version that is not later than the latest one registered under its name.
+            const latest = registered.filter((entry) => entry.name === name).at(-1);
+            assert.ok(!latest || laterVersion(version, latest.version), `${name} ${version} registered after ${latest?.version}`);
+            registered.push({ name, version, fn });
+        },
+    };
+    registerWorkflowV2(runtime, { store: {} });
+    const controllers = registered.filter((entry) => entry.name === WORKFLOW_V2_CONTROLLER_NAME);
+    assert.deepEqual(controllers.map((entry) => entry.version), [...WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS, WORKFLOW_V2_CONTROLLER_VERSION]);
+    assert.equal(controllers.at(-1).fn, workflowV2Controller);
+    // Each fenced version keeps its handler: it fails at once, naming its version and the way out.
+    assert.ok(WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS.length > 0);
+    for (const entry of controllers.slice(0, -1)) {
+        assert.throws(() => entry.fn().next(), (error) => error.message.includes(`version ${entry.version}, written by a pre-release build`)
+            && error.message.includes("update_workflow operation recover"));
+    }
+    assert.deepEqual(registered.filter((entry) => entry.name === WORKFLOW_V2_EFFECT_NAME).map((entry) => entry.version), [WORKFLOW_V2_EFFECT_VERSION]);
 });
 
 test("script tools are the generic agent's data-plane tools, bound to the workflow session", async () => {
