@@ -208,6 +208,9 @@ for (const splitClient of [false, true]) {
             h.client._catalog.getSessionCreationConfig = async id => h.rows.get(id)?.creationConfig ?? null;
             await h.client.createSession({ sessionId: "grandchild", parentSessionId: "child", nestingLevel: explicit });
             assert.equal(h.rows.get("grandchild").creationConfig.bootstrapNestingLevel, explicit);
+            // Creation reads back only the row it created (a workflow session's id is refused there).
+            assert.deepEqual(h.reads, ["grandchild"], "creation reads back its own row and walks no ancestry");
+            h.reads.length = 0;
             const sender = splitClient ? new PilotSwarmClient({}) : h.client;
             sender._catalog = h.client._catalog;
             sender.duroxideClient = h.client.duroxideClient;
