@@ -79,12 +79,12 @@ export function MotdAdminPanel({ controller, state, images = {}, isAdmin, canRea
     const bodyRef = React.useRef(null);
     const mobileRef = React.useRef(null);
     React.useLayoutEffect(() => {
-        if (!isAdmin || !state.draftFocusVersion) return;
+        if (!isAdmin || !state.draftFocusVersion || state.duplicatingId) return;
         setPictureError(null);
         if (mobileRef.current) mobileRef.current.open = Boolean(state.draft.mobileBodyMd || state.draft.mobileImage);
         editorRef.current?.scrollIntoView({ block: "nearest", behavior: "auto" });
         bodyRef.current?.focus({ preventScroll: true });
-    }, [state.draftFocusVersion, isAdmin]);
+    }, [state.draftFocusVersion, state.duplicatingId, isAdmin]);
     if (!canRead) return null;
     const draft = state.draft;
     const busy = state.saving || state.loading || Boolean(state.duplicatingId) || reading;
@@ -92,7 +92,7 @@ export function MotdAdminPanel({ controller, state, images = {}, isAdmin, canRea
         React.createElement("input", { type, ...(type === "datetime-local" ? { step: "any" } : {}), value: draft[field] || "", disabled: busy,
             onChange: event => controller.setMotdDraft({ [field]: event.target.value }) }));
     const body = (label, field) => React.createElement("label", { className: "ps-motd-field" }, label,
-        React.createElement("textarea", { ref: field === "bodyMd" ? bodyRef : undefined, value: draft[field] || "", rows: field === "bodyMd" ? 12 : 4,
+        React.createElement("textarea", { ref: field === "bodyMd" ? bodyRef : undefined, "aria-label": label, value: draft[field] || "", rows: field === "bodyMd" ? 12 : 4,
             disabled: busy, onChange: event => controller.setMotdDraft({ [field]: event.target.value }) }));
     const readPicture = async (file, field) => {
         if (!file || busy || !isAdmin) return;
@@ -182,7 +182,7 @@ export function MotdAdminPanel({ controller, state, images = {}, isAdmin, canRea
                 body("Body (markdown)", "bodyMd"),
                 picture("Picture", "image"),
                 React.createElement("label", { className: "ps-motd-field" }, "Picture placement",
-                    React.createElement("select", { value: draft.imagePlacement, disabled: busy, onChange: event => controller.setMotdDraft({ imagePlacement: event.target.value }) },
+                    React.createElement("select", { "aria-label": "Picture placement", value: draft.imagePlacement, disabled: busy, onChange: event => controller.setMotdDraft({ imagePlacement: event.target.value }) },
                         ["above", "beside", "background"].map(value => React.createElement("option", { key: value, value }, value[0].toUpperCase() + value.slice(1))))),
                 React.createElement("details", { ref: mobileRef, className: "ps-motd-mobile-editor" },
                     React.createElement("summary", null, "Mobile version (optional)"), body("Mobile body (markdown)", "mobileBodyMd"), picture("Mobile picture", "mobileImage")),
