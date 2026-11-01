@@ -1,10 +1,12 @@
 // Theme sounds: the person's setting, and the shape of an ambient sound over
 // time. Pure functions only. The browser player lives in ui/react.
 //
-// A theme that sounds declares `sound` (see themes/hearth.js). It plays for
-// `playSeconds` out of every `everySeconds`, fading in and out, and only when
-// the person has turned theme sounds on. The setting is desktop-only: the
-// phone has no Appearance settings, and a phone in a pocket should not crackle.
+// A theme that sounds declares `sound` (see themes/hearth.js). By default the
+// sound plays continuously once the person turns theme sounds on, fading in
+// when it starts and out when it stops. A theme may instead ask for a window:
+// `playSeconds` out of every `everySeconds`, fading in and out each time.
+// The setting is desktop-only: the phone has no Appearance settings, and a
+// phone in a pocket should not crackle.
 
 export const THEME_SOUND_VOLUME_DEFAULT = 35;
 
@@ -30,11 +32,20 @@ function positive(value, fallback) {
 
 /** The timing a theme asked for, with safe defaults and sane bounds. */
 export function themeSoundTiming(sound) {
-    const every = positive(sound?.everySeconds, 30);
+    const fadeIn = positive(sound?.fadeInSeconds, 2.5);
+    const fadeOut = positive(sound?.fadeOutSeconds, 2);
+    const every = Number(sound?.everySeconds);
+    if (!Number.isFinite(every) || every <= 0) {
+        return { continuous: true, fadeIn, fadeOut };
+    }
     const play = Math.min(every, positive(sound?.playSeconds, 10));
-    const fadeIn = Math.min(play / 2, positive(sound?.fadeInSeconds, 2.5));
-    const fadeOut = Math.min(play / 2, positive(sound?.fadeOutSeconds, 3));
-    return { every, play, fadeIn, fadeOut };
+    return {
+        continuous: false,
+        every,
+        play,
+        fadeIn: Math.min(play / 2, fadeIn),
+        fadeOut: Math.min(play / 2, fadeOut),
+    };
 }
 
 // Raised cosine: starts and ends with zero slope, so the fade has no audible
@@ -46,12 +57,14 @@ function ease(x) {
 
 /**
  * Loudness, 0 to 1, `elapsedSeconds` after the sound was switched on.
- * The first cycle starts at once, so turning the setting on is heard.
+ * It starts at once, so turning the setting on is heard.
  */
 export function themeSoundEnvelope(elapsedSeconds, sound) {
     const elapsed = Number(elapsedSeconds);
     if (!Number.isFinite(elapsed) || elapsed < 0) return 0;
-    const { every, play, fadeIn, fadeOut } = themeSoundTiming(sound);
+    const timing = themeSoundTiming(sound);
+    if (timing.continuous) return ease(elapsed / timing.fadeIn);
+    const { every, play, fadeIn, fadeOut } = timing;
     const phase = elapsed % every;
     if (phase >= play) return 0;
     if (phase < fadeIn) return ease(phase / fadeIn);

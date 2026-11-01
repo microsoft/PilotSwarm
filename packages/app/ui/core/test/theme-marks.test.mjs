@@ -189,8 +189,8 @@ test("Hearth's mark moves only by named motions, and its sound is described as d
         assert.ok(path.motion === undefined || /^[a-z-]+$/.test(path.motion), "a motion is a plain name");
     }
     assert.equal(sound.id, "fire");
-    assert.equal(sound.everySeconds, 30);
-    assert.equal(sound.playSeconds, 10);
+    assert.equal(sound.everySeconds, undefined, "the fire plays continuously");
+    assert.ok(sound.fadeInSeconds > 0 && sound.fadeOutSeconds > 0, "it fades in and out");
 });
 
 test("only Hearth remains of the holiday themes", () => {

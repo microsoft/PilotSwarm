@@ -1,14 +1,15 @@
 // Browser player for theme sounds. One player per page.
 //
 // The sound is synthesized live with Web Audio, so there is no audio file to
-// fetch, cache or license. The loudness follows themeSoundEnvelope(): a short
-// play window every few seconds with a raised-cosine fade at each end.
+// fetch, cache or license. The loudness follows themeSoundEnvelope(): a
+// raised-cosine fade in when it starts, and a fade out when it is switched
+// off or the tab is hidden.
 //
 // Browsers keep audio silent until the person interacts with the page, so the
 // player waits for a click or key press before it resumes its context, and a
 // settings switch can prime it directly inside its own click.
 
-import { themeSoundEnvelope } from "pilotswarm/ui-core";
+import { themeSoundEnvelope, themeSoundTiming } from "pilotswarm/ui-core";
 
 const TICK_MS = 200;
 // Peak gain at volume 100. The fire is ambience, not an alert.
@@ -33,8 +34,9 @@ function whiteNoise(ctx, seconds) {
     return buffer;
 }
 
-// A low fire: a filtered rumble that breathes slowly, small crackles at
-// irregular intervals, and now and then the deeper pop of a settling log.
+// A fire that is mostly crackle: frequent small crackles and snaps at
+// irregular intervals, now and then the deeper pop of a settling log, over a
+// quiet low rumble that breathes slowly.
 function startFire(ctx, output, cache) {
     cache.bed = cache.bed || brownNoise(ctx, 5);
     cache.white = cache.white || whiteNoise(ctx, 0.08);
@@ -43,9 +45,9 @@ function startFire(ctx, output, cache) {
     bed.loop = true;
     const lowpass = ctx.createBiquadFilter();
     lowpass.type = "lowpass";
-    lowpass.frequency.value = 380;
+    lowpass.frequency.value = 300;
     const bedGain = ctx.createGain();
-    bedGain.gain.value = 0.32;
+    bedGain.gain.value = 0.09;
     bed.connect(lowpass);
     lowpass.connect(bedGain);
     bedGain.connect(output);
@@ -53,28 +55,34 @@ function startFire(ctx, output, cache) {
     const breath = ctx.createOscillator();
     breath.frequency.value = 0.11;
     const breathDepth = ctx.createGain();
-    breathDepth.gain.value = 0.1;
+    breathDepth.gain.value = 0.03;
     breath.connect(breathDepth);
     breathDepth.connect(bedGain.gain);
     breath.start();
 
     let timer = null;
     let running = true;
-    const pop = (at, deep) => {
+    // kind: "crackle" (bright, very short), "snap" (mid, a little longer),
+    // or "pop" (low, the settling log).
+    const pop = (at, kind) => {
         const source = ctx.createBufferSource();
         source.buffer = cache.white;
         const filter = ctx.createBiquadFilter();
-        if (deep) {
+        if (kind === "pop") {
             filter.type = "lowpass";
             filter.frequency.value = 260 + Math.random() * 120;
+        } else if (kind === "snap") {
+            filter.type = "bandpass";
+            filter.frequency.value = 650 + Math.random() * 700;
+            filter.Q.value = 1.2 + Math.random() * 2;
         } else {
             filter.type = "bandpass";
-            filter.frequency.value = 1100 + Math.random() * 3800;
+            filter.frequency.value = 1300 + Math.random() * 4200;
             filter.Q.value = 0.7 + Math.random() * 2.2;
         }
         const gain = ctx.createGain();
-        const peak = deep ? 0.7 : 0.08 + Math.random() * 0.5;
-        const length = deep ? 0.11 : 0.004 + Math.random() * 0.028;
+        const peak = kind === "pop" ? 0.65 : kind === "snap" ? 0.35 + Math.random() * 0.4 : 0.12 + Math.random() * 0.6;
+        const length = kind === "pop" ? 0.11 : kind === "snap" ? 0.025 + Math.random() * 0.035 : 0.004 + Math.random() * 0.026;
         gain.gain.setValueAtTime(0.0001, at);
         gain.gain.linearRampToValueAtTime(peak, at + 0.0015);
         gain.gain.exponentialRampToValueAtTime(0.0005, at + length);
@@ -86,10 +94,11 @@ function startFire(ctx, output, cache) {
     const crackle = () => {
         if (!running) return;
         const at = ctx.currentTime + 0.01;
-        const count = Math.random() < 0.28 ? 2 + Math.floor(Math.random() * 4) : 1;
-        for (let k = 0; k < count; k += 1) pop(at + k * (0.008 + Math.random() * 0.045), false);
-        if (Math.random() < 0.05) pop(at + 0.02, true);
-        timer = setTimeout(crackle, 35 + Math.random() * Math.random() * 520);
+        const count = Math.random() < 0.35 ? 2 + Math.floor(Math.random() * 5) : 1;
+        for (let k = 0; k < count; k += 1) pop(at + k * (0.008 + Math.random() * 0.04), "crackle");
+        if (Math.random() < 0.12) pop(at + 0.015, "snap");
+        if (Math.random() < 0.05) pop(at + 0.02, "pop");
+        timer = setTimeout(crackle, 25 + Math.random() * Math.random() * 380);
     };
     crackle();
 
@@ -115,6 +124,7 @@ export function createThemeSoundPlayer({ win = typeof window === "undefined" ? n
     let volume = 0;
     let startedAt = 0;
     let timer = null;
+    let stopTimer = null;
     const cache = {};
 
     const setMarker = (value) => {
@@ -142,18 +152,24 @@ export function createThemeSoundPlayer({ win = typeof window === "undefined" ? n
 
     const onGesture = () => resume();
 
-    const silence = () => {
-        if (stopVoice) {
-            stopVoice();
-            stopVoice = null;
+    // Fade to silence over `seconds`, then stop the voice so it costs nothing.
+    const silence = (seconds = 0.3) => {
+        if (master && ctx) {
+            master.gain.cancelScheduledValues(ctx.currentTime);
+            master.gain.setTargetAtTime(0, ctx.currentTime, Math.max(0.02, seconds / 4));
         }
-        if (master && ctx) master.gain.setTargetAtTime(0, ctx.currentTime, 0.05);
+        if (stopVoice) {
+            const stop = stopVoice;
+            stopVoice = null;
+            clearTimeout(stopTimer);
+            stopTimer = setTimeout(stop, seconds * 1000 + 300);
+        }
     };
 
     const tick = () => {
         const active = Boolean(enabled && sound && VOICES[sound.id] && doc && !doc.hidden);
         if (!active) {
-            silence();
+            silence(0.6);
             setMarker(enabled && sound ? "resting" : null);
             return;
         }
@@ -193,6 +209,7 @@ export function createThemeSoundPlayer({ win = typeof window === "undefined" ? n
             const nextSound = next.sound && VOICES[next.sound.id] ? next.sound : null;
             const nextEnabled = next.enabled === true && Boolean(nextSound);
             const turnedOn = nextEnabled && (!enabled || nextSound?.id !== sound?.id);
+            const previous = sound;
             sound = nextSound;
             enabled = nextEnabled;
             volume = Math.min(1, Math.max(0, Number(next.volume) || 0));
@@ -201,14 +218,14 @@ export function createThemeSoundPlayer({ win = typeof window === "undefined" ? n
                 schedule();
                 tick();
             } else {
-                silence();
+                silence(themeSoundTiming(previous).fadeOut);
                 setMarker(null);
                 unschedule();
             }
         },
         dispose() {
             enabled = false;
-            silence();
+            silence(0.05);
             setMarker(null);
             unschedule();
             if (ctx) ctx.close().catch(() => {});

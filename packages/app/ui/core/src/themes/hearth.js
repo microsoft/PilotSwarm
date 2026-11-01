@@ -11,7 +11,7 @@ import { createTheme, THEME_GROUP_OTHER } from "./helpers.js";
 // green, so Failed and Done still read. Holly green is only Done.
 //
 // The fire can also be heard: `sound` names an ambient that the portal plays
-// for a few seconds at a time, only after the person turns theme sounds on.
+// only after the person turns theme sounds on.
 
 const WALNUT = "#1c120c";
 const PANEL = "#211610";
@@ -45,12 +45,12 @@ const hearthTheme = createTheme({
             { d: "M18.96 59.61L46.73 53.2A3.75 3.75 0 0 0 45.04 45.89L17.27 52.3A3.75 3.75 0 0 0 18.96 59.61Z", fill: "#3a2416" },
         ],
     },
+    // Plays continuously while theme sounds are on: mostly crackle, with a
+    // quiet low bed. It fades in when it starts and out when it stops.
     sound: {
         id: "fire",
-        everySeconds: 30,
-        playSeconds: 10,
-        fadeInSeconds: 2.5,
-        fadeOutSeconds: 3,
+        fadeInSeconds: 3,
+        fadeOutSeconds: 2,
     },
     page: {
         background: WALNUT,

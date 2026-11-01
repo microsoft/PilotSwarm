@@ -1,8 +1,8 @@
 /**
  * Theme sounds: the desktop setting on the profile, and the fade shape.
  *
- * The fire plays 10 seconds out of every 30, fading in and out, and only
- * after the person turns theme sounds on.
+ * The fire plays continuously once the person turns theme sounds on, fading
+ * in when it starts and out when it stops.
  *
  * Run: node --test test/theme-sound.test.mjs
  */
@@ -49,25 +49,31 @@ test("a repeat write is a no-op and bad values clamp or are ignored", () => {
     assert.equal(normalizeThemeSound(null), null);
 });
 
-test("the fire plays 10 s of every 30 s and fades in and out smoothly", () => {
+test("the fire plays continuously and fades in smoothly when it starts", () => {
     const fire = getTheme("hearth").sound;
-    assert.deepEqual(themeSoundTiming(fire), { every: 30, play: 10, fadeIn: 2.5, fadeOut: 3 });
+    assert.deepEqual(themeSoundTiming(fire), { continuous: true, fadeIn: 3, fadeOut: 2 });
     close(themeSoundEnvelope(0, fire), 0, "starts silent");
-    close(themeSoundEnvelope(1.25, fire), 0.5, "half way up the fade in");
-    close(themeSoundEnvelope(2.5, fire), 1, "full after the fade in");
-    close(themeSoundEnvelope(6, fire), 1, "full in the middle");
-    close(themeSoundEnvelope(8.5, fire), 0.5, "half way down the fade out");
-    close(themeSoundEnvelope(10, fire), 0, "silent at the end of the window");
-    close(themeSoundEnvelope(20, fire), 0, "silent between windows");
-    close(themeSoundEnvelope(31.25, fire), 0.5, "the next window starts at 30 s");
+    close(themeSoundEnvelope(1.5, fire), 0.5, "half way up the fade in");
+    close(themeSoundEnvelope(3, fire), 1, "full after the fade in");
+    for (const s of [10, 20, 30, 45, 600]) close(themeSoundEnvelope(s, fire), 1, `still playing at ${s} s`);
     let previous = 0;
-    for (let s = 0; s <= 2.5; s += 0.05) {
+    for (let s = 0; s <= 3; s += 0.05) {
         const level = themeSoundEnvelope(s, fire);
         assert.ok(level >= previous - 1e-9, "the fade in never dips");
         previous = level;
     }
     assert.equal(themeSoundEnvelope(-1, fire), 0);
     assert.equal(themeSoundEnvelope(Number.NaN, fire), 0);
+});
+
+test("a theme may still ask for a window: 10 s of every 30 s with fades", () => {
+    const windowed = { id: "fire", everySeconds: 30, playSeconds: 10, fadeInSeconds: 2.5, fadeOutSeconds: 3 };
+    assert.deepEqual(themeSoundTiming(windowed), { continuous: false, every: 30, play: 10, fadeIn: 2.5, fadeOut: 3 });
+    close(themeSoundEnvelope(1.25, windowed), 0.5, "half way up");
+    close(themeSoundEnvelope(6, windowed), 1, "full");
+    close(themeSoundEnvelope(8.5, windowed), 0.5, "half way down");
+    close(themeSoundEnvelope(20, windowed), 0, "silent between windows");
+    close(themeSoundEnvelope(31.25, windowed), 0.5, "the next window");
 });
 
 test("the portal wires the setting to Appearance, the profile, and the player", () => {
@@ -80,4 +86,6 @@ test("the portal wires the setting to Appearance, the profile, and the player", 
     assert.match(webApp, /themeSound: normalizedRemote\.themeSound/, "applied from the profile on desktop");
     assert.match(player, /themeSoundEnvelope\(elapsed, sound\)/);
     assert.match(player, /doc\.hidden/, "silent while the tab is hidden");
+    assert.match(player, /bedGain\.gain\.value = 0\.09/, "the low rumble stays quiet under the crackle");
+    assert.match(player, /silence\(themeSoundTiming\(previous\)\.fadeOut\)/, "switching off fades out");
 });
