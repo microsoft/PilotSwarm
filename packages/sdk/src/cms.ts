@@ -1763,6 +1763,19 @@ export class PgSessionCatalog implements SessionCatalog {
                     [providerModel, opts?.owner?.provider ?? null, opts?.owner?.subject ?? null, opts?.isSystem ?? false],
                 );
             }
+            // A workflow session's first create saves its start request; a
+            // concurrent or repeated create of the same live id must not
+            // replace it. A deleted id is revived by the create proc and may
+            // take a new one.
+            const guardWorkflowStart = opts?.sessionKind === "workflow" && useCreationConfig;
+            let priorDeleted = false;
+            if (guardWorkflowStart) {
+                const { rows } = await client.query(
+                    `SELECT deleted_at FROM "${this.sql.schema}".sessions WHERE session_id = $1 FOR UPDATE`,
+                    [sessionId],
+                );
+                priorDeleted = rows[0]?.deleted_at != null;
+            }
             const baseArgs = [sessionId, opts?.model ?? null, opts?.reasoningEffort ?? null, opts?.parentSessionId ?? null, opts?.isSystem ?? false, opts?.agentId ?? null, opts?.splash ?? null, null];
             if (useVisibilityCreate) {
                 await client.query(
@@ -1779,6 +1792,17 @@ export class PgSessionCatalog implements SessionCatalog {
                     `SELECT ${this.sql.fn.createSession}($1, $2, $3, $4, $5, $6, $7, $8)`,
                     baseArgs,
                 );
+            }
+
+            if (guardWorkflowStart && !priorDeleted) {
+                const { rows } = await client.query(
+                    `SELECT creation_config FROM "${this.sql.schema}".sessions WHERE session_id = $1 FOR UPDATE`,
+                    [sessionId],
+                );
+                if (rows[0]?.creation_config?.workflowStart) {
+                    await client.query("ROLLBACK");
+                    return;
+                }
             }
 
             // Creation config rides the same transaction as a raw UPDATE, like

@@ -809,7 +809,13 @@ export interface WorkflowSessionConfig {
     yaml: string;
     inputs?: Record<string, unknown>;
     sessionId?: string;
-    parentSessionId?: string;
+    /**
+     * The agent session that starts the workflow; required. It must exist,
+     * must not have ended, must not be a workflow session, and must have
+     * the same owner as the caller.
+     */
+    parentSessionId: string;
+    /** Defaults to the parent's effective owner. */
     owner?: SessionOwnerInfo | null;
     groupId?: string | null;
     visibility?: "private" | "shared_read" | "shared_write" | null;

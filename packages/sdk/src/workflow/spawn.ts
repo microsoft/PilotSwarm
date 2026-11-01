@@ -82,8 +82,17 @@ export async function spawnWorkflowFromTool(
                 : "You will not be told when it ends; check it with read_session_info or list_sessions. ")
             + "The user can follow each step in the portal, under this session.]";
     } catch (error) {
-        if ((error as any)?.code === "WORKFLOW_SESSION_ENDING") {
-            return `[SYSTEM: spawn_workflow refused — ${(error as Error).message} Pass a different key for a new run.]`;
+        const code = (error as any)?.code;
+        const message = error instanceof Error ? error.message : String(error);
+        if (code === "WORKFLOW_SESSION_ENDING") {
+            return `[SYSTEM: spawn_workflow refused — ${message} Pass a different key for a new run.]`;
+        }
+        if (code === "WORKFLOW_ADMISSION_CONFLICT") {
+            return `[SYSTEM: spawn_workflow refused — ${message} This key already names a workflow run with a different YAML, inputs `
+                + "or notify_on_completion. Call again with the same arguments to resume it, or pass a different key for a new run.]";
+        }
+        if (code === "WORKFLOW_PARENT_REQUIRED" || code === "WORKFLOW_PARENT_INVALID") {
+            return `[SYSTEM: spawn_workflow refused — ${message} Nothing was started.]`;
         }
         return `[SYSTEM: spawn_workflow failed — ${error instanceof Error ? error.message : String(error)}]`;
     }

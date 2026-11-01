@@ -25,6 +25,7 @@ import type {
 } from "./types.js";
 import { validateWorkspaceText } from "./workspace-check.js";
 import type { SessionCatalog, SessionEvent, SessionVisibility, SessionRow } from "./cms.js";
+import { resolveEffectiveSpawnOwner } from "./cms.js";
 import type { MessageSender } from "./message-sender.js";
 import { normalizeMessageSender } from "./message-sender.js";
 import type { FactStore } from "./facts-store.js";
@@ -125,6 +126,27 @@ export function projectSerializableSessionConfig(
     };
 }
 
+function workflowError(message: string, code: string, status: number): Error {
+    return Object.assign(new Error(message), { code, status });
+}
+
+/** JSON with object keys sorted at every level, for comparing saved requests. */
+function stableJson(value: unknown): string {
+    return JSON.stringify(value, (_key, item) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) return item;
+        return Object.fromEntries(Object.keys(item).sort().map((key) => [key, (item as Record<string, unknown>)[key]]));
+    });
+}
+
+function assertSameWorkflowStart(sessionId: string, stored: WorkflowOrchestrationInput, requested: WorkflowOrchestrationInput): void {
+    if (stableJson(stored) === stableJson(requested)) return;
+    throw workflowError(
+        `Workflow session ${sessionId} was already started with a different request (YAML, inputs, parent or notification setting). Use a different id for a new run.`,
+        "WORKFLOW_ADMISSION_CONFLICT",
+        409,
+    );
+}
+
 export class PilotSwarmClient {
     private config!: PilotSwarmClientOptions & { waitThreshold: number };
     private _catalog!: SessionCatalog;
@@ -174,16 +196,29 @@ export class PilotSwarmClient {
 
     /**
      * Create and start a workflow session: a session that runs the
-     * workflow graph in `config.yaml` instead of a conversation. The YAML is
-     * compiled here first, so an invalid definition is refused before any
-     * session exists. Pass `parentSessionId` to create it as a child of an
-     * agent session; that session is told the result when it ends.
+     * workflow graph in `config.yaml` instead of a conversation. A workflow
+     * session is always the child of an agent session: `parentSessionId` is
+     * required, and that session must exist, must not have ended, must not be
+     * a workflow itself, and must have the caller's owner. The workflow's
+     * owner defaults to the parent's. The YAML is compiled here first, so an
+     * invalid definition is refused before any session exists.
      *
-     * Idempotent for a given `sessionId`: a second call returns the same
-     * session without starting a second run.
+     * The first create saves the start request (the orchestration input) in
+     * the session's creation config, and the run always starts from that
+     * saved copy. A second call with the same `sessionId` and the same
+     * request returns the existing session without starting a second run; a
+     * different request is refused with `WORKFLOW_ADMISSION_CONFLICT`.
      */
     async createWorkflowSession(config: WorkflowSessionConfig & { notifyParent?: boolean }): Promise<{ sessionId: string; workflowName: string }> {
         if (!this.duroxideClient) throw new Error("PilotSwarmClient is not started.");
+        const parentSessionId = typeof config.parentSessionId === "string" ? config.parentSessionId.trim() : "";
+        if (!parentSessionId) {
+            throw workflowError(
+                "A workflow session must be started by an agent session: parentSessionId is required. Agents start workflows with spawn_workflow.",
+                "WORKFLOW_PARENT_REQUIRED",
+                400,
+            );
+        }
         const inputs = config.inputs && typeof config.inputs === "object" && !Array.isArray(config.inputs)
             ? config.inputs
             : {};
@@ -200,55 +235,124 @@ export class PilotSwarmClient {
         }
         const sessionId = config.sessionId ?? crypto.randomUUID();
         const orchestrationId = `session-${sessionId}`;
+        const requested: WorkflowOrchestrationInput = {
+            sessionId,
+            yaml: config.yaml,
+            inputs,
+            parentSessionId,
+            notifyParent: config.notifyParent !== false,
+        };
         const existing = await this._catalog.getSession(sessionId).catch(() => null);
         if (existing && existing.sessionKind !== "workflow") {
             throw Object.assign(new Error(`Session ${sessionId} already exists and is not a workflow session.`), { code: "SESSION_EXISTS", status: 409 });
         }
-        if (!existing) {
-            // The id may belong to a deleted session whose run is still on
-            // record. A finished run is cleared so this id starts a new one;
-            // a run still going (a delete in progress) is refused.
-            const prior = await this.duroxideClient.getStatus(orchestrationId).catch(() => null);
-            const priorStatus = prior?.status;
-            if (priorStatus === "Running") {
-                throw Object.assign(
-                    new Error(`Session ${sessionId} was deleted, but its workflow run has not ended yet. Try again shortly, or use another id.`),
-                    { code: "WORKFLOW_SESSION_ENDING", status: 409 },
+        if (existing) {
+            const stored = await this._readWorkflowStart(sessionId);
+            if (!stored) {
+                if (existing.orchestrationId || existing.state !== "pending") return { sessionId, workflowName };
+                throw workflowError(
+                    `Workflow session ${sessionId} has no saved start request, so it cannot be started again. Use a different id for a new run.`,
+                    "WORKFLOW_ADMISSION_CONFLICT",
+                    409,
                 );
             }
-            if (priorStatus && priorStatus !== "NotFound" && priorStatus !== "Unknown") {
-                await this.duroxideClient.deleteInstance(orchestrationId, true);
-            }
+            assertSameWorkflowStart(sessionId, stored, requested);
+            // Same request: the run already started, or the earlier create
+            // stopped before it could start it. Only the second case acts.
+            if (existing.orchestrationId || existing.state !== "pending") return { sessionId, workflowName };
+            await this._assertWorkflowParent(parentSessionId, config.owner ?? null);
+            await this._startWorkflowRun(sessionId, orchestrationId, stored);
+            return { sessionId, workflowName };
         }
-        if (!existing) {
-            await this._catalog.createSession(sessionId, {
-                sessionKind: "workflow",
-                ...(config.parentSessionId ? { parentSessionId: config.parentSessionId } : {}),
-                ...(config.owner ? { owner: config.owner } : {}),
-                ...(config.groupId ? { groupId: config.groupId } : {}),
-                ...(config.visibility ? { visibility: config.visibility } : {}),
-            });
-            await this._catalog.updateSession(sessionId, { title: `Workflow: ${workflowName}`, titleLocked: true });
+
+        // The id may belong to a deleted session whose run is still on
+        // record. A finished run is cleared so this id starts a new one;
+        // a run still going (a delete in progress) is refused.
+        const prior = await this.duroxideClient.getStatus(orchestrationId).catch(() => null);
+        const priorStatus = prior?.status;
+        if (priorStatus === "Running") {
+            throw Object.assign(
+                new Error(`Session ${sessionId} was deleted, but its workflow run has not ended yet. Try again shortly, or use another id.`),
+                { code: "WORKFLOW_SESSION_ENDING", status: 409 },
+            );
         }
-        const input: WorkflowOrchestrationInput = {
-            sessionId,
-            yaml: config.yaml,
-            inputs,
-            ...(config.parentSessionId ? { parentSessionId: config.parentSessionId } : {}),
-            ...(config.notifyParent !== undefined ? { notifyParent: config.notifyParent } : {}),
-        };
-        await this.duroxideClient.startOrchestrationVersioned(
+        const owner = await this._assertWorkflowParent(parentSessionId, config.owner ?? null);
+        if (priorStatus && priorStatus !== "NotFound" && priorStatus !== "Unknown") {
+            await this.duroxideClient.deleteInstance(orchestrationId, true);
+        }
+        await this._catalog.createSession(sessionId, {
+            sessionKind: "workflow",
+            parentSessionId,
+            ...(owner ? { owner } : {}),
+            ...(config.groupId ? { groupId: config.groupId } : {}),
+            ...(config.visibility ? { visibility: config.visibility } : {}),
+            creationConfig: { workflowStart: requested },
+        });
+        // A concurrent create with the same id may have saved its request
+        // first; the saved copy decides, and a different one is refused.
+        const stored = await this._readWorkflowStart(sessionId);
+        if (!stored) {
+            throw new Error(`Workflow session ${sessionId}: the session store did not keep the start request (its creation config is not supported).`);
+        }
+        assertSameWorkflowStart(sessionId, stored, requested);
+        const row = await this._catalog.getSession(sessionId).catch(() => null);
+        if (row?.orchestrationId || (row && row.state !== "pending")) return { sessionId, workflowName };
+        await this._catalog.updateSession(sessionId, { title: `Workflow: ${workflowName}`, titleLocked: true });
+        await this._startWorkflowRun(sessionId, orchestrationId, stored);
+        return { sessionId, workflowName };
+    }
+
+    /** The start request saved by a workflow session's first create, or null. */
+    private async _readWorkflowStart(sessionId: string): Promise<WorkflowOrchestrationInput | null> {
+        if (!this._catalog.getSessionCreationConfig) return null;
+        const creation = await this._catalog.getSessionCreationConfig(sessionId);
+        const start = creation?.workflowStart;
+        return start && typeof start === "object" && !Array.isArray(start)
+            ? start as WorkflowOrchestrationInput
+            : null;
+    }
+
+    /** Start the run from the SAVED request, never from a caller's arguments. */
+    private async _startWorkflowRun(sessionId: string, orchestrationId: string, stored: WorkflowOrchestrationInput): Promise<void> {
+        await this.duroxideClient!.startOrchestrationVersioned(
             orchestrationId,
             WORKFLOW_SESSION_ORCHESTRATION_NAME,
-            input,
+            stored,
             WORKFLOW_SESSION_LATEST_VERSION,
         );
         // The worker sets the state when the run begins and ends; writing
         // "running" here could overwrite a run that already ended.
-        if (!existing || existing.state === "pending") {
+        const row = await this._catalog.getSession(sessionId).catch(() => null);
+        if (!row || row.state === "pending") {
             await this._catalog.updateSession(sessionId, { orchestrationId, lastActiveAt: new Date() });
         }
-        return { sessionId, workflowName };
+    }
+
+    /**
+     * Refuse a workflow parent that cannot own a run: missing or deleted,
+     * ended, itself a workflow, or owned by someone other than the caller.
+     * Returns the owner the workflow session gets: the caller's, or the
+     * parent's effective owner when the caller names none.
+     */
+    private async _assertWorkflowParent(parentSessionId: string, callerOwner: SessionOwnerInfo | null): Promise<SessionOwnerInfo | null> {
+        const refuse = (reason: string) => workflowError(
+            `Session ${parentSessionId} cannot be the parent of a workflow session: ${reason}.`,
+            "WORKFLOW_PARENT_INVALID",
+            400,
+        );
+        const parent = await this._catalog.getSession(parentSessionId).catch(() => null);
+        if (!parent || parent.deletedAt) throw refuse("it does not exist or was deleted");
+        if (parent.sessionKind === "workflow") throw refuse("it is a workflow session, and only an agent session can start a workflow");
+        if (parent.state === "completed" || parent.state === "failed" || parent.state === "cancelled") {
+            throw refuse(`it has ended (state ${parent.state})`);
+        }
+        const parentOwner = await resolveEffectiveSpawnOwner((id) => this._catalog.getSession(id), parentSessionId);
+        const caller = callerOwner?.provider && callerOwner?.subject ? callerOwner : null;
+        if (!caller) return parentOwner;
+        if (!parentOwner || parentOwner.provider !== caller.provider || parentOwner.subject !== caller.subject) {
+            throw refuse("it belongs to a different owner");
+        }
+        return caller;
     }
 
     async createSession(config?: Omit<ManagedSessionConfig, "workspace"> & {

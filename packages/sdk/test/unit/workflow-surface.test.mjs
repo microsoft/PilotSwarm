@@ -324,6 +324,27 @@ test("spawn_workflow can run without waking the parent, and reports a failed cre
     );
 });
 
+test("spawn_workflow turns a parent or admission refusal into a plain refusal", async () => {
+    const refusing = (code, message) => spawnDeps({
+        createWorkflowSession: async () => { throw Object.assign(new Error(message), { code }); },
+    }).deps;
+    assert.equal(
+        await spawnWorkflowFromTool({ yaml: yaml() }, { toolCallId: "r1" }, refusing("WORKFLOW_PARENT_REQUIRED",
+            "A workflow session must be started by an agent session: parentSessionId is required. Agents start workflows with spawn_workflow.")),
+        "[SYSTEM: spawn_workflow refused — A workflow session must be started by an agent session: parentSessionId is required. "
+            + "Agents start workflows with spawn_workflow. Nothing was started.]",
+    );
+    assert.equal(
+        await spawnWorkflowFromTool({ yaml: yaml() }, { toolCallId: "r2" }, refusing("WORKFLOW_PARENT_INVALID",
+            "Session parent-agent cannot be the parent of a workflow session: it has ended (state completed).")),
+        "[SYSTEM: spawn_workflow refused — Session parent-agent cannot be the parent of a workflow session: it has ended (state completed). Nothing was started.]",
+    );
+    const conflict = await spawnWorkflowFromTool({ yaml: yaml(), key: "nightly" }, { toolCallId: "r3" }, refusing("WORKFLOW_ADMISSION_CONFLICT",
+        "Workflow session w was already started with a different request (YAML, inputs, parent or notification setting). Use a different id for a new run."));
+    assert.match(conflict, /^\[SYSTEM: spawn_workflow refused — Workflow session w was already started with a different request .*This key already names a workflow run with a different YAML, inputs or notify_on_completion\. Call again with the same arguments to resume it, or pass a different key for a new run\.\]$/);
+    assert.doesNotMatch(conflict, /failed/);
+});
+
 // ── Live view, cancellation commands, MCP and session tools ─────────
 
 import {
