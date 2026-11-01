@@ -10,7 +10,7 @@ import { withClient } from "../helpers/local-workers.js";
 import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
 import { canonicalJson, parseStoredJson, sha256Hex } from "../../src/workflow/v2/json.ts";
 import { createWorkflowV2, dispatchWorkflowV2Run, updateWorkflowV2 } from "../../src/workflow/v2/service.ts";
-import { WORKFLOW_V2_CONTROLLER_NAME, workflowEffectInstanceId } from "../../src/workflow/v2/runtime.ts";
+import { WORKFLOW_V2_CONTROLLER_NAME, WORKFLOW_V2_STORE_RETRY, workflowEffectInstanceId } from "../../src/workflow/v2/runtime.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const ACTOR = { kind: "system", name: "workflow-v2-core-test" };
@@ -71,7 +71,7 @@ function host(client) {
     return { catalog: client._catalog, store: client._catalog.workflowStore(), duroxideClient: client.duroxideClient };
 }
 
-async function until(check, label, timeoutMs = 60_000) {
+async function until(check, label, timeoutMs = 60_000, diagnose = async () => null) {
     const deadline = Date.now() + timeoutMs;
     let last;
     while (Date.now() < deadline) {
@@ -79,14 +79,22 @@ async function until(check, label, timeoutMs = 60_000) {
         if (last) return last;
         await new Promise(resolve => setTimeout(resolve, 100));
     }
-    throw new Error(`timed out waiting for ${label}: ${JSON.stringify(last)}`);
+    throw new Error(`timed out waiting for ${label}: ${JSON.stringify(last)}; diagnosis: ${JSON.stringify(await diagnose())}`);
 }
 
-async function finishedRun(store, runId) {
+/** The run's controller orchestration status: a stalled run names its runtime cause. */
+async function controllerStatus(h, runId) {
+    const run = await h.store.readRun(runId);
+    if (!run) return { run: null };
+    const status = await h.duroxideClient.getStatus(run.controllerInstanceId);
+    return { runStatus: run.status, orchestration: { status: status.status, error: status.error ?? null, customStatus: status.customStatus ?? null } };
+}
+
+async function finishedRun(h, runId) {
     return until(async () => {
-        const run = await store.readRun(runId);
+        const run = await h.store.readRun(runId);
         return run && ["completed", "failed", "cancelled"].includes(run.status) ? run : null;
-    }, `run ${runId} to finish`);
+    }, `run ${runId} to finish`, 60_000, () => controllerStatus(h, runId));
 }
 
 async function events(client, sessionId) {
@@ -105,6 +113,12 @@ async function expectCode(promise, code) {
 }
 
 describe("workflow v2 compiler and values", () => {
+    it("schedules store activities with a retry policy duroxide-node accepts", () => {
+        // duroxide-node reads backoff as a strategy name; a number fails the orchestration.
+        expect(["undefined", "string"]).toContain(typeof WORKFLOW_V2_STORE_RETRY.backoff);
+        expect(WORKFLOW_V2_STORE_RETRY.maxAttempts).toBeGreaterThan(1);
+    });
+
     it("compiles a valid definition to a stable IR hash that changes with the source", () => {
         const a = compileWorkflowV2(PIPELINE);
         const b = compileWorkflowV2(PIPELINE);
@@ -206,7 +220,7 @@ describe("workflow v2 store and controller on PostgreSQL", () => {
             const started = await createWorkflowV2(h, { workflowSessionId: id, parentSessionId: null, yaml: PIPELINE, actor: ACTOR,
                 operationId: "create-start", start: { inputs } });
             const runId = started.receipt.run.runId;
-            const run = await finishedRun(h.store, runId);
+            const run = await finishedRun(h, runId);
             expect(run.status, JSON.stringify(run.terminalError)).toBe("completed");
             expect(run.terminalOutcome).toBe("succeeded");
             expect(run.terminalOutput).toEqual({ text: inputs.text, n: 2, seen: true });
@@ -245,7 +259,7 @@ describe("workflow v2 store and controller on PostgreSQL", () => {
             const id = randomUUID();
             const started = await createWorkflowV2(h, { workflowSessionId: id, parentSessionId: null, yaml: LOOP, actor: ACTOR,
                 operationId: "loop", start: { inputs: {} } });
-            const run = await finishedRun(h.store, started.receipt.run.runId);
+            const run = await finishedRun(h, started.receipt.run.runId);
             expect(run.status, JSON.stringify(run.terminalError)).toBe("completed");
             expect(run.terminalOutput).toEqual({ n: 30 });
             const nodes = await h.store.listNodeExecutions(run.runId);
@@ -265,7 +279,7 @@ describe("workflow v2 store and controller on PostgreSQL", () => {
             const throwing = PIPELINE.replace('await setResult("ok", { text: context.input.text, n: 1 });', 'throw new Error("boom");');
             const first = await createWorkflowV2(h, { workflowSessionId: caught, parentSessionId: null, yaml: throwing, actor: ACTOR,
                 operationId: "caught", start: { inputs: { text: "x" } } });
-            const blocked = await finishedRun(h.store, first.receipt.run.runId);
+            const blocked = await finishedRun(h, first.receipt.run.runId);
             expect(blocked.status).toBe("completed");
             expect(blocked.terminalOutcome).toBe("blocked");
             expect(blocked.terminalOutput).toMatchObject({ code: "execution_failed" });
@@ -274,7 +288,7 @@ describe("workflow v2 store and controller on PostgreSQL", () => {
             const undeclared = LOOP.replace('n < 30 ? "again" : "enough"', '"surprise"');
             const second = await createWorkflowV2(h, { workflowSessionId: unhandled, parentSessionId: null, yaml: undeclared, actor: ACTOR,
                 operationId: "unhandled", start: { inputs: {} } });
-            const failed = await finishedRun(h.store, second.receipt.run.runId);
+            const failed = await finishedRun(h, second.receipt.run.runId);
             expect(failed.status).toBe("failed");
             expect(failed.terminalError).toMatchObject({ code: "invalid_output" });
             expect((await client._catalog.getSession(unhandled)).state).toBe("failed");
@@ -292,10 +306,10 @@ describe("workflow v2 store and controller on PostgreSQL", () => {
             const node = await until(async () => {
                 const [first] = await h.store.listNodeExecutions(runId);
                 return first?.effectAttempts >= 1 ? first : null;
-            }, "the script to start");
+            }, "the script to start", 60_000, () => controllerStatus(h, runId));
             await client.duroxideClient.enqueueEvent(started.receipt.run.controllerInstanceId, "messages",
                 JSON.stringify({ type: "cmd", cmd: "cancel", id: "cancel-1", args: { reason: "test cancel" } }));
-            const run = await finishedRun(h.store, runId);
+            const run = await finishedRun(h, runId);
             expect(run.status).toBe("cancelled");
             const stored = await h.store.readNodeExecution(node.nodeExecutionId);
             expect(stored).toMatchObject({ state: "completed", outcome: "cancelled", resultKind: "runtime_error", winner: "cancel" });

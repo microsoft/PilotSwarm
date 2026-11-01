@@ -101,14 +101,15 @@ describe("workflow v2 driven by an agent", () => {
                 expect(repeated).toMatchObject({ ok: true, replayed: true });
                 expect(repeated.run.runId).toBe(started.run.runId);
 
+                const store = client._catalog.workflowStore();
                 const child = await until(async () => {
                     const row = await mgmt.getSession(draft.workflowId);
                     return row && ["completed", "failed", "cancelled"].includes(row.status) ? row : null;
                 }, "workflow completion");
                 expect(child.parentSessionId).toBe(parent.sessionId);
-                const store = client._catalog.workflowStore();
                 const run = await store.readRun(started.run.runId);
-                expect(run.status, JSON.stringify(run.terminalError)).toBe("completed");
+                const orchestration = await client.duroxideClient.getStatus(run.controllerInstanceId);
+                expect(run.status, JSON.stringify({ error: run.terminalError, orchestration })).toBe("completed");
                 expect(run.terminalOutcome).toBe("succeeded");
                 expect(run.terminalOutput).toEqual({ key: "v2-e2e/first", count: 1 });
 

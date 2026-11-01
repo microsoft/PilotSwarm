@@ -74,7 +74,13 @@ export const WORKFLOW_V2_ACTIVITIES = {
     wake: "workflow.v2.wake",
 } as const;
 
-const STORE_RETRY = { maxAttempts: 5, timeoutMs: 30_000, totalTimeoutMs: 180_000, backoff: 2 };
+/**
+ * Retry policy for store-backed activities, with the runtime's default
+ * backoff. duroxide-node deserializes `backoff` as a strategy name; a number
+ * (which its type declaration allows) fails the orchestration at the schedule.
+ */
+export const WORKFLOW_V2_STORE_RETRY = { maxAttempts: 5, timeoutMs: 30_000, totalTimeoutMs: 180_000 } as const;
+const STORE_RETRY = WORKFLOW_V2_STORE_RETRY;
 
 export function workflowLiveControllerInstanceId(workflowSessionId: string): string {
     return `session-${workflowSessionId}`;
