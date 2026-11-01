@@ -1,10 +1,17 @@
 import type { Pool, PoolClient } from "pg";
-import { MESSAGE_SENT, parseDiagnostics, parseWorkflowIr, RECEIVE_RECEIVED, WAIT_ELAPSED, WORKFLOW_V2_API_VERSION, type WorkflowCompileResult, type WorkflowDiagnostic, type WorkflowIR } from "./compiler.js";
-import { canonicalJson, isJsonObject, isStorableText, jsonbSafeText, jsonbSafeValue, jsonSha256, parseStoredJson, sha256Hex, type JsonValue } from "./json.js";
-import { decideTypedInputAuthority, TYPED_INPUT_REFUSALS, type AuthoritySession, type TypedInputAuthority } from "./authority.js";
+import {
+    MESSAGE_SENT, parseDiagnostics, parseWorkflowIr, RECEIVE_RECEIVED, REQUEST_DECLINED, REQUEST_RESPONDED, WAIT_ELAPSED, WAIT_MAX_SECONDS,
+    WORKFLOW_V2_API_VERSION, WORKFLOW_V2_REQUEST_IR_VERSION, type WorkflowCompileResult, type WorkflowDiagnostic, type WorkflowIR,
+} from "./compiler.js";
+import {
+    assertJsonValue, canonicalJson, isJsonObject, isStorableText, jsonbSafeText, jsonbSafeValue, jsonSha256, parseStoredJson, sha256Hex,
+    utf8ByteLength, WorkflowJsonError, type JsonValue,
+} from "./json.js";
+import { decideRequestAuthority, decideTypedInputAuthority, TYPED_INPUT_REFUSALS, type AuthoritySession, type TypedInputAuthority } from "./authority.js";
+import { schemaSetFor, WorkflowSchemaSet, type SchemaProblem } from "./schema.js";
 
 /**
- * PostgreSQL persistence for workflow v2 (tables from migrations 0085 and 0087 to 0089).
+ * PostgreSQL persistence for workflow v2 (tables from migrations 0085 and 0087 to 0093).
  *
  * Every definition mutation runs in one transaction that first locks the
  * definition row (or creates it with INSERT ... ON CONFLICT, which waits for
@@ -456,6 +463,97 @@ export interface SendSpecInput {
 }
 
 /**
+ * What a request state requests, resolved when it is entered (IR 7; no
+ * runtime enters one yet, design workflow-messaging-request.md 8.4): a send
+ * state's spec, plus its deadline's seconds (frozen at admission, from 1 to
+ * WAIT_MAX_SECONDS) and the name of the schema a response must satisfy in
+ * the run's pinned definition. The admission decides the responder under
+ * the session locks as a send's recipient; a workflow responder is not
+ * supported yet and fails the state with `workflowRecipient`.
+ */
+export interface RequestSpecInput extends SendSpecInput {
+    timeoutSeconds: number;
+    responseSchema: string;
+    workflowRecipient: { result: NodeResultInput; projection?: SessionProjection };
+}
+
+/**
+ * A request's status, derived from its node execution (the node's
+ * compare-and-swap is the one decision): pending; responded or declined
+ * (a response record exists); timed_out; cancelled (a cancel, a deletion, a
+ * recover or the run's end); failed (unavailable, forbidden, delivery_failed,
+ * unsupported_contract or invalid_input). Never stored.
+ */
+export type WorkflowRequestStatus = "pending" | "responded" | "declined" | "timed_out" | "cancelled" | "failed";
+
+/** The receipt of the response or declined refusal that decided a request; stored once with its record. */
+export interface WorkflowRequestReceipt {
+    exchangeId: string;
+    workflowSessionId: string;
+    runId: string;
+    stateId: string;
+    responderSessionId: string;
+    operationId: string;
+    kind: "response" | "decline";
+    /** sha256 of the canonical JSON of {kind, value}: a response and a decline never have the same identity. */
+    resultSha256: string;
+    /** The one reading of the store's clock that decided it (ISO 8601 UTC with microseconds). */
+    decidedAt: string;
+}
+
+/** A request as it is now: its immutable record, its derived status, its response, its wake intent and its bindings. */
+export interface WorkflowRequestView {
+    exchangeId: string;
+    workflowSessionId: string;
+    runId: string;
+    stateId: string;
+    responderSessionId: string;
+    contract: string;
+    requestSha256: string;
+    responseSchema: string;
+    deadlineAt: string;
+    createdAt: string;
+    status: WorkflowRequestStatus;
+    /** The runtime error code of a failed request; null otherwise. */
+    failure: string | null;
+    response: {
+        kind: "response" | "decline"; value: JsonValue; resultSha256: string; operationId: string; actorSessionId: string; decidedAt: string;
+        receipt: WorkflowRequestReceipt;
+    } | null;
+    wake: { state: "pending" | "leased" | "dispatched" | "moot" | "abandoned"; attempts: number; settledAt: string | null } | null;
+    /** The operations bound to this request. */
+    operations: number;
+}
+
+/**
+ * What a response call got (store.respondToRequest). A refusal that writes
+ * nothing (REQUEST_NOT_FOUND, RESPONSE_INVALID, OPERATION_LIMIT) is thrown
+ * instead. `status` is the request's status as this operation's binding
+ * records it; `currentStatus` is the request's status now.
+ */
+export type WorkflowRequestCallResult =
+    | { kind: "accepted"; replayed: boolean; receipt: WorkflowRequestReceipt; status: "responded" | "declined" }
+    | { kind: "refused"; replayed: boolean; code: "REQUEST_EXPIRED" | "REQUEST_CLOSED" | "RESPONSE_CONFLICT" | "OPERATION_CONFLICT";
+        status: WorkflowRequestStatus; currentStatus: WorkflowRequestStatus };
+
+/** A response's largest canonical JSON, in UTF-8 bytes (the send payload bound). */
+export const WORKFLOW_V2_MAX_RESPONSE_BYTES = 16 * 1024;
+/** The operations one request binds at most; a new operation beyond them is refused (OPERATION_LIMIT) and nothing is written. */
+export const WORKFLOW_V2_MAX_REQUEST_OPERATIONS = 50;
+/** The framework's strict decline schema: a reason of 1 to 2,000 characters and nothing else. */
+export const WORKFLOW_V2_DECLINE_SCHEMA: JsonValue = {
+    type: "object", additionalProperties: false, required: ["reason"],
+    properties: { reason: { type: "string", minLength: 1, maxLength: 2_000 } },
+};
+const REQUEST_FAILURE_CODES: readonly string[] = ["unavailable", "forbidden", "delivery_failed", "unsupported_contract", "invalid_input"];
+
+let declineSchemas: WorkflowSchemaSet | null = null;
+function declineProblems(value: JsonValue): SchemaProblem[] {
+    declineSchemas ??= new WorkflowSchemaSet({ decline: WORKFLOW_V2_DECLINE_SCHEMA });
+    return declineSchemas.validate("decline", value);
+}
+
+/**
  * A workflow recipient's acceptance of a send state's message as typed
  * input (store.acceptInput): its inbox message, the recipient run, the exact
  * accepted and expiry times, and the receive state that took it in that
@@ -498,8 +596,11 @@ export interface WorkflowSendReceipt {
 }
 
 /**
- * A send state's message in the outbox (migrations 0091, 0092), as it is
- * now. Times are the stored values, exactly (ISO 8601 UTC with microseconds).
+ * A send state's message in the outbox (migrations 0091, 0092), or a request
+ * state's (migration 0093, mode request), as it is now. Times are the stored
+ * values, exactly (ISO 8601 UTC with microseconds). Only a send's message is
+ * delivered by a send orchestration (beginDelivery, recordDelivery and
+ * failDelivery refuse a request's).
  */
 export interface WorkflowOutboxMessage {
     /** The message's stable identity: its send state's node execution id. */
@@ -507,7 +608,7 @@ export interface WorkflowOutboxMessage {
     nodeExecutionId: string;
     workflowSessionId: string;
     runId: string;
-    mode: "send";
+    mode: "send" | "request";
     recipientSessionId: string;
     /** What the admission decided the recipient is (rows before migration 0092: agent). */
     recipientKind: RecipientKind;
@@ -537,7 +638,7 @@ function outboxFrom(row: Row): WorkflowOutboxMessage {
     const state = str(row, "state");
     if (state !== "pending" && state !== "delivered" && state !== "failed") return corrupt(`Unknown outbox state ${state}.`);
     const mode = str(row, "mode");
-    if (mode !== "send") return corrupt(`Unknown outbox mode ${mode}.`);
+    if (mode !== "send" && mode !== "request") return corrupt(`Unknown outbox mode ${mode}.`);
     const kind = strOrNull(row, "recipient_kind") ?? "agent";
     if (kind !== "agent" && kind !== "workflow") return corrupt(`Unknown outbox recipient kind ${kind}.`);
     const correlation = strOrNull(row, "correlation");
@@ -590,6 +691,117 @@ export function parseSendReceipt(value: JsonValue): WorkflowSendReceipt {
         stateId: text("stateId"), recipientSessionId: text("recipientSessionId"), recipientKind: kind, contract: text("contract"),
         payloadSha256: text("payloadSha256"), clientMessageId, input, attempts, deliveredAt: text("deliveredAt"),
     };
+}
+
+/** A request's immutable record (migration 0093), with exact times. */
+interface WorkflowRequestRecord {
+    exchangeId: string;
+    workflowSessionId: string;
+    runId: string;
+    responderSessionId: string;
+    contract: string;
+    requestSha256: string;
+    responseSchema: string;
+    deadlineAt: string;
+    createdAt: string;
+}
+
+const REQUEST_COLUMNS = `exchange_id, workflow_session_id, run_id, responder_session_id, contract, request_sha256, response_schema,
+    ${isoUtc("deadline_at")} AS deadline_at_iso, ${isoUtc("created_at")} AS created_at_iso`;
+
+function requestFrom(row: Row): WorkflowRequestRecord {
+    return {
+        exchangeId: str(row, "exchange_id"), workflowSessionId: str(row, "workflow_session_id"), runId: str(row, "run_id"),
+        responderSessionId: str(row, "responder_session_id"), contract: str(row, "contract"), requestSha256: str(row, "request_sha256"),
+        responseSchema: str(row, "response_schema"), deadlineAt: str(row, "deadline_at_iso"), createdAt: str(row, "created_at_iso"),
+    };
+}
+
+const RESPONSE_COLUMNS = `exchange_id, kind, value, result_sha256, operation_id, actor_session_id, ${isoUtc("decided_at")} AS decided_at_iso, receipt`;
+
+function responseFrom(row: Row): NonNullable<WorkflowRequestView["response"]> {
+    const kind = str(row, "kind");
+    if (kind !== "response" && kind !== "decline") return corrupt(`Unknown request response kind ${kind}.`);
+    const receipt = parseRequestReceipt(parseStoredJson(str(row, "receipt"), "receipt"));
+    const response = {
+        kind, value: parseStoredJson(str(row, "value"), "value"), resultSha256: str(row, "result_sha256"), operationId: str(row, "operation_id"),
+        actorSessionId: str(row, "actor_session_id"), decidedAt: str(row, "decided_at_iso"), receipt,
+    };
+    if (receipt.exchangeId !== str(row, "exchange_id") || receipt.kind !== kind || receipt.resultSha256 !== response.resultSha256
+        || receipt.operationId !== response.operationId || receipt.decidedAt !== response.decidedAt) {
+        return corrupt(`The response record of request ${receipt.exchangeId} does not match its receipt.`);
+    }
+    return response;
+}
+
+/** A stored request receipt, with its declared shape. */
+export function parseRequestReceipt(value: JsonValue): WorkflowRequestReceipt {
+    const invalid = () => new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "Stored request receipt has an invalid shape.");
+    if (!isJsonObject(value)) throw invalid();
+    const text = (key: string): string => {
+        const item = value[key];
+        if (typeof item !== "string") throw invalid();
+        return item;
+    };
+    const kind = value.kind;
+    if (kind !== "response" && kind !== "decline") throw invalid();
+    return {
+        exchangeId: text("exchangeId"), workflowSessionId: text("workflowSessionId"), runId: text("runId"), stateId: text("stateId"),
+        responderSessionId: text("responderSessionId"), operationId: text("operationId"), kind, resultSha256: text("resultSha256"),
+        decidedAt: text("decidedAt"),
+    };
+}
+
+/**
+ * A request's status from its node execution and its response record: the
+ * only mapping there is. Any other combination (an unknown outcome, a
+ * responded or declined node without its record or with the other kind, a
+ * record on any other node) is store corruption, never a default status.
+ */
+function requestStatusOf(exchangeId: string, node: WorkflowNodeExecutionRow, response: { kind: "response" | "decline" } | null)
+    : { status: WorkflowRequestStatus; failure: string | null } {
+    if (node.state === "pending") {
+        if (response === null) return { status: "pending", failure: null };
+    } else if (node.resultKind === "business") {
+        if (node.winner === "response" && node.outcome === REQUEST_RESPONDED && response?.kind === "response") return { status: "responded", failure: null };
+        if (node.winner === "response" && node.outcome === REQUEST_DECLINED && response?.kind === "decline") return { status: "declined", failure: null };
+    } else if (node.resultKind === "runtime_error" && response === null) {
+        if (node.outcome === "timed_out") return { status: "timed_out", failure: null };
+        if (node.outcome === "cancelled") return { status: "cancelled", failure: null };
+        if (node.outcome !== null && REQUEST_FAILURE_CODES.includes(node.outcome)) return { status: "failed", failure: node.outcome };
+    }
+    return corrupt(`Request ${exchangeId} is in no request status: its state is ${node.state}${node.outcome ? ` (${node.outcome})` : ""}`
+        + ` and it has ${response === null ? "no response record" : `a ${response.kind} record`}.`);
+}
+
+function requestStatusText(row: Row, column: string): WorkflowRequestStatus {
+    const status = str(row, column);
+    if (status !== "pending" && status !== "responded" && status !== "declined" && status !== "timed_out" && status !== "cancelled" && status !== "failed") {
+        return corrupt(`Unknown request status ${status}.`);
+    }
+    return status;
+}
+
+/** A response call's value as JSON (any JSON value: null, false, arrays, NUL and lone surrogates included), or RESPONSE_INVALID. */
+function responseValueOf(raw: unknown, kind: "response" | "decline"): JsonValue {
+    try {
+        assertJsonValue(raw, `$.${kind}`);
+        return raw;
+    } catch (error) {
+        if (error instanceof WorkflowJsonError) throw new WorkflowStoreError("RESPONSE_INVALID", error.message, [{ path: error.path, message: error.message }]);
+        throw error;
+    }
+}
+
+/** A revision row's IR, verified against its stored hash (and the pinned one, when given). */
+function revisionIrFrom(row: Row | undefined, revision: number, expectedIrSha256: string | undefined, options: { maxIrVersion?: number }): WorkflowIR {
+    const text = row ? strOrNull(row, "ir") : null;
+    const stored = row ? strOrNull(row, "ir_sha256") : null;
+    if (!text || !stored) throw new WorkflowStoreError("DEFINITION_INVALID", `Revision ${revision} has no compiled IR.`);
+    if (sha256Hex(text) !== stored || (expectedIrSha256 && stored !== expectedIrSha256)) {
+        throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Revision ${revision} IR does not match its pinned hash.`);
+    }
+    return parseWorkflowIr(parseStoredJson(text, "ir"), options);
 }
 
 /** Diagnostics as plain JSON (for error details). */
@@ -645,6 +857,7 @@ export function nodeExecutionIdFor(runId: string, scopeId: string, nodeId: strin
 export class WorkflowStore {
     private readonly t: {
         definitions: string; revisions: string; operations: string; runs: string; nodes: string; kvRevisions: string; inbox: string; outbox: string;
+        requests: string; requestResponses: string; requestOperations: string; responseWakes: string;
         sessions: string; sessionOwners: string; users: string; recordEvents: string; updateSession: string; softDeleteSession: string;
     };
 
@@ -654,6 +867,8 @@ export class WorkflowStore {
             definitions: `${s}.workflow_definitions`, revisions: `${s}.workflow_revisions`,
             operations: `${s}.workflow_operations`, runs: `${s}.workflow_runs`, nodes: `${s}.workflow_node_executions`,
             kvRevisions: `${s}.workflow_kv_revisions`, inbox: `${s}.workflow_inbox`, outbox: `${s}.workflow_outbox`,
+            requests: `${s}.workflow_requests`, requestResponses: `${s}.workflow_request_responses`,
+            requestOperations: `${s}.workflow_request_operations`, responseWakes: `${s}.workflow_response_wakes`,
             sessions: `${s}.sessions`, sessionOwners: `${s}.session_owners`, users: `${s}.users`,
             recordEvents: `${s}.cms_record_events`, updateSession: `${s}.cms_update_session`,
             softDeleteSession: `${s}.cms_soft_delete_session`,
@@ -696,8 +911,24 @@ export class WorkflowStore {
      */
     private async lockInputSessions(client: PoolClient, workflowSessionId: string, senderSessionId: string)
         : Promise<{ live: boolean; authority: TypedInputAuthority }> {
+        const locked = await this.lockSessionPair(client, workflowSessionId, senderSessionId);
+        return {
+            live: locked.workflow !== null && !locked.workflow.deleted,
+            authority: decideTypedInputAuthority({ workflow: locked.workflow, definition: locked.definition, sender: locked.other, senderSessionId }),
+        };
+    }
+
+    /**
+     * The locks and reads of lockInputSessions, without a rule applied: the
+     * workflow's session row FOR NO KEY UPDATE and the other session's FOR
+     * SHARE, in ascending session id order before any definition, run or
+     * node row; then both sessions with their owners in one statement, and
+     * the workflow's definition parent. A row the locks did not find is null.
+     */
+    private async lockSessionPair(client: PoolClient, workflowSessionId: string, otherSessionId: string)
+        : Promise<{ workflow: AuthoritySession | null; other: AuthoritySession | null; definition: { parentSessionId: string | null } | null }> {
         const locked = new Set<string>();
-        for (const sessionId of [...new Set([workflowSessionId, senderSessionId])].sort()) {
+        for (const sessionId of [...new Set([workflowSessionId, otherSessionId])].sort()) {
             const { rows } = await client.query(
                 `SELECT 1 FROM ${this.t.sessions} WHERE session_id = $1 FOR ${sessionId === workflowSessionId ? "NO KEY UPDATE" : "SHARE"}`, [sessionId]);
             if (rows[0]) locked.add(sessionId);
@@ -710,15 +941,12 @@ export class WorkflowStore {
                LEFT JOIN ${this.t.users} u ON u.user_id = so.user_id
               WHERE s.session_id = ANY($1::text[])`, [[...locked]]);
         const found = new Map<string, AuthoritySession>(rows.map(row => [str(row, "session_id"), authoritySessionFrom(row)] as [string, AuthoritySession]));
-        const workflow = found.get(workflowSessionId) ?? null;
         const { rows: definitions } = await client.query(
             `SELECT parent_session_id FROM ${this.t.definitions} WHERE workflow_session_id = $1`, [workflowSessionId]);
         return {
-            live: workflow !== null && !workflow.deleted,
-            authority: decideTypedInputAuthority({
-                workflow, definition: definitions[0] ? { parentSessionId: strOrNull(definitions[0], "parent_session_id") } : null,
-                sender: found.get(senderSessionId) ?? null, senderSessionId,
-            }),
+            workflow: found.get(workflowSessionId) ?? null,
+            other: found.get(otherSessionId) ?? null,
+            definition: definitions[0] ? { parentSessionId: strOrNull(definitions[0], "parent_session_id") } : null,
         };
     }
 
@@ -874,7 +1102,7 @@ export class WorkflowStore {
     private async decidePendingSendsIn(client: PoolClient, workflowSessionId: string, runId: string): Promise<void> {
         const { rows } = await client.query(
             `SELECT ${OUTBOX_COLUMNS} FROM ${this.t.outbox}
-              WHERE run_id = $1 AND state = 'pending' AND recipient_kind = 'workflow' ORDER BY exchange_id FOR UPDATE`, [runId]);
+              WHERE run_id = $1 AND mode = 'send' AND state = 'pending' AND recipient_kind = 'workflow' ORDER BY exchange_id FOR UPDATE`, [runId]);
         for (const row of rows) {
             const message = outboxFrom(row);
             const node = await this.nodeIn(client, message.nodeExecutionId);
@@ -1617,17 +1845,22 @@ export class WorkflowStore {
         return rows[0] ? { name: strOrNull(rows[0], "name"), semver: strOrNull(rows[0], "semver") } : null;
     }
 
-    /** The IR of a valid revision, verified against its stored hash. */
-    async readRevisionIr(workflowSessionId: string, revision: number, expectedIrSha256?: string): Promise<WorkflowIR> {
+    /**
+     * The IR of a valid revision, verified against its stored hash. IR 7 (request states) is read only when the caller
+     * asks for it (parseWorkflowIr's maxIrVersion); the runtime does not.
+     */
+    async readRevisionIr(workflowSessionId: string, revision: number, expectedIrSha256?: string, options: { maxIrVersion?: number } = {}): Promise<WorkflowIR> {
         const { rows } = await this.pool.query(
             `SELECT ir, ir_sha256 FROM ${this.t.revisions} WHERE workflow_session_id = $1 AND revision = $2`, [workflowSessionId, revision]);
-        const text = rows[0] ? strOrNull(rows[0], "ir") : null;
-        const stored = rows[0] ? strOrNull(rows[0], "ir_sha256") : null;
-        if (!text || !stored) throw new WorkflowStoreError("DEFINITION_INVALID", `Revision ${revision} has no compiled IR.`);
-        if (sha256Hex(text) !== stored || (expectedIrSha256 && stored !== expectedIrSha256)) {
-            throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Revision ${revision} IR does not match its pinned hash.`);
-        }
-        return parseWorkflowIr(parseStoredJson(text, "ir"));
+        return revisionIrFrom(rows[0], revision, expectedIrSha256, options);
+    }
+
+    /** readRevisionIr in the caller's transaction (a second connection is never needed while its locks are held). */
+    private async revisionIrIn(client: PoolClient, workflowSessionId: string, revision: number, expectedIrSha256: string, options: { maxIrVersion?: number })
+        : Promise<WorkflowIR> {
+        const { rows } = await client.query(
+            `SELECT ir, ir_sha256 FROM ${this.t.revisions} WHERE workflow_session_id = $1 AND revision = $2`, [workflowSessionId, revision]);
+        return revisionIrFrom(rows[0], revision, expectedIrSha256, options);
     }
 
     async listRuns(workflowSessionId: string): Promise<WorkflowRunRow[]> {
@@ -1786,6 +2019,14 @@ export class WorkflowStore {
         } | null;
         /** What a send state sends (null for other states and for one that failed at admission). */
         send?: SendSpecInput | null;
+        /**
+         * What a request state requests (null for other states and for one
+         * that failed at admission). No runtime passes one yet (design
+         * workflow-messaging-request.md 8.4). Its deadline is the admission's
+         * accepted-entry reading plus its seconds, as a wait's; waitSeconds
+         * is null with it.
+         */
+        request?: RequestSpecInput | null;
         immediate: NodeResultInput | null;
         projection?: SessionProjection;
     }): Promise<{ admitted: true; inserted: boolean; node: WorkflowNodeExecutionRow }
@@ -1794,7 +2035,7 @@ export class WorkflowStore {
         return this.transaction(async client => {
             const workflowSessionId = await this.workflowOfRun(client, input.runId);
             const sender = input.receive?.from ?? null;
-            const other = sender ?? input.send?.recipient ?? null;
+            const other = sender ?? input.send?.recipient ?? input.request?.recipient ?? null;
             const decided = other === null ? null : await this.lockInputSessions(client, workflowSessionId, other);
             const live = decided === null ? await this.lockLiveSession(client, workflowSessionId) : decided.live;
             const senderAuthority = decided === null || sender === null ? null : decided.authority;
@@ -1816,13 +2057,18 @@ export class WorkflowStore {
             let immediate = input.immediate;
             let receive = input.receive ?? null;
             let send = input.send ?? null;
+            let request = input.request ?? null;
             // A receive spec belongs to a receive state admitted without an
             // immediate result, and has refusals exactly when it names a sender;
-            // a send spec belongs to a send state admitted without one.
-            if ((receive !== null || send !== null) !== (input.nodeType === "messaging" && immediate === null)
-                || (receive !== null && send !== null)
+            // a send spec belongs to a send state admitted without one, and a
+            // request spec to a request state admitted without one.
+            if ((receive !== null || send !== null || request !== null) !== (input.nodeType === "messaging" && immediate === null)
+                || [receive, send, request].filter(spec => spec !== null).length > 1
                 || (receive !== null && (receive.from === null) !== (receive.refused === null))) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has an invalid messaging spec.`);
+            }
+            if (request !== null && !(Number.isSafeInteger(request.timeoutSeconds) && request.timeoutSeconds >= 1 && request.timeoutSeconds <= WAIT_MAX_SECONDS)) {
+                throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has an invalid request deadline.`);
             }
             // A wait admitted pending has a whole number of seconds; a receive may
             // race a wait (then it has them too); nothing else has any.
@@ -1857,6 +2103,21 @@ export class WorkflowStore {
                     projection = send.refused[recipient.refusal].projection;
                     send = null;
                 } else recipientKind = recipient.kind;
+            }
+            // A request's responder, decided the same way; a workflow responder is
+            // not supported yet. One admitted pending has its deadline as a wait has.
+            if (request !== null) {
+                if (decided === null) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has an invalid messaging spec.`);
+                const responder = await this.recipientDecision(client, decided.authority, request.recipient);
+                if (responder.refusal !== null) {
+                    immediate = request.refused[responder.refusal].result;
+                    projection = request.refused[responder.refusal].projection;
+                    request = null;
+                } else if (responder.kind === "workflow") {
+                    immediate = request.workflowRecipient.result;
+                    projection = request.workflowRecipient.projection;
+                    request = null;
+                } else waitSeconds = request.timeoutSeconds;
             }
             // A receive decides at one reading of the store's clock, taken here,
             // after the locks and guards, and kept as exact SQL text (a
@@ -1915,6 +2176,25 @@ export class WorkflowStore {
                      SELECT $1, $1, $2, $3, 'send', $4, $5, $6, $7, $8, $9, entered_at FROM ${this.t.nodes} WHERE node_execution_id = $1`,
                     [node.nodeExecutionId, workflowSessionId, input.runId, send.recipient, recipientKind, send.contract, send.payloadText,
                         sha256Hex(send.payloadText), send.correlationText]);
+            }
+            // A request admitted pending: its message's intent (outbox, mode request) and its immutable request record,
+            // with the node's deadline and entry time, before any delivery.
+            if (request !== null) {
+                await client.query(
+                    `INSERT INTO ${this.t.outbox}
+                        (exchange_id, node_execution_id, workflow_session_id, run_id, mode, recipient_session_id, recipient_kind, contract, payload,
+                         payload_sha256, correlation, created_at)
+                     SELECT $1, $1, $2, $3, 'request', $4, 'agent', $5, $6, $7, $8, entered_at FROM ${this.t.nodes} WHERE node_execution_id = $1`,
+                    [node.nodeExecutionId, workflowSessionId, input.runId, request.recipient, request.contract, request.payloadText,
+                        sha256Hex(request.payloadText), request.correlationText]);
+                const { rows: recorded } = await client.query(
+                    `INSERT INTO ${this.t.requests}
+                        (exchange_id, workflow_session_id, run_id, responder_session_id, contract, request_sha256, response_schema, deadline_at, created_at)
+                     SELECT $1, $2, $3, $4, $5, $6, $7, deadline_at, entered_at FROM ${this.t.nodes}
+                      WHERE node_execution_id = $1 AND deadline_at IS NOT NULL RETURNING exchange_id`,
+                    [node.nodeExecutionId, workflowSessionId, input.runId, request.recipient, request.contract, sha256Hex(request.payloadText),
+                        request.responseSchema]);
+                if (!recorded[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Request ${node.nodeExecutionId} was admitted without its deadline.`);
             }
             if (claim) {
                 const { rows: claimed } = await client.query(
@@ -2245,6 +2525,257 @@ export class WorkflowStore {
         return rows[0] ? outboxFrom(rows[0]) : null;
     }
 
+    /** A request as it is now (its derived status, response, wake intent and bindings), or null for no such request. */
+    async readRequest(exchangeId: string): Promise<WorkflowRequestView | null> {
+        const { rows } = await this.pool.query(`SELECT ${REQUEST_COLUMNS} FROM ${this.t.requests} WHERE exchange_id = $1`, [exchangeId]);
+        return rows[0] ? this.requestView(requestFrom(rows[0])) : null;
+    }
+
+    /** A run's requests, oldest first (bounded), as they are now. */
+    async listRequests(runId: string, limit = 100): Promise<WorkflowRequestView[]> {
+        const { rows } = await this.pool.query(
+            `SELECT ${REQUEST_COLUMNS} FROM ${this.t.requests} WHERE run_id = $1 ORDER BY created_at, exchange_id LIMIT $2`,
+            [runId, Math.min(Math.max(limit, 1), 500)]);
+        const views: WorkflowRequestView[] = [];
+        for (const row of rows) views.push(await this.requestView(requestFrom(row)));
+        return views;
+    }
+
+    private async requestView(request: WorkflowRequestRecord): Promise<WorkflowRequestView> {
+        // One statement, so the node, its response record, its wake intent and the bindings are one committed state.
+        const { rows } = await this.pool.query(
+            `SELECT node.*,
+                    resp.exchange_id AS r_exchange_id, resp.kind AS r_kind, resp.value AS r_value, resp.result_sha256 AS r_result_sha256,
+                    resp.operation_id AS r_operation_id, resp.actor_session_id AS r_actor_session_id,
+                    ${isoUtc("resp.decided_at")} AS r_decided_at_iso, resp.receipt AS r_receipt,
+                    wake.state AS w_state, wake.attempts AS w_attempts, ${isoUtc("wake.settled_at")} AS w_settled_at_iso,
+                    (SELECT count(*)::int FROM ${this.t.requestOperations} op WHERE op.exchange_id = node.node_execution_id) AS op_count
+               FROM ${this.t.nodes} node
+               LEFT JOIN ${this.t.requestResponses} resp ON resp.exchange_id = node.node_execution_id
+               LEFT JOIN ${this.t.responseWakes} wake ON wake.exchange_id = node.node_execution_id
+              WHERE node.node_execution_id = $1`, [request.exchangeId]);
+        const row = rows[0];
+        if (!row) return corrupt(`Request ${request.exchangeId} has no node execution.`);
+        const node = nodeFrom(row);
+        const response = row.r_exchange_id === null || row.r_exchange_id === undefined ? null : responseFrom({
+            exchange_id: row.r_exchange_id, kind: row.r_kind, value: row.r_value, result_sha256: row.r_result_sha256, operation_id: row.r_operation_id,
+            actor_session_id: row.r_actor_session_id, decided_at_iso: row.r_decided_at_iso, receipt: row.r_receipt,
+        });
+        const { status, failure } = requestStatusOf(request.exchangeId, node, response);
+        let wake: WorkflowRequestView["wake"] = null;
+        if (row.w_state !== null && row.w_state !== undefined) {
+            const state = str(row, "w_state");
+            if (state !== "pending" && state !== "leased" && state !== "dispatched" && state !== "moot" && state !== "abandoned") {
+                return corrupt(`Unknown wake state ${state}.`);
+            }
+            wake = { state, attempts: int(row, "w_attempts"), settledAt: strOrNull(row, "w_settled_at_iso") };
+        }
+        // Every response has its wake intent, written in the same transaction, and nothing else has one.
+        if ((response === null) !== (wake === null)) return corrupt(`Request ${request.exchangeId} has a response without its wake intent, or the reverse.`);
+        return { ...request, stateId: node.nodeId, status, failure, response, wake, operations: int(row, "op_count") };
+    }
+
+    /** A request's node execution, response record and derived status, read in the caller's transaction under its locks. */
+    private async requestStateIn(client: PoolClient, request: WorkflowRequestRecord)
+        : Promise<{ node: WorkflowNodeExecutionRow; response: NonNullable<WorkflowRequestView["response"]> | null; status: WorkflowRequestStatus }> {
+        const node = await this.nodeIn(client, request.exchangeId);
+        const { rows } = await client.query(`SELECT ${RESPONSE_COLUMNS} FROM ${this.t.requestResponses} WHERE exchange_id = $1`, [request.exchangeId]);
+        const response = rows[0] ? responseFrom(rows[0]) : null;
+        return { node, response, status: requestStatusOf(request.exchangeId, node, response).status };
+    }
+
+    /**
+     * A response call to a request state, in one transaction (design
+     * workflow-messaging-request.md sections 4 to 7). No runtime calls this
+     * yet: the respond tool and the request's delivery are gated (8.4). The
+     * actor is the caller's authenticated session (the respond tool's host),
+     * never a field of the call. In order:
+     *
+     * 1. The request rule. The request's immutable record is read, then the
+     *    requester's and the actor's session rows are locked (lockSessionPair:
+     *    the requester's FOR NO KEY UPDATE, the actor's FOR SHARE, ascending
+     *    session id) before any run or node row, and decideRequestAuthority
+     *    decides on what they show: only the frozen responder, live and still
+     *    related to the requester (a soft-deleted requester's kept rows
+     *    count). An unknown request and every refusal are the same
+     *    REQUEST_NOT_FOUND, with nothing written and nothing diagnosed.
+     * 2. The call: exactly one of response or decline, by presence (a
+     *    response of null is a response), a JSON value whose canonical text is
+     *    at most WORKFLOW_V2_MAX_RESPONSE_BYTES (RESPONSE_INVALID). Its
+     *    result identity is the sha256 of the canonical JSON of {kind, value}.
+     * 3. A known operation decides alone: its binding with the same result
+     *    identity returns the outcome it got (the winner's receipt, or the
+     *    refusal), and another result is OPERATION_CONFLICT; the binding
+     *    never changes, and a repeat counts in last_at and count.
+     * 4. A soft-deleted requester gets read-only answers: no new decision
+     *    (REQUEST_CLOSED), no binding, no counter and no session touch.
+     * 5. The schema: a response against the contract's response schema, a
+     *    decline against WORKFLOW_V2_DECLINE_SCHEMA (RESPONSE_INVALID, field
+     *    errors, nothing written).
+     * 6. A new operation once WORKFLOW_V2_MAX_REQUEST_OPERATIONS are bound is
+     *    OPERATION_LIMIT, nothing written; known operations stay replayable.
+     * 7. One reading of the store's clock, after the run and node locks,
+     *    decides by the request's state and binds the operation: pending
+     *    with the reading before the deadline (exact SQL comparison; equal
+     *    is late) decides the node (responded or declined, winner response,
+     *    completed at that reading) with the response record, its receipt,
+     *    the wake intent and the requester's events; pending at or after the
+     *    deadline is REQUEST_EXPIRED and decides nothing (only the
+     *    controller's elapse decides timed_out); a decided request returns
+     *    the winner's receipt for the same result and RESPONSE_CONFLICT for
+     *    another; a closed one is REQUEST_CLOSED with its status.
+     *
+     * A decision before the deadline may commit after it. Every write that
+     * decides a request's node takes the requester's session row first, so
+     * the node read here under that lock is one committed state.
+     */
+    async respondToRequest(input: { exchangeId: string; actorSessionId: string; operationId: string; call: { response?: unknown; decline?: unknown } })
+        : Promise<WorkflowRequestCallResult> {
+        if (typeof input.operationId !== "string" || !input.operationId.trim() || input.operationId.length > 256 || !isStorableText(input.operationId)) {
+            throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "operation_id must be 1-256 characters of valid Unicode text without NUL characters.");
+        }
+        return this.transaction(async client => {
+            const notFound = () => new WorkflowStoreError("REQUEST_NOT_FOUND", "No such request is open to this session.");
+            const { rows: found } = await client.query(`SELECT ${REQUEST_COLUMNS} FROM ${this.t.requests} WHERE exchange_id = $1`, [input.exchangeId]);
+            if (!found[0]) throw notFound();
+            const request = requestFrom(found[0]);
+            // 1. The request rule, on the session rows as these locks find them.
+            const locked = await this.lockSessionPair(client, request.workflowSessionId, input.actorSessionId);
+            if (decideRequestAuthority({
+                requester: locked.workflow, definition: locked.definition, actor: locked.other,
+                actorSessionId: input.actorSessionId, responderSessionId: request.responderSessionId,
+            }) !== "allowed") throw notFound();
+            const requesterLive = locked.workflow !== null && !locked.workflow.deleted;
+
+            // 2. The call.
+            const kinds = (["response", "decline"] as const).filter(name => Object.hasOwn(input.call, name));
+            if (kinds.length !== 1) throw new WorkflowStoreError("RESPONSE_INVALID", "A response call gives exactly one of response or decline.");
+            const kind = kinds[0];
+            const value = responseValueOf(input.call[kind], kind);
+            const valueText = canonicalJson(value);
+            if (utf8ByteLength(valueText) > WORKFLOW_V2_MAX_RESPONSE_BYTES) {
+                throw new WorkflowStoreError("RESPONSE_INVALID", `A ${kind} must be at most ${WORKFLOW_V2_MAX_RESPONSE_BYTES} bytes of canonical JSON.`);
+            }
+            const resultSha256 = jsonSha256({ kind, value });
+
+            // 3. A known operation decides alone.
+            const { rows: known } = await client.query(
+                `SELECT result_sha256, outcome, status FROM ${this.t.requestOperations} WHERE exchange_id = $1 AND operation_id = $2 FOR UPDATE`,
+                [request.exchangeId, input.operationId]);
+            if (known[0]) {
+                if (requesterLive) {
+                    await client.query(
+                        `UPDATE ${this.t.requestOperations} SET last_at = clock_timestamp(), count = count + 1 WHERE exchange_id = $1 AND operation_id = $2`,
+                        [request.exchangeId, input.operationId]);
+                }
+                const current = await this.requestStateIn(client, request);
+                const recorded = requestStatusText(known[0], "status");
+                if (str(known[0], "result_sha256") !== resultSha256) {
+                    return { kind: "refused" as const, replayed: true, code: "OPERATION_CONFLICT" as const, status: recorded, currentStatus: current.status };
+                }
+                const outcome = str(known[0], "outcome");
+                if (outcome === "decided" || outcome === "same") {
+                    if (current.response === null || (current.status !== "responded" && current.status !== "declined")) {
+                        return corrupt(`Request ${request.exchangeId} has a ${outcome} operation but no decision.`);
+                    }
+                    return { kind: "accepted" as const, replayed: true, receipt: current.response.receipt, status: current.status };
+                }
+                const code = outcome === "expired" ? "REQUEST_EXPIRED" as const : outcome === "closed" ? "REQUEST_CLOSED" as const
+                    : outcome === "conflict" ? "RESPONSE_CONFLICT" as const : corrupt(`Unknown request operation outcome ${outcome}.`);
+                return { kind: "refused" as const, replayed: true, code, status: recorded, currentStatus: current.status };
+            }
+
+            // 4. A deleted requester: read-only, no new decision.
+            if (!requesterLive) {
+                const current = await this.requestStateIn(client, request);
+                return { kind: "refused" as const, replayed: false, code: "REQUEST_CLOSED" as const, status: current.status, currentStatus: current.status };
+            }
+
+            // 5. The schema of the response (from the run's pinned definition) or of a decline.
+            const run = await this.lockRun(client, request.runId);
+            const ir = await this.revisionIrIn(client, run.workflowSessionId, run.revision, run.irSha256, { maxIrVersion: WORKFLOW_V2_REQUEST_IR_VERSION });
+            const problems = kind === "response" ? schemaSetFor(run.irSha256, ir.schemaDefs).validate(request.responseSchema, value) : declineProblems(value);
+            if (problems.length > 0) {
+                throw new WorkflowStoreError("RESPONSE_INVALID", kind === "response"
+                    ? `The response does not match the response schema of contract ${request.contract}.`
+                    : "A decline is { reason: <1 to 2,000 characters> } and nothing else.",
+                    problems.map(problem => ({ path: problem.path, message: problem.message })));
+            }
+
+            // 6. The bound on operations.
+            const { rows: bound } = await client.query(
+                `SELECT count(*)::int AS n FROM ${this.t.requestOperations} WHERE exchange_id = $1`, [request.exchangeId]);
+            if (int(bound[0], "n") >= WORKFLOW_V2_MAX_REQUEST_OPERATIONS) {
+                throw new WorkflowStoreError("OPERATION_LIMIT", `This request has bound ${WORKFLOW_V2_MAX_REQUEST_OPERATIONS} operations; `
+                    + "repeat one of them, or stop: a new one is not taken.", { limit: WORKFLOW_V2_MAX_REQUEST_OPERATIONS });
+            }
+
+            // 7. One reading of the store's clock decides, after the run and node locks.
+            const { rows: nodeRows } = await client.query(`SELECT * FROM ${this.t.nodes} WHERE node_execution_id = $1 FOR UPDATE`, [request.exchangeId]);
+            if (!nodeRows[0]) return corrupt(`Request ${request.exchangeId} has no node execution.`);
+            const { rows: clock } = await client.query(
+                `WITH reading AS (SELECT clock_timestamp() AS at) SELECT at::text AS at, ${isoUtc("at")} AS at_iso FROM reading`);
+            const at = str(clock[0], "at");
+            const atIso = str(clock[0], "at_iso");
+            const bind = async (outcome: "decided" | "same" | "expired" | "closed" | "conflict", status: WorkflowRequestStatus): Promise<void> => {
+                await client.query(
+                    `INSERT INTO ${this.t.requestOperations} (exchange_id, operation_id, actor_session_id, result_sha256, outcome, status, first_at, last_at)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, $7::timestamptz)`,
+                    [request.exchangeId, input.operationId, input.actorSessionId, resultSha256, outcome, status, at]);
+            };
+            const current = await this.requestStateIn(client, request);
+            if (current.status === "pending") {
+                if (!ACTIVE_RUN_STATUSES.includes(run.status)) return corrupt(`Request ${request.exchangeId} is pending in an ended run.`);
+                const { rows: early } = await client.query(
+                    `SELECT $1::timestamptz < deadline_at AS in_time FROM ${this.t.requests} WHERE exchange_id = $2`, [at, request.exchangeId]);
+                if (!bool(early[0], "in_time")) {
+                    await bind("expired", "pending");
+                    return { kind: "refused" as const, replayed: false, code: "REQUEST_EXPIRED" as const, status: "pending" as const, currentStatus: "pending" as const };
+                }
+                const outcome = kind === "response" ? REQUEST_RESPONDED : REQUEST_DECLINED;
+                const status = kind === "response" ? "responded" as const : "declined" as const;
+                const { rows: completed } = await client.query(
+                    `UPDATE ${this.t.nodes}
+                        SET state = 'completed', outcome = $2, result_kind = 'business', output = $3, error = NULL, winner = 'response',
+                            completed_at = $4::timestamptz
+                      WHERE node_execution_id = $1 AND state = 'pending' RETURNING *`,
+                    [request.exchangeId, outcome, valueText, at]);
+                if (!completed[0]) return corrupt(`Request ${request.exchangeId} changed under its lock.`);
+                const decided = nodeFrom(completed[0]);
+                const receipt: WorkflowRequestReceipt = {
+                    exchangeId: request.exchangeId, workflowSessionId: request.workflowSessionId, runId: request.runId, stateId: decided.nodeId,
+                    responderSessionId: request.responderSessionId, operationId: input.operationId, kind, resultSha256, decidedAt: atIso,
+                };
+                await client.query(
+                    `INSERT INTO ${this.t.requestResponses} (exchange_id, kind, value, result_sha256, operation_id, actor_session_id, decided_at, receipt)
+                     VALUES ($1, $2, $3, $4, $5, $6, $7::timestamptz, $8)`,
+                    [request.exchangeId, kind, valueText, resultSha256, input.operationId, input.actorSessionId, at, canonicalJson(receipt)]);
+                await bind("decided", status);
+                await client.query(
+                    `INSERT INTO ${this.t.responseWakes} (exchange_id, run_id, controller_instance_id, next_attempt_at, created_at)
+                     VALUES ($1, $2, $3, $4::timestamptz, $4::timestamptz)`,
+                    [request.exchangeId, run.runId, run.controllerInstanceId, at]);
+                await this.project(client, { sessionId: request.workflowSessionId, update: { touch: true }, events: [{ eventType: "workflow.state_completed", data: {
+                    runId: run.runId, nodeExecutionId: decided.nodeExecutionId, stateId: decided.nodeId, step: decided.ordinal, outcome,
+                    resultKind: "business", exchangeId: request.exchangeId, responderSessionId: request.responderSessionId,
+                    operationId: input.operationId, outputPreview: jsonbSafeText(valueText, 1_000),
+                } }] });
+                return { kind: "accepted" as const, replayed: false, receipt, status };
+            }
+            if (current.status === "responded" || current.status === "declined") {
+                if (current.response === null) return corrupt(`Request ${request.exchangeId} was decided without its record.`);
+                if (current.response.resultSha256 === resultSha256) {
+                    await bind("same", current.status);
+                    return { kind: "accepted" as const, replayed: true, receipt: current.response.receipt, status: current.status };
+                }
+                await bind("conflict", current.status);
+                return { kind: "refused" as const, replayed: false, code: "RESPONSE_CONFLICT" as const, status: current.status, currentStatus: current.status };
+            }
+            await bind("closed", current.status);
+            return { kind: "refused" as const, replayed: false, code: "REQUEST_CLOSED" as const, status: current.status, currentStatus: current.status };
+        });
+    }
+
     /**
      * Begin one delivery attempt of a send state's message, in one
      * transaction under the session locks the admission took (the workflow's
@@ -2292,6 +2823,7 @@ export class WorkflowStore {
             if (!nodes[0] || !messages[0]) throw new WorkflowStoreError("NODE_NOT_FOUND", `Node execution ${nodeExecutionId} is missing.`);
             const node = nodeFrom(nodes[0]);
             const message = outboxFrom(messages[0]);
+            if (message.mode !== "send") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${nodeExecutionId} is not a send state's message.`);
             if (message.state !== "pending") return { kind: "decided" as const, node, message };
             if (message.recipientKind === "workflow") {
                 const accepted = await this.sendAcceptanceIn(client, message);
@@ -2359,6 +2891,7 @@ export class WorkflowStore {
                 `SELECT ${OUTBOX_COLUMNS} FROM ${this.t.outbox} WHERE node_execution_id = $1 FOR UPDATE`, [nodeExecutionId]);
             if (!messages[0]) throw new WorkflowStoreError("NODE_NOT_FOUND", `Node execution ${nodeExecutionId} has no outbox message.`);
             const message = outboxFrom(messages[0]);
+            if (message.mode !== "send") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${nodeExecutionId} is not a send state's message.`);
             if (message.state !== "pending") return { recorded: false, won: false, node: await this.nodeIn(client, nodeExecutionId), message };
             if ((message.recipientKind === "agent") !== (delivery.clientMessageId !== null)
                 || (message.recipientKind === "workflow") !== (delivery.input !== null)) {
@@ -2406,6 +2939,7 @@ export class WorkflowStore {
                 `SELECT ${OUTBOX_COLUMNS} FROM ${this.t.outbox} WHERE node_execution_id = $1 FOR UPDATE`, [nodeExecutionId]);
             if (!pendingRows[0]) throw new WorkflowStoreError("NODE_NOT_FOUND", `Node execution ${nodeExecutionId} has no outbox message.`);
             const pending = outboxFrom(pendingRows[0]);
+            if (pending.mode !== "send") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${nodeExecutionId} is not a send state's message.`);
             if (pending.state === "pending" && pending.recipientKind === "workflow") {
                 const accepted = await this.sendAcceptanceIn(client, pending);
                 if (accepted.kind === "accepted") {

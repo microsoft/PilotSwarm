@@ -74,6 +74,31 @@ export function decideTypedInputAuthority(input: {
     return senderOwner !== null && workflowOwner !== null && senderOwner === workflowOwner ? "allowed" : "forbidden";
 }
 
+/**
+ * Who may answer a request state's request, or read its closed status or a
+ * stored receipt (the request rule, design workflow-messaging-request.md
+ * section 6): only the request's frozen responder, live, and related to the
+ * requesting workflow as the typed-input rule relates a sender, on the rows
+ * as they are now, except that the requesting workflow may be soft-deleted
+ * (its session row and definition are kept). A requester whose rows are
+ * gone or that is not a workflow, a responder that is missing or deleted,
+ * any other actor and any other relationship are refused, all alike. The
+ * global typed-input rule is unchanged. A deleted requester gets read-only
+ * answers only; that is the store's to decide.
+ */
+export function decideRequestAuthority(input: {
+    requester: AuthoritySession | null;
+    definition: { parentSessionId: string | null } | null;
+    actor: AuthoritySession | null;
+    actorSessionId: string;
+    responderSessionId: string;
+}): "allowed" | "refused" {
+    if (input.actorSessionId !== input.responderSessionId || input.requester === null) return "refused";
+    return decideTypedInputAuthority({
+        workflow: { ...input.requester, deleted: false }, definition: input.definition, sender: input.actor, senderSessionId: input.actorSessionId,
+    }) === "allowed" ? "allowed" : "refused";
+}
+
 function authoritySessionOf(row: SessionRow | null): AuthoritySession | null {
     if (!row) return null;
     return {

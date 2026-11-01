@@ -120,15 +120,16 @@ contracts:
 
 ## 3. Records
 
-One migration (the next free number when it lands; design A's storage may
-take an earlier one):
+One migration (0093 in the foundation; design A's storage may take a later
+number):
 
 - `workflow_outbox.mode` admits `request`; existing `send` rows stay valid.
 - `workflow_requests`: written once at entry, never updated. Key
   `exchange_id` = the node execution id (foreign keys to the node and to
   the outbox). Columns: `workflow_session_id`, `run_id`,
   `responder_session_id` (frozen at entry), `contract`, `request_sha256`
-  (the canonical payload), `response_schema_sha256`, `deadline_at`,
+  (the canonical payload), `response_schema` (the schema's name in the
+  run's definition, which the run's pinned IR hash fixes), `deadline_at`,
   `created_at`.
 - `workflow_request_responses`: at most one row per request, written only
   by the transaction that wins the node's compare-and-swap with a
