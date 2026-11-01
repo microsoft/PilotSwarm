@@ -83,6 +83,41 @@ test("failed picture copy preserves the old draft and exposes a retry error", as
     assert.equal(state().draft.bodyMd, "Keep this draft"); assert.equal(state().duplicatingId, null);
     assert.match(state().error, /source picture could not be loaded/);
 });
+test("Duplicate retries a failed picture immediately without discarding loaded variants", async () => {
+    let attempts = 0;
+    const { controller, store, state } = fixture({ getMotdImage: async (_id, phone) => {
+        assert.equal(phone, true);
+        if (++attempts === 1) throw new Error("temporary picture failure");
+        return mobile;
+    } });
+    store.dispatch({ type: "motd/patch", patch: { images: { "7": { desktop: main } } } });
+    assert.equal(await controller.duplicateAdminMotd("7"), false);
+    assert.equal(await controller.duplicateAdminMotd("7"), true);
+    assert.equal(attempts, 2); assert.deepEqual(state().draft.image, main); assert.deepEqual(state().draft.mobileImage, mobile);
+});
+test("unchanged duplicate dates preserve the exact duration through a DST repeated hour", async t => {
+    const prior = process.env.TZ;
+    process.env.TZ = "America/Los_Angeles";
+    const now = Date.parse("2026-11-01T08:10:15Z");
+    t.mock.timers.enable({ apis: ["Date"], now });
+    const foldSource = { ...source, fromAt: "2020-01-01T00:00:00Z", toAt: "2020-01-01T01:00:00Z" };
+    try {
+        const { controller, store, calls, state } = fixture({ listMotds: async () => [foldSource] });
+        store.dispatch({ type: "admin/motds", patch: { today: foldSource, history: [foldSource] } });
+        store.dispatch({ type: "motd/patch", patch: { images: { "7": { desktop: main, mobile } } } });
+        await controller.duplicateAdminMotd("7");
+        assert.equal(state().draft.fromAt, state().draft.toAt, "the two instants occupy the repeated local hour");
+        await controller.createAdminMotd();
+        assert.equal(calls.create[0].fromAt, "2026-11-01T08:11:00.000Z");
+        assert.equal(calls.create[0].toAt, "2026-11-01T09:11:00.000Z");
+        await controller.duplicateAdminMotd("7");
+        controller.setMotdDraft({ toAt: "2026-11-01T03:00:00.000" });
+        await controller.createAdminMotd();
+        assert.equal(calls.create[1].toAt, "2026-11-01T11:00:00.000Z", "an edited field uses the admin's new local time");
+    } finally {
+        if (prior === undefined) delete process.env.TZ; else process.env.TZ = prior;
+    }
+});
 test("readers cannot duplicate, and a demotion rejects a pending copy", async () => {
     const reader = fixture({}, { ...admin, isAdmin: false });
     assert.equal(await reader.controller.duplicateAdminMotd("7"), false);
@@ -116,4 +151,15 @@ test("the shared paste/drop helpers preserve text and chat rejection behavior", 
     handleImageDrop({ dataTransfer: { files: [file] }, preventDefault: () => { prevented++; } }, files => { dropped = files; });
     assert.deepEqual(dropped, [file]); assert.equal(prevented, 3);
     assert.equal(hasFileDrag({ types: ["Files"] }), true); assert.equal(hasFileDrag({ types: ["text/plain"] }), false);
+});
+test("the editor prefers mixed clipboard text in a text field without changing chat's default", () => {
+    let staged = 0, prevented = 0;
+    const file = { type: "image/png" };
+    const event = { target: { matches: () => true }, clipboardData: {
+        getData: () => "Copied text", items: [{ kind: "file", type: "image/png", getAsFile: () => file }],
+    }, preventDefault: () => { prevented++; } };
+    handleImagePaste(event, () => { staged++; return 1; }, { preferText: true, consumeRejected: true });
+    assert.equal(staged, 0); assert.equal(prevented, 0);
+    handleImagePaste(event, () => { staged++; return 1; });
+    assert.equal(staged, 1); assert.equal(prevented, 1);
 });

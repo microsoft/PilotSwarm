@@ -3,7 +3,7 @@ import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./comman
 import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
 import { parseAgentSourceLink } from "./repo-links.js";
 import { importPackageFilesFromLink, readImportedPackageName } from "./repo-import.js";
-import { MOTD_REFRESH_MS, canReadMotd, motdPrincipal, duplicateMotdDraft } from "./motd.js";
+import { MOTD_REFRESH_MS, canReadMotd, motdPrincipal, duplicateMotdDraft, motdDraftWindow } from "./motd.js";
 import {
     appendEventToHistory,
     applyLiveTurnToHistory,
@@ -3937,7 +3937,7 @@ export class PilotSwarmUiController {
             })]);
         } finally { clearTimeout(timeout); }
     }
-    async _motdPictures(message, { both = false, mobile = this.getState().ui.sessionViewDevice === "mobile" } = {}) {
+    async _motdPictures(message, { both = false, force = false, mobile = this.getState().ui.sessionViewDevice === "mobile" } = {}) {
         if (!message) return {};
         if (typeof this.transport.getMotdImage !== "function") return this.getState().motd.images[message.motdId] || {};
         const context = this._motdContext(), id = message.motdId;
@@ -3954,7 +3954,7 @@ export class PilotSwarmUiController {
                 continue;
             }
             const now = Date.now();
-            if (cached.attempted?.[variant] !== undefined && now - cached.attempted[variant] < 300_000) continue;
+            if (!force && cached.attempted?.[variant] !== undefined && now - cached.attempted[variant] < 300_000) continue;
             this.dispatch({ type: "motd/patch", patch: { images: { ...this.getState().motd.images,
                 [id]: { ...cached, attempted: { ...cached.attempted, [variant]: now } } } } });
             const loading = (async () => {
@@ -4053,7 +4053,7 @@ export class PilotSwarmUiController {
         const context = this._motdContext();
         this.dispatch({ type: "admin/motds", patch: { duplicatingId: motdId, error: null } });
         try {
-            const pictures = await this._motdPictures(message, { both: true });
+            const pictures = await this._motdPictures(message, { both: true, force: true });
             if (context !== this._motdContext() || !this._featureIsAdmin()) return false;
             const draft = duplicateMotdDraft(message, pictures, Date.now());
             this.dispatch({ type: "admin/motds", patch: { draft, retry: null, notice: null,
@@ -4117,16 +4117,16 @@ export class PilotSwarmUiController {
         const context = this._motdContext();
         const state = this.getState().admin.motds;
         const draft = state.draft;
+        const window = motdDraftWindow(draft);
         if ([draft.image, draft.mobileImage].some(picture => picture && !picture.alt?.trim())) {
             this.dispatch({ type: "admin/motds", patch: { error: "Picture alt text is required before publishing." } });
             return;
         }
-        if (!draft.bodyMd.trim() || !Number.isFinite(Date.parse(draft.fromAt)) || !Number.isFinite(Date.parse(draft.toAt))
-            || Date.parse(draft.toAt) <= Date.parse(draft.fromAt)) {
+        if (!draft.bodyMd.trim() || !Number.isFinite(window.from) || !Number.isFinite(window.to) || window.to <= window.from) {
             this.dispatch({ type: "admin/motds", patch: { error: "Enter a markdown body and an end time after the start time." } });
             return;
         }
-        const input = { fromAt: new Date(draft.fromAt).toISOString(), toAt: new Date(draft.toAt).toISOString(), bodyMd: draft.bodyMd,
+        const input = { fromAt: new Date(window.from).toISOString(), toAt: new Date(window.to).toISOString(), bodyMd: draft.bodyMd,
             ...(draft.mobileBodyMd?.trim() ? { mobileBodyMd: draft.mobileBodyMd } : {}),
             imagePlacement: draft.imagePlacement, ...(draft.image ? { image: draft.image } : {}),
             ...(draft.mobileImage ? { mobileImage: draft.mobileImage } : {}) };

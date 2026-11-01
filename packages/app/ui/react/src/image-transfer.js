@@ -7,7 +7,9 @@ export function clipboardImageFiles(data) {
         .filter(item => item.kind === "file" && item.type.startsWith("image/"))
         .map(item => item.getAsFile()).filter(Boolean);
 }
-export function handleImagePaste(event, stage, { consumeRejected = false } = {}) {
+export function handleImagePaste(event, stage, { consumeRejected = false, preferText = false } = {}) {
+    if (preferText && event.target?.matches?.('textarea, input:not([type]), input[type="text"], input[type="search"]')
+        && event.clipboardData?.getData?.("text/plain")) return;
     const files = clipboardImageFiles(event.clipboardData);
     if (!files.length) return;
     const accepted = stage(files);

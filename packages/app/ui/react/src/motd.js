@@ -1,5 +1,5 @@
 import React from "react";
-import { selectMotd } from "../../core/src/motd.js";
+import { selectMotd, motdDraftWindow } from "../../core/src/motd.js";
 import { useControllerSelector } from "./use-controller-state.js";
 import { renderMarkdown } from "./workspace-markdown.js";
 import { IMAGE_PROMPT_ATTACHMENT_TYPES } from "../../core/src/controller.js";
@@ -66,9 +66,10 @@ export function MotdOverlay({ controller, mobile = false }) {
         preview: view.preview, onDismiss: () => { void controller.dismissCurrentMotd(); } });
 }
 function draftMessage(draft) {
+    const window = motdDraftWindow(draft);
     return { motdId: "draft", bodyMd: draft.bodyMd, mobileBodyMd: draft.mobileBodyMd || null,
-        fromAt: Number.isFinite(Date.parse(draft.fromAt)) ? new Date(draft.fromAt).toISOString() : new Date().toISOString(),
-        toAt: Number.isFinite(Date.parse(draft.toAt)) ? new Date(draft.toAt).toISOString() : new Date().toISOString(),
+        fromAt: Number.isFinite(window.from) ? new Date(window.from).toISOString() : new Date().toISOString(),
+        toAt: Number.isFinite(window.to) ? new Date(window.to).toISOString() : new Date().toISOString(),
         imagePlacement: draft.imagePlacement, pictures: { desktop: draft.image, mobile: draft.mobileImage } };
 }
 export function MotdAdminPanel({ controller, state, images = {}, isAdmin, canRead = isAdmin, mobile = false }) {
@@ -78,11 +79,13 @@ export function MotdAdminPanel({ controller, state, images = {}, isAdmin, canRea
     const editorRef = React.useRef(null);
     const bodyRef = React.useRef(null);
     const mobileRef = React.useRef(null);
+    const handledFocusVersion = React.useRef(state.draftFocusVersion);
     React.useLayoutEffect(() => {
-        if (!isAdmin || !state.draftFocusVersion || state.duplicatingId) return;
+        if (!isAdmin || state.draftFocusVersion <= handledFocusVersion.current || state.duplicatingId) return;
+        handledFocusVersion.current = state.draftFocusVersion;
         setPictureError(null);
         if (mobileRef.current) mobileRef.current.open = Boolean(state.draft.mobileBodyMd || state.draft.mobileImage);
-        editorRef.current?.scrollIntoView({ block: "nearest", behavior: "auto" });
+        bodyRef.current?.scrollIntoView({ block: "center", behavior: "auto" });
         bodyRef.current?.focus({ preventScroll: true });
     }, [state.draftFocusVersion, state.duplicatingId, isAdmin]);
     if (!canRead) return null;
@@ -117,7 +120,10 @@ export function MotdAdminPanel({ controller, state, images = {}, isAdmin, canRea
         && (mobileRef.current.contains(event.target) || mobileRef.current.contains(document.activeElement)) ? "mobileImage" : "image";
     const stagePictureFiles = (files, field) => {
         const selected = imageFiles(files);
-        if (!selected.length) return 0;
+        if (!selected.length) {
+            if (files?.length) setPictureError(PICTURE_ERROR);
+            return 0;
+        }
         if (busy) {
             setPictureError("Wait for the current message action before adding a picture.");
             return 0;
@@ -170,15 +176,15 @@ export function MotdAdminPanel({ controller, state, images = {}, isAdmin, canRea
                     React.createElement("p", { className: "ps-motd-meta" }, "Show splash again is a preview. It does not record a dismissal."))
                     : React.createElement("p", { className: "ps-motd-meta" }, state.loading ? "Loading messages..." : "No message is active today.")),
             isAdmin ? React.createElement("form", { ref: editorRef, className: `ps-motd-admin-card ps-motd-editor${dragOver ? " is-drag-over" : ""}`,
-                onPaste: event => handleImagePaste(event, files => stagePictureFiles(files, pictureField(event)), { consumeRejected: true }),
+                onPaste: event => handleImagePaste(event, files => stagePictureFiles(files, pictureField(event)), { consumeRejected: true, preferText: true }),
                 onDragOver: event => { if (hasFileDrag(event.dataTransfer)) { event.preventDefault(); setDragOver(true); } },
                 onDragLeave: event => { if (!event.currentTarget.contains(event.relatedTarget)) setDragOver(false); },
                 onDrop: event => { setDragOver(false); handleImageDrop(event, files => stagePictureFiles(files, pictureField(event))); },
                 onSubmit: event => { event.preventDefault(); void controller.createAdminMotd(); } },
                 React.createElement("h4", null, "New message"),
-                state.copyNotice ? React.createElement("p", { role: "status", className: "ps-motd-meta" }, state.copyNotice) : null,
                 React.createElement("p", { className: "ps-motd-meta" }, "Enter times in your local time. They are stored in UTC. A later start time takes over."),
                 React.createElement("div", { className: "ps-motd-time-fields" }, input("From", "fromAt", "datetime-local"), input("To", "toAt", "datetime-local")),
+                state.copyNotice ? React.createElement("p", { role: "status", className: "ps-motd-meta" }, state.copyNotice) : null,
                 body("Body (markdown)", "bodyMd"),
                 picture("Picture", "image"),
                 React.createElement("label", { className: "ps-motd-field" }, "Picture placement",

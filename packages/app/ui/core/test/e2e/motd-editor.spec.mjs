@@ -13,7 +13,6 @@ async function openEditor(page, options = {}) {
     return { ...f, stop: async () => {
         // route.fetch uses the context's HTTP client, not only the page.
         await page.request.dispose();
-        await page.context().close();
         await f.stop();
     } };
 }
@@ -35,6 +34,7 @@ async function transferImage(page, target, { mobile = false, kind = "paste", nam
     }, { kind, name, size, type, base64: PNG });
 }
 test("duplicate an older message, edit it and publish only the new message", async ({ page }) => {
+    await page.setViewportSize({ width: 1100, height: 600 });
     const f = await openEditor(page);
     try {
         const start = Date.now();
@@ -42,7 +42,9 @@ test("duplicate an older message, edit it and publish only the new message", asy
         const editor = page.locator(".ps-motd-editor");
         await expect(page.getByLabel("Body (markdown)", { exact: true })).toHaveValue(source().bodyMd);
         await expect(page.getByLabel("Body (markdown)", { exact: true })).toBeFocused();
+        await expect(page.getByLabel("Body (markdown)", { exact: true })).toBeInViewport({ ratio: 1 });
         await expect(editor).toContainText("Copied from message 7");
+        await expect(editor.getByRole("status").filter({ hasText: "Copied from message 7" })).toBeInViewport();
         await expect(page.getByLabel("Mobile body (markdown)", { exact: true })).toHaveValue("Short original");
         await expect(page.getByLabel("Picture alt text", { exact: true })).toHaveValue("Source main alt");
         await expect(page.getByLabel("Mobile picture alt text", { exact: true })).toHaveValue("Source mobile alt");
@@ -111,7 +113,48 @@ test("oversized and unsupported pasted images use the same rejection as upload",
         await expect(page.getByRole("alert")).toHaveText("Choose PNG, JPEG, WebP or GIF, at most 2 MB per picture.");
         await editor.locator('input[type="file"]').first().setInputFiles({ name: "vector.svg", mimeType: "image/svg+xml", buffer: Buffer.from("<svg></svg>") });
         await expect(page.getByRole("alert")).toHaveText("Choose PNG, JPEG, WebP or GIF, at most 2 MB per picture.");
+        await transferImage(page, editor, { kind: "drop", name: "document.pdf", type: "application/pdf" });
+        await expect(page.getByRole("alert")).toHaveText("Choose PNG, JPEG, WebP or GIF, at most 2 MB per picture.");
         expect(f.state.calls).toHaveLength(0);
+    } finally { await f.stop(); }
+});
+test("copied drafts do not steal focus on remount or after a failed second Duplicate", async ({ page }) => {
+    const next = source({ motdId: "8", hasMobileImage: false });
+    const f = await openEditor(page, { history: [source(), next] });
+    try {
+        await page.getByRole("button", { name: "Duplicate message 7", exact: true }).click();
+        await expect(page.getByLabel("Body (markdown)", { exact: true })).toHaveValue(source().bodyMd);
+        await page.locator(".ps-motd-mobile-editor summary").click();
+        await page.getByRole("button", { name: "Model Providers", exact: true }).click();
+        await page.getByRole("button", { name: "Message of the day", exact: true }).click();
+        await expect(page.getByLabel("Body (markdown)", { exact: true })).not.toBeFocused();
+        await expect(page.locator(".ps-motd-mobile-editor")).not.toHaveAttribute("open", "");
+        await page.route("**/api/v1/management/motd/8/image**", route => route.fulfill({ status: 503,
+            json: { ok: false, error: { code: "UNAVAILABLE", message: "Picture unavailable" } } }));
+        const duplicate = page.getByRole("button", { name: "Duplicate message 8", exact: true });
+        await duplicate.click();
+        await expect(page.getByRole("alert")).toContainText("source picture could not be loaded");
+        await expect(duplicate).toBeFocused();
+        await expect(page.getByLabel("Body (markdown)", { exact: true })).toHaveValue(source().bodyMd);
+        expect(f.state.calls).toHaveLength(0);
+    } finally { await f.stop(); }
+});
+test("a mixed image and text clipboard leaves text paste to the browser", async ({ page }) => {
+    const f = await openEditor(page);
+    try {
+        const body = page.getByLabel("Body (markdown)", { exact: true });
+        await body.fill("Existing body");
+        const prevented = await body.evaluate((node, png) => {
+            const data = new DataTransfer();
+            data.setData("text/plain", "Office text");
+            data.items.add(new File([Uint8Array.from(atob(png), character => character.charCodeAt(0))], "rendered.png", { type: "image/png" }));
+            const event = new ClipboardEvent("paste", { clipboardData: data, bubbles: true, cancelable: true });
+            node.dispatchEvent(event);
+            return event.defaultPrevented;
+        }, PNG);
+        expect(prevented).toBe(false);
+        await expect(page.locator(".ps-motd-editor-thumb")).toHaveCount(0);
+        await expect(body).toHaveValue("Existing body");
     } finally { await f.stop(); }
 });
 test("a nameless pasted image leaves alt empty; plain text paste remains untouched", async ({ page }) => {

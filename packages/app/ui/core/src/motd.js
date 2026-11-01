@@ -21,10 +21,20 @@ export function duplicateMotdDraft(message, pictures, now) {
         if (!picture?.base64 || !picture.contentType) throw new Error("The source picture could not be loaded. Refresh the message and retry Duplicate.");
         return { base64: picture.base64, contentType: picture.contentType, alt: alt ?? picture.alt ?? "" };
     };
-    return { fromAt: localInput(from), toAt: localInput(from + duration), bodyMd: message.bodyMd,
+    const fromAt = localInput(from), toAt = localInput(from + duration);
+    return { fromAt, toAt, duplicateWindow: { fromAt, toAt,
+        fromInstant: new Date(from).toISOString(), toInstant: new Date(from + duration).toISOString() },
+        bodyMd: message.bodyMd,
         mobileBodyMd: message.mobileBodyMd || "", imagePlacement: message.imagePlacement || "above",
         ...(message.hasImage ? { image: image("desktop", message.imageAlt) } : {}),
         ...(message.hasMobileImage ? { mobileImage: image("mobile", message.mobileImageAlt) } : {}) };
+}
+export function motdDraftWindow(draft) {
+    const original = draft.duplicateWindow;
+    return {
+        from: Date.parse(original && draft.fromAt === original.fromAt ? original.fromInstant : draft.fromAt),
+        to: Date.parse(original && draft.toAt === original.toAt ? original.toInstant : draft.toAt),
+    };
 }
 export function motdPrincipal(state) {
     // Some transports provide identity only through the authenticated profile API.
