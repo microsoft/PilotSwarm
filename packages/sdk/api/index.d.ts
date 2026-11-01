@@ -11,6 +11,8 @@ export interface OperationParamSpec {
     in: "path" | "query" | "body";
     name?: string;
     type?: "string" | "number" | "boolean" | "json";
+    /** A string query param that is an id: carried only as one string; any other value is carried as the empty string (invalid). */
+    strict?: boolean;
 }
 
 export interface Operation {
@@ -29,7 +31,7 @@ export declare function buildOperationRequest(name: string, params?: Record<stri
     query: URLSearchParams;
     body: Record<string, unknown> | null;
 };
-export declare function coerceQueryValue(value: unknown, type?: string): unknown;
+export declare function coerceQueryValue(value: unknown, type?: string, options?: { strict?: boolean }): unknown;
 export declare function artifactDownloadPath(sessionId: string, filename: string): string;
 
 export declare class ApiError extends Error {

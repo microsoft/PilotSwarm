@@ -6,9 +6,14 @@
  * workflow (and look up its run); the transport's readWorkflow is the human
  * read adapter, never the agent tool's parent-only path. A content-bearing
  * read by an admin outside the owner's visibility is audited as break-glass.
- * Only an absent runId is omitted on the way: an empty, blank or non-string
- * one reaches the adapter's validation (400) unchanged, through the actual
- * HTTP route, and only after the gate (READ-WIRE-04).
+ * Only an absent runId is omitted on the way: an empty or blank one reaches
+ * the adapter's validation (400) unchanged, and one that is not a single
+ * string (a list, a number, an object, a repeated query param) is carried by
+ * both HTTP codecs (the clients' request builder and the route's query
+ * decoder) as the empty string, never as an id coerced from it, so it too is
+ * refused there (400), and only after the gate; the direct path refuses its
+ * type as it is (READ-WIRE-04). Exercised through the actual HTTP route, with
+ * HttpApiTransport and WebPilotSwarmManagementClient over real fetch.
  *
  * Run: node --test web/test/workflow-read-runtime.test.mjs
  */
@@ -17,7 +22,8 @@ import assert from "node:assert/strict";
 import http from "node:http";
 import express from "express";
 import { NodeSdkTransport } from "pilotswarm/host";
-import { PilotSwarmManagementClient } from "pilotswarm-sdk";
+import { PilotSwarmManagementClient, WebPilotSwarmManagementClient } from "pilotswarm-sdk";
+import { ApiClient, HttpApiTransport } from "pilotswarm-sdk/api";
 
 import { createApiRouter } from "../api/router.js";
 import { PortalRuntime } from "../runtime.js";
@@ -28,7 +34,7 @@ test("readWorkflow is one GET session:read operation: the session in the path, a
     assert.ok(op, "readWorkflow is a protocol operation");
     assert.deepEqual({ access: op.access, method: op.method, path: op.path, params: op.params }, {
         access: "session:read", method: "GET", path: "/sessions/:sessionId/workflow",
-        params: { sessionId: { in: "path", name: "sessionId" }, runId: { in: "query", type: "string" } },
+        params: { sessionId: { in: "path", name: "sessionId" }, runId: { in: "query", type: "string", strict: true } },
     });
     // The legacy creation route is unchanged.
     const create = OPERATIONS.find((entry) => entry.name === "createWorkflowSession");
@@ -100,17 +106,31 @@ test("with the ownership switch off, readWorkflow behaves as every other session
 
 /**
  * The actual HTTP route, end to end in-process: the generated Express route, the real PortalRuntime gate, the real
- * NodeSdkTransport.readWorkflow and the real PilotSwarmManagementClient.readWorkflow adapter (its runId validation and its
- * session lookup), over a stand-in catalog (no database).
+ * NodeSdkTransport.readWorkflow and the real PilotSwarmManagementClient.readWorkflow adapter (its runId validation, its
+ * session lookup and readWorkflowV2View), over a stand-in catalog and workflow store (no database): alice owns every
+ * session; wf1 is a version 2 workflow with a live run and run R; any other session is an agent session.
  */
 async function routeHarness() {
     const owner = { provider: "dev", subject: "alice" };
     const adapterCalls = [];
+    const run = (runId, mode, status) => ({ runId, mode, status, revision: 1, terminalOutcome: null, pausedFrom: null, terminalNodeId: null,
+        terminalOutput: null, terminalError: null, kvRevision: 0, kv: {} });
+    const runs = [run("run-live", "live", "running"), run("R", "test", "running")];
+    const store = {
+        readDefinition: async () => ({ state: "published", semver: "1.0.0", currentRevision: 1, publishedRevision: 1, publishedYamlSha256: "h" }),
+        readRevision: async () => ({ revision: 1, yamlSha256: "h", valid: true, irSha256: null, name: "w", diagnostics: [], yaml: "" }),
+        readRevisionIr: async () => null,
+        listRuns: async () => runs,
+        listNodeExecutions: async () => [],
+        listInbox: async () => [],
+        listOutbox: async () => [],
+    };
     const mgmt = {
         _ensureStarted() {},
         _catalog: {
-            getSession: async (sessionId) => (sessionId === "missing" ? null : { sessionId, sessionKind: "agent", deletedAt: null }),
-            workflowStore: () => ({}),
+            getSession: async (sessionId) => (sessionId === "missing" ? null
+                : { sessionId, sessionKind: sessionId === "wf1" ? "workflow" : "agent", deletedAt: null }),
+            workflowStore: () => store,
         },
         async readWorkflow(sessionId, options) {
             adapterCalls.push([sessionId, options]);
@@ -138,12 +158,13 @@ async function routeHarness() {
     app.use("/api/v1", createApiRouter({ runtime, requireAuth }));
     const server = http.createServer(app);
     await new Promise((resolve) => server.listen(0, resolve));
-    const base = `http://127.0.0.1:${server.address().port}/api/v1`;
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    const base = `${origin}/api/v1`;
     const get = async (path, subject = "alice") => {
         const response = await fetch(`${base}${path}`, { headers: { "x-test-user": subject } });
         return { status: response.status, body: await response.json() };
     };
-    return { runtime, adapterCalls, get, close: () => new Promise((resolve) => server.close(resolve)) };
+    return { runtime, adapterCalls, get, origin, close: () => new Promise((resolve) => server.close(resolve)) };
 }
 
 test("the HTTP route keeps an explicit empty or blank runId for the adapter's validation, after the session gate", async () => {
@@ -176,6 +197,61 @@ test("the HTTP route keeps an explicit empty or blank runId for the adapter's va
         await assert.rejects(h.runtime.call("readWorkflow", { sessionId: "s1", runId: 5 }, { principal: { provider: "dev", subject: "alice" },
             authorization: { role: "user" } }), (error) => error.code === "INVALID_REQUEST" && error.status === 400);
         assert.deepEqual(h.adapterCalls.at(-1), ["s1", { runId: 5 }]);
+    } finally {
+        await h.close();
+    }
+});
+
+test("READ-WIRE-04: both HTTP-backed clients and the route carry a run that is not one string as invalid, never as a coerced id, after the gate", async () => {
+    const h = await routeHarness();
+    try {
+        const urls = [];
+        // The clients' own codec (ApiClient.call, buildOperationRequest) over real fetch; only the test user is added.
+        const api = (subject) => new ApiClient({ apiUrl: h.origin, fetchImpl: (url, init = {}) => {
+            urls.push(String(url));
+            return fetch(url, { ...init, headers: { ...init.headers, "x-test-user": subject } });
+        } });
+        const clients = [
+            ["HttpApiTransport", (subject) => new HttpApiTransport({ api: api(subject) })],
+            ["WebPilotSwarmManagementClient", (subject) => new WebPilotSwarmManagementClient({ api: api(subject) })],
+        ];
+        for (const [name, client] of clients) {
+            const alice = client("alice");
+            // A run that is one string is read as itself; an absent one is the live run.
+            assert.equal((await alice.readWorkflow("wf1", { runId: "R" })).run.runId, "R", name);
+            assert.ok(urls.at(-1).endsWith("/api/v1/sessions/wf1/workflow?runId=R"), name);
+            assert.equal((await alice.readWorkflow("wf1")).run.runId, "run-live", name);
+            // A list holding that run, a number, a repeated run and an object are sent as invalid and refused after the gate:
+            // neither run R nor a run named "5" is read.
+            for (const runId of [["R"], 5, ["R", "R"], { runId: "R" }]) {
+                const label = `${name} ${JSON.stringify(runId)}`;
+                const calls = h.adapterCalls.length;
+                await assert.rejects(alice.readWorkflow("wf1", { runId }), (error) => error.code === "INVALID_REQUEST" && error.status === 400, label);
+                assert.ok(urls.at(-1).endsWith("/api/v1/sessions/wf1/workflow?runId="), label);
+                assert.deepEqual(h.adapterCalls.slice(calls), [["wf1", { runId: "" }]], label);
+            }
+            // Someone who cannot read the session gets the same not-found whatever the run, and nothing is read.
+            const bob = client("bob");
+            const calls = h.adapterCalls.length;
+            for (const options of [{}, { runId: "R" }, { runId: ["R"] }, { runId: 5 }]) {
+                await assert.rejects(bob.readWorkflow("wf1", options),
+                    (error) => error.code === "NOT_FOUND" && error.status === 404 && error.message === "Session not found.", `${name} bob ${JSON.stringify(options)}`);
+            }
+            assert.equal(h.adapterCalls.length, calls, name);
+        }
+        // On the route itself, a repeated run is never joined into an id: it is refused after the gate, as an empty one is.
+        const calls = h.adapterCalls.length;
+        const repeated = await h.get("/sessions/wf1/workflow?runId=R&runId=R");
+        assert.equal(repeated.status, 400);
+        assert.equal(repeated.body.error.code, "INVALID_REQUEST");
+        assert.deepEqual(h.adapterCalls.slice(calls), [["wf1", { runId: "" }]]);
+        const hidden = await h.get("/sessions/wf1/workflow?runId=R&runId=R", "bob");
+        assert.equal(hidden.status, 404);
+        assert.equal(hidden.body.error.code, "NOT_FOUND");
+        assert.equal(h.adapterCalls.length, calls + 1);
+        const single = await h.get("/sessions/wf1/workflow?runId=R");
+        assert.equal(single.status, 200);
+        assert.equal(single.body.result.run.runId, "R");
     } finally {
         await h.close();
     }

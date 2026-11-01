@@ -48,7 +48,8 @@ export const WS_SERVER_MESSAGES = ["ready", "subscribedSession", "sessionEvent",
 export const WEB_MODE_UNSUPPORTED = "WEB_MODE_UNSUPPORTED";
 
 const path = (name) => ({ in: "path", name });
-const query = (type = "string") => ({ in: "query", type });
+// `strict`: a string query param that is an id. It is carried only as one string; see strictQueryText.
+const query = (type = "string", options = {}) => ({ in: "query", type, ...options });
 const body = () => ({ in: "body" });
 
 /**
@@ -56,7 +57,7 @@ const body = () => ({ in: "body" });
  *   name: string,
  *   method: "GET"|"POST"|"PUT"|"PATCH"|"DELETE",
  *   path: string,
- *   params?: Record<string, { in: "path"|"query"|"body", name?: string, type?: string }>,
+ *   params?: Record<string, { in: "path"|"query"|"body", name?: string, type?: string, strict?: boolean }>,
  *   summary: string,
  * }>}
  */
@@ -65,7 +66,7 @@ export const OPERATIONS = [
     { name: "listSessions", access: "session:list", method: "GET", path: "/sessions", summary: "List session summaries." },
     { name: "createSession", access: "session:create", method: "POST", path: "/sessions", params: { model: body(), reasoningEffort: body(), contextTier: body(), groupId: body(), visibility: body(), workspace: body() }, summary: "Create a session. Owner is the authenticated principal; visibility defaults to the deployment default. workspace { root, folder? } sets its working folder." },
     { name: "createWorkflowSession", access: "session:create", method: "POST", path: "/sessions/workflow", params: { yaml: body(), inputs: body(), groupId: body(), visibility: body() }, summary: "Create a workflow session from Workflow YAML (kind: Workflow). It runs the workflow graph instead of a conversation; inputs is a JSON object checked against the workflow's inputs schema and read by its states as context.inputs." },
-    { name: "readWorkflow", access: "session:read", method: "GET", path: "/sessions/:sessionId/workflow", params: { sessionId: path("sessionId"), runId: query("string") }, summary: "Read a version 2 workflow session without changing it: definition state, current revision and its diagnostics (no YAML), graph, runs, and one run (runId, default the live run) with its node executions, typed input inbox and outbox. 404 NOT_FOUND unless the session is readable, WORKFLOW_NOT_FOUND for a session that is not a version 2 workflow, RUN_NOT_FOUND for a run that is not one of its runs." },
+    { name: "readWorkflow", access: "session:read", method: "GET", path: "/sessions/:sessionId/workflow", params: { sessionId: path("sessionId"), runId: query("string", { strict: true }) }, summary: "Read a version 2 workflow session without changing it: definition state, current revision and its diagnostics (no YAML), graph, runs, and one run (runId, default the live run) with its node executions, typed input inbox and outbox. 404 NOT_FOUND unless the session is readable, WORKFLOW_NOT_FOUND for a session that is not a version 2 workflow, RUN_NOT_FOUND for a run that is not one of its runs." },
     { name: "createSessionForAgent", access: "session:create", method: "POST", path: "/sessions/for-agent", params: { agentName: body(), model: body(), reasoningEffort: body(), contextTier: body(), title: body(), splash: body(), splashMobile: body(), initialPrompt: body(), groupId: body(), visibility: body(), workspace: body() }, summary: "Create a session bound to a named agent. workspace { root, folder? } sets its working folder." },
     { name: "getSession", access: "session:read", method: "GET", path: "/sessions/:sessionId", params: { sessionId: path("sessionId") }, summary: "Get one session view (live orchestration status)." },
     { name: "deleteSession", access: "session:destroy", method: "DELETE", path: "/sessions/:sessionId", params: { sessionId: path("sessionId") }, summary: "Cancel and soft-delete a session." },
@@ -337,7 +338,7 @@ export function buildOperationRequest(name, params = {}) {
             resolvedPath = resolvedPath.replace(`:${spec.name || key}`, encodeURIComponent(raw));
         } else if (spec.in === "query") {
             if (value === undefined || value === null) continue;
-            queryParams.set(key, spec.type === "json" ? JSON.stringify(value) : String(value));
+            queryParams.set(key, spec.type === "json" ? JSON.stringify(value) : spec.strict ? strictQueryText(value) : String(value));
         } else {
             if (value === undefined) continue;
             if (!bodyPayload) bodyPayload = {};
@@ -351,8 +352,21 @@ export function buildOperationRequest(name, params = {}) {
     return { method: op.method, path: `${API_PREFIX}${resolvedPath}`, query: queryParams, body: bodyPayload };
 }
 
-/** Coerce a query-string value per the declared param type (server side). */
-export function coerceQueryValue(value, type) {
+/**
+ * A strict string query param (an id, `query("string", { strict: true })`)
+ * is carried only as one string, both when a client builds the request and
+ * when the server reads it. Anything else (a number, a list such as a
+ * repeated param, an object) becomes the empty string, which is never an id:
+ * the operation then refuses it (400) after its access gate, instead of
+ * reading an id coerced from it. A list is never joined into an id. The
+ * exact invalid value is not kept; only that it is invalid.
+ */
+function strictQueryText(value) {
+    return typeof value === "string" ? value : "";
+}
+
+/** Coerce a query-string value per the declared param type (server side); `strict` as for strictQueryText. */
+export function coerceQueryValue(value, type, { strict = false } = {}) {
     if (value === undefined || value === null) return undefined;
     if (type === "number") {
         const numeric = Number(value);
@@ -366,7 +380,7 @@ export function coerceQueryValue(value, type) {
             throw Object.assign(new Error("Malformed JSON query parameter"), { code: "INVALID_REQUEST" });
         }
     }
-    return String(value);
+    return strict ? strictQueryText(value) : String(value);
 }
 
 /** Path for the raw (streaming) artifact download route. */

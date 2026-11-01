@@ -104,6 +104,27 @@ test("coerceQueryValue rejects malformed json", () => {
     assert.throws(() => coerceQueryValue("{nope", "json"), /Malformed JSON/);
 });
 
+test("a strict string query param (readWorkflow's runId) is carried only as one string; anything else stays invalid (READ-WIRE-04)", () => {
+    assert.equal(getOperation("readWorkflow").params.runId.strict, true);
+    const sent = (runId) => buildOperationRequest("readWorkflow", { sessionId: "s1", runId }).query;
+    assert.equal(sent("R").get("runId"), "R");
+    assert.equal(sent("").get("runId"), "");
+    // A list holding a run, a number, a repeated run or an object is sent as the empty string, which is never a run id.
+    for (const runId of [["R"], 5, ["R", "R"], { runId: "R" }, true]) assert.equal(sent(runId).get("runId"), "", JSON.stringify(runId));
+    assert.equal(sent(undefined).has("runId"), false);
+    assert.equal(sent(null).has("runId"), false);
+    // The server reads it the same way: a repeated or structured value is never joined into an id.
+    const strict = { strict: true };
+    assert.equal(coerceQueryValue("R", "string", strict), "R");
+    assert.equal(coerceQueryValue("", "string", strict), "");
+    for (const raw of [["R"], ["R", "R"], { runId: "R" }]) assert.equal(coerceQueryValue(raw, "string", strict), "", JSON.stringify(raw));
+    assert.equal(coerceQueryValue(undefined, "string", strict), undefined);
+    // Every other string param keeps its coercion.
+    assert.equal(coerceQueryValue(["a", "b"], "string"), "a,b");
+    assert.equal(buildOperationRequest("getProviderUsageSummary", { providers: ["a", "b"] }).query.get("providers"), "a,b");
+    assert.equal(getOperation("getProviderUsageSummary").params.providers.strict, undefined);
+});
+
 test("artifactDownloadPath encodes segments", () => {
     assert.equal(
         artifactDownloadPath("s 1", "a/b.txt"),
