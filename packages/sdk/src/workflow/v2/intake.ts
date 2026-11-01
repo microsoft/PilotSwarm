@@ -35,6 +35,9 @@ export const INTAKE_REFUSED_WORKFLOW_EVENT = "workflow.message_refused";
 /** The event a refusal records on the recipient's session: an event only, its session row untouched (design 5.6). */
 export const INTAKE_REFUSED_RECIPIENT_EVENT = "session.workflow_message_refused";
 
+/** The intake's two activities (design section 8): the claim and the settles, scheduled by orchestration 1.0.83 only. */
+export const WORKFLOW_INTAKE_ACTIVITIES = { claim: "claimWorkflowIntake", settle: "settleWorkflowIntake" } as const;
+
 const EXCHANGE_ID = /^nx-[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 

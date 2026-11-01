@@ -166,6 +166,13 @@ const unsentCarried = (ns = [1]) => carry(bound(ns), MESSAGE).state;
 /** The invocation of exchanges `ns` after an attempt sent it and errored, carried by its own turn's retry. */
 const sentCarried = (ns = [1]) => carry(attempt(unsentCarried(ns), witness(true), { kind: "retrying" }).state, OWN_RETRY).state;
 
+/** The invocation's cancel write, its call made from the state and its answer or failure reported against that call. */
+const cancelWritten = state => applyIntakeInvocationCancelled(state, intakeInvocationCancelCall(state));
+const cancelWriteFailed = (state, nowMs) => applyIntakeInvocationCancelFailure(state, intakeInvocationCancelCall(state), nowMs);
+/** The end settlement, its call made from the state and its answer or failure reported against that call. */
+const endAnswered = (state, answer) => applyIntakeEnded(state, intakeEndCall(state), answer);
+const endFailedAt = (state, nowMs) => applyIntakeEndFailure(state, intakeEndCall(state), nowMs);
+
 // ─── Retry ───────────────────────────────────────────────────
 
 test("a failed store write is due 30 s after its first failure, doubling to 15 min, counting its failures", () => {
@@ -601,7 +608,7 @@ test("the wake: the earliest due write of any kind, in order, store writes only;
         assert.deepEqual(intakeDueWork(quiet, NOW * 1_000), []);
     }
     // Idle, only a cancel pending, its write failed: due at its retry, and that is all the wake makes; no turn of its own.
-    const cancelOnly = frozen(applyIntakeInvocationCancelFailure(latch(bound([1, 2]), 1), NOW).state);
+    const cancelOnly = frozen(cancelWriteFailed(latch(bound([1, 2]), 1), NOW).state);
     assert.equal(intakeDueAtMs(cancelOnly), NOW + 30_000);
     assert.deepEqual(intakeDueWork(cancelOnly, NOW + 30_000), [{ kind: "cancel_invocation" }]);
     assert.equal(intakeOwnTurnStimulus(cancelOnly, 0), null);
@@ -610,7 +617,7 @@ test("the wake: the earliest due write of any kind, in order, store writes only;
     const ending = frozen(attempt(sentCarried(), witness(true), { kind: "result" }).state);
     assert.equal(intakeDueAtMs(ending), 0);
     assert.deepEqual(intakeDueWork(ending, 0), [{ kind: "settle" }]);
-    const settleFailed = frozen(applyIntakeEndFailure(ending, NOW).state);
+    const settleFailed = frozen(endFailedAt(ending, NOW).state);
     assert.deepEqual(intakeDueWork(settleFailed, NOW + 29_999), []);
     assert.deepEqual(intakeDueWork(settleFailed, NOW + 30_000), [{ kind: "settle" }]);
     assert.deepEqual(intakeDueWork(latch(settleFailed, 1), NOW), [{ kind: "cancel_invocation" }]);
@@ -676,7 +683,7 @@ test("the bind admits the batch before any attempt carries it; a failed bind wai
     assert.deepEqual(intakeDueWork(admitted, NOW), [{ kind: "cancel_invocation" }]);
     assert.equal(carry(admitted, MESSAGE).carry, null);
     assert.deepEqual(intakeInvocationCancelCall(admitted), { kind: "unsent", invocationId: "inv-1", items: [{ exchangeId: exchange(1), claimId: "claim-1" }] });
-    const cleaned = applyIntakeInvocationCancelled(admitted);
+    const cleaned = cancelWritten(admitted);
     assert.deepEqual(carry(cleaned, MESSAGE).carry.items.map(entry => entry.exchangeId), [exchange(3)]);
     // Any other answer is a broken invariant: nothing is dispatched.
     const answer = bindAnswer(formed);
@@ -886,23 +893,26 @@ test("the end is a settlement: its batch with cancel flags, cleared once settled
     for (const start of STARTS) assert.equal(carry(ending, start).carry, null);
     assert.equal(intakeOwnTurnStimulus(ending, 1), null);
     assert.equal(intakeCanForm(ending), false);
-    const failed = applyIntakeEndFailure(ending, NOW);
+    const failed = endFailedAt(ending, NOW);
     assert.deepEqual(failed.decision, { kind: "settle_retry", retry: { attempts: 1, nextAttemptAtMs: NOW + 30_000 } });
     assert.deepEqual(failed.state.invocation.settle, { outcome: "completed", retry: { attempts: 1, nextAttemptAtMs: NOW + 30_000 } });
     const next = continued(failed.state);
-    assert.deepEqual(applyIntakeEndFailure(next, NOW + 30_000).state.invocation.settle.retry, { attempts: 2, nextAttemptAtMs: NOW + 90_000 });
-    const ended = applyIntakeEnded(next, frozen({ ended: true }));
+    assert.deepEqual(endFailedAt(next, NOW + 30_000).state.invocation.settle.retry, { attempts: 2, nextAttemptAtMs: NOW + 90_000 });
+    const endStep = endAnswered(next, frozen({ ended: true }));
+    assert.deepEqual(endStep.decision, { kind: "ended", ended: true });
+    const ended = endStep.state;
     assert.deepEqual(ended, { queue: ending.queue, invocation: null, heldCancelRetry: null });
     assert.equal(ended.queue[0].exchangeId, exchange(3));
     continued(ended);
     // A replay (found settled) clears it the same way; the held item forms the next invocation.
-    assert.deepEqual(applyIntakeEnded(ending, frozen({ ended: false })), ended);
+    assert.deepEqual(endAnswered(ending, frozen({ ended: false })), { state: ended, decision: { kind: "ended", ended: false } });
     assert.equal(intakeCanForm(ended), true);
-    assert.throws(() => applyIntakeEnded(ending, frozen({ ended: "yes" })), error => error instanceof IntakeShapeError && error.path === "end.ended");
+    assert.throws(() => endAnswered(ending, frozen({ ended: "yes" })), error => error instanceof IntakeShapeError && error.path === "end.ended");
     for (const state of [EMPTY, bound([1]), carried]) {
         assert.throws(() => intakeEndCall(state), IntakeInvariantError);
-        assert.throws(() => applyIntakeEnded(state, { ended: true }), IntakeInvariantError);
-        assert.throws(() => applyIntakeEndFailure(state, NOW), IntakeInvariantError);
+        // Reported against a call while no end waits: a broken invariant.
+        assert.throws(() => applyIntakeEnded(state, intakeEndCall(ending), { ended: true }), IntakeInvariantError);
+        assert.throws(() => applyIntakeEndFailure(state, intakeEndCall(ending), NOW), IntakeInvariantError);
     }
 });
 
@@ -921,7 +931,7 @@ test("a bound unsent item's cancel is latched, never carried, and removed by the
     assert.deepEqual(intakeDueWork(latched, NOW), [{ kind: "cancel_invocation" }]);
     assert.deepEqual(intakeInvocationCancelCall(latched), { kind: "unsent", invocationId: "inv-1", items: [{ exchangeId: exchange(1), claimId: "claim-1" }] });
     // The write fails (or commits, its answer lost); continue-as-new; the tombstone is gone: still latched, still not carried.
-    const failed = applyIntakeInvocationCancelFailure(latched, NOW);
+    const failed = cancelWriteFailed(latched, NOW);
     assert.deepEqual(failed.decision, { kind: "cancel_retry", retry: { attempts: 1, nextAttemptAtMs: NOW + 30_000 } });
     const next = continued(failed.state);
     assert.equal(latchIntakeCancels(next, none), next);
@@ -929,7 +939,7 @@ test("a bound unsent item's cancel is latched, never carried, and removed by the
     assert.deepEqual(intakeDueWork(next, NOW + 29_999), []);
     assert.deepEqual(intakeDueWork(next, NOW + 30_000), [{ kind: "cancel_invocation" }]);
     // Made (a cancel already recorded is the same result): the item leaves with its size; the rest rides the next attempt.
-    const cleaned = frozen(applyIntakeInvocationCancelled(next));
+    const cleaned = frozen(cancelWritten(next));
     assert.deepEqual(cleaned.invocation.items.map(entry => entry.exchangeId), [exchange(2)]);
     assert.deepEqual(cleaned.invocation.itemBytes, [ready.invocation.itemBytes[1]]);
     assert.equal(cleaned.invocation.cancelWrite, null);
@@ -939,21 +949,24 @@ test("a bound unsent item's cancel is latched, never carried, and removed by the
     // not_dispatched with an empty batch, whose end names no exchange.
     const both = latch(ready, 1, 2);
     assert.deepEqual(intakeInvocationCancelCall(both).items.map(entry => entry.exchangeId), [exchange(1), exchange(2)]);
-    const retriedBoth = continued(applyIntakeInvocationCancelFailure(both, NOW).state);
+    const retriedBoth = continued(cancelWriteFailed(both, NOW).state);
     assert.deepEqual(intakeInvocationCancelCall(retriedBoth).items.map(entry => entry.exchangeId), [exchange(1), exchange(2)]);
-    const empty = frozen(applyIntakeInvocationCancelled(retriedBoth));
+    const empty = frozen(cancelWritten(retriedBoth));
     assert.deepEqual(empty.invocation.settle, { outcome: "not_dispatched", retry: null });
     assert.deepEqual(intakeEndCall(empty), { invocationId: "inv-1", outcome: "not_dispatched", items: [] });
     continued(empty);
-    assert.deepEqual(applyIntakeEnded(empty, { ended: false }), { queue: [], invocation: null, heldCancelRetry: null });
+    assert.deepEqual(endAnswered(empty, { ended: false }).state, { queue: [], invocation: null, heldCancelRetry: null });
     // A parked unsent invocation emptied the same way is no longer parked.
     const parked = frozen(attempt(unsentCarried(), witness(false), { kind: "failed", cause: "credential" }).state);
-    const emptied = applyIntakeInvocationCancelled(latch(parked, 1));
+    const emptied = cancelWritten(latch(parked, 1));
     assert.equal(emptied.invocation.parked, null);
     assert.deepEqual(emptied.invocation.settle, { outcome: "not_dispatched", retry: null });
     continued(emptied);
-    assert.throws(() => applyIntakeInvocationCancelled(ready), IntakeInvariantError);
-    assert.throws(() => applyIntakeInvocationCancelFailure(ready, NOW), IntakeInvariantError);
+    assert.throws(() => cancelWritten(ready), IntakeInvariantError);
+    assert.throws(() => cancelWriteFailed(ready, NOW), IntakeInvariantError);
+    // Reported against a call while no cancel write waits: a broken invariant.
+    assert.throws(() => applyIntakeInvocationCancelled(ready, intakeInvocationCancelCall(latched)), IntakeInvariantError);
+    assert.throws(() => applyIntakeInvocationCancelFailure(ready, intakeInvocationCancelCall(latched), NOW), IntakeInvariantError);
 });
 
 test("a sent item's cancel, also while its end is pending, is recorded before the end names it; the outcome stands", () => {
@@ -963,7 +976,7 @@ test("a sent item's cancel, also while its end is pending, is recorded before th
     assert.deepEqual(latched.invocation.cancelWrite, { retry: null });
     assert.deepEqual(intakeInvocationCancelCall(latched), { kind: "requested", invocationId: "inv-1", items: [{ exchangeId: exchange(2), claimId: "claim-2" }] });
     assert.deepEqual(carry(latched, OWN_RETRY).carry.items.map(entry => entry.exchangeId), [exchange(1), exchange(2)]);
-    const recorded = frozen(applyIntakeInvocationCancelled(latched));
+    const recorded = frozen(cancelWritten(latched));
     assert.equal(recorded.invocation.cancelWrite, null);
     assert.deepEqual(recorded.invocation.items.map(entry => entry.cancelRequested), [false, true]);
     assert.equal(latchIntakeCancels(recorded, cancelling(2)), recorded);
@@ -974,20 +987,20 @@ test("a sent item's cancel, also while its end is pending, is recorded before th
     assert.equal(ending.invocation.settle.outcome, "completed");
 
     // Ending (completed), its end failed, or committed with its answer lost: a tombstone now is latched, not ignored.
-    const endFailed = continued(applyIntakeEndFailure(frozen(attempt(sentCarried([1, 2]), witness(true), { kind: "result" }).state), NOW).state);
+    const endFailed = continued(endFailedAt(frozen(attempt(sentCarried([1, 2]), witness(true), { kind: "result" }).state), NOW).state);
     const late = latch(endFailed, 1);
     assert.deepEqual(late.invocation.items.map(entry => entry.cancelRequested), [true, false]);
     assert.deepEqual(late.invocation.settle, endFailed.invocation.settle);
     // The cancel is recorded first: the end waits for it, even when the end itself is due.
     assert.throws(() => intakeEndCall(late), IntakeInvariantError);
-    assert.throws(() => applyIntakeEnded(late, { ended: true }), IntakeInvariantError);
+    assert.throws(() => endAnswered(late, { ended: true }), IntakeInvariantError);
     assert.deepEqual(intakeDueWork(late, NOW + 30_000), [{ kind: "cancel_invocation" }]);
     assert.deepEqual(intakeInvocationCancelCall(late), { kind: "requested", invocationId: "inv-1", items: [{ exchangeId: exchange(1), claimId: "claim-1" }] });
     // The record fails, continue-as-new, the tombstone is gone: the flag stays, and the end still waits for the record.
-    const recordFailed = continued(applyIntakeInvocationCancelFailure(late, NOW + 30_000).state);
+    const recordFailed = continued(cancelWriteFailed(late, NOW + 30_000).state);
     assert.deepEqual(intakeDueWork(recordFailed, NOW + 30_000), []);
     assert.deepEqual(intakeDueWork(recordFailed, NOW + 60_000), [{ kind: "cancel_invocation" }]);
-    const nowRecorded = frozen(applyIntakeInvocationCancelled(recordFailed));
+    const nowRecorded = frozen(cancelWritten(recordFailed));
     assert.deepEqual(intakeDueWork(nowRecorded, NOW + 60_000), [{ kind: "settle" }]);
     assert.deepEqual(intakeEndCall(nowRecorded), {
         invocationId: "inv-1", outcome: "completed",
@@ -999,6 +1012,92 @@ test("a sent item's cancel, also while its end is pending, is recorded before th
     // An unsent invocation that is ending was never dispatched and never will be: a tombstone changes nothing on it.
     const notDispatched = frozen(attempt(unsentCarried([1]), witness(false), { kind: "stopped" }).state);
     assert.equal(latchIntakeCancels(notDispatched, cancelling(1)), notDispatched);
+});
+
+test("an answer acknowledges only what its call named: a cancel latched after the call stays latched; an end in flight is kept and made again after the cancel write (review of 813de112)", () => {
+    // Unsent: the call names item 1; item 2 is latched before its answer. Only item 1 leaves; item 2's write is due now.
+    const ready = bound([1, 2, 3]);
+    const first = latch(ready, 1);
+    const call = intakeInvocationCancelCall(first);
+    const meanwhile = latch(first, 2);
+    const acknowledged = frozen(applyIntakeInvocationCancelled(meanwhile, call));
+    assert.deepEqual(acknowledged.invocation.items.map(entry => [entry.exchangeId, entry.cancelRequested]), [[exchange(2), true], [exchange(3), false]]);
+    assert.deepEqual(acknowledged.invocation.itemBytes, ready.invocation.itemBytes.slice(1));
+    assert.deepEqual(acknowledged.invocation.cancelWrite, { retry: null });
+    assert.deepEqual(intakeDueWork(acknowledged, NOW), [{ kind: "cancel_invocation" }]);
+    assert.deepEqual(intakeInvocationCancelCall(acknowledged).items, [{ exchangeId: exchange(2), claimId: "claim-2" }]);
+    for (const start of STARTS) assert.equal(carry(acknowledged, start).carry, null);
+    continued(acknowledged);
+    // A failure reported for that call keeps both latched, due at its retry.
+    const failed = applyIntakeInvocationCancelFailure(meanwhile, call, NOW);
+    assert.deepEqual(failed.state.invocation.items.map(entry => entry.cancelRequested), [true, true, false]);
+    assert.deepEqual(failed.state.invocation.cancelWrite, { retry: { attempts: 1, nextAttemptAtMs: NOW + 30_000 } });
+    // Sent: the first write records item 1 only; item 2's write is due now, and it names every latched item again.
+    const sentFirst = latch(sentCarried([1, 2]), 1);
+    const sentCall = intakeInvocationCancelCall(sentFirst);
+    const sentAck = frozen(applyIntakeInvocationCancelled(latch(sentFirst, 2), sentCall));
+    assert.deepEqual(sentAck.invocation.items.map(entry => entry.cancelRequested), [true, true]);
+    assert.deepEqual(sentAck.invocation.cancelWrite, { retry: null });
+    assert.deepEqual(intakeInvocationCancelCall(sentAck).items.map(entry => entry.exchangeId), [exchange(1), exchange(2)]);
+    continued(sentAck);
+    // A report against another call is a broken invariant.
+    for (const wrong of [
+        { ...call, invocationId: "inv-9" }, { ...call, kind: "requested" }, { ...call, items: [] },
+        { ...call, items: [{ exchangeId: exchange(3), claimId: "claim-3" }] }, { ...call, items: [{ exchangeId: exchange(1), claimId: "claim-9" }] },
+    ]) {
+        assert.throws(() => applyIntakeInvocationCancelled(meanwhile, frozen(wrong)), IntakeInvariantError, JSON.stringify(wrong));
+        assert.throws(() => applyIntakeInvocationCancelFailure(meanwhile, frozen(wrong), NOW), IntakeInvariantError, JSON.stringify(wrong));
+    }
+
+    // The end in flight: its call named item 1 unflagged, and a cancel was latched on item 1 before its answer. The answer
+    // is kept (end_after_cancel); the end stays pending behind the cancel write and is made again with the flag, which the
+    // store answers as the same end.
+    const ending = frozen(attempt(sentCarried([1, 2]), witness(true), { kind: "result" }).state);
+    const endCall = intakeEndCall(ending);
+    const lateLatch = latch(ending, 1);
+    for (const ended of [true, false]) {
+        const kept = applyIntakeEnded(lateLatch, endCall, frozen({ ended }));
+        assert.deepEqual(kept.decision, { kind: "end_after_cancel", ended });
+        assert.deepEqual(kept.state.invocation.settle, { outcome: "completed", retry: null });
+        assert.deepEqual(intakeDueWork(kept.state, NOW), [{ kind: "cancel_invocation" }]);
+        const recordedNow = frozen(cancelWritten(continued(kept.state)));
+        assert.deepEqual(intakeDueWork(recordedNow, NOW), [{ kind: "settle" }]);
+        assert.deepEqual(intakeEndCall(recordedNow).items.map(entry => entry.cancelRequested), [true, false]);
+        assert.deepEqual(endAnswered(recordedNow, frozen({ ended: false })), {
+            state: { queue: [], invocation: null, heldCancelRetry: null }, decision: { kind: "ended", ended: false },
+        });
+    }
+    // Its failure reported for that call: retried after the cancel write.
+    const keptFailure = applyIntakeEndFailure(lateLatch, endCall, NOW);
+    assert.deepEqual(keptFailure.state.invocation.settle, { outcome: "completed", retry: { attempts: 1, nextAttemptAtMs: NOW + 30_000 } });
+    assert.deepEqual(intakeDueWork(keptFailure.state, NOW), [{ kind: "cancel_invocation" }]);
+    continued(keptFailure.state);
+    // The cancel write made before the end's answer is applied: the store holds both, and the invocation is cleared.
+    assert.equal(applyIntakeEnded(frozen(cancelWritten(lateLatch)), endCall, frozen({ ended: true })).state.invocation, null);
+    // A report against another call is a broken invariant, and so is a flag the call set that the state does not hold.
+    for (const wrong of [
+        { ...endCall, invocationId: "inv-9" }, { ...endCall, outcome: "interrupted" }, { ...endCall, items: endCall.items.slice(1) },
+        { ...endCall, items: [{ ...endCall.items[0], claimId: "claim-9" }, endCall.items[1]] },
+        { ...endCall, items: [{ ...endCall.items[0], cancelRequested: true }, endCall.items[1]] },
+    ]) {
+        assert.throws(() => applyIntakeEnded(ending, frozen(wrong), { ended: true }), IntakeInvariantError, JSON.stringify(wrong));
+        assert.throws(() => applyIntakeEndFailure(ending, frozen(wrong), NOW), IntakeInvariantError, JSON.stringify(wrong));
+    }
+});
+
+test("the clock is read only for a failure: a claim's or a holder settle's result needs none, a failure reported without one is a broken invariant", () => {
+    const call = () => frozen(intakeArrivalClaimCall(EMPTY, "claim-1", envelope(1)));
+    assert.equal(applyIntakeClaim(EMPTY, call(), frozen(accepted(1, "claim-1")), ctx(none, null)).decision.kind, "held");
+    assert.equal(applyIntakeClaim(EMPTY, call(), frozen({ result: { result: "duplicate", state: "holding" } }), ctx(none, null)).decision.kind, "recorded");
+    assert.throws(() => applyIntakeClaim(EMPTY, call(), FAILED, ctx(none, null)), IntakeInvariantError);
+    const waiting = arrive(EMPTY, 1, FAILED).state;
+    assert.throws(() => applyIntakeClaim(waiting, intakeUnclaimedRetryCall(waiting, "claim-1"), FAILED, ctx(none, null)), IntakeInvariantError);
+    const settling = frozen(arrive(EMPTY, 1, accepted(1, "claim-1"), ctx(cancelling(1))).state);
+    const settle = { exchangeId: exchange(1), claimId: "claim-1", latched: true };
+    assert.deepEqual(applyIntakeHolderSettle(settling, settle, true, null).decision, { kind: "settled" });
+    assert.throws(() => applyIntakeHolderSettle(settling, settle, false, null), IntakeInvariantError);
+    // Not latched, a failure stops the execution, whatever the clock.
+    assert.equal(applyIntakeHolderSettle(EMPTY, { ...settle, latched: false }, false, null).decision.kind, "fail_stop");
 });
 
 // ─── A whole pass ────────────────────────────────────────────
@@ -1027,7 +1126,7 @@ test("a pass end to end: copies claimed, a duplicate recorded, one invocation bo
     const done = attempt(turn.state, witness(true), { kind: "result" });
     assert.deepEqual(done.decision, { next: "end", outcome: "completed" });
     assert.deepEqual(intakeEndCall(done.state).items.map(entry => entry.exchangeId), [exchange(1), exchange(2)]);
-    const settled = applyIntakeEnded(frozen(done.state), frozen({ ended: true }));
+    const settled = endAnswered(frozen(done.state), frozen({ ended: true })).state;
     assert.deepEqual(settled, { queue: [], invocation: null, heldCancelRetry: null });
     assert.equal(carryIntakeState(settled), undefined);
 });

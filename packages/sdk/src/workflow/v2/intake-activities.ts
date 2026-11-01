@@ -21,12 +21,12 @@
 import type { ActivityContext } from "duroxide";
 import { isTransientCmsError } from "../../cms-retry.js";
 import { WorkflowJsonError } from "./json.js";
-import { INTAKE_MAX_HELD, IntakeShapeError, intakeObject } from "./intake.js";
+import { INTAKE_MAX_HELD, IntakeShapeError, WORKFLOW_INTAKE_ACTIVITIES, intakeObject } from "./intake.js";
 import { workflowSendClientMessageId, workflowSendPrompt, type WorkflowV2ActivityRuntime } from "./runtime.js";
 import { WorkflowStoreError, type WorkflowIntakeRender, type WorkflowStore } from "./store.js";
 
-/** The intake's activity names (design section 8). */
-export const WORKFLOW_INTAKE_ACTIVITIES = { claim: "claimWorkflowIntake", settle: "settleWorkflowIntake" } as const;
+/** The intake's activity names (design section 8), defined with the shared intake pieces. */
+export { WORKFLOW_INTAKE_ACTIVITIES };
 
 /** The in-activity waits before each retry of a transient store error (design 5.4, F9). */
 export const WORKFLOW_INTAKE_RETRY_DELAYS_MS: readonly number[] = [1_000, 5_000, 15_000];

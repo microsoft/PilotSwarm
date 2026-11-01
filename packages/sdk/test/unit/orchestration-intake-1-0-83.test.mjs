@@ -135,17 +135,58 @@ test("1.0.83 is not registered, and nothing outside its tree imports it", () => 
     assert.match(read("orchestration_1_0_83/index.ts"), /export function\* durableSessionOrchestration_1_0_83\(/);
 });
 
+/** The lines `a` has that `b` has not, counted (a multiset difference), in `a`'s order. */
+function linesOnly(a, b) {
+    const counts = new Map();
+    for (const line of b.split("\n")) counts.set(line, (counts.get(line) ?? 0) + 1);
+    const out = [];
+    for (const line of a.split("\n")) {
+        const left = counts.get(line) ?? 0;
+        if (left > 0) counts.set(line, left - 1);
+        else out.push(line);
+    }
+    return out;
+}
+
+/** The lines of the frozen 1.0.82 queue.ts that 1.0.83 changes, each to carry the intake (its third deadline, its wake). */
+const QUEUE_CHANGED_82 = [
+    "    opts: { batchMs?: number; digestHasError?: boolean } = {},",
+    "): { kind: \"active\" | \"child-digest\"; remainingMs: number; timer?: ActiveTimer } | null {",
+    "    const candidates: Array<{ kind: \"active\" | \"child-digest\"; remainingMs: number; timer?: ActiveTimer }> = [];",
+    "        !hasFifoItems(runtime)",
+    "        } else if (state.activeTimer || (state.pendingChildDigest && !state.pendingChildDigest.ready)) {",
+    "                if (candidate.kind === \"active\" && candidate.timer) {",
+    "                if (candidate.kind === \"active\" && candidate.timer) {",
+];
+
 test("1.0.83 is the frozen 1.0.82 plus the intake: the files it does not change are the frozen ones", () => {
-    assert.deepEqual(tsFiles("orchestration_1_0_83"), [...tsFiles("orchestration_1_0_82"), "intake-machine.ts", "intake-state.ts"].sort());
-    for (const name of ["agents.ts", "queue.ts", "turn.ts", "utils.ts"]) {
+    assert.deepEqual(tsFiles("orchestration_1_0_83"), [...tsFiles("orchestration_1_0_82"), "intake-machine.ts", "intake-state.ts", "intake-wiring.ts"].sort());
+    for (const name of ["agents.ts", "turn.ts", "utils.ts"]) {
         assert.equal(read(`orchestration_1_0_83/${name}`), read(`orchestration_1_0_82/${name}`), name);
     }
+    // runtime.ts: its version, and no continue-as-new while an intake write is due (drain races it).
     assert.equal(read("orchestration_1_0_83/runtime.ts"), read("orchestration_1_0_82/runtime.ts")
-        .replace('export const CURRENT_ORCHESTRATION_VERSION = "1.0.82";', 'export const CURRENT_ORCHESTRATION_VERSION = "1.0.83";'));
-    // Its new imports are the intake modules only (and node:crypto for the text hash).
+        .replace('export const CURRENT_ORCHESTRATION_VERSION = "1.0.82";', 'export const CURRENT_ORCHESTRATION_VERSION = "1.0.83";')
+        .replace('import { decide, drain, settleQueuedWorkAfterDecide, turnsStarted } from "./queue.js";\n',
+            'import { decide, drain, settleQueuedWorkAfterDecide, turnsStarted } from "./queue.js";\nimport { intakeDueAtMs } from "./intake-machine.js";\n')
+        .replace("        if (state.activeTimer) continue;        // drain will race the timer next iteration\n",
+            "        if (state.activeTimer) continue;        // drain will race the timer next iteration\n"
+            + "        if (intakeDueAtMs(state.intake) !== null) continue; // 1.0.83: drain will race the intake's due write\n"));
+    // queue.ts: only the intake's hooks (arrival in drain and the sweep, the tombstone latch, the third deadline and its
+    // wake). Every frozen line it changes is listed; every line it adds is about the intake or the structure around it.
+    const queue82 = read("orchestration_1_0_82/queue.ts");
+    const queue83 = read("orchestration_1_0_83/queue.ts");
+    assert.deepEqual(linesOnly(queue82, queue83).sort(), [...QUEUE_CHANGED_82].sort());
+    for (const line of linesOnly(queue83, queue82)) {
+        assert.ok(/intake|Intake/.test(line)
+            || /^\s*(\}|continue;|\/\/.*|\} else if \(candidate\.kind === "active" && candidate\.timer\) \{|!hasFifoItems\(runtime\) &&)?\s*$/.test(line), line);
+    }
+    // Its new imports are the intake modules and the capability routing only (and node:crypto for the text hash).
     const frozen = new Set(tsFiles("orchestration_1_0_82").flatMap(name => importsOf(read(`orchestration_1_0_82/${name}`))));
     const added = new Set(tsFiles("orchestration_1_0_83").flatMap(name => importsOf(read(`orchestration_1_0_83/${name}`))).filter(s => !frozen.has(s)));
-    assert.deepEqual([...added].sort(), ["../workflow/v2/intake.js", "./intake-state.js", "node:crypto"]);
+    assert.deepEqual([...added].sort(), [
+        "../activity-routing.js", "../workflow/v2/intake.js", "./intake-machine.js", "./intake-state.js", "./intake-wiring.js", "node:crypto",
+    ]);
 });
 
 // ─── Every continue-as-new goes through versionedContinueAsNew ──

@@ -640,6 +640,14 @@ today; that growth is outside this design (section 13).
   `utcNow`.
 - Both claim before the cancel check; a `duplicate`, `conflict` or
   `unverified` result never calls `dropCancelledPrompt`.
+- (Implementation clarification, inactive wiring.) A successful claim
+  and the sweep read no clock; a store write that fails reads it once, to
+  set its retry, wherever it was made (drain, the sweep or the wake). An
+  intake tombstone is latched (5.5) and not consumed: once latched it
+  decides nothing more, and it leaves the bounded cancel set by eviction.
+  Every recorded claim answer and every cancel the intake makes is one
+  best-effort diagnostic event (`session.workflow_intake_recorded`); the
+  refusals' own events are the store's (5.6).
 
 ### 6.3 Parsing
 

@@ -9,6 +9,7 @@ import { advanceRegenPipeline,
     versionedContinueAsNew,
 } from "./lifecycle.js";
 import { decide, drain, settleQueuedWorkAfterDecide, turnsStarted } from "./queue.js";
+import { intakeDueAtMs } from "./intake-machine.js";
 import {
     HISTORY_SIZE_CHECK_INTERVAL_ITERATIONS,
     MAX_HISTORY_SIZE_BEFORE_CONTINUE_AS_NEW_BYTES,
@@ -296,6 +297,7 @@ export function* runLoop(runtime: DurableSessionRuntime): Generator<any, string,
 
         if (didWork) continue;
         if (state.activeTimer) continue;        // drain will race the timer next iteration
+        if (intakeDueAtMs(state.intake) !== null) continue; // 1.0.83: drain will race the intake's due write
         if (state.pendingInputQuestion) continue; // drain will block on dequeue for an answer
 
         ctx.traceInfo(`[orch] no buffered work, continuing as new`);

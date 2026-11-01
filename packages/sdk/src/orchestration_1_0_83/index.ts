@@ -26,7 +26,8 @@
  *   - agents.ts       sub-agent tracking, tool actions, shutdown cascade
  *   - runtime.ts      createRuntime, runLoop
  *   - intake-state.ts the intake state that continue-as-new carries (never KV)
- *   - intake-machine.ts the intake's pure transitions (not yet called)
+ *   - intake-machine.ts the intake's pure transitions
+ *   - intake-wiring.ts the intake's store writes from drain, the sweep and the wake
  *
  * @internal
  */

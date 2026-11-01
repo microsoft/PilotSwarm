@@ -47,6 +47,8 @@ import {
 } from "./state.js";
 import { handleTurnResult, processPrompt, processTimer } from "./turn.js";
 import { validClientMessageIds , noteMessageSender, applySenderAttribution, maybeQueueSharedPreamble } from "./utils.js";
+import { intakeDueAtMs } from "./intake-machine.js";
+import { intakeArrival, latchIntakeTombstones, runIntakeWake } from "./intake-wiring.js";
 
 // ─── KV FIFO bucket primitives ──────────────────────────────
 
@@ -434,9 +436,9 @@ function nextTimerCandidate(
     activeTimer: ActiveTimer | null,
     pendingChildDigest: PendingChildDigest | null,
     now: number,
-    opts: { batchMs?: number; digestHasError?: boolean } = {},
-): { kind: "active" | "child-digest"; remainingMs: number; timer?: ActiveTimer } | null {
-    const candidates: Array<{ kind: "active" | "child-digest"; remainingMs: number; timer?: ActiveTimer }> = [];
+    opts: { batchMs?: number; digestHasError?: boolean; intakeDueAtMs?: number | null } = {},
+): { kind: "active" | "child-digest" | "intake"; remainingMs: number; timer?: ActiveTimer } | null {
+    const candidates: Array<{ kind: "active" | "child-digest" | "intake"; remainingMs: number; timer?: ActiveTimer }> = [];
     if (activeTimer) {
         candidates.push({
             kind: "active",
@@ -465,6 +467,12 @@ function nextTimerCandidate(
             });
         }
     }
+    // 1.0.83 (design 5.4, N2): the intake's earliest due store write is the
+    // third deadline. Equal deadlines keep the order above: the armed timer
+    // and the digest window go first, as before.
+    if (opts.intakeDueAtMs !== undefined && opts.intakeDueAtMs !== null) {
+        candidates.push({ kind: "intake", remainingMs: Math.max(0, opts.intakeDueAtMs - now) });
+    }
     if (candidates.length === 0) return null;
     candidates.sort((left, right) => left.remainingMs - right.remainingMs);
     return candidates[0];
@@ -485,7 +493,9 @@ function needsBlockingDequeue(runtime: DurableSessionRuntime): boolean {
         !hasReadyPendingChildDigest(runtime) &&
         state.pendingToolActions.length === 0 &&
         !state.pendingPrompt &&
-        !hasFifoItems(runtime)
+        !hasFifoItems(runtime) &&
+        // 1.0.83 (design 5.4, N2): a due intake write is raced, never blocked on.
+        intakeDueAtMs(state.intake) === null
     );
 }
 
@@ -741,16 +751,20 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 msg = typeof raced.value === "string" ? JSON.parse(raced.value) : raced.value;
             }
 
-        } else if (state.activeTimer || (state.pendingChildDigest && !state.pendingChildDigest.ready)) {
+        } else if (state.activeTimer || (state.pendingChildDigest && !state.pendingChildDigest.ready) || intakeDueAtMs(state.intake) !== null) {
             const now: number = yield ctx.utcNow();
             const candidate = nextTimerCandidate(state.activeTimer, state.pendingChildDigest, now, {
                 batchMs: childUpdateBatchMs(state.subAgents?.length ?? 0),
                 digestHasError: pendingChildDigestHasError(runtime),
+                intakeDueAtMs: intakeDueAtMs(state.intake),
             });
             if (!candidate) continue;
 
             if (candidate.remainingMs === 0) {
-                if (candidate.kind === "active" && candidate.timer) {
+                if (candidate.kind === "intake") {
+                    // 1.0.83 (design 5.4): the due intake writes, store writes only; the armed timer stays armed.
+                    yield* runIntakeWake(runtime, now);
+                } else if (candidate.kind === "active" && candidate.timer) {
                     stash.push({ kind: "timer", timer: { ...candidate.timer }, firedAtMs: now });
                     state.activeTimer = null;
                 } else if (state.pendingChildDigest && state.pendingChildDigest.updates.length > 0) {
@@ -765,7 +779,10 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             const race: any = yield ctx.race(msgTask, timerTask);
 
             if (race.index === 1) {
-                if (candidate.kind === "active" && candidate.timer) {
+                if (candidate.kind === "intake") {
+                    // The intake deadline won: its writes were due when the timer fired.
+                    yield* runIntakeWake(runtime, now + candidate.remainingMs);
+                } else if (candidate.kind === "active" && candidate.timer) {
                     const firedAt: number = yield ctx.utcNow();
                     stash.push({ kind: "timer", timer: { ...candidate.timer }, firedAtMs: firedAt });
                     state.activeTimer = null;
@@ -833,6 +850,8 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                     stash.splice(s, 1);
                 }
             }
+            // 1.0.83 (design 5.5): latched on every intake copy it names; its writes are due now.
+            latchIntakeTombstones(runtime);
             continue;
         }
 
@@ -857,6 +876,13 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             // starting). Later cmds still pre-empt: the loop re-enters drain
             // between stages and this pass is non-blocking while regen is set.
             if (state.regen) return;
+            continue;
+        }
+
+        if (Object.hasOwn(msg, "workflowIntake")) {
+            // 1.0.83 (design 3, 5.3): an enveloped copy takes the intake path
+            // only; it is never a prompt, an answer or a child update.
+            yield* intakeArrival(runtime, msg.workflowIntake, "drain");
             continue;
         }
 
@@ -1185,6 +1211,8 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
                     }
                 }
             }
+            // 1.0.83 (design 5.5): latched on every intake copy it names; its writes are due on drain's wake.
+            latchIntakeTombstones(runtime);
             continue;
         }
 
@@ -1206,6 +1234,13 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
             // starting). Later cmds still pre-empt: the loop re-enters drain
             // between stages and this pass is non-blocking while regen is set.
             if (state.regen) return;
+            continue;
+        }
+
+        if (Object.hasOwn(msg, "workflowIntake")) {
+            // 1.0.83 (design 5.3, 6.2): the sweep's intake path: claim before
+            // any cancel, no timer release, no note, no digest taken.
+            yield* intakeArrival(runtime, msg.workflowIntake, "sweep");
             continue;
         }
 
