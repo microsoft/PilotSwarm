@@ -1,0 +1,115 @@
+// Server-render checks for the v2 workflow graph and node panes. Like
+// app-render-smoke.test.mjs, this runs component bodies without a DOM; effects
+// (resize observers, the controller's definition request) do not run.
+import test from "node:test";
+import assert from "node:assert/strict";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { PilotSwarmUiController, appReducer, createInitialState, createStore } from "../src/index.js";
+import { workflowDefinition } from "../src/workflow-view.js";
+import { WorkflowMainPane, WorkflowNodePane } from "../../react/src/workflow-workspace.js";
+import { WorkflowV2NodeContent } from "../../react/src/workflow-v2-panels.js";
+import { projectWorkflowV2 } from "../src/workflow-v2-view.js";
+import { startedData, legacyStartedData, started, completed, runtimeError, row, done, readModel } from "./workflow-v2-fixtures.mjs";
+
+function mount({ view = {}, events = [] } = {}) {
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
+    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", sessionKind: "workflow", title: "Watch" }] });
+    store.dispatch({ type: "sessions/selected", sessionId: "wf" });
+    if (events.length) store.dispatch({ type: "history/set", sessionId: "wf", history: { events } });
+    store.dispatch({ type: "ui/workflowView", sessionId: "wf", view });
+    return new PilotSwarmUiController({ store, transport: {} });
+}
+
+const main = controller => renderToStaticMarkup(React.createElement(WorkflowMainPane, { controller, log: null, icon: null }));
+const node = controller => renderToStaticMarkup(React.createElement(WorkflowNodePane, { controller }));
+
+test("the legacy graph renders as before, without v2 marks", () => {
+    const html = main(mount({ view: { definition: workflowDefinition(legacyStartedData) } }));
+    assert.ok(html.includes("node · idle"));
+    assert.ok(!html.includes("data-kind"));
+    assert.ok(!html.includes("data-phase=\"waiting\""));
+    assert.equal(html.split(">Workflow session<").length - 1, 1, "the footer text appears once");
+});
+
+test("a v2 graph shows typed state labels, runtime-error routes and run status from the read model", () => {
+    const model = readModel({ nodeExecutions: [row("pause", 1, "pending", { deadline: "2026-11-01T12:00:30.000Z" }), done("poll", 1, "changed")] });
+    const html = main(mount({ view: { definition: workflowDefinition(startedData), readModel: model } }));
+    assert.ok(html.includes("wait · 30 s"));
+    assert.ok(html.includes("send · Alert@1"));
+    assert.ok(html.includes("receive · Ack@1"));
+    assert.ok(html.includes("Done · changed"));
+    assert.ok(html.includes("data-kind=\"error\""));
+    assert.ok(html.includes("stroke-dasharray=\"5 4\""));
+    assert.ok(html.includes("data-phase=\"waiting\""));
+    assert.ok(html.includes(">Running<"), "the header shows the run status");
+    assert.ok(html.includes("aria-label=\"Inspect notify\"") && html.includes("tabindex=\"0\""), "nodes keep their keyboard and button semantics");
+    assert.equal(html.split(">Workflow session<").length - 1, 1);
+});
+
+test("a v2 graph is drawn from durable events alone, and an unrecognized read model is reported, not drawn", () => {
+    const events = [started("poll", 1), completed("poll", 1, "unchanged"), started("pause", 1)];
+    const html = main(mount({ view: { definition: workflowDefinition(startedData) }, events }));
+    assert.ok(html.includes("Done · unchanged"));
+    assert.ok(html.includes(">Waiting<"));
+    const refused = main(mount({ view: { readModel: { nope: true } } }));
+    assert.ok(refused.includes("No workflow graph to show"));
+    assert.ok(refused.includes("not a workflow v2 read model"));
+    const legacyKept = main(mount({ view: { definition: workflowDefinition(legacyStartedData), readModel: { nope: true } } }));
+    assert.ok(legacyKept.includes("node · idle"), "a bad read model never hides a legacy definition");
+});
+
+test("an invalid draft shows its diagnostics as text, and a draft with a graph says it is a draft", () => {
+    const invalid = readModel({ noRun: true, graph: null, definition: { state: "draft", publishedRevision: null, publishedDefinitionHash: null },
+        revision: { revision: 2, valid: false, irSha256: null, diagnostics: [{ severity: "error", code: "BAD", path: "states[0]", message: "<script>alert(1)</script> is not a state", line: 3 }] } });
+    const html = main(mount({ view: { readModel: invalid } }));
+    assert.ok(html.includes("This workflow definition is invalid"));
+    assert.ok(html.includes("&lt;script&gt;alert(1)&lt;/script&gt; is not a state"));
+    assert.ok(!html.includes("<script>alert"));
+    const draft = main(mount({ view: { readModel: readModel({ noRun: true, definition: { state: "draft", publishedRevision: null, publishedDefinitionHash: null } }) } }));
+    assert.ok(draft.includes("Draft revision 1 · not published."));
+    assert.ok(draft.includes("No run yet."));
+    assert.ok(node(mount({ view: { readModel: invalid } })).includes("This workflow definition is invalid"));
+});
+
+test("node details explain a send accurately and show values as escaped text, never markup", () => {
+    const payload = '{"x":"<b>bold</b>"}';
+    const model = readModel({
+        nodeExecutions: [done("notify", 1, "sent")],
+        outbox: [{ exchangeId: "nx-notify-1", nodeExecutionId: "nx-notify-1", recipientSessionId: "parent-1", recipientKind: "agent",
+            contract: "Alert@1", state: "delivered", attempts: 1, payloadPreview: payload }],
+    });
+    const html = node(mount({ view: { definition: workflowDefinition(startedData), readModel: model, selectedNodeId: "notify" } }));
+    assert.ok(html.includes("Sent · queued at recipient"));
+    assert.ok(html.includes("does not show that the recipient read, answered or acted on it"));
+    assert.ok(html.includes("&lt;b&gt;bold&lt;/b&gt;"));
+    assert.ok(!html.includes("<b>bold"));
+    assert.ok(html.includes("delivery_failed → failed · runtime error route"));
+});
+
+test("output and history tabs show the right result kind, truncation, and combined repeats with raw rows kept", () => {
+    const events = [
+        completed("poll", 1, "unchanged", "<img src=x onerror=alert(1)>"), completed("poll", 2, "unchanged", "<img src=x onerror=alert(1)>"),
+        completed("poll", 3, "unchanged", "<img src=x onerror=alert(1)>"), runtimeError("poll", 4, "timed_out", "cut off…"),
+    ];
+    const view = projectWorkflowV2({ definition: workflowDefinition(startedData), events });
+    const selected = view.nodes[0];
+    const render = tab => renderToStaticMarkup(React.createElement(WorkflowV2NodeContent, { tab, selected, nodes: view.nodes, select() {}, runOutput: null, runError: null }));
+    const output = render("output");
+    assert.ok(output.includes("Runtime error"));
+    assert.ok(output.includes("cut off…"));
+    assert.ok(output.includes("This preview was cut short"));
+    const history = render("history");
+    assert.ok(history.includes("1–3 (×3)"));
+    assert.ok(history.includes("Every loaded execution (4)"));
+    assert.ok(history.includes("Runtime error"));
+    const business = projectWorkflowV2({ definition: workflowDefinition(startedData), events: events.slice(0, 1) }).nodes[0];
+    const businessOutput = renderToStaticMarkup(React.createElement(WorkflowV2NodeContent, { tab: "output", selected: business, nodes: [], select() {}, runOutput: null, runError: null }));
+    assert.ok(businessOutput.includes("&lt;img src=x onerror=alert(1)&gt;"));
+    assert.ok(!businessOutput.includes("<img"));
+    const terminal = projectWorkflowV2({ readModel: readModel({ run: { status: "completed", outcome: "succeeded", terminalState: "done", output: '{"summary":"all good"}' } }) });
+    const doneNode = terminal.nodes.find(item => item.id === "done");
+    const terminalOutput = renderToStaticMarkup(React.createElement(WorkflowV2NodeContent, { tab: "output", selected: doneNode, nodes: terminal.nodes, select() {}, runOutput: terminal.output, runError: terminal.error }));
+    assert.ok(terminalOutput.includes("Run output"));
+    assert.ok(terminalOutput.includes("all good"));
+});

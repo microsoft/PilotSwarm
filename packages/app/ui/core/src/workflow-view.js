@@ -1,5 +1,14 @@
-/** Read-only workflow view data. Execution and its durable events are unchanged. */
+import { annotateWorkflowV2Edges, projectWorkflowV2, workflowShape, workflowV2Definition } from "./workflow-v2-view.js";
+
+export * from "./workflow-v2-view.js";
+
+/**
+ * Read-only workflow view data. Execution and its durable events are unchanged.
+ * A workflow v2 payload returns `{ shape: "v2", ... }`; a legacy payload keeps
+ * its original result, which has no `shape`.
+ */
 export function workflowDefinition(data) {
+    if (workflowShape(data) === "v2") return workflowV2Definition(data);
     if (!Array.isArray(data?.states)) throw new Error("The workflow definition has no states.");
     const states = data.states;
     if (!states.length) throw new Error("The workflow definition has no states.");
@@ -25,8 +34,13 @@ export function workflowDefinition(data) {
     return { name: data.name, version: data.version, initial, states };
 }
 
-export function workflowNodeViews(definition, events = [], live = null) {
+/**
+ * Node views for the graph. `options.readModel` is the object that
+ * `readWorkflowV2View` returns; only a v2 definition reads it.
+ */
+export function workflowNodeViews(definition, events = [], live = null, options = {}) {
     if (!definition) return [];
+    if (definition.shape === "v2") return projectWorkflowV2({ definition, events, readModel: options?.readModel ?? null }).nodes;
     const terminal = events.findLast(event => ["workflow.completed", "workflow.failed", "workflow.cancelled"].includes(event?.eventType));
     return definition.states.map(node => {
         const history = events.filter(event => event?.data?.stateId === node.id
@@ -166,7 +180,8 @@ export function layoutWorkflowGraph(definition, availableWidth = 640) {
         edge.labelX = outside < 0 ? (sx + tx) / 2 : (sx + points[2][0]) / 2;
         edge.labelY = track - 5;
     }
-    return { width, height: Math.max(150, y), positions, edges };
+    const layout = { width, height: Math.max(150, y), positions, edges };
+    return definition?.shape === "v2" ? annotateWorkflowV2Edges(definition, layout) : layout;
 }
 
 export function workflowLogBounds(availableHeight, requested = 210) {

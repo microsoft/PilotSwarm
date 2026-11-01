@@ -1,6 +1,8 @@
 import React from "react";
 import { useControllerSelector } from "./use-controller-state.js";
 import { layoutWorkflowGraph, workflowLogBounds, workflowNodeViews } from "../../core/src/workflow-view.js";
+import { projectWorkflowV2 } from "../../core/src/workflow-v2-view.js";
+import { WorkflowV2Banners, WorkflowV2NoGraph, WorkflowV2NodeContent } from "./workflow-v2-panels.js";
 
 const EMPTY_EVENTS = [];
 const EMPTY_VIEW = {};
@@ -16,20 +18,31 @@ function useWorkflowView(controller) {
     React.useEffect(() => {
         controller.ensureWorkflowDefinition(sessionId);
     }, [controller, sessionId, events]);
-    const nodes = React.useMemo(() => workflowNodeViews(view.definition, events, live), [view.definition, events, live]);
+    // `view.readModel` is the object readWorkflowV2View returns. Nothing in this
+    // file fetches it; a caller supplies it with ui/workflowView.
+    const readModel = view.readModel ?? null;
+    const v2 = React.useMemo(() => {
+        if (view.definition?.shape !== "v2" && !readModel) return null;
+        const projected = projectWorkflowV2({ definition: view.definition, readModel, events });
+        // A read model that is not v2 never hides a legacy definition.
+        return !projected.definition && view.definition ? null : projected;
+    }, [view.definition, readModel, events]);
+    const definition = v2 ? v2.definition : view.definition;
+    const legacyNodes = React.useMemo(() => v2 ? [] : workflowNodeViews(view.definition, events, live), [v2, view.definition, events, live]);
+    const nodes = v2 ? v2.nodes : legacyNodes;
     const selected = nodes.find(node => node.id === view.selectedNodeId)
-        || nodes.find(node => node.id === live?.current)
-        || nodes.find(node => node.id === view.definition?.initial)
+        || (v2 ? nodes.find(node => node.pending) : nodes.find(node => node.id === live?.current))
+        || nodes.find(node => node.id === definition?.initial)
         || nodes[0];
     const terminal = events.findLast(event => ["workflow.completed", "workflow.failed", "workflow.cancelled"].includes(event?.eventType));
-    const status = terminal?.eventType.slice("workflow.".length)
+    const status = v2 ? v2.status.label : terminal?.eventType.slice("workflow.".length)
         || (["completed", "failed", "cancelled"].includes(session?.status) ? session.status : live?.status || session?.status || "Starting");
     const select = nodeId => {
         controller.dispatch({ type: "ui/workflowView", sessionId, view: { selectedNodeId: nodeId } });
         controller.dispatch({ type: "ui/sidePaneTab", tab: "canvas" });
         controller.dispatch({ type: "canvas/flip", sessionId, slot: 1 });
     };
-    return { sessionId, session, view, nodes, selected, select, live, status };
+    return { sessionId, session, view, nodes, selected, select, live, status, v2, definition };
 }
 
 function Duration({ ms }) {
@@ -38,7 +51,7 @@ function Duration({ ms }) {
         : "Not recorded";
 }
 
-function WorkflowGraph({ definition, nodes, selected, select }) {
+function WorkflowGraph({ definition, nodes, selected, select, banners }) {
     const hostRef = React.useRef(null);
     const [width, setWidth] = React.useState(640);
     const [zoomMode, setZoomMode] = React.useState("fit");
@@ -54,6 +67,7 @@ function WorkflowGraph({ definition, nodes, selected, select }) {
     const layout = React.useMemo(() => layoutWorkflowGraph(definition, width), [definition, width]);
     const zoom = zoomMode === "fit" ? Math.min(1, width / layout.width) : 1;
     return React.createElement("div", { className: "ps-workflow-graph-view" },
+        React.createElement(WorkflowV2Banners, { banners }),
         React.createElement("div", { className: "ps-workflow-graph-tools" },
             React.createElement("span", null, "Full graph · scroll to explore"),
             React.createElement("button", { type: "button", className: "ps-mini-button", "aria-pressed": zoomMode === "fit",
@@ -70,8 +84,10 @@ function WorkflowGraph({ definition, nodes, selected, select }) {
             React.createElement("marker", { id: markerId, viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 6, markerHeight: 6, orient: "auto" },
                 React.createElement("path", { d: "M0 0L10 5L0 10z", fill: "currentColor" }))),
         layout.edges.map(edge => React.createElement("g", { key: `${edge.from}:${edge.to}`, className: "ps-workflow-edge",
-            "data-from": edge.from, "data-to": edge.to, "aria-label": `${edge.from}: ${edge.outcome} → ${edge.to}` },
-            React.createElement("path", { d: edge.path, markerEnd: `url(#${markerId})` }),
+            "data-from": edge.from, "data-to": edge.to, "data-kind": edge.kind,
+            "aria-label": `${edge.from}: ${edge.outcome} → ${edge.to}${edge.kind === "error" ? " (runtime error route)" : ""}` },
+            React.createElement("path", { d: edge.path, markerEnd: `url(#${markerId})`,
+                strokeDasharray: edge.kind === "error" ? "5 4" : undefined }),
             React.createElement("text", { x: edge.labelX, y: edge.labelY, textAnchor: "middle" },
                 edge.outcome.length > 20 ? `${edge.outcome.slice(0, 19)}…` : edge.outcome,
                 React.createElement("title", null, edge.outcome)))),
@@ -79,6 +95,7 @@ function WorkflowGraph({ definition, nodes, selected, select }) {
             const box = layout.positions.get(node.id);
             return React.createElement("g", {
                 key: node.id, className: `ps-workflow-node is-${node.state}${node.id === selected?.id ? " is-selected" : ""}`,
+                "data-phase": node.phase,
                 transform: `translate(${box.x},${box.y})`, role: "button", tabIndex: 0,
                 "data-node-id": node.id, "aria-label": `Inspect ${node.id}`, "aria-pressed": node.id === selected?.id,
                 onClick: () => select(node.id),
@@ -90,15 +107,17 @@ function WorkflowGraph({ definition, nodes, selected, select }) {
             React.createElement("text", { x: 14, y: 23, className: "ps-workflow-node-name" },
                 node.id.length > 23 ? `${node.id.slice(0, 22)}…` : node.id),
             React.createElement("text", { x: 14, y: 43, className: "ps-workflow-node-meta" },
-                node.type === "terminal" ? `ends · ${node.outcome || "terminal"}` : `${node.runtime || "script"} · ${node.outcome || node.state}`),
-            React.createElement("text", { x: box.width - 12, y: 57, textAnchor: "end", className: "ps-workflow-node-meta" },
+                node.shape === "v2" ? node.label.slice(0, 30) : node.type === "terminal" ? `ends · ${node.outcome || "terminal"}` : `${node.runtime || "script"} · ${node.outcome || node.state}`),
+            node.shape === "v2" ? React.createElement("text", { x: 14, y: 58, className: "ps-workflow-node-meta" },
+                node.stateLabel.length > 24 ? `${node.stateLabel.slice(0, 23)}…` : node.stateLabel) : null,
+            React.createElement("text", { x: box.width - 12, y: node.shape === "v2" ? 58 : 57, textAnchor: "end", className: "ps-workflow-node-meta" },
                 node.runs ? `×${node.runs}${node.partial ? " loaded" : ""}` : ""),
-            React.createElement("title", null, node.id));
+            React.createElement("title", null, node.shape === "v2" ? `${node.id} · ${node.label} · ${node.stateLabel}` : node.id));
         }))));
 }
 
 export function WorkflowMainPane({ controller, log, icon, showFooter = true, onNodeSelected }) {
-    const { sessionId, session, view, nodes, selected, select, status } = useWorkflowView(controller);
+    const { sessionId, session, view, nodes, selected, select, status, v2, definition } = useWorkflowView(controller);
     const splitRef = React.useRef(null);
     const dragRef = React.useRef(false);
     const [splitHeight, setSplitHeight] = React.useState(500);
@@ -120,15 +139,16 @@ export function WorkflowMainPane({ controller, log, icon, showFooter = true, onN
     };
     return React.createElement("section", { className: "ps-workflow-main", "aria-label": "Workflow session" },
         React.createElement("header", { className: "ps-workflow-main-header" },
-            React.createElement("strong", null, icon, view.definition?.name || session?.title || "Workflow"),
+            React.createElement("strong", null, icon, definition?.name || session?.title || "Workflow"),
             React.createElement("span", { className: "ps-workflow-status" }, status),
             React.createElement("button", { type: "button", className: "ps-mini-button", disabled: !selected,
                 onClick: () => selectNode(selected.id) }, "Node details")),
         React.createElement("div", { ref: splitRef, className: "ps-workflow-split",
             style: { gridTemplateRows: `minmax(150px, 1fr) 12px ${height}px` } },
             React.createElement("div", { className: "ps-workflow-graph-region" },
-                view.definition
-                    ? React.createElement(WorkflowGraph, { definition: view.definition, nodes, selected, select: selectNode })
+                definition
+                    ? React.createElement(WorkflowGraph, { definition, nodes, selected, select: selectNode, banners: v2?.banners })
+                    : v2 ? React.createElement(WorkflowV2NoGraph, { projection: v2 })
                     : React.createElement("div", { className: "ps-workflow-empty", role: view.error ? "alert" : "status" },
                         view.error || "Loading workflow graph…",
                         view.error ? React.createElement("button", { type: "button", className: "ps-mini-button",
@@ -161,9 +181,10 @@ export function WorkflowMainPane({ controller, log, icon, showFooter = true, onN
 }
 
 export function WorkflowNodePane({ controller }) {
-    const { view, selected, select, nodes } = useWorkflowView(controller);
+    const { view, selected, select, nodes, v2 } = useWorkflowView(controller);
     const [tab, setTab] = React.useState("details");
     const tabId = React.useId();
+    if (!selected && v2) return React.createElement(WorkflowV2NoGraph, { projection: v2 });
     if (!selected) return React.createElement("div", { className: "ps-workflow-empty" },
         view.error || "Select a workflow node to inspect it.");
     const property = (label, value) => React.createElement("div", { className: "ps-workflow-property", key: label },
@@ -173,12 +194,18 @@ export function WorkflowNodePane({ controller }) {
         React.createElement("header", null,
             React.createElement("small", null, "SELECTED NODE"),
             React.createElement("h2", null, selected.id),
-            React.createElement("p", null, selected.type === "script" ? `${selected.runtime || "Script"} · ${selected.state}` : `Terminal · ${selected.state}`)),
+            React.createElement("p", null, selected.shape === "v2" ? `${selected.label} · ${selected.stateLabel}`
+                : selected.type === "script" ? `${selected.runtime || "Script"} · ${selected.state}` : `Terminal · ${selected.state}`)),
         React.createElement("div", { className: "ps-workflow-detail-tabs", role: "tablist", "aria-label": "Node detail views" },
             [["details", "Details"], ["output", "Output"], ["history", "History"]].map(([id, title]) =>
                 React.createElement("button", { key: id, id: `${tabId}-${id}`, role: "tab", type: "button",
                     "aria-selected": tab === id, onClick: () => setTab(id) }, title))),
         React.createElement("div", { className: "ps-workflow-detail-content", role: "tabpanel", "aria-labelledby": `${tabId}-${tab}` },
+            selected.shape === "v2" ? React.createElement(WorkflowV2NodeContent, {
+                tab, selected, nodes, select,
+                runOutput: v2?.status.terminalState === selected.id ? v2.output : null,
+                runError: v2?.status.terminalState === selected.id ? v2.error : null,
+            }) :
             tab === "details" ? React.createElement(React.Fragment, null,
                 property("Executions", `${selected.runs}${selected.partial ? " in loaded history" : ""}`),
                 property("Last outcome", selected.outcome || "Not recorded"),
