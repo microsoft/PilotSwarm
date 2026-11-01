@@ -84,6 +84,11 @@ export const WORKFLOW_V2_EFFECT_VERSION = "1.0.0";
  */
 export const WORKFLOW_V2_NOTIFY_NAME = "workflow-v2-notify";
 export const WORKFLOW_V2_NOTIFY_VERSION = "1.0.0";
+/**
+ * Evaluations of one admission whose KV revision changed before it committed,
+ * before the enter activity fails (and the store retry policy runs it again).
+ */
+export const WORKFLOW_V2_ADMISSION_EVALUATIONS = 5;
 /** Node admissions per controller execution before continue-as-new bounds history. */
 export const WORKFLOW_V2_ADMISSIONS_PER_EXECUTION = 25;
 /** Idle waits (backstop timers that found nothing) per controller execution before continue-as-new. */
@@ -850,50 +855,61 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             }
             return { admitted: true, nodeExecutionId, state: admitted.state };
         }
-        // The input is evaluated with the run's current KV revision, which the admission pins.
-        const kvRevision = run.kvRevision;
-        const kv = await store.readKv(runId, kvRevision);
+        // The admission pins the KV revision that is current when it commits.
+        // set_vars locks the run row as the admission does, so every set_vars
+        // is ordered before or after it: when the revision this evaluation
+        // read changed before the commit, the store refuses the admission and
+        // the input is evaluated again with the new revision.
+        for (let evaluation = 1; ; evaluation += 1) {
+            const current = evaluation === 1 ? run : await runOf(runId);
+            const kvRevision = current.kvRevision;
+            const kv = await store.readKv(runId, kvRevision);
 
-        let immediate: NodeResultInput | null = null;
-        let value: JsonValue = null;
-        const arrived = await arrival(run, ir, kv, nodeId, predecessorId, arrivalRoute);
-        if ("failure" in arrived) immediate = arrived.failure;
-        else {
-            value = arrived.incoming;
-            if (node.type === "script" && node.hasInput) {
-                try { value = evaluateBindingTemplate(node.input, scopeFor(run, arrived.incoming, arrived.runtimeError, kv), `states.${nodeId}.input`); }
-                catch (error) {
-                    if (!(error instanceof WorkflowBindingError)) throw error;
-                    immediate = runtimeError("invalid_input", error.message);
+            let immediate: NodeResultInput | null = null;
+            let value: JsonValue = null;
+            const arrived = await arrival(current, ir, kv, nodeId, predecessorId, arrivalRoute);
+            if ("failure" in arrived) immediate = arrived.failure;
+            else {
+                value = arrived.incoming;
+                if (node.type === "script" && node.hasInput) {
+                    try { value = evaluateBindingTemplate(node.input, scopeFor(current, arrived.incoming, arrived.runtimeError, kv), `states.${nodeId}.input`); }
+                    catch (error) {
+                        if (!(error instanceof WorkflowBindingError)) throw error;
+                        immediate = runtimeError("invalid_input", error.message);
+                    }
+                }
+                if (!immediate && node.type === "script" && node.inputSchema) {
+                    const problems = schemaSetFor(current.irSha256, ir.schemaDefs).validate(node.inputSchema, value);
+                    if (problems.length) immediate = runtimeError("invalid_input", `Input does not match ${node.inputSchema}.`, problemsJson(problems));
                 }
             }
-            if (!immediate && node.type === "script" && node.inputSchema) {
-                const problems = schemaSetFor(run.irSha256, ir.schemaDefs).validate(node.inputSchema, value);
-                if (problems.length) immediate = runtimeError("invalid_input", `Input does not match ${node.inputSchema}.`, problemsJson(problems));
+            let inputText: string;
+            try { inputText = boundedCanonicalJson(value, `Input of state '${nodeId}'`); }
+            catch (error) {
+                if (!(error instanceof WorkflowJsonError)) throw error;
+                immediate = runtimeError("invalid_input", error.message);
+                inputText = canonicalJson(null);
+            }
+            if (immediate) immediate = { ...immediate, winner: "controller" };
+            const result = await store.enterNode({
+                runId, nodeExecutionId, scopeId, nodeId, ordinal, nodeType: node.type, predecessorId, arrivalRoute, inputText, kvRevision, immediate,
+                projection: {
+                    sessionId: current.workflowSessionId,
+                    events: [{ eventType: "workflow.state_started", data: {
+                        runId, nodeExecutionId, stateId: nodeId, scopeId, ordinal, type: node.type, step: ordinal, kvRevision,
+                        ...(arrivalRoute === CATCH_ALL_ROUTE ? { catchAll: true, failedNodeExecutionId: predecessorId } : {}),
+                        ...(immediate ? { immediateOutcome: immediate.outcome } : {}),
+                    } }],
+                    update: { touch: true },
+                },
+            });
+            if (result.admitted) return { admitted: true, nodeExecutionId, state: result.node.state };
+            if (result.reason === "inactive") return { admitted: false, status: result.run.status, outcome: result.run.terminalOutcome };
+            // kv_changed: a set_vars committed after this evaluation read the run.
+            if (evaluation >= WORKFLOW_V2_ADMISSION_EVALUATIONS) {
+                throw new WorkflowStoreError("KV_CHANGING", `The run's KV changed during each of ${evaluation} evaluations of state '${nodeId}'; the admission is retried.`);
             }
         }
-        let inputText: string;
-        try { inputText = boundedCanonicalJson(value, `Input of state '${nodeId}'`); }
-        catch (error) {
-            if (!(error instanceof WorkflowJsonError)) throw error;
-            immediate = runtimeError("invalid_input", error.message);
-            inputText = canonicalJson(null);
-        }
-        if (immediate) immediate = { ...immediate, winner: "controller" };
-        const result = await store.enterNode({
-            runId, nodeExecutionId, scopeId, nodeId, ordinal, nodeType: node.type, predecessorId, arrivalRoute, inputText, kvRevision, immediate,
-            projection: {
-                sessionId: run.workflowSessionId,
-                events: [{ eventType: "workflow.state_started", data: {
-                    runId, nodeExecutionId, stateId: nodeId, scopeId, ordinal, type: node.type, step: ordinal, kvRevision,
-                    ...(arrivalRoute === CATCH_ALL_ROUTE ? { catchAll: true, failedNodeExecutionId: predecessorId } : {}),
-                    ...(immediate ? { immediateOutcome: immediate.outcome } : {}),
-                } }],
-                update: { touch: true },
-            },
-        });
-        if (!result.admitted) return { admitted: false, status: result.run.status, outcome: result.run.terminalOutcome };
-        return { admitted: true, nodeExecutionId, state: result.node.state };
     });
 
     runtime.registerActivity(WORKFLOW_V2_ACTIVITIES.collect, async (actx, rawInput) => {

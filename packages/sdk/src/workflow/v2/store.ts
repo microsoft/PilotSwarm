@@ -818,10 +818,14 @@ export class WorkflowStore {
                 throw new WorkflowStoreError("KV_REVISION_CONFLICT", `The run's KV is at revision ${run.kvRevision}, not ${input.expectedRevision}.`,
                     { kvRevision: run.kvRevision });
             }
-            const current = isJsonObject(run.kv) ? run.kv : {};
-            const next: { [key: string]: JsonValue } = {};
-            for (const [key, value] of Object.entries(current)) if (!input.delete.includes(key)) next[key] = value;
-            for (const [key, value] of Object.entries(input.set)) next[key] = value;
+            const current: { [key: string]: JsonValue } = isJsonObject(run.kv) ? run.kv : {};
+            const replaced = new Set([...input.delete, ...Object.keys(input.set)]);
+            // fromEntries defines own properties, so any valid key ("__proto__"
+            // included) stays plain data; assignment would call the prototype setter.
+            const next: { [key: string]: JsonValue } = Object.fromEntries([
+                ...Object.entries(current).filter(([key]) => !replaced.has(key)),
+                ...Object.entries(input.set),
+            ]);
             const kvText = checkedKvText(next);
             const revision = run.kvRevision + 1;
             await client.query(`UPDATE ${this.t.runs} SET kv = $2, kv_revision = $3, updated_at = now() WHERE run_id = $1`, [run.runId, kvText, revision]);
@@ -991,7 +995,13 @@ export class WorkflowStore {
     /**
      * Admit one node execution of an active run. Idempotent: the identity is
      * derived from the history-selected (run, scope, node, ordinal), and a
-     * retry must name the same predecessor, route and input.
+     * retry must name the same predecessor and route, and the same input
+     * when it was evaluated with the same KV revision.
+     *
+     * The admission pins the KV revision current at its commit: set_vars
+     * locks this run row too, so each set_vars commits before or after the
+     * admission. An admission whose input was evaluated with an earlier
+     * revision is refused (kv_changed), and the caller evaluates it again.
      */
     async enterNode(input: {
         runId: string;
@@ -1007,7 +1017,8 @@ export class WorkflowStore {
         kvRevision: number;
         immediate: NodeResultInput | null;
         projection?: SessionProjection;
-    }): Promise<{ admitted: true; inserted: boolean; node: WorkflowNodeExecutionRow } | { admitted: false; run: WorkflowRunRow }> {
+    }): Promise<{ admitted: true; inserted: boolean; node: WorkflowNodeExecutionRow }
+        | { admitted: false; reason: "inactive" | "kv_changed"; run: WorkflowRunRow }> {
         const inputSha256 = sha256Hex(input.inputText);
         return this.transaction(async client => {
             const live = await this.lockLiveSession(client, await this.workflowOfRun(client, input.runId));
@@ -1015,14 +1026,17 @@ export class WorkflowStore {
             const existing = await client.query(`SELECT * FROM ${this.t.nodes} WHERE node_execution_id = $1`, [input.nodeExecutionId]);
             if (existing.rows[0]) {
                 const node = nodeFrom(existing.rows[0]);
+                // An input evaluated with another KV revision may differ; the stored admission stands.
+                const sameBasis = node.kvRevision === input.kvRevision;
                 if (node.runId !== input.runId || node.scopeId !== input.scopeId || node.nodeId !== input.nodeId || node.ordinal !== input.ordinal
-                    || node.predecessorId !== input.predecessorId || node.arrivalRoute !== input.arrivalRoute || node.inputSha256 !== inputSha256) {
+                    || node.predecessorId !== input.predecessorId || node.arrivalRoute !== input.arrivalRoute || (sameBasis && node.inputSha256 !== inputSha256)) {
                     throw new WorkflowStoreError("NONDETERMINISTIC_ADMISSION", `Node execution ${input.nodeExecutionId} was admitted with different coordinates.`);
                 }
                 return { admitted: true as const, inserted: false, node };
             }
             // A paused run admits nothing new; a deleted or ended one admits nothing at all.
-            if (!live || !ADMITTING_RUN_STATUSES.includes(run.status)) return { admitted: false as const, run };
+            if (!live || !ADMITTING_RUN_STATUSES.includes(run.status)) return { admitted: false as const, reason: "inactive" as const, run };
+            if (run.kvRevision !== input.kvRevision) return { admitted: false as const, reason: "kv_changed" as const, run };
             const immediate = input.immediate;
             const { rows } = await client.query(
                 `INSERT INTO ${this.t.nodes}

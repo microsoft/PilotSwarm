@@ -49,6 +49,49 @@ states:
   done: { type: terminal, outcome: succeeded, output: { last: "\${input}", mode: "\${kv.mode}" } }
 `;
 
+/** One script state whose input reads the KV; it reports the snapshot and input it was given. */
+const ONE_STATE = `
+apiVersion: pilotswarm.dev/v2-draft
+kind: Workflow
+metadata: { name: one-state, version: "1.0.0" }
+initial: first
+states:
+  first:
+    type: script
+    input: { mode: "\${kv.mode}" }
+    source: |
+      await setResult("ok", { kv: context.kv, input: context.input });
+    transition: { next: { ok: done } }
+  done: { type: terminal, outcome: succeeded, output: "\${input}" }
+`;
+
+/** A script that reports which KV keys it sees as own data, and a terminal that reads two of them. */
+const KEYS = `
+apiVersion: pilotswarm.dev/v2-draft
+kind: Workflow
+metadata: { name: kv-keys, version: "1.0.0" }
+initial: act
+states:
+  act:
+    type: script
+    source: |
+      await setResult("ok", {
+        keys: Object.keys(context.kv).sort(),
+        proto: Object.hasOwn(context.kv, "__proto__") ? context.kv["__proto__"] : "missing",
+        plain: Object.getPrototypeOf(context.kv) === Object.prototype,
+      });
+    transition: { next: { ok: done } }
+  done:
+    type: terminal
+    outcome: succeeded
+    output: { seen: "\${input}", proto: '\${kv["__proto__"] ?? "deleted"}', ctor: "\${kv.constructor}" }
+`;
+
+/** A KV map's own entries, sorted by key, and whether its prototype is the plain one. */
+function entriesOf(map) {
+    return { plain: Object.getPrototypeOf(map) === Object.prototype, entries: Object.entries(map).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)) };
+}
+
 async function until(check, label, timeoutMs = 60_000) {
     const deadline = Date.now() + timeoutMs;
     let last;
@@ -71,9 +114,10 @@ function gate() {
 /**
  * A worker-equivalent registration. `hold` pauses each effect named in it
  * after its node was admitted and before its script starts (the tool binding
- * read); `refusals` counts admissions the store refused for a pause.
+ * read); `refusals` counts admissions the store refused for a pause;
+ * `wrapStore` wraps the store the runtime uses.
  */
-async function harness(env) {
+async function harness(env, { wrapStore } = {}) {
     const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
     await catalog.initialize();
     const store = catalog.workflowStore();
@@ -91,7 +135,7 @@ async function harness(env) {
         registerOrchestrationVersioned: (name, version, fn) => runtime.registerOrchestrationVersioned(name, version, fn),
     };
     registerWorkflowV2(registrar, {
-        store,
+        store: wrapStore ? wrapStore(store) : store,
         catalog,
         enabled: () => true,
         resolveToolBinding: async (sessionId) => {
@@ -267,6 +311,95 @@ describe("workflow v2 run control on the real runtime", () => {
             expect(await parent.update(id, { operation: "cancel", operation_id: "cancel-1", reason: "not needed" })).toEqual({ ...cancel, replayed: true });
             expect(await parent.update(id, { operation: "pause", operation_id: "pause-late" })).toMatchObject({ ok: false, error: { code: "RUN_ENDED" } });
             expect(await h.store.listNodeExecutions(runId)).toEqual([]);
+        } finally { await h.stop(); }
+    });
+    it("keeps any valid KV key, \"__proto__\" and \"constructor\" included, as plain data through every update", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const parent = await parentOf(h);
+            const id = randomUUID();
+            const held = h.hold(id);
+            // Parsed JSON, as tool arguments arrive: "__proto__" is an own data property here.
+            const initial = JSON.parse('{"__proto__": 7, "constructor": "c", "toString": null, "mode": "a"}');
+            const created = await createWorkflowV2(h.host, { workflowSessionId: id, parentSessionId: parent.parentId, yaml: KEYS,
+                actor: ACTOR, operationId: "start", start: { inputs: {}, vars: initial } });
+            const { runId } = created.receipt.run;
+            await held.reached;
+            const set = (operationId, setJson, expected) => parent.update(id,
+                { operation: "set_vars", operation_id: operationId, set: JSON.parse(setJson), expected_kv_revision: expected });
+            const at = async (revision) => entriesOf(await h.store.readKv(runId, revision));
+            expect(await at(1)).toEqual({ plain: true, entries: [["__proto__", 7], ["constructor", "c"], ["mode", "a"], ["toString", null]] });
+
+            // An unrelated update keeps the key and its value.
+            expect(await set("mode-b", '{"mode": "b"}', 1)).toMatchObject({ ok: true, kvRevision: 2 });
+            expect(await at(2)).toEqual({ plain: true, entries: [["__proto__", 7], ["constructor", "c"], ["mode", "b"], ["toString", null]] });
+            // A direct set of null, its replay, then an object value carried through another unrelated update.
+            const toNull = await set("proto-null", '{"__proto__": null}', 2);
+            expect(toNull).toMatchObject({ ok: true, replayed: false, kvRevision: 3 });
+            expect(await set("proto-null", '{"__proto__": null}', 2)).toEqual({ ...toNull, replayed: true });
+            expect(await at(3)).toEqual({ plain: true, entries: [["__proto__", null], ["constructor", "c"], ["mode", "b"], ["toString", null]] });
+            expect(await set("proto-object", '{"__proto__": {"a": 1}}', 3)).toMatchObject({ ok: true, kvRevision: 4 });
+            expect(await set("mode-c", '{"mode": "c"}', 4)).toMatchObject({ ok: true, kvRevision: 5 });
+            expect(await at(5)).toEqual({ plain: true, entries: [["__proto__", { a: 1 }], ["constructor", "c"], ["mode", "c"], ["toString", null]] });
+            // Only an explicit delete removes it.
+            expect(await parent.update(id, { operation: "set_vars", operation_id: "proto-delete", delete: ["__proto__"], expected_kv_revision: 5 }))
+                .toMatchObject({ ok: true, kvRevision: 6 });
+            expect(await at(6)).toEqual({ plain: true, entries: [["constructor", "c"], ["mode", "c"], ["toString", null]] });
+            const view = (await parent.read(id)).run;
+            expect(view.kvRevision).toBe(6);
+            expect(entriesOf(JSON.parse(view.kv)).entries).toEqual([["constructor", "c"], ["mode", "c"], ["toString", null]]);
+
+            // The running script keeps revision 1, "__proto__" as own data; the terminal reads revision 6.
+            held.open();
+            const run = await finished(h, runId);
+            expect(run.status, JSON.stringify(run)).toBe("completed");
+            const [act, done] = await h.store.listNodeExecutions(runId);
+            expect([act.kvRevision, done.kvRevision]).toEqual([1, 6]);
+            expect(act.output).toEqual({ keys: ["__proto__", "constructor", "mode", "toString"], proto: 7, plain: true });
+            expect(run.terminalOutput).toEqual({ seen: act.output, proto: "deleted", ctor: "c" });
+        } finally { await h.stop(); }
+    });
+
+    it("pins the KV revision current when an admission commits, even when set_vars commits while it is evaluated", { timeout: TIMEOUT }, async () => {
+        const reads = [];
+        let armed = false;
+        const evaluating = gate();
+        // The first KV read of the run is the evaluation of its first admission; it waits there.
+        const h = await harness(getEnv(), {
+            wrapStore: (store) => {
+                const watched = Object.create(store);
+                watched.readKv = async (runId, revision) => {
+                    if (armed) {
+                        reads.push(revision);
+                        if (reads.length === 1) { evaluating.arrive(); await evaluating.wait(); }
+                    }
+                    return store.readKv(runId, revision);
+                };
+                return watched;
+            },
+        });
+        try {
+            const parent = await parentOf(h);
+            const id = randomUUID();
+            armed = true;
+            const created = await createWorkflowV2(h.host, { workflowSessionId: id, parentSessionId: parent.parentId, yaml: ONE_STATE,
+                actor: ACTOR, operationId: "start", start: { inputs: {}, vars: { mode: "a" } } });
+            const { runId } = created.receipt.run;
+            await evaluating.reached;
+            expect(await h.store.listNodeExecutions(runId)).toEqual([]);
+            // set_vars commits after the evaluation read revision 1 and before the admission commits.
+            expect(await parent.update(id, { operation: "set_vars", operation_id: "during", set: { mode: "b" }, expected_kv_revision: 1 }))
+                .toMatchObject({ ok: true, kvRevision: 2 });
+            evaluating.open();
+            const run = await finished(h, runId);
+            expect(run.status, JSON.stringify(run)).toBe("completed");
+            // The admission was refused for the changed revision and evaluated again with revision 2.
+            expect(reads.slice(0, 2)).toEqual([1, 2]);
+            const [first] = await h.store.listNodeExecutions(runId);
+            expect(first).toMatchObject({ nodeId: "first", ordinal: 1, kvRevision: 2, input: { mode: "b" } });
+            expect(first.output).toEqual({ kv: { mode: "b" }, input: { mode: "b" } });
+            const started = await h.host.catalog.getSessionEvents(id, 0, 50, ["workflow.state_started"]);
+            expect(started.map(event => [event.data.stateId, event.data.kvRevision])).toEqual([["first", 2], ["done", 2]]);
         } finally { await h.stop(); }
     });
 });
