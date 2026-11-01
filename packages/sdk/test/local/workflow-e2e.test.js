@@ -114,6 +114,12 @@ describe("previously admitted script workflow sessions (worker + client + Postgr
                 expect(view.status).toBe("completed");
                 expect(view.sessionKind).toBe("workflow");
                 expect(view.title).toBe("Workflow: remember-and-check");
+                // The view's status is the orchestration's custom status, which the run publishes before
+                // its finish activity writes the completed event, the final canvas tick and the session
+                // state. Wait until the orchestration itself has completed (its finish activity returned)
+                // before reading what that activity wrote.
+                const native = await client.duroxideClient.waitForOrchestration(`session-${sessionId}`, 30_000);
+                expect(native.status, JSON.stringify(native)).toBe("Completed");
 
                 const listed = (await mgmt.listSessions()).find((session) => session.sessionId === sessionId);
                 expect(listed?.sessionKind).toBe("workflow");
