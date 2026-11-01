@@ -5,29 +5,38 @@
  *
  * Each function takes the state and what one step observed (a claim's or a
  * bind's result, a store write that failed, an attempt's dispatch witness,
- * the orchestration clock) and returns the next state and what the
- * orchestration does next. None yields, reads a clock, does I/O or changes
- * its arguments, so replay rebuilds the same states from the same history.
- * Nothing calls this module yet: the drain, sweep, decide and turn wiring,
- * the claim and settle activities and the turn's `intake` field are a later,
- * separately reviewed slice.
+ * the orchestration clock, the session's tombstones) and returns the next
+ * state and what the orchestration does next. None yields, reads a clock,
+ * does I/O or changes its arguments, so replay rebuilds the same states from
+ * the same history. Nothing calls this module yet: the drain, sweep, decide
+ * and turn wiring, the claim and settle activities and the turn's `intake`
+ * field are a later, separately reviewed slice.
  *
  * - Arrival and claim (5.3, 5.4): an accepted claim becomes a held entry,
  *   unless the exchange is already placed (nothing more), its canonical id
- *   is cancelled (the holder settles it cancelled) or it has no room (the
- *   holder settles it refused). A claim that fails keeps the copy as an
- *   unclaimed entry, retried in place under its own claim id; with every
+ *   is cancelled, or it has no room: then its holder's final state
+ *   (cancelled, refused_full, refused_size) is decided and latched as a
+ *   settling entry before it is written. A claim that fails keeps the copy as
+ *   an unclaimed entry, retried in place under its own claim id; with every
  *   unclaimed entry taken the copy is claimed again in mode refuse, and only
  *   a failure then stops the execution.
- * - The wake (5.4, N2): the earliest due claim, bind or end settlement, and
- *   the writes due now; it never starts a turn and never unparks.
+ * - Cancels (5.5, review INTAKE-MACHINE-01 to 03): latchIntakeCancels turns a
+ *   tombstone into carried state the first time it names a copy (an
+ *   unclaimed entry, a held entry, an invocation item); from then on the
+ *   decision stands whatever later tombstones say (evicted or consumed). A
+ *   latched held entry is never bound; a latched unsent item is never
+ *   carried and is removed by the invocation's cancel write; a latched sent
+ *   item keeps the invocation's outcome and is recorded cancel_requested
+ *   before the end names it.
+ * - The wake (5.4, N2): the earliest due claim, holder settle, held cancel,
+ *   bind, invocation cancel write or end settlement, and the writes due now:
+ *   store writes only; it never starts a turn and never unparks.
  * - The invocation (5.5): formed from held entries in arrival order and bound
  *   before any attempt carries it; `sent` is cumulative; the transition table
  *   gives each carrying attempt's next step (its turn's retry, parked with a
  *   cause, or an end with its outcome); a parked one rides only an attempt
  *   that one of its resume stimuli starts; its end is a settlement, retried
- *   as one; a tombstone removes an unsent item or records a cancel on a sent
- *   one.
+ *   as one, made after its cancel write.
  *
  * A broken invariant (a result for another claim, item or invocation, a text
  * that is not the one claimed) throws IntakeInvariantError: the execution
@@ -42,6 +51,7 @@ import {
     IntakeShapeError,
     intakeBoundItem,
     intakeClientMessageId,
+    intakeEnvelopeClientMessageId,
     intakeExchangeId,
     intakeId,
     intakeItemBytes,
@@ -56,14 +66,17 @@ import {
     INTAKE_MAX_HELD_ENTRY_BYTES,
     INTAKE_MAX_UNCLAIMED,
     INTAKE_MAX_UNCLAIMED_ENTRY_BYTES,
+    intakeHeldEntryCapBytes,
     selectIntakeBatch,
     type IntakeHeldEntry,
+    type IntakeHolderOutcome,
     type IntakeInvocation,
     type IntakeInvocationItem,
     type IntakeOutcome,
     type IntakeParkCause,
     type IntakeQueueEntry,
     type IntakeRetry,
+    type IntakeSettlingEntry,
     type IntakeState,
     type IntakeUnclaimedEntry,
 } from "./intake-state.js";
@@ -116,8 +129,9 @@ function heldCount(state: IntakeState): number {
     return state.queue.filter(entry => entry.kind === "held").length;
 }
 
-function unclaimedCount(state: IntakeState): number {
-    return state.queue.filter(entry => entry.kind === "unclaimed").length;
+/** Copies waiting for a store write before any placement: unclaimed and settling entries share one pool. */
+function waitingCount(state: IntakeState): number {
+    return state.queue.filter(entry => entry.kind !== "held").length;
 }
 
 function unclaimedEntry(state: IntakeState, claimId: string): IntakeUnclaimedEntry {
@@ -146,6 +160,11 @@ export function intakePlacementClaim(state: IntakeState, exchangeId: string): st
         if (entry.kind === "held" && entry.exchangeId === exchangeId) return entry.claimId;
     }
     return state.invocation?.items.find(item => item.exchangeId === exchangeId)?.claimId ?? null;
+}
+
+/** The settling entry decided for an exchange, or undefined. */
+function settlingFor(state: IntakeState, exchangeId: string): IntakeSettlingEntry | undefined {
+    return state.queue.find((entry): entry is IntakeSettlingEntry => entry.kind === "settling" && entry.exchangeId === exchangeId);
 }
 
 // ─── Arrival and claim (design 5.2, 5.3, 5.4) ────────────────
@@ -186,10 +205,16 @@ export function intakeRefuseClaimCall(call: IntakeClaimCall): IntakeClaimCall {
     return { claimId: call.claimId, envelope: call.envelope, mode: "refuse", source: "arrival" };
 }
 
-/** The retry of a waiting unclaimed entry under its own claim id (design 5.4): mode accept while a held entry is free, refuse otherwise. */
+/**
+ * The retry of a waiting unclaimed entry under its own claim id (design 5.4):
+ * mode accept while a held entry is free, refuse otherwise; always accept for
+ * a copy whose cancel is latched, so a new row is held only to be settled
+ * cancelled, never refused instead.
+ */
 export function intakeUnclaimedRetryCall(state: IntakeState, claimId: string): IntakeClaimCall {
     const entry = unclaimedEntry(state, claimId);
-    return { claimId: entry.claimId, envelope: entry.envelope, mode: heldCount(state) < INTAKE_MAX_HELD ? "accept" : "refuse", source: "unclaimed" };
+    const mode: IntakeClaimMode = entry.cancel || heldCount(state) < INTAKE_MAX_HELD ? "accept" : "refuse";
+    return { claimId: entry.claimId, envelope: entry.envelope, mode, source: "unclaimed" };
 }
 
 function checkCall(state: IntakeState, call: IntakeClaimCall): void {
@@ -266,6 +291,10 @@ export function parseIntakeClaimResult(raw: unknown, call: IntakeClaimCall): Int
         if (item.exchangeId !== exchangeId || item.claimId !== call.claimId) {
             throw new IntakeInvariantError(exchangeId, `the claim of ${call.claimId} accepted exchange ${item.exchangeId} under claim ${item.claimId}`);
         }
+        // The canonical id every copy carries, which tombstones name and which an unclaimed copy's latch was checked against.
+        if (item.clientMessageId !== intakeEnvelopeClientMessageId(call.envelope)) {
+            throw new IntakeInvariantError(exchangeId, "the claimed item's client message id is not its exchange's canonical one");
+        }
         if (inserted && call.mode === "refuse") throw new IntakeInvariantError(exchangeId, "a claim in mode refuse inserted a holding row");
         return { result: "accepted", inserted, item };
     }
@@ -306,11 +335,28 @@ export interface IntakeUnclaimedDecision {
     retry: IntakeRetry;
 }
 
-/** The one fail-stop case (design 5.4, 9 row 11): a store outage with every unclaimed entry taken; the execution fails. */
+/** The one fail-stop case (design 5.4, 9 row 11): a store outage with every waiting entry taken; the execution fails. */
 export interface IntakeFailStop {
     kind: "fail_stop";
     exchangeId: string;
     message: string;
+}
+
+/**
+ * The holder's final state of a claimed copy it does not place, decided once
+ * (design 5.2, 5.4, 5.6): a tombstone named the copy (cancelled), every held
+ * entry is taken (refused_full), or its held reference would be over its
+ * 512-byte cap (refused_size). `latched` when a settling entry carries the
+ * decision, which is always so but for a dequeued copy that found every
+ * waiting entry taken: then a failed write is retried on the wake, never
+ * decided again; not latched, a failed write stops the execution.
+ */
+export interface IntakeHolderSettle {
+    kind: "settle_holder";
+    exchangeId: string;
+    claimId: string;
+    outcome: IntakeHolderOutcome;
+    latched: boolean;
 }
 
 /** What the orchestration does after a claim (design 5.3, 5.4). */
@@ -321,16 +367,10 @@ export type IntakeClaimDecision =
     | { kind: "already_placed" }
     /** Recorded: nothing is placed, no timer released, no digest taken, no tombstone consumed, no id pending. */
     | { kind: "recorded"; result: Exclude<IntakeClaimResult, { result: "accepted" }> }
-    /** A tombstone names the canonical id (arrival step 4): the holder settles its row cancelled, then reports it to applyIntakeHolderSettle. */
-    | { kind: "settle_cancelled"; exchangeId: string; claimId: string; clientMessageId: string }
-    /**
-     * No room: every held entry is taken (refused_full), or the item's held
-     * reference would be over its 512-byte cap (refused_size). The holder
-     * settles its row refused, then reports it to applyIntakeHolderSettle.
-     */
-    | { kind: "settle_refused"; exchangeId: string; claimId: string; outcome: "refused_full" | "refused_size" }
+    /** Write the holder's settle (cancelled: settle cancel_held; refused: settle refuse), then report it to applyIntakeHolderSettle. */
+    | IntakeHolderSettle
     | IntakeUnclaimedDecision
-    /** The claim failed with every unclaimed entry taken: claim again in mode refuse (intakeRefuseClaimCall). */
+    /** The claim failed with every waiting entry taken: claim again in mode refuse (intakeRefuseClaimCall). */
     | { kind: "claim_refuse" }
     | IntakeFailStop;
 
@@ -340,28 +380,33 @@ export interface IntakeClaimContext {
     isCancelled: IntakeCancelCheck;
 }
 
-/** A waiting entry for a copy whose claim or holder settle failed; null when a dequeued copy finds every unclaimed entry taken. */
-function keepUnclaimed(state: IntakeState, call: IntakeClaimCall, nowMs: number): IntakeStep<IntakeUnclaimedDecision> | null {
+/**
+ * A waiting entry for a copy whose claim failed, its cancel latched when a
+ * tombstone names its canonical id now (or did before); null when a dequeued
+ * copy finds every waiting entry taken.
+ */
+function keepUnclaimed(state: IntakeState, call: IntakeClaimCall, context: IntakeClaimContext): IntakeStep<IntakeUnclaimedDecision> | null {
+    const cancelled = context.isCancelled(intakeEnvelopeClientMessageId(call.envelope));
     if (call.source === "unclaimed") {
         const entry = unclaimedEntry(state, call.claimId);
-        const retry = intakeRetryAfterFailure(entry.retry, nowMs);
-        return { state: withUnclaimed(state, call.claimId, { ...entry, retry }), decision: { kind: "unclaimed", claimId: call.claimId, retry } };
+        const retry = intakeRetryAfterFailure(entry.retry, context.nowMs);
+        const kept: IntakeUnclaimedEntry = { ...entry, retry, cancel: entry.cancel || cancelled };
+        return { state: withUnclaimed(state, call.claimId, kept), decision: { kind: "unclaimed", claimId: call.claimId, retry } };
     }
-    if (unclaimedCount(state) >= INTAKE_MAX_UNCLAIMED) return null;
-    const retry = intakeRetryAfterFailure(null, nowMs);
-    const entry: IntakeUnclaimedEntry = { kind: "unclaimed", claimId: call.claimId, envelope: call.envelope, retry };
+    if (waitingCount(state) >= INTAKE_MAX_UNCLAIMED) return null;
+    const retry = intakeRetryAfterFailure(null, context.nowMs);
+    const entry: IntakeUnclaimedEntry = { kind: "unclaimed", claimId: call.claimId, envelope: call.envelope, retry, cancel: cancelled };
     // Not reachable: an envelope within its 1 KiB cap and an id within its length always fit the entry's 2 KiB.
     if (jsonBytes(entry) > INTAKE_MAX_UNCLAIMED_ENTRY_BYTES) throw new IntakeInvariantError(call.envelope.exchangeId, "its unclaimed entry is over its cap");
     return { state: { queue: [...state.queue, entry], invocation: state.invocation }, decision: { kind: "unclaimed", claimId: call.claimId, retry } };
 }
 
-function failStop(state: IntakeState, call: IntakeClaimCall): IntakeStep<IntakeFailStop> {
-    const exchangeId = call.envelope.exchangeId;
+function failStop(state: IntakeState, exchangeId: string): IntakeStep<IntakeFailStop> {
     return {
         state,
         decision: {
             kind: "fail_stop", exchangeId,
-            message: `The workflow store could not record exchange ${exchangeId} while every unclaimed intake entry is taken (design 5.4).`,
+            message: `The workflow store could not record exchange ${exchangeId} while every waiting intake entry is taken (design 5.4).`,
         },
     };
 }
@@ -377,132 +422,254 @@ function dropRetried(state: IntakeState, call: IntakeClaimCall): IntakeState {
  * only when the exchange has no placement (I7), whatever the call's mode: a
  * call in mode refuse answered accepted found its own earlier holding row,
  * and the holder refuses it only when it has no room. A retried entry that
- * becomes held keeps its arrival position.
+ * becomes held keeps its arrival position. A copy whose cancel was latched
+ * while it waited, or that a tombstone names now, is settled cancelled; that
+ * decision and a refusal are latched as a settling entry before the write.
  */
 export function applyIntakeClaim(state: IntakeState, call: IntakeClaimCall, outcome: { result: unknown } | { failed: true }, context: IntakeClaimContext)
     : IntakeStep<IntakeClaimDecision> {
     checkCall(state, call);
     if ("failed" in outcome) {
-        const kept = keepUnclaimed(state, call, context.nowMs);
+        const kept = keepUnclaimed(state, call, context);
         if (kept !== null) return kept;
-        return call.mode === "accept" ? { state, decision: { kind: "claim_refuse" } } : failStop(state, call);
+        return call.mode === "accept" ? { state, decision: { kind: "claim_refuse" } } : failStop(state, call.envelope.exchangeId);
     }
     const result = parseIntakeClaimResult(outcome.result, call);
-    if (result.result !== "accepted") return { state: dropRetried(state, call), decision: { kind: "recorded", result } };
+    // A cancel latched on any waiting copy of this exchange holds for every copy of it here, whatever the tombstones say now.
+    const exchangeId = call.envelope.exchangeId;
+    const latchedCancel = state.queue.some(entry => entry.kind === "unclaimed" && entry.cancel && entry.envelope.exchangeId === exchangeId);
+    const keepLatch = (next: IntakeState): IntakeState => (latchedCancel ? latchCopies(next, (_, copyExchangeId) => copyExchangeId === exchangeId) : next);
+    if (result.result !== "accepted") return { state: keepLatch(dropRetried(state, call)), decision: { kind: "recorded", result } };
     const { item } = result;
-    const placedUnder = intakePlacementClaim(state, item.exchangeId);
-    if (placedUnder !== null) {
-        if (placedUnder !== item.claimId) {
-            throw new IntakeInvariantError(item.exchangeId, `it is placed under claim ${placedUnder}, but its row holds claim ${item.claimId}`);
+    const decidedUnder = intakePlacementClaim(state, item.exchangeId) ?? settlingFor(state, item.exchangeId)?.claimId ?? null;
+    if (decidedUnder !== null) {
+        if (decidedUnder !== item.claimId) {
+            throw new IntakeInvariantError(item.exchangeId, `it is placed or settling under claim ${decidedUnder}, but its row holds claim ${item.claimId}`);
         }
-        return { state: dropRetried(state, call), decision: { kind: "already_placed" } };
-    }
-    if (context.isCancelled(item.clientMessageId)) {
-        return { state, decision: { kind: "settle_cancelled", exchangeId: item.exchangeId, claimId: item.claimId, clientMessageId: item.clientMessageId } };
+        return { state: keepLatch(dropRetried(state, call)), decision: { kind: "already_placed" } };
     }
     const entry: IntakeHeldEntry = {
         kind: "held", exchangeId: item.exchangeId, claimId: item.claimId, textSha256: item.textSha256, clientMessageId: item.clientMessageId,
-        itemBytes: item.itemBytes,
+        itemBytes: item.itemBytes, cancel: null,
     };
-    if (jsonBytes(entry) > INTAKE_MAX_HELD_ENTRY_BYTES) {
-        return { state, decision: { kind: "settle_refused", exchangeId: item.exchangeId, claimId: item.claimId, outcome: "refused_size" } };
+    const decided: IntakeHolderOutcome | null = latchedCancel || context.isCancelled(item.clientMessageId) ? "cancelled"
+        : intakeHeldEntryCapBytes(entry) > INTAKE_MAX_HELD_ENTRY_BYTES ? "refused_size"
+            : heldCount(state) >= INTAKE_MAX_HELD ? "refused_full" : null;
+    if (decided === null) {
+        const placed = call.source === "unclaimed" ? withUnclaimed(state, call.claimId, entry) : { queue: [...state.queue, entry], invocation: state.invocation };
+        return { state: placed, decision: { kind: "held", entry } };
     }
-    if (heldCount(state) >= INTAKE_MAX_HELD) {
-        return { state, decision: { kind: "settle_refused", exchangeId: item.exchangeId, claimId: item.claimId, outcome: "refused_full" } };
-    }
-    const placed = call.source === "unclaimed" ? withUnclaimed(state, call.claimId, entry) : { queue: [...state.queue, entry], invocation: state.invocation };
-    return { state: placed, decision: { kind: "held", entry } };
+    const settling: IntakeSettlingEntry = { kind: "settling", exchangeId: item.exchangeId, claimId: item.claimId, outcome: decided, retry: null };
+    const settle = (latched: boolean): IntakeHolderSettle => ({
+        kind: "settle_holder", exchangeId: settling.exchangeId, claimId: settling.claimId, outcome: settling.outcome, latched,
+    });
+    // Latched before the write: in the copy's own waiting entry, else in a free one.
+    if (call.source === "unclaimed") return { state: withUnclaimed(state, call.claimId, settling), decision: settle(true) };
+    if (waitingCount(state) < INTAKE_MAX_UNCLAIMED) return { state: { queue: [...state.queue, settling], invocation: state.invocation }, decision: settle(true) };
+    return { state, decision: settle(false) };
 }
 
 /**
- * The holder's settle after a claim (settle_cancelled or settle_refused).
- * Settled: the copy is done, and a retried entry leaves the queue. Not
- * settled (the write failed after its retries): the copy keeps or takes an
- * unclaimed entry under the same claim, whose retry finds its holding row
- * again (accepted) and decides afresh; with every unclaimed entry taken the
- * execution fails (the one fail-stop case).
+ * The holder's settle was written (`settled`) or failed after its retries.
+ * Latched: settled, its settling entry leaves; failed, it stays with its due
+ * time on the wake, the same decision under the same claim. Not latched (the
+ * copy found every waiting entry taken): failed, the execution stops (the one
+ * fail-stop case).
  */
-export function applyIntakeHolderSettle(state: IntakeState, call: IntakeClaimCall, settled: boolean, nowMs: number)
-    : IntakeStep<{ kind: "settled" } | IntakeUnclaimedDecision | IntakeFailStop> {
-    checkCall(state, call);
-    if (settled) return { state: dropRetried(state, call), decision: { kind: "settled" } };
-    return keepUnclaimed(state, call, nowMs) ?? failStop(state, call);
+export function applyIntakeHolderSettle(state: IntakeState, settle: Pick<IntakeHolderSettle, "exchangeId" | "claimId" | "latched">, settled: boolean,
+    nowMs: number): IntakeStep<{ kind: "settled" } | { kind: "settle_retry"; retry: IntakeRetry } | IntakeFailStop> {
+    const entry = settlingFor(state, settle.exchangeId);
+    if (!settle.latched) {
+        if (entry !== undefined) throw new IntakeInvariantError(settle.exchangeId, "its holder settle is latched");
+        return settled ? { state, decision: { kind: "settled" } } : failStop(state, settle.exchangeId);
+    }
+    if (entry === undefined || entry.claimId !== settle.claimId) {
+        throw new IntakeInvariantError(settle.exchangeId, `no holder settle is latched under claim ${settle.claimId}`);
+    }
+    if (settled) return { state: { queue: state.queue.filter(candidate => candidate !== entry), invocation: state.invocation }, decision: { kind: "settled" } };
+    const retry = intakeRetryAfterFailure(entry.retry, nowMs);
+    const queue: IntakeQueueEntry[] = state.queue.map(candidate => (candidate === entry ? { ...entry, retry } : candidate));
+    return { state: { queue, invocation: state.invocation }, decision: { kind: "settle_retry", retry } };
+}
+
+// ─── Cancels: a tombstone latched once (design 5.5, review INTAKE-MACHINE-01, 03) ──
+
+/**
+ * Latch the cancel of every copy in the state that `names` picks, by its
+ * canonical client message id (an unclaimed copy's is its envelope's) and its
+ * exchange: an unclaimed entry's cancel, a held entry's cancel (due now), and
+ * an invocation item's cancelRequested, with the invocation's cancel write
+ * due now once it is bound (before its bind the cancel waits for it; its rows
+ * are not admitted yet). An unsent invocation that is ending was never
+ * dispatched: nothing is latched on it. Returns `state` itself when nothing is
+ * newly latched.
+ */
+function latchCopies(state: IntakeState, names: (clientMessageId: string, exchangeId: string) => boolean): IntakeState {
+    const queue: IntakeQueueEntry[] = state.queue.map((entry): IntakeQueueEntry => {
+        if (entry.kind === "unclaimed" && !entry.cancel && names(intakeEnvelopeClientMessageId(entry.envelope), entry.envelope.exchangeId)) {
+            return { ...entry, cancel: true };
+        }
+        if (entry.kind === "held" && entry.cancel === null && names(entry.clientMessageId, entry.exchangeId)) return { ...entry, cancel: { retry: null } };
+        return entry;
+    });
+    let invocation = state.invocation;
+    if (invocation !== null && !(invocation.bound && !invocation.sent && invocation.settle !== null)) {
+        const current = invocation;
+        const named = new Set(current.items.filter(item => !item.cancelRequested && names(item.clientMessageId, item.exchangeId)).map(item => item.exchangeId));
+        if (named.size > 0) {
+            invocation = {
+                ...current,
+                items: current.items.map(item => (named.has(item.exchangeId) ? { ...item, cancelRequested: true } : item)),
+                cancelWrite: current.bound ? current.cancelWrite ?? { retry: null } : null,
+            };
+        }
+    }
+    const queueChanged = queue.some((entry, index) => entry !== state.queue[index]);
+    return queueChanged || invocation !== state.invocation ? { queue, invocation } : state;
+}
+
+/**
+ * Latch every tombstone that names a copy in the intake state, the first time
+ * it does (latchCopies). A latch is never undone: the write it decided is
+ * made whatever later tombstones say, so the session may consume or evict a
+ * tombstone once it is latched. Drain latches at each tombstone and decide
+ * before it forms, binds or carries anything. Returns `state` itself when
+ * nothing is newly latched.
+ */
+export function latchIntakeCancels(state: IntakeState, isCancelled: IntakeCancelCheck): IntakeState {
+    return latchCopies(state, clientMessageId => isCancelled(clientMessageId));
 }
 
 // ─── The wake (design 5.4, N2) ───────────────────────────────
 
+/** The invocation's one pending store write, in order: its bind, then its cancel write, then its end; null when none waits. */
+function invocationWrite(invocation: IntakeInvocation | null): { kind: "bind" | "cancel_invocation" | "settle"; dueAtMs: number } | null {
+    if (invocation === null) return null;
+    if (!invocation.bound) return { kind: "bind", dueAtMs: invocation.bindRetry?.nextAttemptAtMs ?? 0 };
+    if (invocation.cancelWrite !== null) return { kind: "cancel_invocation", dueAtMs: invocation.cancelWrite.retry?.nextAttemptAtMs ?? 0 };
+    if (invocation.settle !== null) return { kind: "settle", dueAtMs: invocation.settle.retry?.nextAttemptAtMs ?? 0 };
+    return null;
+}
+
 /**
  * The earliest due time of the intake's store writes, the third deadline of
- * drain's race: an unclaimed entry's claim, the invocation's bind or its end
- * settlement. A write that has no due time yet is due now (0). Null when no
- * write waits: drain then runs exactly as today.
+ * drain's race: an unclaimed entry's claim, a settling entry's holder settle,
+ * a latched held cancel, and the invocation's bind, cancel write or end (the
+ * end waits for the cancel write). A write that has no due time yet is due
+ * now (0). Null when no write waits: drain then runs exactly as today. A
+ * cancel needs no other stimulus to be made (review INTAKE-MACHINE-02).
  */
 export function intakeDueAtMs(state: IntakeState): number | null {
     const times: number[] = [];
     for (const entry of state.queue) {
         if (entry.kind === "unclaimed") times.push(entry.retry.nextAttemptAtMs);
+        else if (entry.kind === "settling") times.push(entry.retry?.nextAttemptAtMs ?? 0);
+        else if (entry.cancel !== null) times.push(entry.cancel.retry?.nextAttemptAtMs ?? 0);
     }
-    const invocation = state.invocation;
-    if (invocation !== null && !invocation.bound) times.push(invocation.bindRetry?.nextAttemptAtMs ?? 0);
-    else if (invocation !== null && invocation.settle !== null) times.push(invocation.settle.retry?.nextAttemptAtMs ?? 0);
+    const write = invocationWrite(state.invocation);
+    if (write !== null) times.push(write.dueAtMs);
     return times.length === 0 ? null : Math.min(...times);
 }
 
-/** A store write the wake makes when due: an unclaimed entry's claim, the invocation's bind, or its end settlement. */
-export type IntakeDueWork = { kind: "claim"; claimId: string } | { kind: "bind" } | { kind: "settle" };
+/**
+ * A store write the wake makes when due: an unclaimed entry's claim
+ * (intakeUnclaimedRetryCall), a settling entry's holder settle, the latched
+ * held cancels as one write (settle cancel_held), the invocation's bind
+ * (intakeBindCall), its cancel write (intakeInvocationCancelCall) or its end
+ * (intakeEndCall).
+ */
+export type IntakeDueWork =
+    | { kind: "claim"; claimId: string }
+    | { kind: "holder_settle"; exchangeId: string; claimId: string; outcome: IntakeHolderOutcome }
+    | { kind: "cancel_held"; items: Array<{ exchangeId: string; claimId: string }> }
+    | { kind: "bind" }
+    | { kind: "cancel_invocation" }
+    | { kind: "settle" };
 
-/** The writes due at `nowMs`: unclaimed claims oldest first, then the bind or the settlement. Store writes only: no turn, no unparking. */
+/**
+ * The writes due at `nowMs`, in order: unclaimed claims and holder settles
+ * oldest first, then the due latched held cancels, then the invocation's
+ * write. Store writes only: no turn, no unparking. Each is reported back as
+ * made or failed (its retry then doubles); a failure never drops a latch.
+ */
 export function intakeDueWork(state: IntakeState, nowMs: number): IntakeDueWork[] {
     const now = clockMs(nowMs);
     const work: IntakeDueWork[] = [];
+    const heldCancels: Array<{ exchangeId: string; claimId: string }> = [];
     for (const entry of state.queue) {
-        if (entry.kind === "unclaimed" && entry.retry.nextAttemptAtMs <= now) work.push({ kind: "claim", claimId: entry.claimId });
+        if (entry.kind === "unclaimed") {
+            if (entry.retry.nextAttemptAtMs <= now) work.push({ kind: "claim", claimId: entry.claimId });
+        } else if (entry.kind === "settling") {
+            if ((entry.retry?.nextAttemptAtMs ?? 0) <= now) {
+                work.push({ kind: "holder_settle", exchangeId: entry.exchangeId, claimId: entry.claimId, outcome: entry.outcome });
+            }
+        } else if (entry.cancel !== null && (entry.cancel.retry?.nextAttemptAtMs ?? 0) <= now) {
+            heldCancels.push({ exchangeId: entry.exchangeId, claimId: entry.claimId });
+        }
     }
-    const invocation = state.invocation;
-    if (invocation !== null && !invocation.bound) {
-        if ((invocation.bindRetry?.nextAttemptAtMs ?? 0) <= now) work.push({ kind: "bind" });
-    } else if (invocation !== null && invocation.settle !== null) {
-        if ((invocation.settle.retry?.nextAttemptAtMs ?? 0) <= now) work.push({ kind: "settle" });
+    if (heldCancels.length > 0) work.push({ kind: "cancel_held", items: heldCancels });
+    const write = invocationWrite(state.invocation);
+    if (write !== null && write.dueAtMs <= now) {
+        if (write.kind === "bind") work.push({ kind: "bind" });
+        else if (write.kind === "cancel_invocation") work.push({ kind: "cancel_invocation" });
+        else work.push({ kind: "settle" });
     }
     return work;
 }
 
 // ─── Held entries and the binding (design 5.5, 6.1) ──────────
 
-/** The held entries a tombstone names: decide settles each cancelled before it binds, and none is ever bound. */
-export function intakeHeldToCancel(state: IntakeState, isCancelled: IntakeCancelCheck): IntakeHeldEntry[] {
-    return state.queue.filter((entry): entry is IntakeHeldEntry => entry.kind === "held" && isCancelled(entry.clientMessageId));
-}
-
-/** Held entries their holder settled cancelled leave the queue. A settle that failed leaves its entry held (and unbound) for the next decide. */
-export function applyIntakeHeldCancelled(state: IntakeState, exchangeIds: readonly string[]): IntakeState {
-    const settled = new Set(exchangeIds);
-    for (const exchangeId of settled) {
-        if (!state.queue.some(entry => entry.kind === "held" && entry.exchangeId === exchangeId)) {
-            throw new IntakeInvariantError(exchangeId, "it was settled cancelled but is not a held entry");
+/** The held entries named, each of whose cancel must be latched. */
+function latchedHeld(state: IntakeState, exchangeIds: readonly string[]): Set<string> {
+    const named = new Set(exchangeIds);
+    for (const exchangeId of named) {
+        if (!state.queue.some(entry => entry.kind === "held" && entry.exchangeId === exchangeId && entry.cancel !== null)) {
+            throw new IntakeInvariantError(exchangeId, "its cancel was written, but it is not a held entry whose cancel is latched");
         }
     }
-    return { queue: state.queue.filter(entry => entry.kind !== "held" || !settled.has(entry.exchangeId)), invocation: state.invocation };
+    return named;
 }
 
-/** Whether decide forms an invocation now: none exists, and a held entry that no tombstone names waits. */
-export function intakeCanForm(state: IntakeState, isCancelled: IntakeCancelCheck): boolean {
-    return state.invocation === null && state.queue.some(entry => entry.kind === "held" && !isCancelled(entry.clientMessageId));
+/** The latched cancels of these held entries were written (settle cancel_held): they leave the queue. */
+export function applyIntakeHeldCancelled(state: IntakeState, exchangeIds: readonly string[]): IntakeState {
+    const done = latchedHeld(state, exchangeIds);
+    return { queue: state.queue.filter(entry => entry.kind !== "held" || !done.has(entry.exchangeId)), invocation: state.invocation };
+}
+
+/**
+ * The write of these latched held cancels failed after its retries (or
+ * committed and its answer was lost): each stays latched, never bound, due
+ * again on the wake; a repeated cancel of a cancelled row is the same result.
+ */
+export function applyIntakeHeldCancelFailure(state: IntakeState, exchangeIds: readonly string[], nowMs: number): IntakeState {
+    const failed = latchedHeld(state, exchangeIds);
+    const now = clockMs(nowMs);
+    const queue = state.queue.map((entry): IntakeQueueEntry => {
+        if (entry.kind !== "held" || entry.cancel === null || !failed.has(entry.exchangeId)) return entry;
+        return { ...entry, cancel: { retry: intakeRetryAfterFailure(entry.cancel.retry, now) } };
+    });
+    return { queue, invocation: state.invocation };
+}
+
+/** Whether decide forms an invocation now: none exists, and a held entry whose cancel is not latched waits. */
+export function intakeCanForm(state: IntakeState): boolean {
+    return state.invocation === null && state.queue.some(entry => entry.kind === "held" && entry.cancel === null);
 }
 
 /**
  * Form the next invocation in one synchronous step (design 5.5, C1): the
  * longest arrival-order run of held entries that fits one invocation, those
- * a tombstone names passed over, leaves the queue and becomes its batch,
- * unbound and unsent. Its bind follows in the same pass with no other yield
- * between, so this form, which has no bind retry yet, is never carried.
+ * whose cancel is latched passed over (decide latches the session's
+ * tombstones first, latchIntakeCancels), leaves the queue and becomes its
+ * batch, unbound and unsent. Its bind follows in the same pass with no other
+ * yield between, so this form, which has no bind retry yet, is never carried.
  */
-export function formIntakeInvocation(state: IntakeState, invocationId: string, isCancelled: IntakeCancelCheck): IntakeState {
+export function formIntakeInvocation(state: IntakeState, invocationId: string): IntakeState {
     if (state.invocation !== null) {
         throw new IntakeInvariantError(null, `invocation ${state.invocation.invocationId} exists; the next one forms only after it ends`);
     }
     const id = intakeId(invocationId, "invocationId");
-    const batch = selectIntakeBatch(state.queue.filter(entry => entry.kind !== "held" || !isCancelled(entry.clientMessageId)));
+    const batch = selectIntakeBatch(state.queue);
     if (batch.length === 0) throw new IntakeInvariantError(null, "no held entry waits for an invocation");
     const taken = new Set(batch.map(entry => entry.claimId));
     const invocation: IntakeInvocation = {
@@ -512,7 +679,7 @@ export function formIntakeInvocation(state: IntakeState, invocationId: string, i
             text: null, cancelRequested: false,
         })),
         itemBytes: batch.map(entry => entry.itemBytes),
-        bound: false, sent: false, parked: null, bindRetry: null, settle: null,
+        bound: false, sent: false, parked: null, bindRetry: null, settle: null, cancelWrite: null,
     };
     return { queue: state.queue.filter(entry => !taken.has(entry.claimId)), invocation };
 }
@@ -533,7 +700,8 @@ export function intakeBindCall(state: IntakeState): { invocationId: string; item
  * The bind returned: the claims are admitted to the invocation (bound now, or
  * found bound with the same membership: a replay). Each item takes the text
  * its row stored, which must be the one its claim hashed and measured; any
- * other answer is a broken invariant, and nothing is dispatched.
+ * other answer is a broken invariant, and nothing is dispatched. A cancel
+ * latched before the bind now has its cancel write due.
  */
 export function applyIntakeBound(state: IntakeState, raw: unknown): IntakeState {
     const invocation = unboundInvocation(state);
@@ -560,7 +728,8 @@ export function applyIntakeBound(state: IntakeState, raw: unknown): IntakeState 
         }
         return { ...item, text };
     });
-    return { queue: state.queue, invocation: { ...invocation, items, bound: true, bindRetry: null } };
+    const cancelWrite = items.some(item => item.cancelRequested) ? { retry: null } : null;
+    return { queue: state.queue, invocation: { ...invocation, items, bound: true, bindRetry: null, cancelWrite } };
 }
 
 /** The bind failed after its retries: the invocation stays unsent and unbound, its bind due on the wake (design 5.5); nothing carries it. */
@@ -616,11 +785,11 @@ export function intakeTurnPayload(invocation: IntakeInvocation): IntakeTurnPaylo
  * gate's own retry; parked for any other cause, only a new turn that a
  * message, a timer or a newly claimed item starts. Carrying unparks it: the
  * attempt applies the transition table again. An unbound invocation, one
- * whose end is being settled, and an unsent one with an item a tombstone
- * names (its cancel is settled first) ride nothing.
+ * whose end is being settled, and an unsent one with a latched cancel (its
+ * cancel write removes the item first) ride nothing, whatever the session's
+ * tombstones say now.
  */
-export function carryIntakeInvocation(state: IntakeState, start: IntakeAttemptStart, isCancelled: IntakeCancelCheck)
-    : { state: IntakeState; carry: IntakeTurnPayload | null } {
+export function carryIntakeInvocation(state: IntakeState, start: IntakeAttemptStart): { state: IntakeState; carry: IntakeTurnPayload | null } {
     const invocation = state.invocation;
     const named = start.kind === "retry" ? start.invocationId : null;
     if (invocation === null || !invocation.bound || invocation.settle !== null) {
@@ -636,7 +805,7 @@ export function carryIntakeInvocation(state: IntakeState, start: IntakeAttemptSt
     else if (invocation.parked === null) carries = true;
     else if (invocation.parked === "gate") carries = start.kind === "new" && start.stimulus === "gate_retry";
     else carries = start.kind === "new" && RESUME_STIMULI.includes(start.stimulus);
-    if (carries && !invocation.sent && invocation.items.some(item => isCancelled(item.clientMessageId))) carries = false;
+    if (carries && !invocation.sent && invocation.items.some(item => item.cancelRequested)) carries = false;
     if (!carries) return { state, carry: null };
     const next: IntakeInvocation = { ...invocation, parked: null };
     return { state: { queue: state.queue, invocation: next }, carry: intakeTurnPayload(next) };
@@ -647,14 +816,13 @@ export function carryIntakeInvocation(state: IntakeState, start: IntakeAttemptSt
  * queued (design 5.5, I11): a ready one starts one (`intake_turn`); one parked
  * for any cause but a gate starts one only for a newly claimed item not yet
  * answered by an attempt (`intake_arrival`); anything else starts none, nor
- * does an unsent one with an item a tombstone names until that cancel is
- * settled (no attempt would carry it).
+ * does an unsent one with a latched cancel until its cancel write removes the
+ * item (no attempt would carry it).
  */
-export function intakeOwnTurnStimulus(state: IntakeState, pendingArrivals: number, isCancelled: IntakeCancelCheck)
-    : "intake_turn" | "intake_arrival" | null {
+export function intakeOwnTurnStimulus(state: IntakeState, pendingArrivals: number): "intake_turn" | "intake_arrival" | null {
     const invocation = state.invocation;
     if (invocation === null || !invocation.bound || invocation.sent || invocation.settle !== null) return null;
-    if (invocation.items.some(item => isCancelled(item.clientMessageId))) return null;
+    if (invocation.items.some(item => item.cancelRequested)) return null;
     if (invocation.parked === null) return "intake_turn";
     return invocation.parked !== "gate" && pendingArrivals > 0 ? "intake_arrival" : null;
 }
@@ -771,16 +939,22 @@ export function applyIntakeAttempt(state: IntakeState, invocationId: string, dis
 
 // ─── The end and its settlement (design 5.2, 5.5) ────────────
 
+/** The invocation whose end is decided, its cancel write made: an end names a cancel only once the store recorded it. */
 function endingInvocation(state: IntakeState): IntakeInvocation & { settle: NonNullable<IntakeInvocation["settle"]> } {
     const invocation = state.invocation;
     if (invocation === null || invocation.settle === null) throw new IntakeInvariantError(null, "no invocation waits for its end settlement");
+    if (invocation.cancelWrite !== null) {
+        throw new IntakeInvariantError(null, `invocation ${invocation.invocationId}'s cancel write is pending; its end is made after it`);
+    }
     return { ...invocation, settle: invocation.settle };
 }
 
 /**
  * The end settlement's input (design 5.2): the outcome and the batch, every
  * item not cancelled before the send with its cancel flag; empty when every
- * item was (the store then checks and writes nothing).
+ * item was (the store then checks and writes nothing). Made only after the
+ * invocation's cancel write, so a replay of an end that committed names only
+ * cancels the store recorded (review INTAKE-MACHINE-03).
  */
 export function intakeEndCall(state: IntakeState)
     : { invocationId: string; outcome: IntakeOutcome; items: Array<{ exchangeId: string; claimId: string; cancelRequested: boolean }> } {
@@ -809,58 +983,54 @@ export function applyIntakeEndFailure(state: IntakeState, nowMs: number): Intake
     };
 }
 
-// ─── Tombstones on the invocation (design 5.5) ───────────────
+// ─── The invocation's cancel write (design 5.5, review INTAKE-MACHINE-01 to 03) ──
 
-/** A cancel to settle for an item of the invocation: `unsent` removes it (not_dispatched, reason cancelled); `requested` records it only. */
-export type IntakeInvocationCancel = { kind: "unsent" | "requested"; exchangeId: string; claimId: string; clientMessageId: string };
-
-/**
- * The cancels the invocation's items need: none before its bind (its rows
- * are not yet admitted) or while its end is being settled (its outcome is
- * decided); an unsent item a tombstone names is removed; a sent one records
- * cancel_requested once.
- */
-export function intakeInvocationCancels(state: IntakeState, isCancelled: IntakeCancelCheck): IntakeInvocationCancel[] {
+function cancellingInvocation(state: IntakeState): IntakeInvocation & { cancelWrite: NonNullable<IntakeInvocation["cancelWrite"]> } {
     const invocation = state.invocation;
-    if (invocation === null || !invocation.bound || invocation.settle !== null) return [];
-    const kind: "unsent" | "requested" = invocation.sent ? "requested" : "unsent";
-    return invocation.items
-        .filter(item => isCancelled(item.clientMessageId) && !(invocation.sent && item.cancelRequested))
-        .map((item): IntakeInvocationCancel => ({ kind, exchangeId: item.exchangeId, claimId: item.claimId, clientMessageId: item.clientMessageId }));
-}
-
-function itemIndex(invocation: IntakeInvocation, exchangeId: string): number {
-    const index = invocation.items.findIndex(item => item.exchangeId === exchangeId);
-    if (index < 0) throw new IntakeInvariantError(exchangeId, `it is not an item of invocation ${invocation.invocationId}`);
-    return index;
+    if (invocation === null || invocation.cancelWrite === null) throw new IntakeInvariantError(null, "no invocation's cancel write is pending");
+    return { ...invocation, cancelWrite: invocation.cancelWrite };
 }
 
 /**
- * An unsent item was settled not_dispatched (cancelled): it leaves the batch
- * in the same step. When the last one leaves, the invocation ends
- * not_dispatched with an empty batch, whose end names no exchange.
+ * The cancel write's input: every latched item. Unsent, each is settled
+ * not_dispatched (cancelled) and leaves the batch (settle cancel_unsent);
+ * sent, ending or not, each records cancel_requested and the outcome stands
+ * (settle request_cancel). Each settle is the same result when repeated, so
+ * the whole list is written again after a failure or a lost answer.
  */
-export function applyIntakeUnsentCancelled(state: IntakeState, exchangeId: string): IntakeState {
-    const invocation = state.invocation;
-    if (invocation === null || !invocation.bound || invocation.sent || invocation.settle !== null) {
-        throw new IntakeInvariantError(exchangeId, "it was cancelled as unsent, but no bound unsent invocation waits");
-    }
-    const index = itemIndex(invocation, exchangeId);
-    const items = invocation.items.filter((_, position) => position !== index);
-    const itemBytes = invocation.itemBytes.filter((_, position) => position !== index);
+export function intakeInvocationCancelCall(state: IntakeState): { kind: "unsent" | "requested"; invocationId: string; items: Array<{ exchangeId: string; claimId: string }> } {
+    const invocation = cancellingInvocation(state);
+    return {
+        kind: invocation.sent ? "requested" : "unsent", invocationId: invocation.invocationId,
+        items: invocation.items.filter(item => item.cancelRequested).map(item => ({ exchangeId: item.exchangeId, claimId: item.claimId })),
+    };
+}
+
+/**
+ * The cancel write was made. Unsent: the latched items leave the batch with
+ * their sizes, in the same step; when none is left the invocation ends
+ * not_dispatched with an empty batch, whose end names no exchange. Sent: the
+ * cancels are recorded; the items keep their flags for the end to name.
+ */
+export function applyIntakeInvocationCancelled(state: IntakeState): IntakeState {
+    const invocation = cancellingInvocation(state);
+    if (invocation.sent) return { queue: state.queue, invocation: { ...invocation, cancelWrite: null } };
+    const keep = invocation.items.map(item => !item.cancelRequested);
+    const items = invocation.items.filter((_, index) => keep[index]);
+    const itemBytes = invocation.itemBytes.filter((_, index) => keep[index]);
     const next: IntakeInvocation = items.length > 0
-        ? { ...invocation, items, itemBytes }
-        : { ...invocation, items, itemBytes, parked: null, settle: { outcome: "not_dispatched", retry: null } };
+        ? { ...invocation, items, itemBytes, cancelWrite: null }
+        : { ...invocation, items, itemBytes, cancelWrite: null, parked: null, settle: { outcome: "not_dispatched", retry: null } };
     return { queue: state.queue, invocation: next };
 }
 
-/** A cancel of a sent item was recorded (cancel_requested): only its flag changes, and the invocation's outcome stands. */
-export function applyIntakeCancelRequested(state: IntakeState, exchangeId: string): IntakeState {
-    const invocation = state.invocation;
-    if (invocation === null || !invocation.bound || !invocation.sent || invocation.settle !== null) {
-        throw new IntakeInvariantError(exchangeId, "its cancel was recorded, but no sent invocation waits");
-    }
-    const index = itemIndex(invocation, exchangeId);
-    const items = invocation.items.map((item, position) => position === index ? { ...item, cancelRequested: true } : item);
-    return { queue: state.queue, invocation: { ...invocation, items } };
+/**
+ * The cancel write failed after its retries (or committed and its answer was
+ * lost): the latches stay, due again on the wake; an unsent batch with a
+ * latched item is still never carried, and an end waits for the write.
+ */
+export function applyIntakeInvocationCancelFailure(state: IntakeState, nowMs: number): IntakeStep<{ kind: "cancel_retry"; retry: IntakeRetry }> {
+    const invocation = cancellingInvocation(state);
+    const retry = intakeRetryAfterFailure(invocation.cancelWrite.retry, nowMs);
+    return { state: { queue: state.queue, invocation: { ...invocation, cancelWrite: { retry } } }, decision: { kind: "cancel_retry", retry } };
 }

@@ -372,6 +372,11 @@ yield, before any placement.
   execution). No sleep, no busy loop, and no other message is needed. The
   wake never starts a turn and never makes a parked invocation eligible
   (5.5). A session with no intake due time runs exactly today's drain.
+  (Implementation clarification, review INTAKE-MACHINE-02: the due times
+  also include every latched write of 5.5 "Latched cancels": a `settling`
+  entry's holder settle, a latched `held` cancel and the invocation's
+  cancel write, which comes before its end. A cancel is made with no other
+  stimulus, as a store write only.)
 - **No FIFO (F7).** An accepted item is never appended, so none of the
   four append sites (`queue.ts` 844, 1144, 1195, 1293) can lose it, and
   a full FIFO does not matter to it. It waits as a `held` entry until the
@@ -501,6 +506,24 @@ flag.
   does not prove that an earlier attempt did not process the item. A
   tombstone for a `held` item settles it `cancelled` and removes its
   entry, at the latest when `decide` would bind it (6.1).
+- **Latched cancels (implementation clarification, review
+  INTAKE-MACHINE-01 to 03).** The first time a tombstone names a copy, the
+  decision is written into the carried state before any store write:
+  an `unclaimed` entry's cancel flag (its canonical id is known from the
+  envelope), a `held` entry's cancel, an invocation item's
+  `cancel_requested` with the invocation's cancel write, or, for a claimed
+  copy that is not placed (cancelled, `refused_full`, `refused_size`), a
+  `settling` entry. The decision is never taken again from tombstones: it
+  stands when the tombstone is consumed or evicted, across continue-as-new,
+  a failed write and a lost answer, and holds for every copy of the
+  exchange in the state. A latched `held` entry is never bound; an unsent
+  invocation with a latched item is never carried and starts no turn until
+  its cancel write removes the item; before the bind the cancel waits for
+  it. A sent item's cancel is recorded (`cancel_requested`) before any end
+  names it, also while the end is pending; the end's outcome and
+  membership do not change. An unsent invocation that is ending was never
+  dispatched, and a tombstone changes nothing on it. Every latched write is
+  a store write on the wake (5.4), with its own backoff, until it is made.
 - **Frozen versions** are unchanged; 1.0.82 and earlier keep their dispatch
   and stash behavior. 1.0.83's turns run under new activity names and a
   capability tag (section 8), because an older worker would ignore the
@@ -553,9 +576,10 @@ the exact canonical JSON kept, escaping included.
 | The queued envelope (the `workflowIntake` object, fixed fields) | 1 KiB | arrival step 1, before anything is kept | malformed, refused and recorded |
 | One canonical item text, as the claim stores it (5.1) | 60 KiB, today's FIFO item bound (`MAX_FIFO_ITEM_BYTES`, `state.ts` 432) | the claim, in the store, on the exact rendered text | `refused_size` (5.6) |
 | An `unclaimed` entry | 2 KiB; at most 8 entries | arrival, before the entry is kept | an envelope over its cap is malformed; with no free entry, a claim in mode `refuse` (5.4) |
-| A `held` entry (a reference) | 512 B; at most 64 entries | the holder, before placing | no free entry: `refused_full` (5.4, 5.6) |
+| A `settling` entry (implementation clarification) | 2 KiB; shares the 8 entries with `unclaimed` | the holder, before its write | with no free entry the decision is not latched and a failed write stops the execution (the fail-stop case of 5.4) |
+| A `held` entry (a reference) | 512 B, its cancel latch at its largest included; at most 64 entries | the holder, before placing | no free entry: `refused_full` (5.4, 5.6); over its bytes: `refused_size` |
 | The invocation's items (each a reference, its text and its cancel flag) | 61 KiB together, so one item of the largest size always fits | forming it | the next `held` entry waits for the next invocation |
-| The invocation's other fields (id, `sent`, the parked cause, a pending settlement) | 1 KiB | forming it | not reachable: the fields have fixed shapes |
+| The invocation's other fields (id, `sent`, the parked cause, a pending settlement, a pending cancel write) | 1 KiB | forming it | not reachable: the fields have fixed shapes |
 
 So the carried intake state is at most 16 KiB of `unclaimed` entries,
 32 KiB of `held` entries and 62 KiB of invocation, 110 KiB in all. Room for

@@ -15,6 +15,10 @@
  *   design budget (110 KiB in all); what the installed runtime and provider
  *   accept for a whole continue-as-new input is a qualification obligation
  *   before activation, not something this module proves.
+ * - A decided store write is latched in this state before it is made (review
+ *   INTAKE-MACHINE-01): a settling entry, a held entry's cancel, the
+ *   invocation's cancel write. A latch is never re-decided from tombstones,
+ *   survives continue-as-new, and is retried on the wake until made.
  *
  * Pure: no yields, no I/O, no clock. Exercised by
  * test/unit/orchestration-intake-1-0-83.test.mjs.
@@ -41,11 +45,12 @@ import {
 
 export { IntakeShapeError };
 
-/** At most this many messages wait for a claim the store could not take (design 5.4, 5.7). */
+/** At most this many copies wait for a store write before any placement: unclaimed and settling entries together (design 5.4, 5.7). */
 export const INTAKE_MAX_UNCLAIMED = 8;
 export const INTAKE_MAX_UNCLAIMED_ENTRY_BYTES = 2 * 1024;
 /** At most this many claimed items wait for an invocation (design 5.4, 5.7); shared with the store's bind. */
 export { INTAKE_MAX_HELD };
+/** A held entry's cap, its cancel latch at its largest included, so a later cancel always fits. */
 export const INTAKE_MAX_HELD_ENTRY_BYTES = 512;
 /** The invocation's fields other than its items (design 5.7). */
 export const INTAKE_MAX_INVOCATION_FIELDS_BYTES = 1024;
@@ -58,9 +63,12 @@ export const INTAKE_STATE_FORMAT = 1;
 export type IntakeOutcome = "completed" | "not_dispatched" | "interrupted" | "failed_indeterminate";
 /** Why an unsent invocation is parked; it resumes only on that cause's stimuli (design 5.5). */
 export type IntakeParkCause = "gate" | "credential" | "non_retryable" | "exhausted" | "not_sent" | "hydration";
+/** The final state a holder writes for a claimed copy it does not place (design 5.2, 5.6). */
+export type IntakeHolderOutcome = "cancelled" | "refused_full" | "refused_size";
 
 const OUTCOMES: readonly IntakeOutcome[] = ["completed", "not_dispatched", "interrupted", "failed_indeterminate"];
 const PARK_CAUSES: readonly IntakeParkCause[] = ["gate", "credential", "non_retryable", "exhausted", "not_sent", "hydration"];
+const HOLDER_OUTCOMES: readonly IntakeHolderOutcome[] = ["cancelled", "refused_full", "refused_size"];
 
 /** A store write that failed and waits for its due time on the intake wake (design 5.4, N2). */
 export interface IntakeRetry {
@@ -69,19 +77,48 @@ export interface IntakeRetry {
     nextAttemptAtMs: number;
 }
 
-/** A message whose claim the store could not take; only its envelope is kept, never the queued prompt. */
+/** A decided store write, latched until it is made: due now (no retry yet), or at its retry. */
+export interface IntakeLatch {
+    retry: IntakeRetry | null;
+}
+
+/** The largest latch, for caps that must hold whatever a latch's retry becomes. */
+export const INTAKE_LARGEST_LATCH: IntakeLatch = { retry: { attempts: Number.MAX_SAFE_INTEGER, nextAttemptAtMs: Number.MAX_SAFE_INTEGER } };
+
+/**
+ * A message whose claim the store could not take; only its envelope is kept,
+ * never the queued prompt. `cancel` latches a tombstone that named its
+ * canonical id while it waited: once claimed it is settled cancelled, whatever
+ * the tombstones say then.
+ */
 export interface IntakeUnclaimedEntry {
     kind: "unclaimed";
     claimId: string;
     envelope: IntakeEnvelope;
     retry: IntakeRetry;
+    cancel: boolean;
+}
+
+/**
+ * A claimed copy with no placement whose holder decided its final state
+ * (cancelled, or refused for room or size): latched before the write, then
+ * written, and retried on the wake until made; never claimed or decided again.
+ */
+export interface IntakeSettlingEntry {
+    kind: "settling";
+    exchangeId: string;
+    claimId: string;
+    outcome: IntakeHolderOutcome;
+    retry: IntakeRetry | null;
 }
 
 /**
  * A claimed item waiting for an invocation: a reference, not its text (the
  * claim stored the text in the item's row). `itemBytes` is the exact size of
  * its bound form, measured when it was claimed, so a batch is chosen before
- * its bind and never found too large after it (condition C1).
+ * its bind and never found too large after it (condition C1). `cancel`
+ * latches a tombstone that named it: it is never bound, and its cancel is
+ * written, and retried on the wake, until made.
  */
 export interface IntakeHeldEntry {
     kind: "held";
@@ -90,11 +127,18 @@ export interface IntakeHeldEntry {
     textSha256: string;
     clientMessageId: string;
     itemBytes: number;
+    cancel: IntakeLatch | null;
 }
 
-export type IntakeQueueEntry = IntakeUnclaimedEntry | IntakeHeldEntry;
+export type IntakeQueueEntry = IntakeUnclaimedEntry | IntakeSettlingEntry | IntakeHeldEntry;
 
-/** An invocation's item: its reference, its text once bound (null before), and whether a tombstone named it after a send. */
+/**
+ * An invocation's item: its reference, its text once bound (null before), and
+ * whether a tombstone named it (latched, never cleared): an unsent item is
+ * removed by the invocation's cancel write (not_dispatched, cancelled); a sent
+ * one keeps its outcome, its cancel_requested recorded by that write and
+ * named by the end.
+ */
 export interface IntakeInvocationItem {
     exchangeId: string;
     claimId: string;
@@ -121,6 +165,8 @@ export interface IntakeInvocation {
     bindRetry: IntakeRetry | null;
     /** An end decided but not yet settled in the store; no turn carries it. */
     settle: { outcome: IntakeOutcome; retry: IntakeRetry | null } | null;
+    /** The store write of its items' latched cancels, pending until made; made before its end. Only once bound. */
+    cancelWrite: IntakeLatch | null;
 }
 
 export interface IntakeState {
@@ -165,30 +211,52 @@ function retryOf(raw: unknown, path: string): IntakeRetry {
     return { attempts: integerOf(value.attempts, `${path}.attempts`, 1), nextAttemptAtMs: integerOf(value.nextAttemptAtMs, `${path}.nextAttemptAtMs`, 0) };
 }
 
+function latchOf(raw: unknown, path: string): IntakeLatch {
+    const value = intakeObject(raw, path, ["retry"]);
+    return { retry: value.retry === null ? null : retryOf(value.retry, `${path}.retry`) };
+}
+
+/** A held entry's size against its cap: its JSON with its cancel latch at its largest, so a later cancel never takes it over the cap. */
+export function intakeHeldEntryCapBytes(entry: IntakeHeldEntry): number {
+    return bytes({ ...entry, cancel: INTAKE_LARGEST_LATCH });
+}
+
 function entryOf(raw: unknown, path: string): IntakeQueueEntry {
     const kind = typeof raw === "object" && raw !== null ? (raw as Record<string, unknown>).kind : undefined;
     if (kind === "unclaimed") {
-        const value = intakeObject(raw, path, ["kind", "claimId", "envelope", "retry"]);
+        const value = intakeObject(raw, path, ["kind", "claimId", "envelope", "retry", "cancel"]);
         const entry: IntakeUnclaimedEntry = {
             kind: "unclaimed", claimId: intakeId(value.claimId, `${path}.claimId`), envelope: parseIntakeEnvelope(value.envelope, `${path}.envelope`),
-            retry: retryOf(value.retry, `${path}.retry`),
+            retry: retryOf(value.retry, `${path}.retry`), cancel: booleanOf(value.cancel, `${path}.cancel`),
+        };
+        if (bytes(entry) > INTAKE_MAX_UNCLAIMED_ENTRY_BYTES) throw new IntakeShapeError(path, `is over ${INTAKE_MAX_UNCLAIMED_ENTRY_BYTES} bytes`);
+        return entry;
+    }
+    if (kind === "settling") {
+        const value = intakeObject(raw, path, ["kind", "exchangeId", "claimId", "outcome", "retry"]);
+        const outcome = HOLDER_OUTCOMES.find(item => item === value.outcome);
+        if (outcome === undefined) throw new IntakeShapeError(`${path}.outcome`, "is not cancelled, refused_full or refused_size");
+        const entry: IntakeSettlingEntry = {
+            kind: "settling", exchangeId: intakeExchangeId(value.exchangeId, `${path}.exchangeId`), claimId: intakeId(value.claimId, `${path}.claimId`),
+            outcome, retry: value.retry === null ? null : retryOf(value.retry, `${path}.retry`),
         };
         if (bytes(entry) > INTAKE_MAX_UNCLAIMED_ENTRY_BYTES) throw new IntakeShapeError(path, `is over ${INTAKE_MAX_UNCLAIMED_ENTRY_BYTES} bytes`);
         return entry;
     }
     if (kind === "held") {
-        const value = intakeObject(raw, path, ["kind", "exchangeId", "claimId", "textSha256", "clientMessageId", "itemBytes"]);
+        const value = intakeObject(raw, path, ["kind", "exchangeId", "claimId", "textSha256", "clientMessageId", "itemBytes", "cancel"]);
         const entry: IntakeHeldEntry = {
             kind: "held", exchangeId: intakeExchangeId(value.exchangeId, `${path}.exchangeId`), claimId: intakeId(value.claimId, `${path}.claimId`),
             textSha256: intakeSha256(value.textSha256, `${path}.textSha256`),
             clientMessageId: clientMessageIdOf(value.clientMessageId, `${path}.clientMessageId`),
             itemBytes: integerOf(value.itemBytes, `${path}.itemBytes`, 1),
+            cancel: value.cancel === null ? null : latchOf(value.cancel, `${path}.cancel`),
         };
         if (!intakeItemFitsAlone(entry.itemBytes)) throw new IntakeShapeError(`${path}.itemBytes`, "is over what one invocation holds");
-        if (bytes(entry) > INTAKE_MAX_HELD_ENTRY_BYTES) throw new IntakeShapeError(path, `is over ${INTAKE_MAX_HELD_ENTRY_BYTES} bytes`);
+        if (intakeHeldEntryCapBytes(entry) > INTAKE_MAX_HELD_ENTRY_BYTES) throw new IntakeShapeError(path, `is over ${INTAKE_MAX_HELD_ENTRY_BYTES} bytes`);
         return entry;
     }
-    throw new IntakeShapeError(`${path}.kind`, "is not unclaimed or held");
+    throw new IntakeShapeError(`${path}.kind`, "is not unclaimed, settling or held");
 }
 
 function itemOf(raw: unknown, path: string): IntakeInvocationItem {
@@ -208,7 +276,7 @@ function itemOf(raw: unknown, path: string): IntakeInvocationItem {
 
 function invocationOf(raw: unknown, path: string): IntakeInvocation {
     const invalid = (field: string, message: string) => new IntakeShapeError(`${path}.${field}`, message);
-    const value = intakeObject(raw, path, ["invocationId", "items", "itemBytes", "bound", "sent", "parked", "bindRetry", "settle"]);
+    const value = intakeObject(raw, path, ["invocationId", "items", "itemBytes", "bound", "sent", "parked", "bindRetry", "settle", "cancelWrite"]);
     const rawItems = value.items;
     const rawSizes = value.itemBytes;
     if (!Array.isArray(rawItems) || rawItems.length > INTAKE_MAX_HELD) {
@@ -238,6 +306,7 @@ function invocationOf(raw: unknown, path: string): IntakeInvocation {
         invocationId: intakeId(value.invocationId, `${path}.invocationId`), items, itemBytes,
         bound: booleanOf(value.bound, `${path}.bound`), sent: booleanOf(value.sent, `${path}.sent`), parked,
         bindRetry: value.bindRetry === null ? null : retryOf(value.bindRetry, `${path}.bindRetry`), settle,
+        cancelWrite: value.cancelWrite === null ? null : latchOf(value.cancelWrite, `${path}.cancelWrite`),
     };
     // Only the states an invocation passes through (design 5.5). Its batch is empty only when every item was cancelled
     // before its send: it then ends not_dispatched, and its end names no exchange.
@@ -250,9 +319,12 @@ function invocationOf(raw: unknown, path: string): IntakeInvocation {
         if (invocation.sent || invocation.parked !== null || invocation.settle !== null) {
             throw invalid("bound", "is false on an invocation that was sent, parked or ended");
         }
+        // Its rows are not admitted yet: a latched cancel waits for the bind.
+        if (invocation.cancelWrite !== null) throw invalid("cancelWrite", "is pending on an invocation that is not bound");
     } else if (invocation.bindRetry !== null) {
         throw invalid("bindRetry", "is present on a bound invocation");
     }
+    const unsentEnding = invocation.bound && !invocation.sent && invocation.settle !== null;
     invocation.items.forEach((item, index) => {
         const text = item.text;
         if (!invocation.bound) {
@@ -264,8 +336,16 @@ function invocationOf(raw: unknown, path: string): IntakeInvocation {
                 throw invalid(`itemBytes[${index}]`, "is not the size measured at its claim");
             }
         }
-        if (item.cancelRequested && !invocation.sent) throw invalid(`items[${index}].cancelRequested`, "is set on an invocation that was not sent");
+        // A latched cancel: before the bind it waits; bound and unsent, the cancel write that removes it is pending; sent, it
+        // stays (its cancel_requested recorded or pending). An unsent invocation that ends was never dispatched: none is latched.
+        if (item.cancelRequested && unsentEnding) throw invalid(`items[${index}].cancelRequested`, "is latched on an unsent invocation that is ending");
+        if (item.cancelRequested && invocation.bound && !invocation.sent && invocation.cancelWrite === null) {
+            throw invalid(`items[${index}].cancelRequested`, "is latched on an unsent invocation with no cancel write pending");
+        }
     });
+    if (invocation.cancelWrite !== null && !invocation.items.some(item => item.cancelRequested)) {
+        throw invalid("cancelWrite", "is pending with no latched cancel");
+    }
     if (invocation.parked !== null && (invocation.sent || invocation.settle !== null)) throw invalid("parked", "is set on an invocation that was sent or ended");
     if (invocation.settle !== null && (invocation.settle.outcome === "not_dispatched") === invocation.sent) {
         throw invalid("settle.outcome", invocation.sent ? "is not_dispatched for an invocation that was sent" : "is not not_dispatched for an invocation never sent");
@@ -297,11 +377,12 @@ export function restoreIntakeState(raw: unknown, path = "$.intake"): IntakeState
     if (!Array.isArray(rawQueue)) throw new IntakeShapeError(`${path}.queue`, "is not a list");
     const queue = rawQueue.map((entry: unknown, index: number) => entryOf(entry, `${path}.queue[${index}]`));
     const invocation = value.invocation === null ? null : invocationOf(value.invocation, `${path}.invocation`);
-    const unclaimed = queue.filter(entry => entry.kind === "unclaimed").length;
-    if (unclaimed > INTAKE_MAX_UNCLAIMED) throw new IntakeShapeError(`${path}.queue`, `has more than ${INTAKE_MAX_UNCLAIMED} unclaimed entries`);
-    if (queue.length - unclaimed > INTAKE_MAX_HELD) throw new IntakeShapeError(`${path}.queue`, `has more than ${INTAKE_MAX_HELD} held entries`);
-    // One claim id per claim, and one placement per exchange (I7): a held entry or an invocation item. An unclaimed copy of
-    // a placed exchange may still wait: its claim will find the exchange held (duplicate).
+    const waiting = queue.filter(entry => entry.kind !== "held").length;
+    if (waiting > INTAKE_MAX_UNCLAIMED) throw new IntakeShapeError(`${path}.queue`, `has more than ${INTAKE_MAX_UNCLAIMED} unclaimed or settling entries`);
+    if (queue.length - waiting > INTAKE_MAX_HELD) throw new IntakeShapeError(`${path}.queue`, `has more than ${INTAKE_MAX_HELD} held entries`);
+    // One claim id per claim, and one placement per exchange (I7): a held entry or an invocation item. A settling copy has
+    // none and is decided once: its exchange is neither placed nor settling twice. An unclaimed copy of a placed or
+    // settling exchange may still wait: its claim will find the exchange's row under the other claim (duplicate).
     const claims = new Set<string>(invocation?.items.map(item => item.claimId) ?? []);
     const placed = new Set<string>(invocation?.items.map(item => item.exchangeId) ?? []);
     queue.forEach((entry, index) => {
@@ -311,6 +392,14 @@ export function restoreIntakeState(raw: unknown, path = "$.intake"): IntakeState
             if (placed.has(entry.exchangeId)) throw new IntakeShapeError(`${path}.queue[${index}].exchangeId`, "is placed twice");
             placed.add(entry.exchangeId);
         }
+    });
+    const settling = new Set<string>();
+    queue.forEach((entry, index) => {
+        if (entry.kind !== "settling") return;
+        if (placed.has(entry.exchangeId) || settling.has(entry.exchangeId)) {
+            throw new IntakeShapeError(`${path}.queue[${index}].exchangeId`, "is settling while it is placed or settling already");
+        }
+        settling.add(entry.exchangeId);
     });
     if (queue.length === 0 && invocation === null) throw new IntakeShapeError(path, "is carried but empty");
     return { queue, invocation };
@@ -344,14 +433,15 @@ export function carriedIntakeBytes(state: IntakeState): number {
  * The batch for the next invocation (design 5.5, condition C1): the longest
  * arrival-order run of held entries whose bound items fit one invocation,
  * from the sizes measured at their claims, so it is chosen before its bind
- * and never found too large after it. Each held entry fits alone, so a queue
- * with a held entry always gives at least one.
+ * and never found too large after it. A held entry whose cancel is latched is
+ * passed over: it is never bound. Each held entry fits alone, so a queue with
+ * a held entry that is not cancelled always gives at least one.
  */
 export function selectIntakeBatch(queue: readonly IntakeQueueEntry[]): IntakeHeldEntry[] {
     const batch: IntakeHeldEntry[] = [];
     const sizes: number[] = [];
     for (const entry of queue) {
-        if (entry.kind !== "held") continue;
+        if (entry.kind !== "held" || entry.cancel !== null) continue;
         if (intakeItemsBytes([...sizes, entry.itemBytes]) > INTAKE_MAX_INVOCATION_ITEMS_BYTES) break;
         batch.push(entry);
         sizes.push(entry.itemBytes);

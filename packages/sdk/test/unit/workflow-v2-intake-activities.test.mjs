@@ -24,7 +24,7 @@ import {
 } from "../../dist/workflow/v2/intake-activities.js";
 import { workflowSendClientMessageId, workflowSendPrompt } from "../../dist/workflow/v2/runtime.js";
 import { WorkflowStoreError } from "../../dist/workflow/v2/store.js";
-import { IntakeShapeError } from "../../dist/workflow/v2/intake.js";
+import { IntakeShapeError, intakeEnvelopeClientMessageId } from "../../dist/workflow/v2/intake.js";
 
 const SRC = new URL("../../src/", import.meta.url);
 
@@ -122,6 +122,8 @@ test("the claim renders with the sender's own renderer and answers the store's r
     assert.deepEqual(workflowIntakeRender(source), {
         text: workflowSendPrompt(source), clientMessageId: workflowSendClientMessageId("wf", "run", X1),
     });
+    // The recipient knows the same canonical id from an envelope alone, to latch a tombstone while a copy's claim waits.
+    assert.equal(intakeEnvelopeClientMessageId({ workflowSessionId: "wf", runId: "run", exchangeId: X1 }), workflowSendClientMessageId("wf", "run", X1));
     // A claim in mode refuse is given as such.
     await runWorkflowIntakeClaim(h.deps, { ...CLAIM, mode: "refuse" });
     assert.equal(h.calls[1].input.mode, "refuse");
@@ -244,4 +246,30 @@ test("a list settled item by item is repeated whole after a transient error, eac
         { ok: true, result: { items: [{ exchangeId: X1, cancelled: false }, { exchangeId: X2, cancelled: true }] } });
     assert.deepEqual(h.calls.map(call => call.input.exchangeId), [X1, X2, X1, X2]);
     assert.deepEqual(h.sleeps, [1_000]);
+});
+
+test("a cancel list that committed in part and failed, or committed whole and lost its answer, is written again whole by the latch", async () => {
+    // The store's rows: an unsent item cancelled once stays so, and a repeat answers the same (cancelled: false).
+    const committed = new Set();
+    const h = harness({
+        cancelUnsentWorkflowIntake: (input, n) => {
+            if (n === 2) return new Error("Cannot use a pool after calling end on the pool");
+            const already = committed.has(input.exchangeId);
+            committed.add(input.exchangeId);
+            return { cancelled: !already };
+        },
+    });
+    const write = { op: "cancel_unsent", recipientSessionId: "me", invocationId: "inv-1",
+        items: [{ exchangeId: X1, claimId: "claim-1" }, { exchangeId: X2, claimId: "claim-2" }] };
+    // X1 commits, then the store fails on X2: the activity throws, and the orchestration keeps its latch (applyIntake...Failure).
+    await assert.rejects(runWorkflowIntakeSettle(h.deps, write), /Cannot use a pool/);
+    assert.deepEqual([...committed], [X1]);
+    // The wake writes the whole list again: X1 answers the same, X2 commits.
+    assert.deepEqual(await runWorkflowIntakeSettle(h.deps, write),
+        { ok: true, result: { items: [{ exchangeId: X1, settled: false }, { exchangeId: X2, settled: true }] } });
+    // Committed whole, its answer lost before the orchestration recorded it: written again, every item answers the same.
+    assert.deepEqual(await runWorkflowIntakeSettle(h.deps, write),
+        { ok: true, result: { items: [{ exchangeId: X1, settled: false }, { exchangeId: X2, settled: false }] } });
+    assert.deepEqual(h.calls.map(call => call.input.exchangeId), [X1, X2, X1, X2, X1, X2]);
+    assert.deepEqual(h.sleeps, []);
 });

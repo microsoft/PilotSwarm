@@ -69,9 +69,9 @@ function ref(n, text) {
     return { exchangeId: exchange(n), claimId: `claim-${n}`, textSha256: sha256(text), clientMessageId: `workflow:${WF}:${RUN}:send:${exchange(n)}` };
 }
 
-function held(n, text) {
+function held(n, text, cancel = null) {
     const r = ref(n, text);
-    return { kind: "held", ...r, itemBytes: intakeItemBytes(intakeBoundItem(r, text)) };
+    return { kind: "held", ...r, itemBytes: intakeItemBytes(intakeBoundItem(r, text)), cancel };
 }
 
 function envelope(n) {
@@ -81,17 +81,27 @@ function envelope(n) {
     };
 }
 
-function unclaimed(n) {
-    return { kind: "unclaimed", claimId: `claim-u${n}`, envelope: envelope(n), retry: { attempts: 1, nextAttemptAtMs: 1_000 } };
+function unclaimed(n, cancel = false) {
+    return { kind: "unclaimed", claimId: `claim-u${n}`, envelope: envelope(n), retry: { attempts: 1, nextAttemptAtMs: 1_000 }, cancel };
+}
+
+/** A holder's decided settle, latched (design 5.2, 5.4; review INTAKE-MACHINE-01). */
+function settling(n, { outcome = "cancelled", retry = null } = {}) {
+    return { kind: "settling", exchangeId: exchange(n), claimId: `claim-s${n}`, outcome, retry };
 }
 
 /** A bound invocation of the given texts (exchanges numbered from `first`). */
-function boundInvocation(texts, { first = 100, sent = false, parked = null, settle = null } = {}) {
+function boundInvocation(texts, { first = 100, sent = false, parked = null, settle = null, cancelWrite = null } = {}) {
     const items = texts.map((text, index) => ({ ...ref(first + index, text), text, cancelRequested: false }));
     return {
         invocationId: "inv-1", items, itemBytes: texts.map((text, index) => intakeItemBytes(intakeBoundItem(ref(first + index, text), text))),
-        bound: true, sent, parked, bindRetry: null, settle,
+        bound: true, sent, parked, bindRetry: null, settle, cancelWrite,
     };
+}
+
+/** The same with its first item's cancel latched. */
+function latchedFirst(invocation) {
+    return { ...invocation, items: invocation.items.map((item, index) => (index === 0 ? { ...item, cancelRequested: true } : item)) };
 }
 
 function unboundInvocation(texts, first = 100) {
@@ -311,6 +321,30 @@ const INVALID = [
     ["a parked invocation that was sent", s => ({ ...s, invocation: { ...s.invocation, parked: "gate" } }), "$.intake.invocation.parked"],
     ["a cancel requested before a send", s => ({ ...s, invocation: { ...s.invocation, sent: false,
         items: [{ ...s.invocation.items[0], cancelRequested: true }] } }), "$.intake.invocation.items[0].cancelRequested"],
+    ["an unclaimed cancel that is not a boolean", s => ({ ...s, queue: [{ ...s.queue[0], cancel: "yes" }] }), "$.intake.queue[0].cancel"],
+    ["an unclaimed entry without its cancel", s => ({ ...s, queue: [{ ...s.queue[0], cancel: undefined }] }), "$.intake.queue[0].cancel"],
+    ["a held cancel latch with a retry of no attempt", s => ({ ...s, queue: [{ ...s.queue[1], cancel: { retry: { attempts: 0, nextAttemptAtMs: 1 } } }] }),
+        "$.intake.queue[0].cancel.retry.attempts"],
+    ["a held cancel latch with an unknown field", s => ({ ...s, queue: [{ ...s.queue[1], cancel: { retry: null, extra: 1 } }] }), "$.intake.queue[0].cancel"],
+    // Within 512 bytes as it is, but not once its cancel is latched: a later cancel must always fit.
+    ["a held entry over its cap once latched", s => ({ ...s, queue: [{ ...s.queue[1], clientMessageId: "c".repeat(250) }] }), "$.intake.queue[0]"],
+    ["a settling entry with another outcome", s => ({ ...s, queue: [settling(5, { outcome: "admitted" })] }), "$.intake.queue[0].outcome"],
+    ["a settling entry with a negative due time", s => ({ ...s, queue: [settling(5, { retry: { attempts: 1, nextAttemptAtMs: -1 } })] }),
+        "$.intake.queue[0].retry.nextAttemptAtMs"],
+    ["a settling entry for a placed exchange", s => ({ ...s, queue: [s.queue[1], settling(2)] }), "$.intake.queue[1].exchangeId"],
+    ["an exchange settling twice", s => ({ ...s, queue: [settling(5), { ...settling(5), claimId: "claim-s5b" }] }), "$.intake.queue[1].exchangeId"],
+    ["too many waiting entries", s => ({ ...s, queue: [...Array.from({ length: 4 }, (_, n) => unclaimed(n)), ...Array.from({ length: 5 }, (_, n) => settling(n + 10))] }),
+        "$.intake.queue"],
+    ["a latched item on an unsent invocation that is ending",
+        s => ({ ...s, invocation: latchedFirst(boundInvocation([TEXT_B], { settle: { outcome: "not_dispatched", retry: null } })) }),
+        "$.intake.invocation.items[0].cancelRequested"],
+    ["a cancel write with no latched cancel", s => ({ ...s, invocation: { ...s.invocation, cancelWrite: { retry: null } } }), "$.intake.invocation.cancelWrite"],
+    ["a cancel write before the bind", s => ({ ...s, invocation: { ...latchedFirst(unboundInvocation([TEXT_B])), cancelWrite: { retry: null } } }),
+        "$.intake.invocation.cancelWrite"],
+    ["a cancel write with a negative due time",
+        s => ({ ...s, invocation: { ...latchedFirst(s.invocation), cancelWrite: { retry: { attempts: 1, nextAttemptAtMs: -1 } } } }),
+        "$.intake.invocation.cancelWrite.retry.nextAttemptAtMs"],
+    ["an invocation without its cancel write field", s => ({ ...s, invocation: { ...s.invocation, cancelWrite: undefined } }), "$.intake.invocation.cancelWrite"],
     ["not_dispatched after a send", s => ({ ...s, invocation: { ...s.invocation, settle: { outcome: "not_dispatched", retry: null } } }),
         "$.intake.invocation.settle.outcome"],
     ["completed with no send", s => ({ ...s, invocation: { ...s.invocation, sent: false, settle: { outcome: "completed", retry: null } } }),
@@ -343,12 +377,30 @@ test("a carried intake state is checked whole: each malformed part fails with it
         // Every item cancelled before the send: it ends not_dispatched with an empty batch, also while its end is retried.
         { ...boundInvocation([TEXT_A], { settle: { outcome: "not_dispatched", retry: null } }), items: [], itemBytes: [] },
         { ...boundInvocation([TEXT_A], { settle: { outcome: "not_dispatched", retry: { attempts: 1, nextAttemptAtMs: 9 } } }), items: [], itemBytes: [] },
+        // Cancels latched (review INTAKE-MACHINE-01 to 03): before the bind; bound and unsent with its cancel write due or
+        // failed, also parked; sent with its record due; sent while its end waits.
+        latchedFirst(unboundInvocation([TEXT_A, TEXT_B])),
+        latchedFirst(boundInvocation([TEXT_A, TEXT_B], { cancelWrite: { retry: null } })),
+        latchedFirst(boundInvocation([TEXT_A], { parked: "credential", cancelWrite: { retry: { attempts: 1, nextAttemptAtMs: 9 } } })),
+        latchedFirst(boundInvocation([TEXT_A], { sent: true, cancelWrite: { retry: null } })),
+        latchedFirst(boundInvocation([TEXT_A], { sent: true, settle: { outcome: "completed", retry: { attempts: 1, nextAttemptAtMs: 9 } },
+            cancelWrite: { retry: null } })),
     ]) {
         const state = carried({ invocation });
         assert.deepEqual(restoreIntakeState(JSON.parse(JSON.stringify(state))).invocation, invocation);
     }
-    // An unclaimed copy of an exchange that is already placed may still wait (its claim will find it held).
+    // Settling entries, latched held entries and a waiting copy whose cancel is latched restore.
+    for (const queue of [
+        [settling(5), held(2, TEXT_A)],
+        [settling(5, { outcome: "refused_full", retry: { attempts: 3, nextAttemptAtMs: 9 } }), settling(6, { outcome: "refused_size" })],
+        [held(2, TEXT_A, { retry: null }), held(3, TEXT_A, { retry: { attempts: 2, nextAttemptAtMs: 9 } })],
+        [unclaimed(1, true), unclaimed(2)],
+    ]) {
+        assert.deepEqual(restoreIntakeState(JSON.parse(JSON.stringify(carried({ queue })))).queue, queue);
+    }
+    // An unclaimed copy of an exchange that is already placed, or settling, may still wait (its claim will find the row).
     assert.doesNotThrow(() => restoreIntakeState(carried({ queue: [unclaimed(2), held(2, TEXT_A)] })));
+    assert.doesNotThrow(() => restoreIntakeState(carried({ queue: [unclaimed(5), settling(5)] })));
 });
 
 test("a carry is checked and copied, and an empty state carries nothing", () => {
@@ -412,4 +464,7 @@ test("a batch is the longest arrival-order run of held items that fits one invoc
     // The largest item that fits alone is a batch of one.
     const largest = sized(8, INTAKE_MAX_INVOCATION_ITEMS_BYTES - 2);
     assert.deepEqual(selectIntakeBatch([largest, tiny]), [largest]);
+    // A held entry whose cancel is latched is never bound: it is passed over, and the run goes on after it.
+    assert.deepEqual(selectIntakeBatch([{ ...largest, cancel: { retry: null } }, tiny]), [tiny]);
+    assert.deepEqual(selectIntakeBatch([{ ...tiny, cancel: { retry: { attempts: 1, nextAttemptAtMs: 9 } } }]), []);
 });

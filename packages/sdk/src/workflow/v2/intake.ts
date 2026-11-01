@@ -134,6 +134,16 @@ export function intakeEnvelopeSha256(fields: Omit<IntakeEnvelope, "envelopeSha25
     }));
 }
 
+/**
+ * The canonical client message id of an exchange's every copy (design
+ * section 3): the sender's own (runtime.ts workflowSendClientMessageId, which
+ * the claim's render gives), known from the envelope alone, so a tombstone
+ * that names it is latched even while the copy's claim waits.
+ */
+export function intakeEnvelopeClientMessageId(envelope: Pick<IntakeEnvelope, "workflowSessionId" | "runId" | "exchangeId">): string {
+    return `workflow:${envelope.workflowSessionId}:${envelope.runId}:send:${envelope.exchangeId}`;
+}
+
 /** What identifies an admitted item, without its text. */
 export interface IntakeItemRef {
     exchangeId: string;
