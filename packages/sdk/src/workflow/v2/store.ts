@@ -56,6 +56,14 @@ export interface StoredOperation<T> {
     replayed: boolean;
 }
 
+/** The receipt of an operation that is stored inside another transaction (recover). */
+export interface OperationReceiptInput {
+    operationId: string;
+    kind: string;
+    requestSha256: string;
+    value: JsonValue;
+}
+
 export interface WorkflowDefinitionRow {
     workflowSessionId: string;
     parentSessionId: string | null;
@@ -459,6 +467,42 @@ export class WorkflowStore {
         const stored = await this.readOperationReceipt(workflowSessionId, operationId, kind, requestSha256);
         if (stored === null) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Operation ${operationId} has no stored receipt.`);
         return { receipt: stored, replayed: true };
+    }
+
+    /**
+     * Inside a transaction: store an operation's receipt, or throw
+     * OPERATION_CONFLICT (which rolls the transaction back) when the id
+     * already has one; the caller then reads that receipt.
+     */
+    private async insertReceiptOnce(client: PoolClient, workflowSessionId: string, receipt: OperationReceiptInput): Promise<void> {
+        const { rows } = await client.query(
+            `INSERT INTO ${this.t.operations} (workflow_session_id, operation_id, kind, request_sha256, receipt) VALUES ($1, $2, $3, $4, $5)
+             ON CONFLICT (workflow_session_id, operation_id) DO NOTHING RETURNING operation_id`,
+            [workflowSessionId, receipt.operationId, receipt.kind, receipt.requestSha256, canonicalJson(receipt.value)]);
+        if (!rows[0]) {
+            throw new WorkflowStoreError("OPERATION_CONFLICT", `Operation ${receipt.operationId} already has a receipt.`,
+                { operationId: receipt.operationId });
+        }
+    }
+
+    /**
+     * The intent of a recover that dispatches an admitted run, stored before
+     * the dispatch: its receipt and its projection in one transaction, only
+     * while the run is still admitted and its session is live. The caller
+     * starts the controller after this commits, and a repeat of the request
+     * starts it again (duroxide ignores a second start of an instance), so
+     * the stored receipt never disagrees with the dispatch its request made.
+     */
+    async recordRecoverDispatch(input: { runId: string; receipt: OperationReceiptInput; projection: SessionProjection })
+        : Promise<{ recorded: boolean; run: WorkflowRunRow }> {
+        return this.transaction(async client => {
+            const live = await this.lockLiveSession(client, await this.workflowOfRun(client, input.runId));
+            const run = await this.lockRun(client, input.runId);
+            if (!live || run.status !== "admitted") return { recorded: false, run };
+            await this.insertReceiptOnce(client, run.workflowSessionId, input.receipt);
+            await this.project(client, input.projection);
+            return { recorded: true, run };
+        });
     }
 
     private async insertRevision(client: PoolClient, workflowSessionId: string, revision: number, yaml: string, compiled: WorkflowCompileResult, actor: WorkflowActor): Promise<void> {
@@ -929,23 +973,14 @@ export class WorkflowStore {
          * nothing changes and OPERATION_CONFLICT is thrown; the caller reads
          * that receipt.
          */
-        receipt?: { operationId: string; kind: string; requestSha256: string; value: JsonValue } | null;
+        receipt?: OperationReceiptInput | null;
         projection?: SessionProjection;
     }): Promise<{ ended: boolean; run: WorkflowRunRow }> {
         return this.transaction(async client => {
             const live = await this.lockLiveSession(client, await this.workflowOfRun(client, input.runId));
             const run = await this.lockRun(client, input.runId);
             if (!live || !ACTIVE_RUN_STATUSES.includes(run.status)) return { ended: false, run };
-            if (input.receipt) {
-                const recorded = await client.query(
-                    `INSERT INTO ${this.t.operations} (workflow_session_id, operation_id, kind, request_sha256, receipt) VALUES ($1, $2, $3, $4, $5)
-                     ON CONFLICT (workflow_session_id, operation_id) DO NOTHING RETURNING operation_id`,
-                    [run.workflowSessionId, input.receipt.operationId, input.receipt.kind, input.receipt.requestSha256, canonicalJson(input.receipt.value)]);
-                if (!recorded.rows[0]) {
-                    throw new WorkflowStoreError("OPERATION_CONFLICT", `Operation ${input.receipt.operationId} already has a receipt.`,
-                        { operationId: input.receipt.operationId });
-                }
-            }
+            if (input.receipt) await this.insertReceiptOnce(client, run.workflowSessionId, input.receipt);
             const { rows } = await client.query(
                 `UPDATE ${this.t.runs}
                     SET status = $2, terminal_node_id = $3, terminal_outcome = $4, terminal_output = $5, terminal_error = $6,

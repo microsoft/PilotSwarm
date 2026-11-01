@@ -176,10 +176,25 @@ async function notifyRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxide
 }
 
 /**
+ * Start the controller of a run whose recover receipt says it was
+ * dispatched, while the run is still admitted (nothing has begun it). The
+ * receipt was stored first, so a repeat of the request reaches this again
+ * after an interruption; duroxide ignores a second start of an instance, and
+ * the run's stored controller instance id never changes.
+ */
+async function dispatchRecoveredRun(host: Pick<WorkflowV2Host, "duroxideClient">, run: WorkflowRunRow): Promise<void> {
+    if (run.status !== "admitted") return;
+    const input: ControllerInput = { v: 2, workflowSessionId: run.workflowSessionId, runId: run.runId };
+    await host.duroxideClient.startOrchestrationVersioned(run.controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME, input, WORKFLOW_V2_CONTROLLER_VERSION);
+}
+
+/**
  * Recover an active run whose controller can no longer end it, on an
  * explicit request (update_workflow operation recover):
  * - admitted with no controller instance (the dispatch after admission was
- *   lost): dispatch it again (duroxide ignores a second start of an instance);
+ *   lost): dispatch it again. The receipt and the workflow.recovered event
+ *   are stored before the start, so the receipt of a request that started
+ *   the controller always says dispatched; a repeat starts it again;
  * - the controller ended, or its instance is gone, while the run is still
  *   active (its finalization attempts ran out, it was terminated, or its
  *   history is from an unsupported pre-release controller): end the run as
@@ -187,8 +202,10 @@ async function notifyRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxide
  *   when the workflow asked for it. Pending node executions lose to that
  *   end, so a running script's liveness check stops it.
  * A run that is not active, or whose controller is still running, is left as
- * it is. The operation id makes the request idempotent: its receipt is
- * stored (with the run's end, when it ends the run), and a repeat returns it.
+ * it is. The operation id makes the request idempotent: the first receipt
+ * stored for it is returned to every repeat, and a repeat completes the
+ * dispatch or the notification that receipt implies. The dispatch and the
+ * notification are at least once, not exactly once.
  */
 export async function recoverWorkflowV2Run(host: Pick<WorkflowV2Host, "store" | "duroxideClient">, runId: string,
     request: { requestedBy: string | null; operationId: string }): Promise<StoredOperation<WorkflowV2RecoverReceipt>> {
@@ -198,9 +215,20 @@ export async function recoverWorkflowV2Run(host: Pick<WorkflowV2Host, "store" | 
     const workflowSessionId = run.workflowSessionId;
     const requestSha256 = jsonSha256({ kind: "recover", runId });
     const replay = async (stored: JsonValue): Promise<StoredOperation<WorkflowV2RecoverReceipt>> => {
+        const receipt = parseRecoverReceipt(stored);
         const current = await host.store.readRun(runId);
-        if (current) await notifyRecoveredRun(host, current);
-        return { receipt: parseRecoverReceipt(stored), replayed: true };
+        if (current) {
+            if (receipt.action === "dispatched") await dispatchRecoveredRun(host, current);
+            await notifyRecoveredRun(host, current);
+        }
+        return { receipt, replayed: true };
+    };
+    /** The id was recorded meanwhile: a concurrent repeat (its receipt is returned) or another request (OPERATION_CONFLICT). */
+    const recordedMeanwhile = async (error: unknown): Promise<StoredOperation<WorkflowV2RecoverReceipt>> => {
+        if (!(error instanceof WorkflowStoreError) || error.code !== "OPERATION_CONFLICT") throw error;
+        const stored = await host.store.readOperationReceipt(workflowSessionId, request.operationId, "recover", requestSha256);
+        if (stored === null) throw error;
+        return replay(stored);
     };
     const prior = await host.store.readOperationReceipt(workflowSessionId, request.operationId, "recover", requestSha256);
     if (prior !== null) return replay(prior);
@@ -208,11 +236,28 @@ export async function recoverWorkflowV2Run(host: Pick<WorkflowV2Host, "store" | 
     const controller = await inspectWorkflowV2Controller(host, run);
     let receipt: WorkflowV2RecoverReceipt = { runId, action: "none", status: run.status, controller };
     if (controller.needsRecovery && controller.status === "NotFound" && run.status === "admitted") {
-        const input: ControllerInput = { v: 2, workflowSessionId, runId };
-        await host.duroxideClient.startOrchestrationVersioned(run.controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME, input, WORKFLOW_V2_CONTROLLER_VERSION);
-        await host.store.recordSessionEvents(workflowSessionId, [{ eventType: "workflow.recovered",
-            data: { runId, action: "dispatched", requestedBy: request.requestedBy } }]);
-        receipt = { runId, action: "dispatched", status: run.status, controller };
+        const dispatching: WorkflowV2RecoverReceipt = { runId, action: "dispatched", status: run.status, controller };
+        let intent: { recorded: boolean; run: WorkflowRunRow };
+        try {
+            intent = await host.store.recordRecoverDispatch({
+                runId,
+                receipt: { operationId: request.operationId, kind: "recover", requestSha256, value: recoverReceiptJson(dispatching) },
+                projection: {
+                    sessionId: workflowSessionId,
+                    events: [{ eventType: "workflow.recovered", data: {
+                        runId, action: "dispatched", requestedBy: request.requestedBy, operationId: request.operationId,
+                    } }],
+                },
+            });
+        } catch (error) {
+            return recordedMeanwhile(error);
+        }
+        if (intent.recorded) {
+            await dispatchRecoveredRun(host, intent.run);
+            return { receipt: dispatching, replayed: false };
+        }
+        // Something began or ended the run meanwhile; this request changes nothing.
+        receipt = { runId, action: "none", status: intent.run.status, controller };
     } else if (controller.needsRecovery) {
         const message = controller.status === "NotFound"
             ? "The workflow controller no longer exists; the run cannot continue."
@@ -235,12 +280,7 @@ export async function recoverWorkflowV2Run(host: Pick<WorkflowV2Host, "store" | 
                 },
             });
         } catch (error) {
-            // The id was recorded meanwhile: a concurrent repeat (its receipt
-            // is returned) or another request (OPERATION_CONFLICT).
-            if (!(error instanceof WorkflowStoreError) || error.code !== "OPERATION_CONFLICT") throw error;
-            const stored = await host.store.readOperationReceipt(workflowSessionId, request.operationId, "recover", requestSha256);
-            if (stored === null) throw error;
-            return replay(stored);
+            return recordedMeanwhile(error);
         }
         if (ended.ended) {
             await notifyRecoveredRun(host, ended.run);

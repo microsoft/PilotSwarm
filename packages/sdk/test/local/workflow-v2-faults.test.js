@@ -27,7 +27,7 @@ import { createWorkflowV2 } from "../../src/workflow/v2/service.ts";
 import { readWorkflowFromTool, updateWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
 import {
     registerWorkflowV2, WORKFLOW_V2_ACTIVITIES, WORKFLOW_V2_CONTROLLER_NAME, WORKFLOW_V2_CONTROLLER_VERSION, workflowEffectInstanceId,
-    workflowNotifyInstanceId,
+    workflowLiveControllerInstanceId, workflowNotifyInstanceId,
 } from "../../src/workflow/v2/runtime.ts";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
@@ -436,7 +436,7 @@ states:
             expect(run.status, JSON.stringify(run)).toBe("completed");
             expect(run.terminalOutput).toEqual({ n: 2 });
             const recoveredEvents = await h.host.catalog.getSessionEvents(lostId, 0, 50, ["workflow.recovered"]);
-            expect(recoveredEvents.map(event => event.data)).toEqual([{ runId: run.runId, action: "dispatched", requestedBy: parentId }]);
+            expect(recoveredEvents.map(event => event.data)).toEqual([{ runId: run.runId, action: "dispatched", requestedBy: parentId, operationId: "recover-lost" }]);
 
             // Only the parent may recover.
             const stranger = JSON.parse(await updateWorkflowFromTool({ workflow_id: slowId, operation: "recover", operation_id: "x" },
@@ -701,6 +701,120 @@ states:
             expect(view.run).toMatchObject({ runId: lost.receipt.run.runId, status: "admitted", controller: { status: "NotFound", needsRecovery: true } });
             expect((await h.client.getStatus(lost.receipt.run.controllerInstanceId)).status).toBe("NotFound");
             expect((await h.store.readRun(lost.receipt.run.runId)).status).toBe("admitted");
+        } finally { await h.stop(); }
+    });
+
+    it("stores a recover's dispatch receipt before it starts the controller, so a concurrent or interrupted repeat returns it", { timeout: 180_000 }, async () => {
+        const h = await harness(getEnv(), {});
+        try {
+            const parentId = randomUUID();
+            await h.host.catalog.createSession(parentId, {});
+            /** Every controller start that a recover made, through any host below. */
+            const starts = [];
+            const hostWith = ({ store = h.store, beforeStart = async () => undefined, afterStart = async () => undefined } = {}) => {
+                const client = Object.create(h.client);
+                client.startOrchestrationVersioned = async (instanceId, name, input, version) => {
+                    await beforeStart();
+                    await h.client.startOrchestrationVersioned(instanceId, name, input, version);
+                    starts.push({ instanceId, name, input, version });
+                    await afterStart();
+                };
+                return { ...h.host, store, duroxideClient: client };
+            };
+            const recover = async (host, workflowId, operationId) => JSON.parse(await updateWorkflowFromTool(
+                { workflow_id: workflowId, operation: "recover", operation_id: operationId }, { callerSessionId: parentId, host }));
+            const undispatched = { ...h.host, duroxideClient: { ...h.host.duroxideClient, startOrchestrationVersioned: async () => undefined } };
+            const lostRun = async () => {
+                const id = randomUUID();
+                const created = await createWorkflowV2(undispatched, { workflowSessionId: id, parentSessionId: parentId, yaml: TWO_STEPS,
+                    actor: ACTOR, operationId: "start", start: { inputs: {} } });
+                expect((await h.client.getStatus(created.receipt.run.controllerInstanceId)).status).toBe("NotFound");
+                return { id, run: created.receipt.run };
+            };
+            const recovered = async (id) => (await h.host.catalog.getSessionEvents(id, 0, 50, ["workflow.recovered"])).map(event => event.data);
+            const completesOnce = async (lost) => {
+                const run = await finished(h, lost.run.runId, 60_000);
+                expect(run.status, JSON.stringify(run)).toBe("completed");
+                expect(run.terminalOutput).toEqual({ n: 2 });
+                expect((await h.store.listNodeExecutions(run.runId)).map(node => [node.nodeId, node.ordinal])).toEqual([["first", 1], ["second", 1], ["done", 1]]);
+                expect(await h.client.listExecutions(lost.run.controllerInstanceId)).toEqual([1]);
+            };
+
+            // 1. The reviewed race: a repeat reads no receipt, the first request dispatches and the
+            // controller starts, then the repeat sees no recovery to do. It returns the first receipt.
+            const raced = await lostRun();
+            const paused = gate();
+            const pausingStore = Object.create(h.store);
+            pausingStore.readOperationReceipt = async (...args) => {
+                const stored = await h.store.readOperationReceipt(...args);
+                if (stored === null) { paused.arrive(); await paused.wait(); }
+                return stored;
+            };
+            const late = recover(hostWith({ store: pausingStore }), raced.id, "recover-race");
+            await paused.reached;
+            const first = await recover(hostWith(), raced.id, "recover-race");
+            expect(first, JSON.stringify(first)).toMatchObject({ ok: true, replayed: false, action: "dispatched", status: "admitted" });
+            await until(async () => (await h.client.getStatus(raced.run.controllerInstanceId)).status !== "NotFound", "the dispatched controller to start");
+            paused.open();
+            expect(await late).toEqual({ ...first, replayed: true });
+            await completesOnce(raced);
+            expect(await recovered(raced.id)).toEqual([{ runId: raced.run.runId, action: "dispatched", requestedBy: parentId, operationId: "recover-race" }]);
+
+            // 2. Both requests decide to dispatch: the first stores its intent and pauses before its start;
+            // the repeat's intent conflicts, rolls back, returns the first receipt and starts the controller.
+            const both = await lostRun();
+            const beforeIntent = gate();
+            const intentStore = Object.create(h.store);
+            intentStore.recordRecoverDispatch = async (...args) => { beforeIntent.arrive(); await beforeIntent.wait(); return h.store.recordRecoverDispatch(...args); };
+            const beforeStart = gate();
+            const decided = recover(hostWith({ store: intentStore }), both.id, "recover-both");
+            await beforeIntent.reached;
+            const owner = recover(hostWith({ beforeStart: async () => { beforeStart.arrive(); await beforeStart.wait(); } }), both.id, "recover-both");
+            await beforeStart.reached;
+            expect(await recovered(both.id)).toHaveLength(1);
+            beforeIntent.open();
+            const repeat = await decided;
+            expect(repeat, JSON.stringify(repeat)).toMatchObject({ ok: true, replayed: true, action: "dispatched", status: "admitted" });
+            beforeStart.open();
+            expect(await owner).toEqual({ ...repeat, replayed: false });
+            await completesOnce(both);
+            expect(await recovered(both.id)).toEqual([{ runId: both.run.runId, action: "dispatched", requestedBy: parentId, operationId: "recover-both" }]);
+
+            // 3. Interrupted after the intent and before the start: nothing started; a repeat starts it.
+            const crashed = await lostRun();
+            const failedStart = await recover(hostWith({ beforeStart: async () => { throw new Error("injected crash before the controller start"); } }),
+                crashed.id, "recover-crash");
+            expect(failedStart).toMatchObject({ ok: false, error: { message: "injected crash before the controller start" } });
+            expect((await h.client.getStatus(crashed.run.controllerInstanceId)).status).toBe("NotFound");
+            expect((await h.store.readRun(crashed.run.runId)).status).toBe("admitted");
+            expect(await recover(hostWith(), crashed.id, "recover-crash")).toMatchObject({ ok: true, replayed: true, action: "dispatched", status: "admitted" });
+            await completesOnce(crashed);
+            expect(await recovered(crashed.id)).toHaveLength(1);
+
+            // 4. Interrupted after the start: a repeat returns the receipt; its second start is ignored.
+            const interrupted = await lostRun();
+            const failedReturn = await recover(hostWith({ afterStart: async () => { throw new Error("injected crash after the controller start"); } }),
+                interrupted.id, "recover-after-start");
+            expect(failedReturn).toMatchObject({ ok: false, error: { message: "injected crash after the controller start" } });
+            expect(await recover(hostWith(), interrupted.id, "recover-after-start")).toMatchObject({ ok: true, replayed: true, action: "dispatched" });
+            await completesOnce(interrupted);
+            expect(await recovered(interrupted.id)).toHaveLength(1);
+
+            // 5. An operation id that another request used is refused before anything starts.
+            const conflicting = await lostRun();
+            expect(await recover(hostWith(), conflicting.id, "start")).toMatchObject({ ok: false, error: { code: "OPERATION_CONFLICT" } });
+            expect((await h.client.getStatus(conflicting.run.controllerInstanceId)).status).toBe("NotFound");
+            expect(await recovered(conflicting.id)).toEqual([]);
+
+            // Every start named the run's stored controller instance, controller and version.
+            const runs = [raced, both, crashed, interrupted];
+            expect(new Set(starts.map(start => start.instanceId))).toEqual(new Set(runs.map(lost => lost.run.controllerInstanceId)));
+            for (const start of starts) {
+                const lost = runs.find(item => item.run.controllerInstanceId === start.instanceId);
+                expect(start.instanceId).toBe(workflowLiveControllerInstanceId(lost.id));
+                expect(start).toMatchObject({ name: WORKFLOW_V2_CONTROLLER_NAME, version: WORKFLOW_V2_CONTROLLER_VERSION,
+                    input: { v: 2, workflowSessionId: lost.id, runId: lost.run.runId } });
+            }
         } finally { await h.stop(); }
     });
 
