@@ -97,7 +97,7 @@ test("send_workflow_input is declared beside the workflow tools, with the sender
         ["contract", "correlation", "operation_id", "payload", "run_id", "ttl_seconds", "workflow_id"]);
     // No field names a sender: the runtime names the calling session.
     assert.ok(!Object.keys(send.parameters.properties).some((name) => /sender|from|actor/.test(name)));
-    for (const phrase of ["receive", "operation_id", "claimedBy", "not processing", "your own user"]) {
+    for (const phrase of ["receive", "operation_id", "claimedBy", "not processing", "your own user", "unchanged", "payloadSha256", "microseconds"]) {
         assert.ok(send.description.includes(phrase), `send_workflow_input describes ${phrase}`);
     }
 });

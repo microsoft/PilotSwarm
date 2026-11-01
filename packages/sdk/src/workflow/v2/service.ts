@@ -31,6 +31,7 @@ import {
     type WorkflowActor,
     type WorkflowDefinitionReceipt,
     type WorkflowInboxLimits,
+    type WorkflowInputReceipt,
     type WorkflowRunCommandReceipt,
     type WorkflowRunRow,
     type WorkflowRunStatus,
@@ -712,31 +713,24 @@ export const WORKFLOW_V2_INBOX_LIMITS: WorkflowInboxLimits = { maxUnconsumed: 10
 /** How long an unclaimed input stays eligible for a receive state: the default and the most (seconds). */
 export const WORKFLOW_V2_INPUT_TTL_SECONDS = 86_400;
 
-/** The receipt of send_workflow_input: the input as accepted, and the receive state that took it (now). */
-export interface WorkflowV2InputReceipt {
-    workflowSessionId: string;
-    runId: string;
-    messageId: string;
-    contract: string;
-    acceptedAt: string;
-    expiresAt: string;
-    claimedBy: { nodeExecutionId: string; stateId: string } | null;
-}
-
 /**
  * send_workflow_input: give a run of a v2 workflow one typed input (R07,
  * R08). The sender is the session the adapter names as the caller, never a
- * field of the request, and it must be allowed (authority.ts): the parent,
- * or a session that does not cross a user ownership boundary. The run is
+ * field of the request, and it must be allowed (authority.ts): the
+ * workflow's live parent, or a live session of the same user as the
+ * workflow (both owned by that user; unknown or system ownership grants
+ * nothing). The run is
  * the one named, or the live run. Its pinned definition must have a receive
  * state for the contract (an undeclared contract is refused as
  * UNSUPPORTED_CONTRACT), and the payload must satisfy the contract's schema
  * (INPUT_INVALID, nothing stored). The store accepts it once per (workflow,
  * sender, operation id) and a waiting receive takes it in the same
  * transaction (store.acceptInput); an input no receive waits for is kept,
- * in the run's order, until one takes it or it expires. When a receive took
- * it, the run's controller gets a wake (a hint; its backstop timer finds the
- * result too); a repeat of the request sends the wake again.
+ * in the run's order, until one takes it or it expires. The receipt is the
+ * acceptance's, stored with the input: a repeat returns it unchanged. When a
+ * receive took the input as it was accepted, the run's controller gets a
+ * wake (a hint; its backstop timer finds the result too); a repeat of the
+ * request sends the wake again.
  */
 export async function sendWorkflowInputV2(
     host: Pick<WorkflowV2Host, "catalog" | "store" | "duroxideClient">,
@@ -750,16 +744,17 @@ export async function sendWorkflowInputV2(
         ttlSeconds?: number | null;
         operationId: string;
     },
-): Promise<StoredOperation<WorkflowV2InputReceipt>> {
+): Promise<StoredOperation<WorkflowInputReceipt>> {
     requireOperationId(request.operationId);
     const { workflowSessionId, senderSessionId } = request;
     const definition = await host.store.readDefinition(workflowSessionId);
     if (!definition) throw new WorkflowStoreError("WORKFLOW_NOT_FOUND", `${workflowSessionId} is not a version 2 workflow.`);
     if (definition.state === "deleted") throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow was deleted.");
     const authority = await typedInputAuthority(host.catalog, host.store, workflowSessionId, senderSessionId);
-    if (authority === "unknown") throw new WorkflowStoreError("FORBIDDEN", "The sending session or the workflow session is not available.");
-    if (authority === "cross_owner") {
-        throw new WorkflowStoreError("FORBIDDEN", "This workflow belongs to another user; typed input across users needs a grant this release does not support.");
+    if (authority === "unavailable") throw new WorkflowStoreError("FORBIDDEN", "The sending session or the workflow session is not available.");
+    if (authority === "forbidden") {
+        throw new WorkflowStoreError("FORBIDDEN", "Only the workflow's parent, or a session of the same user as the workflow, may give it input; "
+            + "a session with unknown or system ownership, or of another user, may not.");
     }
     const runs = await host.store.listRuns(workflowSessionId);
     const run = request.runId ? runs.find(item => item.runId === request.runId) : runs.find(item => item.mode === "live");
@@ -795,17 +790,9 @@ export async function sendWorkflowInputV2(
         workflowSessionId, runId: run.runId, messageId: randomUUID(), senderSessionId, operationId: request.operationId, requestSha256,
         contract: request.contract, correlationText, payloadText, ttlSeconds, limits: WORKFLOW_V2_INBOX_LIMITS,
     });
-    if (stored.claimed && ACTIVE_RUN_STATUSES.includes(stored.run.status)) {
+    if (stored.receipt.claimedBy && ACTIVE_RUN_STATUSES.includes(stored.run.status)) {
         await host.duroxideClient.enqueueEvent(stored.run.controllerInstanceId, WORKFLOW_COMMAND_QUEUE,
             JSON.stringify({ type: "workflow-wake", runId: stored.run.runId, reason: "input" }));
     }
-    const { message } = stored;
-    return {
-        receipt: {
-            workflowSessionId, runId: message.runId, messageId: message.messageId, contract: message.contract,
-            acceptedAt: message.acceptedAt.toISOString(), expiresAt: message.expiresAt.toISOString(),
-            claimedBy: stored.claimed ? { nodeExecutionId: stored.claimed.nodeExecutionId, stateId: stored.claimed.nodeId } : null,
-        },
-        replayed: stored.replayed,
-    };
+    return { receipt: stored.receipt, replayed: stored.replayed };
 }

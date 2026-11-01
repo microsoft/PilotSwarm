@@ -161,7 +161,10 @@ export interface WorkflowNodeExecutionRow {
     completedAt: Date | null;
 }
 
-/** One typed input a sender gave a run (migration 0089). */
+/**
+ * One typed input a sender gave a run (migrations 0089, 0090), as it is now.
+ * Times are the stored values, exactly (ISO 8601 UTC with microseconds).
+ */
 export interface WorkflowInboxMessage {
     messageId: string;
     /** The durable order in which receive states claim messages. */
@@ -173,11 +176,34 @@ export interface WorkflowInboxMessage {
     contract: string;
     correlation: JsonValue;
     payload: JsonValue;
-    acceptedAt: Date;
-    expiresAt: Date;
+    acceptedAt: string;
+    expiresAt: string;
     /** The receive state's node execution that took it; null while unclaimed. */
     consumedBy: string | null;
-    consumedAt: Date | null;
+    consumedAt: string | null;
+}
+
+/**
+ * The receipt of an accepted input (send_workflow_input), stored with the
+ * input when it is accepted and returned unchanged to every repeat of the
+ * request. It names the request it accepted (requestSha256, payloadSha256)
+ * and records what happened in the acceptance's transaction: claimedBy is
+ * the receive state that took the input then, or null. What happens to the
+ * input later is the inbox read view's, not the receipt's.
+ */
+export interface WorkflowInputReceipt {
+    workflowSessionId: string;
+    runId: string;
+    messageId: string;
+    senderSessionId: string;
+    operationId: string;
+    contract: string;
+    requestSha256: string;
+    payloadSha256: string;
+    /** The store's clock reading that decided the acceptance (ISO 8601 UTC, microseconds). */
+    acceptedAt: string;
+    expiresAt: string;
+    claimedBy: { nodeExecutionId: string; stateId: string } | null;
 }
 
 /** Bounds on a run's inbox, checked when an input is accepted. */
@@ -332,13 +358,46 @@ function receiveOf(row: Row): WorkflowNodeExecutionRow["receive"] {
     return { contract, from: strOrNull(row, "receive_from"), correlation: parseStoredJson(str(row, "receive_correlation"), "receive_correlation") };
 }
 
+/** A timestamp column as exact ISO 8601 UTC text with microseconds (a JavaScript Date keeps only milliseconds). */
+function isoUtc(column: string): string {
+    return `to_char(${column} AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"')`;
+}
+
+/** The inbox columns inboxFrom reads, with exact times. */
+const INBOX_COLUMNS = `message_id, seq, workflow_session_id, run_id, sender_session_id, operation_id, contract, correlation, payload, consumed_by,
+    ${isoUtc("accepted_at")} AS accepted_at_iso, ${isoUtc("expires_at")} AS expires_at_iso, ${isoUtc("consumed_at")} AS consumed_at_iso`;
+
 function inboxFrom(row: Row): WorkflowInboxMessage {
     return {
         messageId: str(row, "message_id"), seq: int(row, "seq"), workflowSessionId: str(row, "workflow_session_id"), runId: str(row, "run_id"),
         senderSessionId: str(row, "sender_session_id"), operationId: str(row, "operation_id"), contract: str(row, "contract"),
         correlation: parseStoredJson(str(row, "correlation"), "correlation"), payload: parseStoredJson(str(row, "payload"), "payload"),
-        acceptedAt: date(row, "accepted_at"), expiresAt: date(row, "expires_at"),
-        consumedBy: strOrNull(row, "consumed_by"), consumedAt: dateOrNull(row, "consumed_at"),
+        acceptedAt: str(row, "accepted_at_iso"), expiresAt: str(row, "expires_at_iso"),
+        consumedBy: strOrNull(row, "consumed_by"), consumedAt: strOrNull(row, "consumed_at_iso"),
+    };
+}
+
+/** A stored input receipt, with its declared shape. */
+export function parseInputReceipt(value: JsonValue): WorkflowInputReceipt {
+    const invalid = () => new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "Stored input receipt has an invalid shape.");
+    if (!isJsonObject(value)) throw invalid();
+    const text = (key: string): string => {
+        const item = value[key];
+        if (typeof item !== "string") throw invalid();
+        return item;
+    };
+    let claimedBy: WorkflowInputReceipt["claimedBy"] = null;
+    const claim = value.claimedBy;
+    if (claim !== null) {
+        if (!isJsonObject(claim)) throw invalid();
+        const { nodeExecutionId, stateId } = claim;
+        if (typeof nodeExecutionId !== "string" || typeof stateId !== "string") throw invalid();
+        claimedBy = { nodeExecutionId, stateId };
+    }
+    return {
+        workflowSessionId: text("workflowSessionId"), runId: text("runId"), messageId: text("messageId"), senderSessionId: text("senderSessionId"),
+        operationId: text("operationId"), contract: text("contract"), requestSha256: text("requestSha256"), payloadSha256: text("payloadSha256"),
+        acceptedAt: text("acceptedAt"), expiresAt: text("expiresAt"), claimedBy,
     };
 }
 
@@ -1242,11 +1301,13 @@ export class WorkflowStore {
      *
      * A receive state takes, in this same transaction, the first message the
      * run already accepted that it accepts (contract, sender, correlation)
-     * and that has not expired, in the run's durable order; it is admitted
-     * completed (received) with that message as its output, and the message
-     * is claimed by it. Otherwise it is admitted pending, with its wait's
-     * deadline when it races one, and a later input can claim it
-     * (acceptInput).
+     * and that has not expired at its deciding reading, in the run's durable
+     * order; it is admitted completed (received) with that message as its
+     * output, and the message is claimed by it. Otherwise it is admitted
+     * pending, with its wait's deadline when it races one, and a later input
+     * can claim it (acceptInput). Its deciding reading of the store's clock
+     * is taken once after the locks and guards; selection, entered_at,
+     * completed_at, the deadline and consumed_at all use it exactly.
      */
     async enterNode(input: {
         runId: string;
@@ -1271,7 +1332,7 @@ export class WorkflowStore {
         receive?: { contract: string; from: string | null; correlationText: string } | null;
         immediate: NodeResultInput | null;
         projection?: SessionProjection;
-    }): Promise<{ admitted: true; inserted: boolean; node: WorkflowNodeExecutionRow; claimed?: WorkflowInboxMessage }
+    }): Promise<{ admitted: true; inserted: boolean; node: WorkflowNodeExecutionRow }
         | { admitted: false; reason: "inactive" | "kv_changed"; run: WorkflowRunRow }> {
         const inputSha256 = sha256Hex(input.inputText);
         return this.transaction(async client => {
@@ -1305,24 +1366,36 @@ export class WorkflowStore {
                 || (input.waitSeconds !== null && !(Number.isSafeInteger(input.waitSeconds) && input.waitSeconds >= 1))) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has invalid wait seconds.`);
             }
-            // A receive takes the first eligible message the run already accepted, in its durable order.
-            let claim: WorkflowInboxMessage | null = null;
+            // A receive decides at one reading of the store's clock, taken here,
+            // after the locks and guards, and kept as exact SQL text (a
+            // JavaScript Date keeps only milliseconds): the first message the
+            // run accepted that it takes must be unexpired at that reading,
+            // and the reading is its entered_at (and completed_at when it
+            // takes one, or the start of its wait's seconds).
+            let decidedAt: string | null = null;
+            let claim: { messageId: string; payloadText: string; contract: string; senderSessionId: string } | null = null;
             if (receive) {
+                const { rows: clock } = await client.query(`SELECT clock_timestamp()::text AS at`);
+                decidedAt = str(clock[0], "at");
                 const { rows: messages } = await client.query(
-                    `SELECT * FROM ${this.t.inbox}
+                    `SELECT message_id, payload, contract, sender_session_id FROM ${this.t.inbox}
                       WHERE run_id = $1 AND consumed_by IS NULL AND contract = $2 AND ($3::text IS NULL OR sender_session_id = $3)
-                        AND correlation = $4 AND expires_at > clock_timestamp()
+                        AND correlation = $4 AND expires_at > $5::timestamptz
                       ORDER BY seq LIMIT 1 FOR UPDATE`,
-                    [input.runId, receive.contract, receive.from, receive.correlationText]);
-                claim = messages[0] ? inboxFrom(messages[0]) : null;
+                    [input.runId, receive.contract, receive.from, receive.correlationText, decidedAt]);
+                claim = messages[0] ? {
+                    messageId: str(messages[0], "message_id"), payloadText: str(messages[0], "payload"),
+                    contract: str(messages[0], "contract"), senderSessionId: str(messages[0], "sender_session_id"),
+                } : null;
             }
             const result: NodeResultInput | null = immediate
-                ?? (claim ? { outcome: RECEIVE_RECEIVED, resultKind: "business", valueText: canonicalJson(claim.payload), winner: "message" } : null);
+                ?? (claim ? { outcome: RECEIVE_RECEIVED, resultKind: "business", valueText: claim.payloadText, winner: "message" } : null);
             // The accepted-entry clock reading: the CTE is evaluated once per
             // statement, so entered_at, an immediate result's completed_at and
-            // a wait's deadline_at share it exactly.
+            // a wait's deadline_at share it exactly. A receive passes its
+            // deciding reading instead; every other state reads the clock here.
             const { rows } = await client.query(
-                `WITH accepted AS (SELECT clock_timestamp() AS at)
+                `WITH accepted AS (SELECT COALESCE($22::timestamptz, clock_timestamp()) AS at)
                  INSERT INTO ${this.t.nodes}
                     (node_execution_id, run_id, scope_id, node_id, ordinal, node_type, predecessor_id, arrival_route, input, input_sha256,
                      state, outcome, result_kind, output, error, winner, entered_at, completed_at, kv_revision, deadline_at,
@@ -1337,26 +1410,25 @@ export class WorkflowStore {
                     result?.resultKind === "business" ? result.valueText : null,
                     result?.resultKind === "runtime_error" ? result.valueText : null,
                     result?.winner ?? null, input.kvRevision, claim ? null : input.waitSeconds,
-                    receive?.contract ?? null, receive?.from ?? null, receive?.correlationText ?? null],
+                    receive?.contract ?? null, receive?.from ?? null, receive?.correlationText ?? null, decidedAt],
             );
             const node = nodeFrom(rows[0]);
             let projection = input.projection;
             if (claim) {
                 const { rows: claimed } = await client.query(
-                    `UPDATE ${this.t.inbox} SET consumed_by = $2, consumed_at = $3 WHERE message_id = $1 AND consumed_by IS NULL RETURNING *`,
-                    [claim.messageId, node.nodeExecutionId, node.enteredAt]);
+                    `UPDATE ${this.t.inbox} SET consumed_by = $2, consumed_at = $3::timestamptz WHERE message_id = $1 AND consumed_by IS NULL RETURNING message_id`,
+                    [claim.messageId, node.nodeExecutionId, decidedAt]);
                 if (!claimed[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Message ${claim.messageId} was claimed under its lock.`);
-                claim = inboxFrom(claimed[0]);
                 if (projection) {
                     projection = { ...projection, events: [...(projection.events ?? []), { eventType: "workflow.state_completed", data: {
                         runId: node.runId, nodeExecutionId: node.nodeExecutionId, stateId: node.nodeId, step: node.ordinal,
                         outcome: RECEIVE_RECEIVED, resultKind: "business", messageId: claim.messageId, contract: claim.contract,
-                        senderSessionId: claim.senderSessionId, outputPreview: jsonbSafeText(canonicalJson(claim.payload), 1_000),
+                        senderSessionId: claim.senderSessionId, outputPreview: jsonbSafeText(claim.payloadText, 1_000),
                     } }] };
                 }
             }
             await this.project(client, projection);
-            return { admitted: true as const, inserted: true, node, ...(claim ? { claimed: claim } : {}) };
+            return { admitted: true as const, inserted: true, node };
         });
     }
 
@@ -1485,22 +1557,26 @@ export class WorkflowStore {
     /**
      * Accept one typed input for a run, once per (workflow, sender, operation
      * id), in one transaction under the session and run locks (the order an
-     * admission takes them). The message is stored with its accepted time,
-     * one reading of the store's clock after the locks, and its expiry. The
-     * earliest receive state of the run that waits for it (same contract,
-     * from no sender or this sender, same correlation) and whose wait has
-     * not reached its deadline at that reading then takes it in this
-     * transaction: an input accepted before the deadline wins even if the
-     * controller elapses the wait later; one accepted at or after it is late
-     * for that receive. An input no receive takes now stays unclaimed, in the
-     * run's durable order, until a receive takes it or it expires; a wait
-     * that elapses first does not discard it. A paused run accepts input and
-     * a receive may take it; the run admits nothing until it is resumed.
+     * admission takes them). One reading of the store's clock, taken after
+     * the locks and kept as exact SQL text (a JavaScript Date keeps only
+     * milliseconds), decides everything here: the inbox bounds, the input's
+     * accepted_at and expires_at, and whether a waiting receive takes it.
+     * The earliest receive state of the run that waits for it (same
+     * contract, from no sender or this sender, same correlation) and whose
+     * wait's deadline is after that reading takes it in this transaction,
+     * with that reading as its completed_at and the input's consumed_at: an
+     * input accepted before the deadline wins even if the controller elapses
+     * the wait later; one accepted at or after it is late for that receive.
+     * An input no receive takes now stays unclaimed, in the run's durable
+     * order, until a receive takes it or it expires; a wait that elapses
+     * first does not discard it. A paused run accepts input and a receive
+     * may take it; the run admits nothing until it is resumed.
      *
-     * A repeat of the request returns the message as it is now; another
-     * request with the id is refused. A deleted workflow takes no input, and
-     * a repeat to it is refused too. The inbox bounds are checked before
-     * anything is stored.
+     * The acceptance's receipt is stored with the input and never rewritten:
+     * a repeat of the request returns it as stored, whatever happened to the
+     * input since (listInbox shows that); another request with the id is
+     * refused. A deleted workflow takes no input, and a repeat to it is
+     * refused too. The inbox bounds are checked before anything is stored.
      */
     async acceptInput(input: {
         workflowSessionId: string;
@@ -1514,42 +1590,44 @@ export class WorkflowStore {
         payloadText: string;
         ttlSeconds: number;
         limits: WorkflowInboxLimits;
-    }): Promise<{ message: WorkflowInboxMessage; replayed: boolean; claimed: WorkflowNodeExecutionRow | null; run: WorkflowRunRow }> {
+    }): Promise<{ receipt: WorkflowInputReceipt; replayed: boolean; run: WorkflowRunRow }> {
         if (!Number.isSafeInteger(input.ttlSeconds) || input.ttlSeconds < 1) {
             throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Message ${input.messageId} has an invalid ttl.`);
         }
         return this.transaction(async client => {
             if (!await this.lockLiveSession(client, input.workflowSessionId)) throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow was deleted.");
-            const claimedNode = async (message: WorkflowInboxMessage): Promise<WorkflowNodeExecutionRow | null> => {
-                if (message.consumedBy === null) return null;
-                const { rows } = await client.query(`SELECT * FROM ${this.t.nodes} WHERE node_execution_id = $1`, [message.consumedBy]);
-                return rows[0] ? nodeFrom(rows[0]) : null;
-            };
             const { rows: priorRows } = await client.query(
-                `SELECT * FROM ${this.t.inbox} WHERE workflow_session_id = $1 AND sender_session_id = $2 AND operation_id = $3`,
+                `SELECT run_id, request_sha256, receipt FROM ${this.t.inbox}
+                  WHERE workflow_session_id = $1 AND sender_session_id = $2 AND operation_id = $3`,
                 [input.workflowSessionId, input.senderSessionId, input.operationId]);
             if (priorRows[0]) {
                 if (str(priorRows[0], "request_sha256") !== input.requestSha256) {
                     throw new WorkflowStoreError("OPERATION_CONFLICT", `Operation ${input.operationId} was already used for a different input.`,
                         { operationId: input.operationId });
                 }
-                const message = inboxFrom(priorRows[0]);
-                const { rows: runRows } = await client.query(`SELECT * FROM ${this.t.runs} WHERE run_id = $1`, [message.runId]);
-                if (!runRows[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Message ${message.messageId} names a missing run.`);
-                return { message, replayed: true, claimed: await claimedNode(message), run: runFrom(runRows[0]) };
+                const receiptText = strOrNull(priorRows[0], "receipt");
+                if (receiptText === null) {
+                    throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT",
+                        `Input ${input.operationId} was accepted by a pre-release build that stored no receipt; it cannot be repeated.`);
+                }
+                const { rows: runRows } = await client.query(`SELECT * FROM ${this.t.runs} WHERE run_id = $1`, [str(priorRows[0], "run_id")]);
+                if (!runRows[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Input ${input.operationId} names a missing run.`);
+                return { receipt: parseInputReceipt(parseStoredJson(receiptText, "receipt")), replayed: true, run: runFrom(runRows[0]) };
             }
             const run = await this.lockRun(client, input.runId);
             if (run.workflowSessionId !== input.workflowSessionId) throw new WorkflowStoreError("RUN_NOT_FOUND", `Run ${input.runId} is not a run of this workflow.`);
             if (!ACTIVE_RUN_STATUSES.includes(run.status)) {
                 throw new WorkflowStoreError("RUN_ENDED", `Run ${run.runId} has ended (${run.status}); it takes no input.`, { status: run.status });
             }
+            const { rows: clock } = await client.query(`SELECT clock_timestamp()::text AS at`);
+            const at = str(clock[0], "at");
             const { rows: counts } = await client.query(
                 `SELECT
-                    (count(*) FILTER (WHERE run_id = $1 AND consumed_by IS NULL AND expires_at > clock_timestamp()))::int AS unconsumed,
-                    (count(*) FILTER (WHERE run_id = $1 AND consumed_by IS NULL AND expires_at > clock_timestamp() AND sender_session_id = $3))::int AS sender_unconsumed,
-                    (count(*) FILTER (WHERE sender_session_id = $3 AND accepted_at > clock_timestamp() - $4::integer * interval '1 second'))::int AS sender_recent
+                    (count(*) FILTER (WHERE run_id = $1 AND consumed_by IS NULL AND expires_at > $4::timestamptz))::int AS unconsumed,
+                    (count(*) FILTER (WHERE run_id = $1 AND consumed_by IS NULL AND expires_at > $4::timestamptz AND sender_session_id = $3))::int AS sender_unconsumed,
+                    (count(*) FILTER (WHERE sender_session_id = $3 AND accepted_at > $4::timestamptz - $5::integer * interval '1 second'))::int AS sender_recent
                    FROM ${this.t.inbox} WHERE workflow_session_id = $2`,
-                [run.runId, input.workflowSessionId, input.senderSessionId, input.limits.windowSeconds]);
+                [run.runId, input.workflowSessionId, input.senderSessionId, at, input.limits.windowSeconds]);
             const count = counts[0] ?? {};
             if (int(count, "unconsumed") >= input.limits.maxUnconsumed || int(count, "sender_unconsumed") >= input.limits.maxUnconsumedPerSender) {
                 throw new WorkflowStoreError("INBOX_FULL", `Run ${run.runId} holds as many unclaimed inputs as it may (${input.limits.maxUnconsumed}, `
@@ -1561,56 +1639,59 @@ export class WorkflowStore {
                     + `${input.limits.windowSeconds} s; nothing was stored.`, { windowSeconds: input.limits.windowSeconds });
             }
             const { rows: inserted } = await client.query(
-                `WITH accepted AS (SELECT clock_timestamp() AS at)
-                 INSERT INTO ${this.t.inbox}
+                `INSERT INTO ${this.t.inbox}
                     (message_id, workflow_session_id, run_id, sender_session_id, operation_id, request_sha256, contract, correlation, payload,
                      accepted_at, expires_at)
-                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, (SELECT at FROM accepted), (SELECT at FROM accepted) + $10::integer * interval '1 second')
-                 RETURNING *`,
+                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::timestamptz, $10::timestamptz + $11::integer * interval '1 second')
+                 RETURNING ${isoUtc("accepted_at")} AS accepted_at_iso, ${isoUtc("expires_at")} AS expires_at_iso`,
                 [input.messageId, input.workflowSessionId, run.runId, input.senderSessionId, input.operationId, input.requestSha256,
-                    input.contract, input.correlationText, input.payloadText, input.ttlSeconds]);
-            let message = inboxFrom(inserted[0]);
+                    input.contract, input.correlationText, input.payloadText, at, input.ttlSeconds]);
             const { rows: waiting } = await client.query(
-                `SELECT * FROM ${this.t.nodes}
+                `SELECT node_execution_id FROM ${this.t.nodes}
                   WHERE run_id = $1 AND state = 'pending' AND node_type = 'messaging' AND receive_contract = $2
                     AND (receive_from IS NULL OR receive_from = $3) AND receive_correlation = $4
-                    AND (deadline_at IS NULL OR deadline_at > $5)
+                    AND (deadline_at IS NULL OR deadline_at > $5::timestamptz)
                   ORDER BY entered_at, node_execution_id LIMIT 1 FOR UPDATE`,
-                [run.runId, input.contract, input.senderSessionId, input.correlationText, message.acceptedAt]);
+                [run.runId, input.contract, input.senderSessionId, input.correlationText, at]);
             let claimed: WorkflowNodeExecutionRow | null = null;
-            const events: SessionEventRecord[] = [];
             if (waiting[0]) {
                 const { rows: completed } = await client.query(
                     `UPDATE ${this.t.nodes}
-                        SET state = 'completed', outcome = $2, result_kind = 'business', output = $3, error = NULL, winner = 'message', completed_at = $4
+                        SET state = 'completed', outcome = $2, result_kind = 'business', output = $3, error = NULL, winner = 'message',
+                            completed_at = $4::timestamptz
                       WHERE node_execution_id = $1 AND state = 'pending' RETURNING *`,
-                    [str(waiting[0], "node_execution_id"), RECEIVE_RECEIVED, input.payloadText, message.acceptedAt]);
+                    [str(waiting[0], "node_execution_id"), RECEIVE_RECEIVED, input.payloadText, at]);
                 if (!completed[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "A pending receive changed under its lock.");
                 claimed = nodeFrom(completed[0]);
-                const { rows: consumed } = await client.query(
-                    `UPDATE ${this.t.inbox} SET consumed_by = $2, consumed_at = $3 WHERE message_id = $1 RETURNING *`,
-                    [message.messageId, claimed.nodeExecutionId, message.acceptedAt]);
-                message = inboxFrom(consumed[0]);
+                await client.query(`UPDATE ${this.t.inbox} SET consumed_by = $2, consumed_at = $3::timestamptz WHERE message_id = $1`,
+                    [input.messageId, claimed.nodeExecutionId, at]);
             }
-            events.push({ eventType: "workflow.input_accepted", data: {
-                runId: run.runId, messageId: message.messageId, contract: message.contract, senderSessionId: message.senderSessionId,
-                claimedBy: message.consumedBy,
-            } });
+            const receipt: WorkflowInputReceipt = {
+                workflowSessionId: input.workflowSessionId, runId: run.runId, messageId: input.messageId, senderSessionId: input.senderSessionId,
+                operationId: input.operationId, contract: input.contract, requestSha256: input.requestSha256, payloadSha256: sha256Hex(input.payloadText),
+                acceptedAt: str(inserted[0], "accepted_at_iso"), expiresAt: str(inserted[0], "expires_at_iso"),
+                claimedBy: claimed ? { nodeExecutionId: claimed.nodeExecutionId, stateId: claimed.nodeId } : null,
+            };
+            await client.query(`UPDATE ${this.t.inbox} SET receipt = $2 WHERE message_id = $1`, [input.messageId, canonicalJson(receipt)]);
+            const events: SessionEventRecord[] = [{ eventType: "workflow.input_accepted", data: {
+                runId: run.runId, messageId: input.messageId, contract: input.contract, senderSessionId: input.senderSessionId,
+                claimedBy: claimed ? claimed.nodeExecutionId : null,
+            } }];
             if (claimed) {
                 events.push({ eventType: "workflow.state_completed", data: {
                     runId: run.runId, nodeExecutionId: claimed.nodeExecutionId, stateId: claimed.nodeId, step: claimed.ordinal,
-                    outcome: RECEIVE_RECEIVED, resultKind: "business", messageId: message.messageId, contract: message.contract,
-                    senderSessionId: message.senderSessionId, outputPreview: jsonbSafeText(input.payloadText, 1_000),
+                    outcome: RECEIVE_RECEIVED, resultKind: "business", messageId: input.messageId, contract: input.contract,
+                    senderSessionId: input.senderSessionId, outputPreview: jsonbSafeText(input.payloadText, 1_000),
                 } });
             }
             await this.project(client, { sessionId: input.workflowSessionId, events, update: { touch: true } });
-            return { message, replayed: false, claimed, run };
+            return { receipt, replayed: false, run };
         });
     }
 
-    /** A run's inbox, oldest first: unclaimed messages and the ones receive states took (bounded). */
+    /** A run's inbox, oldest first: unclaimed messages and the ones receive states took (bounded), as they are now. */
     async listInbox(runId: string, limit = 100): Promise<WorkflowInboxMessage[]> {
-        const { rows } = await this.pool.query(`SELECT * FROM ${this.t.inbox} WHERE run_id = $1 ORDER BY seq LIMIT $2`, [runId, limit]);
+        const { rows } = await this.pool.query(`SELECT ${INBOX_COLUMNS} FROM ${this.t.inbox} WHERE run_id = $1 ORDER BY seq LIMIT $2`, [runId, limit]);
         return rows.map(inboxFrom);
     }
 

@@ -919,11 +919,12 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     });
     /**
      * A receive state's sender, correlation and contract, resolved when it
-     * is entered. The parent comes from the definition (trusted lineage); a
-     * named session must exist and may give this workflow typed input (the
-     * rule of send_workflow_input), otherwise the state fails with
-     * unavailable or forbidden. A correlation is a JSON object of at most
-     * WORKFLOW_V2_MAX_CORRELATION_BYTES.
+     * is entered. The parent selector names the definition's parent; a
+     * named session is the binding's value. Either way the sender must be
+     * live and may give this workflow typed input (authority.ts, the rule of
+     * send_workflow_input), otherwise the state fails with unavailable or
+     * forbidden at once, so it never waits for a sender that cannot send. A
+     * correlation is a JSON object of at most WORKFLOW_V2_MAX_CORRELATION_BYTES.
      */
     const resolveReceive = async (node: WorkflowIRMessaging, run: WorkflowRunRow, scope: BindingScope)
         : Promise<{ spec: ReceiveSpec } | { failure: NodeResultInput }> => {
@@ -954,13 +955,17 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             if (typeof named !== "string" || !named.trim() || named.length > 256 || !isStorableText(named)) {
                 return { failure: runtimeError("invalid_input", `The sender of state '${node.id}' must be a session id.`) };
             }
-            const authority = await typedInputAuthority(deps.catalog, store, run.workflowSessionId, named);
-            if (authority === "unknown") return { failure: runtimeError("unavailable", `Session ${named} does not exist or was deleted.`, { sessionId: named }) };
-            if (authority === "cross_owner") {
-                return { failure: runtimeError("forbidden", `Session ${named} belongs to another user; typed input across users needs a grant this release does not support.`,
-                    { sessionId: named }) };
-            }
             from = named;
+        }
+        if (from !== null) {
+            const authority = await typedInputAuthority(deps.catalog, store, run.workflowSessionId, from);
+            if (authority === "unavailable") {
+                return { failure: runtimeError("unavailable", `Session ${from} does not exist or was deleted; it cannot send this input.`, { sessionId: from }) };
+            }
+            if (authority === "forbidden") {
+                return { failure: runtimeError("forbidden", `Session ${from} may not give this workflow input: only its parent, or a session of the same user `
+                    + "as the workflow, may (unknown or system ownership grants nothing).", { sessionId: from }) };
+            }
         }
         return { spec: { contract: node.contract, from, correlationText } };
     };

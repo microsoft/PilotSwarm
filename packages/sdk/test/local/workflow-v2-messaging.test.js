@@ -13,8 +13,21 @@
  *   receive, and a wait that elapses first does not discard it;
  * - a wrong sender, contract or correlation is not taken and does not move
  *   the deadline; an undeclared contract or an invalid payload stores
- *   nothing; a session of another user may not send, and a receive may not
- *   name one as its sender;
+ *   nothing;
+ * - only the workflow's live parent, or a live session owned by the same
+ *   user as the workflow (provider and subject exactly equal), may send:
+ *   unknown, partial, blank or system ownership on either side grants
+ *   nothing, and another identity is refused; a receive may not name such a
+ *   sender (forbidden), nor a deleted one, its parent included
+ *   (unavailable), even when that sender's earlier input waits;
+ * - one reading of the store's clock decides each acceptance and each
+ *   entry, compared and recorded exactly (microseconds): an input accepted
+ *   at its receive's deadline is late, one a microsecond earlier wins; a
+ *   receive takes at entry only an input unexpired at its own reading,
+ *   however late its entry commits;
+ * - the acceptance's receipt names the request and payload it accepted and
+ *   is returned unchanged to every repeat; the read view shows what
+ *   happened to the input since;
  * - a paused run takes input, and its receive may take it, but it admits
  *   nothing until it is resumed;
  * - each input is accepted once per (sender, operation id), and the inbox is
@@ -32,6 +45,8 @@ import { PgSessionCatalog } from "../../src/cms.ts";
 import {
     compileWorkflowV2, parseWorkflowIr, WORKFLOW_V2_IR_VERSION, WORKFLOW_V2_MESSAGING_IR_VERSION, WORKFLOW_V2_WAIT_IR_VERSION,
 } from "../../src/workflow/v2/compiler.ts";
+import { canonicalJson, sha256Hex } from "../../src/workflow/v2/json.ts";
+import { WorkflowStore } from "../../src/workflow/v2/store.ts";
 import { createWorkflowV2, WORKFLOW_V2_INBOX_LIMITS } from "../../src/workflow/v2/service.ts";
 import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
 import {
@@ -77,6 +92,9 @@ ${wait ? `    wait: { seconds: "\${kv.secs}" }\n` : ""}    transition: { next: {
   refused: { type: terminal, outcome: failed, output: "\${runtime.error}" }
 `;
 
+/** One receive state from the workflow's parent, with no wait: received is its only outcome. */
+const PARENT_RECEIVER = RECEIVER({ wait: false }).replace("    correlate:", "    from: { parent: true }\n    correlate:");
+
 /** A receive whose 1 s wait elapses, then a gap (seconds from the KV), then the same receive again. */
 const POLLER = `
 apiVersion: pilotswarm.dev/v2-draft
@@ -111,14 +129,19 @@ async function until(check, label, timeoutMs = 60_000) {
     throw new Error(`timed out waiting for ${label}: ${JSON.stringify(last)}`);
 }
 
-/** A worker-equivalent registration with one durable provider; `refusals` lists runs whose admission was refused for a pause. */
-async function harness(env, { wakeBackstopMs = 500 } = {}) {
+/**
+ * A worker-equivalent registration with one durable provider; `refusals` lists runs whose admission was refused for a pause.
+ * With `storePool`, the runtime's store runs on that pool (a test pool that can hold a statement); tool calls use the catalog's.
+ */
+async function harness(env, { wakeBackstopMs = 500, storePool = null } = {}) {
     const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
     await catalog.initialize();
     const store = catalog.workflowStore();
+    const runtimeStore = storePool ? new WorkflowStore(storePool, env.cmsSchema) : store;
     const provider = await PostgresProvider.connectWithSchema(env.store, env.duroxideSchema);
     const client = new Client(provider);
     const runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error" });
+    const direct = new pg.Pool({ connectionString: env.store, max: 2 });
     const refusals = [];
     registerWorkflowV2({
         registerActivity: (name, fn) => runtime.registerActivity(name, name !== WORKFLOW_V2_ACTIVITIES.enter ? fn : async (ctx, input) => {
@@ -128,7 +151,7 @@ async function harness(env, { wakeBackstopMs = 500 } = {}) {
         }),
         registerOrchestrationVersioned: (name, version, fn) => runtime.registerOrchestrationVersioned(name, version, fn),
     }, {
-        store, catalog,
+        store: runtimeStore, catalog,
         enabled: () => true,
         resolveToolBinding: async () => null,
         openToolExecutor: async () => { throw new Error("These workflows call no tools."); },
@@ -144,11 +167,52 @@ async function harness(env, { wakeBackstopMs = 500 } = {}) {
         /** The host with a controller start that never reaches duroxide: a run stays admitted, its controller absent. */
         undispatched: { ...host, duroxideClient: { ...client, startOrchestrationVersioned: async () => undefined,
             getStatus: id => client.getStatus(id), enqueueEvent: (...args) => client.enqueueEvent(...args) } },
+        /** A query on the test database: SCHEMA. names this test's catalog schema; times compared in SQL keep their microseconds. */
+        async q(text, params = []) {
+            return (await direct.query(text.replaceAll("SCHEMA.", `"${env.cmsSchema}".`), params)).rows;
+        },
         async stop() {
             await runtime.shutdown(100);
             await catalog.close();
+            await direct.end();
         },
     };
+}
+
+/**
+ * A pool for the runtime's store that holds a receive's entry (fault injection). When the entry's claim-selection
+ * statement returns a message of `hold.runId`, the entry's transaction waits on its own connection until the
+ * store's clock is past that message's expiry (recorded exactly in `hold.heldUntil`), then goes on to its insert and
+ * commit. It holds once.
+ */
+function holdingPool(env) {
+    const pool = new pg.Pool({ connectionString: env.store, max: 8 });
+    const inbox = `"${env.cmsSchema}".workflow_inbox`;
+    const hold = { runId: null, messageId: null, heldUntil: null };
+    const holding = client => ({
+        async query(text, params) {
+            const result = await client.query(text, params);
+            const sql = typeof text === "string" ? text : text.text;
+            if (hold.runId !== null && hold.messageId === null && Array.isArray(params) && params[0] === hold.runId && result.rows[0]
+                && sql.includes("workflow_inbox") && sql.includes("consumed_by IS NULL") && sql.includes("FOR UPDATE")) {
+                hold.messageId = result.rows[0].message_id;
+                const deadline = Date.now() + 20_000;
+                for (;;) {
+                    const { rows } = await client.query(`SELECT clock_timestamp() > expires_at AS past, clock_timestamp()::text AS at
+                        FROM ${inbox} WHERE message_id = $1`, [hold.messageId]);
+                    if (rows[0].past) {
+                        hold.heldUntil = rows[0].at;
+                        break;
+                    }
+                    if (Date.now() > deadline) throw new Error(`Message ${hold.messageId} did not expire while its receive's entry was held.`);
+                    await new Promise(resolve => setTimeout(resolve, 50));
+                }
+            }
+            return result;
+        },
+        release: (...args) => client.release(...args),
+    });
+    return { hold, pool: { connect: async () => holding(await pool.connect()), query: (text, params) => pool.query(text, params), end: () => pool.end() } };
 }
 
 async function finished(store, runId, timeoutMs = 60_000) {
@@ -158,10 +222,10 @@ async function finished(store, runId, timeoutMs = 60_000) {
     }, `run ${runId} to finish`, timeoutMs);
 }
 
-/** A session (parent, peer or stranger) and the tool calls it makes. */
-async function sessionOf(h, owner = null) {
+/** A session (parent, peer or stranger) and the tool calls it makes; `system` makes a system session. */
+async function sessionOf(h, owner = null, { system = false } = {}) {
     const sessionId = randomUUID();
-    await h.catalog.createSession(sessionId, owner ? { owner } : {});
+    await h.catalog.createSession(sessionId, { ...(owner ? { owner } : {}), ...(system ? { isSystem: true } : {}) });
     const context = { callerSessionId: sessionId, host: h.host };
     return {
         sessionId,
@@ -169,6 +233,44 @@ async function sessionOf(h, owner = null) {
         update: async (workflowId, args) => JSON.parse(await updateWorkflowFromTool({ workflow_id: workflowId, ...args }, context)),
         read: async (workflowId, args = {}) => JSON.parse(await readWorkflowFromTool({ workflow_id: workflowId, ...args }, context)),
     };
+}
+
+/**
+ * Link a session to a user row as stored, directly: the catalog registers
+ * only complete, trimmed identities and never links a system session, so
+ * partial, blank and system ownership exist only as stored data.
+ */
+async function linkOwner(h, sessionId, provider, subject) {
+    const [user] = await h.q(`INSERT INTO SCHEMA.users (provider, subject) VALUES ($1, $2)
+        ON CONFLICT (provider, subject) DO UPDATE SET provider = EXCLUDED.provider RETURNING user_id`, [provider, subject]);
+    await h.q(`INSERT INTO SCHEMA.session_owners (session_id, user_id) VALUES ($1, $2)
+        ON CONFLICT (session_id) DO UPDATE SET user_id = EXCLUDED.user_id`, [sessionId, user.user_id]);
+}
+
+/** ISO 8601 UTC with microseconds, as the store records its times. */
+const EXACT_TIME = /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{6}Z$/;
+
+/**
+ * The receipt a send returned is the one stored with the input, with the
+ * input's exact stored times, and names the request and the payload it
+ * accepted.
+ */
+async function expectStoredReceipt(h, sent, payload) {
+    const { ok, replayed, workflowId, ...fields } = sent;
+    expect(ok).toBe(true);
+    expect(typeof replayed).toBe("boolean");
+    const [row] = await h.q(`SELECT receipt, request_sha256, accepted_at = $2::timestamptz AS same_accepted, expires_at = $3::timestamptz AS same_expires,
+            to_char(accepted_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS accepted
+          FROM SCHEMA.workflow_inbox WHERE message_id = $1`, [sent.messageId, sent.acceptedAt, sent.expiresAt]);
+    expect(JSON.parse(row.receipt)).toEqual({ workflowSessionId: workflowId, ...fields });
+    expect(row).toMatchObject({ request_sha256: sent.requestSha256, same_accepted: true, same_expires: true, accepted: sent.acceptedAt });
+    expect(sent.payloadSha256).toBe(sha256Hex(canonicalJson(payload)));
+    expect([sent.acceptedAt, sent.expiresAt]).toEqual([expect.stringMatching(EXACT_TIME), expect.stringMatching(EXACT_TIME)]);
+}
+
+/** Events of a workflow session that record accepted input and completed states. */
+async function inputEvents(h, workflowId) {
+    return h.catalog.getSessionEvents(workflowId, 0, 200, ["workflow.input_accepted", "workflow.state_completed"]);
 }
 
 /** Start a run of `yaml` for `parent`; with `dispatch: false` its controller is not started. */
@@ -218,7 +320,7 @@ describe("workflow v2 messaging receive", () => {
         expect(contracts).toBeDefined();
         expect(() => parseWorkflowIr({ ...withoutContracts, irVersion: WORKFLOW_V2_WAIT_IR_VERSION })).toThrow("stored IR messaging state await_build is invalid");
         // The parent as sender, and no wait: received is the only outcome.
-        const parentOnly = compileWorkflowV2(RECEIVER({ wait: false }).replace("    correlate:", "    from: { parent: true }\n    correlate:"));
+        const parentOnly = compileWorkflowV2(PARENT_RECEIVER);
         expect(parentOnly.valid, JSON.stringify(parentOnly.diagnostics)).toBe(true);
         expect(parentOnly.ir.nodes.await_build).toMatchObject({ from: { parent: true }, waitSeconds: null });
         // A workflow with no receive keeps its earlier IR version and stores no contracts (they are reported unused).
@@ -269,15 +371,15 @@ states:
             expect(await nodesOf(h.store, run.runId)).toEqual([]);
             const expiring = await parent.send(run.id, { contract: "BuildEvent@1", correlation: { buildId: 7 }, payload: { buildId: 7, state: "running" },
                 ttl_seconds: 1, operation_id: "first" });
-            expect(expiring).toMatchObject({ ok: true, runId: run.runId, contract: "BuildEvent@1", replayed: false, claimedBy: null });
+            expect(expiring).toMatchObject({ ok: true, runId: run.runId, contract: "BuildEvent@1", replayed: false, claimedBy: null,
+                senderSessionId: parent.sessionId, operationId: "first" });
+            await expectStoredReceipt(h, expiring, { buildId: 7, state: "running" });
             // Wait (on the store's clock) until it has expired, then give two more.
-            const pool = new pg.Pool({ connectionString: getEnv().store, max: 1 });
-            try {
-                await until(async () => (await pool.query("SELECT clock_timestamp() > $1::timestamptz AS past", [expiring.expiresAt])).rows[0].past, "the first input to expire");
-            } finally { await pool.end(); }
+            await until(async () => (await h.q("SELECT clock_timestamp() > $1::timestamptz AS past", [expiring.expiresAt]))[0].past, "the first input to expire");
             const earlier = await parent.send(run.id, { contract: "BuildEvent@1", correlation: { buildId: 7 }, payload: BUILD, operation_id: "second" });
             const later = await parent.send(run.id, { contract: "BuildEvent@1", correlation: { buildId: 7 }, payload: { buildId: 7, state: "failed" }, operation_id: "third" });
             expect([earlier.claimedBy, later.claimedBy]).toEqual([null, null]);
+            await expectStoredReceipt(h, earlier, BUILD);
 
             await run.startController();
             const ended = await finished(h.store, run.runId);
@@ -287,22 +389,37 @@ states:
             expect(receive).toMatchObject({ nodeId: "await_build", nodeType: "messaging", state: "completed", outcome: "received", resultKind: "business",
                 winner: "message", output: BUILD, deadlineAt: null, effectAttempts: 0,
                 receive: { contract: "BuildEvent@1", from: null, correlation: { buildId: 7 } } });
-            expect(receive.completedAt).toEqual(receive.enteredAt);
+            // One reading of the store's clock decided the entry, exactly: it is the receive's entered_at and
+            // completed_at and the input's consumed_at, and the input was unexpired at it.
+            const [entry] = await h.q(`SELECT n.completed_at = n.entered_at AS completed_at_entry, m.consumed_at = n.entered_at AS consumed_at_entry,
+                    m.expires_at > n.entered_at AS unexpired_at_entry
+                  FROM SCHEMA.workflow_node_executions n JOIN SCHEMA.workflow_inbox m ON m.consumed_by = n.node_execution_id
+                 WHERE n.node_execution_id = $1`, [receive.nodeExecutionId]);
+            expect(entry).toEqual({ completed_at_entry: true, consumed_at_entry: true, unexpired_at_entry: true });
             const inbox = await h.store.listInbox(run.runId);
             expect(inbox.map(message => [message.operationId, message.consumedBy])).toEqual([["first", null], ["second", receive.nodeExecutionId], ["third", null]]);
-            expect(inbox[1].consumedAt).toEqual(receive.enteredAt);
+            expect(inbox[1].consumedAt).toMatch(EXACT_TIME);
             expect((await h.client.getStatus(workflowEffectInstanceId(receive.nodeExecutionId))).status).toBe("NotFound");
 
-            // A repeat returns the receipt as it is now; another input with the id is refused.
+            // A repeat returns the acceptance's receipt unchanged: no receive took the input when it was accepted,
+            // although one took it since, and the expired input's repeat too. The read view shows what happened since.
             const repeat = await parent.send(run.id, { contract: "BuildEvent@1", correlation: { buildId: 7 }, payload: BUILD, operation_id: "second" });
-            expect(repeat).toMatchObject({ ok: true, replayed: true, messageId: earlier.messageId,
-                claimedBy: { nodeExecutionId: receive.nodeExecutionId, stateId: "await_build" } });
+            expect(repeat).toEqual({ ...earlier, replayed: true });
+            expect(await parent.send(run.id, { contract: "BuildEvent@1", correlation: { buildId: 7 }, payload: { buildId: 7, state: "running" },
+                ttl_seconds: 1, operation_id: "first" })).toEqual({ ...expiring, replayed: true });
+            const view = await parent.read(run.id);
+            expect(view.run.inbox.map(message => [message.messageId, message.claimedBy, message.claimedAt])).toEqual([
+                [expiring.messageId, null, null], [earlier.messageId, receive.nodeExecutionId, inbox[1].consumedAt], [later.messageId, null, null]]);
             const conflict = await parent.send(run.id, { contract: "BuildEvent@1", correlation: { buildId: 7 }, payload: { buildId: 7, state: "running" }, operation_id: "second" });
             expect(conflict).toMatchObject({ ok: false, error: { code: "OPERATION_CONFLICT" } });
             // The run has ended: new input is refused, and nothing is stored.
             expect(await parent.send(run.id, { contract: "BuildEvent@1", correlation: { buildId: 7 }, payload: BUILD, operation_id: "late" }))
                 .toMatchObject({ ok: false, error: { code: "RUN_ENDED" } });
             expect((await h.store.listInbox(run.runId)).length).toBe(3);
+            // An input stored without a receipt (a pre-release build) is not repeated from what it is now.
+            await h.q("UPDATE SCHEMA.workflow_inbox SET receipt = NULL WHERE message_id = $1", [later.messageId]);
+            expect(await parent.send(run.id, { contract: "BuildEvent@1", correlation: { buildId: 7 }, payload: { buildId: 7, state: "failed" }, operation_id: "third" }))
+                .toMatchObject({ ok: false, error: { code: "WORKFLOW_STORE_CORRUPT" } });
         } finally { await h.stop(); }
     });
 
@@ -316,21 +433,23 @@ states:
             expect(waiting.deadlineAt.getTime() - waiting.enteredAt.getTime()).toBe(60_000);
             const sent = await parent.send(quick.id, { contract: "BuildEvent@1", correlation: { buildId: 7 }, payload: BUILD, operation_id: "build" });
             expect(sent).toMatchObject({ ok: true, claimedBy: { nodeExecutionId: waiting.nodeExecutionId, stateId: "await_build" } });
+            await expectStoredReceipt(h, sent, BUILD);
             const claimed = await h.store.readNodeExecution(waiting.nodeExecutionId);
             expect(claimed).toMatchObject({ state: "completed", outcome: "received", winner: "message", output: BUILD, deadlineAt: waiting.deadlineAt });
-            expect(claimed.completedAt.toISOString()).toBe(sent.acceptedAt);
-            expect(claimed.completedAt.getTime()).toBeLessThan(waiting.deadlineAt.getTime());
+            // One reading of the store's clock decided the acceptance, exactly: the input's accepted_at, the
+            // receive's completed_at and the input's consumed_at, before the receive's deadline.
+            const [race] = await h.q(`SELECT n.completed_at = m.accepted_at AS completed_at_acceptance, m.consumed_at = m.accepted_at AS consumed_at_acceptance,
+                    m.accepted_at < n.deadline_at AS before_deadline
+                  FROM SCHEMA.workflow_inbox m JOIN SCHEMA.workflow_node_executions n ON n.node_execution_id = m.consumed_by WHERE m.message_id = $1`, [sent.messageId]);
+            expect(race).toEqual({ completed_at_acceptance: true, consumed_at_acceptance: true, before_deadline: true });
             expect(await finished(h.store, quick.runId)).toMatchObject({ status: "completed", terminalOutput: BUILD });
 
             // An input accepted at or after the deadline is late for that receive (fault injection: the stored
             // deadline moves back after the controller read it, so the controller elapses the wait later).
             const late = await started(h, parent, RECEIVER(), { vars: { secs: 4 } });
             const pending = await nodeAt(h.store, late.runId, "await_build", 1, "pending");
-            const pool = new pg.Pool({ connectionString: getEnv().store, max: 1 });
-            try {
-                await pool.query(`UPDATE "${getEnv().cmsSchema}".workflow_node_executions SET deadline_at = clock_timestamp() - interval '1 second'
-                                   WHERE node_execution_id = $1`, [pending.nodeExecutionId]);
-            } finally { await pool.end(); }
+            await h.q(`UPDATE SCHEMA.workflow_node_executions SET deadline_at = clock_timestamp() - interval '1 second' WHERE node_execution_id = $1`,
+                [pending.nodeExecutionId]);
             const tooLate = await parent.send(late.id, { contract: "BuildEvent@1", correlation: { buildId: 7 }, payload: BUILD, operation_id: "build" });
             expect(tooLate).toMatchObject({ ok: true, claimedBy: null });
             const elapsed = await nodeAt(h.store, late.runId, "await_build", 1, "completed");
@@ -358,10 +477,12 @@ states:
     it("does not take an input of another sender or correlation, refuses an undeclared contract or an invalid payload, and keeps the deadline", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
-            const parent = await sessionOf(h);
-            const reporter = await sessionOf(h);
-            const peer = await sessionOf(h);
-            const run = await started(h, parent, RECEIVER({ from: true }), { vars: { secs: 60, reporter: reporter.sessionId } });
+            // Every sender here is owned by the workflow's user, so each may send.
+            const alice = { provider: "test", subject: `alice-${randomUUID()}` };
+            const parent = await sessionOf(h, alice);
+            const reporter = await sessionOf(h, alice);
+            const peer = await sessionOf(h, alice);
+            const run = await started(h, parent, RECEIVER({ from: true }), { vars: { secs: 60, reporter: reporter.sessionId }, owner: alice });
             const waiting = await nodeAt(h.store, run.runId, "await_build", 1, "pending");
             expect(waiting.receive).toEqual({ contract: "BuildEvent@1", from: reporter.sessionId, correlation: { buildId: 7 } });
             const wrongRound = await reporter.send(run.id, { contract: "BuildEvent@1", correlation: { buildId: 8 }, payload: BUILD, operation_id: "a" });
@@ -419,6 +540,214 @@ states:
         } finally { await h.stop(); }
     });
 
+    it("refuses input from a session of unknown, partial, blank or system ownership or another identity, and fails a receive that names one", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const alice = { provider: "test", subject: `alice-${randomUUID()}` };
+            const parent = await sessionOf(h, alice);
+            const colleague = await sessionOf(h, alice);
+            // Senders whose stored ownership grants nothing: none, partial, blank, a system session (unowned, and one
+            // linked to the workflow's user as stored data), and an identity that differs from that user's by a space.
+            const unowned = await sessionOf(h);
+            const partial = await sessionOf(h);
+            await linkOwner(h, partial.sessionId, alice.provider, "");
+            const blank = await sessionOf(h);
+            await linkOwner(h, blank.sessionId, " ", " ");
+            const system = await sessionOf(h, null, { system: true });
+            const aliceSystem = await sessionOf(h, null, { system: true });
+            await linkOwner(h, aliceSystem.sessionId, alice.provider, alice.subject);
+            const padded = await sessionOf(h);
+            await linkOwner(h, padded.sessionId, alice.provider, `${alice.subject} `);
+            // The catalog reads the stored ownership these cases depend on.
+            expect((await h.catalog.getSession(unowned.sessionId)).owner).toBeNull();
+            expect((await h.catalog.getSession(partial.sessionId)).owner).toBeNull();
+            expect((await h.catalog.getSession(blank.sessionId)).owner).toMatchObject({ provider: " ", subject: " " });
+            expect(await h.catalog.getSession(system.sessionId)).toMatchObject({ isSystem: true, owner: null });
+            expect(await h.catalog.getSession(aliceSystem.sessionId)).toMatchObject({ isSystem: true, owner: alice });
+            expect((await h.catalog.getSession(padded.sessionId)).owner).toMatchObject({ provider: alice.provider, subject: `${alice.subject} ` });
+            const refused = { unowned, partial, blank, system, aliceSystem, padded };
+
+            const run = await started(h, parent, RECEIVER({ wait: false }), { owner: alice });
+            expect((await h.catalog.getSession(run.id)).owner).toMatchObject(alice);
+            const waiting = await nodeAt(h.store, run.runId, "await_build", 1, "pending");
+            const events = await inputEvents(h, run.id);
+            for (const [name, sender] of Object.entries(refused)) {
+                expect(await sender.send(run.id, { contract: "BuildEvent@1", correlation: { buildId: 7 }, payload: BUILD, operation_id: "x" }), name)
+                    .toMatchObject({ ok: false, error: { code: "FORBIDDEN" } });
+            }
+            // Nothing was stored or recorded, and the receive still waits.
+            expect(await h.store.listInbox(run.runId)).toEqual([]);
+            expect(await inputEvents(h, run.id)).toEqual(events);
+            expect(await h.store.readNodeExecution(waiting.nodeExecutionId)).toMatchObject({ state: "pending" });
+            // A session of the workflow's user may.
+            expect(await colleague.send(run.id, { contract: "BuildEvent@1", correlation: { buildId: 7 }, payload: BUILD, operation_id: "x" }))
+                .toMatchObject({ ok: true, claimedBy: { nodeExecutionId: waiting.nodeExecutionId } });
+            expect(await finished(h.store, run.runId)).toMatchObject({ status: "completed", terminalOutput: BUILD });
+
+            // A workflow that no user owns takes input from its parent only: not from a user's session, nor from another unowned one.
+            const unownedParent = await sessionOf(h);
+            const orphan = await started(h, unownedParent, RECEIVER({ wait: false }));
+            expect((await h.catalog.getSession(orphan.id)).owner).toBeNull();
+            await nodeAt(h.store, orphan.runId, "await_build", 1, "pending");
+            for (const [name, sender] of Object.entries({ colleague, unowned })) {
+                expect(await sender.send(orphan.id, { contract: "BuildEvent@1", correlation: { buildId: 7 }, payload: BUILD, operation_id: "y" }), name)
+                    .toMatchObject({ ok: false, error: { code: "FORBIDDEN" } });
+            }
+            expect(await h.store.listInbox(orphan.runId)).toEqual([]);
+            expect(await unownedParent.send(orphan.id, { contract: "BuildEvent@1", correlation: { buildId: 7 }, payload: BUILD, operation_id: "y" }))
+                .toMatchObject({ ok: true, claimedBy: { stateId: "await_build" } });
+            expect(await finished(h.store, orphan.runId)).toMatchObject({ status: "completed", terminalOutput: BUILD });
+
+            // A receive that names any of the refused senders fails on entry, waiting for nothing.
+            const named = [];
+            for (const [name, sender] of Object.entries(refused)) {
+                named.push([name, await started(h, parent, RECEIVER({ from: true }), { vars: { secs: 60, reporter: sender.sessionId }, owner: alice })]);
+            }
+            for (const [name, namedRun] of named) {
+                expect(await finished(h.store, namedRun.runId), name).toMatchObject({ status: "failed", terminalOutput: { code: "forbidden" } });
+                expect((await nodesOf(h.store, namedRun.runId))[0], name).toMatchObject({ nodeId: "await_build", outcome: "forbidden",
+                    resultKind: "runtime_error", winner: "controller", receive: null, deadlineAt: null });
+            }
+        } finally { await h.stop(); }
+    });
+
+    it("fails a receive whose sender is not live when it is entered, the parent included, although an input that sender gave earlier waits", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const parent = await sessionOf(h);
+            const run = await started(h, parent, PARENT_RECEIVER, { dispatch: false });
+            const before = await parent.send(run.id, { contract: "BuildEvent@1", correlation: { buildId: 7 }, payload: BUILD, operation_id: "before" });
+            expect(before).toMatchObject({ ok: true, claimedBy: null, senderSessionId: parent.sessionId });
+            // The parent is deleted before the run enters the receive; the workflow is not.
+            await h.catalog.softDeleteSession(parent.sessionId);
+            expect(await h.catalog.getSession(parent.sessionId)).toBeNull();
+            expect(await h.catalog.getSession(run.id)).toMatchObject({ sessionKind: "workflow", parentSessionId: parent.sessionId });
+            await run.startController();
+            expect(await finished(h.store, run.runId)).toMatchObject({ status: "failed",
+                terminalOutput: { code: "unavailable", details: { sessionId: parent.sessionId } } });
+            expect((await nodesOf(h.store, run.runId))[0]).toMatchObject({ nodeId: "await_build", outcome: "unavailable", resultKind: "runtime_error",
+                winner: "controller", receive: null, deadlineAt: null });
+            // The input the parent gave before it was deleted was not taken.
+            expect((await h.store.listInbox(run.runId)).map(message => [message.messageId, message.consumedBy])).toEqual([[before.messageId, null]]);
+
+            // A receive that names the deleted parent as its sender fails the same way.
+            const other = await sessionOf(h);
+            const named = await started(h, other, RECEIVER({ from: true }), { vars: { secs: 60, reporter: parent.sessionId } });
+            expect(await finished(h.store, named.runId)).toMatchObject({ status: "failed", terminalOutput: { code: "unavailable" } });
+            expect((await nodesOf(h.store, named.runId))[0]).toMatchObject({ outcome: "unavailable", receive: null, deadlineAt: null });
+
+            // A live parent is the receive's sender, and the receive takes its input.
+            const live = await started(h, other, PARENT_RECEIVER);
+            const waiting = await nodeAt(h.store, live.runId, "await_build", 1, "pending");
+            expect(waiting).toMatchObject({ deadlineAt: null, receive: { contract: "BuildEvent@1", from: other.sessionId, correlation: { buildId: 7 } } });
+            expect(await other.send(live.id, { contract: "BuildEvent@1", correlation: { buildId: 7 }, payload: BUILD, operation_id: "now" }))
+                .toMatchObject({ ok: true, claimedBy: { nodeExecutionId: waiting.nodeExecutionId } });
+            expect(await finished(h.store, live.runId)).toMatchObject({ status: "completed", terminalOutput: BUILD });
+        } finally { await h.stop(); }
+    });
+
+    it("decides an input against its receive's deadline to the microsecond: at the deadline or after it is late, a microsecond before it wins", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            // Fault injection: as an input of a listed run is inserted, its waiting receive's deadline moves to the
+            // input's own acceptance reading plus the run's offset (microseconds). The controller still elapses the
+            // wait at the time it read at entry.
+            await h.q(`CREATE TABLE SCHEMA.test_deadline_offsets (run_id TEXT PRIMARY KEY, offset_us BIGINT NOT NULL)`);
+            await h.q(`CREATE FUNCTION SCHEMA.test_move_deadline() RETURNS trigger LANGUAGE plpgsql AS $$
+                BEGIN
+                    UPDATE SCHEMA.workflow_node_executions n SET deadline_at = NEW.accepted_at + o.offset_us * interval '1 microsecond'
+                      FROM SCHEMA.test_deadline_offsets o
+                     WHERE o.run_id = NEW.run_id AND n.run_id = NEW.run_id AND n.state = 'pending' AND n.node_type = 'messaging';
+                    RETURN NEW;
+                END $$`);
+            await h.q(`CREATE TRIGGER test_move_deadline BEFORE INSERT ON SCHEMA.workflow_inbox FOR EACH ROW EXECUTE FUNCTION SCHEMA.test_move_deadline()`);
+            const parent = await sessionOf(h);
+            const give = async (offsetUs, secs) => {
+                const run = await started(h, parent, RECEIVER(), { vars: { secs } });
+                const waiting = await nodeAt(h.store, run.runId, "await_build", 1, "pending");
+                await h.q(`INSERT INTO SCHEMA.test_deadline_offsets (run_id, offset_us) VALUES ($1, $2)`, [run.runId, offsetUs]);
+                const sent = await parent.send(run.id, { contract: "BuildEvent@1", correlation: { buildId: 7 }, payload: BUILD, operation_id: "build" });
+                expect(sent, `offset ${offsetUs}`).toMatchObject({ ok: true });
+                const [moved] = await h.q(`SELECT n.deadline_at = m.accepted_at + $3::bigint * interval '1 microsecond' AS at_offset,
+                        (extract(microseconds FROM m.accepted_at)::bigint % 1000)::int AS sub_ms
+                      FROM SCHEMA.workflow_inbox m, SCHEMA.workflow_node_executions n WHERE m.message_id = $1 AND n.node_execution_id = $2`,
+                    [sent.messageId, waiting.nodeExecutionId, offsetUs]);
+                expect(moved.at_offset, `offset ${offsetUs}: the deadline was moved`).toBe(true);
+                return { run, waiting, sent, subMs: moved.sub_ms };
+            };
+            // At the deadline, and a microsecond after it, the input is late: it is kept and the wait elapses. A
+            // millisecond comparison would let both win whenever the acceptance's reading had two or more microseconds
+            // past its millisecond, so a case is given again (at most twice) when its reading had fewer.
+            for (const offsetUs of [-1, 0]) {
+                let late = null;
+                for (let attempt = 1; attempt <= 3 && !(late && late.subMs >= 2); attempt += 1) {
+                    late = await give(offsetUs, 4);
+                    expect(late.sent, `offset ${offsetUs}`).toMatchObject({ claimedBy: null });
+                    expect(await nodeAt(h.store, late.run.runId, "await_build", 1, "completed"), `offset ${offsetUs}`)
+                        .toMatchObject({ outcome: "elapsed", winner: "controller" });
+                    expect(await finished(h.store, late.run.runId)).toMatchObject({ status: "completed", terminalOutcome: "blocked" });
+                    expect((await h.store.listInbox(late.run.runId)).map(message => message.consumedBy)).toEqual([null]);
+                }
+                expect(late.subMs, `offset ${offsetUs}: the reading could tell a millisecond comparison apart`).toBeGreaterThanOrEqual(2);
+            }
+            // A microsecond before the deadline, the input wins, at its acceptance reading exactly.
+            const early = await give(1, 60);
+            expect(early.sent).toMatchObject({ claimedBy: { nodeExecutionId: early.waiting.nodeExecutionId, stateId: "await_build" } });
+            const [won] = await h.q(`SELECT n.completed_at = m.accepted_at AS completed_at_acceptance, m.consumed_at = m.accepted_at AS consumed_at_acceptance,
+                    n.deadline_at - m.accepted_at = interval '1 microsecond' AS microsecond_before
+                  FROM SCHEMA.workflow_inbox m JOIN SCHEMA.workflow_node_executions n ON n.node_execution_id = m.consumed_by WHERE m.message_id = $1`,
+                [early.sent.messageId]);
+            expect(won).toEqual({ completed_at_acceptance: true, consumed_at_acceptance: true, microsecond_before: true });
+            expect(await finished(h.store, early.run.runId)).toMatchObject({ status: "completed", terminalOutput: BUILD });
+        } finally {
+            try {
+                await h.q(`DROP TRIGGER IF EXISTS test_move_deadline ON SCHEMA.workflow_inbox`);
+                await h.q(`DROP FUNCTION IF EXISTS SCHEMA.test_move_deadline()`);
+                await h.q(`DROP TABLE IF EXISTS SCHEMA.test_deadline_offsets`);
+            } finally { await h.stop(); }
+        }
+    });
+
+    it("takes at entry only an input unexpired at the entry's own reading of the store's clock, however late the entry commits", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const holding = holdingPool(env);
+        const h = await harness(env, { storePool: holding.pool });
+        try {
+            const parent = await sessionOf(h);
+            // The input must still be unexpired when the receive selects it. When the controller starts too late for
+            // that (nothing is held; the receive's 1 s wait elapses), the case is given again with a longer ttl.
+            let held = null;
+            for (const ttl of [2, 4, 8]) {
+                const run = await started(h, parent, RECEIVER(), { vars: { secs: 1 }, dispatch: false });
+                const sent = await parent.send(run.id, { contract: "BuildEvent@1", correlation: { buildId: 7 }, payload: BUILD, ttl_seconds: ttl, operation_id: "build" });
+                expect(sent, `ttl ${ttl}`).toMatchObject({ ok: true, claimedBy: null });
+                holding.hold.runId = run.runId;
+                await run.startController();
+                const ended = await finished(h.store, run.runId);
+                const [receive] = await nodesOf(h.store, run.runId);
+                if (receive.outcome === "elapsed") {
+                    expect(holding.hold.messageId, `ttl ${ttl}`).toBeNull();
+                    continue;
+                }
+                held = { sent, receive, ended };
+                break;
+            }
+            expect(held, "a receive selected the input before it expired").not.toBeNull();
+            expect(held.ended).toMatchObject({ status: "completed", terminalOutput: BUILD });
+            expect(held.receive).toMatchObject({ outcome: "received", winner: "message", output: BUILD, deadlineAt: null });
+            expect(holding.hold).toMatchObject({ messageId: held.sent.messageId, heldUntil: expect.any(String) });
+            // The entry was held until the input had expired, and still decided at its own earlier reading:
+            // entered_at, completed_at and consumed_at are that reading, before the expiry.
+            const [entry] = await h.q(`SELECT m.expires_at > n.entered_at AS unexpired_at_entry, m.consumed_at = n.entered_at AS consumed_at_entry,
+                    n.completed_at = n.entered_at AS completed_at_entry, $2::timestamptz > m.expires_at AS held_past_expiry
+                  FROM SCHEMA.workflow_inbox m JOIN SCHEMA.workflow_node_executions n ON n.node_execution_id = m.consumed_by WHERE m.message_id = $1`,
+                [held.sent.messageId, holding.hold.heldUntil]);
+            expect(entry).toEqual({ unexpired_at_entry: true, consumed_at_entry: true, completed_at_entry: true, held_past_expiry: true });
+        } finally {
+            try { await h.stop(); } finally { await holding.pool.end(); }
+        }
+    });
+
     it("takes input while paused without admitting anything until the run is resumed", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
@@ -440,8 +769,9 @@ states:
     it("bounds a run's unclaimed input per sender, and stores nothing past the bound", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv());
         try {
-            const parent = await sessionOf(h);
-            const run = await started(h, parent, RECEIVER(), { vars: { secs: 60 } });
+            const alice = { provider: "test", subject: `alice-${randomUUID()}` };
+            const parent = await sessionOf(h, alice);
+            const run = await started(h, parent, RECEIVER(), { vars: { secs: 60 }, owner: alice });
             await nodeAt(h.store, run.runId, "await_build", 1, "pending");
             const bound = WORKFLOW_V2_INBOX_LIMITS.maxUnconsumedPerSender;
             for (let index = 0; index < bound; index += 1) {
@@ -451,10 +781,10 @@ states:
             expect(await parent.send(run.id, { contract: "BuildEvent@1", correlation: { buildId: 999 }, payload: BUILD, operation_id: "over" }))
                 .toMatchObject({ ok: false, error: { code: "INBOX_FULL" } });
             expect((await h.store.listInbox(run.runId)).length).toBe(bound);
-            // A repeat of an accepted input is still answered; another sender still has room.
+            // A repeat of an accepted input is still answered; another sender of the same user still has room.
             expect(await parent.send(run.id, { contract: "BuildEvent@1", correlation: { buildId: 100 }, payload: BUILD, operation_id: "n0" }))
                 .toMatchObject({ ok: true, replayed: true });
-            const other = await sessionOf(h);
+            const other = await sessionOf(h, alice);
             expect(await other.send(run.id, { contract: "BuildEvent@1", correlation: { buildId: 7 }, payload: BUILD, operation_id: "n0" }))
                 .toMatchObject({ ok: true, replayed: false, claimedBy: { stateId: "await_build" } });
             expect(await finished(h.store, run.runId)).toMatchObject({ status: "completed", terminalOutput: BUILD });

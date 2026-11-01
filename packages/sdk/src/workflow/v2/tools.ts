@@ -88,11 +88,14 @@ export const SEND_WORKFLOW_INPUT_TOOL_SPEC = {
         "Give a run of a version 2 workflow one typed input for its messaging receive states. "
         + "contract names one of the workflow's contracts that a receive state takes (such as BuildEvent@1); payload must satisfy its schema. "
         + "correlation (optional JSON object) must equal the receive's correlate values; run_id defaults to the live run. "
-        + "The input is accepted durably once per operation_id (a repeat returns the same receipt; another request with the id is refused). "
+        + "The input is accepted durably once per operation_id; a repeat returns the same receipt, unchanged, and another request with the id is refused. "
         + "A receive that waits for it takes it now; otherwise it is kept, in order, until a receive takes it or ttl_seconds pass (default and most 86400). "
         + "A receive that elapsed first does not discard it. Acceptance is not processing: read_workflow shows what the run did. "
-        + "You may send to the workflows you created, and to workflows of your own user; the workflow's receive may also require a specific sender. "
-        + "Returns JSON: messageId, acceptedAt, expiresAt and claimedBy (the receive state that took it, or null).",
+        + "You may send to the workflows you created, and to workflows that your own user owns when your session is owned by that user too; "
+        + "the workflow's receive may also require a specific sender. "
+        + "Returns the acceptance receipt as JSON: messageId, requestSha256 and payloadSha256 (the request and payload it accepted), "
+        + "acceptedAt and expiresAt (the store's times, ISO 8601 with microseconds) and claimedBy (the receive state that took it when it was accepted, or null). "
+        + "What happened to the input after that is shown by read_workflow, not by the receipt.",
     parameters: {
         type: "object",
         properties: {
@@ -342,8 +345,8 @@ export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId
             })),
             inbox: inbox.map(message => ({
                 messageId: message.messageId, contract: message.contract, senderSessionId: message.senderSessionId,
-                correlation: message.correlation, acceptedAt: message.acceptedAt.toISOString(), expiresAt: message.expiresAt.toISOString(),
-                claimedBy: message.consumedBy, payloadPreview: previewJson(message.payload, 300),
+                correlation: message.correlation, acceptedAt: message.acceptedAt, expiresAt: message.expiresAt,
+                claimedBy: message.consumedBy, claimedAt: message.consumedAt, payloadPreview: previewJson(message.payload, 300),
             })),
         } : null,
     };
@@ -371,7 +374,8 @@ export async function readWorkflowFromTool(args: Record<string, unknown>, contex
 /**
  * send_workflow_input: the calling session (from the host) gives a run typed
  * input. Unlike update_workflow it is not limited to the parent: the
- * service allows any session that does not cross a user ownership boundary.
+ * service also allows a live session owned by the same user as the
+ * workflow (authority.ts); unknown or system ownership allows nothing.
  */
 export async function sendWorkflowInputFromTool(args: Record<string, unknown>, context: { callerSessionId: string; host: WorkflowToolHost }): Promise<string> {
     try {
@@ -389,8 +393,9 @@ export async function sendWorkflowInputFromTool(args: Record<string, unknown>, c
         });
         const receipt = sent.receipt;
         return payload({
-            ok: true, workflowId: receipt.workflowSessionId, runId: receipt.runId, messageId: receipt.messageId, contract: receipt.contract,
-            replayed: sent.replayed, acceptedAt: receipt.acceptedAt, expiresAt: receipt.expiresAt,
+            ok: true, replayed: sent.replayed, workflowId: receipt.workflowSessionId, runId: receipt.runId, messageId: receipt.messageId,
+            senderSessionId: receipt.senderSessionId, operationId: receipt.operationId, contract: receipt.contract,
+            requestSha256: receipt.requestSha256, payloadSha256: receipt.payloadSha256, acceptedAt: receipt.acceptedAt, expiresAt: receipt.expiresAt,
             claimedBy: receipt.claimedBy ? { nodeExecutionId: receipt.claimedBy.nodeExecutionId, stateId: receipt.claimedBy.stateId } : null,
         });
     } catch (error) {
