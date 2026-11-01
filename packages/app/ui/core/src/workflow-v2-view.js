@@ -88,6 +88,24 @@ export function workflowV2Definition(data, meta = {}) {
     };
 }
 
+const INTAKE_REFUSALS = { refused_full: "queue full", refused_size: "message too large" };
+
+/**
+ * The recipient's later intake refusal of a delivered outbox message, from the optional `intakeOutcome` and
+ * `intakeOutcomeAt` that readWorkflowV2View adds only when set. It is read beside the delivery and never changes
+ * it. Both fields absent (or null) is no annotation: null. A known outcome gives `{ kind, reason, at }`. Anything
+ * else (an unrecognized outcome, a time with no outcome) is `kind: "unknown"`, never shown as success or refusal.
+ */
+export function workflowV2IntakeOutcome(message) {
+    const outcome = message?.intakeOutcome, at = message?.intakeOutcomeAt;
+    const hasOutcome = outcome !== undefined && outcome !== null, hasAt = at !== undefined && at !== null;
+    if (!hasOutcome && !hasAt) return null;
+    const when = typeof at === "string" && at ? at : null;
+    if (typeof outcome === "string" && Object.hasOwn(INTAKE_REFUSALS, outcome)) return { kind: outcome, reason: INTAKE_REFUSALS[outcome], at: when };
+    const raw = typeof outcome === "string" && outcome ? (outcome.length > 60 ? `${outcome.slice(0, 59)}…` : outcome) : null;
+    return { kind: "unknown", reason: null, raw, at: when };
+}
+
 export function formatSeconds(seconds) {
     if (!Number.isFinite(seconds)) return String(seconds);
     if (seconds < 60) return `${seconds} s`;
@@ -314,7 +332,8 @@ function collectExecutions(events, runId, run, overlay) {
             const found = executions.get(message.nodeExecutionId);
             if (found) found.outbox = { state: message.state, attempts: message.attempts, recipientSessionId: message.recipientSessionId,
                 recipientKind: message.recipientKind, contract: message.contract, deliveredAt: message.deliveredAt ?? null,
-                payloadPreview: message.payloadPreview, errorPreview: message.errorPreview, inputMessageId: message.inputMessageId ?? null };
+                payloadPreview: message.payloadPreview, errorPreview: message.errorPreview, inputMessageId: message.inputMessageId ?? null,
+                ...definedOnly({ intake: workflowV2IntakeOutcome(message) ?? undefined }) };
         }
         for (const message of run.inbox) {
             const found = message.claimedBy ? executions.get(message.claimedBy) : null;

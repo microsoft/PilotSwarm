@@ -42,6 +42,20 @@ function Value({ value, label }) {
         truncated ? h("p", null, "This preview was cut short; the full value is not in this view.") : null);
 }
 
+/** The recipient's intake line. It sits beside the delivery rows and never replaces them; every value is text. */
+function IntakeOutcome({ intake }) {
+    const refused = intake.kind !== "unknown";
+    const row = (label, value) => h("div", { className: "ps-workflow-property", key: label },
+        h("span", null, label), h("strong", null, value));
+    return h("div", { className: "ps-workflow-intake", "data-intake": intake.kind },
+        row("Recipient intake", refused ? `Refused · ${intake.reason}`
+            : `Unrecognized outcome${intake.raw ? ` · ${intake.raw}` : ""}`),
+        row("Intake noted at", intake.at || "Time not recorded"),
+        h("p", null, refused
+            ? "The recipient's intake refused this message after it was delivered to its queue. The delivery above is as recorded and is not changed by this."
+            : "This intake note is not recognized, so it is not shown as a result. The delivery above is as recorded."));
+}
+
 const resultLabel = execution => execution.status === "pending" ? "Pending"
     : execution.resultKind === "business" ? "Business result"
         : execution.resultKind === "runtime_error" ? "Runtime error" : "Result kind not recorded";
@@ -91,6 +105,7 @@ export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput,
                 property("Delivery state", current.outbox.state),
                 property("Attempts", String(current.outbox.attempts ?? "—")),
                 property("Recipient", current.outbox.recipientSessionId || "—"),
+                current.outbox.intake ? h(IntakeOutcome, { intake: current.outbox.intake }) : null,
                 h(Value, { value: current.outbox.payloadPreview, label: "Sent payload" })) : null);
     }
     if (tab === "output") {
