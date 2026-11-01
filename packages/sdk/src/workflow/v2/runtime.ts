@@ -59,7 +59,15 @@ export const WORKFLOW_V2_EFFECT_NAME = "workflow-v2-effect";
 export const WORKFLOW_V2_EFFECT_VERSION = "1.0.0";
 /** Node admissions per controller execution before continue-as-new bounds history. */
 export const WORKFLOW_V2_ADMISSIONS_PER_EXECUTION = 25;
+/** Idle waits (backstop timers that found nothing) per controller execution before continue-as-new. */
+export const WORKFLOW_V2_IDLE_WAITS_PER_EXECUTION = 50;
+/** Default interval of the backstop collection while the controller waits for a wake. */
+export const WORKFLOW_V2_DEFAULT_WAKE_BACKSTOP_MS = 30_000;
+/** Default interval of a running script's check that its node is still undecided. */
+export const WORKFLOW_V2_DEFAULT_LIVENESS_MS = 1_000;
 export const ROOT_SCOPE = "root";
+/** duroxide statuses after which an orchestration does no more work. */
+const TERMINAL_ORCHESTRATION_STATUSES: readonly string[] = ["Completed", "Failed", "Terminated"];
 
 export const WORKFLOW_V2_ACTIVITIES = {
     begin: "workflow.v2.begin",
@@ -121,6 +129,8 @@ export interface ControllerPlan {
     version: string;
     initial: string;
     maxNodeExecutions: number;
+    /** Recorded in history, so a changed worker default never alters a replay. */
+    wakeBackstopMs: number;
     nodes: Record<string, { type: "script" | "terminal"; next: Record<string, string> }>;
 }
 
@@ -206,6 +216,8 @@ function parsePlan(value: unknown): ControllerPlan {
     const plan = record(value, "plan");
     const nodes = record(plan.nodes, "plan nodes");
     expect(typeof plan.maxNodeExecutions === "number", "plan limit is invalid");
+    expect(typeof plan.wakeBackstopMs === "number" && Number.isSafeInteger(plan.wakeBackstopMs) && plan.wakeBackstopMs >= 100,
+        "plan wake backstop is invalid");
     const parsed: ControllerPlan["nodes"] = {};
     for (const [id, node] of Object.entries(nodes)) {
         const item = record(node, `plan node ${id}`);
@@ -217,8 +229,14 @@ function parsePlan(value: unknown): ControllerPlan {
     }
     return {
         name: text(plan.name, "name"), version: text(plan.version, "version"), initial: text(plan.initial, "initial"),
-        maxNodeExecutions: plan.maxNodeExecutions, nodes: parsed,
+        maxNodeExecutions: plan.maxNodeExecutions, wakeBackstopMs: plan.wakeBackstopMs, nodes: parsed,
     };
+}
+
+function parseRace(value: unknown): { index: number; value: unknown } {
+    const raced = record(value, "race result");
+    expect(raced.index === 0 || raced.index === 1, "race index is invalid");
+    return { index: raced.index, value: raced.value };
 }
 
 function parseBegin(value: unknown): { status: WorkflowRunStatus; irSha256: string; initial: string; outcome: string | null } {
@@ -302,18 +320,25 @@ export function* workflowV2Controller(ctx: OrchestrationContext, rawInput: unkno
 }
 
 function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generator<ScheduledTask, ControllerResult | null, unknown> {
-    let state = input.state ?? null;
-    if (!state) {
+    let restored = input.state ?? null;
+    if (!restored) {
         publishStatus(ctx, input, null, null, "running");
         const begun = parseBegin(yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.begin, { runId: input.runId }, STORE_RETRY));
         if (!ACTIVE_RUN_STATUSES.includes(begun.status)) return { runId: input.runId, status: begun.status, outcome: begun.outcome };
-        state = {
+        restored = {
             irSha256: begun.irSha256, steps: 0, ordinals: {},
             cursors: [{ scopeId: ROOT_SCOPE, nodeId: begun.initial, predecessorId: null, arrivalRoute: null, pending: null }],
         };
     }
+    const state: ControllerState = restored;
     const plan = parsePlan(yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.plan, { runId: input.runId, irSha256: state.irSha256 }, STORE_RETRY));
     let admittedThisExecution = 0;
+    let idleWaits = 0;
+    const continueAsNew = function* (): Generator<ScheduledTask, null, unknown> {
+        yield ctx.continueAsNewVersioned({ v: 2, workflowSessionId: input.workflowSessionId, runId: input.runId, state } satisfies ControllerInput,
+            WORKFLOW_V2_CONTROLLER_VERSION);
+        return null;
+    };
 
     for (;;) {
         // 1. Admit the next node of every cursor that is not waiting on work.
@@ -367,18 +392,21 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
                 owner.arrivalRoute = route;
                 owner.pending = null;
             }
-            if (admittedThisExecution >= WORKFLOW_V2_ADMISSIONS_PER_EXECUTION) {
-                yield ctx.continueAsNewVersioned({ v: 2, workflowSessionId: input.workflowSessionId, runId: input.runId, state } satisfies ControllerInput,
-                    WORKFLOW_V2_CONTROLLER_VERSION);
-                return null;
-            }
+            if (admittedThisExecution >= WORKFLOW_V2_ADMISSIONS_PER_EXECUTION) return yield* continueAsNew();
             continue;
         }
 
-        // 3. Nothing is ready: wait for a wake or a lifecycle command.
+        // 3. Nothing is ready: wait for a wake or a lifecycle command. A wake is
+        // only a hint; the backstop timer collects stored results even when
+        // every wake is lost. A message already queued wins the race.
         publishStatus(ctx, input, plan, state, "running");
-        const raw: unknown = yield ctx.dequeueEvent(WORKFLOW_COMMAND_QUEUE);
-        const command = parseWorkflowCommand(raw);
+        const raced = parseRace(yield ctx.race(ctx.dequeueEvent(WORKFLOW_COMMAND_QUEUE), ctx.scheduleTimer(plan.wakeBackstopMs)));
+        if (raced.index === 1) {
+            idleWaits += 1;
+            if (idleWaits >= WORKFLOW_V2_IDLE_WAITS_PER_EXECUTION) return yield* continueAsNew();
+            continue;
+        }
+        const command = parseWorkflowCommand(raced.value);
         if (command) {
             const ended = parseResult(yield ctx.scheduleActivityWithRetryTyped(WORKFLOW_V2_ACTIVITIES.cancel, {
                 runId: input.runId, command: command.cmd, reason: command.reason ?? null, requestedBy: command.requestedBy ?? null,
@@ -450,6 +478,10 @@ export interface WorkflowV2RuntimeDeps {
     notifyParent: (parentSessionId: string, prompt: string, sender: { kind: "system"; display: string }, clientMessageId?: string) => Promise<void>;
     deleteSession: (sessionId: string) => Promise<void>;
     runnerOptions?: ScriptRunnerOptions;
+    /** Backstop collection interval for new controller executions (default 30 s). */
+    wakeBackstopMs?: number;
+    /** How often a running script checks that its node is still undecided (default 1 s). */
+    livenessIntervalMs?: number;
 }
 
 export interface WorkflowV2ActivityRuntime {
@@ -563,7 +595,10 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         const ir = await irOf(run);
         const nodes: ControllerPlan["nodes"] = {};
         for (const node of Object.values(ir.nodes)) nodes[node.id] = { type: node.type, next: node.type === "script" ? node.next : {} };
-        const plan: ControllerPlan = { name: ir.name, version: ir.version, initial: ir.initial, maxNodeExecutions: ir.limits.maxNodeExecutions, nodes };
+        const plan: ControllerPlan = {
+            name: ir.name, version: ir.version, initial: ir.initial, maxNodeExecutions: ir.limits.maxNodeExecutions,
+            wakeBackstopMs: deps.wakeBackstopMs ?? WORKFLOW_V2_DEFAULT_WAKE_BACKSTOP_MS, nodes,
+        };
         return plan;
     });
 
@@ -622,11 +657,41 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         return { admitted: true, nodeExecutionId, state: result.node.state };
     });
 
-    runtime.registerActivity(WORKFLOW_V2_ACTIVITIES.collect, async (_ctx, rawInput) => {
+    runtime.registerActivity(WORKFLOW_V2_ACTIVITIES.collect, async (actx, rawInput) => {
         const input = record(rawInput, "collect input");
         expect(Array.isArray(input.nodeExecutionIds), "nodeExecutionIds is not a list");
         const ids = input.nodeExecutionIds.map((id, index) => text(id, `nodeExecutionIds[${index}]`));
-        const rows = await store.readCompletedNodes(text(input.runId, "runId"), ids);
+        const runId = text(input.runId, "runId");
+        const rows = await store.readCompletedNodes(runId, ids);
+        // A script node whose effect orchestration ended without storing a
+        // result (its record activity exhausted retries, or it was terminated)
+        // would otherwise stay pending forever. Record that as a runtime error;
+        // the compare-and-swap keeps any result the effect stored meanwhile.
+        const completedIds = new Set(rows.map(row => row.nodeExecutionId));
+        const unresolved = ids.filter(id => !completedIds.has(id));
+        if (unresolved.length > 0) {
+            const client = actx.getClient();
+            if (!client) throw new Error("Workflow collection needs the durable client.");
+            for (const nodeExecutionId of unresolved) {
+                const executed = await store.readNodeExecution(nodeExecutionId);
+                if (!executed || executed.runId !== runId || executed.nodeType !== "script" || executed.state !== "pending") continue;
+                const effect = await client.getStatus(workflowEffectInstanceId(nodeExecutionId));
+                if (!TERMINAL_ORCHESTRATION_STATUSES.includes(effect.status)) continue;
+                const run = await runOf(runId);
+                const stored = await store.completeNode(nodeExecutionId, {
+                    ...runtimeError("execution_failed", `The script's effect ended (${effect.status}) without storing a result.`,
+                        { effectStatus: effect.status, effectError: effect.error === undefined ? null : jsonbSafeText(effect.error, 2_000) }),
+                    winner: "controller",
+                }, {
+                    sessionId: run.workflowSessionId,
+                    events: [{ eventType: "workflow.state_failed", data: {
+                        runId, nodeExecutionId, stateId: executed.nodeId, step: executed.ordinal, effectStatus: effect.status,
+                    } }],
+                    update: { touch: true },
+                });
+                if (stored.node.state === "completed") rows.push(stored.node);
+            }
+        }
         return rows.map(row => ({ nodeExecutionId: row.nodeExecutionId, outcome: row.outcome, resultKind: row.resultKind }));
     });
 
@@ -652,10 +717,15 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             const errorValue = predecessor?.resultKind === "runtime_error" ? predecessor.error : null;
             try {
                 const output = node.hasOutput ? evaluateBindingTemplate(node.output, scopeFor(run, executed.input, errorValue), `states.${node.id}.output`) : null;
-                const problems = node.outputSchema ? schemaSetFor(run.irSha256, ir.schemaDefs).validate(node.outputSchema, output) : [];
-                if (problems.length) {
+                // A terminal's own schema adds to the workflow contract; it never replaces it.
+                const contracts = [node.outputSchema, node.outcome === "succeeded" ? ir.outputSchema : null]
+                    .filter((name): name is string => name !== null);
+                const schemas = schemaSetFor(run.irSha256, ir.schemaDefs);
+                const failed = contracts.map(name => ({ name, problems: schemas.validate(name, output) })).filter(item => item.problems.length > 0);
+                if (failed.length) {
                     status = "failed";
-                    errorText = envelopeText({ code: "invalid_output", message: `Final output does not match ${node.outputSchema}.`, details: problemsJson(problems) });
+                    errorText = envelopeText({ code: "invalid_output", message: `Final output does not match ${failed.map(item => item.name).join(" and ")}.`,
+                        details: failed.map(item => ({ schema: item.name, problems: problemsJson(item.problems) })) });
                 } else {
                     status = terminalStatus(node.outcome);
                     terminalOutcome = node.outcome;
@@ -682,7 +752,8 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         }
         const eventType = endEventType(status);
         const ended = await store.finishRun({
-            runId: run.runId, status, terminalNodeId, terminalOutcome, outputText, errorText, cancelPending: false, terminalNode,
+            runId: run.runId, status, terminalNodeId, terminalOutcome, outputText, errorText, terminalNode,
+            endPending: { winner: "controller", message: "The workflow run ended before this state finished." },
             projection: {
                 sessionId: run.workflowSessionId,
                 events: [{ eventType, data: {
@@ -705,30 +776,34 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         const requestedBy = textOrNull(input.requestedBy, "requestedBy");
         const ended = await store.finishRun({
             runId: run.runId, status: "cancelled", terminalNodeId: null, terminalOutcome: null, outputText: null,
-            errorText: envelopeText({ code: "cancelled", message: reason, details: { command, requestedBy } }), cancelPending: true,
+            errorText: envelopeText({ code: "cancelled", message: reason, details: { command, requestedBy } }),
+            endPending: { winner: "cancel", message: "The workflow run was cancelled." },
             projection: {
                 sessionId: run.workflowSessionId,
                 events: [{ eventType: "workflow.cancelled", data: { runId: run.runId, reason: jsonbSafeText(reason, 500), command, ...(command === "delete" ? { deleted: true } : {}) } }],
                 update: { state: "cancelled", lastError: jsonbSafeText(reason, 500), touch: true },
             },
         });
-        // Ask every cancelled node's effect to stop. The node results are already decided.
+        // Ask the effect of every node whose stored result is this cancellation
+        // to stop. The list comes from the store on every execution, so an
+        // activity retried after the commit above still sends the requests.
         const client = actx.getClient();
         if (!client) throw new Error("Workflow cancellation needs the durable client.");
-        const cleanup: Array<{ nodeExecutionId: string; instanceId: string; status: string }> = [];
-        for (const nodeExecutionId of ended.cancelledNodeIds) {
+        const requested: Array<{ nodeExecutionId: string; instanceId: string; status: string }> = [];
+        for (const nodeExecutionId of await store.listCancelledNodeIds(run.runId)) {
             const instanceId = workflowEffectInstanceId(nodeExecutionId);
             const status = await client.getStatus(instanceId);
-            if (status.status === "Running" || status.status === "Suspended") await client.cancelInstance(instanceId, reason);
-            cleanup.push({ nodeExecutionId, instanceId, status: status.status });
+            if (status.status === "Running" || status.status === "Suspended") {
+                await client.cancelInstance(instanceId, reason);
+                requested.push({ nodeExecutionId, instanceId, status: status.status });
+            }
         }
-        if (cleanup.length) {
-            await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.cancel_requested", data: { runId: run.runId, effects: cleanup } }]);
+        if (requested.length) {
+            await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.cancel_requested", data: { runId: run.runId, effects: requested } }]);
         }
-        if (command === "delete") {
-            await store.markDeleted(run.workflowSessionId);
-            await deps.deleteSession(run.workflowSessionId);
-        }
+        // Soft-deleting the session tombstones the definition in the same
+        // transaction (migration 0085 trigger), whichever path deletes it.
+        if (command === "delete") await deps.deleteSession(run.workflowSessionId);
         return { runId: run.runId, status: ended.run.status, outcome: ended.run.terminalOutcome };
     });
 
@@ -771,7 +846,12 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         const node = nodeOf(ir, executed.nodeId);
         if (node.type !== "script") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${executed.nodeId} is not a script state.`);
         if (!deps.enabled()) return { kind: "result", result: runtimeError("unavailable", WORKFLOW_SCRIPTS_DISABLED_MESSAGE) };
-        const attempt = await store.noteEffectAttempt(executed.nodeExecutionId);
+        // The claim is the script's entry boundary: a deletion or cancellation
+        // committed first refuses it; one committed later stops the script
+        // through the liveness check below.
+        const claim = await store.claimScriptEntry(executed.nodeExecutionId);
+        if (!claim.claimed) return { kind: "completed" };
+        const attempt = claim.attempt;
         const binding = await deps.resolveToolBinding(run.workflowSessionId);
         const tools: { executor: WorkflowToolExecutor | null } = { executor: null };
         const callTool = async (call: ScriptToolCall): Promise<unknown> => {
@@ -779,6 +859,18 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             tools.executor ??= await deps.openToolExecutor(run.workflowSessionId, binding, executed.ordinal);
             return tools.executor.call(call.name, call.arguments);
         };
+        // A failed check leaves the script running; its result still has to win
+        // the node's compare-and-swap, so a late result cannot override a decision.
+        let decidedElsewhere = false;
+        let checking = false;
+        const liveness = setInterval(() => {
+            if (checking || decidedElsewhere) return;
+            checking = true;
+            store.isNodePending(executed.nodeExecutionId)
+                .then(pending => { if (!pending) decidedElsewhere = true; })
+                .catch(error => actx.traceWarn(`[workflow-v2] liveness check for ${executed.nodeExecutionId} failed: ${workflowErrorMessage(error)}`))
+                .finally(() => { checking = false; });
+        }, deps.livenessIntervalMs ?? WORKFLOW_V2_DEFAULT_LIVENESS_MS);
         let ran: RunScriptNodeResult;
         try {
             ran = await runScriptNode({
@@ -790,8 +882,9 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 step: executed.ordinal,
                 callTool,
                 guardedNode: true,
+                strictJson: true,
                 cancelTools: async () => { if (tools.executor) await tools.executor.close(); },
-                isCancelled: () => actx.isCancelled(),
+                isCancelled: () => actx.isCancelled() || decidedElsewhere,
                 context: {
                     sessionId: run.workflowSessionId, workflowSessionId: run.workflowSessionId, runId: run.runId, mode: run.mode,
                     workflow: ir.name, version: ir.version, node: node.id, nodeExecutionId: executed.nodeExecutionId,
@@ -801,8 +894,10 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         } catch (error) {
             return { kind: "result", result: runtimeError("execution_failed", workflowErrorMessage(error)) };
         } finally {
+            clearInterval(liveness);
             if (tools.executor) await tools.executor.close();
         }
+        if (decidedElsewhere) return { kind: "completed" };
         return { kind: "result", result: scriptResult(node, run, ir, ran) };
     });
 
@@ -844,9 +939,12 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
 function scriptResult(node: WorkflowIRScript, run: WorkflowRunRow, ir: WorkflowIR, result: RunScriptNodeResult): NodeResultInput {
     if (result.resultSource === "cancelled") return runtimeError("cancelled", "The script was cancelled.");
     if (result.resultSource === "timeout") return runtimeError("timed_out", `The script ran past its ${node.timeoutSeconds}s timeout.`, { timeoutSeconds: node.timeoutSeconds });
-    if (result.resultSource === "exit" && result.exitCode !== 0) {
+    if (result.exitCode !== 0) {
         return runtimeError("execution_failed", `The script exited with code ${String(result.exitCode)}.`,
             { exitCode: result.exitCode, stderr: jsonbSafeText(result.stderrTail.trim().slice(-4_096)) });
+    }
+    if (result.resultSource !== "reported") {
+        return runtimeError("invalid_output", "The script exited without an accepted setResult(outcome, output) call.");
     }
     if (!node.outcomes.includes(result.outcome)) {
         return runtimeError("invalid_output", `The script reported undeclared outcome '${jsonbSafeText(result.outcome, 100)}' (declared: ${node.outcomes.join(", ")}).`);

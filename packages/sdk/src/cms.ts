@@ -1172,6 +1172,18 @@ export interface SessionCatalog {
     /** Workflow v2 persistence on the same database and schema (migration 0085). Optional for other stores. */
     workflowStore?(): import("./workflow/v2/store.js").WorkflowStore;
 
+    /**
+     * Create a workflow v2 session row only if no row with this id exists
+     * (live, deleted, or being created concurrently). On `created: false`
+     * nothing was changed. Kind, lineage, creation config and owner are
+     * written in the same transaction as the claim (migration 0085).
+     */
+    createWorkflowSessionV2?(sessionId: string, opts: {
+        parentSessionId: string | null;
+        owner: SessionOwnerInfo | null;
+        creationConfig: Record<string, unknown>;
+    }): Promise<{ created: boolean }>;
+
     /** Stamp a session as a service session post-create (migration 0037). */
     markSessionService(sessionId: string, serviceKind: string, serviceOf: string | null): Promise<void>;
 
@@ -1723,6 +1735,46 @@ export class PgSessionCatalog implements SessionCatalog {
     workflowStore(): WorkflowStore {
         this._workflowStore ??= new WorkflowStore(this.pool, this.sql.schema);
         return this._workflowStore;
+    }
+
+    async createWorkflowSessionV2(sessionId: string, opts: {
+        parentSessionId: string | null;
+        owner: SessionOwnerInfo | null;
+        creationConfig: Record<string, unknown>;
+    }): Promise<{ created: boolean }> {
+        const client = await this.pool.connect();
+        let released = false;
+        try {
+            await client.query("BEGIN");
+            const { rows } = await client.query(
+                `SELECT "${this.sql.schema}".cms_create_workflow_session_v2($1, $2, $3::jsonb) AS created`,
+                [sessionId, opts.parentSessionId, JSON.stringify(opts.creationConfig)],
+            );
+            if (rows[0]?.created !== true) {
+                await client.query("ROLLBACK");
+                return { created: false };
+            }
+            if (opts.owner?.provider && opts.owner?.subject) {
+                await client.query(
+                    `SELECT ${this.sql.fn.setSessionOwner}($1, $2, $3, $4, $5)`,
+                    [sessionId, opts.owner.provider, opts.owner.subject, opts.owner.email ?? null, opts.owner.displayName ?? null],
+                );
+            } else if (opts.parentSessionId) {
+                await client.query(`SELECT ${this.sql.fn.inheritSessionOwner}($1, $2)`, [sessionId, opts.parentSessionId]);
+            }
+            await client.query("COMMIT");
+            return { created: true };
+        } catch (err) {
+            try {
+                await client.query("ROLLBACK");
+            } catch (rollbackError) {
+                released = true;
+                client.release(rollbackError instanceof Error ? rollbackError : new Error(String(rollbackError)));
+            }
+            throw err;
+        } finally {
+            if (!released) client.release();
+        }
     }
 
     // ── Writes ───────────────────────────────────────────────

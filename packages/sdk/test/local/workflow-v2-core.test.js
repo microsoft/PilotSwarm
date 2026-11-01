@@ -11,6 +11,8 @@ import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
 import { canonicalJson, parseStoredJson, sha256Hex } from "../../src/workflow/v2/json.ts";
 import { createWorkflowV2, dispatchWorkflowV2Run, updateWorkflowV2 } from "../../src/workflow/v2/service.ts";
 import { WORKFLOW_V2_CONTROLLER_NAME, WORKFLOW_V2_STORE_RETRY, workflowEffectInstanceId } from "../../src/workflow/v2/runtime.ts";
+import { runScriptNode } from "../../src/workflow/runner.ts";
+import { schemaSetFor } from "../../src/workflow/v2/schema.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const ACTOR = { kind: "system", name: "workflow-v2-core-test" };
@@ -49,6 +51,37 @@ states:
     transition: { next: { ok: done, failure: broken } }
   done: { type: terminal, outcome: succeeded, output: "\${input}" }
   broken: { type: terminal, outcome: blocked, output: "\${runtime.error}" }
+`;
+
+/** Root contract: integer. The succeeded terminal adds its own schema and emits `output`. */
+const CONTRACT = (output, localSchema) => `
+apiVersion: pilotswarm.dev/v2-draft
+kind: Workflow
+metadata: { name: contract, version: "1.0.0" }
+outputSchema: { type: integer }
+initial: first
+states:
+  first:
+    type: script
+    source: |
+      await setResult("ok", {});
+    transition: { next: { ok: done } }
+  done: { type: terminal, outcome: succeeded, output: ${output}, outputSchema: ${localSchema} }
+`;
+
+const NULL_INPUTS = `
+apiVersion: pilotswarm.dev/v2-draft
+kind: Workflow
+metadata: { name: null-inputs, version: "1.0.0" }
+inputs: { schema: { type: "null" } }
+initial: first
+states:
+  first:
+    type: script
+    source: |
+      await setResult("ok", { inputs: context.inputs });
+    transition: { next: { ok: done } }
+  done: { type: terminal, outcome: succeeded, output: "\${input}" }
 `;
 
 const LOOP = `
@@ -148,6 +181,35 @@ describe("workflow v2 compiler and values", () => {
         }
     });
 
+    it("rejects an explicit null schema on every schema field and keeps boolean schemas", () => {
+        const nullCases = [
+            ["inputs.schema", PIPELINE.replace('inputs:\n  schema: { $ref: "#/schemas/In" }', "inputs:\n  schema: null")],
+            ["outputSchema", PIPELINE.replace("initial: first", "outputSchema: null\ninitial: first")],
+            ["states.first.outputSchema", PIPELINE.replace('outputSchema: { $ref: "#/schemas/Mid" }', "outputSchema: null")],
+            ["states.second.inputSchema", PIPELINE.replace('inputSchema: { $ref: "#/schemas/Mid" }', "inputSchema: null")],
+            ["states.done.outputSchema", PIPELINE.replace('done: { type: terminal, outcome: succeeded, output: "\${input}" }',
+                'done: { type: terminal, outcome: succeeded, output: "\${input}", outputSchema: null }')],
+        ];
+        for (const [path, yaml] of nullCases) {
+            expect(yaml, path).not.toBe(PIPELINE);
+            const result = compileWorkflowV2(yaml);
+            expect(result.valid, path).toBe(false);
+            expect(result.diagnostics, path).toContainEqual(expect.objectContaining({ code: "WORKFLOW_SCHEMA_INVALID", path }));
+        }
+        const accept = compileWorkflowV2(PIPELINE.replace('inputs:\n  schema: { $ref: "#/schemas/In" }', "inputs:\n  schema: true"));
+        const reject = compileWorkflowV2(PIPELINE.replace('inputs:\n  schema: { $ref: "#/schemas/In" }', "inputs:\n  schema: false"));
+        expect(accept.valid && reject.valid, JSON.stringify([accept.diagnostics, reject.diagnostics])).toBe(true);
+        expect(schemaSetFor(accept.irSha256, accept.ir.schemaDefs).validate(accept.ir.inputsSchema, { anything: 1 })).toEqual([]);
+        expect(schemaSetFor(reject.irSha256, reject.ir.schemaDefs).validate(reject.ir.inputsSchema, {})).not.toEqual([]);
+    });
+
+    it("keeps the workflow output contract beside a terminal's own schema", () => {
+        const result = compileWorkflowV2(CONTRACT("wrong", "{ type: string }"));
+        expect(result.valid, JSON.stringify(result.diagnostics)).toBe(true);
+        expect(result.ir.outputSchema).toBe("workflow.output");
+        expect(result.ir.nodes.done.outputSchema).toBe("node.done.output");
+    });
+
     it("stores escaped NUL and lone surrogates exactly and sorts keys", () => {
         const value = { z: "a\u0000b\ud800c", a: [null, 1.5, true, { y: "\udc01" }] };
         const text = canonicalJson(value);
@@ -157,6 +219,67 @@ describe("workflow v2 compiler and values", () => {
         for (const bad of [undefined, Number.NaN, new Date(0), { nested: () => 1 }]) {
             expect(() => canonicalJson(bad)).toThrow();
         }
+    });
+});
+
+function scriptNode(source) {
+    return { id: "probe", type: "script", runtime: "node", source, timeoutSeconds: 30, outcomes: ["ok"], next: { ok: "done" } };
+}
+
+function runProbe(source, strictJson) {
+    return runScriptNode({
+        sessionId: "strict-json-probe", workflowName: "probe", node: scriptNode(source), inputs: {}, priorOutput: null, step: 1,
+        callTool: async () => { throw new Error("These probes call no tools."); },
+        guardedNode: true, strictJson,
+    });
+}
+
+describe("workflow v2 script results are plain JSON before any serialization", () => {
+    const rejected = [
+        ["NaN", 'await setResult("ok", { n: NaN });', "numbers must be finite"],
+        ["Infinity", 'await setResult("ok", { n: Infinity });', "numbers must be finite"],
+        ["undefined", 'await setResult("ok", { a: undefined });', "undefined is not a JSON value"],
+        ["toJSON on a class", 'await setResult("ok", { d: new Date(0) });', "only plain objects are JSON (got Date)"],
+        ["own toJSON function", 'await setResult("ok", { toJSON() { return 1; } });', "function is not a JSON value"],
+        ["tool arguments", 'await callTool("x", { n: NaN });', "numbers must be finite"],
+    ];
+    for (const [label, source, message] of rejected) {
+        it(`rejects ${label} in the script before it is sent`, { timeout: 60_000 }, async () => {
+            const result = await runProbe(source, true);
+            expect(result.resultSource, JSON.stringify(result)).toBe("exit");
+            expect(result.exitCode).not.toBe(0);
+            expect(result.stderrTail).toContain(message);
+        });
+    }
+
+    it("rejects a non-finite number posted directly to the endpoint (1e400 parses to Infinity)", { timeout: 60_000 }, async () => {
+        const result = await runProbe(`
+const response = await fetch(process.env.PILOTSWARM_WORKFLOW_ENDPOINT + "/result", {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: "Bearer " + process.env.PILOTSWARM_WORKFLOW_TOKEN },
+    body: '{"outcome":"ok","output":1e400}',
+});
+await setResult("ok", { status: response.status, body: await response.json() });`, true);
+        expect(result.resultSource, JSON.stringify(result)).toBe("reported");
+        expect(result.output).toEqual({ status: 400, body: { ok: false, error: "output: numbers must be finite" } });
+    });
+
+    it("does not take a result from stdout or the exit code", { timeout: 60_000 }, async () => {
+        const result = await runProbe('console.log(\'{"outcome":"ok","output":1e400}\');', true);
+        expect(result).toMatchObject({ resultSource: "none", exitCode: 0, output: null });
+    });
+
+    it("keeps escaped NUL, lone surrogates and plain values exact", { timeout: 60_000 }, async () => {
+        const result = await runProbe('await setResult("ok", { s: "a\\u0000b\\ud800c", n: 1.5, nested: [null, true, { k: "v" }] });', true);
+        expect(result.resultSource, JSON.stringify(result)).toBe("reported");
+        expect(result.output).toEqual({ s: "a\u0000b\ud800c", n: 1.5, nested: [null, true, { k: "v" }] });
+    });
+
+    it("leaves the legacy runner's conversions unchanged when strict JSON is off", { timeout: 60_000 }, async () => {
+        const reported = await runProbe('await setResult("ok", { n: NaN, a: undefined, d: new Date(0) });', false);
+        expect(reported.output).toEqual({ n: null, d: "1970-01-01T00:00:00.000Z" });
+        const stdout = await runProbe('console.log(\'{"outcome":"ok","output":1e400}\');', false);
+        expect(stdout).toMatchObject({ resultSource: "stdout", outcome: "ok", output: null });
     });
 });
 
@@ -194,6 +317,12 @@ describe("workflow v2 store and controller on PostgreSQL", () => {
             const session = await client._catalog.getSession(id);
             expect(session.sessionKind).toBe("workflow");
             expect(session.orchestrationId ?? null).toBeNull();
+
+            // Text PostgreSQL would reject or rewrite never reaches the store.
+            await expectCode(createWorkflowV2(h, { workflowSessionId: randomUUID(), parentSessionId: null, yaml: PIPELINE + "#\u0000",
+                actor: ACTOR, operationId: "nul" }), "WORKFLOW_YAML_INVALID");
+            await expectCode(createWorkflowV2(h, { workflowSessionId: randomUUID(), parentSessionId: null, yaml: PIPELINE,
+                actor: ACTOR, operationId: "op-\ud800" }), "WORKFLOW_COMMAND_INVALID");
         });
     });
 
@@ -292,6 +421,99 @@ describe("workflow v2 store and controller on PostgreSQL", () => {
             expect(failed.status).toBe("failed");
             expect(failed.terminalError).toMatchObject({ code: "invalid_output" });
             expect((await client._catalog.getSession(unhandled)).state).toBe("failed");
+        });
+    });
+
+    it("fails a succeeded terminal whose output breaks the workflow contract, even when its own schema allows it", { timeout: TIMEOUT }, async () => {
+        await withClient(getEnv(), { worker: { workflowScripts: { enabled: true } } }, async (client) => {
+            const h = host(client);
+            const weakened = await createWorkflowV2(h, { workflowSessionId: randomUUID(), parentSessionId: null,
+                yaml: CONTRACT("wrong", "{ type: string }"), actor: ACTOR, operationId: "weakened", start: { inputs: {} } });
+            const failed = await finishedRun(h, weakened.receipt.run.runId);
+            expect(failed.status).toBe("failed");
+            expect(failed.terminalError).toMatchObject({ code: "invalid_output" });
+            expect(JSON.stringify(failed.terminalError.details)).toContain("workflow.output");
+
+            const control = await createWorkflowV2(h, { workflowSessionId: randomUUID(), parentSessionId: null,
+                yaml: CONTRACT("7", "{ type: integer, minimum: 0 }"), actor: ACTOR, operationId: "control", start: { inputs: {} } });
+            const completed = await finishedRun(h, control.receipt.run.runId);
+            expect(completed.status, JSON.stringify(completed.terminalError)).toBe("completed");
+            expect(completed.terminalOutput).toBe(7);
+        });
+    });
+
+    it("starts a run for publish_and_start with null inputs instead of only publishing", { timeout: TIMEOUT }, async () => {
+        await withClient(getEnv(), { worker: { workflowScripts: { enabled: true } } }, async (client) => {
+            const h = host(client);
+            const id = randomUUID();
+            const draft = await createWorkflowV2(h, { workflowSessionId: id, parentSessionId: null, yaml: NULL_INPUTS, actor: ACTOR, operationId: "draft" });
+            const started = await updateWorkflowV2(h, id, { operation: "publish_and_start", expectedRevision: 1,
+                definitionHash: draft.receipt.yamlSha256, inputs: null }, { actor: ACTOR, operationId: "go" });
+            expect(started.receipt).toMatchObject({ operation: "publish_and_start", state: "published" });
+            expect(started.receipt.run?.mode).toBe("live");
+            const run = await finishedRun(h, started.receipt.run.runId);
+            expect(run.inputs).toBeNull();
+            expect(run.status, JSON.stringify(run.terminalError)).toBe("completed");
+            expect(run.terminalOutput).toEqual({ inputs: null });
+            const replay = await updateWorkflowV2(h, id, { operation: "publish_and_start", expectedRevision: 1,
+                definitionHash: draft.receipt.yamlSha256, inputs: null }, { actor: ACTOR, operationId: "go" });
+            expect(replay.replayed).toBe(true);
+            expect(replay.receipt.run.runId).toBe(started.receipt.run.runId);
+            expect(await h.store.listRuns(id)).toHaveLength(1);
+        });
+    });
+
+    it("keeps the title of the current revision across create and replace replays", { timeout: TIMEOUT }, async () => {
+        await withClient(getEnv(), async (client) => {
+            const h = host(client);
+            const id = randomUUID();
+            const yamlA = PIPELINE.replace("name: pipeline", "name: title-a");
+            const yamlB = PIPELINE.replace("name: pipeline", "name: title-b");
+            await createWorkflowV2(h, { workflowSessionId: id, parentSessionId: null, yaml: yamlA, actor: ACTOR, operationId: "create" });
+            expect((await client._catalog.getSession(id)).title).toBe("Workflow: title-a");
+            await updateWorkflowV2(h, id, { operation: "replace_definition", yaml: yamlB, expectedRevision: 1 }, { actor: ACTOR, operationId: "rename" });
+            expect((await client._catalog.getSession(id)).title).toBe("Workflow: title-b");
+            const replayedCreate = await createWorkflowV2(h, { workflowSessionId: id, parentSessionId: null, yaml: yamlA, actor: ACTOR, operationId: "create" });
+            expect(replayedCreate.replayed).toBe(true);
+            const replayedRename = await updateWorkflowV2(h, id, { operation: "replace_definition", yaml: yamlB, expectedRevision: 1 },
+                { actor: ACTOR, operationId: "rename" });
+            expect(replayedRename.replayed).toBe(true);
+            expect((await client._catalog.getSession(id)).title).toBe("Workflow: title-b");
+            expect((await h.store.readDefinition(id)).currentRevision).toBe(2);
+        });
+    });
+
+    it("completes a state only from an accepted setResult: non-JSON or missing results become typed errors", { timeout: TIMEOUT }, async () => {
+        await withClient(getEnv(), { worker: { workflowScripts: { enabled: true } } }, async (client) => {
+            const h = host(client);
+            const cases = [
+                ["stdout-1e400", 'console.log(\'{"outcome":"ok","output":1e400}\');', "invalid_output"],
+                ["nan", 'await setResult("ok", { n: NaN });', "execution_failed"],
+            ];
+            for (const [name, source, code] of cases) {
+                const yaml = `
+apiVersion: pilotswarm.dev/v2-draft
+kind: Workflow
+metadata: { name: ${name}, version: "1.0.0" }
+initial: probe
+states:
+  probe:
+    type: script
+    outputSchema: { type: [object, "null"] }
+    source: |
+      ${source}
+    transition: { next: { ok: done, failure: caught } }
+  done: { type: terminal, outcome: succeeded, output: "\${input}" }
+  caught: { type: terminal, outcome: blocked, output: "\${runtime.error}" }
+`;
+                const started = await createWorkflowV2(h, { workflowSessionId: randomUUID(), parentSessionId: null, yaml,
+                    actor: ACTOR, operationId: name, start: { inputs: {} } });
+                const run = await finishedRun(h, started.receipt.run.runId);
+                expect(run.terminalOutcome, `${name}: ${JSON.stringify(run)}`).toBe("blocked");
+                expect(run.terminalOutput.code).toBe(code);
+                const [probe] = await h.store.listNodeExecutions(run.runId);
+                expect(probe).toMatchObject({ nodeId: "probe", resultKind: "runtime_error", outcome: code, output: null });
+            }
         });
     });
 

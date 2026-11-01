@@ -73,6 +73,7 @@ export interface WorkflowIRTerminal {
     summary: string | null;
     hasOutput: boolean;
     output: JsonValue;
+    /** This terminal's own contract. A succeeded terminal must also satisfy the workflow's outputSchema. */
     outputSchema: string | null;
 }
 
@@ -87,6 +88,8 @@ export interface WorkflowIR {
     initial: string;
     initialInput: JsonValue;
     inputsSchema: string | null;
+    /** The workflow's output contract; every succeeded terminal's output must satisfy it. */
+    outputSchema: string | null;
     limits: { maxNodeExecutions: number };
     schemaDefs: Record<string, JsonValue>;
     nodes: Record<string, WorkflowIRNode>;
@@ -163,9 +166,17 @@ interface SchemaCollector {
     declared: Set<string>;
 }
 
-/** A node/root schema field: `{ $ref: "#/schemas/X" }` names X; anything else becomes a generated definition. */
+/**
+ * A node/root schema field: `{ $ref: "#/schemas/X" }` names X; a mapping or a
+ * boolean becomes a generated definition. Only an omitted field means "no
+ * contract"; an explicit null is an error, never a disabled check.
+ */
 function schemaField(value: unknown, generatedName: string, path: string, schemas: SchemaCollector, diagnostics: Diagnostics): string | null {
-    if (value === undefined || value === null) return null;
+    if (value === undefined) return null;
+    if (value === null) {
+        diagnostics.error("WORKFLOW_SCHEMA_INVALID", path, `${path} is null; give a JSON Schema (a mapping or true/false) or omit the field.`);
+        return null;
+    }
     if (isJsonObject(value) && Object.keys(value).length === 1 && typeof value.$ref === "string" && value.$ref.startsWith("#/schemas/")) {
         const name = value.$ref.slice("#/schemas/".length);
         if (!schemas.declared.has(name)) {
@@ -250,7 +261,7 @@ function compileScript(id: string, raw: Record<string, unknown>, nodeIds: Readon
     };
 }
 
-function compileTerminal(id: string, raw: Record<string, unknown>, schemas: SchemaCollector, rootOutputSchema: string | null, diagnostics: Diagnostics): WorkflowIRTerminal | null {
+function compileTerminal(id: string, raw: Record<string, unknown>, schemas: SchemaCollector, diagnostics: Diagnostics): WorkflowIRTerminal | null {
     const path = `states.${id}`;
     checkKeys(raw, ["type", "description", "outcome", "output", "summary", "outputSchema"], path, diagnostics);
     const outcome = raw.outcome;
@@ -265,7 +276,7 @@ function compileTerminal(id: string, raw: Record<string, unknown>, schemas: Sche
         id, type: "terminal", description: optionalText(raw.description, `${path}.description`, diagnostics), outcome,
         summary: optionalText(raw.summary, `${path}.summary`, diagnostics),
         hasOutput, output,
-        outputSchema: own ?? (outcome === "succeeded" ? rootOutputSchema : null),
+        outputSchema: own,
     };
 }
 
@@ -408,7 +419,7 @@ export function compileWorkflowV2(yaml: string): WorkflowCompileResult {
                 const node = compileScript(id, rawNode, nodeIds, schemas, diagnostics);
                 if (node) nodes[id] = node;
             } else if (type === "terminal") {
-                const node = compileTerminal(id, rawNode, schemas, rootOutputSchema, diagnostics);
+                const node = compileTerminal(id, rawNode, schemas, diagnostics);
                 if (node) nodes[id] = node;
             } else if (typeof type === "string" && KNOWN_NODE_TYPES.includes(type)) {
                 diagnostics.error("WORKFLOW_NODE_TYPE_UNSUPPORTED", `${path}.type`, `state type '${type}' is not supported by this build yet (supported: ${SUPPORTED_NODE_TYPES.join(", ")}).`);
@@ -442,6 +453,7 @@ export function compileWorkflowV2(yaml: string): WorkflowCompileResult {
         initial,
         initialInput,
         inputsSchema,
+        outputSchema: rootOutputSchema,
         limits: { maxNodeExecutions },
         schemaDefs: schemas.defs,
         nodes,
@@ -509,7 +521,8 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
     need(value.irVersion === WORKFLOW_V2_IR_VERSION, `stored IR version ${String(value.irVersion)} is not supported by this worker`);
     need(value.apiVersion === WORKFLOW_V2_API_VERSION, "stored IR has a different apiVersion");
     need(typeof value.name === "string" && typeof value.version === "string" && typeof value.initial === "string"
-        && nullableString(value.description) && nullableString(value.inputsSchema), "stored IR header is invalid");
+        && nullableString(value.description) && nullableString(value.inputsSchema) && nullableString(value.outputSchema),
+        "stored IR header is invalid");
     need(isJsonObject(value.limits) && typeof value.limits.maxNodeExecutions === "number", "stored IR limits are invalid");
     need(isJsonObject(value.schemaDefs) && isJsonObject(value.nodes), "stored IR schemas or nodes are invalid");
     need(Object.hasOwn(value, "initialInput"), "stored IR has no initialInput");
@@ -542,7 +555,7 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
     return {
         irVersion: WORKFLOW_V2_IR_VERSION, apiVersion: WORKFLOW_V2_API_VERSION, name: value.name, version: value.version,
         description: value.description, initial: value.initial, initialInput: value.initialInput,
-        inputsSchema: value.inputsSchema, limits: { maxNodeExecutions: value.limits.maxNodeExecutions },
+        inputsSchema: value.inputsSchema, outputSchema: value.outputSchema, limits: { maxNodeExecutions: value.limits.maxNodeExecutions },
         schemaDefs: value.schemaDefs, nodes,
     };
 }

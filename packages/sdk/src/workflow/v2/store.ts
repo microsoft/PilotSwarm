@@ -144,7 +144,7 @@ export interface SessionEventRecord {
 export interface SessionProjection {
     sessionId: string;
     events?: SessionEventRecord[];
-    update?: { state?: string; lastError?: string | null; orchestrationId?: string; touch?: boolean };
+    update?: { state?: string; lastError?: string | null; orchestrationId?: string; title?: string; titleLocked?: boolean; touch?: boolean };
 }
 
 export interface NodeResultInput {
@@ -303,7 +303,7 @@ export function nodeExecutionIdFor(runId: string, scopeId: string, nodeId: strin
 export class WorkflowStore {
     private readonly t: {
         definitions: string; revisions: string; operations: string; runs: string; nodes: string;
-        recordEvents: string; updateSession: string;
+        sessions: string; recordEvents: string; updateSession: string;
     };
 
     constructor(private readonly pool: Pool, readonly schema: string) {
@@ -311,8 +311,42 @@ export class WorkflowStore {
         this.t = {
             definitions: `${s}.workflow_definitions`, revisions: `${s}.workflow_revisions`,
             operations: `${s}.workflow_operations`, runs: `${s}.workflow_runs`, nodes: `${s}.workflow_node_executions`,
-            recordEvents: `${s}.cms_record_events`, updateSession: `${s}.cms_update_session`,
+            sessions: `${s}.sessions`, recordEvents: `${s}.cms_record_events`, updateSession: `${s}.cms_update_session`,
         };
+    }
+
+    /**
+     * Lock the workflow's session row. Every v2 transaction takes its locks in
+     * one order (session, definition, run, node) and re-checks deletion here,
+     * so it serializes with deletion (whose trigger ends v2 work in the same
+     * transaction as the soft delete). False when the row is deleted or absent.
+     */
+    private async lockLiveSession(client: PoolClient, workflowSessionId: string): Promise<boolean> {
+        const { rows } = await client.query(
+            `SELECT deleted_at FROM ${this.t.sessions} WHERE session_id = $1 FOR NO KEY UPDATE`, [workflowSessionId]);
+        return Boolean(rows[0]) && rows[0].deleted_at === null;
+    }
+
+    private async requireLiveSession(client: PoolClient, workflowSessionId: string): Promise<void> {
+        if (!await this.lockLiveSession(client, workflowSessionId)) {
+            throw new WorkflowStoreError("WORKFLOW_DELETED", `Workflow session ${workflowSessionId} was deleted or does not exist.`);
+        }
+    }
+
+    /** The workflow that owns a run (an immutable column, read before any lock). */
+    private async workflowOfRun(client: PoolClient, runId: string): Promise<string> {
+        const { rows } = await client.query(`SELECT workflow_session_id FROM ${this.t.runs} WHERE run_id = $1`, [runId]);
+        if (!rows[0]) throw new WorkflowStoreError("RUN_NOT_FOUND", `Workflow run ${runId} does not exist.`);
+        return str(rows[0], "workflow_session_id");
+    }
+
+    /** The workflow that owns a node execution (immutable columns, read before any lock). */
+    private async workflowOfNode(client: PoolClient, nodeExecutionId: string): Promise<string> {
+        const { rows } = await client.query(
+            `SELECT run.workflow_session_id FROM ${this.t.nodes} node JOIN ${this.t.runs} run ON run.run_id = node.run_id
+              WHERE node.node_execution_id = $1`, [nodeExecutionId]);
+        if (!rows[0]) throw new WorkflowStoreError("NODE_NOT_FOUND", `Node execution ${nodeExecutionId} does not exist.`);
+        return str(rows[0], "workflow_session_id");
     }
 
     private async transaction<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
@@ -345,8 +379,10 @@ export class WorkflowStore {
         }
         const update = projection.update;
         if (update) {
-            const updates: Record<string, string | null> = {};
+            const updates: Record<string, string | boolean | null> = {};
             if (update.state !== undefined) updates.state = update.state;
+            if (update.title !== undefined) updates.title = jsonbSafeText(update.title, 200);
+            if (update.titleLocked !== undefined) updates.titleLocked = update.titleLocked;
             if (update.lastError !== undefined) updates.lastError = update.lastError === null ? null : jsonbSafeText(update.lastError, 4_000);
             if (update.orchestrationId !== undefined) updates.orchestrationId = update.orchestrationId;
             if (update.touch) updates.lastActiveAt = new Date().toISOString();
@@ -417,6 +453,10 @@ export class WorkflowStore {
             [start.runId, definition.workflowSessionId, start.mode, revision.revision, revision.yamlSha256, revision.irSha256,
                 start.inputsText, start.controllerInstanceId, start.mode === "test" ? start.testAgentMode : null, operationId],
         );
+        if (start.mode === "live") {
+            await client.query(`SELECT ${this.t.updateSession}($1, $2)`,
+                [definition.workflowSessionId, JSON.stringify({ orchestrationId: start.controllerInstanceId })]);
+        }
         return { runId: start.runId, mode: start.mode, controllerInstanceId: start.controllerInstanceId, revision: revision.revision, irSha256: revision.irSha256 };
     }
 
@@ -443,6 +483,8 @@ export class WorkflowStore {
         requestSha256: string;
         publish: boolean;
         start: RunAdmission | null;
+        /** Session title, written with the definition under the session lock. */
+        title: string;
     }): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
         if ((input.publish || input.start) && !input.compiled.valid) {
             throw new WorkflowStoreError("DEFINITION_INVALID", "An invalid definition can be saved as a draft but not published or started.",
@@ -450,6 +492,7 @@ export class WorkflowStore {
         }
         if (input.start && !input.publish) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "Starting a live run requires publication.");
         return this.transaction(async client => {
+            await this.requireLiveSession(client, input.workflowSessionId);
             const created = await client.query(
                 `INSERT INTO ${this.t.definitions}
                     (workflow_session_id, parent_session_id, api_version, semver, state, current_revision, notify_parent)
@@ -479,6 +522,7 @@ export class WorkflowStore {
             }
             const revision = await this.readRevisionRow(client, input.workflowSessionId, 1);
             if (input.start) run = await this.insertRun(client, definition, revision, input.start, input.operationId);
+            await this.project(client, { sessionId: input.workflowSessionId, update: { title: input.title, titleLocked: true } });
             const receipt = this.receiptFor("create", definition, revision, run);
             await this.recordReceipt(client, input.workflowSessionId, input.operationId, "create", input.requestSha256, receipt);
             return { receipt, replayed: false };
@@ -495,8 +539,10 @@ export class WorkflowStore {
         actor: WorkflowActor;
         operationId: string;
         requestSha256: string;
+        title: string;
     }): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
         return this.transaction(async client => {
+            await this.requireLiveSession(client, input.workflowSessionId);
             const definition = await this.lockDefinition(client, input.workflowSessionId);
             const prior = await this.priorReceipt(client, input.workflowSessionId, input.operationId, "replace_definition", input.requestSha256);
             if (prior) return { receipt: prior, replayed: true };
@@ -522,6 +568,7 @@ export class WorkflowStore {
                 [input.workflowSessionId, nextRevision, input.declaredSemver],
             );
             const updated = definitionFrom(rows[0]);
+            await this.project(client, { sessionId: input.workflowSessionId, update: { title: input.title, titleLocked: true } });
             const receipt = this.receiptFor("replace_definition", updated, await this.readRevisionRow(client, input.workflowSessionId, nextRevision), null);
             await this.recordReceipt(client, input.workflowSessionId, input.operationId, "replace_definition", input.requestSha256, receipt);
             return { receipt, replayed: false };
@@ -539,6 +586,7 @@ export class WorkflowStore {
     }): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
         const kind = input.start ? "publish_and_start" : "publish";
         return this.transaction(async client => {
+            await this.requireLiveSession(client, input.workflowSessionId);
             const definition = await this.lockDefinition(client, input.workflowSessionId);
             const prior = await this.priorReceipt(client, input.workflowSessionId, input.operationId, kind, input.requestSha256);
             if (prior) return { receipt: prior, replayed: true };
@@ -583,6 +631,7 @@ export class WorkflowStore {
         start: RunAdmission;
     }): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
         return this.transaction(async client => {
+            await this.requireLiveSession(client, input.workflowSessionId);
             const definition = await this.lockDefinition(client, input.workflowSessionId);
             const prior = await this.priorReceipt(client, input.workflowSessionId, input.operationId, "start", input.requestSha256);
             if (prior) return { receipt: prior, replayed: true };
@@ -607,12 +656,6 @@ export class WorkflowStore {
         if (events.length === 0) return;
         const safe = events.map(event => ({ eventType: event.eventType, data: jsonbSafeValue(event.data) }));
         await this.pool.query(`SELECT ${this.t.recordEvents}($1, $2, $3)`, [sessionId, JSON.stringify(safe), null]);
-    }
-
-    /** Tombstone a definition (its session is being deleted). Retained for audit and key-reuse refusal. */
-    async markDeleted(workflowSessionId: string): Promise<void> {
-        await this.pool.query(
-            `UPDATE ${this.t.definitions} SET state = 'deleted', updated_at = now() WHERE workflow_session_id = $1`, [workflowSessionId]);
     }
 
     async readDefinition(workflowSessionId: string): Promise<WorkflowDefinitionRow | null> {
@@ -658,7 +701,9 @@ export class WorkflowStore {
     /** admitted -> running. Returns whether this call made the transition. */
     async beginRun(runId: string, projection?: SessionProjection): Promise<{ run: WorkflowRunRow; transitioned: boolean }> {
         return this.transaction(async client => {
+            const live = await this.lockLiveSession(client, await this.workflowOfRun(client, runId));
             const run = await this.lockRun(client, runId);
+            if (!live) return { run, transitioned: false };
             if (run.status !== "admitted") return { run, transitioned: false };
             const { rows } = await client.query(
                 `UPDATE ${this.t.runs} SET status = 'running', updated_at = now() WHERE run_id = $1 RETURNING *`, [runId]);
@@ -687,6 +732,7 @@ export class WorkflowStore {
     }): Promise<{ admitted: true; inserted: boolean; node: WorkflowNodeExecutionRow } | { admitted: false; run: WorkflowRunRow }> {
         const inputSha256 = sha256Hex(input.inputText);
         return this.transaction(async client => {
+            const live = await this.lockLiveSession(client, await this.workflowOfRun(client, input.runId));
             const run = await this.lockRun(client, input.runId);
             const existing = await client.query(`SELECT * FROM ${this.t.nodes} WHERE node_execution_id = $1`, [input.nodeExecutionId]);
             if (existing.rows[0]) {
@@ -697,7 +743,7 @@ export class WorkflowStore {
                 }
                 return { admitted: true as const, inserted: false, node };
             }
-            if (!ACTIVE_RUN_STATUSES.includes(run.status)) return { admitted: false as const, run };
+            if (!live || !ACTIVE_RUN_STATUSES.includes(run.status)) return { admitted: false as const, run };
             const immediate = input.immediate;
             const { rows } = await client.query(
                 `INSERT INTO ${this.t.nodes}
@@ -728,12 +774,31 @@ export class WorkflowStore {
         return rows.map(nodeFrom);
     }
 
-    /** Count an effect attempt for a pending node (transport/activity retries stay visible). */
-    async noteEffectAttempt(nodeExecutionId: string): Promise<number> {
-        const { rows } = await this.pool.query(
-            `UPDATE ${this.t.nodes} SET effect_attempts = effect_attempts + 1 WHERE node_execution_id = $1 AND state = 'pending'
-             RETURNING effect_attempts`, [nodeExecutionId]);
-        return rows[0] ? int(rows[0], "effect_attempts") : 0;
+    /**
+     * Claim a script start for a pending node execution of an active run of a
+     * live workflow, counting the attempt, in one transaction under the
+     * session, run and node locks. A deletion or cancellation that committed
+     * first makes the claim fail; one that commits later finds the node
+     * claimed and is honored by the running effect's liveness check.
+     */
+    async claimScriptEntry(nodeExecutionId: string): Promise<{ claimed: boolean; attempt: number }> {
+        return this.transaction(async client => {
+            const workflowSessionId = await this.workflowOfNode(client, nodeExecutionId);
+            if (!await this.lockLiveSession(client, workflowSessionId)) return { claimed: false, attempt: 0 };
+            const { rows: nodes } = await client.query(`SELECT run_id FROM ${this.t.nodes} WHERE node_execution_id = $1`, [nodeExecutionId]);
+            const run = await this.lockRun(client, str(nodes[0], "run_id"));
+            if (!ACTIVE_RUN_STATUSES.includes(run.status)) return { claimed: false, attempt: 0 };
+            const { rows } = await client.query(
+                `UPDATE ${this.t.nodes} SET effect_attempts = effect_attempts + 1
+                  WHERE node_execution_id = $1 AND state = 'pending' RETURNING effect_attempts`, [nodeExecutionId]);
+            return rows[0] ? { claimed: true, attempt: int(rows[0], "effect_attempts") } : { claimed: false, attempt: 0 };
+        });
+    }
+
+    /** Whether a node execution still awaits its result (a running script's liveness check). */
+    async isNodePending(nodeExecutionId: string): Promise<boolean> {
+        const { rows } = await this.pool.query(`SELECT state FROM ${this.t.nodes} WHERE node_execution_id = $1`, [nodeExecutionId]);
+        return rows[0]?.state === "pending";
     }
 
     /**
@@ -742,7 +807,8 @@ export class WorkflowStore {
      */
     async completeNode(nodeExecutionId: string, result: NodeResultInput, projection?: SessionProjection): Promise<{ won: boolean; node: WorkflowNodeExecutionRow }> {
         return this.transaction(async client => {
-            const { rows } = await client.query(
+            const live = await this.lockLiveSession(client, await this.workflowOfNode(client, nodeExecutionId));
+            const { rows } = live ? await client.query(
                 `UPDATE ${this.t.nodes}
                     SET state = 'completed', outcome = $2, result_kind = $3,
                         output = CASE WHEN $3 = 'business' THEN $4 END,
@@ -751,7 +817,7 @@ export class WorkflowStore {
                   WHERE node_execution_id = $1 AND state = 'pending'
                   RETURNING *`,
                 [nodeExecutionId, result.outcome, result.resultKind, result.valueText, result.winner],
-            );
+            ) : { rows: [] };
             if (rows[0]) {
                 await this.project(client, projection);
                 return { won: true, node: nodeFrom(rows[0]) };
@@ -760,6 +826,13 @@ export class WorkflowStore {
             if (!stored.rows[0]) throw new WorkflowStoreError("NODE_NOT_FOUND", `Node execution ${nodeExecutionId} does not exist.`);
             return { won: false, node: nodeFrom(stored.rows[0]) };
         });
+    }
+
+    /** Node executions of a run whose stored result is the run's cancellation. */
+    async listCancelledNodeIds(runId: string): Promise<string[]> {
+        const { rows } = await this.pool.query(
+            `SELECT node_execution_id FROM ${this.t.nodes} WHERE run_id = $1 AND winner = 'cancel' ORDER BY node_execution_id`, [runId]);
+        return rows.map(row => str(row, "node_execution_id"));
     }
 
     /** The completed node executions among the exact history-selected ids. */
@@ -782,27 +855,20 @@ export class WorkflowStore {
         terminalOutcome: string | null;
         outputText: string | null;
         errorText: string | null;
-        /** Node executions to complete as cancelled in the same transaction (cancel only). */
-        cancelPending: boolean;
-        /** Terminal node execution to complete in the same transaction. */
+        /**
+         * Every node execution still pending when the run ends is completed in
+         * the same transaction as a cancelled runtime error with this winner,
+         * so no result can arrive after the run's terminal state.
+         */
+        endPending: { winner: "cancel" | "controller"; message: string };
+        /** Terminal node execution to complete (first) in the same transaction. */
         terminalNode?: { nodeExecutionId: string; result: NodeResultInput } | null;
         projection?: SessionProjection;
-    }): Promise<{ ended: boolean; run: WorkflowRunRow; cancelledNodeIds: string[] }> {
+    }): Promise<{ ended: boolean; run: WorkflowRunRow }> {
         return this.transaction(async client => {
+            const live = await this.lockLiveSession(client, await this.workflowOfRun(client, input.runId));
             const run = await this.lockRun(client, input.runId);
-            if (!ACTIVE_RUN_STATUSES.includes(run.status)) return { ended: false, run, cancelledNodeIds: [] };
-            let cancelledNodeIds: string[] = [];
-            if (input.cancelPending) {
-                const envelope = canonicalJson({ code: "cancelled", message: "The workflow run was cancelled." });
-                const { rows } = await client.query(
-                    `UPDATE ${this.t.nodes}
-                        SET state = 'completed', outcome = 'cancelled', result_kind = 'runtime_error', error = $2, output = NULL,
-                            winner = 'cancel', completed_at = now()
-                      WHERE run_id = $1 AND state = 'pending'
-                      RETURNING node_execution_id`,
-                    [input.runId, envelope]);
-                cancelledNodeIds = rows.map(row => str(row, "node_execution_id"));
-            }
+            if (!live || !ACTIVE_RUN_STATUSES.includes(run.status)) return { ended: false, run };
             const { rows } = await client.query(
                 `UPDATE ${this.t.runs}
                     SET status = $2, terminal_node_id = $3, terminal_outcome = $4, terminal_output = $5, terminal_error = $6,
@@ -820,8 +886,14 @@ export class WorkflowStore {
                       WHERE node_execution_id = $1 AND run_id = $6 AND state = 'pending'`,
                     [input.terminalNode.nodeExecutionId, result.outcome, result.resultKind, result.valueText, result.winner, input.runId]);
             }
+            await client.query(
+                `UPDATE ${this.t.nodes}
+                    SET state = 'completed', outcome = 'cancelled', result_kind = 'runtime_error', error = $2, output = NULL,
+                        winner = $3, completed_at = now()
+                  WHERE run_id = $1 AND state = 'pending'`,
+                [input.runId, canonicalJson({ code: "cancelled", message: input.endPending.message }), input.endPending.winner]);
             await this.project(client, input.projection);
-            return { ended: true, run: runFrom(rows[0]), cancelledNodeIds };
+            return { ended: true, run: runFrom(rows[0]) };
         });
     }
 }

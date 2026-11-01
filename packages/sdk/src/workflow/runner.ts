@@ -8,6 +8,7 @@ import type { AddressInfo } from "node:net";
 import { killProcessTree } from "../process-tree.js";
 import type { ScriptRuntime, WorkflowScriptState } from "./compiler.js";
 import { WorkflowExecutionError, type ScriptToolCall } from "./executor.js";
+import { assertJsonValue, WorkflowJsonError } from "./v2/json.js";
 
 /** Largest JSON a node may hand to the next node (it is stored in durable history). */
 export const SCRIPT_NODE_MAX_OUTPUT_BYTES = 256 * 1024;
@@ -19,7 +20,8 @@ const STREAM_TAIL_BYTES = 16 * 1024;
 /** Environment variables a script inherits from the worker. Everything else is dropped. */
 const INHERITED_ENV = ["PATH", "LANG", "LC_ALL", "TZ", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT"];
 
-export type ScriptResultSource = "reported" | "stdout" | "exit" | "timeout" | "cancelled";
+/** "none": a strict-JSON script exited without a valid setResult. */
+export type ScriptResultSource = "reported" | "stdout" | "exit" | "timeout" | "cancelled" | "none";
 
 const CANCEL_POLL_MS = 250;
 
@@ -47,6 +49,14 @@ export interface RunScriptNodeRequest {
     cancelTools?: () => Promise<void>;
     /** The JSON the script reads as `context`; absent: the legacy context built from the fields above. */
     context?: Record<string, unknown>;
+    /**
+     * Workflow v2: results and tool arguments must be plain JSON. The script's
+     * setResult/callTool reject NaN, Infinity, undefined, functions, symbols
+     * and non-plain objects (no toJSON conversion); the endpoint re-checks
+     * parsed bodies (1e400 parses to Infinity); only setResult completes the
+     * node (no stdout or exit-code result). Legacy runs leave this unset.
+     */
+    strictJson?: boolean;
 }
 
 export interface RunScriptNodeResult {
@@ -81,6 +91,61 @@ async function __psPost(route, body) {
 }
 async function callTool(name, args = {}) { return __psPost("/tool", { name, arguments: args }); }
 async function setResult(outcome, output = null) { await __psPost("/result", { outcome, output }); }
+`;
+
+/** Workflow v2 prelude: plain-JSON values are checked before they are serialized. */
+const NODE_STRICT_PRELUDE = `import { readFileSync as __psReadFileSync } from "node:fs";
+import { createRequire as __psCreateRequire } from "node:module";
+const require = __psCreateRequire(import.meta.url);
+const context = JSON.parse(__psReadFileSync(0, "utf8") || "{}");
+function __psAssertJson(value, path, depth) {
+    if (depth > 64) throw new TypeError(path + ": nesting exceeds 64 levels");
+    if (value === null || typeof value === "boolean" || typeof value === "string") return;
+    if (typeof value === "number") {
+        if (!Number.isFinite(value)) throw new TypeError(path + ": numbers must be finite (got " + String(value) + ")");
+        return;
+    }
+    if (Array.isArray(value)) {
+        for (let index = 0; index < value.length; index += 1) {
+            if (!(index in value)) throw new TypeError(path + "[" + index + "]: sparse arrays are not JSON");
+            __psAssertJson(value[index], path + "[" + index + "]", depth + 1);
+        }
+        return;
+    }
+    if (typeof value === "object") {
+        const prototype = Object.getPrototypeOf(value);
+        if (prototype !== Object.prototype && prototype !== null) {
+            throw new TypeError(path + ": only plain objects are JSON (got " + (value.constructor?.name ?? "object") + ")");
+        }
+        for (const key of Reflect.ownKeys(value)) {
+            if (typeof key === "symbol") throw new TypeError(path + ": symbol keys are not JSON");
+            const descriptor = Object.getOwnPropertyDescriptor(value, key);
+            if (descriptor.get || descriptor.set) throw new TypeError(path + "." + key + ": accessors are not JSON");
+            __psAssertJson(descriptor.value, path + "." + key, depth + 1);
+        }
+        return;
+    }
+    throw new TypeError(path + ": " + (value === undefined ? "undefined" : typeof value) + " is not a JSON value");
+}
+async function __psPost(route, body) {
+    const response = await fetch(process.env.PILOTSWARM_WORKFLOW_ENDPOINT + route, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: "Bearer " + process.env.PILOTSWARM_WORKFLOW_TOKEN },
+        body: JSON.stringify(body),
+    });
+    const payload = await response.json();
+    if (!payload.ok) throw new Error(payload.error);
+    return payload.result;
+}
+async function callTool(name, args = {}) {
+    __psAssertJson(args, "arguments", 0);
+    return __psPost("/tool", { name, arguments: args });
+}
+async function setResult(outcome, output = null) {
+    if (typeof outcome !== "string" || !outcome.trim()) throw new TypeError("setResult needs a non-empty outcome string");
+    __psAssertJson(output, "output", 0);
+    await __psPost("/result", { outcome, output });
+}
 `;
 
 const PYTHON_PRELUDE = `import json as __ps_json, os as __ps_os, sys as __ps_sys, urllib.request as __ps_request
@@ -211,6 +276,17 @@ function errorText(error: unknown): string {
     return error instanceof Error ? error.message : String(error);
 }
 
+/** Why a parsed request value is not plain JSON (e.g. 1e400 parsed to Infinity), or null. */
+function strictJsonProblem(value: unknown, path: string): string | null {
+    try {
+        assertJsonValue(value, path);
+        return null;
+    } catch (error) {
+        if (error instanceof WorkflowJsonError) return error.message;
+        throw error;
+    }
+}
+
 /**
  * Run one script node as a child process on this worker.
  *
@@ -236,6 +312,10 @@ export async function runScriptNode(
     if (request.guardedNode && (node.runtime !== "node" || executable !== process.execPath)) {
         throw new WorkflowExecutionError("Guarded workflows require the worker's supported Node runtime.");
     }
+    if (request.strictJson && node.runtime !== "node") {
+        throw new WorkflowExecutionError("Strict-JSON workflow scripts run on the Node runtime only.");
+    }
+    const prelude = request.strictJson ? NODE_STRICT_PRELUDE : runtime.prelude;
     if (request.guardedNode) {
         const [major, minor, patch] = process.versions.node.split(".").map(Number);
         if (!(major === 24 && (minor > 22 || minor === 22 && patch >= 1)
@@ -268,7 +348,13 @@ export async function runScriptNode(
                 reply(400, { ok: false, error: "outcome must be a non-empty string" });
                 return;
             }
-            reported = { outcome: body.outcome, output: Object.hasOwn(body, "output") ? body.output : null };
+            const output = Object.hasOwn(body, "output") ? body.output : null;
+            const problem = request.strictJson ? strictJsonProblem(output, "output") : null;
+            if (problem) {
+                reply(400, { ok: false, error: problem });
+                return;
+            }
+            reported = { outcome: body.outcome, output };
             reply(200, { ok: true, result: null });
             return;
         }
@@ -283,6 +369,14 @@ export async function runScriptNode(
             const args = body?.arguments && typeof body.arguments === "object" && !Array.isArray(body.arguments)
                 ? body.arguments as Record<string, unknown>
                 : {};
+            const rawArguments = body?.arguments === undefined ? {} : body.arguments;
+            const argumentsProblem = !request.strictJson ? null
+                : rawArguments === null || typeof rawArguments !== "object" || Array.isArray(rawArguments) ? "arguments must be a JSON object"
+                    : strictJsonProblem(rawArguments, "arguments");
+            if (argumentsProblem) {
+                reply(400, { ok: false, error: argumentsProblem });
+                return;
+            }
             const callStarted = Date.now();
             admittedToolCalls++;
             try {
@@ -307,7 +401,7 @@ export async function runScriptNode(
 
     try {
         const scriptPath = path.join(workDir, runtime.file);
-        fs.writeFileSync(scriptPath, `${runtime.prelude}\n${node.source}\n`, { mode: 0o600 });
+        fs.writeFileSync(scriptPath, `${prelude}\n${node.source}\n`, { mode: 0o600 });
 
         const env: Record<string, string> = {};
         for (const key of INHERITED_ENV) {
@@ -419,6 +513,14 @@ export async function runScriptNode(
             return { ...common, outcome: "timeout", output: { timeoutSeconds: node.timeoutSeconds }, resultSource: "timeout" };
         }
         const finalReport = reported as { outcome: string; output: unknown } | null;
+        if (request.strictJson) {
+            // Only an accepted setResult completes the node, and only on a clean exit.
+            if (exitCode !== 0) {
+                return { ...common, outcome: "failure", output: { exitCode, stderr: stderrTail.trim().slice(-4_096) }, resultSource: "exit" };
+            }
+            if (!finalReport) return { ...common, outcome: "", output: null, resultSource: "none" };
+            return { ...common, outcome: finalReport.outcome, output: finalReport.output, resultSource: "reported" };
+        }
         if (finalReport) {
             return { ...common, outcome: finalReport.outcome, output: boundedOutput(node.id, finalReport.output), resultSource: "reported" };
         }

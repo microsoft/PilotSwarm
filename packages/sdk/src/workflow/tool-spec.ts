@@ -59,7 +59,9 @@ export const SPAWN_WORKFLOW_TOOL_SPEC = {
         + "(state: published publishes revision 1; add start: true to also start its one live run). Drafts may be invalid and come back with diagnostics. "
         + "Use update_workflow to replace the draft, publish the exact reviewed definitionHash, or start; read_workflow shows definition, graph and runs. "
         + "V2 states: script (source, optional input binding, inputSchema/outputSchema, transition.next routes; runtime errors route by code or 'failure') "
-        + "and terminal (outcome, output binding). Bindings are whole-string ${inputs.x}, ${input.x} or ${runtime.error}; schemas are JSON Schema 2020-12 under schemas, referenced as {$ref: '#/schemas/Name'}.",
+        + "and terminal (outcome, output binding). Bindings are whole-string ${inputs.x}, ${input.x} or ${runtime.error}; schemas are JSON Schema 2020-12 under schemas, referenced as {$ref: '#/schemas/Name'}. "
+        + "A v2 script state completes only through await setResult(outcome, output) with plain JSON (no NaN, Infinity, undefined, Date or class instances) and a clean exit; "
+        + "printed JSON and exit codes do not complete it, and a non-zero exit is execution_failed.",
     parameters: {
         type: "object",
         properties: {
