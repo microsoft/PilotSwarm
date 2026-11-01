@@ -1,6 +1,6 @@
 # Workflow v2 formal models
 
-Five TLA+ modules model workflow v2 as the code in
+Six TLA+ modules model workflow v2 as the code in
 `packages/sdk/src/workflow/v2` implements it in the same commit as this
 file. Each is small and checks one group of boundaries; each has cases
 with expected PASS and expected violations (earlier code revisions,
@@ -13,6 +13,7 @@ deliberate faults and witnesses).
 | `WorkflowV2Admission.tla` | Admission under the open KV and pause: the revision current at commit, KV_CHANGING, refusals, ordinals, the paused wait and its backstop, begin of a run paused before it began, the deletion trigger | "Admission model" |
 | `WorkflowV2Lifecycle.tla` | Start of a run and cancels before begin: lost and skipped dispatch, the provider's drop, begin honoring an accepted cancel (C1), its recorded (nullable) requester and who is told (C2, M1), notification eligibility and each notification's outcome (A6), recover | "Lifecycle model" |
 | `WorkflowV2SessionCommands.tla` | A parent session's cancel and delete for a v2 child through `sendCommandToSession`: receipts, redelivery, conflicts, the deleted-child path (D2), deletes applied in the store (D1) and the repeat of an earlier build's queued delete | "Session command model" |
+| `WorkflowV2Receive.tla` | Messaging receive states and typed input: the claim at entry and in the input's acceptance, each decided at one reading of the store's clock, the deadline race, expiry, the durable order, the sender decided in the admission and in the acceptance (R5), the stored receipt (R4) | "Receive model" |
 
 `WorkflowV2Run.tla` models one workflow v2 run as the code in
 `packages/sdk/src/workflow/v2` implements it: the controller orchestration,
@@ -212,8 +213,9 @@ takes the session row first, so they serialize.
   commands to a v2 child are applied in the store (`S`
   `recordSessionCommand`). The lifecycle model and the session command
   model check these paths.
-- Messaging receive states (controller 1.7.0, IR version 5) are not
-  modeled yet; the messaging regressions are their evidence. A receive
+- Messaging receive states (controller 1.7.0, IR version 5) are modeled
+  in the receive model ("Receive model") within its bounds; the messaging
+  regressions are the evidence for the rest (its limits). A receive
   takes one typed message of its contract, from its sender (the parent, a
   named session or any allowed sender) and with its correlation, that a
   session gave the run with `send_workflow_input`. Only the workflow's
@@ -369,8 +371,8 @@ Run from this folder with the TLA+ tools jar (`tla2tools.jar`). Each case
 names its module by its prefix: `wait-` and `wit-wait-` cases are for
 `WorkflowV2Wait.tla`, `adm-` for `WorkflowV2Admission.tla`, `lc-` and
 `wit-lc-` for `WorkflowV2Lifecycle.tla`, `cmd-` and `wit-cmd-` for
-`WorkflowV2SessionCommands.tla`, and every other case for
-`WorkflowV2Run.tla`.
+`WorkflowV2SessionCommands.tla`, `rcv-` and `wit-rcv-` for
+`WorkflowV2Receive.tla`, and every other case for `WorkflowV2Run.tla`.
 
 ```sh
 java -cp tla2tools.jar tla2sany.SANY <module>.tla
@@ -844,3 +846,124 @@ Limits:
   creation time, the terminal payload and node winners, a facts cleanup
   that fails and later fact writers are not modeled (the session-commands
   regressions compare the stored rows).
+
+## Receive model
+
+`WorkflowV2Receive.tla` models messaging receive states and typed input
+(controller 1.7.0, IR version 5). A run enters receive state 1 and, when
+that one received or elapsed, receive state 2. Both name one sender
+(`From`: a session, `p` or `q`, or any sender) and race a wait of `Secs`
+seconds in the store's clock, or none (`HasWait = FALSE`). Two inputs are
+given, each in two steps: the service's check on the catalog's rows
+(`SendCheck`) and the store's acceptance (`SendAccept`). A sender's session
+may be deleted (`Delete`), which does not end the workflow, and the run may
+be cancelled. One integer clock is the store's, which the controller reads
+too (skew is the wait model's). It checks the receive review findings R2
+to R5 against their earlier commits, and the claims, the deadline race,
+expiry and the durable order against deliberate faults.
+
+The authority rule is a constant here (`Authorized`: the sessions it allows
+while they are live). Its cases (unknown, partial, blank and system
+ownership, exact identities, a parent in both records) are the regressions'
+(R1); the model checks when the rule is decided, not the rule.
+
+| Constant | Kind | Code |
+|---|---|---|
+| `From`, `Sender1`, `Sender2`, `Authorized`, `Matching` | environment | The receives' sender; each input's sender; the sessions the authority rule allows; the inputs whose contract and correlation match. |
+| `Secs`, `HasWait`, `Ttl`, `MaxPre` | bounds | The receives' wait; how long an input stays eligible (`ttl_seconds`); the clock's free range. |
+| `Deletes`, `Cancels` | environment | A sender's session is soft-deleted; the run is cancelled. |
+| `AdmitDecides`, `AcceptDecides` | fix 63f55d71 (R5) | The admission (`S` `enterNode`) and the acceptance (`S` `acceptInput`) decide the sender under the session locks. FALSE: 6a2819f4, which kept the resolution's decision and the service's check. |
+| `OneReading` | fix 6a2819f4 (R3) | One reading of the store's clock decides an entry. FALSE: ba01ef8e selected at one reading and inserted at a later one (`AdmitInsert`). |
+| `Granule` | fix 6a2819f4 (R2) | 1: exact times. 2: ba01ef8e compared a deadline with an acceptance time truncated to milliseconds (one tick stands for a microsecond). |
+| `ReceiptStored` | fix 6a2819f4 (R4) | A repeat returns the acceptance's stored receipt. FALSE: ba01ef8e returned the input's current claim. |
+| `EntryClaim`, `IngressClaim`, `DeadlineCheck`, `ConsumeOnClaim`, `EarliestFirst`, `Cas` | code | The claim at entry, the claim in the acceptance, its deadline check, the consumption mark, the durable order, the elapse's compare-and-swap. FALSE: deliberate faults. |
+
+| Receive action | Code | Boundary |
+|---|---|---|
+| `Resolve` | `R` `resolveReceive` 937, called in the enter activity 1122; the refusals it carries 968 | Before the admission's transaction: the definition's parent or the binding's session, frozen for this entry. It decides nothing about the sender; 6a2819f4 decided its authority here. |
+| `Admit` / `AdmitInsert` | `S` `enterNode` 1381, `lockInputSessions` 509 (514, the locks), 1462 (a refused sender), 1479 (the one reading), 1485 (the earliest eligible input) | The session rows in ascending session id (the sender's `FOR SHARE`), then the run. One reading decides the input taken, `entered_at`, `consumed_at` and the deadline. `AdmitInsert` is ba01ef8e's later insert only. |
+| `AdmitEnded` | `S` 1438 | A run that ended admits nothing; the controller ends. |
+| `SendCheck` | `V` `sendWorkflowInputV2` 758; `A` `decideTypedInputAuthority` 62 | The catalog's rows; an earlier refusal, and the only check of a repeat. |
+| `SendAccept` | `S` `acceptInput` 1687, 1724 (the sender), 1730 (the one reading), 1761 (the waiting receive, before its deadline), 1783 (the receipt) | One transaction under the session and run locks: the sender, `accepted_at`, `expires_at`, the claim and the receipt. |
+| `Repeat` | `S` 1722 | The stored receipt, after the service's check allowed the sender. |
+| `Delete` | `cms-migrations.ts` `cms_soft_delete_session`; `S` 514 | Waits for a transaction that holds the sender's row lock; the workflow stays live. |
+| `Elapse` | `R` 628 (call); `S` `elapseWait` 1624, 1634 (guard) | Compare-and-swap from pending at or after the deadline. |
+| `Collect` | `R` 642 (collect), 649 (routing) | Receive state 1 routes to receive state 2; a refusal routes to a failed terminal. |
+| `Cancel` | `R` 485; `S` `finishRun` 1826; `migrations/workflow-v2-0087.ts` 58 | The run's end decides a pending receive in its transaction. |
+| `Tick` | none | The store's clock (PostgreSQL), assumed never to go back. |
+
+| Property | Meaning |
+|---|---|
+| `Inv_NoMissedClaim` | A receive never waits before its deadline while an input it could take exists: one accepted before it was entered is taken at entry, one accepted while it waits is taken at once (R08). |
+| `Inv_NotLate` | An input taken in its own acceptance was accepted before the receive's deadline, compared exactly (R2). |
+| `Inv_EntryUnexpired` | An input taken at entry was accepted before the entry and was unexpired at the entry's one reading, its `entered_at` (R3). |
+| `Inv_TakeOnce` | An input is taken by at most one receive, which records it. |
+| `Inv_TakeFits` | A receive takes only an input that fits it (contract, correlation, sender). |
+| `Inv_InOrder` | An entry takes the earliest eligible input: no input earlier in the durable order is still eligible. |
+| `Inv_AdmittedSenderOk` | A receive is admitted only while its sender is live and allowed (R5). |
+| `Inv_AcceptedSenderOk` | An input is accepted only while its sender is live and allowed (R5). |
+| `Inv_RepeatReceipt` | A repeat returns the acceptance's receipt, whatever happened to the input since (R4). |
+| `Inv_RefusedBare` | A refused receive has no deadline and takes nothing. |
+| `ReceiveSafety` | `TypeOK` and the ten invariants above. |
+| `Prop_FirstResultKept` | The first stored result of a receive is kept. |
+| `Live_ReceiveDecided` | A pending receive is eventually decided. Needs its wait. |
+| `Live_RunEnds` | The controller eventually ends. |
+| `Wit_EntryClaim`, `Wit_IngressClaim` | Witnesses: a receive takes an input at its entry; an input takes the waiting receive. |
+| `Wit_TimerWinKeepsInput` | Witness: an input late for receive state 1 is kept, and receive state 2 takes it. |
+| `Wit_RefusedAtAdmission` | Witness: a sender that the resolution allowed is deleted, and the admission fails the receive. |
+| `Wit_RefusedAtAcceptance` | Witness: a sender that the service's check allowed is deleted, and the acceptance refuses its input. |
+
+| Case | Mode | Checked | Expected |
+|---|---|---|---|
+| `rcv-hd-safety` | this commit, sender `p`, inputs from `p` and `q`, deletions and the cancel | `ReceiveSafety`, `Prop_FirstResultKept` | PASS |
+| `rcv-hd-safety-any` | the same, any sender | the same | PASS |
+| `rcv-hd-safety-forbidden` | the same, sender `q`, which the rule does not allow | the same | PASS |
+| `rcv-hd-safety-nowait` | as `rcv-hd-safety`, no wait | the same | PASS |
+| `rcv-hd-live` | as `rcv-hd-safety` | `Live_ReceiveDecided`, `Live_RunEnds` | PASS |
+| `rcv-hd-live-any` | as `rcv-hd-safety-any` | `Live_ReceiveDecided`, `Live_RunEnds` | PASS |
+| `rcv-lim-no-wait` | as `rcv-hd-safety-nowait` | `Live_ReceiveDecided` | liveness violation: the stated limit (with no wait, only an input or the run's end decides a receive) |
+| `wit-rcv-entry-claim` | as `rcv-hd-safety` | `Wit_EntryClaim` | safety violation (witness) |
+| `wit-rcv-ingress-claim` | as `rcv-hd-safety` | `Wit_IngressClaim` | safety violation (witness) |
+| `wit-rcv-timer-win-keeps-input` | as `rcv-hd-safety` | `Wit_TimerWinKeepsInput` | safety violation (witness) |
+| `wit-rcv-refused-at-admission` | as `rcv-hd-safety` | `Wit_RefusedAtAdmission` | safety violation (witness) |
+| `wit-rcv-refused-at-acceptance` | as `rcv-hd-safety` | `Wit_RefusedAtAcceptance` | safety violation (witness) |
+| `rcv-rv-ba01ef8e-coarse` | this commit with ba01ef8e's truncated comparison (`Granule = 2`) | `Inv_NotLate` | safety violation (R2) |
+| `rcv-rv-ba01ef8e-two-readings` | this commit with ba01ef8e's two readings of an entry | `Inv_EntryUnexpired` | safety violation (R3) |
+| `rcv-rv-ba01ef8e-receipt-view` | this commit with ba01ef8e's repeat | `Inv_RepeatReceipt` | safety violation (R4) |
+| `rcv-rv-6a2819f4-admit` | this commit with 6a2819f4's admission | `Inv_AdmittedSenderOk` | safety violation (R5) |
+| `rcv-rv-6a2819f4-accept` | this commit with 6a2819f4's acceptance | `Inv_AcceptedSenderOk` | safety violation (R5) |
+| `rcv-df-no-entry-claim` | this commit without the entry's claim | `Inv_NoMissedClaim` | safety violation |
+| `rcv-df-no-ingress-claim` | this commit without the acceptance's claim | `Inv_NoMissedClaim` | safety violation |
+| `rcv-df-no-deadline-check` | this commit without the deadline check | `Inv_NotLate` | safety violation |
+| `rcv-df-no-consume` | this commit without the consumption mark | `Inv_TakeOnce` | safety violation |
+| `rcv-df-no-cas` | this commit without the elapse's compare-and-swap | `Prop_FirstResultKept` | safety violation |
+| `rcv-df-latest-first` | as `rcv-hd-safety-any`, the latest eligible input first | `Inv_InOrder` | safety violation |
+
+Each `rcv-rv-` case sets one switch of its earlier commit and keeps this
+commit's others, so its counterexample shows that one boundary.
+
+Limits:
+
+- One run with two receive states in sequence and one sender; one receive
+  is pending at a time (parallel states are not implemented), so the
+  acceptance's choice of the earliest waiting receive is not exercised.
+- The authority rule is a constant. That the store reads both sessions and
+  their owners in one statement after the locks, the owner's single
+  assignment and the placeholder merge are not modeled; the store
+  regressions refuse another user's, an unowned, a missing and a deleted
+  session in the acceptance itself.
+- A sender deleted after a receive's admission does not change that
+  admission: the receive waits for an input that can no longer come, until
+  its wait elapses or the run ends (`rcv-lim-no-wait` shows that a
+  receive with no wait is decided only by an input or the run's end).
+- The service's check, the store's acceptance, an admission and a
+  deletion are each one atomic step. The session-row locks serialize the
+  last three; a lock cycle with another writer, which PostgreSQL aborts
+  and the caller retries, is not modeled.
+- Not modeled; the messaging regressions cover them: the inbox bounds and
+  the rate window, pause (a paused run takes input and admits nothing),
+  continue-as-new, controller death and crashes, the wake hint, contracts
+  and payload validation, operation conflicts (another request with an
+  operation id), the receipt's request and payload hashes (abstracted as
+  its `claimedBy`), and the refusal to repeat an input stored without a
+  receipt.
