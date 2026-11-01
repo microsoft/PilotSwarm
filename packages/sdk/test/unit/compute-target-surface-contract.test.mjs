@@ -104,10 +104,11 @@ test("probe orchestration schedules the worker activity", () => {
     const generator = computeTargetProbeOrchestration({
         scheduleActivity(name, activityInput) {
             scheduled.push({ name, input: activityInput });
-            return "result";
+            return "activity";
         },
     }, input);
-    assert.deepEqual(generator.next(), { value: "result", done: true });
+    assert.deepEqual(generator.next(), { value: "activity", done: false });
+    assert.deepEqual(generator.next({ ok: true }), { value: { ok: true }, done: true });
     assert.deepEqual(scheduled, [{ name: COMPUTE_TARGET_PROBE_ACTIVITY, input }]);
 });
 
