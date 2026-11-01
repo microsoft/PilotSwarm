@@ -606,7 +606,7 @@ describe("workflow v2 run control on the real runtime", () => {
             const parent = await parentOf(h);
             const undispatched = { ...h.host, duroxideClient: { ...h.host.duroxideClient, startOrchestrationVersioned: async () => undefined } };
             const lost = async (id) => (await createWorkflowV2(undispatched, { workflowSessionId: id, parentSessionId: parent.parentId, yaml: TWO_STATES,
-                actor: ACTOR, operationId: "start", start: { inputs: {} } })).receipt.run;
+                actor: ACTOR, operationId: "start", start: { inputs: {}, vars: { mode: "recovered" } } })).receipt.run;
             const provider = async (instanceId) => {
                 const count = async (table) => Number((await db.query(
                     `SELECT count(*) AS n FROM "${env.duroxideSchema}".${table} WHERE instance_id = $1`, [instanceId])).rows[0].n);
@@ -634,7 +634,11 @@ describe("workflow v2 run control on the real runtime", () => {
             await dropped(runX.controllerInstanceId);
             expect((await h.client.getStatus(runX.controllerInstanceId)).status).toBe("NotFound");
             expect(await parent.update(x, { operation: "recover", operation_id: "recover" })).toMatchObject({ ok: true, action: "dispatched" });
-            expect(await finished(h, runX.runId)).toMatchObject({ status: "completed", terminalOutcome: "succeeded" });
+            // The terminal reads kv.mode, which this fixture sets: the run completes with its declared output.
+            const completedX = await finished(h, runX.runId);
+            expect(completedX, JSON.stringify(completedX)).toMatchObject({ status: "completed", terminalOutcome: "succeeded", terminalNodeId: "done" });
+            expect(completedX.terminalOutput.mode).toBe("recovered");
+            expect((await h.store.listNodeExecutions(runX.runId)).map(node => [node.nodeId, node.outcome])).toEqual([["first", "ok"], ["second", "ok"], ["done", "succeeded"]]);
 
             // A cancel an earlier build accepted, exactly as it stored it (receipt with the run's status then), whose
             // command the provider dropped. Its repeat ends the run now; the stored receipt stays as it was.
