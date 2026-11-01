@@ -148,15 +148,27 @@ function linesOnly(a, b) {
     return out;
 }
 
-/** The lines of the frozen 1.0.82 queue.ts that 1.0.83 changes, each to carry the intake (its third deadline, its wake). */
+/** The lines of the frozen 1.0.82 queue.ts that 1.0.83 changes: one, so that a due intake write is raced, never blocked on. */
 const QUEUE_CHANGED_82 = [
-    "    opts: { batchMs?: number; digestHasError?: boolean } = {},",
-    "): { kind: \"active\" | \"child-digest\"; remainingMs: number; timer?: ActiveTimer } | null {",
-    "    const candidates: Array<{ kind: \"active\" | \"child-digest\"; remainingMs: number; timer?: ActiveTimer }> = [];",
     "        !hasFifoItems(runtime)",
-    "        } else if (state.activeTimer || (state.pendingChildDigest && !state.pendingChildDigest.ready)) {",
-    "                if (candidate.kind === \"active\" && candidate.timer) {",
-    "                if (candidate.kind === \"active\" && candidate.timer) {",
+];
+
+/**
+ * The lines 1.0.83 adds to queue.ts that neither name the intake nor are a
+ * comment or structure: the changed line above, and the parts of
+ * intakeDeadlineFirst and of drain's intake race that reuse 1.0.82's own
+ * expressions.
+ */
+const QUEUE_ADDED_GENERIC = [
+    "        !hasFifoItems(runtime) &&",
+    "    const { state } = runtime;",
+    "    if (dueAtMs === null) return false;",
+    "    const other = nextTimerCandidate(state.activeTimer, state.pendingChildDigest, dueAtMs, {",
+    "        batchMs: childUpdateBatchMs(state.subAgents?.length ?? 0),",
+    "        digestHasError: pendingChildDigestHasError(runtime),",
+    "    });",
+    "    return other === null || other.remainingMs > 0;",
+    "            const now: number = yield ctx.utcNow();",
 ];
 
 test("1.0.83 is the frozen 1.0.82 plus the intake: the files it does not change are the frozen ones", () => {
@@ -172,14 +184,14 @@ test("1.0.83 is the frozen 1.0.82 plus the intake: the files it does not change 
         .replace("        if (state.activeTimer) continue;        // drain will race the timer next iteration\n",
             "        if (state.activeTimer) continue;        // drain will race the timer next iteration\n"
             + "        if (intakeDueAtMs(state.intake) !== null) continue; // 1.0.83: drain will race the intake's due write\n"));
-    // queue.ts: only the intake's hooks (arrival in drain and the sweep, the tombstone latch, the third deadline and its
-    // wake). Every frozen line it changes is listed; every line it adds is about the intake or the structure around it.
+    // queue.ts: only the intake's hooks (arrival in drain and the sweep, the tombstone latch first in both, the intake
+    // deadline's own race and its wake). The one frozen line it changes is listed; every line it adds names the intake,
+    // is a comment or structure, or is one of the listed reuses of 1.0.82's own expressions.
     const queue82 = read("orchestration_1_0_82/queue.ts");
     const queue83 = read("orchestration_1_0_83/queue.ts");
     assert.deepEqual(linesOnly(queue82, queue83).sort(), [...QUEUE_CHANGED_82].sort());
     for (const line of linesOnly(queue83, queue82)) {
-        assert.ok(/intake|Intake/.test(line)
-            || /^\s*(\}|continue;|\/\/.*|\} else if \(candidate\.kind === "active" && candidate\.timer\) \{|!hasFifoItems\(runtime\) &&)?\s*$/.test(line), line);
+        assert.ok(/intake|Intake/.test(line) || /^\s*(\}|continue;|\/\/.*|\/\*\*|\*\/|\*( .*)?)?\s*$/.test(line) || QUEUE_ADDED_GENERIC.includes(line), line);
     }
     // Its new imports are the intake modules and the capability routing only (and node:crypto for the text hash).
     const frozen = new Set(tsFiles("orchestration_1_0_82").flatMap(name => importsOf(read(`orchestration_1_0_82/${name}`))));

@@ -377,6 +377,16 @@ yield, before any placement.
   entry's holder settle, the latched `held` cancels (one write, one retry)
   and the invocation's cancel write, which comes before its end. A cancel
   is made with no other stimulus, as a store write only.)
+  (Implementation clarification, review of b92ff04b: drain races the queue
+  before every wake, for a moment at least when a write is already due,
+  and one wake makes at most one intake activity call, so a queued message,
+  a command first, waits for one store write at most; a holder settle that
+  a claim decides is latched and made by a later wake. A thrown activity
+  failure keeps only its message in history: the activity marks a failure
+  no retry can fix (a programming error, or a PostgreSQL error of class 22,
+  23 or 42) `WORKFLOW_INTAKE_NON_RETRYABLE` in it, and the execution fails
+  visibly on that mark; any other thrown failure, an outage or a lost
+  answer, is made again when due.)
 - **No FIFO (F7).** An accepted item is never appended, so none of the
   four append sites (`queue.ts` 844, 1144, 1195, 1293) can lose it, and
   a full FIFO does not matter to it. It waits as a `held` entry until the
@@ -645,6 +655,9 @@ today; that growth is outside this design (section 13).
   set its retry, wherever it was made (drain, the sweep or the wake). An
   intake tombstone is latched (5.5) and not consumed: once latched it
   decides nothing more, and it leaves the bounded cancel set by eviction.
+  A cancel message is latched first, from its own ids, before they join
+  the bounded cancel set or a stashed prompt with the same id consumes
+  them (review of b92ff04b).
   Every recorded claim answer and every cancel the intake makes is one
   best-effort diagnostic event (`session.workflow_intake_recorded`); the
   refusals' own events are the store's (5.6).

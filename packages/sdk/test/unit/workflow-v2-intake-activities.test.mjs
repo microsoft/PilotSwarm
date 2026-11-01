@@ -5,13 +5,18 @@
  * with recorded waits.
  *
  * - Only a test registers them, under their design names; no production
- *   source registers or imports them.
+ *   source imports their module or registers them, their names are written
+ *   once in the shared intake definition, and no worker declares the
+ *   workflow-request capability that routes them.
  * - The claim renders with the sender's own renderer; every settlement goes
  *   to its one store write with exactly the fields given.
  * - A transient store error is retried after 1 s, 5 s and 15 s, then thrown;
- *   any other failure and a worker without a store throw at once; the
- *   store's refusal of a broken invariant or a malformed input is an answer,
- *   `{ ok: false, error }`, and a malformed activity input reaches no store.
+ *   a failure no retry can fix (a programming error, a PostgreSQL error of
+ *   class 22, 23 or 42) is thrown at once, marked WORKFLOW_INTAKE_NON_RETRYABLE
+ *   in its message; any other failure and a worker without a store throw at
+ *   once, unmarked; the store's refusal of a broken invariant or a malformed
+ *   input is an answer, `{ ok: false, error }`, and a malformed activity
+ *   input reaches no store.
  *
  * Run: node --test test/unit/workflow-v2-intake-activities.test.mjs
  */
@@ -37,6 +42,15 @@ function allSourceFiles(dir = "") {
     }
     return out;
 }
+
+/** A source file's import and re-export specifiers, static and dynamic. */
+function importsOf(text) {
+    return [...text.matchAll(/^(?:import|export)\b[^\n]*?\sfrom\s+"([^"]+)"|^\}\s+from\s+"([^"]+)"|\bimport\("([^"]+)"\)/gm)]
+        .map(match => match[1] ?? match[2] ?? match[3]);
+}
+
+/** A source file's code without its comments (block comments, and line comments not inside a URL), so prose names nothing. */
+const withoutComments = text => text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/(^|[^:\\])\/\/.*$/gm, "$1");
 
 const METHODS = ["claimWorkflowIntake", "bindWorkflowIntake", "endWorkflowIntake", "cancelHeldWorkflowIntake", "cancelUnsentWorkflowIntake",
     "requestCancelWorkflowIntake", "refuseHeldWorkflowIntake"];
@@ -87,7 +101,7 @@ async function refused(promise, code) {
 
 // ─── Registration ────────────────────────────────────────────
 
-test("only a test registers the intake activities, under their design names; no production source registers or imports them", async () => {
+test("only a test registers the intake activities; no production source imports their module or registers them, their names live in the shared definition, and no worker declares the capability that routes them", async () => {
     assert.deepEqual({ ...WORKFLOW_INTAKE_ACTIVITIES }, { claim: "claimWorkflowIntake", settle: "settleWorkflowIntake" });
     const registered = new Map();
     const h = harness({ claimWorkflowIntake: { result: "duplicate", state: "holding" } });
@@ -98,13 +112,25 @@ test("only a test registers the intake activities, under their design names; no 
     assert.deepEqual(await registered.get("claimWorkflowIntake")(actx, CLAIM), { ok: true, result: { result: "duplicate", state: "holding" } });
     assert.deepEqual(await registered.get("settleWorkflowIntake")(actx, { op: "refuse", recipientSessionId: "me", exchangeId: X1, claimId: "claim-1",
         outcome: "refused_full" }), { ok: true, result: { method: "refuseHeldWorkflowIntake" } });
+    const namedIn = [];
     for (const path of allSourceFiles()) {
         if (path === "workflow/v2/intake-activities.ts") continue;
         const text = readFileSync(new URL(path, SRC), "utf8");
-        assert.ok(!text.includes("intake-activities"), `${path} imports the intake activities`);
-        assert.ok(!text.includes("registerWorkflowIntakeActivities"), `${path} registers the intake activities`);
-        assert.ok(!/["'](?:claimWorkflowIntake|settleWorkflowIntake)["']/.test(text), `${path} names an intake activity`);
+        const code = withoutComments(text);
+        // The activities' module (their handlers over the store) is imported by no production source.
+        assert.ok(!importsOf(text).some(specifier => /(?:^|\/)intake-activities(?:\.js)?$/.test(specifier)), `${path} imports the intake activities`);
+        assert.ok(!code.includes("registerWorkflowIntakeActivities"), `${path} registers the intake activities`);
+        // Their names are written once, in the shared intake definition; the inactive 1.0.83 tree schedules them by that constant.
+        if (/["'`](?:claimWorkflowIntake|settleWorkflowIntake)["'`]/.test(code)) namedIn.push(path);
+        // The capability that routes them is defined once; only the inactive 1.0.83 tree routes with it; no worker declares it.
+        if (path !== "activity-routing.ts") {
+            assert.ok(!code.includes("WORKFLOW_REQUEST_CAPABILITY") && !code.includes("pilotswarm.workflow-request.v1"), `${path} names the workflow-request capability`);
+            if (!path.startsWith("orchestration_1_0_83/")) assert.ok(!code.includes("routeWorkflowRequestActivity"), `${path} routes with the workflow-request capability`);
+        }
     }
+    assert.deepEqual(namedIn, ["workflow/v2/intake.ts"]);
+    const worker = withoutComments(readFileSync(new URL("worker.ts", SRC), "utf8"));
+    assert.ok(!/workflow-request|WORKFLOW_REQUEST|WorkflowIntake|workflowIntake/.test(worker), "worker.ts registers, routes or declares nothing of the intake");
 });
 
 // ─── The claim ───────────────────────────────────────────────
@@ -161,7 +187,7 @@ test("a malformed claim or settlement input is refused as an answer, and reaches
 
 // ─── Failures, retries and refusals ──────────────────────────
 
-test("a transient store error is retried after 1 s, 5 s and 15 s, then thrown; any other failure throws at once; a refusal is an answer", async () => {
+test("a transient store error is retried after 1 s, 5 s and 15 s, then thrown; a failure no retry can fix is thrown marked; any other throws at once; a refusal is an answer", async () => {
     assert.deepEqual([...WORKFLOW_INTAKE_RETRY_DELAYS_MS], [1_000, 5_000, 15_000]);
     const result = { result: "unverified", reason: "the exchange has no message to this session" };
     const recovers = harness({ claimWorkflowIntake: (_input, n) => (n < 3 ? transient() : result) });
@@ -178,9 +204,33 @@ test("a transient store error is retried after 1 s, 5 s and 15 s, then thrown; a
 
     const broken = harness({ bindWorkflowIntake: new Error("Cannot use a pool after calling end on the pool") });
     await assert.rejects(runWorkflowIntakeSettle(broken.deps, { op: "bind", recipientSessionId: "me", invocationId: "inv-1",
-        items: [{ exchangeId: X1, claimId: "claim-1" }] }), /Cannot use a pool/);
+        items: [{ exchangeId: X1, claimId: "claim-1" }] }), error => /Cannot use a pool/.test(error.message) && !error.message.includes("WORKFLOW_INTAKE_NON_RETRYABLE"));
     assert.equal(broken.calls.length, 1);
     assert.deepEqual(broken.sleeps, []);
+
+    // A failure no retry can fix (review of b92ff04b, P2-2): thrown at once, marked at the start of its message, which is all
+    // a thrown activity failure keeps in the orchestration's history, with its code and the original as its cause.
+    const pg = (code, message) => Object.assign(new Error(message), { code });
+    for (const failure of [new TypeError("Cannot read properties of undefined (reading 'rows')"), new RangeError("Invalid array length"),
+        pg("22012", "division by zero"), pg("23505", "duplicate key value violates unique constraint"), pg("42P01", "relation does not exist")]) {
+        const h = harness({ claimWorkflowIntake: failure });
+        await assert.rejects(runWorkflowIntakeClaim(h.deps, CLAIM), error => error.message === `WORKFLOW_INTAKE_NON_RETRYABLE: ${failure.message}`
+            && error.cause === failure && (failure.code === undefined ? error.code === undefined : error.code === failure.code), failure.message);
+        assert.equal(h.calls.length, 1, failure.message);
+        assert.deepEqual(h.sleeps, [], failure.message);
+    }
+    // Any other failure may be an outage or a lost answer: thrown unmarked, at once or after the transient retries, so the
+    // orchestration makes the write again when it is due.
+    for (const [failure, sleeps] of [
+        [pg("53100", "could not extend file: No space left on device"), []],
+        [pg("XX000", "internal error"), []],
+        [pg("ECONNRESET", "read ECONNRESET"), [1_000, 5_000, 15_000]],
+        [pg("57P01", "terminating connection due to administrator command"), [1_000, 5_000, 15_000]],
+    ]) {
+        const h = harness({ claimWorkflowIntake: () => failure });
+        await assert.rejects(runWorkflowIntakeClaim(h.deps, CLAIM), error => error === failure, failure.message);
+        assert.deepEqual(h.sleeps, sleeps, failure.message);
+    }
 
     // The store's refusal: a broken invariant (the execution fails with it) or a malformed input; never retried.
     const invariant = harness({ endWorkflowIntake: new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Intake of exchange ${X1}: it is not bound`) });

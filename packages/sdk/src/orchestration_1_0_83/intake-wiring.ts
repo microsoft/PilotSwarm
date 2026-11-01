@@ -11,18 +11,27 @@
  *   nothing placed), a claim id is drawn, and the claim is made and applied.
  *   Nothing else of the message is read. A newly held item's canonical id
  *   enters the duplicate window.
- * - Tombstones (5.5): each one is latched at once on every copy it names;
- *   the writes it decides are due now on the wake.
- * - The wake (5.4, N2): when drain's intake deadline wins its race, the
- *   intake's due store writes are made: store writes only, never a turn and
- *   never an unpark.
+ * - Tombstones (5.5; review of b92ff04b, P2-1): each one is latched on
+ *   every copy it names before anything else is done with it, from the
+ *   tombstone's own ids, so neither the bounded cancel set's eviction nor a
+ *   stashed prompt that consumes the same id can lose the latch; the writes
+ *   it decides are due now on the wake.
+ * - The wake (5.4, N2; review of b92ff04b, P2-3): when the intake's due
+ *   write is the earliest deadline, drain races the queue for it, for a
+ *   moment at least, and each wake makes at most one intake activity call:
+ *   a queued message, a command first, waits for one store write at most.
+ *   A claim that decides its holder's settle latches it, and the settle is
+ *   a later wake's write. Store writes only, never a turn and never an
+ *   unpark.
  * - One write at a time (review of 813de112): each write's call is made and
  *   its answer applied against that call before anything else is read or
  *   latched, so an answer acknowledges only what its call named.
  * - Failures: an activity that throws (a store outage after its own
- *   retries, a worker without a workflow store) leaves its write due again
- *   at its doubled retry, and the clock is read only then. The store's
- *   refusal (a broken invariant or a malformed input), a malformed answer, a
+ *   retries, a worker without a workflow store, a lost answer) leaves its
+ *   write due again at its doubled retry, and the clock is read only then.
+ *   A thrown failure the activity marked WORKFLOW_INTAKE_NON_RETRYABLE (no
+ *   retry can fix it), the store's refusal (a broken invariant or a
+ *   malformed input), a malformed answer, a write that cannot be routed, a
  *   broken invariant in the transitions and the one fail-stop case fail the
  *   execution visibly: the session is marked failed and nothing more is
  *   dispatched. None of them is ever retried.
@@ -40,7 +49,7 @@
  * restored one.
  */
 import { routeWorkflowRequestActivity } from "../activity-routing.js";
-import { IntakeShapeError, WORKFLOW_INTAKE_ACTIVITIES, intakeObject } from "../workflow/v2/intake.js";
+import { IntakeShapeError, WORKFLOW_INTAKE_ACTIVITIES, WORKFLOW_INTAKE_NON_RETRYABLE, intakeObject } from "../workflow/v2/intake.js";
 import {
     IntakeInvariantError,
     applyIntakeBindFailure,
@@ -67,7 +76,6 @@ import {
     type IntakeClaimResult,
     type IntakeHolderSettle,
 } from "./intake-machine.js";
-import { INTAKE_MAX_HELD, INTAKE_MAX_UNCLAIMED } from "./intake-state.js";
 import { publishStatus } from "./lifecycle.js";
 import { touchRecentClientMessageIds, type DurableSessionRuntime } from "./state.js";
 
@@ -80,13 +88,6 @@ export type IntakeArrival = "held" | "waiting" | "settled" | "recorded";
 /** The best-effort diagnostic event of everything the intake records or cancels (design 5.4). */
 export const INTAKE_RECORDED_EVENT = "session.workflow_intake_recorded";
 
-/**
- * More writes than one wake can owe: every waiting copy's claim and holder
- * settle, every held cancel made due again by a later latch, and the
- * invocation's writes. Reaching it is a broken invariant, never a retry.
- */
-const INTAKE_WAKE_MAX_WRITES = 4 * (INTAKE_MAX_UNCLAIMED + INTAKE_MAX_HELD);
-
 /** The execution stops (design 5.4, 9 row 11): a store outage while every waiting entry is taken. */
 export class IntakeFailStopError extends Error {
     readonly code = "WORKFLOW_INTAKE_FAIL_STOP";
@@ -96,16 +97,31 @@ export class IntakeFailStopError extends Error {
     }
 }
 
-function cancelCheck(runtime: DurableSessionRuntime): IntakeCancelCheck {
+/**
+ * A store write failed in a way no retry can fix: its activity marked the
+ * failure WORKFLOW_INTAKE_NON_RETRYABLE, or the write cannot be routed. The
+ * execution fails visibly; the write is not made again (review of b92ff04b,
+ * P2-2, P3-1).
+ */
+export class IntakeWriteFailedError extends Error {
+    readonly code = "WORKFLOW_INTAKE_NON_RETRYABLE";
+    constructor(message: string) {
+        super(message);
+        this.name = "IntakeWriteFailedError";
+    }
+}
+
+/** The session's tombstones, and those of a cancel message being handled before they join (or are evicted from) the cancel set. */
+function cancelCheck(runtime: DurableSessionRuntime, incoming: readonly string[] = []): IntakeCancelCheck {
     const cancelled = runtime.state.cancelledMessageIds;
-    return clientMessageId => cancelled.has(clientMessageId);
+    return clientMessageId => cancelled.has(clientMessageId) || incoming.includes(clientMessageId);
 }
 
 // ─── One store write ─────────────────────────────────────────
 
 type IntakeAnswer = { ok: true; result: unknown } | { ok: false; code: string; message: string };
 
-/** An intake activity's answer (intake-activities.ts): the store's result, or its refusal; anything else is malformed. */
+/** An intake activity's answer: the store's result, or its refusal; anything else is malformed. */
 function answerOf(raw: unknown, name: string): IntakeAnswer {
     let value: unknown = raw;
     if (typeof value === "string") {
@@ -130,18 +146,27 @@ type IntakeWritten = { answered: true; result: unknown } | { answered: false; fa
 
 /**
  * Make one store write with the workflow-request capability tag (design
- * section 8). Only the activity's own failure is caught: the write is made
- * again when due. The store's refusal is a broken invariant.
+ * section 8). A write that cannot be routed fails the execution. Only the
+ * activity's own failure is caught, by its message, the only part of it the
+ * history keeps: one the activity marked WORKFLOW_INTAKE_NON_RETRYABLE fails
+ * the execution; any other (an outage, a lost answer) leaves the write to be
+ * made again when due. The store's refusal is a broken invariant.
  */
 function* intakeWrite(runtime: DurableSessionRuntime, activity: keyof typeof WORKFLOW_INTAKE_ACTIVITIES, input: Record<string, unknown>)
     : Generator<any, IntakeWritten, any> {
     const name = WORKFLOW_INTAKE_ACTIVITIES[activity];
-    const task = routeWorkflowRequestActivity(runtime.ctx.scheduleActivity(name, input));
+    let task: unknown;
+    try {
+        task = routeWorkflowRequestActivity(runtime.ctx.scheduleActivity(name, input));
+    } catch (error: any) {
+        throw new IntakeWriteFailedError(`${name} cannot be scheduled with the workflow-request capability: ${String(error?.message ?? error)}`);
+    }
     let raw: unknown;
     try {
         raw = yield task;
     } catch (error: any) {
         const failure = String(error?.message ?? error);
+        if (failure.includes(WORKFLOW_INTAKE_NON_RETRYABLE)) throw new IntakeWriteFailedError(`${name} failed, and no retry can fix it: ${failure}`);
         runtime.ctx.traceInfo(`[intake] ${name} failed; it is made again when due: ${failure}`);
         return { answered: false, failure };
     }
@@ -182,7 +207,8 @@ function* guarded<T>(runtime: DurableSessionRuntime, step: Generator<any, T, any
     try {
         return yield* step;
     } catch (error) {
-        if (error instanceof IntakeInvariantError || error instanceof IntakeShapeError || error instanceof IntakeFailStopError) {
+        if (error instanceof IntakeInvariantError || error instanceof IntakeShapeError || error instanceof IntakeFailStopError
+            || error instanceof IntakeWriteFailedError) {
             return yield* failIntake(runtime, error);
         }
         throw error;
@@ -226,10 +252,13 @@ function* arriveCopy(runtime: DurableSessionRuntime, raw: unknown, source: "drai
 
 /**
  * Make a claim and apply its answer (design 5.3, 5.4): held, its canonical
- * id entering the duplicate window; a holder settle, written now; waiting as
- * an unclaimed entry when the claim failed; claimed again in mode refuse
- * when every waiting entry was taken; or recorded. The one fail-stop case
- * fails the execution.
+ * id entering the duplicate window; a holder's settle decided (cancelled or
+ * refused), latched as a settling entry and made by a later wake, or written
+ * now when every waiting entry was taken so it could not be latched; waiting
+ * as an unclaimed entry when the claim failed; claimed again in mode refuse
+ * when every waiting entry was taken; or recorded. So a claim is one intake
+ * activity call but when the waiting entries are full (review of b92ff04b,
+ * P2-3). The one fail-stop case fails the execution.
  */
 function* claimCopy(runtime: DurableSessionRuntime, first: IntakeClaimCall, source: IntakeSource): Generator<any, IntakeArrival, any> {
     const { ctx, state } = runtime;
@@ -253,7 +282,8 @@ function* claimCopy(runtime: DurableSessionRuntime, first: IntakeClaimCall, sour
                 yield* recordIntake(runtime, { ...recordedResult(decision.result), exchangeId: call.envelope.exchangeId, claimId: call.claimId, source });
                 return "recorded";
             case "settle_holder":
-                yield* settleHolder(runtime, decision, source);
+                // Latched: due now, a later wake's write. Not latched: only written now can it be made at all.
+                if (!decision.latched) yield* settleHolder(runtime, decision, source);
                 return "settled";
             case "unclaimed":
                 return "waiting";
@@ -294,48 +324,49 @@ function* settleHolder(runtime: DurableSessionRuntime, settle: Pick<IntakeHolder
 // ─── Tombstones (design 5.5) ─────────────────────────────────
 
 /**
- * Latch the session's tombstones on every copy in the intake state that
- * they name (latchIntakeCancels): drain and the sweep call it at each
- * tombstone. The writes decided are due now on the wake; a latch is never
- * undone.
+ * Latch every tombstone on each copy in the intake state that it names
+ * (latchIntakeCancels): the session's cancel set and `incoming`, the ids of
+ * a cancel message being handled. Drain and the sweep call it first thing
+ * at each cancel message, before its ids join the bounded cancel set (which
+ * may evict them) and before a stashed prompt with the same id consumes
+ * them (review of b92ff04b, P2-1). The writes decided are due now on the
+ * wake; a latch is never undone.
  */
-export function latchIntakeTombstones(runtime: DurableSessionRuntime): void {
-    runtime.state.intake = latchIntakeCancels(runtime.state.intake, cancelCheck(runtime));
+export function latchIntakeTombstones(runtime: DurableSessionRuntime, incoming: readonly string[] = []): void {
+    runtime.state.intake = latchIntakeCancels(runtime.state.intake, cancelCheck(runtime, incoming));
 }
 
 // ─── The wake (design 5.4, N2) ───────────────────────────────
 
 /**
- * The wake: the intake's store writes due at `nowMs`, one at a time, each
- * picked again after the one before it, in intakeDueWork's order: claims of
- * waiting copies under their own claim ids and holder settles, oldest first;
- * the latched held cancels as one write; then the invocation's bind, cancel
- * write or end. A write that fails is due again later; one made due by an
- * earlier write of this wake is made in it. Store writes only: no turn, no
- * unparking.
+ * One wake: the first of the intake's store writes due at `nowMs`, in
+ * intakeDueWork's order (claims of waiting copies under their own claim ids
+ * and holder settles, oldest first; the latched held cancels as one write;
+ * then the invocation's bind, cancel write or end), as at most one intake
+ * activity call. Drain races the queue before every wake, so a queued
+ * message, a command first, waits for one store write at most (review of
+ * b92ff04b, P2-3). A write that fails is due again later. Store writes only:
+ * no turn, no unparking.
  */
 export function* runIntakeWake(runtime: DurableSessionRuntime, nowMs: number): Generator<any, void, any> {
-    yield* guarded(runtime, wake(runtime, nowMs));
+    yield* guarded(runtime, wakeOnce(runtime, nowMs));
 }
 
-function* wake(runtime: DurableSessionRuntime, nowMs: number): Generator<any, void, any> {
-    for (let writes = 0; ; writes += 1) {
-        const work = intakeDueWork(runtime.state.intake, nowMs)[0];
-        if (work === undefined) return;
-        if (writes >= INTAKE_WAKE_MAX_WRITES) throw new IntakeInvariantError(null, `the wake made ${writes} writes and one is still due`);
-        if (work.kind === "claim") {
-            yield* claimCopy(runtime, intakeUnclaimedRetryCall(runtime.state.intake, work.claimId), "wake");
-        } else if (work.kind === "holder_settle") {
-            yield* settleHolder(runtime, { exchangeId: work.exchangeId, claimId: work.claimId, outcome: work.outcome, latched: true }, "wake");
-        } else if (work.kind === "cancel_held") {
-            yield* cancelHeld(runtime, work.items);
-        } else if (work.kind === "bind") {
-            yield* bindInvocation(runtime);
-        } else if (work.kind === "cancel_invocation") {
-            yield* cancelInvocation(runtime);
-        } else {
-            yield* endInvocation(runtime);
-        }
+function* wakeOnce(runtime: DurableSessionRuntime, nowMs: number): Generator<any, void, any> {
+    const work = intakeDueWork(runtime.state.intake, nowMs)[0];
+    if (work === undefined) return;
+    if (work.kind === "claim") {
+        yield* claimCopy(runtime, intakeUnclaimedRetryCall(runtime.state.intake, work.claimId), "wake");
+    } else if (work.kind === "holder_settle") {
+        yield* settleHolder(runtime, { exchangeId: work.exchangeId, claimId: work.claimId, outcome: work.outcome, latched: true }, "wake");
+    } else if (work.kind === "cancel_held") {
+        yield* cancelHeld(runtime, work.items);
+    } else if (work.kind === "bind") {
+        yield* bindInvocation(runtime);
+    } else if (work.kind === "cancel_invocation") {
+        yield* cancelInvocation(runtime);
+    } else {
+        yield* endInvocation(runtime);
     }
 }
 

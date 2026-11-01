@@ -436,9 +436,9 @@ function nextTimerCandidate(
     activeTimer: ActiveTimer | null,
     pendingChildDigest: PendingChildDigest | null,
     now: number,
-    opts: { batchMs?: number; digestHasError?: boolean; intakeDueAtMs?: number | null } = {},
-): { kind: "active" | "child-digest" | "intake"; remainingMs: number; timer?: ActiveTimer } | null {
-    const candidates: Array<{ kind: "active" | "child-digest" | "intake"; remainingMs: number; timer?: ActiveTimer }> = [];
+    opts: { batchMs?: number; digestHasError?: boolean } = {},
+): { kind: "active" | "child-digest"; remainingMs: number; timer?: ActiveTimer } | null {
+    const candidates: Array<{ kind: "active" | "child-digest"; remainingMs: number; timer?: ActiveTimer }> = [];
     if (activeTimer) {
         candidates.push({
             kind: "active",
@@ -467,12 +467,6 @@ function nextTimerCandidate(
             });
         }
     }
-    // 1.0.83 (design 5.4, N2): the intake's earliest due store write is the
-    // third deadline. Equal deadlines keep the order above: the armed timer
-    // and the digest window go first, as before.
-    if (opts.intakeDueAtMs !== undefined && opts.intakeDueAtMs !== null) {
-        candidates.push({ kind: "intake", remainingMs: Math.max(0, opts.intakeDueAtMs - now) });
-    }
     if (candidates.length === 0) return null;
     candidates.sort((left, right) => left.remainingMs - right.remainingMs);
     return candidates[0];
@@ -497,6 +491,24 @@ function needsBlockingDequeue(runtime: DurableSessionRuntime): boolean {
         // 1.0.83 (design 5.4, N2): a due intake write is raced, never blocked on.
         intakeDueAtMs(state.intake) === null
     );
+}
+
+/**
+ * 1.0.83 (design 5.4, N2): whether the intake's earliest due store write is
+ * the third deadline that drain races before the armed timer and the
+ * child-digest window, that is earlier than both. They keep their own race
+ * when they come first or at the same time. The deadlines are compared as
+ * absolute times, so deciding reads no clock.
+ */
+function intakeDeadlineFirst(runtime: DurableSessionRuntime): boolean {
+    const { state } = runtime;
+    const dueAtMs = intakeDueAtMs(state.intake);
+    if (dueAtMs === null) return false;
+    const other = nextTimerCandidate(state.activeTimer, state.pendingChildDigest, dueAtMs, {
+        batchMs: childUpdateBatchMs(state.subAgents?.length ?? 0),
+        digestHasError: pendingChildDigestHasError(runtime),
+    });
+    return other === null || other.remainingMs > 0;
 }
 
 /**
@@ -751,20 +763,31 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                 msg = typeof raced.value === "string" ? JSON.parse(raced.value) : raced.value;
             }
 
-        } else if (state.activeTimer || (state.pendingChildDigest && !state.pendingChildDigest.ready) || intakeDueAtMs(state.intake) !== null) {
+        } else if (intakeDeadlineFirst(runtime)) {
+            // 1.0.83 (design 5.4, N2; review of b92ff04b, P2-3): the intake's
+            // due write is the earliest deadline. Drain races the queue for
+            // it, for a moment at least, and each wake makes at most one
+            // intake activity call, so a queued message, a command first,
+            // waits for one store write at most. The armed timer stays armed.
+            const now: number = yield ctx.utcNow();
+            const intakeWaitMs = Math.max(NON_BLOCKING_TIMER_MS, (intakeDueAtMs(state.intake) ?? now) - now);
+            const intakeRace: any = yield ctx.race(ctx.dequeueEvent("messages"), ctx.scheduleTimer(intakeWaitMs));
+            if (intakeRace.index === 1) {
+                yield* runIntakeWake(runtime, now + intakeWaitMs);
+                continue;
+            }
+            msg = typeof intakeRace.value === "string" ? JSON.parse(intakeRace.value) : intakeRace.value;
+
+        } else if (state.activeTimer || (state.pendingChildDigest && !state.pendingChildDigest.ready)) {
             const now: number = yield ctx.utcNow();
             const candidate = nextTimerCandidate(state.activeTimer, state.pendingChildDigest, now, {
                 batchMs: childUpdateBatchMs(state.subAgents?.length ?? 0),
                 digestHasError: pendingChildDigestHasError(runtime),
-                intakeDueAtMs: intakeDueAtMs(state.intake),
             });
             if (!candidate) continue;
 
             if (candidate.remainingMs === 0) {
-                if (candidate.kind === "intake") {
-                    // 1.0.83 (design 5.4): the due intake writes, store writes only; the armed timer stays armed.
-                    yield* runIntakeWake(runtime, now);
-                } else if (candidate.kind === "active" && candidate.timer) {
+                if (candidate.kind === "active" && candidate.timer) {
                     stash.push({ kind: "timer", timer: { ...candidate.timer }, firedAtMs: now });
                     state.activeTimer = null;
                 } else if (state.pendingChildDigest && state.pendingChildDigest.updates.length > 0) {
@@ -779,10 +802,7 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
             const race: any = yield ctx.race(msgTask, timerTask);
 
             if (race.index === 1) {
-                if (candidate.kind === "intake") {
-                    // The intake deadline won: its writes were due when the timer fired.
-                    yield* runIntakeWake(runtime, now + candidate.remainingMs);
-                } else if (candidate.kind === "active" && candidate.timer) {
+                if (candidate.kind === "active" && candidate.timer) {
                     const firedAt: number = yield ctx.utcNow();
                     stash.push({ kind: "timer", timer: { ...candidate.timer }, firedAtMs: firedAt });
                     state.activeTimer = null;
@@ -835,6 +855,10 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                     cancelledThisDrain.add(id);
                 }
             }
+            // 1.0.83 (design 5.5; review of b92ff04b, P2-1): latched on every
+            // intake copy these ids name before the bounded cancel set can
+            // evict them or a stashed prompt can consume them.
+            latchIntakeTombstones(runtime, validCancelIds);
             addCancelledMessageIds(state, validCancelIds);
             if (validCancelIds.length > 0) {
                 ctx.traceInfo(`[drain] received cancel tombstone (ids=${validCancelIds.join(",")})`);
@@ -850,8 +874,6 @@ export function* drain(runtime: DurableSessionRuntime): Generator<any, void, any
                     stash.splice(s, 1);
                 }
             }
-            // 1.0.83 (design 5.5): latched on every intake copy it names; its writes are due now.
-            latchIntakeTombstones(runtime);
             continue;
         }
 
@@ -1197,6 +1219,10 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
 
         if (msg && Array.isArray(msg.cancelPending) && msg.cancelPending.length > 0) {
             const validCancelIds = validClientMessageIds(msg.cancelPending);
+            // 1.0.83 (design 5.5; review of b92ff04b, P2-1): latched on every
+            // intake copy these ids name before the bounded cancel set can
+            // evict them or a stashed prompt can consume them.
+            latchIntakeTombstones(runtime, validCancelIds);
             addCancelledMessageIds(state, validCancelIds);
             if (validCancelIds.length > 0) {
                 ctx.traceInfo(`[predispatch] received cancel tombstone (ids=${validCancelIds.join(",")})`);
@@ -1211,8 +1237,6 @@ function* sweepMessagesBeforePromptDispatch(runtime: DurableSessionRuntime): Gen
                     }
                 }
             }
-            // 1.0.83 (design 5.5): latched on every intake copy it names; its writes are due on drain's wake.
-            latchIntakeTombstones(runtime);
             continue;
         }
 

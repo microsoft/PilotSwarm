@@ -11,8 +11,14 @@
  *   does not import the runtime, admits exactly what a delivery queued.
  * - A transient store error is retried in the activity, after 1 s, 5 s and
  *   15 s. A worker without a workflow store, retries that run out and any
- *   other failure throw: the orchestration keeps the write and makes it again
- *   when it is due on its wake (intake-machine.ts).
+ *   failure that may be an outage or a lost answer throw: the orchestration
+ *   keeps the write and makes it again when it is due on its wake
+ *   (intake-machine.ts). A failure that no retry can fix (a programming
+ *   error, or a PostgreSQL error of class 22, 23 or 42) is thrown at once,
+ *   its code kept and WORKFLOW_INTAKE_NON_RETRYABLE at the start of its
+ *   message, the only part of a thrown failure that reaches the
+ *   orchestration's history: the execution fails visibly on it, never
+ *   retrying it for ever (review of b92ff04b, P2-2).
  * - The store's refusal of a broken invariant or of a malformed input is an
  *   answer, not a failure: `{ ok: false, error }`, on which the execution
  *   fails visibly and dispatches nothing. Every other answer is
@@ -21,7 +27,7 @@
 import type { ActivityContext } from "duroxide";
 import { isTransientCmsError } from "../../cms-retry.js";
 import { WorkflowJsonError } from "./json.js";
-import { INTAKE_MAX_HELD, IntakeShapeError, WORKFLOW_INTAKE_ACTIVITIES, intakeObject } from "./intake.js";
+import { INTAKE_MAX_HELD, IntakeShapeError, WORKFLOW_INTAKE_ACTIVITIES, WORKFLOW_INTAKE_NON_RETRYABLE, intakeObject } from "./intake.js";
 import { workflowSendClientMessageId, workflowSendPrompt, type WorkflowV2ActivityRuntime } from "./runtime.js";
 import { WorkflowStoreError, type WorkflowIntakeRender, type WorkflowStore } from "./store.js";
 
@@ -65,9 +71,31 @@ function refusalOf(error: unknown): { code: string; message: string } | null {
     return null;
 }
 
+/** PostgreSQL error classes whose failure does not change between attempts: data exception, integrity constraint violation, syntax error or access rule violation. */
+const NON_RETRYABLE_SQL_CLASSES: ReadonlySet<string> = new Set(["22", "23", "42"]);
+
 /**
- * Make one store write: its result or the store's refusal as the answer;
- * a transient error retried after each of the waits; anything else thrown.
+ * A failure that no retry can fix, marked so that the orchestration fails
+ * visibly instead of making the write again: a programming error (TypeError,
+ * RangeError, ReferenceError, SyntaxError), or a PostgreSQL error whose
+ * SQLSTATE class is in NON_RETRYABLE_SQL_CLASSES. Its code is kept and the
+ * original is its cause. Null for any other failure, which may be an outage
+ * or a lost answer and stays retried.
+ */
+function nonRetryableOf(error: unknown): Error | null {
+    const code: unknown = typeof error === "object" && error !== null ? (error as { code?: unknown }).code : undefined;
+    const sqlState = typeof code === "string" && /^[0-9A-Z]{5}$/.test(code) ? code : null;
+    const programming = error instanceof TypeError || error instanceof RangeError || error instanceof ReferenceError || error instanceof SyntaxError;
+    if (!programming && (sqlState === null || !NON_RETRYABLE_SQL_CLASSES.has(sqlState.slice(0, 2)))) return null;
+    const message = error instanceof Error ? error.message : String(error);
+    const marked = new Error(`${WORKFLOW_INTAKE_NON_RETRYABLE}: ${message}`, { cause: error });
+    return sqlState !== null ? Object.assign(marked, { code: sqlState }) : marked;
+}
+
+/**
+ * Make one store write: its result or the store's refusal as the answer; a
+ * transient error retried after each of the waits, then thrown; a failure no
+ * retry can fix thrown at once, marked; any other failure thrown at once.
  */
 async function answer(deps: WorkflowIntakeActivityDeps, label: string, write: (store: WorkflowStore) => Promise<unknown>, log?: (message: string) => void)
     : Promise<WorkflowIntakeAnswer> {
@@ -81,7 +109,8 @@ async function answer(deps: WorkflowIntakeActivityDeps, label: string, write: (s
         } catch (error) {
             const refusal = refusalOf(error);
             if (refusal !== null) return { ok: false, error: refusal };
-            if (!isTransientCmsError(error) || attempt >= delays.length) throw error;
+            if (!isTransientCmsError(error)) throw nonRetryableOf(error) ?? error;
+            if (attempt >= delays.length) throw error;
             log?.(`[intake] ${label}: transient store error (attempt ${attempt + 1} of ${delays.length + 1}), retrying in ${delays[attempt]} ms: ${
                 error instanceof Error ? error.message : String(error)}`);
             await sleep(delays[attempt]);

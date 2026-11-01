@@ -38,6 +38,17 @@ export const INTAKE_REFUSED_RECIPIENT_EVENT = "session.workflow_message_refused"
 /** The intake's two activities (design section 8): the claim and the settles, scheduled by orchestration 1.0.83 only. */
 export const WORKFLOW_INTAKE_ACTIVITIES = { claim: "claimWorkflowIntake", settle: "settleWorkflowIntake" } as const;
 
+/**
+ * The mark an intake activity puts at the start of a thrown failure that no
+ * retry can fix: a programming error, or a PostgreSQL error of a class that
+ * does not change between attempts. A thrown activity failure reaches the
+ * orchestration's history as its message only, so the mark is in the
+ * message; the orchestration fails visibly on it, and makes any other thrown
+ * failure (an outage, a lost answer) again when it is due (design 5.2, 5.4;
+ * review of b92ff04b, P2-2).
+ */
+export const WORKFLOW_INTAKE_NON_RETRYABLE = "WORKFLOW_INTAKE_NON_RETRYABLE";
+
 const EXCHANGE_ID = /^nx-[0-9a-f]{40}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
 
