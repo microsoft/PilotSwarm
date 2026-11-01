@@ -17,6 +17,7 @@ import { systemSessionProtectedError, type SessionOwnerInfo, type SessionSummary
 import type { MessageSender } from "./message-sender.js";
 import { TurnControlUnavailableError } from "./turn-control-contract.js";
 import type { TurnControlListenClient } from "./turn-control.js";
+import { WorkflowStore } from "./workflow/v2/store.js";
 
 // ─── Types ───────────────────────────────────────────────────────
 
@@ -1168,6 +1169,9 @@ export interface SessionCatalog {
      */
     getSessionCreationConfig?(sessionId: string): Promise<Record<string, unknown> | null>;
 
+    /** Workflow v2 persistence on the same database and schema (migration 0085). Optional for other stores. */
+    workflowStore?(): import("./workflow/v2/store.js").WorkflowStore;
+
     /** Stamp a session as a service session post-create (migration 0037). */
     markSessionService(sessionId: string, serviceKind: string, serviceOf: string | null): Promise<void>;
 
@@ -1714,6 +1718,13 @@ export class PgSessionCatalog implements SessionCatalog {
         this.initialized = true;
     }
 
+    private _workflowStore: WorkflowStore | null = null;
+
+    workflowStore(): WorkflowStore {
+        this._workflowStore ??= new WorkflowStore(this.pool, this.sql.schema);
+        return this._workflowStore;
+    }
+
     // ── Writes ───────────────────────────────────────────────
 
     async createSession(sessionId: string, opts?: {
@@ -1787,7 +1798,7 @@ export class PgSessionCatalog implements SessionCatalog {
                     `SELECT creation_config FROM "${this.sql.schema}".sessions WHERE session_id = $1 FOR UPDATE`,
                     [sessionId],
                 );
-                if (rows[0]?.creation_config?.workflowAdmission) {
+                if (rows[0]?.creation_config?.workflowAdmission || rows[0]?.creation_config?.workflowV2) {
                     await client.query("ROLLBACK");
                     return;
                 }

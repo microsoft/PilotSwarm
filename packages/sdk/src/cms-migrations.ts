@@ -14,6 +14,7 @@ import { nativeTasksDefaultPolicyMigration } from "./migrations/native-tasks-def
 import { modelEventLoggingFlagMigration } from "./migrations/model-event-logging-flag-0081.js";
 import { turnControlMigration } from "./migrations/turn-control-0082.js";
 import { turnControlConvertMigration } from "./migrations/turn-control-0083.js";
+import { workflowV2Migration } from "./migrations/workflow-v2-0085.js";
 
 function workflowSessionKindMigration(schema: string): string {
     const s = `"${schema}"`;
@@ -431,6 +432,7 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0082", name: "turn_control", sql: turnControlMigration(schema) },
         { version: "0083", name: "turn_control_convert", sql: turnControlConvertMigration(schema) },
         { version: "0084", name: "workflow_session_kind", sql: workflowSessionKindMigration(schema) },
+        { version: "0085", name: "workflow_v2", sql: workflowV2Migration(schema) },
     ];
 }
 

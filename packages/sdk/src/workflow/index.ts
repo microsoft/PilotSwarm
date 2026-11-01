@@ -7,3 +7,5 @@ export * from "./tool-spec.js";
 export * from "./spawn.js";
 export * from "./canvas.js";
 export * from "./mcp.js";
+export { registerWorkflowV2 } from "./v2/runtime.js";
+export * as workflowV2 from "./v2/index.js";

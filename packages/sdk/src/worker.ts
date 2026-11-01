@@ -44,6 +44,7 @@ import {
     registerWorkflowActivities,
     WORKFLOW_SESSION_ORCHESTRATION_NAME,
     WORKFLOW_SESSION_ORCHESTRATION_REGISTRY,
+    registerWorkflowV2,
 } from "./workflow/index.js";
 import fs from "node:fs";
 import os from "node:os";
@@ -978,6 +979,38 @@ export class PilotSwarmWorker {
         const workflowScriptSettings = resolveWorkflowScriptSettings(this.config.workflowScripts);
         this.sessionManager.workflowScriptsEnabled = workflowScriptSettings.enabled;
         const workflowClient = new Client(this._provider);
+        const resolveWorkflowToolBinding = async (sessionId: string) => {
+            if (!this._catalog?.getSessionCreationConfig) throw new Error("Workflow tool-policy storage is unavailable.");
+            const config = await this._catalog.getSessionCreationConfig(sessionId);
+            const { readWorkflowToolBinding } = await import("./workflow/tool-policy.js");
+            return readWorkflowToolBinding(config?.workflowToolBinding);
+        };
+        const deleteWorkflowSession = async (sessionId: string) => {
+            await this._catalog?.softDeleteSession(sessionId);
+            await this.factStore?.deleteSessionFactsForSession(sessionId).catch(() => undefined);
+        };
+        const authorizeWorkflowParentNotification = async (sessionId: string, parentSessionId: string) => {
+            if (!this._catalog) throw new Error("Workflow parent catalog is unavailable.");
+            const [child, parent] = await Promise.all([
+                this._catalog.getSession(sessionId), this._catalog.getSession(parentSessionId),
+            ]);
+            if (!child || child.parentSessionId !== parentSessionId || !parent || parent.deletedAt
+                || ["completed", "failed", "cancelled"].includes(parent.state ?? "")) return false;
+            const { resolveEffectiveSpawnOwner } = await import("./cms.js");
+            const [childOwner, parentOwner] = await Promise.all([
+                resolveEffectiveSpawnOwner(id => this._catalog!.getSession(id), sessionId),
+                resolveEffectiveSpawnOwner(id => this._catalog!.getSession(id), parentSessionId),
+            ]);
+            return Boolean(childOwner && parentOwner && childOwner.provider === parentOwner.provider
+                && childOwner.subject === parentOwner.subject);
+        };
+        const notifyWorkflowParent = async (parentSessionId: string, prompt: string, sender: { kind: "system"; display: string }, clientMessageId?: string) => {
+            await workflowClient.enqueueEvent(
+                `session-${parentSessionId}`,
+                "messages",
+                JSON.stringify({ prompt, sender, ...(clientMessageId ? { clientMessageIds: [clientMessageId] } : {}) }),
+            );
+        };
         registerWorkflowActivities(this.runtime, {
             catalog: this._catalog,
             enabled: () => workflowScriptSettings.enabled,
@@ -987,40 +1020,12 @@ export class PilotSwarmWorker {
                 ...(this.config.workerNodeId ? { workerNodeId: this.config.workerNodeId } : {}),
             }),
             resolveTools: (sessionId) => this.sessionManager.resolveScriptTools(sessionId),
-            resolveToolBinding: async (sessionId) => {
-                if (!this._catalog?.getSessionCreationConfig) throw new Error("Workflow tool-policy storage is unavailable.");
-                const config = await this._catalog.getSessionCreationConfig(sessionId);
-                const { readWorkflowToolBinding } = await import("./workflow/tool-policy.js");
-                return readWorkflowToolBinding(config?.workflowToolBinding);
-            },
+            resolveToolBinding: resolveWorkflowToolBinding,
             openToolExecutor: (sessionId, binding, step) => this.sessionManager.openWorkflowToolExecutor(sessionId, binding, step),
             resolveMcpServers: () => this.sessionManager.scriptMcpServers(),
-            deleteSession: async (sessionId) => {
-                await this._catalog?.softDeleteSession(sessionId);
-                await this.factStore?.deleteSessionFactsForSession(sessionId).catch(() => undefined);
-            },
-            authorizeParentNotification: async (sessionId, parentSessionId) => {
-                if (!this._catalog) throw new Error("Workflow parent catalog is unavailable.");
-                const [child, parent] = await Promise.all([
-                    this._catalog.getSession(sessionId), this._catalog.getSession(parentSessionId),
-                ]);
-                if (!child || child.parentSessionId !== parentSessionId || !parent || parent.deletedAt
-                    || ["completed", "failed", "cancelled"].includes(parent.state ?? "")) return false;
-                const { resolveEffectiveSpawnOwner } = await import("./cms.js");
-                const [childOwner, parentOwner] = await Promise.all([
-                    resolveEffectiveSpawnOwner(id => this._catalog!.getSession(id), sessionId),
-                    resolveEffectiveSpawnOwner(id => this._catalog!.getSession(id), parentSessionId),
-                ]);
-                return Boolean(childOwner && parentOwner && childOwner.provider === parentOwner.provider
-                    && childOwner.subject === parentOwner.subject);
-            },
-            notifyParent: async (parentSessionId, prompt, sender, clientMessageId) => {
-                await workflowClient.enqueueEvent(
-                    `session-${parentSessionId}`,
-                    "messages",
-                    JSON.stringify({ prompt, sender, ...(clientMessageId ? { clientMessageIds: [clientMessageId] } : {}) }),
-                );
-            },
+            deleteSession: deleteWorkflowSession,
+            authorizeParentNotification: authorizeWorkflowParentNotification,
+            notifyParent: notifyWorkflowParent,
             runnerOptions: { executables: workflowScriptSettings.executables },
         });
         for (const registration of WORKFLOW_SESSION_ORCHESTRATION_REGISTRY) {
@@ -1029,6 +1034,23 @@ export class PilotSwarmWorker {
                 registration.version,
                 registration.handler,
             );
+        }
+        // Workflow v2: drafts, publication and durable runs (migration 0085).
+        if (this._catalog?.workflowStore) {
+            registerWorkflowV2(this.runtime, {
+                store: this._catalog.workflowStore(),
+                catalog: this._catalog,
+                enabled: () => workflowScriptSettings.enabled,
+                resolveToolBinding: resolveWorkflowToolBinding,
+                openToolExecutor: (sessionId, binding, step) => this.sessionManager.openWorkflowToolExecutor(sessionId, binding, step),
+                authorizeParentNotification: authorizeWorkflowParentNotification,
+                notifyParent: notifyWorkflowParent,
+                deleteSession: async (sessionId) => {
+                    await this._catalog?.softDeleteSession(sessionId);
+                    await this.factStore?.deleteSessionFactsForSession(sessionId);
+                },
+                runnerOptions: { executables: workflowScriptSettings.executables },
+            });
         }
         trace(`[worker] workflow scripts ${workflowScriptSettings.enabled ? "enabled" : "disabled"}`);
 

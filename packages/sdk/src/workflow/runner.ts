@@ -45,6 +45,8 @@ export interface RunScriptNodeRequest {
     guardedNode?: boolean;
     /** Stop brokered work when the script is interrupted. */
     cancelTools?: () => Promise<void>;
+    /** The JSON the script reads as `context`; absent: the legacy context built from the fields above. */
+    context?: Record<string, unknown>;
 }
 
 export interface RunScriptNodeResult {
@@ -382,7 +384,7 @@ export async function runScriptNode(
                 resolve(code);
             });
             child.stdin.on("error", () => { /* the script may exit without reading its context */ });
-            child.stdin.end(JSON.stringify({
+            child.stdin.end(JSON.stringify(request.context ?? {
                 sessionId: request.sessionId,
                 workflow: request.workflowName,
                 node: node.id,
