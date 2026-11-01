@@ -953,6 +953,10 @@ export class WebPilotSwarmManagementClient {
     getModelCredentialStatus(): never {
         throw webModeUnsupported("getModelCredentialStatus", "credential checks happen server-side");
     }
+
+    listComputeTargetModels(): never {
+        throw webModeUnsupported("listComputeTargetModels", "compute targets have no web route yet; this is a direct-mode exploration");
+    }
 }
 
 /**

@@ -80,6 +80,7 @@ import type {
     AgentPackageScope, AgentPackageSummary, AgentPackageDetail, AgentPackageEditorInfo, AgentWorkerStateRow, WorkerRow,
 } from "./cms.js";
 import { SYSTEM_USER_PRINCIPAL } from "./cms.js";
+import type { ComputeTargetModel } from "./compute-target-store.js";
 import { readCanvasKv, writeCanvasKv, CanvasKvError } from "./canvas-kv.js";
 import type { CanvasKvStore, CanvasKvPrincipal, CanvasKvReadResult, CanvasKvWriteOp, CanvasKvWriteResult, CanvasKvMe } from "./canvas-kv.js";
 import type {
@@ -5545,6 +5546,33 @@ export class PilotSwarmManagementClient {
             }
         }
         return out;
+    }
+
+    /**
+     * The models a session could run on a given compute target: the ones
+     * PilotSwarm offers, and the ones that target says it offers itself,
+     * kept apart because they are not the same kind of thing.
+     *
+     * A target's own models run on the host's model access: PilotSwarm
+     * holds no credential for them and its budgets do not cover them. What
+     * a target advertises can be out of date, so this is the list of
+     * choices to show, not a promise that one will still work.
+     *
+     * The target is chosen first and the model after it, which is why this
+     * takes the target's name. A target the viewer cannot use looks the
+     * same as one that does not exist: PilotSwarm's own models and nothing
+     * of its own.
+     */
+    async listComputeTargetModels(viewer: ProviderViewer, targetName: string): Promise<{
+        target: string;
+        catalog: ModelSummary[];
+        hostModels: ComputeTargetModel[];
+    }> {
+        const catalog = await this.listRuntimeModels(viewer);
+        const store = this._catalog?.computeTargets;
+        if (!store) return { target: targetName, catalog, hostModels: [] };
+        const { actor, isAdmin } = await this._providerActor(viewer);
+        return { target: targetName, catalog, hostModels: await store.listTargetModels(actor, isAdmin, targetName) };
     }
 
     /**

@@ -31,6 +31,14 @@ export interface ProcessComputeProviderOptions {
     startTimeoutMs?: number;
     /** Extra variables for the runtime. The worker's own environment is never passed. */
     env?: Record<string, string>;
+    /**
+     * Whether to present these hosts as having model access of their own, so
+     * a personal target of this kind may offer its own models. Off by
+     * default: a plain runtime on the worker's machine has no model access
+     * the worker did not give it. It exists so the host-model path can be
+     * exercised without a host that really has its own.
+     */
+    offersModels?: boolean;
 }
 
 interface ProcessHost {
@@ -196,7 +204,15 @@ export function createProcessComputeProvider(options: ProcessComputeProviderOpti
 
     return {
         kind: PROCESS_COMPUTE_KIND,
-        capabilities: { os: [process.platform], sandboxed: false, files: "worker-local" },
+        capabilities: {
+            os: [process.platform], sandboxed: false, files: "worker-local",
+            ...(options.offersModels ? { offersModels: true } : {}),
+        },
+
+        async describeHost(req) {
+            const host = live(req.host);
+            return { os: process.platform, ...(host ? { details: { workFolder: host.workDir } } : {}) };
+        },
 
         async bind(req) {
             const key = hostKey(req.target.id, req.rootSessionId);

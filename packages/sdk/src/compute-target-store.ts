@@ -4,7 +4,7 @@
  * do what lives in SQL; this class adds shape and a typed error.
  */
 import type { Pool } from "pg";
-import type { ComputeTarget, ComputeTargetClass } from "./compute.js";
+import { advertisedHostModels, normalizeAdvertisement, targetModelRef, type ComputeAdvertisement, type ComputeTarget, type ComputeTargetAdvertisement, type ComputeTargetClass } from "./compute.js";
 
 /** A refusal from the database, with the marker turned into a code. */
 export class ComputeTargetError extends Error {
@@ -22,11 +22,13 @@ function rethrow(err: any): never {
     const raw = String(err?.message ?? "");
     const m = COMPUTE_TARGET_ERROR.exec(raw);
     if (m) throw new ComputeTargetError(m[1], m[2].trim());
-    if (err?.code === "23514" && /compute_targets_(name|kind)_shape/.test(raw)) {
+    if (err?.code === "23514" && /compute_targets_(name_shape|name_space|kind_shape)/.test(raw)) {
         throw new ComputeTargetError("COMPUTE_TARGET_INVALID",
             /kind_shape/.test(raw)
                 ? "A compute kind uses lowercase letters, numbers and dash."
-                : "A compute target name uses letters, numbers, dot, dash and underscore.");
+                : /name_space/.test(raw)
+                    ? 'A compute target everyone shares is named "shared/<label>", and one of someone\'s own is named after them.'
+                    : 'A compute target is named "<owner>/<label>": the owner\'s sign-in address, or "shared" for one an administrator registers for everyone, then a label of letters, numbers, dot, dash and underscore.');
     }
     throw err;
 }
@@ -51,7 +53,24 @@ function toTarget(r: any): ComputeTarget {
         displayName: r.display_name ?? null,
         config: r.config && typeof r.config === "object" ? r.config : {},
         enabled: r.enabled !== false,
+        advertised: toAdvertisement(r.advertised, r.advertised_at),
     };
+}
+
+function toAdvertisement(raw: unknown, at: unknown): ComputeTargetAdvertisement | null {
+    if (!raw || typeof raw !== "object") return null;
+    return { ...normalizeAdvertisement(raw), observedAt: iso(at) ?? "" };
+}
+
+/** A model a target offers, as a session names it. */
+export interface ComputeTargetModel {
+    /** The name a session uses: `@<target>:<model>`. */
+    ref: string;
+    target: string;
+    id: string;
+    name?: string;
+    /** When the target last said it offers this, or "" if it never has. */
+    advertisedAt: string;
 }
 
 export class ComputeTargetStore {
@@ -117,6 +136,36 @@ export class ComputeTargetStore {
         const rows = await this.call(
             `SELECT ${this.fn("cms_compute_target_delete")}($1,$2,$3) AS waiting`, [name, actor, isAdmin]);
         return Number(rows[0]?.waiting ?? 0);
+    }
+
+    /**
+     * Worker side: store what a target advertises. A shared target's models
+     * are dropped (only personal targets may offer models). Returns the
+     * target, or null when it is gone. Trusted caller.
+     */
+    async recordAdvertisement(targetId: string, advertisement: ComputeAdvertisement): Promise<ComputeTarget | null> {
+        const rows = await this.call(
+            `SELECT * FROM ${this.fn("cms_compute_target_record_advertisement")}($1,$2)`,
+            [targetId, JSON.stringify(normalizeAdvertisement(advertisement))]);
+        return rows[0] ? toTarget(rows[0]) : null;
+    }
+
+    /**
+     * The models the viewer's targets offer, as sessions name them. Only a
+     * viewer's own (personal) targets offer models, so a shared target
+     * contributes none however it advertises itself. Pass a target name for
+     * one target. What a target advertises can be out of date: this is the
+     * list of options to show, not a decision about what may run.
+     */
+    async listTargetModels(viewer: number | null, isAdmin: boolean, targetName?: string): Promise<ComputeTargetModel[]> {
+        const targets = await this.list(viewer, isAdmin);
+        return targets
+            .filter((t) => t.enabled && (!targetName || t.name === targetName))
+            .flatMap((t) => advertisedHostModels(t).map((m) => ({
+                ref: targetModelRef(t.name, m.id), target: t.name, id: m.id,
+                ...(m.name ? { name: m.name } : {}),
+                advertisedAt: t.advertised?.observedAt ?? "",
+            })));
     }
 
     /**

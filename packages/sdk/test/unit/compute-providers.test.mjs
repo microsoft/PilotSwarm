@@ -63,9 +63,11 @@ test("the local provider binds to the worker and connects locally with the same 
     assert.deepEqual(local.capabilities.os, [process.platform]);
 });
 
-test("target names follow the model provider name rule", () => {
-    assert.deepEqual(validateComputeTargetName(" team-sandboxes.1 "), { ok: true, name: "team-sandboxes.1" });
-    for (const bad of ["", "-x", "a:b", "has space", "x".repeat(65), 7, null]) {
+test("a target is named after whoever owns it", () => {
+    assert.deepEqual(validateComputeTargetName(" shared/team-sandboxes.1 "), { ok: true, name: "shared/team-sandboxes.1" });
+    assert.equal(validateComputeTargetName("alice@example.com/box").ok, true);
+    // A bare label is shorthand a caller may use, never a name that is stored.
+    for (const bad of ["", "team-sandboxes.1", "-x", "shared/a:b", "shared/has space", "shared/" + "x".repeat(65), "/x", "x/", 7, null]) {
         const checked = validateComputeTargetName(bad);
         assert.equal(checked.ok, false, String(bad));
         assert.equal(checked.code, COMPUTE_ERROR_CODES.INVALID);
@@ -107,7 +109,7 @@ test("only addresses on this machine count as loopback", () => {
 
 test("the creation config projection keeps computeTarget only when set", () => {
     assert.equal("computeTarget" in projectSerializableSessionConfig({ model: "p:m" }, 30), false);
-    assert.equal(projectSerializableSessionConfig({ model: "p:m", computeTarget: "team-sandboxes" }, 30).computeTarget, "team-sandboxes");
+    assert.equal(projectSerializableSessionConfig({ model: "p:m", computeTarget: "shared/team-sandboxes" }, 30).computeTarget, "shared/team-sandboxes");
 });
 
 test("migration 0084 adds compute targets after 0083", () => {

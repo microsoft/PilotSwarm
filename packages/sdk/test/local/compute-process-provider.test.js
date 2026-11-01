@@ -31,7 +31,7 @@ const getEnv = useSuiteEnv(import.meta.url);
 async function registerTarget(env, name, kind) {
     const catalog = await createCatalog(env);
     try {
-        await catalog.computeTargets.create({ name, kind, class: "shared", displayName: name }, null, true);
+        await catalog.computeTargets.create({ name: `shared/${name}`, kind, class: "shared", displayName: name }, null, true);
     } finally {
         await catalog.close?.();
     }
@@ -90,7 +90,7 @@ describe("process compute provider", () => {
         };
 
         await withScriptedModel(env, { respond, worker: { computeProviders: [providerA] } }, async ({ client, worker, model, modelProvidersPath, qualifiedModel }) => {
-            const session = await client.createSession({ model: qualifiedModel, computeTarget: "local-process" });
+            const session = await client.createSession({ model: qualifiedModel, computeTarget: "shared/local-process" });
             expect(await session.sendAndWait("first prompt", TIMEOUT)).toBe(`turn1:${marker}`);
 
             // The turn ran in the provider's runtime, not the worker's child process.

@@ -1,5 +1,6 @@
-import { COMPUTE_ERROR_CODES, ComputeProviderRegistry, isLoopbackAddress, runtimeConnectionFor, runtimeEndpointKey, type ComputeHostRef, type ComputePrincipal, type ComputeProvider, type ComputeReleaseReason, type ComputeRuntimeEndpoint, type ComputeTarget, type ComputeWorkspacePaths } from "./compute.js";
-import { REMOTE_SESSION_STATE_ROOT, RemoteRuntimeRequestHandler, WorkerDirectorySessionFs, redactProviderSecrets, remoteSessionGrant, type RemoteSessionGrant } from "./compute-runtime.js";
+import { COMPUTE_ERROR_CODES, ComputeProviderRegistry, advertisedHostModels, isLoopbackAddress, normalizeAdvertisement, parseTargetModelRef, runtimeConnectionFor, runtimeEndpointKey, targetMayOfferHostModels, type ComputeAdvertisement, type ComputeFailure, type ComputeHostRef, type ComputePrincipal, type ComputeProvider, type ComputeReleaseReason, type ComputeRuntimeEndpoint, type ComputeTarget, type ComputeWorkspacePaths } from "./compute.js";
+import { REMOTE_SESSION_STATE_ROOT, RemoteRuntimeRequestHandler, WorkerDirectorySessionFs, askHostModels, redactProviderSecrets, remoteSessionGrant, type RemoteSessionGrant } from "./compute-runtime.js";
+import { ComputeRuntimeBridge } from "./compute-bridge.js";
 import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, capabilityOwnership, parseCapabilityRef, resolveCapabilitySource, workspaceCapabilityHits, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
 import { bindCapabilities, nextCapabilityState, validatePackageRequest } from "./capability-runtime.js";
 import type { McpAllowlistAgent } from "./mcp-loader.js";
@@ -49,7 +50,7 @@ import { buildKnowledgePromptBlocks, loadKnowledgeIndexFromFactStore, buildEnhan
 import { composeStructuredSystemMessage, extractPromptContent, mergePromptSections } from "./prompt-layering.js";
 import { buildPromptLayersEventPayload, type PromptLayerDescriptor } from "./prompt-layers.js";
 import { approvePermissionForSession } from "./permissions.js";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readSnapshotMarker, supportsVersionedSnapshots, writeSnapshotMarker } from "./snapshot-protocol.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -601,10 +602,24 @@ function folderReleaseRequest(
 const WORKSPACE_ROOT_CLIENT_SEPARATOR = "\0workspace-root:";
 /** Compute providers: a pool key part naming a remote runtime endpoint (runtimeEndpointKey). */
 const COMPUTE_CLIENT_SEPARATOR = "\0compute:";
+/**
+ * Compute providers: a pool key part for a session running on one of its
+ * target's own models. Such a client holds no PilotSwarm credentials and no
+ * request handler, so it must never be shared with a session that does.
+ */
+const COMPUTE_HOST_MODEL_CLIENT_MARK = "\0host-model";
 /** Deadlines for compute provider calls. */
 const COMPUTE_BIND_TIMEOUT_MS = 5 * 60_000;
 const COMPUTE_CONNECT_TIMEOUT_MS = 2 * 60_000;
 const COMPUTE_RELEASE_TIMEOUT_MS = 30_000;
+/** How long the worker gives a target to say what it offers. */
+const COMPUTE_ADVERTISE_TIMEOUT_MS = 30_000;
+/**
+ * How long an advertisement is treated as current. Every connection may
+ * refresh it, but not more often than this: asking costs a connection to
+ * the host, and a target's models rarely change within a turn.
+ */
+const COMPUTE_ADVERTISE_REFRESH_MS = 10 * 60_000;
 
 /** A session's binding to a compute host on this worker. */
 interface ComputeBinding {
@@ -617,6 +632,11 @@ interface ComputeBinding {
     endpointKey: string;
     /** The session's workspace folders as the worker sees them. */
     workerPaths: string[];
+    /**
+     * For a provider that opens its own connections: this binding's bridge
+     * on the worker's own machine. It lives and dies with the binding.
+     */
+    bridge?: ComputeRuntimeBridge;
 }
 
 /**
@@ -1239,7 +1259,14 @@ export class SessionManager {
         workspaceAttach: ManagedSessionConfig["workspaceAttach"] | undefined,
         catalogRow: any,
         turnIndex: number,
-    ): Promise<{ endpoint: ComputeRuntimeEndpoint; workspace: ComputeWorkspacePaths; endpointKey: string } | null> {
+    ): Promise<{
+        endpoint: ComputeRuntimeEndpoint;
+        workspace: ComputeWorkspacePaths;
+        endpointKey: string;
+        /** The target as it stands this turn, with what it last advertised. */
+        target: ComputeTarget;
+        provider: ComputeProvider;
+    } | null> {
         const fail = (code: string, message: string, retryAfterMs?: number): never => {
             throw Object.assign(new Error(`${code}: ${message}`), { code, ...(retryAfterMs ? { retryAfterMs } : {}) });
         };
@@ -1294,10 +1321,14 @@ export class SessionManager {
             ...(workspaceAttach?.path ?? config.workingDirectory ? { cwd: workspaceAttach?.path ?? config.workingDirectory } : {}),
             ...(workspaceAttach?.extras?.length ? { additionalDirectories: workspaceAttach.extras.map((extra) => extra.path) } : {}),
         };
+        const sameHost = Boolean(previous && previous.host.id === bound.host.id && previous.host.incarnation === bound.host.incarnation);
         const binding: ComputeBinding = {
             provider, target, host: bound.host, rootSessionId, workerNodeId,
-            endpointKey: previous && previous.host.id === bound.host.id && previous.host.incarnation === bound.host.incarnation ? previous.endpointKey : "",
+            endpointKey: sameHost ? previous!.endpointKey : "",
             workerPaths: [workspace.cwd, ...(workspace.additionalDirectories ?? [])].filter((entry): entry is string => Boolean(entry)),
+            // The bridge belongs to the binding: the same host keeps its
+            // bridge, a replaced host gets a new one.
+            ...(sameHost && previous!.bridge && !previous!.bridge.isClosed ? { bridge: previous!.bridge } : {}),
         };
         this.computeHosts.set(sessionId, binding);
         const connected = await this._computeCall("connect", COMPUTE_CONNECT_TIMEOUT_MS,
@@ -1314,11 +1345,230 @@ export class SessionManager {
             return fail(COMPUTE_ERROR_CODES.ENDPOINT_REFUSED,
                 "the compute provider returned a runtime address that is not on this machine; this worker accepts only local addresses");
         }
-        const endpointKey = runtimeEndpointKey(connected.endpoint, bound.host);
+        // A provider that opens its own connections gets a bridge on this
+        // machine, and the rest of the worker then sees an ordinary local
+        // address. Nothing below this line knows what the connection is
+        // made of.
+        let endpoint: ComputeRuntimeEndpoint = connected.endpoint;
+        if (endpoint.transport === "pipe") {
+            try {
+                endpoint = await this._bridgeEndpoint(binding, endpoint);
+            } catch (error) {
+                await this.releaseCompute(sessionId, "failed");
+                return fail(COMPUTE_ERROR_CODES.UNAVAILABLE,
+                    `the connection to the compute host could not be prepared: ${String((error as Error)?.message ?? error)}`, 5_000);
+            }
+        }
+        const endpointKey = runtimeEndpointKey(endpoint, bound.host);
         const oldKey = binding.endpointKey;
         binding.endpointKey = endpointKey;
         if (oldKey && oldKey !== endpointKey) await this._retireEndpointIfUnused(oldKey);
-        return { endpoint: connected.endpoint, workspace: connected.workspace, endpointKey };
+        // Every connection may refresh what the target offers, so the options
+        // a user sees stay close to the truth. Bounded, throttled, and never
+        // allowed to fail the turn.
+        const refreshed = await this._refreshAdvertisement(provider, target, bound.host, endpoint);
+        return {
+            endpoint, workspace: connected.workspace, endpointKey,
+            target: refreshed ?? target, provider,
+        };
+    }
+
+    /**
+     * The local address standing in for a host whose provider opens its own
+     * connections. The binding's bridge is made once and kept: the same
+     * host keeps the same address, so its pooled client survives the turn.
+     * A replaced host arrives here with no bridge and gets a new one, and
+     * the new address gives it a fresh client.
+     *
+     * The bridge asks the provider for a pipe per connection, so a broken
+     * connection is replaced by a fresh pipe rather than a dead one, and a
+     * provider that cannot open one fails the connection where it is seen.
+     */
+    private async _bridgeEndpoint(
+        binding: ComputeBinding,
+        endpoint: Extract<ComputeRuntimeEndpoint, { transport: "pipe" }>,
+    ): Promise<ComputeRuntimeEndpoint> {
+        const { provider, target, host } = binding;
+        if (typeof provider.openConnection !== "function") {
+            throw new Error(`the compute provider "${provider.kind}" returned a connection it has no code to open`);
+        }
+        const details = endpoint.details ?? {};
+        if (!binding.bridge || binding.bridge.isClosed) {
+            const bridge = new ComputeRuntimeBridge((signal) =>
+                provider.openConnection!({ target, host, details, signal }));
+            await bridge.start();
+            try {
+                // Fail here, where a compute failure can be named, rather
+                // than leaving the SDK to report a connection that died on it.
+                await bridge.verify();
+            } catch (error) {
+                await bridge.close().catch(() => { /* best effort */ });
+                throw error;
+            }
+            binding.bridge = bridge;
+        }
+        return {
+            transport: "uri",
+            address: binding.bridge.address,
+            ...(endpoint.connectionToken ? { connectionToken: endpoint.connectionToken } : {}),
+        };
+    }
+
+    /**
+     * Ask a host what it offers and store it as its target's advertisement.
+     *
+     * Returns the target with its new advertisement, or null when nothing
+     * was refreshed — because the provider's hosts have no model access of
+     * their own, because the target is shared (only a personal target may
+     * offer models of its own), because a recent advertisement still
+     * stands, or because the host did not answer. A host that cannot say
+     * what it offers is not a failed turn: the previous answer, or none,
+     * stays.
+     */
+    private async _refreshAdvertisement(
+        provider: ComputeProvider,
+        target: ComputeTarget,
+        host: ComputeHostRef,
+        endpoint: ComputeRuntimeEndpoint,
+    ): Promise<ComputeTarget | null> {
+        const store = this.sessionCatalog?.computeTargets;
+        if (!store || !targetMayOfferHostModels(target, provider.capabilities)) return null;
+        const last = Date.parse(target.advertised?.observedAt ?? "");
+        if (Number.isFinite(last) && Date.now() - last < COMPUTE_ADVERTISE_REFRESH_MS) return null;
+        try {
+            const advertisement = await this._askTarget(provider, target, host, endpoint);
+            return await store.recordAdvertisement(target.id, advertisement);
+        } catch (error) {
+            emitSessionManagerTrace(target.id,
+                `compute target "${target.name}" could not say what it offers: ${String((error as Error)?.message ?? error)}`);
+            return null;
+        }
+    }
+
+    /**
+     * What a host offers, from the host itself: the provider's own facts
+     * about it, plus the models its runtime says it can serve with its own
+     * model access. Asked over a short connection of its own, so it never
+     * borrows a client that carries PilotSwarm credentials.
+     *
+     * The answer is untrusted — it decides which options a user is shown,
+     * never what a session may do — so it is shaped before it is stored.
+     */
+    private async _askTarget(
+        provider: ComputeProvider,
+        target: ComputeTarget,
+        host: ComputeHostRef,
+        endpoint: ComputeRuntimeEndpoint,
+    ): Promise<ComputeAdvertisement> {
+        const described = provider.describeHost
+            ? await this._computeCall("describeHost", COMPUTE_ADVERTISE_TIMEOUT_MS,
+                (signal) => provider.describeHost!({ target, host, signal }))
+            : {};
+        let models: Awaited<ReturnType<typeof askHostModels>> = [];
+        if (endpoint.transport !== "local") {
+            const client = createCopilotClient({ logLevel: "error" }, undefined, undefined,
+                { connection: runtimeConnectionFor(endpoint) });
+            try {
+                await client.start();
+                models = await askHostModels(client as unknown as { listModels?: () => Promise<unknown> });
+            } finally {
+                try { await client.stop(); } catch { /* best effort */ }
+            }
+        }
+        return normalizeAdvertisement({ ...described, models });
+    }
+
+    /**
+     * Compute providers: validate a target and record what it offers,
+     * without a session behind it. A registration check, and the first way
+     * a target's options are filled in: bind, connect, ask, release.
+     *
+     * Trusted caller: whether this principal may see or manage the target is
+     * decided before this is called.
+     */
+    async probeComputeTarget(
+        target: ComputeTarget,
+        opts?: { principal?: ComputePrincipal | null },
+    ): Promise<{ ok: true; target: ComputeTarget } | ComputeFailure> {
+        const provider = this.computeProviders.get(target.kind);
+        if (!provider) {
+            return { ok: false, code: COMPUTE_ERROR_CODES.KIND_UNKNOWN, message: `this worker has no compute provider of kind "${target.kind}"` };
+        }
+        if (!target.enabled) {
+            return { ok: false, code: COMPUTE_ERROR_CODES.DISABLED, message: `the compute target "${target.name}" is disabled` };
+        }
+        const principal = opts?.principal ?? null;
+        const workerNodeId = this.workspaceWorkerNodeId ?? os.hostname();
+        // A probe is its own short-lived session tree: it must never join,
+        // or take over, a host a real session is using.
+        const sessionId = `compute-probe-${randomUUID()}`;
+        try {
+            if (provider.validateTarget) {
+                const valid = await this._computeCall("validateTarget", COMPUTE_CONNECT_TIMEOUT_MS,
+                    (signal) => provider.validateTarget!({ target, principal, signal }));
+                if (!valid.ok) return valid;
+            }
+            const bound = await this._computeCall("bind", COMPUTE_BIND_TIMEOUT_MS,
+                (signal) => provider.bind({ target, sessionId, rootSessionId: sessionId, owner: principal, workerNodeId, signal }));
+            if (!bound.ok) return bound;
+            // A probe's bridge lives no longer than the probe.
+            let probeBridge: ComputeRuntimeBridge | undefined;
+            try {
+                const connected = await this._computeCall("connect", COMPUTE_CONNECT_TIMEOUT_MS,
+                    (signal) => provider.connect({
+                        target, host: bound.host, sessionId, rootSessionId: sessionId, workerNodeId,
+                        turnIndex: 0, signal, workspace: {},
+                    }));
+                if (!connected.ok) return connected;
+                if (connected.endpoint.transport === "uri" && !this.computeAllowNonLoopbackEndpoints
+                    && !isLoopbackAddress(connected.endpoint.address)) {
+                    return {
+                        ok: false, code: COMPUTE_ERROR_CODES.ENDPOINT_REFUSED,
+                        message: "the compute provider returned a runtime address that is not on this machine; this worker accepts only local addresses",
+                    };
+                }
+                let endpoint: ComputeRuntimeEndpoint = connected.endpoint;
+                if (endpoint.transport === "pipe") {
+                    if (typeof provider.openConnection !== "function") {
+                        return {
+                            ok: false, code: COMPUTE_ERROR_CODES.UNAVAILABLE,
+                            message: `the compute provider "${provider.kind}" returned a connection it has no code to open`,
+                        };
+                    }
+                    const details = endpoint.details ?? {};
+                    probeBridge = new ComputeRuntimeBridge((signal) =>
+                        provider.openConnection!({ target, host: bound.host, details, signal }));
+                    await probeBridge.start();
+                    endpoint = {
+                        transport: "uri", address: probeBridge.address,
+                        ...(endpoint.connectionToken ? { connectionToken: endpoint.connectionToken } : {}),
+                    };
+                }
+                const advertisement = targetMayOfferHostModels(target, provider.capabilities)
+                    ? await this._askTarget(provider, target, bound.host, endpoint)
+                    : normalizeAdvertisement(provider.describeHost
+                        ? await this._computeCall("describeHost", COMPUTE_ADVERTISE_TIMEOUT_MS,
+                            (signal) => provider.describeHost!({ target, host: bound.host, signal }))
+                        : {});
+                const stored = await this.sessionCatalog?.computeTargets?.recordAdvertisement(target.id, advertisement);
+                return { ok: true, target: stored ?? { ...target, advertised: { ...advertisement, observedAt: new Date().toISOString() } } };
+            } finally {
+                if (probeBridge) await probeBridge.close().catch(() => { /* best effort */ });
+                if (provider.release) {
+                    await this._computeCall("release", COMPUTE_RELEASE_TIMEOUT_MS, (signal) => provider.release!({
+                        target, host: bound.host, sessionId, rootSessionId: sessionId,
+                        workerNodeId, reason: "probe", signal,
+                    })).catch(() => { /* best effort */ });
+                }
+            }
+        } catch (error) {
+            const code = (error as { code?: string })?.code;
+            return {
+                ok: false,
+                code: typeof code === "string" && code.startsWith("COMPUTE_") ? code : COMPUTE_ERROR_CODES.UNAVAILABLE,
+                message: String((error as Error)?.message ?? error),
+            };
+        }
     }
 
     /** Run one provider call with a deadline; a provider that does not answer fails the call. */
@@ -1347,7 +1597,9 @@ export class SessionManager {
         if (!endpointKey || [...this.computeHosts.values()].some((other) => other.endpointKey === endpointKey)) return;
         this.computeEndpoints.delete(endpointKey);
         const suffix = COMPUTE_CLIENT_SEPARATOR + endpointKey;
-        const stale = [...this.clients.entries()].filter(([key]) => key.endsWith(suffix));
+        // Both the credential-carrying client and the host-model one.
+        const stale = [...this.clients.entries()]
+            .filter(([key]) => key.endsWith(suffix) || key.endsWith(suffix + COMPUTE_HOST_MODEL_CLIENT_MARK));
         for (const [key] of stale) this.clients.delete(key);
         await Promise.all(stale.map(async ([, client]) => {
             let timer: ReturnType<typeof setTimeout> | undefined;
@@ -1366,6 +1618,11 @@ export class SessionManager {
     private async _releaseBinding(sessionId: string, binding: ComputeBinding, reason: ComputeReleaseReason, keepGrant = false): Promise<void> {
         if (!keepGrant) this.remoteGrants.delete(sessionId);
         await this._retireEndpointIfUnused(binding.endpointKey);
+        // The bridge and every pipe through it go with the binding, after
+        // the clients that used it have gone.
+        if (binding.bridge && ![...this.computeHosts.values()].some((other) => other.bridge === binding.bridge)) {
+            try { await binding.bridge.close(); } catch { /* best effort */ }
+        }
         if (!binding.provider.release) return;
         try {
             await this._computeCall("release", COMPUTE_RELEASE_TIMEOUT_MS, (signal) => binding.provider.release!({
@@ -1533,14 +1790,18 @@ export class SessionManager {
      * It may not be started yet: create and resume sessions on it through
      * `_createCopilotSession` / `_resumeCopilotSession`.
      */
-    private async ensureClient(tokenOverride?: string, byokOpenAi = false, workspaceRoot?: string, endpoint?: ComputeRuntimeEndpoint, computeKey?: string): Promise<CopilotClient> {
+    private async ensureClient(tokenOverride?: string, byokOpenAi = false, workspaceRoot?: string, endpoint?: ComputeRuntimeEndpoint, computeKey?: string, hostModel = false): Promise<CopilotClient> {
         // Resolve the effective token: explicit override > worker default >
         // first registry github provider's resolved token. The override is
         // how per-user GitHub Copilot keys (cms.users.github_copilot_key)
         // get plumbed through to a dedicated CopilotClient.
-        let token = tokenOverride;
-        if (!token) token = this.githubToken;
-        if (!token && this.workerDefaults.modelProviders) {
+        //
+        // A session on one of its target's own models gets none of this: the
+        // host signs its own model calls, and nothing of PilotSwarm's goes
+        // to it.
+        let token = hostModel ? undefined : tokenOverride;
+        if (!token && !hostModel) token = this.githubToken;
+        if (!token && !hostModel && this.workerDefaults.modelProviders) {
             for (const p of this.workerDefaults.modelProviders.allProviders) {
                 if (p.type === "github" && p.models.length > 0) {
                     const firstModel = typeof p.models[0] === "string" ? p.models[0] : p.models[0].name;
@@ -1553,9 +1814,15 @@ export class SessionManager {
 
         const remote = endpoint && endpoint.transport !== "local" ? endpoint : undefined;
         const endpointKey = remote ? (computeKey || runtimeEndpointKey(remote)) : "";
+        // A host-model client has no request handler, and a request handler
+        // is client-wide, so it cannot be the same client as one serving a
+        // PilotSwarm model on the same endpoint. Its own pool slot keeps the
+        // two apart.
+        const onHostModel = Boolean(remote && hostModel);
         const clientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (token || "")
             + (workspaceRoot ? WORKSPACE_ROOT_CLIENT_SEPARATOR + workspaceRoot : "")
-            + (remote ? COMPUTE_CLIENT_SEPARATOR + endpointKey : "");
+            + (remote ? COMPUTE_CLIENT_SEPARATOR + endpointKey : "")
+            + (onHostModel ? COMPUTE_HOST_MODEL_CLIENT_MARK : "");
         const existing = this.clients.get(clientKey);
         if (existing) return existing;
         if (remote) this.computeEndpoints.set(endpointKey, remote);
@@ -1608,11 +1875,16 @@ export class SessionManager {
             ...(remote ? { sessionFs: { initialCwd: "/", sessionStatePath: REMOTE_SESSION_STATE_ROOT, conventions: "posix" as const } } : {}),
         }, byokOpenAi ? { type: "openai" } : undefined, toolCatalogResolver, remote ? {
             connection: runtimeConnectionFor(remote),
-            // Serves only the sessions bound to this connection.
-            requestHandler: new RemoteRuntimeRequestHandler((sessionId) => {
-                const entry = sessionId ? this.remoteGrants.get(sessionId) : undefined;
-                return entry && entry.endpointKey === endpointKey ? entry.grant : undefined;
-            }, toolCatalogResolver),
+            // On a target's own model the host makes its own model calls, so
+            // there is nothing for the worker to serve and no credential to
+            // bring back. Otherwise: serves only the sessions bound to this
+            // connection.
+            ...(onHostModel ? {} : {
+                requestHandler: new RemoteRuntimeRequestHandler((sessionId) => {
+                    const entry = sessionId ? this.remoteGrants.get(sessionId) : undefined;
+                    return entry && entry.endpointKey === endpointKey ? entry.grant : undefined;
+                }, toolCatalogResolver),
+            }),
         } : undefined);
         this.clients.set(clientKey, created);
         return created;
@@ -1740,8 +2012,11 @@ export class SessionManager {
         const computeAt = key.indexOf(COMPUTE_CLIENT_SEPARATOR);
         let endpoint: ComputeRuntimeEndpoint | undefined;
         let computeKey: string | undefined;
+        let hostModel = false;
         if (computeAt >= 0) {
             computeKey = key.slice(computeAt + COMPUTE_CLIENT_SEPARATOR.length);
+            hostModel = computeKey.endsWith(COMPUTE_HOST_MODEL_CLIENT_MARK);
+            if (hostModel) computeKey = computeKey.slice(0, -COMPUTE_HOST_MODEL_CLIENT_MARK.length);
             endpoint = this.computeEndpoints.get(computeKey);
             if (!endpoint) {
                 throw Object.assign(new Error("COMPUTE_UNAVAILABLE: the remote runtime for this session is not known on this worker"),
@@ -1753,8 +2028,8 @@ export class SessionManager {
         const workspaceRoot = rootAt >= 0 ? key.slice(rootAt + WORKSPACE_ROOT_CLIENT_SEPARATOR.length) || undefined : undefined;
         const base = rootAt >= 0 ? key.slice(0, rootAt) : key;
         return base.startsWith(BYOK_CLIENT_PREFIX)
-            ? this.ensureClient(base.slice(BYOK_CLIENT_PREFIX.length) || undefined, true, workspaceRoot, endpoint, computeKey)
-            : this.ensureClient(base || undefined, false, workspaceRoot, endpoint, computeKey);
+            ? this.ensureClient(base.slice(BYOK_CLIENT_PREFIX.length) || undefined, true, workspaceRoot, endpoint, computeKey, hostModel)
+            : this.ensureClient(base || undefined, false, workspaceRoot, endpoint, computeKey, hostModel);
     }
 
     private async _ensureClientForSession(sessionId: string): Promise<CopilotClient> {
@@ -2319,16 +2594,26 @@ export class SessionManager {
             }
         }
 
+        // Compute providers: the session's model may be one of its target's
+        // own rather than one of PilotSwarm's. Such a name never resolves
+        // against the provider catalog — the host runs it on its own model
+        // access — so the whole resolution below is skipped for it and the
+        // target's advertisement decides, further down, whether it still
+        // stands.
+        const hostModelRef = parseTargetModelRef(config.model);
+
         // Resolve model up-front so we can pick the right CopilotClient
         // (per-user GitHub Copilot token) before any session create/resume.
         const registry = this.workerDefaults.modelProviders;
-        const effectiveModel = this.normalizeModelRef(config.model) || "";
-        const resolvedProvider = registry?.resolve(effectiveModel);
-        const baseProviderConfig = this._resolveProviderConfig(effectiveModel);
-        const sdkModelName = effectiveModel && registry?.getDescriptor(effectiveModel)?.modelName
-            ? registry.getDescriptor(effectiveModel)!.modelName
-            : effectiveModel;
-        const modelDescriptor = registry && effectiveModel
+        const effectiveModel = hostModelRef ? String(config.model) : (this.normalizeModelRef(config.model) || "");
+        const resolvedProvider = hostModelRef ? undefined : registry?.resolve(effectiveModel);
+        const baseProviderConfig = hostModelRef ? {} as ReturnType<SessionManager["_resolveProviderConfig"]> : this._resolveProviderConfig(effectiveModel);
+        const sdkModelName = hostModelRef
+            ? hostModelRef.model
+            : (effectiveModel && registry?.getDescriptor(effectiveModel)?.modelName
+                ? registry.getDescriptor(effectiveModel)!.modelName
+                : effectiveModel);
+        const modelDescriptor = !hostModelRef && registry && effectiveModel
             ? registry.getDescriptor(effectiveModel)
             : undefined;
 
@@ -2382,7 +2667,7 @@ export class SessionManager {
         // is wired in. Skipping the await on the no-catalog path matters
         // for the SessionManager unit tests that exercise lock ordering
         // by counting microtasks before the first `resumeSession()` call.
-        const userGithubToken = this.sessionCatalog
+        const userGithubToken = this.sessionCatalog && !hostModelRef
             ? await this._resolveSessionGitHubToken(sessionId, config, effectiveModel, catalogRow)
             : undefined;
         if (resolvedProvider?.type === "github" && !userGithubToken && !this.githubToken && !resolvedProvider.githubToken) {
@@ -2397,19 +2682,49 @@ export class SessionManager {
         // a session without a compute target: the worker's own child process.
         const compute = await this._prepareCompute(sessionId, config, workspaceAttach, catalogRow, turnIndex ?? 0);
         const remoteEndpoint = compute && compute.endpoint.transport !== "local" ? compute.endpoint : undefined;
-        if (remoteEndpoint && !resolvedProviderConfig.provider) {
+        // A model of the target's own only means anything on that target,
+        // and only while the target still says it offers it. The
+        // advertisement is refreshed on connect just above, so this is as
+        // current as the host last managed to be.
+        if (hostModelRef) {
+            if (!compute || !remoteEndpoint) {
+                throw Object.assign(
+                    new Error(`${COMPUTE_ERROR_CODES.HOST_MODEL_UNAVAILABLE}: "${config.model}" is a model of a compute target, and this session does not run on one`),
+                    { code: COMPUTE_ERROR_CODES.HOST_MODEL_UNAVAILABLE, status: 400 },
+                );
+            }
+            if (compute.target.name !== hostModelRef.target) {
+                throw Object.assign(
+                    new Error(`${COMPUTE_ERROR_CODES.HOST_MODEL_UNAVAILABLE}: "${config.model}" is a model of another compute target; this session runs on "${compute.target.name}"`),
+                    { code: COMPUTE_ERROR_CODES.HOST_MODEL_UNAVAILABLE, status: 400 },
+                );
+            }
+            if (!targetMayOfferHostModels(compute.target, compute.provider.capabilities)
+                || !advertisedHostModels(compute.target).some((m) => m.id === hostModelRef.model)) {
+                throw Object.assign(
+                    new Error(`${COMPUTE_ERROR_CODES.HOST_MODEL_UNAVAILABLE}: the compute target "${compute.target.name}" no longer offers the model "${hostModelRef.model}"; choose another model for this session`),
+                    { code: COMPUTE_ERROR_CODES.HOST_MODEL_UNAVAILABLE, status: 400 },
+                );
+            }
+            // Nothing of PilotSwarm's goes to a host running its own model.
+            this.remoteGrants.delete(sessionId);
+        } else if (remoteEndpoint && !resolvedProviderConfig.provider) {
             // GitHub Copilot models authenticate inside the runtime with a
-            // GitHub token. A remote runtime must not hold one, and per-request
-            // auth for them through the worker is not built yet.
+            // GitHub token. A remote runtime must not hold the worker's, and
+            // per-request auth for them through the worker is not built yet.
+            // A target's own model is the exception: the host signs for
+            // itself, so nothing of the worker's is involved.
             throw Object.assign(
-                new Error(`${COMPUTE_ERROR_CODES.UNSUPPORTED}: GitHub Copilot models cannot run on a remote compute target yet; choose a model from a configured provider`),
+                new Error(`${COMPUTE_ERROR_CODES.UNSUPPORTED}: GitHub Copilot models cannot run on a remote compute target yet; choose a model from a configured provider, or one the target offers itself`),
                 { code: COMPUTE_ERROR_CODES.UNSUPPORTED, status: 400 },
             );
         }
         // The provider config the runtime sees: on a remote host, credentials
-        // are placeholders the worker's request handler swaps back.
+        // are placeholders the worker's request handler swaps back. On a
+        // target's own model there is no provider config at all — the host
+        // uses its own model access.
         let sessionProviderConfig: typeof resolvedProviderConfig = resolvedProviderConfig;
-        if (remoteEndpoint) {
+        if (remoteEndpoint && !hostModelRef) {
             const realProvider = resolvedProviderConfig.provider as Record<string, any>;
             const fingerprint = JSON.stringify([realProvider?.type ?? null, realProvider?.baseUrl ?? null,
                 Object.keys(realProvider?.headers ?? {}).sort(), Boolean(realProvider?.apiKey), Boolean(realProvider?.bearerToken),
@@ -2432,9 +2747,11 @@ export class SessionManager {
             sessionProviderConfig = { ...resolvedProviderConfig, provider: entry.provider } as typeof resolvedProviderConfig;
         }
         const byokOpenAi = needsByokRequestCompatibility(resolvedProviderConfig.provider);
+        const onHostModel = Boolean(remoteEndpoint && hostModelRef);
         const desiredClientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (userGithubToken || "")
             + (workspaceAttach ? WORKSPACE_ROOT_CLIENT_SEPARATOR + workspaceAttach.root : "")
-            + (remoteEndpoint ? COMPUTE_CLIENT_SEPARATOR + compute!.endpointKey : "");
+            + (remoteEndpoint ? COMPUTE_CLIENT_SEPARATOR + compute!.endpointKey : "")
+            + (onHostModel ? COMPUTE_HOST_MODEL_CLIENT_MARK : "");
         const previousClientKey = this.sessionClientKeys.get(sessionId);
         if (previousClientKey !== undefined && previousClientKey !== desiredClientKey) {
             // The credential or native/BYOK transport changed since we last
@@ -2454,7 +2771,7 @@ export class SessionManager {
                 this._forgetWarmSession(sessionId);
             }
         }
-        const client = await this.ensureClient(userGithubToken, byokOpenAi, workspaceAttach?.root, remoteEndpoint, compute?.endpointKey);
+        const client = await this.ensureClient(userGithubToken, byokOpenAi, workspaceAttach?.root, remoteEndpoint, compute?.endpointKey, onHostModel);
         this.sessionClientKeys.set(sessionId, desiredClientKey);
         const sessionDir = path.join(this.sessionStateDir, sessionId);
 

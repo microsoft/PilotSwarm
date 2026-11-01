@@ -235,12 +235,19 @@ export {
     COMPUTE_ERROR_CODES,
     COMPUTE_KIND_PATTERN,
     COMPUTE_TARGET_NAME_PATTERN,
+    MAX_COMPUTE_ADVERTISEMENT_BYTES,
+    MAX_COMPUTE_HOST_MODELS,
     ComputeProviderRegistry,
     createLocalComputeProvider,
     validateComputeTargetName,
     runtimeConnectionFor,
     runtimeEndpointKey,
     isLoopbackAddress,
+    targetModelRef,
+    parseTargetModelRef,
+    normalizeAdvertisement,
+    targetMayOfferHostModels,
+    advertisedHostModels,
 } from "./compute.js";
 export type {
     ComputeProvider,
@@ -255,14 +262,22 @@ export type {
     ComputeBindRequest,
     ComputeConnectRequest,
     ComputeConnectResult,
+    ComputeDescribeRequest,
     ComputeRuntimeEndpoint,
     ComputeWorkspacePaths,
     ComputeReleaseReason,
+    ComputeAdvertisement,
+    ComputeTargetAdvertisement,
+    ComputeHostModel,
+    ComputeTransport,
+    ComputePipe,
+    ComputeOpenConnectionRequest,
 } from "./compute.js";
+export { ComputeRuntimeBridge, COMPUTE_PIPE_OPEN_TIMEOUT_MS, COMPUTE_BRIDGE_MAX_CONNECTIONS } from "./compute-bridge.js";
 export { createProcessComputeProvider, PROCESS_COMPUTE_KIND } from "./compute-process.js";
 export type { ProcessComputeProviderOptions } from "./compute-process.js";
 export { ComputeTargetStore, ComputeTargetError } from "./compute-target-store.js";
-export type { ComputeTargetRow } from "./compute-target-store.js";
+export type { ComputeTargetRow, ComputeTargetModel } from "./compute-target-store.js";
 export {
     DEFAULT_WORKSPACE_FILE_MAX_BYTES,
     WORKSPACE_FILE_ERROR_CODES,

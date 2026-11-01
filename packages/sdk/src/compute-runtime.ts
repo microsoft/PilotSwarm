@@ -21,6 +21,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { CopilotRequestContext, CopilotWebSocketHandler, SessionFsFileInfo, SessionFsProvider } from "@github/copilot-sdk";
 import { ByokRequestCompatibility } from "./copilot-client.js";
+import { MAX_COMPUTE_HOST_MODELS, type ComputeHostModel } from "./compute.js";
 
 /** The virtual root the runtime sees for session state. */
 export const REMOTE_SESSION_STATE_ROOT = "/pilotswarm/session-state";
@@ -178,6 +179,36 @@ export async function injectSecrets(request: Request, secrets: RemoteSecretMap |
         headers.set(name, next);
     }
     return headers ? new Request(request, { headers }) : request;
+}
+
+/**
+ * What a host's own runtime says it can serve with its own model access.
+ *
+ * The worker asks over the same connection it drives the runtime with, and
+ * keeps the answer as the target's advertisement. It is the host talking
+ * about itself: it decides which options a user is shown, never what the
+ * session may do. An answer the worker cannot read, or no answer at all,
+ * is an empty list rather than a failure — asking must never fail a turn.
+ */
+export async function askHostModels(
+    runtime: { listModels?: () => Promise<unknown> } | null | undefined,
+): Promise<ComputeHostModel[]> {
+    if (!runtime || typeof runtime.listModels !== "function") return [];
+    let answer: unknown;
+    try {
+        answer = await runtime.listModels();
+    } catch {
+        return [];
+    }
+    if (!Array.isArray(answer)) return [];
+    const models: ComputeHostModel[] = [];
+    for (const entry of answer.slice(0, MAX_COMPUTE_HOST_MODELS)) {
+        if (!entry || typeof entry !== "object") continue;
+        const { id, name } = entry as { id?: unknown; name?: unknown };
+        if (typeof id !== "string" || !id.trim()) continue;
+        models.push(typeof name === "string" && name.trim() ? { id: id.trim(), name: name.trim() } : { id: id.trim() });
+    }
+    return models;
 }
 
 /** The most one SessionFs write may carry. */
