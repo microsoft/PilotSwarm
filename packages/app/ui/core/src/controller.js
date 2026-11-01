@@ -3,7 +3,7 @@ import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./comman
 import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
 import { parseAgentSourceLink } from "./repo-links.js";
 import { importPackageFilesFromLink, readImportedPackageName } from "./repo-import.js";
-import { MOTD_REFRESH_MS, canReadMotd, motdPrincipal } from "./motd.js";
+import { MOTD_REFRESH_MS, canReadMotd, motdPrincipal, duplicateMotdDraft } from "./motd.js";
 import {
     appendEventToHistory,
     applyLiveTurnToHistory,
@@ -3938,9 +3938,15 @@ export class PilotSwarmUiController {
         } finally { clearTimeout(timeout); }
     }
     async _motdPictures(message, { both = false, mobile = this.getState().ui.sessionViewDevice === "mobile" } = {}) {
-        if (!message || typeof this.transport.getMotdImage !== "function") return {};
+        if (!message) return {};
+        if (typeof this.transport.getMotdImage !== "function") return this.getState().motd.images[message.motdId] || {};
         const context = this._motdContext(), id = message.motdId;
+        this._motdPictureReads ??= new Map();
         for (const variant of both ? ["desktop", "mobile"] : [mobile ? "mobile" : "desktop"]) {
+            if (context !== this._motdContext()) break;
+            const key = JSON.stringify([context, id, variant]);
+            const pending = this._motdPictureReads.get(key);
+            if (pending) { await pending; continue; }
             const cached = this.getState().motd.images[id] || {};
             if (cached[variant] || !(variant === "mobile" ? message.hasMobileImage || message.hasImage : message.hasImage)) continue;
             if (variant === "mobile" && !message.hasMobileImage && cached.desktop) {
@@ -3951,26 +3957,32 @@ export class PilotSwarmUiController {
             if (cached.attempted?.[variant] !== undefined && now - cached.attempted[variant] < 300_000) continue;
             this.dispatch({ type: "motd/patch", patch: { images: { ...this.getState().motd.images,
                 [id]: { ...cached, attempted: { ...cached.attempted, [variant]: now } } } } });
-            try {
-                const picture = await this._motdRequest(signal => this.transport.getMotdImage(id, variant === "mobile", { signal }), 60_000);
-                if (context !== this._motdContext() || this.getState().motd.images[id]?.attempted?.[variant] !== now) continue;
-                const latest = this.getState().motd.images[id];
-                this.dispatch({ type: "motd/patch", patch: { images: { ...this.getState().motd.images,
-                    [id]: { ...latest, [variant]: picture,
-                        ...(variant === "mobile" && !message.hasMobileImage ? { desktop: picture } : {}),
-                        failures: { ...latest.failures, [variant]: false } } } } });
-            } catch (error) {
-                if (context !== this._motdContext() || this.getState().motd.images[id]?.attempted?.[variant] !== now) continue;
-                const latest = this.getState().motd.images[id];
-                this.dispatch({ type: "motd/patch", patch: { error: error?.message || String(error), images: {
-                    ...this.getState().motd.images, [id]: { ...latest, failures: { ...latest.failures, [variant]: true } } } } });
-            }
+            const loading = (async () => {
+                try {
+                    const picture = await this._motdRequest(signal => this.transport.getMotdImage(id, variant === "mobile", { signal }), 60_000);
+                    if (context !== this._motdContext() || this.getState().motd.images[id]?.attempted?.[variant] !== now) return;
+                    const latest = this.getState().motd.images[id];
+                    this.dispatch({ type: "motd/patch", patch: { images: { ...this.getState().motd.images,
+                        [id]: { ...latest, [variant]: picture,
+                            ...(variant === "mobile" && !message.hasMobileImage ? { desktop: picture } : {}),
+                            failures: { ...latest.failures, [variant]: false } } } } });
+                } catch (error) {
+                    if (context !== this._motdContext() || this.getState().motd.images[id]?.attempted?.[variant] !== now) return;
+                    const latest = this.getState().motd.images[id];
+                    this.dispatch({ type: "motd/patch", patch: { error: error?.message || String(error), images: {
+                        ...this.getState().motd.images, [id]: { ...latest, failures: { ...latest.failures, [variant]: true } } } } });
+                }
+            })();
+            this._motdPictureReads.set(key, loading);
+            try { await loading; }
+            finally { if (this._motdPictureReads.get(key) === loading) this._motdPictureReads.delete(key); }
         }
         return this.getState().motd.images[id] || {};
     }
     _pruneMotdPictures(current) {
         const state = this.getState();
         const keep = new Set([current?.motdId, state.admin.motds.today?.motdId, state.motd.preview?.motdId,
+            state.admin.motds.duplicatingId,
             ...state.admin.motds.expandedIds]);
         return Object.fromEntries(Object.entries(state.motd.images).filter(([id]) => keep.has(id)));
     }
@@ -4026,8 +4038,34 @@ export class PilotSwarmUiController {
         await this._persistMotdDismissal(id);
     }
     setMotdDraft(patch) {
-        if (!this._featureIsAdmin() || this.getState().admin.motds.saving) return;
+        if (!this._featureIsAdmin() || this.getState().admin.motds.saving || this.getState().admin.motds.duplicatingId) return;
         this.dispatch({ type: "admin/motds", patch: { draft: { ...this.getState().admin.motds.draft, ...patch }, error: null, notice: null } });
+    }
+    async duplicateAdminMotd(motdId) {
+        const state = this.getState().admin.motds;
+        if (!canReadMotd(this.getState()) || !this._featureIsAdmin() || state.saving || state.duplicatingId) return false;
+        const message = state.history.find(row => row.motdId === motdId)
+            || (state.today?.motdId === motdId ? state.today : null);
+        if (!message) {
+            this.dispatch({ type: "admin/motds", patch: { error: "The source message is no longer in the loaded history." } });
+            return false;
+        }
+        const context = this._motdContext();
+        this.dispatch({ type: "admin/motds", patch: { duplicatingId: motdId, error: null } });
+        try {
+            const pictures = await this._motdPictures(message, { both: true });
+            if (context !== this._motdContext() || !this._featureIsAdmin()) return false;
+            const draft = duplicateMotdDraft(message, pictures, Date.now());
+            this.dispatch({ type: "admin/motds", patch: { draft, retry: null, notice: null,
+                copyNotice: `Copied from message ${motdId}. Edit it before you click Publish.`,
+                draftFocusVersion: this.getState().admin.motds.draftFocusVersion + 1 } });
+            return true;
+        } catch (error) {
+            if (context === this._motdContext()) this.dispatch({ type: "admin/motds", patch: { error: error?.message || String(error) } });
+            return false;
+        } finally {
+            if (context === this._motdContext()) this.dispatch({ type: "admin/motds", patch: { duplicatingId: null } });
+        }
     }
     async refreshAdminMotds({ older = false, afterMutation = false } = {}) {
         if (!canReadMotd(this.getState()) || typeof this.transport.listMotds !== "function") return;
@@ -4075,10 +4113,14 @@ export class PilotSwarmUiController {
         else this.dispatch({ type: "motd/patch", patch: { images: this._pruneMotdPictures(this.getState().motd.current) } });
     }
     async createAdminMotd() {
-        if (!this._featureIsAdmin() || this.getState().admin.motds.saving) return;
+        if (!this._featureIsAdmin() || this.getState().admin.motds.saving || this.getState().admin.motds.duplicatingId) return;
         const context = this._motdContext();
         const state = this.getState().admin.motds;
         const draft = state.draft;
+        if ([draft.image, draft.mobileImage].some(picture => picture && !picture.alt?.trim())) {
+            this.dispatch({ type: "admin/motds", patch: { error: "Picture alt text is required before publishing." } });
+            return;
+        }
         if (!draft.bodyMd.trim() || !Number.isFinite(Date.parse(draft.fromAt)) || !Number.isFinite(Date.parse(draft.toAt))
             || Date.parse(draft.toAt) <= Date.parse(draft.fromAt)) {
             this.dispatch({ type: "admin/motds", patch: { error: "Enter a markdown body and an end time after the start time." } });
@@ -4095,7 +4137,7 @@ export class PilotSwarmUiController {
         try {
             await this._motdRequest(signal => this.transport.createMotd({ ...input, requestId: retry.requestId }, { signal }), 60_000);
             if (context !== this._motdContext() || !this._featureIsAdmin()) return;
-            this.dispatch({ type: "admin/motds", patch: { retry: null, notice: "Message published.",
+            this.dispatch({ type: "admin/motds", patch: { retry: null, copyNotice: null, notice: "Message published.",
                 draft: { fromAt: "", toAt: "", bodyMd: "", mobileBodyMd: "", imagePlacement: "above" } } });
             await this.refreshAdminMotds({ afterMutation: true });
         } catch (error) {

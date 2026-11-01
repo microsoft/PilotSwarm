@@ -115,6 +115,8 @@
 .ps-motd-admin-heading { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: 12px; }
 .ps-motd-admin-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-items: start; margin: 16px 0; }
 .ps-motd-editor { container: motd-editor / inline-size; }
+.ps-motd-editor.is-drag-over { outline: 2px solid var(--ps-selection-background); outline-offset: -2px; }
+.ps-motd-history-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .ps-motd-admin-card { padding: 16px; border: 1px solid var(--ps-border); background: var(--ps-chrome); border-radius: 10px; min-width: 0; }
 .ps-motd-admin-card h4 { margin: 0 0 6px; }
 .ps-motd-meta { color: var(--ps-muted); font-size: 12px; overflow-wrap: anywhere; }
@@ -11201,5 +11203,5 @@ textarea.ps-link-input {
   .ps-motd-history-row, .ps-motd-history-row.is-read-only { grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
   .ps-motd-history-title { grid-column: 1; grid-row: 1; }
   .ps-motd-history-row > .ps-motd-meta { grid-column: 1; grid-row: 2; }
-  .ps-motd-history-row > button { grid-column: 2; grid-row: 1 / span 3; }
+  .ps-motd-history-row > .ps-motd-history-actions { grid-column: 2; grid-row: 1 / span 3; }
 }

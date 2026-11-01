@@ -3,6 +3,7 @@ import { ChatCallLine } from "./chat-call-line.js";
 import React from "react";
 import { FeatureFlagsPanel } from "./feature-flags-panel.js";
 import { MotdOverlay, MotdAdminPanel } from "./motd.js";
+import { imageFiles, handleImagePaste, handleImageDrop, hasFileDrag } from "./image-transfer.js";
 import { NativeTaskCard } from "./native-task-card.js";
 import { WorkspacePane, WORKSPACE_CHANGED_EVENT, announceWorkspaceChange, downloadBase64, workspaceToolActivity } from "./workspace-pane.js";
 // createPortal is only invoked by browser-only surfaces (tooltips, toolbar
@@ -10070,7 +10071,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
 
     const stageImageFiles = React.useCallback((files) => {
         if (!canAttachImages) return 0;
-        const list = Array.from(files || []).filter((f) => f && typeof f.type === "string" && f.type.startsWith("image/"));
+        const list = imageFiles(files);
         if (list.length === 0) return 0;
         const result = controller.addPendingImageFiles(list);
         return result?.accepted || 0;
@@ -10170,7 +10171,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
         "data-session-id": promptState.sessionId || undefined,
         ...(canAttachImages ? {
             onDragOver: (event) => {
-                if (event.dataTransfer?.types?.includes?.("Files")) {
+                if (hasFileDrag(event.dataTransfer)) {
                     event.preventDefault();
                     setDragOver(true);
                 }
@@ -10180,10 +10181,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             },
             onDrop: (event) => {
                 setDragOver(false);
-                if (event.dataTransfer?.files?.length) {
-                    event.preventDefault();
-                    stageImageFiles(event.dataTransfer.files);
-                }
+                handleImageDrop(event, stageImageFiles);
             },
         } : {}),
     },
@@ -10255,16 +10253,7 @@ function PromptComposer({ controller, mobile, compact = false, active = true, on
             // clipboardData.items carries the image file(s). preventDefault only
             // when we actually staged one, so text pastes are untouched.
             onPaste: canAttachImages
-                ? (event) => {
-                    const items = Array.from(event.clipboardData?.items || []);
-                    const files = items
-                        .filter((item) => item.kind === "file" && item.type.startsWith("image/"))
-                        .map((item) => item.getAsFile())
-                        .filter(Boolean);
-                    if (files.length > 0 && stageImageFiles(files) > 0) {
-                        event.preventDefault();
-                    }
-                }
+                ? (event) => handleImagePaste(event, stageImageFiles)
                 : undefined,
             onKeyDown: (event) => {
                 if (event.key === "Tab" && !event.shiftKey && controller.acceptPromptReferenceAutocomplete()) {
