@@ -34,6 +34,7 @@ import { controlWorkflowV2Run, createWorkflowV2 } from "../../src/workflow/v2/se
 import { readWorkflowFromTool, updateWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
 import {
     registerWorkflowV2, WORKFLOW_V2_ACTIVITIES, WORKFLOW_V2_CONTROLLER_NAME, WORKFLOW_V2_CONTROLLER_VERSION, WORKFLOW_V2_FINALIZE_DELAYS_MS,
+    WORKFLOW_V2_NOTIFY_NAME, WORKFLOW_V2_NOTIFY_VERSION,
     workflowEffectInstanceId, workflowLiveControllerInstanceId, workflowNotifyInstanceId,
 } from "../../src/workflow/v2/runtime.ts";
 
@@ -749,32 +750,59 @@ states:
             authorizeParentNotification: async (workflowSessionId, parentSessionId) => !revoked.has(parentSessionId),
             notifyParent: async (parentSessionId, prompt, sender, clientMessageId) => { sent.push({ parentSessionId, clientMessageId }); },
         });
+        /** The skips a workflow recorded, as stored. */
+        const skipsOf = async workflowId => (await h.host.catalog.getSessionEvents(workflowId, 0, 50, ["workflow.parent_notification_skipped"]))
+            .map(event => event.data);
+        const skip = runId => ({ runId, reason: "Parent authority is no longer available" });
         try {
             const parentId = randomUUID();
             await h.host.catalog.createSession(parentId, {});
             revoked.add(parentId);
-            // The controller's own report: the run completes; the delivery records a skip and returns; the controller completes.
+            // The controller's own report: the run completes; the delivery records a skip and returns; the controller
+            // completes; the run stays as it ended.
             const done = await notifying(h, parentId, TWO_STEPS);
-            expect(await finished(h, done.runId, 60_000)).toMatchObject({ status: "completed", terminalOutput: { n: 2 } });
+            const doneEnded = await finished(h, done.runId, 60_000);
+            expect(doneEnded).toMatchObject({ status: "completed", terminalOutput: { n: 2 } });
             const doneController = await h.client.waitForOrchestration(done.controllerInstanceId, 30_000);
             expect(doneController.status, JSON.stringify(doneController)).toBe("Completed");
             expect(doneController.output).toEqual({ runId: done.runId, status: "completed", outcome: "succeeded" });
             expect(await notificationsOf(h, done.id)).toEqual([["workflow.parent_notification_skipped", done.runId]]);
-            // The notifier, started by a recover: its delivery records a skip, and it completes; it does not fail.
+            expect(await skipsOf(done.id)).toEqual([skip(done.runId)]);
+            expect(await h.store.readRun(done.runId)).toEqual(doneEnded);
+            // The notifier, started by a recover: its delivery records a skip, and it completes; it does not fail. The
+            // run stays as the recover ended it.
             const slow = await notifying(h, parentId, SLOW);
             await recoverEnded(h, parentId, slow);
+            const failedRun = await h.store.readRun(slow.runId);
+            expect(failedRun).toMatchObject({ status: "failed", terminalError: { code: "controller_ended" } });
             const notifier = await h.client.waitForOrchestration(workflowNotifyInstanceId(slow.runId), 30_000);
             expect(notifier.status, JSON.stringify(notifier)).toBe("Completed");
             expect(notifier.output ?? null).toBeNull();
             expect(await notificationsOf(h, slow.id)).toEqual([["workflow.parent_notification_skipped", slow.runId]]);
-            expect(await h.store.readRun(slow.runId)).toMatchObject({ status: "failed", terminalError: { code: "controller_ended" } });
+            expect(await skipsOf(slow.id)).toEqual([skip(slow.runId)]);
+            expect(await h.store.readRun(slow.runId)).toEqual(failedRun);
             expect(sent).toEqual([]);
 
-            // Control: with the parent's authority back, the same report is delivered once, with the stable client message id.
+            // With the parent's authority back, a later notification of either run (another notifier instance) finds
+            // that run's skip and tells no one.
             revoked.delete(parentId);
+            for (const run of [done, slow]) {
+                const again = `wfn-again-${run.runId}`;
+                await h.client.startOrchestrationVersioned(again, WORKFLOW_V2_NOTIFY_NAME, { runId: run.runId }, WORKFLOW_V2_NOTIFY_VERSION);
+                const repeated = await h.client.waitForOrchestration(again, 30_000);
+                expect(repeated.status, JSON.stringify(repeated)).toBe("Completed");
+                expect(await notificationsOf(h, run.id)).toEqual([["workflow.parent_notification_skipped", run.runId]]);
+                expect(await skipsOf(run.id)).toEqual([skip(run.runId)]);
+            }
+            expect(sent).toEqual([]);
+
+            // Control: with the parent's authority back, a new run's report is delivered once, with the stable client
+            // message id, and its controller completes with the run's result.
             const told = await notifying(h, parentId, TWO_STEPS);
             await finished(h, told.runId, 60_000);
-            expect((await h.client.waitForOrchestration(told.controllerInstanceId, 30_000)).status).toBe("Completed");
+            const toldController = await h.client.waitForOrchestration(told.controllerInstanceId, 30_000);
+            expect(toldController.status, JSON.stringify(toldController)).toBe("Completed");
+            expect(toldController.output).toEqual({ runId: told.runId, status: "completed", outcome: "succeeded" });
             expect(sent).toEqual([{ parentSessionId: parentId, clientMessageId: `workflow:${told.id}:${told.runId}:terminal` }]);
             expect(await notificationsOf(h, told.id)).toEqual([["workflow.parent_notified", told.runId]]);
         } finally { await h.stop(); }
@@ -900,7 +928,9 @@ states:
             const told = await cancelledBeforeBegin();
             const toldController = await h.client.waitForOrchestration(told.controllerInstanceId, 60_000);
             expect(toldController.status, JSON.stringify(toldController)).toBe("Completed");
-            expect(toldController.output).toEqual({ runId: told.runId, status: "cancelled", outcome: told.ended.terminalOutcome });
+            // A cancel before begin stores no outcome; the controller's result says the same, literally.
+            expect(told.ended.terminalOutcome).toBeNull();
+            expect(toldController.output).toEqual({ runId: told.runId, status: "cancelled", outcome: null });
             expect(beginStarts.get(told.runId)).toBe(5);
             expect(sent.filter(item => item.clientMessageId === told.clientMessageId)).toEqual([{ parentSessionId: parentId, clientMessageId: told.clientMessageId }]);
             expect(await notificationsOf(h, told.id)).toEqual([["workflow.parent_notified", told.runId]]);
