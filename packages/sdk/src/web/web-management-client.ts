@@ -336,6 +336,11 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("getSessionWorkspace", { sessionId });
     }
 
+    /** Workflow v2: the read-only view of a workflow session (readWorkflow, session:read; runId optional). */
+    async readWorkflow(sessionId: string, options: { runId?: string | null } = {}): Promise<any> {
+        return this._api.call("readWorkflow", { sessionId, ...(options?.runId ? { runId: options.runId } : {}) });
+    }
+
     /** Session workspaces: set or clear the workspace (external flow). */
     async setSessionWorkspace(
         sessionId: string,

@@ -128,6 +128,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "readArtifactBase64",
     "readCanvasKv",
     "readFacts",
+    "readWorkflow",
     "regenerateSession",
     "removeCanvasShareLink",
     "removeProviderLimit",
@@ -1241,6 +1242,15 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Read a version 2 workflow session without changing it: definition state, current revision and its diagnostics (no YAML), graph, runs, and one run (runId, default the live run) with its node executions, typed input inbox and outbox. 404 NOT_FOUND unless the session is readable, WORKFLOW_NOT_FOUND for a session that is not a version 2 workflow, RUN_NOT_FOUND for a run that is not one of its runs.
+     * @remarks `GET /sessions/:sessionId/workflow` — access: `session:read`
+     */
+    readWorkflow(params: {
+        sessionId: string;
+        runId?: string;
+    }): Promise<any>;
+
+    /**
      * Regenerate the session's transcript in place (epoch rebirth): archive, distill, and recreate the Copilot session at a turn boundary. Enqueue-then-observe; outcomes arrive as session.regenerate_* events.
      * @remarks `POST /management/sessions/:sessionId/regenerate` — access: `session:manage`
      */
@@ -1932,6 +1942,7 @@ export function createManagementOps(
         readArtifactBase64: (params: Record<string, unknown> = {}) => callOp("readArtifactBase64", params),
         readCanvasKv: (params: Record<string, unknown> = {}) => callOp("readCanvasKv", params),
         readFacts: (params: Record<string, unknown> = {}) => callOp("readFacts", params),
+        readWorkflow: (params: Record<string, unknown> = {}) => callOp("readWorkflow", params),
         regenerateSession: (params: Record<string, unknown> = {}) => callOp("regenerateSession", params),
         removeCanvasShareLink: (params: Record<string, unknown> = {}) => callOp("removeCanvasShareLink", params),
         removeProviderLimit: (params: Record<string, unknown> = {}) => callOp("removeProviderLimit", params),

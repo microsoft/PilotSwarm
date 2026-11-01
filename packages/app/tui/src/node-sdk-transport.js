@@ -1116,6 +1116,11 @@ export class NodeSdkTransport {
         return this.mgmt.getSessionWorkspace(sessionId);
     }
 
+    /** Workflow v2: the read-only view of a workflow session (readWorkflow). Authorization is the caller's (the portal gates session:read). */
+    async readWorkflow(sessionId, options = {}) {
+        return this.mgmt.readWorkflow(sessionId, options);
+    }
+
     async setSessionWorkspace(sessionId, input = {}, options = {}) {
         return this.mgmt.setSessionWorkspace(sessionId, input, options);
     }

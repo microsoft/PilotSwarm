@@ -53,6 +53,14 @@ function formatNext(next) {
     return entries.map(([outcome, target]) => `${outcome} → ${target ?? "end"}`).join(", ");
 }
 
+/** The state's kind for the definition table: v2 wait and messaging states are not scripts. */
+function stateKind(state) {
+    if (state?.type === "terminal") return "terminal";
+    if (state?.type === "wait") return `wait (${state.seconds ?? "?"} s)`;
+    if (state?.type === "messaging") return `${state.mode ?? "messaging"} (${state.contract ?? "?"})`;
+    return `script (${state?.runtime ?? "?"})`;
+}
+
 function shortPreview(text, max = 200) {
     const value = String(text ?? "");
     return value.length > max ? `${value.slice(0, max)}…` : value;
@@ -84,7 +92,7 @@ export function formatWorkflowEventText(event) {
             if (states.length > 0) {
                 lines.push("", "| State | Type | Outcome → next |", "|---|---|---|");
                 for (const state of states) {
-                    const type = state?.type === "terminal" ? "terminal" : `script (${state?.runtime ?? "?"})`;
+                    const type = stateKind(state);
                     const next = state?.type === "terminal" ? `ends: ${state.outcome ?? "?"}` : formatNext(state?.next);
                     lines.push(`| ${cell(state?.id)} | ${cell(type)} | ${cell(next)} |`);
                 }
@@ -92,7 +100,7 @@ export function formatWorkflowEventText(event) {
             return lines.join("\n");
         }
         case "workflow.state_started":
-            return `▶ Step ${data.step ?? "?"}: ${code(data.stateId)} started (${data.runtime ?? "script"}).`;
+            return `▶ Step ${data.step ?? "?"}: ${code(data.stateId)} started (${data.runtime ?? data.type ?? "script"}).`;
         case "workflow.state_completed": {
             const parts = [`✓ Step ${data.step ?? "?"}: ${code(data.stateId)} → **${data.outcome ?? "?"}**`];
             const duration = formatDuration(data.durationMs);

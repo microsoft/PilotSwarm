@@ -109,3 +109,20 @@ test("Stop and Steer forward every option, including the request id, unchanged",
     assert.equal(calls[1].url, `https://portal.example.com${API_PREFIX}/management/sessions/s1/stop-turn`);
     assert.deepEqual(JSON.parse(calls[1].options.body), { options: { requestId: "r-2", reason: "enough", timeoutMs: 5000 } });
 });
+
+test("readWorkflow reads GET /sessions/:sessionId/workflow, with the run in the query only when one is named", async () => {
+    const view = { workflowId: "s1", run: null };
+    const { transport, calls } = createTransport({ responses: [
+        jsonResponse({ ok: true, result: view }),
+        jsonResponse({ ok: true, result: view }),
+        jsonResponse({ ok: false, error: { code: "WORKFLOW_NOT_FOUND", message: "This session is not a version 2 workflow." } }, { status: 404 }),
+    ] });
+    assert.deepEqual(await transport.readWorkflow("s1"), view);
+    assert.deepEqual(await transport.readWorkflow("s1", { runId: "run-1" }), view);
+    await assert.rejects(transport.readWorkflow("agent-1"), (error) => error.code === "WORKFLOW_NOT_FOUND" && error.status === 404);
+    assert.equal(calls[0].url, `https://portal.example.com${API_PREFIX}/sessions/s1/workflow`);
+    assert.equal(calls[0].options.method, "GET");
+    assert.equal(calls[0].options.body, undefined);
+    assert.equal(calls[1].url, `https://portal.example.com${API_PREFIX}/sessions/s1/workflow?runId=run-1`);
+    assert.equal(calls[2].url, `https://portal.example.com${API_PREFIX}/sessions/agent-1/workflow`);
+});

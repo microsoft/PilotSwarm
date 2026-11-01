@@ -161,6 +161,8 @@ import {
     type SystemAgentSessionPlan,
 } from "./system-agents.js";
 import type { ArtifactStore } from "./session-store.js";
+import { readWorkflowV2View } from "./workflow/v2/tools.js";
+import { WorkflowStoreError } from "./workflow/v2/store.js";
 import {
     AgentPackageValidationError,
     deleteAgentPackageEverywhere,
@@ -1863,6 +1865,42 @@ export class PilotSwarmManagementClient {
             workspace: (result.workspace ?? null) as SessionWorkspace | null,
             ...(result.path !== undefined ? { path: result.path } : {}),
         };
+    }
+
+    /**
+     * Workflow v2: the read-only view of a workflow session (readWorkflow,
+     * GET /api/v1/sessions/:sessionId/workflow, access session:read): its
+     * definition state, current revision with its diagnostics, graph, runs,
+     * and one run (runId, default the live run) with its node executions,
+     * typed input inbox and outbox, bounded as the read_workflow tool bounds
+     * them; the YAML is omitted. Authorization is the caller's (the portal
+     * gates session:read, with its not-found privacy, before this runs; the
+     * direct client is trusted). This is the human read adapter, separate
+     * from the agent tool: it never acts as the workflow's parent, and it
+     * changes nothing. A missing or deleted session is NOT_FOUND (404), a
+     * session that is not a version 2 workflow WORKFLOW_NOT_FOUND (404), a
+     * run that is not one of its runs RUN_NOT_FOUND (404), and an invalid run
+     * id INVALID_REQUEST (400).
+     */
+    async readWorkflow(sessionId: string, options: { runId?: string | null } = {}): Promise<Record<string, unknown>> {
+        this._ensureStarted();
+        const failure = (code: string, status: number, message: string): Error => Object.assign(new Error(message), { code, status });
+        const runId = options?.runId ?? null;
+        if (runId !== null && (typeof runId !== "string" || !runId.trim() || runId.length > 256)) {
+            throw failure("INVALID_REQUEST", 400, "runId must be a run id of 1 to 256 characters.");
+        }
+        const session = await this._catalog!.getSession(sessionId);
+        if (!session || session.deletedAt) throw failure("NOT_FOUND", 404, "Session not found.");
+        const store = this._catalog!.workflowStore?.();
+        if (session.sessionKind !== "workflow" || !store) throw failure("WORKFLOW_NOT_FOUND", 404, "This session is not a version 2 workflow.");
+        try {
+            return await readWorkflowV2View(store, sessionId, { runId });
+        } catch (error) {
+            if (error instanceof WorkflowStoreError && (error.code === "WORKFLOW_NOT_FOUND" || error.code === "RUN_NOT_FOUND")) {
+                throw failure(error.code, 404, error.message);
+            }
+            throw error;
+        }
     }
 
     /**
