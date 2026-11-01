@@ -107,7 +107,7 @@ export interface IntakeInvocationItem {
 /** The logical turn invocation that carries a fixed batch of admitted items (design 5.5). */
 export interface IntakeInvocation {
     invocationId: string;
-    /** In arrival order; never grows, and does not change after its first send. */
+    /** In arrival order; never grows, and does not change after its first send. Empty only once every item was cancelled unsent. */
     items: IntakeInvocationItem[];
     /** The items' bound sizes as measured at their claims, in the same order. */
     itemBytes: number[];
@@ -211,8 +211,8 @@ function invocationOf(raw: unknown, path: string): IntakeInvocation {
     const value = intakeObject(raw, path, ["invocationId", "items", "itemBytes", "bound", "sent", "parked", "bindRetry", "settle"]);
     const rawItems = value.items;
     const rawSizes = value.itemBytes;
-    if (!Array.isArray(rawItems) || rawItems.length === 0 || rawItems.length > INTAKE_MAX_HELD) {
-        throw invalid("items", `is not a list of 1 to ${INTAKE_MAX_HELD} items`);
+    if (!Array.isArray(rawItems) || rawItems.length > INTAKE_MAX_HELD) {
+        throw invalid("items", `is not a list of at most ${INTAKE_MAX_HELD} items`);
     }
     if (!Array.isArray(rawSizes) || rawSizes.length !== rawItems.length) throw invalid("itemBytes", "is not one size per item");
     const items = rawItems.map((item: unknown, index: number) => itemOf(item, `${path}.items[${index}]`));
@@ -239,7 +239,12 @@ function invocationOf(raw: unknown, path: string): IntakeInvocation {
         bound: booleanOf(value.bound, `${path}.bound`), sent: booleanOf(value.sent, `${path}.sent`), parked,
         bindRetry: value.bindRetry === null ? null : retryOf(value.bindRetry, `${path}.bindRetry`), settle,
     };
-    // Only the states an invocation passes through (design 5.5).
+    // Only the states an invocation passes through (design 5.5). Its batch is empty only when every item was cancelled
+    // before its send: it then ends not_dispatched, and its end names no exchange.
+    if (invocation.items.length === 0
+        && !(invocation.bound && !invocation.sent && invocation.settle !== null && invocation.settle.outcome === "not_dispatched")) {
+        throw invalid("items", "is empty on an invocation that is not ending with every item cancelled before its send");
+    }
     if (!invocation.bound) {
         if (invocation.bindRetry === null) throw invalid("bindRetry", "is missing on an invocation that is not bound");
         if (invocation.sent || invocation.parked !== null || invocation.settle !== null) {

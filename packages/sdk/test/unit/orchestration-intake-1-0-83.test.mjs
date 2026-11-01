@@ -123,7 +123,7 @@ test("1.0.83 is not registered, and nothing outside its tree imports it", () => 
 });
 
 test("1.0.83 is the frozen 1.0.82 plus the intake: the files it does not change are the frozen ones", () => {
-    assert.deepEqual(tsFiles("orchestration_1_0_83"), [...tsFiles("orchestration_1_0_82"), "intake-state.ts"].sort());
+    assert.deepEqual(tsFiles("orchestration_1_0_83"), [...tsFiles("orchestration_1_0_82"), "intake-machine.ts", "intake-state.ts"].sort());
     for (const name of ["agents.ts", "queue.ts", "turn.ts", "utils.ts"]) {
         assert.equal(read(`orchestration_1_0_83/${name}`), read(`orchestration_1_0_82/${name}`), name);
     }
@@ -285,6 +285,12 @@ const INVALID = [
     ["too many unclaimed entries", s => ({ ...s, queue: Array.from({ length: INTAKE_MAX_UNCLAIMED + 1 }, (_, n) => unclaimed(n)) }), "$.intake.queue"],
     ["too many held entries", s => ({ ...s, invocation: null, queue: Array.from({ length: INTAKE_MAX_HELD + 1 }, (_, n) => held(n + 1, TEXT_A)) }), "$.intake.queue"],
     ["an invocation without items", s => ({ ...s, invocation: { ...s.invocation, items: [], itemBytes: [] } }), "$.intake.invocation.items"],
+    ["an empty batch that is not ending", s => ({ ...s, invocation: { ...s.invocation, sent: false, items: [], itemBytes: [] } }),
+        "$.intake.invocation.items"],
+    ["an empty batch ending after a send", s => ({ ...s, invocation: { ...s.invocation, items: [], itemBytes: [],
+        settle: { outcome: "interrupted", retry: null } } }), "$.intake.invocation.items"],
+    ["an empty batch before its bind", s => ({ ...s, invocation: { ...unboundInvocation([TEXT_B]), items: [], itemBytes: [] } }),
+        "$.intake.invocation.items"],
     ["sizes that are not one per item", s => ({ ...s, invocation: { ...s.invocation, itemBytes: [] } }), "$.intake.invocation.itemBytes"],
     ["sizes over what an invocation holds", s => ({ ...s, invocation: { ...s.invocation, itemBytes: [INTAKE_MAX_INVOCATION_ITEMS_BYTES] } }),
         "$.intake.invocation.itemBytes"],
@@ -334,6 +340,9 @@ test("a carried intake state is checked whole: each malformed part fails with it
         { ...boundInvocation([TEXT_A], { sent: true }), items: [{ ...boundInvocation([TEXT_A]).items[0], cancelRequested: true }] },
         boundInvocation([TEXT_A], { sent: true, settle: { outcome: "interrupted", retry: { attempts: 2, nextAttemptAtMs: 9 } } }),
         boundInvocation([TEXT_A], { settle: { outcome: "not_dispatched", retry: null } }),
+        // Every item cancelled before the send: it ends not_dispatched with an empty batch, also while its end is retried.
+        { ...boundInvocation([TEXT_A], { settle: { outcome: "not_dispatched", retry: null } }), items: [], itemBytes: [] },
+        { ...boundInvocation([TEXT_A], { settle: { outcome: "not_dispatched", retry: { attempts: 1, nextAttemptAtMs: 9 } } }), items: [], itemBytes: [] },
     ]) {
         const state = carried({ invocation });
         assert.deepEqual(restoreIntakeState(JSON.parse(JSON.stringify(state))).invocation, invocation);
