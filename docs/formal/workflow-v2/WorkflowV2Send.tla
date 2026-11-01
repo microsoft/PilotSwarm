@@ -13,9 +13,15 @@
 (* recipient may be deleted or stop allowing the sender; the recipient may *)
 (* refuse the message's content; a trusted caller of the public typed-     *)
 (* input service may give the recipient an input under the send's id.     *)
-(* Each step is one store transaction, and every step that reads or        *)
-(* decides the send takes the sending workflow's session lock first, so    *)
-(* the steps are atomic here. A failed attempt loses only its own          *)
+(* Each step is the state-changing store decision of its path: one store   *)
+(* transaction that takes the session locks first and decides on what it  *)
+(* reads after them. The typed-input service's prechecks (definition,     *)
+(* authority, run, contract and payload) are reads before acceptInput's    *)
+(* transaction, which locks both sessions and rechecks what can change.   *)
+(* For one existing run with a stable pinned definition, the model takes   *)
+(* that transaction as the acceptance's atomic commit point; read errors,  *)
+(* a missing run and each interleaving of a precheck with other steps are  *)
+(* not separate outcomes here. A failed attempt loses only its own         *)
 (* progress. Agent-session recipients are not in this model.               *)
 (***************************************************************************)
 EXTENDS Naturals
@@ -365,6 +371,10 @@ Prop_FirstDecisionKept ==
     [][/\ node # "pending" => node' = node
        /\ outbox # "pending" => (outbox' = outbox /\ rcpt' = rcpt)]_vars
 
+(* What recorded the delivery is written once, by the step that delivers   *)
+(* the message, and never changes after.                                   *)
+Prop_RecorderFixed == [][how' # how => (how = "none" /\ outbox = "pending" /\ outbox' = "delivered")]_vars
+
 (* The state is eventually decided.                                        *)
 Live_StateDecided == <>(node # "pending")
 
@@ -390,8 +400,10 @@ Wit_RefusedAfterDecision == ~(guarded /\ input = "none" /\ outbox = "failed")
 Wit_OwnLostReplyRecovered == ~(how = "begin" /\ byUs)
 (* An unbound input that a trusted caller gave with the message's content  *)
 (* is adopted by a later begin as the delivery (not the send's own         *)
-(* acceptance).                                                            *)
-Wit_UnboundSameAdopted == ~(outbox = "delivered" /\ ~byUs)
+(* acceptance). A delivery that the run's end, the collection or an        *)
+(* attempt's record made is not this witness: each writes its own `how`    *)
+(* (Prop_RecorderFixed).                                                   *)
+Wit_UnboundSameAdopted == ~(how = "begin" /\ outbox = "delivered" /\ rcpt = "own" /\ ~byUs)
 (* An attempt meets another input under the send's id                      *)
 (* (OPERATION_CONFLICT), and the message fails because of that refusal.    *)
 Wit_OtherRefused == failCause # "conflict"

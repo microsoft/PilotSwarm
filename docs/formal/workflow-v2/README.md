@@ -1088,8 +1088,16 @@ deleted or stop allowing the sender (`RecipientStops`); the recipient's
 contract may refuse the message's content (`Refuses`). A trusted caller of
 the public typed-input service may give the recipient an input under the
 send's id (`Give`), with the message's own content or another. Each step
-is one store transaction, and every step that reads or decides the send
-takes the sending workflow's session lock first, so the steps are atomic
+is the state-changing store decision of its path: one store transaction
+that takes the session locks first and decides on what it reads after
+them. The typed-input service's prechecks (definition, authority, run,
+pinned contract and payload, correlation and ttl) are reads before
+`acceptInput`'s transaction, which locks both sessions and rechecks what
+can change (the recipient, the authority, an earlier input, the send's
+decision, the run's status) before it stores the input. For one existing
+run with a stable pinned definition, the model takes that transaction as
+the acceptance's atomic commit point. Read errors, a missing run and each
+interleaving of a precheck with other steps are not separate outcomes
 here. The model checks the three findings of the review of `fa7c232f`
 (S2-GPT-01 to S2-GPT-03) against that commit's code, and the run's end
 that decides a pending message.
@@ -1158,13 +1166,14 @@ receipt with another message id, and a corrupt receipt.
 | `Inv_ReceiptHeld` | The input that a receipt names is the one the recipient holds. |
 | `SendSafety` | `TypeOK` and the six invariants above. |
 | `Prop_FirstDecisionKept` | The first decision of the state, and of the message with its receipt, is kept. |
+| `Prop_RecorderFixed` | What recorded the delivery (`how`) is written once, by the step that delivers the message, and never changes after. |
 | `Live_StateDecided` | The state is eventually decided (under the fairness below). |
 | `Live_MessageDecided` | The message is eventually decided (under the fairness below). |
 | `Wit_CollectRecords` | Witness: the controller's collection records the acceptance after the send orchestration ended without a record. |
 | `Wit_EndRecords` | Witness: the run's end records an acceptance made before the cancel, and the state keeps the cancel. |
 | `Wit_RefusedAfterDecision` | Witness: an acceptance is refused because the send was decided first, and the recipient holds nothing. |
 | `Wit_OwnLostReplyRecovered` | Witness: the send's own acceptance lost its reply (the attempt failed after it) and the next attempt's begin records it (`Begin`, `Accept`, `Crash`, `Begin`). |
-| `Wit_UnboundSameAdopted` | Witness: an unbound input that a trusted caller gave with the message's content is adopted by a later begin as the delivery. It is not the send's own acceptance. |
+| `Wit_UnboundSameAdopted` | Witness: an unbound input that a trusted caller gave with the message's content is adopted by a later begin as the delivery (`how = begin`, receipt `own`, not `byUs`). It is not the send's own acceptance, and a delivery by the run's end, the collection or an attempt's record does not count (the review check below). |
 | `Wit_OtherRefused` | Witness: an attempt meets another input under the send's id (`OPERATION_CONFLICT`), and `Fail` fails the still-pending message because of that refusal (`failCause = conflict`). A message failed first by another step does not count. |
 | `Wit_InvalidRefused` | Witness: the recipient's contract refuses the content, and `Fail` fails the message because of that refusal (`failCause = invalid`). |
 | `Wit_RecipientGoneAtBegin` | Witness: a recipient deleted or no longer allowing the sender is refused inside the begin's transaction, which fails the state and the message (`failCause = begin-gone`). |
@@ -1174,6 +1183,7 @@ receipt with another message id, and a corrupt receipt.
 | `send-hd-safety` | this commit, `MaxAttempts = 2`, another input under the send's id, every environment step | `SendSafety`, `Prop_FirstDecisionKept` | PASS |
 | `send-hd-safety-same` | as `send-hd-safety`, the trusted caller gives the message's own content | the same | PASS |
 | `send-hd-safety-refused` | as `send-hd-safety`, the recipient's contract refuses the content | the same | PASS |
+| `send-hd-recorder` | as `send-hd-safety-same` | `SendSafety`, `Prop_RecorderFixed` | PASS |
 | `send-hd-live` | as `send-hd-safety` without the sending workflow's deletion | `Live_StateDecided`, `Live_MessageDecided` | PASS |
 | `send-hd-live-delete` | as `send-hd-safety` without the send orchestration's termination | `Live_StateDecided`, `Live_MessageDecided` | PASS |
 | `send-lim-delete-terminated` | as `send-hd-safety` | `Live_MessageDecided` | liveness violation: the stated limit (a deleted sending workflow whose send orchestration also ended leaves its message pending) |
@@ -1193,6 +1203,19 @@ receipt with another message id, and a corrupt receipt.
 A witness counts only when its trace shows the path its row names; a
 matching result class alone is not coverage.
 
+Review check for `Wit_UnboundSameAdopted`: every step that delivers the
+message writes what recorded it, and `send-hd-recorder` checks that this
+value is written only then and never changes after. So a delivery by
+another step never satisfies the witness:
+
+| Step | `how` it writes | Path that delivers an unbound input with the message's content |
+|---|---|---|
+| `Begin`, the acceptance found | `begin` | `Give`, `Begin`: the witness |
+| `Cancel`, the acceptance found | `end` | `Give`, `Cancel` |
+| `Collect` (`Conclude`) | `collect` | `Give`, `Terminate`, `Collect` |
+| `Record` | `attempt` | `Begin`, `Give`, `Accept` (the input found), `Record` |
+| `Fail`, `Exhausted` (`Conclude`) | `fail`, `exhausted` | `Begin`, `Give`, `RecipientStops`, `Accept` (refused), `Fail`; or the attempts used up after `Give`, then `Exhausted` |
+
 Each `send-rv-` case sets one switch of `fa7c232f` and keeps this commit's
 others, so its counterexample shows that one boundary. In `fa7c232f` the
 other lookups of an earlier acceptance (before `beginDelivery`, after a
@@ -1205,7 +1228,9 @@ History: the first run of this model (`008080cd`, 14 cases) is kept as
 evidence of that model. Its `wit-send-other-refused` trace (`Cancel`,
 `Give`) did not show the refusal its name claimed, which this revision's
 `failCause` corrects; its `wit-send-same-recorded` is this revision's
-`wit-send-unbound-same-adopted`.
+`wit-send-unbound-same-adopted`. The run of `113ff02f` (18 cases) is kept
+as evidence of that model; its `Wit_UnboundSameAdopted` did not require the
+begin, which this revision adds with `send-hd-recorder`.
 
 Limits:
 
@@ -1216,12 +1241,13 @@ Limits:
   queueing, the status read before the enqueue and the recipient
   session's 20-id window have only the send regressions as evidence, and
   durable recipient intake (design A) is not implemented.
-- The steps are atomic store transactions. The session-row locks, and the
-  order in which the code takes them (all session locks before run and
-  node locks), are assumed, not modeled. A lock cycle, which PostgreSQL
-  aborts and the caller retries, is an attempt's failure here. Lock-order
-  correctness and freedom from deadlock are not proved (every case sets
-  `CHECK_DEADLOCK FALSE`).
+- Each step is the store decision of its path, atomic at its commit point
+  (see the opening paragraph for the typed-input service's prechecks).
+  The session-row locks, and the order in which the code takes them (all
+  session locks before run and node locks), are assumed, not modeled. A
+  lock cycle, which PostgreSQL aborts and the caller retries, is an
+  attempt's failure here. Lock-order correctness and freedom from
+  deadlock are not proved (every case sets `CHECK_DEADLOCK FALSE`).
 - Liveness is eventual decision, not delivery. It holds only under weak
   fairness of the store's steps, the send orchestration and the
   controller: it assumes that the store eventually completes a step that
