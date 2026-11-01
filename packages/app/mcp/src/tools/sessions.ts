@@ -25,13 +25,14 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                 prompt: z.string().optional().describe("Initial message to send immediately after session creation (fire-and-forget)"),
                 reasoning_effort: z.string().optional().describe("Reasoning effort for the session's model (e.g. low, medium, high)"),
                 context_tier: z.string().optional().describe("Context-window tier for the session's model: 'default' (smaller window) or 'long_context'"),
+                compute_target: z.string().optional().describe("Compute target to run the session on: a full owner/label name or a supported shorthand"),
                 group_id: z.string().optional().describe("One of YOUR session groups to place the new session in (groups are private per-user organization; fails if the group is not yours)"),
                 splash: z.string().optional().describe("Splash text shown in the portal UI (agent-bound sessions only)"),
                 workspace_root: z.string().optional().describe("Session workspaces: a root name the deployment serves; the session works in that root"),
                 workspace_folder: z.string().optional().describe("Session workspaces: a folder relative to workspace_root (needs workspace_root)"),
             },
         },
-        async ({ model, agent, system_message, title, prompt, reasoning_effort, context_tier, group_id, splash, workspace_root, workspace_folder }) => {
+        async ({ model, agent, system_message, title, prompt, reasoning_effort, context_tier, compute_target, group_id, splash, workspace_root, workspace_folder }) => {
             try {
                 if (workspace_folder !== undefined && !workspace_root) {
                     return errorResult("workspace_folder needs workspace_root", {});
@@ -59,6 +60,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                             boundAgentName: agent,
                             model,
                             systemMessage: system_message,
+                            computeTarget: compute_target,
                             ...(workspace ? { workspace } : {}),
                         });
                     } else {
@@ -67,6 +69,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                             title,
                             reasoningEffort: reasoning_effort,
                             contextTier: context_tier,
+                            computeTarget: compute_target,
                             groupId: group_id,
                             splash,
                             ...(workspace ? { workspace } : {}),
@@ -78,6 +81,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                         ...(ctx.webMode ? {} : { systemMessage: system_message }),
                         reasoningEffort: reasoning_effort,
                         contextTier: context_tier,
+                        computeTarget: compute_target,
                         groupId: group_id,
                         ...(workspace ? { workspace } : {}),
                     } as any);
@@ -124,6 +128,7 @@ export function registerSessionTools(server: McpServer, ctx: ServerContext) {
                                     warning: "system_message has no Web API carrier and was NOT applied — bind the session to an agent whose definition carries the prompt, or run the MCP server in direct mode.",
                                 }),
                                 model: model ?? "default",
+                                ...(compute_target ? { compute_target } : {}),
                                 title: title ?? null,
                                 ...(workspace ? { workspace } : {}),
                                 ...(prompt !== undefined && {

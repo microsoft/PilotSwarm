@@ -104,8 +104,8 @@ sessions return not-found to avoid an existence oracle.
 | Operation | Route | Parameters | Summary |
 |---|---|---|---|
 | listSessions | `GET /api/v1/sessions` | — | List session summaries. |
-| createSession | `POST /api/v1/sessions` | model (body), reasoningEffort (body), contextTier (body), groupId (body), visibility (body) | Create a session. Owner is the authenticated principal; visibility defaults to the deployment default. `groupId` is an initial placement into one of **your** groups — `403` if the group is missing or not yours. |
-| createSessionForAgent | `POST /api/v1/sessions/for-agent` | agentName (body), model (body), reasoningEffort (body), contextTier (body), title (body), splash (body), initialPrompt (body), groupId (body), visibility (body) | Create a session bound to a named agent. Same `groupId` placement rule as createSession. |
+| createSession | `POST /api/v1/sessions` | model (body), reasoningEffort (body), contextTier (body), computeTarget (body), groupId (body), visibility (body) | Create a session. Owner is the authenticated principal; visibility defaults to the deployment default. `computeTarget` selects a full owner/label target name or supported shorthand. `groupId` is an initial placement into one of **your** groups — `403` if the group is missing or not yours. |
+| createSessionForAgent | `POST /api/v1/sessions/for-agent` | agentName (body), model (body), reasoningEffort (body), contextTier (body), computeTarget (body), title (body), splash (body), initialPrompt (body), groupId (body), visibility (body) | Create a session bound to a named agent. Same `computeTarget` and `groupId` rules as createSession. |
 | getSession | `GET /api/v1/sessions/:sessionId` | sessionId (path) | Get one session view (live orchestration status). |
 | deleteSession | `DELETE /api/v1/sessions/:sessionId` | sessionId (path) | Cancel and soft-delete a session. |
 | sendMessage | `POST /api/v1/sessions/:sessionId/messages` | sessionId (path), prompt (body), options (body) | Send a prompt (options: { enqueueOnly?, clientMessageIds? }). |
@@ -311,6 +311,26 @@ data or reveals anyone else's grouping.
 | setProviderAllowance **[admin]** | `PUT /api/v1/management/providers/:name/allowance` | name (path), pct (body) | Set the per-user share of shared-provider limits. |
 | setProviderHold **[admin]** | `PUT /api/v1/management/providers/:name/hold` | name (path), untilUtc?, release? (body) | Hold or release new turns against a provider. |
 | listPausedSessions | `GET /api/v1/providers/paused` | — | Sessions waiting on a provider, limit, allowance, or hold; fleet-wide for admins, own sessions otherwise. |
+
+### Compute targets
+
+Targets name an installed compute-provider kind and its provider-specific
+configuration. Personal targets belong to the caller; shared targets require
+an administrator. Probe operations run through a worker and store the target's
+latest advertisement.
+
+| Operation | Route | Parameters | Summary |
+|---|---|---|---|
+| listComputeTargets | `GET /api/v1/compute-targets` | — | List shared targets and the caller's own targets. |
+| listComputeTargetModels | `GET /api/v1/compute-targets/models` | name (query) | List PilotSwarm runtime models and the selected target's advertised host model options. |
+| createMyComputeTarget | `POST /api/v1/me/compute-targets` | name or label, kind, displayName?, config? (body) | Create a target in the caller's personal namespace. |
+| updateMyComputeTarget | `PATCH /api/v1/me/compute-targets/:name` | name (path), displayName?, config?, enabled? (body) | Update or enable/disable one of the caller's personal targets. |
+| deleteMyComputeTarget | `DELETE /api/v1/me/compute-targets/:name` | name (path) | Delete one of the caller's personal targets. |
+| probeMyComputeTarget | `POST /api/v1/me/compute-targets/:name/probe` | name (path) | Check a personal target on a worker and record its advertised options. |
+| createComputeTarget **[admin]** | `POST /api/v1/management/compute-targets` | name or label, kind, displayName?, config? (body) | Create a target in the shared namespace. |
+| updateComputeTarget **[admin]** | `PATCH /api/v1/management/compute-targets/:name` | name (path), displayName?, config?, enabled? (body) | Update or enable/disable a shared target. |
+| deleteComputeTarget **[admin]** | `DELETE /api/v1/management/compute-targets/:name` | name (path) | Delete a shared target. |
+| probeComputeTarget **[admin]** | `POST /api/v1/management/compute-targets/:name/probe` | name (path) | Check a shared target on a worker and record its advertised options. |
 
 Trusted session creation resolves `explicit → user default → cluster default →
 first usable provider/model`, validates capabilities, and writes the exact

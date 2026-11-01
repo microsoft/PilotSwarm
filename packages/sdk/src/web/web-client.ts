@@ -59,6 +59,7 @@ export class WebPilotSwarmClient {
         model?: string;
         reasoningEffort?: string;
         contextTier?: string;
+        computeTarget?: string | null;
         groupId?: string | null;
         onUserInputRequest?: UserInputHandler;
     } & Record<string, unknown>): Promise<WebPilotSwarmSession> {
@@ -71,8 +72,10 @@ export class WebPilotSwarmClient {
             model: config?.model,
             reasoningEffort: config?.reasoningEffort,
             contextTier: config?.contextTier,
+            computeTarget: config?.computeTarget,
             groupId: config?.groupId,
             ...(config?.workspace != null ? { workspace: config.workspace } : {}),
+            ...(config?.computeTarget != null ? { computeTarget: config.computeTarget } : {}),
         });
         return new WebPilotSwarmSession(view.sessionId, this._api, config?.onUserInputRequest);
     }
@@ -86,6 +89,8 @@ export class WebPilotSwarmClient {
         splashMobile?: string;
         initialPrompt?: string;
         groupId?: string | null;
+        computeTarget?: string | null;
+        computeTarget?: string | null;
         /** Session workspaces: the working folder, { root, folder? }. */
         workspace?: { root: string; folder?: string } | null;
         onUserInputRequest?: UserInputHandler;
@@ -100,7 +105,9 @@ export class WebPilotSwarmClient {
             splashMobile: opts?.splashMobile,
             initialPrompt: opts?.initialPrompt,
             groupId: opts?.groupId,
+            computeTarget: opts?.computeTarget,
             ...(opts?.workspace != null ? { workspace: opts.workspace } : {}),
+            ...(opts?.computeTarget != null ? { computeTarget: opts.computeTarget } : {}),
         });
         return new WebPilotSwarmSession(view.sessionId, this._api, opts?.onUserInputRequest);
     }

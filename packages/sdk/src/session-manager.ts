@@ -1571,6 +1571,25 @@ export class SessionManager {
         }
     }
 
+    /**
+     * Worker entry point for management probes. Durable orchestration input
+     * contains only the target id, never provider-owned target configuration.
+     */
+    async probeComputeTargetById(
+        targetId: string,
+        principal: ComputePrincipal | null,
+    ): Promise<{ ok: true; target: ComputeTarget } | ComputeFailure> {
+        const target = await this.sessionCatalog?.computeTargets?.resolveForSession(targetId, principal, false);
+        if (!target) {
+            return {
+                ok: false,
+                code: COMPUTE_ERROR_CODES.NOT_FOUND,
+                message: `the compute target "${targetId}" does not exist or is not available to this account`,
+            };
+        }
+        return this.probeComputeTarget(target, { principal });
+    }
+
     /** Run one provider call with a deadline; a provider that does not answer fails the call. */
     private async _computeCall<T>(name: string, timeoutMs: number, call: (signal: AbortSignal) => Promise<T>): Promise<T> {
         const controller = new AbortController();
