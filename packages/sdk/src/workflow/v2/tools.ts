@@ -34,7 +34,7 @@ export const UPDATE_WORKFLOW_TOOL_SPEC = {
         + "publish (expected_revision + definition_hash of the exact reviewed revision; does not start), "
         + "publish_and_start (publish fields + inputs, optional vars), start (definition_hash + inputs, optional vars; one live run per workflow child), "
         + "set_vars (set: {key: JSON value} and/or delete: [keys], expected_kv_revision from read_workflow; one atomic batch on the run's open KV; "
-        + "null is a value, deletion is explicit; a state admitted later reads it as context.kv or ${kv.key}, one already admitted keeps its snapshot), "
+        + "null is a value, deletion is explicit; a state admitted later reads it as context.kv, ${kv.key} or ${kv[\"any key\"]}, one already admitted keeps its snapshot), "
         + "pause (the run admits no new state; work already running finishes and its result is kept), resume (a paused run only), "
         + "cancel (asks the run's controller to cancel it; read_workflow shows when it has ended), "
         + "or recover (run_id optional, default the live run): when read_workflow shows needsRecovery, a run whose controller ended "

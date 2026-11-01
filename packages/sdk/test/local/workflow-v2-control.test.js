@@ -9,7 +9,10 @@
  * - pause and resume: a paused run admits no new state, while work already
  *   running finishes and its result is kept; resume admits again;
  * - cancel while paused, a run paused before its controller began, and
- *   recover of such a run whose dispatch was lost.
+ *   recover of such a run whose dispatch was lost;
+ * - bindings that name any KV key: `??`, quotes, backslashes, `${` and `}`
+ *   inside a JSON-string key or default are data, in a typed script input
+ *   and a typed terminal output.
  *
  * Pause, resume and KV are not in the formal model (README "Model
  * simplifications"); these regressions are their evidence.
@@ -19,6 +22,8 @@ import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
+import { evaluateBindingTemplate, parseBindingExpression, WorkflowBindingError } from "../../src/workflow/v2/bindings.ts";
+import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
 import { createWorkflowV2 } from "../../src/workflow/v2/service.ts";
 import { readWorkflowFromTool, updateWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
 import { registerWorkflowV2, WORKFLOW_V2_ACTIVITIES } from "../../src/workflow/v2/runtime.ts";
@@ -85,6 +90,109 @@ states:
     type: terminal
     outcome: succeeded
     output: { seen: "\${input}", proto: '\${kv["__proto__"] ?? "deleted"}', ctor: "\${kv.constructor}" }
+`;
+
+/** KV keys that hold the operator `??`, quotes, a backslash, `${` and `}` as data. */
+const KEY = { op: "a??b", quoted: 'say "hi" ?? x', slash: "back\\slash??", end: "end\\", ownNull: "own??null", dollar: "a${b}", brace: "}" };
+const VARS = { [KEY.op]: 1, [KEY.quoted]: "q", [KEY.slash]: "s", [KEY.end]: "e", [KEY.ownNull]: null, [KEY.dollar]: "d", [KEY.brace]: "b" };
+
+/** The script input template of BINDING_KEYS: each value is the text an author writes (JSON-string keys, no Unicode escapes). */
+const READ_INPUT = {
+    op: '${kv["a??b"]}',
+    opNull: '${kv["a??b"] ?? null}',
+    quoted: '${kv["say \\"hi\\" ?? x"]}',
+    slash: '${kv["back\\\\slash??"] ?? "unused"}',
+    end: '${kv["end\\\\"]??1}',
+    ownNull: '${kv["own??null"]}',
+    ownNullDefault: '${kv["own??null"] ?? "unused"}',
+    missing: '${kv["no??such"] ?? "fallback ?? text"}',
+    missingNull: '${kv["no??such"] ?? null}',
+    dollar: '${kv["a${b}"]}',
+    brace: '${kv[ "}" ] ?? "}"}',
+};
+
+/** READ_INPUT with VARS: a present value wins over a default, an own null is a value, only a missing key takes its default. */
+const SEEN = { op: 1, opNull: 1, quoted: "q", slash: "s", end: "e", ownNull: null, ownNullDefault: null,
+    missing: "fallback ?? text", missingNull: null, dollar: "d", brace: "b" };
+
+/**
+ * A typed script state whose input names the keys of VARS, and a typed
+ * terminal that names a key of its input, of the KV and of the static inputs.
+ * The YAML single-quoted values are the texts of READ_INPUT.
+ */
+const BINDING_KEYS = `
+apiVersion: pilotswarm.dev/v2-draft
+kind: Workflow
+metadata: { name: binding-keys, version: "1.0.0" }
+inputs:
+  schema: { type: object, required: ["x??y"], properties: { "x??y": { type: integer } } }
+schemas:
+  Seen:
+    type: object
+    additionalProperties: false
+    required: [op, opNull, quoted, slash, end, ownNull, ownNullDefault, missing, missingNull, dollar, brace]
+    properties:
+      op: { type: integer }
+      opNull: { type: integer }
+      quoted: { type: string }
+      slash: { type: string }
+      end: { type: string }
+      ownNull: { type: "null" }
+      ownNullDefault: { type: "null" }
+      missing: { type: string }
+      missingNull: { type: "null" }
+      dollar: { type: string }
+      brace: { type: string }
+  Echo:
+    type: object
+    additionalProperties: false
+    required: [seen, keys]
+    properties:
+      seen: { $ref: "#/schemas/Seen" }
+      keys: { type: array, items: { type: string } }
+  Done:
+    type: object
+    additionalProperties: false
+    required: [seen, quoted, viaKv, missing, fromInputs]
+    properties:
+      seen: { $ref: "#/schemas/Seen" }
+      quoted: { type: string }
+      viaKv: { type: string }
+      missing: { type: string }
+      fromInputs: { type: integer }
+outputSchema: { $ref: "#/schemas/Done" }
+initial: read
+states:
+  read:
+    type: script
+    input:
+      op: '\${kv["a??b"]}'
+      opNull: '\${kv["a??b"] ?? null}'
+      quoted: '\${kv["say \\"hi\\" ?? x"]}'
+      slash: '\${kv["back\\\\slash??"] ?? "unused"}'
+      end: '\${kv["end\\\\"]??1}'
+      ownNull: '\${kv["own??null"]}'
+      ownNullDefault: '\${kv["own??null"] ?? "unused"}'
+      missing: '\${kv["no??such"] ?? "fallback ?? text"}'
+      missingNull: '\${kv["no??such"] ?? null}'
+      dollar: '\${kv["a\${b}"]}'
+      brace: '\${kv[ "}" ] ?? "}"}'
+    inputSchema: { $ref: "#/schemas/Seen" }
+    outputSchema: { $ref: "#/schemas/Echo" }
+    source: |
+      await setResult("ok", { seen: context.input, keys: Object.keys(context.kv).sort() });
+    transition: { next: { ok: done, invalid_input: bad } }
+  done:
+    type: terminal
+    outcome: succeeded
+    output:
+      seen: '\${input.seen}'
+      quoted: '\${input.seen["quoted"]}'
+      viaKv: '\${kv["back\\\\slash??"]}'
+      missing: '\${input["no??such"] ?? "absent ?? here"}'
+      fromInputs: '\${inputs["x??y"]}'
+    outputSchema: { $ref: "#/schemas/Done" }
+  bad: { type: terminal, outcome: blocked, output: '\${input}' }
 `;
 
 /** A KV map's own entries, sorted by key, and whether its prototype is the plain one. */
@@ -400,6 +508,94 @@ describe("workflow v2 run control on the real runtime", () => {
             expect(first.output).toEqual({ kv: { mode: "b" }, input: { mode: "b" } });
             const started = await h.host.catalog.getSessionEvents(id, 0, 50, ["workflow.state_started"]);
             expect(started.map(event => [event.data.stateId, event.data.kvRevision])).toEqual([["first", 2], ["done", 2]]);
+        } finally { await h.stop(); }
+    });
+});
+
+describe("workflow v2 bindings name any KV key", () => {
+    it("reads ??, quotes, backslashes, ${ and } inside a JSON-string key or default as data, and still refuses them outside one", () => {
+        // The YAML spells the texts of READ_INPUT, and the compiler accepts them unchanged.
+        const compiled = compileWorkflowV2(BINDING_KEYS);
+        expect(compiled.valid, JSON.stringify(compiled.diagnostics)).toBe(true);
+        expect(compiled.ir.nodes.read.input).toEqual(READ_INPUT);
+        expect(compiled.ir.nodes.done.output.viaKv).toBe('${kv["back\\\\slash??"]}');
+
+        const parse = (text) => parseBindingExpression(text, "$");
+        const kvPath = (segments, more = {}) => ({ root: "kv", segments, hasDefault: false, defaultValue: null, ...more });
+        expect(parse(READ_INPUT.op)).toEqual(kvPath([KEY.op]));
+        expect(parse(READ_INPUT.opNull)).toEqual(kvPath([KEY.op], { hasDefault: true }));
+        expect(parse(READ_INPUT.quoted)).toEqual(kvPath([KEY.quoted]));
+        expect(parse(READ_INPUT.slash)).toEqual(kvPath([KEY.slash], { hasDefault: true, defaultValue: "unused" }));
+        expect(parse(READ_INPUT.end)).toEqual(kvPath([KEY.end], { hasDefault: true, defaultValue: 1 }));
+        expect(parse(READ_INPUT.missing)).toEqual(kvPath(["no??such"], { hasDefault: true, defaultValue: "fallback ?? text" }));
+        expect(parse(READ_INPUT.dollar)).toEqual(kvPath([KEY.dollar]));
+        expect(parse(READ_INPUT.brace)).toEqual(kvPath([KEY.brace], { hasDefault: true, defaultValue: "}" }));
+        expect(parse('${input[ "x]??y" ][0].z}')).toEqual({ root: "input", segments: ["x]??y", 0, "z"], hasDefault: false, defaultValue: null });
+        expect(parse('${kv.a ?? "${b}"}')).toEqual(kvPath(["a"], { hasDefault: true, defaultValue: "${b}" }));
+        expect(parse("plain ?? text")).toBeNull();
+
+        // Present, own null and missing, with and without a default.
+        const scope = { inputs: {}, input: { "x]??y": [{ z: 3 }] }, kv: VARS, runtime: null };
+        expect(evaluateBindingTemplate(READ_INPUT, scope)).toEqual(SEEN);
+        expect(evaluateBindingTemplate({ deep: '${input[ "x]??y" ][0].z}', text: "plain ?? text" }, scope)).toEqual({ deep: 3, text: "plain ?? text" });
+        expect(() => evaluateBindingTemplate('${kv["no??such"]}', scope, "$.missing")).toThrow("$.missing: could not resolve 'no??such' of kv");
+
+        // Outside a JSON string, a second expression, a bad bracket or a bad default is still refused.
+        const refusal = (text) => {
+            try { parse(text); }
+            catch (error) { return error instanceof WorkflowBindingError ? [error.code, error.message] : String(error); }
+            return null;
+        };
+        const exactlyOne = ["WORKFLOW_BINDING_INVALID", "$: a value that uses ${...} must be exactly one expression"];
+        const invalid = (message) => ["WORKFLOW_BINDING_INVALID", `$: ${message}`];
+        expect([
+            '${kv.a}${kv.b}', 'x ${kv["a??b"]}', '${kv["a"] ?? null} ${kv.b}', '${kv["a" x]}', '${kv["open]}', '${kv["a"}',
+            '${kv["a"] ?? nope}', '${kv["a"] ?? "x" ?? "y"}', '${kv[1.5]}', '${kv["\\x"]}',
+        ].map(refusal)).toEqual([
+            exactlyOne, exactlyOne, exactlyOne,
+            invalid(`bracket segment must be an index or a JSON string near '["a" x]'`),
+            invalid(`unclosed '[' near '["open]'`),
+            invalid(`unclosed '[' near '["a"'`),
+            invalid("default 'nope' must be a JSON literal"),
+            invalid(`default '"x" ?? "y"' must be a JSON literal`),
+            invalid("bracket segment must be an index or a JSON string near '[1.5]'"),
+            invalid(`bracket segment must be an index or a JSON string near '["\\x"]'`),
+        ]);
+        // The compiler reports a refused binding at the template that holds it.
+        const refused = compileWorkflowV2(BINDING_KEYS.replace(READ_INPUT.opNull, READ_INPUT.opNull.replace("null", "nope")));
+        expect(refused.valid).toBe(false);
+        expect(refused.diagnostics).toContainEqual(expect.objectContaining({ severity: "error", code: "WORKFLOW_BINDING_INVALID",
+            path: "states.read.input", message: "states.read.input.opNull: default 'nope' must be a JSON literal" }));
+    });
+
+    it("gives a typed script the values those keys name, and a typed terminal its output; a wrong type fails the input contract", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv());
+        try {
+            const parent = await parentOf(h);
+            const start = async (vars) => {
+                const id = randomUUID();
+                const created = await createWorkflowV2(h.host, { workflowSessionId: id, parentSessionId: parent.parentId, yaml: BINDING_KEYS,
+                    actor: ACTOR, operationId: "start", start: { inputs: { "x??y": 5 }, vars } });
+                return { id, runId: created.receipt.run.runId };
+            };
+            const typed = await start(VARS);
+            const run = await finished(h, typed.runId);
+            expect(run, JSON.stringify(run)).toMatchObject({ status: "completed", terminalOutcome: "succeeded", terminalNodeId: "done" });
+            const [read, done] = await h.store.listNodeExecutions(typed.runId);
+            expect(read).toMatchObject({ nodeId: "read", outcome: "ok", winner: "effect", kvRevision: 1, input: SEEN });
+            expect(read.output).toEqual({ seen: SEEN, keys: Object.keys(VARS).sort() });
+            expect(done).toMatchObject({ nodeId: "done", kvRevision: 1 });
+            expect(run.terminalOutput).toEqual({ seen: SEEN, quoted: "q", viaKv: "s", missing: "absent ?? here", fromInputs: 5 });
+            expect(entriesOf(JSON.parse((await parent.read(typed.id)).run.kv))).toEqual(entriesOf(VARS));
+
+            // The same bindings with a value of the wrong type: the input contract refuses it before any script starts.
+            const wrong = await start({ ...VARS, [KEY.op]: "1" });
+            const blocked = await finished(h, wrong.runId);
+            expect(blocked, JSON.stringify(blocked)).toMatchObject({ status: "completed", terminalOutcome: "blocked", terminalNodeId: "bad",
+                terminalOutput: { code: "invalid_input", message: "Input does not match Seen." } });
+            expect(blocked.terminalOutput.details).toContainEqual(expect.objectContaining({ path: "/op" }));
+            const [refused] = await h.store.listNodeExecutions(wrong.runId);
+            expect(refused).toMatchObject({ nodeId: "read", outcome: "invalid_input", resultKind: "runtime_error", winner: "controller", input: { ...SEEN, op: "1" } });
         } finally { await h.stop(); }
     });
 });

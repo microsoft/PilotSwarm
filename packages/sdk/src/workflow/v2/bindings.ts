@@ -8,7 +8,9 @@ import { assertJsonValue, isJsonObject, type JsonValue } from "./json.js";
  * Roots: `inputs` (static run inputs), `input` (the value arriving at the
  * node: the predecessor's output, or its runtime error envelope on an error
  * route), `kv` (the pinned KV snapshot) and `runtime` (`runtime.error`).
- * Segments: `.name`, `[index]` or `["any key"]`.
+ * Segments: `.name`, `[index]` or `["any key"]` (a JSON string, so any open
+ * KV key can be named). The operator `??` and a nested `${` count only
+ * outside JSON strings: a quoted key or a string default may contain them.
  */
 
 export const BINDING_ROOTS = ["inputs", "input", "kv", "runtime"] as const;
@@ -41,23 +43,60 @@ export class WorkflowBindingError extends Error {
 }
 
 const IDENT = /^[A-Za-z_$][A-Za-z0-9_$-]*/;
+const EXACTLY_ONE = "a value that uses ${...} must be exactly one expression";
+
+/**
+ * The index of the quote that closes the JSON string whose opening quote is
+ * at `start` (a backslash escapes the character after it), or -1 when the
+ * string is not closed.
+ */
+function jsonStringEnd(text: string, start: number): number {
+    for (let index = start + 1; index < text.length; index += 1) {
+        if (text[index] === "\\") { index += 1; continue; }
+        if (text[index] === "\"") return index;
+    }
+    return -1;
+}
+
+/**
+ * Where, outside JSON strings, an expression body has its first default
+ * operator `??` and its first `${` (-1 when it has none). Only a JSON string
+ * holds a quote in a valid body (a `["key"]` segment or a string default),
+ * and a key or a default may contain `??`, `${` or `}` as data.
+ */
+function scanExpressionBody(body: string): { defaultAt: number; nestedAt: number } {
+    let defaultAt = -1;
+    let nestedAt = -1;
+    for (let index = 0; index < body.length; index += 1) {
+        const char = body[index];
+        if (char === "\"") {
+            const end = jsonStringEnd(body, index);
+            // An unclosed string: the segment or default parse reports it.
+            if (end === -1) break;
+            index = end;
+            continue;
+        }
+        if (defaultAt === -1 && char === "?" && body[index + 1] === "?") { defaultAt = index; index += 1; continue; }
+        if (nestedAt === -1 && char === "$" && body[index + 1] === "{") nestedAt = index;
+    }
+    return { defaultAt, nestedAt };
+}
 
 /** Parse `text` when it is an expression string; null for a plain string. */
 export function parseBindingExpression(text: string, path: string): BindingExpression | null {
     const trimmed = text.trim();
-    if (!(trimmed.startsWith("${") && trimmed.endsWith("}") && trimmed.indexOf("${", 2) === -1)) {
-        if (text.includes("${")) {
-            throw new WorkflowBindingError("a value that uses ${...} must be exactly one expression", path);
-        }
+    if (!(trimmed.startsWith("${") && trimmed.endsWith("}"))) {
+        if (text.includes("${")) throw new WorkflowBindingError(EXACTLY_ONE, path);
         return null;
     }
-    let body = trimmed.slice(2, -1).trim();
+    const inner = trimmed.slice(2, -1);
+    const { defaultAt, nestedAt } = scanExpressionBody(inner);
+    if (nestedAt !== -1) throw new WorkflowBindingError(EXACTLY_ONE, path);
+    const body = (defaultAt === -1 ? inner : inner.slice(0, defaultAt)).trim();
     let hasDefault = false;
     let defaultValue: JsonValue = null;
-    const split = body.indexOf("??");
-    if (split !== -1) {
-        const literal = body.slice(split + 2).trim();
-        body = body.slice(0, split).trim();
+    if (defaultAt !== -1) {
+        const literal = inner.slice(defaultAt + 2).trim();
         let parsed: unknown;
         try { parsed = JSON.parse(literal); }
         catch { throw new WorkflowBindingError(`default '${literal}' must be a JSON literal`, path); }
@@ -80,32 +119,35 @@ export function parseBindingExpression(text: string, path: string): BindingExpre
             continue;
         }
         if (rest.startsWith("[")) {
-            const close = rest.startsWith("[\"") ? findStringBracketEnd(rest) : rest.indexOf("]");
-            if (close === -1) throw new WorkflowBindingError(`unclosed '[' near '${rest}'`, path);
-            const inner = rest.slice(1, close).trim();
-            if (/^\d+$/.test(inner)) segments.push(Number(inner));
-            else {
+            // `[index]` or `["key"]`, with optional whitespace inside the brackets.
+            const notIndex = `bracket segment must be an index or a JSON string near '${rest}'`;
+            let at = 1;
+            while (at < rest.length && /\s/.test(rest[at])) at += 1;
+            let segment: string | number;
+            if (rest[at] === "\"") {
+                const end = jsonStringEnd(rest, at);
+                if (end === -1) throw new WorkflowBindingError(`unclosed '[' near '${rest}'`, path);
                 let key: unknown;
-                try { key = JSON.parse(inner); }
-                catch { throw new WorkflowBindingError(`bracket segment must be an index or a JSON string near '${rest}'`, path); }
-                if (typeof key !== "string") throw new WorkflowBindingError("bracket segment must be an index or a JSON string", path);
-                segments.push(key);
+                try { key = JSON.parse(rest.slice(at, end + 1)); }
+                catch { throw new WorkflowBindingError(notIndex, path); }
+                if (typeof key !== "string") throw new WorkflowBindingError(notIndex, path);
+                segment = key;
+                at = end + 1;
+            } else {
+                const digits = /^\d+/.exec(rest.slice(at));
+                if (!digits) throw new WorkflowBindingError(notIndex, path);
+                segment = Number(digits[0]);
+                at += digits[0].length;
             }
-            rest = rest.slice(close + 1);
+            while (at < rest.length && /\s/.test(rest[at])) at += 1;
+            if (rest[at] !== "]") throw new WorkflowBindingError(at >= rest.length ? `unclosed '[' near '${rest}'` : notIndex, path);
+            segments.push(segment);
+            rest = rest.slice(at + 1);
             continue;
         }
         throw new WorkflowBindingError(`unexpected text '${rest}' in expression`, path);
     }
     return { root, segments, hasDefault, defaultValue };
-}
-
-function findStringBracketEnd(text: string): number {
-    // text starts with `["`; find the `"]` that closes the JSON string.
-    for (let index = 2; index < text.length; index += 1) {
-        if (text[index] === "\\") { index += 1; continue; }
-        if (text[index] === "\"") return text[index + 1] === "]" ? index + 1 : -1;
-    }
-    return -1;
 }
 
 /** Validate a template at compile time and return it as JSON. */
