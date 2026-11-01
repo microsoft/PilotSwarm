@@ -38,6 +38,17 @@ export function headingSlug(text) {
     return String(text || "").trim().toLowerCase().replace(/[^\p{L}\p{M}\p{N}\p{Pc} -]/gu, "").replace(/ /g, "-");
 }
 
+export function restrictMarkdownLinkToExternal(link) {
+    if (/^(https?:\/\/|mailto:)/i.test(link.getAttribute("href") || "")) {
+        link.setAttribute("target", "_blank");
+        link.setAttribute("rel", "noopener noreferrer");
+    } else {
+        const label = link.ownerDocument.createElement("span");
+        label.append(...link.childNodes);
+        link.replaceWith(label);
+    }
+}
+
 /**
  * Safe HTML for a markdown file.
  *
@@ -70,15 +81,10 @@ export function renderMarkdown(text, { images = null, escapeRawHtml = false, all
         slugs.set(slug, seen + 1);
         heading.id = `user-content-${seen ? `${slug}-${seen}` : slug}`;
     }
-    for (const link of Array.from(template.content.querySelectorAll("a[href]"))) {
+    for (const link of Array.from(template.content.querySelectorAll(externalLinksOnly ? "a" : "a[href]"))) {
         const href = link.getAttribute("href") || "";
         if (externalLinksOnly) {
-            if (/^(https?:\/\/|mailto:)/i.test(href)) {
-                link.setAttribute("target", "_blank");
-                link.setAttribute("rel", "noopener noreferrer");
-            } else {
-                link.removeAttribute("href");
-            }
+            restrictMarkdownLinkToExternal(link);
             continue;
         }
         if (href.startsWith("#")) {
