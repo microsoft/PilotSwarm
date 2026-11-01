@@ -41,7 +41,9 @@
  *   claims of one exchange (accept against refuse, either first, and one
  *   claim twice) decide once, and a real PostgreSQL failure at the outbox
  *   outcome, the sender's touch or the recipient's event rolls back every
- *   effect.
+ *   effect. The sender's read view shows each outcome beside the delivery it
+ *   never rewrites, and looks outcomes up for exactly the bounded page of
+ *   outbox messages it shows (INTAKE-VIEW).
  * - The guard (5.1): identity and text never change, the state and the
  *   processing move forward once, nothing goes back, nothing is deleted.
  *   Every check is a total boolean (INTAKE-S2-03, INTAKE-S2-04): a null
@@ -234,7 +236,7 @@ async function intakeHarness(env, { migrate = null } = {}) {
      * a waiter's first statement. The setting is this private pool's only;
      * stop() closes its connections.
      */
-    const control = { hook: null };
+    const control = { hook: null, reads: null };
     const hookedPool = new pg.Pool({ connectionString: env.store, max: 6, connectionTimeoutMillis: 10_000,
         statement_timeout: 15_000, lock_timeout: 10_000 });
     const connectHooked = async () => {
@@ -254,7 +256,11 @@ async function intakeHarness(env, { migrate = null } = {}) {
                 release: (...args) => client.release(...args),
             };
         },
-        query: (text, params) => hookedPool.query(text, params),
+        // The store's statements outside a transaction (its reads), recorded while `control.reads` is a list.
+        query: (text, params) => {
+            control.reads?.push({ sql: typeof text === "string" ? text : text.text, params });
+            return hookedPool.query(text, params);
+        },
     }, env.cmsSchema);
     /**
      * A-ISO, measured on a hooked connection: the default it inherits, the
@@ -1008,6 +1014,47 @@ describe("workflow v2 durable intake: the refusal transaction (store)", () => {
                 .toEqual([{ result: "refused_full", inserted: true }, { result: "refused_full", inserted: true }]);
             expect(await h.events(h.recipient, INTAKE_REFUSED_RECIPIENT_EVENT)).toHaveLength(6);
             expect(await h.sessionRow(h.recipient)).toEqual(recipientBefore);
+        } finally { await h.stop(); }
+    });
+
+    it("looks up intake outcomes for exactly the bounded page of outbox messages the view shows (INTAKE-VIEW)", { timeout: TIMEOUT }, async () => {
+        const h = await intakeHarness(getEnv());
+        try {
+            const run = await h.workflow();
+            // 55 durable messages, each with an outcome as the refusal transaction writes it (alternating, so a lookup that
+            // mixed rows up would show it); the view shows 50 of them.
+            const outcomes = new Map();
+            for (let ordinal = 1; ordinal <= 55; ordinal += 1) {
+                const exchangeId = await h.durable(run, { ordinal, payload: { n: ordinal } });
+                const outcome = ordinal % 2 === 0 ? "refused_full" : "refused_size";
+                await h.q("UPDATE SCHEMA.workflow_outbox SET intake_outcome = $2, intake_outcome_at = clock_timestamp() WHERE exchange_id = $1",
+                    [exchangeId, outcome]);
+                outcomes.set(exchangeId, outcome);
+            }
+            h.control.reads = [];
+            const view = await readWorkflowV2View(h.hooked, run.workflowSessionId, { runId: run.runId });
+            const lookups = h.control.reads.filter(read => read.sql.includes("intake_outcome IS NOT NULL"));
+            h.control.reads = null;
+            const shown = view.run.outbox.map(entry => entry.exchangeId);
+            expect(shown).toHaveLength(50);
+            // One lookup, scoped to the run and to exactly the shown exchanges; no other refusal of the run is read.
+            expect(lookups).toHaveLength(1);
+            expect(lookups[0].params[0]).toBe(run.runId);
+            expect([...lookups[0].params[1]].sort()).toEqual([...shown].sort());
+            expect(lookups[0].sql).toMatch(/exchange_id = ANY/);
+            expect(lookups[0].sql).not.toMatch(/LIMIT/i);
+            // Each shown entry carries its own outcome.
+            for (const entry of view.run.outbox) {
+                expect(entry.intakeOutcome, entry.exchangeId).toBe(outcomes.get(entry.exchangeId));
+                expect(entry.intakeOutcomeAt).toMatch(EXACT_TIME);
+            }
+            // A run whose outbox is empty asks nothing.
+            const empty = await h.workflow();
+            h.control.reads = [];
+            const emptyView = await readWorkflowV2View(h.hooked, empty.workflowSessionId, { runId: empty.runId });
+            expect(emptyView.run.outbox).toEqual([]);
+            expect(h.control.reads.filter(read => read.sql.includes("intake_outcome IS NOT NULL"))).toHaveLength(0);
+            h.control.reads = null;
         } finally { await h.stop(); }
     });
 

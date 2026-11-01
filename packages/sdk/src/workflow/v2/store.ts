@@ -2931,17 +2931,20 @@ export class WorkflowStore {
     }
 
     /**
-     * The intake outcomes of a run's outbox messages that have one, by
-     * exchange id (migration 0094; design 5.6): the recipient's intake refused
-     * the message after its delivery was recorded. Read apart from the
-     * message, whose state, attempts and receipt stay as the delivery
-     * recorded them.
+     * The intake outcomes of the run's outbox messages `exchangeIds` that have
+     * one, by exchange id (migration 0094; design 5.6): the recipient's intake
+     * refused the message after its delivery was recorded. Only the messages
+     * named are read (the caller names the bounded page it shows), and none
+     * when none are named. Read apart from the message, whose state,
+     * attempts and receipt stay as the delivery recorded them.
      */
-    async listOutboxIntakeOutcomes(runId: string): Promise<Map<string, { intakeOutcome: WorkflowIntakeRefusal; intakeOutcomeAt: string }>> {
+    async listOutboxIntakeOutcomes(runId: string, exchangeIds: readonly string[])
+        : Promise<Map<string, { intakeOutcome: WorkflowIntakeRefusal; intakeOutcomeAt: string }>> {
+        const outcomes = new Map<string, { intakeOutcome: WorkflowIntakeRefusal; intakeOutcomeAt: string }>();
+        if (exchangeIds.length === 0) return outcomes;
         const { rows } = await this.pool.query(
             `SELECT exchange_id, intake_outcome, ${isoUtc("intake_outcome_at")} AS intake_outcome_at_iso FROM ${this.t.outbox}
-              WHERE run_id = $1 AND intake_outcome IS NOT NULL`, [runId]);
-        const outcomes = new Map<string, { intakeOutcome: WorkflowIntakeRefusal; intakeOutcomeAt: string }>();
+              WHERE run_id = $1 AND exchange_id = ANY($2::text[]) AND intake_outcome IS NOT NULL`, [runId, [...exchangeIds]]);
         for (const row of rows) {
             const outcome = str(row, "intake_outcome");
             if (outcome !== "refused_full" && outcome !== "refused_size") return corrupt(`Unknown intake outcome ${outcome}.`);

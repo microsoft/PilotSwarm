@@ -315,9 +315,10 @@ export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId
     const nodes = selected ? await store.listNodeExecutions(selected.runId, 200) : [];
     const inbox = selected ? await store.listInbox(selected.runId, 50) : [];
     const outbox = selected ? await store.listOutbox(selected.runId, 50) : [];
-    // A recipient's later intake refusal of a delivered message (design 5.6), shown beside the delivery, which it never rewrites.
-    const intakeOutcomes: Map<string, { intakeOutcome: string; intakeOutcomeAt: string }> = selected
-        ? await store.listOutboxIntakeOutcomes(selected.runId) : new Map();
+    // A recipient's later intake refusal of a delivered message (design 5.6), shown beside the delivery, which it never rewrites;
+    // looked up for exactly the bounded page of messages shown.
+    const intakeOutcomes: Map<string, { intakeOutcome: string; intakeOutcomeAt: string }> = selected && outbox.length > 0
+        ? await store.listOutboxIntakeOutcomes(selected.runId, outbox.map(message => message.exchangeId)) : new Map();
     // A paused run has settled once no state it admitted is still running.
     const pauseSettled = selected?.status === "paused" ? !await store.hasPendingNodes(selected.runId) : null;
     return {
