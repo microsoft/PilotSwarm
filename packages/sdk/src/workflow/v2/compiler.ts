@@ -153,6 +153,12 @@ export interface WorkflowIRSend {
     contract: string;
     /** The parent, or a session id (literal or one whole-string binding), resolved and frozen when the state is entered. */
     recipient: WorkflowIRSender;
+    /**
+     * A JSON template of correlation values evaluated on entry (null is {}):
+     * a workflow recipient's receive states match it. Version 6 IR written
+     * before this field was added has none (null).
+     */
+    correlate: JsonValue;
     /** The payload: the input binding's value, or without one the value that arrived. */
     hasInput: boolean;
     input: JsonValue;
@@ -445,21 +451,28 @@ function contractField(value: unknown, path: string, contracts: ReadonlySet<stri
 
 /**
  * A send state: one typed message of its contract to its recipient, the
- * workflow's parent or a named session, which is resolved and authorized
- * when the state is entered and kept for that entry. The payload is the
- * state's input (its input binding, or the value that arrived) and must
- * satisfy the contract's schema. The state's one outcome, sent, means the
- * recipient's durable queue accepted the message, not that it was read.
+ * workflow's parent, a named agent session, or a named workflow (typed
+ * input for one of its receive states, which match the optional
+ * correlation), resolved and authorized when the state is entered and kept
+ * for that entry. The payload is the state's input (its input binding, or
+ * the value that arrived) and must satisfy the contract's schema. The
+ * state's one outcome, sent, means the recipient accepted the message (an
+ * agent session's queue, or a workflow's inbox), not that it was read.
  */
 function compileSend(id: string, raw: Record<string, unknown>, nodeIds: ReadonlySet<string>, contracts: ReadonlySet<string>, hasCatchAll: boolean,
     diagnostics: Diagnostics): WorkflowIRSend | null {
     const path = `states.${id}`;
-    checkKeys(raw, ["type", "description", "mode", "contract", "recipient", "input", "transition"], path, diagnostics);
+    checkKeys(raw, ["type", "description", "mode", "contract", "recipient", "correlate", "input", "transition"], path, diagnostics);
     const contract = contractField(raw.contract, `${path}.contract`, contracts, diagnostics);
     let recipient: WorkflowIRSender | null = null;
     if (raw.recipient === undefined) {
         diagnostics.error("WORKFLOW_FIELD_REQUIRED", `${path}.recipient`, "a send state needs a recipient: {parent: true}, a session id, or {sessionId: <id>}.");
     } else recipient = senderField(raw.recipient, `${path}.recipient`, diagnostics, "recipient");
+    let correlate: JsonValue = null;
+    if (raw.correlate !== undefined) {
+        if (!isJsonObject(raw.correlate)) diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.correlate`, "correlate must map correlation keys to values or bindings.");
+        else correlate = bindingValue(raw.correlate, `${path}.correlate`, diagnostics);
+    }
     const hasInput = Object.hasOwn(raw, "input");
     const input = hasInput ? bindingValue(raw.input, `${path}.input`, diagnostics) : null;
     const next = compileRoutes(raw, path, "a messaging state", nodeIds, diagnostics);
@@ -476,7 +489,7 @@ function compileSend(id: string, raw: Record<string, unknown>, nodeIds: Readonly
     if (contract === null || recipient === null) return null;
     return {
         id, type: "messaging", description: optionalText(raw.description, `${path}.description`, diagnostics), mode: "send",
-        contract, recipient, hasInput, input, next,
+        contract, recipient, correlate, hasInput, input, next,
     };
 }
 
@@ -905,6 +918,7 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
             nodes[id] = {
                 id, type: "messaging", description: node.description, mode: "send", contract: node.contract,
                 recipient: typeof recipient.sessionId === "string" ? { sessionId: recipient.sessionId } : { parent: true },
+                correlate: Object.hasOwn(node, "correlate") ? node.correlate : null,
                 hasInput: node.hasInput, input: node.input, next: node.next,
             };
         } else if (node.type === "messaging") {

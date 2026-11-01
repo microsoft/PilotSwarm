@@ -413,11 +413,17 @@ export function parseInputReceipt(value: JsonValue): WorkflowInputReceipt {
 
 /**
  * Why a send state may not send to its recipient: unavailable (missing or
- * deleted; at a delivery attempt also a session whose orchestration ended),
- * forbidden (the authority rule), or unsupported (a workflow session, which
- * this build does not deliver to).
+ * deleted; at a delivery attempt also an agent session whose orchestration
+ * ended), or forbidden (the authority rule).
  */
-export type RecipientRefusal = "unavailable" | "forbidden" | "unsupported";
+export type RecipientRefusal = "unavailable" | "forbidden";
+
+/**
+ * What the admission decided a send state's recipient is, under the session
+ * locks: an agent session (its message goes to the session's message queue)
+ * or a workflow (typed input for one of its receive states).
+ */
+export type RecipientKind = "agent" | "workflow";
 
 /**
  * What a send state sends, resolved when it is entered. The admission
@@ -428,17 +434,34 @@ export interface SendSpecInput {
     contract: string;
     /** Canonical JSON of the payload, already checked against the contract's schema. */
     payloadText: string;
+    /** Canonical JSON of the correlation object ({} without one); a workflow recipient's receive states match it. */
+    correlationText: string;
     /** What the admission (or a delivery attempt) records instead when the recipient may not be sent to, by refusal. */
     refused: Readonly<Record<RecipientRefusal, { result: NodeResultInput; projection?: SessionProjection }>>;
 }
 
 /**
+ * A workflow recipient's acceptance of a send state's message as typed
+ * input (store.acceptInput): its inbox message, the recipient run, the exact
+ * accepted and expiry times, and the receive state that took it in that
+ * acceptance (null when none waited for it then).
+ */
+export interface WorkflowSendInputAcceptance {
+    messageId: string;
+    runId: string;
+    acceptedAt: string;
+    expiresAt: string;
+    claimedBy: { nodeExecutionId: string; stateId: string } | null;
+}
+
+/**
  * The receipt of a delivered message, stored once with it and passed on as
- * its send state's output: the recipient session's durable queue accepted
- * the message, which does not mean the recipient read it. clientMessageId is
- * the one every delivery attempt of this message carried; attempts counts the
- * attempts begun when the delivery was recorded (more than one means the
- * recipient may have received the message more than once).
+ * its send state's output. It says the recipient accepted the message, not
+ * that the recipient read it: an agent session's queue accepted it (at least
+ * once; clientMessageId is the one every attempt carried, and more than one
+ * attempt means the session may have received it more than once), or a
+ * workflow's inbox accepted it as typed input once per exchange (`input`).
+ * attempts counts the attempts begun when the delivery was recorded.
  */
 export interface WorkflowSendReceipt {
     exchangeId: string;
@@ -447,17 +470,21 @@ export interface WorkflowSendReceipt {
     nodeExecutionId: string;
     stateId: string;
     recipientSessionId: string;
+    recipientKind: RecipientKind;
     contract: string;
     payloadSha256: string;
-    clientMessageId: string;
+    /** An agent recipient: the client message id every attempt carried; a workflow recipient: null. */
+    clientMessageId: string | null;
+    /** A workflow recipient: its inbox's acceptance; an agent recipient: null. */
+    input: WorkflowSendInputAcceptance | null;
     attempts: number;
     /** The store's clock reading that recorded the delivery (ISO 8601 UTC, microseconds). */
     deliveredAt: string;
 }
 
 /**
- * A send state's message in the outbox (migration 0091), as it is now.
- * Times are the stored values, exactly (ISO 8601 UTC with microseconds).
+ * A send state's message in the outbox (migrations 0091, 0092), as it is
+ * now. Times are the stored values, exactly (ISO 8601 UTC with microseconds).
  */
 export interface WorkflowOutboxMessage {
     /** The message's stable identity: its send state's node execution id. */
@@ -467,9 +494,13 @@ export interface WorkflowOutboxMessage {
     runId: string;
     mode: "send";
     recipientSessionId: string;
+    /** What the admission decided the recipient is (rows before migration 0092: agent). */
+    recipientKind: RecipientKind;
     contract: string;
     payload: JsonValue;
     payloadSha256: string;
+    /** The correlation object the state resolved ({} for rows before migration 0092). */
+    correlation: JsonValue;
     /** pending until a delivery is recorded (delivered), or none will be (failed). */
     state: "pending" | "delivered" | "failed";
     /** Delivery attempts begun (store.beginDelivery). */
@@ -483,20 +514,24 @@ export interface WorkflowOutboxMessage {
 }
 
 /** The outbox columns outboxFrom reads, with exact times. */
-const OUTBOX_COLUMNS = `exchange_id, node_execution_id, workflow_session_id, run_id, mode, recipient_session_id, contract, payload, payload_sha256,
-    state, attempts, receipt, error, ${isoUtc("created_at")} AS created_at_iso, ${isoUtc("last_attempt_at")} AS last_attempt_at_iso,
-    ${isoUtc("decided_at")} AS decided_at_iso`;
+const OUTBOX_COLUMNS = `exchange_id, node_execution_id, workflow_session_id, run_id, mode, recipient_session_id, recipient_kind, contract, payload,
+    payload_sha256, correlation, state, attempts, receipt, error, ${isoUtc("created_at")} AS created_at_iso,
+    ${isoUtc("last_attempt_at")} AS last_attempt_at_iso, ${isoUtc("decided_at")} AS decided_at_iso`;
 
 function outboxFrom(row: Row): WorkflowOutboxMessage {
     const state = str(row, "state");
     if (state !== "pending" && state !== "delivered" && state !== "failed") return corrupt(`Unknown outbox state ${state}.`);
     const mode = str(row, "mode");
     if (mode !== "send") return corrupt(`Unknown outbox mode ${mode}.`);
+    const kind = strOrNull(row, "recipient_kind") ?? "agent";
+    if (kind !== "agent" && kind !== "workflow") return corrupt(`Unknown outbox recipient kind ${kind}.`);
+    const correlation = strOrNull(row, "correlation");
     const receipt = strOrNull(row, "receipt");
     return {
         exchangeId: str(row, "exchange_id"), nodeExecutionId: str(row, "node_execution_id"), workflowSessionId: str(row, "workflow_session_id"),
-        runId: str(row, "run_id"), mode, recipientSessionId: str(row, "recipient_session_id"), contract: str(row, "contract"),
+        runId: str(row, "run_id"), mode, recipientSessionId: str(row, "recipient_session_id"), recipientKind: kind, contract: str(row, "contract"),
         payload: parseStoredJson(str(row, "payload"), "payload"), payloadSha256: str(row, "payload_sha256"),
+        correlation: correlation === null ? {} : parseStoredJson(correlation, "correlation"),
         state, attempts: int(row, "attempts"), createdAt: str(row, "created_at_iso"),
         lastAttemptAt: strOrNull(row, "last_attempt_at_iso"), decidedAt: strOrNull(row, "decided_at_iso"),
         receipt: receipt === null ? null : parseSendReceipt(parseStoredJson(receipt, "receipt")),
@@ -504,21 +539,41 @@ function outboxFrom(row: Row): WorkflowOutboxMessage {
     };
 }
 
-/** A stored send receipt, with its declared shape. */
+/**
+ * A stored send receipt, with its declared shape. A receipt written before
+ * workflow recipients (no recipientKind) is an agent recipient's.
+ */
 export function parseSendReceipt(value: JsonValue): WorkflowSendReceipt {
     const invalid = () => new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "Stored send receipt has an invalid shape.");
     if (!isJsonObject(value)) throw invalid();
-    const text = (key: string): string => {
-        const item = value[key];
+    const textOf = (item: JsonValue | undefined): string => {
         if (typeof item !== "string") throw invalid();
         return item;
     };
+    const text = (key: string): string => textOf(value[key]);
     const attempts = value.attempts;
     if (typeof attempts !== "number" || !Number.isSafeInteger(attempts) || attempts < 1) throw invalid();
+    const kind = value.recipientKind === undefined ? "agent" : value.recipientKind;
+    if (kind !== "agent" && kind !== "workflow") throw invalid();
+    let input: WorkflowSendInputAcceptance | null = null;
+    if (value.input !== undefined && value.input !== null) {
+        const accepted = value.input;
+        if (!isJsonObject(accepted)) throw invalid();
+        let claimedBy: WorkflowSendInputAcceptance["claimedBy"] = null;
+        if (accepted.claimedBy !== null) {
+            const claim = accepted.claimedBy;
+            if (!isJsonObject(claim)) throw invalid();
+            claimedBy = { nodeExecutionId: textOf(claim.nodeExecutionId), stateId: textOf(claim.stateId) };
+        }
+        input = { messageId: textOf(accepted.messageId), runId: textOf(accepted.runId), acceptedAt: textOf(accepted.acceptedAt),
+            expiresAt: textOf(accepted.expiresAt), claimedBy };
+    }
+    const clientMessageId = value.clientMessageId === null ? null : text("clientMessageId");
+    if ((kind === "agent") !== (clientMessageId !== null) || (kind === "workflow") !== (input !== null)) throw invalid();
     return {
         exchangeId: text("exchangeId"), workflowSessionId: text("workflowSessionId"), runId: text("runId"), nodeExecutionId: text("nodeExecutionId"),
-        stateId: text("stateId"), recipientSessionId: text("recipientSessionId"), contract: text("contract"), payloadSha256: text("payloadSha256"),
-        clientMessageId: text("clientMessageId"), attempts, deliveredAt: text("deliveredAt"),
+        stateId: text("stateId"), recipientSessionId: text("recipientSessionId"), recipientKind: kind, contract: text("contract"),
+        payloadSha256: text("payloadSha256"), clientMessageId, input, attempts, deliveredAt: text("deliveredAt"),
     };
 }
 
@@ -646,22 +701,23 @@ export class WorkflowStore {
     }
 
     /**
-     * Whether a send state may send to its recipient, after lockInputSessions
-     * locked both session rows and decided the recipient by the rule a sender
-     * is decided by (authority.ts: the workflow's trusted parent, or a session
-     * of the same user; a missing or deleted session is unavailable): a
-     * refusal of that rule stands, and a workflow session is unsupported
-     * (this build delivers to agent sessions only). No session state is read
-     * here: an idle session, or one whose turn completed, still takes
-     * messages, and whether a session's orchestration has ended is the
-     * runtime's to say when a delivery is attempted (beginDelivery). Null when
-     * the state may send.
+     * Whether a send state may send to its recipient, and what the recipient
+     * is, after lockInputSessions locked both session rows and decided the
+     * recipient by the rule a sender is decided by (authority.ts: the
+     * workflow's trusted parent, or a session of the same user; a missing or
+     * deleted session is unavailable). A refusal of that rule stands. A
+     * workflow session is a workflow recipient (typed input for one of its
+     * receive states); every other session is an agent recipient. No session
+     * state is read here: an idle session, or one whose turn completed, still
+     * takes messages, and whether an agent session's orchestration has ended
+     * is the runtime's to say when a delivery is attempted (beginDelivery).
      */
-    private async recipientRefusal(client: PoolClient, authority: TypedInputAuthority, recipientSessionId: string): Promise<RecipientRefusal | null> {
-        if (authority !== "allowed") return authority;
+    private async recipientDecision(client: PoolClient, authority: TypedInputAuthority, recipientSessionId: string)
+        : Promise<{ refusal: RecipientRefusal; kind: null } | { refusal: null; kind: RecipientKind }> {
+        if (authority !== "allowed") return { refusal: authority, kind: null };
         const { rows } = await client.query(`SELECT session_kind FROM ${this.t.sessions} WHERE session_id = $1`, [recipientSessionId]);
-        if (!rows[0]) return "unavailable";
-        return str(rows[0], "session_kind") === "workflow" ? "unsupported" : null;
+        if (!rows[0]) return { refusal: "unavailable", kind: null };
+        return { refusal: null, kind: str(rows[0], "session_kind") === "workflow" ? "workflow" : "agent" };
     }
 
     private async requireLiveSession(client: PoolClient, workflowSessionId: string): Promise<void> {
@@ -1509,12 +1565,13 @@ export class WorkflowStore {
      * happened to its sender since.
      *
      * A send state locks the workflow's and its recipient's session rows the
-     * same way and decides there whether it may send to that recipient
-     * (recipientRefusal): a recipient deleted before this transaction,
-     * missing, not allowed, or a workflow session fails the state at once
-     * with the refusal it carries, and nothing is queued. Otherwise it is
-     * admitted pending and its message's outbox row (the intent: the
-     * recipient, contract and payload, with the node execution's id as its
+     * same way and decides there whether it may send to that recipient, and
+     * whether the recipient is an agent session or a workflow
+     * (recipientDecision): a recipient deleted before this transaction,
+     * missing or not allowed fails the state at once with the refusal it
+     * carries, and nothing is stored. Otherwise it is admitted pending and
+     * its message's outbox row (the intent: the recipient and its kind, the
+     * contract, payload and correlation, with the node execution's id as its
      * stable exchange id) is written in this same transaction, before any
      * delivery.
      */
@@ -1614,15 +1671,16 @@ export class WorkflowStore {
                 waitSeconds = null;
             }
             // The send's recipient, decided under the session locks the same way:
-            // one that may not be sent to fails the state now, and nothing is queued.
+            // one that may not be sent to fails the state now, and nothing is stored.
+            let recipientKind: RecipientKind | null = null;
             if (send !== null) {
                 if (decided === null) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has an invalid messaging spec.`);
-                const refusal = await this.recipientRefusal(client, decided.authority, send.recipient);
-                if (refusal !== null) {
-                    immediate = send.refused[refusal].result;
-                    projection = send.refused[refusal].projection;
+                const recipient = await this.recipientDecision(client, decided.authority, send.recipient);
+                if (recipient.refusal !== null) {
+                    immediate = send.refused[recipient.refusal].result;
+                    projection = send.refused[recipient.refusal].projection;
                     send = null;
-                }
+                } else recipientKind = recipient.kind;
             }
             // A receive decides at one reading of the store's clock, taken here,
             // after the locks and guards, and kept as exact SQL text (a
@@ -1673,11 +1731,14 @@ export class WorkflowStore {
             const node = nodeFrom(rows[0]);
             // A send admitted pending: its message's intent, before any delivery.
             if (send !== null) {
+                if (recipientKind === null) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${input.nodeExecutionId} has no recipient decision.`);
                 await client.query(
                     `INSERT INTO ${this.t.outbox}
-                        (exchange_id, node_execution_id, workflow_session_id, run_id, mode, recipient_session_id, contract, payload, payload_sha256, created_at)
-                     SELECT $1, $1, $2, $3, 'send', $4, $5, $6, $7, entered_at FROM ${this.t.nodes} WHERE node_execution_id = $1`,
-                    [node.nodeExecutionId, workflowSessionId, input.runId, send.recipient, send.contract, send.payloadText, sha256Hex(send.payloadText)]);
+                        (exchange_id, node_execution_id, workflow_session_id, run_id, mode, recipient_session_id, recipient_kind, contract, payload,
+                         payload_sha256, correlation, created_at)
+                     SELECT $1, $1, $2, $3, 'send', $4, $5, $6, $7, $8, $9, entered_at FROM ${this.t.nodes} WHERE node_execution_id = $1`,
+                    [node.nodeExecutionId, workflowSessionId, input.runId, send.recipient, recipientKind, send.contract, send.payloadText,
+                        sha256Hex(send.payloadText), send.correlationText]);
             }
             if (claim) {
                 const { rows: claimed } = await client.query(
@@ -1968,6 +2029,20 @@ export class WorkflowStore {
         return rows.map(inboxFrom);
     }
 
+    /**
+     * The stored acceptance receipt of the input a sender gave a workflow under
+     * an operation id, or null when there is none (or it was stored without a
+     * receipt, by a pre-release build). A send state's delivery reads it to
+     * record an acceptance that an earlier attempt made and did not record.
+     */
+    async readAcceptedInput(workflowSessionId: string, senderSessionId: string, operationId: string): Promise<WorkflowInputReceipt | null> {
+        const { rows } = await this.pool.query(
+            `SELECT receipt FROM ${this.t.inbox} WHERE workflow_session_id = $1 AND sender_session_id = $2 AND operation_id = $3`,
+            [workflowSessionId, senderSessionId, operationId]);
+        const receipt = rows[0] ? strOrNull(rows[0], "receipt") : null;
+        return receipt === null ? null : parseInputReceipt(parseStoredJson(receipt, "receipt"));
+    }
+
     /** Node executions of a run whose stored result is the run's cancellation. */
     async listCancelledNodeIds(runId: string): Promise<string[]> {
         const { rows } = await this.pool.query(
@@ -2007,18 +2082,19 @@ export class WorkflowStore {
      *   it), nothing is delivered ("decided"), and the message becomes failed
      *   with the reason, since no delivery will be recorded for it;
      * - the recipient is decided again on what this transaction reads
-     *   (recipientRefusal): one deleted or no longer allowed since the state
+     *   (recipientDecision): one deleted or no longer allowed since the state
      *   was entered fails the state with the refusal it carries, and the
      *   message with it ("refused");
-     * - when the caller found the recipient's session orchestration ended
-     *   just before this transaction (`ended`), the state fails with that
-     *   result and the message with it ("refused"): a message queued for it
-     *   would not be processed, and a send never starts a session again;
+     * - when the caller found an agent recipient's session orchestration
+     *   ended just before this transaction (`ended`), the state fails with
+     *   that result and the message with it ("refused"): a message queued for
+     *   it would not be processed, and a send never starts a session again;
      * - otherwise the attempt is counted and the message returned for
      *   delivery ("deliver").
-     * The delivery itself (the recipient queue's acceptance) is outside this
-     * transaction; recordDelivery records it. A message refused here was not
-     * queued in this attempt; an earlier counted attempt may have queued it.
+     * The delivery itself (an agent session queue's acceptance, or a
+     * workflow inbox's) is outside this transaction; recordDelivery records
+     * it. A message refused here was not delivered in this attempt; an
+     * earlier counted attempt may have delivered it.
      */
     async beginDelivery(nodeExecutionId: string, refusals: {
         refused: SendSpecInput["refused"];
@@ -2045,8 +2121,9 @@ export class WorkflowStore {
                         + `${message.attempts} delivery attempts had begun.`, 4_000), details: { attempts: message.attempts } })]);
                 return { kind: "decided" as const, node, message: abandoned[0] ? outboxFrom(abandoned[0]) : message };
             }
-            const refusal = await this.recipientRefusal(client, decided.authority, message.recipientSessionId);
-            const refused = refusal !== null ? refusals.refused[refusal] : refusals.ended;
+            const recipient = await this.recipientDecision(client, decided.authority, message.recipientSessionId);
+            const refused = recipient.refusal !== null ? refusals.refused[recipient.refusal]
+                : recipient.kind === "agent" ? refusals.ended : null;
             if (refused !== null) {
                 const { result, projection } = refused;
                 const { rows: completed } = await client.query(
@@ -2073,17 +2150,19 @@ export class WorkflowStore {
     }
 
     /**
-     * Record a delivery that the recipient's durable queue accepted, in one
-     * transaction under the workflow's session lock: the message from pending
-     * to delivered with its receipt, and its send state from pending to sent
-     * with that receipt as its output and the projection's events. One
-     * reading of the store's clock is the receipt's deliveredAt and the
-     * state's completed_at. A state decided meanwhile (a cancel or a
-     * deletion) keeps its result, and the message is recorded as delivered
-     * all the same. A message no longer pending is returned as stored: a
-     * repeat after this commit records nothing again.
+     * Record a delivery that its recipient accepted (an agent session's
+     * queue, or a workflow's inbox as typed input), in one transaction under
+     * the workflow's session lock: the message from pending to delivered with
+     * its receipt, and its send state from pending to sent with that receipt
+     * as its output and the projection's events. One reading of the store's
+     * clock is the receipt's deliveredAt and the state's completed_at. A
+     * state decided meanwhile (a cancel or a deletion) keeps its result, and
+     * the message is recorded as delivered all the same. A message no longer
+     * pending is returned as stored: a repeat after this commit records
+     * nothing again.
      */
-    async recordDelivery(nodeExecutionId: string, delivery: { stateId: string; clientMessageId: string },
+    async recordDelivery(nodeExecutionId: string,
+        delivery: { stateId: string; clientMessageId: string | null; input: WorkflowSendInputAcceptance | null },
         projection: (receipt: WorkflowSendReceipt) => SessionProjection)
         : Promise<{ recorded: boolean; won: boolean; node: WorkflowNodeExecutionRow; message: WorkflowOutboxMessage }> {
         return this.transaction(async client => {
@@ -2099,11 +2178,16 @@ export class WorkflowStore {
                 return nodeFrom(rows[0]);
             };
             if (message.state !== "pending") return { recorded: false, won: false, node: await current(), message };
+            if ((message.recipientKind === "agent") !== (delivery.clientMessageId !== null)
+                || (message.recipientKind === "workflow") !== (delivery.input !== null)) {
+                throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Send ${nodeExecutionId} was delivered as another kind of recipient.`);
+            }
             const { rows: clock } = await client.query(`WITH c AS (SELECT clock_timestamp() AS at) SELECT at::text AS at, ${isoUtc("at")} AS iso FROM c`);
             const receipt: WorkflowSendReceipt = {
                 exchangeId: message.exchangeId, workflowSessionId, runId: message.runId, nodeExecutionId, stateId: delivery.stateId,
-                recipientSessionId: message.recipientSessionId, contract: message.contract, payloadSha256: message.payloadSha256,
-                clientMessageId: delivery.clientMessageId, attempts: Math.max(message.attempts, 1), deliveredAt: str(clock[0], "iso"),
+                recipientSessionId: message.recipientSessionId, recipientKind: message.recipientKind, contract: message.contract,
+                payloadSha256: message.payloadSha256, clientMessageId: delivery.clientMessageId, input: delivery.input,
+                attempts: Math.max(message.attempts, 1), deliveredAt: str(clock[0], "iso"),
             };
             const receiptText = canonicalJson(receipt);
             const { rows: delivered } = await client.query(

@@ -71,8 +71,8 @@ export const READ_WORKFLOW_TOOL_SPEC = {
         + "the graph, runs, and the node executions of one run (default: the live run), with the run's open KV (kv, kvRevision) "
         + "and, while it is paused, pausedFrom and pauseSettled (true once no state it admitted is still running), the run's inbox of typed input "
         + "(send_workflow_input: each message, its sender and the receive state that took it), and its outbox (each message a send state sent: "
-        + "its recipient, state pending, delivered or failed, and attempts; delivered means the recipient session's queue accepted it, "
-        + "not that it was read). Returns JSON. Reading changes nothing: "
+        + "its recipient (an agent session or a workflow), state pending, delivered or failed, and attempts; delivered means the recipient "
+        + "accepted it (a session's queue, or a workflow's inbox), not that it was read). Returns JSON. Reading changes nothing: "
         + "an active run whose controller can no longer end it shows run.controller.needsRecovery; use update_workflow operation recover.",
     parameters: {
         type: "object",
@@ -353,8 +353,9 @@ export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId
             })),
             outbox: outbox.map(message => ({
                 exchangeId: message.exchangeId, nodeExecutionId: message.nodeExecutionId, recipientSessionId: message.recipientSessionId,
-                contract: message.contract, state: message.state, attempts: message.attempts, createdAt: message.createdAt,
-                deliveredAt: message.receipt?.deliveredAt ?? null, payloadPreview: previewJson(message.payload, 300),
+                recipientKind: message.recipientKind, contract: message.contract, state: message.state, attempts: message.attempts,
+                createdAt: message.createdAt, deliveredAt: message.receipt?.deliveredAt ?? null, payloadPreview: previewJson(message.payload, 300),
+                ...(message.receipt?.input ? { inputMessageId: message.receipt.input.messageId, claimedBy: message.receipt.input.claimedBy?.nodeExecutionId ?? null } : {}),
                 ...(message.error !== null ? { errorPreview: previewJson(message.error, 500) } : {}),
             })),
         } : null,

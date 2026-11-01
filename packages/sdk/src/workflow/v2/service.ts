@@ -736,7 +736,7 @@ export const WORKFLOW_V2_INPUT_TTL_SECONDS = 86_400;
  * request sends the wake again.
  */
 export async function sendWorkflowInputV2(
-    host: Pick<WorkflowV2Host, "catalog" | "store" | "duroxideClient">,
+    host: { catalog: Pick<SessionCatalog, "getSession">; store: WorkflowStore; duroxideClient: Pick<WorkflowV2Host["duroxideClient"], "enqueueEvent"> },
     request: {
         workflowSessionId: string;
         senderSessionId: string;
