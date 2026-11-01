@@ -188,11 +188,16 @@ export async function holdSession(h, sessionId) {
 
 /** Bounded lock observation only: no wall-clock sleep, synthetic lock, or replacement transaction SQL. */
 export async function observeBlocked(h, pid, holderPid) {
+    let last;
     for (let attempt = 0; attempt < 200; attempt += 1) {
-        const [row] = await h.q("SELECT $2::int = ANY(pg_blocking_pids($1::int)) AS blocked", [pid, holderPid]);
+        const [row] = await h.q(`WITH blocking AS MATERIALIZED (SELECT pg_blocking_pids($1::int) AS blockers)
+            SELECT blockers, $2::int = ANY(blockers) AS blocked FROM blocking`, [pid, holderPid]);
+        last = row;
         if (row.blocked) return;
     }
-    throw new Error("The real PostgreSQL transaction did not wait for the held session row.");
+    const error = new Error("The real PostgreSQL transaction did not wait for the held session row.");
+    error.blockObservation = { pid, holderPid, attempts: 200, ...last };
+    throw error;
 }
 
 /** Failure diagnostics read only the fixture's three backends, before its held transaction is released. */

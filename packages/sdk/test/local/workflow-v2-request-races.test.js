@@ -49,7 +49,7 @@ async function concurrentCalls(h, run, exchangeId, calls) {
             directControls.push(knownDirect.pid);
         }
         console.info("workflow request lock diagnostic", JSON.stringify({
-            holderPid: holder.pid, responsePids: pids, directControls,
+            holderPid: holder.pid, responsePids: pids, directControls, failedObservation: error.blockObservation ?? null,
             canonicalOrder: [run.workflowSessionId, h.parent].sort(),
             requesterSessionId: run.workflowSessionId, actorSessionId: h.parent, dispatchedLocks: locks,
             pool: { max: 4, total: h.pool.totalCount, idle: h.pool.idleCount, waiting: h.pool.waitingCount },
