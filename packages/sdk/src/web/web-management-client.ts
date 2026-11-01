@@ -6,6 +6,7 @@ import {
 } from "./api-connection.js";
 import { createManagementOps, type ManagementOps } from "./generated-op-methods.js";
 import type { FeatureViewer, FeatureMutation, FeatureView, FeatureMutationResult } from "../feature-store.js";
+import type { MotdCreateInput, MotdViewer } from "../motd-store.js";
 import type { StopTurnOptions, StopTurnResult, SteerTurnOptions, SteerTurnResult } from "../types.js";
 
 const WAIT_SLICE_MS = 25_000;
@@ -779,6 +780,12 @@ export class WebPilotSwarmManagementClient {
     }
 
     async listFeatureFlags(_viewer: FeatureViewer): Promise<FeatureView> { return this.ops.listFeatureFlags(); }
+    async getCurrentMotd(_viewer: MotdViewer) { return this._api.call("getCurrentMotd"); }
+    async dismissMotd(_viewer: MotdViewer, motdId: string) { return this._api.call("dismissMotd", { motdId }); }
+    async getMotdImage(_viewer: MotdViewer, motdId: string, mobile = false) { return this._api.call("getMotdImage", { motdId, mobile }); }
+    async listMotds(_viewer: MotdViewer, limit?: number, before?: string) { return this._api.call("listMotds", { limit, before }); }
+    async createMotd(_viewer: MotdViewer, input: MotdCreateInput) { return this._api.call("createMotd", { ...input }); }
+    async deleteMotd(_viewer: MotdViewer, motdId: string) { return this._api.call("deleteMotd", { motdId }); }
     async getClusterFeatureFlags(_viewer: FeatureViewer): Promise<FeatureView> { return this.ops.getClusterFeatureFlags(); }
     async getMyFeatureFlags(_viewer: FeatureViewer): Promise<FeatureView> { return this.ops.getMyFeatureFlags(); }
     async getUserFeatureFlags(_viewer: FeatureViewer, userId: number): Promise<FeatureView> { return this.ops.getUserFeatureFlags({ userId: String(userId) }); }
