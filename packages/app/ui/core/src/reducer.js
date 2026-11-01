@@ -992,7 +992,8 @@ function baseReducer(state, action) {
                 ...state,
                 admin: featurePrincipalKey(state.auth?.principal) !== featurePrincipalKey(action.principal)
                     || state.auth?.authorization?.role !== action.authorization?.role
-                    ? { ...state.admin, features: clearFeatureIdentity(state.admin.features), motds: createMotdAdminState() } : state.admin,
+                    ? { ...state.admin, features: clearFeatureIdentity(state.admin.features), motds: createMotdAdminState(),
+                        ...(!action.principal && state.auth?.principal ? { profile: null } : {}) } : state.admin,
                 motd: motdForIdentity(state, { principal: action.principal, authorization: action.authorization }),
                 auth: {
                     principal: action.principal ?? null,
