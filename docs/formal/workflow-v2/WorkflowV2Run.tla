@@ -523,17 +523,19 @@ Prop_ResultImmutable ==
     [][\A x \in NX : nState[x] = "completed"
           => (nState'[x] = "completed" /\ nWinner'[x] = nWinner[x] /\ nOutcome'[x] = nOutcome[x])]_vars
 
-Prop_RunTerminalImmutable == [][runStatus \in Terminal => runStatus' = runStatus]_vars
+(* The action of each [][...]_vars below is parenthesized: SANY reads      *)
+(* "[ identifier \in" as the start of a function constructor.             *)
+Prop_RunTerminalImmutable == [][(runStatus \in Terminal => runStatus' = runStatus)]_vars
 
 Prop_NoAdmissionAfterTerminal ==
-    [][runStatus \in Terminal => \A x \in NX : nState[x] = "absent" => nState'[x] = "absent"]_vars
+    [][(runStatus \in Terminal => \A x \in NX : nState[x] = "absent" => nState'[x] = "absent")]_vars
 
 (* No script starts after the workflow session was deleted.                *)
 Prop_NoScriptAfterDelete ==
     [][\A x \in SNodes : (eff[x] # "running" /\ eff'[x] = "running") => sessionLive]_vars
 
 (* A tombstone is permanent.                                               *)
-Prop_TombstonePermanent == [][defDeleted => (defDeleted' /\ ~sessionLive')]_vars
+Prop_TombstonePermanent == [][(defDeleted => (defDeleted' /\ ~sessionLive'))]_vars
 
 (* Liveness                                                                *)
 
