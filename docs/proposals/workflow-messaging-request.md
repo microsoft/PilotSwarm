@@ -223,6 +223,12 @@ deletion trigger stays as it is.
   `REQUEST_EXPIRED`. It accepts nothing and decides nothing: the
   controller's elapse, on its durable timer, is the only producer of
   `timed_out`. The operation is bound `expired` (section 7).
+- Expiry is durable. `clock_timestamp()` is wall-clock time and can step
+  back, so the first `expired` binding of a pending request is its expiry
+  point: every later new operation is `REQUEST_EXPIRED` and bound
+  `expired`, whatever its own reading. Every `expired` binding is written
+  under the node's lock, so this is one committed state; the deciding
+  reading stays one reading, and the decision window is not reopened.
 - A repeat of an accepted response with the same operation id and the same
   result returns the stored receipt after the deadline too (a known
   operation, section 7); the decision window is not reopened.
@@ -417,8 +423,8 @@ a response and a decline never collide.
 
 | Request state at the reading | Outcome | Binding |
 |---|---|---|
-| `pending`, reading before `deadline_at` | Decides: node, response record, wake intent and events; returns the receipt | `decided` |
-| `pending`, reading at or after `deadline_at` | `REQUEST_EXPIRED`; nothing decided | `expired` |
+| `pending`, reading before `deadline_at`, no operation bound `expired` | Decides: node, response record, wake intent and events; returns the receipt | `decided` |
+| `pending`, reading at or after `deadline_at`, or an operation already bound `expired` | `REQUEST_EXPIRED`; nothing decided | `expired` |
 | `responded` or `declined`, same identity as the winner | The winner's receipt (T057) | `same` |
 | `responded` or `declined`, another identity | `RESPONSE_CONFLICT`; the first stays (T058) | `conflict` |
 | `timed_out`, `cancelled` or `failed` | `REQUEST_CLOSED` with the status | `closed` |
@@ -611,7 +617,8 @@ a response and a decline never collide.
 - **Q1 one winner:** a request is decided once, by the node's
   compare-and-swap; its status is the node's (section 3).
 - **Q2 deadline:** a response is accepted only when its one deciding
-  reading is before `deadline_at`; `timed_out` is decided only by the
+  reading is before `deadline_at` and no earlier operation was bound
+  `expired`; `timed_out` is decided only by the
   elapse at a reading at or after it.
 - **Q3 late calls:** a call that finds the request decided or expired
   changes nothing but its own new binding, or the `last_at` and `count`

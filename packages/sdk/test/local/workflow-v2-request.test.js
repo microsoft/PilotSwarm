@@ -53,12 +53,19 @@
  * committed state whole (its node, run, message, response, receipt, winning
  * binding and wake intent); and the request rule comes before the operation
  * id and the call, so every refused caller gets the same REQUEST_NOT_FOUND.
+ *
+ * Durable expiry (formal intent model CP1 trace): the store's clock can step
+ * back, so once an operation of a pending request is bound expired, a later
+ * new operation is expired too, whatever its own reading; known operations
+ * replay, and a request with no expired binding is still decided by its one
+ * reading. Only that reading is injected (requestClock).
  */
 import { describe, it, expect } from "vitest";
 import { createHash, randomUUID } from "node:crypto";
 import pg from "pg";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { withClient } from "../helpers/local-workers.js";
+import { requestClock, requestFixture } from "../helpers/workflow-v2-request-fixture.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import {
     compileWorkflowV2, parseWorkflowIr, REQUEST_RESPONSE_SCHEMA_MAX_BYTES, WORKFLOW_V2_REQUEST_IR_VERSION, WORKFLOW_V2_SEND_IR_VERSION,
@@ -1102,5 +1109,59 @@ describe("workflow v2 request states: the store's review corrections", () => {
             }
             expect(await h.binding(exchangeId, "A2")).toBeNull();
         } finally { await h.stop(); }
+    });
+});
+
+describe("workflow v2 request states: durable expiry (store)", () => {
+    // Formal intent model CP1 trace: o1 is bound expired, the store's clock steps back, o2's reading is before the deadline.
+    // clock_timestamp() is not monotonic, so the first expired binding, written under the node's lock, is the request's
+    // expiry point. Only the deciding reading is injected (requestClock); every lock, guard and write is real PostgreSQL.
+    it("keeps a pending request expired once an operation was bound expired, even when the clock steps back", { timeout: TIMEOUT }, async () => {
+        const h = await requestFixture(getEnv());
+        const YES = { response: { approved: true } };
+        const EXPIRED = { kind: "refused", replayed: false, code: "REQUEST_EXPIRED", status: "pending", currentStatus: "pending" };
+        try {
+            const run = await h.workflow();
+            const exchangeId = await h.admit(run);
+            let readings = 0;
+            const count = () => { readings += 1; };
+            // o1: its one deciding reading is the deadline itself (equal is late): expired, nothing decided.
+            h.control.hook = requestClock(h, exchangeId, 0, count);
+            expect(await h.respond(exchangeId, "o1", YES)).toEqual(EXPIRED);
+            // o2 and o3: the clock stepped back one second; each reading is before the deadline, and the request stays expired.
+            h.control.hook = requestClock(h, exchangeId, -1_000_000, count);
+            expect(await h.respond(exchangeId, "o2", YES)).toEqual(EXPIRED);
+            expect(await h.respond(exchangeId, "o3", { decline: { reason: "late" } })).toEqual(EXPIRED);
+            h.control.hook = null;
+            expect(readings).toBe(3);
+            for (const operationId of ["o1", "o2", "o3"]) {
+                expect(await h.binding(exchangeId, operationId)).toMatchObject({ outcome: "expired", status: "pending", count: 1 });
+            }
+            expect(await h.counts(exchangeId)).toEqual({ decisions: 0, responses: 0, wakes: 0, operations: 3, decided: 0, same: 0, conflict: 0 });
+            expect(await h.store.readNodeExecution(exchangeId)).toMatchObject({ state: "pending", output: null, winner: null });
+            expect(await h.store.readRequest(exchangeId)).toMatchObject({ status: "pending", response: null, wake: null, operations: 3 });
+            expect((await h.catalog.getSessionEvents(run.workflowSessionId, 0, 1000))
+                .filter(event => event.eventType === "workflow.state_completed" && event.data?.exchangeId === exchangeId)).toHaveLength(0);
+            // Known operations replay what they were bound, without a reading; another result is an operation conflict.
+            h.control.hook = requestClock(h, exchangeId, -1_000_000, count);
+            expect(await h.respond(exchangeId, "o2", YES)).toEqual({ ...EXPIRED, replayed: true });
+            expect(await h.respond(exchangeId, "o1", { decline: { reason: "other" } })).toMatchObject({ code: "OPERATION_CONFLICT", replayed: true });
+            h.control.hook = null;
+            expect(readings).toBe(3);
+
+            // Control: with no expired binding, the same stepped-back reading decides (the one reading still decides), and a
+            // later call whose reading is after the deadline finds it decided and gets the winner's receipt.
+            const fresh = await h.admit(run, { ordinal: 2 });
+            h.control.hook = requestClock(h, fresh, -1_000_000);
+            const winner = await h.respond(fresh, "w1", YES);
+            expect(winner).toMatchObject({ kind: "accepted", replayed: false, status: "responded" });
+            h.control.hook = requestClock(h, fresh, 1);
+            expect(await h.respond(fresh, "w2", YES)).toEqual({ kind: "accepted", replayed: true, status: "responded", receipt: winner.receipt });
+            h.control.hook = null;
+            expect(await h.counts(fresh)).toEqual({ decisions: 1, responses: 1, wakes: 1, operations: 2, decided: 1, same: 1, conflict: 0 });
+        } finally {
+            h.control.hook = null;
+            await h.stop();
+        }
     });
 });

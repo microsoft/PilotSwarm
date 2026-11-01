@@ -2983,7 +2983,12 @@ export class WorkflowStore {
      *    deadline is REQUEST_EXPIRED and decides nothing (only the
      *    controller's elapse decides timed_out); a decided request returns
      *    the winner's receipt for the same result and RESPONSE_CONFLICT for
-     *    another; a closed one is REQUEST_CLOSED with its status.
+     *    another; a closed one is REQUEST_CLOSED with its status. Expiry is
+     *    durable: once an operation of the pending request is bound expired,
+     *    every later new operation is REQUEST_EXPIRED too, whatever its own
+     *    reading, because clock_timestamp() can step back. Every expired
+     *    binding is written under this node lock, so the first one is the
+     *    request's expiry point, and the decision window is not reopened.
      *
      * Every answer from step 3 on reads the request's committed state checked
      * whole (requestStateFrom); a contradiction is WORKFLOW_STORE_CORRUPT and
@@ -3100,8 +3105,12 @@ export class WorkflowStore {
             const current = await this.requestStateIn(client, request);
             if (current.status === "pending") {
                 if (!ACTIVE_RUN_STATUSES.includes(run.status)) return corrupt(`Request ${request.exchangeId} is pending in an ended run.`);
+                // In time: the one reading is before the deadline, and no earlier operation found the request expired (durable
+                // expiry, step 7: the store's clock is not monotonic).
                 const { rows: early } = await client.query(
-                    `SELECT $1::timestamptz < deadline_at AS in_time FROM ${this.t.requests} WHERE exchange_id = $2`, [at, request.exchangeId]);
+                    `SELECT $1::timestamptz < deadline_at
+                            AND NOT EXISTS (SELECT 1 FROM ${this.t.requestOperations} WHERE exchange_id = $2 AND outcome = 'expired') AS in_time
+                       FROM ${this.t.requests} WHERE exchange_id = $2`, [at, request.exchangeId]);
                 if (!bool(early[0], "in_time")) {
                     await bind("expired", "pending");
                     return { kind: "refused" as const, replayed: false, code: "REQUEST_EXPIRED" as const, status: "pending" as const, currentStatus: "pending" as const };
