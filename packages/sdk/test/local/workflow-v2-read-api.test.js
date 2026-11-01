@@ -73,7 +73,12 @@ describe("workflow v2 readWorkflow (direct management client)", () => {
             expect(view).toMatchObject({ workflowId: workflowSessionId, definition: { state: "published", currentRevision: 1 },
                 revision: { revision: 1, valid: true }, run: { runId, mode: "live" } });
             expect(view.revision).not.toHaveProperty("yaml");
-            expect(view.graph?.states?.map(state => state.id)).toEqual(["step", "done"]);
+            // The graph is the stored IR, kept as canonical JSON (its pinned hash covers that text), so its states come in the IR's
+            // key order, not the YAML's: what matters is which states there are and how they connect.
+            expect(view.graph?.states?.map(state => state.id).sort()).toEqual(["done", "step"]);
+            expect(view.graph).toMatchObject({ revision: 1, initial: "step" });
+            expect(view.graph.states.find(state => state.id === "step")).toMatchObject({ type: "script", next: { ok: "done" } });
+            expect(view.graph.states.find(state => state.id === "done")).toMatchObject({ type: "terminal", outcome: "succeeded" });
             expect(await mgmt.readWorkflow(workflowSessionId, { runId })).toEqual(view);
             // Reading changes nothing.
             expect(await store.readRun(runId)).toMatchObject({ status: "admitted" });
