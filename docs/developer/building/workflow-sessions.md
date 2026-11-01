@@ -127,7 +127,12 @@ An agent writes this once and calls `spawn_workflow` once. After that the
 checks and the waits cost no model tokens; only the message that wakes an
 agent when there is work does. Agent `cron` plus `spawn_workflow` on every
 wake also works, but each wake costs a model turn, so the `spawn_workflow`
-tool tells models to put polling inside the workflow instead.
+tool tells models to put polling inside the workflow instead. On workers that
+run workflows, `cron` and `cron_at` describe themselves as being for wake-ups
+that need the agent's own judgment, and send checks a script can do to
+`spawn_workflow`. Elsewhere they keep their usual wording. Turn workflows on
+for all workers of a deployment or none, so every session sees the same
+wording.
 
 A workflow like this runs until it is cancelled (`cancel_agent` from its
 parent, or Cancel in the portal). Its canvas shows the wait state as

@@ -141,6 +141,10 @@ describe("agent-driven script workflows", () => {
             const names = model.sessionRequests("list your tools")[0].body.tools.map((tool) => tool?.function?.name);
             expect(names).toContain("spawn_agent");
             expect(names).not.toContain("spawn_workflow");
+            // Without workflows, cron is not steered toward them.
+            const cron = model.sessionRequests("list your tools")[0].body.tools.find((tool) => tool?.function?.name === "cron");
+            expect(cron?.function?.description ?? "").not.toMatch(/spawn_workflow/);
+            expect(cron?.function?.description ?? "").toMatch(/^Declare a recurring durable schedule owned by the orchestration\./);
         });
     });
 });
@@ -217,6 +221,13 @@ describe("agent-driven polling workflows", () => {
                     .find((tool) => tool?.function?.name === "spawn_workflow")?.function?.description ?? "";
                 expect(spec).toMatch(/call spawn_workflow ONCE\. Do not use cron or cron_at for it/);
                 expect(spec).toContain("type: wait");
+                // And the timer tools say they are for wake-ups that need the agent's judgment.
+                const tools = model.sessionRequests(POLL_PROMPT)[0].body.tools;
+                for (const name of ["cron", "cron_at"]) {
+                    const description = tools.find((tool) => tool?.function?.name === name)?.function?.description ?? "";
+                    expect(description, name).toMatch(/^Wake THIS AGENT .* Use it only when each wake-up needs this agent's own judgment/);
+                    expect(description, name).toMatch(/call spawn_workflow ONCE with a loop through a wait state/);
+                }
 
                 const child = await waitFor(async () => {
                     const all = await mgmt.listSessions();

@@ -24,6 +24,7 @@ import { clipDescription } from "./skills.js";
 import { createFactTools } from "./facts-tools.js";
 import { createToolFactsAccessor } from "./tool-facts-accessor.js";
 import { createScriptSessionTools } from "./workflow/session-tools.js";
+import { workflowAwareSchedulingTool } from "./workflow/tool-spec.js";
 import { createGraphTools } from "./graph-tools.js";
 import { createInspectTools, NO_VIEWER, type InspectViewer } from "./inspect-tools.js";
 import { createProviderTools, holdsProviderTools } from "./provider-tools.js";
@@ -2209,7 +2210,13 @@ export class SessionManager {
         const systemTools = ManagedSession.systemToolDefs({
             agentIdentity: effectiveSerializableConfig.agentIdentity,
             ...(workspaceTools ? { workspaceTools: true } : {}),
-        }).filter((tool: any) => !isTunerSession || !mutatingSystemToolNames.has(tool.name));
+        }).filter((tool: any) => !isTunerSession || !mutatingSystemToolNames.has(tool.name))
+            // Where workflows run, cron and cron_at are for wake-ups that need
+            // the agent's judgment; a check a script can do belongs in a
+            // workflow's wait loop, which costs no model turns. A deployment
+            // turns workflows on for all its workers or none, so every session
+            // in it sees the same wording.
+            .map((tool: any) => (this.workflowScriptsEnabled && !isTunerSession ? workflowAwareSchedulingTool(tool) : tool));
         const readOnlyTunerSubAgentToolNames = new Set(["check_agents", "list_sessions"]);
         const subAgentTools = ManagedSession.subAgentToolDefs(workspaceTools ? { workspaceTools: true } : undefined)
             .filter((tool: any) => !isTunerSession || readOnlyTunerSubAgentToolNames.has(tool.name))

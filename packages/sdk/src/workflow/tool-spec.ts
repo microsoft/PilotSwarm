@@ -88,3 +88,36 @@ export interface SpawnWorkflowToolArgs {
     notify_on_completion?: boolean;
     key?: string;
 }
+
+/**
+ * The cron and cron_at descriptions on workers that run workflows. The default
+ * wording invites "periodic monitoring" and "external polling", which models
+ * read as the way to do any repeated check; where spawn_workflow is offered a
+ * repeated check a script can do belongs in a workflow's wait loop, which
+ * costs no model turns. These keep every rule of the default wording.
+ */
+export const WORKFLOW_AWARE_CRON_DESCRIPTION =
+    "Wake THIS AGENT on a recurring interval. Use it only when each wake-up needs this agent's own judgment: "
+    + "deciding what to do next, summarizing or writing for a person, or pursuing a goal autonomously until it is done. "
+    + "For a fixed check or job a script can do (\"every 10 minutes check X and if so do Y\"), do NOT use cron: call spawn_workflow ONCE "
+    + "with a loop through a wait state. A workflow's checks and waits cost no model turns; every cron wake-up costs one. "
+    + "Do not use cron solely to poll sub-agent status; qualifying child updates wake the parent according to contract.wakeOn. "
+    + "If it is genuinely ambiguous whether the task should become an ongoing recurring workflow, clarify that intent before setting cron. "
+    + "Set or update the schedule with seconds + reason. Cancel it with action='cancel'. "
+    + "Minimum interval is 15 seconds.";
+
+export const WORKFLOW_AWARE_CRON_AT_DESCRIPTION =
+    "Wake THIS AGENT at wall-clock times, like 'nightly at 02:00 UTC' or 'Mondays at 09:00 America/New_York'. "
+    + "Use it only when each wake-up needs this agent's own judgment. For a fixed job a script can do (\"every night at 02:00 run the report\"), "
+    + "do NOT use cron_at: call spawn_workflow ONCE with a loop through a wait state that has `at` (a clock time); it costs no model turns. "
+    + "Do NOT implement wall-clock schedules by polling every N minutes with cron(seconds=...) and checking the clock - that wastes tokens and turns. "
+    + "Recurrence is inferred from the fields you provide: minute (hourly), minute+hour (daily), minute+hour+day_of_week (weekly), minute+hour+day_of_month (monthly). "
+    + "Pass max_fires=1 for a single one-shot scheduled-at-time action. "
+    + "Cancel with action='cancel'.";
+
+/** The cron or cron_at declaration as workers that run workflows describe it; other tools unchanged. */
+export function workflowAwareSchedulingTool<T extends { name?: string; description?: string }>(tool: T): T {
+    if (tool?.name === "cron") return { ...tool, description: WORKFLOW_AWARE_CRON_DESCRIPTION };
+    if (tool?.name === "cron_at") return { ...tool, description: WORKFLOW_AWARE_CRON_AT_DESCRIPTION };
+    return tool;
+}

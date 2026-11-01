@@ -13,6 +13,9 @@ import {
     compileWorkflow,
     WorkflowCompileError,
     SPAWN_WORKFLOW_TOOL_SPEC,
+    workflowAwareSchedulingTool,
+    WORKFLOW_AWARE_CRON_DESCRIPTION,
+    WORKFLOW_AWARE_CRON_AT_DESCRIPTION,
     WORKFLOW_MAX_YAML_BYTES,
     workflowErrorMessage,
     workflowStatusForOutcome,
@@ -51,6 +54,29 @@ test("spawn_workflow is declared for agent sessions and carries the YAML contrac
     assert.match(tool.description, /every night at 02:00 do Z/);
     assert.match(tool.description, /at: \{ hour: 2, minute: 0, tz: America\/Los_Angeles \}/);
     assert.equal(tool.description, SPAWN_WORKFLOW_TOOL_SPEC.description);
+});
+
+test("where workflows run, cron and cron_at are for wake-ups that need the agent's judgment", () => {
+    const cron = { name: "cron", description: "Declare a recurring durable schedule.", parameters: { type: "object" } };
+    const aware = workflowAwareSchedulingTool(cron);
+    assert.equal(aware.description, WORKFLOW_AWARE_CRON_DESCRIPTION);
+    assert.deepEqual(aware.parameters, cron.parameters, "only the description changes");
+    assert.equal(cron.description, "Declare a recurring durable schedule.", "the original declaration is not changed");
+    assert.match(WORKFLOW_AWARE_CRON_DESCRIPTION, /^Wake THIS AGENT on a recurring interval\. Use it only when each wake-up needs this agent's own judgment/);
+    assert.match(WORKFLOW_AWARE_CRON_DESCRIPTION, /do NOT use cron: call spawn_workflow ONCE with a loop through a wait state/);
+    assert.doesNotMatch(WORKFLOW_AWARE_CRON_DESCRIPTION, /external polling/);
+    // The rules of the default wording are kept.
+    for (const rule of [/Do not use cron solely to poll sub-agent status/, /clarify that intent before setting cron/, /Minimum interval is 15 seconds/]) {
+        assert.match(WORKFLOW_AWARE_CRON_DESCRIPTION, rule);
+    }
+    const cronAt = workflowAwareSchedulingTool({ name: "cron_at", description: "x" });
+    assert.equal(cronAt.description, WORKFLOW_AWARE_CRON_AT_DESCRIPTION);
+    assert.match(WORKFLOW_AWARE_CRON_AT_DESCRIPTION, /do NOT use cron_at: call spawn_workflow ONCE with a loop through a wait state that has `at`/);
+    for (const rule of [/minute \(hourly\), minute\+hour \(daily\)/, /max_fires=1/, /Do NOT implement wall-clock schedules by polling/]) {
+        assert.match(WORKFLOW_AWARE_CRON_AT_DESCRIPTION, rule);
+    }
+    const other = { name: "wait", description: "w" };
+    assert.equal(workflowAwareSchedulingTool(other), other);
 });
 
 test("a package cannot shadow spawn_workflow", () => {
