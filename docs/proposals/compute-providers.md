@@ -1,7 +1,6 @@
 # Compute providers: running a session's GHCP runtime somewhere else
 
-Status: exploration (branch `waldemort/compute-providers`). Nothing here is
-released.
+Status: exploration. Nothing here is released.
 
 ## The problem
 
@@ -28,8 +27,8 @@ SDK connection; the runtime calls back over the same connection for
 PilotSwarm tools, model requests, session-state reads and writes, and
 permission requests.
 
-Nothing in this design names a platform. A compute type can be a pod on a
-separate node pool, a managed sandbox service, a user's own machine, or an
+Nothing in this design names a platform. A compute type can be a container on
+separate machines, a managed sandbox service, a user's own machine, or an
 existing build pool. Each is a plug-in.
 
 ## Terms
@@ -80,7 +79,7 @@ interface ComputeProvider {
   bind(req): Promise<{ ok: true; host: ComputeHostRef } | ComputeFailure>; // once per session tree
   connect(req): Promise<ComputeConnectResult>;                     // every turn
   hostState?(host): Promise<ComputeHostState>;                     // trusted host state
-  release?(req: { host; reason }): Promise<void>;
+  release?(req: { host; sessionId; reason }): Promise<void>;    // once per leaving session
 }
 ```
 
@@ -93,6 +92,10 @@ interface ComputeProvider {
   local address.
 - Failures use the workspace provider shape (`code`, `message`,
   `retryAfterMs`).
+- `release` is called once per session that leaves a host (`ended`,
+  `moved` on dehydrate, `evicted`, `shutdown`). Sessions of one tree share
+  a host, so a provider stops it when its last session has left. The worker
+  drops its pooled client for the endpoint first.
 - The built-in `local` provider is always registered, so there is one code
   path. Applications add providers with `computeProviders` in the worker
   options or `worker.registerComputeProvider()`, for example from an
@@ -118,6 +121,42 @@ interface ComputeProvider {
    it cannot resolve.
 6. The turn runs; PilotSwarm tools execute in the worker as external tools.
 
+## Testing without a cluster: the `process` provider
+
+`createProcessComputeProvider()` (kind `process`) runs each session tree's
+runtime as a separate `copilot --headless` process on the worker's machine
+and returns its `127.0.0.1` address and a fresh connection token. It is not
+a sandbox. It exercises exactly the remote path a cluster provider uses, so
+the plumbing can be built and tested on a laptop or in CI. The runtime gets
+a scrubbed environment (its own home, `PATH`, the connection token, nothing
+from the worker) and leads its own process group, so stopping it stops the
+commands it started.
+
+`test/local/compute-process-provider.test.js` drives it with the scripted
+model through real workers and PostgreSQL and checks:
+
+| Check | Result |
+|---|---|
+| A turn on a `process` target runs `bash` inside the separate runtime | the command sees the runtime's home, and no worker variables (`PS_TEST_DATABASE_URL`, `PG*`) |
+| The runtime holds only credential placeholders | every model request still carries the real key; no placeholder reaches the model |
+| Session state | written through SessionFs into the worker's own session folder (`events.jsonl`, `workspace.yaml`, `checkpoints/`) |
+| A new worker with a new runtime | resumes the session from that folder; the next request carries the earlier turn |
+| Stop | the worker's shutdown releases the host; no runtime process is left |
+| Refusals | an unknown target is refused at create; an unknown kind fails the turn |
+
+What the run showed about the runtime:
+
+- It writes session files under the SessionFs root, and also names some of
+  them by its own home (`<COPILOT_HOME>/session-state/<sessionId>/...`).
+  The worker's SessionFs maps both to the session folder.
+- It keeps a local `session-store.db` (SQLite) in its home. It is not
+  needed to resume: a new runtime with an empty home resumed the session.
+  A long-lived shared runtime must still keep that home per host, not per
+  user.
+- A refusal at bind or connect is retried like any failed turn (15 s, then
+  30 s) before the session shows the error. Unknown or disabled targets
+  should fail at once; that needs a new orchestration version.
+
 ## Built on the branch
 
 | Piece | Where |
@@ -127,8 +166,9 @@ interface ComputeProvider {
 | Target store; create-time check | `packages/sdk/src/compute-target-store.ts`, `cms.ts` |
 | `computeTarget` on the session config | `types.ts`, `client.ts` |
 | Credential placeholders, request handler, worker-backed SessionFs | `packages/sdk/src/compute-runtime.ts` |
+| `process` provider (separate local runtime, for tests and as the smallest example) | `packages/sdk/src/compute-process.ts` |
 | Remote client and turn wiring | `copilot-client.ts`, `session-manager.ts` |
-| Tests | `test/unit/compute-providers.test.mjs`, `test/unit/compute-runtime.test.mjs`, `test/local/compute-targets.test.js` |
+| Tests | `test/unit/compute-providers.test.mjs`, `test/unit/compute-runtime.test.mjs`, `test/unit/compute-process.test.mjs`, `test/local/compute-targets.test.js`, `test/local/compute-process-provider.test.js` |
 
 ## Known gaps
 
@@ -137,10 +177,10 @@ interface ComputeProvider {
 | GitHub Copilot models on a remote target | Refused for now: they authenticate inside the runtime with a GitHub token, which a remote runtime must not hold. Needs per-request auth through the worker |
 | Skills and MCP servers on a remote target | Not sent: skill folders and MCP configs are worker-local (paths, commands, environment) |
 | PilotSwarm tools that read host files | Work only when the worker sees the same files (`shared-mount`); others need a provider file API |
-| Hold-and-retry | A bind or connect failure fails the turn; it should hold the turn like a workspace attach does |
+| Hold-and-retry | A bind or connect failure goes through the ordinary turn retry (three tries, then an error). A transient failure should hold the turn like a workspace attach does; a permanent refusal should fail at once |
 | Routing capability tag | Workers that can drive remote runtimes should declare a tag so older workers never run remote sessions locally |
 | Admin and user surfaces | Protocol operations, management client, MCP tools and portal for registering targets and picking one at session creation |
 | Turn survival across a worker crash | Depends on whether the runtime keeps a turn when its client disconnects and on `resumeSession` reattaching. Unverified |
-| SessionFs path layout | The mapping of the runtime's session-state root to the worker's per-session directory is assumed, not yet verified against the runtime |
+| SessionFs path layout | Verified with the `process` provider for ordinary turns, dehydrate and resume. Not yet checked: checkpoints under compaction, large files, a Windows runtime |
 | SQL tools on remote sessions | Need SessionFs SQLite support |
 | Provisioning | Out of scope here: targets are assumed to exist. A compute provisioner can create hosts on demand later |

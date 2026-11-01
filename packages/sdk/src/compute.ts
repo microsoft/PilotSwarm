@@ -158,8 +158,12 @@ export interface ComputeProvider {
     connect(req: ComputeConnectRequest): Promise<ComputeConnectResult>;
     /** Trusted state from the host's own control plane. */
     hostState?(host: ComputeHostRef): Promise<ComputeHostState>;
-    /** Best effort. */
-    release?(req: { host: ComputeHostRef; reason: ComputeReleaseReason }): Promise<void>;
+    /**
+     * Best effort. Called once per session that leaves the host; several
+     * sessions of one tree can share a host, so a provider stops it only
+     * when its last session has left.
+     */
+    release?(req: { host: ComputeHostRef; sessionId: string; reason: ComputeReleaseReason }): Promise<void>;
 }
 
 /** The built-in provider: the runtime runs as the worker's child process, as today. */

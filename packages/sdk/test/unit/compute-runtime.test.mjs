@@ -18,7 +18,7 @@ import {
 
 test("redaction replaces every credential with a per-session placeholder", async () => {
     const provider = {
-        type: "azure",
+        type: "openai",
         baseUrl: "https://example.invalid/openai",
         apiKey: "real-key",
         bearerToken: "real-bearer",
@@ -99,4 +99,20 @@ test("session state lives in the worker's session directory and cannot escape it
 
     await assert.rejects(sfs.readFile(`${REMOTE_SESSION_STATE_ROOT}/../../etc/passwd`), /outside the session directory/);
     await assert.rejects(sfs.writeFile("/../escape.txt", "x"), /outside the session directory/);
+});
+
+test("files the runtime names by its own home land in the same session directory", async (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ps-sessionfs-"));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const dir = path.join(root, "11111111-2222-4333-8444-555555555555");
+    fs.mkdirSync(dir);
+    const sfs = new WorkerDirectorySessionFs(dir);
+    const home = "/runtime/home/session-state/11111111-2222-4333-8444-555555555555";
+
+    await sfs.writeFile(`${home}/workspace.yaml`, "id: x\n");
+    await sfs.writeFile(`${home}/checkpoints/index.md`, "# index\n");
+    assert.equal(fs.readFileSync(path.join(dir, "workspace.yaml"), "utf8"), "id: x\n");
+    assert.equal(fs.readFileSync(path.join(dir, "checkpoints", "index.md"), "utf8"), "# index\n");
+    assert.equal(await sfs.exists(home), true);
+    assert.equal(fs.existsSync(path.join(dir, "runtime")), false);
 });

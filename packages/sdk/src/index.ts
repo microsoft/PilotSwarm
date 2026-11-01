@@ -258,6 +258,8 @@ export type {
     ComputeWorkspacePaths,
     ComputeReleaseReason,
 } from "./compute.js";
+export { createProcessComputeProvider, PROCESS_COMPUTE_KIND } from "./compute-process.js";
+export type { ProcessComputeProviderOptions } from "./compute-process.js";
 export { ComputeTargetStore, ComputeTargetError } from "./compute-target-store.js";
 export type { ComputeTargetRow } from "./compute-target-store.js";
 export {

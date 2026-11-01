@@ -809,7 +809,7 @@ export class SessionManager {
     /** Per remote session: credential placeholders the request handler swaps back. */
     private remoteSecrets = new Map<string, RemoteSecretMap>();
     /** Per session: the compute host it is bound to, for release. */
-    private computeHosts = new Map<string, { provider: ComputeProvider; host: ComputeHostRef }>();
+    private computeHosts = new Map<string, { provider: ComputeProvider; host: ComputeHostRef; endpointKey: string }>();
     private unsubscribeFeatureFlags: (() => void) | null = null;
 
     /** Live in-memory session count — worker-registry health reporting. */
@@ -1238,7 +1238,7 @@ export class SessionManager {
         };
         const connected = await provider!.connect({ target, host: bound.host, sessionId, rootSessionId, workerNodeId, turnIndex, workspace });
         if (!connected.ok) return fail(connected.code, connected.message, connected.retryAfterMs);
-        this.computeHosts.set(sessionId, { provider: provider!, host: bound.host });
+        this.computeHosts.set(sessionId, { provider: provider!, host: bound.host, endpointKey: runtimeEndpointKey(connected.endpoint) });
         return { endpoint: connected.endpoint, workspace: connected.workspace };
     }
 
@@ -1247,9 +1247,29 @@ export class SessionManager {
         const bound = this.computeHosts.get(sessionId);
         this.computeHosts.delete(sessionId);
         this.remoteSecrets.delete(sessionId);
-        if (!bound?.provider.release) return;
+        if (!bound) return;
+        if (bound.endpointKey && ![...this.computeHosts.values()].some((other) => other.endpointKey === bound.endpointKey)) {
+            // The last session on this runtime left: disconnect its pooled clients
+            // before the provider stops the host.
+            this.computeEndpoints.delete(bound.endpointKey);
+            const suffix = COMPUTE_CLIENT_SEPARATOR + bound.endpointKey;
+            const stale = [...this.clients.entries()].filter(([key]) => key.endsWith(suffix));
+            for (const [key] of stale) this.clients.delete(key);
+            await Promise.all(stale.map(async ([, client]) => {
+                let timer: ReturnType<typeof setTimeout> | undefined;
+                try {
+                    await Promise.race([
+                        client.stop(),
+                        new Promise((resolve) => { timer = setTimeout(resolve, COPILOT_CLIENT_SHUTDOWN_TIMEOUT_MS); }),
+                    ]);
+                } catch { /* best effort */ } finally {
+                    if (timer) clearTimeout(timer);
+                }
+            }));
+        }
+        if (!bound.provider.release) return;
         try {
-            await bound.provider.release({ host: bound.host, reason });
+            await bound.provider.release({ host: bound.host, sessionId, reason });
         } catch { /* best effort */ }
     }
 
@@ -3185,6 +3205,9 @@ export class SessionManager {
             }
         }
 
+        // The session leaves this worker: its compute host is no longer needed here.
+        await this.releaseCompute(sessionId, "moved");
+
         // Phase 2: Persist to the session store (always attempt, even if destroy failed)
         if (this.sessionStore) {
             let lastStoreError: Error | undefined;
@@ -3545,6 +3568,7 @@ export class SessionManager {
         this._forgetWarmSession(sessionId);
         this.sessionApplicationTools.delete(sessionId);
         this.sessionConfigs.delete(sessionId);
+        await this.releaseCompute(sessionId, "ended");
     }
 
     /**
@@ -3633,6 +3657,8 @@ export class SessionManager {
                 if (timer) clearTimeout(timer);
             }
         }));
+        // Compute hosts go after their clients have disconnected.
+        await Promise.all([...this.computeHosts.keys()].map((sessionId) => this.releaseCompute(sessionId, "shutdown")));
     }
 
     /**

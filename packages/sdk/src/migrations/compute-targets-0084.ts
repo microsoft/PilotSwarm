@@ -3,8 +3,8 @@
  * See docs/proposals/compute-providers.md and migrations/0084_diff.md.
  *
  * A compute target is a registered place where a session's GHCP runtime can
- * run: one instance of a compute type (the worker's own process, a pod on
- * another node pool, a sandbox, a user's machine, an existing build pool).
+ * run: one instance of a compute type (the worker's own process, a container on
+ * separate machines, a sandbox, a user's machine, an existing build pool).
  * The type is named by `kind`; the worker plug-in that understands it is a
  * compute provider. PilotSwarm stores the target and checks who may use it.
  * It never interprets `config`: that belongs to the provider of `kind`.

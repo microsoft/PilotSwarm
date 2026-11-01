@@ -127,9 +127,15 @@ export class WorkerDirectorySessionFs implements SessionFsProvider {
 
     private real(p: string): string {
         const posix = p.replace(/\\/g, "/");
+        // The runtime also names some session files by its own home
+        // (<COPILOT_HOME>/session-state/<sessionId>/...); they belong here too.
+        const homeMarker = `/session-state/${path.basename(this.dir)}`;
+        const homeAt = posix.indexOf(homeMarker + "/");
         const rel = posix === this.virtualRoot ? ""
             : posix.startsWith(this.virtualRoot + "/") ? posix.slice(this.virtualRoot.length + 1)
-                : posix.replace(/^\/+/, "");
+                : posix.endsWith(homeMarker) ? ""
+                    : homeAt >= 0 ? posix.slice(homeAt + homeMarker.length + 1)
+                        : posix.replace(/^\/+/, "");
         const resolved = path.resolve(this.dir, rel);
         if (resolved !== this.dir && !resolved.startsWith(this.dir + path.sep)) {
             throw Object.assign(new Error(`path outside the session directory: ${p}`), { code: "EACCES" });
