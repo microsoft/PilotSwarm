@@ -885,6 +885,8 @@ describe("workflow v2 request states: the store's review corrections", () => {
                 ["no wake intent", id => h.withoutGuard("workflow_response_wakes", "DELETE FROM SCHEMA.workflow_response_wakes WHERE exchange_id = $1", [id])],
                 ["a wake intent of another run", id => h.withoutGuard("workflow_response_wakes",
                     "UPDATE SCHEMA.workflow_response_wakes SET run_id = $2 WHERE exchange_id = $1", [id, other.runId])],
+                ["a wake intent for another controller", id => h.withoutGuard("workflow_response_wakes",
+                    "UPDATE SCHEMA.workflow_response_wakes SET controller_instance_id = controller_instance_id || '-other' WHERE exchange_id = $1", [id])],
                 ["no winning binding", id => h.withoutGuard("workflow_request_operations",
                     "DELETE FROM SCHEMA.workflow_request_operations WHERE exchange_id = $1 AND operation_id = 'w'", [id])],
                 ["a second winning binding", id => h.q(`INSERT INTO SCHEMA.workflow_request_operations
@@ -955,6 +957,83 @@ describe("workflow v2 request states: the store's review corrections", () => {
             expect(await h.respond(short.exchangeId, h.parent, "w", { response: X })).toEqual(replayed);
             expect(await h.store.readRequest(short.exchangeId)).toMatchObject({ status: "responded", response: { receipt: won.receipt }, operations: 1 });
             expect((await h.q("SELECT count(*)::int AS n FROM SCHEMA.workflow_response_wakes WHERE exchange_id = $1", [short.exchangeId]))[0].n).toBe(1);
+            // Its one wake intent targets its run's own controller.
+            expect(await h.q("SELECT run_id, controller_instance_id FROM SCHEMA.workflow_response_wakes WHERE exchange_id = $1", [short.exchangeId]))
+                .toEqual([{ run_id: ended.runId, controller_instance_id: workflowLiveControllerInstanceId(ended.workflowSessionId) }]);
+        } finally { await h.stop(); }
+    });
+
+    it("answers a known operation only when its binding agrees with the request's state (RQF-3)", { timeout: TIMEOUT }, async () => {
+        const h = await requestHarness(getEnv());
+        try {
+            const Y = { approved: false };
+            const sha = value => kindValueSha256("response", canonicalJson(value));
+            const run = await h.workflow();
+            let ordinal = 0;
+            /** A request decided by A with X, B an alias of the winner (same), C another result (conflict). */
+            const decided = async () => {
+                ordinal += 1;
+                const { exchangeId } = await h.admit(run, h.parent, { ordinal });
+                const won = await h.respond(exchangeId, h.parent, "A", { response: X });
+                expect(await h.respond(exchangeId, h.parent, "B", { response: X })).toEqual({ ...won, replayed: true });
+                expect(await h.respond(exchangeId, h.parent, "C", { response: Y })).toMatchObject({ kind: "refused", code: "RESPONSE_CONFLICT", replayed: false });
+                expect(await h.binding(exchangeId, "B")).toMatchObject({ outcome: "same", status: "responded" });
+                expect(await h.binding(exchangeId, "C")).toMatchObject({ outcome: "conflict", status: "responded" });
+                return { exchangeId, won };
+            };
+            const tamper = (exchangeId, operationId, set, params = []) => h.withoutGuard("workflow_request_operations",
+                `UPDATE SCHEMA.workflow_request_operations SET ${set} WHERE exchange_id = $1 AND operation_id = $2`, [exchangeId, operationId, ...params]);
+            const bindings = async exchangeId => h.q(
+                "SELECT operation_id, result_sha256, outcome, status, count FROM SCHEMA.workflow_request_operations WHERE exchange_id = $1 ORDER BY operation_id",
+                [exchangeId]);
+
+            // Controls: intact bindings replay as they were bound.
+            const intact = await decided();
+            expect(await h.respond(intact.exchangeId, h.parent, "A", { response: X })).toEqual({ ...intact.won, replayed: true });
+            expect(await h.respond(intact.exchangeId, h.parent, "B", { response: X })).toEqual({ ...intact.won, replayed: true });
+            expect(await h.respond(intact.exchangeId, h.parent, "B", { response: Y })).toMatchObject({ kind: "refused", code: "OPERATION_CONFLICT", replayed: true });
+            expect(await h.respond(intact.exchangeId, h.parent, "C", { response: Y })).toMatchObject({ kind: "refused", code: "RESPONSE_CONFLICT", replayed: true });
+
+            // A binding that contradicts the decision never answers, whatever value the call repeats, and nothing is written.
+            for (const [name, operationId, set, params] of [
+                ["an alias bound to another result (the review's case)", "B", "result_sha256 = $3", [sha(Y)]],
+                ["an alias with another status", "B", "status = 'declined'", []],
+                ["an alias bound by another session", "B", "actor_session_id = $3", [h.peer]],
+                ["a conflict bound to the winner's result", "C", "result_sha256 = $3", [sha(X)]],
+                ["a conflict with another status", "C", "status = 'declined'", []],
+            ]) {
+                const { exchangeId } = await decided();
+                await tamper(exchangeId, operationId, set, params);
+                const before = await bindings(exchangeId);
+                for (const value of [X, Y]) {
+                    await expectCode(h.respond(exchangeId, h.parent, operationId, { response: value }), "WORKFLOW_STORE_CORRUPT");
+                }
+                expect(await bindings(exchangeId), name).toEqual(before);
+                // The winner's own replay is not affected by another operation's binding.
+                expect(await h.respond(exchangeId, h.parent, "A", { response: X }), name).toMatchObject({ kind: "accepted", replayed: true });
+            }
+
+            // Expired and closed bindings: a valid replay answers as it was bound; a contradicting one is corrupt.
+            const late = await h.admit(run, h.parent, { ordinal: 90, timeoutSeconds: 1 });
+            await new Promise(resolve => setTimeout(resolve, 1_100));
+            expect(await h.respond(late.exchangeId, h.parent, "E", { response: X })).toMatchObject({ code: "REQUEST_EXPIRED", replayed: false });
+            expect(await h.respond(late.exchangeId, h.parent, "F", { response: X })).toMatchObject({ code: "REQUEST_EXPIRED", replayed: false });
+            expect(await h.respond(late.exchangeId, h.parent, "E", { response: X }))
+                .toEqual({ kind: "refused", replayed: true, code: "REQUEST_EXPIRED", status: "pending", currentStatus: "pending" });
+            await tamper(late.exchangeId, "F", "status = 'responded'");
+            await expectCode(h.respond(late.exchangeId, h.parent, "F", { response: X }), "WORKFLOW_STORE_CORRUPT");
+            expect(await h.binding(late.exchangeId, "F")).toMatchObject({ count: 1 });
+            const ended = await h.workflow();
+            const closing = await h.admit(ended, h.parent);
+            await h.store.finishRun({ runId: ended.runId, status: "cancelled", terminalNodeId: null, terminalOutcome: null, outputText: null,
+                errorText: canonicalJson({ code: "cancelled", message: "cancelled by the test" }), endPending: { winner: "cancel", message: "cancelled by the test" } });
+            expect(await h.respond(closing.exchangeId, h.parent, "G", { response: X })).toMatchObject({ code: "REQUEST_CLOSED", status: "cancelled" });
+            expect(await h.respond(closing.exchangeId, h.parent, "H", { response: X })).toMatchObject({ code: "REQUEST_CLOSED", status: "cancelled" });
+            expect(await h.respond(closing.exchangeId, h.parent, "G", { response: X }))
+                .toEqual({ kind: "refused", replayed: true, code: "REQUEST_CLOSED", status: "cancelled", currentStatus: "cancelled" });
+            await tamper(closing.exchangeId, "H", "status = 'timed_out'");
+            await expectCode(h.respond(closing.exchangeId, h.parent, "H", { response: X }), "WORKFLOW_STORE_CORRUPT");
+            expect(await h.binding(closing.exchangeId, "H")).toMatchObject({ count: 1 });
         } finally { await h.stop(); }
     });
 

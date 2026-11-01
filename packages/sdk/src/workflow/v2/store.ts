@@ -799,7 +799,8 @@ interface WorkflowRequestState {
  * run and workflow; its message intent's identity; the status mapping
  * (requestStatusOf); and, for a response, its canonical value and identity,
  * the node's result and completion time, its receipt's requester, run,
- * state and responder, its one winning binding and its wake intent. A
+ * state and responder, its one winning binding and its wake intent (its
+ * run, its run's controller and its time). A
  * request with no response has no wake intent and no winning binding. Any
  * other combination is store corruption, on inspection and on every
  * response path, a known operation's replay included. Nothing here checks a
@@ -851,11 +852,39 @@ function requestStateFrom(request: WorkflowRequestRecord, row: Row | undefined):
             || strOrNull(row, "b_result_sha256") !== response.resultSha256 || strOrNull(row, "b_status") !== status || row.b_time !== true) {
             return corrupt(`The response of request ${id} has no one winning binding.`);
         }
-        if (wake === null || strOrNull(row, "w_run_id") !== request.runId || row.w_time !== true) {
+        if (wake === null || strOrNull(row, "w_run_id") !== request.runId || row.w_time !== true
+            || strOrNull(row, "w_controller_instance_id") !== str(row, "run_controller_instance_id")) {
             return corrupt(`The response of request ${id} has no wake intent of its own.`);
         }
     }
     return { node, response, status, failure, wake, operations: int(row, "op_count") };
+}
+
+/**
+ * A known operation's binding, checked against the request's committed state
+ * before any answer comes from it (design Q5, Q7). Every binding is the
+ * frozen responder's. A decided binding is the decision's own operation; a
+ * same or a conflict binding was bound after the decision: each names the
+ * decision's status, and the decision's result identity (decided, same) or
+ * another one (conflict). An expired binding was bound while the request was
+ * pending; a closed one names the request's final status. Anything else is
+ * store corruption, so a corrupt binding never answers with success or with
+ * the decision's receipt. No business schema and no deadline is checked again.
+ */
+function assertKnownBinding(request: WorkflowRequestRecord, operationId: string, binding: Row, current: WorkflowRequestState): void {
+    const outcome = str(binding, "outcome");
+    const status = requestStatusText(binding, "status");
+    const resultSha256 = str(binding, "result_sha256");
+    const decision = current.response;
+    const afterDecision = outcome === "decided" || outcome === "same" || outcome === "conflict";
+    const consistent = str(binding, "actor_session_id") === request.responderSessionId && (afterDecision
+        ? decision !== null && status === current.status && (status === "responded" || status === "declined")
+            && (resultSha256 === decision.resultSha256) === (outcome !== "conflict")
+            && (operationId === decision.operationId) === (outcome === "decided")
+        : outcome === "expired" ? status === "pending"
+        : outcome === "closed" ? status === current.status && status !== "pending" && status !== "responded" && status !== "declined"
+        : false);
+    if (!consistent) corrupt(`Operation ${operationId} of request ${request.exchangeId} does not match the request's state.`);
 }
 
 /** A response call's value as JSON (any JSON value: null, false, arrays, NUL and lone surrogates included), or RESPONSE_INVALID. */
@@ -2666,7 +2695,7 @@ export class WorkflowStore {
     /** The one statement requestStateFrom reads: a request's node, run, message, response, wake intent and bindings. */
     private requestStateSql(): string {
         return `SELECT node.*,
-                    run.workflow_session_id AS run_workflow_session_id,
+                    run.workflow_session_id AS run_workflow_session_id, run.controller_instance_id AS run_controller_instance_id,
                     ob.node_execution_id AS o_node_execution_id, ob.workflow_session_id AS o_workflow_session_id, ob.run_id AS o_run_id,
                     ob.mode AS o_mode, ob.recipient_session_id AS o_recipient_session_id, ob.recipient_kind AS o_recipient_kind,
                     ob.contract AS o_contract, ob.payload_sha256 AS o_payload_sha256,
@@ -2675,7 +2704,7 @@ export class WorkflowStore {
                     ${isoUtc("resp.decided_at")} AS r_decided_at_iso, resp.receipt AS r_receipt,
                     (node.completed_at IS NOT DISTINCT FROM resp.decided_at) AS r_node_time,
                     wake.exchange_id AS w_exchange_id, wake.state AS w_state, wake.attempts AS w_attempts,
-                    ${isoUtc("wake.settled_at")} AS w_settled_at_iso, wake.run_id AS w_run_id,
+                    ${isoUtc("wake.settled_at")} AS w_settled_at_iso, wake.run_id AS w_run_id, wake.controller_instance_id AS w_controller_instance_id,
                     (wake.created_at IS NOT DISTINCT FROM resp.decided_at) AS w_time,
                     win.actor_session_id AS b_actor_session_id, win.result_sha256 AS b_result_sha256, win.outcome AS b_outcome,
                     win.status AS b_status, (win.first_at IS NOT DISTINCT FROM resp.decided_at) AS b_time,
@@ -2715,10 +2744,12 @@ export class WorkflowStore {
      *    identity is the sha256 of the canonical JSON of {kind, value},
      *    hashed from the value's canonical text (kindValueSha256), so a value
      *    at the full JSON depth keeps its identity.
-     * 3. A known operation decides alone: its binding with the same result
-     *    identity returns the outcome it got (the winner's receipt, or the
-     *    refusal), and another result is OPERATION_CONFLICT; the binding
-     *    never changes, and a repeat counts in last_at and count.
+     * 3. A known operation decides alone: its binding, once it agrees with
+     *    the request's committed state (assertKnownBinding; a binding that
+     *    does not is WORKFLOW_STORE_CORRUPT), returns the outcome it got for
+     *    the same result identity (the winner's receipt, or the refusal),
+     *    and another result is OPERATION_CONFLICT; the binding never
+     *    changes, and a repeat counts in last_at and count.
      * 4. A soft-deleted requester gets read-only answers: no new decision
      *    (REQUEST_CLOSED), no binding, no counter and no session touch.
      * 5. The schema: the record's response schema must be the one its
@@ -2780,9 +2811,10 @@ export class WorkflowStore {
             }
             const resultSha256 = kindValueSha256(kind, valueText);
 
-            // 3. A known operation decides alone.
+            // 3. A known operation decides alone, once its binding agrees with the request's state.
             const { rows: known } = await client.query(
-                `SELECT result_sha256, outcome, status FROM ${this.t.requestOperations} WHERE exchange_id = $1 AND operation_id = $2 FOR UPDATE`,
+                `SELECT actor_session_id, result_sha256, outcome, status FROM ${this.t.requestOperations}
+                  WHERE exchange_id = $1 AND operation_id = $2 FOR UPDATE`,
                 [request.exchangeId, operationId]);
             if (known[0]) {
                 if (requesterLive) {
@@ -2791,6 +2823,7 @@ export class WorkflowStore {
                         [request.exchangeId, operationId]);
                 }
                 const current = await this.requestStateIn(client, request);
+                assertKnownBinding(request, operationId, known[0], current);
                 const recorded = requestStatusText(known[0], "status");
                 if (str(known[0], "result_sha256") !== resultSha256) {
                     return { kind: "refused" as const, replayed: true, code: "OPERATION_CONFLICT" as const, status: recorded, currentStatus: current.status };
