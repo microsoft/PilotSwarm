@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import {
     requestFixture, REQUEST_ACTOR, REQUEST_TIMEOUT, checkpoint, reachedDuring, holdSession, observeBlocked, requestClock, requestLockSnapshot,
+    requestWaitState,
 } from "../helpers/workflow-v2-request-fixture.js";
 import { canonicalJson, jsonSha256 } from "../../src/workflow/v2/json.ts";
 import { WORKFLOW_V2_MAX_REQUEST_OPERATIONS } from "../../src/workflow/v2/store.ts";
@@ -17,6 +18,7 @@ async function concurrentCalls(h, run, exchangeId, calls) {
     const pids = [];
     const locks = [];
     const directControls = [];
+    const waitProofs = [];
     let work;
     let settled;
     h.control.hook = ({ sql, params, query, client }) => {
@@ -35,10 +37,28 @@ async function concurrentCalls(h, run, exchangeId, calls) {
         settled = Promise.allSettled(work);
         await reachedDuring(atLock, settled, "both session-lock queries");
         expect(new Set(pids).size).toBe(calls.length);
+        const participants = [holder.pid, ...pids];
         for (const pid of pids) {
-            await observeBlocked(h, pid, holder.pid);
-            directControls.push(pid);
+            const proof = await observeBlocked(h, pid, holder.pid, participants);
+            expect(proof.path[0]).toBe(pid);
+            expect(proof.path.at(-1)).toBe(holder.pid);
+            expect(proof.path.length).toBeGreaterThan(1);
+            expect(new Set(proof.path).size).toBe(proof.path.length);
+            expect(proof.path.every(backend => participants.includes(backend))).toBe(true);
+            waitProofs.push(proof);
         }
+        const direct = waitProofs.find(proof => proof.path.length === 2);
+        expect(direct).toBeDefined();
+        const [positive] = await h.q("SELECT $2::int = ANY(pg_blocking_pids($1::int)) AS blocked", [direct.path[0], holder.pid]);
+        expect(positive.blocked).toBe(true);
+        directControls.push(direct.path[0]);
+        const observerPid = waitProofs[0].observer_pid;
+        expect(participants).not.toContain(observerPid);
+        const negative = await requestWaitState(h, observerPid, holder.pid, [...participants, observerPid]);
+        expect(negative).toMatchObject({ blocked: false, path: null, blockers: [] });
+        const requesterLocks = locks.filter(lock => lock.sessionId === run.workflowSessionId && lock.mode === "NO KEY UPDATE");
+        expect(requesterLocks).toHaveLength(calls.length);
+        expect(requesterLocks.every(lock => !lock.returned)).toBe(true);
         await holder.release();
         return await settled;
     } catch (error) {
@@ -49,7 +69,7 @@ async function concurrentCalls(h, run, exchangeId, calls) {
             directControls.push(knownDirect.pid);
         }
         console.info("workflow request lock diagnostic", JSON.stringify({
-            holderPid: holder.pid, responsePids: pids, directControls, failedObservation: error.blockObservation ?? null,
+            holderPid: holder.pid, responsePids: pids, directControls, waitProofs, failedObservation: error.blockObservation ?? null,
             canonicalOrder: [run.workflowSessionId, h.parent].sort(),
             requesterSessionId: run.workflowSessionId, actorSessionId: h.parent, dispatchedLocks: locks,
             pool: { max: 4, total: h.pool.totalCount, idle: h.pool.idleCount, waiting: h.pool.waitingCount },

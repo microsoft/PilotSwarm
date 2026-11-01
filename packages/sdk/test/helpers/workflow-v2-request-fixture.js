@@ -186,14 +186,38 @@ export async function holdSession(h, sessionId) {
     };
 }
 
-/** Bounded lock observation only: no wall-clock sleep, synthetic lock, or replacement transaction SQL. */
-export async function observeBlocked(h, pid, holderPid) {
+/** A tuple waiter can depend on its sibling. Follow only the fixture's known backends, without cycles. */
+export async function requestWaitState(h, pid, holderPid, participants = []) {
+    const scoped = [...new Set([pid, holderPid, ...participants])];
+    const [row] = await h.q(`WITH RECURSIVE
+        blocking AS MATERIALIZED (
+            SELECT backend.pid, pg_blocking_pids(backend.pid) AS blockers
+            FROM unnest($1::integer[]) backend(pid)
+        ),
+        paths(pid, path) AS (
+            SELECT $2::integer, ARRAY[$2::integer]
+            UNION ALL
+            SELECT blocker.pid, paths.path || blocker.pid
+            FROM paths JOIN blocking ON blocking.pid = paths.pid
+            CROSS JOIN LATERAL unnest(blocking.blockers) blocker(pid)
+            WHERE blocker.pid = ANY($1::integer[]) AND blocker.pid <> ALL(paths.path)
+        )
+        SELECT pg_backend_pid() AS observer_pid,
+            (SELECT blockers FROM blocking WHERE pid = $2::integer) AS blockers,
+            (SELECT path FROM paths WHERE pid = $3::integer AND cardinality(path) > 1
+                ORDER BY cardinality(path), path LIMIT 1) AS path,
+            EXISTS(SELECT 1 FROM paths WHERE pid = $3::integer AND cardinality(path) > 1) AS blocked,
+            (SELECT json_agg(blocking ORDER BY pid) FROM blocking) AS edges`, [scoped, pid, holderPid]);
+    return row;
+}
+
+/** Bounded real lock observation; both direct row waits and sibling tuple waits must reach the held transaction. */
+export async function observeBlocked(h, pid, holderPid, participants = []) {
     let last;
     for (let attempt = 0; attempt < 200; attempt += 1) {
-        const [row] = await h.q(`WITH blocking AS MATERIALIZED (SELECT pg_blocking_pids($1::int) AS blockers)
-            SELECT blockers, $2::int = ANY(blockers) AS blocked FROM blocking`, [pid, holderPid]);
+        const row = await requestWaitState(h, pid, holderPid, participants);
         last = row;
-        if (row.blocked) return;
+        if (row.blocked) return row;
     }
     const error = new Error("The real PostgreSQL transaction did not wait for the held session row.");
     error.blockObservation = { pid, holderPid, attempts: 200, ...last };
