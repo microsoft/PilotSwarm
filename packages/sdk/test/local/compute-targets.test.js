@@ -71,10 +71,14 @@ describe("compute targets", () => {
         const created = await store.create({ name: "pool-a", kind: "sandbox", class: "shared", displayName: "Pool A", config: { size: "m" } }, null, true);
         expect(created).toMatchObject({ name: "pool-a", kind: "sandbox", class: "shared", ownerUserId: null, displayName: "Pool A", config: { size: "m" }, enabled: true });
 
+        expect(created.id).toMatch(/^[0-9a-f-]{36}$/);
+
         const seen = await store.list(alice, false);
         expect(seen.map((t) => [t.name, t.manageable])).toEqual([["pool-a", false]]);
+        expect(seen[0].config, "provider config is shown only to managers").toEqual({});
         const asAdmin = await store.list(null, true);
         expect(asAdmin.map((t) => [t.name, t.manageable])).toEqual([["pool-a", true]]);
+        expect(asAdmin[0].config).toEqual({ size: "m" });
     });
 
     it("a personal target belongs to its creator and is invisible to others, admins included", async () => {
@@ -117,26 +121,41 @@ describe("compute targets", () => {
         await store.create({ name: "alice-box", kind: "user-machine", class: "personal" }, alice, false);
         const assertSession = (name, subject, isSystem = false) =>
             sql(`SELECT @cms_compute_target_assert_session($1,'test-idp',$2,$3) AS ok`, [name, subject, isSystem]);
+        const uuid = /^[0-9a-f-]{36}$/;
 
-        expect((await assertSession("shared-1", "bob"))[0].ok).toBe(true);
-        expect((await assertSession("alice-box", "alice"))[0].ok).toBe(true);
+        expect((await assertSession("shared-1", "bob"))[0].ok).toMatch(uuid);
+        expect((await assertSession("alice-box", "alice"))[0].ok).toMatch(uuid);
         expect(String((await rejects(assertSession("alice-box", "bob"))).message)).toMatch(/COMPUTE_TARGET_NOT_FOUND/);
         expect(String((await rejects(assertSession("alice-box", null, true))).message)).toMatch(/COMPUTE_TARGET_NOT_FOUND/);
-        expect((await assertSession("shared-1", null, true))[0].ok).toBe(true);
+        expect((await assertSession("shared-1", null, true))[0].ok).toMatch(uuid);
 
         await store.update("shared-1", { enabled: false }, null, true);
         expect(String((await rejects(assertSession("shared-1", "bob"))).message)).toMatch(/COMPUTE_TARGET_DISABLED/);
     });
 
-    it("resolve returns the row for the worker, and delete counts open sessions naming it", async () => {
-        await store.create({ name: "pool-c", kind: "sandbox", class: "shared", config: { region: "x" } }, null, true);
-        expect(await store.resolve("pool-c")).toMatchObject({ name: "pool-c", kind: "sandbox", config: { region: "x" } });
-        expect(await store.resolve("nope")).toBeNull();
+    it("the worker resolves by id for the session's owner, and a reused name never takes old sessions", async () => {
+        const alice = await makeUser("alice");
+        await makeUser("bob");
+        const shared = await store.create({ name: "pool-c", kind: "sandbox", class: "shared", config: { region: "x" } }, null, true);
+        const bobs = { provider: "test-idp", subject: "bob" };
+        expect(await store.resolveForSession(shared.id, bobs, false)).toMatchObject({ id: shared.id, name: "pool-c", config: { region: "x" } });
+        expect(await store.resolveForSession(shared.id, null, true)).toMatchObject({ name: "pool-c" });
+        expect(await store.resolveForSession("not-a-uuid", bobs, false)).toBeNull();
+
+        const own = await store.create({ name: "alice-box", kind: "user-machine", class: "personal" }, alice, false);
+        expect(await store.resolveForSession(own.id, { provider: "test-idp", subject: "alice" }, false)).toMatchObject({ name: "alice-box" });
+        expect(await store.resolveForSession(own.id, bobs, false), "another user's personal target").toBeNull();
+        expect(await store.resolveForSession(own.id, null, true), "system sessions use shared targets only").toBeNull();
 
         await sql(`INSERT INTO @sessions (session_id, state, creation_config)
-                   VALUES ('s-open', 'idle', '{"computeTarget":"pool-c"}'::jsonb),
-                          ('s-done', 'completed', '{"computeTarget":"pool-c"}'::jsonb)`);
+                   VALUES ('s-open', 'idle', $1::jsonb), ('s-done', 'completed', $1::jsonb)`,
+        [JSON.stringify({ computeTarget: "pool-c", computeTargetId: shared.id })]);
         expect(await store.delete("pool-c", null, true)).toBe(1);
-        expect(await store.resolve("pool-c")).toBeNull();
+        expect(await store.resolveForSession(shared.id, bobs, false)).toBeNull();
+
+        // The same name again is a different target: old sessions stay blocked.
+        const reused = await store.create({ name: "pool-c", kind: "sandbox", class: "shared" }, null, true);
+        expect(reused.id).not.toBe(shared.id);
+        expect(await store.resolveForSession(shared.id, bobs, false)).toBeNull();
     });
 });

@@ -14,8 +14,14 @@
  *   personal  registered by a user for themselves; usable only by that user,
  *             invisible to everyone else, administrators included
  *
- * Additive: one table and its procedures. A session records its target in
- * its creation config (`computeTarget`); no session column changes.
+ * A target also has an id that is never reused. A session records the
+ * target's name and id in its creation config (`computeTarget`,
+ * `computeTargetId`); the worker binds by id, so a deleted target leaves its
+ * sessions blocked, and a new target with the same name never takes them.
+ * The worker re-checks before every turn that the session's owner may still
+ * use the target.
+ *
+ * Additive: one table and its procedures; no session column changes.
  */
 export function computeTargetsMigration(schema: string): string {
     const s = `"${schema}"`;
@@ -24,6 +30,8 @@ export function computeTargetsMigration(schema: string): string {
 
 CREATE TABLE IF NOT EXISTS ${s}.compute_targets (
     name           TEXT PRIMARY KEY,
+    target_id      UUID NOT NULL UNIQUE
+                   DEFAULT md5(random()::text || clock_timestamp()::text)::uuid,
     kind           TEXT NOT NULL,
     class          TEXT NOT NULL CHECK (class IN ('shared','personal')),
     owner_user_id  BIGINT REFERENCES ${s}.users(user_id) ON DELETE CASCADE,
@@ -141,25 +149,29 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql VOLATILE;
 
--- Returns how many open sessions name the target. They are not touched: at
--- their next turn the target no longer resolves and the turn waits.
+-- Returns how many open sessions use the target. They are not touched: at
+-- their next turn the target no longer resolves and the turn fails. A new
+-- target with the same name gets a new id and never serves them.
 CREATE OR REPLACE FUNCTION ${s}.cms_compute_target_delete(
     p_name TEXT, p_actor BIGINT, p_is_admin BOOLEAN
 ) RETURNS BIGINT AS $$
-DECLARE v_waiting BIGINT;
+DECLARE
+    v_waiting BIGINT;
+    v_row ${s}.compute_targets;
 BEGIN
-    PERFORM ${s}.cms_compute_target_assert_manage(p_name, p_actor, p_is_admin);
+    v_row := ${s}.cms_compute_target_assert_manage(p_name, p_actor, p_is_admin);
     SELECT count(*) INTO v_waiting
       FROM ${s}.sessions ss
      WHERE ss.deleted_at IS NULL
        AND ss.state NOT IN ('completed', 'failed', 'error', 'cancelled')
-       AND ss.creation_config->>'computeTarget' = p_name;
+       AND ss.creation_config->>'computeTargetId' = v_row.target_id::text;
     DELETE FROM ${s}.compute_targets ct WHERE ct.name = p_name;
     RETURN v_waiting;
 END;
 $$ LANGUAGE plpgsql VOLATILE;
 
--- The viewer's namespace: every shared target plus their own.
+-- The viewer's namespace: every shared target plus their own. Provider
+-- config is shown only to those who may manage the target.
 CREATE OR REPLACE FUNCTION ${s}.cms_compute_target_list(
     p_viewer BIGINT, p_is_admin BOOLEAN
 ) RETURNS TABLE(
@@ -168,7 +180,10 @@ CREATE OR REPLACE FUNCTION ${s}.cms_compute_target_list(
     created_at TIMESTAMPTZ, updated_at TIMESTAMPTZ, manageable BOOLEAN
 ) AS $$
     SELECT ct.name, ct.kind, ct.class, ct.owner_user_id,
-           ct.display_name, ct.config, ct.enabled,
+           ct.display_name,
+           CASE WHEN ct.class = 'personal' OR COALESCE(p_is_admin, FALSE)
+                THEN ct.config ELSE '{}'::jsonb END,
+           ct.enabled,
            ct.created_at, ct.updated_at,
            (ct.class = 'personal' OR COALESCE(p_is_admin, FALSE)) AS manageable
       FROM ${s}.compute_targets ct
@@ -178,10 +193,11 @@ CREATE OR REPLACE FUNCTION ${s}.cms_compute_target_list(
 $$ LANGUAGE sql STABLE;
 
 -- Session creation: may this owner run a session on the target? System
--- sessions use shared targets only. Raises rather than returning false.
+-- sessions use shared targets only. Raises rather than returning false;
+-- returns the target's id for the session to record.
 CREATE OR REPLACE FUNCTION ${s}.cms_compute_target_assert_session(
     p_name TEXT, p_owner_provider TEXT, p_owner_subject TEXT, p_is_system BOOLEAN
-) RETURNS BOOLEAN AS $$
+) RETURNS UUID AS $$
 DECLARE
     v_owner BIGINT;
     v_row ${s}.compute_targets;
@@ -202,16 +218,29 @@ BEGIN
     IF NOT v_row.enabled THEN
         RAISE EXCEPTION 'COMPUTE_TARGET_DISABLED: the compute target "%" is disabled', p_name;
     END IF;
-    RETURN TRUE;
+    RETURN v_row.target_id;
 END;
 $$ LANGUAGE plpgsql VOLATILE;
 
--- Worker side: the target a session names, as the worker needs it before a
--- turn. Trusted caller; no viewer. NULL when the target is gone.
-CREATE OR REPLACE FUNCTION ${s}.cms_compute_target_resolve(
-    p_name TEXT
+-- Worker side, before every turn: the target with this id, if the session's
+-- owner may still use it (shared, or the owner's own; system sessions:
+-- shared only). No row when it is gone or no longer theirs. Disabled rows
+-- are returned so the worker can say so.
+CREATE OR REPLACE FUNCTION ${s}.cms_compute_target_resolve_for_session(
+    p_target_id UUID, p_owner_provider TEXT, p_owner_subject TEXT, p_is_system BOOLEAN
 ) RETURNS SETOF ${s}.compute_targets AS $$
-    SELECT ct.* FROM ${s}.compute_targets ct WHERE ct.name = p_name;
-$$ LANGUAGE sql STABLE;
+DECLARE v_owner BIGINT;
+BEGIN
+    IF NOT COALESCE(p_is_system, FALSE) THEN
+        SELECT u.user_id INTO v_owner FROM ${s}.users u
+         WHERE u.provider = NULLIF(BTRIM(p_owner_provider), '')
+           AND u.subject = NULLIF(BTRIM(p_owner_subject), '');
+    END IF;
+    RETURN QUERY
+        SELECT ct.* FROM ${s}.compute_targets ct
+         WHERE ct.target_id = p_target_id
+           AND (ct.class = 'shared' OR (v_owner IS NOT NULL AND ct.owner_user_id = v_owner));
+END;
+$$ LANGUAGE plpgsql STABLE;
 `;
 }

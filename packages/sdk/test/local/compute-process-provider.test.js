@@ -10,7 +10,9 @@
  *     the real key, swapped in by the worker's request handler
  *   - the runtime keeps its session state in the worker's session folder
  *     (SessionFs), so a new worker with a new runtime resumes the session
- *   - unknown targets and unknown kinds are refused
+ *   - a sub-agent runs in its tree's runtime
+ *   - unknown targets, unknown kinds and non-local runtime addresses are
+ *     refused
  *
  * Run: npx vitest run test/local/compute-process-provider.test.js
  */
@@ -40,6 +42,22 @@ function listTree(dir, prefix = "") {
     return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => entry.isDirectory()
         ? listTree(join(dir, entry.name), `${prefix}${entry.name}/`)
         : [`${prefix}${entry.name}`]);
+}
+
+/** Wait until one of the session's events names the error. */
+async function waitForSessionError(env, sessionId, pattern) {
+    const catalog = await createCatalog(env);
+    try {
+        for (let i = 0; i < 60; i++) {
+            const events = await catalog.getSessionEvents(sessionId, 0, 200);
+            const hit = events.find((event) => pattern.test(JSON.stringify(event.data ?? {})));
+            if (hit) return hit;
+            await new Promise((resolve) => setTimeout(resolve, 1_000));
+        }
+        return null;
+    } finally {
+        await catalog.close?.();
+    }
 }
 
 function isAlive(pid) {
@@ -100,6 +118,15 @@ describe("process compute provider", () => {
             expect(workerFiles.some((file) => file.includes("session-state/"))).toBe(false);
             expect(hostFiles.some((file) => file.includes(session.sessionId))).toBe(false);
 
+            // A sub-agent runs where its tree runs, though nothing in its own
+            // config names the target.
+            probeOutput = "";
+            const child = await client.createSession({ model: qualifiedModel, parentSessionId: session.sessionId });
+            expect(await child.sendAndWait("child prompt", TIMEOUT)).toBe(`turn1:${marker}`);
+            expect(probeOutput).toContain(`home=${hosts[0].homeDir}`);
+            expect(providerA.hosts()).toHaveLength(1);
+            expect(providerA.hosts()[0].sessions).toEqual(expect.arrayContaining([session.sessionId, child.sessionId]));
+
             // A new worker with a new runtime picks the session up from the worker folder.
             const firstPid = hosts[0].pid;
             await worker.stop();
@@ -129,6 +156,26 @@ describe("process compute provider", () => {
         await providerA.stopAll();
     });
 
+    it("refuses a runtime address that is not on this machine and releases the host", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        await registerTarget(env, "far", "far-away");
+        const released = [];
+        const farAway = {
+            kind: "far-away",
+            capabilities: { os: [process.platform], sandboxed: true, files: "none" },
+            async bind(req) { return { ok: true, host: { kind: "far-away", id: req.rootSessionId, incarnation: "1" } }; },
+            async connect() { return { ok: true, endpoint: { transport: "uri", address: "192.0.2.10:7777", connectionToken: "t" }, workspace: {} }; },
+            async release(req) { released.push(req.reason); },
+        };
+        await withScriptedModel(env, { respond: () => ({ content: "should not run" }), worker: { computeProviders: [farAway] } }, async ({ client, model, qualifiedModel }) => {
+            const session = await client.createSession({ model: qualifiedModel, computeTarget: "far" });
+            await session.send("hello");
+            expect(await waitForSessionError(env, session.sessionId, /COMPUTE_ENDPOINT_REFUSED/)).toBeTruthy();
+            expect(released).toContain("failed");
+            expect(model.sessionRequests()).toHaveLength(0);
+        });
+    });
+
     it("refuses an unknown target at create and an unknown kind at the turn", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
         await registerTarget(env, "nowhere", "no-such-kind");
@@ -139,18 +186,7 @@ describe("process compute provider", () => {
             // The refusal fails the turn, and the session records why.
             // (Today the turn is then retried like any failed turn.)
             await session.send("hello");
-            const catalog = await createCatalog(env);
-            let failure;
-            try {
-                for (let i = 0; i < 60 && !failure; i++) {
-                    const events = await catalog.getSessionEvents(session.sessionId, 0, 200);
-                    failure = events.find((event) => /COMPUTE_KIND_UNKNOWN/.test(JSON.stringify(event.data ?? {})));
-                    if (!failure) await new Promise((resolve) => setTimeout(resolve, 1_000));
-                }
-            } finally {
-                await catalog.close?.();
-            }
-            expect(failure, "a session event names the refusal").toBeTruthy();
+            expect(await waitForSessionError(env, session.sessionId, /COMPUTE_KIND_UNKNOWN/), "a session event names the refusal").toBeTruthy();
             expect(model.sessionRequests()).toHaveLength(0);
         });
     });

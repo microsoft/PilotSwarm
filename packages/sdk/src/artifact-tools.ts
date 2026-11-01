@@ -67,7 +67,7 @@ function allowedFileRoots(): string[] {
     });
 }
 
-function resolveJailedPath(candidate: string, mustExist: boolean): { path?: string; error?: string } {
+function resolveJailedPath(candidate: string, mustExist: boolean, rootsOverride?: string[]): { path?: string; error?: string } {
     const resolved = path.resolve(String(candidate || ""));
     // realpath the deepest existing ancestor so symlinks can't tunnel out.
     let probe = mustExist ? resolved : path.dirname(resolved);
@@ -83,7 +83,12 @@ function resolveJailedPath(candidate: string, mustExist: boolean): { path?: stri
         return { error: `Path is not accessible: ${candidate}` };
     }
     const effective = mustExist ? real : path.join(real, path.relative(probe, resolved));
-    const roots = allowedFileRoots();
+    const roots = rootsOverride
+        ? rootsOverride.map((root) => { try { return fs.realpathSync(path.resolve(root)); } catch { return path.resolve(root); } })
+        : allowedFileRoots();
+    if (roots.length === 0) {
+        return { error: "This session cannot read or write files on the worker: its runtime runs elsewhere." };
+    }
     const inJail = roots.some((root) => effective === root || effective.startsWith(root + path.sep));
     if (!inJail) {
         return { error: `Path is outside the allowed roots (${roots.join(", ")}): ${candidate}` };
@@ -101,8 +106,15 @@ function resolveJailedPath(candidate: string, mustExist: boolean): { path?: stri
  */
 export function createArtifactTools(opts: {
     blobStore: ArtifactStore;
+    /**
+     * Per session, the only worker folders `fromFile`/`toFile` may use, or
+     * undefined for the default roots. Compute providers use it: a session
+     * whose runtime runs elsewhere must not reach the worker's own files.
+     */
+    localPathRootsFor?: (sessionId: string) => string[] | undefined;
 }): Tool<any>[] {
     const { blobStore } = opts;
+    const rootsFor = (sessionId: string | undefined) => sessionId ? opts.localPathRootsFor?.(sessionId) : undefined;
 
     // ── write_artifact ─────────────────────────────────────────
 
@@ -199,7 +211,7 @@ export function createArtifactTools(opts: {
 
             try {
                 if (params.fromFile) {
-                    const jailed = resolveJailedPath(params.fromFile, true);
+                    const jailed = resolveJailedPath(params.fromFile, true, rootsFor(sessionId));
                     if (jailed.error) return toolError("PATH_OUTSIDE_WORKDIR", jailed.error);
                     const filename = params.filename || path.basename(jailed.path!);
                     const metadata = await blobStore.uploadArtifactFromFile(
@@ -319,7 +331,7 @@ export function createArtifactTools(opts: {
             encoding?: "utf-8" | "base64";
             maxBytes?: number;
             offset?: number;
-        }) => {
+        }, context: any) => {
             if ([params.metaOnly, params.manifestOnly, params.toFile].filter(Boolean).length > 1) {
                 return toolError(
                     "EXCLUSIVE_MODE",
@@ -368,7 +380,7 @@ export function createArtifactTools(opts: {
                 }
 
                 if (params.toFile) {
-                    const jailed = resolveJailedPath(params.toFile, false);
+                    const jailed = resolveJailedPath(params.toFile, false, rootsFor(context?.durableSessionId));
                     if (jailed.error) return toolError("PATH_OUTSIDE_WORKDIR", jailed.error);
                     const result = await blobStore.downloadArtifact(params.sessionId, params.filename);
                     fs.mkdirSync(path.dirname(jailed.path!), { recursive: true });

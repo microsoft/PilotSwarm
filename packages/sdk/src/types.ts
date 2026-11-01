@@ -1428,6 +1428,15 @@ export interface PilotSwarmWorkerOptions {
      */
     computeProviders?: import("./compute.js").ComputeProvider[];
 
+    /**
+     * Compute providers: accept runtime addresses that are not on this
+     * machine. Off by default: the worker sends prompts, tool results and the
+     * connection token over that connection, so a provider should secure the
+     * path itself and hand back a local address. Turn this on only when the
+     * network between the worker and its hosts is already secured.
+     */
+    computeAllowNonLoopbackEndpoints?: boolean;
+
     /** Optional session state store. When set, enables durable session dehydration without Azure Blob Storage. */
     sessionStore?: SessionStateStore;
 

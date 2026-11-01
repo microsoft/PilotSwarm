@@ -12,7 +12,7 @@
  * The runtime gets a scrubbed environment: no worker variables, so no
  * database URLs, tokens or keys reach the commands the model runs.
  */
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess, type SpawnOptions } from "node:child_process";
 import { randomBytes, randomUUID } from "node:crypto";
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
@@ -34,10 +34,12 @@ export interface ProcessComputeProviderOptions {
 }
 
 interface ProcessHost {
+    key: string;
     ref: ComputeHostRef;
     child: ChildProcess;
     port: number;
     token: string;
+    hostDir: string;
     homeDir: string;
     workDir: string;
     sessions: Set<string>;
@@ -65,6 +67,7 @@ function defaultCliPath(): string {
 function baseRuntimeEnv(homeDir: string): Record<string, string> {
     const env: Record<string, string> = {
         HOME: homeDir,
+        USERPROFILE: homeDir,
         COPILOT_HOME: homeDir,
         COPILOT_DISABLE_KEYTAR: "1",
         PATH: process.env.PATH ?? "/usr/local/bin:/usr/bin:/bin",
@@ -76,9 +79,11 @@ function baseRuntimeEnv(homeDir: string): Record<string, string> {
     return env;
 }
 
+const OUTPUT_TAIL_BYTES = 4_096;
+
 export function createProcessComputeProvider(options: ProcessComputeProviderOptions = {}): ComputeProvider & {
-    /** Test and diagnostic view: the live hosts by tree. */
-    hosts(): Array<{ rootSessionId: string; pid: number | undefined; port: number; homeDir: string; workDir: string; sessions: string[] }>;
+    /** Test and diagnostic view: the live hosts. */
+    hosts(): Array<{ targetId: string; rootSessionId: string; pid: number | undefined; port: number; homeDir: string; workDir: string; sessions: string[] }>;
     /** Stop every host. */
     stopAll(): Promise<void>;
 } {
@@ -86,93 +91,118 @@ export function createProcessComputeProvider(options: ProcessComputeProviderOpti
     const startTimeoutMs = options.startTimeoutMs ?? 30_000;
     const hosts = new Map<string, ProcessHost>();
     const starting = new Map<string, Promise<ProcessHost>>();
+    const hostKey = (targetId: string, rootSessionId: string) => `${targetId}\0${rootSessionId}`;
 
-    async function start(rootSessionId: string): Promise<ProcessHost> {
+    function signalGroup(child: ChildProcess, name: NodeJS.Signals): void {
+        try {
+            // The runtime leads its own process group: stop the commands it started too.
+            if (process.platform !== "win32" && child.pid) process.kill(-child.pid, name);
+            else child.kill(name);
+        } catch { /* already gone */ }
+    }
+
+    async function start(key: string, targetId: string, rootSessionId: string): Promise<ProcessHost> {
         const cliPath = options.cliPath ?? defaultCliPath();
-        const hostDir = path.join(rootDir, rootSessionId);
+        const incarnation = randomUUID();
+        const hostDir = path.join(rootDir, incarnation);
         const homeDir = path.join(hostDir, "home");
         const workDir = path.join(hostDir, "work");
-        fs.mkdirSync(homeDir, { recursive: true });
-        fs.mkdirSync(workDir, { recursive: true });
+        fs.mkdirSync(rootDir, { recursive: true, mode: 0o700 });
+        fs.mkdirSync(homeDir, { recursive: true, mode: 0o700 });
+        fs.mkdirSync(workDir, { recursive: true, mode: 0o700 });
         const token = randomBytes(24).toString("hex");
         const env = { ...baseRuntimeEnv(homeDir), ...(options.env ?? {}), COPILOT_CONNECTION_TOKEN: token };
         const args = ["--headless", "--no-auto-update", "--no-auto-login"];
-        const child = /\.[cm]?js$/.test(cliPath)
-            ? spawn(process.execPath, [cliPath, ...args], { cwd: workDir, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, detached: process.platform !== "win32" })
-            : spawn(cliPath, args, { cwd: workDir, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, detached: process.platform !== "win32" });
-        const port = await new Promise<number>((resolve, reject) => {
-            let stdout = "";
-            let stderr = "";
-            const timer = setTimeout(() => {
-                try { if (child.pid && process.platform !== "win32") process.kill(-child.pid, "SIGKILL"); else child.kill("SIGKILL"); } catch { /* gone */ }
-                reject(new Error(`the runtime did not listen within ${startTimeoutMs} ms${stderr ? `: ${stderr.trim().slice(-500)}` : ""}`));
-            }, startTimeoutMs);
-            child.stdout!.on("data", (data) => {
-                stdout += data.toString();
-                const match = stdout.match(/listening on port (\d+)/i);
-                if (match) {
+        const spawnOptions: SpawnOptions = { cwd: workDir, env, stdio: ["ignore", "pipe", "pipe"], windowsHide: true, detached: process.platform !== "win32" };
+        const child: ChildProcess = /\.[cm]?js$/.test(cliPath)
+            ? spawn(process.execPath, [cliPath, ...args], spawnOptions)
+            : spawn(cliPath, args, spawnOptions);
+        const cleanup = () => fs.rmSync(hostDir, { recursive: true, force: true });
+        let port: number;
+        try {
+            port = await new Promise<number>((resolve, reject) => {
+                let stdout = "";
+                let stderr = "";
+                const tail = (text: string, more: string) => (text + more).slice(-OUTPUT_TAIL_BYTES);
+                const timer = setTimeout(() => {
+                    signalGroup(child, "SIGKILL");
+                    reject(new Error(`the runtime did not listen within ${startTimeoutMs} ms${stderr ? `: ${stderr.trim().slice(-500)}` : ""}`));
+                }, startTimeoutMs);
+                child.stdout!.on("data", (data: Buffer) => {
+                    stdout = tail(stdout, data.toString());
+                    const match = stdout.match(/listening on port (\d+)/i);
+                    if (match) {
+                        clearTimeout(timer);
+                        resolve(Number(match[1]));
+                    }
+                });
+                child.stderr!.on("data", (data: Buffer) => { stderr = tail(stderr, data.toString()); });
+                child.once("error", (error) => { clearTimeout(timer); reject(error); });
+                child.once("exit", (code, signal) => {
                     clearTimeout(timer);
-                    resolve(Number(match[1]));
-                }
+                    reject(new Error(`the runtime exited before listening (code ${code}, signal ${signal})${stderr ? `: ${stderr.trim().slice(-500)}` : ""}`));
+                });
             });
-            child.stderr!.on("data", (data) => { stderr += data.toString(); });
-            child.once("error", (error) => { clearTimeout(timer); reject(error); });
-            child.once("exit", (code, signal) => {
-                clearTimeout(timer);
-                reject(new Error(`the runtime exited before listening (code ${code}, signal ${signal})${stderr ? `: ${stderr.trim().slice(-500)}` : ""}`));
-            });
-        });
+        } catch (error) {
+            cleanup();
+            throw error;
+        }
+        // Keep draining the pipes so the runtime never blocks, without keeping its output.
+        child.stdout!.removeAllListeners("data");
+        child.stderr!.removeAllListeners("data");
+        child.stdout!.resume();
+        child.stderr!.resume();
         const host: ProcessHost = {
-            ref: { kind: PROCESS_COMPUTE_KIND, id: rootSessionId, incarnation: randomUUID(), data: { port } },
-            child, port, token, homeDir, workDir, sessions: new Set(), exited: false,
+            key,
+            ref: { kind: PROCESS_COMPUTE_KIND, id: `${targetId}/${rootSessionId}`, incarnation, data: { port } },
+            child, port, token, hostDir, homeDir, workDir, sessions: new Set(), exited: false,
         };
         child.once("exit", () => {
             host.exited = true;
-            if (hosts.get(rootSessionId) === host) hosts.delete(rootSessionId);
+            if (hosts.get(key) === host) hosts.delete(key);
         });
         return host;
     }
 
     async function stop(host: ProcessHost): Promise<void> {
-        if (hosts.get(host.ref.id) === host) hosts.delete(host.ref.id);
-        if (host.exited) return;
-        // The runtime leads its own process group: stop the commands it started too.
-        const signal = (name: NodeJS.Signals) => {
-            try {
-                if (process.platform !== "win32" && host.child.pid) process.kill(-host.child.pid, name);
-                else host.child.kill(name);
-            } catch { /* already gone */ }
-        };
-        await new Promise<void>((resolve) => {
-            const timer = setTimeout(() => { signal("SIGKILL"); resolve(); }, 5_000);
-            host.child.once("exit", () => { clearTimeout(timer); resolve(); });
-            signal("SIGTERM");
-        });
+        if (hosts.get(host.key) === host) hosts.delete(host.key);
+        if (!host.exited) {
+            await new Promise<void>((resolve) => {
+                const timer = setTimeout(() => { signalGroup(host.child, "SIGKILL"); resolve(); }, 5_000);
+                host.child.once("exit", () => { clearTimeout(timer); resolve(); });
+                signalGroup(host.child, "SIGTERM");
+            });
+        }
+        // The runtime's home holds conversation data; it goes with the host.
+        fs.rmSync(host.hostDir, { recursive: true, force: true });
     }
 
     function live(ref: ComputeHostRef): ProcessHost | undefined {
-        const host = hosts.get(ref.id);
-        return host && !host.exited && host.ref.incarnation === ref.incarnation ? host : undefined;
+        for (const host of hosts.values()) {
+            if (!host.exited && host.ref.id === ref.id && host.ref.incarnation === ref.incarnation) return host;
+        }
+        return undefined;
     }
 
     return {
         kind: PROCESS_COMPUTE_KIND,
-        capabilities: { os: [process.platform === "win32" ? "windows" : "linux"], sandboxed: false, files: "worker-local" },
+        capabilities: { os: [process.platform], sandboxed: false, files: "worker-local" },
 
         async bind(req) {
-            let host = hosts.get(req.rootSessionId);
+            const key = hostKey(req.target.id, req.rootSessionId);
+            let host = hosts.get(key);
             if (!host || host.exited) {
-                let pending = starting.get(req.rootSessionId);
+                let pending = starting.get(key);
                 if (!pending) {
-                    pending = start(req.rootSessionId).finally(() => starting.delete(req.rootSessionId));
-                    starting.set(req.rootSessionId, pending);
+                    pending = start(key, req.target.id, req.rootSessionId).finally(() => starting.delete(key));
+                    starting.set(key, pending);
                 }
                 try {
                     host = await pending;
                 } catch (error) {
                     return { ok: false, code: COMPUTE_ERROR_CODES.UNAVAILABLE, message: String((error as Error)?.message ?? error), retryAfterMs: 5_000 };
                 }
-                hosts.set(req.rootSessionId, host);
+                hosts.set(key, host);
             }
             host.sessions.add(req.sessionId);
             return { ok: true, host: host.ref };
@@ -181,19 +211,14 @@ export function createProcessComputeProvider(options: ProcessComputeProviderOpti
         async connect(req) {
             const host = live(req.host);
             if (!host) {
-                return { ok: false, code: COMPUTE_ERROR_CODES.UNAVAILABLE, message: `the runtime for tree ${req.host.id} is not running`, retryAfterMs: 1_000 };
+                return { ok: false, code: COMPUTE_ERROR_CODES.UNAVAILABLE, message: `the runtime for host ${req.host.id} is not running`, retryAfterMs: 1_000 };
             }
             // Same machine: the worker's folders are valid paths for the host.
             return {
                 ok: true,
                 endpoint: { transport: "uri", address: `127.0.0.1:${host.port}`, connectionToken: host.token },
-                workspace: { cwd: req.workspace.cwd ?? host.workDir, ...(req.workspace.additionalDirectories ? { additionalDirectories: req.workspace.additionalDirectories } : {}), convention: process.platform === "win32" ? "windows" : "posix" },
+                workspace: { cwd: req.workspace.cwd ?? host.workDir, ...(req.workspace.additionalDirectories ? { additionalDirectories: req.workspace.additionalDirectories } : {}) },
             };
-        },
-
-        async hostState(ref) {
-            const host = live(ref);
-            return { phase: host ? "ready" : "gone", observedAt: new Date().toISOString() };
         },
 
         async release(req) {
@@ -204,9 +229,10 @@ export function createProcessComputeProvider(options: ProcessComputeProviderOpti
         },
 
         hosts() {
-            return [...hosts.entries()].map(([rootSessionId, host]) => ({
-                rootSessionId, pid: host.child.pid, port: host.port, homeDir: host.homeDir, workDir: host.workDir, sessions: [...host.sessions],
-            }));
+            return [...hosts.values()].map((host) => {
+                const [targetId, rootSessionId] = host.key.split("\0");
+                return { targetId, rootSessionId, pid: host.child.pid, port: host.port, homeDir: host.homeDir, workDir: host.workDir, sessions: [...host.sessions] };
+            });
         },
 
         async stopAll() {

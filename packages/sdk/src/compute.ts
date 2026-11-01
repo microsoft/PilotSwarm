@@ -14,6 +14,7 @@
  * about any particular platform; the built-in `local` provider is today's
  * behaviour, a runtime the worker starts as its own child process.
  */
+import { createHash } from "node:crypto";
 import { RuntimeConnection } from "@github/copilot-sdk";
 
 export const LOCAL_COMPUTE_KIND = "local";
@@ -31,14 +32,20 @@ export const COMPUTE_ERROR_CODES = {
     DISABLED: "COMPUTE_TARGET_DISABLED",
     /** The worker has no provider for the target's kind. */
     KIND_UNKNOWN: "COMPUTE_KIND_UNKNOWN",
-    /** bind or connect failed; may carry retryAfterMs. */
+    /** bind or connect failed, or did not answer in time; may carry retryAfterMs. */
     UNAVAILABLE: "COMPUTE_UNAVAILABLE",
+    /** The session cannot run on a remote target as configured (for example its model). */
+    UNSUPPORTED: "COMPUTE_UNSUPPORTED",
+    /** The provider returned a runtime address this worker does not accept. */
+    ENDPOINT_REFUSED: "COMPUTE_ENDPOINT_REFUSED",
 } as const;
 
 export type ComputeTargetClass = "shared" | "personal";
 
 /** A registered compute target, as the CMS stores it. `config` belongs to the provider of `kind`. */
 export interface ComputeTarget {
+    /** Never reused, unlike the name. */
+    id: string;
     name: string;
     kind: string;
     class: ComputeTargetClass;
@@ -57,34 +64,44 @@ export interface ComputePrincipal {
 
 /** What a provider says about the hosts it creates. Descriptive; used for policy and display. */
 export interface ComputeCapabilities {
-    os: Array<"linux" | "windows">;
+    /** Operating systems of its hosts, as Node names them ("linux", "win32", "darwin", ...). */
+    os: string[];
     /** Whether the host is an isolation boundary for model-chosen code. */
     sandboxed: boolean;
     /** How PilotSwarm tools in the worker reach the host's files. */
     files: "worker-local" | "shared-mount" | "provider-api" | "none";
 }
 
-/** An opaque handle to a host. `id` is stable for the host's life; `incarnation` changes when it is replaced. */
+/**
+ * An opaque handle to a host. `id` is stable for the host's life;
+ * `incarnation` changes whenever the host is replaced. The worker keeps it
+ * in memory for the binding and never reads `data`.
+ */
 export interface ComputeHostRef {
     kind: string;
     id: string;
     incarnation: string;
-    /** Provider-private details; PilotSwarm stores and returns them unread. */
+    /** Provider-private details. */
     data?: Record<string, unknown>;
 }
 
 export type ComputeFailure = { ok: false; code: string; message: string; retryAfterMs?: number };
 
-export interface ComputeValidateRequest {
-    config: Record<string, unknown>;
-    class: ComputeTargetClass;
-    registeredBy: ComputePrincipal | null;
+/** Every provider call carries a deadline; a provider should stop work when it fires. */
+interface ComputeCall {
+    signal: AbortSignal;
 }
 
-export interface ComputeBindRequest {
+export interface ComputeValidateRequest extends ComputeCall {
+    target: ComputeTarget;
+    /** Who will use the target: the session tree's owner, or null for system sessions. */
+    principal: ComputePrincipal | null;
+}
+
+export interface ComputeBindRequest extends ComputeCall {
     target: ComputeTarget;
     sessionId: string;
-    /** The session tree: hosts are bound per tree. */
+    /** The session tree: hosts are bound per (target, tree). */
     rootSessionId: string;
     owner: ComputePrincipal | null;
     workerNodeId: string;
@@ -96,7 +113,7 @@ export interface ComputeWorkspacePaths {
     additionalDirectories?: string[];
 }
 
-export interface ComputeConnectRequest {
+export interface ComputeConnectRequest extends ComputeCall {
     target: ComputeTarget;
     host: ComputeHostRef;
     sessionId: string;
@@ -110,8 +127,13 @@ export interface ComputeConnectRequest {
  * How the worker reaches the GHCP runtime.
  *   local  the worker starts the runtime as its own child process (today)
  *   uri    a runtime already listening at `address` ("host:port" or a URL),
- *          reachable from the worker. A provider that needs a tunnel or a
- *          relay runs it and hands back a local address.
+ *          reachable from the worker, with the token the runtime expects.
+ *
+ * The worker sends prompts, tool results and the token over this
+ * connection, so by default it accepts only loopback addresses: a provider
+ * that reaches a host elsewhere secures that path itself and hands back a
+ * local address. A worker can opt in to other addresses
+ * (`computeAllowNonLoopbackEndpoints`) when its network secures them.
  */
 export type ComputeRuntimeEndpoint =
     | { transport: "local" }
@@ -122,55 +144,61 @@ export type ComputeConnectResult =
         ok: true;
         endpoint: ComputeRuntimeEndpoint;
         /** The folders as the host sees them. */
-        workspace: ComputeWorkspacePaths & { convention?: "posix" | "windows" };
+        workspace: ComputeWorkspacePaths;
     }
     | ComputeFailure;
 
-export interface ComputeHostState {
-    phase: "pending" | "ready" | "stopped" | "failed" | "gone" | "unknown";
-    detail?: string;
-    observedAt: string;
-}
-
 /**
- * Why a host is released:
- *   ended    the session tree ended
+ * Why a session leaves its host:
+ *   ended    the session ended
  *   moved    the session left this worker and stays open
  *   evicted  the worker dropped the idle session
  *   shutdown the worker is shutting down
+ *   failed   bind succeeded but the session could not use the host
  */
-export type ComputeReleaseReason = "ended" | "moved" | "evicted" | "shutdown";
+export type ComputeReleaseReason = "ended" | "moved" | "evicted" | "shutdown" | "failed";
+
+export interface ComputeReleaseRequest extends ComputeCall {
+    target: ComputeTarget;
+    host: ComputeHostRef;
+    sessionId: string;
+    rootSessionId: string;
+    workerNodeId: string;
+    reason: ComputeReleaseReason;
+}
 
 /**
  * A compute provider: the worker plug-in for one compute type.
  *
- * `bind` runs once per session tree and must be idempotent: called again
- * for the same tree, it returns the same host while that host lives.
- * `connect` runs before every turn, possibly on another worker. Failures
- * use the workspace provider shape, so the same hold-and-retry applies.
+ * Experimental: this interface may change before it is released.
+ *
+ * `validateTarget` runs before every bind: may this principal use what the
+ * target's config points at? `bind` must be idempotent per (target, tree):
+ * called again, it returns the same host while that host lives. `connect`
+ * runs before every turn, possibly on another worker. `release` is best
+ * effort and called once per session that leaves a host on this worker;
+ * several sessions of a tree share a host, so a provider stops it only when
+ * no session uses it. A worker can crash without releasing, so a provider
+ * that holds costly hosts also needs its own expiry.
+ *
+ * Every call has a deadline (`signal`). A failure uses the workspace
+ * provider shape (`code`, `message`, `retryAfterMs`); the turn then fails
+ * and is retried like any failed turn.
  */
 export interface ComputeProvider {
     readonly kind: string;
     readonly capabilities: ComputeCapabilities;
-    /** At registration: is this config valid, and may the principal use what it points at? */
     validateTarget?(req: ComputeValidateRequest): Promise<{ ok: true } | ComputeFailure>;
     bind(req: ComputeBindRequest): Promise<{ ok: true; host: ComputeHostRef } | ComputeFailure>;
     connect(req: ComputeConnectRequest): Promise<ComputeConnectResult>;
-    /** Trusted state from the host's own control plane. */
-    hostState?(host: ComputeHostRef): Promise<ComputeHostState>;
-    /**
-     * Best effort. Called once per session that leaves the host; several
-     * sessions of one tree can share a host, so a provider stops it only
-     * when its last session has left.
-     */
-    release?(req: { host: ComputeHostRef; sessionId: string; reason: ComputeReleaseReason }): Promise<void>;
+    release?(req: ComputeReleaseRequest): Promise<void>;
 }
 
 /** The built-in provider: the runtime runs as the worker's child process, as today. */
 export function createLocalComputeProvider(): ComputeProvider {
     return {
         kind: LOCAL_COMPUTE_KIND,
-        capabilities: { os: [process.platform === "win32" ? "windows" : "linux"], sandboxed: false, files: "worker-local" },
+        capabilities: { os: [process.platform], sandboxed: false, files: "worker-local" },
         async bind(req) {
             return { ok: true, host: { kind: LOCAL_COMPUTE_KIND, id: req.workerNodeId, incarnation: req.workerNodeId } };
         },
@@ -235,8 +263,30 @@ export function runtimeConnectionFor(endpoint: ComputeRuntimeEndpoint | undefine
     throw new Error(`unknown compute transport "${(endpoint as { transport?: unknown }).transport}"`);
 }
 
-/** A stable key for a client pool: one Copilot client per runtime endpoint. */
-export function runtimeEndpointKey(endpoint: ComputeRuntimeEndpoint | undefined): string {
+/**
+ * A key for the client pool: one Copilot client per runtime connection.
+ * It covers the address, the token, and the host and its incarnation, so a
+ * replaced host or a rotated token gets a fresh client. The token itself is
+ * never part of the key.
+ */
+export function runtimeEndpointKey(endpoint: ComputeRuntimeEndpoint | undefined, host?: ComputeHostRef): string {
     if (!endpoint || endpoint.transport === "local") return "";
-    return `uri\0${endpoint.address}`;
+    const digest = createHash("sha256")
+        .update(JSON.stringify([endpoint.address, endpoint.connectionToken ?? "", host?.kind ?? "", host?.id ?? "", host?.incarnation ?? ""]))
+        .digest("hex")
+        .slice(0, 32);
+    return `uri\0${digest}`;
+}
+
+/** Whether an endpoint address names this machine (localhost, 127.0.0.0/8 or ::1). */
+export function isLoopbackAddress(address: string): boolean {
+    let host = address.trim();
+    try {
+        if (/^[a-z][a-z0-9+.-]*:\/\//i.test(host)) host = new URL(host).hostname;
+        else host = new URL(`tcp://${host}`).hostname;
+    } catch {
+        return false;
+    }
+    host = host.replace(/^\[|\]$/g, "").toLowerCase();
+    return host === "localhost" || host === "::1" || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
 }

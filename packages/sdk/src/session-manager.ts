@@ -1,5 +1,5 @@
-import { COMPUTE_ERROR_CODES, ComputeProviderRegistry, runtimeConnectionFor, runtimeEndpointKey, type ComputeHostRef, type ComputeProvider, type ComputeReleaseReason, type ComputeRuntimeEndpoint, type ComputeWorkspacePaths } from "./compute.js";
-import { REMOTE_SESSION_STATE_ROOT, RemoteRuntimeRequestHandler, WorkerDirectorySessionFs, redactProviderSecrets, type RemoteSecretMap } from "./compute-runtime.js";
+import { COMPUTE_ERROR_CODES, ComputeProviderRegistry, isLoopbackAddress, runtimeConnectionFor, runtimeEndpointKey, type ComputeHostRef, type ComputePrincipal, type ComputeProvider, type ComputeReleaseReason, type ComputeRuntimeEndpoint, type ComputeTarget, type ComputeWorkspacePaths } from "./compute.js";
+import { REMOTE_SESSION_STATE_ROOT, RemoteRuntimeRequestHandler, WorkerDirectorySessionFs, redactProviderSecrets, remoteSessionGrant, type RemoteSessionGrant } from "./compute-runtime.js";
 import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, capabilityOwnership, parseCapabilityRef, resolveCapabilitySource, workspaceCapabilityHits, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
 import { bindCapabilities, nextCapabilityState, validatePackageRequest } from "./capability-runtime.js";
 import type { McpAllowlistAgent } from "./mcp-loader.js";
@@ -601,6 +601,23 @@ function folderReleaseRequest(
 const WORKSPACE_ROOT_CLIENT_SEPARATOR = "\0workspace-root:";
 /** Compute providers: a pool key part naming a remote runtime endpoint (runtimeEndpointKey). */
 const COMPUTE_CLIENT_SEPARATOR = "\0compute:";
+/** Deadlines for compute provider calls. */
+const COMPUTE_BIND_TIMEOUT_MS = 5 * 60_000;
+const COMPUTE_CONNECT_TIMEOUT_MS = 2 * 60_000;
+const COMPUTE_RELEASE_TIMEOUT_MS = 30_000;
+
+/** A session's binding to a compute host on this worker. */
+interface ComputeBinding {
+    provider: ComputeProvider;
+    target: ComputeTarget;
+    host: ComputeHostRef;
+    rootSessionId: string;
+    workerNodeId: string;
+    /** runtimeEndpointKey of the connection; empty until connect succeeds. */
+    endpointKey: string;
+    /** The session's workspace folders as the worker sees them. */
+    workerPaths: string[];
+}
 
 /**
  * Session workspaces: how long a release may spend cancelling tasks and
@@ -806,10 +823,17 @@ export class SessionManager {
     private computeProviders = new ComputeProviderRegistry();
     /** Remote runtime endpoints by runtimeEndpointKey, so a pool key can rebuild its client. */
     private computeEndpoints = new Map<string, ComputeRuntimeEndpoint>();
-    /** Per remote session: credential placeholders the request handler swaps back. */
-    private remoteSecrets = new Map<string, RemoteSecretMap>();
+    /**
+     * Per remote session: what its model requests may reach and the
+     * placeholders to swap, tied to the runtime connection it was bound on.
+     * Kept while the session stays on that connection, so a warm runtime
+     * session keeps its placeholders.
+     */
+    private remoteGrants = new Map<string, { grant: RemoteSessionGrant; endpointKey: string; fingerprint: string; provider: unknown }>();
     /** Per session: the compute host it is bound to, for release. */
-    private computeHosts = new Map<string, { provider: ComputeProvider; host: ComputeHostRef; endpointKey: string }>();
+    private computeHosts = new Map<string, ComputeBinding>();
+    /** Whether a provider may hand back a runtime address that is not on this machine. */
+    private computeAllowNonLoopbackEndpoints = false;
     private unsubscribeFeatureFlags: (() => void) | null = null;
 
     /** Live in-memory session count — worker-registry health reporting. */
@@ -1199,9 +1223,15 @@ export class SessionManager {
     }
 
     /**
-     * Compute providers: bind and connect the session's compute target before
-     * a turn. Null when the session has no target. Throws a coded error when
-     * the target is gone, disabled, of an unknown kind, or unavailable.
+     * Compute providers: bind and connect the session tree's compute target
+     * before a turn. Null when the tree has none.
+     *
+     * The target comes from the tree's root session in the CMS (its creation
+     * config), never from in-memory config, so a sub-agent always runs where
+     * its tree runs and a client cannot redirect a session. The worker
+     * re-checks before every turn, by the target's id, that the tree's owner
+     * may still use it. Throws a coded error when the target is gone,
+     * disabled, of an unknown kind, or unavailable.
      */
     private async _prepareCompute(
         sessionId: string,
@@ -1209,68 +1239,167 @@ export class SessionManager {
         workspaceAttach: ManagedSessionConfig["workspaceAttach"] | undefined,
         catalogRow: any,
         turnIndex: number,
-    ): Promise<{ endpoint: ComputeRuntimeEndpoint; workspace: ComputeWorkspacePaths } | null> {
-        const name = config.computeTarget;
-        if (!name) {
-            this.computeHosts.delete(sessionId);
-            return null;
-        }
+    ): Promise<{ endpoint: ComputeRuntimeEndpoint; workspace: ComputeWorkspacePaths; endpointKey: string } | null> {
         const fail = (code: string, message: string, retryAfterMs?: number): never => {
             throw Object.assign(new Error(`${code}: ${message}`), { code, ...(retryAfterMs ? { retryAfterMs } : {}) });
         };
-        const store = this.sessionCatalog?.computeTargets;
-        if (!store) fail(COMPUTE_ERROR_CODES.NOT_FOUND, `compute target "${name}" cannot be resolved: no catalog`);
-        const target = await store!.resolve(name);
-        if (!target) return fail(COMPUTE_ERROR_CODES.NOT_FOUND, `there is no compute target named "${name}"`);
-        if (!target.enabled) fail(COMPUTE_ERROR_CODES.DISABLED, `the compute target "${name}" is disabled`);
-        const provider = this.computeProviders.get(target.kind);
-        if (!provider) fail(COMPUTE_ERROR_CODES.KIND_UNKNOWN, `this worker has no compute provider of kind "${target.kind}"`);
-        const workerNodeId = this.workspaceWorkerNodeId ?? os.hostname();
-        const owner = catalogRow?.owner?.provider && catalogRow?.owner?.subject
-            ? { provider: catalogRow.owner.provider, subject: catalogRow.owner.subject, email: catalogRow.owner.email ?? null }
+        const catalog = this.sessionCatalog;
+        if (!catalog?.computeTargets || !catalog.getSessionCreationConfig) return null;
+        const row = catalogRow ?? await catalog.getSession(sessionId).catch(() => null);
+        if (!row) return fail(COMPUTE_ERROR_CODES.UNAVAILABLE, "the session's catalog row cannot be read, so its compute target is unknown", 5_000);
+        const rootSessionId: string = row.rootSessionId || sessionId;
+        const rootRow = rootSessionId === sessionId ? row : await catalog.getSession(rootSessionId).catch(() => null);
+        if (!rootRow) return fail(COMPUTE_ERROR_CODES.UNAVAILABLE, "the session tree's root cannot be read, so its compute target is unknown", 5_000);
+        const [ownConfig, treeConfig] = await Promise.all([
+            catalog.getSessionCreationConfig(sessionId),
+            rootSessionId === sessionId ? Promise.resolve(null) : catalog.getSessionCreationConfig(rootSessionId),
+        ]);
+        const rootConfig = rootSessionId === sessionId ? ownConfig : treeConfig;
+        const text = (value: unknown) => typeof value === "string" ? value : "";
+        const targetName = text(rootConfig?.computeTarget);
+        const targetId = text(rootConfig?.computeTargetId);
+        const ownTargetId = text(ownConfig?.computeTargetId);
+        if (ownTargetId && ownTargetId !== targetId) {
+            return fail(COMPUTE_ERROR_CODES.INVALID, "this session names a different compute target than its session tree");
+        }
+        if (!targetName && !targetId) return null;
+        if (!targetId) return fail(COMPUTE_ERROR_CODES.NOT_FOUND, `the compute target "${targetName}" of this session has no recorded id`);
+        const owner: ComputePrincipal | null = rootRow.owner?.provider && rootRow.owner?.subject
+            ? { provider: rootRow.owner.provider, subject: rootRow.owner.subject, email: rootRow.owner.email ?? null }
             : null;
-        const rootSessionId = catalogRow?.rootSessionId || sessionId;
-        const bound = await provider!.bind({ target, sessionId, rootSessionId, owner, workerNodeId });
+        const isSystem = Boolean(rootRow.isSystem);
+        const target = await catalog.computeTargets.resolveForSession(targetId, owner, isSystem);
+        if (!target) return fail(COMPUTE_ERROR_CODES.NOT_FOUND, `the compute target "${targetName}" of this session is gone or no longer available to its owner`);
+        if (!target.enabled) return fail(COMPUTE_ERROR_CODES.DISABLED, `the compute target "${target.name}" is disabled`);
+        const provider = this.computeProviders.get(target.kind);
+        if (!provider) return fail(COMPUTE_ERROR_CODES.KIND_UNKNOWN, `this worker has no compute provider of kind "${target.kind}"`);
+        const workerNodeId = this.workspaceWorkerNodeId ?? os.hostname();
+
+        if (provider.validateTarget) {
+            const valid = await this._computeCall("validateTarget", COMPUTE_CONNECT_TIMEOUT_MS,
+                (signal) => provider.validateTarget!({ target, principal: owner, signal }));
+            if (!valid.ok) return fail(valid.code, valid.message, valid.retryAfterMs);
+        }
+        const previous = this.computeHosts.get(sessionId);
+        const bound = await this._computeCall("bind", COMPUTE_BIND_TIMEOUT_MS,
+            (signal) => provider.bind({ target, sessionId, rootSessionId, owner, workerNodeId, signal }));
         if (!bound.ok) return fail(bound.code, bound.message, bound.retryAfterMs);
+        if (previous && (previous.target.id !== target.id || previous.host.id !== bound.host.id || previous.host.incarnation !== bound.host.incarnation)) {
+            // The session's host was replaced: leave the old one.
+            this.computeHosts.delete(sessionId);
+            await this._releaseBinding(sessionId, previous, "failed", true);
+        }
+        // Record the binding before connect, so a failed connect still releases it.
         const workspace: ComputeWorkspacePaths = {
             ...(workspaceAttach?.path ?? config.workingDirectory ? { cwd: workspaceAttach?.path ?? config.workingDirectory } : {}),
             ...(workspaceAttach?.extras?.length ? { additionalDirectories: workspaceAttach.extras.map((extra) => extra.path) } : {}),
         };
-        const connected = await provider!.connect({ target, host: bound.host, sessionId, rootSessionId, workerNodeId, turnIndex, workspace });
-        if (!connected.ok) return fail(connected.code, connected.message, connected.retryAfterMs);
-        this.computeHosts.set(sessionId, { provider: provider!, host: bound.host, endpointKey: runtimeEndpointKey(connected.endpoint) });
-        return { endpoint: connected.endpoint, workspace: connected.workspace };
+        const binding: ComputeBinding = {
+            provider, target, host: bound.host, rootSessionId, workerNodeId,
+            endpointKey: previous && previous.host.id === bound.host.id && previous.host.incarnation === bound.host.incarnation ? previous.endpointKey : "",
+            workerPaths: [workspace.cwd, ...(workspace.additionalDirectories ?? [])].filter((entry): entry is string => Boolean(entry)),
+        };
+        this.computeHosts.set(sessionId, binding);
+        const connected = await this._computeCall("connect", COMPUTE_CONNECT_TIMEOUT_MS,
+            (signal) => provider.connect({ target, host: bound.host, sessionId, rootSessionId, workerNodeId, turnIndex, signal, workspace })).catch(async (error) => {
+                await this.releaseCompute(sessionId, "failed");
+                throw error;
+            });
+        if (!connected.ok) {
+            await this.releaseCompute(sessionId, "failed");
+            return fail(connected.code, connected.message, connected.retryAfterMs);
+        }
+        if (connected.endpoint.transport === "uri" && !this.computeAllowNonLoopbackEndpoints && !isLoopbackAddress(connected.endpoint.address)) {
+            await this.releaseCompute(sessionId, "failed");
+            return fail(COMPUTE_ERROR_CODES.ENDPOINT_REFUSED,
+                "the compute provider returned a runtime address that is not on this machine; this worker accepts only local addresses");
+        }
+        const endpointKey = runtimeEndpointKey(connected.endpoint, bound.host);
+        const oldKey = binding.endpointKey;
+        binding.endpointKey = endpointKey;
+        if (oldKey && oldKey !== endpointKey) await this._retireEndpointIfUnused(oldKey);
+        return { endpoint: connected.endpoint, workspace: connected.workspace, endpointKey };
+    }
+
+    /** Run one provider call with a deadline; a provider that does not answer fails the call. */
+    private async _computeCall<T>(name: string, timeoutMs: number, call: (signal: AbortSignal) => Promise<T>): Promise<T> {
+        const controller = new AbortController();
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+            return await Promise.race([
+                call(controller.signal),
+                new Promise<never>((_, reject) => {
+                    timer = setTimeout(() => {
+                        controller.abort();
+                        reject(Object.assign(
+                            new Error(`${COMPUTE_ERROR_CODES.UNAVAILABLE}: the compute provider did not answer ${name} within ${timeoutMs} ms`),
+                            { code: COMPUTE_ERROR_CODES.UNAVAILABLE, retryAfterMs: 5_000 }));
+                    }, timeoutMs);
+                }),
+            ]);
+        } finally {
+            if (timer) clearTimeout(timer);
+        }
+    }
+
+    /** Disconnect the pooled clients of a runtime connection no session uses any more. */
+    private async _retireEndpointIfUnused(endpointKey: string): Promise<void> {
+        if (!endpointKey || [...this.computeHosts.values()].some((other) => other.endpointKey === endpointKey)) return;
+        this.computeEndpoints.delete(endpointKey);
+        const suffix = COMPUTE_CLIENT_SEPARATOR + endpointKey;
+        const stale = [...this.clients.entries()].filter(([key]) => key.endsWith(suffix));
+        for (const [key] of stale) this.clients.delete(key);
+        await Promise.all(stale.map(async ([, client]) => {
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            try {
+                await Promise.race([
+                    client.stop(),
+                    new Promise((resolve) => { timer = setTimeout(resolve, COPILOT_CLIENT_SHUTDOWN_TIMEOUT_MS); }),
+                ]);
+            } catch { /* best effort */ } finally {
+                if (timer) clearTimeout(timer);
+            }
+        }));
+    }
+
+    /** Leave one binding: drop its clients if unused, then tell the provider. Best effort, bounded. */
+    private async _releaseBinding(sessionId: string, binding: ComputeBinding, reason: ComputeReleaseReason, keepGrant = false): Promise<void> {
+        if (!keepGrant) this.remoteGrants.delete(sessionId);
+        await this._retireEndpointIfUnused(binding.endpointKey);
+        if (!binding.provider.release) return;
+        try {
+            await this._computeCall("release", COMPUTE_RELEASE_TIMEOUT_MS, (signal) => binding.provider.release!({
+                target: binding.target, host: binding.host, sessionId, rootSessionId: binding.rootSessionId,
+                workerNodeId: binding.workerNodeId, reason, signal,
+            }));
+        } catch { /* best effort */ }
     }
 
     /** Compute providers: tell the provider a session no longer needs its host here. Best effort. */
     async releaseCompute(sessionId: string, reason: ComputeReleaseReason): Promise<void> {
-        const bound = this.computeHosts.get(sessionId);
+        const binding = this.computeHosts.get(sessionId);
         this.computeHosts.delete(sessionId);
-        this.remoteSecrets.delete(sessionId);
-        if (!bound) return;
-        if (bound.endpointKey && ![...this.computeHosts.values()].some((other) => other.endpointKey === bound.endpointKey)) {
-            // The last session on this runtime left: disconnect its pooled clients
-            // before the provider stops the host.
-            this.computeEndpoints.delete(bound.endpointKey);
-            const suffix = COMPUTE_CLIENT_SEPARATOR + bound.endpointKey;
-            const stale = [...this.clients.entries()].filter(([key]) => key.endsWith(suffix));
-            for (const [key] of stale) this.clients.delete(key);
-            await Promise.all(stale.map(async ([, client]) => {
-                let timer: ReturnType<typeof setTimeout> | undefined;
-                try {
-                    await Promise.race([
-                        client.stop(),
-                        new Promise((resolve) => { timer = setTimeout(resolve, COPILOT_CLIENT_SHUTDOWN_TIMEOUT_MS); }),
-                    ]);
-                } catch { /* best effort */ } finally {
-                    if (timer) clearTimeout(timer);
-                }
-            }));
-        }
-        if (!bound.provider.release) return;
-        try {
-            await bound.provider.release({ host: bound.host, sessionId, reason });
-        } catch { /* best effort */ }
+        this.remoteGrants.delete(sessionId);
+        if (binding) await this._releaseBinding(sessionId, binding, reason);
+    }
+
+    /**
+     * Compute providers: the worker folders a session's tools may name by
+     * path. Undefined for a session that runs here (the default roots apply).
+     * A session whose runtime runs elsewhere gets only its own workspace
+     * folders, and only when its provider says the host shares them with the
+     * worker; otherwise none.
+     */
+    computeLocalPathRoots(sessionId: string): string[] | undefined {
+        const binding = this.computeHosts.get(sessionId);
+        if (!binding || !binding.endpointKey) return undefined;
+        const files = binding.provider.capabilities?.files;
+        return files === "worker-local" || files === "shared-mount" ? [...binding.workerPaths] : [];
+    }
+
+    /** Compute providers: whether a provider may return a runtime address that is not on this machine. */
+    setComputeOptions(options: { allowNonLoopbackEndpoints?: boolean }): void {
+        this.computeAllowNonLoopbackEndpoints = options.allowNonLoopbackEndpoints === true;
     }
 
     /** Compute providers: add one plug-in per compute type. */
@@ -1404,7 +1533,7 @@ export class SessionManager {
      * It may not be started yet: create and resume sessions on it through
      * `_createCopilotSession` / `_resumeCopilotSession`.
      */
-    private async ensureClient(tokenOverride?: string, byokOpenAi = false, workspaceRoot?: string, endpoint?: ComputeRuntimeEndpoint): Promise<CopilotClient> {
+    private async ensureClient(tokenOverride?: string, byokOpenAi = false, workspaceRoot?: string, endpoint?: ComputeRuntimeEndpoint, computeKey?: string): Promise<CopilotClient> {
         // Resolve the effective token: explicit override > worker default >
         // first registry github provider's resolved token. The override is
         // how per-user GitHub Copilot keys (cms.users.github_copilot_key)
@@ -1423,7 +1552,7 @@ export class SessionManager {
         }
 
         const remote = endpoint && endpoint.transport !== "local" ? endpoint : undefined;
-        const endpointKey = remote ? runtimeEndpointKey(remote) : "";
+        const endpointKey = remote ? (computeKey || runtimeEndpointKey(remote)) : "";
         const clientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (token || "")
             + (workspaceRoot ? WORKSPACE_ROOT_CLIENT_SEPARATOR + workspaceRoot : "")
             + (remote ? COMPUTE_CLIENT_SEPARATOR + endpointKey : "");
@@ -1479,7 +1608,11 @@ export class SessionManager {
             ...(remote ? { sessionFs: { initialCwd: "/", sessionStatePath: REMOTE_SESSION_STATE_ROOT, conventions: "posix" as const } } : {}),
         }, byokOpenAi ? { type: "openai" } : undefined, toolCatalogResolver, remote ? {
             connection: runtimeConnectionFor(remote),
-            requestHandler: new RemoteRuntimeRequestHandler((sessionId) => sessionId ? this.remoteSecrets.get(sessionId) : undefined, toolCatalogResolver),
+            // Serves only the sessions bound to this connection.
+            requestHandler: new RemoteRuntimeRequestHandler((sessionId) => {
+                const entry = sessionId ? this.remoteGrants.get(sessionId) : undefined;
+                return entry && entry.endpointKey === endpointKey ? entry.grant : undefined;
+            }, toolCatalogResolver),
         } : undefined);
         this.clients.set(clientKey, created);
         return created;
@@ -1606,8 +1739,10 @@ export class SessionManager {
         if (cached) return cached;
         const computeAt = key.indexOf(COMPUTE_CLIENT_SEPARATOR);
         let endpoint: ComputeRuntimeEndpoint | undefined;
+        let computeKey: string | undefined;
         if (computeAt >= 0) {
-            endpoint = this.computeEndpoints.get(key.slice(computeAt + COMPUTE_CLIENT_SEPARATOR.length));
+            computeKey = key.slice(computeAt + COMPUTE_CLIENT_SEPARATOR.length);
+            endpoint = this.computeEndpoints.get(computeKey);
             if (!endpoint) {
                 throw Object.assign(new Error("COMPUTE_UNAVAILABLE: the remote runtime for this session is not known on this worker"),
                     { code: COMPUTE_ERROR_CODES.UNAVAILABLE });
@@ -1618,8 +1753,8 @@ export class SessionManager {
         const workspaceRoot = rootAt >= 0 ? key.slice(rootAt + WORKSPACE_ROOT_CLIENT_SEPARATOR.length) || undefined : undefined;
         const base = rootAt >= 0 ? key.slice(0, rootAt) : key;
         return base.startsWith(BYOK_CLIENT_PREFIX)
-            ? this.ensureClient(base.slice(BYOK_CLIENT_PREFIX.length) || undefined, true, workspaceRoot, endpoint)
-            : this.ensureClient(base || undefined, false, workspaceRoot, endpoint);
+            ? this.ensureClient(base.slice(BYOK_CLIENT_PREFIX.length) || undefined, true, workspaceRoot, endpoint, computeKey)
+            : this.ensureClient(base || undefined, false, workspaceRoot, endpoint, computeKey);
     }
 
     private async _ensureClientForSession(sessionId: string): Promise<CopilotClient> {
@@ -2267,24 +2402,39 @@ export class SessionManager {
             // GitHub token. A remote runtime must not hold one, and per-request
             // auth for them through the worker is not built yet.
             throw Object.assign(
-                new Error("COMPUTE_UNSUPPORTED: GitHub Copilot models cannot run on a remote compute target yet; choose a model from a configured provider"),
-                { code: "COMPUTE_UNSUPPORTED", status: 400 },
+                new Error(`${COMPUTE_ERROR_CODES.UNSUPPORTED}: GitHub Copilot models cannot run on a remote compute target yet; choose a model from a configured provider`),
+                { code: COMPUTE_ERROR_CODES.UNSUPPORTED, status: 400 },
             );
         }
         // The provider config the runtime sees: on a remote host, credentials
         // are placeholders the worker's request handler swaps back.
         let sessionProviderConfig: typeof resolvedProviderConfig = resolvedProviderConfig;
         if (remoteEndpoint) {
-            const redacted = redactProviderSecrets(resolvedProviderConfig.provider as Record<string, any>, sessionId);
-            this.remoteSecrets.set(sessionId, redacted.secrets);
-            sessionProviderConfig = { ...resolvedProviderConfig, provider: redacted.provider } as typeof resolvedProviderConfig;
-        } else {
-            this.remoteSecrets.delete(sessionId);
+            const realProvider = resolvedProviderConfig.provider as Record<string, any>;
+            const fingerprint = JSON.stringify([realProvider?.type ?? null, realProvider?.baseUrl ?? null,
+                Object.keys(realProvider?.headers ?? {}).sort(), Boolean(realProvider?.apiKey), Boolean(realProvider?.bearerToken),
+                typeof realProvider?.bearerTokenProvider === "function"]);
+            let entry = this.remoteGrants.get(sessionId);
+            if (!entry || entry.endpointKey !== compute!.endpointKey || entry.fingerprint !== fingerprint) {
+                // New placeholders whenever the session lands on a new connection
+                // or its provider changes; the same ones while it stays put.
+                const redacted = redactProviderSecrets(realProvider, sessionId);
+                const grant = remoteSessionGrant(realProvider?.baseUrl, redacted.secrets);
+                if (!grant) {
+                    throw Object.assign(
+                        new Error(`${COMPUTE_ERROR_CODES.UNSUPPORTED}: this session's model provider has no http(s) base URL, which a remote runtime needs`),
+                        { code: COMPUTE_ERROR_CODES.UNSUPPORTED, status: 400 },
+                    );
+                }
+                entry = { grant, endpointKey: compute!.endpointKey, fingerprint, provider: redacted.provider };
+                this.remoteGrants.set(sessionId, entry);
+            }
+            sessionProviderConfig = { ...resolvedProviderConfig, provider: entry.provider } as typeof resolvedProviderConfig;
         }
         const byokOpenAi = needsByokRequestCompatibility(resolvedProviderConfig.provider);
         const desiredClientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (userGithubToken || "")
             + (workspaceAttach ? WORKSPACE_ROOT_CLIENT_SEPARATOR + workspaceAttach.root : "")
-            + (remoteEndpoint ? COMPUTE_CLIENT_SEPARATOR + runtimeEndpointKey(remoteEndpoint) : "");
+            + (remoteEndpoint ? COMPUTE_CLIENT_SEPARATOR + compute!.endpointKey : "");
         const previousClientKey = this.sessionClientKeys.get(sessionId);
         if (previousClientKey !== undefined && previousClientKey !== desiredClientKey) {
             // The credential or native/BYOK transport changed since we last
@@ -2304,7 +2454,7 @@ export class SessionManager {
                 this._forgetWarmSession(sessionId);
             }
         }
-        const client = await this.ensureClient(userGithubToken, byokOpenAi, workspaceAttach?.root, remoteEndpoint);
+        const client = await this.ensureClient(userGithubToken, byokOpenAi, workspaceAttach?.root, remoteEndpoint, compute?.endpointKey);
         this.sessionClientKeys.set(sessionId, desiredClientKey);
         const sessionDir = path.join(this.sessionStateDir, sessionId);
 

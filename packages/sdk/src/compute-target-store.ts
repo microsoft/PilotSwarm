@@ -43,6 +43,7 @@ const iso = (v: any): string | null =>
 
 function toTarget(r: any): ComputeTarget {
     return {
+        id: String(r.target_id ?? ""),
         name: r.name,
         kind: r.kind,
         class: r.class as ComputeTargetClass,
@@ -118,9 +119,19 @@ export class ComputeTargetStore {
         return Number(rows[0]?.waiting ?? 0);
     }
 
-    /** Worker side: the target a session names, or null when it is gone. Trusted caller. */
-    async resolve(name: string): Promise<ComputeTarget | null> {
-        const rows = await this.call(`SELECT * FROM ${this.fn("cms_compute_target_resolve")}($1)`, [name]);
+    /**
+     * Worker side, before every turn: the target with this id if the session's
+     * owner may still use it, else null. Trusted caller.
+     */
+    async resolveForSession(
+        targetId: string,
+        owner: { provider: string; subject: string } | null,
+        isSystem: boolean,
+    ): Promise<ComputeTarget | null> {
+        if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(targetId)) return null;
+        const rows = await this.call(
+            `SELECT * FROM ${this.fn("cms_compute_target_resolve_for_session")}($1,$2,$3,$4)`,
+            [targetId, owner?.provider ?? null, owner?.subject ?? null, isSystem]);
         return rows[0] ? toTarget(rows[0]) : null;
     }
 }

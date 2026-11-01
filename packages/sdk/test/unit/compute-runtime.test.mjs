@@ -10,10 +10,13 @@ import os from "node:os";
 import path from "node:path";
 import {
     REMOTE_SESSION_STATE_ROOT,
+    RemoteRuntimeRequestHandler,
     WorkerDirectorySessionFs,
+    checkModelRequest,
     containsWorkerPlaceholder,
     injectSecrets,
     redactProviderSecrets,
+    remoteSessionGrant,
 } from "../../dist/compute-runtime.js";
 
 test("redaction replaces every credential with a per-session placeholder", async () => {
@@ -30,7 +33,7 @@ test("redaction replaces every credential with a per-session placeholder", async
     for (const field of ["apiKey", "bearerToken"]) {
         assert.notEqual(redacted[field], provider[field]);
         assert.ok(containsWorkerPlaceholder(redacted[field]));
-        assert.match(redacted[field], /s1$/);
+        assert.match(redacted[field], /-s1-[0-9a-f]{32}$/);
     }
     assert.ok(containsWorkerPlaceholder(redacted.headers["x-api-key"]));
     assert.ok(containsWorkerPlaceholder(await redacted.bearerTokenProvider({ providerName: "default" })));
@@ -40,6 +43,41 @@ test("redaction replaces every credential with a per-session placeholder", async
 
     const other = redactProviderSecrets(provider, "s2").provider;
     assert.notEqual(other.apiKey, redacted.apiKey, "placeholders differ between sessions");
+    const again = redactProviderSecrets(provider, "s1").provider;
+    assert.notEqual(again.apiKey, redacted.apiKey, "placeholders differ between bindings of one session");
+});
+
+test("a grant pins a session's model requests to its provider's origin and path", () => {
+    const grant = remoteSessionGrant("https://models.example.invalid/v1/", new Map());
+    assert.deepEqual({ origin: grant.origin, pathPrefix: grant.pathPrefix }, { origin: "https://models.example.invalid", pathPrefix: "/v1/" });
+    assert.equal(remoteSessionGrant(undefined, new Map()), null);
+    assert.equal(remoteSessionGrant("file:///etc/passwd", new Map()), null);
+    const ok = (url, init) => checkModelRequest(new Request(url, { method: "POST", ...init }), grant);
+    ok("https://models.example.invalid/v1/chat/completions?api-version=1");
+    ok("https://models.example.invalid/v1");
+    for (const [url, why] of [
+        ["https://attacker.example.invalid/v1/chat/completions", /refusing a model request to/],
+        ["http://models.example.invalid/v1/chat/completions", /refusing a model request to/],
+        ["https://models.example.invalid:8443/v1/chat/completions", /refusing a model request to/],
+        ["http://169.254.169.254/metadata", /refusing a model request to/],
+        ["https://models.example.invalid/admin", /outside this session's model provider path/],
+        ["https://models.example.invalid/v10/chat", /outside this session's model provider path/],
+    ]) {
+        assert.throws(() => ok(url), why, url);
+    }
+    assert.throws(() => ok("https://models.example.invalid/v1/x", { method: "PUT" }), /method PUT/);
+});
+
+test("the request handler serves only sessions bound to its runtime, within their grant", async () => {
+    const { provider, secrets } = redactProviderSecrets({ apiKey: "k1", baseUrl: "https://models.example.invalid/v1" }, "s1");
+    const grant = remoteSessionGrant(provider.baseUrl, secrets);
+    const handler = new RemoteRuntimeRequestHandler((sessionId) => sessionId === "s1" ? grant : undefined);
+    const forged = new Request("https://models.example.invalid/v1/chat/completions", { method: "POST", headers: { "api-key": provider.apiKey } });
+    await assert.rejects(handler.sendRequest(forged, { sessionId: "s2", transport: "http" }), /no session on this runtime matches/);
+    await assert.rejects(handler.sendRequest(forged, { transport: "http" }), /no session on this runtime matches/);
+    const elsewhere = new Request("https://attacker.example.invalid/v1/chat", { method: "POST", headers: { "api-key": provider.apiKey } });
+    await assert.rejects(handler.sendRequest(elsewhere, { sessionId: "s1", transport: "http" }), /refusing a model request to/);
+    await assert.rejects(handler.openWebSocket({ sessionId: "s1", transport: "websocket" }), /WebSocket/);
 });
 
 test("redaction of no provider is a no-op", () => {
@@ -99,6 +137,29 @@ test("session state lives in the worker's session directory and cannot escape it
 
     await assert.rejects(sfs.readFile(`${REMOTE_SESSION_STATE_ROOT}/../../etc/passwd`), /outside the session directory/);
     await assert.rejects(sfs.writeFile("/../escape.txt", "x"), /outside the session directory/);
+    await assert.rejects(sfs.readFile("/etc/passwd"), /outside the session directory/);
+    await assert.rejects(sfs.writeFile("C:\\Windows\\x.txt", "x"), /outside the session directory/);
+    await sfs.writeFile("relative/ok.txt", "r");
+    assert.equal(fs.readFileSync(path.join(dir, "relative", "ok.txt"), "utf8"), "r");
+});
+
+test("SessionFs never follows a link inside the session directory", async (t) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "ps-sessionfs-"));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const dir = path.join(root, "session");
+    const outside = path.join(root, "outside");
+    fs.mkdirSync(dir);
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, "secret.txt"), "secret");
+    fs.symlinkSync(path.join(outside, "secret.txt"), path.join(dir, "file-link"));
+    fs.symlinkSync(outside, path.join(dir, "dir-link"));
+    const sfs = new WorkerDirectorySessionFs(dir);
+    await assert.rejects(sfs.readFile(`${REMOTE_SESSION_STATE_ROOT}/file-link`), /crosses a link/);
+    await assert.rejects(sfs.readFile(`${REMOTE_SESSION_STATE_ROOT}/dir-link/secret.txt`), /crosses a link/);
+    await assert.rejects(sfs.writeFile(`${REMOTE_SESSION_STATE_ROOT}/dir-link/new.txt`, "x"), /crosses a link/);
+    await assert.rejects(sfs.rename(`${REMOTE_SESSION_STATE_ROOT}/dir-link/secret.txt`, `${REMOTE_SESSION_STATE_ROOT}/stolen.txt`), /crosses a link/);
+    assert.equal(fs.existsSync(path.join(outside, "new.txt")), false);
+    assert.equal(fs.readFileSync(path.join(outside, "secret.txt"), "utf8"), "secret");
 });
 
 test("files the runtime names by its own home land in the same session directory", async (t) => {

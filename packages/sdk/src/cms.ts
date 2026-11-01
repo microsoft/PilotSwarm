@@ -1773,11 +1773,13 @@ export class PgSessionCatalog implements SessionCatalog {
             }
             if (computeTarget) {
                 // Same rule as the model check above: the target must be shared or
-                // the owner's own, and enabled. A refusal aborts the create.
-                await client.query(
-                    `SELECT "${this.sql.schema}".cms_compute_target_assert_session($1,$2,$3,$4)`,
+                // the owner's own, and enabled. A refusal aborts the create. The
+                // session records the target's id: the worker binds by id.
+                const { rows: targetRows } = await client.query(
+                    `SELECT "${this.sql.schema}".cms_compute_target_assert_session($1,$2,$3,$4) AS target_id`,
                     [computeTarget, opts?.owner?.provider ?? null, opts?.owner?.subject ?? null, opts?.isSystem ?? false],
                 );
+                opts!.creationConfig = { ...opts!.creationConfig, computeTargetId: String(targetRows[0]?.target_id ?? "") };
             }
             const baseArgs = [sessionId, opts?.model ?? null, opts?.reasoningEffort ?? null, opts?.parentSessionId ?? null, opts?.isSystem ?? false, opts?.agentId ?? null, opts?.splash ?? null, null];
             if (useVisibilityCreate) {

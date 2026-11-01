@@ -229,7 +229,7 @@ export {
 // Session workspaces
 export { validateWorkspaceText, sameWorkspace, sameWorkingFolder, mergeWorkspaceChange, MAX_WORKSPACE_EXTRAS } from "./workspace-check.js";
 export { createBuiltInWorkspaceProvider, combineWorkspaceProviders, applyWorkspaceDefaults } from "./workspace.js";
-// Compute providers and compute targets
+// Compute providers and compute targets (experimental: may change before release)
 export {
     LOCAL_COMPUTE_KIND,
     COMPUTE_ERROR_CODES,
@@ -240,6 +240,7 @@ export {
     validateComputeTargetName,
     runtimeConnectionFor,
     runtimeEndpointKey,
+    isLoopbackAddress,
 } from "./compute.js";
 export type {
     ComputeProvider,
@@ -248,7 +249,7 @@ export type {
     ComputeTargetClass,
     ComputePrincipal,
     ComputeHostRef,
-    ComputeHostState,
+    ComputeReleaseRequest,
     ComputeFailure,
     ComputeValidateRequest,
     ComputeBindRequest,

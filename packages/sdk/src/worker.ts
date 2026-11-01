@@ -446,6 +446,7 @@ export class PilotSwarmWorker {
         for (const provider of options.computeProviders ?? []) {
             this.sessionManager.registerComputeProvider(provider, { replace: provider.kind === LOCAL_COMPUTE_KIND });
         }
+        this.sessionManager.setComputeOptions({ allowNonLoopbackEndpoints: options.computeAllowNonLoopbackEndpoints });
     }
 
     private _startProviderPolling(): void {
@@ -979,7 +980,10 @@ export class PilotSwarmWorker {
 
         // Auto-register artifact tools (blob storage or local filesystem)
         if (this.artifactStore) {
-            const artifactTools = createArtifactTools({ blobStore: this.artifactStore });
+            const artifactTools = createArtifactTools({
+                blobStore: this.artifactStore,
+                localPathRootsFor: (sessionId) => this.sessionManager?.computeLocalPathRoots(sessionId),
+            });
             // The write bundle attaches patch artifacts through the same store.
             if (this.sessionManager) this.sessionManager.artifactStore = this.artifactStore ?? null;
             this.registerTools(artifactTools);

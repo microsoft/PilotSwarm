@@ -10,6 +10,7 @@ import {
     ComputeProviderRegistry,
     LOCAL_COMPUTE_KIND,
     createLocalComputeProvider,
+    isLoopbackAddress,
     runtimeConnectionFor,
     runtimeEndpointKey,
     validateComputeTargetName,
@@ -59,6 +60,7 @@ test("the local provider binds to the worker and connects locally with the same 
     });
     assert.deepEqual(connected, { ok: true, endpoint: { transport: "local" }, workspace: { cwd: "/ws/a", additionalDirectories: ["/ws/shared"] } });
     assert.equal(local.capabilities.sandboxed, false);
+    assert.deepEqual(local.capabilities.os, [process.platform]);
 });
 
 test("target names follow the model provider name rule", () => {
@@ -80,7 +82,27 @@ test("endpoints map to SDK connections and pool keys", () => {
     assert.throws(() => runtimeConnectionFor({ transport: "uri", address: "" }), /needs an address/);
     assert.throws(() => runtimeConnectionFor({ transport: "carrier-pigeon" }), /unknown compute transport/);
     assert.equal(runtimeEndpointKey({ transport: "local" }), "");
-    assert.equal(runtimeEndpointKey({ transport: "uri", address: "h:1" }), "uri\0h:1");
+});
+
+test("a pool key changes with the token and the host incarnation, and never holds the token", () => {
+    const endpoint = { transport: "uri", address: "127.0.0.1:1", connectionToken: "secret-token" };
+    const host = { kind: "k", id: "h", incarnation: "1" };
+    const key = runtimeEndpointKey(endpoint, host);
+    assert.match(key, /^uri\0[0-9a-f]{32}$/);
+    assert.equal(key.includes("secret-token"), false);
+    assert.equal(runtimeEndpointKey(endpoint, { ...host }), key);
+    assert.notEqual(runtimeEndpointKey({ ...endpoint, connectionToken: "rotated" }, host), key);
+    assert.notEqual(runtimeEndpointKey(endpoint, { ...host, incarnation: "2" }), key);
+    assert.notEqual(runtimeEndpointKey(endpoint, { ...host, id: "other" }), key);
+});
+
+test("only addresses on this machine count as loopback", () => {
+    for (const ok of ["127.0.0.1:1", "localhost:9", "[::1]:5", "http://127.0.0.5:80", "ws://localhost:1"]) {
+        assert.equal(isLoopbackAddress(ok), true, ok);
+    }
+    for (const bad of ["10.0.0.5:7777", "example.invalid:1", "http://169.254.169.254", "127.0.0.1.example.invalid:1", "", "::"]) {
+        assert.equal(isLoopbackAddress(bad), false, bad);
+    }
 });
 
 test("the creation config projection keeps computeTarget only when set", () => {
@@ -98,7 +120,7 @@ test("migration 0084 adds compute targets after 0083", () => {
     for (const fn of [
         "cms_compute_target_create", "cms_compute_target_assert_manage", "cms_compute_target_update",
         "cms_compute_target_delete", "cms_compute_target_list", "cms_compute_target_assert_session",
-        "cms_compute_target_resolve",
+        "cms_compute_target_resolve_for_session",
     ]) {
         assert.match(sql, new RegExp(`"ps_test"\\.${fn}\\(`), fn);
     }
