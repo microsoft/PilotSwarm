@@ -3,7 +3,7 @@
  * PostgreSQL (CMS, facts and duroxide), real script processes, and the
  * worker's own tool set. No LLM is needed: the workflow runs no model.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -402,6 +402,125 @@ ${hasPwsh
                 expect(canvas.filter((event) => event.eventType === "session.canvas_updated")).toHaveLength(1);
                 expect(canvas.filter((event) => event.eventType === "session.canvas_data").at(-1).data.payload)
                     .toMatchObject({ status: "completed", outcome: "succeeded", current: "finished", step: steps });
+            } finally {
+                await mgmt.stop?.();
+            }
+        });
+    });
+});
+
+describe("polling workflows with wait states (worker + client + PostgreSQL, no model)", () => {
+    // Documents may declare waits of a second here; production's minimum is 60.
+    let savedMinWait;
+    beforeAll(() => {
+        savedMinWait = process.env.PILOTSWARM_WORKFLOW_MIN_WAIT_SECONDS;
+        process.env.PILOTSWARM_WORKFLOW_MIN_WAIT_SECONDS = "1";
+    });
+    afterAll(() => {
+        if (savedMinWait === undefined) delete process.env.PILOTSWARM_WORKFLOW_MIN_WAIT_SECONDS;
+        else process.env.PILOTSWARM_WORKFLOW_MIN_WAIT_SECONDS = savedMinWait;
+    });
+
+    const pollYaml = (foundAfter) => `
+apiVersion: pilotswarm.dev/v1alpha1
+kind: Workflow
+metadata: { name: poll-builds, version: 1.0.0 }
+inputs:
+  run: { type: string, required: true }
+initial: check
+states:
+  check:
+    type: script
+    runtime: node
+    source: |
+      const key = "poll/" + context.inputs.run + "/checks";
+      const prior = await callTool("read_facts", { key_pattern: key, scope: "session" });
+      const n = (prior.facts?.[0]?.value?.n ?? 0) + 1;
+      await callTool("store_fact", { key, value: { n } });
+      await setResult(n >= ${foundAfter} ? "found" : "idle", { n });
+    completion: { outcomes: [found, idle] }
+    transition: { next: { found: handle, idle: sleep } }
+  handle:
+    type: script
+    runtime: node
+    source: |
+      await callTool("store_fact", { key: "poll/" + context.inputs.run + "/handled", value: { afterChecks: context.input.n } });
+      await setResult("done", { handledAfter: context.input.n });
+    completion: { outcomes: [done] }
+    transition: { next: { done: finished } }
+  sleep:
+    type: wait
+    seconds: 1
+    transition: { next: check }
+  finished:
+    type: terminal
+    outcome: succeeded
+    summary: Found work and handled it.
+    output: "\${states.handle.result}"
+`;
+
+    it("checks, waits and checks again until it finds work, then handles it and ends", { timeout: 120_000 }, async () => {
+        const env = getEnv();
+        await withClient(env, { worker: { workflowScripts: { enabled: true } } }, async (client) => {
+            const mgmt = await createManagementClient(env);
+            try {
+                const run = `poll-${Math.random().toString(36).slice(2)}`;
+                const { sessionId } = await client.createWorkflowSession({ yaml: pollYaml(3), inputs: { run } });
+                const view = await waitForTerminal(mgmt, sessionId);
+                const events = (await mgmt.getSessionEvents(sessionId, 0, 1_000)).filter((e) => e.eventType.startsWith("workflow."));
+                const end = events.at(-1);
+                expect(view.status, JSON.stringify(end?.data)).toBe("completed");
+                expect(end.data).toMatchObject({ outcome: "succeeded", stateId: "finished", steps: 6, summary: "Found work and handled it." });
+                expect(JSON.parse(end.data.outputPreview)).toEqual({ handledAfter: 3 });
+                expect(events.filter((e) => /^workflow\.state_(started|waiting)$/.test(e.eventType)).map((e) => `${e.data.stateId}#${e.data.visit}`))
+                    .toEqual(["check#1", "sleep#1", "check#2", "sleep#2", "check#3", "handle#1"]);
+                const waits = events.filter((e) => e.eventType === "workflow.state_waiting");
+                const checkStarts = events.filter((e) => e.eventType === "workflow.state_started" && e.data.stateId === "check");
+                // Each check after a wait started no earlier than that wait's end.
+                for (let i = 0; i < waits.length; i += 1) {
+                    expect(new Date(checkStarts[i + 1].createdAt).getTime()).toBeGreaterThanOrEqual(waits[i].data.until - 50);
+                }
+                const canvas = await mgmt.getSessionEvents(sessionId, 0, 1_000, ["session.canvas_data"]);
+                expect(canvas.at(-1).data.payload).toMatchObject({ status: "completed", current: "finished", nodes: { check: { runs: 3 }, sleep: { runs: 2, state: "done" } } });
+            } finally {
+                await mgmt.stop?.();
+            }
+        });
+    });
+
+    it("a loop with no terminal state runs until cancelled, and cancel stops it while it waits", { timeout: 120_000 }, async () => {
+        const env = getEnv();
+        const yaml = pollYaml(1_000_000).replace(/  handle:[\s\S]*?transition: \{ next: \{ done: finished \} \}\n/, "")
+            .replace("found: handle, idle: sleep", "found: sleep, idle: sleep")
+            .replace(/  finished:[\s\S]*$/, "")
+            .replace("seconds: 1", "seconds: 2");
+        await withClient(env, { worker: { workflowScripts: { enabled: true } } }, async (client) => {
+            const mgmt = await createManagementClient(env);
+            try {
+                const { sessionId } = await client.createWorkflowSession({ yaml, inputs: { run: `forever-${Math.random().toString(36).slice(2)}` } });
+                const deadline = Date.now() + 60_000;
+                let waits = [];
+                while (Date.now() < deadline) {
+                    waits = await mgmt.getSessionEvents(sessionId, 0, 100, ["workflow.state_waiting"]);
+                    if (waits.length >= 2) break;
+                    await new Promise((r) => setTimeout(r, 200));
+                }
+                expect(waits.length).toBeGreaterThanOrEqual(2);
+                expect((await mgmt.getSession(sessionId)).status).toBe("running");
+                await mgmt.cancelSession(sessionId, "enough polling");
+                expect((await mgmt.getSession(sessionId)).status).toBe("cancelled");
+                const end = (await mgmt.getSessionEvents(sessionId, 0, 1_000, ["workflow.cancelled"]))[0]
+                    ?? await (async () => {
+                        const until = Date.now() + 20_000;
+                        while (Date.now() < until) {
+                            const rows = await mgmt.getSessionEvents(sessionId, 0, 1_000, ["workflow.cancelled"]);
+                            if (rows.length) return rows[0];
+                            await new Promise((r) => setTimeout(r, 200));
+                        }
+                        return null;
+                    })();
+                expect(end?.data).toMatchObject({ reason: "enough polling" });
+                expect(["check", "sleep"]).toContain(end.data.stateId);
             } finally {
                 await mgmt.stop?.();
             }

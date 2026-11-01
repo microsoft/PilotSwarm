@@ -266,3 +266,77 @@ test("a workflow's live canvas opens with the session and follows each step", as
     expect(errors).toEqual([]);
 });
 
+
+const POLL_ID = "55555555-2222-3333-4444-555555555555";
+const POLL_YAML = `
+apiVersion: pilotswarm.dev/v1alpha1
+kind: Workflow
+metadata: { name: poll-builds, version: 1.0.0 }
+initial: check
+states:
+  check:
+    type: script
+    runtime: python
+    source: x
+    completion: { outcomes: [found, idle] }
+    transition: { next: { found: handle, idle: sleep } }
+  handle:
+    type: script
+    runtime: node
+    source: x
+    completion: { outcomes: [done] }
+    transition: { next: { done: sleep } }
+  sleep: { type: wait, seconds: 600, transition: { next: check } }
+`;
+
+test("a polling workflow's canvas shows the wait, when it ends, and how many times it looped", async ({ page }) => {
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const graph = compileWorkflow(POLL_YAML);
+    const html = buildWorkflowCanvasHtml(graph, foldWorkflowCanvasState([], graph));
+    const until = Date.now() + 9 * 60_000;
+    const log = [{ eventType: "workflow.started", data: { name: "poll-builds", states: Object.values(graph.states).map((n) => ({ id: n.id, type: n.type })) } }];
+    for (let visit = 1; visit <= 3; visit += 1) {
+        const step = visit * 2 - 1;
+        log.push(
+            { eventType: "workflow.state_started", data: { stateId: "check", step, visit } },
+            { eventType: "workflow.state_completed", data: { stateId: "check", step, visit, outcome: "idle", resultSource: "reported", durationMs: 380, toolCalls: [{ name: "ci/list_failed_builds", ok: true }] } },
+            { eventType: "workflow.state_waiting", data: { stateId: "sleep", step: step + 1, seconds: 600, until: visit === 3 ? until : until - (3 - visit) * 600_000, visit } },
+        );
+    }
+    const waiting = foldWorkflowCanvasState(log);
+    const session = { sessionId: POLL_ID, title: "Workflow: poll-builds", status: "running", sessionKind: "workflow", createdAt: now - 10_000, updatedAt: now };
+    await page.routeWebSocket("**/api/v1/ws", () => {});
+    await page.route("**/api/v1/**", async (route) => {
+        const url = new URL(route.request().url());
+        const answer = (result) => route.fulfill({ json: { ok: true, result } });
+        if (url.pathname.endsWith("/events-before") && url.search.includes("session.canvas_updated")) {
+            return answer([{ seq: 1, eventType: "session.canvas_updated", data: { slot: 1, rev: 1, sizeBytes: html.length, name: "Workflow" } }]);
+        }
+        if (url.pathname.endsWith("/events-before") && url.search.includes("session.canvas_data")) {
+            return answer([{ seq: 2, eventType: "session.canvas_data", data: { slot: 1, dataRev: 1, payload: waiting } }]);
+        }
+        if (url.pathname.includes("/artifacts/") && url.pathname.includes("canvas.html")) {
+            return route.fulfill({ contentType: "text/html", body: html });
+        }
+        if (url.pathname.endsWith("/management/sessions")) return answer({ sessions: [session], hasMore: false, nextCursor: null });
+        if (url.pathname.endsWith("/sessions") && route.request().method() === "GET") return answer({ sessions: [session], hasMore: false });
+        if (url.pathname.endsWith(`/sessions/${POLL_ID}`)) return answer({ ...session, events: [], messages: [] });
+        if (url.pathname.endsWith("/events")) return answer([]);
+        return route.fallback();
+    });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${POLL_ID}`);
+
+    const frame = page.frameLocator(".ps-side-pane-layer:not(.is-parked) iframe.ps-html-preview-frame:not(.is-staging)");
+    await expect(frame.locator("#status")).toHaveText("running");
+    await expect(frame.locator("#where")).toContainText("step 6 · sleep waiting until ");
+    await expect(frame.locator("g.node.waiting")).toHaveCount(1);
+    await expect(frame.locator("g.node.waiting text").first()).toHaveText("sleep");
+    await expect(frame.locator("g.node.waiting .sub")).toHaveText("wait · 10 min → elapsed");
+    await expect(frame.locator("g.node.waiting .runs")).toHaveText("×3");
+    await expect(frame.locator("g.node.done .runs")).toHaveText("×3");
+    await expect(frame.locator("#steps tr").first().locator("td").nth(2)).toContainText("waiting until ");
+    await expect(frame.locator("g.edge.taken")).toHaveCount(2);
+    await shot(page, "8-live-canvas-waiting");
+    expect(errors).toEqual([]);
+});

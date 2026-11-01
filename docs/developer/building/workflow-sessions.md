@@ -3,13 +3,15 @@
 A **workflow session** runs a durable state machine instead of a
 conversation. No LLM runs inside it. A workflow document names its
 **states**, the **initial** state, and how each state's **outcome** leads to
-the next state; every run ends at a **terminal** state.
+the next state. A run ends at a **terminal** state, or, when its loop passes
+through a **wait** state, runs until it is cancelled.
 
-This version runs two state types:
+This version runs three state types:
 
 | Type | What it does |
 |---|---|
 | `script` | Runs one Python, Node or PowerShell script. The script can call the same tools an agent session has; it reports an outcome, which picks the next state. |
+| `wait` | Waits a fixed time on a durable timer, then goes to its next state. No process runs and no model is called while it waits. This is how a workflow polls or repeats. |
 | `terminal` | Ends the run with an outcome: `succeeded`, `blocked`, `failed` or `cancelled`, an optional summary and an optional output. |
 
 Other state types of the workflow language (`agent`, `question`, `action`,
@@ -72,13 +74,57 @@ states:
 | Rule | Detail |
 |---|---|
 | Document | `apiVersion: pilotswarm.dev/v1alpha1`, `kind: Workflow`, `metadata.name` and `metadata.version` are required. |
-| States | Ids are a letter, then up to 63 letters, digits, `_` or `-`; at most 100 states. `initial` must be a script state; at least one terminal state is required. |
+| States | Ids are a letter, then up to 63 letters, digits, `_` or `-`; at most 100 states. `initial` must be a script or wait state. A workflow needs a terminal state, or a wait state if it runs until cancelled. |
 | Transitions | `completion.outcomes` lists every outcome a script state may return; `transition.next` maps **each** of them to a state, and nothing else. An outcome not listed fails the run. |
 | Inputs | `inputs` declares types (`string`, `number`, `integer`, `boolean`, `object`, `array`) and `required`. A run whose inputs do not match is refused; undeclared inputs pass through. |
 | Terminal output | `output` may hold values that are exactly one `${inputs.x}`, `${configuration.x}` or `${states.<id>.result...}` expression (the latest output of that state). Inside a `{ }` flow mapping, quote it: `output: { total: "${states.sum.result}" }`. |
 | Session status | A terminal outcome `succeeded` or `blocked` ends the session `completed`; `failed` ends it `failed`; `cancelled` ends it `cancelled`. |
 | Size limits | YAML at most 256 KB. Each state's output at most 256 KB of JSON: store larger data as a fact or artifact and pass its key. |
-| Run limit | At most 1,000 script-state executions per run, so a loop in the graph cannot run forever. |
+| Wait states | `seconds` is a whole number from 60 to 604,800 (7 days); `transition: { next: <state id> }` (or `{ next: { elapsed: <state id> } }`). A wait has no `completion`. The script after a wait receives, as `context.input`, the output of the script before it. |
+| Run limit | At most 1,000 script-state executions between two waits. A loop that waits may run until it is cancelled; a loop of scripts with no wait fails, so it cannot spin. |
+
+## Polling and repeating work
+
+Put the schedule in the graph. "Every 10 minutes, check for failed builds and
+handle them" is one workflow whose check loops back through a wait:
+
+```yaml
+initial: check
+states:
+  check:
+    type: script
+    runtime: python
+    source: |
+      failed = call_tool("ci/list_failed_builds", {})
+      set_result("found" if failed else "idle", failed)
+    completion: { outcomes: [found, idle] }
+    transition: { next: { found: handle, idle: sleep } }
+  handle:
+    type: script
+    runtime: node
+    source: |
+      await callTool("send_session_message", { session_id: context.inputs.triager, subject: "Failed builds", body: JSON.stringify(context.input) });
+      await setResult("done", null);
+    completion: { outcomes: [done] }
+    transition: { next: { done: sleep } }
+  sleep:
+    type: wait
+    seconds: 600
+    transition: { next: check }
+```
+
+An agent writes this once and calls `spawn_workflow` once. After that the
+checks and the waits cost no model tokens; only the message that wakes an
+agent when there is work does. Agent `cron` plus `spawn_workflow` on every
+wake also works, but each wake costs a model turn, so the `spawn_workflow`
+tool tells models to put polling inside the workflow instead.
+
+A workflow like this runs until it is cancelled (`cancel_agent` from its
+parent, or Cancel in the portal). Its canvas shows the wait state as
+waiting, with the time it ends, and a `×N` counter on each state that ran more
+than once. The orchestration continues as new every 20 states, so its history
+stays small however long it runs; the session's event log grows by a few rows
+per loop.
 
 ## What a script sees
 
@@ -183,6 +229,7 @@ Scripts run as child processes **on the worker**, so script states are
 |---|---|
 | `PILOTSWARM_WORKFLOW_SCRIPTS=1` or `new PilotSwarmWorker({ workflowScripts: { enabled: true } })` | Run workflow script states on this worker. |
 | `PILOTSWARM_WORKFLOW_PYTHON`, `PILOTSWARM_WORKFLOW_PWSH`, or `workflowScripts.executables` | The program for a runtime. Defaults: this worker's Node, `python3`, `pwsh`. |
+| `PILOTSWARM_WORKFLOW_MIN_WAIT_SECONDS` | The shortest wait a document may declare (default 60). Lower it only for development and tests; set the same value on clients and workers, because both check documents. |
 
 Turn scripts on for **every** worker of a deployment: any worker may run any
 state. A worker with scripts off still runs the controller, so a workflow
@@ -212,8 +259,10 @@ version `1.0.0`), separate from the agent orchestration. The compiled graph
 and every state's result are recorded in its history, so a worker restart
 resumes at the state that was running: finished states are never run again,
 and the state that was running is run again from its start. Write scripts so
-that running one twice is safe. The orchestration continues as new every 20
-script states to keep its history small.
+that running one twice is safe. A wait is a durable timer in the
+orchestration's history: a restarted worker resumes it where it was, and a
+cancel ends a run that is waiting. The orchestration continues as new every
+20 states to keep its history small.
 
 ## Testing
 
@@ -223,8 +272,14 @@ tests, and real-worker runs on PostgreSQL. It needs `DATABASE_URL`; set
 `PS_TEST_PWSH` to a PowerShell outside `PATH` if needed. One of these runs is a
 synthetic workflow that uses Python, Node and PowerShell states, loops past
 one continue-as-new, routes a non-zero exit and a timeout as outcomes, calls
-tools, and checks that every state ran exactly once. Python and PowerShell
-states fall back to Node where those runtimes are not installed.
+tools, and checks that every state ran exactly once. Another runs a polling
+loop through wait states to the end with no model, and one is cancelled while
+it waits. Python and PowerShell states fall back to Node where those runtimes
+are not installed.
+
+`test/local/workflow-live-model.test.js` checks that a real model turns a
+polling request into one `spawn_workflow` with a wait loop and no `cron`. It
+runs only where a model provider is configured, and skips otherwise.
 
 The portal's workflow browser tests run with Playwright:
 `npm run test:e2e --workspace=pilotswarm -- workflow-session`.

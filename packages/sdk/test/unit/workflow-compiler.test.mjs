@@ -6,6 +6,9 @@ import {
     validateWorkflowInputs,
     WorkflowCompileError,
     WORKFLOW_MAX_YAML_BYTES,
+    WORKFLOW_WAIT_MAX_SECONDS,
+    workflowHasWaits,
+    workflowMinWaitSeconds,
 } from "../../dist/workflow/compiler.js";
 import { executeWorkflow, WorkflowExecutionError } from "../../dist/workflow/executor.js";
 
@@ -95,7 +98,7 @@ test("every declared outcome has exactly one known target", () => {
 
 test("terminal states and graph rules", () => {
     rejects(VALID.replace("outcome: succeeded", "outcome: done"), /outcome must be one of succeeded, blocked, failed, cancelled/);
-    rejects(VALID.replace("initial: collect", "initial: done"), /initial must be a script state/);
+    rejects(VALID.replace("initial: collect", "initial: done"), /initial must be a script or wait state/);
     rejects(VALID.replace("value: ${states.collect.result.value}", "value: ${states.nope.result}"), /references unknown state 'nope'/);
     rejects(VALID.replace("label: ${configuration.label}", "label: x-${configuration.label}"), /embeds an expression/);
     const noTerminal = `
@@ -106,7 +109,100 @@ initial: a
 states:
   a: { type: script, runtime: node, source: x, completion: { outcomes: [again] }, transition: { next: { again: a } } }
 `;
-    rejects(noTerminal, /at least one terminal state/);
+    rejects(noTerminal, /must include a terminal state, or a wait state/);
+});
+
+const POLL = `
+apiVersion: pilotswarm.dev/v1alpha1
+kind: Workflow
+metadata: { name: poll, version: "1" }
+initial: check
+states:
+  check:
+    type: script
+    runtime: node
+    source: x
+    completion: { outcomes: [found, idle] }
+    transition: { next: { found: handle, idle: sleep } }
+  handle:
+    type: script
+    runtime: node
+    source: x
+    completion: { outcomes: [done] }
+    transition: { next: { done: sleep } }
+  sleep:
+    type: wait
+    seconds: 600
+    transition: { next: check }
+`;
+
+test("a wait state compiles to a timer with one 'elapsed' transition, and a waiting loop needs no terminal", () => {
+    const compiled = compileWorkflow(POLL);
+    assert.deepEqual(compiled.states.sleep, { id: "sleep", type: "wait", seconds: 600, next: { elapsed: "check" } });
+    assert.equal(workflowHasWaits(compiled), true);
+    assert.equal(workflowHasWaits(compileWorkflow(VALID)), false);
+    // The mapping form is the same transition.
+    assert.deepEqual(compileWorkflow(POLL.replace("transition: { next: check }", "transition: { next: { elapsed: check } }")).states.sleep.next, { elapsed: "check" });
+    // A wait may be the initial state.
+    assert.equal(compileWorkflow(POLL.replace("initial: check", "initial: sleep")).initial, "sleep");
+});
+
+test("wait state rules", () => {
+    rejects(POLL.replace("seconds: 600", "seconds: 59"), /seconds must be an integer from 60 to 604800/);
+    rejects(POLL.replace("seconds: 600", `seconds: ${WORKFLOW_WAIT_MAX_SECONDS + 1}`), /seconds must be an integer from 60/);
+    rejects(POLL.replace("seconds: 600", "seconds: 90.5"), /seconds must be an integer/);
+    rejects(POLL.replace("    seconds: 600\n", ""), /seconds must be an integer/);
+    rejects(POLL.replace("transition: { next: check }", "transition: { next: nowhere }"), /references unknown state 'nowhere'/);
+    rejects(POLL.replace("transition: { next: check }", "transition: { next: sleep }"), /must lead to another state/);
+    rejects(POLL.replace("transition: { next: check }", "transition: { next: { done: check } }"), /must be a state id, or \{ elapsed: <state id> \}/);
+    rejects(POLL.replace("transition: { next: check }", "transition: { handler: { module: m, export: e } }"), /handler is not supported yet/, "WORKFLOW_TRANSITION_HANDLER_UNSUPPORTED");
+    rejects(POLL.replace("    seconds: 600\n", "    seconds: 600\n    completion: { outcomes: [elapsed] }\n"), /wait state; it has no completion outcomes/);
+    rejects(POLL.replace("transition: { next: check }", "next: check"), /use transition.next/, "WORKFLOW_INLINE_TRANSITION_UNSUPPORTED");
+});
+
+test("the shortest wait is 60 seconds unless development lowers it", () => {
+    assert.equal(workflowMinWaitSeconds({}), 60);
+    assert.equal(workflowMinWaitSeconds({ PILOTSWARM_WORKFLOW_MIN_WAIT_SECONDS: "1" }), 1);
+    assert.equal(workflowMinWaitSeconds({ PILOTSWARM_WORKFLOW_MIN_WAIT_SECONDS: "0" }), 60);
+    assert.equal(workflowMinWaitSeconds({ PILOTSWARM_WORKFLOW_MIN_WAIT_SECONDS: "abc" }), 60);
+    assert.equal(compileWorkflow(POLL.replace("seconds: 600", "seconds: 2"), { minWaitSeconds: 1 }).states.sleep.seconds, 2);
+});
+
+test("in-process execution passes through waits; a loop that never waits fails at the limit", async () => {
+    const waits = [];
+    let checks = 0;
+    const bounded = POLL.replace("transition: { next: { done: sleep } }", "transition: { next: { done: finished } }")
+        + "  finished: { type: terminal, outcome: succeeded, output: \"${states.handle.result}\" }\n";
+    const result = await executeWorkflow(compileWorkflow(bounded), {}, async (request) => {
+        if (request.node.id === "check") {
+            checks += 1;
+            return { outcome: checks < 3 ? "idle" : "found", output: { checks } };
+        }
+        return { outcome: "done", output: { handled: request.priorOutput } };
+    }, { wait: async (state, step) => { waits.push([state.id, state.seconds, step]); } });
+    assert.deepEqual(waits, [["sleep", 600, 2], ["sleep", 600, 4]]);
+    assert.deepEqual(result.output, { handled: { checks: 3 } });
+    assert.equal(result.terminalStateId, "finished");
+
+    const spin = `
+apiVersion: pilotswarm.dev/v1alpha1
+kind: Workflow
+metadata: { name: spin, version: "1" }
+initial: a
+states:
+  a: { type: script, runtime: node, source: x, completion: { outcomes: [again, stop] }, transition: { next: { again: a, stop: nap } } }
+  nap: { type: wait, seconds: 60, transition: { next: a } }
+`;
+    await assert.rejects(
+        () => executeWorkflow(compileWorkflow(spin), {}, async () => ({ outcome: "again", output: null }), { maxScriptRunsBetweenWaits: 5 }),
+        /ran 5 script states without reaching a wait state/,
+    );
+    // Waiting resets the count: 4 runs, a wait, 4 more is fine.
+    let n = 0;
+    await assert.rejects(
+        () => executeWorkflow(compileWorkflow(spin), {}, async () => ({ outcome: ++n % 4 === 0 ? "stop" : "again", output: null }), { maxScriptRunsBetweenWaits: 5, maxSteps: 50 }),
+        /did not end within 50 steps/,
+    );
 });
 
 test("limits on ids, timeouts, document size and YAML strictness", () => {

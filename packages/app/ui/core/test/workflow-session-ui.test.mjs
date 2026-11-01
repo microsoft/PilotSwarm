@@ -17,6 +17,7 @@ import {
     createInitialState,
     createStore,
     formatWorkflowEventText,
+    isWorkflowEvent,
     selectSessionAgentPickerModal,
     selectSessionRows,
     selectTurnControlView,
@@ -70,6 +71,27 @@ test("each workflow event reads as one line of an execution log", () => {
     const authoredFailure = event("workflow.failed", { name: "nightly-report", steps: 1, stateId: "failed", outcome: "failed", summary: "Could not read facts." });
     assert.match(formatWorkflowEventText(authoredFailure), /reached `failed` after 1 step: outcome \*\*failed\*\*\. Could not read facts\./);
     assert.equal(formatWorkflowEventText({ eventType: "assistant.message", data: {} }), null);
+});
+
+test("a wait state reads as waiting, with its length, end time and loop count", () => {
+    const until = Date.UTC(2026, 9, 29, 14, 30, 0);
+    const graph = formatWorkflowEventText(event("workflow.started", {
+        name: "poll", version: "1", initial: "check",
+        states: [
+            { id: "check", type: "script", runtime: "python", next: { found: "handle", idle: "sleep" } },
+            { id: "sleep", type: "wait", seconds: 600, next: { elapsed: "check" } },
+        ],
+    }));
+    assert.match(graph, /\| sleep \| wait \(10 min\) \| elapsed → check \|/);
+    const waiting = event("workflow.state_waiting", { stateId: "sleep", step: 4, seconds: 600, until, visit: 2 });
+    const text = formatWorkflowEventText(waiting);
+    assert.match(text, /^⏸ Step 4: `sleep` waiting 10 min, until .+\. This is wait 2\.$/);
+    assert.ok(text.includes(new Date(until).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })));
+    const notice = describeWorkflowEvent(waiting);
+    assert.equal(notice.kind, "notice");
+    assert.match(notice.summary, /^sleep waiting 10 min, until .+ \(wait 2\)$/);
+    assert.equal(isWorkflowEvent(waiting), true);
+    assert.equal(formatWorkflowEventText(event("workflow.state_waiting", { stateId: "nap", step: 1, seconds: 90, until, visit: 1 })).includes("This is wait"), false);
 });
 
 test("the graph and the result are cards; each step is a one-line notice", () => {

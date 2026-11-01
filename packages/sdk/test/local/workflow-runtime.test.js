@@ -5,7 +5,7 @@
  * run the real workflow-session orchestration on an in-memory duroxide
  * runtime. No database, worker or LLM is required.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { createRequire } from "node:module";
 import { spawnSync } from "node:child_process";
 import { compileWorkflow } from "../../src/workflow/compiler.js";
@@ -188,7 +188,7 @@ async function startRuntime(provider, deps, runtimeOptions = {}) {
     return runtime;
 }
 
-async function runWorkflow(yaml, { deps = {}, inputs = {}, parentSessionId } = {}) {
+async function runWorkflow(yaml, { deps = {}, inputs = {}, parentSessionId, extra = {} } = {}) {
     const provider = await SqliteProvider.inMemory();
     const catalog = fakeCatalog();
     const notifications = [];
@@ -205,7 +205,7 @@ async function runWorkflow(yaml, { deps = {}, inputs = {}, parentSessionId } = {
         const sessionId = `wf-${Math.random().toString(36).slice(2)}`;
         const instanceId = `session-${sessionId}`;
         await client.startOrchestrationVersioned(instanceId, WORKFLOW_SESSION_ORCHESTRATION_NAME, {
-            sessionId, yaml, inputs, ...(parentSessionId ? { parentSessionId } : {}),
+            sessionId, yaml, inputs, ...(parentSessionId ? { parentSessionId } : {}), ...extra,
         }, WORKFLOW_SESSION_LATEST_VERSION);
         const status = await client.waitForOrchestration(instanceId, 60_000);
         const executions = await client.listExecutions?.(instanceId).catch?.(() => null) ?? null;
@@ -869,5 +869,219 @@ describe("compiled graph sanity", () => {
         expect(compiled.states.decide.next).toEqual({ many: "report", few: "nothing" });
         expect(compiled.states.collect.timeoutSeconds).toBe(300);
         expect(compiled.states.nothing).toMatchObject({ type: "terminal", outcome: "blocked" });
+    });
+});
+
+// ─── Wait states ────────────────────────────────────────────────
+
+describe("workflow wait states (duroxide)", () => {
+    // Documents may declare waits of a second here; production's minimum is 60.
+    let savedMinWait;
+    beforeAll(() => {
+        savedMinWait = process.env.PILOTSWARM_WORKFLOW_MIN_WAIT_SECONDS;
+        process.env.PILOTSWARM_WORKFLOW_MIN_WAIT_SECONDS = "1";
+    });
+    afterAll(() => {
+        if (savedMinWait === undefined) delete process.env.PILOTSWARM_WORKFLOW_MIN_WAIT_SECONDS;
+        else process.env.PILOTSWARM_WORKFLOW_MIN_WAIT_SECONDS = savedMinWait;
+    });
+
+    const waitsOf = (catalog) => catalog.events.filter((e) => e.eventType === "workflow.state_waiting");
+
+    it("a polling loop waits between checks, crosses continue-as-new, and runs every state exactly as the graph says", async () => {
+        const yaml = `
+apiVersion: pilotswarm.dev/v1alpha1
+kind: Workflow
+metadata: { name: poll, version: "1" }
+initial: check
+states:
+  check: { type: script, runtime: node, source: stub, completion: { outcomes: [found, idle] }, transition: { next: { found: finished, idle: a } } }
+  a: { type: script, runtime: node, source: stub, completion: { outcomes: [success] }, transition: { next: { success: b } } }
+  b: { type: script, runtime: node, source: stub, completion: { outcomes: [success] }, transition: { next: { success: c } } }
+  c: { type: script, runtime: node, source: stub, completion: { outcomes: [success] }, transition: { next: { success: nap } } }
+  nap: { type: wait, seconds: 1, transition: { next: check } }
+  finished: { type: terminal, outcome: succeeded, output: "\${states.check.result}" }
+`;
+        const ran = [];
+        let checks = 0;
+        const started = Date.now();
+        const { status, catalog, executions, custom } = await runWorkflow(yaml, {
+            deps: {
+                runNode: async (request) => {
+                    ran.push(request.node.id);
+                    if (request.node.id !== "check") return okResult({ seen: request.priorOutput });
+                    checks += 1;
+                    return { ...okResult({ checks }), outcome: checks < 5 ? "idle" : "found" };
+                },
+            },
+        });
+        const elapsed = Date.now() - started;
+        expect(status.status).toBe("Completed");
+        // 4 loops of check, a, b, c and a wait (20 steps), then the check that finds work.
+        expect(status.output).toMatchObject({ status: "completed", outcome: "succeeded", stateId: "finished", steps: 21, output: { checks: 5 } });
+        expect(ran).toEqual([...Array(4).fill(["check", "a", "b", "c"]).flat(), "check"]);
+        expect(executions === null || executions.length >= 2, "the run continued as new").toBe(true);
+        const waits = waitsOf(catalog);
+        expect(waits.map((e) => [e.data.stateId, e.data.step, e.data.seconds, e.data.visit])).toEqual([
+            ["nap", 5, 1, 1], ["nap", 10, 1, 2], ["nap", 15, 1, 3], ["nap", 20, 1, 4],
+        ]);
+        for (const wait of waits) expect(typeof wait.data.until).toBe("number");
+        expect(elapsed).toBeGreaterThanOrEqual(4 * 1000 - 100);
+        // Each script state's runs are numbered across continue-as-new.
+        expect(catalog.events.filter((e) => e.eventType === "workflow.state_started" && e.data.stateId === "check").map((e) => e.data.visit))
+            .toEqual([1, 2, 3, 4, 5]);
+        expect(custom).toMatchObject({ status: "completed", workflow: { stateId: "finished", step: 21 } });
+    });
+
+    it("cancel ends a run while it waits, at once, and the parent is told why", async () => {
+        const provider = await SqliteProvider.inMemory();
+        const catalog = fakeCatalog();
+        const notifications = [];
+        const runtime = await startRuntime(provider, {
+            catalog, enabled: () => true, resolveTools: async () => new Map(),
+            notifyParent: async (parent, prompt) => { notifications.push({ parent, prompt }); },
+            runNode: async () => okResult(null),
+        });
+        try {
+            const client = new Client(provider);
+            const instanceId = "session-wait-cancel";
+            await client.startOrchestrationVersioned(instanceId, WORKFLOW_SESSION_ORCHESTRATION_NAME, {
+                sessionId: "wait-cancel", parentSessionId: "parent-1", inputs: {}, yaml: `
+apiVersion: pilotswarm.dev/v1alpha1
+kind: Workflow
+metadata: { name: long-wait, version: "1" }
+initial: first
+states:
+  first: { type: script, runtime: node, source: stub, completion: { outcomes: [success] }, transition: { next: { success: nap } } }
+  nap: { type: wait, seconds: 600, transition: { next: first } }
+`,
+            }, WORKFLOW_SESSION_LATEST_VERSION);
+            const deadline = Date.now() + 20_000;
+            while (!waitsOf(catalog).length && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+            expect(waitsOf(catalog)).toHaveLength(1);
+            const waiting = JSON.parse((await client.getStatus(instanceId)).customStatus);
+            expect(waiting).toMatchObject({ status: "running", workflow: { stateId: "nap", step: 2 } });
+            expect(waiting.workflow.waitingUntil).toBe(waitsOf(catalog)[0].data.until);
+
+            const sent = Date.now();
+            await client.enqueueEvent(instanceId, "messages", command("cancel"));
+            const status = await client.waitForOrchestration(instanceId, 20_000);
+            expect(Date.now() - sent).toBeLessThan(5_000);
+            expect(status.output).toMatchObject({ status: "cancelled", stateId: "nap", steps: 2, reason: "cancel by test" });
+            expect(catalog.events.map((e) => e.eventType).slice(-2)).toEqual(["workflow.state_waiting", "workflow.cancelled"]);
+            expect(notifications.map((n) => n.prompt)).toEqual([expect.stringMatching(/cancelled after 2 step\(s\)\. Reason: cancel by test/)]);
+        } finally {
+            await runtime.shutdown(100);
+        }
+    });
+
+    it("a stray message during a wait does not cut it short or end the run", async () => {
+        const provider = await SqliteProvider.inMemory();
+        const catalog = fakeCatalog();
+        const runtime = await startRuntime(provider, {
+            catalog, enabled: () => true, resolveTools: async () => new Map(), notifyParent: async () => {},
+            runNode: async () => okResult(null),
+        });
+        try {
+            const client = new Client(provider);
+            const instanceId = "session-wait-stray";
+            await client.startOrchestrationVersioned(instanceId, WORKFLOW_SESSION_ORCHESTRATION_NAME, {
+                sessionId: "wait-stray", inputs: {}, yaml: `
+apiVersion: pilotswarm.dev/v1alpha1
+kind: Workflow
+metadata: { name: stray, version: "1" }
+initial: nap
+states:
+  nap: { type: wait, seconds: 2, transition: { next: after } }
+  after: { type: script, runtime: node, source: stub, completion: { outcomes: [success] }, transition: { next: { success: done } } }
+  done: { type: terminal, outcome: succeeded }
+`,
+            }, WORKFLOW_SESSION_LATEST_VERSION);
+            const deadline = Date.now() + 20_000;
+            while (!waitsOf(catalog).length && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+            const until = waitsOf(catalog)[0].data.until;
+            await client.enqueueEvent(instanceId, "messages", JSON.stringify({ prompt: "hello" }));
+            const status = await client.waitForOrchestration(instanceId, 20_000);
+            expect(status.output).toMatchObject({ status: "completed", steps: 2 });
+            const afterStarted = catalog.events.find((e) => e.eventType === "workflow.state_started" && e.data.stateId === "after");
+            expect(afterStarted, "the state after the wait ran").toBeTruthy();
+            expect(Date.now()).toBeGreaterThanOrEqual(until - 50);
+        } finally {
+            await runtime.shutdown(100);
+        }
+    });
+
+    it("a worker restart during a wait resumes the same timer and does not re-run the state before it", async () => {
+        const provider = await SqliteProvider.inMemory();
+        const catalog = fakeCatalog();
+        const ran = [];
+        const yaml = `
+apiVersion: pilotswarm.dev/v1alpha1
+kind: Workflow
+metadata: { name: restart-wait, version: "1" }
+initial: first
+states:
+  first: { type: script, runtime: node, source: stub, completion: { outcomes: [success] }, transition: { next: { success: nap } } }
+  nap: { type: wait, seconds: 5, transition: { next: second } }
+  second: { type: script, runtime: node, source: stub, completion: { outcomes: [success] }, transition: { next: { success: done } } }
+  done: { type: terminal, outcome: succeeded, output: "\${states.second.result}" }
+`;
+        const deps = (label) => ({
+            catalog, enabled: () => true, resolveTools: async () => new Map(), notifyParent: async () => {},
+            runNode: async (request) => { ran.push(`${label}:${request.node.id}`); return okResult({ by: label, prior: request.priorOutput }); },
+        });
+        // A short lock lets the second runtime take over work the first held when it stopped.
+        const firstRuntime = await startRuntime(provider, deps("rt1"), { workerLockTimeoutMs: 1_000 });
+        const client = new Client(provider);
+        const instanceId = "session-restart-wait";
+        await client.startOrchestrationVersioned(instanceId, WORKFLOW_SESSION_ORCHESTRATION_NAME, {
+            sessionId: "restart-wait", yaml, inputs: {},
+        }, WORKFLOW_SESSION_LATEST_VERSION);
+        const deadline = Date.now() + 20_000;
+        while (!waitsOf(catalog).length && Date.now() < deadline) await new Promise((r) => setTimeout(r, 20));
+        const until = waitsOf(catalog)[0].data.until;
+        await firstRuntime.shutdown(100);
+        // The worker is gone for most of the wait.
+        await new Promise((r) => setTimeout(r, 3_000));
+        const secondRuntime = await startRuntime(provider, deps("rt2"), { workerLockTimeoutMs: 1_000 });
+        try {
+            const status = await client.waitForOrchestration(instanceId, 30_000);
+            const finishedAt = Date.now();
+            expect(status.output).toMatchObject({ status: "completed", steps: 3, output: { by: "rt2", prior: { by: "rt1", prior: null } } });
+            expect(ran).toEqual(["rt1:first", "rt2:second"]);
+            expect(waitsOf(catalog)).toHaveLength(1);
+            // The timer kept its original end: a wait restarted after the 3 s outage would end 3 s or more after it.
+            expect(finishedAt - until, `finished ${finishedAt - until} ms after the wait's end`).toBeLessThan(2_000);
+            expect(finishedAt).toBeGreaterThanOrEqual(until - 50);
+        } finally {
+            await secondRuntime.shutdown(100);
+        }
+    });
+
+    it("a loop of script states that never waits fails at the limit; waiting resets the count", async () => {
+        const yaml = `
+apiVersion: pilotswarm.dev/v1alpha1
+kind: Workflow
+metadata: { name: spin, version: "1" }
+initial: a
+states:
+  a: { type: script, runtime: node, source: stub, completion: { outcomes: [again, rest, stop] }, transition: { next: { again: a, rest: nap, stop: done } } }
+  nap: { type: wait, seconds: 1, transition: { next: a } }
+  done: { type: terminal, outcome: succeeded }
+`;
+        const spinning = await runWorkflow(yaml, {
+            extra: { maxScriptRunsBetweenWaits: 5 },
+            deps: { runNode: async () => ({ ...okResult(null), outcome: "again" }) },
+        });
+        expect(spinning.status.output).toMatchObject({ status: "failed", steps: 5, stateId: "a" });
+        expect(spinning.status.output.error).toMatch(/ran 5 script states without reaching a wait state/);
+
+        let n = 0;
+        const resting = await runWorkflow(yaml, {
+            extra: { maxScriptRunsBetweenWaits: 5 },
+            deps: { runNode: async () => { n += 1; return { ...okResult(null), outcome: n === 12 ? "stop" : n % 4 === 0 ? "rest" : "again" }; } },
+        });
+        // 12 script runs with two waits between them: never more than 5 in a row.
+        expect(resting.status.output).toMatchObject({ status: "completed", steps: 14 });
     });
 });

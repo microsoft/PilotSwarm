@@ -1,20 +1,22 @@
-import type { CompiledWorkflow, WorkflowScriptState, WorkflowTerminalOutcome } from "./compiler.js";
+import { WORKFLOW_WAIT_OUTCOME, type CompiledWorkflow, type WorkflowScriptState, type WorkflowTerminalOutcome } from "./compiler.js";
 import {
     requireScriptResult,
     resolveTransition,
     terminalOutput,
-    WORKFLOW_MAX_TRANSITIONS,
+    WORKFLOW_MAX_SCRIPT_RUNS_BETWEEN_WAITS,
+    workflowSpinError,
 } from "./executor.js";
 
 export const WORKFLOW_SESSION_ORCHESTRATION_NAME = "workflow-session";
 export const WORKFLOW_SESSION_LATEST_VERSION = "1.0.0";
 
-/** Script-state executions per orchestration execution before continue-as-new bounds history. */
+/** State executions (script and wait) per orchestration execution before continue-as-new bounds history. */
 export const WORKFLOW_STEPS_PER_EXECUTION = 20;
 
 export const WORKFLOW_ACTIVITIES = {
     begin: "workflow.begin",
     runScript: "workflow.runScript",
+    wait: "workflow.wait",
     finish: "workflow.finish",
 } as const;
 
@@ -25,6 +27,10 @@ export interface WorkflowResumePoint {
     step: number;
     /** The latest output of each state that ran, for terminal `output` templates. */
     results: Record<string, unknown>;
+    /** Script states run since the last wait (the spin limit counts these). */
+    sinceWait?: number;
+    /** How many times each state has run, for the views' loop counters. */
+    visits?: Record<string, number>;
 }
 
 export interface WorkflowOrchestrationInput {
@@ -36,6 +42,8 @@ export interface WorkflowOrchestrationInput {
     notifyParent?: boolean;
     /** Set only by continue-as-new. */
     resume?: WorkflowResumePoint;
+    /** Internal (tests): script runs allowed between waits. Default WORKFLOW_MAX_SCRIPT_RUNS_BETWEEN_WAITS. */
+    maxScriptRunsBetweenWaits?: number;
 }
 
 export interface WorkflowBeginResult {
@@ -50,6 +58,19 @@ export interface WorkflowRunStateInput {
     inputs: Record<string, unknown>;
     priorOutput: unknown;
     step: number;
+    /** This state's run count, this one included. */
+    visit?: number;
+}
+
+export interface WorkflowWaitInput {
+    sessionId: string;
+    workflowName: string;
+    stateId: string;
+    step: number;
+    seconds: number;
+    /** When the wait ends, in epoch milliseconds (orchestration time). */
+    until: number;
+    visit: number;
 }
 
 export interface WorkflowRunStateResult {
@@ -107,6 +128,8 @@ export interface WorkflowCustomStatus {
         name: string | null;
         stateId: string | null;
         step: number;
+        /** Set while a wait state is waiting: when it ends, in epoch milliseconds. */
+        waitingUntil?: number;
         outcome?: string;
         error?: string;
     };
@@ -147,10 +170,12 @@ function publish(ctx: any, status: WorkflowCustomStatus): void {
  *
  * Determinism: the compiled graph comes from an activity (so a compiler
  * change cannot alter a replay), each script state runs in an activity, and
- * the next state is chosen here from recorded results only. History is
- * bounded by continuing as new every WORKFLOW_STEPS_PER_EXECUTION script
- * states, carrying the compiled graph, the current state, its input and the
- * results terminal templates may read.
+ * the next state is chosen here from recorded results only. A wait state is
+ * a durable timer raced against the command queue, so a cancel ends a run
+ * that is waiting, and a restarted worker resumes the timer where it was.
+ * History is bounded by continuing as new every WORKFLOW_STEPS_PER_EXECUTION
+ * states, carrying the compiled graph, the current state, its input, the
+ * results terminal templates may read and the loop counters.
  */
 export function* workflowSessionOrchestration_1_0_0(
     ctx: any,
@@ -161,9 +186,20 @@ export function* workflowSessionOrchestration_1_0_0(
     let stateId: string | null = input.resume?.stateId ?? null;
     let priorOutput: unknown = input.resume?.priorOutput ?? null;
     let step = input.resume?.step ?? 0;
+    let sinceWait = input.resume?.sinceWait ?? 0;
     const results: Record<string, unknown> = { ...(input.resume?.results ?? {}) };
+    const visits: Record<string, number> = { ...(input.resume?.visits ?? {}) };
+    const spinLimit = input.maxScriptRunsBetweenWaits ?? WORKFLOW_MAX_SCRIPT_RUNS_BETWEEN_WAITS;
 
     const finish = function* (result: Omit<WorkflowFinishInput, "sessionId" | "parentSessionId" | "notifyParent">) {
+        // The end is recorded first, so a reader that sees the final status
+        // also finds the end event in the session's log.
+        yield ctx.scheduleActivityTyped(WORKFLOW_ACTIVITIES.finish, {
+            sessionId: input.sessionId,
+            ...(input.parentSessionId ? { parentSessionId: input.parentSessionId } : {}),
+            notifyParent,
+            ...result,
+        } satisfies WorkflowFinishInput);
         publish(ctx, {
             status: result.status === "deleted" ? "cancelled" : result.status,
             sessionKind: "workflow",
@@ -176,12 +212,6 @@ export function* workflowSessionOrchestration_1_0_0(
                 ...(result.reason ? { error: result.reason } : {}),
             },
         });
-        yield ctx.scheduleActivityTyped(WORKFLOW_ACTIVITIES.finish, {
-            sessionId: input.sessionId,
-            ...(input.parentSessionId ? { parentSessionId: input.parentSessionId } : {}),
-            notifyParent,
-            ...result,
-        } satisfies WorkflowFinishInput);
         const run: WorkflowRunResult = {
             status: result.status,
             workflowName: result.workflowName,
@@ -226,9 +256,6 @@ export function* workflowSessionOrchestration_1_0_0(
                 });
             }
 
-            if (step >= WORKFLOW_MAX_TRANSITIONS) {
-                throw new Error(`Workflow '${workflow.name}' exceeded ${WORKFLOW_MAX_TRANSITIONS} state executions.`);
-            }
             if (stepsThisExecution >= WORKFLOW_STEPS_PER_EXECUTION) {
                 yield ctx.continueAsNewVersioned({
                     sessionId: input.sessionId,
@@ -236,13 +263,60 @@ export function* workflowSessionOrchestration_1_0_0(
                     inputs: input.inputs,
                     ...(input.parentSessionId ? { parentSessionId: input.parentSessionId } : {}),
                     ...(input.notifyParent !== undefined ? { notifyParent: input.notifyParent } : {}),
-                    resume: { workflow, stateId: stateId!, priorOutput, step, results },
+                    ...(input.maxScriptRunsBetweenWaits !== undefined ? { maxScriptRunsBetweenWaits: input.maxScriptRunsBetweenWaits } : {}),
+                    resume: { workflow, stateId: stateId!, priorOutput, step, results, sinceWait, visits },
                 } satisfies WorkflowOrchestrationInput, WORKFLOW_SESSION_LATEST_VERSION);
                 return null;
             }
 
+            if (state.type === "wait") {
+                step += 1;
+                stepsThisExecution += 1;
+                sinceWait = 0;
+                visits[state.id] = (visits[state.id] ?? 0) + 1;
+                const startedAt: number = yield ctx.utcNow();
+                const until = startedAt + state.seconds * 1000;
+                publish(ctx, { status: "running", sessionKind: "workflow", workflow: { name: workflow.name, stateId: state.id, step, waitingUntil: until } });
+                yield ctx.scheduleActivityTyped(WORKFLOW_ACTIVITIES.wait, {
+                    sessionId: input.sessionId,
+                    workflowName: workflow.name,
+                    stateId: state.id,
+                    step,
+                    seconds: state.seconds,
+                    until,
+                    visit: visits[state.id],
+                } satisfies WorkflowWaitInput);
+                // The timer races the command queue, so cancel, complete and
+                // delete end a run that is waiting. It ends at `until`, however
+                // long the activity above or a worker restart took.
+                while (true) {
+                    const now: number = yield ctx.utcNow();
+                    const remainingMs = until - now;
+                    if (remainingMs <= 0) break;
+                    const raced = yield ctx.race(ctx.scheduleTimer(remainingMs), ctx.dequeueEvent(WORKFLOW_COMMAND_QUEUE));
+                    if (raced?.index === 0) break;
+                    const command = parseWorkflowCommand(raced?.value);
+                    if (command) {
+                        return yield* finish({
+                            workflowName: workflow.name,
+                            status: command.cmd === "delete" ? "deleted" : "cancelled",
+                            stateId: state.id,
+                            steps: step,
+                            reason: command.reason ?? (command.cmd === "delete" ? "Deleted" : command.cmd === "done" ? "Stopped" : "Cancelled"),
+                            ...(command.requestedBy ? { requestedBy: command.requestedBy } : {}),
+                        });
+                    }
+                    ctx.traceWarn?.(`[workflow] session=${input.sessionId} ignored a non-command message at wait ${state.id}`);
+                }
+                stateId = resolveTransition(workflow, state.id, WORKFLOW_WAIT_OUTCOME);
+                continue;
+            }
+
+            if (sinceWait >= spinLimit) throw new Error(workflowSpinError(workflow.name, spinLimit));
             step += 1;
             stepsThisExecution += 1;
+            sinceWait += 1;
+            visits[state.id] = (visits[state.id] ?? 0) + 1;
             publish(ctx, { status: "running", sessionKind: "workflow", workflow: { name: workflow.name, stateId: state.id, step } });
 
             // The script races the command queue, so cancel, complete and
@@ -257,6 +331,7 @@ export function* workflowSessionOrchestration_1_0_0(
                     inputs: input.inputs,
                     priorOutput,
                     step,
+                    visit: visits[state.id],
                 } satisfies WorkflowRunStateInput),
                 ctx.dequeueEvent(WORKFLOW_COMMAND_QUEUE),
             );
@@ -268,6 +343,8 @@ export function* workflowSessionOrchestration_1_0_0(
                     // so the same state runs again from its start.
                     ctx.traceWarn?.(`[workflow] session=${input.sessionId} ignored a non-command message at state ${state.id}`);
                     step -= 1;
+                    sinceWait -= 1;
+                    visits[state.id] -= 1;
                     continue;
                 }
                 return yield* finish({

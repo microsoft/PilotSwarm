@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { systemChildAgentUUID } from "../agent-loader.js";
 import type { WorkflowSessionConfig, SessionOwnerInfo } from "../types.js";
 import { WORKFLOW_SCRIPTS_DISABLED_MESSAGE } from "./activities.js";
-import { compileWorkflow, validateWorkflowInputs } from "./compiler.js";
+import { compileWorkflow, validateWorkflowInputs, workflowHasWaits } from "./compiler.js";
 import type { SpawnWorkflowToolArgs } from "./tool-spec.js";
 
 export interface SpawnWorkflowDeps {
@@ -40,10 +40,12 @@ export async function spawnWorkflowFromTool(
             return `[SYSTEM: spawn_workflow refused — ${WORKFLOW_SCRIPTS_DISABLED_MESSAGE}]`;
         }
         let workflowName: string;
+        let loops = false;
         try {
             const compiled = compileWorkflow(args.yaml);
             validateWorkflowInputs(compiled, args.inputs ?? {});
             workflowName = compiled.name;
+            loops = workflowHasWaits(compiled);
         } catch (error) {
             return `[SYSTEM: spawn_workflow refused — the workflow is not valid: ${error instanceof Error ? error.message : String(error)} `
                 + "Fix it and call spawn_workflow again.]";
@@ -65,6 +67,10 @@ export async function spawnWorkflowFromTool(
             notifyParent: notify,
         });
         return `[SYSTEM: started workflow session ${workflowSessionId} running "${workflowName}". `
+            + (loops
+                ? "It repeats through its wait state by itself until it reaches a terminal state or is cancelled (cancel_agent); "
+                    + "do not also schedule it with cron. "
+                : "")
             + (notify
                 ? "You will receive its result as a system message when it ends; do not poll for it. "
                 : "You will not be told when it ends; check it with read_session_info or list_sessions. ")

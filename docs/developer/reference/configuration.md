@@ -853,3 +853,4 @@ See [Workflow sessions](../building/workflow-sessions.md).
 | `PILOTSWARM_WORKFLOW_SCRIPTS` | off | `1` runs workflow script states on this worker. The `workflowScripts.enabled` option wins. |
 | `PILOTSWARM_WORKFLOW_PYTHON` | `python3` | The Python program for `runtime: python`. |
 | `PILOTSWARM_WORKFLOW_PWSH` | `pwsh` | The PowerShell 7 program for `runtime: powershell`. |
+| `PILOTSWARM_WORKFLOW_MIN_WAIT_SECONDS` | `60` | The shortest `wait` state a workflow may declare, in seconds (at least 1). For development and tests; set it on clients and workers alike. |

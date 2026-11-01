@@ -5,11 +5,12 @@ import { parseDocument } from "yaml";
  *
  * The document shape is the general `kind: Workflow` shape (PR 116): a named,
  * versioned graph of `states`, entered at `initial`, ending in `terminal`
- * states. This MVP executes two state types, `script` and `terminal`, and
- * transitions written as a `transition.next` map. Every other state type
- * and `transition.handler` are refused with a clear "not supported yet"
- * error, so documents written for later versions fail loudly here rather
- * than run differently.
+ * states. This MVP executes three state types: `script`, `wait` (a durable
+ * timer, which is how a workflow polls or repeats) and `terminal`, with
+ * transitions written as `transition.next`. Every other state type and
+ * `transition.handler` are refused with a clear "not supported yet" error,
+ * so documents written for later versions fail loudly here rather than run
+ * differently.
  */
 
 export const WORKFLOW_API_VERSION = "pilotswarm.dev/v1alpha1";
@@ -19,6 +20,11 @@ export const SCRIPT_STATE_DEFAULT_TIMEOUT_SECONDS = 300;
 export const SCRIPT_STATE_MAX_TIMEOUT_SECONDS = 3_600;
 export const WORKFLOW_MAX_YAML_BYTES = 256 * 1024;
 export const WORKFLOW_TERMINAL_OUTCOMES = ["succeeded", "blocked", "failed", "cancelled"] as const;
+/** The shortest wait a document may declare, unless PILOTSWARM_WORKFLOW_MIN_WAIT_SECONDS lowers it. */
+export const WORKFLOW_WAIT_MIN_SECONDS = 60;
+export const WORKFLOW_WAIT_MAX_SECONDS = 7 * 24 * 60 * 60;
+/** The one outcome a wait state has: its time passed. */
+export const WORKFLOW_WAIT_OUTCOME = "elapsed";
 
 const STATE_ID_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
 const EXACT_EXPRESSION = /^\$\{([^{}]+)\}$/;
@@ -51,7 +57,16 @@ export interface WorkflowTerminalState {
     output?: unknown;
 }
 
-export type WorkflowState = WorkflowScriptState | WorkflowTerminalState;
+/** A durable timer: no process runs and no model is called while it waits. */
+export interface WorkflowWaitState {
+    id: string;
+    type: "wait";
+    seconds: number;
+    /** `{ elapsed: <state id> }`: where the run goes when the time has passed. */
+    next: Record<typeof WORKFLOW_WAIT_OUTCOME, string>;
+}
+
+export type WorkflowState = WorkflowScriptState | WorkflowWaitState | WorkflowTerminalState;
 
 export interface WorkflowInputDeclaration {
     type: "string" | "number" | "integer" | "boolean" | "object" | "array";
@@ -65,6 +80,23 @@ export interface CompiledWorkflow {
     inputs: Record<string, WorkflowInputDeclaration>;
     configuration: JsonObject;
     states: Record<string, WorkflowState>;
+}
+
+export interface CompileWorkflowOptions {
+    /** The shortest wait allowed. Default: workflowMinWaitSeconds(). */
+    minWaitSeconds?: number;
+}
+
+/**
+ * The shortest wait a document may declare: 60 seconds, or a lower whole
+ * number of seconds (at least 1) set in PILOTSWARM_WORKFLOW_MIN_WAIT_SECONDS
+ * for development and tests.
+ */
+export function workflowMinWaitSeconds(env: Record<string, string | undefined> = process.env): number {
+    const raw = env.PILOTSWARM_WORKFLOW_MIN_WAIT_SECONDS;
+    if (raw === undefined || raw.trim() === "") return WORKFLOW_WAIT_MIN_SECONDS;
+    const value = Number(raw);
+    return Number.isInteger(value) && value >= 1 ? Math.min(value, WORKFLOW_WAIT_MAX_SECONDS) : WORKFLOW_WAIT_MIN_SECONDS;
 }
 
 export class WorkflowCompileError extends Error {
@@ -241,6 +273,33 @@ function compileScriptState(id: string, state: JsonObject, stateIds: ReadonlySet
     };
 }
 
+function compileWaitState(id: string, state: JsonObject, stateIds: ReadonlySet<string>, minSeconds: number): WorkflowWaitState {
+    const path = `states.${id}`;
+    const seconds = state.seconds;
+    if (typeof seconds !== "number" || !Number.isInteger(seconds) || seconds < minSeconds || seconds > WORKFLOW_WAIT_MAX_SECONDS) {
+        fail(`${path}.seconds must be an integer from ${minSeconds} to ${WORKFLOW_WAIT_MAX_SECONDS}.`);
+    }
+    if (state.completion !== undefined) fail(`${path} is a wait state; it has no completion outcomes (its one outcome is '${WORKFLOW_WAIT_OUTCOME}').`);
+    const transition = requireObject(state.transition, `${path}.transition`);
+    if (transition.handler !== undefined) {
+        fail(`${path}.transition.handler is not supported yet; declare transition.next instead.`, "WORKFLOW_TRANSITION_HANDLER_UNSUPPORTED");
+    }
+    let target: string;
+    if (typeof transition.next === "string") {
+        target = requireText(transition.next, `${path}.transition.next`);
+    } else {
+        const rawNext = requireObject(transition.next, `${path}.transition.next`);
+        const keys = Object.keys(rawNext);
+        if (keys.length !== 1 || keys[0] !== WORKFLOW_WAIT_OUTCOME) {
+            fail(`${path}.transition.next must be a state id, or { ${WORKFLOW_WAIT_OUTCOME}: <state id> }.`);
+        }
+        target = requireText(rawNext[WORKFLOW_WAIT_OUTCOME], `${path}.transition.next.${WORKFLOW_WAIT_OUTCOME}`);
+    }
+    if (!stateIds.has(target)) fail(`${path}.transition.next references unknown state '${target}'.`);
+    if (target === id) fail(`${path}.transition.next must lead to another state.`);
+    return { id, type: "wait", seconds, next: { [WORKFLOW_WAIT_OUTCOME]: target } as WorkflowWaitState["next"] };
+}
+
 function compileTerminalState(id: string, state: JsonObject, name: string, stateIds: ReadonlySet<string>): WorkflowTerminalState {
     const path = `states.${id}`;
     const outcome = requireText(state.outcome, `${path}.outcome`);
@@ -267,7 +326,8 @@ function yamlHint(yaml: string): string {
 }
 
 /** Compile and validate one `kind: Workflow` document. */
-export function compileWorkflow(yaml: string): CompiledWorkflow {
+export function compileWorkflow(yaml: string, options: CompileWorkflowOptions = {}): CompiledWorkflow {
+    const minWaitSeconds = options.minWaitSeconds ?? workflowMinWaitSeconds();
     if (typeof yaml !== "string" || !yaml.trim()) fail("Workflow YAML must be a non-empty string.");
     if (Buffer.byteLength(yaml, "utf8") > WORKFLOW_MAX_YAML_BYTES) {
         fail(`Workflow YAML must be at most ${WORKFLOW_MAX_YAML_BYTES} bytes.`);
@@ -314,14 +374,25 @@ export function compileWorkflow(yaml: string): CompiledWorkflow {
             fail(`states.${id} declares transitions outside 'transition'; use transition.next.`, "WORKFLOW_INLINE_TRANSITION_UNSUPPORTED");
         }
         if (type === "script") states[id] = compileScriptState(id, state, stateIds);
+        else if (type === "wait") states[id] = compileWaitState(id, state, stateIds, minWaitSeconds);
         else if (type === "terminal") states[id] = compileTerminalState(id, state, name, stateIds);
-        else if (DEFERRED_STATE_TYPES.has(type)) fail(`states.${id}.type '${type}' is not supported yet; this version runs script and terminal states.`, "WORKFLOW_STATE_TYPE_UNSUPPORTED");
+        else if (DEFERRED_STATE_TYPES.has(type)) fail(`states.${id}.type '${type}' is not supported yet; this version runs script, wait and terminal states.`, "WORKFLOW_STATE_TYPE_UNSUPPORTED");
         else fail(`states.${id}.type '${type}' is not a workflow state type.`, "WORKFLOW_STATE_TYPE_UNSUPPORTED");
     }
-    if (states[initial].type === "terminal") fail("initial must be a script state.");
-    if (!Object.values(states).some((state) => state.type === "terminal")) fail("states must include at least one terminal state.");
+    if (states[initial].type === "terminal") fail("initial must be a script or wait state.");
+    // A workflow ends at a terminal state, or runs until it is cancelled; a
+    // loop that never waits would only spin, so it needs a wait to go on forever.
+    const values = Object.values(states);
+    if (!values.some((state) => state.type === "terminal" || state.type === "wait")) {
+        fail("states must include a terminal state, or a wait state for a workflow that runs until it is cancelled.");
+    }
 
     return { name, version, initial, inputs, configuration, states };
+}
+
+/** Whether a compiled workflow has a wait state (it can run until cancelled). */
+export function workflowHasWaits(workflow: CompiledWorkflow): boolean {
+    return Object.values(workflow.states).some((state) => state.type === "wait");
 }
 
 /** Whether a compiled workflow has script states (they need the worker's script switch). */

@@ -14,7 +14,7 @@ export const WORKFLOW_CANVAS_NAME = "Workflow";
 const RECENT_STEPS = 40;
 const PREVIEW_CHARS = 400;
 
-export type WorkflowNodeState = "idle" | "running" | "done" | "failed" | "cancelled";
+export type WorkflowNodeState = "idle" | "running" | "waiting" | "done" | "failed" | "cancelled";
 
 export interface WorkflowCanvasState {
     status: "running" | "completed" | "failed" | "cancelled";
@@ -24,7 +24,9 @@ export interface WorkflowCanvasState {
     nodes: Record<string, { state: WorkflowNodeState; runs: number; lastOutcome?: string; lastDurationMs?: number }>;
     /** Times each transition was taken, keyed `${from}\u0001${outcome}`. */
     taken: Record<string, number>;
-    steps: Array<{ step: number; node: string; outcome?: string; durationMs?: number; tools?: number; failedTools?: number; state: WorkflowNodeState }>;
+    steps: Array<{ step: number; node: string; outcome?: string; durationMs?: number; tools?: number; failedTools?: number; until?: number; state: WorkflowNodeState }>;
+    /** While a wait state is waiting: when it ends, in epoch milliseconds. */
+    waitingUntil?: number;
     outcome?: string;
     summary?: string;
     output?: string;
@@ -58,6 +60,25 @@ export function foldWorkflowCanvasState(events: WorkflowEventLike[], graph?: Com
         return entry;
     };
     let lastFinished: { node: string; outcome: string } | null = null;
+    let waiting: { node: string; step: number } | null = null;
+    // The run count: exact from the event's `visit` when the fold sees only
+    // a recent window of a long run, else counted here.
+    const countRun = (n: { runs: number }, visit: unknown) => {
+        n.runs = Number.isInteger(visit) && Number(visit) > 0 ? Math.max(n.runs, Number(visit)) : n.runs + 1;
+    };
+    const settleWait = (outcomeState: WorkflowNodeState) => {
+        if (!waiting) return;
+        const n = node(waiting.node);
+        if (n.state === "waiting") n.state = outcomeState;
+        if (outcomeState === "done") n.lastOutcome = "elapsed";
+        const entry = state.steps.find((s) => s.step === waiting!.step);
+        if (entry && entry.state === "waiting") {
+            entry.state = outcomeState;
+            if (outcomeState === "done") entry.outcome = "elapsed";
+        }
+        waiting = null;
+        delete state.waitingUntil;
+    };
     for (const event of events) {
         const data = event?.data ?? {};
         switch (event?.eventType) {
@@ -65,20 +86,34 @@ export function foldWorkflowCanvasState(events: WorkflowEventLike[], graph?: Com
                 state.name = data.name ?? state.name;
                 for (const n of Array.isArray(data.states) ? data.states : []) if (n?.id) node(String(n.id));
                 break;
-            case "workflow.state_started": {
+            case "workflow.state_started":
+            case "workflow.state_waiting": {
                 const id = String(data.stateId ?? "");
                 if (!id) break;
+                settleWait("done");
                 if (lastFinished) {
                     const key = `${lastFinished.node}\u0001${lastFinished.outcome}`;
                     state.taken[key] = (state.taken[key] ?? 0) + 1;
                     lastFinished = null;
                 }
                 const n = node(id);
-                n.state = "running";
-                n.runs += 1;
+                countRun(n, data.visit);
                 state.current = id;
                 state.step = Math.max(state.step, Number(data.step) || 0);
-                stepEntry(Number(data.step) || state.step, id);
+                const entry = stepEntry(Number(data.step) || state.step, id);
+                if (event.eventType === "workflow.state_waiting") {
+                    n.state = "waiting";
+                    entry.state = "waiting";
+                    const until = Number(data.until);
+                    if (Number.isFinite(until)) {
+                        entry.until = until;
+                        state.waitingUntil = until;
+                    }
+                    waiting = { node: id, step: entry.step };
+                    lastFinished = { node: id, outcome: "elapsed" };
+                } else {
+                    n.state = "running";
+                }
                 break;
             }
             case "workflow.state_completed": {
@@ -115,6 +150,8 @@ export function foldWorkflowCanvasState(events: WorkflowEventLike[], graph?: Com
             case "workflow.cancelled": {
                 state.status = event.eventType === "workflow.completed" ? "completed"
                     : event.eventType === "workflow.failed" ? "failed" : "cancelled";
+                // A wait the run ended during did not finish.
+                settleWait(state.status === "completed" ? "done" : "cancelled");
                 state.step = Math.max(state.step, Number(data.steps) || 0);
                 // A run that reached a terminal state: mark it and the edge into it.
                 const reachedTerminal = data.outcome !== undefined && typeof data.stateId === "string";
@@ -172,7 +209,9 @@ export function buildWorkflowCanvasHtml(workflow: CompiledWorkflow, initial: Wor
         entry: workflow.initial,
         nodes: Object.values(workflow.states).map((n) => n.type === "script"
             ? { id: n.id, type: "script", runtime: n.runtime, next: n.next }
-            : { id: n.id, type: "terminal", outcome: n.outcome, next: {} }),
+            : n.type === "wait"
+                ? { id: n.id, type: "wait", seconds: n.seconds, next: n.next }
+                : { id: n.id, type: "terminal", outcome: n.outcome, next: {} }),
     };
     return `<!doctype html>
 <html lang="en">
@@ -199,6 +238,8 @@ export function buildWorkflowCanvasHtml(workflow: CompiledWorkflow, initial: Wor
   .node.done rect { stroke: #5fd38d; fill: #15281e; }
   .node.failed rect { stroke: #ff7b72; fill: #2c1719; }
   .node.cancelled rect { stroke: #e3b341; fill: #2a2414; }
+  .node.wait rect { stroke-dasharray: 2 4; }
+  .node.waiting rect { stroke: #d2a8ff; stroke-width: 2.5; stroke-dasharray: 6 4; fill: #1f1a2c; }
   .node.entry rect { stroke-dasharray: 5 3; }
   .node.done.entry rect, .node.running.entry rect, .node.failed.entry rect, .node.cancelled.entry rect { stroke-dasharray: none; }
   .node.terminal rect { fill: #161d29; stroke: #5c6b82; stroke-dasharray: 3 3; }
@@ -214,7 +255,7 @@ export function buildWorkflowCanvasHtml(workflow: CompiledWorkflow, initial: Wor
   th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #1f2a3a; white-space: nowrap; }
   td.out { white-space: normal; }
   th { color: #8b96a8; font-weight: 600; }
-  td.state-running { color: #6cb6ff; } td.state-done { color: #5fd38d; } td.state-failed { color: #ff7b72; } td.state-cancelled { color: #e3b341; }
+  td.state-running { color: #6cb6ff; } td.state-waiting { color: #d2a8ff; } td.state-done { color: #5fd38d; } td.state-failed { color: #ff7b72; } td.state-cancelled { color: #e3b341; }
   .empty { color: #8b96a8; padding: 6px 8px; }
 </style>
 </head>
@@ -323,17 +364,23 @@ export function buildWorkflowCanvasHtml(workflow: CompiledWorkflow, initial: Wor
   graph.nodes.forEach(function (n) {
     var p = pos[n.id];
     var terminal = n.type === "terminal";
-    var cls = "node" + (terminal ? " terminal outcome-" + n.outcome : "") + (n.id === graph.entry ? " entry" : "");
+    var cls = "node" + (terminal ? " terminal outcome-" + n.outcome : "") + (n.type === "wait" ? " wait" : "") + (n.id === graph.entry ? " entry" : "");
     var g = el("g", { "class": cls, transform: "translate(" + p.x + "," + p.y + ")" }, nodeLayer);
     el("rect", { width: W, height: H, rx: terminal ? H / 2 : 8 }, g);
     var t = el("text", { x: terminal ? 18 : 10, y: 19 }, g); t.textContent = n.id.length > 22 ? n.id.slice(0, 21) + "…" : n.id;
-    var label = terminal ? "ends · " + n.outcome : n.runtime;
+    var label = terminal ? "ends · " + n.outcome : n.type === "wait" ? "wait · " + secs(n.seconds) : n.runtime;
     var sub = el("text", { x: terminal ? 18 : 10, y: 36, "class": "sub" }, g); sub.textContent = label;
     var runs = el("text", { x: W - 10, y: 19, "text-anchor": "end", "class": "runs" }, g);
     var title = el("title", {}, g); title.textContent = n.id;
     nodeEls[n.id] = { g: g, sub: sub, runs: runs, base: cls, runtime: label, terminal: terminal };
   });
 
+  function secs(s) {
+    if (s % 86400 === 0) return (s / 86400) + " d";
+    if (s % 3600 === 0) return (s / 3600) + " h";
+    if (s % 60 === 0) return (s / 60) + " min";
+    return s + " s";
+  }
   function fmt(ms) {
     if (typeof ms !== "number" || !isFinite(ms)) return "";
     if (ms < 1000) return Math.round(ms) + " ms";
@@ -341,6 +388,10 @@ export function buildWorkflowCanvasHtml(workflow: CompiledWorkflow, initial: Wor
     return Math.floor(ms / 60000) + " min " + Math.round((ms % 60000) / 1000) + " s";
   }
   function text(id, value) { document.getElementById(id).textContent = value; }
+  function clock(ms) {
+    try { return new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }); }
+    catch (e) { return new Date(ms).toISOString().slice(11, 19); }
+  }
 
   function applyData(state) {
     if (!state || typeof state !== "object") return;
@@ -348,9 +399,12 @@ export function buildWorkflowCanvasHtml(workflow: CompiledWorkflow, initial: Wor
     var status = document.getElementById("status");
     status.className = "pill " + (state.status || "running");
     status.textContent = state.status || "running";
-    text("where", state.status === "running" && state.current
-      ? "step " + state.step + " · running " + state.current
-      : state.step ? state.step + " step" + (state.step === 1 ? "" : "s") : "starting");
+    var waitingNow = state.status === "running" && typeof state.waitingUntil === "number";
+    text("where", waitingNow
+      ? "step " + state.step + " · " + state.current + " waiting until " + clock(state.waitingUntil)
+      : state.status === "running" && state.current
+        ? "step " + state.step + " · running " + state.current
+        : state.step ? state.step + " step" + (state.step === 1 ? "" : "s") : "starting");
     var note = document.getElementById("note");
     var noteText = state.status === "failed" ? (state.error ? "Failed: " + state.error : "Outcome failed" + (state.summary ? " — " + state.summary : ""))
       : state.status === "cancelled" ? (state.reason ? "Stopped: " + state.reason : "Outcome cancelled" + (state.summary ? " — " + state.summary : ""))
@@ -382,7 +436,8 @@ export function buildWorkflowCanvasHtml(workflow: CompiledWorkflow, initial: Wor
     }
     steps.forEach(function (s) {
       var tr = document.createElement("tr");
-      [String(s.step), s.node, s.outcome || (s.state === "running" ? "running…" : s.state), fmt(s.durationMs),
+      var shown = s.outcome || (s.state === "running" ? "running…" : s.state === "waiting" && s.until ? "waiting until " + clock(s.until) : s.state);
+      [String(s.step), s.node, shown, fmt(s.durationMs),
         s.tools ? s.tools + (s.failedTools ? " (" + s.failedTools + " failed)" : "") : ""].forEach(function (v, i) {
         var td = document.createElement("td");
         td.textContent = v;

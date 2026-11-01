@@ -42,9 +42,12 @@ test("spawn_workflow is declared for agent sessions and carries the YAML contrac
     assert.ok(tool, "spawn_workflow must be declared beside spawn_agent");
     assert.deepEqual(tool.parameters.required, ["yaml"]);
     assert.deepEqual(Object.keys(tool.parameters.properties).sort(), ["inputs", "key", "notify_on_completion", "yaml"]);
-    for (const phrase of ["kind: Workflow", "type: script", "type: terminal", "completion: { outcomes:", "transition:", "call_tool", "callTool", "Invoke-PilotSwarmTool", "set_result", "cron"]) {
+    for (const phrase of ["kind: Workflow", "type: script", "type: wait", "type: terminal", "completion: { outcomes:", "transition:", "call_tool", "callTool", "Invoke-PilotSwarmTool", "set_result", "cron"]) {
         assert.ok(tool.description.includes(phrase), `description should mention ${phrase}`);
     }
+    // Models are steered to put polling inside the workflow, not on an agent timer.
+    assert.match(tool.description, /call spawn_workflow ONCE\. Do not use cron or cron_at for it/);
+    assert.match(tool.description, /each cron wake-up costs a model turn/);
     assert.equal(tool.description, SPAWN_WORKFLOW_TOOL_SPEC.description);
 });
 
@@ -197,6 +200,22 @@ test("spawn_workflow starts a child workflow owned like its parent and says how 
         owner: { provider: "dev", subject: "alice" },
         notifyParent: true,
     }]);
+    assert.doesNotMatch(text, /repeats through its wait state/);
+});
+
+test("spawn_workflow tells the agent a waiting loop repeats by itself and needs no cron", async () => {
+    const { deps } = spawnDeps();
+    const looping = `
+apiVersion: pilotswarm.dev/v1alpha1
+kind: Workflow
+metadata: { name: poll, version: 1.0.0 }
+initial: check
+states:
+  check: { type: script, runtime: node, source: x, completion: { outcomes: [idle] }, transition: { next: { idle: sleep } } }
+  sleep: { type: wait, seconds: 600, transition: { next: check } }
+`;
+    const text = await spawnWorkflowFromTool({ yaml: looping }, { toolCallId: "call-loop" }, deps);
+    assert.match(text, /started workflow session \S+ running "poll"\. It repeats through its wait state by itself until it reaches a terminal state or is cancelled \(cancel_agent\); do not also schedule it with cron\./);
 });
 
 test("spawn_workflow is idempotent per key, and per tool call without one", async () => {
@@ -307,6 +326,61 @@ test("the canvas state is folded from the workflow log and fits a data tick", ()
     const fitted = fitWorkflowCanvasState(big);
     assert.ok(Buffer.byteLength(JSON.stringify(fitted)) <= 32_768);
     assert.equal(fitted.steps.at(-1).step, 399, "the newest steps are kept");
+});
+
+test("a wait shows as waiting with its end time, counts its loops, and settles when the next state starts", () => {
+    const started = { eventType: "workflow.started", data: { name: "poll", states: [{ id: "check", type: "script" }, { id: "sleep", type: "wait", seconds: 600 }] } };
+    const loop = (n, base) => [
+        { eventType: "workflow.state_started", data: { stateId: "check", step: base, visit: n } },
+        { eventType: "workflow.state_completed", data: { stateId: "check", step: base, visit: n, outcome: "idle", resultSource: "reported" } },
+        { eventType: "workflow.state_waiting", data: { stateId: "sleep", step: base + 1, seconds: 600, until: 1_700_000_000_000 + n, visit: n } },
+    ];
+    const waiting = foldWorkflowCanvasState([started, ...loop(1, 1), ...loop(2, 3)]);
+    assert.equal(waiting.status, "running");
+    assert.equal(waiting.current, "sleep");
+    assert.equal(waiting.waitingUntil, 1_700_000_000_002);
+    assert.equal(waiting.nodes.sleep.state, "waiting");
+    assert.equal(waiting.nodes.sleep.runs, 2);
+    assert.equal(waiting.nodes.check.runs, 2);
+    assert.deepEqual(waiting.taken, { "check\u0001idle": 2, "sleep\u0001elapsed": 1 });
+    assert.deepEqual(waiting.steps.map((s) => [s.step, s.node, s.state, s.outcome]), [
+        [1, "check", "done", "idle"], [2, "sleep", "done", "elapsed"], [3, "check", "done", "idle"], [4, "sleep", "waiting", undefined],
+    ]);
+
+    // A fold that sees only a recent window of a long run still counts loops exactly.
+    const windowed = foldWorkflowCanvasState([started, ...loop(41, 81)]);
+    assert.equal(windowed.nodes.check.runs, 41);
+    assert.equal(windowed.nodes.sleep.runs, 41);
+
+    // Cancelled while waiting: the wait shows as stopped and nothing still reads as waiting.
+    const cancelled = foldWorkflowCanvasState([started, ...loop(1, 1),
+        { eventType: "workflow.cancelled", data: { steps: 2, stateId: "sleep", reason: "no longer needed" } }]);
+    assert.equal(cancelled.status, "cancelled");
+    assert.equal(cancelled.nodes.sleep.state, "cancelled");
+    assert.equal(cancelled.waitingUntil, undefined);
+    assert.equal(cancelled.steps.at(-1).state, "cancelled");
+    assert.equal(cancelled.reason, "no longer needed");
+});
+
+test("the canvas page draws wait states and shows when a wait ends", () => {
+    const workflow = compileWorkflow(`
+apiVersion: pilotswarm.dev/v1alpha1
+kind: Workflow
+metadata: { name: poll, version: "1" }
+initial: check
+states:
+  check:
+    type: script
+    runtime: node
+    source: x
+    completion: { outcomes: [idle] }
+    transition: { next: { idle: sleep } }
+  sleep: { type: wait, seconds: 600, transition: { next: check } }
+`);
+    const html = buildWorkflowCanvasHtml(workflow, foldWorkflowCanvasState([], workflow));
+    assert.match(html, /"type":"wait","seconds":600,"next":\{"elapsed":"check"\}/);
+    assert.match(html, /"wait · " \+ secs\(n\.seconds\)/);
+    assert.match(html, /waiting until " \+ clock\(state\.waitingUntil\)/);
 });
 
 test("a run that reaches a terminal state marks it and the edge into it", () => {

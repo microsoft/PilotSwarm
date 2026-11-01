@@ -7,6 +7,7 @@ import {
     type WorkflowFinishInput,
     type WorkflowRunStateInput,
     type WorkflowRunStateResult,
+    type WorkflowWaitInput,
 } from "./orchestration.js";
 import { runScriptNode, type RunScriptNodeResult, type ScriptRunnerOptions } from "./runner.js";
 import { parseScriptMcpToolName, ScriptMcpConnections } from "./mcp.js";
@@ -19,6 +20,7 @@ export const WORKFLOW_LOG_EVENT_TYPES = [
     "workflow.state_completed",
     "workflow.state_failed",
     "workflow.state_cancelled",
+    "workflow.state_waiting",
     "workflow.completed",
     "workflow.failed",
     "workflow.cancelled",
@@ -27,7 +29,7 @@ export const WORKFLOW_LOG_EVENT_TYPES = [
 export type ScriptToolHandler = (args: Record<string, unknown>) => Promise<unknown>;
 
 export interface WorkflowActivityDeps {
-    catalog: (Pick<SessionCatalog, "updateSession" | "recordEvents"> & Partial<Pick<SessionCatalog, "getSessionEvents">>) | null;
+    catalog: (Pick<SessionCatalog, "updateSession" | "recordEvents"> & Partial<Pick<SessionCatalog, "getSessionEvents" | "getSessionEventsBefore">>) | null;
     /** Draws and updates the live execution canvas. Absent: no canvas. */
     canvas?: WorkflowCanvasPublisher | null;
     /** Whether this worker runs workflow scripts. A workflow with script states fails at its start where it is off. */
@@ -78,11 +80,33 @@ async function record(
     }
 }
 
+/** How many of the latest workflow events the live view folds. */
+const CANVAS_EVENT_WINDOW = 1_000;
+
+/**
+ * The events the live view folds: the run's start plus its latest events.
+ * A workflow that waits between checks can run for weeks, so the view reads
+ * a recent window rather than the whole log; the loop counters come from
+ * each event's `visit`, so they stay exact.
+ */
+async function canvasEvents(catalog: NonNullable<WorkflowActivityDeps["catalog"]>, sessionId: string): Promise<unknown[]> {
+    if (typeof catalog.getSessionEventsBefore !== "function") {
+        return catalog.getSessionEvents!(sessionId, 0, 5_000, WORKFLOW_LOG_EVENT_TYPES);
+    }
+    const [started, recent] = await Promise.all([
+        catalog.getSessionEvents!(sessionId, 0, 1, ["workflow.started"]),
+        catalog.getSessionEventsBefore(sessionId, Number.MAX_SAFE_INTEGER, CANVAS_EVENT_WINDOW, WORKFLOW_LOG_EVENT_TYPES),
+    ]);
+    const first = (started as any[])[0];
+    const window = recent as any[];
+    return first && !window.some((event) => event?.seq === first.seq) ? [first, ...window] : window;
+}
+
 /** Re-render the live canvas from the session's workflow events. Best effort. */
 async function refreshCanvas(deps: WorkflowActivityDeps, sessionId: string): Promise<void> {
-    if (!deps.canvas || typeof deps.catalog?.getSessionEvents !== "function") return;
+    if (!deps.canvas || !deps.catalog || typeof deps.catalog.getSessionEvents !== "function") return;
     try {
-        const events = await deps.catalog.getSessionEvents(sessionId, 0, 5_000, WORKFLOW_LOG_EVENT_TYPES);
+        const events = await canvasEvents(deps.catalog, sessionId);
         await deps.canvas.tick(sessionId, foldWorkflowCanvasState(events as any));
     } catch {
         // The transcript log is the record; the canvas is a view of it.
@@ -104,7 +128,9 @@ export function buildParentNotification(input: WorkflowFinishInput): string {
 export function describeStates(workflow: CompiledWorkflow): Array<Record<string, unknown>> {
     return Object.values(workflow.states).map((state) => state.type === "script"
         ? { id: state.id, type: "script", runtime: state.runtime, timeoutSeconds: state.timeoutSeconds, next: state.next }
-        : { id: state.id, type: "terminal", outcome: state.outcome });
+        : state.type === "wait"
+            ? { id: state.id, type: "wait", seconds: state.seconds, next: state.next }
+            : { id: state.id, type: "terminal", outcome: state.outcome });
 }
 
 const END_EVENT: Record<WorkflowFinishInput["status"], string> = {
@@ -114,7 +140,7 @@ const END_EVENT: Record<WorkflowFinishInput["status"], string> = {
     deleted: "workflow.cancelled",
 };
 
-/** Register the three activities behind the workflow controller. */
+/** Register the activities behind the workflow controller. */
 export function registerWorkflowActivities(runtime: any, deps: WorkflowActivityDeps): void {
     const runNode = deps.runNode ?? runScriptNode;
 
@@ -152,6 +178,7 @@ export function registerWorkflowActivities(runtime: any, deps: WorkflowActivityD
             stateId: input.stateId,
             runtime: input.node.runtime,
             step: input.step,
+            ...(input.visit !== undefined ? { visit: input.visit } : {}),
         });
         await refreshCanvas(deps, input.sessionId);
         let tools: Map<string, ScriptToolHandler> | null = null;
@@ -222,6 +249,7 @@ export function registerWorkflowActivities(runtime: any, deps: WorkflowActivityD
         await record(deps, input.sessionId, "workflow.state_completed", {
             stateId: input.stateId,
             step: input.step,
+            ...(input.visit !== undefined ? { visit: input.visit } : {}),
             outcome: result.outcome,
             resultSource: result.resultSource,
             exitCode: result.exitCode,
@@ -234,6 +262,24 @@ export function registerWorkflowActivities(runtime: any, deps: WorkflowActivityD
         });
         await refreshCanvas(deps, input.sessionId);
         return { outcome: result.outcome, output: result.output };
+    });
+
+    // Records the wait and updates the views; the timer itself is the
+    // orchestration's, so nothing runs on the worker while it waits.
+    runtime.registerActivity(WORKFLOW_ACTIVITIES.wait, async (
+        _ctx: any,
+        input: WorkflowWaitInput,
+    ): Promise<null> => {
+        await record(deps, input.sessionId, "workflow.state_waiting", {
+            stateId: input.stateId,
+            step: input.step,
+            seconds: input.seconds,
+            until: input.until,
+            visit: input.visit,
+        });
+        await deps.catalog?.updateSession(input.sessionId, { lastActiveAt: new Date() }).catch(() => undefined);
+        await refreshCanvas(deps, input.sessionId);
+        return null;
     });
 
     runtime.registerActivity(WORKFLOW_ACTIVITIES.finish, async (

@@ -4,7 +4,8 @@
  * A workflow session runs a graph of states instead of a conversation.
  * The worker records one CMS event per step; the transcript renders them as
  * an execution log: the graph when it starts, a line per state as it starts
- * and ends, and the terminal state the run reached. The live view is the session's canvas,
+ * and ends (or, for a wait state, when it waits until), and the terminal
+ * state the run reached. The live view is the session's canvas,
  * which the worker draws and updates (packages/sdk workflow/canvas.ts).
  */
 
@@ -16,6 +17,7 @@ export const WORKFLOW_EVENT_TYPES = [
     "workflow.state_completed",
     "workflow.state_failed",
     "workflow.state_cancelled",
+    "workflow.state_waiting",
     "workflow.completed",
     "workflow.failed",
     "workflow.cancelled",
@@ -45,6 +47,31 @@ function formatDuration(ms) {
     if (value < 1_000) return `${Math.round(value)} ms`;
     if (value < 60_000) return `${(value / 1_000).toFixed(1)} s`;
     return `${Math.floor(value / 60_000)} min ${Math.round((value % 60_000) / 1_000)} s`;
+}
+
+function formatSeconds(seconds) {
+    const value = Number(seconds);
+    if (!Number.isFinite(value) || value < 0) return "?";
+    if (value % 86_400 === 0 && value > 0) return `${value / 86_400} d`;
+    if (value % 3_600 === 0 && value > 0) return `${value / 3_600} h`;
+    if (value % 60 === 0 && value > 0) return `${value / 60} min`;
+    return `${value} s`;
+}
+
+function formatClock(ms) {
+    const value = Number(ms);
+    if (!Number.isFinite(value)) return null;
+    try {
+        return new Date(value).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    } catch {
+        return new Date(value).toISOString().slice(11, 19);
+    }
+}
+
+function waitText(data) {
+    const until = formatClock(data.until);
+    const visit = Number(data.visit) > 1 ? ` (wait ${data.visit})` : "";
+    return `${data.stateId ?? "?"} waiting ${formatSeconds(data.seconds)}${until ? `, until ${until}` : ""}${visit}`;
 }
 
 function formatNext(next) {
@@ -84,7 +111,9 @@ export function formatWorkflowEventText(event) {
             if (states.length > 0) {
                 lines.push("", "| State | Type | Outcome → next |", "|---|---|---|");
                 for (const state of states) {
-                    const type = state?.type === "terminal" ? "terminal" : `script (${state?.runtime ?? "?"})`;
+                    const type = state?.type === "terminal" ? "terminal"
+                        : state?.type === "wait" ? `wait (${formatSeconds(state?.seconds)})`
+                            : `script (${state?.runtime ?? "?"})`;
                     const next = state?.type === "terminal" ? `ends: ${state.outcome ?? "?"}` : formatNext(state?.next);
                     lines.push(`| ${cell(state?.id)} | ${cell(type)} | ${cell(next)} |`);
                 }
@@ -106,6 +135,11 @@ export function formatWorkflowEventText(event) {
         }
         case "workflow.state_failed":
             return `✗ Step ${data.step ?? "?"}: ${code(data.stateId)} could not run: ${data.error ?? "unknown error"}`;
+        case "workflow.state_waiting": {
+            const until = formatClock(data.until);
+            const visit = Number(data.visit) > 1 ? ` This is wait ${data.visit}.` : "";
+            return `⏸ Step ${data.step ?? "?"}: ${code(data.stateId)} waiting ${formatSeconds(data.seconds)}${until ? `, until ${until}` : ""}.${visit}`;
+        }
         case "workflow.completed": {
             const lines = [endedAtTerminal(data, "■")];
             if (data.outputPreview && data.outputPreview !== "null") {
@@ -159,6 +193,8 @@ export function describeWorkflowEvent(event) {
         }
         case "workflow.state_failed":
             return { kind: "notice", title: stepTitle, color: "red", summary: `${data.stateId ?? "?"} could not run: ${data.error ?? "unknown error"}`, text };
+        case "workflow.state_waiting":
+            return { kind: "notice", title: stepTitle, color: "gray", summary: waitText(data), text };
         case "workflow.state_cancelled": {
             const duration = formatDuration(data.durationMs);
             return { kind: "notice", title: stepTitle, color: "yellow", summary: `${data.stateId ?? "?"} stopped${duration ? ` after ${duration}` : ""}`, text };
