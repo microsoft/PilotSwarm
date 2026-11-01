@@ -12,6 +12,8 @@ import {
     FAILURE_ROUTE,
     MESSAGE_SENT,
     RECEIVE_RECEIVED,
+    REQUEST_DECLINED,
+    REQUEST_RESPONDED,
     WAIT_ELAPSED,
     WAIT_MAX_SECONDS,
     type RuntimeErrorCode,
@@ -1129,6 +1131,13 @@ export function describeWorkflowV2State(node: WorkflowIRNode): { [key: string]: 
                 recipient: "parent" in node.recipient ? "parent" : node.recipient.sessionId, outcomes: [MESSAGE_SENT], next: node.next,
             };
         }
+        if (node.mode === "request") {
+            return {
+                id: node.id, type: "messaging", mode: "request", contract: node.contract,
+                recipient: "parent" in node.recipient ? "parent" : node.recipient.sessionId, timeoutSeconds: node.timeoutSeconds,
+                outcomes: [REQUEST_RESPONDED, REQUEST_DECLINED], next: node.next,
+            };
+        }
         return {
             id: node.id, type: "messaging", mode: node.mode, contract: node.contract,
             from: node.from === null ? null : "parent" in node.from ? "parent" : node.from.sessionId,
@@ -1362,8 +1371,11 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         const ir = await irOf(run);
         const nodes: ControllerPlan["nodes"] = {};
         for (const node of Object.values(ir.nodes)) {
-            nodes[node.id] = node.type === "messaging" ? { type: node.type, mode: node.mode, next: node.next }
-                : { type: node.type, next: node.type === "terminal" ? {} : node.next };
+            if (node.type === "messaging") {
+                // A request state is never run by this controller; IR 7 is not read unless asked for (parseWorkflowIr).
+                if (node.mode === "request") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `State ${node.id} is a request state, which this build does not run.`);
+                nodes[node.id] = { type: node.type, mode: node.mode, next: node.next };
+            } else nodes[node.id] = { type: node.type, next: node.type === "terminal" ? {} : node.next };
         }
         const plan: ControllerPlan = {
             name: ir.name, version: ir.version, initial: ir.initial, maxNodeExecutions: ir.limits.maxNodeExecutions,

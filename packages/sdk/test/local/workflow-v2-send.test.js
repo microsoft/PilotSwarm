@@ -42,8 +42,10 @@
  *   state fails unavailable, and a cancel, a delivery recorded before or a
  *   workflow recipient's earlier acceptance is kept.
  *
- * Send states are not yet in the formal models (README "Receive model" is
- * for receive states); these regressions are their evidence.
+ * Sends to a workflow are modeled in WorkflowV2Send.tla (README "Send
+ * model"), a diagnostic of its modeled paths, not a proof; sends to an
+ * agent session are in no formal model. These regressions are the
+ * evidence for the code.
  */
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";

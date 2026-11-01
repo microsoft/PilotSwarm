@@ -29,12 +29,21 @@ export const WORKFLOW_V2_KIND = "Workflow";
  *   name (WORKFLOW_V2_MESSAGING_IR_VERSION), written only for a workflow
  *   that has one;
  * - 6: version 5 plus messaging send states (WORKFLOW_V2_SEND_IR_VERSION),
- *   written only for a workflow that has one.
+ *   written only for a workflow that has one;
+ * - 7: version 6 plus messaging request states and contract responses
+ *   (WORKFLOW_V2_REQUEST_IR_VERSION), written only for a workflow that has
+ *   one of them and only when requests are enabled (WorkflowCompileOptions).
+ *   A reader takes it only when asked to (parseWorkflowIr's maxIrVersion):
+ *   a build that does not run request states refuses it explicitly and
+ *   never reads it as version 6.
  */
 export const WORKFLOW_V2_IR_VERSION = 3;
 export const WORKFLOW_V2_WAIT_IR_VERSION = 4;
 export const WORKFLOW_V2_MESSAGING_IR_VERSION = 5;
 export const WORKFLOW_V2_SEND_IR_VERSION = 6;
+export const WORKFLOW_V2_REQUEST_IR_VERSION = 7;
+/** The newest IR version a worker reads unless asked for more: request states are not run yet. */
+export const WORKFLOW_V2_RUNNABLE_IR_VERSION = 6;
 /** A wait state's seconds: an integer in this range, literal or bound. */
 export const WAIT_MAX_SECONDS = 86_400;
 /** The one business outcome of a wait state, and a receive state's outcome when its wait wins. */
@@ -43,6 +52,11 @@ export const WAIT_ELAPSED = "elapsed";
 export const RECEIVE_RECEIVED = "received";
 /** A send state's outcome: the recipient's durable queue accepted its message (not that it was read). */
 export const MESSAGE_SENT = "sent";
+/** A request state's business outcomes: an accepted response, or the responder's declared refusal. */
+export const REQUEST_RESPONDED = "responded";
+export const REQUEST_DECLINED = "declined";
+/** The largest response schema, with every schema it references, in UTF-8 bytes of their canonical JSON. */
+export const REQUEST_RESPONSE_SCHEMA_MAX_BYTES = 8 * 1024;
 /** A contract name: a name, '@' and a positive integer version, such as BuildEvent@1. */
 export const CONTRACT_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}@[1-9][0-9]{0,5}$/;
 export const WORKFLOW_V2_MAX_YAML_BYTES = 256 * 1024;
@@ -61,7 +75,11 @@ export const RUNTIME_ERROR_CODES = [
 export const FAILURE_ROUTE = "failure";
 /** Node types this build compiles. Others are refused explicitly, never run differently. */
 export const SUPPORTED_NODE_TYPES = ["script", "wait", "messaging", "terminal"] as const;
-/** Messaging modes this build compiles; request is refused explicitly. */
+/**
+ * Messaging modes this build runs. A request state compiles to IR 7 only
+ * when requests are enabled; otherwise it is refused explicitly, so no
+ * definition with one is published or run.
+ */
 export const SUPPORTED_MESSAGING_MODES = ["receive", "send"] as const;
 const KNOWN_NODE_TYPES = ["script", "terminal", "wait", "messaging", "agent", "parallel", "join"];
 
@@ -166,18 +184,49 @@ export interface WorkflowIRSend {
     next: Record<string, string>;
 }
 
-export type WorkflowIRMessaging = WorkflowIRReceive | WorkflowIRSend;
+export type WorkflowIRMessaging = WorkflowIRReceive | WorkflowIRSend | WorkflowIRRequest;
+
+/**
+ * A request state (IR 7): one typed request of its contract to its
+ * recipient, answered by one typed result: an accepted response (outcome
+ * responded) or the responder's declared refusal (outcome declined); its
+ * deadline (timed_out) and the other runtime errors route by code.
+ */
+export interface WorkflowIRRequest {
+    id: string;
+    type: "messaging";
+    description: string | null;
+    mode: "request";
+    /** A root contract that declares a response: the payload must satisfy its schema, a response its response schema. */
+    contract: string;
+    /** The parent, or a session id (literal or one whole-string binding), resolved and frozen when the state is entered. */
+    recipient: WorkflowIRSender;
+    /** A JSON template of correlation values evaluated on entry (null is {}). */
+    correlate: JsonValue;
+    /** The payload: the input binding's value, or without one the value that arrived. */
+    hasInput: boolean;
+    input: JsonValue;
+    /** The deadline: an integer of seconds, or one whole-string binding checked and frozen when the state is entered. */
+    timeoutSeconds: number | string;
+    /** Route label -> target node: responded, declined, and runtime routes (timed_out among them). */
+    next: Record<string, string>;
+}
 
 export interface WorkflowIRContract {
     /** The schema (in schemaDefs) every payload of this contract must satisfy. */
     schema: string;
+    /** Version 7: the schema (in schemaDefs) a response to a request of this contract must satisfy. */
+    response?: { schema: string };
 }
 
 export type WorkflowIRNode = WorkflowIRScript | WorkflowIRWait | WorkflowIRMessaging | WorkflowIRTerminal;
 
 export interface WorkflowIR {
-    /** 1 and 2 are read-only earlier shapes (outputSchema and catchAll null when absent); 3, 4 with wait states, 5 with receive states or 6 with send states is written now. */
-    irVersion: 1 | 2 | 3 | 4 | 5 | 6;
+    /**
+     * 1 and 2 are read-only earlier shapes (outputSchema and catchAll null when absent); 3, 4 with wait states, 5 with
+     * receive states, 6 with send states or 7 with request states or contract responses is written now.
+     */
+    irVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7;
     apiVersion: typeof WORKFLOW_V2_API_VERSION;
     name: string;
     version: string;
@@ -208,6 +257,16 @@ export interface WorkflowCompileResult {
     version: string | null;
     ir: WorkflowIR | null;
     irSha256: string | null;
+}
+
+export interface WorkflowCompileOptions {
+    /**
+     * Compile request states and contract responses to IR 7. Off by default:
+     * they are still checked field by field, but the result is invalid with
+     * WORKFLOW_FEATURE_UNSUPPORTED, so no definition with one is stored as
+     * valid, published or run until requests are enabled.
+     */
+    enableRequests?: boolean;
 }
 
 /** True when the text declares the v2 apiVersion (used to route spawn_workflow; legacy YAML keeps its path). */
@@ -299,6 +358,25 @@ function schemaField(value: unknown, generatedName: string, path: string, schema
     }
 }
 
+/**
+ * UTF-8 bytes of a definition's canonical JSON plus those of every
+ * definition it references (#/$defs/<name>), each counted once.
+ */
+function schemaClosureBytes(defs: Record<string, JsonValue>, name: string): number {
+    const seen = new Set<string>();
+    const pending = [name];
+    let bytes = 0;
+    while (pending.length > 0) {
+        const next = pending.pop()!;
+        if (seen.has(next) || !Object.hasOwn(defs, next)) continue;
+        seen.add(next);
+        const text = canonicalJson(defs[next]);
+        bytes += Buffer.byteLength(text, "utf8");
+        for (const match of text.matchAll(/"\$ref":"#\/\$defs\/([^"/]+)/g)) pending.push(match[1]);
+    }
+    return bytes;
+}
+
 /** A state's transition.next: route label -> target state. */
 function compileRoutes(raw: Record<string, unknown>, path: string, what: string, nodeIds: ReadonlySet<string>, diagnostics: Diagnostics): Record<string, string> {
     const next: Record<string, string> = {};
@@ -382,9 +460,9 @@ function compileScript(id: string, raw: Record<string, unknown>, nodeIds: Readon
  * state is entered: invalid_input otherwise); it elapses with the value it
  * was given as its output.
  */
-/** A wait's seconds: an integer from 1 to WAIT_MAX_SECONDS, or one whole-string binding checked on entry. */
-function secondsField(value: unknown, path: string, diagnostics: Diagnostics): number | string | null {
-    const message = `seconds must be an integer from 1 to ${WAIT_MAX_SECONDS}, or one \${...} binding that gives one.`;
+/** A wait's seconds (or a request's timeoutSeconds): an integer from 1 to WAIT_MAX_SECONDS, or one whole-string binding checked on entry. */
+function secondsField(value: unknown, path: string, diagnostics: Diagnostics, field = "seconds"): number | string | null {
+    const message = `${field} must be an integer from 1 to ${WAIT_MAX_SECONDS}, or one \${...} binding that gives one.`;
     if (typeof value === "number") {
         if (!Number.isInteger(value) || value < 1 || value > WAIT_MAX_SECONDS) { diagnostics.error("WORKFLOW_FIELD_INVALID", path, message); return null; }
         return value;
@@ -494,22 +572,85 @@ function compileSend(id: string, raw: Record<string, unknown>, nodeIds: Readonly
 }
 
 /**
- * A messaging state. This build compiles modes receive and send. A receive
- * state takes one typed message of its contract, from its sender and with
- * its correlation, that a sender gave the run (send_workflow_input) before
- * or after the state was entered, in the order the run accepted them. An
- * optional wait races it; the store decides which comes first. A send state
- * is compileSend's. request is refused explicitly.
+ * A request state (IR 7): one typed request of its contract, which must
+ * declare a response, to its recipient (the workflow's parent or a named
+ * session, resolved and authorized when the state is entered), answered by
+ * one typed result: an accepted response (responded), the responder's
+ * declared refusal (declined), or a runtime error routed by code, its
+ * deadline (timed_out) among them. The payload is the state's input. The
+ * obsolete spellings 'request' (for input) and the route 'timeout' (for
+ * timed_out) are refused by name and never read as aliases.
+ */
+function compileRequest(id: string, raw: Record<string, unknown>, nodeIds: ReadonlySet<string>, contracts: ReadonlySet<string>,
+    responding: ReadonlySet<string>, hasCatchAll: boolean, diagnostics: Diagnostics): WorkflowIRRequest | null {
+    const path = `states.${id}`;
+    if (Object.hasOwn(raw, "request")) {
+        diagnostics.error("WORKFLOW_FIELD_RENAMED", `${path}.request`, "a request state's payload is 'input', not 'request'.");
+    }
+    checkKeys(Object.fromEntries(Object.entries(raw).filter(([key]) => key !== "request")),
+        ["type", "description", "mode", "contract", "recipient", "correlate", "input", "timeoutSeconds", "transition"], path, diagnostics);
+    const contract = contractField(raw.contract, `${path}.contract`, contracts, diagnostics);
+    if (contract !== null && !responding.has(contract)) {
+        diagnostics.error("WORKFLOW_CONTRACT_NO_RESPONSE", `${path}.contract`,
+            `contract '${contract}' declares no response; a request state needs a contract with response: { schema: <JSON Schema> }.`);
+    }
+    let recipient: WorkflowIRSender | null = null;
+    if (raw.recipient === undefined) {
+        diagnostics.error("WORKFLOW_FIELD_REQUIRED", `${path}.recipient`, "a request state needs a recipient: {parent: true}, a session id, or {sessionId: <id>}.");
+    } else recipient = senderField(raw.recipient, `${path}.recipient`, diagnostics, "recipient");
+    let correlate: JsonValue = null;
+    if (raw.correlate !== undefined) {
+        if (!isJsonObject(raw.correlate)) diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.correlate`, "correlate must map correlation keys to values or bindings.");
+        else correlate = bindingValue(raw.correlate, `${path}.correlate`, diagnostics);
+    }
+    const hasInput = Object.hasOwn(raw, "input");
+    const input = hasInput ? bindingValue(raw.input, `${path}.input`, diagnostics) : null;
+    const timeoutSeconds = secondsField(raw.timeoutSeconds, `${path}.timeoutSeconds`, diagnostics, "timeoutSeconds");
+    const next = compileRoutes(raw, path, "a messaging state", nodeIds, diagnostics);
+    for (const label of Object.keys(next)) {
+        if (label === "timeout") {
+            diagnostics.error("WORKFLOW_ROUTE_RENAMED", `${path}.transition.next.${label}`, "a request's deadline route is 'timed_out', not 'timeout'.");
+        } else if (label !== REQUEST_RESPONDED && label !== REQUEST_DECLINED && !isRuntimeRoute(label)) {
+            diagnostics.error("WORKFLOW_ROUTE_INVALID", `${path}.transition.next.${label}`,
+                `a request's outcomes are '${REQUEST_RESPONDED}' and '${REQUEST_DECLINED}'; its other routes must be runtime error codes or '${FAILURE_ROUTE}'.`);
+        }
+    }
+    if (isJsonObject(raw.transition) && isJsonObject(raw.transition.next)) {
+        for (const outcome of [REQUEST_RESPONDED, REQUEST_DECLINED]) {
+            if (!Object.hasOwn(next, outcome)) diagnostics.error("WORKFLOW_ROUTE_MISSING", `${path}.transition.next`, `a request needs a '${outcome}' route.`);
+        }
+    }
+    warnUnhandledFailure(path, next, hasCatchAll, diagnostics);
+    if (contract === null || recipient === null || timeoutSeconds === null) return null;
+    return {
+        id, type: "messaging", description: optionalText(raw.description, `${path}.description`, diagnostics), mode: "request",
+        contract, recipient, correlate, hasInput, input, timeoutSeconds, next,
+    };
+}
+
+/**
+ * A messaging state. This build compiles modes receive and send, and
+ * request (compileRequest) when requests are enabled; otherwise a request
+ * state is checked field by field and refused. A receive state takes one
+ * typed message of its contract, from its sender and with its correlation,
+ * that a sender gave the run (send_workflow_input) before or after the
+ * state was entered, in the order the run accepted them. An optional wait
+ * races it; the store decides which comes first. A send state is
+ * compileSend's.
  */
 function compileMessaging(id: string, raw: Record<string, unknown>, nodeIds: ReadonlySet<string>, contracts: ReadonlySet<string>, hasCatchAll: boolean,
-    diagnostics: Diagnostics): WorkflowIRMessaging | null {
+    diagnostics: Diagnostics, requests: { responding: ReadonlySet<string>; enabled: boolean }): WorkflowIRMessaging | null {
     const path = `states.${id}`;
     if (raw.mode === "send") return compileSend(id, raw, nodeIds, contracts, hasCatchAll, diagnostics);
-    if (raw.mode !== "receive") {
-        if (raw.mode === "request") {
+    if (raw.mode === "request") {
+        if (!requests.enabled) {
             diagnostics.error("WORKFLOW_FEATURE_UNSUPPORTED", `${path}.mode`,
-                `messaging mode '${raw.mode}' is not supported by this build yet (supported: ${SUPPORTED_MESSAGING_MODES.join(", ")}).`);
-        } else diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.mode`, "mode must be receive, send or request.");
+                `messaging mode 'request' is not enabled in this build: a definition with a request state is not published or run (enabled: ${SUPPORTED_MESSAGING_MODES.join(", ")}).`);
+        }
+        return compileRequest(id, raw, nodeIds, contracts, requests.responding, hasCatchAll, diagnostics);
+    }
+    if (raw.mode !== "receive") {
+        diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.mode`, "mode must be receive, send or request.");
         return null;
     }
     checkKeys(raw, ["type", "description", "mode", "contract", "from", "correlate", "wait", "input", "transition"], path, diagnostics);
@@ -606,8 +747,9 @@ function checkGraph(ir: { initial: string; catchAll: string | null; nodes: Recor
 }
 
 /** Compile one v2 document. Never throws for document content; returns diagnostics instead. */
-export function compileWorkflowV2(yaml: string): WorkflowCompileResult {
+export function compileWorkflowV2(yaml: string, options: WorkflowCompileOptions = {}): WorkflowCompileResult {
     const diagnostics = new Diagnostics();
+    const enableRequests = options.enableRequests === true;
     if (typeof yaml !== "string") throw new TypeError("Workflow YAML must be a string.");
     const yamlSha256 = sha256Hex(yaml);
     const result = (name: string | null, version: string | null, ir: WorkflowIR | null): WorkflowCompileResult => {
@@ -681,9 +823,11 @@ export function compileWorkflowV2(yaml: string): WorkflowCompileResult {
     }
     const rootOutputSchema = schemaField(root.outputSchema, "workflow.output", "outputSchema", schemas, diagnostics);
 
-    // Named typed exchanges: a receive state names one; a sender's payload must satisfy its schema.
+    // Named typed exchanges: a receive state names one; a sender's payload must satisfy its schema. A contract may also
+    // declare a response (IR 7): the schema a response to a request of it must satisfy.
     const contracts: Record<string, WorkflowIRContract> = {};
     const declaredContracts = new Set<string>();
+    const respondingContracts = new Set<string>();
     if (root.contracts !== undefined) {
         if (!isJsonObject(root.contracts)) {
             diagnostics.error("WORKFLOW_FIELD_INVALID", "contracts", "contracts must map contract names (Name@version) to { schema: <JSON Schema> }.");
@@ -698,10 +842,27 @@ export function compileWorkflowV2(yaml: string): WorkflowCompileResult {
                 diagnostics.error("WORKFLOW_FIELD_INVALID", path, "a contract must be { schema: <JSON Schema> }.");
                 continue;
             }
-            checkKeys(definition, ["schema", "description"], path, diagnostics);
+            checkKeys(definition, ["schema", "description", "response"], path, diagnostics);
             optionalText(definition.description, `${path}.description`, diagnostics);
-            const schema = schemaField(definition.schema, `contract.${contractName.replace("@", ".v")}`, `${path}.schema`, schemas, diagnostics);
-            if (schema !== null) contracts[contractName] = { schema };
+            const generated = `contract.${contractName.replace("@", ".v")}`;
+            const schema = schemaField(definition.schema, generated, `${path}.schema`, schemas, diagnostics);
+            let responseSchema: string | null = null;
+            if (Object.hasOwn(definition, "response")) {
+                if (!enableRequests) {
+                    diagnostics.error("WORKFLOW_FEATURE_UNSUPPORTED", `${path}.response`,
+                        "a contract response is not enabled in this build: a definition with one is not published or run.");
+                }
+                const response = definition.response;
+                if (!isJsonObject(response) || !Object.hasOwn(response, "schema")) {
+                    diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.response`, "a contract's response must be { schema: <JSON Schema> }.");
+                } else {
+                    checkKeys(response, ["schema", "description"], `${path}.response`, diagnostics);
+                    optionalText(response.description, `${path}.response.description`, diagnostics);
+                    responseSchema = schemaField(response.schema, `${generated}.response`, `${path}.response.schema`, schemas, diagnostics);
+                }
+            }
+            if (schema !== null) contracts[contractName] = responseSchema !== null ? { schema, response: { schema: responseSchema } } : { schema };
+            if (responseSchema !== null) respondingContracts.add(contractName);
         }
     }
 
@@ -742,7 +903,8 @@ export function compileWorkflowV2(yaml: string): WorkflowCompileResult {
                 const node = compileWait(id, rawNode, nodeIds, hasCatchAll, diagnostics);
                 if (node) nodes[id] = node;
             } else if (type === "messaging") {
-                const node = compileMessaging(id, rawNode, nodeIds, declaredContracts, hasCatchAll, diagnostics);
+                const node = compileMessaging(id, rawNode, nodeIds, declaredContracts, hasCatchAll, diagnostics,
+                    { responding: respondingContracts, enabled: enableRequests });
                 if (node) nodes[id] = node;
             } else if (type === "terminal") {
                 const node = compileTerminal(id, rawNode, schemas, diagnostics);
@@ -779,19 +941,29 @@ export function compileWorkflowV2(yaml: string): WorkflowCompileResult {
     if (diagnostics.failed || !name || !version) return result(name, version, null);
     checkGraph({ initial, catchAll, nodes }, diagnostics);
     if (diagnostics.failed) return result(name, version, null);
-    const received = new Set(Object.values(nodes).flatMap(node => node.type === "messaging" && node.mode === "receive" ? [node.contract] : []));
-    const sent = new Set(Object.values(nodes).flatMap(node => node.type === "messaging" && node.mode === "send" ? [node.contract] : []));
-    for (const contractName of Object.keys(contracts)) {
-        if (!received.has(contractName) && !sent.has(contractName)) {
-            diagnostics.warning("WORKFLOW_CONTRACT_UNUSED", `contracts.${contractName}`,
-                `no state receives or sends contract '${contractName}'; this workflow refuses input of it.`);
+    for (const [contractName, contract] of Object.entries(contracts)) {
+        if (contract.response && schemaClosureBytes(schemas.defs, contract.response.schema) > REQUEST_RESPONSE_SCHEMA_MAX_BYTES) {
+            diagnostics.error("WORKFLOW_SCHEMA_TOO_LARGE", `contracts.${contractName}.response.schema`,
+                `a response schema, with the schemas it references, must be at most ${REQUEST_RESPONSE_SCHEMA_MAX_BYTES} bytes of canonical JSON.`);
         }
     }
-    const hasMessaging = received.size > 0 || sent.size > 0;
+    if (diagnostics.failed) return result(name, version, null);
+    const received = new Set(Object.values(nodes).flatMap(node => node.type === "messaging" && node.mode === "receive" ? [node.contract] : []));
+    const sent = new Set(Object.values(nodes).flatMap(node => node.type === "messaging" && node.mode === "send" ? [node.contract] : []));
+    const requested = new Set(Object.values(nodes).flatMap(node => node.type === "messaging" && node.mode === "request" ? [node.contract] : []));
+    for (const contractName of Object.keys(contracts)) {
+        if (!received.has(contractName) && !sent.has(contractName) && !requested.has(contractName)) {
+            diagnostics.warning("WORKFLOW_CONTRACT_UNUSED", `contracts.${contractName}`,
+                `no state receives, sends or requests contract '${contractName}'; this workflow refuses input of it.`);
+        }
+    }
+    const responds = Object.values(contracts).some(contract => contract.response !== undefined);
+    const hasMessaging = received.size > 0 || sent.size > 0 || requested.size > 0 || responds;
     const ir: WorkflowIR = {
-        irVersion: sent.size > 0 ? WORKFLOW_V2_SEND_IR_VERSION
-            : received.size > 0 ? WORKFLOW_V2_MESSAGING_IR_VERSION
-                : Object.values(nodes).some(node => node.type === "wait") ? WORKFLOW_V2_WAIT_IR_VERSION : WORKFLOW_V2_IR_VERSION,
+        irVersion: requested.size > 0 || responds ? WORKFLOW_V2_REQUEST_IR_VERSION
+            : sent.size > 0 ? WORKFLOW_V2_SEND_IR_VERSION
+                : received.size > 0 ? WORKFLOW_V2_MESSAGING_IR_VERSION
+                    : Object.values(nodes).some(node => node.type === "wait") ? WORKFLOW_V2_WAIT_IR_VERSION : WORKFLOW_V2_IR_VERSION,
         apiVersion: WORKFLOW_V2_API_VERSION,
         name, version,
         description: optionalText(root.description, "description", diagnostics),
@@ -863,11 +1035,14 @@ export function parseDiagnostics(value: JsonValue): WorkflowDiagnostic[] {
 }
 
 /** Read stored IR (already hash-verified) back with its declared shape. */
-export function parseWorkflowIr(value: JsonValue): WorkflowIR {
+export function parseWorkflowIr(value: JsonValue, options: { maxIrVersion?: number } = {}): WorkflowIR {
+    // A worker reads only the versions it runs: request states (version 7) are read only when asked for.
+    const maxIrVersion = options.maxIrVersion ?? WORKFLOW_V2_RUNNABLE_IR_VERSION;
     need(isJsonObject(value), "stored IR is not an object");
     need(value.irVersion === 1 || value.irVersion === 2 || value.irVersion === 3 || value.irVersion === 4 || value.irVersion === 5
-        || value.irVersion === 6, `stored IR version ${String(value.irVersion)} is not supported by this worker`);
-    const irVersion: 1 | 2 | 3 | 4 | 5 | 6 = value.irVersion;
+        || value.irVersion === 6 || (value.irVersion === 7 && maxIrVersion >= WORKFLOW_V2_REQUEST_IR_VERSION),
+        `stored IR version ${String(value.irVersion)} is not supported by this worker`);
+    const irVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 = value.irVersion;
     // A field a version introduced must be stated (null when absent) from that version on.
     const rootOutputSchema = irVersion === 1 && !Object.hasOwn(value, "outputSchema") ? null : value.outputSchema;
     const catchAll = irVersion < 3 && !Object.hasOwn(value, "catchAll") ? null : value.catchAll;
@@ -886,7 +1061,14 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
         for (const [contractName, contract] of Object.entries(value.contracts)) {
             need(CONTRACT_NAME_PATTERN.test(contractName) && isJsonObject(contract) && typeof contract.schema === "string"
                 && Object.hasOwn(schemaDefs, contract.schema), `stored IR contract ${contractName} is invalid`);
-            contracts[contractName] = { schema: contract.schema };
+            if (Object.hasOwn(contract, "response")) {
+                // A response is version 7's; an earlier version with one is not read as if it had none.
+                const response = contract.response;
+                need(irVersion >= WORKFLOW_V2_REQUEST_IR_VERSION && isJsonObject(response) && Object.keys(response).length === 1
+                    && typeof response.schema === "string" && Object.hasOwn(schemaDefs, response.schema),
+                    `stored IR contract ${contractName} has an invalid response`);
+                contracts[contractName] = { schema: contract.schema, response: { schema: response.schema } };
+            } else contracts[contractName] = { schema: contract.schema };
         }
     } else need(!Object.hasOwn(value, "contracts"), "stored IR has contracts before version 5");
     const nodes: Record<string, WorkflowIRNode> = {};
@@ -920,6 +1102,20 @@ export function parseWorkflowIr(value: JsonValue): WorkflowIR {
                 recipient: typeof recipient.sessionId === "string" ? { sessionId: recipient.sessionId } : { parent: true },
                 correlate: Object.hasOwn(node, "correlate") ? node.correlate : null,
                 hasInput: node.hasInput, input: node.input, next: node.next,
+            };
+        } else if (node.type === "messaging" && node.mode === "request") {
+            const recipient = node.recipient;
+            const timeoutSeconds = node.timeoutSeconds;
+            need(irVersion >= WORKFLOW_V2_REQUEST_IR_VERSION && contracts !== undefined && typeof node.contract === "string"
+                && Object.hasOwn(contracts, node.contract) && contracts[node.contract].response !== undefined
+                && isJsonObject(recipient) && Object.keys(recipient).length === 1 && (recipient.parent === true || typeof recipient.sessionId === "string")
+                && Object.hasOwn(node, "correlate") && (typeof timeoutSeconds === "number" || typeof timeoutSeconds === "string")
+                && typeof node.hasInput === "boolean" && Object.hasOwn(node, "input") && stringMap(node.next),
+                `stored IR messaging state ${id} is invalid`);
+            nodes[id] = {
+                id, type: "messaging", description: node.description, mode: "request", contract: node.contract,
+                recipient: typeof recipient.sessionId === "string" ? { sessionId: recipient.sessionId } : { parent: true },
+                correlate: node.correlate, hasInput: node.hasInput, input: node.input, timeoutSeconds, next: node.next,
             };
         } else if (node.type === "messaging") {
             const from = node.from;
