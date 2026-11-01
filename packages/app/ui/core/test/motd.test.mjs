@@ -156,3 +156,14 @@ test("late list and current replies cannot restore a deleted message", async () 
     assert.equal(reads, 2); assert.deepEqual(adminState().history, []);
     assert.equal(state().current, null); assert.equal(adminState().loading, false);
 });
+test("a role-only change can retry an in-flight picture without accepting its stale reply", async () => {
+    let calls = 0, resolveOld;
+    const fresh = { base64: "AAAA", contentType: "image/png", alt: "New picture" };
+    const { controller, store, state } = setup({ getMotdImage: () => ++calls === 1
+        ? new Promise(resolve => { resolveOld = resolve; }) : Promise.resolve(fresh) });
+    const old = controller._motdPictures(message("1", { hasImage: true })); await tick();
+    store.dispatch({ type: "admin/profile/loaded", profile: { ...admin, isAdmin: false } });
+    await controller._motdPictures(message("1", { hasImage: true }));
+    resolveOld({ ...fresh, alt: "Stale picture" }); await old;
+    assert.equal(calls, 2); assert.equal(state().images["1"].desktop.alt, "New picture");
+});

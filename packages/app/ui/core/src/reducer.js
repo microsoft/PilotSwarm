@@ -60,7 +60,9 @@ function motdForIdentity(state, auth = state.auth, profile = state.admin.profile
     const admin = (a, p) => a?.authorization?.role
         ? ["admin", "anonymous"].includes(a.authorization.role) && p?.isAdmin !== false : p?.isAdmin === true;
     if (admin(state.auth, state.admin.profile) !== admin(auth, profile))
-        return { ...state.motd, generation: (state.motd?.generation || 0) + 1, preview: null, reading: false };
+        return { ...state.motd, generation: (state.motd?.generation || 0) + 1, preview: null, reading: false,
+            images: Object.fromEntries(Object.entries(state.motd.images).map(([id, pictures]) =>
+                [id, { ...pictures, attempted: {}, failures: {} }])) };
     return state.motd;
 }
 

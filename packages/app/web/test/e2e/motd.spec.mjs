@@ -8,7 +8,7 @@ const message = extra => ({ motdId: "1", fromAt: "2020-01-01T00:00:00Z", toAt: "
     hasMobileImage: false, createdBy: { subject: "admin" }, status: "live", dismissalCount: 0, ...extra });
 async function fixture(page, { admin = true, current = message(), history = null } = {}) {
     const stub = await startStubServer(0, { sessionCount: 1, admin });
-    const state = { current, history: history || (current ? [current] : []), calls: [], reads: 0, failDismiss: false, failCreate: false };
+    const state = { current, history: history || (current ? [current] : []), calls: [], imageRequests: [], reads: 0, failDismiss: false, failCreate: false };
     await page.route("**/api/auth/me", route => route.fulfill({ json: { ok: true,
         principal: { provider: "none", subject: "test", displayName: "Test User" },
         authorization: { allowed: true, role: admin ? "admin" : "user" } } }));
@@ -19,8 +19,11 @@ async function fixture(page, { admin = true, current = message(), history = null
             state.reads++;
             return route.fulfill({ json: { ok: true, result: state.current } });
         }
-        if (url.pathname.endsWith("/image")) return route.fulfill({ json: { ok: true,
-            result: { ...picture, alt: url.searchParams.get("mobile") === "true" && state.current?.hasMobileImage ? "Phone picture" : "Main picture" } } });
+        if (url.pathname.endsWith("/image")) {
+            state.imageRequests.push(url.searchParams.get("mobile") === "true");
+            return route.fulfill({ json: { ok: true,
+                result: { ...picture, alt: url.searchParams.get("mobile") === "true" && state.current?.hasMobileImage ? "Phone picture" : "Main picture" } } });
+        }
         if (request.method() === "GET") return route.fulfill({ json: { ok: true, result: state.history } });
         const input = request.method() === "POST" ? request.postDataJSON() || {} : {};
         state.calls.push({ path: url.pathname, method: request.method(), input });
@@ -95,6 +98,7 @@ test("phone uses the mobile body and optional mobile picture", async ({ page }) 
     try {
         await expect(splash(page).getByRole("heading", { name: "Phone only" })).toBeVisible();
         await expect(splash(page).getByAltText("Phone picture")).toBeVisible();
+        expect(f.state.imageRequests).toEqual([true]);
         await expect(splash(page)).not.toContainText("Use the portal.");
     } finally { await f.stop(); }
 });
