@@ -22,17 +22,18 @@ function useWorkflowView(controller) {
         controller.ensureWorkflowDefinition(sessionId);
     }, [controller, sessionId, events, selectedRunId, sessionUpdatedAt]);
     // `view.readModel` is the object readWorkflowV2View returns, fetched by the controller (ensureWorkflowReadModel)
-    // for the run selection it records; a model read for another run is not used. Its watermark (`readModelAfterSeq`)
-    // is the highest event sequence the controller had loaded before it fetched that read model; it only lets older
-    // pause/resume events stop contradicting the snapshot.
-    const { readModel, readModelAfterSeq, error: readError } = workflowReadModelView(view);
+    // for the run selection it records. Only a model read for this selection is overlaid; a model read for another one
+    // still says what graph the workflow has (or that it has none) while this selection's own model loads or fails,
+    // and its run is never shown. Its watermark (`readModelAfterSeq`) is the highest event sequence the controller had
+    // loaded before it fetched that read model; it only lets older pause/resume events stop contradicting the snapshot.
+    const { readModel, readModelAfterSeq, workflowModel, error: readError } = workflowReadModelView(view);
     const v2 = React.useMemo(() => {
-        if (view.definition?.shape !== "v2" && !readModel) return null;
-        const projected = projectWorkflowV2({ definition: view.definition, readModel, events, readModelAfterSeq });
+        if (view.definition?.shape !== "v2" && !readModel && !workflowModel) return null;
+        const projected = projectWorkflowV2({ definition: view.definition, readModel, workflowModel, selectedRunId, events, readModelAfterSeq });
         // Only a legacy definition falls back to the legacy view. A v2 definition is never redrawn once the
         // read model says there is no graph (invalid or unavailable); the no-graph panel explains why.
         return !projected.definition && view.definition && view.definition.shape !== "v2" ? null : projected;
-    }, [view.definition, readModel, readModelAfterSeq, events]);
+    }, [view.definition, readModel, workflowModel, selectedRunId, readModelAfterSeq, events]);
     const definition = v2 ? v2.definition : view.definition;
     const legacyNodes = React.useMemo(() => v2 ? [] : workflowNodeViews(view.definition, events, live), [v2, view.definition, events, live]);
     const nodes = v2 ? v2.nodes : legacyNodes;

@@ -12,7 +12,11 @@
  *     a response is applied only for its own request, selection and session
  *     kind (failures included), and a selection that changed while it ran is
  *     asked for without waiting for events
- *   - a model read for another run is neither reused nor shown
+ *   - a model read for another run is neither reused nor overlaid, and while
+ *     the selected run's own model loads or fails, no other run's events or
+ *     model are shown for it (only its own events); the last model's
+ *     workflow-wide parts (its graph, or that there is none, with the reason)
+ *     stay, so an earlier definition is not drawn again
  *   - WORKFLOW_NOT_FOUND (also a version 2 session whose definition has not
  *     committed yet) shows no error and is asked again, once, on new events
  *     or a changed session row; a legacy definition is never asked for
@@ -29,8 +33,9 @@ import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { PilotSwarmUiController, appReducer, createInitialState, createStore, formatWorkflowEventText } from "../src/index.js";
 import { workflowDefinition, workflowReadModelView } from "../src/workflow-view.js";
+import { projectWorkflowV2 } from "../src/workflow-v2-view.js";
 import { WorkflowMainPane } from "../../react/src/workflow-workspace.js";
-import { startedData, legacyStartedData, done, readModel as fixtureReadModel } from "./workflow-v2-fixtures.mjs";
+import { RUN, startedData, legacyStartedData, ev, started, completed, row, done, readModel as fixtureReadModel } from "./workflow-v2-fixtures.mjs";
 
 const SID = "wf-read-model";
 
@@ -336,13 +341,154 @@ test("READ-WIRE-02: the pane shows the selected run's read failure beside the gr
     const other = render({ ...failed, selectedRunId: "run-2" });
     assert.ok(!other.includes("could not be read"));
     assert.ok(!other.includes("Done · changed"));
-    assert.ok(other.includes("wait · 30 s"), "the graph from the definition");
+    assert.ok(other.includes("wait · 30 s"), "the workflow's graph");
     // No failure, no alert.
     assert.ok(!render({ ...failed, readModelError: null }).includes("could not be read"));
     // A legacy definition has no read model: a failure recorded before it loaded is not shown.
     const legacy = render({ ...failed, definition: workflowDefinition(legacyStartedData), readModel: null });
     assert.ok(!legacy.includes("could not be read"));
     assert.ok(legacy.includes("node · idle"), "the legacy graph");
+});
+
+/** Run A's durable events (the live run, run-1): its start, poll ended `changed`, then pause waiting. */
+const runAEvents = [ev("workflow.started", startedData), started("poll", 1), completed("poll", 1, "changed", '{"n":1}'), started("pause", 2, { type: "wait" })];
+
+/** The same event shape for another run. */
+const inRun = (runId, event) => ({ ...event, data: { ...event.data, runId,
+    ...(event.data.nodeExecutionId ? { nodeExecutionId: `${event.data.nodeExecutionId}-${runId}` } : {}) } });
+
+/** The workflow pane rendered on the server from a workflow view and a loaded history (effects do not run). */
+function renderPane(view, events = []) {
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
+    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: SID, sessionKind: "workflow", title: "Watch" }] });
+    store.dispatch({ type: "sessions/selected", sessionId: SID });
+    if (events.length) store.dispatch({ type: "history/set", sessionId: SID, history: { chat: [], activity: [], events, lastSeq: events.length } });
+    store.dispatch({ type: "ui/workflowView", sessionId: SID, view });
+    const controller = new PilotSwarmUiController({ store, transport: {} });
+    return renderToStaticMarkup(React.createElement(WorkflowMainPane, { controller, log: null, icon: null }));
+}
+
+/** Nothing of run A: its executions, its waiting state and its status. */
+function assertNoRunA(html, label) {
+    assert.ok(!html.includes("Done · changed"), `${label}: no execution of run A`);
+    assert.ok(!html.includes(">Waiting<") && !html.includes("data-phase=\"waiting\""), `${label}: no waiting state of run A`);
+    assert.ok(!html.includes(">Running<"), `${label}: not run A's status`);
+}
+
+test("READ-WIRE-01: with run A's history loaded, a selected run B whose model is loading or failed shows nothing of run A, and the workflow's graph or its absence stays", () => {
+    const definition = workflowDefinition(startedData);
+    // The history is in effect: with the live selection and no read model, run A is drawn from its events.
+    const live = renderPane({ definition }, runAEvents);
+    assert.ok(live.includes("Done · changed") && live.includes(">Waiting<") && live.includes(">Running<"), "run A from its events");
+
+    const modelA = fixtureReadModel({ nodeExecutions: [done("poll", 1, "changed"), row("pause", 2, "pending")] });
+    const loading = { definition, readModel: modelA, readModelRunId: null, readModelAfterSeq: 4,
+        readModelAttempt: { runId: null, afterSeq: 4, sessionUpdatedAt: null }, selectedRunId: "run-2" };
+    const failed = { ...loading, readModelAttempt: { runId: "run-2", afterSeq: 4, sessionUpdatedAt: null }, readModelError: "Service unavailable." };
+    for (const [label, view] of [["loading", loading], ["failed", failed]]) {
+        const html = renderPane(view, runAEvents);
+        assertNoRunA(html, label);
+        assert.ok(html.includes("wait · 30 s"), `${label}: the workflow's graph stays`);
+        assert.ok(html.includes(">Selected run not loaded<"), `${label}: the header says so`);
+        assert.equal(html.includes("could not be read: Service unavailable."), label === "failed", label);
+        const projected = projectWorkflowV2({ ...workflowReadModelView(view), definition, events: runAEvents });
+        assert.equal(projected.runId, "run-2", label);
+        assert.equal(projected.readModel, null, label);
+        assert.deepEqual([projected.inbox, projected.outbox, projected.output, projected.error], [[], [], null, null], label);
+        assert.ok(projected.nodes.every(node => node.executions.length === 0 && node.pending === null), label);
+    }
+
+    // Run B's own events are drawn meanwhile; run A's are not.
+    const runBEvents = [inRun("run-2", ev("workflow.started", startedData)), inRun("run-2", started("poll", 1)),
+        inRun("run-2", completed("poll", 1, "unchanged"))];
+    const mixed = renderPane(loading, [...runAEvents, ...runBEvents]);
+    assert.ok(mixed.includes("Done · unchanged"), "run B's events");
+    assert.ok(!mixed.includes("Done · changed") && !mixed.includes(">Waiting<"), "not run A's");
+    // A selected run of another revision is not overlaid, even when its start is not loaded: the workflow's run list says its revision.
+    const listed = fixtureReadModel({ nodeExecutions: [done("poll", 1, "changed")], runs: [
+        { runId: RUN, mode: "live", status: "running", revision: 1, outcome: null }, { runId: "run-2", mode: "test", status: "running", revision: 2, outcome: null }] });
+    const otherRevision = projectWorkflowV2({ ...workflowReadModelView({ ...loading, readModel: listed }), definition,
+        events: [...runAEvents, inRun("run-2", completed("poll", 1, "unchanged"))] });
+    assert.equal(otherRevision.bound, false);
+    assert.ok(otherRevision.banners.some(banner => banner.text.startsWith("This run used revision 2;")));
+    assert.ok(otherRevision.nodes.every(node => node.executions.length === 0));
+
+    // A model that says the workflow has no graph keeps saying so while run B's model loads or fails: the definition from the
+    // events is not drawn again, and the reason stays.
+    const noGraph = fixtureReadModel({ graph: null, nodeExecutions: [done("poll", 1, "changed")] });
+    const own = renderPane({ definition, readModel: noGraph, readModelRunId: null }, runAEvents);
+    assert.ok(own.includes("No workflow graph to show") && own.includes("is valid, but its graph is not available") && !own.includes("wait · 30 s"));
+    for (const [label, view] of [["loading", { ...loading, readModel: noGraph }], ["failed", { ...failed, readModel: noGraph }]]) {
+        const html = renderPane(view, runAEvents);
+        assert.ok(html.includes("No workflow graph to show"), `${label}: still no graph`);
+        assert.ok(html.includes("is valid, but its graph is not available"), `${label}: and why`);
+        assert.ok(!html.includes("wait · 30 s"), `${label}: the events' definition is not drawn again`);
+        assert.ok(html.includes(">Selected run not loaded<"), label);
+        assertNoRunA(html, label);
+    }
+    // An invalid revision keeps its diagnostics; the other selection's run banner is not carried over.
+    const invalid = fixtureReadModel({ graph: null, noRun: true,
+        revision: { valid: false, diagnostics: [{ severity: "error", code: "E1", path: "$.states", message: "broken state" }] } });
+    const invalidOther = renderPane({ ...loading, readModel: invalid }, runAEvents);
+    assert.ok(invalidOther.includes("This workflow definition is invalid") && invalidOther.includes("broken state"));
+    assert.ok(!invalidOther.includes("wait · 30 s"));
+    const projected = projectWorkflowV2({ ...workflowReadModelView({ ...loading, readModel: invalid }), definition, events: runAEvents });
+    assert.equal(projected.definition, null);
+    assert.equal(projected.modelStatus, "invalid");
+    assert.ok(!projected.banners.some(banner => banner.text === "No run yet."));
+    assert.ok(projectWorkflowV2({ readModel: invalid }).banners.some(banner => banner.text === "No run yet."), "it is the run's banner");
+});
+
+test("READ-WIRE-01: the controller's run selection, with run A's history loaded, shows nothing of run A while run B loads, fails and is retried", async () => {
+    const h = seeded({ lastSeq: 4 });
+    h.store.dispatch({ type: "history/set", sessionId: SID, history: { chat: [], activity: [], events: runAEvents, lastSeq: 4 } });
+    const modelA = fixtureReadModel({ nodeExecutions: [done("poll", 1, "changed"), row("pause", 2, "pending")] });
+    const runs = [{ runId: RUN, mode: "live", status: "running", revision: 1, outcome: null }, { runId: "run-2", mode: "test", status: "running", revision: 1, outcome: null }];
+    const modelB = fixtureReadModel({ run: { runId: "run-2", mode: "test" }, runs, nodeExecutions: [done("poll", 1, "unchanged")] });
+    const runB = deferred();
+    h.transport.respond = (_id, options) => (options.runId === "run-2" ? runB.promise : Promise.resolve(modelA));
+    await h.controller.ensureWorkflowDefinition(SID);
+    await until(() => h.view().readModel === modelA && h.view().definition, "run A's model and the definition");
+    const pane = () => renderToStaticMarkup(React.createElement(WorkflowMainPane, { controller: h.controller, log: null, icon: null }));
+    assert.ok(pane().includes("Done · changed"), "run A while it is selected");
+
+    h.select("run-2");
+    const loading = h.controller.ensureWorkflowReadModel(SID);
+    await until(() => h.calls.at(-1)?.[1]?.runId === "run-2", "run B's request");
+    const whileLoading = pane();
+    assertNoRunA(whileLoading, "loading");
+    assert.ok(whileLoading.includes("wait · 30 s") && whileLoading.includes(">Selected run not loaded<"));
+
+    runB.reject(Object.assign(new Error("Service unavailable."), { code: "INTERNAL_ERROR", status: 503 }));
+    await loading;
+    const failed = pane();
+    assertNoRunA(failed, "failed");
+    assert.ok(failed.includes("could not be read: Service unavailable.") && failed.includes(">Retry<") && failed.includes("wait · 30 s"));
+
+    h.transport.respond = async () => modelB;
+    await h.controller.ensureWorkflowReadModel(SID, { force: true });
+    const shown = pane();
+    assert.ok(shown.includes("Done · unchanged") && shown.includes("Test run · Running"), "run B's own model");
+    assert.ok(!shown.includes("Done · changed") && !shown.includes("could not be read"));
+});
+
+test("READ-WIRE-01: without its own model, the live selection never stands for a run known not to be live, even when its events are the latest", () => {
+    const definition = workflowDefinition(startedData);
+    const testRun = [inRun("run-2", ev("workflow.started", { ...startedData, mode: "test" })), inRun("run-2", started("poll", 1)),
+        inRun("run-2", completed("poll", 1, "unchanged"))];
+    // Its start event says it is a test run.
+    const byEvent = projectWorkflowV2({ definition, events: [...runAEvents, ...testRun] });
+    assert.equal(byEvent.runId, RUN);
+    assert.ok(byEvent.nodes.some(node => node.stateLabel === "Done · changed") && !byEvent.nodes.some(node => node.stateLabel === "Done · unchanged"));
+    // Its start is not loaded, but the last model, read for it, lists it as a test run: run A, the live run, is drawn while the
+    // live selection's own model loads.
+    const runs = [{ runId: RUN, mode: "live", status: "running", revision: 1, outcome: null }, { runId: "run-2", mode: "test", status: "running", revision: 1, outcome: null }];
+    const modelB = fixtureReadModel({ run: { runId: "run-2", mode: "test" }, runs, nodeExecutions: [done("poll", 1, "unchanged")] });
+    const view = { definition, readModel: modelB, readModelRunId: "run-2", selectedRunId: null };
+    const html = renderPane(view, [...runAEvents, ...testRun.slice(1)]);
+    assert.ok(html.includes("Done · changed") && html.includes(">Waiting<"), "the live run's events");
+    assert.ok(!html.includes("Done · unchanged"), "not the test run's events or model");
+    assert.equal(projectWorkflowV2({ ...workflowReadModelView(view), events: [...runAEvents, ...testRun.slice(1)] }).runId, RUN);
 });
 
 test("the execution log names v2 wait and messaging states by their kind", () => {

@@ -200,6 +200,8 @@ export function projectWorkflowV2ReadModel(model) {
     } else if (graph.revision !== revision.revision) {
         banners.push({ level: "info", text: `Showing published revision ${graph.revision}. Revision ${revision.revision} is a newer draft.` });
     }
+    // Everything above is the workflow's (its definition, revision and graph), whichever run was asked for; what follows is the run's.
+    const workflowBanners = [...banners];
     const run = normalizeRun(model.run);
     const runInfo = run ? model.runs.find(item => item?.runId === run.runId) : null;
     const runRevision = Number.isSafeInteger(runInfo?.revision) ? runInfo.revision : null;
@@ -219,20 +221,33 @@ export function projectWorkflowV2ReadModel(model) {
     }
     if (run?.executionsTruncated) banners.push({ level: "info", text: `Only the first ${WORKFLOW_V2_READ_LIMITS.nodeExecutions} node executions are listed, so counts may be incomplete.` });
     return {
-        ok: true, status, workflowId: model.workflowId, definition: graph, diagnostics, banners, run, overlay, runRevision,
+        ok: true, status, workflowId: model.workflowId, definition: graph, diagnostics, banners, workflowBanners, run, overlay, runRevision,
         lifecycle: lifecycle.state, semver: lifecycle.semver ?? null, currentRevision: lifecycle.currentRevision,
         publishedRevision: lifecycle.publishedRevision ?? null, validRevision: revision.valid, runs: model.runs,
     };
 }
 
-function latestRunId(events) {
+function latestRunId(events, excluded = new Set()) {
     for (let i = events.length - 1; i >= 0; i--) {
         const type = events[i]?.eventType;
         const id = events[i]?.data?.runId;
-        if (typeof id === "string" && (STATE_EVENTS.has(type) || Object.hasOwn(END_EVENTS, type) || type === "workflow.started"
+        if (typeof id === "string" && !excluded.has(id) && (STATE_EVENTS.has(type) || Object.hasOwn(END_EVENTS, type) || type === "workflow.started"
             || type === "workflow.paused" || type === "workflow.resumed")) return id;
     }
     return null;
+}
+
+/** Runs known not to be the live run: their start event, or the run list of a read model that projects, gives another mode. */
+function notLiveRunIds(events, model) {
+    const ids = new Set();
+    for (const event of events) {
+        const data = event?.data;
+        if (event?.eventType === "workflow.started" && typeof data?.runId === "string" && typeof data.mode === "string" && data.mode !== "live") ids.add(data.runId);
+    }
+    for (const item of model?.ok ? model.runs : []) {
+        if (typeof item?.runId === "string" && typeof item.mode === "string" && item.mode !== "live") ids.add(item.runId);
+    }
+    return ids;
 }
 
 function mergeExecution(prev, next) {
@@ -467,25 +482,42 @@ function nodeView(node, executions, context) {
 
 /**
  * Everything the V2 graph, header and details need from a definition, durable
- * events and an optional read model object. Always returns; it reports what it
- * ignored instead of throwing.
+ * events and the read models. Always returns; it reports what it ignored
+ * instead of throwing.
+ *
+ * `readModel` is the read model read for the current run selection
+ * (`selectedRunId`, null for the live run): only its run is ever overlaid.
+ * `workflowModel` is the last read model of any selection; while the
+ * selection's own model is not there (still loading, or its read failed),
+ * its workflow-wide parts (the graph or that there is none, the definition
+ * state, the revision with its diagnostics, the runs) still decide what is
+ * drawn, and its run is never shown. Without its own model a selected run
+ * shows only its own events; only the live selection falls back to the
+ * latest run in the events, never one known to be another kind of run.
  */
-export function projectWorkflowV2({ definition = null, readModel = null, events = [], readModelAfterSeq = null } = {}) {
+export function projectWorkflowV2({ definition = null, readModel = null, workflowModel = null, selectedRunId = null, events = [], readModelAfterSeq = null } = {}) {
     const model = readModel ? projectWorkflowV2ReadModel(readModel) : null;
-    const banners = model ? [...model.banners] : [];
+    const wide = model || !workflowModel ? null : projectWorkflowV2ReadModel(workflowModel);
+    // The workflow-wide source: the selection's own model, else another selection's model that projects.
+    const shared = model ?? (wide?.ok ? wide : null);
+    const banners = model ? [...model.banners] : shared ? [...shared.workflowBanners] : [];
     const modelOk = Boolean(model?.ok);
-    const modelUsable = Boolean(model?.ok && model.definition);
-    // A read model that says there is no graph is not overridden by an older run's definition.
-    const active = modelUsable ? model.definition : model?.ok ? null : definition?.shape === "v2" ? definition : null;
+    // A read model that says there is no graph is not overridden by an older run's definition, whichever run it was read for.
+    const active = shared?.ok ? shared.definition : definition?.shape === "v2" ? definition : null;
     // With a read model, only the run it names, and only when that run used the graph's revision, may be overlaid.
-    // Events that belong to no selected run, or to another revision, are never painted onto the graph.
+    // Events that belong to no selected run, to another run than the one selected, or to another revision, are never
+    // painted onto the graph.
+    const selection = selectedRunId ?? null;
     const run = modelOk ? model.run : null;
-    const runId = modelOk ? run?.runId ?? null : latestRunId(events);
+    // Without its own model, the live selection stands for the latest run in the events that is not known to be another kind.
+    const runId = modelOk ? run?.runId ?? null : selection ?? latestRunId(events, notLiveRunIds(events, shared));
     let bound = modelOk ? Boolean(run && model.overlay) : true;
     let unboundRevision = modelOk ? model.runRevision : null;
     if (!modelOk && runId && active?.revision !== undefined) {
         const begun = events.findLast(event => event?.eventType === "workflow.started" && event.data?.runId === runId);
-        const revision = begun?.data?.revision;
+        // A run's revision never changes, so the workflow's run list says it when the run's start is not among the loaded events.
+        const listed = shared?.ok ? shared.runs.find(item => item?.runId === runId)?.revision : undefined;
+        const revision = Number.isSafeInteger(begun?.data?.revision) ? begun.data.revision : listed;
         if (Number.isSafeInteger(revision) && revision !== active.revision) {
             bound = false; unboundRevision = revision;
             banners.push({ level: "warning", text: `This run used revision ${revision}; the graph shows revision ${active.revision}, so node status is not overlaid.` });
@@ -496,6 +528,8 @@ export function projectWorkflowV2({ definition = null, readModel = null, events 
     let status = !bound && modelOk && !run
         ? { phase: "none", ended: false, label: model.runs.length ? "No live run selected" : "No run yet" }
         : workflowV2RunStatus({ run, events: bound || !modelOk ? events : [], runId, readModelAfterSeq });
+    // A selected run whose own read model is not here (yet), and none of whose events are loaded.
+    if (!modelOk && selection !== null && status.phase === "none") status = { ...status, label: "Selected run not loaded" };
     if (!bound && runId) status = { ...status, terminalState: null, label: `${unboundRevision === null ? "Unbound" : `Revision ${unboundRevision}`} run · ${status.label}` };
     if (status.phase === "unverified") {
         banners.push({ level: "warning", text: `Run status is not verified: the read model says ${status.conflict.readModel} but the latest durable event says ${status.conflict.events}. Refresh the read model.` });
@@ -510,8 +544,8 @@ export function projectWorkflowV2({ definition = null, readModel = null, events 
     const nodes = (active?.states || []).map(node => nodeView(node, executions, context));
     return {
         shape: "v2", status, definition: active, nodes, banners, readModel: model, runId, bound,
-        diagnostics: model?.diagnostics || [], inbox: bound ? run?.inbox || [] : [], outbox: bound ? run?.outbox || [] : [],
-        output: bound ? run?.output ?? null : null, error: bound ? run?.error ?? null : null, modelStatus: model?.status ?? null,
+        diagnostics: shared?.diagnostics || [], inbox: bound ? run?.inbox || [] : [], outbox: bound ? run?.outbox || [] : [],
+        output: bound ? run?.output ?? null : null, error: bound ? run?.error ?? null : null, modelStatus: shared?.status ?? null,
     };
 }
 

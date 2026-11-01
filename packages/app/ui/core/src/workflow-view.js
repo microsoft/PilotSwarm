@@ -191,12 +191,16 @@ export function workflowLogBounds(availableHeight, requested = 210) {
 }
 
 /**
- * The workflow view's v2 read model for its current run selection
- * (`selectedRunId`, null for the live run): the model and its watermark only
- * when they were read for that selection (a model read for another run is
- * not shown), and the failure of that selection's last request, if any. A
- * legacy (version 1) definition has no read model, so no failure is shown
- * for it.
+ * The workflow view's v2 read models for its current run selection
+ * (`selectedRunId`, null for the live run), shaped as projectWorkflowV2
+ * takes them: `readModel` and its watermark only when they were read for
+ * that selection (a model read for another run is never overlaid), and
+ * `workflowModel`, the last model read for any selection, whose
+ * workflow-wide parts (the graph or that there is none, the definition, the
+ * revision, the runs) stay authoritative while the selection's own model is
+ * loading or failed; and the failure of that selection's last request, if
+ * any. A legacy (version 1) definition has no read model, so no failure is
+ * shown for it.
  */
 export function workflowReadModelView(view = {}) {
     const selection = view.selectedRunId ?? null;
@@ -204,8 +208,10 @@ export function workflowReadModelView(view = {}) {
     const legacy = view.definition != null && view.definition.shape !== "v2";
     const attempted = view.readModelAttempt != null && (view.readModelAttempt.runId ?? null) === selection;
     return {
+        selectedRunId: selection,
         readModel: own ? view.readModel : null,
         readModelAfterSeq: own && Number.isSafeInteger(view.readModelAfterSeq) ? view.readModelAfterSeq : null,
+        workflowModel: !legacy && view.readModel != null ? view.readModel : null,
         error: !legacy && attempted && typeof view.readModelError === "string" && view.readModelError ? view.readModelError : null,
     };
 }
