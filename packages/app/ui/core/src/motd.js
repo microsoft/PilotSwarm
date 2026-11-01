@@ -20,6 +20,20 @@ export function motdLocalParts(time) {
 }
 export function motdStartsAt(message) { return message.startsAt ?? message.fromAt; }
 export function motdEndsAt(message) { return message.endsAt !== undefined ? message.endsAt : message.toAt; }
+export function formatMotdTimestamp(value, now = Date.now()) {
+    const date = new Date(value);
+    return date.toLocaleString("en-US", { weekday: "short", month: "short", day: "numeric",
+        ...(date.getFullYear() === new Date(now).getFullYear() ? {} : { year: "numeric" }),
+        hour: "numeric", minute: "2-digit" });
+}
+function motdTimeZoneName(value) {
+    return new Intl.DateTimeFormat("en-US", { timeZoneName: "longGeneric" }).formatToParts(new Date(value))
+        .find(part => part.type === "timeZoneName")?.value || Intl.DateTimeFormat().resolvedOptions().timeZone;
+}
+export function formatMotdWindow(message, now = Date.now()) {
+    const start = motdStartsAt(message), end = motdEndsAt(message);
+    return `${formatMotdTimestamp(start, now)} until ${end == null ? "replaced" : formatMotdTimestamp(end, now)} (${motdTimeZoneName(start)})`;
+}
 export function duplicateMotdDraft(message, pictures, now) {
     const end = motdEndsAt(message);
     const duration = end == null ? null : Date.parse(end) - Date.parse(motdStartsAt(message));
@@ -66,13 +80,10 @@ export function motdDraftWindow(draft, now = Date.now()) {
 export function motdScheduleSummary(draft, now = Date.now()) {
     const { from, to } = motdDraftWindow(draft, now);
     if (!Number.isFinite(from) || to !== null && !Number.isFinite(to)) return "Choose a valid date and time.";
-    const format = value => new Date(value).toLocaleString("en-US", { weekday: "short", month: "short",
-        day: "numeric", hour: "numeric", minute: "2-digit" });
-    const zone = new Intl.DateTimeFormat("en-US", { timeZoneName: "longGeneric" }).formatToParts(new Date(from))
-        .find(part => part.type === "timeZoneName")?.value || Intl.DateTimeFormat().resolvedOptions().timeZone;
-    const starts = draft.startMode === "now" ? "now" : format(from);
+    const zone = motdTimeZoneName(from);
+    const starts = draft.startMode === "now" ? "now" : formatMotdTimestamp(from, now);
     return to === null ? `Shows ${starts} until replaced or deleted${draft.startMode === "now" ? "." : ` (${zone}).`}`
-        : `Shows ${starts} until ${format(to)} (${zone}).`;
+        : `Shows ${starts} until ${formatMotdTimestamp(to, now)} (${zone}).`;
 }
 export function motdPrincipal(state) {
     // Some transports provide identity only through the authenticated profile API.

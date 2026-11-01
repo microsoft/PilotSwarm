@@ -21,14 +21,14 @@ test("Now and Never defaults publish without either time", async ({ page }) => {
         await page.getByLabel("Body (markdown)", { exact: true }).fill("No end announcement");
         await page.getByRole("button", { name: "Preview", exact: true }).click();
         const preview = page.getByRole("dialog", { name: "Message of the day preview", exact: true });
-        await expect(preview).toContainText("until replaced (No end)");
+        await expect(preview).toContainText("until replaced");
         await expect(preview).not.toContainText("Invalid Date");
         await preview.getByRole("button", { name: "Close preview", exact: true }).click();
         await page.getByRole("button", { name: "Publish", exact: true }).click();
         await expect(page.getByRole("status").filter({ hasText: "Message published." })).toBeVisible();
         expect(f.state.calls[0].input.startsAt).toBeUndefined();
         expect(f.state.calls[0].input.endsAt).toBeUndefined();
-        await expect(page.locator(".ps-motd-admin")).toContainText("No end");
+        await expect(page.locator(".ps-motd-admin")).toContainText("until replaced");
     } finally { await f.stop(); }
 });
 test("custom dates and 15-minute time selects work with the keyboard and show the zone", async ({ page }) => {

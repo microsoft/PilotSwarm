@@ -1,5 +1,5 @@
 import React from "react";
-import { selectMotd, motdDraftWindow, motdStartsAt, motdEndsAt, motdScheduleSummary } from "../../core/src/motd.js";
+import { selectMotd, motdDraftWindow, formatMotdWindow, motdScheduleSummary } from "../../core/src/motd.js";
 import { useControllerSelector } from "./use-controller-state.js";
 import { renderMarkdown } from "./workspace-markdown.js";
 import { IMAGE_PROMPT_ATTACHMENT_TYPES } from "../../core/src/controller.js";
@@ -10,11 +10,6 @@ const PICTURE_ERROR = "Choose PNG, JPEG, WebP or GIF, at most 2 MB per picture."
 function pictureUrl(image) {
     return image && IMAGE_TYPES.includes(image.contentType) && typeof image.base64 === "string"
         ? `data:${image.contentType};base64,${image.base64}` : null;
-}
-function windowText(message) {
-    const format = value => new Date(value).toLocaleString("en-GB", { timeZone: "UTC", day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
-    const end = motdEndsAt(message);
-    return `${format(motdStartsAt(message))} ${end == null ? "until replaced (No end)" : `to ${format(end)}`} UTC`;
 }
 export function MotdSchedulePicker({ controller, draft, busy }) {
     const choices = (label, field, values) => React.createElement("fieldset", { className: "ps-motd-schedule-group", disabled: busy },
@@ -84,7 +79,7 @@ export function MotdSplash({ message, pictures, mobile = false, preview = false,
         React.createElement("article", { className: "ps-motd-splash", onClick: dismissCard },
             React.createElement("div", { className: "ps-motd-scroll" }, React.createElement(MotdContent, { message, pictures, mobile })),
             React.createElement("footer", { className: "ps-motd-footer" },
-                React.createElement("span", { className: "ps-motd-window" }, windowText(message)),
+                React.createElement("span", { className: "ps-motd-window" }, formatMotdWindow(message)),
                 React.createElement("button", { type: "button", autoFocus: true, className: "ps-motd-button", onClick: onDismiss }, preview ? "Close preview" : "Got it"))));
 }
 export function MotdOverlay({ controller, mobile = false }) {
@@ -195,8 +190,8 @@ export function MotdAdminPanel({ controller, state, images = {}, isAdmin, canRea
                 React.createElement("h4", null, "Today"),
                 state.today ? React.createElement(React.Fragment, null,
                     React.createElement("p", { className: "ps-motd-meta" }, isAdmin
-                        ? `${windowText(state.today)} · by ${state.today.createdBy?.subject || "admin"} · ${state.today.dismissalCount || 0} people dismissed it`
-                        : windowText(state.today)),
+                        ? `${formatMotdWindow(state.today)} · by ${state.today.createdBy?.subject || "admin"} · ${state.today.dismissalCount || 0} people dismissed it`
+                        : formatMotdWindow(state.today)),
                     React.createElement("div", { className: "ps-motd-mini" }, React.createElement(MotdContent, { message: state.today, pictures: images[state.today.motdId], mobile })),
                     React.createElement("div", { className: "ps-motd-actions" },
                         React.createElement("button", { type: "button", className: "ps-mini-button", onClick: () => controller.previewMotd(state.today, { mobile }) }, "Show splash again"),
@@ -237,7 +232,7 @@ export function MotdAdminPanel({ controller, state, images = {}, isAdmin, canRea
                     open: state.expandedIds?.includes(row.motdId) === true,
                     onToggle: event => controller.setMotdHistoryExpanded(row.motdId, event.currentTarget.open) },
                     React.createElement("summary", { className: `ps-motd-history-row${isAdmin ? "" : " is-read-only"}` },
-                    React.createElement("span", { className: "ps-motd-meta" }, windowText(row)),
+                    React.createElement("span", { className: "ps-motd-meta" }, formatMotdWindow(row)),
                     React.createElement("span", { className: "ps-motd-history-title", title: row.bodyMd }, row.bodyMd.replace(/^#+\s*/, "").split("\n")[0]),
                     React.createElement("span", { className: `ps-motd-status is-${row.status}` }, { live: "Live", hidden: "Hidden by later message", scheduled: "Scheduled", ended: "Ended" }[row.status]),
                     isAdmin ? React.createElement("span", { className: "ps-motd-history-actions" },

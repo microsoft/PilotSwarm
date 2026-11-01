@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import React from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { MotdContent, MotdSplash, MotdAdminPanel } from "../../react/src/motd.js";
-import { createMotdAdminState } from "../src/motd.js";
+import { createMotdAdminState, formatMotdWindow } from "../src/motd.js";
 
 const message = { motdId: "1", fromAt: "2020-01-01T00:00:00Z", toAt: "2090-01-01T00:00:00Z",
     bodyMd: "Desktop body", mobileBodyMd: "Phone body", imagePlacement: "beside", createdBy: { subject: "admin" },
@@ -28,7 +28,7 @@ test("phone without mobile body or image falls back to desktop, above", () => {
 test("splash has a modal dialog, separate scroll body and always-present dismissal footer", () => {
     const html = render(MotdSplash, { message, pictures, onDismiss: () => {} });
     assert.match(html, /<dialog/); assert.match(html, /ps-motd-scroll/); assert.match(html, />Got it</);
-    assert.match(html, /<footer/); assert.match(html, /UTC/);
+    assert.match(html, /<footer/); assert.ok(html.includes(formatMotdWindow(message)));
     assert.match(render(MotdSplash, { message, pictures, preview: true, onDismiss: () => {} }), />Close preview</);
 });
 test("admin tab has today preview, editor, picture limits, history and both delete controls", () => {

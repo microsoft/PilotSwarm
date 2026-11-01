@@ -50,11 +50,11 @@ test("a schedule spanning daylight-saving changes uses the generic zone name", (
         assert.doesNotMatch(summary, /Daylight|Standard/);
     } finally { if (prior === undefined) delete process.env.TZ; else process.env.TZ = prior; }
 });
-test("missing ends render as No end rather than an invalid date", () => {
+test("missing ends render as until replaced rather than an invalid date", () => {
     const html = renderToStaticMarkup(React.createElement(MotdSplash, { message: {
         motdId: "1", startsAt: "2026-11-01T00:00:00Z", endsAt: null, bodyMd: "No end",
     }, onDismiss: () => {} }));
-    assert.match(html, /until replaced \(No end\)/);
+    assert.match(html, /until replaced/);
     assert.doesNotMatch(html, /Invalid Date|1970/);
 });
 test("uncertain relative-end publication freezes time input and retry identity", async t => {
