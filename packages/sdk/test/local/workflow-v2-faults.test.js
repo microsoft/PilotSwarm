@@ -15,7 +15,13 @@
  * df-no-recovery), and the controller's fail-closed
  * finalization, continue-as-new with a pending state, at-least-once parent
  * notification (also of a run that a recover ended), recover receipts and
- * the command-read boundary (README "Regressions").
+ * the command-read boundary (README "Regressions"). The outcomes of a
+ * parent notification (WorkflowV2Lifecycle.tla AuthorityLoss, NotifyFaults,
+ * CtlFallback): a delivery that finds the parent's authority gone records a
+ * skip and returns; a delivery that runs out fails the notifier, and the
+ * controller after its failure path's one more delivery; a begin whose
+ * notifier start runs out takes the failure path, whose delivery tells the
+ * parent or runs out too.
  */
 import { describe, it, expect } from "vitest";
 import { createServer } from "node:http";
@@ -23,11 +29,11 @@ import { createRequire } from "node:module";
 import { randomUUID } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
-import { createWorkflowV2 } from "../../src/workflow/v2/service.ts";
+import { controlWorkflowV2Run, createWorkflowV2 } from "../../src/workflow/v2/service.ts";
 import { readWorkflowFromTool, updateWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
 import {
-    registerWorkflowV2, WORKFLOW_V2_ACTIVITIES, WORKFLOW_V2_CONTROLLER_NAME, WORKFLOW_V2_CONTROLLER_VERSION, workflowEffectInstanceId,
-    workflowLiveControllerInstanceId, workflowNotifyInstanceId,
+    registerWorkflowV2, WORKFLOW_V2_ACTIVITIES, WORKFLOW_V2_CONTROLLER_NAME, WORKFLOW_V2_CONTROLLER_VERSION, WORKFLOW_V2_FINALIZE_DELAYS_MS,
+    workflowEffectInstanceId, workflowLiveControllerInstanceId, workflowNotifyInstanceId,
 } from "../../src/workflow/v2/runtime.ts";
 
 const { Runtime, Client, PostgresProvider } = createRequire(import.meta.url)("duroxide");
@@ -174,6 +180,43 @@ function gate() {
     const reached = new Promise(resolve => { arrive = resolve; });
     const opened = new Promise(resolve => { open = resolve; });
     return { reached, arrive: () => arrive(), wait: () => opened, open: () => open() };
+}
+
+/**
+ * Shorten the delays between the controller's finalize batches (fault injection on time): in production nine durable
+ * delays, about 29 minutes, separate ten batches of the store retry policy's five attempts; with `delays`, a delivery
+ * that always fails runs out in seconds. Each batch still makes its five attempts. Returns the restore, to call after
+ * the runtime stopped.
+ */
+function shortenFinalizeSchedule(delays) {
+    const production = [...WORKFLOW_V2_FINALIZE_DELAYS_MS];
+    WORKFLOW_V2_FINALIZE_DELAYS_MS.splice(0, WORKFLOW_V2_FINALIZE_DELAYS_MS.length, ...delays);
+    return () => { WORKFLOW_V2_FINALIZE_DELAYS_MS.splice(0, WORKFLOW_V2_FINALIZE_DELAYS_MS.length, ...production); };
+}
+
+/** The parent notifications a workflow recorded: [event type, run id]. */
+async function notificationsOf(h, workflowId) {
+    return (await h.host.catalog.getSessionEvents(workflowId, 0, 50, ["workflow.parent_notified", "workflow.parent_notification_skipped"]))
+        .map(event => [event.eventType, event.data.runId]);
+}
+
+/** Start a workflow with `yaml` that tells `parentId` its runs' ends; with `dispatch: false` its controller is not started. */
+async function notifying(h, parentId, yaml, { dispatch = true } = {}) {
+    const id = randomUUID();
+    const host = dispatch ? h.host : { ...h.host, duroxideClient: { ...h.host.duroxideClient, startOrchestrationVersioned: async () => undefined } };
+    const created = await createWorkflowV2(host, { workflowSessionId: id, parentSessionId: parentId, yaml, notifyParent: true,
+        actor: ACTOR, operationId: "start", start: { inputs: {} } });
+    return { id, ...created.receipt.run };
+}
+
+/** End a SLOW run's controller (terminated) and recover it as its parent: the run ends failed and the notifier starts. */
+async function recoverEnded(h, parentId, run) {
+    await until(async () => (await h.store.listNodeExecutions(run.runId))[0]?.effectAttempts >= 1, "the script to start");
+    await h.client.cancelInstance(run.controllerInstanceId, "terminated by the test");
+    await until(async () => (await h.client.getStatus(run.controllerInstanceId)).status === "Failed", "the controller to end");
+    const recovered = JSON.parse(await updateWorkflowFromTool({ workflow_id: run.id, operation: "recover", operation_id: "recover" },
+        { callerSessionId: parentId, host: h.host }));
+    expect(recovered, JSON.stringify(recovered)).toMatchObject({ ok: true, replayed: false, action: "ended", status: "failed" });
 }
 
 async function finished(h, runId, timeoutMs) {
@@ -683,6 +726,167 @@ states:
             expect(await h.host.catalog.getSessionEvents(id, 0, 50, ["workflow.parent_notified"])).toHaveLength(1);
             expect(await h.store.readRun(runId)).toMatchObject({ status: "failed", terminalError: { code: "controller_ended" } });
         } finally { await h.stop(); }
+    });
+
+    it("records a skip and completes when a delivery finds the parent's authority gone: the controller's own report and the notifier", { timeout: TIMEOUT }, async () => {
+        const sent = [];
+        const revoked = new Set();
+        const h = await harness(getEnv(), {}, {
+            authorizeParentNotification: async (workflowSessionId, parentSessionId) => !revoked.has(parentSessionId),
+            notifyParent: async (parentSessionId, prompt, sender, clientMessageId) => { sent.push({ parentSessionId, clientMessageId }); },
+        });
+        try {
+            const parentId = randomUUID();
+            await h.host.catalog.createSession(parentId, {});
+            revoked.add(parentId);
+            // The controller's own report: the run completes; the delivery records a skip and returns; the controller completes.
+            const done = await notifying(h, parentId, TWO_STEPS);
+            expect(await finished(h, done.runId, 60_000)).toMatchObject({ status: "completed", terminalOutput: { n: 2 } });
+            expect((await h.client.waitForOrchestration(done.controllerInstanceId, 30_000)).status).toBe("Completed");
+            expect(await notificationsOf(h, done.id)).toEqual([["workflow.parent_notification_skipped", done.runId]]);
+            // The notifier, started by a recover: its delivery records a skip, and it completes; it does not fail.
+            const slow = await notifying(h, parentId, SLOW);
+            await recoverEnded(h, parentId, slow);
+            const notifier = await h.client.waitForOrchestration(workflowNotifyInstanceId(slow.runId), 30_000);
+            expect(notifier.status, JSON.stringify(notifier)).toBe("Completed");
+            expect(await notificationsOf(h, slow.id)).toEqual([["workflow.parent_notification_skipped", slow.runId]]);
+            expect(await h.store.readRun(slow.runId)).toMatchObject({ status: "failed", terminalError: { code: "controller_ended" } });
+            expect(sent).toEqual([]);
+
+            // Control: with the parent's authority back, the same report is delivered once, with the stable client message id.
+            revoked.delete(parentId);
+            const told = await notifying(h, parentId, TWO_STEPS);
+            await finished(h, told.runId, 60_000);
+            expect((await h.client.waitForOrchestration(told.controllerInstanceId, 30_000)).status).toBe("Completed");
+            expect(sent).toEqual([{ parentSessionId: parentId, clientMessageId: `workflow:${told.id}:${told.runId}:terminal` }]);
+            expect(await notificationsOf(h, told.id)).toEqual([["workflow.parent_notified", told.runId]]);
+        } finally { await h.stop(); }
+    });
+
+    it("fails the notifier when a delivery runs out, and the controller after its failure path's one more delivery runs out; the run's end is kept", { timeout: 180_000 }, async () => {
+        const attempts = [];
+        const restore = shortenFinalizeSchedule([10, 10]);
+        let h = null;
+        try {
+            h = await harness(getEnv(), {}, {
+                authorizeParentNotification: async () => true,
+                notifyParent: async (parentSessionId, prompt, sender, clientMessageId) => {
+                    attempts.push(clientMessageId);
+                    throw new Error("injected: the parent's session does not take the message");
+                },
+            });
+            const parentId = randomUUID();
+            await h.host.catalog.createSession(parentId, {});
+            // The controller's report runs out: three batches of five attempts. Its failure path keeps the completed run
+            // (the finish returns the run as it ended) and delivers once more, which runs out too: the controller fails.
+            const done = await notifying(h, parentId, TWO_STEPS);
+            const ended = await finished(h, done.runId, 60_000);
+            expect(ended).toMatchObject({ status: "completed", terminalOutput: { n: 2 } });
+            const controller = await h.client.waitForOrchestration(done.controllerInstanceId, 120_000);
+            expect(controller.status, JSON.stringify(controller)).toBe("Failed");
+            expect(JSON.stringify(controller)).toContain("injected: the parent's session does not take the message");
+            const doneId = `workflow:${done.id}:${done.runId}:terminal`;
+            expect(attempts.filter(id => id === doneId)).toHaveLength(30);
+            expect(await h.store.readRun(done.runId)).toEqual(ended);
+            expect(await notificationsOf(h, done.id)).toEqual([]);
+
+            // The notifier of a run a recover ended: its delivery runs out (three batches of five attempts), and it fails.
+            const slow = await notifying(h, parentId, SLOW);
+            await recoverEnded(h, parentId, slow);
+            const failedRun = await h.store.readRun(slow.runId);
+            const notifier = await h.client.waitForOrchestration(workflowNotifyInstanceId(slow.runId), 120_000);
+            expect(notifier.status, JSON.stringify(notifier)).toBe("Failed");
+            expect(attempts.filter(id => id === `workflow:${slow.id}:${slow.runId}:terminal`)).toHaveLength(15);
+            expect(await h.store.readRun(slow.runId)).toEqual(failedRun);
+            expect(failedRun).toMatchObject({ status: "failed", terminalError: { code: "controller_ended" } });
+            expect(await notificationsOf(h, slow.id)).toEqual([]);
+        } finally {
+            try { if (h) await h.stop(); } finally { restore(); }
+        }
+    });
+
+    it("takes the controller's failure path when a begin's notifier start runs out: its delivery tells the parent, or runs out too; the run's end is kept", { timeout: 180_000 }, async () => {
+        const sent = [];
+        const beginStarts = new Map();
+        const failDelivery = new Set();
+        const restore = shortenFinalizeSchedule([10, 10]);
+        let h = null;
+        try {
+            h = await harness(getEnv(), {
+                // Fault injection: the begin activity of a run listed here cannot start the notifier (its client refuses).
+                [WORKFLOW_V2_ACTIVITIES.begin]: (fn) => async (ctx, input) => {
+                    if (!beginStarts.has(input?.runId)) return fn(ctx, input);
+                    const refusing = Object.create(ctx);
+                    refusing.getClient = () => ({
+                        startOrchestrationVersioned: async () => {
+                            beginStarts.set(input.runId, beginStarts.get(input.runId) + 1);
+                            throw new Error("injected: the notifier start fails for good");
+                        },
+                    });
+                    return fn(refusing, input);
+                },
+            }, {
+                authorizeParentNotification: async () => true,
+                notifyParent: async (parentSessionId, prompt, sender, clientMessageId) => {
+                    sent.push({ parentSessionId, clientMessageId });
+                    if (failDelivery.has(clientMessageId)) throw new Error("injected: the parent's session does not take the message");
+                },
+            });
+            const parentId = randomUUID();
+            await h.host.catalog.createSession(parentId, {});
+            /**
+             * A run that a system actor's cancel ended before it began, whose request stopped before it started the notifier;
+             * then its controller starts late, and its begin cannot start the notifier. With `deliveryFails`, every delivery
+             * of its end fails.
+             */
+            const cancelledBeforeBegin = async ({ deliveryFails = false } = {}) => {
+                const run = await notifying(h, parentId, TWO_STEPS, { dispatch: false });
+                const notifierStartFails = { ...h.host, duroxideClient: { ...h.host.duroxideClient, startOrchestrationVersioned: async (instanceId, ...rest) => {
+                    if (instanceId === workflowNotifyInstanceId(run.runId)) throw new Error("injected: interrupted before the notifier started");
+                    return h.host.duroxideClient.startOrchestrationVersioned(instanceId, ...rest);
+                } } };
+                await expect(controlWorkflowV2Run(notifierStartFails, run.id, { operation: "cancel", runId: null, reason: "stop it" },
+                    { actor: { kind: "system", name: "workflow-v2-fault-test-user" }, operationId: "cancel-n" }))
+                    .rejects.toThrow("injected: interrupted before the notifier started");
+                const ended = await h.store.readRun(run.runId);
+                expect(ended).toMatchObject({ status: "cancelled", terminalError: { details: { requestedBy: null, operationId: "cancel-n", beforeBegin: true } } });
+                const clientMessageId = `workflow:${run.id}:${run.runId}:terminal`;
+                if (deliveryFails) failDelivery.add(clientMessageId);
+                beginStarts.set(run.runId, 0);
+                await h.client.startOrchestrationVersioned(run.controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME,
+                    { v: 2, workflowSessionId: run.id, runId: run.runId }, WORKFLOW_V2_CONTROLLER_VERSION);
+                return { ...run, ended, clientMessageId };
+            };
+            /** The run is as the cancel ended it: nothing began, and the notifier never started. */
+            const unchanged = async (run) => {
+                expect(await h.store.readRun(run.runId)).toEqual(run.ended);
+                expect(await h.store.listNodeExecutions(run.runId)).toEqual([]);
+                expect(await h.host.catalog.getSessionEvents(run.id, 0, 50, ["workflow.started"])).toEqual([]);
+                expect((await h.client.getStatus(workflowNotifyInstanceId(run.runId))).status).toBe("NotFound");
+            };
+
+            // The begin activity runs out its five attempts; the controller's failure path keeps the cancelled run and
+            // delivers: the parent is told once, and the controller completes.
+            const told = await cancelledBeforeBegin();
+            const toldController = await h.client.waitForOrchestration(told.controllerInstanceId, 60_000);
+            expect(toldController.status, JSON.stringify(toldController)).toBe("Completed");
+            expect(beginStarts.get(told.runId)).toBe(5);
+            expect(sent.filter(item => item.clientMessageId === told.clientMessageId)).toEqual([{ parentSessionId: parentId, clientMessageId: told.clientMessageId }]);
+            expect(await notificationsOf(h, told.id)).toEqual([["workflow.parent_notified", told.runId]]);
+            await unchanged(told);
+
+            // The same, and the failure path's delivery runs out too (three batches of five attempts): the controller fails.
+            const lost = await cancelledBeforeBegin({ deliveryFails: true });
+            const lostController = await h.client.waitForOrchestration(lost.controllerInstanceId, 120_000);
+            expect(lostController.status, JSON.stringify(lostController)).toBe("Failed");
+            expect(JSON.stringify(lostController)).toContain("injected: the parent's session does not take the message");
+            expect(beginStarts.get(lost.runId)).toBe(5);
+            expect(sent.filter(item => item.clientMessageId === lost.clientMessageId)).toHaveLength(15);
+            expect(await notificationsOf(h, lost.id)).toEqual([]);
+            await unchanged(lost);
+        } finally {
+            try { if (h) await h.stop(); } finally { restore(); }
+        }
     });
 
     it("refuses a read or a recover that selects a run of another workflow before it changes anything", { timeout: TIMEOUT }, async () => {
