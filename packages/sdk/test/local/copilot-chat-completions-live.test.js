@@ -26,7 +26,7 @@ const LIVE = process.env.PILOTSWARM_LIVE_MODEL_TESTS === "1";
 const BASE_URL = process.env.PILOTSWARM_COPILOT_API_URL || "https://api.githubcopilot.com";
 const MODEL = process.env.PILOTSWARM_COPILOT_CHAT_MODEL || "gemini-4-argon";
 const WINDOW = 983_040;
-const TYPE_ID = "github-copilot-gemini-only";
+const TYPE_ID = "github-copilot-gemini";
 const INTEGRATION = { "Copilot-Integration-Id": "copilot-developer-cli" };
 const FACTS = { readFacts: async () => ({ count: 0, facts: [] }), storeFact: async () => ({ stored: true }), deleteFact: async () => ({ deleted: true }) };
 
