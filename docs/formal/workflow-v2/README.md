@@ -14,7 +14,7 @@ deliberate faults and witnesses).
 | `WorkflowV2Lifecycle.tla` | Start of a run and cancels before begin: lost and skipped dispatch, the provider's drop, begin honoring an accepted cancel (C1), its recorded (nullable) requester and who is told (C2, M1), notification eligibility and each notification's outcome (A6), recover | "Lifecycle model" |
 | `WorkflowV2SessionCommands.tla` | A parent session's cancel and delete for a v2 child through `sendCommandToSession`: receipts, redelivery, conflicts, the deleted-child path (D2), deletes applied in the store (D1) and the repeat of an earlier build's queued delete | "Session command model" |
 | `WorkflowV2Receive.tla` | Messaging receive states and typed input: the claim at entry and in the input's acceptance, each decided at one reading of the store's clock, the deadline race, expiry (also of an input kept for a later, delayed entry), the durable order, the contract and correlation match, the sender decided in the admission and in the acceptance (R5), the stored receipt (R4) | "Receive model" |
-| `WorkflowV2Send.tla` | A messaging send state to a workflow: delivery attempts and their failures, the acceptance bound to the undecided send, the recipient's acceptance recorded on every end of the attempts (collection and the run's end included), only an input with the message's content counted | "Send model" |
+| `WorkflowV2Send.tla` | A messaging send state to a workflow: delivery attempts, their refusals (content, recipient, conflict, decided send) and failures, the acceptance bound to the undecided send, the recipient's acceptance recorded on every end of the attempts (collection and the run's end included), only an input with the message's content counted | "Send model" |
 
 `WorkflowV2Run.tla` models one workflow v2 run as the code in
 `packages/sdk/src/workflow/v2` implements it: the controller orchestration,
@@ -1074,33 +1074,59 @@ Limits:
 
 `WorkflowV2Send.tla` models a messaging send state whose recipient is a
 workflow (controller 1.8.0, IR version 6), as the code implements it in
-this commit. Its send orchestration attempts the delivery: an attempt
-begins in the store (`Begin`), gives the message to the recipient as typed
-input bound to the send (`Accept`) and records the delivery (`Record`), or
-ends the attempts (`Fail`, `Exhausted`). An attempt may fail between its
-steps and is begun again (`Crash`). The orchestration may end without a
-record (`Terminate`), and the controller then collects the state
-(`Collect`). The sending run may be cancelled (`Cancel`) and its workflow
-deleted (`SourceDelete`); the recipient may stop taking input
-(`RecipientStops`); and a trusted caller of the typed-input service may
-give the recipient an input under the send's id (`Give`), with the
-message's own content or another. Each step is one store transaction,
-and every step that reads or decides the send takes the sending
-workflow's session lock first, so the steps are atomic here. The model
-checks the three findings of the review of `fa7c232f` (S2-GPT-01 to
-S2-GPT-03) against that commit's code, and the run's end that decides a
-pending message. A send to an agent session is in no formal model yet.
+source commit `9fcbf377`. Its send orchestration attempts the delivery:
+an attempt begins in the store (`Begin`), gives the message to the
+recipient as typed input bound to the send (`Accept`) and records the
+delivery (`Record`), or ends the attempts (`Fail`, `Exhausted`). An
+attempt may fail between its steps and is begun again (`Crash`). The
+orchestration may end without a record (`Terminate`), and the controller
+then collects the state (`Collect`). The sending run may end while the
+send state is pending (`Cancel`: a cancel, a recover, or a run that fails
+or completes on another path) and its workflow may be deleted
+(`SourceDelete`). The recipient's run may end, and the recipient may be
+deleted or stop allowing the sender (`RecipientStops`); the recipient's
+contract may refuse the message's content (`Refuses`). A trusted caller of
+the public typed-input service may give the recipient an input under the
+send's id (`Give`), with the message's own content or another. Each step
+is one store transaction, and every step that reads or decides the send
+takes the sending workflow's session lock first, so the steps are atomic
+here. The model checks the three findings of the review of `fa7c232f`
+(S2-GPT-01 to S2-GPT-03) against that commit's code, and the run's end
+that decides a pending message.
 
-The recipient's input under the send's id is one value: none, an input
-with the message's own content (contract, correlation, payload and the
-request hash they give with its run and the default ttl), or an input with
-another content. `Found` is the code's content check (`sendAcceptanceIn`).
+Scope: this is a diagnostic of the modeled paths for one send to one
+workflow recipient, not a proof of every path of the code. A send to an
+agent session is in no formal model yet.
+
+### Abstraction map
+
+The recipient's input under the send's id (one row, by the inbox's
+unique key on recipient, sender and operation id) is one value:
+
+| Model | Source |
+|---|---|
+| `none` | No inbox row under (recipient, sending workflow, exchange id). |
+| `own` | A row that satisfies the whole of `sendAcceptanceIn`: its contract, correlation text and payload text are the outbox row's; its request hash is the one those give with the row's own accepted run and the default ttl; and its stored receipt names the same recipient, sender, operation, message id, run, contract, request hash and payload hash. Such a row is the message's acceptance whichever caller stored it, so `Give` with `same` stores `own`. |
+| `other` | Any other parseable row under that key: another payload, correlation, contract or ttl; a request hash for another run; a receipt that names another request, or no receipt (a pre-release row). It is never the message's acceptance. |
+
+Out of the map, and not modeled: a row whose stored receipt or JSON does
+not parse. The store then throws `WORKFLOW_STORE_CORRUPT` and the step
+decides nothing. Native obligations for it: the step fails visibly, it
+makes no default decision, and a later step on the same row fails the
+same way.
+
+The receipt classes `own` and `other` stand for those predicates; the
+regressions check the fields (changed payload, correlation, contract and
+ttl; a concurrent conflicting input; the record's recheck of the message
+id). Further native obligations: a stale run in the request hash, a
+receipt with another message id, and a corrupt receipt.
 
 | Constant | Kind | Code |
 |---|---|---|
-| `MaxAttempts` | bound | The attempts the send orchestration counts before it gives up. The production schedule allows 50; 2 reach every step. |
+| `MaxAttempts` | bound | The attempts the send orchestration counts before it gives up. The production schedule allows 50; 2 reach every modeled step. This is not a proof that 50 attempts reduce to 2. |
 | `Foreign` | environment | What a trusted caller gives the recipient under the send's id: nothing (`none`), the message's own content (`same`), or another content (`other`). |
-| `Cancels`, `SourceDeletes`, `RecipientEnds`, `Terminates`, `Crashes` | environment | The sending run is cancelled; the sending workflow is deleted; the recipient's run ends or the recipient is deleted; the send orchestration ends without a record; an attempt fails between its steps. |
+| `Refuses` | environment | The recipient's contract refuses the message's content (`UNSUPPORTED_CONTRACT`, `INPUT_INVALID`): every acceptance of it is refused before any input exists. |
+| `Cancels`, `SourceDeletes`, `RecipientEnds`, `Terminates`, `Crashes` | environment | The sending run ends while the send state is pending; the sending workflow is deleted; the recipient's run ends, or the recipient is deleted or stops allowing the sender; the send orchestration ends without a record; an attempt fails between its steps. |
 | `Guard` | fix 9fcbf377 (S2-GPT-02) | A fresh acceptance needs the send undecided (`S` `requireUndecidedSend`). FALSE: fa7c232f, which accepted a fresh input after the send was decided. |
 | `CollectFinds` | fix 9fcbf377 (S2-GPT-01) | The controller's collection records the recipient's acceptance (`S` `failDelivery`). FALSE: fa7c232f, which failed the message without looking for it. |
 | `ContentBound` | fix 9fcbf377 (S2-GPT-03) | Only an input with the message's content is its acceptance (`S` `sendAcceptanceIn`). FALSE: fa7c232f, which took any input under the send's id. |
@@ -1108,42 +1134,46 @@ another content. `Found` is the code's content check (`sendAcceptanceIn`).
 
 | Send action | Code | Boundary |
 |---|---|---|
-| `Begin` | `R` the deliver activity 1917; `S` `beginDelivery` 2277, 2297 (the acceptance found), 2308 (a decided state or a deleted workflow), 2333 (the attempt counted) | One transaction under both session locks (`lockInputSessions`): a message already decided ends the attempt; the recipient's acceptance found is recorded with no attempt counted; a decided state or a deleted sending workflow fails the message; otherwise the attempt is counted. |
-| `Accept` | `R` 1967; `V` `acceptSendAsWorkflowInputV2` 755; `S` `acceptInput` 2097, 2134 (a repeat), 2137 (the send's guard), `requireUndecidedSend` 756, 776 | One transaction under the recipient's and the sending workflow's session locks. A repeat of the message's own request returns its stored acceptance; another input under the id is `OPERATION_CONFLICT`; a fresh input only while the send's state and message are pending (`SEND_DECIDED`). A recipient that stops taking input refuses here even a repeat; the code answers a repeat to a recipient whose run ended. Either way its acceptance is recorded. |
+| `Begin` | `R` the deliver activity 1917; `S` `beginDelivery` 2277, 2297 (the acceptance found), 2308 (a decided state or a deleted workflow), 2311 (the recipient refused), 2333 (the attempt counted) | One transaction under both session locks (`lockInputSessions`): a message already decided ends the attempt; the recipient's acceptance found is recorded with no attempt counted; a decided state or a deleted sending workflow fails the message; a recipient deleted or no longer allowing the sender fails the state and the message; otherwise the attempt is counted. |
+| `Accept` | `R` 1967; `V` `acceptSendAsWorkflowInputV2` 755, `acceptTypedInput` 775: 781 (the recipient deleted), 784 (the sender no longer allowed), 794 (the content refused); `S` `acceptInput` 2097, 2134 (a repeat), 2137 (the send's guard), 2141 (the recipient's run ended); `requireUndecidedSend` 756, 776 | The code's order: the recipient deleted or no longer allowing the sender (`gone`), the sending workflow deleted (`source`), the content refused by the recipient's contract (`invalid`), all before the store; then, under the session locks, a repeat of the message's own request returns its stored acceptance, another input under the id is `OPERATION_CONFLICT` (`conflict`), a decided send is `SEND_DECIDED` (`decided`), an ended recipient run is `RUN_ENDED` (`ended`), otherwise the recipient stores a fresh input. The cause is the attempt's `why`. |
 | `Record` | `R` `recordSend` 1877; `S` `recordDelivery` 2351, 2369 (only the message's own acceptance), `deliverIn` 835 | Under the sending workflow's session lock: the message delivered with the receipt, a state still pending `sent`; a message decided first is kept. |
-| `Fail` | `R` 1975, 1001 (`SEND_DECIDED`); `S` `failDelivery` 2399, 2410 (the acceptance found) | A refusal that cannot pass ends the attempts: the recipient's acceptance found is the delivery, otherwise the message fails and a pending state gets the failure. |
+| `Fail` | `R` 1975, 1001 (`SEND_DECIDED`); `S` `failDelivery` 2399, 2410 (the acceptance found) | A refusal that cannot pass ends the attempts: the recipient's acceptance found is the delivery; otherwise the message fails for the refusal's cause (`failCause`) and a pending state gets the failure. |
 | `Crash` | `R` `persistently` 454 | An attempt's activity fails between its transactions and is begun again on the run-ending writes' schedule; only the attempt's own progress is lost. |
 | `Exhausted` | `R` the deliveryFailed activity 1988; `S` `failDelivery` 2399 | Every attempt failed: `failDelivery`, as for a refusal. |
 | `Complete` / `Terminate` | `R` `workflowV2Send` 807, started at the state's admission 633 | The send orchestration completes after its last attempt, or ends without a record (terminated, or its last record failed); an activity in flight is not stopped. |
 | `Collect` | `R` the collect activity 1527; `S` `failDelivery` 2399 | The controller finds the send orchestration ended and the state pending. |
-| `Cancel` | `R` 527; `S` `finishRun` 2440, 2492, `decidePendingSendsIn` 874 | One transaction under the sending workflow's session lock: the run ends, pending states are cancelled, and a pending message to a workflow is delivered (the acceptance found) or failed. |
+| `Cancel` | `R` 527; `S` `finishRun` 2440, 2492, `decidePendingSendsIn` 874 | Every `finishRun` while the send state is pending (a cancel, a recover, or a run that fails or completes on another path), in one transaction under the sending workflow's session lock: the run ends, pending states are cancelled, and a pending message to a workflow is delivered (the acceptance found) or failed. The variants differ only in the run's status and the state's winner, which the model does not keep. |
 | `SourceDelete` | `migrations/workflow-v2-0087.ts` 58 | The soft delete's trigger cancels the active run's pending states; the message stays pending until an attempt decides it. |
-| `RecipientStops` | `S` `acceptInput` 2097 | The recipient's run ends or its session is deleted; a fresh input is then refused. |
-| `Give` | `V` `sendWorkflowInputV2` 741 | A trusted caller of the typed-input service from the sending workflow; no public request carries the send's binding. |
-| `Found` | `S` `sendAcceptanceIn` 795 | The input under the send's id counts only with the message's contract, correlation and payload, the request hash they give with its run and the default ttl, and a receipt that names them. |
+| `RecipientStops` | `V` 781, 784; `S` 2311, 2141 | `ended`: the recipient's run ended; a repeat is still answered and a fresh input is refused. `gone`: the recipient deleted, or the authority rule no longer allows the sender; refused in the begin and in the acceptance. |
+| `Give` | `V` `sendWorkflowInputV2` 741 | Public and unbound (no exchange binding): a trusted caller from the sending workflow, while the recipient's run takes input; a contract that refuses the message's content refuses the same content here too. |
+| `Found` | `S` `sendAcceptanceIn` 795 | The input under the send's id counts only with the message's contract, correlation and payload, the request hash they give with its run and the default ttl, and a receipt that names them (the abstraction map below). |
 
 | Property | Meaning |
 |---|---|
-| `Inv_NoFreshAfterDecision` | The send's own delivery never stores an input after the send was decided: a cancel or another decision that commits first leaves the recipient nothing (S2-GPT-02). |
+| `Inv_NoFreshAfterDecision` | The send's own delivery never stores an input after the send was decided: a cancel or another decision that commits first leaves the recipient nothing (S2-GPT-02). The public, unbound `Give` is not bound by it. |
 | `Inv_AcceptanceNotFailed` | No decision fails the message while the recipient holds its own input: the acceptance is recorded instead (S2-GPT-01). |
 | `Inv_StoredIsDelivered` | An input that the send's delivery stored is never contradicted by a failed message. |
-| `Inv_ReceiptOwn` | A receipt names only an input with the message's content (S2-GPT-03). |
+| `Inv_ReceiptOwn` | A receipt names only an input with the message's content (S2-GPT-03), in the sense of the abstraction map. |
 | `Inv_SentDelivered` | A sent state's message is delivered, with its own input. |
 | `Inv_ReceiptHeld` | The input that a receipt names is the one the recipient holds. |
 | `SendSafety` | `TypeOK` and the six invariants above. |
 | `Prop_FirstDecisionKept` | The first decision of the state, and of the message with its receipt, is kept. |
-| `Live_StateDecided` | The state is eventually decided. |
-| `Live_MessageDecided` | The message is eventually decided. |
+| `Live_StateDecided` | The state is eventually decided (under the fairness below). |
+| `Live_MessageDecided` | The message is eventually decided (under the fairness below). |
 | `Wit_CollectRecords` | Witness: the controller's collection records the acceptance after the send orchestration ended without a record. |
 | `Wit_EndRecords` | Witness: the run's end records an acceptance made before the cancel, and the state keeps the cancel. |
 | `Wit_RefusedAfterDecision` | Witness: an acceptance is refused because the send was decided first, and the recipient holds nothing. |
-| `Wit_SameRecorded` | Witness: an input that a trusted caller gave with the message's content is recorded as its delivery. |
-| `Wit_OtherRefused` | Witness: another input under the send's id fails the message and stays as it was given. |
+| `Wit_OwnLostReplyRecovered` | Witness: the send's own acceptance lost its reply (the attempt failed after it) and the next attempt's begin records it (`Begin`, `Accept`, `Crash`, `Begin`). |
+| `Wit_UnboundSameAdopted` | Witness: an unbound input that a trusted caller gave with the message's content is adopted by a later begin as the delivery. It is not the send's own acceptance. |
+| `Wit_OtherRefused` | Witness: an attempt meets another input under the send's id (`OPERATION_CONFLICT`), and `Fail` fails the still-pending message because of that refusal (`failCause = conflict`). A message failed first by another step does not count. |
+| `Wit_InvalidRefused` | Witness: the recipient's contract refuses the content, and `Fail` fails the message because of that refusal (`failCause = invalid`). |
+| `Wit_RecipientGoneAtBegin` | Witness: a recipient deleted or no longer allowing the sender is refused inside the begin's transaction, which fails the state and the message (`failCause = begin-gone`). |
 
 | Case | Mode | Checked | Expected |
 |---|---|---|---|
 | `send-hd-safety` | this commit, `MaxAttempts = 2`, another input under the send's id, every environment step | `SendSafety`, `Prop_FirstDecisionKept` | PASS |
 | `send-hd-safety-same` | as `send-hd-safety`, the trusted caller gives the message's own content | the same | PASS |
+| `send-hd-safety-refused` | as `send-hd-safety`, the recipient's contract refuses the content | the same | PASS |
 | `send-hd-live` | as `send-hd-safety` without the sending workflow's deletion | `Live_StateDecided`, `Live_MessageDecided` | PASS |
 | `send-hd-live-delete` | as `send-hd-safety` without the send orchestration's termination | `Live_StateDecided`, `Live_MessageDecided` | PASS |
 | `send-lim-delete-terminated` | as `send-hd-safety` | `Live_MessageDecided` | liveness violation: the stated limit (a deleted sending workflow whose send orchestration also ended leaves its message pending) |
@@ -1154,8 +1184,14 @@ another content. `Found` is the code's content check (`sendAcceptanceIn`).
 | `wit-send-collect-records` | as `send-hd-safety` | `Wit_CollectRecords` | safety violation (witness) |
 | `wit-send-end-records` | as `send-hd-safety` | `Wit_EndRecords` | safety violation (witness) |
 | `wit-send-refused-after-decision` | as `send-hd-safety` | `Wit_RefusedAfterDecision` | safety violation (witness) |
-| `wit-send-same-recorded` | as `send-hd-safety-same` | `Wit_SameRecorded` | safety violation (witness) |
+| `wit-send-own-lost-reply-recovered` | as `send-hd-safety` | `Wit_OwnLostReplyRecovered` | safety violation (witness) |
+| `wit-send-unbound-same-adopted` | as `send-hd-safety-same` | `Wit_UnboundSameAdopted` | safety violation (witness) |
 | `wit-send-other-refused` | as `send-hd-safety` | `Wit_OtherRefused` | safety violation (witness) |
+| `wit-send-invalid-refused` | as `send-hd-safety-refused` | `Wit_InvalidRefused` | safety violation (witness) |
+| `wit-send-recipient-gone-at-begin` | as `send-hd-safety` | `Wit_RecipientGoneAtBegin` | safety violation (witness) |
+
+A witness counts only when its trace shows the path its row names; a
+matching result class alone is not coverage.
 
 Each `send-rv-` case sets one switch of `fa7c232f` and keeps this commit's
 others, so its counterexample shows that one boundary. In `fa7c232f` the
@@ -1164,6 +1200,12 @@ refusal and after the last attempt) ran outside the store's transactions;
 here every lookup is atomic, as this commit's are. The cases model those
 boundaries as the earlier source shows them; they are not executions of
 that build.
+
+History: the first run of this model (`008080cd`, 14 cases) is kept as
+evidence of that model. Its `wit-send-other-refused` trace (`Cancel`,
+`Give`) did not show the refusal its name claimed, which this revision's
+`failCause` corrects; its `wit-send-same-recorded` is this revision's
+`wit-send-unbound-same-adopted`.
 
 Limits:
 
@@ -1177,15 +1219,24 @@ Limits:
 - The steps are atomic store transactions. The session-row locks, and the
   order in which the code takes them (all session locks before run and
   node locks), are assumed, not modeled. A lock cycle, which PostgreSQL
-  aborts and the caller retries, is an attempt's failure here.
-- A recipient that stops taking input refuses even a repeat here; the
-  code answers a repeat to a recipient whose run ended, because the
-  store's check for an earlier input comes first. Either way the
-  acceptance is recorded as the delivery.
+  aborts and the caller retries, is an attempt's failure here. Lock-order
+  correctness and freedom from deadlock are not proved (every case sets
+  `CHECK_DEADLOCK FALSE`).
+- Liveness is eventual decision, not delivery. It holds only under weak
+  fairness of the store's steps, the send orchestration and the
+  controller: it assumes that the store eventually completes a step that
+  stays enabled. A persistent store failure, an unavailable worker and a
+  deployment outage are excluded; the model has no permanent-failure
+  state. The durable timers and batches of the attempts' schedule are not
+  modeled; `Crash` and `Exhausted` stand for them.
+- `Cancel` stands for every `finishRun` while the send state is pending
+  (a cancel, a recover, or a run that fails or completes on another path);
+  the source path is the same transaction for each, and the model keeps
+  neither the run's status nor the state's winner.
 - Not modeled; the send regressions check examples of them, which is not
-  a proof: the attempts' schedule (batches on durable timers), the
-  disabled worker's refusal, the recipient's inbox bounds and rate
-  window, the run and ttl inside the request hash, the receipt's fields
-  and the projection's events.
+  a proof: the disabled worker's refusal, the recipient's inbox bounds and
+  rate window, the run and ttl inside the request hash (the abstraction
+  map), the receipt's fields and the projection's events.
+- Corrupt rows are out of the map (see above).
 - A deleted sending workflow's pending message is decided only by an
   attempt of its send (`send-lim-delete-terminated`).
