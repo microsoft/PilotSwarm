@@ -57,12 +57,16 @@ export const WORKFLOW_V2_CONTROLLER_NAME = "workflow-v2-controller";
 /**
  * The controller's history shape. 1.2.0 reads its commands before every
  * admission, retries a run-ending write on durable timers and may route an
- * unhandled runtime error to the workflow's catch-all state. Histories of the
- * pre-release shapes 1.0.0 and 1.1.0 were never deployed; this code does not
- * replay them (the runtime refuses an instance of an unregistered version
- * rather than re-interpreting it).
+ * unhandled runtime error to the workflow's catch-all state.
  */
 export const WORKFLOW_V2_CONTROLLER_VERSION = "1.2.0";
+/**
+ * Controller versions written only by pre-release builds. Their histories are
+ * not replayed (this code would make different decisions); an instance of
+ * one fails at once with this reason, so its run shows needsRecovery and
+ * update_workflow recover ends it visibly. Its history and rows are kept.
+ */
+export const WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS: readonly string[] = ["1.0.0", "1.1.0"];
 export const WORKFLOW_V2_EFFECT_NAME = "workflow-v2-effect";
 export const WORKFLOW_V2_EFFECT_VERSION = "1.0.0";
 /** Node admissions per controller execution before continue-as-new bounds history. */
@@ -79,8 +83,9 @@ export const WORKFLOW_V2_COMMAND_POLL_MS = 10;
  * Attempts of a run-ending write (the finish and the parent notification).
  * Each attempt runs the activity with the store retry policy; attempts are
  * separated by these durable delays, so a store outage of about half an hour
- * still ends the run. After the last attempt the controller fails and a
- * reader of the run ends it (reconcileWorkflowV2Run).
+ * still ends the run. After the last attempt the controller fails; its run
+ * then shows needsRecovery, and update_workflow recover ends it
+ * (recoverWorkflowV2Run). Nothing recovers it without that request.
  */
 export const WORKFLOW_V2_FINALIZE_DELAYS_MS: readonly number[] = [1_000, 5_000, 15_000, 30_000, 60_000, 120_000, 300_000, 600_000, 600_000];
 /** The arrival route of the workflow's catch-all state (not a valid route label, so it never collides with one). */
@@ -625,9 +630,20 @@ export function describeWorkflowV2States(ir: WorkflowIR): Array<{ [key: string]:
     return Object.values(ir.nodes).map(describeWorkflowV2State);
 }
 
+/** The handler of an unsupported pre-release controller version: it fails the instance with a reason. */
+function unsupportedController(version: string) {
+    return function* unsupported(): Generator<ScheduledTask, never, unknown> {
+        throw new ControllerProtocolError(`This run's controller history has version ${version}, written by a pre-release build; `
+            + "this build does not replay it. Recover the run (update_workflow operation recover) to end it.");
+    };
+}
+
 export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: WorkflowV2RuntimeDeps): void {
     const { store } = deps;
     runtime.registerOrchestrationVersioned(WORKFLOW_V2_CONTROLLER_NAME, WORKFLOW_V2_CONTROLLER_VERSION, workflowV2Controller);
+    for (const version of WORKFLOW_V2_UNSUPPORTED_CONTROLLER_VERSIONS) {
+        runtime.registerOrchestrationVersioned(WORKFLOW_V2_CONTROLLER_NAME, version, unsupportedController(version));
+    }
     runtime.registerOrchestrationVersioned(WORKFLOW_V2_EFFECT_NAME, WORKFLOW_V2_EFFECT_VERSION, workflowV2Effect);
 
     const runOf = async (runId: string): Promise<WorkflowRunRow> => {

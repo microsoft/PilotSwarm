@@ -7,9 +7,10 @@ transitions and deletion of the workflow session. It is derived from the
 code in the same commit as this file. Line numbers below refer to that commit.
 
 The model checks durable-history and transaction boundaries, crashes,
-retries, lost and duplicate wakes, cancellation, deletion, effect death,
-controller death with a reader's reconciliation, and the workflow's
-catch-all state.
+retries, lost and duplicate wakes, cancellation (request and
+acknowledgement), deletion, effect death, the script start inside its entry
+transaction, controller death with the parent's explicit recover, and the
+workflow's catch-all state.
 It does not check the compiler, schemas, bindings or tool authorization;
 real PostgreSQL and runtime tests cover those (see "Regressions").
 
@@ -29,8 +30,8 @@ code revision.
 | `CancelStopFromStore` | fix | The cancel activity reads every `winner = 'cancel'` node from the store on each execution. |
 | `DeleteGuard` | fix | Migration 0086 deletion trigger; every v2 transaction locks the session row first; the script entry checks node, run and session under those locks; the running script's liveness check. |
 | `EntryFence` | fix | The script process starts inside the entry transaction (`S` `enterScript` calls the runner's `start` while it holds the locks). Without it (`159bdce5`), the claim committed first and the process started after the tool binding was read, unchecked. |
-| `CommandPoll` | fix | Before every admission the controller reads every queued message without waiting (`takeQueuedCommand`); a cancel ends the run, a wake is dropped. Without it (before this commit), commands were read only while the controller waited, so a chain of states that completed at once could delay a cancel until the run ended. |
-| `Reconciler` | fix | A reader of the run (`reconcileWorkflowV2Run`, called by `read_workflow`) ends an active run whose controller ended. |
+| `CommandPoll` | fix | Before every admission the controller reads every queued message without waiting (`takeQueuedCommand`); a cancel ends the run, a wake is dropped. Without it (before 547d1bf5), commands were read only while the controller waited, so a chain of states that completed at once could delay a cancel until the run ended. |
+| `Recovery` | fix | The parent's explicit `update_workflow` operation `recover` (`recoverWorkflowV2Run`) ends an active run whose controller ended. `read_workflow` only reports it (`needsRecovery`). |
 | `CatchAll` | workflow | The workflow declares a catch-all state `H` (a script); an unhandled `error` goes there once. |
 | `ControllerDeath` | fault | The controller orchestration ends without ending its run: it was terminated, or its finalization attempts ran out. |
 | `Deletes` | environment | The workflow session may be deleted. FALSE isolates the reviewed-mode liveness counterexamples from deletion. |
@@ -51,32 +52,34 @@ compare-and-swap.
 | Model action | Code | Boundary |
 |---|---|---|
 | `Init` | `S` `createDefinition` 482, `insertRun` 446 | Run row `admitted` committed with the definition and receipt. |
-| `Dispatch` | `V` `dispatchWorkflowV2Run` 94 | After admission commit; a deletion may commit before it. The controller start is idempotent by instance id. |
-| `BeginExec` / `BeginRecord` | `R` 414 (call), 677 (activity); `S` `beginRun` 722 | Session row lock, then run lock; `admitted -> running` only if the session is live. |
-| `PollCommand` | `R` 437-440 (call), `takeQueuedCommand` 388-395 | `race(dequeue, 10 ms timer)` until the timer wins or a command is read; only when the next state is about to be admitted. |
-| `AdmitExec` / `AdmitRecord` | `R` 459 (call), 706 (activity); `S` `enterNode` 740 | Session and run locks; insert by deterministic id from history (scope, node, ordinal); idempotent on retry. |
-| `StartEffect` | `R` 467 | `ctx.startOrchestrationVersioned`; instance id derived from the node execution id. |
-| `CollectExec` / `CollectRecord` | `R` 475 (call), 762 (activity), 781 (effect watch), 485 (catch-all route); `S` `readCompletedNodes` 864 | Reads stored winners of the history-selected pending ids only. An unhandled runtime error goes to the catch-all state once (`catchAllEntered`, carried through continue-as-new). |
-| `WaitMsg` / `WaitTimer` | `R` 510-517 | One durable `race`; an already queued message wins; a wake is only a hint. |
-| `FinishExec` / `FinishFailExec` / `FinishRecord` | `R` 343 (finishRun), 331 (`persistently`), 800 (activity), 806 (no IR on the failure path); `S` `finishRun` 876 | Session and run locks; run end, terminal node and pending nodes in one transaction. A failed attempt is retried on durable timers (about 30 minutes). |
-| `NotifyExec` / `NotifyRecord` | `R` 349, 403 (calls), 924 (activity) | At-least-once; stable client message id; reads no IR. |
-| `CancelTx` | `R` 398 (applyCommand), 876-891 (activity); `S` `finishRun` 876 | Run `cancelled` and pending nodes `winner = 'cancel'` in one transaction. |
-| `CancelStop` | `R` 892-908; `S` `listCancelledNodeIds` 857 | After the commit; not transactional with it. |
-| `CancelCrash` | `R` 876 | Activity retry re-executes the whole body. |
-| `CancelRecord` | `R` 398-407 | Controller resumes with the recorded result. |
-| `ControllerFault` | `R` 366-380 (`workflowV2Controller`), 361 (`failRun`) | `controlRun` throws, or the input does not parse but names the run; the run ends failed with the cause. |
-| `ControllerDie` | `R` 331-340 (the last attempt's failure propagates), or an external termination | The controller orchestration ends; its run stays active until a reader reconciles it. |
-| `Reconcile` | `V` `reconcileWorkflowV2Run` 116; `T` 186 | Run `failed` (`controller_ended`) and pending nodes `winner = 'controller'` in one transaction. A run admitted but never dispatched is dispatched again instead. |
-| `EffClaim` | `R` 545 (call), 954 (activity), 1003; `S` `enterScript` 806; `X` `start` 548, `enter` 605 | Session, run and node locks; enter only a pending node of an active run of a live session; with `EntryFence` the process starts before the commit. |
+| `Dispatch` | `V` `dispatchWorkflowV2Run` 96 | After admission commit; a deletion may commit before it. The controller start is idempotent by instance id. |
+| `BeginExec` / `BeginRecord` | `R` 419 (call), 693 (activity); `S` `beginRun` 722 | Session row lock, then run lock; `admitted -> running` only if the session is live. |
+| `PollCommand` | `R` 442-445 (call), `takeQueuedCommand` 393-400 | `race(dequeue, 10 ms timer)` until the timer wins or a command is read; only when the next state is about to be admitted. |
+| `AdmitExec` / `AdmitRecord` | `R` 464 (call), 722 (activity); `S` `enterNode` 740 | Session and run locks; insert by deterministic id from history (scope, node, ordinal); idempotent on retry. |
+| `StartEffect` | `R` 472 | `ctx.startOrchestrationVersioned`; instance id derived from the node execution id. |
+| `CollectExec` / `CollectRecord` | `R` 480 (call), 778 (activity), 797 (effect watch), 490 (catch-all route); `S` `readCompletedNodes` 864 | Reads stored winners of the history-selected pending ids only. An unhandled runtime error goes to the catch-all state once (`catchAllEntered`, carried through continue-as-new). |
+| `WaitMsg` / `WaitTimer` | `R` 515-522 | One durable `race`; an already queued message wins; a wake is only a hint. |
+| `FinishExec` / `FinishFailExec` / `FinishRecord` | `R` 348 (finishRun), 336 (`persistently`), 816 (activity), 822 (no IR on the failure path); `S` `finishRun` 876 | Session and run locks; run end, terminal node and pending nodes in one transaction. A failed attempt is retried on durable timers (about 30 minutes). |
+| `NotifyExec` / `NotifyRecord` | `R` 354, 408 (calls), 940 (activity) | At least once; stable client message id; reads no IR. |
+| `CancelTx` | `R` 403 (applyCommand), 892-907 (activity); `S` `finishRun` 876 | Run `cancelled` and pending nodes `winner = 'cancel'` in one transaction. |
+| `CancelStop` | `R` 908-924; `S` `listCancelledNodeIds` 857 | After the commit; not transactional with it. Sends a cancellation request (`cancelInstance`) only to effects that are still running; it is a request, not a stop. |
+| `CancelCrash` | `R` 892 | Activity retry re-executes the whole body; the code's attempts are finite (store retry policy, then `persistently`); the model allows one crash, and running out is `ControllerFault`. |
+| `CancelRecord` | `R` 403-412 | Controller resumes with the recorded result. |
+| `ControllerFault` | `R` 371-386 (`workflowV2Controller`), 366 (`failRun`) | `controlRun` throws (an activity ran out of attempts, or a protocol fault), or the input does not parse but names the run; the run ends failed with the cause. |
+| `ControllerDie` | `R` 336-345 (the last attempt's failure propagates); `R` 634 (pre-release versions fail at once); or an external termination | The controller orchestration ends; its run stays active and `read_workflow` shows `needsRecovery`. |
+| `Recover` | `V` `recoverWorkflowV2Run` 142; `T` `recoverWorkflowFromTool` 133 | Parent-authorized write. Run `failed` (`controller_ended`) and pending nodes `winner = 'controller'` in one transaction; a run admitted but never dispatched is dispatched instead. |
+| `EffClaim` | `R` 550 (call), 970 (activity), 1019; `S` `enterScript` 806; `X` `start` 548, `enter` 605 | Session, run and node locks; enter only a pending node of an active run of a live session. With `EntryFence` the process starts inside the transaction (`spawned`), holding the session row lock. |
+| `EffCommit` / `EffCommitFail` | `S` `enterScript` 806 (commit); `X` 605-625 (a failed commit stops and awaits the process, then the activity reports `execution_failed`) | The process exists before the commit; a failed commit kills it but cannot undo what it already did. |
 | `EffLaunch` | none in this commit; `159bdce5` `R` 852 (claim), 855 (binding read), 876 (runner) | Only without `EntryFence`: the process starts after the claim committed. |
-| `EffComplete` | `R` 993-1012, `scriptResult` 1058 | Script result enters the effect history before it is stored. |
-| `EffStopDecided` | `R` 983-991, 1014; `S` `isNodePending` 824; `X` 574 | Polling liveness check; stops the script when its node is decided elsewhere. |
-| `EffCrash` | `R` 545 | Activity re-dispatch after a worker crash. |
-| `EffDie` | `R` 549 | Record activity exhausts retries, or the effect instance is terminated. |
-| `EffRecord` | `R` 549 (call), 1018 (activity); `S` `completeNode` 833 | Session lock, then compare-and-swap from `pending`; loser reads the stored winner. |
-| `EffWake` / `EffWakeDup` / `EffWakeLost` | `R` 550 (call), 1039 (activity) | Enqueue to the controller queue only for an active run. |
+| `EffComplete` | `R` 1009-1028, `scriptResult` 1074 | Script result enters the effect history before it is stored. |
+| `EffStopDecided` | `R` 999-1007, 1030; `S` `isNodePending` 824; `X` 574 | Liveness query every 1 s and the runner's 250 ms poll; it stops the script when its node is decided elsewhere, provided the store answers and the worker runs its timers. |
+| `EffStopRequested` | duroxide cancellation of the effect instance; `X` 574 (`isCancelled`) | The effect acknowledges a stop request: its runner kills the script and it ends without storing a result. |
+| `EffCrash` | `R` 550 | Activity re-dispatch after a worker crash; a crash inside the entry transaction rolls it back. A script process of the crashed worker may outlive it (not modeled; see below). |
+| `EffDie` | `R` 554 | Record activity exhausts retries, or the effect instance is terminated. |
+| `EffRecord` | `R` 554 (call), 1034 (activity); `S` `completeNode` 833 | Session lock, then compare-and-swap from `pending`; loser reads the stored winner. |
+| `EffWake` / `EffWakeDup` / `EffWakeLost` | `R` 555 (call), 1055 (activity) | Enqueue to the controller queue only for an active run. |
 | `SendCancel` | `management-client.ts` `sendCommand` | Command enqueued to the controller queue. |
-| `Delete` | `cms-migrations.ts` `cms_soft_delete_session`; `M` trigger 65-94 | Soft delete, definition tombstone, run cancel and pending nodes `winner = 'delete'` in one transaction. |
+| `Delete` | `cms-migrations.ts` `cms_soft_delete_session`; `M` trigger 65-94 | Soft delete, definition tombstone, run cancel and pending nodes `winner = 'delete'` in one transaction; waits for an entry transaction that holds the session row (`NoEntryInFlight`). |
 
 `Writable` in the model is the session-row check that `S` `lockLiveSession`
 (324) makes at the start of each locking transaction. Every v2 transaction
@@ -92,9 +95,19 @@ takes the session row first, so they serialize.
 - `PollCommand` reads one message per step; a chain of states that complete
   at admission is bounded here by `MaxLoops`, so the model cannot show the
   starvation that `CommandPoll` removes. The immediate-chain regression shows it.
-- `Reconcile` is weakly fair: the model assumes that a reader eventually reads
-  a run whose controller ended. Without a reader the run stays active
-  (`df-no-reconciler`).
+- `Recover` is weakly fair: the model assumes that the parent eventually
+  recovers a run that `read_workflow` shows as needing it. Nothing recovers
+  it otherwise; without the operation the run stays active (`df-no-recovery`).
+- Only transactions that can overlap an entry transaction in the single
+  cursor model wait for it (`NoEntryInFlight` on collect, finish, cancel,
+  record, recover and delete); begin and admit cannot overlap it here.
+- A worker crash rolls back an entry transaction, but a script process that
+  worker had started may keep running without its watcher until it ends on
+  its own. Its effects are already-started effects, separate from a new
+  entry after a deletion (which `Prop_NoScriptAfterDelete` excludes); the
+  model does not track such orphans.
+- External effects of a started script happen at least once (a crash
+  re-runs the script) and are never rolled back.
 - Continue-as-new is not modeled. It carries the exact controller state
   (cursor, ordinals, steps); the 30-step loop regression checks it.
 - The controller is one sequential process; activity retries are Exec steps
@@ -123,13 +136,14 @@ takes the session row first, so they serialize.
 | `Prop_ResultImmutable` | A stored node result never changes. |
 | `Prop_RunTerminalImmutable` | A terminal run status never changes. |
 | `Prop_NoAdmissionAfterTerminal` | No node execution is admitted after the run ended. |
-| `Prop_NoScriptAfterDelete` | No script starts after the session was deleted. |
+| `Prop_NoScriptAfterDelete` | No script process starts (in an entry transaction or after it) after the session was deleted. |
 | `Prop_TombstonePermanent` | A deleted definition stays deleted. |
 | `Inv_CatchAllAfterUnhandled` (in `CoreSafety`) | The catch-all state is admitted only after a state ended with an error it had no route for; `Inv_EventsOnce` limits it to one admission. |
 | `Live_Terminates` | The run eventually ends. |
 | `Live_ControllerDone` | The controller eventually finishes. |
 | `Live_EffectsQuiesce` | Every effect eventually ends for good. |
-| `Live_CancelStops` | Every effect of a cancel-won node is eventually asked to stop. |
+| `Prop_CancelAsksLiveEffects` | Each stop step of the cancel activity asks every cancel-won effect that has not ended to stop (an ended effect needs no request). |
+| `Live_CancelledEffectsEnd` | Every cancel-won effect eventually ends, by its stop request or by its own check, even when the cancel activity runs out of attempts. |
 
 ## Cases
 
@@ -142,24 +156,24 @@ takes the session row first, so they serialize.
 | `rv-terminal-no-pending` | reviewed 63c8013b | controller faults, deletion | `Inv_TerminalNoPending` | safety violation |
 | `rv-terminates-lost-wake` | reviewed 63c8013b | wake loss, no deletion | `Live_Terminates` | liveness violation |
 | `rv-terminates-effect-death` | reviewed 63c8013b | effect faults, no deletion | `Live_Terminates` | liveness violation |
-| `rv-cancel-stops` | reviewed 63c8013b | cancel crash only, no deletion | `Live_CancelStops` | liveness violation |
+| `rv-cancel-stops` | reviewed 63c8013b | one cancel crash, no deletion | `Prop_CancelAsksLiveEffects` | safety violation |
 | `rv-no-script-after-delete` | reviewed 63c8013b | deletion | `Prop_NoScriptAfterDelete` | safety violation |
 | `rv-deleted-not-active` | reviewed 63c8013b | deletion | `Inv_DeletedNotActive` | safety violation |
 | `hd-safety` | this commit | all except controller death | all safety | PASS |
 | `hd-safety-loops2` | this commit, `MaxLoops = 2` | all except controller death | all safety | PASS |
-| `hd-liveness` | this commit | wake loss, effect faults | all four liveness | PASS |
-| `hd-liveness-faults` | this commit | all except controller death | liveness except `Live_CancelStops` | PASS |
+| `hd-liveness` | this commit | wake loss, effect faults | `Live_Terminates`, `Live_ControllerDone`, `Live_CancelledEffectsEnd`, `Live_EffectsQuiesce` | PASS |
+| `hd-liveness-faults` | this commit | all except controller death | the same four | PASS |
 | `hd-catchall-safety` | this commit, catch-all | all except controller death | all safety | PASS |
-| `hd-catchall-liveness` | this commit, catch-all | wake loss, effect faults | all four liveness | PASS |
+| `hd-catchall-liveness` | this commit, catch-all | wake loss, effect faults | the same four | PASS |
 | `hd-controller-death` | this commit | controller death, effect faults | `CoreSafety`, `Inv_TerminalNoPending`, `Live_Terminates`, `Live_EffectsQuiesce` | PASS |
 | `df-no-cas` | this commit + `NoCas` | none | `Prop_ResultImmutable` | safety violation |
 | `df-no-backstop` | this commit without `Backstop` | wake loss | `Live_Terminates` | liveness violation |
 | `df-no-entry-fence` | this commit without `EntryFence` (the `159bdce5` entry) | none | `Prop_NoScriptAfterDelete` | safety violation |
-| `df-no-reconciler` | this commit without `Reconciler` | controller death, no deletion | `Live_Terminates` | liveness violation |
+| `df-no-recovery` | this commit without `Recovery` | controller death, no deletion | `Live_Terminates` | liveness violation |
 
-`Live_CancelStops` is not checked with controller faults: a controller that
-fails after the cancel commit sends no stop request. The script's liveness
-check still stops it; `Live_EffectsQuiesce` and the regressions cover that.
+A controller fault may end the cancel activity before it sends any stop
+request (finite attempts); `Live_CancelledEffectsEnd` still holds through the
+script's own check, which is why it, not a request, is the liveness claim.
 
 A reviewed-mode violation is a model counterexample for the reviewed code,
 not by itself a reproduced defect. The regressions below exercise each
@@ -190,7 +204,8 @@ A case that exceeds its time or memory cap is VOID, not PASS.
 | Deletion while the effect prepares its script, with a positive control (`EntryFence`) | `packages/sdk/test/local/workflow-v2-faults.test.js` "starts no script once a deletion commits before its entry" |
 | IR unreadable after admission and finish attempts failing (`ControllerFault`, fail-closed finalization) | same file, "ends a run as failed with its cause when its IR cannot be read" |
 | Controller input that does not parse but names its run | same file, "ends a run as failed when its controller starts with input it cannot parse" |
-| Terminated controller and lost dispatch (`ControllerDie`, `Reconcile`) | same file, "ends a run whose controller was terminated, and dispatches an admitted run nobody started" |
+| Terminated controller and lost dispatch: read shows, recover acts (`ControllerDie`, `Recover`) | same file, "shows a run whose controller can no longer end it without changing it, and recovers it only on request" |
+| Pre-release controller versions fail visibly; recover ends the run | same file, "fails a controller instance of a pre-release version visibly" |
 | Continue-as-new with a pending state | same file, "carries a pending state across continue-as-new" |
 | Parent notification after a crash past the parent's enqueue (at least once, one id) | same file, "notifies the parent at least once with one stable message id" |
 | Cancel behind a wake; cancel during a chain of states that complete at admission (`CommandPoll`) | same file, "takes a cancel that arrives after a result's wake" and "takes a queued cancel within one step of a long chain" |

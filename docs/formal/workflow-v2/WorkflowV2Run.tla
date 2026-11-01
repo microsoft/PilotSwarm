@@ -34,7 +34,7 @@ CONSTANTS
     EndPending,           \* fix: every run end completes its pending node executions
     EffectWatch,          \* fix: collection fails a pending node whose effect ended
     CommandPoll,          \* fix: the controller reads queued commands before every admission
-    Reconciler,           \* fix: a reader ends a run whose controller ended without ending it
+    Recovery,             \* fix: an explicit recover ends a run whose controller ended without ending it
     CatchAll,             \* feature: the workflow declares a catch-all state H
     ControllerDeath,      \* fault: the controller ends without ending its run
     Deletes,              \* environment: the workflow session may be deleted
@@ -42,7 +42,7 @@ CONSTANTS
 
 ASSUME MaxLoops \in Nat
 ASSUME {LoseWake, ControllerFaults, EffectFaults, Backstop, CancelStopFromStore,
-        DeleteGuard, EntryFence, EndPending, EffectWatch, CommandPoll, Reconciler,
+        DeleteGuard, EntryFence, EndPending, EffectWatch, CommandPoll, Recovery,
         CatchAll, ControllerDeath, Deletes, NoCas} \subseteq BOOLEAN
 
 SOrd == 1..(MaxLoops + 1)
@@ -94,6 +94,11 @@ NextAdmit == IF CommandPoll THEN "poll" ELSE "admit"
 (* A store transition the hardened code makes under the session row lock.  *)
 Writable == sessionLive \/ ~DeleteGuard
 
+(* An entry transaction that has started its script and not yet committed   *)
+(* holds the session row lock (store.enterScript); every other transaction  *)
+(* that locks the session row waits for it.                                 *)
+NoEntryInFlight == \A x \in SNodes : eff[x] # "spawned"
+
 (* Complete every pending node execution in the same store transaction.     *)
 EndPendingNodes(winner) ==
     /\ nState' = [x \in NX |-> IF nState[x] = "pending" THEN "completed" ELSE nState[x]]
@@ -113,9 +118,9 @@ TypeOK ==
     /\ cur.caught \in BOOLEAN
     /\ cur.ord \in SOrd
     /\ cur.pending \in NX \cup {NoNode}
-    /\ cancelStep \in {"tx", "stop", "rec"}
+    /\ cancelStep \in {"tx", "stop", "rec", "txRetry", "stopRetry", "recRetry"}
     /\ cancelIds \subseteq NX
-    /\ eff \in [SNodes -> {"absent", "started", "claimed", "running", "ran", "recorded", "done", "stopped", "failed"}]
+    /\ eff \in [SNodes -> {"absent", "started", "claimed", "spawned", "running", "ran", "recorded", "done", "stopped", "failed"}]
     /\ effRes \in [SNodes -> {"none", "again", "ok", "error", "skip"}]
     /\ stopReq \in [SNodes -> BOOLEAN]
     /\ wakeDup \in [SNodes -> 0..1]
@@ -218,6 +223,7 @@ StartEffect ==
 
 CollectExec ==
     /\ pc = "collect"
+    /\ NoEntryInFlight
     /\ LET x == cur.pending IN
          IF nState[x] = "completed"
            THEN /\ actRes' = nOutcome[x]
@@ -275,6 +281,7 @@ WaitTimer ==
 
 FinishExec ==
     /\ pc = "finish"
+    /\ NoEntryInFlight
     /\ IF runStatus \in Active /\ Writable
          THEN /\ runStatus' = "completed"
               /\ nState' = [x \in NX |-> IF x = TNode \/ (EndPending /\ nState[x] = "pending") THEN "completed" ELSE nState[x]]
@@ -289,6 +296,7 @@ FinishExec ==
 
 FinishFailExec ==
     /\ pc = "finishFail"
+    /\ NoEntryInFlight
     /\ IF runStatus \in Active /\ Writable
          THEN /\ runStatus' = "failed"
               /\ events' = [events EXCEPT !.ended = @ + 1]
@@ -323,11 +331,15 @@ NotifyRecord ==
 
 (* Controller: cancel activity. Its body is not one transaction: the store  *)
 (* commit (CancelTx) precedes the stop requests (CancelStop), and a crash   *)
-(* (CancelCrash) re-executes the body from its start.                       *)
+(* (CancelCrash) re-executes the body from its start. The code retries the  *)
+(* activity a bounded number of times; here one crash may occur ("...Retry" *)
+(* steps), and running out of attempts is ControllerFault. A stop request   *)
+(* is only a request: the effect acknowledges it later (EffStopRequested).  *)
 
 CancelTx ==
     /\ pc = "cancel"
-    /\ cancelStep = "tx"
+    /\ cancelStep \in {"tx", "txRetry"}
+    /\ NoEntryInFlight
     /\ LET pend == {x \in NX : nState[x] = "pending"} IN
          IF runStatus \in Active /\ Writable
            THEN /\ runStatus' = "cancelled"
@@ -337,30 +349,28 @@ CancelTx ==
                 /\ cancelIds' = pend
            ELSE /\ UNCHANGED storeVars
                 /\ cancelIds' = {}
-    /\ cancelStep' = "stop"
+    /\ cancelStep' = IF cancelStep = "tx" THEN "stop" ELSE "stopRetry"
     /\ UNCHANGED <<pc, cur, actRes, effVars, envVars>>
 
 CancelStop ==
     /\ pc = "cancel"
-    /\ cancelStep = "stop"
+    /\ cancelStep \in {"stop", "stopRetry"}
     /\ LET ids == IF CancelStopFromStore
                     THEN {x \in SNodes : nWinner[x] = "cancel"}
                     ELSE cancelIds \cap SNodes
-       IN /\ stopReq' = [x \in SNodes |-> stopReq[x] \/ x \in ids]
-          /\ eff' = [x \in SNodes |-> IF x \in ids /\ eff[x] \in {"started", "claimed", "running", "ran", "recorded"}
-                                        THEN "stopped" ELSE eff[x]]
-    /\ cancelStep' = "rec"
-    /\ UNCHANGED <<storeVars, pc, cur, actRes, cancelIds, effRes, wakeDup, envVars>>
+       IN stopReq' = [x \in SNodes |-> stopReq[x] \/ (x \in ids /\ eff[x] \notin {"absent"} \cup EffectEnded)]
+    /\ cancelStep' = IF cancelStep = "stop" THEN "rec" ELSE "recRetry"
+    /\ UNCHANGED <<storeVars, pc, cur, actRes, cancelIds, eff, effRes, wakeDup, envVars>>
 
 CancelCrash ==
     /\ pc = "cancel"
     /\ cancelStep \in {"stop", "rec"}
-    /\ cancelStep' = "tx"
+    /\ cancelStep' = "txRetry"
     /\ UNCHANGED <<storeVars, pc, cur, actRes, cancelIds, effVars, envVars>>
 
 CancelRecord ==
     /\ pc = "cancel"
-    /\ cancelStep = "rec"
+    /\ cancelStep \in {"rec", "recRetry"}
     /\ pc' = "notify"
     /\ cancelStep' = "tx"
     /\ UNCHANGED <<storeVars, cur, actRes, cancelIds, effVars, envVars>>
@@ -383,13 +393,17 @@ ControllerDie ==
     /\ pc' = "dead"
     /\ UNCHANGED <<storeVars, cur, actRes, cancelStep, cancelIds, effVars, envVars>>
 
-(* A reader of the run (reconcileWorkflowV2Run) ends a run whose            *)
-(* controller ended, in one store transaction with its pending nodes.      *)
-Reconcile ==
-    /\ Reconciler
+(* The parent's explicit recover (update_workflow operation recover,        *)
+(* recoverWorkflowV2Run) ends a run whose controller ended, in one store    *)
+(* transaction with its pending nodes. Nothing does this without that       *)
+(* request; its weak fairness is the assumption that the parent eventually  *)
+(* recovers a run that read_workflow shows as needing it.                   *)
+Recover ==
+    /\ Recovery
     /\ pc = "dead"
     /\ runStatus \in Active
     /\ Writable
+    /\ NoEntryInFlight
     /\ runStatus' = "failed"
     /\ EndPendingNodes("controller")
     /\ events' = [events EXCEPT !.ended = @ + 1]
@@ -401,18 +415,37 @@ Reconcile ==
 (* runScript activity entry. Reviewed code: skip only a completed node.     *)
 (* DeleteGuard: the entry checks the node, run and session under the        *)
 (* session, run and node locks. EntryFence: the script process starts in    *)
-(* that same transaction (store.enterScript). Without it the entry commits  *)
-(* first and the process starts later (EffLaunch), unchecked.               *)
+(* that same transaction (store.enterScript), before it commits: "spawned"  *)
+(* holds the session row lock until EffCommit or EffCommitFail. Without it  *)
+(* the entry commits first and the process starts later (EffLaunch),        *)
+(* unchecked. A started script's external effects happen at least once and *)
+(* are never undone (a failed commit kills the process, it does not roll   *)
+(* back what the script already did).                                       *)
 EffClaim(x) ==
     /\ eff[x] = "started"
     /\ LET entry == IF DeleteGuard
                       THEN nState[x] = "pending" /\ runStatus \in Active /\ sessionLive
                       ELSE nState[x] # "completed"
        IN IF entry
-            THEN /\ eff' = [eff EXCEPT ![x] = IF EntryFence THEN "running" ELSE "claimed"]
+            THEN /\ eff' = [eff EXCEPT ![x] = IF EntryFence THEN "spawned" ELSE "claimed"]
                  /\ UNCHANGED effRes
             ELSE /\ eff' = [eff EXCEPT ![x] = "ran"]
                  /\ effRes' = [effRes EXCEPT ![x] = "skip"]
+    /\ UNCHANGED <<storeVars, ctrlVars, stopReq, wakeDup, envVars>>
+
+(* EntryFence: the entry transaction commits after the process started.   *)
+EffCommit(x) ==
+    /\ eff[x] = "spawned"
+    /\ eff' = [eff EXCEPT ![x] = "running"]
+    /\ UNCHANGED <<storeVars, ctrlVars, effRes, stopReq, wakeDup, envVars>>
+
+(* The entry commit fails: the runner kills the started process and the     *)
+(* activity reports execution_failed (the attempt count rolls back).        *)
+EffCommitFail(x) ==
+    /\ EffectFaults
+    /\ eff[x] = "spawned"
+    /\ eff' = [eff EXCEPT ![x] = "ran"]
+    /\ effRes' = [effRes EXCEPT ![x] = "error"]
     /\ UNCHANGED <<storeVars, ctrlVars, stopReq, wakeDup, envVars>>
 
 (* Without EntryFence (reviewed 159bdce5): after the claim committed, the   *)
@@ -439,10 +472,13 @@ EffStopDecided(x) ==
     /\ effRes' = [effRes EXCEPT ![x] = "skip"]
     /\ UNCHANGED <<storeVars, ctrlVars, stopReq, wakeDup, envVars>>
 
-(* A worker crash re-dispatches runScript: the script may run again.       *)
+(* A worker crash re-dispatches runScript: the script may run again. A       *)
+(* crash inside the entry transaction rolls it back. A process the crashed  *)
+(* worker had started may outlive it; this model does not track such an     *)
+(* orphan (its effects are already-started effects, not a new entry).       *)
 EffCrash(x) ==
     /\ EffectFaults
-    /\ eff[x] \in {"claimed", "running"}
+    /\ eff[x] \in {"claimed", "spawned", "running"}
     /\ eff' = [eff EXCEPT ![x] = "started"]
     /\ UNCHANGED <<storeVars, ctrlVars, effRes, stopReq, wakeDup, envVars>>
 
@@ -454,9 +490,19 @@ EffDie(x) ==
     /\ eff' = [eff EXCEPT ![x] = "failed"]
     /\ UNCHANGED <<storeVars, ctrlVars, effRes, stopReq, wakeDup, envVars>>
 
+(* The effect acknowledges a stop request: duroxide cancels it, its runner  *)
+(* kills the script, and it ends without storing a result. An effect inside *)
+(* its entry transaction acknowledges after that transaction ends.         *)
+EffStopRequested(x) ==
+    /\ stopReq[x]
+    /\ eff[x] \in {"started", "claimed", "running", "ran", "recorded"}
+    /\ eff' = [eff EXCEPT ![x] = "stopped"]
+    /\ UNCHANGED <<storeVars, ctrlVars, effRes, stopReq, wakeDup, envVars>>
+
 (* recordEffectResult activity, store.completeNode (compare-and-swap).     *)
 EffRecord(x) ==
     /\ eff[x] = "ran"
+    /\ NoEntryInFlight
     /\ IF effRes[x] # "skip" /\ (nState[x] = "pending" \/ NoCas) /\ Writable
          THEN /\ nState' = [nState EXCEPT ![x] = "completed"]
               /\ nWinner' = [nWinner EXCEPT ![x] = "effect"]
@@ -504,6 +550,7 @@ SendCancel ==
 Delete ==
     /\ Deletes
     /\ ~deleteSent
+    /\ NoEntryInFlight
     /\ deleteSent' = TRUE
     /\ sessionLive' = FALSE
     /\ IF DeleteGuard
@@ -520,18 +567,22 @@ Controller ==
     \/ CollectExec \/ CollectRecord \/ WaitMsg \/ WaitTimer
     \/ FinishExec \/ FinishFailExec \/ FinishRecord \/ NotifyExec \/ NotifyRecord
     \/ CancelTx \/ CancelStop \/ CancelCrash \/ CancelRecord \/ ControllerFault
-    \/ PollCommand \/ ControllerDie \/ Reconcile
+    \/ PollCommand \/ ControllerDie \/ Recover
 
 Effects ==
     \E x \in SNodes :
-        \/ EffClaim(x) \/ EffLaunch(x) \/ EffComplete(x) \/ EffStopDecided(x) \/ EffCrash(x) \/ EffDie(x)
+        \/ EffClaim(x) \/ EffCommit(x) \/ EffCommitFail(x) \/ EffLaunch(x) \/ EffComplete(x) \/ EffStopDecided(x)
+        \/ EffStopRequested(x) \/ EffCrash(x) \/ EffDie(x)
         \/ EffRecord(x) \/ EffWake(x) \/ EffWakeDup(x) \/ EffWakeLost(x)
 
 Next == Controller \/ Effects \/ SendCancel \/ Delete
 
-(* Controller and normal effect steps are weakly fair. A crash can repeat   *)
-(* the cancel body or a script, so the steps a crash disables are strongly  *)
-(* fair. Faults, cancel and delete are environment actions without fairness.*)
+(* Controller and normal effect steps are weakly fair. The cancel body may  *)
+(* crash once, so its steps are weakly fair too. A worker crash may repeat  *)
+(* a script, so the effect steps a crash disables are strongly fair (an     *)
+(* assumption: crashes do not recur forever). Recover is weakly fair: the   *)
+(* parent eventually recovers a run that needs it. Faults, cancel and       *)
+(* delete are environment actions without fairness.                         *)
 Fairness ==
     /\ WF_vars(Dispatch) /\ WF_vars(BeginExec) /\ WF_vars(BeginRecord)
     /\ WF_vars(AdmitExec) /\ WF_vars(AdmitRecord) /\ WF_vars(StartEffect)
@@ -539,10 +590,11 @@ Fairness ==
     /\ WF_vars(WaitMsg) /\ WF_vars(WaitTimer)
     /\ WF_vars(FinishExec) /\ WF_vars(FinishFailExec) /\ WF_vars(FinishRecord)
     /\ WF_vars(NotifyExec) /\ WF_vars(NotifyRecord)
-    /\ WF_vars(CancelTx) /\ SF_vars(CancelStop) /\ SF_vars(CancelRecord)
-    /\ WF_vars(PollCommand) /\ WF_vars(Reconcile)
+    /\ WF_vars(CancelTx) /\ WF_vars(CancelStop) /\ WF_vars(CancelRecord)
+    /\ WF_vars(PollCommand) /\ WF_vars(Recover)
     /\ \A x \in SNodes :
-          /\ WF_vars(EffClaim(x)) /\ SF_vars(EffLaunch(x)) /\ SF_vars(EffComplete(x)) /\ SF_vars(EffStopDecided(x))
+          /\ WF_vars(EffClaim(x)) /\ WF_vars(EffCommit(x)) /\ SF_vars(EffLaunch(x)) /\ SF_vars(EffComplete(x))
+          /\ SF_vars(EffStopDecided(x)) /\ SF_vars(EffStopRequested(x))
           /\ WF_vars(EffRecord(x)) /\ WF_vars(EffWake(x))
 
 Spec == Init /\ [][Next]_vars /\ Fairness
@@ -601,7 +653,13 @@ Prop_NoAdmissionAfterTerminal ==
 
 (* No script starts after the workflow session was deleted.                *)
 Prop_NoScriptAfterDelete ==
-    [][\A x \in SNodes : (eff[x] # "running" /\ eff'[x] = "running") => sessionLive]_vars
+    [][\A x \in SNodes : (eff[x] \notin {"spawned", "running"} /\ eff'[x] \in {"spawned", "running"}) => sessionLive]_vars
+
+(* Requested: each stop step of the cancel activity asks every cancel-won   *)
+(* effect that has not ended to stop (an ended effect needs no request).    *)
+Prop_CancelAsksLiveEffects ==
+    [][(pc = "cancel" /\ cancelStep \in {"stop", "stopRetry"} /\ cancelStep' \in {"rec", "recRetry"})
+        => \A x \in SNodes : (nWinner[x] = "cancel" /\ eff[x] \notin {"absent"} \cup EffectEnded) => stopReq'[x]]_vars
 
 (* A tombstone is permanent.                                               *)
 Prop_TombstonePermanent == [][(defDeleted => (defDeleted' /\ ~sessionLive'))]_vars
@@ -614,7 +672,10 @@ Live_ControllerDone == <>(pc = "done")
 
 Live_EffectsQuiesce == <>[](\A x \in SNodes : eff[x] \in {"absent"} \cup EffectEnded)
 
-Live_CancelStops ==
-    \A x \in SNodes : (nWinner[x] = "cancel" /\ eff[x] \in {"started", "claimed", "running"}) ~> stopReq[x]
+(* Acknowledged: every cancel-won effect eventually ends (by its stop        *)
+(* request, or by its own check that its node was decided), even when the   *)
+(* cancel activity runs out of attempts before it sends any request.        *)
+Live_CancelledEffectsEnd ==
+    \A x \in SNodes : (nWinner[x] = "cancel") ~> (eff[x] \in {"absent"} \cup EffectEnded)
 
 =============================================================================

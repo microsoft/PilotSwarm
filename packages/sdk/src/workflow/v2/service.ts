@@ -18,6 +18,8 @@ import {
     type StoredOperation,
     type WorkflowActor,
     type WorkflowDefinitionReceipt,
+    type WorkflowRunRow,
+    type WorkflowRunStatus,
     type WorkflowStore,
 } from "./store.js";
 
@@ -103,40 +105,68 @@ export async function dispatchWorkflowV2Run(host: WorkflowV2Host, receipt: Workf
 /** duroxide statuses after which an orchestration does no more work. */
 const ENDED_ORCHESTRATION_STATUSES: readonly string[] = ["Completed", "Failed", "Terminated"];
 
+/** What a run's controller says about the run, without changing anything. */
+export interface WorkflowV2ControllerView {
+    status: string;
+    error: string | null;
+    /**
+     * The run is active but its controller can no longer end it (it ended,
+     * or its instance is gone), or the run was admitted and never started.
+     * update_workflow operation recover acts on it.
+     */
+    needsRecovery: boolean;
+}
+
+export async function inspectWorkflowV2Controller(host: Pick<WorkflowV2Host, "duroxideClient">, run: WorkflowRunRow): Promise<WorkflowV2ControllerView> {
+    const controller = await host.duroxideClient.getStatus(run.controllerInstanceId);
+    const ended = controller.status === "NotFound" || ENDED_ORCHESTRATION_STATUSES.includes(controller.status);
+    return {
+        status: controller.status,
+        error: controller.error === undefined ? null : jsonbSafeText(controller.error, 2_000),
+        needsRecovery: ACTIVE_RUN_STATUSES.includes(run.status) && ended,
+    };
+}
+
 /**
- * Bring an active run in line with its controller, for a reader of the run:
+ * Recover an active run whose controller can no longer end it, on an
+ * explicit request (update_workflow operation recover):
  * - admitted with no controller instance (the dispatch after admission was
  *   lost): dispatch it again (the start is idempotent);
  * - the controller ended, or its instance is gone, while the run is still
- *   active (its finalization retries ran out, or it was terminated): end the
- *   run as failed with the controller's state, visibly. Pending node
- *   executions lose to that end, so a running script's liveness check stops it.
+ *   active (its finalization attempts ran out, it was terminated, or its
+ *   history is from an unsupported pre-release controller): end the run as
+ *   failed with the controller's state. Pending node executions lose to that
+ *   end, so a running script's liveness check stops it.
  * A run that is not active, or whose controller is still running, is left as it is.
  */
-export async function reconcileWorkflowV2Run(host: Pick<WorkflowV2Host, "store" | "duroxideClient">, runId: string): Promise<void> {
+export async function recoverWorkflowV2Run(host: Pick<WorkflowV2Host, "store" | "duroxideClient">, runId: string, requestedBy: string | null)
+    : Promise<{ runId: string; action: "none" | "dispatched" | "ended"; status: WorkflowRunStatus; controller: WorkflowV2ControllerView }> {
     const run = await host.store.readRun(runId);
-    if (!run || !ACTIVE_RUN_STATUSES.includes(run.status)) return;
-    const controller = await host.duroxideClient.getStatus(run.controllerInstanceId);
+    if (!run) throw new WorkflowStoreError("RUN_NOT_FOUND", `Workflow run ${runId} does not exist.`);
+    const controller = await inspectWorkflowV2Controller(host, run);
+    if (!controller.needsRecovery) return { runId, action: "none", status: run.status, controller };
     if (controller.status === "NotFound" && run.status === "admitted") {
         const input: ControllerInput = { v: 2, workflowSessionId: run.workflowSessionId, runId: run.runId };
         await host.duroxideClient.startOrchestrationVersioned(run.controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME, input, WORKFLOW_V2_CONTROLLER_VERSION);
-        return;
+        await host.store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.recovered",
+            data: { runId: run.runId, action: "dispatched", requestedBy } }]);
+        return { runId, action: "dispatched", status: run.status, controller };
     }
-    if (controller.status !== "NotFound" && !ENDED_ORCHESTRATION_STATUSES.includes(controller.status)) return;
     const message = controller.status === "NotFound"
         ? "The workflow controller no longer exists; the run cannot continue."
         : `The workflow controller ended (${controller.status}) without ending the run.`;
-    const controllerError = controller.error === undefined ? null : jsonbSafeText(controller.error, 2_000);
-    await host.store.finishRun({
+    const ended = await host.store.finishRun({
         runId: run.runId, status: "failed", terminalNodeId: null, terminalOutcome: null, outputText: null,
-        errorText: canonicalJson({ code: "controller_ended", message, details: { controllerStatus: controller.status, controllerError } }),
+        errorText: canonicalJson({ code: "controller_ended", message,
+            details: { controllerStatus: controller.status, controllerError: controller.error, requestedBy } }),
         endPending: { winner: "controller", message: "The workflow run ended before this state finished." },
         projection: {
             sessionId: run.workflowSessionId,
-            events: [{ eventType: "workflow.failed", data: { runId: run.runId, code: "controller_ended", controllerStatus: controller.status, error: message } }],
+            events: [{ eventType: "workflow.failed", data: { runId: run.runId, code: "controller_ended", controllerStatus: controller.status, error: message, requestedBy } }],
             update: { state: "failed", lastError: message, touch: true },
         },
     });
+    return { runId, action: ended.ended ? "ended" : "none", status: ended.run.status, controller };
 }
 
 /**

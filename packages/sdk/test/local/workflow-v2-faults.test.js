@@ -21,7 +21,7 @@ import { randomUUID } from "node:crypto";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { createWorkflowV2 } from "../../src/workflow/v2/service.ts";
-import { readWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
+import { readWorkflowFromTool, updateWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
 import {
     registerWorkflowV2, WORKFLOW_V2_ACTIVITIES, WORKFLOW_V2_CONTROLLER_NAME, WORKFLOW_V2_CONTROLLER_VERSION, workflowEffectInstanceId,
 } from "../../src/workflow/v2/runtime.ts";
@@ -376,14 +376,16 @@ states:
         } finally { await h.stop(); }
     });
 
-    it("ends a run whose controller was terminated, and dispatches an admitted run nobody started, when the parent reads it", { timeout: TIMEOUT }, async () => {
+    it("shows a run whose controller can no longer end it without changing it, and recovers it only on request", { timeout: TIMEOUT }, async () => {
         const h = await harness(getEnv(), {});
         try {
             const parentId = randomUUID();
             await h.host.catalog.createSession(parentId, {});
-            const read = async (id) => JSON.parse(await readWorkflowFromTool({ workflow_id: id }, { callerSessionId: parentId, host: h.host }));
+            const context = { callerSessionId: parentId, host: h.host };
+            const read = async (id) => JSON.parse(await readWorkflowFromTool({ workflow_id: id }, context));
+            const recover = async (id, operationId) => JSON.parse(await updateWorkflowFromTool({ workflow_id: id, operation: "recover", operation_id: operationId }, context));
 
-            // A terminated controller: the run is still active until a reader ends it.
+            // A terminated controller: reading shows it and changes nothing; recover ends the run.
             const slowId = randomUUID();
             const slow = await createWorkflowV2(h.host, { workflowSessionId: slowId, parentSessionId: parentId, yaml: SLOW,
                 actor: ACTOR, operationId: "start", start: { inputs: {} } });
@@ -393,27 +395,74 @@ states:
             }, "the script to start");
             await h.client.cancelInstance(slow.receipt.run.controllerInstanceId, "terminated by the test");
             await until(async () => (await h.client.getStatus(slow.receipt.run.controllerInstanceId)).status === "Failed", "the controller to end");
+            for (let read_ = 0; read_ < 2; read_ += 1) {
+                const view = await read(slowId);
+                expect(view.ok, JSON.stringify(view)).toBe(true);
+                expect(view.run).toMatchObject({ status: "running", controller: { status: "Failed", needsRecovery: true } });
+            }
             expect((await h.store.readRun(slow.receipt.run.runId)).status).toBe("running");
-            const view = await read(slowId);
-            expect(view.ok, JSON.stringify(view)).toBe(true);
-            expect(view.run).toMatchObject({ status: "failed" });
+            expect(await h.store.readNodeExecution(node.nodeExecutionId)).toMatchObject({ state: "pending" });
+            const recovered = await recover(slowId, "recover-1");
+            expect(recovered, JSON.stringify(recovered)).toMatchObject({ ok: true, action: "ended", status: "failed", controller: { status: "Failed", needsRecovery: true } });
             const ended = await h.store.readRun(slow.receipt.run.runId);
-            expect(ended.terminalError).toMatchObject({ code: "controller_ended", details: { controllerStatus: "Failed" } });
+            expect(ended.terminalError).toMatchObject({ code: "controller_ended", details: { controllerStatus: "Failed", requestedBy: parentId } });
             expect(await h.store.readNodeExecution(node.nodeExecutionId)).toMatchObject({ state: "completed", outcome: "cancelled", winner: "controller" });
+            expect(await recover(slowId, "recover-2")).toMatchObject({ ok: true, action: "none", status: "failed" });
+            expect((await read(slowId)).run.controller).toBeUndefined();
             // The running script stops through its liveness check.
             const effect = await h.client.waitForOrchestration(workflowEffectInstanceId(node.nodeExecutionId), 30_000);
             expect(effect.status, JSON.stringify(effect)).toBe("Completed");
 
-            // An admitted run whose dispatch was lost: the reader dispatches it, and it then runs to its end.
+            // An admitted run whose dispatch was lost: reading shows it; recover starts it, and it runs to its end.
             const lostId = randomUUID();
             const undispatched = { ...h.host, duroxideClient: { ...h.host.duroxideClient, startOrchestrationVersioned: async () => undefined } };
             const lost = await createWorkflowV2(undispatched, { workflowSessionId: lostId, parentSessionId: parentId, yaml: TWO_STEPS,
                 actor: ACTOR, operationId: "start", start: { inputs: {} } });
+            expect((await read(lostId)).run).toMatchObject({ status: "admitted", controller: { status: "NotFound", needsRecovery: true } });
             expect((await h.client.getStatus(lost.receipt.run.controllerInstanceId)).status).toBe("NotFound");
-            expect((await read(lostId)).ok).toBe(true);
+            expect(await recover(lostId, "recover-lost")).toMatchObject({ ok: true, action: "dispatched", status: "admitted" });
             const run = await finished(h, lost.receipt.run.runId, 60_000);
             expect(run.status, JSON.stringify(run)).toBe("completed");
             expect(run.terminalOutput).toEqual({ n: 2 });
+            const recoveredEvents = await h.host.catalog.getSessionEvents(lostId, 0, 50, ["workflow.recovered"]);
+            expect(recoveredEvents.map(event => event.data)).toEqual([{ runId: run.runId, action: "dispatched", requestedBy: parentId }]);
+
+            // Only the parent may recover.
+            const stranger = JSON.parse(await updateWorkflowFromTool({ workflow_id: slowId, operation: "recover", operation_id: "x" },
+                { callerSessionId: randomUUID(), host: h.host }));
+            expect(stranger).toMatchObject({ ok: false, error: { code: "FORBIDDEN" } });
+            expect((await h.store.readRun(lost.receipt.run.runId)).status).toBe("completed");
+        } finally { await h.stop(); }
+    });
+
+    it("fails a controller instance of a pre-release version visibly, and recover ends its run", { timeout: TIMEOUT }, async () => {
+        const h = await harness(getEnv(), {});
+        try {
+            const parentId = randomUUID();
+            await h.host.catalog.createSession(parentId, {});
+            const context = { callerSessionId: parentId, host: h.host };
+            const undispatched = { ...h.host, duroxideClient: { ...h.host.duroxideClient, startOrchestrationVersioned: async () => undefined } };
+            const id = randomUUID();
+            const created = await createWorkflowV2(undispatched, { workflowSessionId: id, parentSessionId: parentId, yaml: TWO_STEPS,
+                actor: ACTOR, operationId: "start", start: { inputs: {} } });
+            const { runId, controllerInstanceId } = created.receipt.run;
+            // As a pre-release build would have started it.
+            await h.client.startOrchestrationVersioned(controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME, { v: 2, workflowSessionId: id, runId }, "1.1.0");
+            const failed = await until(async () => {
+                const status = await h.client.getStatus(controllerInstanceId);
+                return status.status === "Failed" ? status : null;
+            }, "the pre-release controller to fail");
+            expect(failed.error).toContain("pre-release build");
+            expect((await h.store.readRun(runId)).status).toBe("admitted");
+            expect(await h.store.listNodeExecutions(runId)).toEqual([]);
+            const view = JSON.parse(await readWorkflowFromTool({ workflow_id: id }, context));
+            expect(view.run).toMatchObject({ status: "admitted", controller: { status: "Failed", needsRecovery: true } });
+            expect(view.run.controller.error).toContain("pre-release build");
+            const recovered = JSON.parse(await updateWorkflowFromTool({ workflow_id: id, operation: "recover", operation_id: "recover" }, context));
+            expect(recovered).toMatchObject({ ok: true, action: "ended", status: "failed" });
+            const run = await h.store.readRun(runId);
+            expect(run.terminalError).toMatchObject({ code: "controller_ended", details: { controllerStatus: "Failed" } });
+            expect(run.terminalError.details.controllerError).toContain("pre-release build");
         } finally { await h.stop(); }
     });
 

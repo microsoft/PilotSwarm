@@ -2,8 +2,8 @@ import type { SessionOwnerInfo } from "../../types.js";
 import type { WorkflowToolBinding } from "../tool-policy.js";
 import { assertJsonValue, isJsonObject, jsonbSafeText, previewJson, type JsonValue } from "./json.js";
 import { describeWorkflowV2States } from "./runtime.js";
-import { createWorkflowV2, reconcileWorkflowV2Run, updateWorkflowV2, type WorkflowV2Command, type WorkflowV2Host } from "./service.js";
-import { diagnosticsJson, WorkflowStoreError, type WorkflowActor, type WorkflowDefinitionReceipt, type WorkflowStore } from "./store.js";
+import { createWorkflowV2, inspectWorkflowV2Controller, recoverWorkflowV2Run, updateWorkflowV2, type WorkflowV2Command, type WorkflowV2Host } from "./service.js";
+import { ACTIVE_RUN_STATUSES, diagnosticsJson, WorkflowStoreError, type WorkflowActor, type WorkflowDefinitionReceipt, type WorkflowStore } from "./store.js";
 
 /**
  * Agent tool adapters for workflow v2. Each returns one JSON payload; the
@@ -15,19 +15,22 @@ export const UPDATE_WORKFLOW_TOOL_SPEC = {
         "Change a workflow child you created with spawn_workflow (apiVersion pilotswarm.dev/v2-draft). "
         + "operation: replace_definition (yaml + expected_revision; drafts only, same metadata.version), "
         + "publish (expected_revision + definition_hash of the exact reviewed revision; does not start), "
-        + "publish_and_start (publish fields + inputs), or start (definition_hash + inputs; one live run per workflow child). "
-        + "operation_id makes the call idempotent: repeating it returns the original receipt; reusing it for a different request fails. "
-        + "Published definitions never change; a new version needs a new workflow child. Returns JSON.",
+        + "publish_and_start (publish fields + inputs), start (definition_hash + inputs; one live run per workflow child), "
+        + "or recover (run_id optional, default the live run): when read_workflow shows needsRecovery, a run whose controller ended "
+        + "without ending it is ended as failed (controller_ended), and a run admitted but never started is started; otherwise nothing changes. "
+        + "operation_id makes the call idempotent: repeating it returns the original receipt; reusing it for a different request fails "
+        + "(recover is idempotent by itself). Published definitions never change; a new version needs a new workflow child. Returns JSON.",
     parameters: {
         type: "object",
         properties: {
             workflow_id: { type: "string", description: "The workflow session id from spawn_workflow." },
-            operation: { type: "string", enum: ["replace_definition", "publish", "publish_and_start", "start"] },
+            operation: { type: "string", enum: ["replace_definition", "publish", "publish_and_start", "start", "recover"] },
             operation_id: { type: "string", description: "Idempotency id for this change." },
             yaml: { type: "string", description: "replace_definition: the complete new Workflow YAML." },
             expected_revision: { type: "integer", description: "replace_definition/publish: the draft revision you reviewed." },
             definition_hash: { type: "string", description: "publish/start: the yamlSha256 of the reviewed revision." },
             inputs: { type: "object", description: "publish_and_start/start: static run inputs checked against inputs.schema." },
+            run_id: { type: "string", description: "recover: the run to recover; default the live run." },
         },
         required: ["workflow_id", "operation", "operation_id"],
     },
@@ -36,7 +39,8 @@ export const UPDATE_WORKFLOW_TOOL_SPEC = {
 export const READ_WORKFLOW_TOOL_SPEC = {
     description:
         "Read a workflow child you created with spawn_workflow (v2): definition state, current revision and diagnostics, "
-        + "the graph, runs, and the node executions of one run (default: the live run). Returns JSON. Reading changes nothing.",
+        + "the graph, runs, and the node executions of one run (default: the live run). Returns JSON. Reading changes nothing: "
+        + "an active run whose controller can no longer end it shows run.controller.needsRecovery; use update_workflow operation recover.",
     parameters: {
         type: "object",
         properties: {
@@ -121,12 +125,29 @@ export function parseUpdateWorkflowArgs(args: Record<string, unknown>): { workfl
     else if (operation === "publish_and_start") {
         command = { operation, expectedRevision: revisionArg(args), definitionHash: requiredString(args, "definition_hash"), inputs: inputsArg(args) };
     } else if (operation === "start") command = { operation, definitionHash: requiredString(args, "definition_hash"), inputs: inputsArg(args) };
-    else throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "operation must be replace_definition, publish, publish_and_start or start.");
+    else throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "operation must be replace_definition, publish, publish_and_start, start or recover.");
     return { workflowSessionId, operationId, command };
+}
+
+/** update_workflow operation recover: act on a run that read_workflow shows as needing recovery. */
+async function recoverWorkflowFromTool(args: Record<string, unknown>, context: { callerSessionId: string; host: WorkflowToolHost }): Promise<string> {
+    const workflowSessionId = requiredString(args, "workflow_id");
+    requiredString(args, "operation_id");
+    await authorizeParent(context.host, workflowSessionId, context.callerSessionId);
+    const runs = await context.host.store.listRuns(workflowSessionId);
+    const requested = optionalString(args, "run_id");
+    const run = requested ? runs.find(item => item.runId === requested) : runs.find(item => item.mode === "live");
+    if (!run) throw new WorkflowStoreError("RUN_NOT_FOUND", requested ? `Run ${requested} is not a run of this workflow.` : "This workflow has no live run.");
+    const recovered = await recoverWorkflowV2Run(context.host, run.runId, context.callerSessionId);
+    return payload({
+        ok: true, workflowId: workflowSessionId, operation: "recover", runId: recovered.runId, action: recovered.action, status: recovered.status,
+        controller: { status: recovered.controller.status, error: recovered.controller.error, needsRecovery: recovered.controller.needsRecovery },
+    });
 }
 
 export async function updateWorkflowFromTool(args: Record<string, unknown>, context: { callerSessionId: string; host: WorkflowToolHost }): Promise<string> {
     try {
+        if (args.operation === "recover") return await recoverWorkflowFromTool(args, context);
         const { workflowSessionId, operationId, command } = parseUpdateWorkflowArgs(args);
         await authorizeParent(context.host, workflowSessionId, context.callerSessionId);
         const actor: WorkflowActor = { kind: "agent", sessionId: context.callerSessionId };
@@ -182,11 +203,15 @@ export async function readWorkflowFromTool(args: Record<string, unknown>, contex
     try {
         const workflowSessionId = requiredString(args, "workflow_id");
         await authorizeParent(context.host, workflowSessionId, context.callerSessionId);
-        // A run whose controller can no longer end it is ended (or re-dispatched) before it is shown.
-        for (const run of await context.host.store.listRuns(workflowSessionId)) await reconcileWorkflowV2Run(context.host, run.runId);
         const view = await readWorkflowV2View(context.host.store, workflowSessionId, {
             runId: optionalString(args, "run_id"), includeYaml: args.include_yaml === true,
         });
+        // Report (never change) whether an active run's controller can still end it.
+        const shown = isJsonObject(view.run) && typeof view.run.runId === "string" ? await context.host.store.readRun(view.run.runId) : null;
+        if (shown && isJsonObject(view.run) && ACTIVE_RUN_STATUSES.includes(shown.status)) {
+            const controller = await inspectWorkflowV2Controller(context.host, shown);
+            view.run = { ...view.run, controller: { status: controller.status, error: controller.error, needsRecovery: controller.needsRecovery } };
+        }
         return payload({ ok: true, ...view });
     } catch (error) {
         return errorPayload(error);
