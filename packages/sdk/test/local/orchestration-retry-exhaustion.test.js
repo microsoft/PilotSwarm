@@ -22,10 +22,13 @@ vi.mock("../../src/session-proxy.js", () => ({
     createSessionManagerProxy: () => mockManager,
 }));
 
-function createThrowingHarness({ turnResults = null } = {}) {
+function createThrowingHarness({ turnResults = null, errorMessage = "LLM endpoint exploded" } = {}) {
     const turns = [];
     const cmsStateCalls = [];
     const parentMessages = [];
+    const statuses = [];
+    const timers = [];
+    const events = [];
     const script = turnResults ? [...turnResults] : null;
     const queue = [JSON.stringify({ prompt: "hello there", clientMessageIds: ["cm-x"] })];
 
@@ -47,13 +50,13 @@ function createThrowingHarness({ turnResults = null } = {}) {
     const values = new Map();
     const ctx = {
         traceInfo: () => {},
-        setCustomStatus: () => {},
+        setCustomStatus: (status) => statuses.push(JSON.parse(status)),
         getValue: (k) => (values.has(k) ? values.get(k) : null),
         setValue: (k, v) => values.set(k, v),
         clearValue: (k) => values.delete(k),
         utcNow: () => ({ effect: "utcNow" }),
         newGuid: () => ({ effect: "newGuid" }),
-        scheduleTimer: (ms) => ({ effect: "scheduleTimer", ms }),
+        scheduleTimer: (ms) => { timers.push(ms); return { effect: "scheduleTimer", ms }; },
         dequeueEvent: (name) => ({ effect: "dequeueEvent", name }),
         race: (left, right) => ({ effect: "race", left, right }),
         continueAsNewVersioned: (input, version) => ({ effect: "continueAsNew", input, version }),
@@ -79,7 +82,7 @@ function createThrowingHarness({ turnResults = null } = {}) {
                     if (script.length === 0) throw new Error("runTurn past the script");
                     return script.shift();
                 }
-                return { throwError: new Error("LLM endpoint exploded") };
+                return { throwError: new Error(errorMessage) };
             case "race": {
                 const sides = [effect.left, effect.right];
                 const dequeueIx = sides.findIndex((s) => s?.effect === "dequeueEvent");
@@ -99,6 +102,10 @@ function createThrowingHarness({ turnResults = null } = {}) {
                     parentMessages.push(effect.args);
                     return undefined;
                 }
+                if (effect.effect === "manager.recordSessionEvent") {
+                    events.push(...effect.args[1]);
+                    return undefined;
+                }
                 if (effect.effect === "manager.getWorkerSessionPolicy") {
                     return { policy: null, allowedAgentNames: [] };
                 }
@@ -112,7 +119,7 @@ function createThrowingHarness({ turnResults = null } = {}) {
         }
     };
 
-    return { ctx, turns, cmsStateCalls, parentMessages, resolve };
+    return { ctx, turns, cmsStateCalls, parentMessages, statuses, timers, events, resolve };
 }
 
 async function latestHandler() {
@@ -153,6 +160,69 @@ const INPUT = (overrides = {}) => ({
     isSystem: false,
     blobEnabled: false,
     ...overrides,
+});
+
+describe("compute failure retry classification", () => {
+    for (const returned of [false, true]) {
+        it(`${returned ? "returned" : "thrown"} permanent compute failure stops immediately and keeps its reason when parked`, async () => {
+            const message = "COMPUTE_TARGET_NOT_FOUND: target was deleted";
+            const harness = createThrowingHarness({ errorMessage: message, turnResults: returned ? [{ type: "error", message }] : null });
+            const out = drive((await latestHandler())(harness.ctx, INPUT()), harness);
+            expect(out.kind).not.toBe("continueAsNew");
+            expect(harness.turns).toHaveLength(1);
+            expect(harness.timers).not.toContain(15_000);
+            expect(harness.cmsStateCalls.filter(([, state]) => state === "error")).toHaveLength(1);
+            const failureEvent = harness.events.find(event => event.eventType === "session.compute_failure");
+            expect(failureEvent).toBeDefined();
+            expect(failureEvent.data).toMatchObject({ code: "COMPUTE_TARGET_NOT_FOUND", permanent: true });
+            const status = harness.statuses.at(-1);
+            expect(status.computeFailure).toEqual({ code: "COMPUTE_TARGET_NOT_FOUND", permanent: true });
+            expect(status.error).toContain("Choose an available compute target");
+            expect(status.error).toContain("target was deleted");
+        });
+
+        it(`${returned ? "returned" : "thrown"} temporary compute failure retains all retries and an accurate reason`, async () => {
+            const message = "COMPUTE_UNAVAILABLE: host offline; HTTP 401";
+            let input = INPUT();
+            for (let attempt = 1; attempt <= 3; attempt++) {
+                const harness = createThrowingHarness({ errorMessage: message, turnResults: returned ? [{ type: "error", message, retryable: false }] : null });
+                const out = drive((await latestHandler())(harness.ctx, input), harness);
+                expect(harness.statuses.some(status => status.error?.includes("host offline"))).toBe(true);
+                expect(harness.statuses.some(status => status.error?.includes("start it"))).toBe(true);
+                if (attempt < 3) {
+                    expect(out.kind).toBe("continueAsNew");
+                    expect(out.input.retryCount).toBe(attempt);
+                    expect(harness.timers).toContain(attempt === 1 ? 15_000 : 30_000);
+                    input = INPUT(out.input);
+                } else {
+                    expect(out.kind).not.toBe("continueAsNew");
+                    expect(harness.cmsStateCalls.find(([, state]) => state === "error")[2]).toContain("Failed after 3 attempts");
+                }
+            }
+        });
+    }
+
+    it("ordinary success, authentication failure, and generic retry have the frozen version's durable schedule", async () => {
+        const { durableSessionOrchestration_1_0_82: frozen } = await import("../../src/orchestration_1_0_82/index.ts");
+        const latest = await latestHandler();
+        const normalized = value => JSON.parse(JSON.stringify(value).replaceAll("1.0.82", "VERSION").replaceAll("1.0.83", "VERSION"));
+        for (const options of [
+            { turnResults: [{ type: "completed", content: "ordinary answer" }] },
+            { errorMessage: "ordinary provider outage" },
+            { errorMessage: "Authentication failed (HTTP 401)" },
+        ]) {
+            const traces = [];
+            for (const handler of [frozen, latest]) {
+                const harness = createThrowingHarness(options);
+                const effects = [];
+                const resolve = harness.resolve;
+                harness.resolve = effect => { effects.push(effect); return resolve(effect); };
+                const out = drive(handler(harness.ctx, INPUT()), harness);
+                traces.push(normalized({ out, effects, statuses: harness.statuses }));
+            }
+            expect(traces[1]).toEqual(traces[0]);
+        }
+    });
 });
 
 describe("generic retry exhaustion (orchestration 1.0.69)", () => {

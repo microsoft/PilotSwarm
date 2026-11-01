@@ -4,6 +4,84 @@ import { WebPilotSwarmSession } from "../../src/web/web-client.ts";
 import { assertEqual } from "../helpers/assertions.js";
 
 describe("PilotSwarmClient wait status handling", () => {
+    it("preserves the saved permanent compute error when a detail read observes an active orchestration", async () => {
+        const client = new PilotSwarmClient({});
+        const writes = [];
+        const message = "COMPUTE_TARGET_DISABLED: enable the target, then resend";
+        client._catalog = {
+            getSession: async () => ({
+                sessionId: "compute", state: "error", lastError: message,
+                createdAt: new Date(), updatedAt: new Date(), currentIteration: 0,
+            }),
+            updateSession: async (...args) => writes.push(args),
+        };
+        client.duroxideClient = {
+            getStatus: async () => ({
+                status: "Running",
+                customStatus: JSON.stringify({ status: "error", computeFailure: { code: "COMPUTE_TARGET_DISABLED", permanent: true }, error: message }),
+            }),
+        };
+        expect((await client._getSessionInfo("compute")).error).toBe(message);
+        expect(writes).toEqual([]);
+    });
+
+    it("direct wait surfaces a permanent compute status before a durable response exists", async () => {
+        const client = new PilotSwarmClient({});
+        client.duroxideClient = {
+            waitForStatusChange: async () => ({
+                status: "Running", customStatusVersion: 1,
+                customStatus: JSON.stringify({
+                    status: "error", computeFailure: { code: "COMPUTE_TARGET_DISABLED", permanent: true },
+                    error: "COMPUTE_TARGET_DISABLED: enable the target, then resend",
+                }),
+            }),
+            getValue: async () => { throw new Error("must not wait for a durable response"); },
+        };
+        await expect(client._waitForTurnResult_external("session-compute", "compute", undefined, 1_000))
+            .rejects.toThrow("enable the target");
+    });
+
+    it("web sendAndWait surfaces a permanent compute status and can accept the next prompt", async () => {
+        let failed = true;
+        const api = {
+            call: async method => {
+                if (method === "getSessionStatus") return { customStatusVersion: 0, customStatus: { iteration: 0, responseVersion: 0, status: "idle" } };
+                if (method === "sendMessage") return {};
+                if (method === "waitForStatusChange") return failed
+                    ? { customStatusVersion: 1, customStatus: { status: "error", computeFailure: { code: "COMPUTE_TARGET_DISABLED", permanent: true }, error: "Enable the compute target, then resend" } }
+                    : { customStatusVersion: 2, customStatus: { status: "idle", iteration: 1, turnResult: { type: "completed", content: "recovered" } } };
+                throw new Error(`Unexpected API method: ${method}`);
+            },
+        };
+        const session = new WebPilotSwarmSession("web-compute", api);
+        await expect(session.sendAndWait("first", 1_000)).rejects.toThrow("Enable the compute target");
+        await expect(session.wait()).rejects.toThrow("No pending turn");
+        failed = false;
+        expect(await session.sendAndWait("second", 1_000)).toBe("recovered");
+    });
+
+    it("web authentication failures without compute metadata still use the ordinary durable response path", async () => {
+        let responseReads = 0;
+        const api = {
+            call: async method => {
+                if (method === "getSessionStatus") return { customStatusVersion: 0, customStatus: { iteration: 0, responseVersion: 0, status: "idle" } };
+                if (method === "sendMessage") return {};
+                if (method === "waitForStatusChange") return {
+                    customStatusVersion: 1,
+                    customStatus: { status: "error", authFailure: true, error: "status detail", responseVersion: 1 },
+                };
+                if (method === "getLatestResponse") {
+                    responseReads++;
+                    return { type: "error", content: "durable authentication detail", version: 1 };
+                }
+                throw new Error(`Unexpected API method: ${method}`);
+            },
+        };
+        const session = new WebPilotSwarmSession("ordinary-auth", api);
+        await expect(session.sendAndWait("ordinary prompt", 1_000)).rejects.toThrow("durable authentication detail");
+        expect(responseReads).toBe(1);
+    });
+
     it("syncs response cursors before fire-and-forget send", async () => {
         const calls = [];
         const fake = {

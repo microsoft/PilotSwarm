@@ -161,7 +161,14 @@ export interface ComputeHostRef {
     data?: Record<string, unknown>;
 }
 
-export type ComputeFailure = { ok: false; code: string; message: string; retryAfterMs?: number };
+export type ComputeFailure = {
+    ok: false;
+    code: string;
+    message: string;
+    retryAfterMs?: number;
+    /** Providers may classify their own codes; built-in codes have fixed classifications. */
+    permanent?: boolean;
+};
 
 /** Every provider call carries a deadline; a provider should stop work when it fires. */
 interface ComputeCall {

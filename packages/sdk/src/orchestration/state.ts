@@ -107,7 +107,7 @@ export interface DurableSessionState {
     pendingRequiredTool?: string;
     pendingSystemPrompt?: string;
     runtimeModelNotice?: string;
-    blockedError?: { message: string; authFailure?: boolean };
+    blockedError?: { message: string; authFailure?: boolean; computeFailure?: { code: string; permanent: boolean } };
     pendingCycleOrigin?: "cron" | "cron_at";
     bootstrapPrompt: boolean;
 
