@@ -99,13 +99,23 @@ async function until(check, label, timeoutMs = 60_000, diagnose = async () => nu
     throw new Error(`timed out waiting for ${label}: ${JSON.stringify(last)}; diagnosis: ${JSON.stringify(await diagnose())}`);
 }
 
-/** A worker-equivalent registration with one activity wrapped by `wrap` (and, optionally, its store wrapped by `wrapStore`). */
-async function harness(env, wrap, { wrapStore, runtimeOptions, ...options } = {}) {
+/**
+ * The catalog, store and durable provider one test shares among its
+ * workers. duroxide-node has no way to close a provider, so its pool stays
+ * open until the provider is collected; a test that needs several workers
+ * runs them all on one base instead of opening a pool per worker.
+ */
+async function baseOf(env) {
     const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
     await catalog.initialize();
-    const store = catalog.workflowStore();
     const provider = await PostgresProvider.connectWithSchema(env.store, env.duroxideSchema);
-    const client = new Client(provider);
+    return { catalog, store: catalog.workflowStore(), provider, client: new Client(provider) };
+}
+
+/** A worker-equivalent registration with one activity wrapped by `wrap` (and, optionally, its store wrapped by `wrapStore`). */
+async function harness(env, wrap, { wrapStore, runtimeOptions, base: shared, ...options } = {}) {
+    const base = shared ?? await baseOf(env);
+    const { catalog, store, provider, client } = base;
     const runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error", ...runtimeOptions });
     const registrar = {
         registerActivity: (name, fn) => runtime.registerActivity(name, wrap[name] ? wrap[name](fn) : fn),
@@ -126,17 +136,18 @@ async function harness(env, wrap, { wrapStore, runtimeOptions, ...options } = {}
     await runtime.start();
     let running = true;
     return {
-        store, client,
+        store, client, base,
         host: { catalog, store, duroxideClient: client },
-        /** Stop this worker's runtime (as if the worker died); its store stays open for work it abandoned. */
+        /** Stop this worker's runtime (as if the worker died); the shared store stays open for work it abandoned. */
         async stopRuntime() {
             if (!running) return;
             running = false;
             await runtime.shutdown(100);
         },
+        /** Stop the runtime, and close the catalog unless another test part shares it. */
         async stop() {
             await this.stopRuntime();
-            await catalog.close();
+            if (!shared) await catalog.close();
         },
     };
 }
@@ -834,6 +845,8 @@ states:
     transition: { next: { ok: done } }
   done: { type: terminal, outcome: succeeded, output: "\${input}" }
 `;
+        // Every worker runs on one base (one provider pool and one catalog), as workers share one database.
+        const base = await baseOf(getEnv());
         const workers = [];
         const abandoned = [];
         const crashes = [];
@@ -843,6 +856,7 @@ states:
         const crashingWorker = async (name) => {
             let armed = true;
             const worker = await harness(getEnv(), {}, {
+                base,
                 runtimeOptions,
                 wrapStore: (store) => {
                     const crashing = Object.create(store);
@@ -884,7 +898,7 @@ states:
                     expect(node).toMatchObject({ nodeId: "act", state: "pending", effectAttempts: 0, winner: null });
                     expect((await worker.store.readRun(runId)).status).toBe("running");
                     await worker.stopRuntime();
-                    worker = index < crashCount ? await crashingWorker(`crash-${index + 1}`) : await harness(getEnv(), {});
+                    worker = index < crashCount ? await crashingWorker(`crash-${index + 1}`) : await harness(getEnv(), {}, { base });
                     if (index === crashCount) workers.push(worker);
                 }
                 const run = await finished(worker, runId, 60_000);
@@ -900,9 +914,9 @@ states:
                 await worker.stopRuntime();
             }
         } finally {
-            for (const worker of workers) await worker.stopRuntime();
-            for (const release of abandoned) release();
             for (const worker of workers) await worker.stop();
+            for (const release of abandoned) release();
+            await base.catalog.close();
             await probe.close();
         }
     });
