@@ -68,7 +68,7 @@ export function motdScheduleSummary(draft, now = Date.now()) {
     if (!Number.isFinite(from) || to !== null && !Number.isFinite(to)) return "Choose a valid date and time.";
     const format = value => new Date(value).toLocaleString("en-US", { weekday: "short", month: "short",
         day: "numeric", hour: "numeric", minute: "2-digit" });
-    const zone = new Intl.DateTimeFormat("en-US", { timeZoneName: "long" }).formatToParts(new Date(from))
+    const zone = new Intl.DateTimeFormat("en-US", { timeZoneName: "longGeneric" }).formatToParts(new Date(from))
         .find(part => part.type === "timeZoneName")?.value || Intl.DateTimeFormat().resolvedOptions().timeZone;
     const starts = draft.startMode === "now" ? "now" : format(from);
     return to === null ? `Shows ${starts} until replaced or deleted${draft.startMode === "now" ? "." : ` (${zone}).`}`

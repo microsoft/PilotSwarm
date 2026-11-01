@@ -40,6 +40,16 @@ test("picker renders native radios, separate date and time controls, zone and no
     assert.match(html, /value="09:15"/);
     for (const label of ["Start time", "End time"]) assert.ok(html.includes(label), label);
 });
+test("a schedule spanning daylight-saving changes uses the generic zone name", () => {
+    const prior = process.env.TZ;
+    process.env.TZ = "America/Los_Angeles";
+    try {
+        const summary = motdScheduleSummary({ ...createMotdDraft(), startMode: "custom", startDate: "2030-11-02",
+            startTime: "09:00", endMode: "custom", endDate: "2030-11-08", endTime: "18:00" }, now);
+        assert.match(summary, /9:00 AM.*6:00 PM \(Pacific Time\)\./);
+        assert.doesNotMatch(summary, /Daylight|Standard/);
+    } finally { if (prior === undefined) delete process.env.TZ; else process.env.TZ = prior; }
+});
 test("missing ends render as No end rather than an invalid date", () => {
     const html = renderToStaticMarkup(React.createElement(MotdSplash, { message: {
         motdId: "1", startsAt: "2026-11-01T00:00:00Z", endsAt: null, bodyMd: "No end",
