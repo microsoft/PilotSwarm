@@ -10,7 +10,12 @@ async function openEditor(page, options = {}) {
     await page.getByRole("button", { name: options.admin === false ? "Settings" : "Admin console", exact: true }).click();
     await page.getByRole("button", { name: "Message of the day", exact: true }).click();
     await page.getByRole("region", { name: "Message of the day settings" }).waitFor();
-    return f;
+    return { ...f, stop: async () => {
+        // route.fetch uses the context's HTTP client, not only the page.
+        await page.request.dispose();
+        await page.context().close();
+        await f.stop();
+    } };
 }
 async function transferImage(page, target, { mobile = false, kind = "paste", name = "pasted.png", size = null, type = "image/png" } = {}) {
     if (mobile) {
