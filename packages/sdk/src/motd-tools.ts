@@ -5,7 +5,7 @@ export const MOTD_OPERATION_SPECS = [
     { method: "getCurrentMotd", name: "get_current_motd", kind: "current", access: "authed", description: "Read the current deployment message, excluding your dismissals." },
     { method: "dismissMotd", name: "dismiss_motd", kind: "dismiss", access: "authed", description: "Dismiss a message for yourself permanently. Later messages still show." },
     { method: "getMotdImage", name: "get_motd_image", kind: "image", access: "authed", description: "Read a message picture. Mobile falls back to the main picture." },
-    { method: "listMotds", name: "list_motds", kind: "list", access: "fleet:admin", description: "Admin: list messages, windows, overlap status and dismissal counts. Use before for older messages." },
+    { method: "listMotds", name: "list_motds", kind: "list", access: "authed", description: "Read message history, windows and overlap status. Use before for older messages. Creator identity and dismissal counts are admin-only." },
     { method: "createMotd", name: "create_motd", kind: "create", access: "fleet:admin", description: "Admin: create a deployment-wide message with a UTC window and markdown. Pictures are at most 2 MB each. Reuse requestId unchanged for retries." },
     { method: "deleteMotd", name: "delete_motd", kind: "delete", access: "fleet:admin", description: "Admin: delete a message and its pictures. Dismissals remain; no audit record is written." },
 ] as const;
@@ -61,13 +61,16 @@ export function runMotdStoreOperation(store: MotdStore, spec: MotdOperationSpec,
     }
 }
 export function createMotdTools(store: MotdStore, resolveViewer: () => Promise<MotdViewer>,
-    readPicture: (image: MotdArtifactImage, viewer: MotdViewer) => Promise<MotdImageInput>) {
-    return MOTD_OPERATION_SPECS.map(spec => defineTool(spec.name, {
+    readPicture: (image: MotdArtifactImage, viewer: MotdViewer) => Promise<MotdImageInput>, { includeAdmin = true } = {}) {
+    return MOTD_OPERATION_SPECS.filter(spec => includeAdmin || spec.access !== "fleet:admin").map(spec => defineTool(spec.name, {
         description: spec.description,
         parameters: motdToolParameters(spec, { artifactPictures: true }),
         handler: async (args: MotdArgs) => {
             const viewer = await resolveViewer();
-            if (!viewer.isAdmin) throw new MotdError("MOTD_FORBIDDEN", "Message tools require admin", 403);
+            if (!viewer.principal?.provider || !viewer.principal.subject)
+                throw new MotdError("MOTD_FORBIDDEN", "Message tools require an authenticated owner", 403);
+            if (spec.access === "fleet:admin" && !viewer.isAdmin)
+                throw new MotdError("MOTD_FORBIDDEN", "Message management requires admin", 403);
             const resolved = { ...args };
             if (spec.kind === "create") {
                 for (const key of ["image", "mobileImage"] as const) {

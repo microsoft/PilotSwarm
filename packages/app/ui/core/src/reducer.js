@@ -7,7 +7,7 @@ import { DEFAULT_HISTORY_EVENT_LIMIT, dedupeChatMessages } from "./history.js";
 import { getPromptInputRows } from "./layout.js";
 import { SYSTEM_OWNER_KEY, ownerKeyForOwner, selectSessionRows } from "./selectors.js";
 import { systemSessionSortOrder } from "./system-titles.js";
-import { createMotdState, createMotdAdminState } from "./motd.js";
+import { createMotdState, createMotdAdminState, canReadMotd } from "./motd.js";
 import {
     normalizeArtifactEntries,
     normalizeSessionOwnerFilter,
@@ -3050,7 +3050,7 @@ function baseReducer(state, action) {
         }
         case "admin/section": {
             const section = ["providers", "packages", "workers", "features", "motd", "ghcp"].includes(action.section) ? action.section : "ghcp";
-            if (section === "motd" && !state.admin.profile?.isAdmin) return state;
+            if (section === "motd" && !canReadMotd(state)) return state;
             return { ...state, admin: { ...state.admin, section } };
         }
         case "motd/patch":

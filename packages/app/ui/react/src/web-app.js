@@ -40,6 +40,7 @@ import {
     selectActivityPane,
     selectWorkerDetailsPane,
     selectAdminConsole,
+    canReadMotd,
     selectArtifactPickerModal,
     selectArtifactUploadModal,
     selectLiveActivityLines,
@@ -14498,6 +14499,7 @@ function AdminConsolePanel({ controller, mobile = false }) {
     const features = useControllerSelector(controller, state => state.admin.features);
     const motds = useControllerSelector(controller, state => state.admin.motds);
     const motdImages = useControllerSelector(controller, state => state.motd.images);
+    const motdReadable = useControllerSelector(controller, canReadMotd);
     const featureWorkers = useControllerSelector(controller, state => state.admin.workers);
     const featureRole = useControllerSelector(controller, state => state.auth?.authorization?.role);
     const packages = view.packages || {};
@@ -14505,7 +14507,7 @@ function AdminConsolePanel({ controller, mobile = false }) {
     const showWorkers = view.section === "workers";
     const showFeatures = view.section === "features";
     const showMotd = view.section === "motd";
-    const motdSection = React.createElement(MotdAdminPanel, { controller, state: motds, images: motdImages,
+    const motdSection = React.createElement(MotdAdminPanel, { controller, state: motds, images: motdImages, canRead: motdReadable, mobile,
         isAdmin: view.isAdmin && (!featureRole || featureRole === "admin" || featureRole === "anonymous") });
     const featureSection = React.createElement(FeatureFlagsPanel, { controller, features,
         workers: featureWorkers?.list || [], workersError: featureWorkers?.error,

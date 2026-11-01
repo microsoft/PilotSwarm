@@ -44,13 +44,19 @@ test("MoTD routes reach the authenticated runtime and cannot spoof their viewer"
         assert.equal(calls.length, 6);
         assert.deepEqual(calls[3].args.slice(1), ["1", true]);
         assert.deepEqual(calls[4].args.slice(1), [2, "9"]);
-        for (const method of ["createMotd", "deleteMotd", "listMotds"]) {
+        for (const method of ["createMotd", "deleteMotd"]) {
             await assert.rejects(alice.call(method, { ...request, motdId: "1", isAdmin: true }), { status: 403 });
             await assert.rejects(runtime.call(method, { ...request, motdId: "1", isAdmin: true }, {
                 principal: { provider: "test", subject: "alice" }, authorization: { role: "user" },
             }), error => error.status === 403 || error.code === "FORBIDDEN");
         }
         assert.equal(calls.length, 6);
+        await alice.call("listMotds", { limit: 2, isAdmin: true });
+        assert.equal(calls[6].args[0].isAdmin, false);
+        await runtime.call("listMotds", { isAdmin: true }, {
+            principal: { provider: "test", subject: "alice" }, authorization: { role: "user" },
+        });
+        assert.equal(calls[7].args[0].isAdmin, false);
     });
 });
 test("create alone accepts two 2 MB base64 pictures within 6 MB; default and oversize requests refuse", async () => {

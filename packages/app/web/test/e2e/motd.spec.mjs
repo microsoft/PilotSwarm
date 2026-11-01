@@ -104,11 +104,29 @@ test("admin editor creates UTC windows, retries publication and deletes the curr
         await expect(page.getByText("No message is active today.")).toBeVisible();
     } finally { await f.stop(); }
 });
-test("non-admin sees the splash but no admin MoTD tab", async ({ page }) => {
-    const f = await fixture(page, { admin: false });
+test("non-admin reads today's and previous pictures and previews without change controls", async ({ page }) => {
+    const previous = message({ motdId: "9", status: "ended", hasImage: true, bodyMd: "## Previous notice\nEarlier body." });
+    const live = message({ hasImage: true });
+    const f = await fixture(page, { admin: false, current: live, history: [live, previous] });
     try {
         await expect(splash(page)).toBeVisible(); await splash(page).getByRole("button", { name: "Got it" }).click();
         await page.getByRole("button", { name: "Settings", exact: true }).click();
-        await expect(page.getByRole("button", { name: "Message of the day", exact: true })).toHaveCount(0);
+        await page.getByRole("button", { name: "Message of the day", exact: true }).click();
+        const panel = page.getByRole("region", { name: "Message of the day settings" });
+        await expect(panel.getByRole("heading", { name: "Today", exact: true })).toBeVisible();
+        await expect(panel.locator("form")).toHaveCount(0);
+        await expect(panel.getByRole("button", { name: /Publish|Delete|^Preview$/ })).toHaveCount(0);
+        await expect(panel).not.toContainText("people dismissed");
+        await panel.getByRole("button", { name: "Show splash again", exact: true }).first().click();
+        await expect(page.getByRole("dialog", { name: "Message of the day preview" })).toBeVisible();
+        await page.getByRole("button", { name: "Close preview", exact: true }).click();
+        const older = panel.locator(".ps-motd-history-entry").filter({ hasText: "Previous notice" });
+        await older.locator("summary").click();
+        await expect(older.getByAltText("Main picture")).toBeVisible();
+        await older.getByRole("button", { name: "Show splash again", exact: true }).click();
+        await expect(page.getByRole("dialog", { name: "Message of the day preview" })).toContainText("Earlier body.");
+        await page.getByRole("button", { name: "Close preview", exact: true }).click();
+        expect(f.state.calls).toHaveLength(1);
+        expect(f.state.calls[0].path).toContain("/dismiss");
     } finally { await f.stop(); }
 });

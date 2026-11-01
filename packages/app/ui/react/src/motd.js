@@ -68,17 +68,17 @@ function draftMessage(draft) {
         toAt: Number.isFinite(Date.parse(draft.toAt)) ? new Date(draft.toAt).toISOString() : new Date().toISOString(),
         imagePlacement: draft.imagePlacement, pictures: { desktop: draft.image, mobile: draft.mobileImage } };
 }
-export function MotdAdminPanel({ controller, state, images = {}, isAdmin }) {
+export function MotdAdminPanel({ controller, state, images = {}, isAdmin, canRead = isAdmin, mobile = false }) {
     const [pictureError, setPictureError] = React.useState(null);
     const [reading, setReading] = React.useState(false);
-    if (!isAdmin) return null;
+    if (!canRead) return null;
     const draft = state.draft;
     const busy = state.saving || state.loading || reading;
     const input = (label, field, type = "text") => React.createElement("label", { className: "ps-motd-field" }, label,
         React.createElement("input", { type, value: draft[field] || "", disabled: busy,
             onChange: event => controller.setMotdDraft({ [field]: event.target.value }) }));
     const body = (label, field) => React.createElement("label", { className: "ps-motd-field" }, label,
-        React.createElement("textarea", { value: draft[field] || "", rows: field === "bodyMd" ? 6 : 3,
+        React.createElement("textarea", { value: draft[field] || "", rows: field === "bodyMd" ? 12 : 4,
             disabled: busy, onChange: event => controller.setMotdDraft({ [field]: event.target.value }) }));
     const readPicture = async (event, field) => {
         const file = event.target.files?.[0];
@@ -119,19 +119,21 @@ export function MotdAdminPanel({ controller, state, images = {}, isAdmin }) {
                 onClick: () => { void controller.refreshAdminMotds(); } }, "Refresh messages")),
         state.error || pictureError ? React.createElement("div", { role: "alert", className: "ps-admin-console__error" }, pictureError || state.error) : null,
         state.notice ? React.createElement("p", { role: "status" }, state.notice) : null,
-        React.createElement("div", { className: "ps-motd-admin-grid" },
+        React.createElement("div", { className: `ps-motd-admin-grid${isAdmin ? "" : " is-read-only"}` },
             React.createElement("section", { className: "ps-motd-admin-card" },
                 React.createElement("h4", null, "Today"),
                 state.today ? React.createElement(React.Fragment, null,
-                    React.createElement("p", { className: "ps-motd-meta" }, `${windowText(state.today)} · by ${state.today.createdBy?.subject || "admin"} · ${state.today.dismissalCount || 0} people dismissed it`),
-                    React.createElement("div", { className: "ps-motd-mini" }, React.createElement(MotdContent, { message: state.today, pictures: images[state.today.motdId] })),
+                    React.createElement("p", { className: "ps-motd-meta" }, isAdmin
+                        ? `${windowText(state.today)} · by ${state.today.createdBy?.subject || "admin"} · ${state.today.dismissalCount || 0} people dismissed it`
+                        : windowText(state.today)),
+                    React.createElement("div", { className: "ps-motd-mini" }, React.createElement(MotdContent, { message: state.today, pictures: images[state.today.motdId], mobile })),
                     React.createElement("div", { className: "ps-motd-actions" },
-                        React.createElement("button", { type: "button", className: "ps-mini-button", onClick: () => controller.previewMotd(state.today) }, "Show splash again"),
+                        React.createElement("button", { type: "button", className: "ps-mini-button", onClick: () => controller.previewMotd(state.today, { mobile }) }, "Show splash again"),
                         React.createElement("button", { type: "button", className: "ps-mini-button", onClick: () => controller.previewMotd(state.today, { mobile: true }) }, "Phone view"),
-                        React.createElement("button", { type: "button", className: "ps-mini-button is-danger", disabled: busy, onClick: () => remove(state.today), "aria-label": "Delete current message" }, "Delete")),
+                        isAdmin ? React.createElement("button", { type: "button", className: "ps-mini-button is-danger", disabled: busy, onClick: () => remove(state.today), "aria-label": "Delete current message" }, "Delete") : null),
                     React.createElement("p", { className: "ps-motd-meta" }, "Show splash again is a preview. It does not record a dismissal."))
                     : React.createElement("p", { className: "ps-motd-meta" }, state.loading ? "Loading messages..." : "No message is active today.")),
-            React.createElement("form", { className: "ps-motd-admin-card", onSubmit: event => { event.preventDefault(); void controller.createAdminMotd(); } },
+            isAdmin ? React.createElement("form", { className: "ps-motd-admin-card ps-motd-editor", onSubmit: event => { event.preventDefault(); void controller.createAdminMotd(); } },
                 React.createElement("h4", null, "New message"),
                 React.createElement("p", { className: "ps-motd-meta" }, "Enter times in your local time. They are stored in UTC. A later start time takes over."),
                 React.createElement("div", { className: "ps-motd-time-fields" }, input("From", "fromAt", "datetime-local"), input("To", "toAt", "datetime-local")),
@@ -144,18 +146,28 @@ export function MotdAdminPanel({ controller, state, images = {}, isAdmin }) {
                     React.createElement("summary", null, "Mobile version (optional)"), body("Mobile body (markdown)", "mobileBodyMd"), picture("Mobile picture", "mobileImage")),
                 React.createElement("div", { className: "ps-motd-actions" },
                     React.createElement("button", { type: "button", className: "ps-mini-button", disabled: busy || !draft.bodyMd.trim(),
-                        onClick: () => controller.previewMotd(draftMessage(draft)) }, "Preview"),
-                    React.createElement("button", { type: "submit", className: "ps-primary-button", disabled: busy }, busy ? "Publishing..." : "Publish")))),
+                        onClick: () => controller.previewMotd(draftMessage(draft), { mobile }) }, "Preview"),
+                    React.createElement("button", { type: "submit", className: "ps-primary-button", disabled: busy }, busy ? "Publishing..." : "Publish"))) : null),
         React.createElement("section", { className: "ps-motd-admin-card ps-motd-history" },
             React.createElement("h4", null, "Previous messages"),
-            React.createElement("p", { className: "ps-motd-meta" }, "Newest first. Delete removes the message and its pictures. Dismissals stay."),
+            React.createElement("p", { className: "ps-motd-meta" }, isAdmin
+                ? "Newest first. Delete removes the message and its pictures. Dismissals stay."
+                : "Newest first. Open a previous message to read it and see its picture."),
             React.createElement("div", { className: "ps-motd-history-scroll" }, state.history.map(row =>
-                React.createElement("div", { key: row.motdId, className: "ps-motd-history-row" },
+                React.createElement("details", { key: row.motdId, className: "ps-motd-history-entry",
+                    open: state.expandedIds?.includes(row.motdId) === true,
+                    onToggle: event => controller.setMotdHistoryExpanded(row.motdId, event.currentTarget.open) },
+                    React.createElement("summary", { className: `ps-motd-history-row${isAdmin ? "" : " is-read-only"}` },
                     React.createElement("span", { className: "ps-motd-meta" }, windowText(row)),
                     React.createElement("span", { className: "ps-motd-history-title", title: row.bodyMd }, row.bodyMd.replace(/^#+\s*/, "").split("\n")[0]),
                     React.createElement("span", { className: `ps-motd-status is-${row.status}` }, { live: "Live", hidden: "Hidden by later message", scheduled: "Scheduled", ended: "Ended" }[row.status]),
-                    React.createElement("button", { type: "button", className: "ps-mini-button is-danger", disabled: busy,
-                        "aria-label": `Delete message ${row.motdId}`, onClick: () => remove(row) }, "Delete")))),
+                    isAdmin ? React.createElement("button", { type: "button", className: "ps-mini-button is-danger", disabled: busy,
+                        "aria-label": `Delete message ${row.motdId}`, onClick: event => { event.preventDefault(); event.stopPropagation(); remove(row); } }, "Delete") : null),
+                    React.createElement("div", { className: "ps-motd-history-body" },
+                        React.createElement("div", { className: "ps-motd-mini" }, React.createElement(MotdContent, { message: row, pictures: images[row.motdId], mobile })),
+                        React.createElement("div", { className: "ps-motd-actions" },
+                            React.createElement("button", { type: "button", className: "ps-mini-button", onClick: () => controller.previewMotd(row, { mobile }) }, "Show splash again"),
+                            React.createElement("button", { type: "button", className: "ps-mini-button", onClick: () => controller.previewMotd(row, { mobile: true }) }, "Phone view")))))),
             state.hasMore ? React.createElement("button", { type: "button", className: "ps-mini-button", disabled: busy || state.loading,
                 onClick: () => { void controller.refreshAdminMotds({ older: true }); } }, "Load older messages") : null));
 }

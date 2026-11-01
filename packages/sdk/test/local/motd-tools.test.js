@@ -9,6 +9,7 @@ import { SessionManager } from "../../src/session-manager.ts";
 
 const viewer = { principal: { provider: "test", subject: "alice" }, isAdmin: true };
 const names = MOTD_OPERATION_SPECS.map(spec => spec.name);
+const readNames = MOTD_OPERATION_SPECS.filter(spec => spec.access === "authed").map(spec => spec.name);
 const request = { fromAt: "2020-01-01T00:00:00Z", toAt: "2090-01-01T00:00:00Z", bodyMd: "Hello", requestId: "one" };
 describe("shared MoTD operation list", () => {
     it("dispatches all six operations through the store", async () => {
@@ -26,6 +27,16 @@ describe("shared MoTD operation list", () => {
     });
     it("reserves all names regardless of role or storage", () => {
         for (const name of names) expect(reservedPlatformToolNames().has(name)).toBe(true);
+    });
+    it("lets authenticated non-admin agent tools read history without mutation declarations", async () => {
+        const reader = { ...viewer, isAdmin: false };
+        const store = { list: vi.fn(async actor => { expect(actor).toEqual(reader); return [{ motdId: "1", status: "ended" }]; }) };
+        const tools = createMotdTools(store, async () => reader, vi.fn(), { includeAdmin: false });
+        expect(tools.map(tool => tool.name)).toEqual(readNames);
+        expect(await tools.find(tool => tool.name === "list_motds").handler({})).toContain('"status":"ended"');
+        expect(tools.some(tool => ["create_motd", "delete_motd"].includes(tool.name))).toBe(false);
+        const unauthenticated = createMotdTools(store, async () => ({ principal: null, isAdmin: true }), vi.fn());
+        await expect(unauthenticated.find(tool => tool.name === "list_motds").handler({})).rejects.toMatchObject({ status: 403 });
     });
     it("reads artifact pictures outside model context and rechecks admin", async () => {
         let admin = true;
@@ -69,13 +80,13 @@ describe("MoTD declarations and artifact access in sessions", () => {
         await sessionFixture(async ({ manager, id, configs, setRole }) => {
             const config = { model: "gpt-5.6-terra", agentIdentity: "agent-manager" };
             const declared = () => configs.at(-1).tools.filter(t => names.includes(t.name));
-            await manager.getOrCreate(id, config, { turnIndex: 0 }); expect(declared()).toEqual([]);
+            await manager.getOrCreate(id, config, { turnIndex: 0 }); expect(declared().map(tool => tool.name)).toEqual(readNames);
             setRole("admin");
             await manager.getOrCreate(id, config, { turnIndex: 1 }); expect(declared().map(t => t.name)).toEqual(names);
             const create = declared().find(t => t.name === "create_motd");
             setRole("user");
             await expect(create.handler(request)).rejects.toMatchObject({ status: 403 });
-            await manager.getOrCreate(id, config, { turnIndex: 2 }); expect(declared()).toEqual([]);
+            await manager.getOrCreate(id, config, { turnIndex: 2 }); expect(declared().map(tool => tool.name)).toEqual(readNames);
             setRole("admin");
             await manager.getOrCreate(id, { ...config, agentIdentity: "ordinary" }, { turnIndex: 3 });
             expect(declared()).toEqual([]);

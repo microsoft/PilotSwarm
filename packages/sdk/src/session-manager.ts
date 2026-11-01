@@ -2357,9 +2357,10 @@ export class SessionManager {
             && ["resourcemgr", "pilotswarm", "agent-manager", "generic-superagent"].includes(effectiveSerializableConfig.agentIdentity ?? "")
             && (await this._resolveFeatureViewer(sessionId)).isAdmin
             ? createFeatureTools(this.sessionCatalog.features, () => this._resolveFeatureViewer(sessionId)) : [];
-        const motdTools = this.sessionCatalog?.motds
+        const motdViewer = this.sessionCatalog?.motds
             && ["resourcemgr", "pilotswarm", "agent-manager", "generic-superagent"].includes(effectiveSerializableConfig.agentIdentity ?? "")
-            && (await this._resolveFeatureViewer(sessionId)).isAdmin
+            ? await this._resolveFeatureViewer(sessionId) : null;
+        const motdTools = this.sessionCatalog?.motds && motdViewer
             ? createMotdTools(this.sessionCatalog.motds, () => this._resolveFeatureViewer(sessionId), async (image, viewer) => {
                 if (!this.artifactStore || !viewer.principal) throw new MotdError("MOTD_UNAVAILABLE", "Picture artifact storage is unavailable", 503);
                 const source = image.sessionId ?? sessionId;
@@ -2375,7 +2376,7 @@ export class SessionManager {
                 if (metadata.sizeBytes > MOTD_IMAGE_MAX_BYTES) throw new MotdError("MOTD_INVALID", "A picture must be at most 2 MB");
                 const picture = await this.artifactStore.downloadArtifact(source, image.filename);
                 return { base64: picture.body.toString("base64"), contentType: picture.contentType, alt: image.alt };
-            }) : [];
+            }, { includeAdmin: motdViewer.isAdmin }) : [];
         // Handler refresh alone cannot change the CLI's tool declarations.
         // Role transitions must recreate the warm SDK handle at the next turn.
         config.featureToolFingerprint = createHash("sha256")

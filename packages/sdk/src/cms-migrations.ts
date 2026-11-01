@@ -15,6 +15,7 @@ import { modelEventLoggingFlagMigration } from "./migrations/model-event-logging
 import { turnControlMigration } from "./migrations/turn-control-0082.js";
 import { turnControlConvertMigration } from "./migrations/turn-control-0083.js";
 import { motdMigration } from "./migrations/motd-0084.js";
+import { motdHistoryMigration } from "./migrations/motd-history-0085.js";
 
 /**
  * Return the ordered list of CMS migrations for a given schema.
@@ -410,6 +411,7 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0082", name: "turn_control", sql: turnControlMigration(schema) },
         { version: "0083", name: "turn_control_convert", sql: turnControlConvertMigration(schema) },
         { version: "0084", name: "motd", sql: motdMigration(schema) },
+        { version: "0085", name: "motd_history", sql: motdHistoryMigration(schema) },
     ];
 }
 

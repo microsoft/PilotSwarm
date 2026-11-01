@@ -39,7 +39,11 @@ test("admin tab has today preview, editor, picture limits, history and both dele
     assert.match(html, /type="datetime-local"/);
 });
 test("non-admin cannot render admin controls even with stale admin data", () => {
-    assert.equal(render(MotdAdminPanel, { controller: {}, state: { ...createMotdAdminState(), today: message }, isAdmin: false }), "");
+    const state = { ...createMotdAdminState(), today: message, history: [{ ...message, motdId: "9", status: "ended" }], expandedIds: ["9"] };
+    const html = render(MotdAdminPanel, { controller: {}, state, images: { "1": pictures, "9": pictures }, isAdmin: false, canRead: true });
+    for (const text of ["Today", "Previous messages", "Show splash again", "Main picture"]) assert.ok(html.includes(text), text);
+    assert.doesNotMatch(html, /<form|datetime-local|type="file"|Publish|Delete|New message|people dismissed|by admin/);
+    assert.equal(render(MotdAdminPanel, { controller: {}, state, isAdmin: false, canRead: false }), "");
 });
 test("empty and failed admin states remain explicit", () => {
     const html = render(MotdAdminPanel, { controller: {}, state: { ...createMotdAdminState(), error: "Unable to load messages" }, isAdmin: true });

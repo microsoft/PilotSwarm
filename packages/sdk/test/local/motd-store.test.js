@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import pg from "pg";
 import { MotdStore } from "../../src/motd-store.ts";
 import { motdMigration } from "../../src/migrations/motd-0084.ts";
+import { motdHistoryMigration } from "../../src/migrations/motd-history-0085.ts";
 
 const admin = { principal: { provider: "test", subject: "admin" }, isAdmin: true };
 const alice = { principal: { provider: "test", subject: "alice" }, isAdmin: false };
@@ -44,6 +45,7 @@ describe.skipIf(!pool)("message SQL functions in isolated PostgreSQL", () => {
             LANGUAGE sql AS $$ INSERT INTO "${schema}".users(provider, subject) VALUES(p, s)
             ON CONFLICT(provider, subject) DO UPDATE SET subject = EXCLUDED.subject RETURNING user_id; $$`);
         await pool.query(motdMigration(schema));
+        await pool.query(motdHistoryMigration(schema));
         for (const viewer of [admin, alice, bob]) await pool.query(`INSERT INTO "${schema}".users(provider, subject) VALUES($1, $2)`, [viewer.principal.provider, viewer.principal.subject]);
         store = new MotdStore(pool, schema);
     });
@@ -101,14 +103,15 @@ describe.skipIf(!pool)("message SQL functions in isolated PostgreSQL", () => {
         expect((await store.current(alice)).motdId).toBe(next.motdId);
         // There is deliberately no authz_audit table in this fixture.
     });
-    it("enforces admin inside SQL for all management functions", async () => {
+    it("enforces admin inside SQL for create and delete, and authentication for reads", async () => {
         for (const viewer of [alice, { principal: null, isAdmin: true }]) {
             await expect(store.create(viewer, input())).rejects.toMatchObject({ status: 403 });
-            await expect(store.list(viewer)).rejects.toMatchObject({ status: 403 });
             await expect(store.delete(viewer, "1")).rejects.toMatchObject({ status: 403 });
         }
         await expect(pool.query(`SELECT "${schema}".cms_motd_create('test', 'alice', false, '{}'::jsonb, NULL, NULL)`)).rejects.toThrow("MOTD_FORBIDDEN");
         await expect(store.current({ principal: null, isAdmin: false })).rejects.toMatchObject({ status: 403 });
+        await expect(store.list({ principal: null, isAdmin: true })).rejects.toMatchObject({ status: 403 });
+        await expect(store.image({ principal: null, isAdmin: true }, "1")).rejects.toMatchObject({ status: 403 });
         await expect(store.dismiss({ principal: null, isAdmin: false }, "1")).rejects.toMatchObject({ status: 403 });
     });
     it("coalesces retries and refuses changed input or a different actor", async () => {
@@ -141,11 +144,11 @@ describe.skipIf(!pool)("message SQL functions in isolated PostgreSQL", () => {
         await store.delete(admin, message.motdId);
         expect(await store.dismiss(alice, message.motdId)).toMatchObject({ dismissed: true });
     });
-    it("hides inactive pictures from ordinary viewers and minimizes creator identity", async () => {
+    it("allows authenticated history pictures while keeping admin-only metadata private", async () => {
         const ended = await store.create(admin, input({ image: png, toAt: "2021-01-01T00:00:00Z" }));
         const scheduled = await store.create(admin, input({ image: png, fromAt: "2080-01-01T00:00:00Z" }));
         for (const message of [ended, scheduled]) {
-            await expect(store.image(alice, message.motdId)).rejects.toMatchObject({ status: 404 });
+            expect(await store.image(alice, message.motdId)).toEqual(png);
             expect(await store.image(admin, message.motdId)).toEqual(png);
         }
         const older = await store.create(admin, input({ image: png }));
@@ -153,6 +156,16 @@ describe.skipIf(!pool)("message SQL functions in isolated PostgreSQL", () => {
         expect(await store.image(alice, older.motdId)).toEqual(png);
         expect(await store.current(alice)).not.toHaveProperty("createdBy");
         expect((await store.list(admin))[0]).toHaveProperty("createdBy");
+        expect((await store.list(admin))[0]).toHaveProperty("dismissalCount");
+        for (const row of await store.list(alice)) {
+            expect(row).not.toHaveProperty("createdBy");
+            expect(row).not.toHaveProperty("dismissalCount");
+        }
+        const direct = await pool.query(`SELECT "${schema}".cms_motd_list('test', 'alice', false, 50, NULL) AS result`);
+        expect(direct.rows[0].result).toEqual(await store.list(alice));
+        await store.delete(admin, ended.motdId);
+        expect((await store.list(alice)).some(row => row.motdId === ended.motdId)).toBe(false);
+        await expect(store.image(alice, ended.motdId)).rejects.toMatchObject({ status: 404 });
     });
     it("accepts an animated PNG declared as image/png", async () => {
         const original = Buffer.from(png.base64, "base64");

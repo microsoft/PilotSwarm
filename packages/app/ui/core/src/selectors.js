@@ -1,4 +1,5 @@
 import { INSPECTOR_TABS, FOCUS_REGIONS } from "./commands.js";
+import { canReadMotd } from "./motd.js";
 import { chatCallLine, firstCallLine } from "./chat-activity.js";
 import { canvasKey as canvasSlotKey, parseCanvasKey } from "./state.js";
 import { buildSessionTree, isManuallyOrderableSession } from "./session-tree.js";
@@ -4861,9 +4862,8 @@ export function selectAdminConsole(state) {
     // Settings tree — the session-list-slot navigation. Rendered by both
     // hosts; `kind` drives affordances (section rows switch panes, package
     // rows select a package).
-    const role = state.auth?.authorization?.role;
-    const motdAdmin = state.motd?.portalEnabled && isAdmin && (!role || role === "admin" || role === "anonymous");
-    const section = ["providers", "packages", "workers", "features", ...(motdAdmin ? ["motd"] : [])].includes(admin.section) ? admin.section : "providers";
+    const motdReadable = canReadMotd(state);
+    const section = ["providers", "packages", "workers", "features", ...(motdReadable ? ["motd"] : [])].includes(admin.section) ? admin.section : "providers";
     const settingsTree = [
         { id: "providers", kind: "section", depth: 0, label: "Model Providers", selected: false },
         { id: "myProviders", kind: "subsection", depth: 1, label: "My Providers", selected: section === "providers" && providerPage === "mine" },
@@ -4882,7 +4882,7 @@ export function selectAdminConsole(state) {
             : []),
         // The worker registry is a hard-gated admin read; hide the section
         // entirely from non-admins rather than showing a doomed pane.
-        ...(motdAdmin ? [{ id: "motd", kind: "section", depth: 0, label: "Message of the day", selected: section === "motd" }] : []),
+        ...(motdReadable ? [{ id: "motd", kind: "section", depth: 0, label: "Message of the day", selected: section === "motd" }] : []),
         ...(isAdmin ? [{ id: "workers", kind: "section", depth: 0, label: "Workers", selected: section === "workers" }] : []),
     ];
 

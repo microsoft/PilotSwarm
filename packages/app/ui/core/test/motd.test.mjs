@@ -8,6 +8,7 @@ const tick = () => new Promise(resolve => setImmediate(resolve));
 function setup(overrides = {}, profile = admin) {
     const store = createStore(appReducer, createInitialState({ mode: "remote" }));
     store.dispatch({ type: "motd/patch", patch: { portalEnabled: true } });
+    store.dispatch({ type: "auth/context", principal: profile, authorization: { role: profile?.isAdmin ? "admin" : "user" } });
     store.dispatch({ type: "admin/profile/loaded", profile });
     const transport = { getCurrentMotd: async () => message(), dismissMotd: async () => {},
         listMotds: async () => [message("1", { status: "live" })], ...overrides };
@@ -49,7 +50,7 @@ test("dismissal hides immediately, retries failure and never writes profile sett
     store.dispatch({ type: "motd/patch", patch: { current: message("2") } });
     assert.equal(selectMotd(store.getState()).message.motdId, "2");
 });
-test("admin-only navigation and previews cannot write dismissals", async () => {
+test("signed-in readers have navigation and previews without dismissal writes", async () => {
     let writes = 0;
     const { controller, store } = setup({ dismissMotd: async () => { writes++; } });
     assert.ok(selectAdminConsole(store.getState()).settingsTree.some(row => row.id === "motd"));
@@ -57,10 +58,40 @@ test("admin-only navigation and previews cannot write dismissals", async () => {
     assert.equal(selectMotd(store.getState()).preview, true);
     await controller.dismissCurrentMotd(); assert.equal(writes, 0);
     store.dispatch({ type: "admin/profile/loaded", profile: { ...admin, isAdmin: false } });
+    assert.ok(selectAdminConsole(store.getState()).settingsTree.some(row => row.id === "motd"));
+    store.dispatch({ type: "admin/section", section: "motd" });
+    assert.equal(store.getState().admin.section, "motd");
+    controller.previewMotd(message()); assert.equal(selectMotd(store.getState()).preview, true);
+    await controller.dismissCurrentMotd(); assert.equal(writes, 0);
+});
+test("unsigned viewers cannot enter the history tab or preview", () => {
+    const { controller, store } = setup();
+    store.dispatch({ type: "auth/context", principal: null, authorization: null });
     assert.ok(!selectAdminConsole(store.getState()).settingsTree.some(row => row.id === "motd"));
     store.dispatch({ type: "admin/section", section: "motd" });
     assert.notEqual(store.getState().admin.section, "motd");
-    controller.previewMotd(message()); assert.equal(selectMotd(store.getState()).preview, false);
+    controller.previewMotd(message());
+    assert.equal(selectMotd(store.getState()).message, null);
+});
+test("a non-admin can read and expand picture history without gaining mutation rights", async () => {
+    let creates = 0, deletes = 0, pictureReads = 0;
+    const older = message("9", { status: "ended", hasImage: true });
+    const { controller, store, state, adminState } = setup({
+        listMotds: async () => [older], getCurrentMotd: async () => null,
+        getMotdImage: async () => { pictureReads++; return { base64: "AAAA", contentType: "image/png", alt: "Older picture" }; },
+        createMotd: async () => { creates++; }, deleteMotd: async () => { deletes++; },
+    }, { ...admin, isAdmin: false });
+    await controller.refreshAdminMotds();
+    assert.equal(adminState().history[0].motdId, "9");
+    controller.setMotdHistoryExpanded("9", true); await tick();
+    assert.equal(pictureReads, 1); assert.ok(state().images["9"]);
+    await controller.refreshMotd(); assert.ok(state().images["9"]);
+    await controller.createAdminMotd(); await controller.deleteAdminMotd("9");
+    assert.equal(creates, 0); assert.equal(deletes, 0);
+    controller.previewMotd(older); assert.equal(selectMotd(store.getState()).preview, true);
+    await controller.dismissCurrentMotd();
+    controller.setMotdHistoryExpanded("9", false);
+    assert.equal(state().images["9"], undefined);
 });
 test("identity changes clear state and reject slow previous-user replies", async () => {
     let resolve;

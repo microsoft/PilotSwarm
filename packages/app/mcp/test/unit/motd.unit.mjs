@@ -44,6 +44,9 @@ test("MCP direct message mutations require their explicit grant", async () => {
         assert.equal(calls.length, 0);
         await client.callTool({ name: "get_current_motd", arguments: {} });
         assert.equal(calls[0].args[0].isAdmin, false);
+        assert.ok(!(await client.callTool({ name: "list_motds", arguments: {} })).isError);
+        assert.equal(calls[1].method, "listMotds");
+        assert.equal(calls[1].args[0].isAdmin, false);
     }, { grant: false });
 });
 test("MCP web mode does not invent viewer privilege", async () => {

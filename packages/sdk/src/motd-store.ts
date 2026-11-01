@@ -18,7 +18,7 @@ export interface MotdMessage {
     hasMobileImage: boolean; mobileImageType: string | null; mobileImageAlt: string | null;
     imagePlacement: "above" | "beside" | "background"; createdAt: string; createdBy?: FeatureOwner;
 }
-export interface MotdHistoryMessage extends MotdMessage { status: "live" | "hidden" | "scheduled" | "ended"; dismissalCount: number }
+export interface MotdHistoryMessage extends MotdMessage { status: "live" | "hidden" | "scheduled" | "ended"; dismissalCount?: number }
 export class MotdError extends Error {
     constructor(public readonly code: string, message: string, public readonly status = 400) { super(message); this.name = "MotdError"; }
 }

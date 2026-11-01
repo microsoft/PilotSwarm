@@ -3,7 +3,7 @@ import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./comman
 import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
 import { parseAgentSourceLink } from "./repo-links.js";
 import { importPackageFilesFromLink, readImportedPackageName } from "./repo-import.js";
-import { MOTD_REFRESH_MS } from "./motd.js";
+import { MOTD_REFRESH_MS, canReadMotd } from "./motd.js";
 import {
     appendEventToHistory,
     applyLiveTurnToHistory,
@@ -3970,11 +3970,12 @@ export class PilotSwarmUiController {
     }
     _pruneMotdPictures(current) {
         const state = this.getState();
-        const keep = new Set([current?.motdId, state.admin.motds.today?.motdId, state.motd.preview?.motdId]);
+        const keep = new Set([current?.motdId, state.admin.motds.today?.motdId, state.motd.preview?.motdId,
+            ...state.admin.motds.expandedIds]);
         return Object.fromEntries(Object.entries(state.motd.images).filter(([id]) => keep.has(id)));
     }
     async refreshMotd() {
-        if (!this.getState().motd.portalEnabled || typeof this.transport.getCurrentMotd !== "function") return;
+        if (!canReadMotd(this.getState()) || typeof this.transport.getCurrentMotd !== "function") return;
         const state = this.getState().motd;
         const now = Date.now();
         if (state.reading || state.readAt !== null && now - state.readAt < MOTD_REFRESH_MS) {
@@ -4029,7 +4030,7 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "admin/motds", patch: { draft: { ...this.getState().admin.motds.draft, ...patch }, error: null, notice: null } });
     }
     async refreshAdminMotds({ older = false, afterMutation = false } = {}) {
-        if (!this._featureIsAdmin() || typeof this.transport.listMotds !== "function") return;
+        if (!canReadMotd(this.getState()) || typeof this.transport.listMotds !== "function") return;
         const state = this.getState().admin.motds;
         if (state.loading && !afterMutation) return;
         const context = this._motdContext();
@@ -4038,11 +4039,12 @@ export class PilotSwarmUiController {
         try {
             const before = older ? state.history.at(-1)?.motdId : undefined;
             const rows = await this._motdRequest(() => this.transport.listMotds(50, before));
-            if (context !== this._motdContext() || serial !== this._motdAdminReadSerial || !this._featureIsAdmin()) return;
+            if (context !== this._motdContext() || serial !== this._motdAdminReadSerial || !canReadMotd(this.getState())) return;
             const history = older ? [...this.getState().admin.motds.history, ...rows] : rows;
             const today = history.find(m => m.status === "live") || null;
-            this.dispatch({ type: "admin/motds", patch: { history, today, hasMore: rows.length === 50, fetchedAt: Date.now() } });
-            if (today) void this._motdPictures(today, { both: true });
+            const expandedIds = this.getState().admin.motds.expandedIds.filter(id => history.some(row => row.motdId === id));
+            this.dispatch({ type: "admin/motds", patch: { history, today, expandedIds, hasMore: rows.length === 50, fetchedAt: Date.now() } });
+            if (today) void this._motdPictures(today);
         } catch (error) {
             if (context === this._motdContext() && serial === this._motdAdminReadSerial) this.dispatch({ type: "admin/motds", patch: { error: error?.message || String(error) } });
         } finally {
@@ -4050,9 +4052,27 @@ export class PilotSwarmUiController {
         }
     }
     previewMotd(message, { mobile = false } = {}) {
-        if (!this._featureIsAdmin() || !message) return;
+        if (!canReadMotd(this.getState()) || !message) return;
+        if (message.motdId === "draft" && !this._featureIsAdmin()) {
+            this.dispatch({ type: "admin/motds", patch: { error: "Only admins can preview an unpublished draft." } });
+            return;
+        }
         this.dispatch({ type: "motd/patch", patch: { preview: message, previewMobile: mobile } });
         if (!message.pictures) void this._motdPictures(message, { mobile });
+    }
+    setMotdHistoryExpanded(motdId, expanded) {
+        if (!canReadMotd(this.getState())) return;
+        const state = this.getState().admin.motds;
+        if (state.expandedIds.includes(motdId) === expanded) return;
+        const row = state.history.find(message => message.motdId === motdId);
+        if (!row) {
+            this.dispatch({ type: "admin/motds", patch: { error: "This message is no longer in the loaded history." } });
+            return;
+        }
+        const expandedIds = expanded ? [...state.expandedIds, motdId] : state.expandedIds.filter(id => id !== motdId);
+        this.dispatch({ type: "admin/motds", patch: { expandedIds } });
+        if (expanded) void this._motdPictures(row);
+        else this.dispatch({ type: "motd/patch", patch: { images: this._pruneMotdPictures(this.getState().motd.current) } });
     }
     async createAdminMotd() {
         if (!this._featureIsAdmin() || this.getState().admin.motds.saving) return;
@@ -4100,6 +4120,7 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "motd/patch", patch: { reading: false, current: motd.current?.motdId === motdId ? null : motd.current,
                 preview: motd.preview?.motdId === motdId ? null : motd.preview, images } });
             this.dispatch({ type: "admin/motds", patch: { history: admin.history.filter(m => m.motdId !== motdId),
+                expandedIds: admin.expandedIds.filter(id => id !== motdId),
                 today: admin.today?.motdId === motdId ? null : admin.today, notice: "Message deleted." } });
             await this.refreshAdminMotds({ afterMutation: true });
         } catch (error) {

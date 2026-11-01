@@ -413,10 +413,13 @@ on the turn-control path; list rows do not carry these fields).
 
 ## Message of the day
 
-Admins use Settings > Message of the day to create a deployment-wide notice,
-preview today's splash, and delete current or older messages. Signed-in portal
-viewers read the current notice at most every 30 seconds. A click dismisses
-that message for that person. A preview does not dismiss it.
+Signed-in portal viewers use Settings > Message of the day to read today's
+notice and message history, including pictures. Show splash again is a local
+preview and does not dismiss a message. Admins also get create and delete
+controls. Non-admins have a read-only panel.
+
+The automatic splash reads the current notice at most every 30 seconds.
+A click on that splash dismisses that message for that person.
 
 All paths below are relative to `/api/v1`.
 
@@ -425,7 +428,7 @@ All paths below are relative to `/api/v1`.
 | GET `/management/motd/current` | `getCurrentMotd` | Authenticated |
 | POST `/management/motd/:motdId/dismiss` | `dismissMotd` | Self |
 | GET `/management/motd/:motdId/image?mobile=true` | `getMotdImage` | Authenticated |
-| GET `/management/motd?limit=50&before=123` | `listMotds` | Admin |
+| GET `/management/motd?limit=50&before=123` | `listMotds` | Authenticated |
 | POST `/management/motd` | `createMotd` | Admin |
 | DELETE `/management/motd/:motdId` | `deleteMotd` | Admin |
 
@@ -449,9 +452,12 @@ timeout. The text remains visible when a picture cannot be loaded.
 Message IDs are decimal strings. Deletion removes the message and its
 pictures, writes no audit record, and keeps dismissal rows. IDs are not reused.
 History returns `live`, `hidden`, `scheduled` or `ended`, plus dismissal count.
-Current reads do not expose the creator's identity. History does.
-Ordinary viewers can read pictures only inside a message's time window.
-Admins can read pictures for history and preview outside that window.
+Current reads do not expose the creator's identity.
+History includes creator identity and dismissal counts only for admins.
+Authenticated viewers can read existing message pictures for history and
+preview, including outside the automatic splash window. Deleted messages and
+pictures remain unreadable. Migration 0085 enables this read-only access over
+deployed 0084; it does not change create or delete authorization.
 
 The matching MCP names are `get_current_motd`, `dismiss_motd`, `get_motd_image`,
 `list_motds`, `create_motd` and `delete_motd`. Direct MCP mutations require
