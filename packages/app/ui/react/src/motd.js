@@ -86,6 +86,7 @@ export function MotdAdminPanel({ controller, state, images = {}, isAdmin }) {
             setPictureError("Choose PNG, JPEG, WebP or GIF, at most 2 MB per picture."); return;
         }
         setReading(true); setPictureError(null);
+        const context = controller._motdContext();
         try {
             const base64 = await new Promise((resolve, reject) => {
                 const reader = new FileReader();
@@ -93,7 +94,7 @@ export function MotdAdminPanel({ controller, state, images = {}, isAdmin }) {
                 reader.onload = () => resolve(String(reader.result).split(",", 2)[1]);
                 reader.readAsDataURL(file);
             });
-            controller.setMotdDraft({ [field]: { base64, contentType: file.type, alt: "" } });
+            if (context === controller._motdContext()) controller.setMotdDraft({ [field]: { base64, contentType: file.type, alt: "" } });
         } catch (error) { setPictureError(error.message); }
         finally { setReading(false); }
     };

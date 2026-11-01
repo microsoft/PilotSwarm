@@ -780,12 +780,12 @@ export class WebPilotSwarmManagementClient {
     }
 
     async listFeatureFlags(_viewer: FeatureViewer): Promise<FeatureView> { return this.ops.listFeatureFlags(); }
-    async getCurrentMotd(_viewer: MotdViewer) { return this._api.call("getCurrentMotd"); }
-    async dismissMotd(_viewer: MotdViewer, motdId: string) { return this._api.call("dismissMotd", { motdId }); }
-    async getMotdImage(_viewer: MotdViewer, motdId: string, mobile = false) { return this._api.call("getMotdImage", { motdId, mobile }); }
-    async listMotds(_viewer: MotdViewer, limit?: number, before?: string) { return this._api.call("listMotds", { limit, before }); }
-    async createMotd(_viewer: MotdViewer, input: MotdCreateInput) { return this._api.call("createMotd", { ...input }); }
-    async deleteMotd(_viewer: MotdViewer, motdId: string) { return this._api.call("deleteMotd", { motdId }); }
+    async getCurrentMotd(_viewer: MotdViewer) { return this.ops.getCurrentMotd(); }
+    async dismissMotd(_viewer: MotdViewer, motdId: string) { return this.ops.dismissMotd({ motdId }); }
+    async getMotdImage(_viewer: MotdViewer, motdId: string, mobile = false) { return this.ops.getMotdImage({ motdId, mobile }); }
+    async listMotds(_viewer: MotdViewer, limit?: number, before?: string) { return this.ops.listMotds({ limit, before }); }
+    async createMotd(_viewer: MotdViewer, input: MotdCreateInput) { return this.ops.createMotd({ ...input }); }
+    async deleteMotd(_viewer: MotdViewer, motdId: string) { return this.ops.deleteMotd({ motdId }); }
     async getClusterFeatureFlags(_viewer: FeatureViewer): Promise<FeatureView> { return this.ops.getClusterFeatureFlags(); }
     async getMyFeatureFlags(_viewer: FeatureViewer): Promise<FeatureView> { return this.ops.getMyFeatureFlags(); }
     async getUserFeatureFlags(_viewer: FeatureViewer, userId: number): Promise<FeatureView> { return this.ops.getUserFeatureFlags({ userId: String(userId) }); }

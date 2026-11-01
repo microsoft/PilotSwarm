@@ -411,6 +411,49 @@ on the turn-control path; list rows do not carry these fields).
   control's sender is the parent agent (`kind: "agent"`), and
   `sessions.steering` resolves for the parent session's owner.
 
+## Message of the day
+
+Admins use Settings > Message of the day to create a deployment-wide notice,
+preview today's splash, and delete current or older messages. Signed-in portal
+viewers read the current notice at most every 30 seconds. A click dismisses
+that message for that person. A preview does not dismiss it.
+
+All paths below are relative to `/api/v1`.
+
+| Method / path | Operation | Access |
+| --- | --- | --- |
+| GET `/management/motd/current` | `getCurrentMotd` | Authenticated |
+| POST `/management/motd/:motdId/dismiss` | `dismissMotd` | Self |
+| GET `/management/motd/:motdId/image?mobile=true` | `getMotdImage` | Authenticated |
+| GET `/management/motd?limit=50&before=123` | `listMotds` | Admin |
+| POST `/management/motd` | `createMotd` | Admin |
+| DELETE `/management/motd/:motdId` | `deleteMotd` | Admin |
+
+Creation requires `fromAt` and `toAt` as ISO 8601 times, `bodyMd` (at most
+16 KB of UTF-8), and `requestId`. Reuse the same request ID and unchanged input
+to retry an uncertain response. `toAt` is exclusive. Overlaps select the
+latest start time, then creation time, then message ID.
+
+Optional `image` and `mobileImage` each contain `{base64, contentType, alt}`.
+PNG, JPEG, WebP and GIF are allowed. Each picture is at most 2 MB of decoded
+bytes. Creation has a 6 MB JSON body limit; other routes keep their existing
+limits. `imagePlacement` is `above` (default), `beside` or `background`. Phones
+always use `above`. Optional `mobileBodyMd` supplies a shorter phone notice;
+otherwise the desktop body scrolls in a bottom sheet with Got it visible.
+Markdown escapes raw HTML and leaves body images as placeholders.
+
+Message IDs are decimal strings. Deletion removes the message and its
+pictures, writes no audit record, and keeps dismissal rows. IDs are not reused.
+History returns `live`, `hidden`, `scheduled` or `ended`, plus dismissal count.
+
+The matching MCP names are `get_current_motd`, `dismiss_motd`, `get_motd_image`,
+`list_motds`, `create_motd` and `delete_motd`. Direct MCP mutations require
+`PILOTSWARM_MCP_MOTD_ADMIN=true` and an explicit actor provider and subject.
+Web MCP uses the authenticated server identity instead. Built-in admin agent
+tools use the same operation list, but creation takes picture artifact
+references `{sessionId, filename, alt}` so image bytes stay out of model context.
+The source session must be readable by that caller.
+
 ## Feature flags
 
 Settings → Feature flags exposes personal preferences and admin cluster/user controls.

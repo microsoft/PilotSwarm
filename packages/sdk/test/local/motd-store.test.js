@@ -12,7 +12,8 @@ const input = extra => ({ fromAt: "2020-01-01T00:00:00Z", toAt: "2090-01-01T00:0
 const png = { base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=", contentType: "image/png", alt: "One pixel" };
 const schema = `ps_test_motd_${randomUUID().replaceAll("-", "")}`;
 const url = process.env.PS_TEST_DATABASE_URL;
-const pool = url ? new pg.Pool({ connectionString: url, max: 4 }) : null;
+const localPostgres = process.env.PS_TEST_LOCAL_POSTGRES === "true";
+const pool = url || localPostgres ? new pg.Pool({ ...(url ? { connectionString: url } : {}), max: 4 }) : null;
 let store;
 
 describe("message input validation without a database", () => {
@@ -34,7 +35,7 @@ describe("message input validation without a database", () => {
     });
 });
 
-describe.skipIf(!url)("message SQL functions in isolated PostgreSQL", () => {
+describe.skipIf(!pool)("message SQL functions in isolated PostgreSQL", () => {
     beforeAll(async () => {
         await pool.query(`CREATE SCHEMA "${schema}"`);
         await pool.query(`CREATE TABLE "${schema}".users(user_id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
@@ -58,12 +59,16 @@ describe.skipIf(!url)("message SQL functions in isolated PostgreSQL", () => {
         expect(await store.current(alice)).toBeNull();
         const live = await store.create(admin, input());
         expect((await store.current(alice)).motdId).toBe(live.motdId);
-        await pool.query("BEGIN");
-        await pool.query(`UPDATE "${schema}".motds SET from_at = now(), to_at = now() + interval '1 hour' WHERE motd_id = $1`, [live.motdId]);
-        expect((await store.current(alice)).motdId).toBe(live.motdId);
-        await pool.query(`UPDATE "${schema}".motds SET from_at = now() - interval '1 hour', to_at = now() WHERE motd_id = $1`, [live.motdId]);
-        expect(await store.current(alice)).toBeNull();
-        await pool.query("COMMIT");
+        const client = await pool.connect();
+        try {
+            await client.query("BEGIN");
+            await client.query(`UPDATE "${schema}".motds SET from_at = now(), to_at = now() + interval '1 hour' WHERE motd_id = $1`, [live.motdId]);
+            const current = () => client.query(`SELECT "${schema}".cms_motd_current('test', 'alice', false) AS result`);
+            expect((await current()).rows[0].result.motdId).toBe(live.motdId);
+            await client.query(`UPDATE "${schema}".motds SET from_at = now() - interval '1 hour', to_at = now() WHERE motd_id = $1`, [live.motdId]);
+            expect((await current()).rows[0].result).toBeNull();
+            await client.query("COMMIT");
+        } finally { await client.query("ROLLBACK"); client.release(); }
     });
     it("resolves overlaps, ties, history labels and bounded pagination", async () => {
         const older = await store.create(admin, input());

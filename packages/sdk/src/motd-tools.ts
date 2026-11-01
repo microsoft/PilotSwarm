@@ -15,17 +15,29 @@ export type MotdArgs = Partial<Omit<MotdCreateInput, "image" | "mobileImage">> &
     motdId?: string; mobile?: boolean; limit?: number; before?: string;
     image?: MotdImageInput | MotdArtifactImage; mobileImage?: MotdImageInput | MotdArtifactImage;
 };
+export interface MotdToolProperty {
+    type: string; description?: string; enum?: string[]; pattern?: string;
+    minimum?: number; maximum?: number; minLength?: number; maxLength?: number; default?: string;
+    properties?: Record<string, MotdToolProperty>; required?: string[]; additionalProperties?: boolean;
+}
 export function motdToolParameters(spec: MotdOperationSpec, { artifactPictures = false } = {}) {
     const picture = artifactPictures
         ? { type: "object", properties: { sessionId: { type: "string" }, filename: { type: "string" }, alt: { type: "string", minLength: 1, maxLength: 1024 } }, required: ["filename", "alt"], additionalProperties: false }
         : { type: "object", properties: { base64: { type: "string", maxLength: Math.ceil(MOTD_IMAGE_MAX_BYTES / 3) * 4 }, contentType: { type: "string", enum: ["image/png", "image/jpeg", "image/webp", "image/gif"] }, alt: { type: "string", minLength: 1, maxLength: 1024 } }, required: ["base64", "contentType", "alt"], additionalProperties: false };
-    const properties: Record<string, object> = {};
+    const properties: Record<string, MotdToolProperty> = {};
     const required: string[] = [];
     if (["dismiss", "image", "delete"].includes(spec.kind)) { properties.motdId = { type: "string", pattern: "^[1-9][0-9]*$" }; required.push("motdId"); }
     if (spec.kind === "image") properties.mobile = { type: "boolean" };
     if (spec.kind === "list") {
         properties.limit = { type: "integer", minimum: 1, maximum: 200 };
         properties.before = { type: "string", pattern: "^[1-9][0-9]*$" };
+    }
+    export function motdCreateInput(args: MotdArgs): MotdCreateInput {
+        if (!args.fromAt || !args.toAt || !args.bodyMd || !args.requestId
+            || args.image && !("base64" in args.image) || args.mobileImage && !("base64" in args.mobileImage))
+            throw new MotdError("MOTD_INVALID", "Message times, body, request ID and resolved pictures are required");
+        return { fromAt: args.fromAt, toAt: args.toAt, bodyMd: args.bodyMd, requestId: args.requestId,
+            mobileBodyMd: args.mobileBodyMd, imagePlacement: args.imagePlacement, image: args.image, mobileImage: args.mobileImage };
     }
     if (spec.kind === "create") {
         Object.assign(properties, { fromAt: { type: "string", description: "ISO 8601 start time with UTC offset." },
@@ -45,12 +57,7 @@ export function runMotdStoreOperation(store: MotdStore, spec: MotdOperationSpec,
         case "dismiss": return store.dismiss(viewer, args.motdId!);
         case "delete": return store.delete(viewer, args.motdId!);
         case "image": return store.image(viewer, args.motdId!, args.mobile);
-        case "create":
-            if (!args.fromAt || !args.toAt || !args.bodyMd || !args.requestId
-                || args.image && !("base64" in args.image) || args.mobileImage && !("base64" in args.mobileImage))
-                throw new MotdError("MOTD_INVALID", "Message times, body, request ID and resolved pictures are required");
-            return store.create(viewer, { fromAt: args.fromAt, toAt: args.toAt, bodyMd: args.bodyMd, requestId: args.requestId,
-                mobileBodyMd: args.mobileBodyMd, imagePlacement: args.imagePlacement, image: args.image, mobileImage: args.mobileImage });
+        case "create": return store.create(viewer, motdCreateInput(args));
     }
 }
 export function createMotdTools(store: MotdStore, resolveViewer: () => Promise<MotdViewer>,

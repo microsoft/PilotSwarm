@@ -59,7 +59,10 @@ export class MotdStore {
             ]);
         } finally { if (timer) clearTimeout(timer); }
         const parameters = [viewer?.principal?.provider ?? null, viewer?.principal?.subject ?? null, viewer?.isAdmin === true, ...args];
-        const query = (text: string, values: unknown[] = []) => client.query({ text, values, query_timeout: 6_000 });
+        const query = (text: string, values: unknown[] = []) => {
+            const config = { text, values, query_timeout: 6_000 };
+            return client.query(config);
+        };
         try {
             await query("BEGIN; SET LOCAL statement_timeout = '5s'; SET LOCAL lock_timeout = '5s'");
             const result = await query(`SELECT ${this.schema}.${name}(${parameters.map((_, i) => `$${i + 1}`).join(",")}) AS result`, parameters);
