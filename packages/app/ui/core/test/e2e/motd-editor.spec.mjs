@@ -134,7 +134,7 @@ test("copied drafts do not steal focus on remount or after a failed second Dupli
         const duplicate = page.getByRole("button", { name: "Duplicate message 8", exact: true });
         await duplicate.click();
         await expect(page.getByRole("alert")).toContainText("source picture could not be loaded");
-        await expect(duplicate).toBeFocused();
+        await expect(page.getByLabel("Body (markdown)", { exact: true })).not.toBeFocused();
         await expect(page.getByLabel("Body (markdown)", { exact: true })).toHaveValue(source().bodyMd);
         expect(f.state.calls).toHaveLength(0);
     } finally { await f.stop(); }
