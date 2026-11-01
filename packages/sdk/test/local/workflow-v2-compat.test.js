@@ -139,8 +139,10 @@ describe("workflow v2 data from an earlier build", () => {
             for (const table of ["workflow_requests", "workflow_request_responses", "workflow_request_operations", "workflow_response_wakes"]) {
                 expect((await q(`SELECT count(*)::int AS n FROM SCHEMA.${table}`)).rows[0].n, table).toBe(0);
             }
-            // 0094: the intake table starts empty.
-            expect((await q("SELECT count(*)::int AS n FROM SCHEMA.workflow_intake")).rows[0].n).toBe(0);
+            // 0094: the intake tables start empty.
+            for (const table of ["workflow_intake", "workflow_intake_invocations"]) {
+                expect((await q(`SELECT count(*)::int AS n FROM SCHEMA.${table}`)).rows[0].n, table).toBe(0);
+            }
 
             // Exclusive creation now works on this schema, and never takes an existing row.
             const fresh = randomUUID();

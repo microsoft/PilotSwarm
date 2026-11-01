@@ -910,6 +910,41 @@ function renderedIntake(render: WorkflowIntakeRender, source: WorkflowIntakeRend
     return { text, clientMessageId: intakeClientMessageId(rendered.clientMessageId, "render.clientMessageId") };
 }
 
+/** An invocation's record (migration 0094), written once by its first bind: its recipient and complete membership. */
+interface IntakeInvocationRecord {
+    recipientSessionId: string;
+    /** Each member exchange with its claim, in the first bind's order. */
+    members: Array<{ exchangeId: string; claimId: string }>;
+    /** The canonical JSON of `members`, as stored: a later bind of the invocation must name exactly this. */
+    membersText: string;
+}
+
+/** The canonical JSON of an invocation's members, in bind order. */
+function intakeMembersText(items: ReadonlyArray<{ exchangeId: string; claimId: string }>): string {
+    return canonicalJson(items.map(item => ({ exchangeId: item.exchangeId, claimId: item.claimId })));
+}
+
+function intakeInvocationFrom(invocationId: string, row: Row): IntakeInvocationRecord {
+    const membersText = str(row, "members");
+    const invalid = (): never => corrupt(`Intake invocation ${invocationId} has an invalid membership.`);
+    const parsed = parseStoredJson(membersText, "members");
+    if (!Array.isArray(parsed) || parsed.length === 0 || parsed.length !== int(row, "member_count")) return invalid();
+    const members = parsed.map(member => {
+        if (!isJsonObject(member) || Object.keys(member).length !== 2) return invalid();
+        const { exchangeId, claimId } = member;
+        if (typeof exchangeId !== "string" || typeof claimId !== "string") return invalid();
+        return { exchangeId, claimId };
+    });
+    if (intakeMembersText(members) !== membersText || new Set(members.map(member => member.exchangeId)).size !== members.length) return invalid();
+    return { recipientSessionId: str(row, "recipient_session_id"), members, membersText };
+}
+
+/** The claim an invocation holds an exchange under, or a broken invariant when the exchange is not one of its members. */
+function intakeMemberClaim(invocation: IntakeInvocationRecord, invocationId: string, exchangeId: string): string {
+    const member = invocation.members.find(item => item.exchangeId === exchangeId);
+    return member ? member.claimId : intakeBroken(exchangeId, `it is not a member of invocation ${invocationId}`);
+}
+
 /** A request's immutable record (migration 0093), with exact times. */
 interface WorkflowRequestRecord {
     exchangeId: string;
@@ -1199,7 +1234,7 @@ export function nodeExecutionIdFor(runId: string, scopeId: string, nodeId: strin
 export class WorkflowStore {
     private readonly t: {
         definitions: string; revisions: string; operations: string; runs: string; nodes: string; kvRevisions: string; inbox: string; outbox: string;
-        requests: string; requestResponses: string; requestOperations: string; responseWakes: string; intake: string;
+        requests: string; requestResponses: string; requestOperations: string; responseWakes: string; intake: string; intakeInvocations: string;
         sessions: string; sessionOwners: string; users: string; recordEvents: string; updateSession: string; softDeleteSession: string;
     };
 
@@ -1211,6 +1246,7 @@ export class WorkflowStore {
             kvRevisions: `${s}.workflow_kv_revisions`, inbox: `${s}.workflow_inbox`, outbox: `${s}.workflow_outbox`,
             requests: `${s}.workflow_requests`, requestResponses: `${s}.workflow_request_responses`,
             requestOperations: `${s}.workflow_request_operations`, responseWakes: `${s}.workflow_response_wakes`, intake: `${s}.workflow_intake`,
+            intakeInvocations: `${s}.workflow_intake_invocations`,
             sessions: `${s}.sessions`, sessionOwners: `${s}.session_owners`, users: `${s}.users`,
             recordEvents: `${s}.cms_record_events`, updateSession: `${s}.cms_update_session`,
             softDeleteSession: `${s}.cms_soft_delete_session`,
@@ -3356,6 +3392,33 @@ export class WorkflowStore {
         return str(rows[0], "at");
     }
 
+    /**
+     * Serialize every write that names an invocation (its binds, its end and
+     * its cancels) on the invocation's identity, then read its record as
+     * committed: a transaction-scoped advisory lock on the schema and the
+     * invocation id, taken before any intake row. The lock exists before the
+     * first bind commits the invocation's row, so two first binds of one
+     * invocation, and an end or a cancel racing its first bind, wait for each
+     * other instead of each finding no invocation; each later statement of
+     * the transaction reads what the previous holder committed. Null when the
+     * invocation was never bound.
+     */
+    private async lockIntakeInvocation(client: PoolClient, invocationId: string): Promise<IntakeInvocationRecord | null> {
+        await client.query("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [`${this.schema}:workflow-intake-invocation:${invocationId}`]);
+        const { rows } = await client.query(
+            `SELECT recipient_session_id, members, member_count FROM ${this.t.intakeInvocations} WHERE invocation_id = $1`, [invocationId]);
+        return rows[0] ? intakeInvocationFrom(invocationId, rows[0]) : null;
+    }
+
+    /** lockIntakeInvocation for a write that needs the invocation bound, and the recipient's; otherwise a broken invariant. */
+    private async lockBoundIntakeInvocation(client: PoolClient, invocationId: string, recipientSessionId: string, exchangeId: string)
+        : Promise<IntakeInvocationRecord> {
+        const invocation = await this.lockIntakeInvocation(client, invocationId);
+        if (invocation === null) return intakeBroken(exchangeId, `invocation ${invocationId} was never bound`);
+        if (invocation.recipientSessionId !== recipientSessionId) return intakeBroken(exchangeId, `invocation ${invocationId} belongs to another recipient`);
+        return invocation;
+    }
+
     /** An exchange's outbox row FOR UPDATE, with its intake columns and its send state's id; null when there is none. */
     private async intakeOutboxIn(client: PoolClient, exchangeId: string): Promise<IntakeOutboxRow | null> {
         const { rows } = await client.query(
@@ -3561,58 +3624,81 @@ export class WorkflowStore {
 
     /**
      * Bind held claims to an invocation (design 5.2, 5.5): the logical
-     * admission. Every named row is the recipient's under its claim, and
-     * either all are holding (each becomes admitted, bound to the invocation,
-     * processing bound) or all are already admitted to this invocation (a
-     * replay: nothing is written). Any other row, or a batch found partly
-     * bound, is a broken invariant. Returns each row's stored text and hash
-     * in the caller's order.
+     * admission. Under the invocation's lock (lockIntakeInvocation), its
+     * first bind stores its complete membership once (each exchange with its
+     * claim, in this order) and admits every named row, each holding under its
+     * claim, to it with processing bound. A later bind of the invocation is a
+     * replay only when it names exactly that membership, in that order, for
+     * the same recipient, and every member is still admitted to it; it writes
+     * nothing. Anything else (another or a partial membership, a row in
+     * another state or invocation, another claim or recipient) is a broken
+     * invariant and writes nothing, so an invocation never grows or changes
+     * after its first bind. Returns each row's stored text and hash in the
+     * membership's order.
      */
     async bindWorkflowIntake(input: { recipientSessionId: string; invocationId: string; items: ReadonlyArray<{ exchangeId: string; claimId: string }> })
         : Promise<{ bound: boolean; items: WorkflowIntakeBoundText[] }> {
         const recipientSessionId = intakeId(input.recipientSessionId, "recipientSessionId");
         const invocationId = intakeId(input.invocationId, "invocationId");
         const items = intakeBatch(input.items, "items", false);
+        const membersText = intakeMembersText(items);
         return this.transaction<{ bound: boolean; items: WorkflowIntakeBoundText[] }>(async client => {
-            const rows = await this.lockIntakeRows(client, items.map(item => item.exchangeId));
-            const named = items.map(item => {
+            const invocation = await this.lockIntakeInvocation(client, invocationId);
+            if (invocation !== null) {
+                if (invocation.recipientSessionId !== recipientSessionId) {
+                    return intakeBroken(items[0].exchangeId, `invocation ${invocationId} belongs to another recipient`);
+                }
+                if (invocation.membersText !== membersText) {
+                    return intakeBroken(items[0].exchangeId, `invocation ${invocationId} was bound with another membership, which never changes`);
+                }
+            }
+            const rows = await this.lockIntakeRows(client, items.map(item => item.exchangeId), invocationId);
+            const named = new Set(items.map(item => item.exchangeId));
+            for (const row of rows.values()) {
+                if (row.invocationId === invocationId && !named.has(row.exchangeId)) {
+                    intakeBroken(row.exchangeId, `it is bound to invocation ${invocationId} but is not one of its members`);
+                }
+            }
+            const texts: WorkflowIntakeBoundText[] = items.map(item => {
                 const row = rows.get(item.exchangeId) ?? intakeBroken(item.exchangeId, "it has no intake row");
                 assertIntakeHolder(row, recipientSessionId, item.claimId);
-                if (row.state !== "holding" && (row.state !== "admitted" || row.invocationId !== invocationId)) {
+                const expected = invocation === null ? row.state === "holding" : row.state === "admitted" && row.invocationId === invocationId;
+                if (!expected) {
                     intakeBroken(row.exchangeId, `it is ${row.state}${row.invocationId === null ? "" : ` for invocation ${row.invocationId}`}, `
-                        + `not holding or bound to invocation ${invocationId}`);
+                        + `not ${invocation === null ? "holding" : `bound to invocation ${invocationId}`}`);
                 }
-                return row;
+                const text = row.text;
+                if (text === null || sha256Hex(text) !== row.textSha256) return intakeBroken(row.exchangeId, "its stored text does not match its hash");
+                return { exchangeId: row.exchangeId, claimId: row.claimId, text, textSha256: row.textSha256 };
             });
-            const holding = named.filter(row => row.state === "holding");
-            if (holding.length > 0 && holding.length < named.length) {
-                intakeBroken(holding[0].exchangeId, `it is holding while the rest of invocation ${invocationId}'s batch is bound`);
-            }
-            if (holding.length > 0) {
+            if (invocation === null) {
                 const at = await this.clockIn(client);
+                await client.query(
+                    `INSERT INTO ${this.t.intakeInvocations} (invocation_id, recipient_session_id, members, member_count, created_at)
+                     VALUES ($1, $2, $3, $4, $5::timestamptz)`, [invocationId, recipientSessionId, membersText, items.length, at]);
                 const { rowCount } = await client.query(
                     `UPDATE ${this.t.intake}
                         SET state = 'admitted', invocation_id = $2, processing = 'bound', admitted_at = $3::timestamptz, updated_at = $3::timestamptz
-                      WHERE exchange_id = ANY($1::text[]) AND state = 'holding'`, [holding.map(row => row.exchangeId), invocationId, at]);
-                if (rowCount !== holding.length) return corrupt(`Invocation ${invocationId}'s batch changed under its locks.`);
+                      WHERE exchange_id = ANY($1::text[]) AND state = 'holding'`, [items.map(item => item.exchangeId), invocationId, at]);
+                if (rowCount !== items.length) return corrupt(`Invocation ${invocationId}'s batch changed under its locks.`);
             }
-            return { bound: holding.length > 0, items: named.map(row => {
-                if (row.text === null || sha256Hex(row.text) !== row.textSha256) return intakeBroken(row.exchangeId, "its stored text does not match its hash");
-                return { exchangeId: row.exchangeId, claimId: row.claimId, text: row.text, textSha256: row.textSha256 };
-            }) };
+            return { bound: invocation === null, items: texts };
         });
     }
 
     /**
-     * End an invocation (design 5.2, 5.5): its batch's rows, each the
-     * recipient's under its claim and bound to it, move together from
-     * processing bound to `outcome`, with settled_at, and the items whose
-     * cancel flag is set record cancel_requested. A batch already at
-     * `outcome` is the same end (a replay; nothing is written). A row of the
-     * batch at another value, a batch found partly ended, or a row of the
-     * invocation still bound but missing from the batch is a broken
-     * invariant. Rows of the invocation that a cancel already settled
-     * (cancelUnsentWorkflowIntake) are not part of its batch.
+     * End an invocation (design 5.2, 5.5). Under the invocation's lock, the
+     * batch is checked against its complete membership: every member is the
+     * recipient's row under its member claim and admitted to it, no other row
+     * names it, and the batch names every member except those an unsent
+     * cancel settled (not_dispatched, reason cancelled), which it must not
+     * name. The batch's rows move together from processing bound to
+     * `outcome`, with settled_at, and the items whose cancel flag is set
+     * record cancel_requested. A batch already at `outcome` is the same end
+     * (a replay; nothing is written) when every cancel it names was recorded.
+     * A member left out (bound or ended), a non-member or a cancelled member
+     * named, a batch partly ended or at another value, or a replay naming an
+     * unrecorded cancel is a broken invariant and writes nothing.
      */
     async endWorkflowIntake(input: {
         recipientSessionId: string;
@@ -3628,22 +3714,41 @@ export class WorkflowStore {
         }
         const items = intakeBatch(input.items, "items", true);
         return this.transaction<{ ended: boolean }>(async client => {
-            const rows = await this.lockIntakeRows(client, items.map(item => item.exchangeId), invocationId);
-            const batch = new Set(items.map(item => item.exchangeId));
-            let ended = 0;
-            for (const item of items) {
-                const row = rows.get(item.exchangeId) ?? intakeBroken(item.exchangeId, "it has no intake row");
-                assertIntakeHolder(row, recipientSessionId, item.claimId);
-                if (row.state !== "admitted" || row.invocationId !== invocationId) intakeBroken(row.exchangeId, `it is not bound to invocation ${invocationId}`);
-                if (row.processing === outcome) ended += 1;
-                else if (row.processing !== "bound") intakeBroken(row.exchangeId, `its processing is ${row.processing}, not bound or ${outcome}`);
-            }
-            if (ended > 0 && ended < items.length) intakeBroken(items[0].exchangeId, `invocation ${invocationId}'s batch is partly ended`);
+            const invocation = await this.lockBoundIntakeInvocation(client, invocationId, recipientSessionId, items[0].exchangeId);
+            const memberClaims = new Map<string, string>(invocation.members.map(member => [member.exchangeId, member.claimId] as [string, string]));
+            const rows = await this.lockIntakeRows(client, invocation.members.map(member => member.exchangeId), invocationId);
             for (const row of rows.values()) {
-                if (row.invocationId === invocationId && row.processing === "bound" && !batch.has(row.exchangeId)) {
-                    intakeBroken(row.exchangeId, `it is bound to invocation ${invocationId} but missing from its end`);
+                const claimId = memberClaims.get(row.exchangeId);
+                if (claimId === undefined) intakeBroken(row.exchangeId, `it is bound to invocation ${invocationId} but is not one of its members`);
+                assertIntakeHolder(row, recipientSessionId, claimId);
+                if (row.state !== "admitted" || row.invocationId !== invocationId) {
+                    intakeBroken(row.exchangeId, `it is a member of invocation ${invocationId} but is not bound to it`);
                 }
             }
+            const named = new Map<string, { exchangeId: string; claimId: string; cancelRequested: boolean }>(
+                items.map(item => [item.exchangeId, item] as [string, { exchangeId: string; claimId: string; cancelRequested: boolean }]));
+            for (const item of items) {
+                const claimId = memberClaims.get(item.exchangeId);
+                if (claimId === undefined) intakeBroken(item.exchangeId, `it is not a member of invocation ${invocationId}`);
+                if (claimId !== item.claimId) intakeBroken(item.exchangeId, `it is a member of invocation ${invocationId} under claim ${claimId}, not ${item.claimId}`);
+            }
+            let ended = 0;
+            for (const member of invocation.members) {
+                const row = rows.get(member.exchangeId) ?? intakeBroken(member.exchangeId, "it has no intake row");
+                const item = named.get(member.exchangeId);
+                if (row.processing === "not_dispatched" && row.reason === "cancelled") {
+                    if (item !== undefined) intakeBroken(row.exchangeId, `it was cancelled before invocation ${invocationId} was sent; its end does not name it`);
+                    continue;
+                }
+                if (item === undefined) intakeBroken(row.exchangeId, `it is a member of invocation ${invocationId} but missing from its end`);
+                if (row.processing === outcome) {
+                    ended += 1;
+                    if (item.cancelRequested && !row.cancelRequested) intakeBroken(row.exchangeId, "its end names a cancel that the ended row did not record");
+                } else if (row.processing !== "bound") {
+                    intakeBroken(row.exchangeId, `its processing is ${row.processing}, not bound or ${outcome}`);
+                }
+            }
+            if (ended > 0 && ended < items.length) intakeBroken(items[0].exchangeId, `invocation ${invocationId}'s end is partly applied`);
             if (ended === items.length) return { ended: false };
             const at = await this.clockIn(client);
             const { rowCount } = await client.query(
@@ -3676,9 +3781,11 @@ export class WorkflowStore {
     }
 
     /**
-     * Cancel an item of an invocation not yet sent (design 5.2, 5.5): admitted
-     * to that invocation with processing bound becomes not_dispatched, reason
-     * cancelled. Already so: the same (nothing written).
+     * Cancel an item of an invocation not yet sent (design 5.2, 5.5): under
+     * the invocation's lock, a member admitted to it under its member claim
+     * with processing bound becomes not_dispatched, reason cancelled, and the
+     * invocation's end no longer names it. Already so: the same (nothing
+     * written).
      */
     async cancelUnsentWorkflowIntake(input: { recipientSessionId: string; exchangeId: string; claimId: string; invocationId: string })
         : Promise<{ cancelled: boolean }> {
@@ -3687,6 +3794,10 @@ export class WorkflowStore {
         const claimId = intakeId(input.claimId, "claimId");
         const invocationId = intakeId(input.invocationId, "invocationId");
         return this.transaction<{ cancelled: boolean }>(async client => {
+            const invocation = await this.lockBoundIntakeInvocation(client, invocationId, recipientSessionId, exchangeId);
+            if (intakeMemberClaim(invocation, invocationId, exchangeId) !== claimId) {
+                return intakeBroken(exchangeId, `it is a member of invocation ${invocationId} under another claim than ${claimId}`);
+            }
             const row = await this.lockIntakeRow(client, exchangeId);
             assertIntakeHolder(row, recipientSessionId, claimId);
             if (row.state !== "admitted" || row.invocationId !== invocationId) return intakeBroken(exchangeId, `it is not bound to invocation ${invocationId}`);
@@ -3702,8 +3813,9 @@ export class WorkflowStore {
 
     /**
      * Record a cancel of an item whose invocation was possibly sent (design
-     * 5.2, 5.5): cancel_requested becomes true; its processing is not changed.
-     * Already recorded: the same (nothing written).
+     * 5.2, 5.5): under the invocation's lock, a member admitted to it under
+     * its member claim records cancel_requested; its processing is not
+     * changed. Already recorded: the same (nothing written).
      */
     async requestCancelWorkflowIntake(input: { recipientSessionId: string; exchangeId: string; claimId: string; invocationId: string })
         : Promise<{ recorded: boolean }> {
@@ -3712,6 +3824,10 @@ export class WorkflowStore {
         const claimId = intakeId(input.claimId, "claimId");
         const invocationId = intakeId(input.invocationId, "invocationId");
         return this.transaction<{ recorded: boolean }>(async client => {
+            const invocation = await this.lockBoundIntakeInvocation(client, invocationId, recipientSessionId, exchangeId);
+            if (intakeMemberClaim(invocation, invocationId, exchangeId) !== claimId) {
+                return intakeBroken(exchangeId, `it is a member of invocation ${invocationId} under another claim than ${claimId}`);
+            }
             const row = await this.lockIntakeRow(client, exchangeId);
             assertIntakeHolder(row, recipientSessionId, claimId);
             if (row.state !== "admitted" || row.invocationId !== invocationId) return intakeBroken(exchangeId, `it is not bound to invocation ${invocationId}`);

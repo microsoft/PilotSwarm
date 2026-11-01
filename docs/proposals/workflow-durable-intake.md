@@ -259,6 +259,14 @@ has a separate `processing` value: `bound` until its invocation ends, then
 one final value of `completed`, `not_dispatched`, `interrupted` or
 `failed_indeterminate` (5.5).
 
+`workflow_intake_invocations`, one row per invocation (key: the invocation
+id), written once by its first bind and never changed or deleted: its
+recipient and its complete membership (each exchange with its claim, in the
+bind's order). An admitted row's `invocation_id` refers to it. Every bind,
+end and cancel of an invocation first takes a transaction-scoped lock on
+its identity, so they serialize, the first bind included, and each is
+checked against the whole membership (5.2).
+
 A **placement** is where the orchestration keeps a claimed item: a `held`
 entry of its intake queue (5.4) while the row is `holding`, and the
 invocation (5.5) once it is `admitted`. Both are orchestration state that
@@ -292,11 +300,11 @@ rows' state after it:
 
 | Settle | Write | Condition |
 |---|---|---|
-| bind (invocation `v`, claims `C`) | `state = 'admitted'`, `invocation_id = v`, `processing = 'bound'`, `admitted_at`; returns each row's stored `text` and `text_sha256` | each row `holding` under its claim in `C`; a row already `admitted` under its claim with invocation `v` is the same result (a replay) |
+| bind (invocation `v`, claims `C`) | the first bind of `v`: its membership `C` once; then `state = 'admitted'`, `invocation_id = v`, `processing = 'bound'`, `admitted_at`; returns each row's stored `text` and `text_sha256` | first bind: each row `holding` under its claim in `C`; a later bind is the same result (a replay) only when `C` is exactly the stored membership, in its order, and every member is still `admitted` to `v` |
 | cancel (claim `c`) | `state = 'cancelled'` | `holding(c)` |
-| cancel (claim `c`, invocation `v` not yet sent) | `processing = 'not_dispatched'`, `reason = 'cancelled'` | `admitted(c)`, invocation `v`, `processing = 'bound'` |
-| cancel requested (claim `c`, invocation `v` possibly sent) | `cancel_requested = true` | `admitted(c)`, invocation `v`; the processing value is not changed |
-| end (invocation `v`, outcome `o`) | `processing = o`, `settled_at` | every row of `v` still `bound`; a row already at `o` is the same result |
+| cancel (claim `c`, invocation `v` not yet sent) | `processing = 'not_dispatched'`, `reason = 'cancelled'` | `c` a member of `v`; `admitted(c)`, invocation `v`, `processing = 'bound'` |
+| cancel requested (claim `c`, invocation `v` possibly sent) | `cancel_requested = true` | `c` a member of `v`; `admitted(c)`, invocation `v`; the processing value is not changed |
+| end (invocation `v`, outcome `o`, its batch) | `processing = o`, `settled_at`; `cancel_requested` for each item the batch marks | the batch is every member of `v` except those cancelled while unsent, which it must not name; every batch row still `bound`; a batch already at `o` is the same result when every cancel it marks was recorded |
 | `refused_full`, `refused_size` (claim `c`) | in the refusal transaction (5.6) | `holding(c)` |
 
 A settle by the holder removes or moves the placement in the same

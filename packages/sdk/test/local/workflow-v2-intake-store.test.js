@@ -23,12 +23,32 @@
  *   invocation alone, is refused_size; a large item within both is held.
  * - Bind, end and the cancels (5.2, 5.5): state-conditioned, the same result
  *   again for the holder, and any other row fails visibly, writing nothing.
+ *   An invocation's first bind stores its complete membership once
+ *   (INTAKE-S2-01): a later bind is a replay only with exactly that
+ *   membership, so no subset, reordering, disjoint or growing bind is taken;
+ *   binds and ends of one invocation serialize on its identity, its first
+ *   bind included (barrier-held races on real PostgreSQL). The end
+ *   (INTAKE-S2-02) names every member but those cancelled before the send,
+ *   never those, never leaves out an ended member, and a replay names only
+ *   cancels its rows recorded.
  * - The refusal transaction (5.6): a live sender gets the outcome and one
  *   event; a deleted one nothing; the recipient one event and no write to
  *   its session row; a refusal waits for the sender's session lock and the
- *   outbox row's lock, the locks a delivery attempt takes first.
+ *   outbox row's lock, the locks a delivery attempt takes first. Competing
+ *   claims of one exchange (accept against refuse, either first, and one
+ *   claim twice) decide once, and a real PostgreSQL failure at the outbox
+ *   outcome, the sender's touch or the recipient's event rolls back every
+ *   effect.
  * - The guard (5.1): identity and text never change, the state and the
  *   processing move forward once, nothing goes back, nothing is deleted.
+ *   Every check is a total boolean (INTAKE-S2-03, INTAKE-S2-04): a null
+ *   column never lets a row take an outcome without a durable mode, a time
+ *   without an outcome, or a final processing without the bind's bound.
+ *
+ * Barrier-held races use a second store over a pool whose statements pass
+ * through a hook (the store's own statements, held at COMMIT or followed by
+ * an injected error, never replaced), and PostgreSQL's own lock graph
+ * (pg_blocking_pids) to observe a wait.
  */
 import { describe, it, expect } from "vitest";
 import { randomUUID } from "node:crypto";
@@ -44,7 +64,7 @@ import {
     intakeEnvelopeSha256, intakeItemBytes, intakeItemsBytes,
 } from "../../src/workflow/v2/intake.ts";
 import { workflowLiveControllerInstanceId, workflowSendClientMessageId, workflowSendPrompt } from "../../src/workflow/v2/runtime.ts";
-import { nodeExecutionIdFor } from "../../src/workflow/v2/store.ts";
+import { nodeExecutionIdFor, WorkflowStore } from "../../src/workflow/v2/store.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const ACTOR = { kind: "system", name: "workflow-v2-intake-store-test" };
@@ -86,6 +106,23 @@ async function expectCode(promise, code) {
 }
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+/** A point a transaction reaches (`reach`, with a value) and waits at until it is opened. */
+function gate() {
+    let reach;
+    let open;
+    const reached = new Promise(resolve => { reach = resolve; });
+    const opened = new Promise(resolve => { open = resolve; });
+    return { reached, reach, opened, open };
+}
+
+/** Settle a promise into { value } or { error } so a test can await it after the work it raced. */
+const settle = promise => promise.then(value => ({ value }), error => ({ error }));
+
+/** The pid whose COMMIT `held` holds, or a failure as soon as the settled `work` ends without reaching it. */
+const reachedBefore = (held, work, label) => Promise.race([held.reached, work.then(result => {
+    throw new Error(`${label} ended before its COMMIT was held: ${result.error ? result.error.message : JSON.stringify(result.value)}`);
+})]);
 
 /**
  * The store with workflows whose parent (an agent session of the same user)
@@ -171,10 +208,68 @@ async function intakeHarness(env, { migrate = null } = {}) {
     const sessionRow = async (sessionId) => (await q(
         "SELECT xmin::text AS xmin, updated_at::text AS updated, last_active_at::text AS active FROM SCHEMA.sessions WHERE session_id = $1",
         [sessionId]))[0];
+    /**
+     * A second store over its own pool whose statements pass through
+     * `control.hook` when it is set: the store's real statements, held at a
+     * point or followed by an injected PostgreSQL error, never replaced.
+     */
+    const control = { hook: null };
+    const hookedPool = new pg.Pool({ connectionString: env.store, max: 6 });
+    const hooked = new WorkflowStore({
+        async connect() {
+            const client = await hookedPool.connect();
+            const run = (text, params) => client.query(text, params);
+            return {
+                query(text, params) {
+                    const sql = typeof text === "string" ? text : text.text;
+                    return control.hook ? control.hook({ sql, params, run, pid: client.processID }) : run(text, params);
+                },
+                release: (...args) => client.release(...args),
+            };
+        },
+        query: (text, params) => hookedPool.query(text, params),
+    }, env.cmsSchema);
+    /**
+     * Hold the COMMIT of the first hooked transaction that runs a statement
+     * matching `match`, until the returned gate is opened; `reached` gives that
+     * transaction's backend pid. Every statement still runs as written.
+     */
+    const gates = [];
+    const holdCommit = (match) => {
+        const held = gate();
+        gates.push(held);
+        let pid = null;
+        control.hook = async ({ sql, params, run, pid: clientPid }) => {
+            if (pid === null && match(sql, params)) pid = clientPid;
+            if (sql === "COMMIT" && clientPid === pid) {
+                held.reach(pid);
+                await held.opened;
+            }
+            return run(sql, params);
+        };
+        return held;
+    };
+    /** Some backend waits for a lock that `holderPid` holds: PostgreSQL's own lock graph, polled for up to 20 s. */
+    const waitsFor = async (holderPid) => {
+        const deadline = Date.now() + 20_000;
+        while (Date.now() < deadline) {
+            const [row] = await q("SELECT count(*)::int AS n FROM pg_stat_activity WHERE $1::int = ANY(pg_blocking_pids(pid))", [holderPid]);
+            if (row.n > 0) return true;
+            await sleep(20);
+        }
+        return false;
+    };
     return {
         catalog, store, q, pool: direct, owner, recipient, stranger, workflow, send, countDurable, durable, envelopeOf, claim, expectedItem, outboxIntake,
-        events, sessionRow, refusal,
-        async stop() { await catalog.close(); await direct.end(); },
+        events, sessionRow, refusal, control, hooked, holdCommit, waitsFor,
+        async stop() {
+            control.hook = null;
+            // A held transaction that a failed test left waiting commits now, so its connection returns to its pool.
+            for (const held of gates) held.open();
+            await catalog.close();
+            await direct.end();
+            await hookedPool.end();
+        },
     };
 }
 
@@ -226,6 +321,20 @@ describe("workflow v2 durable intake: the outbox fence (migration 0094)", () => 
                 .rejects.toThrow(/workflow_outbox_intake_outcome/);
             await expect(update(second, "intake_outcome = 'refused_full'")).rejects.toThrow(/workflow_outbox_intake_outcome/);
             await expect(update(second, "intake_mode = 'other'")).rejects.toThrow();
+            // INTAKE-S2-03: a null column never makes the check unknown. A row with no mode (counted by a build without the intake,
+            // or not counted yet) takes no outcome, and a time without an outcome is refused on any row.
+            for (const exchangeId of [first, fourth]) {
+                await expect(update(exchangeId, "intake_outcome = 'refused_full', intake_outcome_at = clock_timestamp()"))
+                    .rejects.toThrow(/workflow_outbox_intake_outcome/);
+                await expect(update(exchangeId, "intake_outcome_at = clock_timestamp()")).rejects.toThrow(/workflow_outbox_intake_outcome/);
+            }
+            await expect(update(second, "intake_outcome_at = clock_timestamp()")).rejects.toThrow(/workflow_outbox_intake_outcome/);
+            await expect(update(second, "intake_outcome = 'refused_size', intake_outcome_at = NULL")).rejects.toThrow(/workflow_outbox_intake_outcome/);
+            expect(await h.q("SELECT count(*)::int AS n FROM SCHEMA.workflow_outbox WHERE intake_outcome IS NOT NULL OR intake_outcome_at IS NOT NULL"))
+                .toEqual([{ n: 0 }]);
+            // Positive control: a durable row takes an outcome with its time.
+            await update(second, "intake_outcome = 'refused_size', intake_outcome_at = clock_timestamp()");
+            expect(await h.outboxIntake(second)).toMatchObject({ intake_mode: "durable", intake_outcome: "refused_size" });
         } finally { await h.stop(); }
     });
 
@@ -422,19 +531,36 @@ describe("workflow v2 durable intake: bind, end and the cancels (store)", () => 
             const bound = await read(x1);
             expect(bound).toMatchObject({ state: "admitted", invocationId: "inv-1", processing: "bound", settledAt: null });
             expect(bound.admittedAt).toMatch(EXACT_TIME);
-            // A replay is the same result, in the caller's order, and writes nothing.
-            expect(await bind("inv-1", [ref(x2), ref(x1)])).toEqual({ bound: false, items: [text(x2), text(x1)] });
+            // INTAKE-S2-01: the first bind stores the invocation's complete membership once, in its order, with its recipient.
+            const membership = async invocationId => (await h.q(
+                "SELECT recipient_session_id, members, member_count FROM SCHEMA.workflow_intake_invocations WHERE invocation_id = $1", [invocationId]))[0];
+            expect(await membership("inv-1")).toEqual({ recipient_session_id: h.recipient, member_count: 2,
+                members: canonicalJson([ref(x1), ref(x2)]) });
+            // A replay names exactly that membership, in that order, and writes nothing.
+            expect(await bind("inv-1", [ref(x1), ref(x2)])).toEqual({ bound: false, items: [text(x1), text(x2)] });
             expect(await read(x1)).toEqual(bound);
             expect(await h.claim(await h.envelopeOf(x1), "claim-1")).toEqual({ result: "admitted", inserted: false });
+            // Another membership of the same invocation is never a replay: a subset, the same members reordered, a disjoint set, a superset.
+            for (const refs of [[ref(x1)], [ref(x2)], [ref(x2), ref(x1)], [ref(x3)], [ref(x1), ref(x2), ref(x3)]]) {
+                await expectCode(bind("inv-1", refs), "WORKFLOW_STORE_CORRUPT");
+            }
+            expect(await read(x3)).toMatchObject({ state: "holding", invocationId: null });
+            expect(await membership("inv-1")).toEqual({ recipient_session_id: h.recipient, member_count: 2,
+                members: canonicalJson([ref(x1), ref(x2)]) });
+            await expect(h.q("UPDATE SCHEMA.workflow_intake_invocations SET member_count = 1 WHERE invocation_id = 'inv-1'")).rejects.toThrow(/written once/);
+            await expect(h.q("DELETE FROM SCHEMA.workflow_intake_invocations WHERE invocation_id = 'inv-1'")).rejects.toThrow(/written once/);
 
             // Any other row fails visibly and writes nothing: another invocation, another claim or recipient, a batch partly bound, no row.
             await expectCode(bind("inv-2", [ref(x1)]), "WORKFLOW_STORE_CORRUPT");
             await expectCode(bind("inv-1", [ref(x1, "claim-9")]), "WORKFLOW_STORE_CORRUPT");
+            await expectCode(bind("inv-1", [ref(x1), ref(x2)], h.stranger), "WORKFLOW_STORE_CORRUPT");
             await expectCode(bind("inv-3", [ref(x3)], h.stranger), "WORKFLOW_STORE_CORRUPT");
             await expectCode(bind("inv-1", [ref(x1), ref(x3)]), "WORKFLOW_STORE_CORRUPT");
             const unclaimed = await h.durable(run, { ordinal: 8 });
             await expectCode(bind("inv-3", [ref(x3), { exchangeId: unclaimed, claimId: "claim-8" }]), "WORKFLOW_STORE_CORRUPT");
             expect(await read(x3)).toMatchObject({ state: "holding", invocationId: null });
+            // A failed first bind leaves no invocation behind.
+            expect(await h.q("SELECT invocation_id FROM SCHEMA.workflow_intake_invocations ORDER BY invocation_id")).toEqual([{ invocation_id: "inv-1" }]);
             await expectCode(bind("inv-3", []), "WORKFLOW_INTAKE_INVALID");
             await expectCode(bind("inv-3", [ref(x3), ref(x3)]), "WORKFLOW_INTAKE_INVALID");
             await expectCode(bind("inv-3", Array.from({ length: 65 }, (_, n) => ({ exchangeId: nodeExecutionIdFor(run.runId, "root", "tell", 100 + n), claimId: "c" }))),
@@ -478,7 +604,14 @@ describe("workflow v2 durable intake: bind, end and the cancels (store)", () => 
             expect(await bind("inv-5", [ref(x5), ref(x6)])).toMatchObject({ bound: true });
             await h.q(`UPDATE SCHEMA.workflow_intake SET processing = 'failed_indeterminate', settled_at = clock_timestamp() WHERE exchange_id = $1`, [x5]);
             await expectCode(end("inv-5", "failed_indeterminate", [[x5], [x6]]), "WORKFLOW_STORE_CORRUPT");
+            // INTAKE-S2-02: a member that ended is still a member; an end that leaves it out fails too, whatever the outcome.
+            await expectCode(end("inv-5", "failed_indeterminate", [[x6]]), "WORKFLOW_STORE_CORRUPT");
+            await expectCode(end("inv-5", "completed", [[x6]]), "WORKFLOW_STORE_CORRUPT");
             expect(await read(x6)).toMatchObject({ processing: "bound" });
+            // An end of an invocation never bound fails, and so does a cancel of one.
+            await expectCode(end("inv-never", "completed", [[x6]]), "WORKFLOW_STORE_CORRUPT");
+            await expectCode(h.store.requestCancelWorkflowIntake({ recipientSessionId: h.recipient, ...ref(x6), invocationId: "inv-never" }),
+                "WORKFLOW_STORE_CORRUPT");
 
             // A held claim's cancel: cancelled; the same again; the claim then reads cancelled; nothing else may settle or bind it.
             expect(await h.store.cancelHeldWorkflowIntake({ recipientSessionId: h.recipient, ...ref(x7) })).toEqual({ cancelled: true });
@@ -493,6 +626,124 @@ describe("workflow v2 durable intake: bind, end and the cancels (store)", () => 
             await expectCode(h.store.cancelHeldWorkflowIntake({ recipientSessionId: h.recipient, ...ref(x1) }), "WORKFLOW_STORE_CORRUPT");
             await expectCode(h.store.refuseHeldWorkflowIntake({ recipientSessionId: h.recipient, ...ref(x7), outcome: "refused_full" }), "WORKFLOW_STORE_CORRUPT");
             expect(await read(x7)).toMatchObject({ ...cancelled, duplicates: 1, updatedAt: expect.stringMatching(EXACT_TIME) });
+        } finally { await h.stop(); }
+    });
+
+    it("ends exactly the members not cancelled before the send, and refuses a replay naming an unrecorded cancel", { timeout: TIMEOUT }, async () => {
+        const h = await intakeHarness(getEnv());
+        try {
+            const run = await h.workflow();
+            const claimOf = {};
+            const claimed = async ordinal => {
+                const exchangeId = await h.durable(run, { ordinal, payload: { note: `item ${ordinal}` } });
+                expect(await h.claim(await h.envelopeOf(exchangeId), `claim-${ordinal}`)).toMatchObject({ result: "accepted", inserted: true });
+                claimOf[exchangeId] = `claim-${ordinal}`;
+                return exchangeId;
+            };
+            const [f, g, hx, ix] = [await claimed(1), await claimed(2), await claimed(3), await claimed(4)];
+            const ref = exchangeId => ({ exchangeId, claimId: claimOf[exchangeId] });
+            const end = (invocationId, outcome, refs) => h.store.endWorkflowIntake({ recipientSessionId: h.recipient, invocationId, outcome,
+                items: refs.map(([exchangeId, cancelRequested = false]) => ({ ...ref(exchangeId), cancelRequested })) });
+            const read = exchangeId => h.store.readWorkflowIntake(exchangeId);
+
+            // INTAKE-S2-02: a member cancelled before the send (not_dispatched, reason cancelled) is not part of the end; naming it fails,
+            // on the first end and on every later one, even once the end's own outcome is not_dispatched too.
+            expect(await h.store.bindWorkflowIntake({ recipientSessionId: h.recipient, invocationId: "inv-x", items: [ref(f), ref(g)] }))
+                .toMatchObject({ bound: true });
+            expect(await h.store.cancelUnsentWorkflowIntake({ recipientSessionId: h.recipient, ...ref(f), invocationId: "inv-x" })).toEqual({ cancelled: true });
+            const cancelled = await read(f);
+            await expectCode(end("inv-x", "not_dispatched", [[f], [g]]), "WORKFLOW_STORE_CORRUPT");
+            await expectCode(end("inv-x", "not_dispatched", [[f]]), "WORKFLOW_STORE_CORRUPT");
+            expect(await read(g)).toMatchObject({ processing: "bound" });
+            expect(await end("inv-x", "not_dispatched", [[g]])).toEqual({ ended: true });
+            expect(await read(g)).toMatchObject({ processing: "not_dispatched", reason: null });
+            expect(await end("inv-x", "not_dispatched", [[g]])).toEqual({ ended: false });
+            await expectCode(end("inv-x", "not_dispatched", [[f]]), "WORKFLOW_STORE_CORRUPT");
+            await expectCode(end("inv-x", "not_dispatched", [[f], [g]]), "WORKFLOW_STORE_CORRUPT");
+            expect(await read(f)).toEqual(cancelled);
+
+            // A replay names a cancel only when its row recorded one.
+            expect(await h.store.bindWorkflowIntake({ recipientSessionId: h.recipient, invocationId: "inv-y", items: [ref(hx), ref(ix)] }))
+                .toMatchObject({ bound: true });
+            expect(await end("inv-y", "interrupted", [[hx], [ix]])).toEqual({ ended: true });
+            const ended = [await read(hx), await read(ix)];
+            await expectCode(end("inv-y", "interrupted", [[hx, true], [ix]]), "WORKFLOW_STORE_CORRUPT");
+            expect([await read(hx), await read(ix)]).toEqual(ended);
+            expect(await end("inv-y", "interrupted", [[hx], [ix]])).toEqual({ ended: false });
+            // A cancel recorded after the end (a late tombstone) makes that replay consistent; a replay without the flag stays the same end.
+            expect(await h.store.requestCancelWorkflowIntake({ recipientSessionId: h.recipient, ...ref(hx), invocationId: "inv-y" })).toEqual({ recorded: true });
+            expect(await end("inv-y", "interrupted", [[hx, true], [ix]])).toEqual({ ended: false });
+            expect(await end("inv-y", "interrupted", [[hx], [ix]])).toEqual({ ended: false });
+            // Members are named under their member claims, by the invocation's recipient.
+            await expectCode(h.store.endWorkflowIntake({ recipientSessionId: h.recipient, invocationId: "inv-y", outcome: "interrupted",
+                items: [{ exchangeId: hx, claimId: "claim-x", cancelRequested: false }, { ...ref(ix), cancelRequested: false }] }), "WORKFLOW_STORE_CORRUPT");
+            await expectCode(h.store.endWorkflowIntake({ recipientSessionId: h.stranger, invocationId: "inv-y", outcome: "interrupted",
+                items: [{ ...ref(hx), cancelRequested: false }, { ...ref(ix), cancelRequested: false }] }), "WORKFLOW_STORE_CORRUPT");
+            await expectCode(h.store.cancelUnsentWorkflowIntake({ recipientSessionId: h.recipient, exchangeId: ix, claimId: "claim-x", invocationId: "inv-y" }),
+                "WORKFLOW_STORE_CORRUPT");
+            await expectCode(h.store.requestCancelWorkflowIntake({ recipientSessionId: h.recipient, ...ref(f), invocationId: "inv-y" }), "WORKFLOW_STORE_CORRUPT");
+        } finally { await h.stop(); }
+    });
+
+    it("serializes the binds and the end of one invocation on its identity, its first bind included", { timeout: TIMEOUT }, async () => {
+        const h = await intakeHarness(getEnv());
+        try {
+            const run = await h.workflow();
+            const claimOf = {};
+            const claimed = async ordinal => {
+                const exchangeId = await h.durable(run, { ordinal, payload: { note: `item ${ordinal}` } });
+                expect(await h.claim(await h.envelopeOf(exchangeId), `claim-${ordinal}`)).toMatchObject({ result: "accepted", inserted: true });
+                claimOf[exchangeId] = `claim-${ordinal}`;
+                return exchangeId;
+            };
+            const [a, b, c] = [await claimed(1), await claimed(2), await claimed(3)];
+            const ref = exchangeId => ({ exchangeId, claimId: claimOf[exchangeId] });
+            const bindVia = (store, invocationId, exchangeIds) => store.bindWorkflowIntake({ recipientSessionId: h.recipient, invocationId,
+                items: exchangeIds.map(ref) });
+            const endVia = (store, invocationId, exchangeIds) => store.endWorkflowIntake({ recipientSessionId: h.recipient, invocationId,
+                outcome: "completed", items: exchangeIds.map(exchangeId => ({ ...ref(exchangeId), cancelRequested: false })) });
+            const firstBind = sql => sql.includes("INSERT INTO") && sql.includes(".workflow_intake_invocations");
+            const endUpdate = sql => /^\s*UPDATE\b/.test(sql) && sql.includes("SET processing = $3");
+
+            // INTAKE-S2-01: two first binds of one invocation with disjoint members. The second waits for the first's lock on the
+            // invocation, then finds the membership the first stored, and binds nothing.
+            const firstHeld = h.holdCommit(firstBind);
+            const first = settle(bindVia(h.hooked, "inv-race", [a]));
+            const firstPid = await reachedBefore(firstHeld, first, "the first bind");
+            const second = settle(bindVia(h.store, "inv-race", [b]));
+            expect(await h.waitsFor(firstPid)).toBe(true);
+            firstHeld.open();
+            expect((await first).value).toMatchObject({ bound: true });
+            expect((await second).error?.code).toBe("WORKFLOW_STORE_CORRUPT");
+            h.control.hook = null;
+            expect(await h.store.readWorkflowIntake(a)).toMatchObject({ state: "admitted", invocationId: "inv-race" });
+            expect(await h.store.readWorkflowIntake(b)).toMatchObject({ state: "holding", invocationId: null });
+
+            // A bind that would grow the invocation while its end commits: it waits for the end, then finds the membership closed.
+            const endHeld = h.holdCommit(endUpdate);
+            const ending = settle(endVia(h.hooked, "inv-race", [a]));
+            const endPid = await reachedBefore(endHeld, ending, "the end");
+            const grow = settle(bindVia(h.store, "inv-race", [b]));
+            expect(await h.waitsFor(endPid)).toBe(true);
+            endHeld.open();
+            expect((await ending).value).toEqual({ ended: true });
+            expect((await grow).error?.code).toBe("WORKFLOW_STORE_CORRUPT");
+            h.control.hook = null;
+            expect(await h.store.readWorkflowIntake(b)).toMatchObject({ state: "holding", invocationId: null });
+
+            // An end that races its invocation's first bind waits for it instead of finding no invocation, then ends what it admitted.
+            const bindHeld = h.holdCommit(firstBind);
+            const binding = settle(bindVia(h.hooked, "inv-next", [b, c]));
+            const bindPid = await reachedBefore(bindHeld, binding, "the first bind of inv-next");
+            const closing = settle(endVia(h.store, "inv-next", [b, c]));
+            expect(await h.waitsFor(bindPid)).toBe(true);
+            bindHeld.open();
+            expect((await binding).value).toMatchObject({ bound: true });
+            expect((await closing).value).toEqual({ ended: true });
+            h.control.hook = null;
+            for (const exchangeId of [b, c]) {
+                expect(await h.store.readWorkflowIntake(exchangeId)).toMatchObject({ invocationId: "inv-next", processing: "completed" });
+            }
         } finally { await h.stop(); }
     });
 });
@@ -632,6 +883,110 @@ describe("workflow v2 durable intake: the refusal transaction (store)", () => {
             await h.stop();
         }
     });
+
+    it("decides competing claims of one exchange once: accept against refuse, in either order, and the same claim twice", { timeout: TIMEOUT }, async () => {
+        const h = await intakeHarness(getEnv());
+        try {
+            const run = await h.workflow();
+            const intakeInsert = sql => sql.includes("INSERT INTO") && sql.includes(".workflow_intake (");
+            /** Claim through the hooked store and hold its COMMIT; race the second claim (the plain store) against it. */
+            const race = async (exchangeId, first, second) => {
+                const envelope = await h.envelopeOf(exchangeId);
+                const held = h.holdCommit(intakeInsert);
+                const one = settle(h.hooked.claimWorkflowIntake({ recipientSessionId: h.recipient, envelope, claimId: first.claimId, mode: first.mode, render }));
+                const holderPid = await reachedBefore(held, one, "the first claim");
+                const two = settle(h.claim(envelope, second.claimId, second.mode));
+                expect(await h.waitsFor(holderPid)).toBe(true);
+                held.open();
+                const results = [await one, await two];
+                h.control.hook = null;
+                for (const result of results) expect(result.error, result.error?.message).toBeUndefined();
+                return results.map(result => result.value);
+            };
+
+            // Accept first: the refusal waits for the sender's session lock, then finds the claim and is a duplicate; nothing is refused.
+            const accepted = await h.durable(run, { ordinal: 1 });
+            const [won, lost] = await race(accepted, { claimId: "claim-a", mode: "accept" }, { claimId: "claim-r", mode: "refuse" });
+            expect(won).toEqual({ result: "accepted", inserted: true, item: await h.expectedItem(accepted, "claim-a") });
+            expect(lost).toEqual({ result: "duplicate", state: "holding" });
+            expect(await h.store.readWorkflowIntake(accepted)).toMatchObject({ state: "holding", claimId: "claim-a", duplicates: 1, conflicts: 0 });
+            expect(await h.outboxIntake(accepted)).toMatchObject({ intake_outcome: null, intake_outcome_at: null });
+
+            // Refuse first: the accept waits, then finds the refusal; the refusal's effects happen once.
+            const refused = await h.durable(run, { ordinal: 2 });
+            const [refusal, late] = await race(refused, { claimId: "claim-r", mode: "refuse" }, { claimId: "claim-a", mode: "accept" });
+            expect(refusal).toEqual({ result: "refused_full", inserted: true });
+            expect(late).toEqual({ result: "duplicate", state: "refused_full" });
+            expect(await h.store.readWorkflowIntake(refused)).toMatchObject({ state: "refused_full", claimId: "claim-r", duplicates: 1 });
+            expect(await h.outboxIntake(refused)).toMatchObject({ intake_outcome: "refused_full" });
+
+            // The same claim twice at once (a lost reply's retry racing its call): one insert, the same item.
+            const same = await h.durable(run, { ordinal: 3 });
+            const [original, retry] = await race(same, { claimId: "claim-s", mode: "accept" }, { claimId: "claim-s", mode: "accept" });
+            const item = await h.expectedItem(same, "claim-s");
+            expect(original).toEqual({ result: "accepted", inserted: true, item });
+            expect(retry).toEqual({ result: "accepted", inserted: false, item });
+            expect(await h.store.readWorkflowIntake(same)).toMatchObject({ state: "holding", claimId: "claim-s", duplicates: 0 });
+
+            // One refusal's effects in all: one event on each side, for the refused exchange only.
+            expect((await h.events(run.workflowSessionId, INTAKE_REFUSED_WORKFLOW_EVENT)).map(event => event.data.exchangeId)).toEqual([refused]);
+            expect((await h.events(h.recipient, INTAKE_REFUSED_RECIPIENT_EVENT)).map(event => event.data.exchangeId)).toEqual([refused]);
+        } finally { await h.stop(); }
+    });
+
+    it.each([
+        ["after its rows, at the outbox outcome", ({ sql }) => /^\s*UPDATE\b/.test(sql) && sql.includes(".workflow_outbox") && sql.includes("intake_outcome")],
+        ["after the sender's event, at the sender's touch", ({ sql, params }, ids) => sql.includes(".cms_update_session") && params?.[0] === ids.sender],
+        ["after both events, at the recipient's event", ({ sql, params }, ids) => sql.includes(".cms_record_events") && params?.[0] === ids.recipient],
+    ])("rolls back every effect of a refusal on a real PostgreSQL failure %s", { timeout: TIMEOUT }, async (_point, matches) => {
+        const h = await intakeHarness(getEnv());
+        try {
+            const run = await h.workflow();
+            const full = await h.durable(run, { ordinal: 1 });
+            const held = await h.durable(run, { ordinal: 2 });
+            expect(await h.claim(await h.envelopeOf(held), "claim-held")).toMatchObject({ result: "accepted", inserted: true });
+            const ids = { sender: run.workflowSessionId, recipient: h.recipient };
+            const snapshot = async () => ({
+                rows: [await h.store.readWorkflowIntake(full), await h.store.readWorkflowIntake(held)],
+                outbox: [await h.outboxIntake(full), await h.outboxIntake(held)],
+                sender: await h.sessionRow(ids.sender),
+                recipient: await h.sessionRow(ids.recipient),
+                senderEvents: (await h.catalog.getSessionEvents(ids.sender, 0, 1000)).length,
+                recipientEvents: (await h.catalog.getSessionEvents(ids.recipient, 0, 1000)).length,
+            });
+            const before = await snapshot();
+            expect(before.rows[0]).toBeNull();
+            let injected = 0;
+            h.control.hook = async ({ sql, params, run: query }) => {
+                if (matches({ sql, params }, ids)) {
+                    injected += 1;
+                    // The statement runs first, so its own writes must roll back as well.
+                    await query(sql, params);
+                    return query("SELECT 1 / 0");
+                }
+                return query(sql, params);
+            };
+            const envelope = await h.envelopeOf(full);
+            try {
+                // A claim's refusal (an insert) and the holder's refusal of its held claim (a settle).
+                await expect(h.hooked.claimWorkflowIntake({ recipientSessionId: h.recipient, envelope, claimId: "claim-full", mode: "refuse", render }))
+                    .rejects.toMatchObject({ code: "22012" });
+                await expect(h.hooked.refuseHeldWorkflowIntake({ recipientSessionId: h.recipient, exchangeId: held, claimId: "claim-held",
+                    outcome: "refused_full" })).rejects.toMatchObject({ code: "22012" });
+                expect(injected).toBe(2);
+            } finally { h.control.hook = null; }
+            // Nothing of either refusal remains: no intake row or state change, no outbox outcome, no event, no sender touch.
+            expect(await snapshot()).toEqual(before);
+            // The same calls then commit once each.
+            expect(await h.claim(envelope, "claim-full", "refuse")).toEqual({ result: "refused_full", inserted: true });
+            expect(await h.store.refuseHeldWorkflowIntake({ recipientSessionId: h.recipient, exchangeId: held, claimId: "claim-held", outcome: "refused_full" }))
+                .toEqual({ refused: true });
+            expect(await h.events(ids.sender, INTAKE_REFUSED_WORKFLOW_EVENT)).toHaveLength(2);
+            expect(await h.events(ids.recipient, INTAKE_REFUSED_RECIPIENT_EVENT)).toHaveLength(2);
+            expect((await h.sessionRow(ids.sender)).xmin).not.toBe(before.sender.xmin);
+            expect(await h.sessionRow(ids.recipient)).toEqual(before.recipient);
+        } finally { await h.stop(); }
+    });
 });
 
 describe("workflow v2 durable intake: the row guard (migration 0094)", () => {
@@ -675,6 +1030,14 @@ describe("workflow v2 durable intake: the row guard (migration 0094)", () => {
             // The table's own checks: an admitted row names its invocation and processing; a held row keeps its text.
             await refused(holding, "state = 'admitted'", /workflow_intake_invocation|workflow_intake_processed|workflow_intake_admitted/);
             await refused(holding, "state = 'refused_full'", /workflow_intake_settled/);
+            // INTAKE-S2-04: a null processing never makes the transition rule unknown. A held row cannot move straight to admitted with a
+            // final processing, even when every other column (an existing invocation, the admission and settlement times) agrees with it;
+            // only the bind's admitted with processing bound starts processing.
+            for (const processing of ["completed", "not_dispatched", "interrupted", "failed_indeterminate"]) {
+                await refused(holding, `state = 'admitted', invocation_id = 'inv-1', processing = '${processing}', admitted_at = clock_timestamp(),
+                    settled_at = clock_timestamp()`, new RegExp(`processing unset cannot become ${processing}`));
+            }
+            await refused(admitted, "processing = NULL, settled_at = NULL", /processing bound cannot become unset/);
             for (const [exchangeId, row] of Object.entries(rows)) expect(await h.store.readWorkflowIntake(exchangeId)).toEqual(row);
             expect(rows[holding]).toMatchObject({ state: "holding", duplicates: 1 });
             expect(rows[ended]).toMatchObject({ processing: "completed", cancelRequested: true });
