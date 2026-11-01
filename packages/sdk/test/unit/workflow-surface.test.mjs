@@ -42,7 +42,7 @@ test("spawn_workflow is declared for agent sessions and carries the YAML contrac
     assert.ok(tool, "spawn_workflow must be declared beside spawn_agent");
     assert.deepEqual(tool.parameters.required, ["yaml"]);
     assert.deepEqual(Object.keys(tool.parameters.properties).sort(), ["inputs", "key", "notify_on_completion", "start", "state", "yaml"]);
-    for (const phrase of ["kind: Workflow", "type: script", "type: terminal", "completion: { outcomes:", "transition:", "callTool", "setResult", "cron", "JavaScript-only", "parent"]) {
+    for (const phrase of ["kind: Workflow", "type: script", "type: terminal", "completion: { outcomes:", "transition:", "callTool", "setResult", "cron", "JavaScript-only", "parent", "recover a run"]) {
         assert.ok(tool.description.includes(phrase), `description should mention ${phrase}`);
     }
     assert.equal(tool.description, SPAWN_WORKFLOW_TOOL_SPEC.description);
@@ -59,9 +59,17 @@ test("workflow v2 tools are declared beside spawn_workflow with typed operations
     const update = defs.find((def) => def.name === "update_workflow");
     const read = defs.find((def) => def.name === "read_workflow");
     assert.ok(update && read);
-    assert.deepEqual([...update.parameters.properties.operation.enum].sort(), ["publish", "publish_and_start", "replace_definition", "start"]);
+    assert.deepEqual([...update.parameters.properties.operation.enum].sort(), ["publish", "publish_and_start", "recover", "replace_definition", "start"]);
     assert.deepEqual([...update.parameters.required].sort(), ["operation", "operation_id", "workflow_id"]);
+    assert.deepEqual(Object.keys(update.parameters.properties).sort(),
+        ["definition_hash", "expected_revision", "inputs", "operation", "operation_id", "run_id", "workflow_id", "yaml"]);
+    assert.ok(update.description.includes("recover") && update.description.includes("needsRecovery"), "update_workflow describes recover");
     assert.deepEqual([...read.parameters.required], ["workflow_id"]);
+    assert.deepEqual(Object.keys(read.parameters.properties).sort(), ["include_yaml", "run_id", "workflow_id"]);
+    // Reading never changes a workflow: the read tool has no operation, and says so.
+    assert.ok(read.description.includes("Reading changes nothing"), "read_workflow promises a pure read");
+    assert.ok(read.description.includes("needsRecovery") && read.description.includes("update_workflow operation recover"),
+        "read_workflow points to recover instead of acting itself");
 });
 
 test("script tools are the generic agent's data-plane tools, bound to the workflow session", async () => {
