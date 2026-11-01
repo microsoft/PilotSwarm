@@ -723,7 +723,7 @@ function responseFrom(row: Row): NonNullable<WorkflowRequestView["response"]> {
     const kind = str(row, "kind");
     if (kind !== "response" && kind !== "decline") return corrupt(`Unknown request response kind ${kind}.`);
     const receipt = parseRequestReceipt(parseStoredJson(str(row, "receipt"), "receipt"));
-    const response = {
+    const response: NonNullable<WorkflowRequestView["response"]> = {
         kind, value: parseStoredJson(str(row, "value"), "value"), resultSha256: str(row, "result_sha256"), operationId: str(row, "operation_id"),
         actorSessionId: str(row, "actor_session_id"), decidedAt: str(row, "decided_at_iso"), receipt,
     };

@@ -21,7 +21,11 @@
  * - workflow_response_wakes: the durable wake intent written with a response;
  *   a settled intent never changes.
  *
- * Additive: no existing row changes. No row of these tables is deleted.
+ * Not purely additive: it replaces the outbox's mode CHECK constraint
+ * (0091: mode IN ('send')) with a wider one (mode IN ('send', 'request')),
+ * which every existing row satisfies. Otherwise it adds four tables, their
+ * indexes and a guard trigger. It drops no table and removes or changes no
+ * row; no row of the new tables is deleted.
  */
 export function workflowV2RequestsMigration(schema: string): string {
     const s = `"${schema}"`;
