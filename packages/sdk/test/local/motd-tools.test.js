@@ -84,6 +84,7 @@ describe("MoTD declarations and artifact access in sessions", () => {
     it("does not let cluster administration bypass a private source session", async () => {
         await sessionFixture(async ({ manager, id, configs, setRole, catalog }) => {
             setRole("admin");
+            manager.adminScope = "cluster";
             manager.artifactStore = { statArtifact: vi.fn(), downloadArtifact: vi.fn() };
             await manager.getOrCreate(id, { model: "gpt-5.6-terra", agentIdentity: "agent-manager" }, { turnIndex: 0 });
             const create = configs[0].tools.find(t => t.name === "create_motd");

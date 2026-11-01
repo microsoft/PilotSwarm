@@ -32,13 +32,6 @@ export function motdToolParameters(spec: MotdOperationSpec, { artifactPictures =
         properties.limit = { type: "integer", minimum: 1, maximum: 200 };
         properties.before = { type: "string", pattern: "^[1-9][0-9]*$" };
     }
-    export function motdCreateInput(args: MotdArgs): MotdCreateInput {
-        if (!args.fromAt || !args.toAt || !args.bodyMd || !args.requestId
-            || args.image && !("base64" in args.image) || args.mobileImage && !("base64" in args.mobileImage))
-            throw new MotdError("MOTD_INVALID", "Message times, body, request ID and resolved pictures are required");
-        return { fromAt: args.fromAt, toAt: args.toAt, bodyMd: args.bodyMd, requestId: args.requestId,
-            mobileBodyMd: args.mobileBodyMd, imagePlacement: args.imagePlacement, image: args.image, mobileImage: args.mobileImage };
-    }
     if (spec.kind === "create") {
         Object.assign(properties, { fromAt: { type: "string", description: "ISO 8601 start time with UTC offset." },
             toAt: { type: "string", description: "ISO 8601 end time, exclusive." },
@@ -49,6 +42,13 @@ export function motdToolParameters(spec: MotdOperationSpec, { artifactPictures =
         required.push("fromAt", "toAt", "bodyMd", "requestId");
     }
     return { type: "object" as const, properties, required, additionalProperties: false };
+}
+export function motdCreateInput(args: MotdArgs): MotdCreateInput {
+    if (!args.fromAt || !args.toAt || !args.bodyMd || !args.requestId
+        || args.image && !("base64" in args.image) || args.mobileImage && !("base64" in args.mobileImage))
+        throw new MotdError("MOTD_INVALID", "Message times, body, request ID and resolved pictures are required");
+    return { fromAt: args.fromAt, toAt: args.toAt, bodyMd: args.bodyMd, requestId: args.requestId,
+        mobileBodyMd: args.mobileBodyMd, imagePlacement: args.imagePlacement, image: args.image, mobileImage: args.mobileImage };
 }
 export function runMotdStoreOperation(store: MotdStore, spec: MotdOperationSpec, viewer: MotdViewer, args: MotdArgs = {}) {
     switch (spec.kind) {

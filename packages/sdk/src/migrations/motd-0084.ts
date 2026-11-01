@@ -18,9 +18,11 @@ CREATE TABLE IF NOT EXISTS ${s}.motds (
     request_hash TEXT NOT NULL,
     CHECK (isfinite(from_at) AND isfinite(to_at) AND to_at > from_at),
     CHECK ((image IS NULL AND image_type IS NULL AND image_alt IS NULL) OR
-        (image IS NOT NULL AND image_type IN ('image/png', 'image/jpeg', 'image/webp', 'image/gif') AND length(btrim(image_alt)) > 0)),
+        (image IS NOT NULL AND image_type IS NOT NULL AND image_alt IS NOT NULL
+            AND image_type IN ('image/png', 'image/jpeg', 'image/webp', 'image/gif') AND length(btrim(image_alt)) BETWEEN 1 AND 1024)),
     CHECK ((mobile_image IS NULL AND mobile_image_type IS NULL AND mobile_image_alt IS NULL) OR
-        (mobile_image IS NOT NULL AND mobile_image_type IN ('image/png', 'image/jpeg', 'image/webp', 'image/gif') AND length(btrim(mobile_image_alt)) > 0))
+        (mobile_image IS NOT NULL AND mobile_image_type IS NOT NULL AND mobile_image_alt IS NOT NULL
+            AND mobile_image_type IN ('image/png', 'image/jpeg', 'image/webp', 'image/gif') AND length(btrim(mobile_image_alt)) BETWEEN 1 AND 1024))
 );
 CREATE INDEX IF NOT EXISTS motds_window ON ${s}.motds(from_at DESC, created_at DESC, motd_id DESC);
 CREATE TABLE IF NOT EXISTS ${s}.motd_dismissals (
@@ -132,6 +134,9 @@ DECLARE v_user BIGINT;
 BEGIN
     v_user := ${s}.cms_motd_actor(p_provider, p_subject, p_admin, false);
     IF p_id IS NULL OR p_id < 1 THEN RAISE EXCEPTION 'MOTD_INVALID: Invalid message ID'; END IF;
+    IF NOT EXISTS (SELECT 1 FROM ${s}.motds WHERE motd_id = p_id) THEN
+        RETURN jsonb_build_object('motdId', p_id::TEXT, 'dismissed', true);
+    END IF;
     IF v_user IS NULL THEN v_user := ${s}.cms_register_user(p_provider, p_subject, NULL, NULL); END IF;
     -- A deletion racing this click must still acknowledge the dismissal.
     INSERT INTO ${s}.motd_dismissals(user_id, motd_id) VALUES (v_user, p_id) ON CONFLICT DO NOTHING;
