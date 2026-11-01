@@ -3,6 +3,7 @@ import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./comman
 import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
 import { parseAgentSourceLink } from "./repo-links.js";
 import { importPackageFilesFromLink, readImportedPackageName } from "./repo-import.js";
+import { MOTD_REFRESH_MS } from "./motd.js";
 import {
     appendEventToHistory,
     applyLiveTurnToHistory,
@@ -2735,6 +2736,7 @@ export class PilotSwarmUiController {
         // The viewer's steering decision is not per session: read it on this
         // loop (throttled), so a session restored at startup gets it too.
         void this.refreshSteeringFeature();
+        void this.refreshMotd();
         // Refreshes OVERLAP. The catalog loop ticks every 4s and a dozen
         // actions call this directly, while one run awaits several sequential
         // round-trips (N catalog pages, the folder list, up to two getSession
@@ -3418,6 +3420,7 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "admin/visibility", visible: true });
         await this.refreshAdminProfile().catch(() => {});
         if (this.getState().admin?.section === "features") void this.refreshFeatureFlags();
+        if (this.getState().admin?.section === "motd") void this.refreshAdminMotds();
         void this.refreshAdminModelProviders().catch(() => {});
         void this.refreshAdminAgentPackages().catch(() => {});
     }
@@ -3891,6 +3894,7 @@ export class PilotSwarmUiController {
     setAdminSection(section) {
         this.dispatch({ type: "admin/section", section });
         if (section === "features") void this.refreshFeatureFlags();
+        if (section === "motd") void this.refreshAdminMotds();
         if (section === "providers") {
             const providers = this.getState().admin?.modelProviders;
             if (!providers?.fetchedAt) void this.refreshAdminModelProviders().catch(() => {});
@@ -3913,6 +3917,160 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "admin/features", patch: { mode, userId: mode === "users" ? userId : null,
             data: null, error: null, notice: null, fetchedAt: null, dirtyDrafts: {} } });
         await this.refreshFeatureFlags();
+    }
+
+    _motdContext() {
+        const state = this.getState();
+        return JSON.stringify([state.motd.generation, state.auth?.principal?.provider, state.auth?.principal?.subject,
+            state.auth?.authorization?.role, state.admin.profile?.provider, state.admin.profile?.subject, state.admin.profile?.isAdmin]);
+    }
+    async _motdRequest(read) {
+        let timeout;
+        try {
+            return await Promise.race([Promise.resolve().then(read), new Promise((_, reject) => {
+                timeout = setTimeout(() => reject(new Error("Message request timed out. Retry or refresh.")), 10_000);
+                timeout?.unref?.();
+            })]);
+        } finally { clearTimeout(timeout); }
+    }
+    async _motdPictures(message) {
+        if (!message || typeof this.transport.getMotdImage !== "function") return {};
+        const images = {};
+        if (message.hasImage) images.desktop = await this._motdRequest(() => this.transport.getMotdImage(message.motdId, false));
+        if (message.hasMobileImage) images.mobile = await this._motdRequest(() => this.transport.getMotdImage(message.motdId, true));
+        return images;
+    }
+    async refreshMotd() {
+        if (typeof this.transport.getCurrentMotd !== "function") return;
+        const state = this.getState().motd;
+        const now = Date.now();
+        if (state.reading || state.readAt !== null && now - state.readAt < MOTD_REFRESH_MS) return;
+        const context = this._motdContext();
+        this.dispatch({ type: "motd/patch", patch: { reading: true, readAt: now } });
+        try {
+            for (const id of state.pendingDismissals) await this._persistMotdDismissal(id);
+            if (context !== this._motdContext()) return;
+            const message = await this._motdRequest(() => this.transport.getCurrentMotd());
+            if (context !== this._motdContext()) return;
+            const current = message && !this.getState().motd.dismissed.includes(message.motdId) ? message : null;
+            // Publish null/deletion before fetching a picture, which may fail.
+            this.dispatch({ type: "motd/patch", patch: { current, error: null,
+                images: current && this.getState().motd.images[current.motdId] ? { [current.motdId]: this.getState().motd.images[current.motdId] } : {} } });
+            if (current && !this.getState().motd.images[current.motdId]) {
+                const images = await this._motdPictures(current);
+                if (context === this._motdContext() && this.getState().motd.current?.motdId === current.motdId)
+                    this.dispatch({ type: "motd/patch", patch: { images: { [current.motdId]: images } } });
+            }
+        } catch (error) {
+            if (context === this._motdContext()) this.dispatch({ type: "motd/patch", patch: { error: error?.message || String(error) } });
+        } finally {
+            if (context === this._motdContext()) this.dispatch({ type: "motd/patch", patch: { reading: false } });
+        }
+    }
+    async _persistMotdDismissal(motdId) {
+        const context = this._motdContext();
+        try {
+            await this._motdRequest(() => this.transport.dismissMotd(motdId));
+            if (context === this._motdContext()) this.dispatch({ type: "motd/patch", patch: {
+                pendingDismissals: this.getState().motd.pendingDismissals.filter(id => id !== motdId), error: null } });
+        } catch (error) {
+            if (context === this._motdContext()) {
+                this.dispatch({ type: "motd/patch", patch: { error: error?.message || String(error) } });
+                this.dispatch({ type: "ui/status", text: "The message is hidden. Its saved dismissal will retry on the next refresh." });
+            }
+        }
+    }
+    async dismissCurrentMotd() {
+        const state = this.getState();
+        if (state.motd.preview) {
+            this.dispatch({ type: "motd/patch", patch: { preview: null, previewMobile: false } });
+            return;
+        }
+        const id = state.motd.current?.motdId;
+        if (!id) return;
+        this.dispatch({ type: "motd/dismiss", motdId: id });
+        await this._persistMotdDismissal(id);
+    }
+    setMotdDraft(patch) {
+        if (!this._featureIsAdmin() || this.getState().admin.motds.saving) return;
+        this.dispatch({ type: "admin/motds", patch: { draft: { ...this.getState().admin.motds.draft, ...patch }, error: null, notice: null } });
+    }
+    async refreshAdminMotds({ older = false } = {}) {
+        if (!this._featureIsAdmin() || typeof this.transport.listMotds !== "function") return;
+        const state = this.getState().admin.motds;
+        if (state.loading) return;
+        const context = this._motdContext();
+        this.dispatch({ type: "admin/motds", patch: { loading: true, error: null } });
+        try {
+            const before = older ? state.history.at(-1)?.motdId : undefined;
+            const rows = await this._motdRequest(() => this.transport.listMotds(50, before));
+            if (context !== this._motdContext() || !this._featureIsAdmin()) return;
+            const history = older ? [...state.history, ...rows] : rows;
+            const today = history.find(m => m.status === "live") || null;
+            this.dispatch({ type: "admin/motds", patch: { history, today, hasMore: rows.length === 50, fetchedAt: Date.now() } });
+            if (today && !this.getState().motd.images[today.motdId]) {
+                const pictures = await this._motdPictures(today);
+                if (context === this._motdContext()) this.dispatch({ type: "motd/patch", patch: {
+                    images: { ...this.getState().motd.images, [today.motdId]: pictures } } });
+            }
+        } catch (error) {
+            if (context === this._motdContext()) this.dispatch({ type: "admin/motds", patch: { error: error?.message || String(error) } });
+        } finally {
+            if (context === this._motdContext()) this.dispatch({ type: "admin/motds", patch: { loading: false } });
+        }
+    }
+    previewMotd(message, { mobile = false } = {}) {
+        if (!this._featureIsAdmin() || !message) return;
+        this.dispatch({ type: "motd/patch", patch: { preview: message, previewMobile: mobile } });
+    }
+    async createAdminMotd() {
+        if (!this._featureIsAdmin() || this.getState().admin.motds.saving) return;
+        const context = this._motdContext();
+        const state = this.getState().admin.motds;
+        const draft = state.draft;
+        if (!draft.bodyMd.trim() || !Number.isFinite(Date.parse(draft.fromAt)) || !Number.isFinite(Date.parse(draft.toAt))
+            || Date.parse(draft.toAt) <= Date.parse(draft.fromAt)) {
+            this.dispatch({ type: "admin/motds", patch: { error: "Enter a markdown body and an end time after the start time." } });
+            return;
+        }
+        const input = { fromAt: new Date(draft.fromAt).toISOString(), toAt: new Date(draft.toAt).toISOString(), bodyMd: draft.bodyMd,
+            ...(draft.mobileBodyMd?.trim() ? { mobileBodyMd: draft.mobileBodyMd } : {}),
+            imagePlacement: draft.imagePlacement, ...(draft.image ? { image: draft.image } : {}),
+            ...(draft.mobileImage ? { mobileImage: draft.mobileImage } : {}) };
+        const fingerprint = JSON.stringify(input);
+        const retry = state.retry?.fingerprint === fingerprint ? state.retry : { fingerprint, requestId: globalThis.crypto.randomUUID() };
+        this.dispatch({ type: "admin/motds", patch: { saving: true, error: null, retry } });
+        try {
+            await this._motdRequest(() => this.transport.createMotd({ ...input, requestId: retry.requestId }));
+            if (context !== this._motdContext() || !this._featureIsAdmin()) return;
+            this.dispatch({ type: "admin/motds", patch: { retry: null, notice: "Message published.",
+                draft: { fromAt: "", toAt: "", bodyMd: "", mobileBodyMd: "", imagePlacement: "above" } } });
+            await this.refreshAdminMotds();
+        } catch (error) {
+            if (context === this._motdContext()) this.dispatch({ type: "admin/motds", patch: { error: error?.message || String(error) } });
+        } finally {
+            if (context === this._motdContext()) this.dispatch({ type: "admin/motds", patch: { saving: false } });
+        }
+    }
+    async deleteAdminMotd(motdId) {
+        if (!this._featureIsAdmin() || this.getState().admin.motds.saving) return;
+        const context = this._motdContext();
+        this.dispatch({ type: "admin/motds", patch: { saving: true, error: null } });
+        try {
+            await this._motdRequest(() => this.transport.deleteMotd(motdId));
+            if (context !== this._motdContext() || !this._featureIsAdmin()) return;
+            const motd = this.getState().motd, admin = this.getState().admin.motds;
+            const images = { ...motd.images }; delete images[motdId];
+            this.dispatch({ type: "motd/patch", patch: { current: motd.current?.motdId === motdId ? null : motd.current,
+                preview: motd.preview?.motdId === motdId ? null : motd.preview, images } });
+            this.dispatch({ type: "admin/motds", patch: { history: admin.history.filter(m => m.motdId !== motdId),
+                today: admin.today?.motdId === motdId ? null : admin.today, notice: "Message deleted." } });
+            await this.refreshAdminMotds();
+        } catch (error) {
+            if (context === this._motdContext()) this.dispatch({ type: "admin/motds", patch: { error: error?.message || String(error) } });
+        } finally {
+            if (context === this._motdContext()) this.dispatch({ type: "admin/motds", patch: { saving: false } });
+        }
     }
 
     _featureIsAdmin() {

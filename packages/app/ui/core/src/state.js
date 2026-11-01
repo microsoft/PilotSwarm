@@ -1,5 +1,6 @@
 import { FOCUS_REGIONS, INSPECTOR_TABS } from "./commands.js";
 import { DEFAULT_THEME_ID, getTheme } from "./themes/index.js";
+import { createMotdState, createMotdAdminState } from "./motd.js";
 
 const ARTIFACT_SOURCES = new Set(["agent", "user", "system"]);
 
@@ -721,6 +722,7 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // stale waiting line unmarked.
             pausedError: null,
         },
+        motd: createMotdState(),
         admin: {
             // Whether the Admin Console is taking over the workspace and
             // hiding the session/chat panes. Persisted only in-memory.
@@ -788,6 +790,7 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // state remains available for rollback compatibility only.
             section: "providers",
             features: { mode: "mine", userId: null, data: null, users: [], drafts: {}, loading: false, saving: false, error: null, generation: 0, fetchedAt: null, userQuery: "" },
+            motds: createMotdAdminState(),
             // Agent packages (docs/proposals/agent-packages.md) — registry
             // list, selected package detail, and the workspace viewer.
             packages: {

@@ -7,6 +7,7 @@ import { DEFAULT_HISTORY_EVENT_LIMIT, dedupeChatMessages } from "./history.js";
 import { getPromptInputRows } from "./layout.js";
 import { SYSTEM_OWNER_KEY, ownerKeyForOwner, selectSessionRows } from "./selectors.js";
 import { systemSessionSortOrder } from "./system-titles.js";
+import { createMotdState, createMotdAdminState } from "./motd.js";
 import {
     normalizeArtifactEntries,
     normalizeSessionOwnerFilter,
@@ -977,7 +978,10 @@ function baseReducer(state, action) {
                 ...state,
                 admin: featurePrincipalKey(state.auth?.principal) !== featurePrincipalKey(action.principal)
                     || state.auth?.authorization?.role !== action.authorization?.role
-                    ? { ...state.admin, features: clearFeatureIdentity(state.admin.features) } : state.admin,
+                    ? { ...state.admin, features: clearFeatureIdentity(state.admin.features), motds: createMotdAdminState() } : state.admin,
+                motd: featurePrincipalKey(state.auth?.principal) !== featurePrincipalKey(action.principal)
+                    || state.auth?.authorization?.role !== action.authorization?.role
+                    ? createMotdState((state.motd?.generation || 0) + 1) : state.motd,
                 auth: {
                     principal: action.principal ?? null,
                     authorization: action.authorization ?? null,
@@ -2570,6 +2574,9 @@ function baseReducer(state, action) {
         case "admin/profile/loaded": {
             return {
                 ...state,
+                motd: featurePrincipalKey(state.admin.profile) !== featurePrincipalKey(action.profile)
+                    || Boolean(state.admin.profile?.isAdmin) !== Boolean(action.profile?.isAdmin)
+                    ? createMotdState((state.motd?.generation || 0) + 1) : state.motd,
                 admin: {
                     ...state.admin,
                     loading: false,
@@ -2578,6 +2585,9 @@ function baseReducer(state, action) {
                     features: featurePrincipalKey(state.admin.profile) !== featurePrincipalKey(action.profile)
                         || Boolean(state.admin.profile?.isAdmin) !== Boolean(action.profile?.isAdmin)
                         ? clearFeatureIdentity(state.admin.features) : state.admin.features,
+                    motds: featurePrincipalKey(state.admin.profile) !== featurePrincipalKey(action.profile)
+                        || Boolean(state.admin.profile?.isAdmin) !== Boolean(action.profile?.isAdmin)
+                        ? createMotdAdminState() : state.admin.motds,
                     ghcpKey: {
                         ...state.admin.ghcpKey,
                         // A successful load doesn't clobber an in-progress
@@ -3029,9 +3039,20 @@ function baseReducer(state, action) {
             };
         }
         case "admin/section": {
-            const section = ["providers", "packages", "workers", "features", "ghcp"].includes(action.section) ? action.section : "ghcp";
+            const section = ["providers", "packages", "workers", "features", "motd", "ghcp"].includes(action.section) ? action.section : "ghcp";
+            if (section === "motd" && !state.admin.profile?.isAdmin) return state;
             return { ...state, admin: { ...state.admin, section } };
         }
+        case "motd/patch":
+            return { ...state, motd: { ...state.motd, ...action.patch } };
+        case "motd/dismiss": {
+            const id = action.motdId;
+            return { ...state, motd: { ...state.motd, current: state.motd.current?.motdId === id ? null : state.motd.current,
+                dismissed: [...new Set([...state.motd.dismissed, id])],
+                pendingDismissals: [...new Set([...state.motd.pendingDismissals, id])] } };
+        }
+        case "admin/motds":
+            return { ...state, admin: { ...state.admin, motds: { ...state.admin.motds, ...action.patch } } };
         case "admin/features":
             return { ...state, admin: { ...state.admin, features: { ...state.admin.features, ...action.patch } } };
         case "admin/workers/attempt": {
