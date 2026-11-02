@@ -1,11 +1,11 @@
 // Theme sounds: the person's setting, and the shape of an ambient sound over
 // time. Pure functions only. The browser player lives in ui/react.
 //
-// A theme that sounds declares `sound` (see themes/hearth.js). By default the
-// sound plays continuously once the person turns theme sounds on, fading in
-// when it starts and out when it stops. A theme may instead ask for a window:
+// A theme that sounds declares `sound` (see themes/hearth.js). Theme sounds
+// are on by default; the sound plays continuously while they are on, fading
+// in when it starts and out when it stops. A theme may instead ask for a window:
 // `playSeconds` out of every `everySeconds`, fading in and out each time.
-// The setting is desktop-only: the phone has no Appearance settings, and a
+// The setting is desktop-only: the phone shows it as "desktop only", and a
 // phone in a pocket should not crackle.
 
 export const THEME_SOUND_VOLUME_DEFAULT = 40;
