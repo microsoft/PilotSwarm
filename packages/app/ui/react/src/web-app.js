@@ -489,7 +489,7 @@ function profileViewState(root) {
     };
 }
 
-function profileSettingsFromViewState(state, preservedOtherTouchScale = null, preservedRightPaneMode = null, preservedDesktopPanes = null, preservedChatReading = null, preservedThemeSound = null) {
+function profileSettingsFromViewState(state, preservedOtherTouchScale = null, preservedRightPaneMode = null, preservedDesktopPanes = null) {
     return normalizeProfileSettings({
         ...(state.moa ? { moa: state.moa } : {}),
         themeId: state.themeId,
@@ -554,14 +554,13 @@ function profileSettingsFromViewState(state, preservedOtherTouchScale = null, pr
             && Object.keys(state.agentPickerUsage).length > 0
             ? { agentPickerUsage: state.agentPickerUsage }
             : {}),
-        // Desktop writes the live column. A phone has no column setting, so
-        // it writes the last desktop value back or the replace would delete it.
-        ...(isNarrowViewport()
-            ? (preservedChatReading ? { chatReading: preservedChatReading } : {})
-            : { chatReading: state.chatReading }),
-        ...(isNarrowViewport()
-            ? (preservedThemeSound ? { themeSound: preservedThemeSound } : {})
-            : (state.themeSound ? { themeSound: state.themeSound } : {})),
+        // Desktop-only preferences, held in state on every device so a
+        // narrow window still carries the stored values: widening it must
+        // not fall back to defaults and then save them over the person's
+        // choice. Their USE is gated by width (the reading column only on the
+        // desktop chat, the sound only above the phone breakpoint).
+        chatReading: state.chatReading,
+        ...(state.themeSound ? { themeSound: state.themeSound } : {}),
     });
 }
 
@@ -670,12 +669,13 @@ function materializeProfileSettings(remoteSettings, defaults) {
             ? { touchScale: normalizedRemote[touchScaleKey()] }
             // Never inherit the other device class's preference.
             : {}),
-        // Desktop only. A phone must not apply the column, and must not
-        // synthesize one: an omitted key leaves the current value alone.
-        ...(!isNarrowViewport() && hasOwn(normalizedRemote, "chatReading")
+        // Desktop preferences are hydrated at every width (their use is
+        // gated, not their storage). No default here: an omitted key leaves
+        // the current value alone.
+        ...(hasOwn(normalizedRemote, "chatReading")
             ? { chatReading: normalizedRemote.chatReading }
             : {}),
-        ...(!isNarrowViewport() && hasOwn(normalizedRemote, "themeSound")
+        ...(hasOwn(normalizedRemote, "themeSound")
             ? { themeSound: normalizedRemote.themeSound }
             : {}),
         // Read back for the same reason as touchScale above: written but never
@@ -7278,6 +7278,7 @@ function ChatReadingControl({ reading, onChange }) {
             React.createElement("button", {
                 type: "button",
                 className: full ? "is-on" : "",
+                "aria-pressed": full,
                 onClick: () => set({ width: null }),
             }, "Full"),
             full
@@ -7305,6 +7306,7 @@ function ChatReadingControl({ reading, onChange }) {
                     key: align,
                     type: "button",
                     className: reading.align === align ? "is-on" : "",
+                    "aria-pressed": reading.align === align,
                     onClick: () => set({ align }),
                 }, align === "left" ? "Left" : "Center"))),
         !full && reading.align === "left"
@@ -14625,21 +14627,28 @@ function ThemeSoundControl({ setting, theme, onChange }) {
             : React.createElement("p", { className: "ps-admin-console__hint" }, "This theme has no sound."));
 }
 
-function AppearanceSettingsPane({ controller }) {
+function AppearanceSettingsPane({ controller, mobile = false }) {
     const reading = useControllerSelector(controller, (state) => state.ui.chatReading);
     const themeSound = useControllerSelector(controller, (state) => state.ui.themeSound);
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
+    // Both settings apply to the desktop portal only. A phone shows the stored
+    // values read-only, so nothing here looks like it works and does not.
     return React.createElement("section", { className: "ps-appearance", "aria-label": "Appearance" },
         React.createElement("h3", null, "Appearance"),
-        React.createElement(ChatReadingControl, {
-            reading,
-            onChange: (next) => controller.dispatch({ type: "ui/chatReading", reading: next }),
-        }),
-        React.createElement(ThemeSoundControl, {
-            setting: themeSound,
-            theme: getTheme(themeId),
-            onChange: (next) => controller.dispatch({ type: "ui/themeSound", themeSound: next }),
-        }));
+        mobile
+            ? React.createElement("p", { className: "ps-admin-console__hint", "data-appearance-desktop-only": "" },
+                "The reading column and theme sounds apply to the desktop portal. Change them on a desktop.")
+            : null,
+        React.createElement("fieldset", { className: "ps-appearance__desktop", disabled: mobile },
+            React.createElement(ChatReadingControl, {
+                reading,
+                onChange: (next) => controller.dispatch({ type: "ui/chatReading", reading: next }),
+            }),
+            React.createElement(ThemeSoundControl, {
+                setting: themeSound,
+                theme: getTheme(themeId),
+                onChange: (next) => controller.dispatch({ type: "ui/themeSound", themeSound: next }),
+            })));
 }
 
 function AdminConsolePanel({ controller, mobile = false }) {
@@ -14805,7 +14814,7 @@ function AdminConsolePanel({ controller, mobile = false }) {
         } else {
             body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree,
                 showAppearance
-                    ? React.createElement(AppearanceSettingsPane, { controller })
+                    ? React.createElement(AppearanceSettingsPane, { controller, mobile: true })
                     : showFeatures ? featureSection : providerSection);
         }
         return React.createElement("div", { className: "ps-admin-console is-mobile" },
@@ -15037,12 +15046,13 @@ function AdminSettingsTree({ controller, view }) {
                     key: id,
                     type: "button",
                     className: field === id ? "is-on" : "",
+                    "aria-pressed": field === id,
                     onClick: () => controller.setAdminPackageQuery(query, id),
                 }, label))),
             React.createElement("div", { className: "ps-admin-pkg-search__meta" },
                 React.createElement("b", null, String(packages.visibleCount ?? 0)),
                 ` of ${packages.totalCount ?? 0}`)),
-        React.createElement("div", { className: "ps-admin-pkg-scroll", role: "listbox", "aria-label": "Packages" },
+        React.createElement("div", { className: "ps-admin-pkg-scroll", role: "region", "aria-label": "Packages" },
             listRows(tree, headEnd, tailStart, renderRow),
             filtering && (packages.visibleCount ?? 0) === 0
                 ? React.createElement("div", { className: "ps-admin-tree__hint" }, `No package matches “${query.trim()}”.`)
@@ -16072,8 +16082,6 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     // overwrite the desktop's column toggles with its own (absent) ones.
     const desktopPanesRef = React.useRef(null);
     // Desktop column, preserved across a phone save. There is no phone slot.
-    const desktopChatReadingRef = React.useRef(null);
-    const desktopThemeSoundRef = React.useRef(null);
     const profileSettingsSaveTimerRef = React.useRef(null);
     const profileSettingsPollTimerRef = React.useRef(null);
     const profileSettingsPollInFlightRef = React.useRef(false);
@@ -16251,12 +16259,6 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                 if (remoteNormalized.desktopPanes) {
                     desktopPanesRef.current = remoteNormalized.desktopPanes;
                 }
-                if (remoteNormalized.chatReading) {
-                    desktopChatReadingRef.current = remoteNormalized.chatReading;
-                }
-                if (remoteNormalized.themeSound) {
-                    desktopThemeSoundRef.current = remoteNormalized.themeSound;
-                }
                 defaultProfileSettingsRef.current = buildDefaultProfileSettingsFromState(
                     controller.getState(), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current,
                 );
@@ -16271,7 +16273,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                 );
                 const settingsJson = JSON.stringify(settings);
                 const currentSettingsBeforeApply = profileSettingsFromViewState(
-                    profileViewState(controller.getState()), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current, desktopChatReadingRef.current, desktopThemeSoundRef.current,
+                    profileViewState(controller.getState()), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current,
                 );
                 const currentSettingsBeforeApplyJson = JSON.stringify(currentSettingsBeforeApply);
                 const hasUnpersistedLocalChange = profileSettingsHydratedRef.current
@@ -16316,7 +16318,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                 // remote state by definition and there is nothing to lose).
                 if (!profileSettingsHydratedRef.current || !hasPendingLocalWrite) {
                     const currentSettings = profileSettingsFromViewState(
-                        profileViewState(controller.getState()), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current, desktopChatReadingRef.current, desktopThemeSoundRef.current,
+                        profileViewState(controller.getState()), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current,
                     );
                     lastProfileSettingsJsonRef.current = JSON.stringify(currentSettings);
                 }
@@ -16351,7 +16353,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
 
     React.useEffect(() => {
         if (!profileSettingsHydratedRef.current) return undefined;
-        const settings = profileSettingsFromViewState(state, otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current, desktopChatReadingRef.current, desktopThemeSoundRef.current);
+        const settings = profileSettingsFromViewState(state, otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current);
         const settingsJson = JSON.stringify(settings);
         if (lastProfileSettingsJsonRef.current === settingsJson) return undefined;
         lastProfileSettingsJsonRef.current = settingsJson;
