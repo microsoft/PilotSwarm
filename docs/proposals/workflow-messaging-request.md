@@ -574,6 +574,18 @@ a response and a decline never collide.
   diagnostic, whatever the compiler accepts, and the worker's IR reader
   keeps refusing IR 7 at plan and start. Nothing in this phase is
   reachable from a published definition.
+- **Inactive runtime phase (decision request-runtime-inactive-phase,
+  2 November 2026).** Commits 3 and 4 of section 11 are implemented
+  inactive: controller 1.9.0, the 1.1.0 effect, notify and send
+  orchestrations, `workflow-v2-request` 1.0.0, their tagged activities,
+  `respond_session_request` (on a 1.0.83 turn only) and the wake
+  dispatcher exist, but only test entry points register or start them
+  (`registerWorkflowV2`'s `workflowRequests`, `WorkflowV2Host.requests`,
+  the turn activities' `workflowRequests` test option). A worker's normal
+  registration, its tags, the tool catalog, the latest controller version
+  (1.8.0) and the publication and start refusals are unchanged, so nothing
+  here is reachable from a deployment. This is development, not the
+  activation gate below.
 - **Activation gate.** Turning request states on needs, first, one of:
   (a) an enforced serving-set fence, under which every worker that
   fetches orchestration items from the store is request-capable before
@@ -672,8 +684,15 @@ a response and a decline never collide.
 ## 11. Plan and coverage
 
 Commits, each with DEV tests and independent review. Commits 1 and 2 are
-the disabled foundation of 8.4 and proceed now; commits 3 and 4 wait for
-the activation gate.
+the disabled foundation of 8.4 and proceed now; commits 3 and 4 are built
+in the inactive runtime phase of 8.4 (test-only registration) and wait for
+the activation gate before any deployment can reach them. Deviations of
+the inactive build: duroxide-node 0.2.4's retrying activity cannot carry a
+tag, so 1.9.0's tagged store calls retry on durable timers (no per-attempt
+timeout); a responder's tool policy is checked only through an optional
+worker hook, its version always; the observation reads a responder's
+session orchestration status outside the locks and treats only a terminal
+status as ended.
 
 1. Compiler and IR 7: the request state, response contracts, the
    diagnostics for obsolete spellings, the frozen timeout binding (compile
