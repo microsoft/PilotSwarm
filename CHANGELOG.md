@@ -1,6 +1,36 @@
 # Changelog
 
-## Unreleased
+## 0.8.8 — 2026-11-02
+
+**Message of the day.** Admins can post a fleet-wide message with an optional
+start and end time and optional pictures (main and mobile, 2 MB each). The
+portal shows the current message as a splash, and each user can dismiss it.
+Only the newest active message is shown. Dismissing it never brings back an
+older one. Everyone can read the message history. Admins create and delete
+messages through the portal editor, the management API, MCP tools or agent
+tools. Creator identity and dismissal counts are visible to admins only.
+
+**Phone Admin Console.** At 920 px wide and below, a cog in the phone header
+opens a settings list: Packages, Message of the day, Appearance, Model
+providers, Workers and Feature flags. Browser Back and Forward move through
+the console's own pages.
+
+**Portal look and package list.** The Admin Console package list scrolls in a
+fixed-height area and has a Find box. Find filters by package name, agent
+name, author or contributor. To support the contributor filter, the list now
+also loads each package's editors and the publisher of each version. Tool and
+activity cards get a left status rail. A new desktop setting controls the
+chat reading column (width, alignment, inset). A new Hearth theme has an
+animated fire and an optional ambient sound, with separate desktop and phone
+settings. Multi-panel (MoA) headers get an accent rail, stable heights and a
+wider grab area on the dividers.
+
+**CLI sign-in with dev auth.** `pilotswarm auth login` and `pilotswarm auth
+status` no longer treat a dev-auth deployment as Entra. With dev auth, they
+read `PILOTSWARM_DEV_USER` and check it against the persona list the
+deployment publishes at `/api/v1/auth/config`. An unknown persona fails with
+the list of valid ones, also at TUI startup. Logout and other providers are
+unchanged.
 
 **Provider request headers.** A provider type in the model catalog may set
 `headers`: fixed HTTP headers sent on every model request, for endpoints that
@@ -20,6 +50,12 @@ visible; saved-app lookup guidance is included only for artifact-based draws.
 failures, including rejected or denied calls reported this way, now contribute
 to the calls/errors display and the `pilotswarm.tool_errors` span attribute.
 Higher error counts reflect corrected reporting, not additional tool failures.
+
+**Database upgrade note.** The first start applies CMS migrations `0084` to
+`0087`. They add the `motds` and `motd_dismissals` tables and the `cms_motd_*`
+functions. They do not change existing tables or rows. The orchestration
+(`duroxide`) and facts schemas are unchanged. An older build runs only the
+migrations it knows, so after an image rollback the new tables stay unused.
 
 ## 0.8.7 — 2026-10-28
 
