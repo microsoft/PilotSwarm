@@ -486,9 +486,14 @@ binds a publication and a test to the exact versions they used
 Still open (not waived): a worker builds its agent host (the same
 resolver, so a run binds what its publication pinned) only behind the
 test-only option `testOptions.workflowRequests` ("A worker that runs the
-milestone" below); no deployment sets it. A child bound to an exact earlier
-package revision on such a worker is not yet proven end to end (the
-worker's install of that revision is proven on its own, R18). A person's
+milestone" below); no deployment sets it. The full worker test
+(`workflow-v2-agent-worker.test.js`, the model scripted) runs a child bound
+to an exact earlier package revision end to end on such a worker: the
+publication pins the package's revision, the package is republished, the
+run's child is bound to `<packageId>@<sha256>`, the worker installs that
+revision for it beside the active one, and the child's real turn runs that
+revision's prompt and completes the state, while everyone else keeps the
+active version. A person's
 publication pins package agents only (the management client does not see a
 worker's deployment agents). A real-agent test run of a draft
 revision is pinned when it is admitted, as its publication would be
@@ -897,7 +902,9 @@ a scripted model) runs a published workflow's agent state that names the
 worker's deployment agent: the child is created under the workflow, owned as
 its owner, bound to that agent, at 1.0.83; its real turn completes the state
 through `complete_workflow_node`; the run completes; the controller ends the
-child. The unit guards that keep the durable intake inactive now allow
+child. Its second case runs a registry package agent pinned at an earlier
+revision (R18, T070; "Publication pins and test evidence" above). The unit
+guards that keep the durable intake inactive now allow
 exactly this module: only it imports 1.0.83 and the intake activities, and
 only it declares the tag for a worker (controller 1.9.0 routes its own
 activities with it); the worker loads it once, dynamically, behind the
