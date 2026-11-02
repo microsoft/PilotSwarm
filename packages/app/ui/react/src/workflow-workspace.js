@@ -4,12 +4,12 @@ import { layoutWorkflowGraph, workflowLogBounds, workflowNodeViews, workflowRead
 import { projectWorkflowV2 } from "../../core/src/workflow-v2-view.js";
 import {
     workflowV2DefinitionControls, workflowV2DraftEditor, workflowV2RunCommandNotice, workflowV2RunControls, workflowV2RunVariables,
-    workflowV2TestControls,
+    workflowV2TestControls, workflowV2TestResponder,
 } from "../../core/src/workflow-v2-commands.js";
 import {
     WorkflowV2Banners, WorkflowV2DefinitionPanel, WorkflowV2DefinitionToggle, WorkflowV2DraftEditor, WorkflowV2DraftToggle, WorkflowV2NoGraph,
-    WorkflowV2NodeContent, WorkflowV2RunCommandNotice, WorkflowV2RunControls, WorkflowV2RunPicker, WorkflowV2TestInterceptions, WorkflowV2TestPanel,
-    WorkflowV2TestToggle, WorkflowV2Variables, WorkflowV2VariablesToggle,
+    WorkflowV2NodeContent, WorkflowV2RunCommandNotice, WorkflowV2RunControls, WorkflowV2RunPicker, WorkflowV2TestAnswer, WorkflowV2TestClock,
+    WorkflowV2TestInterceptions, WorkflowV2TestPanel, WorkflowV2TestToggle, WorkflowV2Variables, WorkflowV2VariablesToggle,
 } from "./workflow-v2-panels.js";
 
 const EMPTY_EVENTS = [];
@@ -69,9 +69,12 @@ function useWorkflowView(controller) {
         [v2, readModel, workflowModel, runCommand]);
     const testControls = React.useMemo(() => v2 ? workflowV2TestControls(readModel ?? workflowModel, runCommand) : null,
         [v2, readModel, workflowModel, runCommand]);
+    // The shown test run's answers and clock: only the selection's own read model says which run that is.
+    const testResponder = React.useMemo(() => v2 ? workflowV2TestResponder(readModel, runCommand) : null, [v2, readModel, runCommand]);
     const runNotice = workflowV2RunCommandNotice(runCommand);
     return { sessionId, session, view, nodes, selected, select, live, status, v2, definition, readError,
-        workflowModel, selectedRunId, ownModelLoaded: readModel != null, runControls, variables, publication, draftEditor, testControls, runNotice };
+        workflowModel, selectedRunId, ownModelLoaded: readModel != null, runControls, variables, publication, draftEditor, testControls, testResponder,
+        runNotice };
 }
 
 /** The read model's last failure for the selected run, beside the graph, with a Retry that asks again now. */
@@ -158,7 +161,7 @@ function WorkflowGraph({ definition, nodes, selected, select, banners }) {
 
 export function WorkflowMainPane({ controller, log, icon, showFooter = true, onNodeSelected }) {
     const { sessionId, session, view, nodes, selected, select, status, v2, definition, readError, workflowModel, selectedRunId, ownModelLoaded,
-        runControls, variables, publication, draftEditor, testControls, runNotice } = useWorkflowView(controller);
+        runControls, variables, publication, draftEditor, testControls, testResponder, runNotice } = useWorkflowView(controller);
     const variablesId = `wf-vars-${React.useId().replace(/:/g, "")}`;
     const variablesOpen = Boolean(variables && view.variablesOpen);
     const publicationId = `wf-publish-${React.useId().replace(/:/g, "")}`;
@@ -204,7 +207,11 @@ export function WorkflowMainPane({ controller, log, icon, showFooter = true, onN
         publicationOpen ? React.createElement(WorkflowV2DefinitionPanel, { controller, sessionId, model: publication, id: publicationId }) : null,
         testOpen ? React.createElement(WorkflowV2TestPanel, { controller, sessionId, model: testControls, id: testId }) : null,
         variablesOpen ? React.createElement(WorkflowV2Variables, { controller, sessionId, model: variables, id: variablesId }) : null,
-        v2?.readModel?.run?.test ? React.createElement(WorkflowV2TestInterceptions, { test: v2.readModel.run.test }) : null,
+        v2?.readModel?.run?.test ? React.createElement(WorkflowV2TestInterceptions, { test: v2.readModel.run.test, controller, sessionId,
+            responder: testResponder, answering: view.answeringInterceptionId ?? null }) : null,
+        testResponder?.advance ? React.createElement(WorkflowV2TestClock, { controller, sessionId, responder: testResponder }) : null,
+        testResponder?.respond && view.answeringInterceptionId
+            ? React.createElement(WorkflowV2TestAnswer, { controller, sessionId, responder: testResponder, interceptionId: view.answeringInterceptionId }) : null,
         React.createElement("div", { ref: splitRef, className: "ps-workflow-split",
             style: { gridTemplateRows: `minmax(150px, 1fr) 12px ${height}px` } },
             React.createElement("div", { className: "ps-workflow-graph-region" },

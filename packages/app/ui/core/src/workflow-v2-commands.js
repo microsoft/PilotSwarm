@@ -5,8 +5,10 @@
  * set or remove a key at the expected KV revision), the draft's YAML
  * (replace_definition at the revision the edit started from), the
  * definition's publication (publish the exact revision shown, publish it and
- * start its live run, start the published revision's live run) and a test of
- * the exact revision shown (test, with its agent mode). Pure: nothing here
+ * start its live run, start the published revision's live run), a test of
+ * the exact revision shown (test, with its agent mode), and a test run's
+ * answers to its intercepted effects and its virtual clock (test_respond,
+ * test_advance). Pure: nothing here
  * calls anything. The controller sends a command (sendWorkflowRunCommand) as
  * an updateWorkflow command through the transport; this module says which
  * commands the workflow offers, checks what a person typed, and says what the
@@ -27,11 +29,15 @@ const ENDED = new Set(["completed", "failed", "cancelled", "stopped"]);
 const LABELS = { pause: "Pause", resume: "Resume", stop: "Stop", cancel: "Cancel" };
 /** How a notice names each command. */
 const NOTICE_LABELS = { ...LABELS, set_vars: "The variables update", publish: "Publish", publish_and_start: "Publish and start", start: "Start",
-    replace_definition: "Saving the draft", test: "Starting the test" };
+    replace_definition: "Saving the draft", test: "Starting the test", test_respond: "The test answer", test_advance: "The clock advance" };
 /** The definition's commands: they name no run (a test makes its own). */
 const DEFINITION_OPERATIONS = new Set(["replace_definition", "publish", "publish_and_start", "start", "test"]);
 /** The longest test scenario name (tools.ts). */
 const SCENARIO_MAX = 128;
+/** The longest single advance of a test run's virtual clock (store.ts WORKFLOW_V2_TEST_ADVANCE_MAX_SECONDS: 30 days). */
+const ADVANCE_MAX_SECONDS = 30 * 86_400;
+/** The kinds of a test answer (test-mode.ts parseTestResponse). */
+const RESPONSE_KINDS = new Set(["success", "error", "cancel"]);
 
 /**
  * What every test run says, and what a test with real agents adds (the SDK's
@@ -138,6 +144,18 @@ export function workflowV2RunControls(model, command = null) {
  */
 export function workflowV2RunCommandArgs(operation, input = {}) {
     if (WORKFLOW_V2_RUN_CONTROL_OPERATIONS.includes(operation)) return { ok: true, args: null };
+    // A test run's answer to one of its intercepted effects, and its virtual clock (design 05).
+    if (operation === "test_respond") {
+        if (!isRecord(input) || typeof input.interceptionId !== "string" || !input.interceptionId) return { ok: false };
+        const response = input.response;
+        if (!isRecord(response) || !RESPONSE_KINDS.has(response.kind) || Object.keys(response).some(key => key !== "kind" && key !== "value")) return { ok: false };
+        if (response.kind === "cancel" && response.value !== undefined && response.value !== null) return { ok: false };
+        return { ok: true, args: { interceptionId: input.interceptionId, response } };
+    }
+    if (operation === "test_advance") {
+        if (!isRecord(input) || !Number.isSafeInteger(input.seconds) || input.seconds < 1 || input.seconds > ADVANCE_MAX_SECONDS) return { ok: false };
+        return { ok: true, args: { seconds: input.seconds } };
+    }
     if (DEFINITION_OPERATIONS.has(operation)) return definitionArgs(operation, input);
     if (operation !== "set_vars" || !isRecord(input)) return { ok: false };
     const set = input.set === undefined ? {} : input.set;
@@ -217,6 +235,15 @@ export function workflowV2RunCommandWire(operation, runId, operationId, args = n
     }
     const command = { operation, operation_id: operationId, run_id: runId };
     if (!args) return command;
+    if (operation === "test_respond") {
+        command.interception_id = args.interceptionId;
+        command.response = args.response;
+        return command;
+    }
+    if (operation === "test_advance") {
+        command.seconds = args.seconds;
+        return command;
+    }
     if (Object.keys(args.set).length) command.set = args.set;
     if (args.delete.length) command.delete = args.delete;
     command.expected_kv_revision = args.expectedKvRevision;
@@ -419,6 +446,86 @@ export function workflowV2ScenarioDraft(source) {
 }
 
 /**
+ * A test run's answers and clock (design 05; mocks M18 and M19; R19, R20,
+ * R26) given the view's last command, or null: without `personCommands`
+ * listing test_respond or test_advance (a host without controller 1.9.0, or
+ * a workflow agent state's subtree), or unless the read model shows a test
+ * run. `waiting` lists the run's intercepted effects that wait for an answer
+ * (`awaiting_parent`), with what the answer must match. `respond` and
+ * `advance` say whether a person may answer and move the virtual clock now:
+ * not once the run has ended, and not for a viewer who may not command the
+ * workflow (`reason` says why). While a command is being sent (`busy`)
+ * nothing else is sent.
+ */
+export function workflowV2TestResponder(model, command = null) {
+    if (!isRecord(model) || !isRecord(model.personCommands) || !isRecord(model.run) || model.run.mode !== "test" || !isRecord(model.run.test)) return null;
+    const operations = Array.isArray(model.personCommands.operations) ? model.personCommands.operations : [];
+    const respond = operations.includes("test_respond"), advance = operations.includes("test_advance");
+    if (!respond && !advance) return null;
+    const run = model.run;
+    if (typeof run.runId !== "string" || !run.runId) return null;
+    const viewer = isRecord(model.personCommands.viewer) ? model.personCommands.viewer : null;
+    const denied = viewer?.allowed === false ? text(viewer.reason) ?? "You cannot command this workflow." : null;
+    const reason = !ACTIVE.has(run.status) ? `Test run ${shortId(run.runId)} has ended (${run.status}); its open interceptions stay unanswered.` : denied;
+    const states = Array.isArray(model.graph?.states) ? model.graph.states : [];
+    const waiting = (Array.isArray(run.test.interceptions) ? run.test.interceptions : [])
+        .filter(item => isRecord(item) && item.state === "awaiting_parent" && typeof item.interceptionId === "string" && item.interceptionId)
+        .map(item => {
+            const state = states.find(entry => isRecord(entry) && entry.id === item.stateId);
+            return { interceptionId: item.interceptionId, operation: text(item.operation) ?? "tool.call", tool: text(item.tool), stateId: text(item.stateId),
+                arguments: item.arguments ?? null, responseSchema: item.responseSchema ?? null, virtualAt: text(item.virtualAt),
+                outcomes: Array.isArray(state?.outcomes) ? state.outcomes.filter(outcome => typeof outcome === "string") : [] };
+        });
+    const busy = isRecord(command) && command.phase === "pending";
+    const elapsed = run.test.virtualClock?.elapsedSeconds;
+    return { runId: run.runId, respond: respond && reason === null, advance: advance && reason === null, waiting, reason, busy,
+        pending: busy && command.runId === run.runId ? command.operation : null, elapsedSeconds: Number.isSafeInteger(elapsed) ? elapsed : null };
+}
+
+/**
+ * A first answer to edit for a waiting interception: an agent state's typed
+ * result ({ outcome, output }, with its first outcome), a request's response
+ * ({ response }), and null for a tool call or a send.
+ */
+export function workflowV2TestAnswerTemplate(waiting) {
+    if (waiting?.operation === "agent") return JSON.stringify({ outcome: waiting.outcomes?.[0] ?? "", output: null });
+    if (waiting?.operation === "request") return JSON.stringify({ response: null });
+    return "null";
+}
+
+/**
+ * An answer a person typed, as the test_respond response it is sent as, or
+ * the reason it is not one: success with any JSON value, error with
+ * { code, message, details? } (a message of 1 to 4,000 characters; the code
+ * a runtime error code for an agent, send or request), or cancel with no
+ * value. The server checks the answer against the effect's contract
+ * (TEST_RESPONSE_INVALID, with its problems) and records it once.
+ */
+export function workflowV2TestResponseDraft(kind, source) {
+    if (!RESPONSE_KINDS.has(kind)) return { ok: false, error: "Choose success, error or cancel." };
+    if (kind === "cancel") return { ok: true, response: { kind } };
+    const textValue = typeof source === "string" ? source : "";
+    if (!textValue.trim()) return { ok: false, error: "Give the answer as JSON (null is a value)." };
+    let value;
+    try {
+        value = JSON.parse(textValue);
+    } catch (error) {
+        return { ok: false, error: `The answer must be JSON: ${bounded(String(error?.message || error))}` };
+    }
+    if (kind === "error" && (!isRecord(value) || typeof value.message !== "string" || !value.message.trim() || value.message.length > 4_000)) {
+        return { ok: false, error: "An error answer is { \"code\", \"message\", \"details\"? } with a message of 1 to 4,000 characters." };
+    }
+    return { ok: true, response: { kind, value } };
+}
+
+/** Seconds a person typed for a virtual clock advance: an integer from 1 to 30 days. */
+export function workflowV2AdvanceDraft(source) {
+    const seconds = Number(typeof source === "string" ? source.trim() : source);
+    return Number.isSafeInteger(seconds) && seconds >= 1 && seconds <= ADVANCE_MAX_SECONDS
+        ? { ok: true, seconds } : { ok: false, error: `Advance by a whole number of seconds from 1 to ${ADVANCE_MAX_SECONDS}.` };
+}
+
+/**
  * The draft editor (design 04 replace_definition; mocks M01 and M02; R03,
  * R17, R26) given the view's last command, or null: without
  * `personCommands.draft` (the deployment takes no person's commands, the
@@ -502,6 +609,18 @@ export function workflowV2RunCommandAccepted(operation, runId, receipt, args = n
             ? ` It has ${errors || "unlisted"} error${errors === 1 ? "" : "s"}, so it cannot be published until they are fixed.` : "";
         return `Saved the draft as ${saved}.${valid}${again}`;
     }
+    if (operation === "test_respond") {
+        const interception = shortId(String(args?.interceptionId ?? receipt?.interceptionId ?? ""));
+        const node = isRecord(receipt?.node) ? receipt.node : null;
+        const decided = node && node.state !== "pending" && text(node.outcome)
+            ? ` State '${text(node.stateId) ?? "?"}' ended '${node.outcome}'.` : "";
+        return `Answered interception ${interception} of test ${run}.${decided}${again}`;
+    }
+    if (operation === "test_advance") {
+        const seconds = isRecord(receipt) && Number.isSafeInteger(receipt.seconds) ? receipt.seconds : args?.seconds;
+        const count = isRecord(receipt) && Array.isArray(receipt.decided) ? receipt.decided.length : 0;
+        return `Advanced the virtual clock of test ${run} by ${seconds} second${seconds === 1 ? "" : "s"}: ${count} deadline${count === 1 ? "" : "s"} came due. Script clocks are real.${again}`;
+    }
     if (operation === "test") {
         const tested = isRecord(receipt) && Number.isSafeInteger(receipt.revision) ? receipt.revision : args?.expectedRevision;
         const started = isRecord(receipt) && isRecord(receipt.run) && typeof receipt.run.runId === "string" ? ` ${shortId(receipt.run.runId)}` : "";
@@ -541,9 +660,14 @@ export function workflowV2RunCommandAccepted(operation, runId, receipt, args = n
 export function workflowV2RunCommandFailure(error) {
     const status = Number(error?.status);
     const refused = Number.isSafeInteger(status) && ((status >= 400 && status < 500) || status === 501);
-    // A contract's refusal lists its problems (WORKFLOW_INPUT_INVALID: path and message); the first few are shown with it.
-    const problems = Array.isArray(error?.details) ? error.details.filter(item => isRecord(item) && typeof item.message === "string")
-        .slice(0, 3).map(item => `${typeof item.path === "string" && item.path ? `${item.path}: ` : ""}${item.message}`) : [];
+    // A contract's refusal lists its problems (WORKFLOW_INPUT_INVALID: a list; TEST_RESPONSE_INVALID: { problems }, or the
+    // state's outcomes); the first few are shown with it.
+    const listed = Array.isArray(error?.details) ? error.details : Array.isArray(error?.details?.problems) ? error.details.problems : [];
+    const problems = listed.filter(item => isRecord(item) && typeof item.message === "string")
+        .slice(0, 3).map(item => `${typeof item.path === "string" && item.path ? `${item.path}: ` : ""}${item.message}`);
+    if (!problems.length && Array.isArray(error?.details?.outcomes)) {
+        problems.push(`Its outcomes are ${error.details.outcomes.filter(item => typeof item === "string").join(", ")}`);
+    }
     const message = bounded(`${String(error?.message || error || "The request failed.")}${problems.length ? ` ${problems.join("; ")}` : ""}`);
     return { phase: refused ? "failed" : "unconfirmed", message, code: typeof error?.code === "string" ? error.code : null };
 }

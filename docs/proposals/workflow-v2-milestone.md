@@ -473,6 +473,7 @@ publication gate on declared test scenarios (not in the YAML design).
 | Portal workflow view variables panel (INACTIVE: only with `personCommands`) | the shown run's `kv` preview and `kvRevision` | a person's `set_vars` of one variable (set, or remove after confirming) at the revision shown |
 | Portal workflow view draft editor (INACTIVE: only with `personCommands.draft`) | the draft's current revision and YAML, for a caller who may change it | a person's `replace_definition` at the revision the edit started from |
 | Portal workflow view test review (INACTIVE: only with `personCommands` listing `test`) | the definition's current revision, definition hash and validity | a person's `test` of that exact revision, with inputs, agent mode and an optional scenario name |
+| Portal workflow view test answers and clock (INACTIVE: only with `personCommands` listing `test_respond` or `test_advance`) | the shown test run's interceptions, what each reached and must match, its virtual clock | a person's `test_respond` to one waiting interception, and `test_advance` of the run's virtual clock |
 | Portal workflow view publication review (INACTIVE: only with `personCommands`) | the definition's state, revision, definition hash, validity and runs | a person's `publish`, `publish_and_start` (exact revision and hash) or `start` (published hash), with JSON inputs and optional initial variables |
 | Portal and TUI composer, management client, SDK client | session access (`canSendPrompt`, `canAnswer`, `canSteer`) | human input, refused for an agent state's subtree at the SDK |
 | REST `POST /sessions/:id/workflow/commands`, SDK (direct and web) and TUI `updateWorkflow`, MCP `update_workflow` (INACTIVE: test-only option `workflowCommands`) | — | a person's `update_workflow` command (below) |
@@ -669,6 +670,34 @@ compile errors, a caller who may not command the workflow, an unknown hash
 or a command in flight disable it, with the reason. The live run is never
 changed.
 
+**Answering a test's effects and moving its clock (R08, R19, R20, R26; mocks
+M18, M19; INACTIVE).** When the view shows a test run and its
+`personCommands` lists `test_respond` or `test_advance` (a host that runs
+controller 1.9.0; never in a workflow agent state's subtree), a person who
+may command the workflow can drive the test:
+
+- **Answers.** Each intercepted effect that waits for an answer
+  (`awaiting_parent`) has an Answer button in the interceptions table. Its
+  form shows what the effect reached (its arguments) and what the answer
+  must match (its response schema), then sends the answer the person
+  chose: success with a JSON value (an agent state's starts as
+  `{ outcome, output }` with its first outcome, a request's as
+  `{ response }`), error with `{ code, message, details? }`, or cancel. The
+  JSON is checked in the view; the server checks it against the effect's
+  contract and refuses it with the fields it rejects (422
+  `TEST_RESPONSE_INVALID`, shown with its first problems or the state's
+  outcomes); the same answer sent again is the same answer, and another is
+  refused (409 `TEST_RESPONSE_CONFLICT`). `test_respond` names the run and
+  the interception. Once accepted, the form closes and the view reads the
+  workflow again.
+- **The virtual clock.** The test run's clock shows how far it is from the
+  test's start; Advance moves it by a whole number of seconds (1 to 30
+  days), deciding whatever came due (`test_advance`), and says that script
+  clocks are real.
+- **Where not.** A test run that ended, or a viewer who may not command the
+  workflow, keeps the interceptions readable with no Answer buttons and no
+  clock control; a live run has neither.
+
 **Publishing and starting from the workflow view (R17, R18, R26; mocks M01,
 M03; INACTIVE).** The same view lets a person publish a draft and start its
 live run, through the same `updateWorkflow` transport.
@@ -705,13 +734,10 @@ Unfulfilled requirements (open, not waived; R26):
   person's test operations travel as `updateWorkflow` commands (above);
   design 04's separate `/test-runs` and `/inbox` paths, and the final path
   names, are API review item D11.
-- **The rest of the UI commands**: the portal sends the run controls,
-  one-variable updates, draft edits, publication and test starts (above).
-  Answering an intercepted effect (`test_respond`) and advancing a test
-  run's virtual clock (`test_advance`) have no screen yet (the view shows a
-  test's interceptions read-only), test fixtures go through the API, MCP or
-  the agent tool, and the TUI has no workflow command keys (it does not draw
-  the workflow view).
+- **The rest of the UI commands**: the portal sends every person's command
+  (above). Test fixtures and a several-key variables update go through the
+  API, MCP or the agent tool, and the TUI has no workflow command keys (it
+  does not draw the workflow view).
 
 **Responses and completions stay in process (owner scope, 2026-11-02).**
 External agents are not in scope: agents run only within PilotSwarm, as
