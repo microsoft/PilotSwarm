@@ -19,9 +19,11 @@ import { withScriptedModel } from "../helpers/scripted-workers.js";
 const TIMEOUT = 240_000;
 const OWNER = { provider: "test", subject: "workflow-owner" };
 const SETUP_PROMPT = "Every 15 seconds, run the counter workflow and tell me what it returns.";
-// The orchestration delivers the result as a wake-up whose system context
-// carries the notification text.
-const isWorkflowResult = (text) => /Workflow session \S+ "counter" ended at state 'counted' with outcome succeeded/.test(text);
+// The orchestration wakes the parent with a short notice (id, status,
+// terminal outcome and step count only; the output is read with
+// read_workflow_result). The runtime moves a [SYSTEM: ...] notice into the
+// turn's system context, so its text is matched without the frame.
+const isWorkflowResult = (text) => /Workflow \S+ finished: completed, outcome "succeeded", \d+ steps?\. Read its result with read_workflow_result/.test(text);
 
 const WORKFLOW_YAML = `
 apiVersion: pilotswarm.dev/v1alpha1
@@ -150,7 +152,7 @@ describe("agent-driven script workflows", () => {
 });
 
 const POLL_PROMPT = "Every minute, check whether a build has failed; when one has, record it. Keep checking until then.";
-const isPollResult = (text) => /Workflow session \S+ "poll-builds" ended at state 'finished' with outcome succeeded/.test(text);
+const isPollResult = (text) => /Workflow \S+ finished: completed, outcome "succeeded", \d+ steps?\. Read its result with read_workflow_result/.test(text);
 const POLL_YAML = `
 apiVersion: pilotswarm.dev/v1alpha1
 kind: Workflow

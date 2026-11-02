@@ -86,6 +86,8 @@ export async function withWorkflowParent(env, opts, fn) {
         await fn({
             client, worker, model, qualifiedModel, liveParent, toolBinding, startWorkflow, spawnThroughAgent,
             settledModelRequests,
+            /** The client handle of a parent made by liveParent. */
+            parentSession: (parentSessionId) => parents.get(parentSessionId),
         });
     });
 }

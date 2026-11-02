@@ -21,7 +21,7 @@ import { attachedFoldersOf, parseSkillFile, readLoadFiles, resolveLoadPath } fro
 import { groupSkipped, parseRepoAgentFile } from "./workspace-repo-agents.js";
 import path from "node:path";
 import { NativeTaskObserver, nativeTaskAgentMarks } from "./native-task-observer.js";
-import { SPAWN_WORKFLOW_TOOL_SPEC, type SpawnWorkflowToolArgs } from "./workflow/tool-spec.js";
+import { READ_WORKFLOW_RESULT_TOOL_SPEC, SPAWN_WORKFLOW_TOOL_SPEC, type SpawnWorkflowToolArgs } from "./workflow/tool-spec.js";
 import { AGENT_CRON_MIN_INTERVAL_SECONDS, agentCronIntervalAllowed } from "./wait-rules.js";
 
 /**
@@ -1404,8 +1404,9 @@ export class ManagedSession {
         });
 
         const spawnWorkflowTool = defineTool("spawn_workflow", { ...SPAWN_WORKFLOW_TOOL_SPEC, handler: async () => "stub" });
+        const readWorkflowResultTool = defineTool("read_workflow_result", { ...READ_WORKFLOW_RESULT_TOOL_SPEC, handler: async () => "stub" });
 
-        return [spawnAgentTool, spawnWorkflowTool, messageAgentTool, checkAgentsTool, waitForAgentsTool, listSessionsTool,
+        return [spawnAgentTool, spawnWorkflowTool, readWorkflowResultTool, messageAgentTool, checkAgentsTool, waitForAgentsTool, listSessionsTool,
             ...ManagedSession._childManagementToolDefs()];
     }
 
@@ -2853,7 +2854,7 @@ export class ManagedSession {
         });
 
         const SYSTEM_TOOL_NAMES = new Set([
-    "update_canvas","wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "send_session_message", "reply_session_message", "show_artifact", "draw_canvas", "read_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "find_canvas_app", "load_skill", "load_agent", "search_capabilities", "load_agent_guidelines", "list_session_capabilities", "use_package", "spawn_agent", "spawn_workflow", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "stop_agent_turn", "delete_agent"]);
+    "update_canvas","wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "send_session_message", "reply_session_message", "show_artifact", "draw_canvas", "read_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "find_canvas_app", "load_skill", "load_agent", "search_capabilities", "load_agent_guidelines", "list_session_capabilities", "use_package", "spawn_agent", "spawn_workflow", "read_workflow_result", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "stop_agent_turn", "delete_agent"]);
 
         // Merge user tools with system tools
         const userTools = this.config.tools ?? [];
@@ -2964,6 +2965,14 @@ export class ManagedSession {
             },
         });
 
+        const readWorkflowResultTool = defineTool("read_workflow_result", {
+            ...READ_WORKFLOW_RESULT_TOOL_SPEC,
+            handler: async (args: { session_id: string }) => {
+                if (!controlBridge?.readWorkflowResult) return JSON.stringify({ error: "read_workflow_result is not available in this session." });
+                return await controlBridge.readWorkflowResult(args);
+            },
+        });
+
         const subAgentToolsForTurn = isServiceSession
             ? []
             : isReadOnlyTuner
@@ -2971,6 +2980,7 @@ export class ManagedSession {
                 : [
                     spawnAgentTool,
                     spawnWorkflowTool,
+                    readWorkflowResultTool,
                     messageAgentTool,
                     checkAgentsTool,
                     waitForAgentsTool,

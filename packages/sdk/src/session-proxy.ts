@@ -74,6 +74,7 @@ import { STREAMING_EVENT_TYPES, keepOrchestrationTurnEvents, turnResultSizeWarni
 import { MODEL_EVENT_TYPES_RECORDED_WHEN_LOGGING, modelEventLoggingEnabled } from "./model-event-logging.js";
 import type { NativeTasksPayload } from "./native-task-observer.js";
 import { spawnWorkflowFromTool } from "./workflow/spawn.js";
+import { readWorkflowResult } from "./workflow/result.js";
 import type { SpawnWorkflowToolArgs } from "./workflow/tool-spec.js";
 
 const SYSTEM_AGENT_IDS = new Set(["pilotswarm", "sweeper", "resourcemgr", "facts-manager"]);
@@ -2697,6 +2698,16 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 captureToolBinding: () => sessionManager.captureWorkflowToolBinding(input.sessionId),
                 createWorkflowSession: async (config, admission) => (await getInlineClient()).createWorkflowSession(config, admission),
             }),
+
+            /**
+             * read_workflow_result: the full result of a workflow this
+             * session started. JSON.stringify builds the tool result, so the
+             * workflow's output cannot break out of it.
+             */
+            readWorkflowResult: async (args: { session_id: string }) => {
+                if (!catalog) return JSON.stringify({ error: "read_workflow_result is not available on this worker." });
+                return JSON.stringify(await readWorkflowResult(catalog, input.sessionId, args?.session_id));
+            },
 
             /**
              * Create a TOP-LEVEL session — the Agent Manager's test loop (§7).

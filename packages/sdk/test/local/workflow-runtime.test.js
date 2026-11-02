@@ -289,7 +289,10 @@ async function runWorkflow(yaml, { deps = {}, inputs = {}, parentSessionId, extr
         catalog,
         stateTypes: () => SCRIPTS,
         resolveTools: async () => new Map(),
-        notifyParent: async (parent, prompt, sender) => { notifications.push({ parent, prompt, sender }); },
+        notifyParent: async (parent, prompt, sender, clientMessageId) => {
+            const endSavedFirst = catalog.events.some((e) => /^workflow\.(completed|failed|cancelled)$/.test(e.eventType) && e.data?.result);
+            notifications.push({ parent, prompt, sender, clientMessageId, endSavedFirst });
+        },
         ...deps,
     };
     const runtime = await startRuntime(provider, fullDeps);
@@ -388,8 +391,13 @@ describe("workflow controller (duroxide)", () => {
 
         expect(notifications).toHaveLength(1);
         expect(notifications[0].parent).toBe("parent-1");
-        expect(notifications[0].sender).toEqual({ kind: "system", display: "workflow branching" });
-        expect(notifications[0].prompt).toMatch(/ended at state 'reported' with outcome succeeded after 3 step\(s\)\. Reported\. Output: \{"reported":3\}/);
+        expect(notifications[0].sender).toEqual({ kind: "system", display: "workflow" });
+        expect(notifications[0].prompt).toBe(`[SYSTEM: Workflow ${sessionId} finished: completed, outcome "succeeded", 3 steps. Read its result with read_workflow_result("${sessionId}").]`);
+        expect(notifications[0].clientMessageId).toBe(`workflow:${sessionId}:terminal`);
+        // The full result was saved with the end record before the parent was told.
+        const end = catalog.events.find((e) => e.eventType === "workflow.completed");
+        expect(end.data.result).toMatchObject({ sessionId, status: "completed", outcome: "succeeded", stateId: "reported", steps: 3, summary: "Reported.", output: { reported: 3 }, error: null, reason: null });
+        expect(notifications[0].endSavedFirst).toBe(true);
     });
 
     it("ends at whichever terminal state an outcome leads to", async () => {
@@ -466,7 +474,8 @@ states:
         });
         expect(catalog.updates.at(-1)).toMatchObject({ state: "failed", lastError: "Limit is over 10." });
         expect(catalog.events.at(-1)).toMatchObject({ eventType: "workflow.failed", data: { stateId: "refused", outcome: "failed", summary: "Limit is over 10." } });
-        expect(notifications[0].prompt).toMatch(/ended at state 'refused' with outcome failed after 1 step\(s\)\. Limit is over 10\./);
+        expect(notifications[0].prompt).toMatch(/^\[SYSTEM: Workflow \S+ finished: failed, outcome "failed", 1 step\. Read its result with read_workflow_result/);
+        expect(notifications[0].prompt).not.toMatch(/Limit is over 10/);
 
         const missing = await runWorkflow(yaml, { inputs: {} });
         expect(missing.status.output).toMatchObject({ status: "failed", steps: 0 });
@@ -494,7 +503,8 @@ states:
         expect(status.output.error).toMatch(/undeclared outcome 'surprise' \(declared: success\)/);
         expect(catalog.updates.at(-1)).toMatchObject({ state: "failed" });
         expect(catalog.events.at(-1).eventType).toBe("workflow.failed");
-        expect(notifications[0].prompt).toMatch(/failed after 1 step\(s\)\. Error: .*surprise/);
+        expect(notifications[0].prompt).toMatch(/^\[SYSTEM: Workflow \S+ failed after 1 step\. Read its result with read_workflow_result/);
+        expect(notifications[0].prompt).not.toMatch(/surprise/);
     });
 
     it("fails a non-zero exit when the node does not route failure, and routes it when it does", async () => {
@@ -683,7 +693,7 @@ describe("workflow cancellation (duroxide)", () => {
             expect(Date.now() - started).toBeLessThan(10_000);
             expect(catalog.events.find((e) => e.eventType === "workflow.cancelled").data).toMatchObject({ reason: "cancel by test", steps: 2 });
             expect(catalog.updates.at(-1)).toMatchObject({ state: "cancelled", lastError: "cancel by test" });
-            expect(notifications.map((n) => n.prompt)).toEqual([expect.stringMatching(/cancelled after 2 step\(s\)\. Reason: cancel by test/)]);
+            expect(notifications.map((n) => n.prompt)).toEqual([expect.stringMatching(/^\[SYSTEM: Workflow \S+ was cancelled after 2 steps\. Read its result with read_workflow_result\("\S+"\)\.\]$/)]);
             const custom = JSON.parse((await client.getStatus(instanceId)).customStatus);
             expect(custom).toMatchObject({ status: "cancelled", workflow: { stateId: "slow" } });
         } finally {
@@ -1000,7 +1010,7 @@ states:
             expect(Date.now() - sent).toBeLessThan(5_000);
             expect(status.output).toMatchObject({ status: "cancelled", stateId: "nap", steps: 2, reason: "cancel by test" });
             expect(catalog.events.map((e) => e.eventType).slice(-2)).toEqual(["workflow.state_waiting", "workflow.cancelled"]);
-            expect(notifications.map((n) => n.prompt)).toEqual([expect.stringMatching(/cancelled after 2 step\(s\)\. Reason: cancel by test/)]);
+            expect(notifications.map((n) => n.prompt)).toEqual([expect.stringMatching(/^\[SYSTEM: Workflow \S+ was cancelled after 2 steps\. Read its result with read_workflow_result\("\S+"\)\.\]$/)]);
         } finally {
             await runtime.shutdown(100);
         }
@@ -1160,7 +1170,8 @@ describe("workflow finish (duroxide)", () => {
     it("retries the end of a run when telling the parent fails, and records the end once", async () => {
         let attempts = 0;
         const notified = [];
-        const { status, catalog } = await runWorkflow(`
+        const ids = [];
+        const { status, catalog, sessionId } = await runWorkflow(`
 apiVersion: pilotswarm.dev/v1alpha1
 kind: Workflow
 metadata: { name: notify-retry, version: "1" }
@@ -1172,8 +1183,9 @@ states:
             parentSessionId: "parent-1",
             deps: {
                 runNode: async () => okResult(null),
-                notifyParent: async (parent, prompt) => {
+                notifyParent: async (parent, prompt, _sender, clientMessageId) => {
                     attempts += 1;
+                    ids.push(clientMessageId);
                     if (attempts === 1) throw new Error("queue unavailable");
                     notified.push({ parent, prompt });
                 },
@@ -1181,8 +1193,10 @@ states:
         });
         expect(status.output).toMatchObject({ status: "completed", outcome: "succeeded" });
         expect(attempts).toBe(2);
-        expect(notified).toEqual([{ parent: "parent-1", prompt: expect.stringMatching(/ended at state 'done' with outcome succeeded/) }]);
+        expect(notified).toEqual([{ parent: "parent-1", prompt: expect.stringMatching(/finished: completed, outcome "succeeded"/) }]);
         expect(catalog.events.filter((e) => e.eventType === "workflow.completed")).toHaveLength(1);
+        // Both attempts carry the same id, so the parent's queue keeps one of them.
+        expect(ids).toEqual([`workflow:${sessionId}:terminal`, `workflow:${sessionId}:terminal`]);
     }, 30_000);
 });
 

@@ -124,18 +124,18 @@ test("the Web API has no way to start a top-level workflow session", () => {
     assert.equal(NON_MANAGEMENT_OPERATION_OWNERS.createWorkflowSession, undefined);
 });
 
-test("the parent hears the terminal state and outcome, or the reason the run stopped", () => {
+test("the parent hears only the id, status, terminal outcome and step count, and is told to read the result", () => {
     assert.equal(
         buildParentNotification({ sessionId: "s1", workflowName: "nightly", status: "completed", outcome: "succeeded", summary: "Done.", stateId: "done", output: { n: 2 }, steps: 3, notifyParent: true }),
-        '[SYSTEM: Workflow session s1 "nightly" ended at state \'done\' with outcome succeeded after 3 step(s). Done. Output: {"n":2}]',
+        '[SYSTEM: Workflow s1 finished: completed, outcome "succeeded", 3 steps. Read its result with read_workflow_result("s1").]',
     );
     assert.equal(
         buildParentNotification({ sessionId: "s1", workflowName: null, status: "failed", error: "boom", steps: 0, notifyParent: true }),
-        "[SYSTEM: Workflow session s1 (unnamed) failed after 0 step(s). Error: boom]",
+        '[SYSTEM: Workflow s1 failed after 0 steps. Read its result with read_workflow_result("s1").]',
     );
     assert.equal(
         buildParentNotification({ sessionId: "s1", workflowName: "n", status: "cancelled", reason: "no longer needed", steps: 1, notifyParent: true }),
-        '[SYSTEM: Workflow session s1 "n" cancelled after 1 step(s). Reason: no longer needed]',
+        '[SYSTEM: Workflow s1 was cancelled after 1 step. Read its result with read_workflow_result("s1").]',
     );
 });
 
@@ -192,7 +192,7 @@ test("spawn_workflow starts a child workflow owned like its parent and says how 
     const text = await spawnWorkflowFromTool({ yaml: yaml(), inputs: { day: "mon" } }, { toolCallId: "call-1" }, deps);
     const expectedId = workflowChildSessionId("parent-agent", undefined, "call-1");
     assert.match(text, new RegExp(`started workflow session ${expectedId} running "limits"`));
-    assert.match(text, /receive its result as a system message/);
+    assert.match(text, /woken with a short notice when it ends; then call read_workflow_result\("[0-9a-f-]+"\) for its output\. Do not poll for it\./);
     assert.deepEqual(created, [{
         sessionId: expectedId,
         yaml: yaml(),
@@ -275,7 +275,7 @@ test("spawn_workflow can run without waking the parent, and reports a failed cre
     const quiet = spawnDeps();
     const text = await spawnWorkflowFromTool({ yaml: yaml(), notify_on_completion: false }, { toolCallId: "q" }, quiet.deps);
     assert.equal(quiet.created[0].notifyParent, false);
-    assert.match(text, /will not be told when it ends/);
+    assert.match(text, /will not be told when it ends; read its result with read_workflow_result\("[0-9a-f-]+"\)/);
 
     const broken = spawnDeps({ createWorkflowSession: async () => { throw new Error("catalog unavailable"); } });
     assert.equal(

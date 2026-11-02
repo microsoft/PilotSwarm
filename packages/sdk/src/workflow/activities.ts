@@ -21,6 +21,12 @@ import {
 import { runScriptNode, type RunScriptNodeResult, type ScriptRunnerOptions } from "./runner.js";
 import { workflowRuntimeRefusal, type WorkflowToolBinding } from "./tool-policy.js";
 import type { WorkflowToolExecutor } from "./tool-executor.js";
+import {
+    buildParentNotification,
+    buildWorkflowResultRecord,
+    workflowTerminalClientMessageId,
+    WORKFLOW_NOTICE_SENDER,
+} from "./result.js";
 import { buildWorkflowCanvasHtml, foldWorkflowCanvasState, type WorkflowCanvasPublisher } from "./canvas.js";
 
 /** The events a workflow writes; the canvas state is folded from them. */
@@ -56,8 +62,11 @@ export interface WorkflowActivityDeps {
     openToolExecutor: (sessionId: string, binding: WorkflowToolBinding, step: number) => Promise<WorkflowToolExecutor>;
     /** Remove a deleted workflow session: CMS soft delete and its session facts. */
     deleteSession?: (sessionId: string) => Promise<void>;
-    /** Deliver a system prompt to the parent session's message queue. */
-    notifyParent: (parentSessionId: string, prompt: string, sender: { kind: "system"; display: string }) => Promise<void>;
+    /**
+     * Deliver a system prompt to the parent session's message queue, with a
+     * stable client message id the parent's queue dedupes repeats by.
+     */
+    notifyParent: (parentSessionId: string, prompt: string, sender: { kind: "system"; display: string }, clientMessageId: string) => Promise<void>;
     runnerOptions?: ScriptRunnerOptions;
     /** Replaceable for tests. */
     runNode?: typeof runScriptNode;
@@ -139,17 +148,6 @@ async function refreshCanvas(deps: WorkflowActivityDeps, sessionId: string): Pro
     } catch {
         // The transcript log is the record; the canvas is a view of it.
     }
-}
-
-export function buildParentNotification(input: WorkflowFinishInput): string {
-    const name = input.workflowName ? `"${input.workflowName}"` : "(unnamed)";
-    if (input.outcome !== undefined) {
-        return `[SYSTEM: Workflow session ${input.sessionId} ${name} ended at state '${input.stateId}' with outcome ${input.outcome} after ${input.steps} step(s). `
-            + `${input.summary ?? ""} Output: ${preview(input.output)}]`;
-    }
-    const header = `[SYSTEM: Workflow session ${input.sessionId} ${name} ${input.status} after ${input.steps} step(s).`;
-    if (input.status === "failed") return `${header} Error: ${input.error ?? "unknown error"}]`;
-    return `${header} Reason: ${input.reason ?? input.status}]`;
 }
 
 /** The graph as the `workflow.started` event and the views describe it. */
@@ -318,22 +316,28 @@ export function registerWorkflowActivities(runtime: any, deps: WorkflowActivityD
         input: WorkflowFinishInput,
     ): Promise<null> => {
         const stopped = input.status === "cancelled" && input.outcome === undefined || input.status === "deleted";
+        // The full result is saved with the end record before the parent is
+        // told, and the parent reads it from there (read_workflow_result).
         // This activity is retried when a required effect below fails; the
-        // end is recorded once.
+        // end, and so the result, is recorded once.
+        const endType = END_EVENT[input.status];
         const recorded = typeof deps.catalog?.getSessionEvents === "function"
-            ? await deps.catalog.getSessionEvents(input.sessionId, 0, 1, [END_EVENT[input.status]]).catch(() => [])
+            ? await deps.catalog.getSessionEvents(input.sessionId, 0, 1, [endType])
             : [];
-        if (!recorded.length) await record(deps, input.sessionId, END_EVENT[input.status], {
-            name: input.workflowName,
-            steps: input.steps,
-            ...(input.stateId ? { stateId: input.stateId } : {}),
-            ...(input.outcome !== undefined ? { outcome: input.outcome } : {}),
-            ...(input.summary ? { summary: input.summary } : {}),
-            ...(input.outcome !== undefined ? { outputPreview: preview(input.output) } : {}),
-            ...(input.error ? { error: input.error } : {}),
-            ...(stopped ? { reason: input.reason ?? input.status } : {}),
-            ...(input.status === "deleted" ? { deleted: true } : {}),
-        });
+        if (!recorded.length && deps.catalog) {
+            await deps.catalog.recordEvents(input.sessionId, [{ eventType: endType, data: {
+                name: input.workflowName,
+                steps: input.steps,
+                ...(input.stateId ? { stateId: input.stateId } : {}),
+                ...(input.outcome !== undefined ? { outcome: input.outcome } : {}),
+                ...(input.summary ? { summary: input.summary } : {}),
+                ...(input.outcome !== undefined ? { outputPreview: preview(input.output) } : {}),
+                ...(input.error ? { error: input.error } : {}),
+                ...(stopped ? { reason: input.reason ?? input.status } : {}),
+                ...(input.status === "deleted" ? { deleted: true } : {}),
+                result: buildWorkflowResultRecord(input, new Date()),
+            } }]);
+        }
         if (input.status !== "deleted") await refreshCanvas(deps, input.sessionId);
         // The session's end state, its removal and the parent's wake-up are
         // required: a failure throws, and the controller retries this
@@ -353,10 +357,12 @@ export function registerWorkflowActivities(runtime: any, deps: WorkflowActivityD
         // A parent that stopped its own workflow does not need to be told.
         const parentAsked = Boolean(input.requestedBy) && input.requestedBy === input.parentSessionId;
         if (input.notifyParent && input.parentSessionId && !parentAsked) {
+            // Only runtime-vouched fields; a repeat is dropped by its stable id.
             await deps.notifyParent(
                 input.parentSessionId,
                 buildParentNotification(input),
-                { kind: "system", display: `workflow ${input.workflowName ?? input.sessionId.slice(0, 8)}` },
+                { ...WORKFLOW_NOTICE_SENDER },
+                workflowTerminalClientMessageId(input.sessionId),
             );
         }
         return null;

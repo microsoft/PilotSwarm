@@ -88,6 +88,7 @@ export const WORKFLOW_EXCLUDED_TOOL_GROUPS: Readonly<Record<string, { reason: st
             "create_agent_session", "create_session", "create_workflow_session",
             "message_agent", "message_agent_session", "manage_agent_session",
             "complete_agent", "cancel_agent", "delete_agent", "stop_agent_turn", "wait_for_agents",
+            "read_workflow_result",
         ],
     },
     conversation: {

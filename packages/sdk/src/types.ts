@@ -211,6 +211,8 @@ export interface TurnOptions {
             args: import("./workflow/tool-spec.js").SpawnWorkflowToolArgs,
             call?: { toolCallId?: string },
         ): Promise<string>;
+        /** The full result of a workflow this session started, as a JSON tool result. */
+        readWorkflowResult?(args: { session_id: string }): Promise<string>;
         spawnAgent(args: {
             agent_name?: string;
             task?: string;

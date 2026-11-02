@@ -1020,11 +1020,13 @@ export class PilotSwarmWorker {
                 await this._catalog?.softDeleteSession(sessionId);
                 await this.factStore?.deleteSessionFactsForSession(sessionId).catch(() => undefined);
             },
-            notifyParent: async (parentSessionId, prompt, sender) => {
+            // The stable id lets the parent's queue drop a repeated notice
+            // (pending ids and its recently consumed ones).
+            notifyParent: async (parentSessionId, prompt, sender, clientMessageId) => {
                 await workflowClient.enqueueEvent(
                     `session-${parentSessionId}`,
                     "messages",
-                    JSON.stringify({ prompt, sender }),
+                    JSON.stringify({ prompt, sender, clientMessageIds: [clientMessageId] }),
                 );
             },
             runnerOptions: { executables: workflowSettings.executables },

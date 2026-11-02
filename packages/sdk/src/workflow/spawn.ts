@@ -88,8 +88,9 @@ export async function spawnWorkflowFromTool(
                     + "do not also schedule it with cron. "
                 : "")
             + (notify
-                ? "You will receive its result as a system message when it ends; do not poll for it. "
-                : "You will not be told when it ends; check it with read_session_info or list_sessions. ")
+                ? "You will be woken with a short notice when it ends; then call read_workflow_result(\"" + workflowSessionId + "\") "
+                    + "for its output. Do not poll for it. "
+                : "You will not be told when it ends; read its result with read_workflow_result(\"" + workflowSessionId + "\"). ")
             + "The user can follow each step in the portal, under this session.]";
     } catch (error) {
         const code = (error as any)?.code;
