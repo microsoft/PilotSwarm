@@ -83,7 +83,7 @@ states:
 
 | Rule | Detail |
 |---|---|
-| Document | `apiVersion: pilotswarm.dev/v1alpha1`, `kind: Workflow`, `metadata.name` and `metadata.version` are required. |
+| Document | `apiVersion: pilotswarm.dev/v1alpha1`, `kind: Workflow`, `metadata.name` and `metadata.version` are required. `apiVersion` is read first and picks the engine from one routing table; any other value, or none, is refused with `WORKFLOW_API_VERSION_UNSUPPORTED`: "This worker does not support workflow apiVersion <X>. Supported: pilotswarm.dev/v1alpha1." A later engine registers its apiVersion in that table. |
 | States | Ids are a letter, then up to 63 letters, digits, `_` or `-`; at most 100 states. `initial` must be a script or wait state. A workflow needs a terminal state, or a wait state if it runs until cancelled. |
 | Transitions | `completion.outcomes` lists every outcome a script state may return; `transition.next` maps **each** of them to a state, and nothing else. An outcome not listed fails the run. |
 | Inputs | `inputs` declares types (`string`, `number`, `integer`, `boolean`, `object`, `array`) and `required`. A run whose inputs do not match is refused; undeclared inputs pass through. |

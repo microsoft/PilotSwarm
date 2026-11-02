@@ -4,6 +4,7 @@ import type { WorkflowSessionConfig, SessionOwnerInfo } from "../types.js";
 import { compileWorkflow, validateWorkflowInputs, workflowHasWaits, workflowNotRunnableReason, WORKFLOWS_DISABLED_MESSAGE } from "./compiler.js";
 import type { SpawnWorkflowToolArgs } from "./tool-spec.js";
 import { workflowRuntimeRefusal, type WorkflowToolBinding } from "./tool-policy.js";
+import { routeWorkflowApiVersion } from "./api-versions.js";
 
 export interface SpawnWorkflowDeps {
     /** The agent session calling spawn_workflow; it becomes the workflow's parent. */
@@ -46,11 +47,14 @@ export async function spawnWorkflowFromTool(
         if (allowed.size === 0) {
             return `[SYSTEM: spawn_workflow refused — ${WORKFLOWS_DISABLED_MESSAGE}]`;
         }
+        // apiVersion first: the routing table picks the engine, or refuses.
+        const route = routeWorkflowApiVersion(args.yaml);
+        if (!route.ok) return `[SYSTEM: spawn_workflow refused — ${route.message} Nothing was started.]`;
         let workflowName: string;
         let loops = false;
         let compiled: ReturnType<typeof compileWorkflow>;
         try {
-            compiled = compileWorkflow(args.yaml);
+            compiled = route.engine.compile(args.yaml);
             validateWorkflowInputs(compiled, args.inputs ?? {});
             workflowName = compiled.name;
             loops = workflowHasWaits(compiled);

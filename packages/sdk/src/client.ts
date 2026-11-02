@@ -36,8 +36,9 @@ import { assertUnambiguousProvider, isWebOptions, type PilotSwarmWebOptions } fr
 import { WebPilotSwarmClient } from "./web/web-client.js";
 import { loadModelProviderTypes, type ModelProviderRegistry } from "./model-providers.js";
 import { resolveRuntimeModelSelection, type RuntimeModelSelection } from "./provider-catalog.js";
-import { compileWorkflow, validateWorkflowInputs, WorkflowCompileError, type CompiledWorkflow } from "./workflow/compiler.js";
+import { validateWorkflowInputs, WorkflowCompileError, type CompiledWorkflow } from "./workflow/compiler.js";
 import { readWorkflowToolBinding, workflowRuntimeRefusal, WORKFLOW_TOOL_POLICY, type WorkflowToolBinding } from "./workflow/tool-policy.js";
+import { routeWorkflowApiVersion } from "./workflow/api-versions.js";
 import {
     WORKFLOW_SESSION_LATEST_VERSION,
     WORKFLOW_SESSION_ORCHESTRATION_NAME,
@@ -257,10 +258,13 @@ export class PilotSwarmClient {
         const inputs = config.inputs && typeof config.inputs === "object" && !Array.isArray(config.inputs)
             ? config.inputs
             : {};
+        // apiVersion first: the routing table picks the engine, or refuses.
+        const route = routeWorkflowApiVersion(config.yaml);
+        if (!route.ok) throw workflowError(route.message, route.code, 400);
         let workflowName: string;
         let compiled: CompiledWorkflow;
         try {
-            compiled = compileWorkflow(config.yaml);
+            compiled = route.engine.compile(config.yaml);
             validateWorkflowInputs(compiled, inputs);
             workflowName = compiled.name;
         } catch (error) {

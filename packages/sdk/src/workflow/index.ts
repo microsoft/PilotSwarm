@@ -9,3 +9,4 @@ export * from "./canvas.js";
 export * from "./tool-policy.js";
 export * from "./tool-executor.js";
 export * from "./result.js";
+export * from "./api-versions.js";
