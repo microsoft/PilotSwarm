@@ -307,8 +307,10 @@
 
 /* ── 2px gap between panels ───────────────────────────────────────────────
    The divider shows the page background as a 2px gap between pane frames.
-   Its drag target stays 8px wide through a transparent overhang. */
+   Its grab zone is 14px: a transparent 6px overhang on each side, drawn above
+   the panes. Without it, a press a few pixels below a horizontal gap landed
+   on the next pane's header and started a pane move instead of a resize. */
 .ps-moa-stage > .ps-moa-divider { flex: none; z-index: 2; overflow: visible; background: var(--ps-page-background, var(--ps-background)); }
-.ps-moa-stage > .ps-moa-divider::before { content: ""; position: absolute; inset: 0 -3px; }
-.ps-moa-stage > .ps-moa-divider[aria-orientation="horizontal"]::before { inset: -3px 0; }
+.ps-moa-stage > .ps-moa-divider::before { content: ""; position: absolute; inset: 0 -6px; }
+.ps-moa-stage > .ps-moa-divider[aria-orientation="horizontal"]::before { inset: -6px 0; }
 .ps-moa-stage > .ps-moa-divider:hover, .ps-moa-stage > .ps-moa-divider:focus-visible { background: var(--ps-selection-background); }

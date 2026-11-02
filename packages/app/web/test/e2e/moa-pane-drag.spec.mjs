@@ -286,3 +286,32 @@ test('pane headers and control panel omit redundant focus and arrangement contro
     await expect(panel(page,'c').getByText('Focused',{exact:true})).toHaveCount(0);
     expect(f.errors).toEqual([]);
 });
+
+test('a press just beside a thin divider resizes and never starts a pane move',async({page})=>{
+    const f=await fixture(page);
+    for (const [id,offset] of [['right',5],['right',-5],['bottom',5],['bottom',-5]]) {
+        const seam=page.locator(`[data-moa-divider="${id}"]`), box=await seam.boundingBox();
+        const vertical=(await seam.getAttribute('aria-orientation'))==='vertical';
+        const x=vertical?box.x+box.width/2+offset:box.x+box.width/3, y=vertical?box.y+box.height/3:box.y+box.height/2+offset;
+        expect(await page.evaluate(([x,y])=>Boolean(document.elementFromPoint(x,y)?.closest('.ps-moa-divider')),[x,y])).toBe(true);
+        const before=structuredClone(f.tree());
+        await page.mouse.move(x,y); await page.mouse.down();
+        await page.mouse.move(vertical?x+60:x,vertical?y:y+60,{steps:8});
+        await expect(page.locator('.ps-moa-drop-preview')).toHaveCount(0);
+        await page.mouse.up();
+        await expect.poll(()=>JSON.stringify(f.tree())).not.toBe(JSON.stringify(before));
+        const leaves=t=>t.type==='split'?[...leaves(t.first),...leaves(t.second)]:[t.id];
+        expect(leaves(f.tree())).toEqual(leaves(before));
+    }
+    expect(f.errors).toEqual([]);
+});
+
+test('a divider drag keeps the gap centred under the pointer',async({page})=>{
+    await fixture(page);
+    const seam=page.locator('[data-moa-divider="bottom"]'), box=await seam.boundingBox();
+    const x=box.x+box.width/2, y=box.y+box.height/3;
+    await page.mouse.move(x,y); await page.mouse.down(); await page.mouse.move(x+90,y,{steps:6});
+    const moved=await seam.boundingBox();
+    expect(Math.abs(moved.x+moved.width/2-(x+90))).toBeLessThan(1.5);
+    await page.mouse.up();
+});
