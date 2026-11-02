@@ -83,6 +83,38 @@ export const COMPUTE_ERROR_CODES = {
 export const COMPUTE_GITHUB_MODEL_REFUSAL =
     "GitHub Copilot models cannot run on a remote compute target yet; choose a model from a configured provider";
 
+/**
+ * Why this model cannot run on a compute host, or null.
+ *
+ * One rule in one place, so creation, a model switch, the list a session is
+ * offered and the worker's own start all decide it the same way. It takes
+ * the provider's *type* rather than a model name: which models a GitHub
+ * Copilot provider serves is not the question, and a deployment can name
+ * its providers whatever it likes.
+ */
+export function computeModelRefusal(providerType: string | undefined, remote: boolean): string | null {
+    return remote && providerType === "github" ? COMPUTE_GITHUB_MODEL_REFUSAL : null;
+}
+
+/**
+ * The model providers a session may be offered, narrowed to the ones it can
+ * actually use where it runs.
+ *
+ * `allowed` is what the session's owner may use, or null when every
+ * provider is. The answer keeps that shape: null still means every one.
+ */
+export function computeUsableModelProviders(
+    providers: ReadonlyArray<{ id: string; type: string }>,
+    allowed: Set<string> | null,
+    remote: boolean,
+): Set<string> | null {
+    if (!remote) return allowed;
+    const usable = providers
+        .filter((provider) => computeModelRefusal(provider.type, true) === null)
+        .map((provider) => provider.id);
+    return new Set(allowed ? usable.filter((id) => allowed.has(id)) : usable);
+}
+
 export type ComputeTargetClass = "shared";
 
 /** A registered compute target, as the CMS stores it. `config` belongs to the provider of `kind`. */

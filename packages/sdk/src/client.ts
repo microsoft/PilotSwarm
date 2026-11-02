@@ -23,7 +23,7 @@ import type {
     SessionWorkspace,
 } from "./types.js";
 import { validateWorkspaceText } from "./workspace-check.js";
-import { COMPUTE_ERROR_CODES, COMPUTE_GITHUB_MODEL_REFUSAL, resolveComputeTargetName, validateComputeTargetName } from "./compute.js";
+import { COMPUTE_ERROR_CODES, computeModelRefusal, resolveComputeTargetName, validateComputeTargetName } from "./compute.js";
 import type { SessionCatalog, SessionEvent, SessionVisibility, SessionRow } from "./cms.js";
 import type { MessageSender } from "./message-sender.js";
 import { normalizeMessageSender } from "./message-sender.js";
@@ -733,7 +733,7 @@ export class PilotSwarmClient {
         const instance = credentials.find((candidate) => candidate.name === providerName);
         if (!instance) return null;
         const type = this._modelProviderTypes.allProviders.find((provider) => provider.id === instance.typeId)?.type;
-        return type === "github" ? COMPUTE_GITHUB_MODEL_REFUSAL : null;
+        return computeModelRefusal(type, true);
     }
 
     private async _resolveCreationModel(

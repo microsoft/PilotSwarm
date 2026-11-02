@@ -1,4 +1,4 @@
-import { COMPUTE_GITHUB_MODEL_REFUSAL, LOCAL_COMPUTE_KIND, type ComputeProvider } from "./compute.js";
+import { LOCAL_COMPUTE_KIND, computeModelRefusal, type ComputeProvider } from "./compute.js";
 import { capabilityHash, type CapabilitySource } from "./capability-catalog.js";
 import { AGENT_HANDOFF_CAPABILITY, COMPUTE_CAPABILITY, TURN_CONTROL_CAPABILITY, WORKSPACE_CAPABILITY } from "./activity-routing.js";
 import { resolveNativeSubagents } from "./native-subagents.js";
@@ -2433,10 +2433,12 @@ export class PilotSwarmWorker {
                 console.warn(`[PilotSwarmWorker] system agent ${plan.agent.id} blocked: configured model ${route.model ?? "(none)"} is unavailable`);
                 continue;
             }
-            if (defaultTarget && route.provider && typeOfProvider(route.provider) === "github") {
+            const refusal = defaultTarget && route.provider
+                ? computeModelRefusal(typeOfProvider(route.provider), true) : null;
+            if (refusal) {
                 console.error(
                     `[PilotSwarmWorker] system agent ${plan.agent.id} blocked: this deployment runs new sessions on the compute target `
-                    + `"${defaultTarget}", and its model ${route.model} is a GitHub Copilot model. ${COMPUTE_GITHUB_MODEL_REFUSAL}. `
+                    + `"${defaultTarget}", and its model ${route.model} cannot run there. ${refusal}. `
                     + "Set a system model from another provider, or set an agent override for this agent.");
                 continue;
             }

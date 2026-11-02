@@ -1,4 +1,4 @@
-import { COMPUTE_ERROR_CODES, COMPUTE_GITHUB_MODEL_REFUSAL, LOCAL_COMPUTE_KIND, ComputeFolderMap, ComputeProviderRegistry, checkRemoteEndpoint, computeBindingKey, computeFolderMapOf, computeSharesWorkerFiles, isLoopbackAddress, runtimeConnectionFor, runtimeEndpointKey, type ComputeFailure, type ComputeHostRef, type ComputePrincipal, type ComputeProvider, type ComputeReleaseReason, type ComputeRuntimeEndpoint, type ComputeTarget, type ComputeWorkspacePaths } from "./compute.js";
+import { COMPUTE_ERROR_CODES, COMPUTE_GITHUB_MODEL_REFUSAL, LOCAL_COMPUTE_KIND, ComputeFolderMap, ComputeProviderRegistry, computeModelRefusal, computeUsableModelProviders, checkRemoteEndpoint, computeBindingKey, computeFolderMapOf, computeSharesWorkerFiles, isLoopbackAddress, runtimeConnectionFor, runtimeEndpointKey, type ComputeFailure, type ComputeHostRef, type ComputePrincipal, type ComputeProvider, type ComputeReleaseReason, type ComputeRuntimeEndpoint, type ComputeTarget, type ComputeWorkspacePaths } from "./compute.js";
 import { computeCopyLimits, planComputeCopy, type ComputeCopyLimits, type ComputeCopyRefusal } from "./compute-assets.js";
 import { COMPUTE_CONTROL_COPY_TIMEOUT_MS, ComputeControlLink, type ComputeCallerStatement } from "./compute-control.js";
 import { computeCopyName, mcpOriginKey, packageMcpFolders, packageMcpFoldersForAgents, remoteMcpCustomAgents, remoteMcpServers, type McpServerOrigin } from "./compute-mcp.js";
@@ -1133,13 +1133,11 @@ export class SessionManager {
     async getModelSummary(sessionId: string): Promise<string | undefined> {
         const registry = this.workerDefaults.modelProviders;
         if (!registry) return undefined;
-        let allowed = await this._allowedModelProviderIds(sessionId);
-        if (await this.sessionRunsRemotely(sessionId)) {
-            const usable = registry.allProviders
-                .filter((provider) => provider.type !== "github")
-                .map((provider) => provider.id);
-            allowed = new Set(allowed ? usable.filter((id) => allowed!.has(id)) : usable);
-        }
+        const allowed = computeUsableModelProviders(
+            registry.allProviders,
+            await this._allowedModelProviderIds(sessionId),
+            await this.sessionRunsRemotely(sessionId),
+        );
         return registry.getModelSummaryForLLM(allowed ?? undefined);
     }
 
@@ -1167,9 +1165,7 @@ export class SessionManager {
      * The one rule today is the GitHub Copilot one.
      */
     computeModelRefusal(model: string | undefined, remote: boolean): string | null {
-        if (!remote) return null;
-        const resolved = this.workerDefaults.modelProviders?.resolve(model);
-        return resolved?.type === "github" ? COMPUTE_GITHUB_MODEL_REFUSAL : null;
+        return computeModelRefusal(this.workerDefaults.modelProviders?.resolve(model)?.type, remote);
     }
 
     async normalizeModelRefForSession(
