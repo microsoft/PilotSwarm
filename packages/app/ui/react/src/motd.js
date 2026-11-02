@@ -44,10 +44,12 @@ export function MotdSchedulePicker({ controller, draft, busy }) {
         React.createElement("p", { className: "ps-motd-schedule-summary" }, motdScheduleSummary(draft)));
 }
 export function MotdMarkdown({ body }) {
-    const html = React.useMemo(() => typeof document === "undefined" ? null
-        : renderMarkdown(body, { images: {}, escapeRawHtml: true, allowInlineImages: false, externalLinksOnly: true, stripFrontMatter: false }).html, [body]);
-    return html === null ? React.createElement("pre", { className: "ps-motd-markdown" }, body)
-        : React.createElement("div", { className: "ps-motd-markdown", dangerouslySetInnerHTML: { __html: html } });
+    // Keep unchanged markdown nodes attached across unrelated portal updates:
+    // a fresh { __html } object on every render makes React rewrite innerHTML.
+    const markup = React.useMemo(() => typeof document === "undefined" ? null
+        : { __html: renderMarkdown(body, { images: {}, escapeRawHtml: true, allowInlineImages: false, externalLinksOnly: true, stripFrontMatter: false }).html }, [body]);
+    return markup === null ? React.createElement("pre", { className: "ps-motd-markdown" }, body)
+        : React.createElement("div", { className: "ps-motd-markdown", dangerouslySetInnerHTML: markup });
 }
 export function MotdContent({ message, pictures = {}, mobile = false }) {
     const body = mobile && message.mobileBodyMd ? message.mobileBodyMd : message.bodyMd;
