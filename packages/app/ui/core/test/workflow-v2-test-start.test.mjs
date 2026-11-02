@@ -161,8 +161,10 @@ test("the test review opens from the header with the test notice, the exact revi
     assert.ok(open.includes("Test review · not a sandbox"));
     assert.ok(open.includes(WORKFLOW_V2_TEST_NOTICE_TEXT), "the test notice is shown before the test starts");
     assert.ok(open.includes(`>${HASH}</code>`));
-    assert.match(open, /value="mocked" checked=""/);
-    assert.doesNotMatch(open, /value="real" checked=""/);
+    // The selection, read from each radio input whatever the order of its attributes.
+    const radios = [...open.matchAll(/<input\b[^>]*>/g)].map(match => match[0]).filter(input => input.includes('type="radio"'));
+    assert.match(radios.find(input => input.includes('value="mocked"')), /checked=""/, "agents are mocked by default");
+    assert.doesNotMatch(radios.find(input => input.includes('value="real"')), /checked=""/);
     assert.ok(!open.includes("their results vary"), "the real-agent cost notice shows only once real agents are chosen");
     assert.ok(open.includes("data-field=\"inputs\"") && open.includes("data-field=\"scenario\""));
     assert.match(open, /data-operation="test" title="Test revision 2 beside the live run, which it never changes\.">Start test</);
