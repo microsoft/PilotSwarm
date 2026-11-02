@@ -311,10 +311,14 @@ function continuedAsNew(runtime, canInput, can = versionedContinueAsNew) {
 }
 
 const INPUT = { sessionId: "44444444-4444-4444-8444-444444444444", config: { model: "m" }, iteration: 3 };
-/** An owed retry (ordinary retry ownership, review Q-W2-7): a failed turn's whole prompt contract, its count and key. */
+/**
+ * An owed retry (ordinary retry ownership, review Q-W2-7): a failed turn's whole prompt contract, its count and key. Its
+ * sender is a whole user sender (provider and subject), the only kind of user sender a turn ever has.
+ */
 const OWNED = {
     prompt: "the failed turn's prompt", bootstrap: false, requiredTool: "report", cycleOrigin: null, clientMessageIds: ["cm-p"],
-    sender: { kind: "user", display: "Ann" }, attachments: [{ filename: "p.png", contentType: "image/png", sizeBytes: 10 }],
+    sender: { kind: "user", provider: "test", subject: "ann", display: "Ann" },
+    attachments: [{ filename: "p.png", contentType: "image/png", sizeBytes: 10 }],
     retryCount: 1, thrownTurnKey: null, fresh: false,
 };
 /**

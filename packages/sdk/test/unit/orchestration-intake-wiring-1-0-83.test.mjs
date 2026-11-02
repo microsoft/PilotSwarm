@@ -1162,7 +1162,8 @@ test("Q-W2-7: a queued tool action runs first and starts no turn; the owed retry
 });
 
 test("Q-W2-7: when the owed retry fails again while a follow-up is pending, its own retry is owed next from that attempt's exact arguments, the follow-up keeps its own fields, and the invocation awaits that retry", () => {
-    const sender = { kind: "user", display: "Ann" };
+    // A whole user sender (provider and subject): the only kind of user sender a turn ever has.
+    const sender = { kind: "user", provider: "test", subject: "ann", display: "Ann" };
     const runtime = makeRuntime({
         intake: carried({ invocation: boundInvocation([1], { sent: true }) }), intakeRetryInvocationId: "inv-1",
         ownedRetry: owedRetry({ requiredTool: "report", clientMessageIds: ["cm-p"], sender }),
@@ -1831,7 +1832,10 @@ test("exposure r2: a carrying attempt refused as possibly seen under another att
     const can = ops.at(-1);
     assert.equal(can.op, "continueAsNew");
     assert.equal(Object.hasOwn(can.canInput, "intakeRetryInvocationId"), false);
-    assert.equal(can.canInput.retryCount, 1);
+    // The retry is owed with its own count (review Q-W2-7); the session's count stays 0.
+    assert.equal(can.canInput.ownedRetry.retryCount, 1);
+    assert.equal(can.canInput.ownedRetry.thrownTurnKey, null);
+    assert.equal(can.canInput.retryCount, 0);
     assert.deepEqual(can.canInput.intake.invocation.settle, { outcome: "interrupted", retry: null });
     assert.equal(can.canInput.intake.invocation.sent, true);
     // The retry runs the turn's own prompt, without the invocation, whose end is made on the wake.
