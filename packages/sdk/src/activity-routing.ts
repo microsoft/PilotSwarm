@@ -10,8 +10,12 @@ export const AGENT_HANDOFF_CAPABILITY = "pilotswarm.agent-handoff.v2";
  * - "turn-control-v1" (1.0.81+): turns run as runTurnV4/runTurnEpochV4 with
  *   TURN_CONTROL_CAPABILITY; every other routed activity keeps the handoff
  *   names and tag.
+ * - "workflow-intake-v1" (1.0.83, INACTIVE): turns run as
+ *   runTurnV5/runTurnEpochV5 with WORKFLOW_REQUEST_CAPABILITY; their input
+ *   may carry `intake` and their result carries `intakeDispatch`; every other
+ *   routed activity keeps the handoff names and tag, as under turn-control-v1.
  */
-export type ActivityRoutingContract = "agent-handoff-v2" | "turn-control-v1";
+export type ActivityRoutingContract = "agent-handoff-v2" | "turn-control-v1" | "workflow-intake-v1";
 export const HANDOFF_ACTIVITY_NAMES = {
     runTurn: "runTurnV3",
     runTurn2: "runTurnEpochV3",
@@ -101,4 +105,22 @@ export function routeWorkflowRequestActivity(task: any): any {
         throw new Error("The workflow intake requires Duroxide activity tag routing support");
     }
     return task.withTag(WORKFLOW_REQUEST_CAPABILITY);
+}
+
+/**
+ * The turn activities of orchestration 1.0.83 (design
+ * workflow-durable-intake.md section 8): the turn-control turn, whose input
+ * may carry an invocation's `intake` field and whose result carries the
+ * `intakeDispatch` witness. An older worker would ignore the field and drop
+ * the items, so they have names of their own and go only to workers that
+ * declare WORKFLOW_REQUEST_CAPABILITY. INACTIVE: only tests register them.
+ */
+export const WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES = {
+    runTurn: "runTurnV5",
+    runTurn2: "runTurnEpochV5",
+} as const;
+
+/** Register a workflow-intake turn activity name. */
+export function registerWorkflowIntakeTurnActivity(runtime: any, name: keyof typeof WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES, handler: any): void {
+    runtime.registerActivity(WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES[name], handler);
 }

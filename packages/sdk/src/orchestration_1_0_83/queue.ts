@@ -31,6 +31,7 @@ import {
     CHILD_DIGEST_COALESCE_MS,
     childUpdateBatchMs,
     FIFO_BUCKET_COUNT,
+    INTERNAL_SYSTEM_TURN_PROMPT,
     MAX_BUCKET_BYTES,
     MAX_FIFO_ITEM_BYTES,
     MAX_DRAIN_PER_TURN,
@@ -48,7 +49,7 @@ import {
 import { handleTurnResult, processPrompt, processTimer } from "./turn.js";
 import { validClientMessageIds , noteMessageSender, applySenderAttribution, maybeQueueSharedPreamble } from "./utils.js";
 import { intakeDueAtMs } from "./intake-machine.js";
-import { intakeArrival, latchIntakeTombstones, runIntakeWake } from "./intake-wiring.js";
+import { intakeArrival, intakeOwnTurn, intakeWantsTurn, latchIntakeTombstones, runIntakeWake } from "./intake-wiring.js";
 
 // ─── KV FIFO bucket primitives ──────────────────────────────
 
@@ -489,7 +490,9 @@ function needsBlockingDequeue(runtime: DurableSessionRuntime): boolean {
         !state.pendingPrompt &&
         !hasFifoItems(runtime) &&
         // 1.0.83 (design 5.4, N2): a due intake write is raced, never blocked on.
-        intakeDueAtMs(state.intake) === null
+        intakeDueAtMs(state.intake) === null &&
+        // 1.0.83 (design 5.5): nor is a turn the intake wants; decide starts it.
+        !intakeWantsTurn(runtime)
     );
 }
 
@@ -529,6 +532,8 @@ function shouldRunQueuedWorkNow(runtime: DurableSessionRuntime, stash: any[]): b
     const digestOpen = Boolean(state.pendingChildDigest && !state.pendingChildDigest.ready);
     if (!timer && !digestOpen) return false;
     if (stash.some(isInteractiveFifoItem) || fifoHasInteractiveItems(runtime)) return true;
+    // 1.0.83 (design 5.5): a turn the intake wants runs now, as queued work does (no timer note, no digest taken: 6.2 deviation, recorded).
+    if (intakeWantsTurn(runtime)) return true;
     if (!timer || (stash.length === 0 && !hasFifoItems(runtime))) return false;
     return timer.type === "idle" || timer.type === "cron" || timer.type === "cron_at"
         || (timer.type === "wait" && !timerGate(timer));
@@ -1375,6 +1380,7 @@ function* processAnswer(runtime: DurableSessionRuntime, answerItem: any): Genera
         ? `The user was asked: "${question}"\nThe user responded${answeredBy}: "${answerItem.answer}"`
         : String(answerItem.answer);
     maybeQueueSharedPreamble(runtime);
+    runtime.intakeStimulus = "message";
     yield* processPrompt(runtime, answerPrompt, false, undefined, undefined, undefined, sender);
 }
 
@@ -1473,6 +1479,8 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
         state.pendingAttachments = undefined;
         state.pendingClientMessageIds = undefined;
         state.pendingSender = undefined;
+        // 1.0.83 (review D-W2-1): the pending prompt's dispatch, the only one that takes a turn's retry marker.
+        runtime.intakePendingDispatch = true;
         yield* processPrompt(
             runtime,
             prompt,
@@ -1548,6 +1556,7 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
                 // requirement on the queued prompt still wins.
                 mergedRequiredTool ??= state.pendingRequiredTool;
                 state.pendingRequiredTool = undefined;
+                runtime.intakeStimulus = "message";
                 yield* processPrompt(
                     runtime,
                     mergedPrompt,
@@ -1594,6 +1603,13 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
     if (state.pendingChildDigest?.ready && state.pendingChildDigest.updates.length > 0 && !state.waitingForAgentIds
         && state.activeTimer?.type !== "workspace_retry") {
         yield* processPendingChildDigest(runtime);
+        return true;
+    }
+
+    // 1.0.83 (design 5.5): with nothing else to dispatch, a ready invocation, or a parked one (not a gate's) that a newly
+    // claimed item resumes, starts a turn of its own on the internal system-turn prompt.
+    if (yield* intakeOwnTurn(runtime)) {
+        yield* processPrompt(runtime, INTERNAL_SYSTEM_TURN_PROMPT, true);
         return true;
     }
 
@@ -1658,6 +1674,8 @@ function* processPendingChildDigest(runtime: DurableSessionRuntime): Generator<a
         return;
     }
 
+    // 1.0.83 (design 5.5): every path below starts the digest's turn; a child update is a message from a session.
+    runtime.intakeStimulus = "message";
     if (state.activeTimer?.type === "wait") {
         const now: number = yield ctx.utcNow();
         const remainingMs = Math.max(0, state.activeTimer.deadlineMs - now);

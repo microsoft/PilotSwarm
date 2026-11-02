@@ -155,9 +155,10 @@ const QUEUE_CHANGED_82 = [
 
 /**
  * The lines 1.0.83 adds to queue.ts that neither name the intake nor are a
- * comment or structure: the changed line above, and the parts of
+ * comment or structure: the changed line above, the parts of
  * intakeDeadlineFirst and of drain's intake race that reuse 1.0.82's own
- * expressions.
+ * expressions, and decide's turn for the intake alone on the internal
+ * system-turn prompt.
  */
 const QUEUE_ADDED_GENERIC = [
     "        !hasFifoItems(runtime) &&",
@@ -169,30 +170,64 @@ const QUEUE_ADDED_GENERIC = [
     "    });",
     "    return other === null || other.remainingMs > 0;",
     "            const now: number = yield ctx.utcNow();",
+    "    INTERNAL_SYSTEM_TURN_PROMPT,",
+    "        yield* processPrompt(runtime, INTERNAL_SYSTEM_TURN_PROMPT, true);",
+    "        return true;",
 ];
+
+/**
+ * The lines of the frozen 1.0.82 turn.ts that 1.0.83 changes: its turns run
+ * under the workflow-intake contract, a hydration give-up is noted to the
+ * intake, and while a sent invocation's retry is held another turn neither
+ * takes nor clears the retry's thrown-turn key (review D-W2-1).
+ */
+const TURN_CHANGED_82 = [
+    '                runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "turn-control-v1");',
+    "        if (state.needsHydration) return;",
+    "        const reusedTurnKey = state.blobEnabled && state.retryCount > 0 && state.thrownTurnKey",
+    "        state.thrownTurnKey = null;",
+    '    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "turn-control-v1");',
+];
+
+/** Lines the file `name` of 1.0.83 adds that neither name the intake nor are a comment or structure must be listed in `generic`. */
+function assertIntakeOnlyAdditions(name, added, generic = []) {
+    for (const line of added) {
+        assert.ok(/intake|Intake/.test(line) || /^\s*(\}|continue;|\/\/.*|\/\*\*|\*\/|\*( .*)?)?\s*$/.test(line) || generic.includes(line), `${name}: ${line}`);
+    }
+}
 
 test("1.0.83 is the frozen 1.0.82 plus the intake: the files it does not change are the frozen ones", () => {
     assert.deepEqual(tsFiles("orchestration_1_0_83"), [...tsFiles("orchestration_1_0_82"), "intake-machine.ts", "intake-state.ts", "intake-wiring.ts"].sort());
-    for (const name of ["agents.ts", "turn.ts", "utils.ts"]) {
+    for (const name of ["agents.ts", "utils.ts"]) {
         assert.equal(read(`orchestration_1_0_83/${name}`), read(`orchestration_1_0_82/${name}`), name);
     }
-    // runtime.ts: its version, and no continue-as-new while an intake write is due (drain races it).
+    // Every 1.0.83 turn runs under the workflow-intake contract (design section 8): no 1.0.83 file names the turn-control one.
+    for (const name of tsFiles("orchestration_1_0_83")) {
+        assert.ok(!read(`orchestration_1_0_83/${name}`).includes('"turn-control-v1"'), `${name} names the turn-control contract`);
+    }
+    // runtime.ts: its version, the workflow-intake contract, and no continue-as-new while an intake write is due (drain races it).
     assert.equal(read("orchestration_1_0_83/runtime.ts"), read("orchestration_1_0_82/runtime.ts")
         .replace('export const CURRENT_ORCHESTRATION_VERSION = "1.0.82";', 'export const CURRENT_ORCHESTRATION_VERSION = "1.0.83";')
+        .replaceAll('"turn-control-v1"', '"workflow-intake-v1"')
         .replace('import { decide, drain, settleQueuedWorkAfterDecide, turnsStarted } from "./queue.js";\n',
             'import { decide, drain, settleQueuedWorkAfterDecide, turnsStarted } from "./queue.js";\nimport { intakeDueAtMs } from "./intake-machine.js";\n')
         .replace("        if (state.activeTimer) continue;        // drain will race the timer next iteration\n",
             "        if (state.activeTimer) continue;        // drain will race the timer next iteration\n"
             + "        if (intakeDueAtMs(state.intake) !== null) continue; // 1.0.83: drain will race the intake's due write\n"));
     // queue.ts: only the intake's hooks (arrival in drain and the sweep, the tombstone latch first in both, the intake
-    // deadline's own race and its wake). The one frozen line it changes is listed; every line it adds names the intake,
-    // is a comment or structure, or is one of the listed reuses of 1.0.82's own expressions.
+    // deadline's own race and its wake, each turn's stimulus, the pending prompt's dispatch and decide's turn for the
+    // intake alone). The one frozen line it changes is listed; every line it adds names the intake, is a comment or
+    // structure, or is one of the listed reuses of 1.0.82's own expressions.
     const queue82 = read("orchestration_1_0_82/queue.ts");
     const queue83 = read("orchestration_1_0_83/queue.ts");
     assert.deepEqual(linesOnly(queue82, queue83).sort(), [...QUEUE_CHANGED_82].sort());
-    for (const line of linesOnly(queue83, queue82)) {
-        assert.ok(/intake|Intake/.test(line) || /^\s*(\}|continue;|\/\/.*|\/\*\*|\*\/|\*( .*)?)?\s*$/.test(line) || QUEUE_ADDED_GENERIC.includes(line), line);
-    }
+    assertIntakeOnlyAdditions("queue.ts", linesOnly(queue83, queue82), QUEUE_ADDED_GENERIC);
+    // turn.ts: only the intake's hooks (each attempt's carry, its dispatch and outcome, each timer turn's stimulus) and
+    // the listed frozen lines; every line it adds names the intake or is a comment or structure.
+    const turn82 = read("orchestration_1_0_82/turn.ts");
+    const turn83 = read("orchestration_1_0_83/turn.ts");
+    assert.deepEqual(linesOnly(turn82, turn83).sort(), [...TURN_CHANGED_82].sort());
+    assertIntakeOnlyAdditions("turn.ts", linesOnly(turn83, turn82));
     // Its new imports are the intake modules and the capability routing only (and node:crypto for the text hash).
     const frozen = new Set(tsFiles("orchestration_1_0_82").flatMap(name => importsOf(read(`orchestration_1_0_82/${name}`))));
     const added = new Set(tsFiles("orchestration_1_0_83").flatMap(name => importsOf(read(`orchestration_1_0_83/${name}`))).filter(s => !frozen.has(s)));
@@ -262,10 +297,13 @@ function continuedAsNew(runtime, canInput, can = versionedContinueAsNew) {
 }
 
 const INPUT = { sessionId: "44444444-4444-4444-8444-444444444444", config: { model: "m" }, iteration: 3 };
+/** VALID's sent invocation awaits its turn's retry, so an input that carries it carries the pending prompt's retry marker (review D-W2-1). */
+const RETRY = { intakeRetryInvocationId: "inv-1" };
 
 test("versionedContinueAsNew carries the intake state whatever built the input, and adds nothing when it is empty", () => {
-    const withIntake = runtimeFor({ ...INPUT, intake: VALID });
+    const withIntake = runtimeFor({ ...INPUT, intake: VALID, ...RETRY });
     assert.deepEqual(withIntake.state.intake, stateOf(VALID));
+    assert.equal(withIntake.state.intakeRetryInvocationId, "inv-1");
     for (const build of [
         runtime => continueInput(runtime),
         runtime => continueInputWithPrompt(runtime, "Continue on another model.", { requiredTool: "x" }),
@@ -274,6 +312,8 @@ test("versionedContinueAsNew carries the intake state whatever built the input, 
     ]) {
         const can = continuedAsNew(withIntake, build(withIntake));
         assert.deepEqual(can.canInput.intake, VALID);
+        // The retry marker rides every continue-as-new with the pending prompt.
+        assert.equal(can.canInput.intakeRetryInvocationId, "inv-1");
         assert.equal(can.version, "1.0.83");
         assert.equal(can.canInput.sourceOrchestrationVersion, "1.0.83");
         // The carried form is a copy: changing it changes nothing in the state.
@@ -283,6 +323,7 @@ test("versionedContinueAsNew carries the intake state whatever built the input, 
     // The carried form restores to the same state in the next execution.
     const next = runtimeFor(continuedAsNew(withIntake, continueInput(withIntake)).canInput);
     assert.deepEqual(next.state.intake, withIntake.state.intake);
+    assert.equal(next.state.intakeRetryInvocationId, "inv-1");
 
     // Empty: no intake field, and the input is the one 1.0.82 builds, but for the version that wrote it.
     const empty = runtimeFor(INPUT);
@@ -290,14 +331,17 @@ test("versionedContinueAsNew carries the intake state whatever built the input, 
     const ours = continuedAsNew(empty, continueInput(empty)).canInput;
     const theirs = continuedAsNew(frozen, continueInput82(frozen), versionedContinueAsNew82).canInput;
     assert.equal(Object.hasOwn(ours, "intake"), false);
+    assert.equal(Object.hasOwn(ours, "intakeRetryInvocationId"), false);
     assert.deepEqual({ ...ours, sourceOrchestrationVersion: "1.0.82" }, theirs);
-    // A stale field on a built input is not carried for an empty state.
-    assert.equal(Object.hasOwn(continuedAsNew(empty, { ...continueInput(empty), intake: VALID }).canInput, "intake"), false);
+    // Stale fields on a built input are not carried for an empty state.
+    const stale = continuedAsNew(empty, { ...continueInput(empty), intake: VALID, ...RETRY }).canInput;
+    assert.equal(Object.hasOwn(stale, "intake"), false);
+    assert.equal(Object.hasOwn(stale, "intakeRetryInvocationId"), false);
 });
 
 test("1.0.83 never continues as new to an older or unreadable version, and stops before any yield", () => {
     for (const latestVersion of ["1.0.82", "1.0.9", "0.9.99", "x", "1.0", "1.0.83.1"]) {
-        const runtime = runtimeFor({ ...INPUT, intake: VALID }, { latestVersion });
+        const runtime = runtimeFor({ ...INPUT, intake: VALID, ...RETRY }, { latestVersion });
         let asked = 0;
         runtime.ctx.continueAsNewVersioned = () => { asked += 1; return { op: "continueAsNew" }; };
         assert.throws(() => versionedContinueAsNew(runtime, continueInput(runtime)).next(), /does not continue as new/, latestVersion);
@@ -314,11 +358,31 @@ test("1.0.83 never continues as new to an older or unreadable version, and stops
 
 test("createInitialState restores the intake state: absent is empty, a valid one is kept, an invalid one fails with its path", () => {
     assert.deepEqual(createInitialState(INPUT, deriveOptions(INPUT)).intake, { queue: [], invocation: null, heldCancelRetry: null });
-    assert.deepEqual(createInitialState({ ...INPUT, intake: VALID }, deriveOptions(INPUT)).intake, stateOf(VALID));
-    assert.throws(() => createInitialState({ ...INPUT, intake: { ...VALID, v: 2 } }, deriveOptions(INPUT)),
+    assert.deepEqual(createInitialState({ ...INPUT, intake: VALID, ...RETRY }, deriveOptions(INPUT)).intake, stateOf(VALID));
+    assert.throws(() => createInitialState({ ...INPUT, intake: { ...VALID, v: 2 }, ...RETRY }, deriveOptions(INPUT)),
         error => error instanceof IntakeShapeError && error.path === "$.intake.v");
     assert.throws(() => createInitialState({ ...INPUT, intake: null }, deriveOptions(INPUT)),
         error => error instanceof IntakeShapeError && error.path === "$.intake");
+});
+
+test("the pending prompt's retry marker is restored exactly while a sent invocation awaits its turn's retry, and names it (review D-W2-1)", () => {
+    const restore = input => createInitialState({ ...INPUT, ...input }, deriveOptions(INPUT));
+    const failsAtMarker = error => error instanceof IntakeShapeError && error.path === "$.intakeRetryInvocationId";
+    assert.equal(restore({ intake: VALID, ...RETRY }).intakeRetryInvocationId, "inv-1");
+    assert.equal(restore({}).intakeRetryInvocationId, null);
+    // A sent invocation that awaits its retry with no marker: its retry would never run, and nothing would end it.
+    assert.throws(() => restore({ intake: VALID }), failsAtMarker);
+    // A marker with no such invocation, for another one, or that is not an id.
+    assert.throws(() => restore({ ...RETRY }), failsAtMarker);
+    assert.throws(() => restore({ intake: VALID, intakeRetryInvocationId: "inv-2" }), failsAtMarker);
+    for (const raw of ["", 5, null]) assert.throws(() => restore({ intake: VALID, intakeRetryInvocationId: raw }), failsAtMarker, String(raw));
+    // An unsent invocation, and a sent one whose end is decided, await no retry: no marker, and none is accepted.
+    const unsent = carried({ invocation: boundInvocation([TEXT_B]) });
+    const ending = carried({ invocation: boundInvocation([TEXT_B], { sent: true, settle: { outcome: "interrupted", retry: null } }) });
+    for (const intake of [unsent, ending]) {
+        assert.equal(restore({ intake }).intakeRetryInvocationId, null);
+        assert.throws(() => restore({ intake, ...RETRY }), failsAtMarker);
+    }
 });
 
 /** [name, a change to a valid carried state, the path the failure names] */

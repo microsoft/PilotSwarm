@@ -209,7 +209,7 @@ export function* releaseAffinity(
         }
     }
     state.affinityKey = yield ctx.newGuid();
-    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "turn-control-v1");
+    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "workflow-intake-v1");
     try {
         yield runtime.manager.recordSessionEvent(runtime.input.sessionId, [{
             eventType: "session.affinity_released",
@@ -346,7 +346,7 @@ export function* applyAgentWorkspaceExtrasChange(runtime: DurableSessionRuntime,
     const revision = state.workspaceRevision + 1;
     const extraPaths = action.extraPaths && typeof action.extraPaths === "object" ? action.extraPaths as Record<string, string> : null;
     state.config.workspace = next;
-    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "turn-control-v1");
+    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "workflow-intake-v1");
     state.workspaceRevision = revision;
     const note = extraFoldersChangedNote(previous, next, extraPaths);
     if (note) state.workspaceNotice = state.workspaceNotice ? `${state.workspaceNotice} ${note}` : note;
@@ -711,7 +711,10 @@ export function buildContinueInputWithPrompt(
  * nothing else calls the context's continue-as-new). So here, before any
  * yield, it refuses an older target (the floor) and carries the intake
  * state: present only when not empty, so a session with no intake continues
- * as new with exactly the input 1.0.82 builds.
+ * as new with exactly the input 1.0.82 builds. The pending prompt's retry
+ * marker rides with that prompt in the same way, present only while set
+ * (review D-W2-1): every continue-as-new carries the pending prompt, merged
+ * or as a retry's own.
  */
 export function* versionedContinueAsNew(
     runtime: DurableSessionRuntime,
@@ -722,6 +725,8 @@ export function* versionedContinueAsNew(
     const carriedIntake = carryIntakeState(state.intake);
     if (carriedIntake !== undefined) (canInput as IntakeCarryingInput).intake = carriedIntake;
     else delete (canInput as IntakeCarryingInput).intake;
+    if (state.intakeRetryInvocationId !== null) (canInput as IntakeCarryingInput).intakeRetryInvocationId = state.intakeRetryInvocationId;
+    else delete (canInput as IntakeCarryingInput).intakeRetryInvocationId;
     if (state.activeTimer) {
         const now: number = yield runtime.ctx.utcNow();
         const remainingMs = Math.max(0, state.activeTimer.deadlineMs - now);
@@ -1122,7 +1127,7 @@ function* handleSetWorkspaceCommand(runtime: DurableSessionRuntime, cmdMsg: Comm
     else delete state.config.workspace;
     // The proxy carries the config into every turn; rebuild it from the
     // changed config rather than rely on sharing one object.
-    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "turn-control-v1");
+    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "workflow-intake-v1");
     state.workspaceRevision = revision;
     // A change of extra folders only (section 4.10) keeps the working
     // directory, so its note names the extra folders alone. A note not yet

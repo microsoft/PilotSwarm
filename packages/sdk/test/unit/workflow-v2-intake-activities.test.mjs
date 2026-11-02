@@ -122,10 +122,13 @@ test("only a test registers the intake activities; no production source imports 
         assert.ok(!code.includes("registerWorkflowIntakeActivities"), `${path} registers the intake activities`);
         // Their names are written once, in the shared intake definition; the inactive 1.0.83 tree schedules them by that constant.
         if (/["'`](?:claimWorkflowIntake|settleWorkflowIntake)["'`]/.test(code)) namedIn.push(path);
-        // The capability that routes them is defined once; only the inactive 1.0.83 tree routes with it; no worker declares it.
+        // The capability that routes them is defined once; only the inactive 1.0.83 tree routes with it, and the session
+        // proxy for the turns of its workflow-intake contract, which only 1.0.83 uses; no worker declares it.
         if (path !== "activity-routing.ts") {
             assert.ok(!code.includes("WORKFLOW_REQUEST_CAPABILITY") && !code.includes("pilotswarm.workflow-request.v1"), `${path} names the workflow-request capability`);
-            if (!path.startsWith("orchestration_1_0_83/")) assert.ok(!code.includes("routeWorkflowRequestActivity"), `${path} routes with the workflow-request capability`);
+            if (!path.startsWith("orchestration_1_0_83/") && path !== "session-proxy.ts") {
+                assert.ok(!code.includes("routeWorkflowRequestActivity"), `${path} routes with the workflow-request capability`);
+            }
         }
     }
     assert.deepEqual(namedIn, ["workflow/v2/intake.ts"]);

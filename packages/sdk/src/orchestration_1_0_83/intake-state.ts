@@ -181,8 +181,13 @@ export interface IntakeState {
     heldCancelRetry: IntakeRetry | null;
 }
 
-/** The continue-as-new input as 1.0.83 writes and reads it: OrchestrationInput with the carried intake. */
-export type IntakeCarryingInput = OrchestrationInput & { intake?: unknown };
+/**
+ * The continue-as-new input as 1.0.83 writes and reads it: OrchestrationInput
+ * with the carried intake and, while a sent invocation awaits its turn's
+ * retry, the pending prompt's retry marker (both carried by every
+ * continue-as-new, lifecycle.ts versionedContinueAsNew).
+ */
+export type IntakeCarryingInput = OrchestrationInput & { intake?: unknown; intakeRetryInvocationId?: unknown };
 
 /** The carried form: what a continue-as-new input holds under `intake`. */
 export interface CarriedIntakeState {
@@ -423,6 +428,34 @@ export function restoreIntakeState(raw: unknown, path = "$.intake"): IntakeState
 /** Nothing waits and no invocation exists (so no held cancel is pending either). */
 export function intakeStateIsEmpty(state: IntakeState): boolean {
     return state.queue.length === 0 && state.invocation === null;
+}
+
+/**
+ * The invocation that awaits its turn's retry (design 5.5, I8): bound, sent
+ * and not ending. A sent invocation is never parked: after each attempt it
+ * either rides its own turn's retry or ends. Null when there is none.
+ */
+export function intakeAwaitingRetry(state: IntakeState): IntakeInvocation | null {
+    const invocation = state.invocation;
+    return invocation !== null && invocation.bound && invocation.sent && invocation.settle === null ? invocation : null;
+}
+
+/**
+ * The pending prompt's retry marker that `raw` (an input's
+ * `intakeRetryInvocationId`) carries, checked against the restored intake
+ * state (review D-W2-1): present exactly while a sent invocation awaits its
+ * turn's retry, and naming it. Anything else fails the execution with the
+ * field's path.
+ */
+export function restoreIntakeRetryInvocationId(raw: unknown, intake: IntakeState, path = "$.intakeRetryInvocationId"): string | null {
+    const awaiting = intakeAwaitingRetry(intake);
+    if (raw === undefined) {
+        if (awaiting !== null) throw new IntakeShapeError(path, `is missing while invocation ${awaiting.invocationId} awaits its turn's retry`);
+        return null;
+    }
+    const invocationId = intakeId(raw, path);
+    if (awaiting === null || awaiting.invocationId !== invocationId) throw new IntakeShapeError(path, "names no sent invocation that awaits its turn's retry");
+    return invocationId;
 }
 
 /**

@@ -713,7 +713,7 @@ test("the bind admits the batch before any attempt carries it; a failed bind wai
 
 // ─── Who carries it ──────────────────────────────────────────
 
-test("a ready invocation rides any attempt; a sent one only its own turn's retries; a parked one only its cause's stimuli", () => {
+test("a ready invocation rides any attempt; a sent one only its own turn's retries; a parked one only its cause's stimuli, a gate's park any attempt", () => {
     const ready = bound([1]);
     const payload = { invocationId: "inv-1", items: [{ exchangeId: exchange(1), clientMessageId: clientId(1), text: textOf(1) }] };
     for (const start of [...STARTS, OWN_RETRY]) {
@@ -721,8 +721,9 @@ test("a ready invocation rides any attempt; a sent one only its own turn's retri
         assert.deepEqual(carried.carry, payload, JSON.stringify(start));
         assert.deepEqual(carried.state, ready);
     }
-    // Parked: a gate's park rides only the gate's own retry; any other cause only a new turn that a message, a timer or a newly
-    // claimed item starts. Carrying unparks it.
+    // Parked: a gate's park rides the next attempt whatever started it, as the gates' held prompts do (every attempt is
+    // checked by the gates again); any other cause only a new turn that a message, a timer or a newly claimed item starts.
+    // Carrying unparks it.
     const parkedBy = {
         gate: [witness(false), { kind: "gate" }],
         credential: [witness(false), { kind: "failed", cause: "credential" }],
@@ -736,7 +737,7 @@ test("a ready invocation rides any attempt; a sent one only its own turn's retri
         assert.equal(parked.invocation.parked, cause);
         continued(parked);
         for (const start of STARTS) {
-            const expected = start.kind === "new" && (cause === "gate" ? start.stimulus === "gate_retry" : ["message", "timer", "intake_arrival"].includes(start.stimulus));
+            const expected = cause === "gate" || (start.kind === "new" && ["message", "timer", "intake_arrival"].includes(start.stimulus));
             const carried = carry(parked, start);
             assert.equal(carried.carry !== null, expected, `${cause} ${JSON.stringify(start)}`);
             assert.equal(carried.state.invocation.parked, expected ? null : cause, `${cause} ${JSON.stringify(start)}`);
@@ -859,13 +860,20 @@ test("an attempt that sends and errors keeps its batch for its own retry only; a
     assert.deepEqual(attempt(errored, witness(true), { kind: "result" }).decision, { next: "end", outcome: "completed" });
 });
 
-test("a gate parks an unsent invocation and its own retry completes it; a credential park waits for a new stimulus, never its own turn", () => {
+test("a gate parks an unsent invocation, which starts no turn and rides the next attempt; a credential park waits for a new stimulus, never its own turn", () => {
     const gated = frozen(attempt(unsentCarried(), witness(false), { kind: "gate" }).state);
-    assert.equal(carry(gated, MESSAGE).carry, null);
-    const resumed = carry(gated, { kind: "new", stimulus: "gate_retry" });
-    assert.notEqual(resumed.carry, null);
-    assert.equal(resumed.state.invocation.parked, null);
-    assert.deepEqual(attempt(resumed.state, witness(true), { kind: "result" }).decision, { next: "end", outcome: "completed" });
+    // No turn of its own, however many items arrive; the next attempt carries it: the gate's own retry, or a message that
+    // ended the gate's wait (a budget wait is never armed again after it, nor a workspace wait), and it completes.
+    assert.equal(intakeOwnTurnStimulus(gated, 3), null);
+    for (const start of [MESSAGE, { kind: "new", stimulus: "gate_retry" }, { kind: "new", stimulus: "other" }]) {
+        const resumed = carry(gated, start);
+        assert.notEqual(resumed.carry, null, JSON.stringify(start));
+        assert.equal(resumed.state.invocation.parked, null);
+        assert.deepEqual(attempt(resumed.state, witness(true), { kind: "result" }).decision, { next: "end", outcome: "completed" });
+    }
+    // Refused again, it parks again.
+    const refused = attempt(carry(gated, MESSAGE).state, witness(false), { kind: "gate" });
+    assert.deepEqual(refused.decision, { next: "parked", cause: "gate" });
 
     const parked = frozen(attempt(carry(bound([1]), { kind: "new", stimulus: "intake_turn" }).state, witness(false),
         { kind: "failed", cause: "credential" }).state);

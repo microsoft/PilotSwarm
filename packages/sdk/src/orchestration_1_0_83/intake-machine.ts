@@ -9,9 +9,9 @@
  * state and what the orchestration does next. None yields, reads a clock,
  * does I/O or changes its arguments, so replay rebuilds the same states from
  * the same history. intake-wiring.ts calls it from drain, the pre-dispatch
- * sweep and the wake, one store write at a time; decide's forming and
- * binding, the turn's carry and attempts, and the turn's `intake` field are
- * a later, separately reviewed slice.
+ * sweep and the wake, one store write at a time, and from decide and the
+ * turn: forming and binding, the turn's carry and its `intake` field, and
+ * the attempt's outcome.
  *
  * - Arrival and claim (5.3, 5.4): an accepted claim becomes a held entry,
  *   unless the exchange is already placed (nothing more), its canonical id
@@ -35,9 +35,10 @@
  * - The invocation (5.5): formed from held entries in arrival order and bound
  *   before any attempt carries it; `sent` is cumulative; the transition table
  *   gives each carrying attempt's next step (its turn's retry, parked with a
- *   cause, or an end with its outcome); a parked one rides only an attempt
- *   that one of its resume stimuli starts; its end is a settlement, retried
- *   as one, made after its cancel write.
+ *   cause, or an end with its outcome); a parked one starts no turn of its
+ *   own and rides only an attempt that one of its resume stimuli starts, or,
+ *   parked for a gate, any attempt (each is checked by the gates again); its
+ *   end is a settlement, retried as one, made after its cancel write.
  *
  * A broken invariant (a result for another claim, item or invocation, a text
  * that is not the one claimed) throws IntakeInvariantError: the execution
@@ -784,7 +785,7 @@ export function applyIntakeBindFailure(state: IntakeState, nowMs: number): Intak
  */
 export type IntakeStimulus = "message" | "timer" | "intake_arrival" | "gate_retry" | "intake_turn" | "other";
 
-/** The stimuli that resume an invocation parked for any cause but a gate. */
+/** The stimuli that resume an invocation parked for any cause but a gate (one parked for a gate rides every attempt). */
 const RESUME_STIMULI: readonly IntakeStimulus[] = ["message", "timer", "intake_arrival"];
 
 /** A turn attempt about to run: a turn's retry (naming the invocation its earlier attempt carried, or none), or a new turn and its stimulus. */
@@ -815,8 +816,11 @@ export function intakeTurnPayload(invocation: IntakeInvocation): IntakeTurnPaylo
 /**
  * Whether an attempt carries the invocation, and its payload (design 5.5).
  * A sent invocation rides only its own turn's retries (the retry names it).
- * An unsent one rides any attempt when ready; parked for a gate, only the
- * gate's own retry; parked for any other cause, only a new turn that a
+ * An unsent one rides any attempt when ready; parked for a gate, any attempt
+ * as well, since every attempt is checked by the gates again (as the gates'
+ * held prompts ride every attempt), though it starts no turn of its own
+ * (intakeOwnTurnStimulus; implementation clarification of the resume table,
+ * see the design's 5.5); parked for any other cause, only a new turn that a
  * message, a timer or a newly claimed item starts. Carrying unparks it: the
  * attempt applies the transition table again. An unbound invocation, one
  * whose end is being settled, and an unsent one with a latched cancel (its
@@ -836,8 +840,7 @@ export function carryIntakeInvocation(state: IntakeState, start: IntakeAttemptSt
     let carries: boolean;
     if (named !== null) carries = true;
     else if (invocation.sent) carries = false;
-    else if (invocation.parked === null) carries = true;
-    else if (invocation.parked === "gate") carries = start.kind === "new" && start.stimulus === "gate_retry";
+    else if (invocation.parked === null || invocation.parked === "gate") carries = true;
     else carries = start.kind === "new" && RESUME_STIMULI.includes(start.stimulus);
     if (carries && !invocation.sent && invocation.items.some(item => item.cancelRequested)) carries = false;
     if (!carries) return { state, carry: null };

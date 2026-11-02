@@ -1,9 +1,10 @@
 /**
- * Orchestration 1.0.83 (INACTIVE): the durable intake's store side, wired
- * into drain and the pre-dispatch sweep (design
- * docs/proposals/workflow-durable-intake.md 3, 5.3, 5.4, 6.1, 6.2 and
+ * Orchestration 1.0.83 (INACTIVE): the durable intake wired into drain, the
+ * pre-dispatch sweep, decide and the turn (design
+ * docs/proposals/workflow-durable-intake.md 3, 5.3 to 5.5, 6.1, 6.2 and
  * section 8, amendment 2). The transitions are intake-machine.ts's; this
- * module makes their store writes and applies the answers.
+ * module makes their store writes, applies the answers, and decides what
+ * each turn attempt carries and what its outcome does.
  *
  * - Arrival (5.3, 6.2): a dequeued message that carries `workflowIntake`
  *   takes the intake path only, in drain and in the sweep, never the
@@ -41,17 +42,30 @@
  *   the rows' counters and the refusals' own events. An intake tombstone is
  *   not consumed: once latched it decides nothing more, and it leaves the
  *   bounded cancel set as any other does.
+ * - Turns (5.5, I8, I11): before each turn attempt the session's tombstones
+ *   are latched, the next invocation is formed and bound when none exists
+ *   (its bind is the admission), and the attempt carries it when the carry
+ *   rules say so; the attempt's dispatch (did not run, threw, or its result's
+ *   witness) and the way its turn went decide the next step by the
+ *   transition table: its turn's retry, parked with a cause, or an end
+ *   settled on the wake. A sent invocation rides only its own turn's retry:
+ *   the attempt that sent it records the retry marker with the pending
+ *   prompt, and only decide's dispatch of that prompt takes it; any other
+ *   attempt, one that runs while the prompt is held, starts new and carries
+ *   no sent invocation (review D-W2-1). With nothing else to dispatch,
+ *   decide starts a turn for a ready invocation alone, or for a parked one
+ *   that a newly claimed item resumes (not a gate's), on the internal
+ *   system-turn prompt; never during a graceful shutdown.
  *
- * Not wired yet (a later, separately reviewed checkpoint): forming and
- * binding in decide, a turn's carry, attempts and end decision, parking and
- * the turn activities with their dispatch witness. Until then nothing forms
- * an invocation, so the invocation's writes below run only on a state that
- * restored one.
+ * Inactive: no production registry entry, latest version, start, upward
+ * continue-as-new, worker capability or tool routes to this code; only
+ * tests register 1.0.83 and the turn activities that carry `intake`.
  */
 import { routeWorkflowRequestActivity } from "../activity-routing.js";
 import { IntakeShapeError, WORKFLOW_INTAKE_ACTIVITIES, WORKFLOW_INTAKE_NON_RETRYABLE, intakeObject } from "../workflow/v2/intake.js";
 import {
     IntakeInvariantError,
+    applyIntakeAttempt,
     applyIntakeBindFailure,
     applyIntakeBound,
     applyIntakeClaim,
@@ -62,20 +76,29 @@ import {
     applyIntakeHolderSettle,
     applyIntakeInvocationCancelFailure,
     applyIntakeInvocationCancelled,
+    assertNoIntakeWitness,
+    carryIntakeInvocation,
+    formIntakeInvocation,
     intakeArrivalClaimCall,
     intakeArrivalEnvelope,
     intakeBindCall,
+    intakeCanForm,
     intakeDueWork,
     intakeEndCall,
     intakeInvocationCancelCall,
+    intakeOwnTurnStimulus,
     intakeRefuseClaimCall,
     intakeUnclaimedRetryCall,
     latchIntakeCancels,
+    type IntakeAttemptEvent,
+    type IntakeAttemptStart,
     type IntakeCancelCheck,
     type IntakeClaimCall,
     type IntakeClaimResult,
     type IntakeHolderSettle,
+    type IntakeTurnPayload,
 } from "./intake-machine.js";
+import { intakeAwaitingRetry } from "./intake-state.js";
 import { publishStatus } from "./lifecycle.js";
 import { touchRecentClientMessageIds, type DurableSessionRuntime } from "./state.js";
 
@@ -275,6 +298,8 @@ function* claimCopy(runtime: DurableSessionRuntime, first: IntakeClaimCall, sour
         switch (decision.kind) {
             case "held":
                 touchRecentClientMessageIds(state, [decision.entry.clientMessageId]);
+                // A newly claimed item: a resume stimulus of a parked invocation until an attempt that carries it answers it (5.5).
+                runtime.intakeArrivals = (runtime.intakeArrivals ?? 0) + 1;
                 return "held";
             case "already_placed":
                 return "recorded";
@@ -433,4 +458,178 @@ function* endInvocation(runtime: DurableSessionRuntime): Generator<any, void, an
         return;
     }
     state.intake = applyIntakeEnded(state.intake, call, written.result).state;
+}
+
+// ─── Turns: forming, carrying and the attempt's outcome (design 5.5) ──
+
+/**
+ * Form the next invocation and bind it (design 5.5): its id drawn first, the
+ * held entries moved into it in one synchronous step, then its bind, with no
+ * other yield between. A bind that fails leaves it unbound, its bind due on
+ * the wake; nothing carries it until it is bound.
+ */
+function* formAndBind(runtime: DurableSessionRuntime): Generator<any, void, any> {
+    const invocationId: string = yield runtime.ctx.newGuid();
+    runtime.state.intake = formIntakeInvocation(runtime.state.intake, invocationId);
+    yield* bindInvocation(runtime);
+}
+
+/**
+ * The first step of every turn attempt (processPrompt; design 5.5, 6.1): the
+ * session's tombstones are latched, the next invocation is formed and bound
+ * when none exists, and the carry rules say whether this attempt carries it.
+ * Only decide's dispatch of the pending prompt takes the retry marker, and
+ * so carries the sent invocation it names, as its turn's retry; any other
+ * attempt starts new with its stimulus, and a sent invocation stays with its
+ * held prompt (I8; review D-W2-1). Returns the payload for the turn's
+ * `intake` field, or null when the attempt carries none.
+ */
+export function* intakeBeforeAttempt(runtime: DurableSessionRuntime): Generator<any, IntakeTurnPayload | null, any> {
+    return yield* guarded(runtime, beforeAttempt(runtime));
+}
+
+function* beforeAttempt(runtime: DurableSessionRuntime): Generator<any, IntakeTurnPayload | null, any> {
+    const { state } = runtime;
+    const stimulus = runtime.intakeStimulus ?? "other";
+    const pendingDispatch = runtime.intakePendingDispatch === true;
+    runtime.intakeStimulus = undefined;
+    runtime.intakePendingDispatch = undefined;
+    const inFlight = runtime.intakeAttempt;
+    if (inFlight) {
+        throw new IntakeInvariantError(null, `an attempt starts before the outcome of the attempt that carried invocation ${inFlight.invocationId} is applied`);
+    }
+    const marker = pendingDispatch ? state.intakeRetryInvocationId : null;
+    if (pendingDispatch) state.intakeRetryInvocationId = null;
+    const awaiting = intakeAwaitingRetry(state.intake);
+    if (marker !== null && awaiting?.invocationId !== marker) {
+        throw new IntakeInvariantError(null, `the pending prompt's retry names invocation ${marker}, which awaits no retry`);
+    }
+    if (awaiting !== null && marker === null && state.intakeRetryInvocationId !== awaiting.invocationId) {
+        throw new IntakeInvariantError(null, `invocation ${awaiting.invocationId} awaits its turn's retry, but no pending prompt carries it`);
+    }
+    latchIntakeTombstones(runtime);
+    if (intakeCanForm(state.intake)) yield* formAndBind(runtime);
+    const start: IntakeAttemptStart = marker !== null ? { kind: "retry", invocationId: marker } : { kind: "new", stimulus };
+    const carried = carryIntakeInvocation(state.intake, start);
+    state.intake = carried.state;
+    if (carried.carry === null) {
+        runtime.intakeAttempt = null;
+        return null;
+    }
+    runtime.intakeAttempt = { invocationId: carried.carry.invocationId, dispatch: null };
+    // This attempt answers every item claimed so far: one attempt per arrival (5.5).
+    runtime.intakeArrivals = 0;
+    return carried.carry;
+}
+
+/** The attempt that would carry the invocation threw (design 5.5): it possibly sent it. Its turn's handling then notes how the turn went. */
+export function noteIntakeThrew(runtime: DurableSessionRuntime): void {
+    const record = runtime.intakeAttempt;
+    if (record) runtime.intakeAttempt = { invocationId: record.invocationId, dispatch: { ran: true, threw: true } };
+}
+
+/**
+ * The attempt returned a result (design 5.5): its raw `intakeDispatch`
+ * witness is kept for the turn's outcome, where none counts as possibly
+ * sent. An attempt that carried no invocation returns no witness: one that
+ * does is a broken invariant, and the execution fails visibly.
+ */
+export function* noteIntakeResult(runtime: DurableSessionRuntime, witness: unknown): Generator<any, void, any> {
+    yield* guarded(runtime, noteResult(runtime, witness));
+}
+
+function* noteResult(runtime: DurableSessionRuntime, witness: unknown): Generator<any, void, any> {
+    const record = runtime.intakeAttempt;
+    if (!record) {
+        assertNoIntakeWitness(witness);
+        return;
+    }
+    runtime.intakeAttempt = { invocationId: record.invocationId, dispatch: { ran: true, threw: false, witness } };
+}
+
+/**
+ * The event a returned result notes at the start of its handling (design
+ * 5.5, rows 1 to 4 and 8 to 10). An error result's row is noted where it is
+ * handled: its retry, exhaustion, a credential or a non-retryable failure.
+ */
+export function intakeResultEvent(type: string, gated: boolean): IntakeAttemptEvent | null {
+    if (type === "error") return null;
+    if (type === "stopped" || type === "cancelled") return { kind: "stopped" };
+    return gated ? { kind: "gate" } : { kind: "result" };
+}
+
+/**
+ * How the turn of the attempt that carried the invocation went (the event
+ * column of design 5.5's table), applied once per attempt: `sent` is updated
+ * from its dispatch, then the first matching row decides. A retry of a sent
+ * invocation becomes the pending prompt's retry marker, which every
+ * continue-as-new carries with that prompt; an unsent one is ready again and
+ * rides the next attempt. An attempt that carried none changes nothing, but
+ * for one case: when its turn retries while a sent invocation awaits its own
+ * retry, its retry's continue-as-new replaces the held pending prompt
+ * (turn.ts retryContinueOverrides), so that retry never runs. The invocation
+ * then ends interrupted, and this is recorded (review D-W2-1).
+ */
+export function* noteIntakeAttempt(runtime: DurableSessionRuntime, event: IntakeAttemptEvent | null): Generator<any, void, any> {
+    if (event === null) return;
+    yield* guarded(runtime, noteAttempt(runtime, event));
+}
+
+function* noteAttempt(runtime: DurableSessionRuntime, event: IntakeAttemptEvent): Generator<any, void, any> {
+    const { state } = runtime;
+    const record = runtime.intakeAttempt;
+    if (!record) {
+        const awaiting = intakeAwaitingRetry(state.intake);
+        if (event.kind !== "retrying" || awaiting === null) return;
+        if (state.intakeRetryInvocationId !== awaiting.invocationId) {
+            throw new IntakeInvariantError(null, `invocation ${awaiting.invocationId} awaits its turn's retry, but no pending prompt carries it`);
+        }
+        state.intake = applyIntakeAttempt(state.intake, awaiting.invocationId, { ran: false }, { kind: "stopped" }).state;
+        state.intakeRetryInvocationId = null;
+        runtime.ctx.traceInfo(`[intake] another turn's retry replaces the prompt held for invocation ${awaiting.invocationId}'s retry; it ends interrupted`);
+        yield* recordIntake(runtime, { outcome: "retry_replaced", invocationId: awaiting.invocationId });
+        return;
+    }
+    if (state.intakeRetryInvocationId !== null) {
+        throw new IntakeInvariantError(null,
+            `the attempt that carried invocation ${record.invocationId} ends while a pending prompt's retry names ${state.intakeRetryInvocationId}`);
+    }
+    runtime.intakeAttempt = null;
+    const step = applyIntakeAttempt(state.intake, record.invocationId, record.dispatch ?? { ran: false }, event);
+    state.intake = step.state;
+    if (step.decision.next === "retry" && state.intake.invocation?.sent === true) state.intakeRetryInvocationId = record.invocationId;
+}
+
+/**
+ * Decide's turn for the intake alone (design 5.5, I11), when nothing else is
+ * to be dispatched: the session's tombstones are latched, the next invocation
+ * is formed and bound when none exists, and a turn starts for a ready
+ * invocation, or for one parked for any cause but a gate that a newly
+ * claimed item resumes; the attempt's stimulus is set for it. Never during a
+ * graceful shutdown. Returns whether decide starts that turn.
+ */
+export function* intakeOwnTurn(runtime: DurableSessionRuntime): Generator<any, boolean, any> {
+    return yield* guarded(runtime, ownTurn(runtime));
+}
+
+function* ownTurn(runtime: DurableSessionRuntime): Generator<any, boolean, any> {
+    const { state } = runtime;
+    if (state.pendingShutdown) return false;
+    latchIntakeTombstones(runtime);
+    if (intakeCanForm(state.intake)) yield* formAndBind(runtime);
+    const stimulus = intakeOwnTurnStimulus(state.intake, runtime.intakeArrivals ?? 0);
+    if (stimulus === null) return false;
+    runtime.intakeStimulus = stimulus;
+    return true;
+}
+
+/**
+ * Whether decide would start the intake's own turn now (intakeOwnTurn): drain
+ * then neither blocks on the queue nor waits for an armed timer, as for
+ * queued work. False during a graceful shutdown, when decide starts none.
+ */
+export function intakeWantsTurn(runtime: DurableSessionRuntime): boolean {
+    const { state } = runtime;
+    if (state.pendingShutdown) return false;
+    return intakeCanForm(state.intake) || intakeOwnTurnStimulus(state.intake, runtime.intakeArrivals ?? 0) !== null;
 }

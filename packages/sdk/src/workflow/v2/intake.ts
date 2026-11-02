@@ -218,3 +218,44 @@ export function intakeItemFitsAlone(itemBytes: number): boolean {
 export function intakeTextWithinCap(text: string): boolean {
     return isStorableText(text) && utf8ByteLength(text) <= INTAKE_MAX_TEXT_BYTES;
 }
+
+/**
+ * What a turn attempt of orchestration 1.0.83 carries in its own `intake`
+ * field (design 5.5): the bound invocation and its items' canonical texts in
+ * batch order. It is never part of the prompt; the worker puts the texts
+ * before whatever prompt the attempt finally sends (composeIntakePrompt).
+ */
+export interface IntakeTurnField {
+    invocationId: string;
+    items: Array<{ exchangeId: string; clientMessageId: string; text: string }>;
+}
+
+/** A turn's `intake` field, checked whole: null when absent; anything else that does not have its shape fails with its path. */
+export function parseIntakeTurnField(raw: unknown, path = "intake"): IntakeTurnField | null {
+    if (raw === undefined) return null;
+    const value = intakeObject(raw, path, ["invocationId", "items"]);
+    const invocationId = intakeId(value.invocationId, `${path}.invocationId`);
+    const items = value.items;
+    if (!Array.isArray(items) || items.length === 0 || items.length > INTAKE_MAX_HELD) {
+        throw new IntakeShapeError(`${path}.items`, `is not a list of 1 to ${INTAKE_MAX_HELD} items`);
+    }
+    return {
+        invocationId,
+        items: items.map((entry: unknown, index: number) => {
+            const itemPath = `${path}.items[${index}]`;
+            const item = intakeObject(entry, itemPath, ["exchangeId", "clientMessageId", "text"]);
+            const text = item.text;
+            if (typeof text !== "string" || !intakeTextWithinCap(text)) throw new IntakeShapeError(`${itemPath}.text`, "is not a text within its cap");
+            return {
+                exchangeId: intakeExchangeId(item.exchangeId, `${itemPath}.exchangeId`),
+                clientMessageId: intakeClientMessageId(item.clientMessageId, `${itemPath}.clientMessageId`),
+                text,
+            };
+        }),
+    };
+}
+
+/** The prompt the model gets on an attempt that carries an invocation: its items' texts in batch order, then the attempt's own prompt, separated by blank lines. */
+export function composeIntakePrompt(prompt: string, field: IntakeTurnField): string {
+    return [...field.items.map(item => item.text), prompt].join("\n\n");
+}

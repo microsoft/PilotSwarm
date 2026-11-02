@@ -503,6 +503,34 @@ flag.
 
   The attempt it rides applies the table again. A lasting failure therefore
   repeats only once per new stimulus, never on its own.
+- **Resume stimuli and the retry marker (implementation clarification,
+  inactive wiring; for review).** A gate refusal does not keep its wait: a
+  budget pause is never re-armed after a turn that passes the gate, and a
+  workspace wait ends at a person's message (`queue.ts`, its own turn is the
+  next attempt), a `retry_workspace` or `set_workspace` command, or its
+  timer. Every attempt is checked by the gates again, and the gates' held
+  prompts ride every attempt. So an invocation parked for a gate rides every
+  attempt as well; it still never starts a turn of its own (I11), and a
+  refused attempt parks it again. Riding only the gate's own timer would
+  strand it whenever another attempt ended the gate's wait. The stimuli are
+  set where each turn starts: an answer, a queued prompt and a child digest
+  are `message`; a wait, cron or cron_at timer is `timer`; the budget and
+  workspace wakes are `gate_retry`; decide's own turn is `intake_turn` or
+  `intake_arrival`; the pending prompt (an agent's follow-up, a machine
+  continuation or a retry) is `other`, so a failure that a parked invocation
+  causes is not repeated on the agent's own follow-ups. A sent invocation's
+  retry is a marker recorded with the pending prompt, carried by every
+  continue-as-new with that prompt and taken only by decide's dispatch of it
+  (review D-W2-1); a turn that runs while that prompt is held (for example
+  while an agent wait holds it) starts new and never carries the sent
+  invocation (I8). Only another turn's retry replaces a held pending prompt
+  (its continue-as-new carries its own prompt instead); that retry then never
+  runs, and the invocation ends `interrupted`, recorded. While the retry is
+  held, another turn also neither reuses nor clears the held retry's turn key
+  (1.0.81's thrown-turn key), so it never adopts the held retry's saved
+  result. The count of newly
+  claimed items that an attempt has not answered yet lives within one
+  execution.
 - **Settlement.** The end is a settlement, never a new attempt. If the end
   settle fails after its retries, the invocation keeps `settle: {outcome}`
   and a due time on the N2 wake (5.4), and the settlement is retried as a
@@ -661,6 +689,11 @@ today; that growth is outside this design (section 13).
   Every recorded claim answer and every cancel the intake makes is one
   best-effort diagnostic event (`session.workflow_intake_recorded`); the
   refusals' own events are the store's (5.6).
+- (Implementation deviation, inactive wiring; open.) A turn that decide
+  starts for an invocation alone releases an armed timer as queued work does
+  (`shouldRunQueuedWorkNow`), but takes no timer note and no child digest
+  yet: the released wait or cron resumes after the turn, and the digest
+  waits for the next turn.
 
 ### 6.3 Parsing
 

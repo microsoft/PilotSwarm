@@ -1,4 +1,4 @@
-import { HANDOFF_ACTIVITY_NAMES, TURN_CONTROL_ACTIVITY_NAMES, routeHandoffActivity, routedActivityName, registerHandoffActivity, registerTurnControlActivity, routeTurnControlActivity, routeWorkspaceActivity, type ActivityRoutingContract } from "./activity-routing.js";
+import { HANDOFF_ACTIVITY_NAMES, TURN_CONTROL_ACTIVITY_NAMES, WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES, routeHandoffActivity, routedActivityName, registerHandoffActivity, registerTurnControlActivity, registerWorkflowIntakeTurnActivity, routeTurnControlActivity, routeWorkflowRequestActivity, routeWorkspaceActivity, type ActivityRoutingContract } from "./activity-routing.js";
 import nodeCrypto from "node:crypto";
 import { createCopilotClient } from "./copilot-client.js";
 import {
@@ -76,6 +76,7 @@ import type { NativeTasksPayload } from "./native-task-observer.js";
 import { spawnWorkflowFromTool } from "./workflow/spawn.js";
 import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool, type WorkflowToolHost } from "./workflow/v2/tools.js";
 import { applySessionCommandToWorkflowV2 } from "./workflow/v2/service.js";
+import { composeIntakePrompt, parseIntakeTurnField, type IntakeTurnField } from "./workflow/v2/intake.js";
 import type { SpawnWorkflowToolArgs } from "./workflow/tool-spec.js";
 
 const SYSTEM_AGENT_IDS = new Set(["pilotswarm", "sweeper", "resourcemgr", "facts-manager"]);
@@ -726,16 +727,23 @@ export function createSessionProxy(
             prompt: string,
             bootstrap?: boolean,
             turnIndex?: number,
-            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[]; sender?: unknown; snapshot?: { expectedVersion?: number; turnKey: string }; attachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; transcriptEpoch?: number; epochStart?: boolean; stashedPrompts?: string[]; stashedAttachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; workspaceRevision?: number; workspaceNotice?: string; carriedSteers?: import("./types.js").LateSteer[] },
+            turnMeta?: { parentSessionId?: string; nestingLevel?: number; requiredTool?: string; cycleOrigin?: "cron" | "cron_at"; retryCount?: number; clientMessageIds?: string[]; sender?: unknown; snapshot?: { expectedVersion?: number; turnKey: string }; attachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; transcriptEpoch?: number; epochStart?: boolean; stashedPrompts?: string[]; stashedAttachments?: Array<{ filename: string; contentType: string; sizeBytes: number }>; workspaceRevision?: number; workspaceNotice?: string; carriedSteers?: import("./types.js").LateSteer[]; intake?: IntakeTurnField },
         ) {
-            const turnControl = routingContract === "turn-control-v1";
+            // Workflow intake (1.0.83, INACTIVE): turns run as runTurnV5 /
+            // runTurnEpochV5, on the turn-control path, with the workflow-
+            // request tag only; their input may carry the invocation's
+            // `intake` field.
+            const workflowIntake = routingContract === "workflow-intake-v1";
+            const turnControl = routingContract === "turn-control-v1" || workflowIntake;
             const task = ctx.scheduleActivityOnSession(
                 // The epoch-start turn is a distinct activity name (runTurn2):
                 // with an explicit contract since 1.0.67. New handoffs ALSO
                 // require a capability tag: activity names alone do not stop
                 // old workers from dequeuing work they cannot execute.
                 // Session turn control (1.0.81): runTurnV4 / runTurnEpochV4.
-                turnControl
+                workflowIntake
+                    ? WORKFLOW_INTAKE_TURN_ACTIVITY_NAMES[turnMeta?.epochStart ? "runTurn2" : "runTurn"]
+                    : turnControl
                     ? TURN_CONTROL_ACTIVITY_NAMES[turnMeta?.epochStart ? "runTurn2" : "runTurn"]
                     : routedActivityName(turnMeta?.epochStart ? "runTurn2" : "runTurn", routingContract),
                 {
@@ -786,9 +794,15 @@ export function createSessionProxy(
                     ...(turnControl && turnMeta?.carriedSteers && turnMeta.carriedSteers.length > 0
                         ? { carriedSteers: turnMeta.carriedSteers }
                         : {}),
+                    // 1.0.83: the invocation this attempt carries, composed by the worker before the prompt it sends.
+                    ...(workflowIntake && turnMeta?.intake ? { intake: turnMeta.intake } : {}),
                 },
                 affinityKey,
             );
+            // Workflow intake (1.0.83): only workers that declare the
+            // workflow-request capability run these turns; an older worker
+            // would ignore the `intake` field and drop its items.
+            if (workflowIntake) return routeWorkflowRequestActivity(task);
             // Session turn control (1.0.81): every turn goes only to workers
             // that listen for controls. Those workers also declare the
             // handoff and workspace tags.
@@ -1236,6 +1250,12 @@ export function registerActivities(
     workerNodeId?: string,
     /** Artifact store — resolves image attachment refs to bytes inside runTurn. */
     artifactStore?: ArtifactStore | null,
+    /**
+     * Test-only switches. `workflowIntakeTurns` registers orchestration
+     * 1.0.83's turn activities (runTurnV5 / runTurnEpochV5), whose input may
+     * carry an invocation's `intake` field. INACTIVE: no worker passes it.
+     */
+    testOptions?: { workflowIntakeTurns?: boolean },
 ) {
     // Shared config for every activity-layer internal PilotSwarmClient /
     // PilotSwarmManagementClient. Carries the FULL facts/CMS target (07 P3) so
@@ -1470,6 +1490,8 @@ export function registerActivities(
             /** 1.0.81 (runTurnV4): steers carried from an earlier turn. Used from phase A4 on. */
             carriedSteers?: import("./types.js").LateSteer[];
         },
+        /** 1.0.83 (runTurnV5): the invocation this attempt carries, already checked; null on every other name. */
+        turnIntake: IntakeTurnField | null = null,
     ): Promise<TurnResult> => {
         // Attachment count is traced unconditionally: a 2026-07-21 incident
         // showed turns whose ActivityScheduled input carried refs executing
@@ -1626,6 +1648,16 @@ export function registerActivities(
         let inlineSdkClientPromise: Promise<PilotSwarmClient> | null = null;
         let cancelPoll: ReturnType<typeof setInterval> | null = null;
         let finalTurnResult: TurnResult | null = null;
+        // Workflow intake (runTurnV5, design 5.5): whether this attempt issued
+        // the model request that included the carried items (runTurnWithPrompt
+        // sets it just before the request). Every result names the invocation
+        // with it, except a saved result a retry adopts: that one keeps the
+        // witness of the attempt that ran.
+        let intakeSent = false;
+        const withIntakeWitness = (result: TurnResult): TurnResult => {
+            if (turnIntake === null || (result as any).intakeDispatch !== undefined) return result;
+            return { ...result, intakeDispatch: { invocationId: turnIntake.invocationId, sent: intakeSent } } as TurnResult;
+        };
 
         // ── Session turn control (runTurnV4, design 4.7) ───────────────
         // Present only on the V4 names and with a catalog. T3 turn start
@@ -1695,6 +1727,8 @@ export function registerActivities(
                         ...((result as any).events ? { events: (result as any).events } : {}),
                         ...((result as any).snapshotVersion != null ? { snapshotVersion: (result as any).snapshotVersion } : {}),
                         ...((result as any).workspaceAttached ? { workspaceAttached: true } : {}),
+                        // Workflow intake (runTurnV5): the witness of the attempt that ran stays with the stopped turn.
+                        ...((result as any).intakeDispatch !== undefined ? { intakeDispatch: (result as any).intakeDispatch } : {}),
                     } as TurnResult;
                 } else if (end.late.length > 0) {
                     out = { ...result, lateSteers: end.late } as TurnResult;
@@ -4517,7 +4551,14 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             }
 
             const runTurnWithPrompt = async (targetSession: any, prompt: string) => {
-                return await targetSession.runTurn(prompt, {
+                // Workflow intake (runTurnV5, design 5.5): the carried items
+                // come before whatever prompt this attempt finally sends, after
+                // any stash or bootstrap replacement: the first run's and each
+                // recovery re-run's alike. From here on the request may have
+                // been issued, so the witness says sent.
+                const modelPrompt = turnIntake ? composeIntakePrompt(prompt, turnIntake) : prompt;
+                if (turnIntake) intakeSent = true;
+                return await targetSession.runTurn(modelPrompt, {
                     onEvent,
                     trace: traceWarn,
                     liveTurn: liveTurnEnabled,
@@ -4853,7 +4894,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         // orchestration history) and in .ps-turn-commit.json (the session
         // snapshot). Keep only the events the orchestration reads; the CMS
         // already has every event from onEvent (issue #121).
-        const bodyResult: TurnResult = keepOrchestrationTurnEvents(fullBodyResult);
+        const bodyResult: TurnResult = withIntakeWitness(keepOrchestrationTurnEvents(fullBodyResult));
         const sizeWarning = turnResultSizeWarning(bodyResult);
         if (sizeWarning) traceWarn(`[runTurn] session=${input.sessionId} ${sizeWarning}`);
 
@@ -4948,12 +4989,13 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             if (!finalTurnResult) {
                 throw new Error("runTurn completed without a turn result");
             }
+            finalTurnResult = withIntakeWitness(finalTurnResult);
             return finalTurnResult;
         } catch (err: any) {
             if (err instanceof PackageToolBindingError || err instanceof BoundAgentPackageUnavailableError) {
                 const message = err.message || String(err);
                 activityCtx.traceInfo(`[runTurn] deterministic package-tool binding failure: ${message}`);
-                finalTurnResult = { type: "error", message, retryable: false } as TurnResult;
+                finalTurnResult = withIntakeWitness({ type: "error", message, retryable: false } as TurnResult);
                 return finalTurnResult;
             }
             if (isSessionLockAcquireTimeoutError(err)) {
@@ -4979,7 +5021,7 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                         (msg) => activityCtx.traceInfo(msg),
                     );
                 }
-                finalTurnResult = { type: "error", message } as TurnResult;
+                finalTurnResult = withIntakeWitness({ type: "error", message } as TurnResult);
                 return finalTurnResult;
             }
             turnSpan.recordException(err);
@@ -5030,6 +5072,15 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
     // Session turn control (1.0.81): the V4 names run the turn-control path.
     registerTurnControlActivity(runtime, "runTurn", runTurnV4Handler);
     registerTurnControlActivity(runtime, "runTurn2", runTurnV4Handler);
+    // Workflow intake (1.0.83, INACTIVE): the V5 names run the turn-control
+    // path with the invocation the input's `intake` field carries, checked
+    // whole first. Only a test registers them.
+    if (testOptions?.workflowIntakeTurns === true) {
+        const runTurnV5Handler = async (activityCtx: any, input: Parameters<typeof runTurnImpl>[2] & { intake?: unknown }) =>
+            runTurnImpl(true, activityCtx, input, parseIntakeTurnField(input.intake));
+        registerWorkflowIntakeTurnActivity(runtime, "runTurn", runTurnV5Handler);
+        registerWorkflowIntakeTurnActivity(runtime, "runTurn2", runTurnV5Handler);
+    }
 
     // ── abortTurn ────────────────────────────────────────────
     // Stop-turn fast-path interrupt. Routed on the session affinity key so it
