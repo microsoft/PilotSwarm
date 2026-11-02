@@ -16,7 +16,7 @@ import {
 } from "./intake.js";
 
 /**
- * PostgreSQL persistence for workflow v2 (tables from migrations 0085 and 0087 to 0095).
+ * PostgreSQL persistence for workflow v2 (tables from migrations 0085 and 0087 to 0096).
  *
  * Every definition mutation runs in one transaction that first locks the
  * definition row (or creates it with INSERT ... ON CONFLICT, which waits for
@@ -32,7 +32,8 @@ export type WorkflowActor =
     | { kind: "system"; name: string };
 
 export type WorkflowDefinitionState = "draft" | "published" | "deleted";
-export type WorkflowRunStatus = "admitted" | "running" | "paused" | "completed" | "failed" | "cancelled";
+/** `stopped` (migration 0096): a run that ended by a graceful stop (requestRunStop, finishStoppedRun); only controller 1.9.0 stops a run. */
+export type WorkflowRunStatus = "admitted" | "running" | "paused" | "completed" | "failed" | "cancelled" | "stopped";
 export type WorkflowRunMode = "live" | "test";
 /** A run that has not ended: it can still be cancelled, deleted, recovered and finish its admitted work. */
 export const ACTIVE_RUN_STATUSES: readonly WorkflowRunStatus[] = ["admitted", "running", "paused"];
@@ -141,7 +142,29 @@ export interface WorkflowRunRow {
     kvRevision: number;
     /** While paused: the status a resume returns to. */
     pausedFrom: "admitted" | "running" | null;
+    /** The controller version the run was admitted for (migration 0096); null for a run admitted before it. */
+    controllerVersion: string | null;
+    /** The run's accepted stop (migration 0096), written once; null when none was requested. */
+    stop: WorkflowRunStop | null;
 }
+
+/**
+ * An accepted graceful stop (requestRunStop): the run admits no new node
+ * execution, and the work it admitted may settle until `deadlineAt` (the
+ * store's clock at the stop plus `graceSeconds`); then whatever is still
+ * pending is cancelled and the run ends stopped (finishStoppedRun).
+ */
+export interface WorkflowRunStop {
+    requestedAt: Date;
+    deadlineAt: Date;
+    operationId: string;
+    reason: string | null;
+    actor: JsonValue;
+    graceSeconds: number;
+}
+
+/** The longest grace a stop may give a run's admitted work to settle (design D03: a configured bound). */
+export const WORKFLOW_V2_STOP_MAX_GRACE_SECONDS = 3_600;
 
 export type NodeResultKind = "business" | "runtime_error";
 
@@ -340,7 +363,7 @@ function revisionFrom(row: Row): WorkflowRevisionRow {
     };
 }
 
-const RUN_STATUSES: readonly WorkflowRunStatus[] = ["admitted", "running", "paused", "completed", "failed", "cancelled"];
+const RUN_STATUSES: readonly WorkflowRunStatus[] = ["admitted", "running", "paused", "completed", "failed", "cancelled", "stopped"];
 function isRunStatus(value: string): value is WorkflowRunStatus {
     return (RUN_STATUSES as readonly string[]).includes(value);
 }
@@ -361,7 +384,22 @@ function runFrom(row: Row): WorkflowRunRow {
         terminalOutput: jsonOrNull(row, "terminal_output"), terminalError: jsonOrNull(row, "terminal_error"),
         createdAt: date(row, "created_at"), updatedAt: date(row, "updated_at"), finishedAt: dateOrNull(row, "finished_at"),
         kv: parseStoredJson(str(row, "kv"), "kv"), kvRevision: int(row, "kv_revision"), pausedFrom: pausedFromOf(row),
+        controllerVersion: strOrNull(row, "controller_version"), stop: stopOf(row),
     };
+}
+
+/** A run's stop columns (migration 0096): all null, or an accepted stop with its stored request. */
+function stopOf(row: Row): WorkflowRunStop | null {
+    const requestedAt = dateOrNull(row, "stop_requested_at");
+    const deadlineAt = dateOrNull(row, "stop_deadline_at");
+    const request = jsonOrNull(row, "stop_request");
+    if (requestedAt === null && deadlineAt === null && request === null) return null;
+    const corrupt = () => new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "Stored run stop has an invalid shape.");
+    if (requestedAt === null || deadlineAt === null || !isJsonObject(request)) throw corrupt();
+    const { operationId, reason, actor, graceSeconds } = request;
+    if (typeof operationId !== "string" || (reason !== null && typeof reason !== "string") || !isJsonObject(actor)
+        || typeof graceSeconds !== "number" || !Number.isSafeInteger(graceSeconds) || graceSeconds < 0) throw corrupt();
+    return { requestedAt, deadlineAt, operationId, reason, actor, graceSeconds };
 }
 
 function pausedFromOf(row: Row): "admitted" | "running" | null {
@@ -1778,10 +1816,12 @@ export class WorkflowStore {
         }
         await client.query(
             `INSERT INTO ${this.t.runs}
-                (run_id, workflow_session_id, mode, revision, yaml_sha256, ir_sha256, inputs, controller_instance_id, status, test_agent_mode, start_operation_id, kv, kv_revision)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'admitted', $9, $10, $11, 1)`,
+                (run_id, workflow_session_id, mode, revision, yaml_sha256, ir_sha256, inputs, controller_instance_id, status, test_agent_mode, start_operation_id, kv, kv_revision,
+                 controller_version)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'admitted', $9, $10, $11, 1, $12)`,
             [start.runId, definition.workflowSessionId, start.mode, revision.revision, revision.yamlSha256, revision.irSha256,
-                start.inputsText, start.controllerInstanceId, start.mode === "test" ? start.testAgentMode : null, operationId, start.kvText],
+                start.inputsText, start.controllerInstanceId, start.mode === "test" ? start.testAgentMode : null, operationId, start.kvText,
+                start.controllerVersion],
         );
         await client.query(`INSERT INTO ${this.t.kvRevisions} (run_id, revision, kv, operation_id) VALUES ($1, 1, $2, $3)`,
             [start.runId, start.kvText, operationId]);
@@ -2061,7 +2101,8 @@ export class WorkflowStore {
      * Pause or resume a run. A paused run admits no new node execution; work
      * already admitted finishes and its result is kept, and a cancel, a
      * deletion and KV updates still apply. Resume returns to the status the
-     * run was paused from.
+     * run was paused from. A stopping run (requestRunStop) is neither paused
+     * nor resumed: RUN_STOPPING.
      */
     async setRunPaused(input: {
         workflowSessionId: string;
@@ -2083,6 +2124,11 @@ export class WorkflowStore {
             if (!ACTIVE_RUN_STATUSES.includes(run.status)) {
                 throw new WorkflowStoreError("RUN_ENDED", `Run ${run.runId} has ended (${run.status}).`, { status: run.status });
             }
+            // A stopping run admits nothing either way (migration 0096); its stop decides how it ends.
+            if (run.stop !== null) {
+                throw new WorkflowStoreError("RUN_STOPPING", `Run ${run.runId} is stopping, until ${run.stop.deadlineAt.toISOString()}; it cannot be ${kind}d.`,
+                    { deadlineAt: run.stop.deadlineAt.toISOString() });
+            }
             let rows: Row[];
             if (input.pause) {
                 if (run.status === "paused") throw new WorkflowStoreError("RUN_ALREADY_PAUSED", `Run ${run.runId} is already paused.`);
@@ -2101,6 +2147,77 @@ export class WorkflowStore {
             const receipt: WorkflowRunCommandReceipt = { workflowSessionId: input.workflowSessionId, operation: kind, runId: run.runId, status: updated.status, kvRevision: updated.kvRevision };
             await this.recordReceipt(client, input.workflowSessionId, input.operationId, kind, input.requestSha256, receipt);
             return { receipt, replayed: false };
+        });
+    }
+
+    /**
+     * Accept a graceful stop of a run (design 02 run lifecycle, D03;
+     * migration 0096), once per operation id, in one transaction under the
+     * session, definition and run locks. The run must be active and admitted
+     * for a controller version that runs a stop (`stoppableVersions`:
+     * controller 1.9.0; a run admitted for another version, or before 0096,
+     * is refused with RUN_STOP_UNSUPPORTED and can be cancelled), and must
+     * not be stopping already. The stop is written once: one reading of the
+     * store's clock is its requested time, and that reading plus
+     * `graceSeconds` its deadline. From then on the run admits no new node
+     * execution (enterNode refuses "stopping", paused or not); its admitted
+     * work may settle until the deadline, and its controller ends it
+     * (finishStoppedRun). Resume and pause refuse a stopping run; a cancel,
+     * a deletion and KV updates still apply, and the first run end stands.
+     * The receipt is the run as the stop was accepted; a repeat returns it,
+     * whatever happened since.
+     */
+    async requestRunStop(input: {
+        workflowSessionId: string;
+        runId: string;
+        operationId: string;
+        requestSha256: string;
+        actor: WorkflowActor;
+        reason: string | null;
+        graceSeconds: number;
+        stoppableVersions: readonly string[];
+    }): Promise<StoredOperation<WorkflowRunCommandReceipt> & { run: WorkflowRunRow }> {
+        if (!Number.isSafeInteger(input.graceSeconds) || input.graceSeconds < 0 || input.graceSeconds > WORKFLOW_V2_STOP_MAX_GRACE_SECONDS) {
+            throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `grace_seconds must be an integer from 0 to ${WORKFLOW_V2_STOP_MAX_GRACE_SECONDS}.`);
+        }
+        return this.transaction(async client => {
+            if (!await this.lockLiveSession(client, input.workflowSessionId)) throw new WorkflowStoreError("WORKFLOW_DELETED", "This workflow was deleted.");
+            await this.lockDefinition(client, input.workflowSessionId);
+            const prior = await this.priorRunCommand(client, input.workflowSessionId, input.operationId, "stop", input.requestSha256);
+            const run = await this.lockRun(client, input.runId);
+            if (run.workflowSessionId !== input.workflowSessionId) throw new WorkflowStoreError("RUN_NOT_FOUND", `Run ${input.runId} is not a run of this workflow.`);
+            // The request hash names the run, so the stored receipt is this run's.
+            if (prior) return { receipt: prior, replayed: true, run };
+            if (!ACTIVE_RUN_STATUSES.includes(run.status)) {
+                throw new WorkflowStoreError("RUN_ENDED", `Run ${run.runId} has ended (${run.status}).`, { status: run.status });
+            }
+            if (run.controllerVersion === null || !input.stoppableVersions.includes(run.controllerVersion)) {
+                throw new WorkflowStoreError("RUN_STOP_UNSUPPORTED",
+                    `Run ${run.runId} runs on workflow controller ${run.controllerVersion ?? "1.8.0 or earlier"}, which cannot stop a run gracefully; cancel it instead.`,
+                    { controllerVersion: run.controllerVersion });
+            }
+            if (run.stop !== null) {
+                throw new WorkflowStoreError("RUN_ALREADY_STOPPING", `Run ${run.runId} is already stopping, until ${run.stop.deadlineAt.toISOString()}.`,
+                    { deadlineAt: run.stop.deadlineAt.toISOString() });
+            }
+            const request = canonicalJson({ operationId: input.operationId, reason: input.reason === null ? null : jsonbSafeText(input.reason, 500),
+                actor: actorJson(input.actor), graceSeconds: input.graceSeconds });
+            // One reading of the store's clock is the stop's time; its deadline counts the grace from it.
+            const { rows } = await client.query(
+                `WITH stopped AS (SELECT clock_timestamp() AS at)
+                 UPDATE ${this.t.runs}
+                    SET stop_requested_at = (SELECT at FROM stopped), stop_deadline_at = (SELECT at FROM stopped) + $2::integer * interval '1 second',
+                        stop_request = $3, updated_at = now()
+                  WHERE run_id = $1 RETURNING *`,
+                [run.runId, input.graceSeconds, request]);
+            const updated = runFrom(rows[0]);
+            await this.project(client, { sessionId: input.workflowSessionId, events: [{ eventType: "workflow.stop_requested", data: {
+                runId: run.runId, actor: actorJson(input.actor), graceSeconds: input.graceSeconds, deadlineAt: updated.stop!.deadlineAt.toISOString(),
+                ...(input.reason ? { reason: jsonbSafeText(input.reason, 500) } : {}),
+            } }], update: { touch: true } });
+            const receipt: WorkflowRunCommandReceipt = { workflowSessionId: input.workflowSessionId, operation: "stop", runId: run.runId, status: updated.status, kvRevision: updated.kvRevision };
+            await this.recordReceipt(client, input.workflowSessionId, input.operationId, "stop", input.requestSha256, receipt);
+            return { receipt, replayed: false, run: updated };
         });
     }
 
@@ -2484,7 +2601,7 @@ export class WorkflowStore {
         immediate: NodeResultInput | null;
         projection?: SessionProjection;
     }): Promise<{ admitted: true; inserted: boolean; node: WorkflowNodeExecutionRow }
-        | { admitted: false; reason: "inactive" | "kv_changed"; run: WorkflowRunRow }> {
+        | { admitted: false; reason: "inactive" | "kv_changed" | "stopping"; run: WorkflowRunRow }> {
         const inputSha256 = sha256Hex(input.inputText);
         return this.transaction(async client => {
             const workflowSessionId = await this.workflowOfRun(client, input.runId);
@@ -2505,7 +2622,9 @@ export class WorkflowStore {
                 }
                 return { admitted: true as const, inserted: false, node };
             }
-            // A paused run admits nothing new; a deleted or ended one admits nothing at all.
+            // A run with an accepted stop admits nothing new (migration 0096), paused or not: its admitted work settles,
+            // then it ends stopped. A paused run admits nothing new; a deleted or ended one admits nothing at all.
+            if (live && ACTIVE_RUN_STATUSES.includes(run.status) && run.stop !== null) return { admitted: false as const, reason: "stopping" as const, run };
             if (!live || !ADMITTING_RUN_STATUSES.includes(run.status)) return { admitted: false as const, reason: "inactive" as const, run };
             if (run.kvRevision !== input.kvRevision) return { admitted: false as const, reason: "kv_changed" as const, run };
             let immediate = input.immediate;
@@ -2962,9 +3081,10 @@ export class WorkflowStore {
     }
 
     /** Node executions of a run whose stored result is the run's cancellation. */
-    async listCancelledNodeIds(runId: string): Promise<string[]> {
+    /** The node executions of a run decided by a cancel (winner `cancel`), or by another such end (a stop's: `stop`). */
+    async listCancelledNodeIds(runId: string, winner: "cancel" | "stop" = "cancel"): Promise<string[]> {
         const { rows } = await this.pool.query(
-            `SELECT node_execution_id FROM ${this.t.nodes} WHERE run_id = $1 AND winner = 'cancel' ORDER BY node_execution_id`, [runId]);
+            `SELECT node_execution_id FROM ${this.t.nodes} WHERE run_id = $1 AND winner = $2 ORDER BY node_execution_id`, [runId, winner]);
         return rows.map(row => str(row, "node_execution_id"));
     }
 
@@ -4606,6 +4726,69 @@ export class WorkflowStore {
             return { ended: true, run: runFrom(rows[0]) };
         });
     }
+    /**
+     * End a stopping run stopped (migration 0096; its controller, 1.9.0,
+     * asks): in one transaction under the session and run locks, with one
+     * reading of the store's clock, kept as exact SQL text, deciding. When no
+     * node execution of the run is pending, or that reading is at or after
+     * the stop's deadline, the run ends stopped: every node execution still
+     * pending is cancelled with winner `stop` (the grace expired), a message
+     * one of its send states sent to a workflow and still pending is decided
+     * with it (decidePendingSendsIn), and the run's terminal error records
+     * the stop (code stopped, its request, whether the grace expired, and
+     * which node executions it cancelled), with the projection
+     * `projection` builds. Before the deadline, with work still pending, it
+     * changes nothing and reports the milliseconds left (at least 1). A run
+     * that has ended, or whose session was deleted, is returned as it is
+     * (inactive): the first run end stands.
+     */
+    async finishStoppedRun(input: {
+        runId: string;
+        projection: (ended: { run: WorkflowRunRow; graceExpired: boolean; cancelled: string[] }) => SessionProjection;
+    }): Promise<{ result: "ended"; run: WorkflowRunRow; graceExpired: boolean; cancelled: string[] }
+        | { result: "not_due"; remainingMs: number }
+        | { result: "inactive"; run: WorkflowRunRow }> {
+        return this.transaction(async client => {
+            const live = await this.lockLiveSession(client, await this.workflowOfRun(client, input.runId));
+            const run = await this.lockRun(client, input.runId);
+            if (!live || !ACTIVE_RUN_STATUSES.includes(run.status)) return { result: "inactive" as const, run };
+            if (run.stop === null) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Run ${run.runId} has no stop to finish.`);
+            const { rows: clock } = await client.query(
+                `SELECT reading.at::text AS at, reading.at >= run.stop_deadline_at AS due,
+                        GREATEST(1, CEIL(EXTRACT(EPOCH FROM (run.stop_deadline_at - reading.at)) * 1000))::bigint AS remaining_ms
+                   FROM (SELECT clock_timestamp() AS at) AS reading, ${this.t.runs} AS run WHERE run.run_id = $1`, [run.runId]);
+            const at = str(clock[0], "at");
+            const { rows: pendingRows } = await client.query(
+                `SELECT node_execution_id FROM ${this.t.nodes} WHERE run_id = $1 AND state = 'pending' ORDER BY node_execution_id FOR UPDATE`, [run.runId]);
+            const cancelled = pendingRows.map(row => str(row, "node_execution_id"));
+            if (cancelled.length > 0 && clock[0].due !== true) return { result: "not_due" as const, remainingMs: int(clock[0], "remaining_ms") };
+            const graceExpired = cancelled.length > 0;
+            if (graceExpired) {
+                await client.query(
+                    `UPDATE ${this.t.nodes}
+                        SET state = 'completed', outcome = 'cancelled', result_kind = 'runtime_error', error = $2, output = NULL,
+                            winner = 'stop', completed_at = $3::timestamptz
+                      WHERE run_id = $1 AND state = 'pending'`,
+                    [run.runId, canonicalJson({ code: "cancelled", message: "The run's stop ended its grace period before this state finished." }), at]);
+            }
+            const stop = run.stop;
+            const errorText = canonicalJson({ code: "stopped", message: jsonbSafeText(stop.reason ?? "Stopped", 4_000), details: {
+                operationId: stop.operationId, actor: stop.actor, graceSeconds: stop.graceSeconds,
+                requestedAt: stop.requestedAt.toISOString(), deadlineAt: stop.deadlineAt.toISOString(),
+                graceExpired, cancelledCount: cancelled.length, cancelled: cancelled.slice(0, 100),
+            } });
+            const { rows } = await client.query(
+                `UPDATE ${this.t.runs}
+                    SET status = 'stopped', terminal_node_id = NULL, terminal_outcome = NULL, terminal_output = NULL, terminal_error = $2,
+                        paused_from = NULL, updated_at = now(), finished_at = $3::timestamptz
+                  WHERE run_id = $1 RETURNING *`,
+                [run.runId, errorText, at]);
+            await this.decidePendingSendsIn(client, run.workflowSessionId, run.runId);
+            const ended = { run: runFrom(rows[0]), graceExpired, cancelled };
+            await this.project(client, input.projection(ended));
+            return { result: "ended" as const, ...ended };
+        });
+    }
 }
 
 export interface RunAdmission {
@@ -4616,6 +4799,8 @@ export interface RunAdmission {
     /** The initial open KV map as canonical JSON text (revision 1). */
     kvText: string;
     testAgentMode: "mocked" | "real" | null;
+    /** The controller version this run is admitted for (migration 0096); stored once and never changed. */
+    controllerVersion: string;
 }
 
 /** The receipt of a run command (set_vars, pause, resume, cancel). */

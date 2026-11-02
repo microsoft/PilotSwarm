@@ -14,6 +14,7 @@ import {
     WORKFLOW_V2_NOTIFY_NAME,
     WORKFLOW_V2_NOTIFY_VERSION,
     WORKFLOW_V2_REQUEST_CONTROLLER_VERSION,
+    WORKFLOW_V2_STOP_CONTROLLER_VERSIONS,
     WORKFLOW_V2_TAGGED_ORCHESTRATION_VERSION,
     workflowLiveControllerInstanceId,
     workflowNotifyInstanceId,
@@ -128,10 +129,12 @@ function validateRunInputs(compiled: WorkflowCompileResult, inputs: JsonValue): 
     }
 }
 
-function liveAdmission(workflowSessionId: string, inputs: JsonValue, vars: { [key: string]: JsonValue } | null): RunAdmission {
+/** A live run's admission, for the controller version this host starts runs at (stored with the run, migration 0096). */
+function liveAdmission(host: Pick<WorkflowV2Host, "requests">, workflowSessionId: string, inputs: JsonValue, vars: { [key: string]: JsonValue } | null): RunAdmission {
     return {
         runId: randomUUID(), mode: "live", controllerInstanceId: workflowLiveControllerInstanceId(workflowSessionId),
         inputsText: boundedCanonicalJson(inputs, "Workflow inputs"), kvText: checkedKvText(vars ?? {}), testAgentMode: null,
+        controllerVersion: controllerVersionFor(host),
     };
 }
 
@@ -198,7 +201,7 @@ function recoverReceiptJson(receipt: WorkflowV2RecoverReceipt): JsonValue {
     };
 }
 
-const RUN_STATUSES: readonly WorkflowRunStatus[] = [...ACTIVE_RUN_STATUSES, "completed", "failed", "cancelled"];
+const RUN_STATUSES: readonly WorkflowRunStatus[] = [...ACTIVE_RUN_STATUSES, "completed", "failed", "cancelled", "stopped"];
 
 function parseRecoverReceipt(value: JsonValue): WorkflowV2RecoverReceipt {
     const corrupt = () => new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", "Stored recover receipt has an invalid shape.");
@@ -419,7 +422,7 @@ export async function createWorkflowV2(host: WorkflowV2Host, request: CreateWork
     const startInputs = request.start ? request.start.inputs : null;
     if (request.start) validateRunInputs(compiled, request.start.inputs);
     // Built before anything is written: inputs or vars over their limits refuse the request without a claim.
-    const admission = request.start ? liveAdmission(request.workflowSessionId, request.start.inputs, request.start.vars ?? null) : null;
+    const admission = request.start ? liveAdmission(host, request.workflowSessionId, request.start.inputs, request.start.vars ?? null) : null;
     const fingerprints = createFingerprints(request, compiled.yamlSha256, publish, startInputs);
     const requestSha256 = fingerprints.v3;
     // Digests a stored receipt of this request may carry (receipts are never rewritten).
@@ -539,7 +542,7 @@ export async function updateWorkflowV2(
             requestSha256: jsonSha256({ kind: command.operation, expectedRevision: command.expectedRevision, definitionHash: command.definitionHash,
                 ...(startInputs ? { inputs: canonicalJson(startInputs.value) } : {}),
                 ...(command.operation === "publish_and_start" ? varsDigestPart(command.vars) : {}) }),
-            start: startInputs ? liveAdmission(workflowSessionId, startInputs.value, command.operation === "publish_and_start" ? command.vars ?? null : null) : null,
+            start: startInputs ? liveAdmission(host, workflowSessionId, startInputs.value, command.operation === "publish_and_start" ? command.vars ?? null : null) : null,
         });
     } else {
         const definition = await host.store.readDefinition(workflowSessionId);
@@ -554,7 +557,7 @@ export async function updateWorkflowV2(
         stored = await host.store.startLive({
             workflowSessionId, definitionHash: command.definitionHash, operationId: context.operationId,
             requestSha256: jsonSha256({ kind: "start", definitionHash: command.definitionHash, inputs: canonicalJson(command.inputs), ...varsDigestPart(command.vars) }),
-            start: liveAdmission(workflowSessionId, command.inputs, command.vars ?? null),
+            start: liveAdmission(host, workflowSessionId, command.inputs, command.vars ?? null),
         });
     }
     if (stored.receipt.run) await dispatchWorkflowV2Run(host, stored.receipt);
@@ -563,7 +566,12 @@ export async function updateWorkflowV2(
 
 export type WorkflowV2RunCommand =
     | { operation: "set_vars"; runId: string | null; set: { [key: string]: JsonValue }; delete: string[]; expectedKvRevision: number }
-    | { operation: "pause" | "resume" | "cancel"; runId: string | null; reason: string | null };
+    | { operation: "pause" | "resume" | "cancel"; runId: string | null; reason: string | null }
+    /** A graceful stop (controller 1.9.0 only; INACTIVE): graceSeconds null is the default grace. */
+    | { operation: "stop"; runId: string | null; reason: string | null; graceSeconds: number | null };
+
+/** The grace a stop gives a run's admitted work to settle when the request names none (design D03; at most WORKFLOW_V2_STOP_MAX_GRACE_SECONDS). */
+export const WORKFLOW_V2_STOP_DEFAULT_GRACE_SECONDS = 60;
 
 /** The run a run command targets: the named run of this workflow, or its live run. */
 async function commandRun(host: Pick<WorkflowV2Host, "store">, workflowSessionId: string, runId: string | null): Promise<WorkflowRunRow> {
@@ -581,7 +589,15 @@ async function commandRun(host: Pick<WorkflowV2Host, "store">, workflowSessionId
  *   finishes; a cancel, a deletion and KV updates still apply while paused);
  * - cancel: send the run's controller its cancel command. The receipt says
  *   the command was accepted, not that the run has ended: the first
- *   run-ending transaction decides, and read_workflow shows the result.
+ *   run-ending transaction decides, and read_workflow shows the result;
+ * - stop (controller 1.9.0 only; INACTIVE: only a test host starts runs
+ *   there): a graceful stop. The store records it once, with its deadline
+ *   (the store's clock plus the grace), for a run admitted for a controller
+ *   that stops (store.requestRunStop): the run admits no new state, its
+ *   admitted work may settle until the deadline, and then its controller
+ *   ends it stopped, cancelling what is still pending. The controller is
+ *   told at once (a hint; its backstop collection finds the stop too). The
+ *   receipt says the stop was accepted, not that the run has ended.
  */
 export async function controlWorkflowV2Run(
     host: Pick<WorkflowV2Host, "store" | "duroxideClient">,
@@ -604,6 +620,20 @@ export async function controlWorkflowV2Run(
             requestSha256: jsonSha256({ kind: "set_vars", runId: run.runId, set: canonicalJson(command.set), delete: [...command.delete].sort(),
                 expectedRevision: command.expectedKvRevision }),
         });
+    }
+    if (command.operation === "stop") {
+        const graceSeconds = command.graceSeconds ?? WORKFLOW_V2_STOP_DEFAULT_GRACE_SECONDS;
+        const stored = await host.store.requestRunStop({
+            workflowSessionId, runId: run.runId, operationId: context.operationId, actor: context.actor, reason: command.reason, graceSeconds,
+            requestSha256: jsonSha256({ kind: "stop", runId: run.runId, reason: command.reason, graceSeconds }),
+            stoppableVersions: WORKFLOW_V2_STOP_CONTROLLER_VERSIONS,
+        });
+        // The stop is stored first, so a repeat of the request sends this hint again; a wake changes nothing by itself.
+        if (ACTIVE_RUN_STATUSES.includes(stored.run.status)) {
+            await host.duroxideClient.enqueueEvent(stored.run.controllerInstanceId, WORKFLOW_COMMAND_QUEUE,
+                JSON.stringify({ type: "workflow-wake", runId: stored.run.runId, reason: "stop" }));
+        }
+        return { receipt: stored.receipt, replayed: stored.replayed };
     }
     const requestSha256 = jsonSha256({ kind: command.operation, runId: run.runId, reason: command.reason });
     if (command.operation === "cancel") {

@@ -142,6 +142,8 @@ export const WORKFLOW_V2_SEND_VERSION = "1.0.0";
  */
 export const WORKFLOW_V2_REQUEST_CONTROLLER_VERSION = "1.9.0";
 export const WORKFLOW_V2_TAGGED_ORCHESTRATION_VERSION = "1.1.0";
+/** The controller versions that run a graceful stop (store.requestRunStop): 1.9.0 only; 1.8.0 refuses with RUN_STOP_UNSUPPORTED. */
+export const WORKFLOW_V2_STOP_CONTROLLER_VERSIONS: readonly string[] = [WORKFLOW_V2_REQUEST_CONTROLLER_VERSION];
 /** Delivers a request state's request (one per node execution, stable instance id), then wakes the controller. */
 export const WORKFLOW_V2_REQUEST_NAME = "workflow-v2-request";
 export const WORKFLOW_V2_REQUEST_VERSION = "1.0.0";
@@ -203,8 +205,9 @@ export const WORKFLOW_V2_ACTIVITIES = {
  * The activities of controller 1.9.0 and of the orchestrations it starts
  * (design workflow-messaging-request.md 8.2): the legacy activities under
  * names of their own, scheduled with the workflow-request capability tag,
- * and the request's own (its responder's observation, its delivery and its
- * delivery's failure). INACTIVE: only a test registers them.
+ * the request's own (its responder's observation, its delivery and its
+ * delivery's failure) and the graceful stop's end (stop). INACTIVE: only a
+ * test registers them.
  */
 export const WORKFLOW_V2_REQUEST_ACTIVITIES = {
     begin: "workflow.v2.r1.begin",
@@ -223,6 +226,7 @@ export const WORKFLOW_V2_REQUEST_ACTIVITIES = {
     observe: "workflow.v2.r1.observe",
     deliverRequest: "workflow.v2.r1.deliverRequest",
     requestDeliveryFailed: "workflow.v2.r1.requestDeliveryFailed",
+    stop: "workflow.v2.r1.stop",
 } as const;
 
 type WorkflowV2ActivityKey = keyof typeof WORKFLOW_V2_ACTIVITIES;
@@ -350,7 +354,8 @@ function textOrNull(value: unknown, what: string): string | null {
 }
 
 function isRunStatus(value: unknown): value is WorkflowRunStatus {
-    return value === "admitted" || value === "running" || value === "paused" || value === "completed" || value === "failed" || value === "cancelled";
+    return value === "admitted" || value === "running" || value === "paused" || value === "completed" || value === "failed" || value === "cancelled"
+        || value === "stopped";
 }
 
 function parseControllerInput(value: unknown): ControllerInput {
@@ -437,12 +442,25 @@ function parseBegin(value: unknown): { status: WorkflowRunStatus; irSha256: stri
     return { status: begun.status, irSha256: text(begun.irSha256, "irSha256"), initial: text(begun.initial, "initial"), outcome: textOrNull(begun.outcome, "outcome") };
 }
 
+/** A stop's deadline in the store's clock (epoch ms), as the enter and collect activities of controller 1.9.0 report it. */
+function parseStopping(value: unknown, what: string): { deadlineMs: number } | null {
+    if (value === undefined || value === null) return null;
+    const stopping = record(value, what);
+    expect(typeof stopping.deadlineMs === "number" && Number.isSafeInteger(stopping.deadlineMs) && stopping.deadlineMs > 0, `${what} deadline is invalid`);
+    return { deadlineMs: stopping.deadlineMs };
+}
+
+/**
+ * An enter result. A refused admission of a run with an accepted stop
+ * carries the stop's deadline (`stopping`; only controller 1.9.0's
+ * activities report one).
+ */
 function parseEnter(value: unknown): { admitted: true; nodeExecutionId: string; state: "pending" | "completed"; deadlineMs: number | null }
-    | { admitted: false; status: WorkflowRunStatus; outcome: string | null } {
+    | { admitted: false; status: WorkflowRunStatus; outcome: string | null; stopping: { deadlineMs: number } | null } {
     const entered = record(value, "enter result");
     if (entered.admitted === false) {
         expect(isRunStatus(entered.status), "enter status is invalid");
-        return { admitted: false, status: entered.status, outcome: textOrNull(entered.outcome, "outcome") };
+        return { admitted: false, status: entered.status, outcome: textOrNull(entered.outcome, "outcome"), stopping: parseStopping(entered.stopping, "enter stopping") };
     }
     expect(entered.admitted === true, "enter result is invalid");
     expect(entered.state === "pending" || entered.state === "completed", "enter state is invalid");
@@ -460,6 +478,23 @@ function parseElapse(value: unknown): Array<{ nodeExecutionId: string; remaining
         expect(typeof wait.remainingMs === "number" && Number.isSafeInteger(wait.remainingMs) && wait.remainingMs >= 1, `not-due wait ${index} is invalid`);
         return { nodeExecutionId: text(wait.nodeExecutionId, "nodeExecutionId"), remainingMs: wait.remainingMs };
     });
+}
+
+/** Controller 1.9.0's collect result: the stored results, and the run's accepted stop (its deadline), read after them. */
+function parseCollectedWithStop(value: unknown): { collected: CollectedResult[]; stopping: { deadlineMs: number } | null } {
+    const result = record(value, "collect result");
+    return { collected: parseCollected(result.collected), stopping: parseStopping(result.stopping, "collect stopping") };
+}
+
+/** The stop activity's answer (controller 1.9.0): the run ended (by this stop, or by an end that came first), or the store's time left. */
+function parseStopFinish(value: unknown): { ended: true; result: ControllerResult } | { ended: false; remainingMs: number } {
+    const finished = record(value, "stop result");
+    if (finished.ended === false) {
+        expect(typeof finished.remainingMs === "number" && Number.isSafeInteger(finished.remainingMs) && finished.remainingMs >= 1, "stop time left is invalid");
+        return { ended: false, remainingMs: finished.remainingMs };
+    }
+    expect(finished.ended === true, "stop result is invalid");
+    return { ended: true, result: parseResult(finished.result) };
 }
 
 function parseCollected(value: unknown): CollectedResult[] {
@@ -585,7 +620,8 @@ const REQUEST_PROFILE: ControllerProfile = { persist: (ctx, name, input) => pers
 function* reportEnded(ctx: OrchestrationContext, runId: string, result: ControllerResult, profile: ControllerProfile = LEGACY_PROFILE)
     : Generator<ScheduledTask, ControllerResult, unknown> {
     yield* profile.persist(ctx, "notifyParent", { runId });
-    ctx.setCustomStatus(JSON.stringify({ status: result.status === "failed" ? "failed" : result.status === "cancelled" ? "cancelled" : "completed",
+    // A stopped run (controller 1.9.0) shows as cancelled, as its session row does (the session statuses have no "stopped").
+    ctx.setCustomStatus(JSON.stringify({ status: result.status === "failed" ? "failed" : result.status === "cancelled" || result.status === "stopped" ? "cancelled" : "completed",
         sessionKind: "workflow", workflow: { v: 2, runId, outcome: result.outcome } }));
     return result;
 }
@@ -899,6 +935,15 @@ function* controlRun(ctx: OrchestrationContext, input: ControllerInput): Generat
  * orchestrations start at WORKFLOW_V2_TAGGED_ORCHESTRATION_VERSION. It
  * continues as new at 1.9.0. A response decides the request's node in its
  * own transaction; its wake, or the backstop, makes this controller collect it.
+ *
+ * Graceful stop (design 02 run lifecycle, D03; migration 0096): once the
+ * run has an accepted stop (an admission refused "stopping", or a
+ * collection that reports it), this controller admits nothing and routes
+ * no result: the work it admitted settles (its results are stored and
+ * kept), commands still apply, and when none is pending, or at the stop's
+ * deadline by the store's clock, the stop activity ends the run stopped,
+ * cancelling what is still pending then, and the parent is told as for any
+ * end. The stop is read from the store again after a continue-as-new.
  */
 function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): Generator<ScheduledTask, ControllerResult | null, unknown> {
     const R = WORKFLOW_V2_REQUEST_ACTIVITIES;
@@ -918,6 +963,9 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
     let idleWaits = 0;
     // When the waiting requests' responders were last observed (once per backstop period; not carried by continue-as-new).
     let observedAtMs: number | null = null;
+    // The run's accepted stop, as the store last reported its deadline (not carried by continue-as-new: a stop is never
+    // withdrawn, and the next execution reads it again at its first admission or collection).
+    let stopping: { deadlineMs: number } | null = null;
     const continueAsNew = function* (): Generator<ScheduledTask, null, unknown> {
         yield ctx.continueAsNewVersioned({ v: 2, workflowSessionId: input.workflowSessionId, runId: input.runId, state } satisfies ControllerInput,
             WORKFLOW_V2_REQUEST_CONTROLLER_VERSION);
@@ -931,11 +979,11 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
             if (command) return yield* applyCommand(ctx, input, command, REQUEST_PROFILE);
         }
 
-        // 1. Admit the next node of every cursor that is not waiting on work.
+        // 1. Admit the next node of every cursor that is not waiting on work (none while the run is stopping).
         let rerouted = false;
         let paused = false;
         for (const cursor of state.cursors) {
-            if (cursor.pending !== null) continue;
+            if (cursor.pending !== null || stopping !== null) continue;
             const node: ControllerPlan["nodes"][string] | undefined = plan.nodes[cursor.nodeId];
             expect(node !== undefined, `plan has no state ${cursor.nodeId}`);
             if (state.steps >= plan.maxNodeExecutions) {
@@ -952,6 +1000,8 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
                 predecessorId: cursor.predecessorId, arrivalRoute: cursor.arrivalRoute,
             }));
             if (!entered.admitted) {
+                // A stopping run admits nothing (paused or not); its admitted work settles below.
+                if (entered.stopping !== null) { stopping = entered.stopping; break; }
                 if (entered.status === "paused") { paused = true; break; }
                 return { runId: input.runId, status: entered.status, outcome: entered.outcome };
             }
@@ -1044,8 +1094,33 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
             }
         }
         const pendingIds = state.cursors.flatMap(cursor => cursor.pending === null ? [] : [cursor.pending]);
-        const collected = parseCollected(yield* storeTagged(ctx, R.collect, { runId: input.runId, nodeExecutionIds: pendingIds }));
-        if (collected.length > 0) {
+        const collection = parseCollectedWithStop(yield* storeTagged(ctx, R.collect, { runId: input.runId, nodeExecutionIds: pendingIds }));
+        const collected = collection.collected;
+        if (stopping === null) stopping = collection.stopping;
+        if (stopping !== null) {
+            // 2a. Stopping: a result settles its cursor, which goes nowhere (its result is stored and kept). When no work is
+            // pending, or at the stop's deadline, the stop activity asks the store to end the run (its clock decides the
+            // deadline, and it cancels what is still pending then); before that it reports the time left.
+            for (const result of collected) {
+                const owner = state.cursors.find(item => item.pending === result.nodeExecutionId);
+                expect(owner !== undefined, `collected ${result.nodeExecutionId} is not pending`);
+                owner.pending = null;
+                owner.deadlineMs = null;
+            }
+            const current = now ?? parseNow(yield ctx.utcNow());
+            now = current;
+            if (!state.cursors.some(cursor => cursor.pending !== null) || current >= stopping.deadlineMs) {
+                const finished = parseStopFinish(yield* persistentlyTagged(ctx, R.stop, { runId: input.runId }));
+                if (finished.ended) {
+                    // Another end decided the run first (a cancel, a deletion): it is done, as when an admission finds it so.
+                    if (finished.result.status !== "stopped") return finished.result;
+                    return yield* reportEnded(ctx, input.runId, finished.result, REQUEST_PROFILE);
+                }
+                const read = parseNow(yield ctx.utcNow());
+                now = read;
+                stopping = { deadlineMs: read + finished.remainingMs };
+            }
+        } else if (collected.length > 0) {
             for (const result of collected) {
                 const owner = state.cursors.find(item => item.pending === result.nodeExecutionId);
                 expect(owner !== undefined, `collected ${result.nodeExecutionId} is not pending`);
@@ -1083,10 +1158,12 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
             continue;
         }
 
-        // 3. Nothing is ready: wait for a wake (a response's included), a lifecycle command or the nearest deadline.
+        // 3. Nothing is ready: wait for a wake (a response's included), a lifecycle command or the nearest deadline (a
+        // stopping run's stop deadline included).
         publishStatus(ctx, input, plan, state, "running");
-        const deadlines = waits();
-        const nearest = now === null || deadlines.length === 0 ? null : Math.min(...deadlines.map(wait => wait.deadlineMs)) - now;
+        const deadlines = waits().map(wait => wait.deadlineMs);
+        if (stopping !== null) deadlines.push(stopping.deadlineMs);
+        const nearest = now === null || deadlines.length === 0 ? null : Math.min(...deadlines) - now;
         const timerMs = nearest === null ? plan.wakeBackstopMs : Math.max(1, Math.min(plan.wakeBackstopMs, nearest));
         const raced = parseRace(yield ctx.race(ctx.dequeueEvent(WORKFLOW_COMMAND_QUEUE), ctx.scheduleTimer(timerMs)));
         if (raced.index === 1) {
@@ -1678,6 +1755,19 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         if (!node) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Pinned definition has no state ${nodeId}.`);
         return node;
     };
+    /**
+     * The enter result of a run with an accepted stop (controller 1.9.0): no
+     * admission, and the stop's deadline in the store's clock. Only a 1.9.0
+     * run can be stopped (the stop records the run's controller version), so
+     * a legacy activity never meets one: it fails rather than end its
+     * controller with an active status.
+     */
+    const stoppingRefusal = (run: WorkflowRunRow, requests: boolean) => {
+        if (!requests || run.stop === null) {
+            throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Run ${run.runId} is stopping, which only controller ${WORKFLOW_V2_REQUEST_CONTROLLER_VERSION} runs.`);
+        }
+        return { admitted: false, status: run.status, outcome: null, stopping: { deadlineMs: run.stop.deadlineAt.getTime() } };
+    };
     const scopeFor = (run: WorkflowRunRow, incoming: JsonValue, runtimeErrorValue: JsonValue, kv: JsonValue): BindingScope => ({
         inputs: run.inputs, input: incoming, kv: isJsonObject(kv) ? kv : {}, runtime: { error: runtimeErrorValue },
     });
@@ -1905,6 +1995,9 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             }
             return { admitted: true, nodeExecutionId, state: admitted.state, deadlineMs: admitted.deadlineAt === null ? null : admitted.deadlineAt.getTime() };
         }
+        // A run with an accepted stop admits nothing (store.enterNode decides it again under the locks; a stop is never
+        // withdrawn, so this early answer only saves the evaluation).
+        if (ACTIVE_RUN_STATUSES.includes(run.status) && run.stop !== null) return stoppingRefusal(run, requests);
         // The admission pins the KV revision that is current when it commits.
         // set_vars locks the run row as the admission does, so every set_vars
         // is ordered before or after it: when the revision this evaluation
@@ -2035,6 +2128,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                     deadlineMs: result.node.deadlineAt === null ? null : result.node.deadlineAt.getTime() };
             }
             if (result.reason === "inactive") return { admitted: false, status: result.run.status, outcome: result.run.terminalOutcome };
+            if (result.reason === "stopping") return stoppingRefusal(result.run, requests);
             // kv_changed: a set_vars committed after this evaluation read the run.
             if (evaluation >= WORKFLOW_V2_ADMISSION_EVALUATIONS) {
                 throw new WorkflowStoreError("KV_CHANGING", `The run's KV changed during each of ${evaluation} evaluations of state '${nodeId}'; the admission is retried.`);
@@ -2119,7 +2213,12 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 if (stored.node.state === "completed") rows.push(stored.node);
             }
         }
-        return rows.map(row => ({ nodeExecutionId: row.nodeExecutionId, outcome: row.outcome, resultKind: row.resultKind }));
+        const collected = rows.map(row => ({ nodeExecutionId: row.nodeExecutionId, outcome: row.outcome, resultKind: row.resultKind }));
+        if (!requests) return collected;
+        // Controller 1.9.0: also the run's accepted stop, read after the results, so a stop accepted before this read
+        // reaches the controller with them (it routes none of them then). A stop is never withdrawn.
+        const run = await runOf(runId);
+        return { collected, stopping: ACTIVE_RUN_STATUSES.includes(run.status) && run.stop !== null ? { deadlineMs: run.stop.deadlineAt.getTime() } : null };
     });
 
     register("finish", async (_ctx, rawInput, requests) => {
@@ -2603,6 +2702,57 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     });
 
     if (!requestsEnabled) return;
+
+    /**
+     * End a stopping run stopped (controller 1.9.0; design 02 run lifecycle,
+     * D03): when none of its work is pending, or at the stop's deadline by the
+     * store's clock (store.finishStoppedRun), which cancels what is still
+     * pending then; before that it reports the time left. Then the effect
+     * of every node execution the stop cancelled is asked to stop (a
+     * running script's liveness check stops it too). The list comes from
+     * the store on every execution, so an attempt retried after the run
+     * ended still sends the requests. A run that another end decided first
+     * (a cancel, a deletion, a failure) is reported as it ended.
+     */
+    runtime.registerActivity(WORKFLOW_V2_REQUEST_ACTIVITIES.stop, async (actx, rawInput) => {
+        const runId = text(record(rawInput, "stop input").runId, "runId");
+        const run = await runOf(runId);
+        const label = await store.readRevisionLabel(run.workflowSessionId, run.revision);
+        const finished = await store.finishStoppedRun({
+            runId,
+            projection: ({ run: ended, graceExpired, cancelled }) => {
+                const reason = ended.stop?.reason ?? null;
+                return {
+                    sessionId: ended.workflowSessionId,
+                    events: [{ eventType: "workflow.stopped", data: {
+                        runId, name: label?.name ?? null, graceExpired, cancelledCount: cancelled.length, cancelled: cancelled.slice(0, 50),
+                        ...(reason ? { reason: jsonbSafeText(reason, 500) } : {}),
+                    } }],
+                    // The session statuses have no "stopped"; read_workflow shows the run's status.
+                    update: { state: "cancelled", lastError: jsonbSafeText(reason ? `Stopped: ${reason}` : "Stopped", 500), touch: true },
+                };
+            },
+        });
+        if (finished.result === "not_due") return { ended: false, remainingMs: finished.remainingMs };
+        const ended = finished.run;
+        if (ended.status === "stopped") {
+            const client = actx.getClient();
+            if (!client) throw new Error("Workflow stop needs the durable client.");
+            const requested: Array<{ nodeExecutionId: string; instanceId: string; status: string }> = [];
+            for (const nodeExecutionId of await store.listCancelledNodeIds(runId, "stop")) {
+                const instanceId = workflowEffectInstanceId(nodeExecutionId);
+                const status = await client.getStatus(instanceId);
+                if (status.status === "Running" || status.status === "Suspended") {
+                    await client.cancelInstance(instanceId, "The run's stop ended its grace period.");
+                    requested.push({ nodeExecutionId, instanceId, status: status.status });
+                }
+            }
+            if (requested.length) {
+                await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.cancel_requested", data: { runId, effects: requested, stop: true } }]);
+            }
+        }
+        return { ended: true, result: { runId, status: ended.status, outcome: ended.terminalOutcome } };
+    });
 
     /** A request's refusals by its responder, decided at a delivery attempt or an observation (winner `winner`). */
     const requestRefusals = (message: WorkflowOutboxMessage, executed: WorkflowNodeExecutionRow, winner: string) => {

@@ -121,13 +121,15 @@ describe("workflow v2 data from an earlier build", () => {
         try {
             await catalog.initialize();
             const after = (await q("SELECT version FROM SCHEMA.schema_migrations ORDER BY version")).rows.map(row => row.version);
-            expect(after).toEqual([...before, "0086", "0087", "0088", "0089", "0090", "0091", "0092", "0093", "0094", "0095"]);
+            expect(after).toEqual([...before, "0086", "0087", "0088", "0089", "0090", "0091", "0092", "0093", "0094", "0095", "0096"]);
             expect(await has()).toEqual({ fn: 1, trigger: 1 });
             const store = catalog.workflowStore();
             expect((await store.readDefinition(id)).state).toBe("published");
             // 0087: the earlier run gets an empty open KV at revision 1 (kept as an immutable revision);
             // its earlier node execution pinned no revision.
             expect(await store.readRun(runId)).toMatchObject({ status: "running", kv: {}, kvRevision: 1, pausedFrom: null });
+            // 0096: an earlier run records no controller version and no stop, so it cannot be stopped gracefully.
+            expect(await store.readRun(runId)).toMatchObject({ controllerVersion: null, stop: null });
             expect(await store.readKv(runId, 1)).toEqual({});
             expect((await store.readNodeExecution("nx-earlier")).kvRevision).toBeNull();
             // 0089: an earlier node execution accepts no typed input, and the inbox starts empty.

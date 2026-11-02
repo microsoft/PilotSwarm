@@ -16,6 +16,7 @@ import {
 import {
     ACTIVE_RUN_STATUSES,
     diagnosticsJson,
+    WORKFLOW_V2_STOP_MAX_GRACE_SECONDS,
     WorkflowStoreError,
     type WorkflowActor,
     type WorkflowDefinitionReceipt,
@@ -238,8 +239,29 @@ export function parseUpdateWorkflowArgs(args: Record<string, unknown>): { workfl
 
 const RUN_COMMANDS: ReadonlySet<string> = new Set(["set_vars", "pause", "resume", "cancel"]);
 
-/** Parse the update_workflow arguments of a run command. */
-export function parseRunCommandArgs(args: Record<string, unknown>): { workflowSessionId: string; operationId: string; command: WorkflowV2RunCommand } {
+/**
+ * Whether a host takes a graceful stop (operation stop): only one that
+ * starts runs at controller 1.9.0 (WorkflowV2Host.requests; INACTIVE, test
+ * hosts only). Elsewhere the operation is refused exactly as before.
+ */
+function hostStops(host: Pick<WorkflowToolHost, "requests">): boolean {
+    return host.requests === true;
+}
+
+function graceSecondsArg(args: Record<string, unknown>): number | null {
+    const value = args.grace_seconds;
+    if (value === undefined || value === null) return null;
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0 || value > WORKFLOW_V2_STOP_MAX_GRACE_SECONDS) {
+        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", `grace_seconds must be an integer from 0 to ${WORKFLOW_V2_STOP_MAX_GRACE_SECONDS}.`);
+    }
+    return value;
+}
+
+/**
+ * Parse the update_workflow arguments of a run command. `stop` (a graceful
+ * stop: optional reason and grace_seconds) only when `options.stop` (hostStops).
+ */
+export function parseRunCommandArgs(args: Record<string, unknown>, options: { stop?: boolean } = {}): { workflowSessionId: string; operationId: string; command: WorkflowV2RunCommand } {
     const workflowSessionId = requiredString(args, "workflow_id");
     const operationId = requiredString(args, "operation_id");
     const runId = optionalString(args, "run_id");
@@ -250,9 +272,10 @@ export function parseRunCommandArgs(args: Record<string, unknown>): { workflowSe
         if (Object.keys(set).length === 0 && keys.length === 0) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "set_vars needs set or delete.");
         return { workflowSessionId, operationId, command: { operation, runId, set, delete: keys, expectedKvRevision: kvRevisionArg(args) } };
     }
-    if (operation === "pause" || operation === "resume" || operation === "cancel") {
+    if (operation === "pause" || operation === "resume" || operation === "cancel" || (operation === "stop" && options.stop === true)) {
         const reason = optionalString(args, "reason");
         if (reason !== null && reason.length > 500) throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "reason must be at most 500 characters.");
+        if (operation === "stop") return { workflowSessionId, operationId, command: { operation, runId, reason, graceSeconds: graceSecondsArg(args) } };
         return { workflowSessionId, operationId, command: { operation, runId, reason } };
     }
     throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "operation must be set_vars, pause, resume or cancel.");
@@ -285,8 +308,9 @@ export async function updateWorkflowFromTool(args: Record<string, unknown>, cont
     try {
         if (args.operation === "recover") return await recoverWorkflowFromTool(args, context);
         const actor: WorkflowActor = { kind: "agent", sessionId: context.callerSessionId };
-        if (typeof args.operation === "string" && RUN_COMMANDS.has(args.operation)) {
-            const { workflowSessionId, operationId, command } = parseRunCommandArgs(args);
+        const stop = hostStops(context.host);
+        if (typeof args.operation === "string" && (RUN_COMMANDS.has(args.operation) || (stop && args.operation === "stop"))) {
+            const { workflowSessionId, operationId, command } = parseRunCommandArgs(args, { stop });
             await authorizeParent(context.host, workflowSessionId, context.callerSessionId);
             const stored = await controlWorkflowV2Run(context.host, workflowSessionId, command, { actor, operationId });
             return payload({ ok: true, ...runCommandJson(stored.receipt, stored.replayed) });
@@ -319,8 +343,10 @@ export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId
     // looked up for exactly the bounded page of messages shown.
     const intakeOutcomes: Map<string, { intakeOutcome: string; intakeOutcomeAt: string }> = selected && outbox.length > 0
         ? await store.listOutboxIntakeOutcomes(selected.runId, outbox.map(message => message.exchangeId)) : new Map();
-    // A paused run has settled once no state it admitted is still running.
+    // A paused run has settled once no state it admitted is still running; so has a stopping run (migration 0096).
     const pauseSettled = selected?.status === "paused" ? !await store.hasPendingNodes(selected.runId) : null;
+    const stopping = selected?.stop && ACTIVE_RUN_STATUSES.includes(selected.status) ? selected.stop : null;
+    const stopSettled = stopping !== null ? !await store.hasPendingNodes(selected!.runId) : null;
     return {
         workflowId: workflowSessionId,
         definition: {
@@ -337,6 +363,13 @@ export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId
         run: selected ? {
             runId: selected.runId, mode: selected.mode, status: selected.status, outcome: selected.terminalOutcome,
             ...(selected.pausedFrom !== null ? { pausedFrom: selected.pausedFrom, pauseSettled } : {}),
+            // A graceful stop (controller 1.9.0; only such a run has one): when it was accepted, its deadline, and while the run is
+            // still active, whether its admitted work has settled.
+            ...(selected.stop !== null ? { stop: {
+                requestedAt: selected.stop.requestedAt.toISOString(), deadline: selected.stop.deadlineAt.toISOString(),
+                graceSeconds: selected.stop.graceSeconds, reason: selected.stop.reason,
+                ...(stopping !== null ? { settled: stopSettled } : {}),
+            } } : {}),
             terminalState: selected.terminalNodeId,
             output: selected.terminalOutput === null ? null : previewJson(selected.terminalOutput, 2_000),
             error: selected.terminalError === null ? null : previewJson(selected.terminalError, 2_000),
