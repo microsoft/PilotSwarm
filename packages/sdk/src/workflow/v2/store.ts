@@ -2702,6 +2702,25 @@ export class WorkflowStore {
         return revisionIrFrom(rows[0], revision, expectedIrSha256, options);
     }
 
+    /**
+     * A revision's IR version, read from its stored IR without parsing it
+     * (so a build reads it whatever version it runs; null for a revision
+     * that does not exist or has no compiled IR). Hosts use it to refuse a
+     * revision they do not run before anything is written.
+     */
+    async readRevisionIrVersion(workflowSessionId: string, revision: number): Promise<number | null> {
+        const { rows } = await this.pool.query(
+            `SELECT CASE WHEN ir IS NULL THEN NULL ELSE ir::jsonb ->> 'irVersion' END AS ir_version FROM ${this.t.revisions}
+              WHERE workflow_session_id = $1 AND revision = $2`, [workflowSessionId, revision]);
+        const value = rows[0]?.ir_version;
+        if (value === null || value === undefined) return null;
+        const irVersion = Number(value);
+        if (!Number.isSafeInteger(irVersion) || irVersion < 1) {
+            throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Revision ${revision} of workflow ${workflowSessionId} has an invalid IR version.`);
+        }
+        return irVersion;
+    }
+
     /** readRevisionIr in the caller's transaction (a second connection is never needed while its locks are held). */
     private async revisionIrIn(client: PoolClient, workflowSessionId: string, revision: number, expectedIrSha256: string, options: { maxIrVersion?: number })
         : Promise<WorkflowIR> {

@@ -513,3 +513,43 @@ limits: { maxNodeExecutions: 100, timeoutSeconds: 3600, onExceeded: expired }
 Not covered: another `onExceeded` policy (the design names only
 `expired`), a deadline given by a binding, and the UI's display of the run
 deadline.
+
+## Version and capability fence (design 02 compatibility and rollout; T120 to T122)
+
+Design 02 requires that reader support precede new writes, that an
+unsupported capability refuses or queues work explicitly instead of being
+partly interpreted, and that a new-version run is never pointed at a legacy
+interpreter. This build adds the fence that the hosts of every build after
+it rely on:
+
+- **Admission by IR.** A host that starts 1.8.0 runs reads a revision's IR
+  version without parsing it (`readRevisionIrVersion`) and refuses to
+  publish (`publish`, `publish_and_start`) or start (`start`) a revision of
+  IR 7 or 8 (request, agent or parallel states, or a run deadline) with
+  `CONTROLLER_UNAVAILABLE` (the revision, its IR version and the controller
+  it needs), before anything is written. Such a revision can exist only as a
+  draft that a 1.9.0 host saved; a 1.9.0 host publishes and starts it. A
+  definition of IR 6 or earlier is published and started as before.
+- **A run keeps its controller version.** A run is started, recovered and
+  reported at the controller version it recorded at admission (migration
+  0096; a run admitted earlier recorded none and is a 1.8.0 run), never at
+  the acting host's version: a 1.9.0 host recovers a 1.8.0 run at 1.8.0, and
+  a 1.8.0 host refuses to start or recover a 1.9.0 run
+  (`CONTROLLER_UNAVAILABLE`) before it records anything. Its notifier is its
+  version's (1.0.0, or the tagged 1.1.0 for 1.9.0).
+- **Unchanged and already explicit.** A build reads only the IR versions it
+  runs (`parseWorkflowIr`'s `maxIrVersion`), refuses store rows it does not
+  know (the outbox's request mode), never fetches tagged activity work it
+  lacks, and fails the instances of pre-release controller versions with a
+  reason (`needsRecovery`, then `recover`). Migrations are additive and run
+  at every process start, so an older reader meets newer columns, which it
+  ignores, never a missing one.
+
+Still required before activation: duroxide 0.1.32 cannot route
+orchestration items by version or tag, so a worker without controller 1.9.0
+can still fetch, abandon and finally poison a 1.9.0 controller item. The
+request design's activation gate (8.4: an enforced serving-set fence, or a
+verified routing mechanism in the dependency) remains the open requirement
+for that; an activity tag, a heartbeat advertisement or this admission
+fence is not it. Replay of a history that a pre-release build wrote remains
+blocked (fenced), not migrated.

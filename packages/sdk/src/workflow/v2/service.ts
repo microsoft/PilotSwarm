@@ -2,7 +2,10 @@ import { randomUUID } from "node:crypto";
 import type { SessionCatalog } from "../../cms.js";
 import type { SessionOwnerInfo } from "../../types.js";
 import type { WorkflowToolBinding } from "../tool-policy.js";
-import { compileWorkflowV2, declaredSemver, WORKFLOW_V2_API_VERSION, WORKFLOW_V2_MILESTONE_IR_VERSION, type WorkflowCompileResult, type WorkflowIR } from "./compiler.js";
+import {
+    compileWorkflowV2, declaredSemver, WORKFLOW_V2_API_VERSION, WORKFLOW_V2_MILESTONE_IR_VERSION, WORKFLOW_V2_RUNNABLE_IR_VERSION,
+    type WorkflowCompileResult, type WorkflowIR,
+} from "./compiler.js";
 import { boundedCanonicalJson, canonicalJson, isJsonObject, isStorableText, jsonbSafeText, jsonSha256, WorkflowJsonError, type JsonValue } from "./json.js";
 import { TYPED_INPUT_REFUSALS, typedInputAuthority } from "./authority.js";
 import { schemaSetFor } from "./schema.js";
@@ -155,9 +158,53 @@ function controllerVersionFor(host: Pick<WorkflowV2Host, "requests">): string {
     return host.requests === true ? WORKFLOW_V2_REQUEST_CONTROLLER_VERSION : WORKFLOW_V2_CONTROLLER_VERSION;
 }
 
-/** The notifier version a host starts (WorkflowV2Host.requests). */
-function notifyVersionFor(host: Pick<WorkflowV2Host, "requests">): string {
-    return host.requests === true ? WORKFLOW_V2_TAGGED_ORCHESTRATION_VERSION : WORKFLOW_V2_NOTIFY_VERSION;
+/**
+ * The controller version a run was admitted for (migration 0096; a run
+ * admitted before it records none, and 1.8.0 was then the only version). A
+ * run is started, recovered and reported only at its own version, never at
+ * the version of the host that acts on it: design 02 never points a
+ * new-version run at a legacy interpreter, nor an older run at a newer one.
+ */
+function runControllerVersion(run: Pick<WorkflowRunRow, "controllerVersion">): string {
+    return run.controllerVersion ?? WORKFLOW_V2_CONTROLLER_VERSION;
+}
+
+/** The notifier version of a run's controller: a 1.9.0 run reports through the tagged 1.1.0 notifier. */
+function runNotifyVersion(run: Pick<WorkflowRunRow, "controllerVersion">): string {
+    return runControllerVersion(run) === WORKFLOW_V2_REQUEST_CONTROLLER_VERSION ? WORKFLOW_V2_TAGGED_ORCHESTRATION_VERSION : WORKFLOW_V2_NOTIFY_VERSION;
+}
+
+/**
+ * The run's controller version when this host runs it; otherwise
+ * CONTROLLER_UNAVAILABLE before anything changes (design 02 compatibility,
+ * T121, T122): a 1.9.0 run is started or recovered only by a host that starts
+ * 1.9.0 runs (WorkflowV2Host.requests), and never handed to 1.8.0.
+ */
+function requireRunsController(host: Pick<WorkflowV2Host, "requests">, run: Pick<WorkflowRunRow, "runId" | "controllerVersion">): string {
+    const version = runControllerVersion(run);
+    if (version === WORKFLOW_V2_CONTROLLER_VERSION || (version === WORKFLOW_V2_REQUEST_CONTROLLER_VERSION && host.requests === true)) return version;
+    throw new WorkflowStoreError("CONTROLLER_UNAVAILABLE",
+        `Run ${run.runId} was admitted for workflow controller ${version}, which this build does not run; a build that runs it starts or recovers it.`,
+        { runId: run.runId, controllerVersion: version, hostControllerVersion: controllerVersionFor(host) });
+}
+
+/**
+ * Refuse, before anything is written, to publish or start a revision whose IR
+ * this host does not run (design 02 compatibility: reader support precedes
+ * new writes; T121): IR 7 and 8 (request, agent or parallel states, or a run
+ * deadline) need controller 1.9.0, so a host that starts 1.8.0 runs answers
+ * CONTROLLER_UNAVAILABLE and neither publishes nor admits anything; a host
+ * that starts 1.9.0 runs does both. A revision that does not exist, or has no
+ * compiled IR, is left to the store's own refusal.
+ */
+async function requireRunsRevision(host: Pick<WorkflowV2Host, "store" | "requests">, workflowSessionId: string, revision: number | null): Promise<void> {
+    if (host.requests === true || revision === null) return;
+    const irVersion = await host.store.readRevisionIrVersion(workflowSessionId, revision);
+    if (irVersion === null || irVersion <= WORKFLOW_V2_RUNNABLE_IR_VERSION) return;
+    throw new WorkflowStoreError("CONTROLLER_UNAVAILABLE",
+        `Revision ${revision} has IR version ${irVersion} (request, agent or parallel states, or a run deadline), which needs workflow controller `
+            + `${WORKFLOW_V2_REQUEST_CONTROLLER_VERSION}; this build runs ${WORKFLOW_V2_CONTROLLER_VERSION}, so it neither publishes nor starts it.`,
+        { revision, irVersion, controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, hostControllerVersion: WORKFLOW_V2_CONTROLLER_VERSION });
 }
 
 /** A definition as a host compiles it (WorkflowV2Host.requests): a host that starts 1.9.0 runs compiles request, agent and parallel states. */
@@ -240,7 +287,8 @@ export async function dispatchWorkflowV2Run(host: WorkflowV2Host, receipt: Workf
     const run = await host.store.readRun(admitted.runId);
     if (!run || !ACTIVE_RUN_STATUSES.includes(run.status)) return;
     const input: ControllerInput = { v: 2, workflowSessionId: receipt.workflowSessionId, runId: admitted.runId };
-    await host.duroxideClient.startOrchestrationVersioned(admitted.controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME, input, controllerVersionFor(host));
+    // At the version the run was admitted for (a replayed admission may reach a host that does not run it: refused).
+    await host.duroxideClient.startOrchestrationVersioned(admitted.controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME, input, requireRunsController(host, run));
 }
 
 /** duroxide statuses after which an orchestration does no more work. */
@@ -310,7 +358,7 @@ async function notifyRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxide
     const definition = await host.store.readDefinition(run.workflowSessionId);
     if (!definition?.parentSessionId || !definition.notifyParent) return;
     await host.duroxideClient.startOrchestrationVersioned(workflowNotifyInstanceId(run.runId), WORKFLOW_V2_NOTIFY_NAME,
-        { runId: run.runId }, notifyVersionFor(host));
+        { runId: run.runId }, runNotifyVersion(run));
 }
 
 /**
@@ -323,7 +371,7 @@ async function notifyRecoveredRun(host: Pick<WorkflowV2Host, "store" | "duroxide
 async function dispatchRecoveredRun(host: Pick<WorkflowV2Host, "duroxideClient" | "requests">, run: WorkflowRunRow): Promise<void> {
     if (!runNotBegun(run)) return;
     const input: ControllerInput = { v: 2, workflowSessionId: run.workflowSessionId, runId: run.runId };
-    await host.duroxideClient.startOrchestrationVersioned(run.controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME, input, controllerVersionFor(host));
+    await host.duroxideClient.startOrchestrationVersioned(run.controllerInstanceId, WORKFLOW_V2_CONTROLLER_NAME, input, requireRunsController(host, run));
 }
 
 /**
@@ -346,7 +394,7 @@ async function notifyCancelledBeforeBegin(host: Pick<WorkflowV2Host, "store" | "
     if (!definition?.parentSessionId || !definition.notifyParent) return;
     if (details.requestedBy === definition.parentSessionId || callerSessionId === definition.parentSessionId) return;
     await host.duroxideClient.startOrchestrationVersioned(workflowNotifyInstanceId(run.runId), WORKFLOW_V2_NOTIFY_NAME,
-        { runId: run.runId }, notifyVersionFor(host));
+        { runId: run.runId }, runNotifyVersion(run));
 }
 
 /**
@@ -369,7 +417,7 @@ async function notifyCancelledBeforeBegin(host: Pick<WorkflowV2Host, "store" | "
  * dispatch or the notification that receipt implies. The dispatch and the
  * notification are at least once, not exactly once.
  */
-export async function recoverWorkflowV2Run(host: Pick<WorkflowV2Host, "store" | "duroxideClient">, runId: string,
+export async function recoverWorkflowV2Run(host: Pick<WorkflowV2Host, "store" | "duroxideClient" | "requests">, runId: string,
     request: { requestedBy: string | null; operationId: string }): Promise<StoredOperation<WorkflowV2RecoverReceipt>> {
     requireOperationId(request.operationId);
     const run = await host.store.readRun(runId);
@@ -398,6 +446,8 @@ export async function recoverWorkflowV2Run(host: Pick<WorkflowV2Host, "store" | 
     const controller = await inspectWorkflowV2Controller(host, run);
     let receipt: WorkflowV2RecoverReceipt = { runId, action: "none", status: run.status, controller };
     if (controller.needsRecovery && controller.status === "NotFound" && runNotBegun(run)) {
+        // Only a host that runs the run's controller version starts it; nothing is recorded otherwise.
+        requireRunsController(host, run);
         const dispatching: WorkflowV2RecoverReceipt = { runId, action: "dispatched", status: run.status, controller };
         let intent: { recorded: boolean; run: WorkflowRunRow };
         try {
@@ -609,6 +659,7 @@ export async function updateWorkflowV2(
         return stored;
     }
     if (command.operation === "publish" || command.operation === "publish_and_start") {
+        await requireRunsRevision(host, workflowSessionId, command.expectedRevision);
         // The operation decides whether a run starts; any JSON input, null included, is a value.
         const startInputs: { value: JsonValue } | null = command.operation === "publish_and_start" ? { value: command.inputs } : null;
         // The revision to publish: its inputs are checked for a start, and on a host that resolves agents its named agents
@@ -638,6 +689,7 @@ export async function updateWorkflowV2(
         });
     } else {
         const definition = await host.store.readDefinition(workflowSessionId);
+        await requireRunsRevision(host, workflowSessionId, definition?.publishedRevision ?? null);
         if (definition?.state === "published" && definition.publishedRevision !== null && definition.publishedIrSha256) {
             const ir = await host.store.readRevisionIr(workflowSessionId, definition.publishedRevision, definition.publishedIrSha256, irOptionsFor(host));
             const problems = ir.inputsSchema ? schemaSetFor(definition.publishedIrSha256, ir.schemaDefs).validate(ir.inputsSchema, command.inputs) : [];
