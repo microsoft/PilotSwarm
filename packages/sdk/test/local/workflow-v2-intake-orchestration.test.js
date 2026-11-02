@@ -156,14 +156,15 @@ describe("workflow v2 durable intake: orchestration 1.0.83 on the native runtime
             ]);
 
             // Natively: the first execution schedules the failed attempt; its continue-as-new carries the invocation, the
-            // pending prompt's retry marker and the retry's count; the next execution schedules the retry.
+            // retry marker and the owed retry with its count (review Q-W2-7); the next execution schedules the retry.
             const [first, second] = await h.histories();
             expect(scheduled(first, "runTurnV5")).toHaveLength(1);
             expect(scheduled(second, "runTurnV5")).toHaveLength(1);
             const restarted = eventText(second[0]);
             expect(second[0].kind).toBe("OrchestrationStarted");
             expect(restarted).toContain(`"intakeRetryInvocationId":"${row.invocationId}"`);
-            expect(restarted).toContain('"intakeRetryAttempt":{"retryCount":1,"thrownTurnKey":null}');
+            expect(restarted).toContain('"ownedRetry":{"prompt":"');
+            expect(restarted).toContain('"retryCount":1,"thrownTurnKey":null,"fresh":false}');
 
             // Turn start recorded the item on the first attempt and found it recorded on the retry.
             const records = await recordsOf(h, expected.clientMessageId);

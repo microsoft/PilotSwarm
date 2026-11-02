@@ -1,34 +1,43 @@
 /**
- * Durable recipient intake, inactive: crash redelivery of an attempt that
- * carries an invocation (exposure protocol revision 2, section 9; decision
- * intake-exposure-r2-implementation), on orchestration 1.0.83, the real
- * runTurnV5 activity and the real workflow store over PostgreSQL, with a
- * scripted model session (TEST_DOUBLES). Each case crashes its native
- * runtime while a carrying activity is in flight: the runtime is shut down
- * with that activity unanswered, so its lock runs out, and another runtime on
- * the same provider is given the same work item. Each case checks together:
- * the two executions of one scheduled input (the same attempt id), the
+ * Durable recipient intake, inactive: redelivery of an attempt that carries
+ * an invocation after a runtime shutdown (exposure protocol revision 2,
+ * section 9; decision intake-exposure-r2-implementation), on orchestration
+ * 1.0.83, the real runTurnV5 activity and the real workflow store over
+ * PostgreSQL, with a scripted model session (TEST_DOUBLES). Each case shuts
+ * its native runtime down (shutdown(500)) while a carrying activity is in
+ * flight and restarts another runtime on the same provider: the activity is
+ * left unanswered, its lock runs out, and the new runtime is given the same
+ * work item. This is a runtime shutdown and restart with the activity
+ * outstanding, not an operating-system crash. Each case checks together: the
+ * two executions of one scheduled input (the same attempt id), the
  * completion the history accepted and its witness, the exposure record, the
  * end the store applied and the final intake row.
  *
- * - Crash after the send: the redelivered run stops before its send; its
+ * - Shutdown after the send: the redelivered run stops before its send; its
  *   witness says not sent, and its completion is the accepted one; the end
  *   asked as not_dispatched is applied interrupted, never not_dispatched.
- * - Crash after the send: the redelivered run is admitted again as the same
- *   attempt and sends (a duplicate request: at least once, never exactly
- *   once); the invocation completes.
- * - A crashed execution that has not observed its cancellation (a
- *   partitioned worker) asks the store, with its run's exact admission
+ * - Shutdown after the send: the redelivered run is admitted again as the
+ *   same attempt and sends (a duplicate request: at least once, never
+ *   exactly once); the invocation completes.
+ * - The two late-admission order cases: the shut-down execution, which has
+ *   not observed its cancellation (as a partitioned worker would not), asks
+ *   the store by calling it directly with its run's exact captured admission
  *   request, only after the redelivered run's accepted negative result:
  *   before the end, the end is applied interrupted; after it, the admission
  *   is refused settled, nothing is recorded and the end stands
- *   not_dispatched. (An execution that observes its cancellation sends
+ *   not_dispatched. These cases call the store directly; they are not a
+ *   worker's own send. (An execution that observes its cancellation sends
  *   nothing; the activity-level cases of workflow-v2-intake-turn.test.js
- *   cover that, and these cases only log what the crashed execution read.)
- * - Crash after the send: the redelivered run fails before its send (asking
- *   nothing), and the invocation parks unsent, unaware of the record; the
- *   next carrying attempt, another attempt, is refused as possibly seen,
+ *   cover that, and these cases only log what the shut-down execution read.)
+ * - Shutdown after the send: the redelivered run fails before its send
+ *   (asking nothing), and the invocation parks unsent, unaware of the record;
+ *   the next carrying attempt, another attempt, is refused as possibly seen,
  *   runs without the items, and ends the invocation interrupted.
+ *
+ * In all five cases the history accepts the new, redelivered execution's
+ * completion. The other order, in which the original execution's completion
+ * is accepted after a duplicate execution has started, is not established
+ * here.
  *
  * No snapshot store runs here (the session has none): a redelivered turn
  * runs again rather than adopting a saved one, which the adoption cases of
@@ -109,8 +118,8 @@ function expectRedelivered(h) {
     return { crashed, redelivered, attemptId: crashed.input.intake.attemptId, invocationId: crashed.input.intake.invocationId };
 }
 
-describe("workflow v2 durable intake: crash redelivery of a carrying attempt (exposure protocol revision 2, inactive)", () => {
-    it("crash after the send; the redelivered run stops before its send: its completion is accepted, and the end asked as not_dispatched is applied interrupted", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
+describe("workflow v2 durable intake: redelivery of a carrying attempt after a runtime shutdown and restart (exposure protocol revision 2, inactive)", () => {
+    it("shutdown(500) after the send and restart; the redelivered run stops before its send: its completion is accepted, and the end asked as not_dispatched is applied interrupted", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
         const flags = { sent: false };
         const crashed = deferred();
         await intakeNativeCase(getEnv(), "crash after the send; the redelivery stops", async (call, _prompt, opts) => {
@@ -155,7 +164,7 @@ describe("workflow v2 durable intake: crash redelivery of a carrying attempt (ex
         });
     });
 
-    it("crash after the send; the redelivered run is admitted again as the same attempt and sends: a duplicate request, and the invocation completes", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
+    it("shutdown(500) after the send and restart; the redelivered run is admitted again as the same attempt and sends: a duplicate request, and the invocation completes", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
         const flags = { sent: false, again: null };
         const crashed = deferred();
         await intakeNativeCase(getEnv(), "crash after the send; the redelivery sends again", async (call, _prompt, opts) => {
@@ -199,7 +208,7 @@ describe("workflow v2 durable intake: crash redelivery of a carrying attempt (ex
     });
 
     for (const [label, admitsBeforeEnd] of [["before the end", true], ["after the end", false]]) {
-        it(`a crashed execution that has not observed its cancellation asks the store only after the redelivered run's accepted negative result, ${label}: ${admitsBeforeEnd
+        it(`the shut-down execution, which has not observed its cancellation, calls the store directly with its captured admission request only after the redelivered run's accepted negative result, ${label}: ${admitsBeforeEnd
             ? "the end is applied interrupted" : "it is refused settled, nothing is recorded, and the end stands not_dispatched"}`, { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
             const flags = { started: false, eligibleAfterRestart: null };
             const zombieGo = deferred();
@@ -264,7 +273,7 @@ describe("workflow v2 durable intake: crash redelivery of a carrying attempt (ex
         });
     }
 
-    it("crash after the send; the redelivered run fails before its send and the invocation parks unsent; the next carrying attempt is refused as possibly seen and ends it interrupted", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
+    it("shutdown(500) after the send and restart; the redelivered run fails before its send and the invocation parks unsent; the next carrying attempt is refused as possibly seen and ends it interrupted", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
         const flags = { sent: false, third: null };
         const crashed = deferred();
         await intakeNativeCase(getEnv(), "crash after the send; a later attempt is refused exposed", async (call, _prompt, opts) => {
