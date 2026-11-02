@@ -81,12 +81,22 @@ test("a folder is carried whole, and sending it again sends nothing", () => {
     assert.equal(deliver(second, store).sent, 0);
     assert.equal(store.placed("skills-a", second.items[0].digest), laid.placements["skills-a"]);
 
-    // Changed: a different digest, the new bytes go, and the folder is laid out again.
+    // Changed: a different digest, the new bytes go, and the folder is
+    // laid out again — beside the old one, not over it. A runtime that is
+    // still warm holds the path it was given, so what it reads must not
+    // change under it.
     write(source, "SKILL.md", "# a skill, rewritten\n");
     const third = planComputeCopy([{ name: "skills-a", source }]);
     assert.notEqual(third.items[0].digest, first.items[0].digest);
-    assert.equal(deliver(third, store).sent, 1);
-    assert.equal(fs.readFileSync(path.join(laid.placements["skills-a"], "SKILL.md"), "utf8"), "# a skill, rewritten\n");
+    const relaid = deliver(third, store);
+    assert.equal(relaid.sent, 1);
+    assert.notEqual(relaid.placements["skills-a"], laid.placements["skills-a"],
+        "a folder's copy is named by what is in it, so a new version is a new folder");
+    assert.equal(fs.readFileSync(path.join(relaid.placements["skills-a"], "SKILL.md"), "utf8"), "# a skill, rewritten\n");
+    assert.equal(fs.readFileSync(path.join(laid.placements["skills-a"], "SKILL.md"), "utf8"), "# a skill\n",
+        "and what a warm runtime was already reading is still there");
+    assert.equal(store.placed("skills-a", first.items[0].digest), laid.placements["skills-a"]);
+    assert.equal(store.placed("skills-a", third.items[0].digest), relaid.placements["skills-a"]);
 });
 
 test("what is laid out is read-only", { skip: process.platform === "win32" ? "file modes" : false }, () => {
@@ -179,4 +189,23 @@ test("what crosses to the host carries no worker path", () => {
     const manifest = computeCopyManifest(plan.items);
     assert.equal(JSON.stringify(manifest).includes(source), false, "the worker's own path never crosses");
     assert.deepEqual(Object.keys(manifest[0]).sort(), ["digest", "files", "name"]);
+});
+
+test("the plan records the resolved path of every file, so the sender never walks a link again", () => {
+    const real = tmp("ps-copy-real-");
+    write(real, "SKILL.md", "# a skill\n");
+    const source = tmp("ps-copy-link-");
+    fs.mkdirSync(path.join(source, "inner"), { recursive: true });
+    write(source, "inner/SKILL.md", "# inner\n");
+
+    const plan = planComputeCopy([{ name: "skills-r", source }]);
+    assert.equal(plan.items[0].files.length, 1);
+    assert.equal(plan.items[0].resolved.length, 1);
+    assert.equal(plan.items[0].resolved[0], fs.realpathSync(path.join(source, "inner", "SKILL.md")),
+        "the resolved path, not one rebuilt from the folder and a relative name");
+    // Worker paths never cross: a manifest carries neither of them.
+    const manifest = JSON.stringify(computeCopyManifest(plan.items));
+    assert.equal(manifest.includes(source), false);
+    assert.equal(manifest.includes(real), false);
+    assert.equal(manifest.includes("resolved"), false);
 });

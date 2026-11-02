@@ -120,20 +120,46 @@ export async function serveComputeHostControl(
 
     /** Bytes arriving for one file, held until the sender has finished. */
     const incoming = new Map<number, Buffer[]>();
+    /**
+     * A folder's file list, as it arrives.
+     *
+     * A notice is bounded and a copy's limits are not, so a manifest
+     * arrives in pieces: piece 0 starts a fresh list, each later piece is
+     * added to it, and `place` lays out what has been gathered.
+     */
+    const manifests = new Map<string, { digest: string; files: unknown[] }>();
 
     channel.on("notice", (message: Record<string, unknown>) => {
         const id = message.id;
         try {
+            if (message.t === "alive") return;
             if (message.t === "have") {
                 void channel.notice({ t: "have:ok", id, missing: store.missing(message.digests) });
                 return;
             }
+            if (message.t === "manifest") {
+                const name = String(message.name ?? "");
+                const digest = String(message.digest ?? "");
+                const at = Number(message.at ?? 0);
+                const files = Array.isArray(message.files) ? message.files : [];
+                const held = at === 0 ? { digest, files: [] as unknown[] } : manifests.get(name);
+                if (!held || held.digest !== digest) throw new Error("that folder's manifest did not arrive in order");
+                held.files.push(...files);
+                if (held.files.length > limits.maxFiles) throw new Error("that folder carries more files than a session's copy does");
+                manifests.set(name, held);
+                void channel.notice({ t: "manifest:ok", id });
+                return;
+            }
             if (message.t === "place") {
-                const placements: Record<string, string> = {};
-                for (const item of Array.isArray(message.items) ? message.items : []) {
-                    placements[String((item as any)?.name ?? "")] = store.place(item as any);
-                }
-                void channel.notice({ t: "place:ok", id, placements });
+                const name = String(message.name ?? "");
+                const digest = String(message.digest ?? "");
+                const held = manifests.get(name);
+                const files = Array.isArray(message.files) ? message.files
+                    : held && held.digest === digest ? held.files : null;
+                if (files === null) throw new Error("that folder's manifest was never sent");
+                const where = store.place({ name, digest, files });
+                manifests.delete(name);
+                void channel.notice({ t: "place:ok", id, where });
                 return;
             }
         } catch (error) {

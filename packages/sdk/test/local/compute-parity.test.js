@@ -180,7 +180,29 @@ describe("skills and MCP servers on a session that runs elsewhere", () => {
             });
 
             const provider = createProcessComputeProvider({ rootDir: path.join(env.baseDir, "parity-compute") });
-            const hostSkillDir = () => path.join(provider.hosts()[0].sharedDir, "copies", "folders", computeCopyName("skills", skillsRoot));
+            /**
+             * Where this session's skill folder actually landed on the
+             * host. A copy is laid out under its name AND what is in it,
+             * so a new version never replaces the folder a warm runtime
+             * is reading: the name alone does not say where it is.
+             */
+            const hostSkillDir = () => {
+                const folders = path.join(provider.hosts()[0].sharedDir, "copies", "folders");
+                const prefix = `${computeCopyName("skills", skillsRoot)}.`;
+                let laid = [];
+                try {
+                    // Newest first: a changed skill is laid out as a new
+                    // folder beside the old one, so that a runtime still
+                    // reading the old one is not pulled out from under.
+                    laid = fs.readdirSync(folders)
+                        .filter((entry) => entry.startsWith(prefix))
+                        .sort((a, b) => fs.statSync(path.join(folders, b)).mtimeMs - fs.statSync(path.join(folders, a)).mtimeMs);
+                } catch { /* not laid out yet */ }
+                // Never throws: this is called while building a model's
+                // answer, and an exception there would hang the turn
+                // rather than fail the assertion that reads the result.
+                return path.join(folders, laid[0] ?? prefix.slice(0, -1));
+            };
 
             const declaredTools = [];
             let skillText = "";

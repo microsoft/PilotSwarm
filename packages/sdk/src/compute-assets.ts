@@ -45,6 +45,8 @@ import * as path from "node:path";
 export const COMPUTE_COPY_MAX_BYTES = 64 * 1024 * 1024;
 /** The most files one session's copy carries, before a deployment says otherwise. */
 export const COMPUTE_COPY_MAX_FILES = 4096;
+/** How many versions of one copied folder a host keeps, newest first. */
+export const COMPUTE_COPY_VERSIONS_KEPT = 3;
 
 export interface ComputeCopyLimits {
     maxBytes: number;
@@ -75,6 +77,16 @@ export interface ComputeCopyItem {
     /** The worker path it was read from. Never sent to the host. */
     source: string;
     files: ComputeCopyFile[];
+    /**
+     * The resolved worker path each file was actually read from, in the
+     * same order as `files`. Never sent to the host.
+     *
+     * The sender reads these, not the paths rebuilt from `source` and a
+     * relative name: rebuilding walks whatever links are there when the
+     * bytes are read, which is after a round trip whose length the host
+     * decides.
+     */
+    resolved: string[];
     /** Over the whole list, so an unchanged folder is recognised without reading it. */
     digest: string;
 }
@@ -97,28 +109,58 @@ export interface ComputeCopyPlan {
 export type ComputeCopyPlacement = Record<string, string>;
 
 /**
- * What each file hashed to, while its size and time of change stay the
- * same.
+ * What each file hashed to, while nothing about it has changed.
  *
  * A session's folders are walked at every turn, and almost nothing in
  * them ever changes; without this every turn would read every skill
- * again. A file whose size or time of change differs is read again, so a
- * file that is edited is noticed. Bounded, and dropped oldest first.
+ * again. The key carries the size, both times the file system records
+ * and the file's own number, so an edit that happens to keep the size and
+ * the modification time is still noticed. Bounded, and dropped oldest
+ * first.
  */
 const DIGESTS = new Map<string, string>();
+/** Which keys a path has, so dropping a file's memory drops all of them. */
+const DIGEST_KEYS = new Map<string, Set<string>>();
 const DIGEST_MEMORY = 20_000;
 
-function digestOf(file: string, size: number, modified: number): string {
-    const key = `${file}\u0000${size}\u0000${modified}`;
+function digestKey(file: string, stat: fs.Stats): string {
+    return [file, stat.size, stat.mtimeMs, stat.ctimeMs, stat.ino, stat.dev].join("\u0000");
+}
+
+function digestOf(file: string, stat: fs.Stats): string {
+    const key = digestKey(file, stat);
     const held = DIGESTS.get(key);
     if (held) return held;
     const digest = createHash("sha256").update(fs.readFileSync(file)).digest("hex");
     if (DIGESTS.size >= DIGEST_MEMORY) {
         const oldest = DIGESTS.keys().next();
-        if (!oldest.done) DIGESTS.delete(oldest.value);
+        if (!oldest.done) forgetKey(oldest.value);
     }
     DIGESTS.set(key, digest);
+    let keys = DIGEST_KEYS.get(file);
+    if (!keys) { keys = new Set(); DIGEST_KEYS.set(file, keys); }
+    keys.add(key);
     return digest;
+}
+
+function forgetKey(key: string): void {
+    DIGESTS.delete(key);
+    const file = key.slice(0, key.indexOf("\u0000"));
+    const keys = DIGEST_KEYS.get(file);
+    if (!keys) return;
+    keys.delete(key);
+    if (keys.size === 0) DIGEST_KEYS.delete(file);
+}
+
+/**
+ * Forget what this path hashed to.
+ *
+ * Called when the bytes read for sending do not match the digest the plan
+ * recorded, so the next turn reads the file again instead of refusing it
+ * for ever on a remembered answer.
+ */
+export function forgetComputeDigest(file: string): void {
+    for (const key of [...(DIGEST_KEYS.get(file) ?? [])]) forgetKey(key);
 }
 
 function toPosix(relative: string): string {
@@ -159,7 +201,7 @@ export function planComputeCopy(
             refusals.push({ item: request.name, reason: `it could not be read: ${String((error as Error)?.message ?? error)}` });
             continue;
         }
-        const collected: ComputeCopyFile[] = [];
+        const collected: Array<ComputeCopyFile & { resolved: string }> = [];
         let overflowed = false;
 
         /**
@@ -228,7 +270,7 @@ export function planComputeCopy(
                 }
                 let digest: string;
                 try {
-                    digest = digestOf(resolved, stat.size, stat.mtimeMs);
+                    digest = digestOf(resolved, stat);
                 } catch (error) {
                     refusals.push({ item: request.name, path: toPosix(childRelative), reason: `it could not be read: ${String((error as Error)?.message ?? error)}` });
                     continue;
@@ -241,6 +283,7 @@ export function planComputeCopy(
                     size: stat.size,
                     // Only the one bit that changes what a file does.
                     executable: process.platform !== "win32" && (stat.mode & 0o111) !== 0,
+                    resolved,
                 });
             }
         };
@@ -251,7 +294,8 @@ export function planComputeCopy(
         items.push({
             name: request.name,
             source: request.source,
-            files: collected,
+            files: collected.map(({ resolved: _resolved, ...file }) => file),
+            resolved: collected.map((file) => file.resolved),
             digest: createHash("sha256")
                 .update(collected.map((file) => `${file.path}\u0000${file.digest}\u0000${file.executable ? "x" : "-"}`).join("\n"))
                 .digest("hex"),
@@ -269,7 +313,7 @@ export function computeCopyDigests(items: ComputeCopyItem[]): string[] {
 }
 
 /** The plan without the worker paths: what actually crosses to the host. */
-export function computeCopyManifest(items: ComputeCopyItem[]): Array<Omit<ComputeCopyItem, "source">> {
+export function computeCopyManifest(items: ComputeCopyItem[]): Array<Omit<ComputeCopyItem, "source" | "resolved">> {
     return items.map(({ name, files, digest }) => ({ name, files, digest }));
 }
 
@@ -344,17 +388,51 @@ export class ComputeAssetStore {
         fs.renameSync(temporary, target);
     }
 
+    /**
+     * Where a folder of this exact content is, by the name the worker
+     * gave it and what is in it.
+     *
+     * The content is part of the folder's own name, so a new version
+     * never replaces a folder a warm runtime is reading, and two workers
+     * on different builds do not flip one folder back and forth under
+     * each other.
+     */
+    private treePath(name: string, digest: string): string {
+        return path.join(this.trees, `${name}.${digest.slice(0, 32)}`);
+    }
+
     /** Where a folder is, if it is already laid out as this manifest says. */
     placed(name: string, digest: string): string | null {
         if (!NAME_PATTERN.test(name) || !DIGEST_PATTERN.test(digest)) return null;
-        const mark = path.join(this.marks, `${name}.txt`);
-        try {
-            if (fs.readFileSync(mark, "utf8").trim() !== digest) return null;
-        } catch {
-            return null;
+        const placed = this.treePath(name, digest);
+        return fs.existsSync(path.join(this.marks, `${name}.${digest.slice(0, 32)}.txt`)) && fs.existsSync(placed)
+            ? placed : null;
+    }
+
+    /**
+     * Keep the newest few versions of one name and drop the rest.
+     *
+     * A warm runtime still holds the path of the version it was given, so
+     * a version is never removed the moment it is replaced; a host that
+     * lives a long time still does not keep every version a session ever
+     * had.
+     */
+    private prune(name: string, keep: string): void {
+        let entries: string[];
+        try { entries = fs.readdirSync(this.trees); } catch { return; }
+        const mine = entries
+            .filter((entry) => entry.startsWith(`${name}.`) && entry !== path.basename(keep) && !entry.startsWith(`.${name}`))
+            .map((entry) => {
+                const full = path.join(this.trees, entry);
+                let at = 0;
+                try { at = fs.statSync(full).mtimeMs; } catch { /* going anyway */ }
+                return { full, entry, at };
+            })
+            .sort((a, b) => b.at - a.at);
+        for (const old of mine.slice(COMPUTE_COPY_VERSIONS_KEPT - 1)) {
+            fs.rmSync(old.full, { recursive: true, force: true });
+            fs.rmSync(path.join(this.marks, `${old.entry}.txt`), { force: true });
         }
-        const placed = path.join(this.trees, name);
-        return fs.existsSync(placed) ? placed : null;
     }
 
     /**
@@ -373,7 +451,7 @@ export class ComputeAssetStore {
         if (already) return already;
         const files = Array.isArray(item.files) ? item.files : [];
         if (files.length > this.limits.maxFiles) throw new Error("that folder carries more files than a session's copy does");
-        const target = path.join(this.trees, name);
+        const target = this.treePath(name, digest);
         const staging = path.join(this.trees, `.${name}.${process.pid}.${Date.now()}`);
         fs.rmSync(staging, { recursive: true, force: true });
         fs.mkdirSync(staging, { recursive: true, mode: 0o700 });
@@ -403,7 +481,8 @@ export class ComputeAssetStore {
             fs.rmSync(staging, { recursive: true, force: true });
             throw error;
         }
-        fs.writeFileSync(path.join(this.marks, `${name}.txt`), digest, { mode: 0o600 });
+        fs.writeFileSync(path.join(this.marks, `${name}.${digest.slice(0, 32)}.txt`), digest, { mode: 0o600 });
+        this.prune(name, target);
         return target;
     }
 }
