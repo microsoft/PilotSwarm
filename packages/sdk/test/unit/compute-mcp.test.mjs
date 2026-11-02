@@ -15,6 +15,7 @@ import assert from "node:assert/strict";
 import path from "node:path";
 import {
     computeCopyName,
+    mcpOriginKey,
     packageMcpFolders,
     packageMcpFoldersForAgents,
     remoteMcpCustomAgents,
@@ -205,4 +206,62 @@ test("a folder's copy is named by where it came from, so the same folder is one 
     assert.equal(computeCopyName("skills", "/a/b"), computeCopyName("skills", "/a/b"));
     assert.notEqual(computeCopyName("skills", "/a/b"), computeCopyName("skills", "/a/c"));
     assert.match(computeCopyName("skills", "/a/b"), /^skills-[0-9a-f]{16}$/);
+});
+
+test("the older event-stream transport is refused plainly rather than offered half-working", () => {
+    // That transport announces, inside the stream, the address the runtime
+    // must post to. The worker forwards the stream without reading it, so
+    // the announcement would reach the runtime naming somewhere it cannot
+    // get to — and the turn would fail in the middle of a conversation
+    // instead of here, with a reason.
+    const result = remoteMcpServers(
+        { legacy: { type: "sse", url: "https://tools.example.invalid/sse", tools: ["*"] } },
+        origins({ legacy: { origin: "deployment", dir: "/deploy", remote: true } }), facts(), mint);
+    assert.deepEqual(result.servers, {});
+    assert.deepEqual(result.tickets, [], "and no ticket is minted for a server that cannot be reached");
+    assert.match(result.unavailable[0].reason, /older event-stream transport/);
+});
+
+test("two packages exporting one server name each get their own, never the other's", () => {
+    // The names collide; the packages do not. A session authorized for
+    // one of them must be given that one's folder and that one's entry.
+    const first = path.resolve("/worker/packages/alpha");
+    const second = path.resolve("/worker/packages/beta");
+    const host = {
+        placements: {
+            [computeCopyName("package", first)]: "/host/copies/folders/alpha",
+            [computeCopyName("package", second)]: "/host/copies/folders/beta",
+        },
+        relay: { command: "/host/node", args: ["/host/relay.cjs"] },
+        httpBase: "http://127.0.0.1:5001/",
+        separator: "/",
+    };
+    const alpha = {
+        origin: "package", dir: first, packageId: "pkg-alpha",
+        raw: { command: "./alpha-server", args: [], tools: ["*"] },
+    };
+    const beta = {
+        origin: "package", dir: second, packageId: "pkg-beta",
+        raw: { command: "./beta-server", args: [], tools: ["*"] },
+    };
+    // The session's own map says which one it was authorized for.
+    const forAlpha = remoteMcpServers({ tools: {} }, origins({ tools: alpha }), host, mint);
+    assert.equal(forAlpha.servers.tools.command, "./alpha-server");
+    assert.equal(forAlpha.servers.tools.cwd, "/host/copies/folders/alpha");
+    assert.deepEqual(packageMcpFolders({ tools: {} }, origins({ tools: alpha })),
+        [{ name: computeCopyName("package", first), source: first }],
+        "and only that package's folder is copied to the host");
+
+    const forBeta = remoteMcpServers({ tools: {} }, origins({ tools: beta }), host, mint);
+    assert.equal(forBeta.servers.tools.command, "./beta-server");
+    assert.equal(forBeta.servers.tools.cwd, "/host/copies/folders/beta");
+    assert.deepEqual(packageMcpFolders({ tools: {} }, origins({ tools: beta })),
+        [{ name: computeCopyName("package", second), source: second }]);
+});
+
+test("an origin is asked for by package and name together, so one name is not one answer", () => {
+    assert.notEqual(mcpOriginKey("pkg-alpha", "tools"), mcpOriginKey("pkg-beta", "tools"));
+    assert.notEqual(mcpOriginKey(null, "tools"), mcpOriginKey("pkg-alpha", "tools"));
+    assert.equal(mcpOriginKey(null, "tools"), mcpOriginKey(undefined, "tools"));
+    assert.equal(mcpOriginKey("pkg-alpha", "tools"), mcpOriginKey("pkg-alpha", "tools"));
 });

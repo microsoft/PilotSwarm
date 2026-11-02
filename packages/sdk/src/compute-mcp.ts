@@ -52,6 +52,24 @@ export interface McpServerOrigin {
     remote?: boolean;
 }
 
+/**
+ * Which entry an origin belongs to, exactly.
+ *
+ * A server name is not an identity: two packages may each export a
+ * server called `tools`, and the per-package maps already keep them
+ * apart. Remembering origins by bare name would let the package that
+ * loaded last answer for the one a session is actually authorized for —
+ * and the answer decides whose folder is copied to the host and whose
+ * code runs there. So an origin is remembered, and asked for, by the
+ * package that defined it together with the name.
+ *
+ * Deployment entries share one space, because a deployment name is
+ * already unique across the catalog: a package may not shadow one.
+ */
+export function mcpOriginKey(packageId: string | null | undefined, name: string): string {
+    return `${packageId ? `package:${packageId}` : "deployment"}\u0000${name}`;
+}
+
 /** What the host component told the worker about itself. */
 export interface RemoteMcpHostFacts {
     /** Where each copied folder ended up, by the name the worker gave it. */
@@ -171,6 +189,21 @@ export function remoteMcpServers(
                 continue;
             }
             if (typeof base.url === "string" && base.url) {
+                if (base.type === "sse") {
+                    // The older transport announces, inside the stream
+                    // itself, the address the runtime must post to. The
+                    // worker forwards that stream without reading it, so
+                    // the announcement arrives naming the trusted side's
+                    // own address or a path outside the one this ticket
+                    // stands for — neither of which the runtime can
+                    // reach. Reading the stream to rewrite it would mean
+                    // PilotSwarm sitting in the middle of an MCP
+                    // conversation, which is exactly what this does not
+                    // do. So it is refused, plainly, rather than offered
+                    // and then failing in the middle of a turn.
+                    unavailable.push({ name, reason: "this server uses the older event-stream transport, which a session whose agent runs elsewhere cannot reach" });
+                    continue;
+                }
                 if (!host.httpBase) {
                     unavailable.push({ name, reason: "this host has no local address for a forwarded server, so a server reached over HTTP cannot be reached from it" });
                     continue;
@@ -180,7 +213,7 @@ export function remoteMcpServers(
                 // No headers: whatever the deployment configured stays on
                 // the trusted side and is applied there, so a credential in
                 // the configuration never reaches the host.
-                out[name] = { ...kept, type: base.type === "sse" ? "sse" : "http", url: `${host.httpBase}${ticket}` };
+                out[name] = { ...kept, type: "http", url: `${host.httpBase}${ticket}` };
                 continue;
             }
             unavailable.push({ name, reason: "this server's configuration is neither a command nor an address, so there is nothing to reach" });
