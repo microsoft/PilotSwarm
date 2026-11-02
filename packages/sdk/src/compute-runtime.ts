@@ -21,6 +21,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import type { CopilotRequestContext, CopilotWebSocketHandler, SessionFsFileInfo, SessionFsProvider } from "@github/copilot-sdk";
 import { ByokRequestCompatibility } from "./copilot-client.js";
+import { isWorkerControlName, PS_CONTROL_PREFIX } from "./snapshot-protocol.js";
 
 /** The virtual root the runtime sees for session state. */
 export const REMOTE_SESSION_STATE_ROOT = "/pilotswarm/session-state";
@@ -278,6 +279,81 @@ export class WorkerDirectorySessionFs implements SessionFsProvider {
             { code: "EDQUOT" });
     }
 
+    /**
+     * While this is set, nothing the runtime sends changes the folder.
+     *
+     * The worker publishes and restores a session's files by reading the
+     * whole folder and writing it back. A runtime writing into it at the
+     * same moment would put half of one state into a snapshot of another,
+     * so the worker closes the folder for the moment it needs it and says
+     * why. Reads are left alone: they change nothing, and a runtime that
+     * cannot read its own transcript for a second is worse off than one
+     * that is told to wait.
+     */
+    private fencedReason: string | null = null;
+
+    /**
+     * Close this session's folder to the runtime until the returned
+     * function is called. Safe to nest: the folder opens again when the
+     * last fence is released.
+     */
+    fence(reason: string): () => void {
+        this.fences += 1;
+        this.fencedReason = reason;
+        let released = false;
+        return () => {
+            if (released) return;
+            released = true;
+            this.fences = Math.max(0, this.fences - 1);
+            if (this.fences === 0) this.fencedReason = null;
+        };
+    }
+
+    private fences = 0;
+
+    /** Whether the folder is closed to the runtime right now. */
+    get isFenced(): boolean {
+        return this.fences > 0;
+    }
+
+    private checkFence(operation: string): void {
+        if (this.fences > 0) {
+            throw Object.assign(
+                new Error(`this session's files are being ${this.fencedReason ?? "saved"}; ${operation} cannot run until that finishes`),
+                { code: "EBUSY" });
+        }
+    }
+
+    /**
+     * PilotSwarm's own files in the session folder are not the runtime's to
+     * touch. Worker recovery trusts the snapshot marker, the turn sentinel
+     * and the committed-turn result: a runtime that could remove, rewrite
+     * or rename any of them could make the worker replay a turn, trust a
+     * dead incarnation's files, or hand back a result that was never
+     * computed. The whole `.ps-` space is refused so that the next control
+     * file is protected by being named, not by being remembered here.
+     *
+     * The session root counts as one of them: removing or renaming it takes
+     * every control file with it.
+     */
+    private checkReserved(p: string, operation: string): void {
+        const reserved = this.relative(p).split("/").filter(Boolean).find(isWorkerControlName);
+        if (reserved) {
+            throw refused(`${operation} is refused: "${reserved}" is one of PilotSwarm's files in this session's folder (names starting with "${PS_CONTROL_PREFIX}" are reserved)`);
+        }
+    }
+
+    /**
+     * The session's own folder is not the runtime's to remove or rename:
+     * doing so takes every control file in it along, which is the same
+     * thing as deleting them one by one.
+     */
+    private checkNotRoot(p: string, operation: string): void {
+        if (!this.relative(p)) {
+            throw refused(`${operation} is refused: this session's own folder cannot be removed or renamed by the runtime`);
+        }
+    }
+
     private relative(p: string): string {
         const posix = String(p).replace(/\\/g, "/");
         const homeMarker = `/session-state/${path.basename(this.dir)}`;
@@ -316,10 +392,13 @@ export class WorkerDirectorySessionFs implements SessionFsProvider {
     }
 
     async readFile(p: string): Promise<string> {
+        this.checkReserved(p, "reading a file");
         return fs.readFile(await this.real(p), "utf8");
     }
 
     async writeFile(p: string, content: string, mode?: number): Promise<void> {
+        this.checkFence("writing a file");
+        this.checkReserved(p, "writing a file");
         this.checkSize(content);
         const target = await this.real(p);
         // What this write adds, which is not what it carries when it
@@ -332,6 +411,8 @@ export class WorkerDirectorySessionFs implements SessionFsProvider {
     }
 
     async appendFile(p: string, content: string, mode?: number): Promise<void> {
+        this.checkFence("appending to a file");
+        this.checkReserved(p, "appending to a file");
         this.checkSize(content);
         const target = await this.real(p);
         await this.checkRoom(Buffer.byteLength(content, "utf8"));
@@ -340,6 +421,14 @@ export class WorkerDirectorySessionFs implements SessionFsProvider {
     }
 
     async exists(p: string): Promise<boolean> {
+        // A reserved file answers as it does for anything that is not
+        // there: the runtime learns nothing about the worker's own files,
+        // not even whether they exist.
+        try {
+            this.checkReserved(p, "testing a path");
+        } catch {
+            return false;
+        }
         try {
             await fs.lstat(await this.real(p));
             return true;
@@ -349,6 +438,7 @@ export class WorkerDirectorySessionFs implements SessionFsProvider {
     }
 
     async stat(p: string): Promise<SessionFsFileInfo> {
+        this.checkReserved(p, "reading a path's details");
         const st = await fs.lstat(await this.real(p));
         return {
             isFile: st.isFile(),
@@ -360,19 +450,28 @@ export class WorkerDirectorySessionFs implements SessionFsProvider {
     }
 
     async mkdir(p: string, recursive: boolean, mode?: number): Promise<void> {
+        this.checkFence("making a directory");
+        this.checkReserved(p, "making a directory");
         await fs.mkdir(await this.real(p), { recursive, ...(mode !== undefined ? { mode } : {}) });
     }
 
     async readdir(p: string): Promise<string[]> {
-        return fs.readdir(await this.real(p));
+        this.checkReserved(p, "listing a directory");
+        return (await fs.readdir(await this.real(p))).filter((name) => !isWorkerControlName(name));
     }
 
     async readdirWithTypes(p: string): Promise<Array<{ name: string; type: "file" | "directory" }>> {
+        this.checkReserved(p, "listing a directory");
         const entries = await fs.readdir(await this.real(p), { withFileTypes: true });
-        return entries.map((e) => ({ name: e.name, type: e.isDirectory() ? "directory" : "file" }));
+        return entries
+            .filter((e) => !isWorkerControlName(e.name))
+            .map((e) => ({ name: e.name, type: e.isDirectory() ? "directory" : "file" }));
     }
 
     async rm(p: string, recursive: boolean, force: boolean): Promise<void> {
+        this.checkFence("removing a path");
+        this.checkNotRoot(p, "removing a path");
+        this.checkReserved(p, "removing a path");
         await fs.rm(await this.real(p), { recursive, force });
         // The folder is smaller than it was; count it again rather than
         // leaving a session unable to write after it has cleaned up.
@@ -380,6 +479,11 @@ export class WorkerDirectorySessionFs implements SessionFsProvider {
     }
 
     async rename(src: string, dest: string): Promise<void> {
+        this.checkFence("renaming a path");
+        this.checkNotRoot(src, "renaming a path");
+        this.checkNotRoot(dest, "renaming a path");
+        this.checkReserved(src, "renaming a path");
+        this.checkReserved(dest, "renaming a path");
         const from = await this.real(src);
         const target = await this.real(dest);
         await fs.mkdir(path.dirname(target), { recursive: true });

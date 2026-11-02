@@ -885,6 +885,12 @@ export class SessionManager {
     /** Per session: the compute host it is bound to, for release. */
     private computeHosts = new Map<string, ComputeBinding>();
     /**
+     * Per session: the session-state folder a remote runtime writes through,
+     * kept so the worker can close it to the runtime while it saves or
+     * restores that folder (`fenceSessionFiles`).
+     */
+    private computeSessionFs = new Map<string, WorkerDirectorySessionFs>();
+    /**
      * Per host: its bridge on this machine, shared by every session of a
      * tree bound to that host, so they share one address and one pooled
      * client. The registry is what makes two turns starting together get
@@ -3642,9 +3648,13 @@ export class SessionManager {
                     ? { additionalDirectories: workspaceAttach.extras.map((extra) => extra.path) }
                     : {}),
             // Compute providers: session state stays in this worker's directory.
-            ...(remoteEndpoint ? { createSessionFsProvider: () => new WorkerDirectorySessionFs(
-                path.join(this.sessionStateDir, sessionId), undefined,
-                { maxTotalBytes: this.sessionFsMaxTotalBytes }) } : {}),
+            ...(remoteEndpoint ? { createSessionFsProvider: () => {
+                const made = new WorkerDirectorySessionFs(
+                    path.join(this.sessionStateDir, sessionId), undefined,
+                    { maxTotalBytes: this.sessionFsMaxTotalBytes });
+                this.computeSessionFs.set(sessionId, made);
+                return made;
+            } } : {}),
             // Session workspaces: repo hooks never run, and the repo's
             // instruction files load only when the provider adopts them. A
             // cleared session keeps hooks off.
@@ -3891,6 +3901,25 @@ export class SessionManager {
         this.sessions.delete(sessionId);
         this.sessionAgentCopies.delete(sessionId);
         this.sessionBindingFingerprints.delete(sessionId);
+        // The folder a remote runtime wrote through belonged to that
+        // handle; the next one makes its own.
+        this.computeSessionFs.delete(sessionId);
+    }
+
+    /**
+     * Compute providers: close a remote session's state folder to its
+     * runtime while the worker saves or restores it, and open it again
+     * afterwards.
+     *
+     * The worker publishes a session's files by reading the whole folder
+     * and writing it back. A runtime writing into the folder at that
+     * moment would put part of one state into the snapshot of another. An
+     * ordinary session writes those files through the worker's own handle
+     * and needs nothing here, so this returns a function that does
+     * nothing for it.
+     */
+    fenceSessionFiles(sessionId: string, reason: string): () => void {
+        return this.computeSessionFs.get(sessionId)?.fence(reason) ?? (() => {});
     }
 
     /**

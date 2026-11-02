@@ -29,6 +29,24 @@ export const PS_MARKER_FILE = ".ps-snapshot-version";
 export const PS_SENTINEL_FILE = ".ps-turn-inprogress";
 export const PS_TURN_COMMIT_FILE = ".ps-turn-commit.json";
 
+/**
+ * The one prefix every worker-owned file and folder inside a session
+ * directory carries: the marker, the sentinel, the committed-turn result,
+ * the temporary directories a hydrate unpacks into, and whatever is added
+ * next. Recovery trusts these, so nothing but the worker may write, remove,
+ * rename or read them — see `WorkerDirectorySessionFs`, which refuses them
+ * on behalf of a session whose agent runtime is not the worker's own.
+ *
+ * It is a prefix rather than a list on purpose: a new control file must be
+ * protected by being named, not by being remembered somewhere else too.
+ */
+export const PS_CONTROL_PREFIX = ".ps-";
+
+/** Whether one path segment names a worker control file or directory. */
+export function isWorkerControlName(name: string): boolean {
+    return typeof name === "string" && name.startsWith(PS_CONTROL_PREFIX);
+}
+
 export interface SnapshotMarker {
     version: number;
     turnKey?: string;
