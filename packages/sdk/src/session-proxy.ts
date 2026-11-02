@@ -4286,8 +4286,10 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             // copy of the same message would be: its canonical text, its
             // canonical client id (which tombstones name) and the system
             // sender `workflow message`. Each has an id, so turn start records
-            // it once, on whichever attempt first reaches it.
-            if (catalog && turnIntake && (tc || !isRetryAttempt)) {
+            // it once, on whichever attempt first reaches it, a retry's
+            // included: only runTurnV5 carries a batch, and it runs the turn-
+            // control path, whose turn start is set wherever a catalog is.
+            if (catalog && turnIntake) {
                 for (const item of turnIntake.items) {
                     promptRecords.push({
                         eventType: isInternalSystemPrompt(item.text) ? "system.message" : "user.message",

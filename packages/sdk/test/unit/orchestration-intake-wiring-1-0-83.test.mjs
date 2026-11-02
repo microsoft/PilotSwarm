@@ -51,6 +51,18 @@
  * - Reviews O-W2-3 and O-W2-5: a held retry keeps its own retry count and
  *   thrown-turn key through interposed turns and continue-as-new; an
  *   unanswered arrival is carried by continue-as-new.
+ * - The formal delta of 84840d8d (S1 to S5): every marker-setting path, the
+ *   connection-closed retries and the lossy handoff included, continues as
+ *   new before any dispatch, with the retry's own count and key; the lossy
+ *   handoff's count 0 draws a new key (as 1.0.82 does); a dispatch without
+ *   the held count and key fails visibly; a hydration give-up after a
+ *   restored retry ends the invocation interrupted with nothing sent; an
+ *   interposed turn's exhaustion or non-retryable failure changes only the
+ *   session's own state, and a replacement clears the marker and the held
+ *   record; an arrival flag with nothing to answer starts no turn and is
+ *   consumed by the next carrying attempt. Q-W2-7 (pre-existing): a turn
+ *   interposed before a thrown turn's retry sends the thrown turn's key and
+ *   carries nothing.
  * - Decide's turn for the intake alone takes what drain gives a newly
  *   arrived prompt: the released timer's note and the buffered child digest,
  *   in its system context; the released wait resumes after it (6.2).
@@ -65,6 +77,7 @@ import { appendToFifo, decide, drain } from "../../dist/orchestration_1_0_83/que
 import { runLoop } from "../../dist/orchestration_1_0_83/runtime.js";
 import { INTAKE_RECORDED_EVENT, intakeWantsTurn, runIntakeWake } from "../../dist/orchestration_1_0_83/intake-wiring.js";
 import { intakeDueAtMs } from "../../dist/orchestration_1_0_83/intake-machine.js";
+import { COPILOT_CONNECTION_CLOSED_MAX_RETRIES } from "../../dist/orchestration_1_0_83/utils.js";
 import { TURN_CONTROL_CAPABILITY, WORKFLOW_REQUEST_CAPABILITY } from "../../dist/activity-routing.js";
 import { createSessionProxy, registerActivities } from "../../dist/session-proxy.js";
 import {
@@ -1025,7 +1038,10 @@ test("D-W2-1: when a turn that runs while the pending prompt is held retries, it
     const can = ops.at(-1);
     assert.equal(can.op, "continueAsNew");
     assert.match(can.canInput.prompt, /second wait is now complete/);
+    // The replacement clears both the marker and the held retry's count and key (formal S4).
     assert.equal(Object.hasOwn(can.canInput, "intakeRetryInvocationId"), false);
+    assert.equal(Object.hasOwn(can.canInput, "intakeRetryAttempt"), false);
+    assert.equal(runtime.state.intakeRetryAttempt, null);
     assert.deepEqual(can.canInput.intake.invocation.settle, { outcome: "interrupted", retry: null });
     // The next execution restores it, its end due on the wake.
     const next = makeRuntime(can.canInput);
@@ -1116,6 +1132,159 @@ test("review O-W2-5: an arrival that resumes a parked invocation is carried by a
     assert.deepEqual(turns[1].input.intake, payloadOf([2], turns[1].input.intake.invocationId));
     assert.equal(next.state.intakeArrivalPending, false);
     assert.deepEqual(next.state.intake, EMPTY_INTAKE);
+});
+
+// ─── Formal delta of 84840d8d: S1 to S5 ──────────────────────
+
+/** Ids for one execution's draws, unique across the executions of a test. */
+const drawsOf = execution => range(1, 12).map(n => `x${execution}-${n}`);
+
+test("formal S1, S2: each connection-closed retry continues as new before any dispatch, with the marker, its count and the thrown key; the lossy handoff's carries count 0, so its dispatch draws a new key (as 1.0.82 does) and carries the same invocation", () => {
+    let runtime = makeRuntime({ intake: carried({ queue: [heldEntry(1)] }), blobEnabled: true });
+    let firstKey = null;
+    let invocationId = null;
+    for (let attempt = 1; attempt <= COPILOT_CONNECTION_CLOSED_MAX_RETRIES + 1; attempt += 1) {
+        const seen = [];
+        const { ops } = drive(runLoop(runtime), turnResponder({
+            guids: drawsOf(attempt), activity: storeAnswers([1]),
+            turn: op => {
+                seen.push({ turnKey: op.input.snapshot?.turnKey ?? null, retryCount: op.input.retryCount ?? 0, intake: op.input.intake ?? null });
+                return { throw: new Error("Connection is closed") };
+            },
+        }));
+        // One attempt per execution: the marker is set and its continue-as-new follows, with no dispatch between them.
+        assert.equal(seen.length, 1, `attempt ${attempt}`);
+        invocationId ??= seen[0].intake?.invocationId ?? null;
+        assert.ok(invocationId !== null);
+        assert.deepEqual(seen[0].intake, payloadOf([1], invocationId), `attempt ${attempt}`);
+        assert.equal(seen[0].retryCount, attempt - 1, `attempt ${attempt}`);
+        firstKey ??= seen[0].turnKey;
+        assert.match(firstKey, /^x1-/);
+        assert.equal(seen[0].turnKey, firstKey, `attempt ${attempt} sends the first attempt's key`);
+        const can = ops.at(-1);
+        assert.equal(can.op, "continueAsNew", `attempt ${attempt}`);
+        assert.equal(can.canInput.intakeRetryInvocationId, invocationId, `attempt ${attempt}`);
+        assert.equal(can.canInput.intake.invocation.sent, true, `attempt ${attempt}`);
+        const lossy = attempt > COPILOT_CONNECTION_CLOSED_MAX_RETRIES;
+        assert.equal(can.canInput.retryCount, lossy ? 0 : attempt, `attempt ${attempt}`);
+        assert.equal(can.canInput.thrownTurnKey, firstKey, `attempt ${attempt}`);
+        assert.deepEqual(can.canInput.intakeRetryAttempt, { retryCount: lossy ? 0 : attempt, thrownTurnKey: firstKey }, `attempt ${attempt}`);
+        assert.equal(ops.some(op => op.op === "record" && op.events[0].eventType === "session.lossy_handoff"), lossy, `attempt ${attempt}`);
+        runtime = makeRuntime(can.canInput);
+    }
+    // The handoff's dispatch: count 0, so no key reuse; it carries the invocation, which its result completes.
+    const seen = [];
+    const { ops } = drive(runLoop(runtime), turnResponder({
+        guids: drawsOf(9), activity: storeAnswers([1]),
+        turn: op => {
+            seen.push({ turnKey: op.input.snapshot?.turnKey ?? null, retryCount: op.input.retryCount ?? 0, intake: op.input.intake ?? null });
+            return completed({ invocationId, sent: true });
+        },
+    }));
+    assert.equal(seen.length, 1);
+    assert.notEqual(seen[0].turnKey, firstKey);
+    assert.match(seen[0].turnKey, /^x9-/);
+    assert.equal(seen[0].retryCount, 0);
+    assert.deepEqual(seen[0].intake, payloadOf([1], invocationId));
+    assert.equal(endOf(ops).input.outcome, "completed");
+    assert.equal(runtime.state.intakeRetryInvocationId, null);
+    assert.equal(runtime.state.intakeRetryAttempt, null);
+});
+
+test("formal S1: a pending prompt's dispatch of a sent invocation's retry without its count and key fails the execution visibly; no turn runs", () => {
+    const runtime = makeRuntime({
+        intake: carried({ invocation: boundInvocation([1], { sent: true }) }), intakeRetryInvocationId: "inv-1",
+        intakeRetryAttempt: { retryCount: 1, thrownTurnKey: null }, prompt: "retry words", retryCount: 1,
+    });
+    // Restored strictly with the marker; a lost record is a broken invariant the dispatch meets.
+    runtime.state.intakeRetryAttempt = null;
+    const ops = [];
+    assert.throws(() => drive(runLoop(runtime), turnResponder({ activity: storeAnswers([1]), turn: () => assert.fail("no turn runs") }), ops),
+        error => error.code === "WORKFLOW_INTAKE_BROKEN" && /has no retry count and turn key/.test(error.message));
+    assert.equal(turnsOf(ops).length, 0);
+    assert.equal(ops.find(op => op.op === "cms").status, "failed");
+    assert.equal(endOf(ops), undefined);
+});
+
+test("formal S3: a hydration give-up before the dispatch of a restored retry ends its sent invocation interrupted; no turn runs and nothing is sent", () => {
+    const runtime = makeRuntime({
+        intake: carried({ invocation: boundInvocation([1], { sent: true }) }), intakeRetryInvocationId: "inv-1",
+        intakeRetryAttempt: { retryCount: 1, thrownTurnKey: "key-A" }, prompt: "retry words", retryCount: 1, thrownTurnKey: "key-A",
+        blobEnabled: true, needsHydration: true,
+    });
+    const { ops } = drive(runLoop(runtime), turnResponder({
+        activity: storeAnswers([1]),
+        sessionActivity: op => (op.name === "hydrateSession" ? { throw: new Error("the session store is unreachable") } : { value: undefined }),
+        turn: () => assert.fail("no turn runs"),
+    }));
+    assert.equal(turnsOf(ops).length, 0);
+    assert.equal(ops.filter(op => op.op === "session" && op.name === "hydrateSession").length, 3);
+    const end = endOf(ops);
+    assert.deepEqual([end.input.invocationId, end.input.outcome], ["inv-1", "interrupted"]);
+    assert.equal(runtime.state.intakeRetryInvocationId, null);
+    assert.equal(runtime.state.intakeRetryAttempt, null);
+    assert.deepEqual(runtime.state.intake, EMPTY_INTAKE);
+});
+
+test("formal S4: an interposed turn that exhausts the session's retries, or fails non-retryably, changes only the session's own state; the held retry keeps its marker and record, and its dispatch carries the invocation with its own count and key", () => {
+    for (const [label, held, failure, keyAfter] of [
+        // The held retry is the turn's second: the interposed turn's error takes the session's shared count to the limit,
+        // and the exhaustion clears the session's thrown key.
+        ["exhausted", 2, { type: "error", message: "the model call failed" }, null],
+        // A non-retryable failure leaves the session's key as it was; with the marker held, no other turn reuses it.
+        ["non-retryable", 1, { type: "error", message: 'Required tool "lookup" is not available in this session.', retryable: false }, "key-A"],
+    ]) {
+        const runtime = heldRetryRuntime({
+            blobEnabled: true, thrownTurnKey: "key-A", retryCount: held, intakeRetryAttempt: { retryCount: held, thrownTurnKey: "key-A" },
+        });
+        const seen = [];
+        let between = null;
+        const { ops } = drive(runLoop(runtime), turnResponder({
+            activity: storeAnswers([1]),
+            turn: op => {
+                seen.push({ turnKey: op.input.snapshot?.turnKey ?? null, retryCount: op.input.retryCount ?? 0, intake: op.input.intake ?? null });
+                return op.input.intake ? completed(sentBy()) : turnResult(failure);
+            },
+            // The first race after the interposed turn: what its failure left.
+            onRace: () => {
+                if (seen.length === 1 && between === null) {
+                    const { state } = runtime;
+                    between = {
+                        marker: state.intakeRetryInvocationId, held: state.intakeRetryAttempt, retryCount: state.retryCount, key: state.thrownTurnKey,
+                    };
+                }
+                return undefined;
+            },
+        }));
+        assert.equal(seen.length, 2, label);
+        // The wait's turn ran under a key of its own and carried nothing; its failure did not replace the held prompt.
+        assert.equal(seen[0].intake, null, label);
+        assert.notEqual(seen[0].turnKey, "key-A", label);
+        assert.equal(ops.some(op => op.op === "record" && op.events[0].eventType === INTAKE_RECORDED_EVENT), false, label);
+        assert.deepEqual(between, { marker: "inv-1", held: { retryCount: held, thrownTurnKey: "key-A" }, retryCount: 0, key: keyAfter }, label);
+        // The retry's dispatch: its own count and key, and the invocation.
+        assert.deepEqual(seen[1], { turnKey: "key-A", retryCount: held, intake: payloadOf([1]) }, label);
+        assert.equal(endOf(ops).input.outcome, "completed", label);
+        assert.equal(runtime.state.intakeRetryAttempt, null, label);
+    }
+});
+
+test("formal S5: an arrival flag with nothing to answer starts no turn and changes no other turn; the next carrying attempt consumes it", () => {
+    const stale = makeRuntime({ intakeArrivalPending: true });
+    assert.equal(intakeWantsTurn(stale), false);
+    const first = drive(runLoop(stale), turnResponder({ messages: [{ prompt: "hello", clientMessageIds: ["person-1"] }], turn: () => completed() }));
+    assert.equal(first.ops[0].op, "dequeue");
+    assert.equal(turnsOf(first.ops).length, 1);
+    assert.equal(Object.hasOwn(turnsOf(first.ops)[0].input, "intake"), false);
+    assert.equal(stale.state.intakeArrivalPending, true);
+    // With an item held, the attempt that carries its invocation takes the flag: one turn, and none for the flag.
+    const held = makeRuntime({ intakeArrivalPending: true, intake: carried({ queue: [heldEntry(1)] }) });
+    const second = drive(runLoop(held), turnResponder({ guids: ["inv-1"], activity: storeAnswers([1]), turn: () => completed(sentBy()) }));
+    assert.equal(turnsOf(second.ops).length, 1);
+    assert.deepEqual(turnsOf(second.ops)[0].input.intake, payloadOf([1]));
+    assert.equal(held.state.intakeArrivalPending, false);
+    assert.equal(endOf(second.ops).input.outcome, "completed");
+    assert.deepEqual(held.state.intake, EMPTY_INTAKE);
 });
 
 test("an attempt that carried no invocation and returns a witness is a broken invariant: the execution fails visibly", () => {
@@ -1340,7 +1509,10 @@ test("W2-WIT3: the retry of a thrown turn that carried nothing sends that attemp
     assert.equal(endOf(ops).input.outcome, "completed");
 });
 
-test("W2-WIT3: a turn that runs while an agent wait holds a thrown turn's retry sends that attempt's key (as 1.0.82 does) and carries nothing; the retry's dispatch then carries the invocation", () => {
+test("W2-WIT3 / Q-W2-7: a turn that runs while an agent wait holds a thrown turn's retry sends that attempt's key and carries nothing; the retry's dispatch then runs under a new key and carries the invocation", () => {
+    // Q-W2-7 (pre-existing, as in 1.0.81 and 1.0.82, whose key reuse asks only for a retry count and a thrown key): the
+    // interposed turn adopts the thrown attempt's saved result when that attempt had committed, and, its success resetting
+    // the count, the retry then runs as a new turn. For the intake it is safe: that turn carries no batch and forms none.
     const runtime = makeRuntime({
         intake: carried({ queue: [heldEntry(1)] }), prompt: "retry words", retryCount: 1, blobEnabled: true, thrownTurnKey: "key-T",
         waitingForAgentIds: ["agent-1"], subAgents: [{ orchId: "agent-1", sessionId: "child-1", task: "helper", status: "running" }],
@@ -1351,7 +1523,9 @@ test("W2-WIT3: a turn that runs while an agent wait holds a thrown turn's retry 
     const { ops } = drive(runLoop(runtime), turnResponder({
         activity: storeAnswers([1]),
         turn: op => {
-            seen.push({ prompt: op.input.prompt, turnKey: op.input.snapshot?.turnKey ?? null, intake: op.input.intake ?? null });
+            seen.push({
+                prompt: op.input.prompt, turnKey: op.input.snapshot?.turnKey ?? null, intake: op.input.intake ?? null, retryCount: op.input.retryCount ?? 0,
+            });
             return op.input.intake ? completed({ invocationId: op.input.intake.invocationId, sent: true }) : completed();
         },
         stop: op => isTurn(op) && seen.length >= 2,
@@ -1360,10 +1534,13 @@ test("W2-WIT3: a turn that runs while an agent wait holds a thrown turn's retry 
     // The wait's turn runs first and sends the thrown attempt's key: whatever it adopts, it carried no batch.
     assert.match(seen[0].prompt, /second wait is now complete/);
     assert.equal(seen[0].turnKey, "key-T");
+    assert.equal(seen[0].retryCount, 1);
     assert.equal(seen[0].intake, null);
-    // The retry's dispatch, after the poll ends the agent wait, carries the newly formed invocation under a new key.
+    // The retry's dispatch, after the poll ends the agent wait, carries the newly formed invocation under a new key, with
+    // the count the wait's success reset (Q-W2-7).
     assert.match(seen[1].prompt, /^retry words/);
     assert.notEqual(seen[1].turnKey, "key-T");
+    assert.equal(seen[1].retryCount, 0);
     assert.ok(seen[1].intake !== null);
     assert.deepEqual(seen[1].intake, payloadOf([1], seen[1].intake.invocationId));
     assert.equal(endOf(ops).input.outcome, "completed");
