@@ -9,17 +9,17 @@
  * compute provider. PilotSwarm stores the target and checks who may use it.
  * It never interprets `config`: that belongs to the provider of `kind`.
  *
- * Classes, as for model providers:
- *   shared    registered by an administrator; usable by every signed-in user
- *   personal  registered by a user for themselves; usable only by that user,
- *             invisible to everyone else, administrators included
+ * A target is registered by an administrator and usable by every signed-in
+ * user. It is named `shared/<label>`; keeping the owner part in the name
+ * means a later change can add targets with another owner without renaming
+ * anything.
  *
  * A target also has an id that is never reused. A session records the
  * target's name and id in its creation config (`computeTarget`,
  * `computeTargetId`); the worker binds by id, so a deleted target leaves its
  * sessions blocked, and a new target with the same name never takes them.
- * The worker re-checks before every turn that the session's owner may still
- * use the target.
+ * The worker re-checks before every turn that the target is still there and
+ * still enabled.
  *
  * `compute_bindings` is what PilotSwarm is using right now: one row per
  * (session tree, target, host). A worker renews its lease while it holds
@@ -40,54 +40,35 @@ CREATE TABLE IF NOT EXISTS ${s}.compute_targets (
     target_id      UUID NOT NULL UNIQUE
                    DEFAULT md5(random()::text || clock_timestamp()::text)::uuid,
     kind           TEXT NOT NULL,
-    class          TEXT NOT NULL CHECK (class IN ('shared','personal')),
-    owner_user_id  BIGINT REFERENCES ${s}.users(user_id) ON DELETE CASCADE,
+    class          TEXT NOT NULL DEFAULT 'shared' CHECK (class IN ('shared')),
     display_name   TEXT,
     config         JSONB NOT NULL DEFAULT '{}'::jsonb,
     enabled        BOOLEAN NOT NULL DEFAULT TRUE,
     created_by     BIGINT,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
-    CONSTRAINT compute_targets_owner_matches_class CHECK (
-        (class = 'shared'   AND owner_user_id IS NULL) OR
-        (class = 'personal' AND owner_user_id IS NOT NULL)),
-    -- '<owner>/<label>': the owner's sign-in address, or 'shared' for a
-    -- target an administrator registers for everyone, then the label the
-    -- registrant chose. The worker builds the owner part from whoever is
-    -- signed in; it is never taken from a request.
+    -- '<owner>/<label>'. Today the owner part is always 'shared': a target
+    -- an administrator registers for everyone. The worker builds that part
+    -- itself; it is never taken from a request. Keeping it in the name now
+    -- means a later change can add targets with another owner without
+    -- renaming anything.
     CONSTRAINT compute_targets_name_shape CHECK (
         name ~ '^[a-zA-Z0-9][a-zA-Z0-9._%+@-]{0,126}/[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$'),
-    -- A target an administrator registers for everyone is the only one in
-    -- the shared space, and the only one outside it that belongs to nobody.
     CONSTRAINT compute_targets_name_space CHECK (
-        (class = 'shared') = (split_part(name, '/', 1) = 'shared')),
+        split_part(name, '/', 1) = 'shared'),
     CONSTRAINT compute_targets_kind_shape CHECK (
         kind ~ '^[a-z0-9][a-z0-9-]{0,63}$'),
     CONSTRAINT compute_targets_config_object CHECK (
         jsonb_typeof(config) = 'object')
 );
 
-CREATE INDEX IF NOT EXISTS compute_targets_owner
-    ON ${s}.compute_targets (owner_user_id) WHERE owner_user_id IS NOT NULL;
-
--- Every shared target, plus the viewer's own. A name outside it returns no
--- row, the same answer as a name that does not exist.
-CREATE OR REPLACE FUNCTION ${s}.cms_compute_target_in_namespace(
-    p_name TEXT, p_viewer BIGINT
-) RETURNS SETOF ${s}.compute_targets AS $$
-    SELECT ct.* FROM ${s}.compute_targets ct
-     WHERE ct.name = p_name
-       AND (ct.class = 'shared'
-            OR (p_viewer IS NOT NULL AND ct.owner_user_id = p_viewer));
-$$ LANGUAGE sql STABLE;
-
+-- Only an administrator registers or changes a compute target.
 CREATE OR REPLACE FUNCTION ${s}.cms_compute_target_create(
-    p_name TEXT, p_kind TEXT, p_class TEXT, p_display_name TEXT, p_config JSONB,
+    p_name TEXT, p_kind TEXT, p_display_name TEXT, p_config JSONB,
     p_actor BIGINT, p_is_admin BOOLEAN
 ) RETURNS SETOF ${s}.compute_targets AS $$
 DECLARE
     v_name TEXT := NULLIF(BTRIM(p_name), '');
-    v_owner_name TEXT;
 BEGIN
     IF v_name IS NULL THEN
         RAISE EXCEPTION 'COMPUTE_TARGET_INVALID: a compute target needs a name';
@@ -95,45 +76,25 @@ BEGIN
     IF NULLIF(BTRIM(p_kind), '') IS NULL THEN
         RAISE EXCEPTION 'COMPUTE_TARGET_INVALID: a compute target needs a kind';
     END IF;
-    IF p_class NOT IN ('shared','personal') THEN
-        RAISE EXCEPTION 'COMPUTE_TARGET_INVALID: class must be shared or personal';
-    END IF;
     IF p_config IS NOT NULL AND jsonb_typeof(p_config) <> 'object' THEN
         RAISE EXCEPTION 'COMPUTE_TARGET_INVALID: config must be a JSON object';
     END IF;
-    IF p_class = 'shared' AND NOT COALESCE(p_is_admin, FALSE) THEN
-        RAISE EXCEPTION 'COMPUTE_TARGET_FORBIDDEN: only an administrator can add a shared compute target';
-    END IF;
-    IF p_class = 'personal' AND p_actor IS NULL THEN
-        RAISE EXCEPTION 'COMPUTE_TARGET_FORBIDDEN: sign in to add a compute target of your own';
-    END IF;
-    -- A target of someone's own is named after them. Checked here as well
-    -- as in the worker, so no caller can name a target after anyone else.
-    IF p_class = 'personal' THEN
-        SELECT lower(BTRIM(u.email)) INTO v_owner_name FROM ${s}.users u WHERE u.user_id = p_actor;
-        IF COALESCE(v_owner_name, '') = '' THEN
-            RAISE EXCEPTION 'COMPUTE_TARGET_INVALID: a compute target of your own is named after your sign-in address, and this account has none on record';
-        END IF;
-        IF split_part(v_name, '/', 1) <> v_owner_name THEN
-            RAISE EXCEPTION 'COMPUTE_TARGET_FORBIDDEN: a compute target of your own is named "%/<label>"', v_owner_name;
-        END IF;
+    IF NOT COALESCE(p_is_admin, FALSE) THEN
+        RAISE EXCEPTION 'COMPUTE_TARGET_FORBIDDEN: only an administrator can add a compute target';
     END IF;
     IF EXISTS (SELECT 1 FROM ${s}.compute_targets ct WHERE ct.name = v_name) THEN
         RAISE EXCEPTION 'COMPUTE_TARGET_CONFLICT: the name "%" is already taken', v_name;
     END IF;
-    -- A personal target always belongs to the person creating it.
     INSERT INTO ${s}.compute_targets
-        (name, kind, class, owner_user_id, display_name, config, created_by)
-    VALUES (v_name, BTRIM(p_kind), p_class,
-            CASE WHEN p_class = 'personal' THEN p_actor END,
+        (name, kind, class, display_name, config, created_by)
+    VALUES (v_name, BTRIM(p_kind), 'shared',
             NULLIF(BTRIM(p_display_name), ''),
             COALESCE(p_config, '{}'::jsonb), p_actor);
     RETURN QUERY SELECT ct.* FROM ${s}.compute_targets ct WHERE ct.name = v_name;
 END;
 $$ LANGUAGE plpgsql VOLATILE;
 
--- May the actor manage this target? A personal target answers only to its
--- owner and reads as absent to anyone else; a shared one needs an admin.
+-- May the actor manage this target? Only an administrator can.
 CREATE OR REPLACE FUNCTION ${s}.cms_compute_target_assert_manage(
     p_name TEXT, p_actor BIGINT, p_is_admin BOOLEAN
 ) RETURNS ${s}.compute_targets AS $$
@@ -143,14 +104,8 @@ BEGIN
     IF NOT FOUND THEN
         RAISE EXCEPTION 'COMPUTE_TARGET_NOT_FOUND: there is no compute target named "%"', p_name;
     END IF;
-    IF v_row.class = 'personal' THEN
-        IF p_actor IS NULL OR v_row.owner_user_id IS DISTINCT FROM p_actor THEN
-            RAISE EXCEPTION 'COMPUTE_TARGET_NOT_FOUND: there is no compute target named "%"', p_name;
-        END IF;
-        RETURN v_row;
-    END IF;
     IF NOT COALESCE(p_is_admin, FALSE) THEN
-        RAISE EXCEPTION 'COMPUTE_TARGET_FORBIDDEN: "%" is a shared compute target; only an administrator can change it', p_name;
+        RAISE EXCEPTION 'COMPUTE_TARGET_FORBIDDEN: only an administrator can change the compute target "%"', p_name;
     END IF;
     RETURN v_row;
 END;
@@ -198,50 +153,36 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql VOLATILE;
 
--- The viewer's namespace: every shared target plus their own. Provider
--- config is shown only to those who may manage the target.
+-- Every target, for every signed-in viewer. Provider config is shown only
+-- to those who may manage the target.
 CREATE OR REPLACE FUNCTION ${s}.cms_compute_target_list(
     p_viewer BIGINT, p_is_admin BOOLEAN
 ) RETURNS TABLE(
-    name TEXT, kind TEXT, class TEXT, owner_user_id BIGINT,
+    name TEXT, kind TEXT, class TEXT,
     display_name TEXT, config JSONB, enabled BOOLEAN,
     created_at TIMESTAMPTZ, updated_at TIMESTAMPTZ, manageable BOOLEAN,
     target_id UUID
 ) AS $$
-    SELECT ct.name, ct.kind, ct.class, ct.owner_user_id,
+    SELECT ct.name, ct.kind, ct.class,
            ct.display_name,
-           CASE WHEN ct.class = 'personal' OR COALESCE(p_is_admin, FALSE)
-                THEN ct.config ELSE '{}'::jsonb END,
+           CASE WHEN COALESCE(p_is_admin, FALSE) THEN ct.config ELSE '{}'::jsonb END,
            ct.enabled,
            ct.created_at, ct.updated_at,
-           (ct.class = 'personal' OR COALESCE(p_is_admin, FALSE)) AS manageable,
+           COALESCE(p_is_admin, FALSE) AS manageable,
            ct.target_id
       FROM ${s}.compute_targets ct
-     WHERE ct.class = 'shared'
-        OR (p_viewer IS NOT NULL AND ct.owner_user_id = p_viewer)
-     ORDER BY ct.class, ct.name;
+     ORDER BY ct.name;
 $$ LANGUAGE sql STABLE;
 
--- Session creation: may this owner run a session on the target? System
--- sessions use shared targets only. Raises rather than returning false;
--- returns the target's id for the session to record.
-CREATE OR REPLACE FUNCTION ${s}.cms_compute_target_assert_session(
-    p_name TEXT, p_owner_provider TEXT, p_owner_subject TEXT, p_is_system BOOLEAN
-) RETURNS UUID AS $$
-DECLARE
-    v_owner BIGINT;
-    v_row ${s}.compute_targets;
+-- Session creation: does the target exist, and is it enabled? Raises
+-- rather than returning false; returns the target's id for the session to
+-- record, because the worker binds by id.
+CREATE OR REPLACE FUNCTION ${s}.cms_compute_target_assert_session(p_name TEXT)
+RETURNS UUID AS $$
+DECLARE v_row ${s}.compute_targets;
 BEGIN
-    IF NOT COALESCE(p_is_system, FALSE) THEN
-        SELECT u.user_id INTO v_owner FROM ${s}.users u
-         WHERE u.provider = NULLIF(BTRIM(p_owner_provider), '')
-           AND u.subject = NULLIF(BTRIM(p_owner_subject), '');
-    END IF;
-    SELECT ct.* INTO v_row
-      FROM ${s}.compute_targets ct
-     WHERE ct.name = p_name
-       AND (ct.class = 'shared' OR (v_owner IS NOT NULL AND ct.owner_user_id = v_owner))
-     FOR KEY SHARE;
+    SELECT ct.* INTO v_row FROM ${s}.compute_targets ct
+     WHERE ct.name = p_name FOR KEY SHARE;
     IF NOT FOUND THEN
         RAISE EXCEPTION 'COMPUTE_TARGET_NOT_FOUND: there is no compute target named "%"', p_name;
     END IF;
@@ -252,32 +193,19 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql VOLATILE;
 
--- Worker side, before every turn: the target with this id, if the session's
--- owner may still use it (shared, or the owner's own; system sessions:
--- shared only). No row when it is gone or no longer theirs. Disabled rows
--- are returned so the worker can say so.
-CREATE OR REPLACE FUNCTION ${s}.cms_compute_target_resolve_for_session(
-    p_target_id UUID, p_owner_provider TEXT, p_owner_subject TEXT, p_is_system BOOLEAN
-) RETURNS SETOF ${s}.compute_targets AS $$
-DECLARE v_owner BIGINT;
-BEGIN
-    IF NOT COALESCE(p_is_system, FALSE) THEN
-        SELECT u.user_id INTO v_owner FROM ${s}.users u
-         WHERE u.provider = NULLIF(BTRIM(p_owner_provider), '')
-           AND u.subject = NULLIF(BTRIM(p_owner_subject), '');
-    END IF;
-    RETURN QUERY
-        SELECT ct.* FROM ${s}.compute_targets ct
-         WHERE ct.target_id = p_target_id
-           AND (ct.class = 'shared' OR (v_owner IS NOT NULL AND ct.owner_user_id = v_owner));
-END;
-$$ LANGUAGE plpgsql STABLE;
+-- Worker side, before every turn: the target with this id. No row when it
+-- is gone, so a deleted target leaves its sessions blocked and a new
+-- target with the same name never takes them. Disabled rows are returned
+-- so the worker can say so.
+CREATE OR REPLACE FUNCTION ${s}.cms_compute_target_resolve_for_session(p_target_id UUID)
+RETURNS SETOF ${s}.compute_targets AS $$
+    SELECT ct.* FROM ${s}.compute_targets ct WHERE ct.target_id = p_target_id;
+$$ LANGUAGE sql STABLE;
 
--- Worker side, with no session behind it: the target with this id,
--- whoever owns it. Used where the worker is acting for PilotSwarm itself
--- rather than for a user — telling a provider a session tree it no longer
--- knows about is finished with a host. Trusted caller; nothing that
--- answers a user goes through it.
+-- Worker side, with no session behind it: the target with this id. Used
+-- where the worker is acting for PilotSwarm itself rather than for a user
+-- — telling a provider a session tree it no longer knows about is
+-- finished with a host.
 CREATE OR REPLACE FUNCTION ${s}.cms_compute_target_by_id(p_target_id UUID)
 RETURNS SETOF ${s}.compute_targets AS $$
     SELECT ct.* FROM ${s}.compute_targets ct WHERE ct.target_id = p_target_id;

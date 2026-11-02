@@ -5,7 +5,8 @@
 **Compute providers (experimental).** A session's agent runtime can run on a
 host chosen for that session instead of inside the worker. A compute provider
 is a worker plug-in for one kind of compute; an administrator registers a
-compute target, and a user picks one when creating a session. Every connection
+compute target (`shared/<label>`), and anyone picks one when creating a
+session. Every connection
 to a runtime outside the worker goes through a local bridge and a mutual
 handshake with a small PilotSwarm component on the host, so each end proves it
 holds that binding's secret before anything of the turn crosses. The runtime

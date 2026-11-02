@@ -302,13 +302,10 @@ export const OPERATIONS = [
     { name: "listPausedSessions", access: "authed", method: "GET", path: "/providers/paused", summary: "Sessions waiting on a limit, allowance, hold, or a provider name that no longer resolves. Admins fleet-wide, everyone else their own." },
 
     // ── Compute targets (docs/proposals/compute-providers.md) ───────────
-    { name: "listComputeTargets", access: "authed", method: "GET", path: "/compute-targets", summary: "List shared targets and the caller's own targets." },
-    { name: "createComputeTarget", access: "fleet:admin", method: "POST", path: "/management/compute-targets", params: { name: body(), label: body(), kind: body(), displayName: body(), config: body() }, summary: "Create a shared compute target. [admin]" },
-    { name: "updateComputeTarget", access: "fleet:admin", method: "PATCH", path: "/management/compute-targets/:name", params: { name: path("name"), displayName: body(), config: body(), enabled: body() }, summary: "Update or enable/disable a shared compute target. [admin]" },
-    { name: "deleteComputeTarget", access: "fleet:admin", method: "DELETE", path: "/management/compute-targets/:name", params: { name: path("name") }, summary: "Delete a shared compute target. [admin]" },
-    { name: "createMyComputeTarget", access: "authed", method: "POST", path: "/me/compute-targets", params: { name: body(), label: body(), kind: body(), displayName: body(), config: body() }, summary: "Create a personal compute target." },
-    { name: "updateMyComputeTarget", access: "authed", method: "PATCH", path: "/me/compute-targets/:name", params: { name: path("name"), displayName: body(), config: body(), enabled: body() }, summary: "Update or enable/disable a personal compute target." },
-    { name: "deleteMyComputeTarget", access: "authed", method: "DELETE", path: "/me/compute-targets/:name", params: { name: path("name") }, summary: "Delete a personal compute target." },
+    { name: "listComputeTargets", access: "authed", method: "GET", path: "/compute-targets", summary: "List the compute targets." },
+    { name: "createComputeTarget", access: "fleet:admin", method: "POST", path: "/management/compute-targets", params: { name: body(), label: body(), kind: body(), displayName: body(), config: body() }, summary: "Create a compute target. [admin]" },
+    { name: "updateComputeTarget", access: "fleet:admin", method: "PATCH", path: "/management/compute-targets/:name", params: { name: path("name"), displayName: body(), config: body(), enabled: body() }, summary: "Update or enable/disable a compute target. [admin]" },
+    { name: "deleteComputeTarget", access: "fleet:admin", method: "DELETE", path: "/management/compute-targets/:name", params: { name: path("name") }, summary: "Delete a compute target. [admin]" },
 
     // ── System ──────────────────────────────────────────────────────────
     { name: "getLogConfig", access: "authed", method: "GET", path: "/system/log-config", summary: "Log tail availability." },

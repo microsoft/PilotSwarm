@@ -226,18 +226,16 @@ export class PilotSwarmClient {
             workspace = checked.workspace;
         }
 
-        // Compute target: a whole name is taken as it is and a bare label is
-        // resolved against who is asking. Whether the owner may use the
-        // target is still checked in the create transaction (cms.ts).
+        // Compute target: a whole name is taken as it is and a bare label
+        // is shorthand for the shared target of that label. Whether the
+        // target exists and is enabled is still checked in the create
+        // transaction (cms.ts).
         let computeTarget: string | undefined;
         if (config?.computeTarget !== undefined && config?.computeTarget !== null && config.computeTarget !== "") {
-            computeTarget = await this._resolveComputeTargetName(config.computeTarget, config?.owner ?? null);
+            computeTarget = this._resolveComputeTargetName(config.computeTarget);
         }
 
         const sessionId = config?.sessionId ?? crypto.randomUUID();
-        // The target is chosen before the model, and a model the target
-        // offers itself is checked against that target rather than against
-        // PilotSwarm's catalog: the host runs it with its own model access.
         const resolved = await this._resolveCreationModel(config ?? {}, false);
         const { workspace: _rawWorkspace, ...configWithoutWorkspace } = config ?? {};
         const resolvedConfig = {
@@ -677,34 +675,16 @@ export class PilotSwarmClient {
 
     /**
      * Which target a caller means. A whole name — `<owner>/<label>` — is
-     * taken as it is. A bare label is shorthand for one of the caller's
-     * own targets, or failing that the shared target of that label; which
-     * one it turned out to be is settled here, so everything downstream
-     * works with a whole name.
+     * taken as it is; a bare label is shorthand for the shared target of
+     * that label, so everything downstream works with a whole name.
      */
-    private async _resolveComputeTargetName(requested: string, owner: SessionOwnerInfo | null): Promise<string> {
-        const refuse = (code: string, message: string): never => {
-            throw Object.assign(new Error(`${code}: ${message}`), { code, status: 400 });
-        };
-        const candidates = resolveComputeTargetName(requested, owner);
-        if (!candidates.length) {
-            const checked = validateComputeTargetName(requested);
-            return refuse(checked.ok ? COMPUTE_ERROR_CODES.INVALID : checked.code,
-                checked.ok ? "that is not a compute target name" : checked.message);
-        }
-        // A whole name goes straight through: the create transaction says
-        // whether it exists and whether this owner may use it.
-        if (candidates.length === 1) return candidates[0];
-        const store = this._catalog?.computeTargets;
-        if (!store) return candidates[candidates.length - 1];
-        const viewer = await store.lookupUserId(owner ?? null);
-        const visible = new Set((await store.list(viewer, false)).map((target) => target.name));
-        const hit = candidates.find((name) => visible.has(name));
-        if (!hit) {
-            return refuse(COMPUTE_ERROR_CODES.NOT_FOUND,
-                `there is no compute target you can use named "${requested}" (tried ${candidates.join(" and ")})`);
-        }
-        return hit;
+    private _resolveComputeTargetName(requested: string): string {
+        const [name] = resolveComputeTargetName(requested);
+        if (name) return name;
+        const checked = validateComputeTargetName(requested);
+        const code = checked.ok ? COMPUTE_ERROR_CODES.INVALID : checked.code;
+        const message = checked.ok ? "that is not a compute target name" : checked.message;
+        throw Object.assign(new Error(`${code}: ${message}`), { code, status: 400 });
     }
 
     private async _resolveCreationModel(

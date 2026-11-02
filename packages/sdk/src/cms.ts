@@ -1777,12 +1777,12 @@ export class PgSessionCatalog implements SessionCatalog {
                 );
             }
             if (computeTarget) {
-                // Same rule as the model check above: the target must be shared or
-                // the owner's own, and enabled. A refusal aborts the create. The
-                // session records the target's id: the worker binds by id.
+                // Same shape as the model check above: the target must exist
+                // and be enabled. A refusal aborts the create. The session
+                // records the target's id: the worker binds by id.
                 const { rows: targetRows } = await client.query(
-                    `SELECT "${this.sql.schema}".cms_compute_target_assert_session($1,$2,$3,$4) AS target_id`,
-                    [computeTarget, opts?.owner?.provider ?? null, opts?.owner?.subject ?? null, opts?.isSystem ?? false],
+                    `SELECT "${this.sql.schema}".cms_compute_target_assert_session($1) AS target_id`,
+                    [computeTarget],
                 );
                 opts!.creationConfig = { ...opts!.creationConfig, computeTargetId: String(targetRows[0]?.target_id ?? "") };
             }
@@ -1921,7 +1921,7 @@ export class PgSessionCatalog implements SessionCatalog {
         if (this._computeTargetsSupported !== null) return this._computeTargetsSupported;
         const { rows } = await this.pool.query(
             `SELECT to_regprocedure($1) IS NOT NULL AS supported`,
-            [`"${this.sql.schema}".cms_compute_target_assert_session(text,text,text,boolean)`],
+            [`"${this.sql.schema}".cms_compute_target_assert_session(text)`],
         );
         this._computeTargetsSupported = Boolean(rows[0]?.supported);
         return this._computeTargetsSupported;

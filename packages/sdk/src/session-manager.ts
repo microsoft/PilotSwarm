@@ -1328,8 +1328,8 @@ export class SessionManager {
             ? { provider: rootRow.owner.provider, subject: rootRow.owner.subject, email: rootRow.owner.email ?? null }
             : null;
         const isSystem = Boolean(rootRow.isSystem);
-        const target = await catalog.computeTargets.resolveForSession(targetId, owner, isSystem);
-        if (!target) return fail(COMPUTE_ERROR_CODES.NOT_FOUND, `the compute target "${targetName}" of this session is gone or no longer available to its owner`);
+        const target = await catalog.computeTargets.resolveForSession(targetId);
+        if (!target) return fail(COMPUTE_ERROR_CODES.NOT_FOUND, `the compute target "${targetName}" of this session is gone`);
         if (!target.enabled) return fail(COMPUTE_ERROR_CODES.DISABLED, `the compute target "${target.name}" is disabled`);
         const provider = this.computeProviders.get(target.kind);
         if (!provider) return fail(COMPUTE_ERROR_CODES.KIND_UNKNOWN, `this worker has no compute provider of kind "${target.kind}"`);

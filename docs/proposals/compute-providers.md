@@ -103,8 +103,7 @@ a reason. The agent never falls back to running on the worker.
 | Who | Does what |
 |---|---|
 | Whoever runs the worker | Loads a compute provider into it (`computeProviders`, or `registerComputeProvider`). Running providers as registered services is future work (section 12). |
-| An administrator | Registers a shared target (`shared/<label>`). |
-| A user | Registers a target of their own (`<owner>/<label>`). |
+| An administrator | Registers a target (`shared/<label>`). |
 | A user creating a session | Picks the target, then a model. |
 
 **Who owns what**
@@ -162,7 +161,7 @@ The one rule the whole design serves:
 | S1 | A session runs its agent on a host that is not the worker, chosen when the session is created and kept for the life of the session tree. |
 | S2 | A sub-agent runs on the same host as its parent. One host serves a whole session tree. |
 | S3 | A session moves to another worker and keeps going. The next worker reaches the same host, or is given a fresh one, without losing the conversation. |
-| S4 | An administrator registers compute everyone shares. A user registers compute of their own. |
+| S4 | An administrator registers compute everyone shares. |
 | S5 | A target says what it offers. That shapes the targets a person is shown. (Future work, section 12.) |
 | S6 | A new kind of compute is added without changing the worker. (Future work, section 12: today a provider is a plug-in loaded into the worker.) |
 | S7 | When compute cannot be used, the person is told why, and a reason that retrying cannot fix stops the turn at once. |
@@ -193,7 +192,7 @@ Defined before use, in the order the rest of the document needs them.
 | Agent runtime | The part that runs the agent loop and the model-chosen commands (such as a shell). Today it runs in the worker; this design lets it run on a host. Also "the runtime". |
 | Compute type | A kind of place a runtime can run. |
 | Compute provider | The code for one compute type, named by its `kind`. It gets a host ready and says how to reach it. |
-| Compute target | A registered instance of a compute type, stored in the CMS. A session picks one. Named `<owner>/<label>`. |
+| Compute target | A registered instance of a compute type, stored in the CMS. A session picks one. Named `shared/<label>`. |
 | Host | The concrete place a session tree's runtime is bound to. Has an `id` and an `incarnation` that changes when it is replaced. |
 | Host component | A small PilotSwarm program on the host. It answers the handshake, then forwards the connection to the runtime's local port. |
 | Binding | One (target, session tree) pairing to a host. It carries a per-binding secret and a lease. |
@@ -281,29 +280,16 @@ Finish
 
 ### 4.1 Targets and names
 
-Migration 0084 adds `compute_targets`, with the same ownership rules model
-providers use. **(built)**
+Migration 0084 adds `compute_targets`. An administrator registers a target;
+every signed-in user can run a session on it. **(built)**
 
-| Class | Registered by | Visible to |
-|---|---|---|
-| `shared` | An administrator | Every signed-in user |
-| `personal` | A user, for themselves | Only that user (administrators included) |
-
-Every target is named `<owner>/<label>`:
-
-- For a target of someone's own, the owner part is their sign-in address, for
-  example `alice@example.com/gpu-sandbox`.
-- For a target an administrator registers for everyone, the owner part is the
-  reserved word `shared`, as in `shared/build-pool`.
-
-So two people can both have a target called `sandbox` without colliding,
-nobody can take a name administrators need, and nobody can name a target after
-someone else. PilotSwarm builds the owner part itself from whoever is signed
-in; whoever registers a target supplies only the label — which lets a provider
-suggest one from something it already knows is unique, such as a machine's own
-name. Labels are plain: letters, numbers, dot, dash and underscore, at most 64
-characters. A registrant with no sign-in address on record is refused rather
-than given an invented owner part.
+Every target is named `<owner>/<label>`, and the owner part is the reserved
+word `shared`, as in `shared/build-pool`. PilotSwarm builds that part itself;
+whoever registers a target supplies only the label. Labels are plain: letters,
+numbers, dot, dash and underscore, at most 64 characters. Keeping the owner
+part in the name now means a later change can add targets with another owner
+without renaming anything. Personal compute targets will be supported in a
+later change.
 
 A target has a `name`, an `id` that is never reused, a `kind` (which provider
 handles it), an optional `displayName`, `enabled`, and a `config` object that
@@ -314,13 +300,12 @@ credentials from the deployment. All rules live in the `cms_compute_target_*`
 procedures; the store only shapes rows and errors.
 
 A session names its target at creation (`computeTarget`). The create
-transaction checks the target is shared or the owner's own, and enabled, and
-records the target's id with the name. System sessions may use shared targets
-only. Before every turn the worker resolves the target by that id and checks
-again that the tree's owner may use it. A deleted target leaves its sessions
-blocked; a new target with the same name is a different target and never takes
-them. When a name is looked up, a whole `<owner>/<label>` is taken as it is,
-and a bare label is shorthand for the caller's own target, falling back to the
+transaction checks the target exists and is enabled, and records the target's
+id with the name. Before every turn the worker resolves the target by that id
+and checks again that it is still there and still enabled. A deleted target
+leaves its sessions blocked; a new target with the same name is a different
+target and never takes them. When a name is looked up, a whole
+`<owner>/<label>` is taken as it is, and a bare label is shorthand for the
 shared target of that label.
 
 ### 4.2 The provider interface
@@ -595,12 +580,12 @@ the way model providers are. **(built)**
 
 | Surface area | Operations |
 |---|---|
-| List and manage targets | List the viewer's targets; create shared (admin) or personal (owner); update; enable/disable; delete |
+| List and manage targets | List the targets; create (admin); update; enable/disable; delete |
 | Create a session | The management client and the Web API accept `computeTarget` |
 | Audit | Every mutation is audited the way provider mutations are |
 
-Admin operations live under the admin path and need the fleet-admin right; a
-user's own operations live under the self path. Managing targets from MCP and
+Managing targets needs the fleet-admin right and lives under the admin path.
+Managing targets from MCP and
 the CLI, and choosing one in the portal and the TUI, are future work (section
 12), as are checking a target on a worker and listing the models a target
 offers itself. The API reference docs are updated alongside; this proposal is
@@ -692,24 +677,23 @@ Finish:   the tree ends; done notice; the provider discards the sandbox and, to
           keep a buffer, may start a fresh one.
 ```
 
-### 6.3 A user's own machine that connects out (pipe transport)
+### 6.3 A host that connects out (pipe transport)
 
-A user registers a machine of their own, `alice@example.com/desktop`. The
-machine sits behind a firewall and cannot be dialed; it connects out to the
-provider, which bridges the connection in.
+An administrator registers `shared/field-hosts`. Its hosts sit behind a
+firewall and cannot be dialed; each connects out to the provider, which
+bridges the connection in.
 
 ```text
-Create:   the user registers the target; the provider proposes the label from
-          the machine's own name.
+Create:   the worker loads the provider; an admin registers
+          shared/field-hosts.
 Turn:
- 1. core binds and connects; because the machine dials out, connect returns a
+ 1. core binds and connects; because the host dials out, connect returns a
     pipe endpoint.
- 2. core runs a bridge and openConnection pairs it with the machine's outbound
+ 2. core runs a bridge and openConnection pairs it with the host's outbound
     link; the host component answers the handshake; the runtime runs the turn.
  3. the session runs on a model from PilotSwarm's own catalog; the runtime
     holds placeholders and every model request comes back to the worker.
-Finish:   the user stops using the target; release; the machine is the user's,
-          so the provider leaves it alone.
+Finish:   the tree ends; done notice; the provider decides the host's fate.
 ```
 
 ## 7. Corner cases
@@ -746,7 +730,7 @@ and Windows, so nothing may assume a path separator or a shell.
 
 | Area | Level | Checks |
 |---|---|---|
-| Targets and names (**built**) | U, L | Owner-qualified names; a bare label resolves to own then shared; a deleted target blocks its sessions; a reused name is a new target; admin-only registration enforced in SQL |
+| Targets and names (**built**) | U, L | Owner-qualified names; a bare label resolves to the shared target; a deleted target blocks its sessions; a reused name is a new target; admin-only registration enforced in SQL |
 | Provider interface and transport (**built**) | U | `direct` vs `pipe` validated; a declaration that disagrees with the code is refused; deadlines enforced |
 | Remote turn and trust boundary (**built**) | L | A turn runs in a separate runtime with none of the worker's environment; every model request carries the real key while the runtime holds only placeholders; a request to any other destination is refused; session state round-trips and resumes on a new worker |
 | The bridge (**built**) | U, L | A full turn through a provider-opened pipe; one bridge per binding on loopback; a broken pipe reconnects or fails clearly |
@@ -769,7 +753,7 @@ and Windows, so nothing may assume a path separator or a shell.
 | A per-binding secret, fresh for every binding, never stored in the CMS | A per-host or per-target secret |
 | The provider decides a host's fate; PilotSwarm only reports use (a lease) and finish (a done notice) | PilotSwarm deleting hosts; release meaning destroy |
 | A host is reusable only with nothing left over | Trusting a host to be clean |
-| Owner-qualified names (`<owner>/<label>`, `shared/<label>`); sessions reference a permanent id | Free-form global names |
+| Owner-qualified names (`shared/<label>`); sessions reference a permanent id | Free-form global names |
 | Target `config` holds no secrets; providers get credentials from the deployment | A secret reference in the config |
 | Clear failure reasons, provider services and target capabilities/host models left out of this change and designed in section 12 | One large change carrying all of it |
 
@@ -799,6 +783,7 @@ and Windows, so nothing may assume a path separator or a shell.
 | Demand hints | Telling a provider how much demand there is per target, so it can size spare capacity. Deferred; the design leaves room. |
 | A secret reference for a provider that needs per-user credentials | Deferred (secrets option A for now: none in the config). |
 | A tree spanning more than one target | An open question; today a tree runs on exactly one. |
+| Personal compute targets | A later change. |
 | A routing capability tag so older workers never run remote sessions locally | To do. |
 | Portal and TUI views for compute | Future work (section 12). |
 | Provisioning (creating hosts on demand) | Out of scope; a compute provisioner can come later. |

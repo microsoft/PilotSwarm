@@ -464,9 +464,6 @@ export class HttpApiTransport {
     createComputeTarget(input = {}) { return this.api.call("createComputeTarget", input); }
     updateComputeTarget(input = {}) { return this.api.call("updateComputeTarget", input); }
     deleteComputeTarget(name) { return this.api.call("deleteComputeTarget", { name }); }
-    createMyComputeTarget(input = {}) { return this.api.call("createMyComputeTarget", input); }
-    updateMyComputeTarget(input = {}) { return this.api.call("updateMyComputeTarget", input); }
-    deleteMyComputeTarget(name) { return this.api.call("deleteMyComputeTarget", { name }); }
     listFeatureFlags() { return this.api.call("listFeatureFlags"); }
     getClusterFeatureFlags() { return this.api.call("getClusterFeatureFlags"); }
     getMyFeatureFlags() { return this.api.call("getMyFeatureFlags"); }

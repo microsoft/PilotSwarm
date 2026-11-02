@@ -1086,9 +1086,6 @@ export class PortalRuntime {
             case "createComputeTarget":
             case "updateComputeTarget":
             case "deleteComputeTarget":
-            case "createMyComputeTarget":
-            case "updateMyComputeTarget":
-            case "deleteMyComputeTarget":
                 return this._callComputeTarget(method, safeParams, { principal: owner, isAdmin, adminScope: this.authz.adminScope });
 
             case "sendMessage": {
@@ -1592,23 +1589,6 @@ export class PortalRuntime {
                     });
                 case "deleteComputeTarget":
                     return await mgmt.deleteComputeTarget(viewer, params.name);
-                case "createMyComputeTarget":
-                    return await mgmt.createMyComputeTarget(viewer, {
-                        name: params.name,
-                        label: params.label,
-                        kind: params.kind,
-                        displayName: params.displayName,
-                        config: params.config,
-                    });
-                case "updateMyComputeTarget":
-                    return await mgmt.updateMyComputeTarget(viewer, {
-                        name: params.name,
-                        displayName: params.displayName,
-                        config: params.config,
-                        enabled: params.enabled,
-                    });
-                case "deleteMyComputeTarget":
-                    return await mgmt.deleteMyComputeTarget(viewer, params.name);
                 default:
                     throw new Error(`Unsupported portal compute-target operation: ${method}`);
             }

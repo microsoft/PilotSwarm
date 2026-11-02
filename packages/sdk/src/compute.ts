@@ -22,23 +22,20 @@ import { COMPUTE_HANDSHAKE_FAILED, type ComputeHandshakeCredential } from "./com
 export const LOCAL_COMPUTE_KIND = "local";
 
 /**
- * The part of a target's name the person registering it chooses. Kept
- * deliberately plain: it ends up in a model name and in URLs.
+ * The part of a target's name the administrator registering it chooses.
+ * Kept deliberately plain: it ends up in URLs.
  */
 export const COMPUTE_TARGET_LABEL_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
 /**
  * A full compute target name, `<owner>/<label>`.
  *
- * Every target is named after whoever it belongs to, so two people can both
- * have a target called `sandbox` and neither can take a name the other, or
- * an administrator, needs. The owner part is the registrant's sign-in
- * address for a personal target, and the reserved word `shared` for a
- * target administrators register for everyone. PilotSwarm builds that part
- * itself from whoever is signed in; a registrant supplies only the label.
+ * Every target is named after whoever it belongs to. Today that is always
+ * the reserved word `shared`: a target an administrator registers for
+ * everyone. PilotSwarm builds the owner part itself; a registrant supplies
+ * only the label. Keeping the owner part in the name now means a later
+ * change can add targets with another owner without renaming anything.
  *
- * The owner part allows what a sign-in address holds and nothing more: no
- * slash (which separates the two parts) and no colon (which separates a
- * target from one of its models).
+ * The owner part allows no slash, which separates the two parts.
  */
 export const COMPUTE_TARGET_OWNER_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._%+@-]{0,126}$/;
 export const COMPUTE_TARGET_NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._%+@-]{0,126}\/[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
@@ -69,7 +66,7 @@ export const COMPUTE_ERROR_CODES = {
     HANDSHAKE_FAILED: COMPUTE_HANDSHAKE_FAILED,
 } as const;
 
-export type ComputeTargetClass = "shared" | "personal";
+export type ComputeTargetClass = "shared";
 
 /** A registered compute target, as the CMS stores it. `config` belongs to the provider of `kind`. */
 export interface ComputeTarget {
@@ -78,7 +75,6 @@ export interface ComputeTarget {
     name: string;
     kind: string;
     class: ComputeTargetClass;
-    ownerUserId: number | null;
     displayName: string | null;
     config: Record<string, unknown>;
     enabled: boolean;
@@ -413,15 +409,15 @@ export class ComputeProviderRegistry {
 
 /**
  * Check a whole target name, `<owner>/<label>`. A bare label is not a name:
- * it is shorthand a caller may use, resolved against who they are
- * (`resolveComputeTargetName`), not something stored.
+ * it is shorthand a caller may use (`resolveComputeTargetName`), not
+ * something stored.
  */
 export function validateComputeTargetName(name: unknown): { ok: true; name: string } | ComputeFailure {
     if (typeof name !== "string" || !COMPUTE_TARGET_NAME_PATTERN.test(name.trim())) {
         return {
             ok: false,
             code: COMPUTE_ERROR_CODES.INVALID,
-            message: 'A compute target is named "<owner>/<label>": the owner\'s sign-in address, or "shared" for one an administrator registers for everyone, then a label of letters, numbers, dot, dash and underscore (at most 64 characters).',
+            message: 'A compute target is named "shared/<label>", where the label uses letters, numbers, dot, dash and underscore (at most 64 characters).',
         };
     }
     return { ok: true, name: name.trim() };
@@ -450,50 +446,27 @@ export function parseComputeTargetName(name: unknown): { owner: string; label: s
 
 /**
  * The name a target would have. The owner part is never taken from what a
- * caller sends: a personal target is named after the person registering
- * it, and only an administrator's target is in the shared space.
- *
- * A personal registrant with no sign-in address on record gets a refusal
- * rather than an invented owner part.
+ * caller sends: PilotSwarm puts every target an administrator registers in
+ * the shared space.
  */
 export function computeTargetNameFor(
-    cls: ComputeTargetClass,
     label: unknown,
-    registrant: { email?: string | null } | null,
 ): { ok: true; name: string } | ComputeFailure {
     const checked = validateComputeTargetLabel(label);
     if (!checked.ok) return checked;
-    if (cls === "shared") return { ok: true, name: `${SHARED_COMPUTE_TARGET_OWNER}/${checked.label}` };
-    const owner = typeof registrant?.email === "string" ? registrant.email.trim().toLowerCase() : "";
-    if (!owner || !COMPUTE_TARGET_OWNER_PATTERN.test(owner) || owner === SHARED_COMPUTE_TARGET_OWNER) {
-        return {
-            ok: false,
-            code: COMPUTE_ERROR_CODES.INVALID,
-            message: "A compute target of your own is named after your sign-in address, and this account has none on record. Ask an administrator to add one, or register the target as a shared one.",
-        };
-    }
-    return { ok: true, name: `${owner}/${checked.label}` };
+    return { ok: true, name: `${SHARED_COMPUTE_TARGET_OWNER}/${checked.label}` };
 }
 
 /**
- * What a caller means by a target name. A whole name is taken as it is. A
- * bare label is shorthand: the caller's own target first, then the shared
- * one of that label — which is the order that cannot surprise anyone,
- * since a person's own target is the one they registered.
+ * What a caller means by a target name. A whole name is taken as it is; a
+ * bare label is shorthand for the shared target of that label.
  */
-export function resolveComputeTargetName(
-    name: unknown,
-    caller: { email?: string | null } | null,
-): string[] {
+export function resolveComputeTargetName(name: unknown): string[] {
     if (typeof name !== "string" || !name.trim()) return [];
     const trimmed = name.trim();
     if (COMPUTE_TARGET_NAME_PATTERN.test(trimmed)) return [trimmed];
     if (!COMPUTE_TARGET_LABEL_PATTERN.test(trimmed)) return [];
-    const own = computeTargetNameFor("personal", trimmed, caller);
-    return [
-        ...(own.ok ? [own.name] : []),
-        `${SHARED_COMPUTE_TARGET_OWNER}/${trimmed}`,
-    ];
+    return [`${SHARED_COMPUTE_TARGET_OWNER}/${trimmed}`];
 }
 
 /** The Copilot SDK connection for an endpoint. */

@@ -104,15 +104,12 @@ test("agent-package and worker operations stay behind management clients", () =>
         "MCP package tools must use management methods");
 });
 
-test("compute-target operations keep shared administration and personal ownership on separate routes", () => {
+test("compute-target operations stay on the admin path and carry computeTarget on session creation", () => {
     const expected = {
         listComputeTargets: ["GET", "/compute-targets", "authed"],
         createComputeTarget: ["POST", "/management/compute-targets", "fleet:admin"],
         updateComputeTarget: ["PATCH", "/management/compute-targets/:name", "fleet:admin"],
         deleteComputeTarget: ["DELETE", "/management/compute-targets/:name", "fleet:admin"],
-        createMyComputeTarget: ["POST", "/me/compute-targets", "authed"],
-        updateMyComputeTarget: ["PATCH", "/me/compute-targets/:name", "authed"],
-        deleteMyComputeTarget: ["DELETE", "/me/compute-targets/:name", "authed"],
     };
     for (const [name, [method, path, access]] of Object.entries(expected)) {
         const operation = OPERATIONS.find((candidate) => candidate.name === name);

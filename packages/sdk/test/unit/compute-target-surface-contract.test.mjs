@@ -4,29 +4,27 @@ import assert from "node:assert/strict";
 import { PilotSwarmManagementClient } from "../../dist/management-client.js";
 
 const principal = { provider: "test", subject: "user-1", email: "owner@example.com" };
-const viewer = { principal, isAdmin: false };
-const personalTarget = {
+const sharedTarget = {
     id: "target-1",
-    name: "owner@example.com/my-machine",
+    name: "shared/pool",
     kind: "pool",
-    class: "personal",
-    ownerUserId: 4,
+    class: "shared",
     displayName: null,
-    config: { selector: "mine" },
+    config: { selector: "any" },
     enabled: true,
     manageable: true,
     createdAt: null,
     updatedAt: null,
 };
 
-function managementClient({ target = personalTarget } = {}) {
+function managementClient({ target = sharedTarget } = {}) {
     const calls = [];
     const store = {
         lookupUserId: async () => 4,
         list: async () => target ? [target] : [],
         create: async (input, actor, isAdmin) => {
             calls.push({ method: "create", input, actor, isAdmin });
-            return { ...input, id: "new-target", ownerUserId: actor, enabled: true };
+            return { ...input, id: "new-target", class: "shared", enabled: true };
         },
         update: async (name, input, actor, isAdmin) => {
             calls.push({ method: "update", name, input, actor, isAdmin });
@@ -43,16 +41,28 @@ function managementClient({ target = personalTarget } = {}) {
     return { client, calls };
 }
 
-
-test("personal target creation assigns the signed-in owner namespace", async () => {
+test("an administrator creates targets in the shared namespace and nowhere else", async () => {
     const { client, calls } = managementClient({ target: null });
-    const result = await client.createMyComputeTarget(viewer, { label: "workstation", kind: "pool" });
-    assert.equal(result.target.name, "owner@example.com/workstation");
-    assert.equal(calls[0].input.class, "personal");
-    assert.equal(calls[0].actor, 4);
-    assert.equal(calls[0].isAdmin, false);
+    const admin = { principal, isAdmin: true };
+    const result = await client.createComputeTarget(admin, { label: "build-pool", kind: "pool" });
+    assert.equal(result.target.name, "shared/build-pool");
+    assert.equal(calls[0].isAdmin, true);
     await assert.rejects(
-        client.createMyComputeTarget(viewer, { name: "someone-else@example.com/workstation", kind: "pool" }),
+        client.createComputeTarget(admin, { name: "someone@example.com/build-pool", kind: "pool" }),
         (error) => error.code === "COMPUTE_TARGET_FORBIDDEN",
     );
+});
+
+test("only an administrator may create a compute target", async () => {
+    const { client } = managementClient({ target: null });
+    await assert.rejects(
+        client.createComputeTarget({ principal, isAdmin: false }, { label: "build-pool", kind: "pool" }),
+        (error) => error.code === "COMPUTE_TARGET_FORBIDDEN",
+    );
+});
+
+test("a bare label is shorthand for the shared target of that label", async () => {
+    const { client, calls } = managementClient();
+    await client.updateComputeTarget({ principal, isAdmin: true }, { name: "pool", enabled: false });
+    assert.equal(calls.find((call) => call.method === "update").name, "shared/pool");
 });

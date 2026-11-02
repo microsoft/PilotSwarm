@@ -885,16 +885,6 @@ export class WebPilotSwarmManagementClient {
         return this.ops.createComputeTarget(input);
     }
 
-    async createMyComputeTarget(_viewer: unknown, input: {
-        name?: string;
-        label?: string;
-        kind: string;
-        displayName?: string | null;
-        config?: Record<string, unknown> | null;
-    }): Promise<any> {
-        return this.ops.createMyComputeTarget(input);
-    }
-
     async updateComputeTarget(_viewer: unknown, input: {
         name: string;
         displayName?: string | null;
@@ -904,21 +894,8 @@ export class WebPilotSwarmManagementClient {
         return this.ops.updateComputeTarget(input);
     }
 
-    async updateMyComputeTarget(_viewer: unknown, input: {
-        name: string;
-        displayName?: string | null;
-        config?: Record<string, unknown> | null;
-        enabled?: boolean | null;
-    }): Promise<any> {
-        return this.ops.updateMyComputeTarget(input);
-    }
-
     async deleteComputeTarget(_viewer: unknown, name: string): Promise<any> {
         return this.ops.deleteComputeTarget({ name });
-    }
-
-    async deleteMyComputeTarget(_viewer: unknown, name: string): Promise<any> {
-        return this.ops.deleteMyComputeTarget({ name });
     }
 
     async setModelDefault(_viewer: unknown, input: { scope: "user" | "cluster"; provider: string | null; model: string | null; reasoningEffort?: string | null; contextTier?: string | null }): Promise<any> {

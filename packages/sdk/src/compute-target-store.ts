@@ -27,8 +27,8 @@ function rethrow(err: any): never {
             /kind_shape/.test(raw)
                 ? "A compute kind uses lowercase letters, numbers and dash."
                 : /name_space/.test(raw)
-                    ? 'A compute target everyone shares is named "shared/<label>", and one of someone\'s own is named after them.'
-                    : 'A compute target is named "<owner>/<label>": the owner\'s sign-in address, or "shared" for one an administrator registers for everyone, then a label of letters, numbers, dot, dash and underscore.');
+                    ? 'A compute target is named "shared/<label>".'
+                    : 'A compute target is named "shared/<label>", where the label uses letters, numbers, dot, dash and underscore.');
     }
     throw err;
 }
@@ -49,7 +49,6 @@ function toTarget(r: any): ComputeTarget {
         name: r.name,
         kind: r.kind,
         class: r.class as ComputeTargetClass,
-        ownerUserId: r.owner_user_id === null || r.owner_user_id === undefined ? null : Number(r.owner_user_id),
         displayName: r.display_name ?? null,
         config: r.config && typeof r.config === "object" ? r.config : {},
         enabled: r.enabled !== false,
@@ -93,12 +92,12 @@ export class ComputeTargetStore {
     }
 
     async create(input: {
-        name: string; kind: string; class: ComputeTargetClass;
+        name: string; kind: string;
         displayName?: string | null; config?: Record<string, unknown> | null;
     }, actor: number | null, isAdmin: boolean): Promise<ComputeTarget> {
         const rows = await this.call(
-            `SELECT * FROM ${this.fn("cms_compute_target_create")}($1,$2,$3,$4,$5,$6,$7)`,
-            [input.name, input.kind, input.class, input.displayName ?? null,
+            `SELECT * FROM ${this.fn("cms_compute_target_create")}($1,$2,$3,$4,$5,$6)`,
+            [input.name, input.kind, input.displayName ?? null,
                 JSON.stringify(input.config ?? {}), actor, isAdmin]);
         return toTarget(rows[0] ?? {});
     }
@@ -134,18 +133,13 @@ export class ComputeTargetStore {
     }
 
     /**
-     * Worker side, before every turn: the target with this id if the session's
-     * owner may still use it, else null. Trusted caller.
+     * Worker side, before every turn: the target with this id, or null when
+     * it is gone. Trusted caller.
      */
-    async resolveForSession(
-        targetId: string,
-        owner: { provider: string; subject: string } | null,
-        isSystem: boolean,
-    ): Promise<ComputeTarget | null> {
+    async resolveForSession(targetId: string): Promise<ComputeTarget | null> {
         if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(targetId)) return null;
         const rows = await this.call(
-            `SELECT * FROM ${this.fn("cms_compute_target_resolve_for_session")}($1,$2,$3,$4)`,
-            [targetId, owner?.provider ?? null, owner?.subject ?? null, isSystem]);
+            `SELECT * FROM ${this.fn("cms_compute_target_resolve_for_session")}($1)`, [targetId]);
         return rows[0] ? toTarget(rows[0]) : null;
     }
 }

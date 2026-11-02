@@ -19,7 +19,6 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "completeSessionGroup",
     "copyArtifact",
     "createComputeTarget",
-    "createMyComputeTarget",
     "createMyProvider",
     "createProvider",
     "createSession",
@@ -32,7 +31,6 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "deleteGraphEdge",
     "deleteGraphNamespace",
     "deleteGraphNode",
-    "deleteMyComputeTarget",
     "deleteMyProvider",
     "deleteProvider",
     "deleteSession",
@@ -181,7 +179,6 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "unsetMyFeatureFlag",
     "unsetUserFeatureFlag",
     "updateComputeTarget",
-    "updateMyComputeTarget",
     "updateMyProviderCredential",
     "updateSessionGroup",
     "updateSharedProviderCredential",
@@ -303,22 +300,10 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Create a shared compute target. [admin]
+     * Create a compute target. [admin]
      * @remarks `POST /management/compute-targets` — access: `fleet:admin`
      */
     createComputeTarget(params: {
-        name?: any;
-        label?: any;
-        kind?: any;
-        displayName?: any;
-        config?: any;
-    }): Promise<any>;
-
-    /**
-     * Create a personal compute target.
-     * @remarks `POST /me/compute-targets` — access: `authed`
-     */
-    createMyComputeTarget(params: {
         name?: any;
         label?: any;
         kind?: any;
@@ -410,7 +395,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Delete a shared compute target. [admin]
+     * Delete a compute target. [admin]
      * @remarks `DELETE /management/compute-targets/:name` — access: `fleet:admin`
      */
     deleteComputeTarget(params: {
@@ -451,14 +436,6 @@ export interface ManagementOps {
     deleteGraphNode(params: {
         nodeKey?: any;
         namespace?: any;
-    }): Promise<any>;
-
-    /**
-     * Delete a personal compute target.
-     * @remarks `DELETE /me/compute-targets/:name` — access: `authed`
-     */
-    deleteMyComputeTarget(params: {
-        name: string;
     }): Promise<any>;
 
     /**
@@ -1093,7 +1070,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * List shared targets and the caller's own targets.
+     * List the compute targets.
      * @remarks `GET /compute-targets` — access: `authed`
      */
     listComputeTargets(params?: Record<string, never>): Promise<any>;
@@ -1753,21 +1730,10 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Update or enable/disable a shared compute target. [admin]
+     * Update or enable/disable a compute target. [admin]
      * @remarks `PATCH /management/compute-targets/:name` — access: `fleet:admin`
      */
     updateComputeTarget(params: {
-        name: string;
-        displayName?: any;
-        config?: any;
-        enabled?: any;
-    }): Promise<any>;
-
-    /**
-     * Update or enable/disable a personal compute target.
-     * @remarks `PATCH /me/compute-targets/:name` — access: `authed`
-     */
-    updateMyComputeTarget(params: {
         name: string;
         displayName?: any;
         config?: any;
@@ -1888,7 +1854,6 @@ export function createManagementOps(
         completeSessionGroup: (params: Record<string, unknown> = {}) => callOp("completeSessionGroup", params),
         copyArtifact: (params: Record<string, unknown> = {}) => callOp("copyArtifact", params),
         createComputeTarget: (params: Record<string, unknown> = {}) => callOp("createComputeTarget", params),
-        createMyComputeTarget: (params: Record<string, unknown> = {}) => callOp("createMyComputeTarget", params),
         createMyProvider: (params: Record<string, unknown> = {}) => callOp("createMyProvider", params),
         createProvider: (params: Record<string, unknown> = {}) => callOp("createProvider", params),
         createSession: (params: Record<string, unknown> = {}) => callOp("createSession", params),
@@ -1901,7 +1866,6 @@ export function createManagementOps(
         deleteGraphEdge: (params: Record<string, unknown> = {}) => callOp("deleteGraphEdge", params),
         deleteGraphNamespace: (params: Record<string, unknown> = {}) => callOp("deleteGraphNamespace", params),
         deleteGraphNode: (params: Record<string, unknown> = {}) => callOp("deleteGraphNode", params),
-        deleteMyComputeTarget: (params: Record<string, unknown> = {}) => callOp("deleteMyComputeTarget", params),
         deleteMyProvider: (params: Record<string, unknown> = {}) => callOp("deleteMyProvider", params),
         deleteProvider: (params: Record<string, unknown> = {}) => callOp("deleteProvider", params),
         deleteSession: (params: Record<string, unknown> = {}) => callOp("deleteSession", params),
@@ -2050,7 +2014,6 @@ export function createManagementOps(
         unsetMyFeatureFlag: (params: Record<string, unknown> = {}) => callOp("unsetMyFeatureFlag", params),
         unsetUserFeatureFlag: (params: Record<string, unknown> = {}) => callOp("unsetUserFeatureFlag", params),
         updateComputeTarget: (params: Record<string, unknown> = {}) => callOp("updateComputeTarget", params),
-        updateMyComputeTarget: (params: Record<string, unknown> = {}) => callOp("updateMyComputeTarget", params),
         updateMyProviderCredential: (params: Record<string, unknown> = {}) => callOp("updateMyProviderCredential", params),
         updateSessionGroup: (params: Record<string, unknown> = {}) => callOp("updateSessionGroup", params),
         updateSharedProviderCredential: (params: Record<string, unknown> = {}) => callOp("updateSharedProviderCredential", params),

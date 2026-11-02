@@ -64,12 +64,12 @@ beforeEach(async () => {
 describe("compute targets", () => {
     it("only an admin creates a shared target; everyone sees it", async () => {
         const alice = await makeUser("alice");
-        const denied = await rejects(store.create({ name: "shared/pool-a", kind: "sandbox", class: "shared" }, alice, false));
+        const denied = await rejects(store.create({ name: "shared/pool-a", kind: "sandbox" }, alice, false));
         expect(denied).toBeInstanceOf(ComputeTargetError);
         expect(denied.code).toBe("COMPUTE_TARGET_FORBIDDEN");
 
-        const created = await store.create({ name: "shared/pool-a", kind: "sandbox", class: "shared", displayName: "Pool A", config: { size: "m" } }, null, true);
-        expect(created).toMatchObject({ name: "shared/pool-a", kind: "sandbox", class: "shared", ownerUserId: null, displayName: "Pool A", config: { size: "m" }, enabled: true });
+        const created = await store.create({ name: "shared/pool-a", kind: "sandbox", displayName: "Pool A", config: { size: "m" } }, null, true);
+        expect(created).toMatchObject({ name: "shared/pool-a", kind: "sandbox", class: "shared", displayName: "Pool A", config: { size: "m" }, enabled: true });
 
         expect(created.id).toMatch(/^[0-9a-f-]{36}$/);
 
@@ -81,32 +81,18 @@ describe("compute targets", () => {
         expect(asAdmin[0].config).toEqual({ size: "m" });
     });
 
-    it("a personal target belongs to its creator and is invisible to others, admins included", async () => {
-        const alice = await makeUser("alice");
-        const bob = await makeUser("bob");
-        await store.create({ name: "alice@example.test/alice-box", kind: "user-machine", class: "personal" }, alice, false);
-
-        expect((await store.list(alice, false)).map((t) => t.name)).toEqual(["alice@example.test/alice-box"]);
-        expect(await store.list(bob, false)).toEqual([]);
-        expect(await store.list(bob, true)).toEqual([]);
-
-        const adminDelete = await rejects(store.delete("alice@example.test/alice-box", bob, true));
-        expect(adminDelete.code).toBe("COMPUTE_TARGET_NOT_FOUND");
-        expect(await store.delete("alice@example.test/alice-box", alice, false)).toBe(0);
-    });
-
     it("refuses bad names, kinds, configs and duplicates", async () => {
-        expect((await rejects(store.create({ name: "shared/a:b", kind: "x", class: "shared" }, null, true))).code).toBe("COMPUTE_TARGET_INVALID");
-        expect((await rejects(store.create({ name: "shared/ok", kind: "Bad Kind", class: "shared" }, null, true))).code).toBe("COMPUTE_TARGET_INVALID");
-        const notObject = await rejects(sql(`SELECT * FROM @cms_compute_target_create('ok','x','shared',NULL,'[1]'::jsonb,NULL,TRUE)`));
+        expect((await rejects(store.create({ name: "shared/a:b", kind: "x" }, null, true))).code).toBe("COMPUTE_TARGET_INVALID");
+        expect((await rejects(store.create({ name: "shared/ok", kind: "Bad Kind" }, null, true))).code).toBe("COMPUTE_TARGET_INVALID");
+        const notObject = await rejects(sql(`SELECT * FROM @cms_compute_target_create('shared/ok','x',NULL,'[1]'::jsonb,NULL,TRUE)`));
         expect(String(notObject.message)).toMatch(/COMPUTE_TARGET_INVALID/);
-        await store.create({ name: "shared/dup", kind: "x", class: "shared" }, null, true);
-        expect((await rejects(store.create({ name: "shared/dup", kind: "x", class: "shared" }, null, true))).code).toBe("COMPUTE_TARGET_CONFLICT");
+        await store.create({ name: "shared/dup", kind: "x" }, null, true);
+        expect((await rejects(store.create({ name: "shared/dup", kind: "x" }, null, true))).code).toBe("COMPUTE_TARGET_CONFLICT");
     });
 
     it("updates keep unspecified fields; only a manager may update", async () => {
         const alice = await makeUser("alice");
-        await store.create({ name: "shared/pool-b", kind: "sandbox", class: "shared", displayName: "B", config: { a: 1 } }, null, true);
+        await store.create({ name: "shared/pool-b", kind: "sandbox", displayName: "B", config: { a: 1 } }, null, true);
         expect((await rejects(store.update("shared/pool-b", { enabled: false }, alice, false))).code).toBe("COMPUTE_TARGET_FORBIDDEN");
         const updated = await store.update("shared/pool-b", { enabled: false }, null, true);
         expect(updated).toMatchObject({ displayName: "B", config: { a: 1 }, enabled: false });
@@ -114,74 +100,43 @@ describe("compute targets", () => {
         expect(renamed).toMatchObject({ displayName: null, config: { b: 2 }, enabled: false });
     });
 
-    it("the session check accepts shared or own, enabled targets only", async () => {
-        const alice = await makeUser("alice");
-        await makeUser("bob");
-        await store.create({ name: "shared/shared-1", kind: "sandbox", class: "shared" }, null, true);
-        await store.create({ name: "alice@example.test/alice-box", kind: "user-machine", class: "personal" }, alice, false);
-        const assertSession = (name, subject, isSystem = false) =>
-            sql(`SELECT @cms_compute_target_assert_session($1,'test-idp',$2,$3) AS ok`, [name, subject, isSystem]);
+    it("the session check accepts an existing, enabled target only", async () => {
+        await store.create({ name: "shared/shared-1", kind: "sandbox" }, null, true);
+        const assertSession = (name) => sql(`SELECT @cms_compute_target_assert_session($1) AS ok`, [name]);
         const uuid = /^[0-9a-f-]{36}$/;
 
-        expect((await assertSession("shared/shared-1", "bob"))[0].ok).toMatch(uuid);
-        expect((await assertSession("alice@example.test/alice-box", "alice"))[0].ok).toMatch(uuid);
-        expect(String((await rejects(assertSession("alice@example.test/alice-box", "bob"))).message)).toMatch(/COMPUTE_TARGET_NOT_FOUND/);
-        expect(String((await rejects(assertSession("alice@example.test/alice-box", null, true))).message)).toMatch(/COMPUTE_TARGET_NOT_FOUND/);
-        expect((await assertSession("shared/shared-1", null, true))[0].ok).toMatch(uuid);
+        expect((await assertSession("shared/shared-1"))[0].ok).toMatch(uuid);
+        expect(String((await rejects(assertSession("shared/gone"))).message)).toMatch(/COMPUTE_TARGET_NOT_FOUND/);
 
         await store.update("shared/shared-1", { enabled: false }, null, true);
-        expect(String((await rejects(assertSession("shared/shared-1", "bob"))).message)).toMatch(/COMPUTE_TARGET_DISABLED/);
+        expect(String((await rejects(assertSession("shared/shared-1"))).message)).toMatch(/COMPUTE_TARGET_DISABLED/);
     });
 
-    it("the worker resolves by id for the session's owner, and a reused name never takes old sessions", async () => {
-        const alice = await makeUser("alice");
-        await makeUser("bob");
-        const shared = await store.create({ name: "shared/pool-c", kind: "sandbox", class: "shared", config: { region: "x" } }, null, true);
-        const bobs = { provider: "test-idp", subject: "bob" };
-        expect(await store.resolveForSession(shared.id, bobs, false)).toMatchObject({ id: shared.id, name: "shared/pool-c", config: { region: "x" } });
-        expect(await store.resolveForSession(shared.id, null, true)).toMatchObject({ name: "shared/pool-c" });
-        expect(await store.resolveForSession("not-a-uuid", bobs, false)).toBeNull();
-
-        const own = await store.create({ name: "alice@example.test/alice-box", kind: "user-machine", class: "personal" }, alice, false);
-        expect(await store.resolveForSession(own.id, { provider: "test-idp", subject: "alice" }, false)).toMatchObject({ name: "alice@example.test/alice-box" });
-        expect(await store.resolveForSession(own.id, bobs, false), "another user's personal target").toBeNull();
-        expect(await store.resolveForSession(own.id, null, true), "system sessions use shared targets only").toBeNull();
+    it("the worker resolves by id, and a reused name never takes old sessions", async () => {
+        const shared = await store.create({ name: "shared/pool-c", kind: "sandbox", config: { region: "x" } }, null, true);
+        expect(await store.resolveForSession(shared.id)).toMatchObject({ id: shared.id, name: "shared/pool-c", config: { region: "x" } });
+        expect(await store.resolveForSession("not-a-uuid")).toBeNull();
 
         await sql(`INSERT INTO @sessions (session_id, state, creation_config)
                    VALUES ('s-open', 'idle', $1::jsonb), ('s-done', 'completed', $1::jsonb)`,
         [JSON.stringify({ computeTarget: "shared/pool-c", computeTargetId: shared.id })]);
         expect(await store.delete("shared/pool-c", null, true)).toBe(1);
-        expect(await store.resolveForSession(shared.id, bobs, false)).toBeNull();
+        expect(await store.resolveForSession(shared.id)).toBeNull();
 
         // The same name again is a different target: old sessions stay blocked.
-        const reused = await store.create({ name: "shared/pool-c", kind: "sandbox", class: "shared" }, null, true);
+        const reused = await store.create({ name: "shared/pool-c", kind: "sandbox" }, null, true);
         expect(reused.id).not.toBe(shared.id);
-        expect(await store.resolveForSession(shared.id, bobs, false)).toBeNull();
+        expect(await store.resolveForSession(shared.id)).toBeNull();
     });
 
-    it("names say who owns a target, and nobody can take a name that is not theirs", async () => {
-        const alice = await makeUser("alice");
-        const bob = await makeUser("bob");
-
-        // Two people may both have a target called "box": the names differ.
-        await store.create({ name: "alice@example.test/box", kind: "user-machine", class: "personal" }, alice, false);
-        await store.create({ name: "bob@example.test/box", kind: "user-machine", class: "personal" }, bob, false);
-        expect((await store.list(alice, false)).map((t) => t.name)).toEqual(["alice@example.test/box"]);
-        expect((await store.list(bob, false)).map((t) => t.name)).toEqual(["bob@example.test/box"]);
-
-        // A target of your own cannot be named after anybody else...
-        expect((await rejects(store.create({ name: "bob@example.test/stolen", kind: "x", class: "personal" }, alice, false))).code)
-            .toBe("COMPUTE_TARGET_FORBIDDEN");
-        // ...nor put in the space administrators keep for everyone.
-        expect((await rejects(store.create({ name: "shared/sneaky", kind: "x", class: "personal" }, alice, false))).code)
-            .toBe("COMPUTE_TARGET_FORBIDDEN");
-        // And a shared target lives only there.
-        expect((await rejects(store.create({ name: "alice@example.test/not-shared", kind: "x", class: "shared" }, null, true))).code)
+    it("every target lives in the shared space, and a name is always two parts", async () => {
+        // A target outside the shared space is refused, so adding targets
+        // with another owner later renames nothing that exists.
+        expect((await rejects(store.create({ name: "alice@example.test/not-shared", kind: "x" }, null, true))).code)
             .toBe("COMPUTE_TARGET_INVALID");
 
-        // A name is always two parts.
         for (const name of ["bare", "/leading", "trailing/", "shared/has space", "shared/a:b"]) {
-            expect((await rejects(store.create({ name, kind: "x", class: "shared" }, null, true))).code, name)
+            expect((await rejects(store.create({ name, kind: "x" }, null, true))).code, name)
                 .toBe("COMPUTE_TARGET_INVALID");
         }
     });
