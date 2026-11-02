@@ -815,9 +815,23 @@ src/orchestration_1_0_53/     │ frozen — replay only (directory form)
 src/orchestration_1_0_54/     │
 src/orchestration_1_0_55/     │
 ...                          │
-src/orchestration_1_0_81/     ┘
-src/orchestration/            ← current latest (1.0.82)
+src/orchestration_1_0_81/     │
+src/orchestration_1_0_82/     ┘
+src/orchestration/            ← current latest (1.0.83)
 ```
+
+**1.0.83 — compute providers.** A session may run its agent runtime on a
+compute host instead of inside the worker. The turns of such a session carry
+a routing tag that keeps them away from workers which cannot drive a remote
+runtime, and that tag is chosen inside the orchestration — so a worker
+running an older version of the orchestration would not choose it, and would
+run the turn as its own child process. Compute is therefore gated on the
+version: only 1.0.83 and later choose the tag or release a session's host
+when it leaves a worker. An old worker does not register 1.0.83, so during a
+rolling deploy or after a rollback it can run no step of a compute session;
+those sessions wait for a worker that can. A session in flight on 1.0.82
+keeps replaying on the frozen copy, which has no compute branch in it. A
+session without a compute target behaves identically on 1.0.82 and 1.0.83.
 
 All registered versions are listed in
 [`orchestration-registry.ts`](../../../packages/sdk/src/orchestration-registry.ts).

@@ -130,7 +130,25 @@ export interface TurnLifecycleContext {
     turnKey: string;
     /** Destroy the in-memory ManagedSession only — disk untouched. */
     dropWarmSession: () => Promise<void>;
+    /**
+     * Compute providers: close the session's state folder to its agent
+     * runtime for the moment this protocol reads or rewrites the whole
+     * folder, and open it again. A session whose runtime is the worker's
+     * own child writes those files through the worker and needs no fence,
+     * so the default does nothing.
+     */
+    fenceSessionFiles?: (reason: string) => () => void;
     trace: (message: string) => void;
+}
+
+/** Run one step of the protocol with the session's folder closed to its runtime. */
+async function fenced<T>(ctx: TurnLifecycleContext, reason: string, step: () => Promise<T>): Promise<T> {
+    const release = ctx.fenceSessionFiles?.(reason) ?? (() => {});
+    try {
+        return await step();
+    } finally {
+        release();
+    }
 }
 
 const COMMIT_TRANSIENT_RETRIES = 3;
@@ -240,6 +258,10 @@ async function resolveFromStore(
  * (already-committed — the caller returns the stored result without a body).
  */
 export async function runTurnPreamble(ctx: TurnLifecycleContext): Promise<TurnPreambleOutcome> {
+    return fenced(ctx, "restored", () => runTurnPreambleFenced(ctx));
+}
+
+async function runTurnPreambleFenced(ctx: TurnLifecycleContext): Promise<TurnPreambleOutcome> {
     const sessionDir = sessionDirOf(ctx);
     const sentinel = readTurnSentinel(sessionDir);
     const marker = readSnapshotMarker(sessionDir);
@@ -368,6 +390,14 @@ export async function attemptStoreRecovery(ctx: TurnLifecycleContext): Promise<n
  * adopted, discarding this attempt's divergent local state.
  */
 export async function runTurnCommit(
+    ctx: TurnLifecycleContext,
+    baseVersion: number,
+    result: unknown,
+): Promise<TurnCommitOutcome> {
+    return fenced(ctx, "saved", () => runTurnCommitFenced(ctx, baseVersion, result));
+}
+
+async function runTurnCommitFenced(
     ctx: TurnLifecycleContext,
     baseVersion: number,
     result: unknown,

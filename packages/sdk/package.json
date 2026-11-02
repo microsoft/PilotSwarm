@@ -16,6 +16,9 @@
         },
         "./package.json": "./package.json"
     },
+    "bin": {
+        "pilotswarm-compute-host": "./dist/compute-host-cli.js"
+    },
     "scripts": {
         "build": "tsc",
         "dev": "tsc --watch",

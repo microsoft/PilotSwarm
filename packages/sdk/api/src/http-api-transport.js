@@ -460,6 +460,10 @@ export class HttpApiTransport {
     // so a reader can line them up against the table.
 
     listProviders() { return this.api.call("listProviders"); }
+    listComputeTargets() { return this.api.call("listComputeTargets"); }
+    createComputeTarget(input = {}) { return this.api.call("createComputeTarget", input); }
+    updateComputeTarget(input = {}) { return this.api.call("updateComputeTarget", input); }
+    deleteComputeTarget(name) { return this.api.call("deleteComputeTarget", { name }); }
     listFeatureFlags() { return this.api.call("listFeatureFlags"); }
     getClusterFeatureFlags() { return this.api.call("getClusterFeatureFlags"); }
     getMyFeatureFlags() { return this.api.call("getMyFeatureFlags"); }

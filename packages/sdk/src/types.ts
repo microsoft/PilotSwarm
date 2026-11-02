@@ -600,6 +600,12 @@ export interface SerializableSessionConfig {
      * The attach path is per-turn data and is never written to config.
      */
     workspace?: SessionWorkspace;
+    /**
+     * The compute target the session's agent runtime runs on (compute
+     * providers, docs/proposals/compute-providers.md). Fixed at creation.
+     * Absent: the worker runs the runtime itself, as before.
+     */
+    computeTarget?: string;
     /** Wait threshold in seconds. Waits shorter than this sleep in-process. */
     waitThreshold?: number;
     /** Internal: bound definition lookup key. New static bindings retain namespace:name; published bindings use name plus packageId. */
@@ -720,6 +726,13 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
      * SessionManager when it builds the CLI config. Runtime-only.
      */
     workspaceAdoption?: WorkspaceAdoptionReport;
+    /**
+     * Compute providers: where this turn's agent runtime runs, when it is
+     * not the worker's own child process. Absent for an ordinary session.
+     * Set by SessionManager when it builds the CLI config; runtime-only,
+     * never serialized.
+     */
+    computeRuntime?: import("./compute.js").ComputeRuntimeContext;
     tools?: Tool<any>[];
     hooks?: SessionConfig["hooks"];
     /**
@@ -1413,6 +1426,69 @@ export interface PilotSwarmWorkerOptions {
      * by the built-in provider (`path` = root path + folder, adopts nothing).
      */
     workspaceRoots?: WorkspaceRoot[];
+
+    /**
+     * Compute providers: worker plug-ins, one per compute type, that place a
+     * session's agent runtime on a registered compute target. The built-in
+     * `local` provider (today's child-process runtime) is always present.
+     * Can also be added later with `registerComputeProvider()`.
+     */
+    computeProviders?: import("./compute.js").ComputeProvider[];
+
+    /**
+     * Compute providers: accept runtime addresses that are not on this
+     * machine. Off by default: the worker sends prompts, tool results and the
+     * connection token over that connection, so a provider should secure the
+     * path itself and hand back a local address. Turn this on only when the
+     * network between the worker and its hosts is already secured.
+     */
+    computeAllowNonLoopbackEndpoints?: boolean;
+
+    /**
+     * Compute providers: the compute target a new root session is given
+     * when it names none, as `shared/<label>`. The session records the
+     * target's id at creation exactly as if it had asked for it, and
+     * sub-agents keep inheriting their tree's target. Unset by default, so
+     * sessions stay on the worker. Env:
+     * `PILOTSWARM_DEFAULT_COMPUTE_TARGET`.
+     */
+    defaultComputeTarget?: string;
+
+    /**
+     * Compute providers: refuse to run any agent runtime as this worker's
+     * own child process. A session with no compute target — and no
+     * deployment default — then fails its turn with `COMPUTE_REQUIRED`
+     * rather than running here. Off by default. Env:
+     * `PILOTSWARM_REQUIRE_COMPUTE`.
+     *
+     * With it on, every session's agent runs where the CMS and the
+     * orchestration cannot be reached, which is when the invariant this
+     * design serves actually holds.
+     */
+    requireCompute?: boolean;
+
+    /**
+     * Compute providers: the most bytes one session's read-only copy of
+     * its skill and package folders carries to its host. Default 64 MiB.
+     * Env: `PILOTSWARM_COMPUTE_COPY_MAX_BYTES`.
+     */
+    computeCopyMaxBytes?: number;
+
+    /**
+     * Compute providers: the most files one session's read-only copy of
+     * its skill and package folders carries to its host. Default 4,096.
+     * Env: `PILOTSWARM_COMPUTE_COPY_MAX_FILES`.
+     */
+    computeCopyMaxFiles?: number;
+
+    /**
+     * Compute providers: the most one session's state folder may hold on
+     * this worker. A runtime on a host writes its session state back
+     * through the worker, into a folder on the worker's own disk, which
+     * it shares with every other session here. Default 512 MiB. Env:
+     * `PILOTSWARM_SESSION_FS_MAX_TOTAL_BYTES`.
+     */
+    sessionFsMaxTotalBytes?: number;
 
     /** Optional session state store. When set, enables durable session dehydration without Azure Blob Storage. */
     sessionStore?: SessionStateStore;

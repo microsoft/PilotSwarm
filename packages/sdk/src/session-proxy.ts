@@ -1,4 +1,4 @@
-import { HANDOFF_ACTIVITY_NAMES, TURN_CONTROL_ACTIVITY_NAMES, routeHandoffActivity, routedActivityName, registerHandoffActivity, registerTurnControlActivity, routeTurnControlActivity, routeWorkspaceActivity, type ActivityRoutingContract } from "./activity-routing.js";
+import { HANDOFF_ACTIVITY_NAMES, TURN_CONTROL_ACTIVITY_NAMES, routeComputeActivity, routeHandoffActivity, routedActivityName, registerHandoffActivity, registerTurnControlActivity, routeTurnControlActivity, routeWorkspaceActivity, type ActivityRoutingContract } from "./activity-routing.js";
 import nodeCrypto from "node:crypto";
 import { createCopilotClient } from "./copilot-client.js";
 import {
@@ -14,6 +14,7 @@ import { canvasArtifactFilename, normalizeCanvasSlot, eventSlot, latestCanvasEve
 import type { SessionStateStore } from "./session-store.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "./cms.js";
 import { admissionToWait, PROVIDER_BUDGET_WAKE_PROMPT } from "./provider-budgets.js";
+import { orchestrationSupportsCompute } from "./orchestration-version.js";
 import { applyWorkspaceDefaults, checkWorkspaceForSpawn, defaultsRecordOf, orchestrationSupportsWorkspaces, prepareWorkspace, prepareWorkspaceExtras, readDefaultsRecord, resolveWorkspaceDefaults, sameDefaultsRecord, WORKSPACE_PARTIAL_CHANGES_NOTE, workspaceOpenedKey } from "./workspace.js";
 import { workingFolderOf } from "./workspace-check.js";
 import { changedExtraNames, sameWorkingFolder } from "./workspace-check.js";
@@ -37,7 +38,7 @@ import { PilotSwarmManagementClient, type SessionOrchestrationStats } from "./ma
 import { replyInternalSessionMessage, sendInternalSessionMessage } from "./session-messages.js";
 import { loadKnowledgeIndexFromFactStore } from "./knowledge-index.js";
 import { mergePromptSections } from "./prompt-layering.js";
-import { approvePermissionForSession } from "./permissions.js";
+import { TOOL_FREE_HELPER_SESSION } from "./permissions.js";
 import { formatSessionTimestamp, sessionTimestampMillis } from "./session-list-timestamps.js";
 import { formatSessionOwnerLabel, getSessionOwnerKind, matchesSessionOwnerFilters } from "./session-owner-utils.js";
 import { cmsRetryBestEffort, cmsRetryCritical } from "./cms-retry.js";
@@ -718,7 +719,15 @@ export function createSessionProxy(
     affinityKey: string,
     config: SerializableSessionConfig,
     routingContract?: ActivityRoutingContract,
+    /**
+     * Compute providers: the orchestration version running this session.
+     * Only a version that knows about compute may choose the compute
+     * routing tag — a frozen older one must schedule exactly what it
+     * always did, whichever build replays it. Absent counts as older.
+     */
+    orchestrationVersion?: string,
 ) {
+    const computeAware = orchestrationSupportsCompute(orchestrationVersion);
     return {
         runTurn(
             prompt: string,
@@ -787,6 +796,12 @@ export function createSessionProxy(
                 },
                 affinityKey,
             );
+            // Compute providers: the turn of a session that runs its agent
+            // on a host goes only to workers that can drive one. An older
+            // worker would run it as its own child process, beside the CMS
+            // and the model keys. Those workers declare the turn-control,
+            // workspace and handoff tags too.
+            if (computeAware && (config as { computeTarget?: unknown }).computeTarget) return routeComputeActivity(task);
             // Session turn control (1.0.81): every turn goes only to workers
             // that listen for controls. Those workers also declare the
             // handoff and workspace tags.
@@ -842,6 +857,22 @@ export function createSessionProxy(
         releaseWorkspace(args: { reason: string; revision?: number; turnIndex?: number }) {
             return routeWorkspaceActivity(ctx.scheduleActivityOnSession(
                 "releaseWorkspace",
+                { sessionId, ...args },
+                affinityKey,
+            ));
+        },
+        /**
+         * Compute providers: let go of this session's host on the worker
+         * that holds it, before the session can move to another one.
+         *
+         * Without this the worker that ran the last turn keeps its bridge,
+         * its pooled client and its warm handle until it evicts the session
+         * much later, while another worker resumes the same session on the
+         * same host. Two workers would then drive one runtime.
+         */
+        releaseCompute(args: { reason: string }) {
+            return routeComputeActivity(ctx.scheduleActivityOnSession(
+                "releaseCompute",
                 { sessionId, ...args },
                 affinityKey,
             ));
@@ -1730,6 +1761,10 @@ export function registerActivities(
                     // pre-1.0.67 inputs → 0 (legacy chain, today's behavior).
                     transcriptEpoch: input.transcriptEpoch ?? 0,
                     dropWarmSession: () => sessionManager.dropWarmSession(input.sessionId),
+                    // Optional, like the rest of the manager's late
+                    // additions: a session manager that does not hold
+                    // remote session folders has nothing to fence.
+                    fenceSessionFiles: (reason) => sessionManager.fenceSessionFiles?.(input.sessionId, reason) ?? (() => {}),
                     trace,
                 }
                 : null;
@@ -5305,6 +5340,30 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
         return result;
     });
 
+    // ── releaseCompute (compute providers) ──────────────────
+    // Session-pinned, like releaseWorkspace: it runs on the worker that
+    // holds the session, before the orchestration releases affinity, so no
+    // second worker can drive the same runtime. The orchestration races it
+    // against a cap and releases affinity anyway if it does not finish.
+    runtime.registerActivity("releaseCompute", async (
+        activityCtx: any,
+        input: { sessionId: string; reason: string },
+    ): Promise<{ released: boolean }> => {
+        const released = await sessionManager.releaseComputeForMove(input.sessionId);
+        activityCtx.traceInfo?.(`[releaseCompute] session=${input.sessionId} reason=${input.reason} released=${released}`);
+        if (catalog && released) {
+            await cmsRetryBestEffort(
+                `releaseCompute.recordEvent session=${input.sessionId}`,
+                () => catalog!.recordEvents(input.sessionId, [{
+                    eventType: "session.compute_released",
+                    data: { reason: input.reason, workerNodeId: workerNodeId ?? os.hostname() },
+                }], workerNodeId),
+                (msg) => activityCtx.traceInfo?.(msg),
+            );
+        }
+        return { released };
+    });
+
     // ── checkpointSession ───────────────────────────────────
     runtime.registerActivity("checkpointSession", async (
         activityCtx: any,
@@ -5473,9 +5532,11 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             try {
                 await sdk.start();
                 // Resolve the default model + provider from the registry
-                const sessionOpts: any = {
-                    onPermissionRequest: approvePermissionForSession,
-                };
+                // A one-shot session that reads a transcript and writes a
+                // line. The transcript may carry anything a session's
+                // events carried, so the helper is given no tools at all
+                // (permissions.ts, TOOL_FREE_HELPER_SESSION).
+                const sessionOpts: any = { ...TOOL_FREE_HELPER_SESSION };
                 if (defaultProvider) {
                     sessionOpts.model = defaultProvider.modelName;
                     sessionOpts.provider = defaultProvider.sdkProvider;

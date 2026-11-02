@@ -69,6 +69,9 @@ const GOLDEN_SURFACE = [
     "runtime.session.checkWorkspace",
     "runtime.session.destroy",
     "runtime.session.hydrate",
+    // 1.0.83 (compute providers): letting go of the session's host on the
+    // worker it is leaving, before an affinity release.
+    "runtime.session.releaseCompute",
     // 1.0.80 (session workspaces): the release before an affinity release.
     "runtime.session.releaseWorkspace",
     "runtime.session.runTurn"

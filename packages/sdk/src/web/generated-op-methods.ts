@@ -18,6 +18,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "completeSession",
     "completeSessionGroup",
     "copyArtifact",
+    "createComputeTarget",
     "createMyProvider",
     "createProvider",
     "createSession",
@@ -25,6 +26,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "createSessionGroup",
     "deleteAgentPackage",
     "deleteArtifact",
+    "deleteComputeTarget",
     "deleteFact",
     "deleteGraphEdge",
     "deleteGraphNamespace",
@@ -105,6 +107,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "listArtifacts",
     "listAuthzAudit",
     "listChildOutcomes",
+    "listComputeTargets",
     "listCreatableAgents",
     "listFeatureFlagChanges",
     "listFeatureFlags",
@@ -175,6 +178,7 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "storeFact",
     "unsetMyFeatureFlag",
     "unsetUserFeatureFlag",
+    "updateComputeTarget",
     "updateMyProviderCredential",
     "updateSessionGroup",
     "updateSharedProviderCredential",
@@ -296,6 +300,18 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Create a compute target. [admin]
+     * @remarks `POST /management/compute-targets` — access: `fleet:admin`
+     */
+    createComputeTarget(params: {
+        name?: any;
+        label?: any;
+        kind?: any;
+        displayName?: any;
+        config?: any;
+    }): Promise<any>;
+
+    /**
      * Create a provider of your own, on your own credentials. Nobody else sees it.
      * @remarks `POST /me/providers` — access: `authed`
      */
@@ -318,7 +334,7 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * Create a session. Owner is the authenticated principal; visibility defaults to the deployment default. workspace { root, folder? } sets its working folder.
+     * Create a session. Owner is the authenticated principal; visibility defaults to the deployment default. workspace { root, folder? } sets its working folder; computeTarget selects a named target.
      * @remarks `POST /sessions` — access: `session:create`
      */
     createSession(params: {
@@ -328,10 +344,11 @@ export interface ManagementOps {
         groupId?: any;
         visibility?: any;
         workspace?: any;
+        computeTarget?: any;
     }): Promise<any>;
 
     /**
-     * Create a session bound to a named agent. workspace { root, folder? } sets its working folder.
+     * Create a session bound to a named agent. workspace { root, folder? } sets its working folder; computeTarget selects a named target.
      * @remarks `POST /sessions/for-agent` — access: `session:create`
      */
     createSessionForAgent(params: {
@@ -346,6 +363,7 @@ export interface ManagementOps {
         groupId?: any;
         visibility?: any;
         workspace?: any;
+        computeTarget?: any;
     }): Promise<any>;
 
     /**
@@ -374,6 +392,14 @@ export interface ManagementOps {
     deleteArtifact(params: {
         sessionId: string;
         filename: string;
+    }): Promise<any>;
+
+    /**
+     * Delete a compute target. [admin]
+     * @remarks `DELETE /management/compute-targets/:name` — access: `fleet:admin`
+     */
+    deleteComputeTarget(params: {
+        name: string;
     }): Promise<any>;
 
     /**
@@ -1044,6 +1070,12 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * List the compute targets.
+     * @remarks `GET /compute-targets` — access: `authed`
+     */
+    listComputeTargets(params?: Record<string, never>): Promise<any>;
+
+    /**
      * Agents sessions can be created for.
      * @remarks `GET /agents` — access: `authed`
      */
@@ -1698,6 +1730,17 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
+     * Update or enable/disable a compute target. [admin]
+     * @remarks `PATCH /management/compute-targets/:name` — access: `fleet:admin`
+     */
+    updateComputeTarget(params: {
+        name: string;
+        displayName?: any;
+        config?: any;
+        enabled?: any;
+    }): Promise<any>;
+
+    /**
      * Replace the credential on one of your own personal providers without changing its name, defaults, or usage history.
      * @remarks `PUT /me/providers/:name/credential` — access: `authed`
      */
@@ -1810,6 +1853,7 @@ export function createManagementOps(
         completeSession: (params: Record<string, unknown> = {}) => callOp("completeSession", params),
         completeSessionGroup: (params: Record<string, unknown> = {}) => callOp("completeSessionGroup", params),
         copyArtifact: (params: Record<string, unknown> = {}) => callOp("copyArtifact", params),
+        createComputeTarget: (params: Record<string, unknown> = {}) => callOp("createComputeTarget", params),
         createMyProvider: (params: Record<string, unknown> = {}) => callOp("createMyProvider", params),
         createProvider: (params: Record<string, unknown> = {}) => callOp("createProvider", params),
         createSession: (params: Record<string, unknown> = {}) => callOp("createSession", params),
@@ -1817,6 +1861,7 @@ export function createManagementOps(
         createSessionGroup: (params: Record<string, unknown> = {}) => callOp("createSessionGroup", params),
         deleteAgentPackage: (params: Record<string, unknown> = {}) => callOp("deleteAgentPackage", params),
         deleteArtifact: (params: Record<string, unknown> = {}) => callOp("deleteArtifact", params),
+        deleteComputeTarget: (params: Record<string, unknown> = {}) => callOp("deleteComputeTarget", params),
         deleteFact: (params: Record<string, unknown> = {}) => callOp("deleteFact", params),
         deleteGraphEdge: (params: Record<string, unknown> = {}) => callOp("deleteGraphEdge", params),
         deleteGraphNamespace: (params: Record<string, unknown> = {}) => callOp("deleteGraphNamespace", params),
@@ -1897,6 +1942,7 @@ export function createManagementOps(
         listArtifacts: (params: Record<string, unknown> = {}) => callOp("listArtifacts", params),
         listAuthzAudit: (params: Record<string, unknown> = {}) => callOp("listAuthzAudit", params),
         listChildOutcomes: (params: Record<string, unknown> = {}) => callOp("listChildOutcomes", params),
+        listComputeTargets: (params: Record<string, unknown> = {}) => callOp("listComputeTargets", params),
         listCreatableAgents: (params: Record<string, unknown> = {}) => callOp("listCreatableAgents", params),
         listFeatureFlagChanges: (params: Record<string, unknown> = {}) => callOp("listFeatureFlagChanges", params),
         listFeatureFlags: (params: Record<string, unknown> = {}) => callOp("listFeatureFlags", params),
@@ -1967,6 +2013,7 @@ export function createManagementOps(
         storeFact: (params: Record<string, unknown> = {}) => callOp("storeFact", params),
         unsetMyFeatureFlag: (params: Record<string, unknown> = {}) => callOp("unsetMyFeatureFlag", params),
         unsetUserFeatureFlag: (params: Record<string, unknown> = {}) => callOp("unsetUserFeatureFlag", params),
+        updateComputeTarget: (params: Record<string, unknown> = {}) => callOp("updateComputeTarget", params),
         updateMyProviderCredential: (params: Record<string, unknown> = {}) => callOp("updateMyProviderCredential", params),
         updateSessionGroup: (params: Record<string, unknown> = {}) => callOp("updateSessionGroup", params),
         updateSharedProviderCredential: (params: Record<string, unknown> = {}) => callOp("updateSharedProviderCredential", params),

@@ -238,9 +238,32 @@ export function createCopilotClient(
     options: CopilotClientOptions,
     provider?: unknown,
     toolCatalog?: ToolCatalogCapability | ToolCatalogPolicyResolver,
+    remote?: {
+        /** How to reach a runtime that is not the worker's child process (compute providers). */
+        connection: RuntimeConnection;
+        /**
+         * How a PilotSwarm model's requests come back to the worker, which
+         * holds the credentials. Left out only when the runtime is using
+         * model access of its own, so there is nothing to bring back — and
+         * because a request handler is client-wide, such a client is never
+         * shared with a session whose model is PilotSwarm's.
+         */
+        requestHandler?: CopilotRequestHandler;
+    },
 ): CopilotClient {
     if (toolCatalog && !needsByokRequestCompatibility(provider)) {
         throw new Error("toolCatalog requires an OpenAI-compatible Chat Completions provider.");
+    }
+    if (remote) {
+        // A remote runtime gets no GitHub token and no environment from the
+        // worker: the SDK refuses gitHubToken over a URI, and env would only
+        // describe the worker anyway.
+        const { gitHubToken: _token, env: _env, ...rest } = options;
+        return new CopilotClient({
+            ...rest,
+            connection: remote.connection,
+            ...(remote.requestHandler ? { requestHandler: remote.requestHandler } : {}),
+        });
     }
     return new CopilotClient({
         ...options,

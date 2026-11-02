@@ -23,6 +23,7 @@ import type {
     SessionWorkspace,
 } from "./types.js";
 import { validateWorkspaceText } from "./workspace-check.js";
+import { COMPUTE_ERROR_CODES, computeModelRefusal, resolveComputeTargetName, validateComputeTargetName } from "./compute.js";
 import type { SessionCatalog, SessionEvent, SessionVisibility, SessionRow } from "./cms.js";
 import type { MessageSender } from "./message-sender.js";
 import { normalizeMessageSender } from "./message-sender.js";
@@ -85,6 +86,32 @@ function throwIfAborted(signal: AbortSignal | undefined, message: string): void 
  *
  * @internal exported for tests
  */
+/**
+ * The compute target recorded for a session's tree, or nothing.
+ *
+ * The root's creation config is where a target is written — by the caller
+ * that named one, or by the catalog applying the deployment's default. A
+ * sub-agent is never given one of its own, so it reads its root's. That
+ * is why this exists at all: taking the caller's field alone left a
+ * sub-agent's turns, and a default-target root's turns, routed as if they
+ * ran on the worker.
+ *
+ * A catalog that cannot answer leaves the session as it was. This decides
+ * routing; failing closed is the worker's job, which refuses to run a
+ * remote session's agent on itself whatever route got there.
+ */
+export async function treeComputeTarget(
+    catalog: Pick<SessionCatalog, "getSessionCreationConfig">,
+    sessionId: string,
+    cmsRow: Pick<SessionRow, "rootSessionId"> | null,
+): Promise<string | undefined> {
+    if (!catalog.getSessionCreationConfig) return undefined;
+    const rootSessionId = cmsRow?.rootSessionId || sessionId;
+    const stored = await catalog.getSessionCreationConfig(rootSessionId).catch(() => null);
+    const name = typeof stored?.computeTarget === "string" ? stored.computeTarget : "";
+    return name || undefined;
+}
+
 export function projectSerializableSessionConfig(
     fullConfig: ManagedSessionConfig | undefined,
     fallbackWaitThreshold: number | undefined,
@@ -115,6 +142,8 @@ export function projectSerializableSessionConfig(
         // Session workspaces: present only when set, so a session without one
         // projects exactly as before.
         ...(fullConfig?.workspace ? { workspace: fullConfig.workspace } : {}),
+        // Compute target: present only when set, like the workspace.
+        ...(fullConfig?.computeTarget ? { computeTarget: fullConfig.computeTarget } : {}),
     };
 }
 
@@ -223,8 +252,24 @@ export class PilotSwarmClient {
             workspace = checked.workspace;
         }
 
+        // Compute target: a whole name is taken as it is and a bare label
+        // is shorthand for the shared target of that label. Whether the
+        // target exists and is enabled is still checked in the create
+        // transaction (cms.ts).
+        let computeTarget: string | undefined;
+        if (config?.computeTarget !== undefined && config?.computeTarget !== null && config.computeTarget !== "") {
+            computeTarget = this._resolveComputeTargetName(config.computeTarget);
+        }
+
         const sessionId = config?.sessionId ?? crypto.randomUUID();
         const resolved = await this._resolveCreationModel(config ?? {}, false);
+        // Compute providers: a session is refused here rather than at its
+        // first turn, where the model is only found out after three failed
+        // attempts and about three quarters of a minute.
+        if (computeTarget && resolved) {
+            const refusal = await this._computeModelRefusal(resolved.provider);
+            if (refusal) throw Object.assign(new Error(refusal), { code: COMPUTE_ERROR_CODES.UNSUPPORTED, status: 400 });
+        }
         const { workspace: _rawWorkspace, ...configWithoutWorkspace } = config ?? {};
         const resolvedConfig = {
             ...configWithoutWorkspace,
@@ -256,6 +301,7 @@ export class PilotSwarmClient {
                 waitThreshold: resolvedConfig.waitThreshold ?? this.config.waitThreshold,
                 toolNames: resolvedConfig.toolNames,
                 ...(workspace ? { workspace } : {}),
+                ...(computeTarget ? { computeTarget } : {}),
             };
             this.sessionConfigs.set(sessionId, fullConfig);
         }
@@ -330,6 +376,8 @@ export class PilotSwarmClient {
         visibility?: SessionVisibility | null;
         /** Session workspaces: the working folder, { root, folder? }. */
         workspace?: SessionWorkspace | { root: string; folder?: string } | null;
+        /** The compute target the session runs on; absent runs it on the worker. */
+        computeTarget?: string | null;
     }): Promise<PilotSwarmSession> {
         // Validate the agent exists and is non-system
         const allowed = this._allowedAgentNames;
@@ -352,6 +400,7 @@ export class PilotSwarmClient {
             groupId: opts?.groupId ?? null,
             visibility: opts?.visibility ?? null,
             ...(opts?.workspace != null ? { workspace: opts.workspace } : {}),
+            ...(opts?.computeTarget ? { computeTarget: opts.computeTarget } : {}),
         });
 
         // Set agent metadata in CMS (agentId + prefixed title)
@@ -657,6 +706,36 @@ export class PilotSwarmClient {
         trace("[client] start complete");
     }
 
+    /**
+     * Which target a caller means. A whole name — `<owner>/<label>` — is
+     * taken as it is; a bare label is shorthand for the shared target of
+     * that label, so everything downstream works with a whole name.
+     */
+    private _resolveComputeTargetName(requested: string): string {
+        const [name] = resolveComputeTargetName(requested);
+        if (name) return name;
+        const checked = validateComputeTargetName(requested);
+        const code = checked.ok ? COMPUTE_ERROR_CODES.INVALID : checked.code;
+        const message = checked.ok ? "that is not a compute target name" : checked.message;
+        throw Object.assign(new Error(`${code}: ${message}`), { code, status: 400 });
+    }
+
+    /**
+     * Compute providers: why a model served by this provider cannot run on
+     * a compute host, or null. GitHub Copilot models authenticate inside
+     * the runtime with a GitHub token, and a runtime on another machine
+     * must not hold the worker's.
+     */
+    private async _computeModelRefusal(providerName: string): Promise<string | null> {
+        const store = this._catalog?.providers;
+        if (!store || !this._modelProviderTypes) return null;
+        const credentials = await store.allCredentials().catch(() => []);
+        const instance = credentials.find((candidate) => candidate.name === providerName);
+        if (!instance) return null;
+        const type = this._modelProviderTypes.allProviders.find((provider) => provider.id === instance.typeId)?.type;
+        return computeModelRefusal(type, true);
+    }
+
     private async _resolveCreationModel(
         config: Pick<ManagedSessionConfig, "model" | "reasoningEffort" | "contextTier"> & { owner?: SessionOwnerInfo | null },
         system: boolean,
@@ -857,6 +936,22 @@ export class PilotSwarmClient {
 
         if (!this.activeOrchestrations.has(sessionId)) {
             const { parentSessionId, nestingLevel } = await this._restoreLineageForStart(sessionId, cmsRow, bootstrapNestingLevel);
+            // Compute providers: every session of a tree that runs its
+            // agent elsewhere carries its target into the orchestration,
+            // so every one of its turns is routed to a worker that can
+            // drive a remote runtime.
+            //
+            // It is read from what was recorded for the tree's root, not
+            // from what a caller passed: a sub-agent is never given a
+            // target of its own, and a root that was given the
+            // deployment's default has it only in the catalog. Taking the
+            // caller's field alone left exactly those turns untagged, and
+            // an untagged turn is the one an older worker picks up and
+            // runs as its own child process.
+            const treeTarget = await treeComputeTarget(this._catalog, sessionId, cmsRow);
+            if (treeTarget && serializableConfig && serializableConfig.computeTarget !== treeTarget) {
+                serializableConfig = { ...serializableConfig, computeTarget: treeTarget };
+            }
             // Explicit local identity keeps its precedence; another process
             // reconstructs the named agent's startup contract from the row.
             const agentId = this.sessionAgentIds.get(sessionId) ?? cmsRow?.agentId;

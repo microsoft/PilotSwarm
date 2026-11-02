@@ -2,6 +2,117 @@
 
 ## Unreleased
 
+**Compute providers (experimental).** A session's agent runtime can run on a
+host chosen for that session instead of inside the worker. A compute provider
+is a worker plug-in for one kind of compute; an administrator registers a
+compute target (`shared/<label>`), and anyone picks one when creating a
+session. Every connection
+to a runtime outside the worker goes through a local bridge and a mutual
+handshake with a small PilotSwarm component on the host, so each end proves it
+holds that binding's secret before anything of the turn crosses. The runtime
+holds placeholder credentials, never PilotSwarm's model keys, and its session
+state stays in the worker's own folder. PilotSwarm tells a provider when a
+session lets go of a host, and the component on a host ends itself after a set
+time with no connection, so a host nobody came back to is freed without the
+worker having to say so; what happens to a host nobody needs is the provider's
+decision. Compute targets are
+managed through the management client and the Web API; the CLI, portal and MCP
+surfaces are not part of this change. A deployment may name a default target
+for sessions that choose none (`defaultComputeTarget`, or
+`PILOTSWARM_DEFAULT_COMPUTE_TARGET` — every process that creates sessions needs
+the same setting), and may require compute (`requireCompute`, or
+`PILOTSWARM_REQUIRE_COMPUTE`), after which the worker refuses to run an agent
+runtime of its own. Both are off by default, so sessions without a compute
+target are unchanged. Every turn of every session in a tree that has a target —
+sub-agents and system sessions included — is routed only to workers that can
+drive a remote runtime, and the worker refuses to start a local runtime for
+such a session whatever route reached it. The connection between a worker and
+a host is not encrypted: the network between them must be private, and only
+the workers should be able to reach a host.
+
+A session that runs on a host gets the same skill folders and the same MCP
+servers as one that runs on the worker.
+Beside the runtime connection the worker opens a second connection to the same
+host component, proved by the same handshake and named in its hello, and over
+it: the skill folders the session is authorized to see are copied to the host
+read-only, named by their content so an unchanged folder is never sent again,
+and the runtime is given the host's paths; a server defined by an agent package
+runs on the host out of that copy, built from the entry as it was written, so
+no worker value or worker path can reach it (one that asks for a worker value
+is unavailable, with the field named); and a server the deployment configured
+keeps running on the trusted side with its own command, environment, headers
+and credentials, reached by the runtime through the host component. PilotSwarm
+forwards that traffic without interpreting it, so whatever the runtime and the
+server support keeps working. On that path it forwards only to servers the
+deployment configured for that session, and only to the address and path that
+server was configured with; it bounds message sizes, how long a call may wait
+to be answered and the gap between bytes, and how many servers one host may
+have the worker start; it passes the caller's own headers through unchanged
+while a header the deployment set for that server wins over a caller's of the
+same name; and it adds nothing beyond what the deployment configured for that
+server — no worker identity and no worker credential. It also attaches a
+statement of the session and its owner for the server's checks and audit. That
+statement is not signed: it is trustworthy only because it arrives over a
+connection only the worker can make, so a server that decides anything from it
+must be reachable from the worker and nowhere else. Servers that speak only the
+older event-stream transport are unavailable to these sessions, with the
+reason. Repository MCP servers stay off.
+
+A session's copy carries 64 MiB and 4,096 files by default
+(`computeCopyMaxBytes` / `computeCopyMaxFiles`, or
+`PILOTSWARM_COMPUTE_COPY_MAX_BYTES` / `PILOTSWARM_COMPUTE_COPY_MAX_FILES`).
+Anything that cannot be copied is unavailable with the reason in the session's
+events and the turn goes on, and so does a host that serves the turn but not
+the side channel. A deployment catalog entry may carry `"remote": false` to
+keep that server away from sessions whose agent runs elsewhere; servers are
+available by default, because a deployment's servers already run on the trusted
+side with the deployment's own configuration and a remote session reaches the
+same server the same way. The field is deployment-only, like `default` and
+`allowedAgents`. **A server offered to these sessions should
+act as the caller:** one that uses its own standing credentials gives every
+remote agent whatever those credentials reach, which is the deployment's
+choice to make.
+
+A session whose agent runs on a host is treated as a session the worker does
+not own the inside of. The background shells it reports are taken at the
+runtime's word and stopped only by asking the runtime: the worker never
+inspects or signals a process id a host reported, and a stop the host will
+not confirm leaves the session busy rather than letting a folder be taken
+from under it. PilotSwarm's own files in the session folder — every name
+starting with `.ps-` — are refused to the runtime, left out of listings and
+reported absent, and the folder is closed to the runtime while the worker
+saves or restores it. An event a runtime sends under a type PilotSwarm
+emits is recorded as `unverified.<type>` and nothing acts on it; bind,
+connect and host replacement are recorded by the worker. Paths the agent is
+given are paths on its host, a path it names is translated back before any
+file is read, and a folder attached on the worker is reported apart from
+whether it is available on the host. The session's instructions say that
+its shell runs on its host and whether the artifact file modes work there.
+GitHub Copilot models are refused when a session is created and when its
+model is switched, left out of the list a remote session is offered, and
+reported at worker start when a default target meets a GitHub Copilot
+system model.
+
+A session that leaves a worker lets go of its host there, so two workers
+never drive one runtime; a provider's `bind` and `release` are per (worker,
+session). A connection that closes retires the clients that were reaching
+that host, so the next turn connects afresh, and the worker's side of the
+pipe keeps the connection checked. The host component's connection limit is
+configurable (`--max-connections`) and a full host answers
+`COMPUTE_HOST_AT_CAPACITY`.
+
+Compute lives in a new session orchestration version, 1.0.83. 1.0.82 is
+frozen and replay-only, so a session already running keeps replaying on
+exactly what the previous build ran. Only 1.0.83 and later choose the
+routing tag that keeps a remote session's turns away from workers which
+cannot drive one, and only they release a session's host when it leaves a
+worker. An old worker does not register 1.0.83, so during a rolling deploy
+or after a rollback it can run no step of a compute session; those sessions
+wait for a worker that can. A session with no compute target behaves
+identically on either version.
+
+The exported interface is experimental and may change before release.
+
 **Provider request headers.** A provider type in the model catalog may set
 `headers`: fixed HTTP headers sent on every model request, for endpoints that
 need a header besides the credential. Shared and personal instances inherit

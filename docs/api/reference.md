@@ -104,8 +104,8 @@ sessions return not-found to avoid an existence oracle.
 | Operation | Route | Parameters | Summary |
 |---|---|---|---|
 | listSessions | `GET /api/v1/sessions` | — | List session summaries. |
-| createSession | `POST /api/v1/sessions` | model (body), reasoningEffort (body), contextTier (body), groupId (body), visibility (body) | Create a session. Owner is the authenticated principal; visibility defaults to the deployment default. `groupId` is an initial placement into one of **your** groups — `403` if the group is missing or not yours. |
-| createSessionForAgent | `POST /api/v1/sessions/for-agent` | agentName (body), model (body), reasoningEffort (body), contextTier (body), title (body), splash (body), initialPrompt (body), groupId (body), visibility (body) | Create a session bound to a named agent. Same `groupId` placement rule as createSession. |
+| createSession | `POST /api/v1/sessions` | model (body), reasoningEffort (body), contextTier (body), computeTarget (body), groupId (body), visibility (body) | Create a session. Owner is the authenticated principal; visibility defaults to the deployment default. `computeTarget` selects a full `shared/<label>` target name or its bare label. `groupId` is an initial placement into one of **your** groups — `403` if the group is missing or not yours. |
+| createSessionForAgent | `POST /api/v1/sessions/for-agent` | agentName (body), model (body), reasoningEffort (body), contextTier (body), computeTarget (body), title (body), splash (body), initialPrompt (body), groupId (body), visibility (body) | Create a session bound to a named agent. Same `computeTarget` and `groupId` rules as createSession. |
 | getSession | `GET /api/v1/sessions/:sessionId` | sessionId (path) | Get one session view (live orchestration status). |
 | deleteSession | `DELETE /api/v1/sessions/:sessionId` | sessionId (path) | Cancel and soft-delete a session. |
 | sendMessage | `POST /api/v1/sessions/:sessionId/messages` | sessionId (path), prompt (body), options (body) | Send a prompt (options: { enqueueOnly?, clientMessageIds? }). |
@@ -311,6 +311,97 @@ data or reveals anyone else's grouping.
 | setProviderAllowance **[admin]** | `PUT /api/v1/management/providers/:name/allowance` | name (path), pct (body) | Set the per-user share of shared-provider limits. |
 | setProviderHold **[admin]** | `PUT /api/v1/management/providers/:name/hold` | name (path), untilUtc?, release? (body) | Hold or release new turns against a provider. |
 | listPausedSessions | `GET /api/v1/providers/paused` | — | Sessions waiting on a provider, limit, allowance, or hold; fleet-wide for admins, own sessions otherwise. |
+
+### Compute targets
+
+Targets name an installed compute-provider kind and its provider-specific
+configuration. An administrator registers them; every signed-in user can see
+them and run a session on one.
+
+| Operation | Route | Parameters | Summary |
+|---|---|---|---|
+| listComputeTargets | `GET /api/v1/compute-targets` | — | List the compute targets. |
+| createComputeTarget **[admin]** | `POST /api/v1/management/compute-targets` | name or label, kind, displayName?, config? (body) | Create a target in the shared namespace. |
+| updateComputeTarget **[admin]** | `PATCH /api/v1/management/compute-targets/:name` | name (path), displayName?, config?, enabled? (body) | Update or enable/disable a target. |
+| deleteComputeTarget **[admin]** | `DELETE /api/v1/management/compute-targets/:name` | name (path) | Delete a target. |
+
+A session on a target gets the same skill folders and MCP servers as one on
+the worker. The folders it is authorized to see are copied to its host
+read-only and the runtime is given the host's paths; a server an agent package
+defines runs on that host out of the copy, with only what its own entry states;
+a server the deployment configured keeps running on the trusted side with its
+own command, environment, headers and credentials, and the runtime reaches it
+through the host component. PilotSwarm forwards that traffic without reading
+it, and only to the servers the deployment configured for that session and
+only to the address and path each was configured with. The caller's own
+headers go through unchanged, except that a header the deployment set for that
+server wins over a caller's of the same name; nothing is added beyond what the
+deployment configured for that server. A statement of the session and its
+owner is attached for the server's own checks. That statement is not signed:
+it is trustworthy only because it arrives over a connection only the worker
+can make, so a server that decides anything from it must be reachable from the
+worker and nowhere else. A server that speaks only the older event-stream
+transport is unavailable to these sessions, with the reason.
+
+**A server offered to these sessions should act as the caller.** One that uses
+its own standing credentials gives every remote agent whatever those
+credentials can reach — a deployment's choice to make. To keep a server away
+from them, set `"remote": false` on its deployment `.mcp.json` entry; servers
+are available by default, the field is deployment-catalog only (like `default`
+and `allowedAgents`), and it is stripped before any configuration reaches a
+runtime.
+
+| Worker option | Environment variable | Default | Meaning |
+|---|---|---|---|
+| `defaultComputeTarget` | `PILOTSWARM_DEFAULT_COMPUTE_TARGET` | none | The target a new root session is given when it names none, as `shared/<label>` or its bare label. Recorded on the session at creation exactly as a named target is. **Every process that creates sessions — the worker, the Web API, the CLI — needs the same setting**, or they disagree about what a session with no named target gets. |
+| `requireCompute` | `PILOTSWARM_REQUIRE_COMPUTE` | off | The worker refuses to run an agent runtime as its own child process. A session with no target and no default fails its turn with `COMPUTE_REQUIRED` before a runtime is started or a prompt moves, and so does a target whose provider would run the runtime on the worker. |
+| `computeCopyMaxBytes` | `PILOTSWARM_COMPUTE_COPY_MAX_BYTES` | 67108864 (64 MiB) | The most bytes one session's copy of its folders carries to its host. |
+| `computeCopyMaxFiles` | `PILOTSWARM_COMPUTE_COPY_MAX_FILES` | 4096 | The most files one session's copy carries. |
+| `computeAllowNonLoopbackEndpoints` | — | off | Whether a provider may return a runtime address that is not on this machine. Off, a provider that reaches a host elsewhere supplies the connection itself. |
+
+Anything that cannot be copied — too large, missing, unreadable, or a link out
+of its folder — is unavailable, the reason is recorded in the session's events
+as `session.compute_capabilities`, and the turn goes on. A host that serves
+the turn but not the side channel is the same: the session's skills and
+servers are unavailable with that reason and the turn runs without them. If
+the side channel is there and nothing can be delivered over it, the turn fails
+with `COMPUTE_UNAVAILABLE`.
+
+**What a session on a target sees of its own files.** Its shell runs on the
+host, and the paths `get_session_workspace` gives it are paths there; that
+tool also says which folders are attached on the worker and which are
+available on the host, which are not the same question. An extra folder
+added during a turn is prepared for the next one, not that one.
+`write_artifact({fromFile})` and `read_artifact({toFile})` work only when
+the target's provider shares the session's folders with the worker; the
+session's own instructions say which case it is in. PilotSwarm's own files
+in the session folder (every name starting with `.ps-`) are not the
+runtime's to read or change. GitHub Copilot models cannot run on a target:
+a session that names one is refused at creation, a switch to one is
+refused, and they are left out of the list the session is offered.
+
+**What a deployment's own worker-module tool is told.** A tool invocation
+for a session whose agent runs elsewhere carries `invocation.compute`:
+`runsRemotely`, the `target` name, `sharesWorkerFiles`, the
+`allowedWorkerPaths` that session may name (empty when its host shares
+none), and `hostPaths`, the same folders as the agent names them. A tool
+that takes a path from the model should confine it to `allowedWorkerPaths`
+and report paths back from `hostPaths`; `invocation.compute` is absent for
+a session that runs on the worker, where the ordinary rules apply.
+
+The host component is run as `pilotswarm-compute-host --binding <id> --runtime
+<host:port|port> --listen <host:port>`. Its connection to the worker is not
+encrypted: listen only on a network the deployment controls, and let only the
+workers reach that port (see section 4.8 of the compute providers proposal). It serves the side channel by default
+— a session with any skill folder or any MCP server needs it — writing the
+copies and the relay under `--services-dir` (a folder of this binding's own
+under the system temporary folder by default). `--no-services` turns it off,
+`--copy-max-bytes` and `--copy-max-files` bound what one session's copy may
+lay out, `--max-connections` bounds how many proved connections it carries at
+once (16 by default; a full host answers `COMPUTE_HOST_AT_CAPACITY`, and a
+tree spread over many workers needs one runtime connection and one side
+channel per worker holding a session), and `--idle-timeout` is a whole number
+of milliseconds (0 keeps the component up for ever).
 
 Trusted session creation resolves `explicit → user default → cluster default →
 first usable provider/model`, validates capabilities, and writes the exact

@@ -168,6 +168,11 @@ const PROVIDER_ERROR_STATUS = {
     // routing first" — a refusal whose message is the whole value. Without
     // a status it falls to the 500 branch, which scrubs the message.
     PROVIDER_IN_USE: 409,
+    COMPUTE_TARGET_NOT_FOUND: 404,
+    COMPUTE_TARGET_FORBIDDEN: 403,
+    COMPUTE_TARGET_CONFLICT: 409,
+    COMPUTE_TARGET_INVALID: 400,
+    COMPUTE_TARGET_DISABLED: 409,
 };
 
 /** `?names=a,b` off the wire, or an array from the legacy /api/rpc caller. */
@@ -919,6 +924,7 @@ export class PortalRuntime {
                     owner,
                     visibility: normalizeVisibility(safeParams.visibility, this.authz.defaultVisibility),
                     ...(safeParams.workspace != null ? { workspace: safeParams.workspace } : {}),
+                    ...(safeParams.computeTarget != null ? { computeTarget: safeParams.computeTarget } : {}),
                 });
                 return this._ensureCreatedPlacement(created, safeParams.groupId, authContext, isAdmin);
             }
@@ -937,6 +943,7 @@ export class PortalRuntime {
                     isAdmin: resourceAdmin,
                     visibility: normalizeVisibility(safeParams.visibility, this.authz.defaultVisibility),
                     ...(safeParams.workspace != null ? { workspace: safeParams.workspace } : {}),
+                    ...(safeParams.computeTarget != null ? { computeTarget: safeParams.computeTarget } : {}),
                 });
                 return this._ensureCreatedPlacement(created, safeParams.groupId, authContext, isAdmin);
             }
@@ -1074,6 +1081,12 @@ export class PortalRuntime {
             case "getProviderUsage":
             case "listPausedSessions":
                 return this._callProvider(method, safeParams, { principal: owner, isAdmin, adminScope: this.authz.adminScope });
+
+            case "listComputeTargets":
+            case "createComputeTarget":
+            case "updateComputeTarget":
+            case "deleteComputeTarget":
+                return this._callComputeTarget(method, safeParams, { principal: owner, isAdmin, adminScope: this.authz.adminScope });
 
             case "sendMessage": {
                 // Canvas actions are CREATOR-only — not shared writers, not
@@ -1545,6 +1558,39 @@ export class PortalRuntime {
                     return await mgmt.listPausedSessions(viewer);
                 default:
                     throw new Error(`Unsupported portal RPC method: ${method}`);
+            }
+        } catch (error) {
+            const status = PROVIDER_ERROR_STATUS[error?.code];
+            if (status) error.status = status;
+            throw error;
+        }
+    }
+
+    async _callComputeTarget(method, params, viewer) {
+        const mgmt = this.transport.mgmt;
+        try {
+            switch (method) {
+                case "listComputeTargets":
+                    return await mgmt.listComputeTargets(viewer);
+                case "createComputeTarget":
+                    return await mgmt.createComputeTarget(viewer, {
+                        name: params.name,
+                        label: params.label,
+                        kind: params.kind,
+                        displayName: params.displayName,
+                        config: params.config,
+                    });
+                case "updateComputeTarget":
+                    return await mgmt.updateComputeTarget(viewer, {
+                        name: params.name,
+                        displayName: params.displayName,
+                        config: params.config,
+                        enabled: params.enabled,
+                    });
+                case "deleteComputeTarget":
+                    return await mgmt.deleteComputeTarget(viewer, params.name);
+                default:
+                    throw new Error(`Unsupported portal compute-target operation: ${method}`);
             }
         } catch (error) {
             const status = PROVIDER_ERROR_STATUS[error?.code];

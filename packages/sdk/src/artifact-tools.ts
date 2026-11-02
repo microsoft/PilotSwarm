@@ -34,6 +34,7 @@ import { extractCanvasAppManifest, normalizeCanvasResponseContract } from "./can
 import { defineTool } from "@github/copilot-sdk";
 import type { Tool } from "@github/copilot-sdk";
 import type { ArtifactStore } from "./session-store.js";
+import type { ComputeFolderMap } from "./compute.js";
 
 const INLINE_READ_DEFAULT_BYTES = 65_536;
 const INLINE_READ_MAX_BYTES = 262_144;
@@ -67,7 +68,7 @@ function allowedFileRoots(): string[] {
     });
 }
 
-function resolveJailedPath(candidate: string, mustExist: boolean): { path?: string; error?: string } {
+function resolveJailedPath(candidate: string, mustExist: boolean, rootsOverride?: string[]): { path?: string; error?: string } {
     const resolved = path.resolve(String(candidate || ""));
     // realpath the deepest existing ancestor so symlinks can't tunnel out.
     let probe = mustExist ? resolved : path.dirname(resolved);
@@ -83,7 +84,12 @@ function resolveJailedPath(candidate: string, mustExist: boolean): { path?: stri
         return { error: `Path is not accessible: ${candidate}` };
     }
     const effective = mustExist ? real : path.join(real, path.relative(probe, resolved));
-    const roots = allowedFileRoots();
+    const roots = rootsOverride
+        ? rootsOverride.map((root) => { try { return fs.realpathSync(path.resolve(root)); } catch { return path.resolve(root); } })
+        : allowedFileRoots();
+    if (roots.length === 0) {
+        return { error: "This session cannot read or write files on the worker: its runtime runs elsewhere." };
+    }
     const inJail = roots.some((root) => effective === root || effective.startsWith(root + path.sep));
     if (!inJail) {
         return { error: `Path is outside the allowed roots (${roots.join(", ")}): ${candidate}` };
@@ -101,8 +107,43 @@ function resolveJailedPath(candidate: string, mustExist: boolean): { path?: stri
  */
 export function createArtifactTools(opts: {
     blobStore: ArtifactStore;
+    /**
+     * Per session, the only worker folders `fromFile`/`toFile` may use, or
+     * undefined for the default roots. Compute providers use it: a session
+     * whose runtime runs elsewhere must not reach the worker's own files.
+     */
+    localPathRootsFor?: (sessionId: string | undefined) => string[] | undefined;
+    /**
+     * Per session, its folders as the worker and its compute host each
+     * name them, or undefined when it runs on the worker and there is one
+     * set of paths. A remote agent names host paths, and these tools read
+     * and write on the worker, so a path crosses this map both ways.
+     */
+    computeFolderMapFor?: (sessionId: string | undefined) => ComputeFolderMap | undefined;
 }): Tool<any>[] {
     const { blobStore } = opts;
+    // Asked even when the session cannot be told: answering "the default
+    // roots" for an unknown session is how a session that runs elsewhere
+    // would reach the worker's own files.
+    const rootsFor = (sessionId: string | undefined) => opts.localPathRootsFor?.(sessionId);
+    const mapFor = (sessionId: string | undefined) => opts.computeFolderMapFor?.(sessionId);
+
+    /** The worker path for a path the agent named, or the reason it is not one. */
+    const workerPathFor = (candidate: string, sessionId: string | undefined): { path: string } | { error: string } => {
+        const map = mapFor(sessionId);
+        if (!map || !path.isAbsolute(candidate)) return { path: candidate };
+        const worker = map.toWorker(candidate);
+        if (!worker) {
+            return {
+                error: `Path is outside this session's folders on its compute host (${map.hostRoots.join(", ") || "none are shared"}): ${candidate}`,
+            };
+        }
+        return { path: worker };
+    };
+
+    /** A worker path, named back to the agent the way it names paths itself. */
+    const agentPathFor = (workerPath: string, sessionId: string | undefined): string =>
+        mapFor(sessionId)?.toHost(workerPath) ?? workerPath;
 
     // ── write_artifact ─────────────────────────────────────────
 
@@ -199,7 +240,9 @@ export function createArtifactTools(opts: {
 
             try {
                 if (params.fromFile) {
-                    const jailed = resolveJailedPath(params.fromFile, true);
+                    const asked = workerPathFor(String(params.fromFile), sessionId);
+                    if ("error" in asked) return toolError("PATH_OUTSIDE_WORKDIR", asked.error);
+                    const jailed = resolveJailedPath(asked.path, true, rootsFor(sessionId));
                     if (jailed.error) return toolError("PATH_OUTSIDE_WORKDIR", jailed.error);
                     const filename = params.filename || path.basename(jailed.path!);
                     const metadata = await blobStore.uploadArtifactFromFile(
@@ -319,7 +362,7 @@ export function createArtifactTools(opts: {
             encoding?: "utf-8" | "base64";
             maxBytes?: number;
             offset?: number;
-        }) => {
+        }, context: any) => {
             if ([params.metaOnly, params.manifestOnly, params.toFile].filter(Boolean).length > 1) {
                 return toolError(
                     "EXCLUSIVE_MODE",
@@ -368,7 +411,15 @@ export function createArtifactTools(opts: {
                 }
 
                 if (params.toFile) {
-                    const jailed = resolveJailedPath(params.toFile, false);
+                    // Which session is asking decides which folders may be
+                    // written, so a file mode with no session is refused
+                    // rather than answered with the worker's defaults.
+                    if (!context?.durableSessionId) {
+                        return toolError("NO_SESSION_CONTEXT", "No session context — toFile cannot decide which folders this session may write.");
+                    }
+                    const asked = workerPathFor(String(params.toFile), context?.durableSessionId);
+                    if ("error" in asked) return toolError("PATH_OUTSIDE_WORKDIR", asked.error);
+                    const jailed = resolveJailedPath(asked.path, false, rootsFor(context?.durableSessionId));
                     if (jailed.error) return toolError("PATH_OUTSIDE_WORKDIR", jailed.error);
                     const result = await blobStore.downloadArtifact(params.sessionId, params.filename);
                     fs.mkdirSync(path.dirname(jailed.path!), { recursive: true });
@@ -377,7 +428,8 @@ export function createArtifactTools(opts: {
                     return JSON.stringify({
                         success: true,
                         sessionId: params.sessionId,
-                        path: jailed.path,
+                        // Named back the way the agent names paths itself.
+                        path: agentPathFor(jailed.path!, context?.durableSessionId),
                         ...metadata,
                         sha256: metadata.sha256 || crypto.createHash("sha256").update(result.body).digest("hex"),
                         artifactLink: artifactLink(params.sessionId, metadata.filename),
@@ -387,10 +439,17 @@ export function createArtifactTools(opts: {
                 const result = await blobStore.downloadArtifact(params.sessionId, params.filename);
                 const encoding = params.encoding || "utf-8";
                 if (result.isBinary && encoding !== "base64") {
+                    // The hint must not send the session to a mode it does
+                    // not have: a session whose host shares no folders with
+                    // the worker cannot use toFile at all.
+                    const canUseFiles = (rootsFor(context?.durableSessionId) ?? ["default"]).length > 0;
                     return JSON.stringify({
                         error: "ARTIFACT_IS_BINARY",
                         message: `Artifact '${params.filename}' is binary (${result.contentType}, ${result.sizeBytes} bytes) and cannot be returned as text.`,
-                        hint: "Use toFile to materialize it on the worker filesystem, or encoding='base64' if it is small enough to inspect inline.",
+                        hint: canUseFiles
+                            ? "Use toFile to materialize it on the worker filesystem, or encoding='base64' if it is small enough to inspect inline."
+                            : "This session's agent runs on a compute host that shares no files with the worker, so toFile is unavailable here. "
+                                + "Use encoding='base64' if it is small enough to inspect inline.",
                         contentType: result.contentType,
                         sizeBytes: result.sizeBytes,
                     });

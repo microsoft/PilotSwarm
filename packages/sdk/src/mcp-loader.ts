@@ -69,6 +69,15 @@ export interface MCPLocalServerConfig {
      * worker before configs reach the Copilot CLI. Ignored in package dirs.
      */
     allowedAgents?: string[];
+    /**
+     * PilotSwarm-only deployment tag (not a Copilot SDK field): whether a
+     * session whose agent runs on a compute host may reach this server.
+     * Servers are available by default; `false` keeps this one away from
+     * those sessions. Stripped by the worker before configs reach the
+     * Copilot CLI. Ignored in package dirs — a package's own server always
+     * runs on the session's host.
+     */
+    remote?: boolean;
 }
 
 export interface MCPRemoteServerConfig {
@@ -93,6 +102,15 @@ export interface MCPRemoteServerConfig {
      * worker before configs reach the Copilot CLI. Ignored in package dirs.
      */
     allowedAgents?: string[];
+    /**
+     * PilotSwarm-only deployment tag (not a Copilot SDK field): whether a
+     * session whose agent runs on a compute host may reach this server.
+     * Servers are available by default; `false` keeps this one away from
+     * those sessions. Stripped by the worker before configs reach the
+     * Copilot CLI. Ignored in package dirs — a package's own server always
+     * runs on the session's host.
+     */
+    remote?: boolean;
 }
 
 // ─── Allowlist ──────────────────────────────────────────────────
@@ -200,12 +218,53 @@ function expandEnvDeep(obj: any): any {
 // ─── Loader ─────────────────────────────────────────────────────
 
 /**
- * Load MCP server config from a `.mcp.json` file in a plugin directory.
+ * Load MCP server config from a `.mcp.json` file in a plugin directory,
+ * with worker `${VAR}` references resolved.
  *
  * @param pluginDir - Path to the plugin directory (looks for `.mcp.json` at root).
  * @returns Record of server name → config. Empty record if no `.mcp.json` found.
  */
 export function loadMcpConfig(pluginDir: string): Record<string, MCPServerConfig> {
+    const result: Record<string, MCPServerConfig> = {};
+    for (const [name, entry] of Object.entries(readMcpConfig(pluginDir))) result[name] = entry.config;
+    return result;
+}
+
+/**
+ * One entry of a `.mcp.json`, in both the forms the worker needs.
+ *
+ * `config` is what has always been loaded: worker `${VAR}` references
+ * already resolved, ready for a server the worker's own machine starts.
+ *
+ * `raw` is the same entry with nothing resolved. It exists for servers
+ * whose code is not the deployment's — a package's own server runs on the
+ * session's compute host, where a worker value must never arrive, so what
+ * goes there is built from `raw` and an entry that asks for a worker value
+ * is refused instead (see compute-mcp.ts).
+ */
+export interface LoadedMcpEntry {
+    config: MCPServerConfig;
+    raw: MCPServerConfig;
+}
+
+/** Whether any string in this config asks for a value from the worker's environment. */
+export function mcpConfigWorkerValueFields(config: unknown, trail: string[] = []): string[] {
+    if (typeof config === "string") return /\$\{\w+\}/.test(config) ? [trail.join(".") || "(value)"] : [];
+    if (Array.isArray(config)) return config.flatMap((entry, at) => mcpConfigWorkerValueFields(entry, [...trail, String(at)]));
+    if (config && typeof config === "object") {
+        return Object.entries(config).flatMap(([key, value]) => mcpConfigWorkerValueFields(value, [...trail, key]));
+    }
+    return [];
+}
+
+/**
+ * Read a plugin directory's `.mcp.json`, keeping both the resolved entry
+ * and the entry as it was written.
+ *
+ * @param pluginDir - Path to the plugin directory (looks for `.mcp.json` at root).
+ * @returns Record of server name → entry. Empty record if no `.mcp.json` found.
+ */
+export function readMcpConfig(pluginDir: string): Record<string, LoadedMcpEntry> {
     const absDir = path.resolve(pluginDir);
     const mcpPath = path.join(absDir, ".mcp.json");
 
@@ -223,13 +282,12 @@ export function loadMcpConfig(pluginDir: string): Record<string, MCPServerConfig
         }
 
         // Expand env vars and validate each entry
-        const result: Record<string, MCPServerConfig> = {};
+        const result: Record<string, LoadedMcpEntry> = {};
         for (const [name, config] of Object.entries(parsed)) {
             if (typeof config !== "object" || config === null) {
                 console.warn(`[mcp-loader] Skipping MCP server "${name}": invalid config`);
                 continue;
             }
-            const expanded = expandEnvDeep(config);
             // Stdio servers ship their code INSIDE the plugin/package dir and
             // reference it relatively ("./mcp-servers/x.js"), but the Copilot
             // CLI spawns them from ITS cwd — and for agent packages the
@@ -237,14 +295,19 @@ export function loadMcpConfig(pluginDir: string): Record<string, MCPServerConfig
             // write an absolute cwd. Anchor relative worlds to the dir that
             // owns the .mcp.json: default a missing cwd to it, resolve a
             // relative cwd against it.
-            if (typeof expanded?.command === "string") {
-                if (!expanded.cwd) {
-                    expanded.cwd = absDir;
-                } else if (!path.isAbsolute(expanded.cwd)) {
-                    expanded.cwd = path.resolve(absDir, expanded.cwd);
-                }
-            }
-            result[name] = expanded;
+            //
+            // The anchoring is about where the entry was found, not about
+            // any worker value, so it is applied to both forms.
+            const anchor = (entry: any) => {
+                if (typeof entry?.command !== "string") return entry;
+                if (!entry.cwd) entry.cwd = absDir;
+                else if (!path.isAbsolute(entry.cwd)) entry.cwd = path.resolve(absDir, entry.cwd);
+                return entry;
+            };
+            result[name] = {
+                config: anchor(expandEnvDeep(config)),
+                raw: anchor(structuredClone(config)),
+            };
         }
 
         return result;

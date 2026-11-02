@@ -103,3 +103,24 @@ test("agent-package and worker operations stay behind management clients", () =>
     assert.doesNotMatch(mcp, /\b(?:ctx\.web|web)\.ops\.(?:listAgentPackages|uploadAgentPackage|getAgentPackage|setAgentPackage|pinAgentPackage|deleteAgentPackage|republishAgentPackage)/,
         "MCP package tools must use management methods");
 });
+
+test("compute-target operations stay on the admin path and carry computeTarget on session creation", () => {
+    const expected = {
+        listComputeTargets: ["GET", "/compute-targets", "authed"],
+        createComputeTarget: ["POST", "/management/compute-targets", "fleet:admin"],
+        updateComputeTarget: ["PATCH", "/management/compute-targets/:name", "fleet:admin"],
+        deleteComputeTarget: ["DELETE", "/management/compute-targets/:name", "fleet:admin"],
+    };
+    for (const [name, [method, path, access]] of Object.entries(expected)) {
+        const operation = OPERATIONS.find((candidate) => candidate.name === name);
+        assert.ok(operation, `missing ${name}`);
+        assert.deepEqual([operation.method, operation.path, operation.access], [method, path, access]);
+        assert.equal(operationRequiresManagementMethod(name), true, `${name} must use management clients`);
+        assert.equal(direct.has(name), true, `direct management missing ${name}`);
+        assert.equal(web.has(name), true, `web management missing ${name}`);
+    }
+    for (const name of ["createSession", "createSessionForAgent"]) {
+        const operation = OPERATIONS.find((candidate) => candidate.name === name);
+        assert.equal(operation.params.computeTarget.in, "body", `${name} must carry computeTarget`);
+    }
+});

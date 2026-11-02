@@ -67,6 +67,7 @@ Building **on** PilotSwarm, deploying it, and contributing **to** it.
 [proposals-impl](./proposals-impl/README.md) — implemented designs, kept as history ·
 [bugreports](./bugreports/) · [_archive](./_archive/) — retired point-in-time docs.
 
+- [Compute providers](./proposals/compute-providers.md) — exploration: a session's agent runs on a host chosen for that session, supplied by a compute provider, reached at an address over a connection whose two ends prove who they are; the session's skill folders are copied there read-only and its MCP servers stay reachable; a deployment may give sessions a default target and refuse to run any agent on the worker.
 - [Session workspaces](./proposals/session-workspaces.md) — proposed: an agent works in a git checkout on a separate repo pod, as on a dev box, across worker moves, with repo-native agents and a test plan.
 - [Session forking and merge-back](./proposals/session-forking.md) — approved: anyone who can watch a session forks it into their own copy with the same model context; sub-agents are optional; merge-back (P1) proposes results to the source owner.
 - [Queued prompts behind timer items](./proposals/queued-prompts-timer-stall.md) — approved: queued user prompts never wait for a timer, one turn takes the whole backlog, schedules keep their time, and the session queue never drops work silently (issue \#192).

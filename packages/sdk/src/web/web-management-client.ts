@@ -871,6 +871,33 @@ export class WebPilotSwarmManagementClient {
         return this.ops.listModels();
     }
 
+    async listComputeTargets(_viewer?: unknown): Promise<any> {
+        return this.ops.listComputeTargets();
+    }
+
+    async createComputeTarget(_viewer: unknown, input: {
+        name?: string;
+        label?: string;
+        kind: string;
+        displayName?: string | null;
+        config?: Record<string, unknown> | null;
+    }): Promise<any> {
+        return this.ops.createComputeTarget(input);
+    }
+
+    async updateComputeTarget(_viewer: unknown, input: {
+        name: string;
+        displayName?: string | null;
+        config?: Record<string, unknown> | null;
+        enabled?: boolean | null;
+    }): Promise<any> {
+        return this.ops.updateComputeTarget(input);
+    }
+
+    async deleteComputeTarget(_viewer: unknown, name: string): Promise<any> {
+        return this.ops.deleteComputeTarget({ name });
+    }
+
     async setModelDefault(_viewer: unknown, input: { scope: "user" | "cluster"; provider: string | null; model: string | null; reasoningEffort?: string | null; contextTier?: string | null }): Promise<any> {
         return this.ops.setModelDefault(input);
     }
@@ -953,6 +980,7 @@ export class WebPilotSwarmManagementClient {
     getModelCredentialStatus(): never {
         throw webModeUnsupported("getModelCredentialStatus", "credential checks happen server-side");
     }
+
 }
 
 /**

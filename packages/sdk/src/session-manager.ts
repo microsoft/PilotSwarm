@@ -1,3 +1,11 @@
+import { COMPUTE_ERROR_CODES, COMPUTE_GITHUB_MODEL_REFUSAL, LOCAL_COMPUTE_KIND, ComputeFolderMap, ComputeProviderRegistry, computeModelRefusal, computeUsableModelProviders, checkRemoteEndpoint, computeBindingKey, computeFolderMapOf, computeSharesWorkerFiles, isLoopbackAddress, runtimeConnectionFor, runtimeEndpointKey, type ComputeFailure, type ComputeHostRef, type ComputePrincipal, type ComputeProvider, type ComputeReleaseReason, type ComputeRuntimeEndpoint, type ComputeTarget, type ComputeWorkspacePaths } from "./compute.js";
+import { computeCopyLimits, planComputeCopy, type ComputeCopyLimits, type ComputeCopyRefusal } from "./compute-assets.js";
+import { COMPUTE_CONTROL_COPY_TIMEOUT_MS, ComputeControlLink, type ComputeCallerStatement } from "./compute-control.js";
+import { computeCopyName, mcpOriginKey, packageMcpFolders, packageMcpFoldersForAgents, remoteMcpCustomAgents, remoteMcpServers, type McpServerOrigin } from "./compute-mcp.js";
+import { REMOTE_SESSION_STATE_ROOT, RemoteRuntimeRequestHandler, WorkerDirectorySessionFs, redactProviderSecrets, remoteSessionGrant, type RemoteSessionGrant } from "./compute-runtime.js";
+import { COMPUTE_PIPE_OPEN_TIMEOUT_MS, ComputeBridgeRegistry, ComputeRuntimeBridge, openTcpPipe } from "./compute-bridge.js";
+import { computeFailureError, computeFailureMessage } from "./compute-failures.js";
+import { isPurposeNotServed, runWorkerHandshake } from "./compute-handshake.js";
 import { CapabilityCatalog, capabilityHash, ownedAndStaticCapabilityInventory, capabilityOwnership, parseCapabilityRef, resolveCapabilitySource, workspaceCapabilityHits, type CapabilitySource, type CapabilityState } from "./capability-catalog.js";
 import { bindCapabilities, nextCapabilityState, validatePackageRequest } from "./capability-runtime.js";
 import type { McpAllowlistAgent } from "./mcp-loader.js";
@@ -47,7 +55,7 @@ import { buildKnowledgePromptBlocks, loadKnowledgeIndexFromFactStore, buildEnhan
 import { composeStructuredSystemMessage, extractPromptContent, mergePromptSections } from "./prompt-layering.js";
 import { buildPromptLayersEventPayload, type PromptLayerDescriptor } from "./prompt-layers.js";
 import { approvePermissionForSession } from "./permissions.js";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readSnapshotMarker, supportsVersionedSnapshots, writeSnapshotMarker } from "./snapshot-protocol.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -291,6 +299,17 @@ export interface WorkerDefaults {
     /** Every server name the deployment defines — a package may not redefine one. Held BY REFERENCE. */
     deploymentMcpNames?: Set<string>;
     /**
+     * Where each catalog server came from, and the entry as it was
+     * written. Only a session whose agent runs on a compute host reads
+     * it: it decides which servers stay on the trusted side and which go
+     * to the host (compute-mcp.ts). Held BY REFERENCE.
+     */
+    mcpServerOrigins?: Map<string, McpServerOrigin>;
+    /** The origin of each entry of the base map, by server name. */
+    baseMcpServerOrigins?: Map<string, McpServerOrigin>;
+    /** The origin of each entry of an agent's map, by the agent's map key. */
+    agentMcpServerOrigins?: Record<string, Map<string, McpServerOrigin>>;
+    /**
      * @deprecated Use `modelProviders` instead. Kept for backwards compatibility.
      * Custom LLM provider config (BYOK). Passed to every session.
      */
@@ -375,6 +394,28 @@ export function buildBindingFingerprintInput(parts: {
     baseAgentPolicy: unknown;
     v2InventoryFingerprint?: string;
     sdkSkillDirectories: unknown;
+    /**
+     * Compute providers: what the session's host actually holds — the
+     * copies laid out there, and the tickets and local addresses its
+     * servers are reached by.
+     *
+     * A warm runtime keeps the configuration it was handed. When the side
+     * channel is replaced, the host opens new listeners and the worker
+     * mints against a new link, so a runtime still holding the old ones
+     * reaches nothing. Including this here is what makes such a session
+     * rebind instead of failing every call for the rest of its life.
+     */
+    remoteCapabilities?: string;
+    /**
+     * Compute providers: the session's folders as the HOST sees them, one
+     * entry per folder.
+     *
+     * A warm runtime keeps the working directory it was created with. A
+     * provider that places the same folder somewhere else on a later turn
+     * leaves the agent working in the old place while every tool reports
+     * the new one, which is worse than a rebind.
+     */
+    computeFolders?: string[];
     boundAgentName: unknown;
     boundAgentSource: unknown;
     boundAgentCopy: unknown;
@@ -387,6 +428,8 @@ export function buildBindingFingerprintInput(parts: {
         capabilityFingerprint: parts.capabilityFingerprint,
         baseAgentPolicy: parts.baseAgentPolicy,
         ...(parts.v2InventoryFingerprint ? { v2InventoryFingerprint: parts.v2InventoryFingerprint, sdkSkillDirectories: parts.sdkSkillDirectories } : {}),
+        ...(parts.remoteCapabilities !== undefined ? { remoteCapabilities: parts.remoteCapabilities } : {}),
+        ...(parts.computeFolders ? { computeFolders: parts.computeFolders } : {}),
         boundAgentName: parts.boundAgentName,
         boundAgentSource: parts.boundAgentSource,
         boundAgentCopy: parts.boundAgentCopy,
@@ -452,6 +495,55 @@ export const DURABLE_FOLDERS_NOTE = [
         + "Other people's sessions may be able to read these folders: never put secrets in them. "
         + "get_session_workspace names each folder.",
 ].join("\n\n");
+
+/**
+ * Compute providers: the base prompt tells every agent that `bash` writes
+ * to the worker's disk, and that `write_artifact({fromFile})` is the byte
+ * channel out of it. Neither is true for a session whose runtime runs on a
+ * compute host: its shell is there, and the worker's file tools read the
+ * worker. A session that is told nothing follows the base prompt into
+ * folders that are not there.
+ *
+ * Two shapes, because the two cases differ in what the agent can do, not
+ * just in wording: a host that shares the session's folders with the worker
+ * still has file modes; one that shares nothing has none.
+ */
+export function computeHostNote(sharesWorkerFiles: boolean): string {
+    return [
+        "## Your shell runs on this session's compute host",
+        "Your `bash` tool, your background shells and every file you make with them are on your compute host, "
+            + "not on the worker that runs PilotSwarm. Paths outside the folders `get_session_workspace` lists are "
+            + "yours alone: no PilotSwarm tool can see them, nothing saves them, and they are gone when the host is "
+            + "replaced. Processes you leave running there outlive your turn.",
+        sharesWorkerFiles
+            ? "The folders `get_session_workspace` lists are shared with the worker, so `write_artifact({fromFile})` and "
+                + "`read_artifact({toFile})` work for files inside them. Use the paths that tool gives you; they are "
+                + "paths on your host."
+            : "This host shares no folders with the worker, so `write_artifact({fromFile})` and `read_artifact({toFile})` "
+                + "are unavailable to you. To save a file, pass its text as `content` (or base64 for a small binary "
+                + "one). Reading a stored artifact inline works as it always does.",
+    ].join("\n\n");
+}
+
+/** Compute providers: add `computeHostNote` for a session whose runtime is not the worker's own. */
+export function withComputeHostNote(
+    message: SystemMessageConfig | undefined,
+    runtime: { sharesWorkerFiles: boolean } | undefined,
+): SystemMessageConfig | undefined {
+    if (!runtime || !message || typeof message !== "object") return message;
+    const note = computeHostNote(runtime.sharesWorkerFiles);
+    if ((message as any).mode === "customize") {
+        const sections = (message as any).sections ?? {};
+        const custom = sections.custom_instructions;
+        if (!custom) return message;
+        return {
+            ...(message as any),
+            sections: { ...sections, custom_instructions: { ...custom, content: `${custom.content ?? ""}\n\n${note}` } },
+        } as SystemMessageConfig;
+    }
+    if (typeof (message as any).content === "string") return { ...(message as any), content: `${(message as any).content}\n\n${note}` } as SystemMessageConfig;
+    return message;
+}
 
 /** Section 4.11: add DURABLE_FOLDERS_NOTE when the turn has folders; otherwise the message is unchanged. */
 export function withDurableFoldersNote(message: SystemMessageConfig | undefined, hasFolders: boolean): SystemMessageConfig | undefined {
@@ -597,6 +689,52 @@ function folderReleaseRequest(
  * a NUL, so the separator cannot occur inside one.
  */
 const WORKSPACE_ROOT_CLIENT_SEPARATOR = "\0workspace-root:";
+/** Compute providers: a pool key part naming a remote runtime endpoint (runtimeEndpointKey). */
+const COMPUTE_CLIENT_SEPARATOR = "\0compute:";
+/** Deadlines for compute provider calls. */
+const COMPUTE_BIND_TIMEOUT_MS = 5 * 60_000;
+const COMPUTE_CONNECT_TIMEOUT_MS = 2 * 60_000;
+const COMPUTE_RELEASE_TIMEOUT_MS = 30_000;
+/** How many sessions' recorded compute targets one worker remembers. */
+const COMPUTE_TARGET_MEMORY = 10_000;
+/** A session's binding to a compute host on this worker. */
+interface ComputeBinding {
+    provider: ComputeProvider;
+    target: ComputeTarget;
+    host: ComputeHostRef;
+    rootSessionId: string;
+    workerNodeId: string;
+    /** runtimeEndpointKey of the connection; empty until connect succeeds. */
+    endpointKey: string;
+    /** The session's workspace folders as the worker sees them. */
+    workerPaths: string[];
+    /**
+     * The session's folders as both sides name them, from the provider's
+     * answer to `connect`. Empty until connect succeeds.
+     */
+    folderMap: ComputeFolderMap;
+    /**
+     * Which host this is, across the sessions of a tree: the target, the
+     * host and which incarnation of it. Everything shared per host — the
+     * bridge, and so the address and the pooled client — hangs off this.
+     */
+    hostKey: string;
+    /**
+     * The bridge on the worker's own machine in front of this host's
+     * runtime. One per host, not per session: the sessions of a tree share
+     * a host, so they must share its address and its pooled client.
+     */
+    bridge?: ComputeRuntimeBridge;
+    /** The tree's owner, for the statement the worker vouches to a forwarded server. */
+    owner?: ComputePrincipal | null;
+    /**
+     * The coded failure of a handshake on a connection through this
+     * binding's bridge, when one has failed since the bridge was proved.
+     * A turn that cannot reach its runtime reports this rather than
+     * whatever the SDK made of a socket that died on it.
+     */
+    handshakeFailure?: Error;
+}
 
 /**
  * Session workspaces: how long a release may spend cancelling tasks and
@@ -798,6 +936,74 @@ export class SessionManager {
     private workspaceProvider: WorkspaceProvider | null = null;
     /** The worker's own ID, for releases this manager starts itself (eviction). */
     private workspaceWorkerNodeId: string | undefined;
+    /** Compute providers by kind; `local` is always present. */
+    private computeProviders = new ComputeProviderRegistry();
+    /** Remote runtime endpoints by runtimeEndpointKey, so a pool key can rebuild its client. */
+    private computeEndpoints = new Map<string, ComputeRuntimeEndpoint>();
+    /**
+     * Per remote session: what its model requests may reach and the
+     * placeholders to swap, tied to the runtime connection it was bound on.
+     * Kept while the session stays on that connection, so a warm runtime
+     * session keeps its placeholders.
+     */
+    private remoteGrants = new Map<string, { grant: RemoteSessionGrant; endpointKey: string; fingerprint: string; provider: unknown }>();
+    /** Per session: the compute host it is bound to, for release. */
+    private computeHosts = new Map<string, ComputeBinding>();
+    /**
+     * Per session: the session-state folder a remote runtime writes through,
+     * kept so the worker can close it to the runtime while it saves or
+     * restores that folder (`fenceSessionFiles`).
+     */
+    private computeSessionFs = new Map<string, WorkerDirectorySessionFs>();
+    /**
+     * Per host: its bridge on this machine, shared by every session of a
+     * tree bound to that host, so they share one address and one pooled
+     * client. The registry is what makes two turns starting together get
+     * one bridge rather than two.
+     */
+    private computeBridges = new ComputeBridgeRegistry();
+    /**
+     * Per host: the way to it as of the most recent connect, read fresh at
+     * every pipe the bridge opens, so a host whose address or secret
+     * changes keeps its bridge while still being reached correctly.
+     */
+    private computeReach = new Map<string, Exclude<ComputeRuntimeEndpoint, { transport: "local" }>>();
+    /**
+     * Per host: the side channel beside its runtime connection, carrying
+     * the read-only copies of a session's folders and the traffic of the
+     * MCP servers that stay on the trusted side. One per host, like the
+     * bridge, and made only when a session on that host actually has
+     * folders or servers.
+     */
+    private computeControl = new Map<string, Promise<ComputeControlLink>>();
+    /**
+     * Compute providers: the target recorded for each session's tree.
+     *
+     * A target is written when a session is created and never changes, so
+     * it is read once. Bounded, oldest first.
+     */
+    private computeTargetBySession = new Map<string, { name: string; id: string; ownId: string }>();
+    /**
+     * Sessions this worker knows run their agent elsewhere.
+     *
+     * Path confinement reads this rather than the binding: between turns,
+     * or before a binding is made, there is no binding, and treating that
+     * as "runs here" would hand a remote session the worker's own folders.
+     */
+    private computeRemoteSessions = new Set<string>();
+    /** The most one session's state folder may hold; the default when unset. */
+    private sessionFsMaxTotalBytes: number | undefined;
+    /** How much one session's copy of its folders carries. */
+    private computeCopyLimits: ComputeCopyLimits = computeCopyLimits();
+    /** Whether a provider may hand back a runtime address that is not on this machine. */
+    private computeAllowNonLoopbackEndpoints = false;
+    /**
+     * Whether this worker refuses to run an agent runtime as its own child
+     * process. Off by default; a deployment turns it on once every session
+     * has a compute target, which is when the agent is reliably somewhere
+     * the CMS and the orchestration cannot be reached.
+     */
+    private computeRequired = false;
     private unsubscribeFeatureFlags: (() => void) | null = null;
 
     /** Live in-memory session count — worker-registry health reporting. */
@@ -916,12 +1122,50 @@ export class SessionManager {
             .map((provider) => provider.name));
     }
 
-    /** Get a viewer-scoped model summary for in-session LLM tools. */
+    /**
+     * Get a viewer-scoped model summary for in-session LLM tools.
+     *
+     * Compute providers: a session whose agent runs on a host is not shown
+     * models it cannot use. Offering them and refusing afterwards costs the
+     * session three failed attempts and about three quarters of a minute,
+     * for a choice it was told to make.
+     */
     async getModelSummary(sessionId: string): Promise<string | undefined> {
         const registry = this.workerDefaults.modelProviders;
         if (!registry) return undefined;
-        const allowed = await this._allowedModelProviderIds(sessionId);
+        const allowed = computeUsableModelProviders(
+            registry.allProviders,
+            await this._allowedModelProviderIds(sessionId),
+            await this.sessionRunsRemotely(sessionId),
+        );
         return registry.getModelSummaryForLLM(allowed ?? undefined);
+    }
+
+    /**
+     * Compute providers: whether this session's tree runs its agent on a
+     * compute host. Answered from what this worker has already read where
+     * it can, and from the catalog otherwise, so a surface that is not in
+     * the middle of a turn can ask.
+     */
+    async sessionRunsRemotely(sessionId: string): Promise<boolean> {
+        if (this.computeRemoteSessions.has(sessionId)) return true;
+        const catalog = this.sessionCatalog;
+        if (!catalog?.getSessionCreationConfig) return false;
+        const config = await catalog.getSessionCreationConfig(sessionId).catch(() => null);
+        if (typeof config?.computeTarget === "string" && config.computeTarget) return true;
+        const row = await catalog.getSession(sessionId).catch(() => null);
+        const rootId = row?.rootSessionId;
+        if (!rootId || rootId === sessionId) return false;
+        const rootConfig = await catalog.getSessionCreationConfig(rootId).catch(() => null);
+        return typeof rootConfig?.computeTarget === "string" && Boolean(rootConfig.computeTarget);
+    }
+
+    /**
+     * Compute providers: why this session cannot run this model, or null.
+     * The one rule today is the GitHub Copilot one.
+     */
+    computeModelRefusal(model: string | undefined, remote: boolean): string | null {
+        return computeModelRefusal(this.workerDefaults.modelProviders?.resolve(model)?.type, remote);
     }
 
     async normalizeModelRefForSession(
@@ -1005,6 +1249,10 @@ export class SessionManager {
         const normalized = await this.normalizeModelRefForSession(
             sessionId, model, { requireQualified: true },
         );
+        // Compute providers: refused here rather than at the first turn on
+        // the new model, which is three failed attempts later.
+        const refusal = this.computeModelRefusal(normalized, await this.sessionRunsRemotely(sessionId));
+        if (refusal) throw Object.assign(new Error(refusal), { code: COMPUTE_ERROR_CODES.UNSUPPORTED });
         const descriptor = this.workerDefaults.modelProviders?.getDescriptor(normalized);
         if (reasoningEffort) {
             const supported = descriptor?.supportedReasoningEfforts ?? [];
@@ -1186,6 +1434,770 @@ export class SessionManager {
         return this.workspaceProvider;
     }
 
+    /**
+     * Compute providers: bind and connect the session tree's compute target
+     * before a turn. Null when the tree has none.
+     *
+     * The target comes from the tree's root session in the CMS (its creation
+     * config), never from in-memory config, so a sub-agent always runs where
+     * its tree runs and a client cannot redirect a session. The worker
+     * re-checks before every turn, by the target's id, that the tree's owner
+     * may still use it. Throws a coded error when the target is gone,
+     * disabled, of an unknown kind, or unavailable.
+     */
+    private async _prepareCompute(
+        sessionId: string,
+        config: ManagedSessionConfig,
+        workspaceAttach: ManagedSessionConfig["workspaceAttach"] | undefined,
+        catalogRow: any,
+        turnIndex: number,
+    ): Promise<{
+        endpoint: ComputeRuntimeEndpoint;
+        workspace: ComputeWorkspacePaths;
+        endpointKey: string;
+        /** The target as it stands this turn. */
+        target: ComputeTarget;
+        provider: ComputeProvider;
+    } | null> {
+        // Every compute failure leaves this method as one coded error in
+        // the one format the rest of the worker reads, so a provider's own
+        // sense of whether retrying can help is never lost on the way out.
+        const fail = (code: string, message: string, retryAfterMs?: number): never => {
+            throw computeFailureError({ code, message, retryAfterMs });
+        };
+        const catalog = this.sessionCatalog;
+        // The policy is read before anything else can answer "no target".
+        // A catalog that cannot say which target a session has is not the
+        // same as a session that has none: with this deployment running
+        // every agent elsewhere, the difference is whether an agent runs
+        // on the worker, so it fails rather than falls through.
+        if (!catalog) {
+            if (this.computeRequired) {
+                return fail(COMPUTE_ERROR_CODES.REQUIRED,
+                    "this deployment runs every session's agent on a compute host, and this worker has no catalog to read its target from");
+            }
+            return null;
+        }
+        if (!catalog.getSessionCreationConfig) {
+            if (this.computeRequired) {
+                return fail(COMPUTE_ERROR_CODES.REQUIRED,
+                    "this deployment runs every session's agent on a compute host, and this catalog cannot say which target a session has");
+            }
+            return null;
+        }
+        const row = catalogRow ?? await catalog.getSession(sessionId).catch(() => null);
+        if (!row) return fail(COMPUTE_ERROR_CODES.UNAVAILABLE, "the session's catalog row cannot be read, so its compute target is unknown", 5_000);
+        const rootSessionId: string = row.rootSessionId || sessionId;
+        const recorded = await this._treeComputeTarget(catalog, sessionId, rootSessionId);
+        const text = (value: unknown) => typeof value === "string" ? value : "";
+        const targetName = recorded.name;
+        const targetId = recorded.id;
+        if (recorded.ownId && recorded.ownId !== targetId) {
+            return fail(COMPUTE_ERROR_CODES.INVALID, "this session names a different compute target than its session tree");
+        }
+        if ((targetName || targetId) && !catalog.computeTargets) {
+            // The tree has a target and this worker cannot resolve one.
+            // Running the agent here instead is precisely the fall-back
+            // this design exists to prevent, so it is refused.
+            return fail(COMPUTE_ERROR_CODES.UNAVAILABLE,
+                `this session runs on the compute target "${targetName || targetId}", and this worker cannot resolve compute targets`, 5_000);
+        }
+        if (!catalog.computeTargets) {
+            if (this.computeRequired) {
+                return fail(COMPUTE_ERROR_CODES.REQUIRED,
+                    "this deployment runs every session's agent on a compute host, and this worker cannot resolve compute targets");
+            }
+            return null;
+        }
+        const rootRow = rootSessionId === sessionId ? row : await catalog.getSession(rootSessionId).catch(() => null);
+        if (!rootRow) return fail(COMPUTE_ERROR_CODES.UNAVAILABLE, "the session tree's root cannot be read, so its compute target is unknown", 5_000);
+        if (!targetName && !targetId) {
+            // Nothing to run on, and this worker will not run an agent of
+            // its own. Fail here, before a runtime is started or a prompt
+            // moves.
+            if (this.computeRequired) {
+                return fail(COMPUTE_ERROR_CODES.REQUIRED,
+                    "this deployment runs every session's agent on a compute host, and this session has no compute target");
+            }
+            return null;
+        }
+        if (!targetId) return fail(COMPUTE_ERROR_CODES.NOT_FOUND, `the compute target "${targetName}" of this session has no recorded id`);
+        const owner: ComputePrincipal | null = rootRow.owner?.provider && rootRow.owner?.subject
+            ? { provider: rootRow.owner.provider, subject: rootRow.owner.subject, email: rootRow.owner.email ?? null }
+            : null;
+        const isSystem = Boolean(rootRow.isSystem);
+        const target = await catalog.computeTargets.resolveForSession(targetId);
+        if (!target) return fail(COMPUTE_ERROR_CODES.NOT_FOUND, `the compute target "${targetName}" of this session is gone`);
+        if (!target.enabled) return fail(COMPUTE_ERROR_CODES.DISABLED, `the compute target "${target.name}" is disabled`);
+        const provider = this.computeProviders.get(target.kind);
+        if (!provider) return fail(COMPUTE_ERROR_CODES.KIND_UNKNOWN, `this worker has no compute provider of kind "${target.kind}"`);
+        const workerNodeId = this.workspaceWorkerNodeId ?? os.hostname();
+
+        if (provider.validateTarget) {
+            const valid = await this._computeCall("validateTarget", COMPUTE_CONNECT_TIMEOUT_MS,
+                (signal) => provider.validateTarget!({ target, principal: owner, signal }));
+            if (!valid.ok) return fail(valid.code, valid.message, valid.retryAfterMs);
+        }
+        const previous = this.computeHosts.get(sessionId);
+        const bound = await this._computeCall("bind", COMPUTE_BIND_TIMEOUT_MS,
+            (signal) => provider.bind({ target, sessionId, rootSessionId, owner, workerNodeId, signal }));
+        if (!bound.ok) return fail(bound.code, bound.message, bound.retryAfterMs);
+        if (previous && (previous.target.id !== target.id || previous.host.id !== bound.host.id || previous.host.incarnation !== bound.host.incarnation)) {
+            // The session's host was replaced: leave the old one.
+            this.computeHosts.delete(sessionId);
+            await this._releaseBinding(sessionId, previous, "failed", true);
+            // Worth recording: the session's processes, its scratch files
+            // and anything it started on the old host are gone, and the
+            // only sign of it otherwise is a turn that finds an empty
+            // folder.
+            this._recordComputeEvent(sessionId, "session.compute_host_replaced", {
+                target: target.name,
+                previousHost: previous.host.id,
+                previousIncarnation: previous.host.incarnation,
+                host: bound.host.id,
+                incarnation: bound.host.incarnation,
+            });
+        } else if (!previous) {
+            this._recordComputeEvent(sessionId, "session.compute_bound", {
+                target: target.name, host: bound.host.id, incarnation: bound.host.incarnation, workerNodeId,
+            });
+        }
+        // Record the binding before connect, so a failed connect still releases it.
+        const workspace: ComputeWorkspacePaths = {
+            ...(workspaceAttach?.path ?? config.workingDirectory ? { cwd: workspaceAttach?.path ?? config.workingDirectory } : {}),
+            ...(workspaceAttach?.extras?.length ? { additionalDirectories: workspaceAttach.extras.map((extra) => extra.path) } : {}),
+        };
+        const sameHost = Boolean(previous && previous.host.id === bound.host.id && previous.host.incarnation === bound.host.incarnation);
+        const binding: ComputeBinding = {
+            provider, target, host: bound.host, rootSessionId, workerNodeId,
+            hostKey: computeBindingKey(target.id, bound.host, rootSessionId),
+            endpointKey: sameHost ? previous!.endpointKey : "",
+            owner,
+            workerPaths: [workspace.cwd, ...(workspace.additionalDirectories ?? [])].filter((entry): entry is string => Boolean(entry)),
+            folderMap: new ComputeFolderMap([]),
+        };
+        this.computeHosts.set(sessionId, binding);
+        const connected = await this._computeCall("connect", COMPUTE_CONNECT_TIMEOUT_MS,
+            (signal) => provider.connect({ target, host: bound.host, sessionId, rootSessionId, workerNodeId, turnIndex, signal, workspace })).catch(async (error) => {
+                await this.releaseCompute(sessionId, "failed");
+                throw error;
+            });
+        if (!connected.ok) {
+            await this.releaseCompute(sessionId, "failed");
+            return fail(connected.code, connected.message, connected.retryAfterMs);
+        }
+        if (connected.endpoint.transport === "local" && provider.kind !== LOCAL_COMPUTE_KIND) {
+            // Only the built-in `local` provider runs a runtime as the
+            // worker's own child process. A third-party provider that
+            // answers `connect` with a local transport has returned
+            // something this worker will not act on — said plainly here,
+            // rather than as the deployment-policy refusal below, which
+            // would be about the wrong thing.
+            await this.releaseCompute(sessionId, "failed");
+            return fail(COMPUTE_ERROR_CODES.ENDPOINT_REFUSED,
+                `the compute provider "${provider.kind}" asked the worker to run this session's runtime as its own child process; only the built-in "${LOCAL_COMPUTE_KIND}" provider may do that, and every other provider must return an address`);
+        }
+        if (this.computeRequired && connected.endpoint.transport === "local") {
+            // A target whose provider runs the runtime here is still the
+            // worker's own child process, which is the thing this
+            // deployment has turned off. Checking the target alone would
+            // miss it.
+            await this.releaseCompute(sessionId, "failed");
+            return fail(COMPUTE_ERROR_CODES.REQUIRED,
+                `this deployment runs every session's agent on a compute host, and the compute target "${target.name}" runs it on the worker`);
+        }
+        if (connected.endpoint.transport === "uri" && !this.computeAllowNonLoopbackEndpoints && !isLoopbackAddress(connected.endpoint.address)) {
+            await this.releaseCompute(sessionId, "failed");
+            return fail(COMPUTE_ERROR_CODES.ENDPOINT_REFUSED,
+                "the compute provider returned a runtime address that is not on this machine; this worker accepts only local addresses");
+        }
+        // Every runtime that is not the worker's own child process gets a
+        // bridge on this machine, and the rest of the worker then sees an
+        // ordinary local address. That is what makes the handshake
+        // uniform: it happens here, once per connection, for a provider
+        // that opened the connection and for one that only named an
+        // address. Nothing below this line knows what the connection is
+        // made of, or that it was proved.
+        let endpoint: ComputeRuntimeEndpoint = connected.endpoint;
+        if (endpoint.transport !== "local") {
+            try {
+                endpoint = await this._bridgeEndpoint(binding, endpoint, sessionId);
+            } catch (error) {
+                await this.releaseCompute(sessionId, "failed");
+                const { code } = (error ?? {}) as { code?: string };
+                return typeof code === "string" && code.startsWith("COMPUTE_")
+                    ? fail(code, computeFailureMessage(code, error))
+                    : fail(COMPUTE_ERROR_CODES.UNAVAILABLE,
+                        `the connection to the compute host could not be prepared: ${String((error as Error)?.message ?? error)}`, 5_000);
+            }
+        }
+        // The session's folders as each side names them. The provider
+        // answers `connect` with the host's view of the same folders, in
+        // the same order, so the two line up by position.
+        binding.folderMap = computeFolderMapOf(workspace, connected.workspace, workspaceAttach?.extras?.map((extra) => extra.name) ?? []);
+        const endpointKey = runtimeEndpointKey(endpoint, bound.host);
+        const oldKey = binding.endpointKey;
+        binding.endpointKey = endpointKey;
+        if (oldKey && oldKey !== endpointKey) {
+            await this._retireEndpointIfUnused(oldKey);
+            // A different connection to the same host: a replaced bridge
+            // or a rotated token, which costs the session a cold resume.
+            this._recordComputeEvent(sessionId, "session.compute_connected", {
+                target: target.name, host: bound.host.id, incarnation: bound.host.incarnation, workerNodeId, reconnected: true,
+            });
+        } else if (!oldKey && endpoint.transport !== "local") {
+            this._recordComputeEvent(sessionId, "session.compute_connected", {
+                target: target.name, host: bound.host.id, incarnation: bound.host.incarnation, workerNodeId, reconnected: false,
+            });
+        }
+        return { endpoint, workspace: connected.workspace, endpointKey, target, provider };
+    }
+
+    /**
+     * Compute providers: PilotSwarm's own note of what happened to a
+     * session's host. Best effort and never on the turn's path: a session
+     * that ran is not failed because its history could not be written.
+     */
+    private _recordComputeEvent(sessionId: string, eventType: string, data: Record<string, unknown>): void {
+        void this.sessionCatalog?.recordEvents(sessionId, [{ eventType, data }])
+            .catch(() => { /* observability only */ });
+    }
+
+    /**
+     * The local address standing in for a host's runtime. The binding's
+     * bridge is made once and kept: the same host keeps the same address,
+     * so its pooled client survives the turn. A replaced host arrives here
+     * with no bridge and gets a new one, and the new address gives it a
+     * fresh client.
+     *
+     * The bridge opens a connection to the host's address per connection,
+     * so a broken connection is replaced by a fresh one rather than a dead
+     * one, and a connection that cannot be opened fails where it is seen.
+     * Over every one of them the worker and the host prove to each other
+     * that they hold this binding's secret before anything else crosses.
+     *
+     * A binding with no secret, or with no connection token, cannot be
+     * used: see `checkRemoteEndpoint`.
+     */
+    private async _bridgeEndpoint(
+        binding: ComputeBinding,
+        endpoint: Exclude<ComputeRuntimeEndpoint, { transport: "local" }>,
+        sessionId: string,
+    ): Promise<ComputeRuntimeEndpoint> {
+        const { provider, target, host } = binding;
+        checkRemoteEndpoint(endpoint, provider.kind);
+        const key = binding.hostKey;
+        // Kept per host rather than captured, so a later turn's address
+        // and secret are the ones the bridge uses, and so the sessions of
+        // a tree all reach their host the same way.
+        this.computeReach.set(key, endpoint);
+        // What must still be true for a cached bridge to be this host's
+        // bridge. Which provider object is serving the kind can change
+        // under a key; the bridge must not go on using the old one.
+        const fingerprint = JSON.stringify([
+            this.computeProviders.get(provider.kind) === provider,
+            provider.kind, target.id, host.id, host.incarnation,
+        ]);
+        const bridge = await this.computeBridges.acquire(key, fingerprint, sessionId, async () => {
+            const made = new ComputeRuntimeBridge(
+                (signal) => openTcpPipe(this.computeReach.get(key)!.address, signal),
+                {
+                    handshake: () => this.computeReach.get(key)?.handshake,
+                    onHandshakeFailure: (error) => {
+                        // A connection that carried, or was to carry, a
+                        // turn could not prove the host. Remembered on the
+                        // binding so the turn reports the coded failure
+                        // rather than a socket that died on the SDK.
+                        binding.handshakeFailure = error;
+                    },
+                    onIdle: () => {
+                        // Every connection to this host is gone. The pooled
+                        // client that was driving the runtime through it is
+                        // of no use now: a client kept in the pool after
+                        // its connection closed leaves the session reaching
+                        // a host that is not there until it is evicted,
+                        // and every failed turn puts that off further. The
+                        // next turn makes a fresh one.
+                        void this._retireClientsForEndpoint(binding.endpointKey, { connectionGone: true });
+                    },
+                },
+            );
+            await made.start();
+            try {
+                // Fail here, where a compute failure can be named, rather
+                // than leaving the SDK to report a connection that died on
+                // it — and before a prompt or a model request has moved.
+                await made.verify();
+            } catch (error) {
+                await made.close().catch(() => { /* best effort */ });
+                throw error;
+            }
+            return made;
+        });
+        binding.bridge = bridge;
+        binding.handshakeFailure = undefined;
+        return {
+            transport: "uri",
+            address: bridge.address,
+            ...(endpoint.connectionToken ? { connectionToken: endpoint.connectionToken } : {}),
+        };
+    }
+
+    /**
+     * The side channel to this binding's host, made once per host.
+     *
+     * It is a second connection to the same address, proved by the same
+     * handshake and named `control` in its hello, so a host that cannot
+     * prove itself never sees a copied file or a forwarded call either.
+     */
+    private async _controlLink(binding: ComputeBinding): Promise<ComputeControlLink> {
+        const key = binding.hostKey;
+        const held = this.computeControl.get(key);
+        if (held) {
+            const link = await held.catch(() => undefined);
+            if (link && !link.isClosed) return link;
+            this.computeControl.delete(key);
+        }
+        const made = (async () => {
+            const reach = this.computeReach.get(key);
+            if (!reach) throw new Error("this host's address is not recorded");
+            const handshake = reach.handshake;
+            if (!handshake) throw new Error("this host's binding has no secret, so a second connection cannot be proved");
+            const pipe = await openTcpPipe(reach.address, AbortSignal.timeout(COMPUTE_PIPE_OPEN_TIMEOUT_MS));
+            try {
+                await runWorkerHandshake(pipe, handshake, { purpose: "control" });
+            } catch (error) {
+                try { pipe.destroy(); } catch { /* already gone */ }
+                throw error;
+            }
+            const link = new ComputeControlLink(pipe, {
+                onRefusal: ({ reason }) => console.warn(`[SessionManager] a forwarded call on ${binding.target.name} was refused: ${reason}`),
+            });
+            try {
+                // Make the host say what it offers before anything is sent,
+                // so a host that cannot serve a side channel fails here.
+                await link.hostFacts();
+            } catch (error) {
+                // A construction that did not finish leaves nothing
+                // behind. Without this the pipe stays open, the host
+                // counts it as company and never goes idle, and every
+                // retry adds another one.
+                try { link.close(); } catch { /* already gone */ }
+                try { pipe.destroy(); } catch { /* already gone */ }
+                throw error;
+            }
+            return link;
+        })();
+        this.computeControl.set(key, made);
+        try {
+            return await made;
+        } catch (error) {
+            if (this.computeControl.get(key) === made) this.computeControl.delete(key);
+            throw error;
+        }
+    }
+
+    /**
+     * The skill folders and MCP servers a session gets when its agent runs
+     * on a compute host.
+     *
+     * Everything that decides WHICH folders and WHICH servers a session
+     * may have has already happened: this is the same list a session on
+     * the worker would be given. What happens here is only where each of
+     * them lives — the folders are copied to the host and named by the
+     * host's paths, the package servers are rebuilt to run there, and the
+     * deployment's servers stay here and are reached through the channel.
+     *
+     * Returns null when the session has neither, which is the common case
+     * for a session with no skills and no servers: no channel is opened.
+     */
+    private async _remoteCapabilities(args: {
+        sessionId: string;
+        binding: ComputeBinding;
+        skillDirectories: string[];
+        mcpServers: Record<string, any>;
+        /** The exact entry each server in that map came from. */
+        mcpOrigins: Map<string, McpServerOrigin>;
+        customAgents?: any[];
+    }): Promise<{
+        skillDirectories: string[];
+        mcpServers: Record<string, any>;
+        customAgents?: any[];
+        unavailable: Array<{ name: string; reason: string }>;
+        refusals: ComputeCopyRefusal[];
+        fingerprint: string;
+    } | null> {
+        const { binding, sessionId } = args;
+        // The origin of each entry of THIS session's map, carried with it.
+        // Never a lookup by bare name across every package the worker has
+        // loaded: that answer belongs to whichever package loaded last.
+        // A name only a nested agent map carries is resolved from the
+        // catalog, and only when exactly one entry anywhere has it —
+        // an ambiguous name gets no origin and the server is refused
+        // rather than guessed at.
+        const origins = (name: string): McpServerOrigin | undefined =>
+            args.mcpOrigins.get(name) ?? this._soleMcpOrigin(name);
+        const hasServers = Object.keys(args.mcpServers ?? {}).length > 0
+            || (args.customAgents ?? []).some((agent) => Object.keys(agent?.mcpServers ?? {}).length > 0);
+        if (args.skillDirectories.length === 0 && !hasServers) {
+            // Nothing to grant this turn. A ticket this session still
+            // holds from an earlier turn is revoked here, including
+            // everything open under it (compute-control.ts).
+            await this._reconcileRemoteGrants(binding, sessionId, []);
+            return null;
+        }
+
+        const link = await this._controlLink(binding);
+        const folders = [
+            ...args.skillDirectories.map((source) => ({ name: computeCopyName("skills", source), source })),
+            ...packageMcpFolders(args.mcpServers, origins),
+            ...packageMcpFoldersForAgents(args.customAgents, origins),
+        ];
+        const wanted = new Map<string, string>();
+        for (const folder of folders) if (!wanted.has(folder.name)) wanted.set(folder.name, folder.source);
+        const plan = planComputeCopy([...wanted].map(([name, source]) => ({ name, source })), this.computeCopyLimits);
+        const placements = await link.copy(plan, { timeoutMs: COMPUTE_CONTROL_COPY_TIMEOUT_MS });
+        const facts = { ...(await link.hostFacts()), placements };
+        const caller: ComputeCallerStatement = {
+            sessionId,
+            rootSessionId: binding.rootSessionId,
+            ownerProvider: binding.owner?.provider ?? "",
+            ownerSubject: binding.owner?.subject ?? "",
+            ownerEmail: binding.owner?.email ?? "",
+            computeTarget: binding.target.name,
+        };
+        const mint = (server: string) => link.mintTicket({
+            sessionId, server, caller,
+            config: args.mcpServers[server] ?? (args.customAgents ?? [])
+                .map((agent) => agent?.mcpServers?.[server]).find(Boolean),
+        });
+        const servers = remoteMcpServers(args.mcpServers, origins, facts, mint);
+        const nested = remoteMcpCustomAgents(args.customAgents, origins, facts, mint);
+        // The whole set this session may reach on this host, as it stands
+        // now. Anything it held before and is not in this set loses its
+        // ticket here, rather than standing until the session leaves.
+        link.reconcileSession(sessionId, [...servers.tickets, ...nested.tickets].map((entry) => entry.server));
+        const skillDirectories = args.skillDirectories
+            .map((source) => placements[computeCopyName("skills", source)])
+            .filter((placed): placed is string => Boolean(placed));
+        return {
+            skillDirectories,
+            mcpServers: servers.servers,
+            ...(args.customAgents ? { customAgents: nested.agents } : {}),
+            unavailable: [...servers.unavailable, ...nested.unavailable],
+            refusals: plan.refusals,
+            // What the host actually holds. A skill whose text changed
+            // gives a different digest, so the session rebinds and the
+            // runtime reads the new text.
+            fingerprint: JSON.stringify([
+                plan.items.map((item) => [item.name, item.digest]),
+                skillDirectories,
+                Object.keys(servers.servers).sort(),
+                servers.unavailable.map((entry) => entry.name).sort(),
+            ]),
+        };
+    }
+
+    /**
+     * The one entry of this name in the whole catalog, or nothing.
+     *
+     * Only for a server a nested agent map names and the session's own
+     * map does not. Two packages may export the same name; when they do,
+     * nothing here can say which one an agent meant, so the answer is
+     * nothing and the server is refused with a reason.
+     */
+    private _soleMcpOrigin(name: string): McpServerOrigin | undefined {
+        const all = this.workerDefaults.mcpServerOrigins;
+        if (!all) return undefined;
+        const deployment = all.get(mcpOriginKey(null, name));
+        if (deployment) return deployment;
+        let only: McpServerOrigin | undefined;
+        const suffix = `\u0000${name}`;
+        for (const [key, origin] of all) {
+            if (!key.endsWith(suffix)) continue;
+            if (only) return undefined;
+            only = origin;
+        }
+        return only;
+    }
+
+    /**
+     * The servers one session may reach on a host, as the turn leaves it.
+     *
+     * Called even when the session has none, so a grant from an earlier
+     * turn does not outlive the authorization that made it. Opens no
+     * channel: with nothing to grant and no channel open there is nothing
+     * to revoke.
+     */
+    private async _reconcileRemoteGrants(binding: ComputeBinding, sessionId: string, servers: string[]): Promise<void> {
+        const held = this.computeControl.get(binding.hostKey);
+        if (!held) return;
+        const link = await held.catch(() => undefined);
+        if (!link || link.isClosed) return;
+        link.reconcileSession(sessionId, servers);
+    }
+
+    /**
+     * The compute target recorded for a session's tree, remembered.
+     *
+     * A target is written once, when the session is created, and never
+     * changes: a session cannot move trees and a tree cannot change its
+     * target. So the answer is kept per session, and an ordinary session
+     * with no target reads the catalog once rather than at every turn —
+     * and a catalog that cannot be read afterwards does not turn a
+     * target-less session into a failing one.
+     */
+    private async _treeComputeTarget(
+        catalog: SessionCatalog,
+        sessionId: string,
+        rootSessionId: string,
+    ): Promise<{ name: string; id: string; ownId: string }> {
+        const held = this.computeTargetBySession.get(sessionId);
+        if (held) return held;
+        const text = (value: unknown) => typeof value === "string" ? value : "";
+        const [ownConfig, treeConfig] = await Promise.all([
+            catalog.getSessionCreationConfig!(sessionId),
+            rootSessionId === sessionId ? Promise.resolve(null) : catalog.getSessionCreationConfig!(rootSessionId),
+        ]);
+        const rootConfig = rootSessionId === sessionId ? ownConfig : treeConfig;
+        const recorded = {
+            name: text(rootConfig?.computeTarget),
+            id: text(rootConfig?.computeTargetId),
+            ownId: text(ownConfig?.computeTargetId),
+        };
+        if (this.computeTargetBySession.size >= COMPUTE_TARGET_MEMORY) {
+            const oldest = this.computeTargetBySession.keys().next();
+            if (!oldest.done) this.computeTargetBySession.delete(oldest.value);
+        }
+        this.computeTargetBySession.set(sessionId, recorded);
+        if (recorded.name || recorded.id) this._rememberRemoteSession(sessionId);
+        return recorded;
+    }
+
+    /**
+     * Remember that a session runs its agent elsewhere, within a bound.
+     *
+     * This set is what keeps a remote session from falling back to the
+     * worker's own folders and from having its agent started here, so a
+     * session is never forgotten while this worker is holding it: only
+     * sessions with no binding and no warm handle are dropped to make
+     * room. A worker that is somehow holding more than the bound is left
+     * to grow rather than made unsafe.
+     */
+    private _rememberRemoteSession(sessionId: string): void {
+        this.computeRemoteSessions.add(sessionId);
+        if (this.computeRemoteSessions.size <= COMPUTE_TARGET_MEMORY) return;
+        for (const candidate of this.computeRemoteSessions) {
+            if (this.computeRemoteSessions.size <= COMPUTE_TARGET_MEMORY) return;
+            if (candidate === sessionId || this.computeHosts.has(candidate) || this.sessions.has(candidate)) continue;
+            this.computeRemoteSessions.delete(candidate);
+            this.computeTargetBySession.delete(candidate);
+        }
+    }
+
+    /** Run one provider call with a deadline; a provider that does not answer fails the call. */
+    private async _computeCall<T>(name: string, timeoutMs: number, call: (signal: AbortSignal) => Promise<T>): Promise<T> {
+        const controller = new AbortController();
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+            return await Promise.race([
+                call(controller.signal),
+                new Promise<never>((_, reject) => {
+                    timer = setTimeout(() => {
+                        controller.abort();
+                        reject(computeFailureError({
+                            code: COMPUTE_ERROR_CODES.UNAVAILABLE,
+                            message: `the compute provider did not answer ${name} within ${timeoutMs} ms`,
+                            retryAfterMs: 5_000,
+                        }));
+                    }, timeoutMs);
+                }),
+            ]);
+        } finally {
+            if (timer) clearTimeout(timer);
+        }
+    }
+
+    /** Disconnect the pooled clients of a runtime connection no session uses any more. */
+    private async _retireEndpointIfUnused(endpointKey: string): Promise<void> {
+        if (!endpointKey || [...this.computeHosts.values()].some((other) => other.endpointKey === endpointKey)) return;
+        this.computeEndpoints.delete(endpointKey);
+        await this._retireClientsForEndpoint(endpointKey);
+    }
+
+    /**
+     * Take the pooled clients of one runtime connection out of the pool and
+     * stop them.
+     *
+     * Used both when no session needs the connection any more and when the
+     * connection itself has closed. In the second case the sessions are
+     * still there: what has gone is the way the worker was reaching their
+     * host, so the client is dropped and the next turn connects again.
+     */
+    private async _retireClientsForEndpoint(endpointKey: string, opts: { connectionGone?: boolean } = {}): Promise<void> {
+        if (!endpointKey) return;
+        const suffix = COMPUTE_CLIENT_SEPARATOR + endpointKey;
+        const stale = [...this.clients.entries()].filter(([key]) => key.endsWith(suffix));
+        for (const [key] of stale) this.clients.delete(key);
+        // A connection that has gone takes the polite shutdown with it. The
+        // ordinary stop ends each session and asks the runtime to shut
+        // down, which means writing down a connection that is not there:
+        // those writes fail, nothing is waiting on them, and an unhandled
+        // rejection takes the worker down with the host. Forcing the stop
+        // drops the connection without writing to it first.
+        const forced = opts.connectionGone === true;
+        if (forced) {
+            for (const [, client] of stale) {
+                const force = (client as { forceStop?: () => Promise<void> }).forceStop;
+                if (typeof force === "function") { try { void force.call(client); } catch { /* best effort */ } }
+            }
+            return;
+        }
+        await Promise.all(stale.map(async ([, client]) => {
+            let timer: ReturnType<typeof setTimeout> | undefined;
+            try {
+                await Promise.race([
+                    client.stop(),
+                    new Promise((resolve) => { timer = setTimeout(resolve, COPILOT_CLIENT_SHUTDOWN_TIMEOUT_MS); }),
+                ]);
+            } catch { /* best effort */ } finally {
+                if (timer) clearTimeout(timer);
+            }
+        }));
+    }
+
+    /** Leave one binding: drop its clients if unused, then tell the provider. Best effort, bounded. */
+    private async _releaseBinding(sessionId: string, binding: ComputeBinding, reason: ComputeReleaseReason, keepGrant = false): Promise<void> {
+        if (!keepGrant) this.remoteGrants.delete(sessionId);
+        await this._retireEndpointIfUnused(binding.endpointKey);
+        // The bridge belongs to the host, so it goes only when the last
+        // session using that host has gone, and after the clients that
+        // were reaching it through the bridge. The registry counts the
+        // holders of the bridge itself, so a bridge that was replaced
+        // under this key is not closed twice or left behind.
+        if (binding.bridge) {
+            await this.computeBridges.release(binding.hostKey, binding.bridge, sessionId);
+            if (![...this.computeHosts.values()].some((other) => other.hostKey === binding.hostKey)) {
+                this.computeReach.delete(binding.hostKey);
+            }
+        }
+        // The side channel goes the same way: the session's tickets first,
+        // then the channel itself once nothing on this host is using it.
+        const control = this.computeControl.get(binding.hostKey);
+        if (control) {
+            const link = await control.catch(() => undefined);
+            link?.forgetSession(sessionId);
+            if (![...this.computeHosts.values()].some((other) => other.hostKey === binding.hostKey)) {
+                this.computeControl.delete(binding.hostKey);
+                link?.close();
+            }
+        }
+        if (!binding.provider.release) return;
+        try {
+            await this._computeCall("release", COMPUTE_RELEASE_TIMEOUT_MS, (signal) => binding.provider.release!({
+                target: binding.target, host: binding.host, sessionId, rootSessionId: binding.rootSessionId,
+                workerNodeId: binding.workerNodeId, reason, signal,
+            }));
+        } catch { /* best effort */ }
+    }
+
+    /**
+     * Compute providers: let go of this session's host because the session
+     * is leaving this worker.
+     *
+     * The warm handle goes first: it is the thing driving the runtime, and
+     * it holds the pooled client that reaches the host. Nothing on the host
+     * is stopped — the session is moving, not ending, and the shells it
+     * started there are its own. Answers whether this worker was holding
+     * anything.
+     */
+    async releaseComputeForMove(sessionId: string): Promise<boolean> {
+        const warm = this.sessions.get(sessionId);
+        const bound = this.computeHosts.has(sessionId);
+        if (!warm && !bound) return false;
+        if (warm) {
+            await warm.destroy().catch(() => { /* the connection is going anyway */ });
+            this._forgetWarmSession(sessionId);
+        }
+        if (bound) await this.releaseCompute(sessionId, "moved");
+        return true;
+    }
+
+    /** Compute providers: tell the provider a session no longer needs its host here. Best effort. */
+    async releaseCompute(sessionId: string, reason: ComputeReleaseReason): Promise<void> {
+        const binding = this.computeHosts.get(sessionId);
+        this.computeHosts.delete(sessionId);
+        this.remoteGrants.delete(sessionId);
+        if (binding) await this._releaseBinding(sessionId, binding, reason);
+    }
+
+    /**
+     * Compute providers: a session's folders as the worker and its host
+     * each name them, or undefined when it runs on the worker and there is
+     * one set of paths.
+     */
+    computeFolderMap(sessionId: string | undefined): ComputeFolderMap | undefined {
+        if (!sessionId) return undefined;
+        const binding = this.computeHosts.get(sessionId);
+        return binding?.endpointKey ? binding.folderMap : undefined;
+    }
+
+    /**
+     * Compute providers: the worker folders a session's tools may name by
+     * path. Undefined for a session that runs here (the default roots apply).
+     * A session whose runtime runs elsewhere gets only its own workspace
+     * folders, and only when its provider says the host shares them with the
+     * worker; otherwise none.
+     */
+    computeLocalPathRoots(sessionId: string | undefined): string[] | undefined {
+        if (!sessionId) {
+            // Which session is asking could not be told, so this is not a
+            // question about any session's folders. It used to be answered
+            // with none as soon as this worker ran a single remote
+            // session, which took the worker's folders away from every
+            // ordinary session sharing the worker with it.
+            //
+            // The file tools refuse a file mode they cannot name a session
+            // for, so nothing reaches here on a session's behalf and the
+            // ordinary rules apply.
+            return undefined;
+        }
+        const binding = this.computeHosts.get(sessionId);
+        if (!binding || !binding.endpointKey) {
+            // Known to run elsewhere, but not bound at this moment: no
+            // worker folder is this session's to name. Falling back to
+            // the worker's own roots here would be the one case where a
+            // remote session reaches the worker's file system.
+            return this.computeRemoteSessions.has(sessionId) ? [] : undefined;
+        }
+        const files = binding.provider.capabilities?.files;
+        return files === "worker-local" || files === "shared-mount" ? [...binding.workerPaths] : [];
+    }
+
+    /** Compute providers: whether a provider may return a runtime address that is not on this machine. */
+    setComputeOptions(options: {
+        allowNonLoopbackEndpoints?: boolean;
+        requireCompute?: boolean;
+        copyLimits?: Partial<ComputeCopyLimits>;
+        /** The most one session's state folder may hold on the worker. */
+        sessionFsMaxTotalBytes?: number;
+    }): void {
+        this.computeAllowNonLoopbackEndpoints = options.allowNonLoopbackEndpoints === true;
+        this.computeRequired = options.requireCompute === true;
+        this.computeCopyLimits = computeCopyLimits(options.copyLimits);
+        const quota = Number(options.sessionFsMaxTotalBytes);
+        this.sessionFsMaxTotalBytes = Number.isFinite(quota) && quota > 0 ? Math.floor(quota) : undefined;
+    }
+
+    /** Compute providers: add one plug-in per compute type. */
+    registerComputeProvider(provider: ComputeProvider, opts: { replace?: boolean } = {}): void {
+        this.computeProviders.register(provider, opts);
+    }
+
+    getComputeProviders(): ComputeProviderRegistry {
+        return this.computeProviders;
+    }
+
     /** Session turn control: set by the worker after it starts the hub. */
     setTurnControlHub(hub: import("./turn-control.js").TurnControlHub | null): void {
         this.turnControlHub = hub;
@@ -1308,7 +2320,7 @@ export class SessionManager {
      * It may not be started yet: create and resume sessions on it through
      * `_createCopilotSession` / `_resumeCopilotSession`.
      */
-    private async ensureClient(tokenOverride?: string, byokOpenAi = false, workspaceRoot?: string): Promise<CopilotClient> {
+    private async ensureClient(tokenOverride?: string, byokOpenAi = false, workspaceRoot?: string, endpoint?: ComputeRuntimeEndpoint, computeKey?: string): Promise<CopilotClient> {
         // Resolve the effective token: explicit override > worker default >
         // first registry github provider's resolved token. The override is
         // how per-user GitHub Copilot keys (cms.users.github_copilot_key)
@@ -1326,10 +2338,37 @@ export class SessionManager {
             }
         }
 
+        const remote = endpoint && endpoint.transport !== "local" ? endpoint : undefined;
+        const endpointKey = remote ? (computeKey || runtimeEndpointKey(remote)) : "";
         const clientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (token || "")
-            + (workspaceRoot ? WORKSPACE_ROOT_CLIENT_SEPARATOR + workspaceRoot : "");
+            + (workspaceRoot ? WORKSPACE_ROOT_CLIENT_SEPARATOR + workspaceRoot : "")
+            + (remote ? COMPUTE_CLIENT_SEPARATOR + endpointKey : "");
         const existing = this.clients.get(clientKey);
         if (existing) return existing;
+        if (remote) this.computeEndpoints.set(endpointKey, remote);
+
+        const toolCatalogResolver = byokOpenAi ? (request: Request, context: { sessionId?: string }, model: string) => {
+            const config = context.sessionId ? this.sessionConfigs.get(context.sessionId) : undefined;
+            if (!config) return undefined;
+            // Policy lookup must never fail the model request itself: a model
+            // removed by a catalog reload (or an unparsable URL) keeps the
+            // catalog unchanged and lets the provider answer.
+            try {
+                const registry = this.workerDefaults.modelProviders;
+                const descriptor = registry?.getDescriptor(this.normalizeModelRef(config.model));
+                if (!descriptor?.toolCatalog || descriptor.modelName !== model) return undefined;
+                const resolved = registry?.resolve(descriptor.qualifiedName);
+                if (!resolved?.sdkProvider || !needsByokRequestCompatibility(resolved.sdkProvider)) return undefined;
+                const provider = applyReasoningEffortToProviderConfig(resolved.sdkProvider, descriptor, config.reasoningEffort);
+                const endpointUrl = new URL(provider.baseUrl);
+                const target = new URL(request.url);
+                if (target.origin !== endpointUrl.origin
+                    || !target.pathname.startsWith(endpointUrl.pathname.replace(/\/+$/, "") + "/")) return undefined;
+                return descriptor.toolCatalog;
+            } catch {
+                return undefined;
+            }
+        } : undefined;
 
         const created = createCopilotClient({
             ...(token ? { gitHubToken: token } : {}),
@@ -1351,27 +2390,16 @@ export class SessionManager {
                 ...process.env,
                 COPILOT_HOME: path.dirname(this.sessionStateDir),
             },
-        }, byokOpenAi ? { type: "openai" } : undefined, byokOpenAi ? (request, context, model) => {
-            const config = context.sessionId ? this.sessionConfigs.get(context.sessionId) : undefined;
-            if (!config) return undefined;
-            // Policy lookup must never fail the model request itself: a model
-            // removed by a catalog reload (or an unparsable URL) keeps the
-            // catalog unchanged and lets the provider answer.
-            try {
-                const registry = this.workerDefaults.modelProviders;
-                const descriptor = registry?.getDescriptor(this.normalizeModelRef(config.model));
-                if (!descriptor?.toolCatalog || descriptor.modelName !== model) return undefined;
-                const resolved = registry?.resolve(descriptor.qualifiedName);
-                if (!resolved?.sdkProvider || !needsByokRequestCompatibility(resolved.sdkProvider)) return undefined;
-                const provider = applyReasoningEffortToProviderConfig(resolved.sdkProvider, descriptor, config.reasoningEffort);
-                const endpoint = new URL(provider.baseUrl);
-                const target = new URL(request.url);
-                if (target.origin !== endpoint.origin
-                    || !target.pathname.startsWith(endpoint.pathname.replace(/\/+$/, "") + "/")) return undefined;
-                return descriptor.toolCatalog;
-            } catch {
-                return undefined;
-            }
+            // Compute providers: a remote runtime keeps its session state in
+            // this worker's session directory through SessionFs.
+            ...(remote ? { sessionFs: { initialCwd: "/", sessionStatePath: REMOTE_SESSION_STATE_ROOT, conventions: "posix" as const } } : {}),
+        }, byokOpenAi ? { type: "openai" } : undefined, toolCatalogResolver, remote ? {
+            connection: runtimeConnectionFor(remote),
+            // Serves only the sessions bound to this connection.
+            requestHandler: new RemoteRuntimeRequestHandler((sessionId) => {
+                const entry = sessionId ? this.remoteGrants.get(sessionId) : undefined;
+                return entry && entry.endpointKey === endpointKey ? entry.grant : undefined;
+            }, toolCatalogResolver),
         } : undefined);
         this.clients.set(clientKey, created);
         return created;
@@ -1408,22 +2436,48 @@ export class SessionManager {
         return starting;
     }
 
+    /**
+     * A connection failure, told as what it really was when the worker
+     * knows better than the SDK could.
+     *
+     * The SDK connects to a bridge on this machine. When the connection
+     * behind that bridge cannot prove the host, the bridge destroys the
+     * local socket and the SDK sees a reset — true, and useless. The
+     * bridge records the coded failure against the binding, so a turn can
+     * be told the handshake failed instead.
+     */
+    private _asComputeFailure(sessionId: string, error: unknown): unknown {
+        const binding = this.computeHosts.get(sessionId);
+        const failure = binding?.handshakeFailure;
+        if (!failure) return error;
+        binding.handshakeFailure = undefined;
+        return failure;
+    }
+
     /** `client.createSession`, after the client's shared start. */
-    private _createCopilotSession(client: CopilotClient, config: SessionConfig): Promise<CopilotSession> {
-        const starting = this._startClient(client);
-        return starting ? starting.then(() => client.createSession(config)) : client.createSession(config);
+    private async _createCopilotSession(client: CopilotClient, config: SessionConfig, sessionId?: string): Promise<CopilotSession> {
+        try {
+            const starting = this._startClient(client);
+            return await (starting ? starting.then(() => client.createSession(config)) : client.createSession(config));
+        } catch (error) {
+            throw sessionId ? this._asComputeFailure(sessionId, error) : error;
+        }
     }
 
     /** `client.resumeSession`, after the client's shared start. */
-    private _resumeCopilotSession(
+    private async _resumeCopilotSession(
         client: CopilotClient,
         sessionId: string,
         config: Parameters<CopilotClient["resumeSession"]>[1],
     ): Promise<CopilotSession> {
-        const starting = this._startClient(client);
-        return starting
-            ? starting.then(() => client.resumeSession(sessionId, config))
-            : client.resumeSession(sessionId, config);
+        try {
+            const starting = this._startClient(client);
+            return await (starting
+                ? starting.then(() => client.resumeSession(sessionId, config))
+                : client.resumeSession(sessionId, config));
+        } catch (error) {
+            throw this._asComputeFailure(sessionId, error);
+        }
     }
 
     /**
@@ -1496,12 +2550,26 @@ export class SessionManager {
     private async ensureClientForKey(key: string): Promise<CopilotClient> {
         const cached = this.clients.get(key);
         if (cached) return cached;
+        const computeAt = key.indexOf(COMPUTE_CLIENT_SEPARATOR);
+        let endpoint: ComputeRuntimeEndpoint | undefined;
+        let computeKey: string | undefined;
+        if (computeAt >= 0) {
+            computeKey = key.slice(computeAt + COMPUTE_CLIENT_SEPARATOR.length);
+            endpoint = this.computeEndpoints.get(computeKey);
+            if (!endpoint) {
+                throw computeFailureError({
+                    code: COMPUTE_ERROR_CODES.UNAVAILABLE,
+                    message: "the remote runtime for this session is not known on this worker",
+                });
+            }
+            key = key.slice(0, computeAt);
+        }
         const rootAt = key.indexOf(WORKSPACE_ROOT_CLIENT_SEPARATOR);
         const workspaceRoot = rootAt >= 0 ? key.slice(rootAt + WORKSPACE_ROOT_CLIENT_SEPARATOR.length) || undefined : undefined;
         const base = rootAt >= 0 ? key.slice(0, rootAt) : key;
         return base.startsWith(BYOK_CLIENT_PREFIX)
-            ? this.ensureClient(base.slice(BYOK_CLIENT_PREFIX.length) || undefined, true, workspaceRoot)
-            : this.ensureClient(base || undefined, false, workspaceRoot);
+            ? this.ensureClient(base.slice(BYOK_CLIENT_PREFIX.length) || undefined, true, workspaceRoot, endpoint, computeKey)
+            : this.ensureClient(base || undefined, false, workspaceRoot, endpoint, computeKey);
     }
 
     private async _ensureClientForSession(sessionId: string): Promise<CopilotClient> {
@@ -1701,6 +2769,7 @@ export class SessionManager {
                         try { await existing.destroy(); } catch {}
                         this._forgetWarmSession(sessionId);
                     }
+                    await this.releaseCompute(sessionId, "evicted");
                     if (!dirExists) {
                         this.sessionLastTouchedAt.delete(sessionId);
                         reclaimed++;
@@ -1953,6 +3022,18 @@ export class SessionManager {
             ...(this.workerDefaults.baseMcpServers ?? {}),
             ...(boundAgentMcpServers ?? {}),
         };
+        // Compute providers: which exact entry each of those is. Built
+        // alongside the map and in the same order, so the answer is the
+        // one this session was actually authorized for and never a guess
+        // from a shared name (see compute-mcp.ts, mcpOriginKey).
+        const boundAgentMcpKey = !effectiveSerializableConfig.boundAgentName || !boundAgentCopy ? null
+            : boundAgentCopy.packageId
+                ? packageAgentKey(boundAgentCopy.packageId, effectiveSerializableConfig.boundAgentName)
+                : effectiveSerializableConfig.boundAgentName;
+        const effectiveMcpOrigins = new Map<string, McpServerOrigin>([
+            ...(this.workerDefaults.baseMcpServerOrigins ?? new Map()),
+            ...(boundAgentMcpKey ? this.workerDefaults.agentMcpServerOrigins?.[boundAgentMcpKey] ?? new Map() : new Map()),
+        ]);
 
         const config: ManagedSessionConfig = {
             ...storedConfig,
@@ -2008,7 +3089,16 @@ export class SessionManager {
                 // shell may be using the folder.
                 const stale = this._heldWithHandle(sessionId, warm).filter((folder) => !inUse(folder));
                 if (stale.length > 0) {
-                    const busy = warm ? await warm.activeBackgroundTasks().catch(() => []) : [];
+                    // Compute providers: a remote host that will not say what
+                    // is running leaves the session busy, so the folder stays
+                    // held rather than being pulled from under a shell on the
+                    // host (the conservative answer, as in the busy guards).
+                    const busy = warm
+                        ? await warm.activeBackgroundTasks().catch(
+                            (error: any) => warm.runsRemotely()
+                                ? [{ id: "unknown", type: `unreadable: ${String(error?.message ?? error)}` }]
+                                : [])
+                        : [];
                     if (busy.length === 0) {
                         await this.releaseWorkspaceFolders(sessionId, stale, {
                             reason: "workspace_changed",
@@ -2139,9 +3229,74 @@ export class SessionManager {
                 { code: "GHCP_KEY_MISSING", status: 400 },
             );
         }
+        // Compute providers: where this session's agent runtime runs. Null for
+        // a session without a compute target: the worker's own child process.
+        const compute = await this._prepareCompute(sessionId, config, workspaceAttach, catalogRow, turnIndex ?? 0);
+        const remoteEndpoint = compute && compute.endpoint.transport !== "local" ? compute.endpoint : undefined;
+        // The last check before a runtime is started. This session's tree
+        // is recorded as running elsewhere, and what is about to happen is
+        // the worker starting an agent as its own child process beside the
+        // CMS, the orchestration and the model keys — which is the one
+        // thing this design exists to prevent. Whatever route got here,
+        // it stops here.
+        if (!remoteEndpoint && this.computeRemoteSessions.has(sessionId)) {
+            throw computeFailureError({
+                code: COMPUTE_ERROR_CODES.REQUIRED,
+                message: "this session's tree runs its agent on a compute host, so this worker will not run it here",
+            });
+        }
+        // Compute providers: carried on the session's own configuration for
+        // this turn, so the parts of it that must not treat a process id, a
+        // path or a file on the host as one of this machine's own can see
+        // where the runtime is without asking the manager.
+        config.computeRuntime = remoteEndpoint && compute
+            ? {
+                targetName: compute.target.name,
+                hostId: this.computeHosts.get(sessionId)?.host.id ?? "",
+                hostIncarnation: this.computeHosts.get(sessionId)?.host.incarnation ?? "",
+                files: compute.provider.capabilities?.files ?? "none",
+                sharesWorkerFiles: computeSharesWorkerFiles(compute.provider.capabilities?.files),
+                folders: [...(this.computeHosts.get(sessionId)?.folderMap.folders ?? [])],
+            }
+            : undefined;
+        if (remoteEndpoint && !resolvedProviderConfig.provider) {
+            // The last line of this defence: creation, the model switch and
+            // the model list all refuse a GitHub Copilot model on a remote
+            // target before a turn gets here.
+            throw Object.assign(
+                computeFailureError({ code: COMPUTE_ERROR_CODES.UNSUPPORTED, message: COMPUTE_GITHUB_MODEL_REFUSAL }),
+                { status: 400 },
+            );
+        }
+        // The provider config the runtime sees: on a remote host, credentials
+        // are placeholders the worker's request handler swaps back.
+        let sessionProviderConfig: typeof resolvedProviderConfig = resolvedProviderConfig;
+        if (remoteEndpoint) {
+            const realProvider = resolvedProviderConfig.provider as Record<string, any>;
+            const fingerprint = JSON.stringify([realProvider?.type ?? null, realProvider?.baseUrl ?? null,
+                Object.keys(realProvider?.headers ?? {}).sort(), Boolean(realProvider?.apiKey), Boolean(realProvider?.bearerToken),
+                typeof realProvider?.bearerTokenProvider === "function"]);
+            let entry = this.remoteGrants.get(sessionId);
+            if (!entry || entry.endpointKey !== compute!.endpointKey || entry.fingerprint !== fingerprint) {
+                // New placeholders whenever the session lands on a new connection
+                // or its provider changes; the same ones while it stays put.
+                const redacted = redactProviderSecrets(realProvider, sessionId);
+                const grant = remoteSessionGrant(realProvider?.baseUrl, redacted.secrets);
+                if (!grant) {
+                    throw Object.assign(
+                computeFailureError({ code: COMPUTE_ERROR_CODES.UNSUPPORTED, message: `this session's model provider has no http(s) base URL, which a remote runtime needs` }),
+                { status: 400 },
+            );
+                }
+                entry = { grant, endpointKey: compute!.endpointKey, fingerprint, provider: redacted.provider };
+                this.remoteGrants.set(sessionId, entry);
+            }
+            sessionProviderConfig = { ...resolvedProviderConfig, provider: entry.provider } as typeof resolvedProviderConfig;
+        }
         const byokOpenAi = needsByokRequestCompatibility(resolvedProviderConfig.provider);
         const desiredClientKey = (byokOpenAi ? BYOK_CLIENT_PREFIX : "") + (userGithubToken || "")
-            + (workspaceAttach ? WORKSPACE_ROOT_CLIENT_SEPARATOR + workspaceAttach.root : "");
+            + (workspaceAttach ? WORKSPACE_ROOT_CLIENT_SEPARATOR + workspaceAttach.root : "")
+            + (remoteEndpoint ? COMPUTE_CLIENT_SEPARATOR + compute!.endpointKey : "");
         const previousClientKey = this.sessionClientKeys.get(sessionId);
         if (previousClientKey !== undefined && previousClientKey !== desiredClientKey) {
             // The credential or native/BYOK transport changed since we last
@@ -2161,7 +3316,7 @@ export class SessionManager {
                 this._forgetWarmSession(sessionId);
             }
         }
-        const client = await this.ensureClient(userGithubToken, byokOpenAi, workspaceAttach?.root);
+        const client = await this.ensureClient(userGithubToken, byokOpenAi, workspaceAttach?.root, remoteEndpoint, compute?.endpointKey);
         this.sessionClientKeys.set(sessionId, desiredClientKey);
         const sessionDir = path.join(this.sessionStateDir, sessionId);
 
@@ -2399,7 +3554,8 @@ export class SessionManager {
         const desiredCapabilities = this.sessionCatalog?.getSessionCapabilities
             ? await readState()
             : { revision: 0, selections: [] };
-        const attached = isServiceSession || isTunerSession ? { tools: [], mcpServers: {}, unavailable: [], fingerprint: "" }
+        const attached = isServiceSession || isTunerSession
+            ? { tools: [], mcpServers: {} as Record<string, any>, mcpOriginKeys: {} as Record<string, string>, unavailable: [], fingerprint: "" }
             : bindCapabilities(getSources(), capabilityOwner, desiredCapabilities.selections, originalTools, originalMcp, capabilityAgent);
         const attachedTools = attached.tools.map(tool => {
             const selected = desiredCapabilities.selections.find(sel => sel.tools.includes(tool.name)
@@ -2420,8 +3576,17 @@ export class SessionManager {
             } };
         });
         Object.assign(effectiveMcpServers, attached.mcpServers);
+        for (const [name, key] of Object.entries(attached.mcpOriginKeys ?? {})) {
+            const origin = this.workerDefaults.mcpServerOrigins?.get(key);
+            if (origin) effectiveMcpOrigins.set(name, origin);
+            else effectiveMcpOrigins.delete(name);
+        }
         config.capabilityFingerprint = attached.fingerprint;
         config.capabilityServices = {
+            // Compute providers: the same rule the artifact tools use, so a
+            // session whose agent runs elsewhere reaches only its own
+            // folders whichever tool names a path.
+            localPathRoots: () => this.computeLocalPathRoots(sessionId),
             search: async args => {
                 const result = await capabilityCatalog.search(await getOwner(), sessionId, args);
                 // The working folder's adopted repo agents and skills are not
@@ -2529,10 +3694,11 @@ export class SessionManager {
         // instructions, when their folder is an extra folder (the CLI reads
         // instruction files only from its working folder), follow PilotSwarm's
         // base and come before the repo's.
-        const systemMessage = withPersonalInstructions(withDurableFoldersNote(keepAdoptedRepoInstructions(
+        const systemMessage = withComputeHostNote(withPersonalInstructions(withDurableFoldersNote(keepAdoptedRepoInstructions(
             this._buildSystemMessage(sessionId, config, sessionOwnerKey, boundAgentCopy ?? null),
             workspaceAttach?.adopt?.instructions === true,
-        ), Boolean(workspaceAttach)), workspaceAttach?.home?.adopt?.instructions ? workspaceAttach.home.repo?.instructionText ?? [] : [], workspaceAttach?.home?.path);
+        ), Boolean(workspaceAttach)), workspaceAttach?.home?.adopt?.instructions ? workspaceAttach.home.repo?.instructionText ?? [] : [], workspaceAttach?.home?.path),
+            config.computeRuntime);
 
         // Handler changes use updateConfig; declaration, MCP and authored prompt
         // changes need a fresh CLI handle at this turn boundary. Do not include
@@ -2590,12 +3756,85 @@ export class SessionManager {
             ? [linkSkillFolders(path.join(os.tmpdir(), "pilotswarm-skills", sessionId), repoAdoption.skills)]
             : repoAdoption?.skillDirectories ?? [];
         const sessionSkillDirectories = [...sdkSkillDirectories, ...adoptedSkillDirectories];
+        // The custom agents this turn would hand the runtime. Named here
+        // because a remote session's nested MCP maps are transformed with
+        // the top-level one, and the result goes into the fingerprint.
+        const sessionCustomAgents: any[] | undefined = nativeEnabled
+            ? (repoAdoption?.customAgents.length
+                ? [...nativeSubagentDefinitions(sdkModelName, nativeTaskAccess), ...repoAdoption.customAgents]
+                : nativeSubagentDefinitions(sdkModelName, nativeTaskAccess))
+            : (this.workerDefaults.customAgents?.length ? this.workerDefaults.customAgents : undefined);
+        // Compute providers: a session whose agent runs elsewhere gets the
+        // same skill folders and the same servers, in the only places they
+        // can be — the folders copied to its host, the package servers
+        // rebuilt to run there, the deployment's servers left here and
+        // reached through the host component. Nothing about which ones it
+        // may have is decided here.
+        let remoteCapabilities: Awaited<ReturnType<SessionManager["_remoteCapabilities"]>> = null;
+        if (remoteEndpoint) {
+            const binding = this.computeHosts.get(sessionId);
+            if (binding) {
+                try {
+                    remoteCapabilities = await this._remoteCapabilities({
+                        sessionId, binding,
+                        skillDirectories: sessionSkillDirectories,
+                        mcpServers: effectiveMcpServers,
+                        mcpOrigins: effectiveMcpOrigins,
+                        customAgents: sessionCustomAgents,
+                    });
+                } catch (error) {
+                    if (!isPurposeNotServed(error)) {
+                        // Nothing could be delivered to the host. That is a
+                        // compute failure like any other: the turn fails here,
+                        // rather than running with a silently emptier session
+                        // than the one that was asked for.
+                        throw computeFailureError({
+                            code: COMPUTE_ERROR_CODES.UNAVAILABLE,
+                            message: `this session's skill folders and MCP servers could not be prepared on its compute host: ${String((error as Error)?.message ?? error)}`,
+                            retryAfterMs: 5_000,
+                        });
+                    }
+                    // This host serves the turn but not the side channel.
+                    // That is a host with less to offer, not a broken one:
+                    // the skills and servers are unavailable with the
+                    // reason, and the turn runs without them — the same
+                    // thing a session on the worker gets when a server
+                    // will not start.
+                    const reason = "this session's compute host does not serve the side channel, so nothing could be copied to it and no server could be reached through it";
+                    remoteCapabilities = {
+                        skillDirectories: [],
+                        mcpServers: {},
+                        ...(sessionCustomAgents ? { customAgents: sessionCustomAgents.map((agent) => ({ ...agent, mcpServers: {} })) } : {}),
+                        unavailable: [
+                            ...Object.keys(effectiveMcpServers).map((name) => ({ name, reason })),
+                            ...sessionSkillDirectories.map((source) => ({ name: computeCopyName("skills", source), reason })),
+                        ],
+                        refusals: [],
+                        fingerprint: JSON.stringify(["no-control", reason]),
+                    };
+                }
+                const notices = [
+                    ...(remoteCapabilities?.unavailable ?? []).map((entry) => ({ kind: "mcpServer", name: entry.name, reason: entry.reason })),
+                    ...(remoteCapabilities?.refusals ?? []).map((entry) => ({ kind: "file", name: entry.path ? `${entry.item}/${entry.path}` : entry.item, reason: entry.reason })),
+                ];
+                if (notices.length > 0) {
+                    for (const notice of notices) {
+                        console.warn(`[SessionManager] ${sessionId}: ${notice.name} is unavailable on this session's compute host: ${notice.reason}`);
+                    }
+                    void this.sessionCatalog?.recordEvents(sessionId, [{
+                        eventType: "session.compute_capabilities",
+                        data: { target: binding.target.name, unavailable: notices },
+                    }]).catch(() => { /* observability only */ });
+                }
+            }
+        }
         const v2InventoryFingerprint = v2Inventory ? capabilityHash(v2Inventory) : undefined;
         const bindingFingerprint = bindingFingerprintDigest(buildBindingFingerprintInput({
             capabilityFingerprint: config.capabilityFingerprint,
             baseAgentPolicy: config.baseAgentPolicy?.fingerprint,
             v2InventoryFingerprint,
             sdkSkillDirectories,
+            ...(remoteCapabilities ? { remoteCapabilities: remoteCapabilities.fingerprint } : {}),
             boundAgentName: config.boundAgentName,
             boundAgentSource: config.boundAgentSource,
             boundAgentCopy,
@@ -2607,6 +3846,14 @@ export class SessionManager {
                 adopt: workspaceAttach.adopt ?? null,
                 ...(repoAdoption?.hash ? { repoAgentHash: repoAdoption.hash } : {}),
             } } : {}),
+            // Compute providers: the folders as the HOST sees them. A warm
+            // runtime keeps the working directory it was created with, so a
+            // host that maps the same folder somewhere else this turn has
+            // to be rebound — without this the agent goes on working in the
+            // old place while every tool reports the new one.
+            ...(config.computeRuntime ? {
+                computeFolders: config.computeRuntime.folders.map((folder) => `${folder.name}\u001f${folder.hostPath}`),
+            } : {}),
         }));
         const bindingChanged = this.sessionBindingFingerprints.has(sessionId)
             && this.sessionBindingFingerprints.get(sessionId) !== bindingFingerprint;
@@ -2653,15 +3900,27 @@ export class SessionManager {
             // Session workspaces: after a clear the folder stays explicit, or
             // the resume falls back to the checkout the CLI session was
             // created in (review R1).
-            workingDirectory: workspaceAttach?.path ?? config.workingDirectory
+            // Compute providers: a remote host sees the folders at its own paths.
+            workingDirectory: remoteEndpoint ? compute!.workspace.cwd
+                : workspaceAttach?.path ?? config.workingDirectory
                 ?? (config.workspaceCleared ? process.cwd() : undefined),
             // Session workspaces (section 4.10): the extra folders attached
             // for this turn. The CLI lists them to the model and keeps them
             // only until a cold resume, so they are passed every time. Not in
             // the fingerprint: a new handle would stop running shells.
-            ...(workspaceAttach?.extras?.length
-                ? { additionalDirectories: workspaceAttach.extras.map((extra) => extra.path) }
-                : {}),
+            ...(remoteEndpoint
+                ? (compute!.workspace.additionalDirectories?.length ? { additionalDirectories: compute!.workspace.additionalDirectories } : {})
+                : workspaceAttach?.extras?.length
+                    ? { additionalDirectories: workspaceAttach.extras.map((extra) => extra.path) }
+                    : {}),
+            // Compute providers: session state stays in this worker's directory.
+            ...(remoteEndpoint ? { createSessionFsProvider: () => {
+                const made = new WorkerDirectorySessionFs(
+                    path.join(this.sessionStateDir, sessionId), undefined,
+                    { maxTotalBytes: this.sessionFsMaxTotalBytes });
+                this.computeSessionFs.set(sessionId, made);
+                return made;
+            } } : {}),
             // Session workspaces: repo hooks never run, and the repo's
             // instruction files load only when the provider adopts them. A
             // cleared session keeps hooks off.
@@ -2693,19 +3952,29 @@ export class SessionManager {
             // tools, and loaded PilotSwarm agents expect durable child contracts.
             excludedTools,
             ...(nativeEnabled ? {
-                customAgents: repoAdoption?.customAgents.length
-                    ? [...nativeSubagentDefinitions(sdkModelName, nativeTaskAccess), ...repoAdoption.customAgents]
-                    : nativeSubagentDefinitions(sdkModelName, nativeTaskAccess),
+                customAgents: remoteCapabilities?.customAgents ?? sessionCustomAgents,
                 customAgentsLocalOnly: true,
                 excludedBuiltinAgents: NATIVE_BUILTIN_AGENTS,
             } : {}),
             // Custom LLM provider — resolve from registry or legacy single provider
-            ...resolvedProviderConfig,
+            ...sessionProviderConfig,
             // Pass loaded skills and agents from worker defaults; MCP servers
             // are the bound agent's own resolved map (see above).
-            ...(sessionSkillDirectories.length && { skillDirectories: sessionSkillDirectories }),
-            ...(!nativeEnabled && this.workerDefaults.customAgents?.length && { customAgents: this.workerDefaults.customAgents }),
-            ...(Object.keys(effectiveMcpServers).length > 0 && { mcpServers: effectiveMcpServers }),
+            // Compute providers: a remote session gets the same folders and
+            // the same servers, as its host sees them — the copies' paths,
+            // the package servers rebuilt for the host, and an entry per
+            // deployment server that reaches back through the host
+            // component. A worker path, a worker value or a configured
+            // credential never appears in any of them.
+            ...(remoteEndpoint
+                ? (remoteCapabilities?.skillDirectories.length ? { skillDirectories: remoteCapabilities.skillDirectories } : {})
+                : sessionSkillDirectories.length ? { skillDirectories: sessionSkillDirectories } : {}),
+            ...(!nativeEnabled && !remoteEndpoint && this.workerDefaults.customAgents?.length && { customAgents: this.workerDefaults.customAgents }),
+            ...(!nativeEnabled && remoteEndpoint && (remoteCapabilities?.customAgents ?? sessionCustomAgents)?.length
+                && { customAgents: remoteCapabilities?.customAgents ?? sessionCustomAgents }),
+            ...(remoteEndpoint
+                ? (remoteCapabilities && Object.keys(remoteCapabilities.mcpServers).length > 0 ? { mcpServers: remoteCapabilities.mcpServers } : {})
+                : Object.keys(effectiveMcpServers).length > 0 ? { mcpServers: effectiveMcpServers } : {}),
         };
 
         let copilotSession: CopilotSession;
@@ -2777,7 +4046,7 @@ export class SessionManager {
                 await this._resetSessionState(sessionId);
             }
 
-            copilotSession = await this._createCopilotSession(client, sessionConfig);
+            copilotSession = await this._createCopilotSession(client, sessionConfig, sessionId);
         } else if (epochStart) {
             // Session regeneration: first turn of a fresh epoch whose chain is
             // empty (the caller verified via the lifecycle preamble). Epoch-
@@ -2789,7 +4058,7 @@ export class SessionManager {
                 { trace },
             );
             await this._resetSessionStateForEpoch(sessionId, transcriptEpoch);
-            copilotSession = await this._createCopilotSession(client, sessionConfig);
+            copilotSession = await this._createCopilotSession(client, sessionConfig, sessionId);
             // Birth marker: the preamble's epoch invariant refuses to trust a
             // markerless dir under epoch >= 1, so stamp the incarnation the
             // moment it exists (version 0 = no commit yet).
@@ -2842,13 +4111,13 @@ export class SessionManager {
                     if (fs.existsSync(sessionDir)) {
                         copilotSession = await this._resumeCopilotSession(client, sessionId, sessionConfig);
                     } else {
-                        copilotSession = await this._createCopilotSession(client, sessionConfig);
+                        copilotSession = await this._createCopilotSession(client, sessionConfig, sessionId);
                     }
                 } catch {
-                    copilotSession = await this._createCopilotSession(client, sessionConfig);
+                    copilotSession = await this._createCopilotSession(client, sessionConfig, sessionId);
                 }
             } else {
-                copilotSession = await this._createCopilotSession(client, sessionConfig);
+                copilotSession = await this._createCopilotSession(client, sessionConfig, sessionId);
             }
         }
 
@@ -2898,6 +4167,25 @@ export class SessionManager {
         this.sessions.delete(sessionId);
         this.sessionAgentCopies.delete(sessionId);
         this.sessionBindingFingerprints.delete(sessionId);
+        // The folder a remote runtime wrote through belonged to that
+        // handle; the next one makes its own.
+        this.computeSessionFs.delete(sessionId);
+    }
+
+    /**
+     * Compute providers: close a remote session's state folder to its
+     * runtime while the worker saves or restores it, and open it again
+     * afterwards.
+     *
+     * The worker publishes a session's files by reading the whole folder
+     * and writing it back. A runtime writing into the folder at that
+     * moment would put part of one state into the snapshot of another. An
+     * ordinary session writes those files through the worker's own handle
+     * and needs nothing here, so this returns a function that does
+     * nothing for it.
+     */
+    fenceSessionFiles(sessionId: string, reason: string): () => void {
+        return this.computeSessionFs.get(sessionId)?.fence(reason) ?? (() => {});
     }
 
     /**
@@ -3052,6 +4340,9 @@ export class SessionManager {
                 }
             }
         }
+
+        // The session leaves this worker: its compute host is no longer needed here.
+        await this.releaseCompute(sessionId, "moved");
 
         // Phase 2: Persist to the session store (always attempt, even if destroy failed)
         if (this.sessionStore) {
@@ -3413,6 +4704,7 @@ export class SessionManager {
         this._forgetWarmSession(sessionId);
         this.sessionApplicationTools.delete(sessionId);
         this.sessionConfigs.delete(sessionId);
+        await this.releaseCompute(sessionId, "ended");
     }
 
     /**
@@ -3501,6 +4793,19 @@ export class SessionManager {
                 if (timer) clearTimeout(timer);
             }
         }));
+        // Compute hosts go after their clients have disconnected.
+        await Promise.all([...this.computeHosts.keys()].map((sessionId) => this.releaseCompute(sessionId, "shutdown")));
+        // Then whatever is left: a side channel or a bridge whose last
+        // session had already gone, or one a failed release left behind.
+        // Nothing of this worker's should still be listening after this.
+        const links = [...this.computeControl.values()];
+        this.computeControl.clear();
+        await Promise.all(links.map(async (held) => {
+            const link = await held.catch(() => undefined);
+            try { link?.close(); } catch { /* already gone */ }
+        }));
+        this.computeReach.clear();
+        await this.computeBridges.closeAll();
     }
 
     /**

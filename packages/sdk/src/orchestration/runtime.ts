@@ -171,7 +171,7 @@ export function* createRuntime(
     state.lastCommandVersion = readCounter(ctx, COMMAND_VERSION_KEY);
 
     const manager = createSessionManagerProxy(ctx, "turn-control-v1", { childResultProvenance: true });
-    const session = createSessionProxy(ctx, input.sessionId, state.affinityKey, state.config, "turn-control-v1");
+    const session = createSessionProxy(ctx, input.sessionId, state.affinityKey, state.config, "turn-control-v1", CURRENT_ORCHESTRATION_VERSION);
 
     const runtime: DurableSessionRuntime = { ctx, input, versions, manager, session, state, options };
 

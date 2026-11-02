@@ -1,5 +1,6 @@
+import { LOCAL_COMPUTE_KIND, computeModelRefusal, type ComputeProvider } from "./compute.js";
 import { capabilityHash, type CapabilitySource } from "./capability-catalog.js";
-import { AGENT_HANDOFF_CAPABILITY, TURN_CONTROL_CAPABILITY, WORKSPACE_CAPABILITY } from "./activity-routing.js";
+import { AGENT_HANDOFF_CAPABILITY, COMPUTE_CAPABILITY, TURN_CONTROL_CAPABILITY, WORKSPACE_CAPABILITY } from "./activity-routing.js";
 import { resolveNativeSubagents } from "./native-subagents.js";
 import { FeatureFlagCache } from "./feature-flag-cache.js";
 import { SessionManager, packageAgentKey, agentOwnerKey, type AgentCopyEntry, type AgentPromptEntry } from "./session-manager.js";
@@ -19,7 +20,8 @@ import { loadAgentFiles, validateAgentDefinition } from "./agent-loader.js";
 import { clipDescription, composeDeclaredSkillsPrompt, loadSkillsSync, type Skill } from "./skills.js";
 import { resolveSystemAgentSessionPlans, startSystemAgents } from "./system-agents.js";
 import { firstRuntimeModel } from "./provider-catalog.js";
-import { loadMcpConfig, mcpAllowlistAdmits, type McpAllowlistAgent } from "./mcp-loader.js";
+import { mcpAllowlistAdmits, readMcpConfig, type McpAllowlistAgent } from "./mcp-loader.js";
+import { mcpOriginKey, type McpServerOrigin } from "./compute-mcp.js";
 
 import { createModelProvidersReloader, type ModelProviderRegistry } from "./model-providers.js";
 import { createArtifactTools } from "./artifact-tools.js";
@@ -216,6 +218,8 @@ export class PilotSwarmWorker {
     private _evictionTimer: ReturnType<typeof setInterval> | null = null;
     private _provider: any = null;
     private _catalog: SessionCatalog | null = null;
+    /** Compute providers: this worker's default target, when it sets one. */
+    private _defaultComputeTarget: string | undefined;
     /** Session turn control: the worker's LISTEN hub (design 4.4). */
     private _turnControlHub: TurnControlHub | null = null;
     private _started = false;
@@ -270,6 +274,27 @@ export class PilotSwarmWorker {
     private _directConfigMcpNames: string[] = [];
     /** Resolved base MCP map applied to EVERY session (base-agent opt-ins + direct config). */
     private _baseMcpServers: Record<string, any> = {};
+    /**
+     * Where each catalog entry came from, and what it was before any
+     * worker value was resolved into it.
+     *
+     * Only a session whose agent runs on a compute host reads this: it is
+     * what decides whether a server's code is the deployment's, and so
+     * stays on the trusted side, or a package's, and so goes to the host
+     * built from the entry as it was written (see compute-mcp.ts).
+     */
+    private _mcpServerOrigins = new Map<string, McpServerOrigin>();
+    /**
+     * The origin of each entry of the base map and of each agent's map,
+     * by the same key the map itself uses.
+     *
+     * Carried beside the maps rather than looked up by name later: the
+     * name alone cannot say which package's server a session was given,
+     * and that is what decides whose folder is copied to a host and whose
+     * code runs there.
+     */
+    private _baseMcpServerOrigins = new Map<string, McpServerOrigin>();
+    private _agentMcpServerOrigins: Record<string, Map<string, McpServerOrigin>> = {};
     /** Model provider registry — multi-provider LLM config. */
     private _modelProviders: ModelProviderRegistry | null = null;
     /** Provider-type templates, including types with no static credential. */
@@ -431,6 +456,9 @@ export class PilotSwarmWorker {
                 baseMcpServers: this._baseMcpServers,
                 mcpAllowedAgents: this._mcpAllowedAgents,
                 deploymentMcpNames: this._deploymentMcpNames,
+                mcpServerOrigins: this._mcpServerOrigins,
+                baseMcpServerOrigins: this._baseMcpServerOrigins,
+                agentMcpServerOrigins: this._agentMcpServerOrigins,
                 provider: options.provider,
                 modelProviders: this._modelProviders ?? undefined,
                 turnTimeoutMs: this.config.turnTimeoutMs,
@@ -442,6 +470,21 @@ export class PilotSwarmWorker {
         this.sessionManager.setWorkspaceProvider(options.workspaceProvider
             ?? (options.workspaceRoots?.length ? createBuiltInWorkspaceProvider(options.workspaceRoots) : null),
         this.config.workerNodeId ?? undefined);
+        for (const provider of options.computeProviders ?? []) {
+            this.sessionManager.registerComputeProvider(provider, { replace: provider.kind === LOCAL_COMPUTE_KIND });
+        }
+        this._defaultComputeTarget = options.defaultComputeTarget;
+        this.sessionManager.setComputeOptions({
+            allowNonLoopbackEndpoints: options.computeAllowNonLoopbackEndpoints,
+            requireCompute: options.requireCompute
+                ?? ["1", "true", "yes", "on"].includes((process.env.PILOTSWARM_REQUIRE_COMPUTE ?? "").trim().toLowerCase()),
+            copyLimits: {
+                maxBytes: options.computeCopyMaxBytes ?? parsePositiveInt(process.env.PILOTSWARM_COMPUTE_COPY_MAX_BYTES),
+                maxFiles: options.computeCopyMaxFiles ?? parsePositiveInt(process.env.PILOTSWARM_COMPUTE_COPY_MAX_FILES),
+            },
+            sessionFsMaxTotalBytes: options.sessionFsMaxTotalBytes
+                ?? parsePositiveInt(process.env.PILOTSWARM_SESSION_FS_MAX_TOTAL_BYTES),
+        });
     }
 
     private _startProviderPolling(): void {
@@ -566,6 +609,15 @@ export class PilotSwarmWorker {
      */
     setWorkspaceProvider(provider: WorkspaceProvider | null): void {
         this.sessionManager.setWorkspaceProvider(provider, this.config.workerNodeId ?? undefined);
+    }
+
+    /**
+     * Compute providers: add the plug-in for one compute type. Sessions whose
+     * compute target has this `kind` run their agent runtime through it.
+     * Throws when the kind is already registered, unless `replace` is set.
+     */
+    registerComputeProvider(provider: ComputeProvider, opts: { replace?: boolean } = {}): void {
+        this.sessionManager.registerComputeProvider(provider, opts);
     }
 
     /** Store full config (with tools/hooks) for a session. */
@@ -706,6 +758,14 @@ export class PilotSwarmWorker {
             for (let attempt = 1; attempt <= attempts; attempt += 1) {
                 try {
                     this._catalog = await runtimeStorageProvider.createSessionCatalog(storage.runtime);
+                    // Compute providers: the catalog resolves the
+                    // deployment's default target at creation, exactly as
+                    // it resolves a named one, so every surface that
+                    // creates a session records the same id. It reads the
+                    // environment itself; a worker option wins over that.
+                    if (this._defaultComputeTarget !== undefined) {
+                        (this._catalog as { defaultComputeTarget?: string }).defaultComputeTarget = this._defaultComputeTarget.trim();
+                    }
                     await this._catalog.initialize();
                     lastErr = null;
                     break;
@@ -874,7 +934,7 @@ export class PilotSwarmWorker {
         this.sessionManager.setDuroxideClient(inspectClient);
 
         const runtimeOptions = {
-            workerTagFilter: { defaultAnd: [AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY, TURN_CONTROL_CAPABILITY] },
+            workerTagFilter: { defaultAnd: [AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY, TURN_CONTROL_CAPABILITY, COMPUTE_CAPABILITY] },
             orchestrationConcurrency,
             workerConcurrency,
             dispatcherPollIntervalMs: 10,
@@ -966,7 +1026,11 @@ export class PilotSwarmWorker {
 
         // Auto-register artifact tools (blob storage or local filesystem)
         if (this.artifactStore) {
-            const artifactTools = createArtifactTools({ blobStore: this.artifactStore });
+            const artifactTools = createArtifactTools({
+                blobStore: this.artifactStore,
+                localPathRootsFor: (sessionId) => this.sessionManager?.computeLocalPathRoots(sessionId),
+                computeFolderMapFor: (sessionId) => this.sessionManager?.computeFolderMap(sessionId),
+            });
             // The write bundle attaches patch artifacts through the same store.
             if (this.sessionManager) this.sessionManager.artifactStore = this.artifactStore ?? null;
             this.registerTools(artifactTools);
@@ -1260,6 +1324,9 @@ export class PilotSwarmWorker {
         this._availableBundledAgents.clear();
         for (const key of Object.keys(this._loadedMcpServers)) delete this._loadedMcpServers[key];
         for (const key of Object.keys(this._agentMcpServers)) delete this._agentMcpServers[key];
+        this._mcpServerOrigins.clear();
+        this._baseMcpServerOrigins.clear();
+        for (const key of Object.keys(this._agentMcpServerOrigins)) delete this._agentMcpServerOrigins[key];
         for (const key of Object.keys(this._agentPromptLookup)) delete this._agentPromptLookup[key];
         this._defaultMcpServerNames.length = 0;
         this._mcpAllowedAgents.clear();
@@ -1624,7 +1691,17 @@ export class PilotSwarmWorker {
             // Direct worker-config servers keep their documented every-session
             // semantics (legacy): they join the catalog AND the base map.
             this._directConfigMcpNames = Object.keys(this.config.mcpServers);
-            for (const name of this._directConfigMcpNames) this._deploymentMcpNames.add(name);
+            for (const name of this._directConfigMcpNames) {
+                this._deploymentMcpNames.add(name);
+                // Configured by the deployment in its own worker options:
+                // the deployment's code, with the deployment's values in
+                // it, so it stays on the trusted side like any other.
+                this._mcpServerOrigins.set(mcpOriginKey(null, name), {
+                    origin: "deployment", dir: "",
+                    raw: (this.config.mcpServers as any)[name],
+                    remote: (this.config.mcpServers as any)[name]?.remote !== false,
+                });
+            }
         }
         source.revision = capabilityHash({ artifacts: source.artifacts, mcp: source.mcpServers });
         this._capabilitySources.push(source);
@@ -1751,6 +1828,11 @@ export class PilotSwarmWorker {
                 this._mcpAllowedAgents.set(name, allowed);
             }
             if ("allowedAgents" in cfg) delete cfg.allowedAgents;
+            // `remote` — a deployment's own choice about whether this
+            // server may be reached by a session whose agent runs
+            // elsewhere. Remembered with the entry's origin, then
+            // stripped: it must never reach the Copilot CLI either.
+            if ("remote" in cfg) delete cfg.remote;
             // A restricted server never joins the default set: "default": true
             // would hand it to every agent that inherits defaults, which is
             // exactly what the allowlist exists to prevent.
@@ -1768,14 +1850,19 @@ export class PilotSwarmWorker {
         // `agent` is the agent whose references are being resolved; null for
         // the base map, which carries no agent identity and therefore never
         // receives a restricted server.
-        const resolveRefs = (owner: string, refs: string[] | undefined, into: Record<string, any>, agent: McpAllowlistAgent | null = null) => {
+        const resolveRefs = (
+            owner: string, refs: string[] | undefined, into: Record<string, any>,
+            agent: McpAllowlistAgent | null = null,
+            intoOrigins?: Map<string, McpServerOrigin>,
+        ) => {
             for (const ref of refs ?? []) {
                 if (typeof ref !== "string" || !ref) continue;
                 const packageServers = agent?.packageId
                     ? this._agentPackageMcpServersByPackage.get(agent.packageId)
                     : undefined;
-                const server = packageServers && Object.hasOwn(packageServers, ref)
-                    ? packageServers[ref]
+                const fromPackage = Boolean(packageServers && Object.hasOwn(packageServers, ref));
+                const server = fromPackage
+                    ? packageServers![ref]
                     : this._deploymentMcpNames.has(ref) ? this._loadedMcpServers[ref] : undefined;
                 if (!server) {
                     console.warn(`[PilotSwarmWorker] ${owner}: MCP server "${ref}" is not in the deployment catalog; reference dropped.`);
@@ -1787,6 +1874,19 @@ export class PilotSwarmWorker {
                     continue;
                 }
                 into[ref] = server;
+                // Exactly which entry this is: the package it came from
+                // decided which object was chosen above, so the same
+                // decision decides the origin.
+                const origin = this._mcpServerOrigins.get(mcpOriginKey(fromPackage ? agent!.packageId : null, ref));
+                if (intoOrigins && origin) intoOrigins.set(ref, origin);
+            }
+        };
+
+        /** Deployment entries are what `default: true` can tag, so defaults carry deployment origins. */
+        const defaultOrigins = (into: Map<string, McpServerOrigin>) => {
+            for (const name of Object.keys(defaults)) {
+                const origin = this._mcpServerOrigins.get(mcpOriginKey(null, name));
+                if (origin) into.set(name, origin);
             }
         };
 
@@ -1796,8 +1896,12 @@ export class PilotSwarmWorker {
         // IN PLACE: SessionManager holds this exact object as
         // workerDefaults.baseMcpServers — never reassign it.
         for (const key of Object.keys(this._baseMcpServers)) delete this._baseMcpServers[key];
-        if (this._baseAgentMcpDecl.inherit) Object.assign(this._baseMcpServers, defaults);
-        resolveRefs("Base (default) agent", this._baseAgentMcpDecl.refs, this._baseMcpServers);
+        this._baseMcpServerOrigins.clear();
+        if (this._baseAgentMcpDecl.inherit) {
+            Object.assign(this._baseMcpServers, defaults);
+            defaultOrigins(this._baseMcpServerOrigins);
+        }
+        resolveRefs("Base (default) agent", this._baseAgentMcpDecl.refs, this._baseMcpServers, null, this._baseMcpServerOrigins);
         for (const name of this._directConfigMcpNames) {
             if (!this._loadedMcpServers[name]) continue;
             if (this._mcpAllowedAgents.has(name)) {
@@ -1805,6 +1909,8 @@ export class PilotSwarmWorker {
                 continue;
             }
             this._baseMcpServers[name] = this._loadedMcpServers[name];
+            const origin = this._mcpServerOrigins.get(mcpOriginKey(null, name));
+            if (origin) this._baseMcpServerOrigins.set(name, origin);
         }
         if (this._directConfigMcpNames.length > 0) {
             console.warn(
@@ -1820,15 +1926,17 @@ export class PilotSwarmWorker {
         const assignedStaticKeys = new Set<string>();
         for (const agent of [...this._rawLoadedAgents, ...this._loadedSystemAgents]) {
             const resolved: Record<string, any> = {};
+            const resolvedOrigins = new Map<string, McpServerOrigin>();
             if (agent.inheritDefaultMcpServers === true) {
                 Object.assign(resolved, defaults);
+                defaultOrigins(resolvedOrigins);
             }
             resolveRefs(`Agent "${agent.name}"`, agent.mcpServers, resolved, {
                 name: agent.name,
                 namespace: agent.namespace ?? null,
                 packageId: (agent as any).packageId ?? null,
                 packageScope: (agent as any).packageScope ?? null,
-            });
+            }, resolvedOrigins);
             const packageId = (agent as any).packageId;
             const keys = packageId
                 ? [packageAgentKey(packageId, agent.name)]
@@ -1838,8 +1946,10 @@ export class PilotSwarmWorker {
                 if (!packageId) assignedStaticKeys.add(key);
                 if (Object.keys(resolved).length > 0) {
                     this._agentMcpServers[key] = resolved;
+                    this._agentMcpServerOrigins[key] = resolvedOrigins;
                 } else {
                     delete this._agentMcpServers[key];
+                    delete this._agentMcpServerOrigins[key];
                 }
             }
         }
@@ -2211,9 +2321,10 @@ export class PilotSwarmWorker {
         // or not), and may not restrict entries itself — `allowedAgents` is a
         // deployment-catalog field. Deployment dirs load before package dirs,
         // so every deployment name is known when a package tries to shadow it.
-        const mcpConfig = loadMcpConfig(absDir);
+        const mcpConfig = readMcpConfig(absDir);
         const mcpPackageProvenance = this._packageDirOwners.get(absDir);
-        for (const [name, cfg] of Object.entries(mcpConfig)) {
+        for (const [name, entry] of Object.entries(mcpConfig)) {
+            const cfg = entry.config as any;
             if (mcpPackageProvenance) {
                 if (this._deploymentMcpNames.has(name)) {
                     console.warn(`[PilotSwarmWorker] Package MCP server "${name}" cannot override a deployment catalog entry; definition dropped.`);
@@ -2227,9 +2338,23 @@ export class PilotSwarmWorker {
                     console.warn(`[PilotSwarmWorker] Package MCP server "${name}": "default" is a deployment-catalog field; ignored.`);
                     delete (cfg as any).default;
                 }
+                if (cfg && typeof cfg === "object" && "remote" in cfg) {
+                    console.warn(`[PilotSwarmWorker] Package MCP server "${name}": "remote" is a deployment-catalog field; ignored.`);
+                    delete (cfg as any).remote;
+                }
             } else {
                 this._deploymentMcpNames.add(name);
             }
+            // Where this entry came from, and what it said before any
+            // worker value was resolved into it. A package's server is
+            // built from the raw form for a session that runs elsewhere.
+            this._mcpServerOrigins.set(mcpOriginKey(mcpPackageProvenance?.packageId ?? null, name), {
+                origin: mcpPackageProvenance ? "package" : "deployment",
+                dir: absDir,
+                packageId: mcpPackageProvenance?.packageId ?? null,
+                raw: entry.raw,
+                ...(mcpPackageProvenance ? {} : { remote: (entry.raw as any)?.remote !== false }),
+            });
             source.mcpServers[name] = structuredClone(cfg);
             source.artifacts.push({ kind: "mcp", name, description: `MCP server exported by ${namespace}` });
             this._loadedMcpServers[name] = cfg;
@@ -2290,12 +2415,31 @@ export class PilotSwarmWorker {
         }
 
         const overrideByAgent = new Map(overrides.map((override) => [override.agentId, override]));
+        // Compute providers: a deployment that names a default compute
+        // target puts every system session on a host. A GitHub Copilot
+        // model cannot run there, and without this check every system
+        // session fails three times a turn, for ever, with nothing said at
+        // start about why.
+        const defaultTarget = this._catalog.defaultComputeTarget ?? "";
+        const typeOfProvider = (providerName: string): string | undefined => {
+            const instance = credentials.find((candidate) => candidate.name === providerName);
+            return this._modelProviderTypes?.allProviders.find((provider) => provider.id === instance?.typeId)?.type;
+        };
         for (const plan of resolveSystemAgentSessionPlans(this._loadedSystemAgents)) {
             if (!this._providerReconciliationEnabled) return;
             const override = overrideByAgent.get(plan.agent.id);
             const route = override ?? systemDefault;
             if (!route.model || !this._modelProviders?.hasModel(route.model)) {
                 console.warn(`[PilotSwarmWorker] system agent ${plan.agent.id} blocked: configured model ${route.model ?? "(none)"} is unavailable`);
+                continue;
+            }
+            const refusal = defaultTarget && route.provider
+                ? computeModelRefusal(typeOfProvider(route.provider), true) : null;
+            if (refusal) {
+                console.error(
+                    `[PilotSwarmWorker] system agent ${plan.agent.id} blocked: this deployment runs new sessions on the compute target `
+                    + `"${defaultTarget}", and its model ${route.model} cannot run there. ${refusal}. `
+                    + "Set a system model from another provider, or set an agent override for this agent.");
                 continue;
             }
             await startSystemAgents({
