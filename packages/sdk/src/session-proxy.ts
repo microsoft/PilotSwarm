@@ -2324,6 +2324,22 @@ export function registerActivities(
                 }
             }
         }
+        // Workflow agent states (INACTIVE: only on a turn of a worker that runs them): this session's stored lineage. An
+        // agent state's own child gets complete_workflow_node; every session in an agent state's subtree gets the ask_user
+        // refusal and nests up to level 3 (design 03 human-input denial and depth), and in a test run's agent state's
+        // subtree (design 05 agent mode real) its framework tool calls are intercepted. A session outside every agent state
+        // gets none of these. A lineage or test scope that cannot be read fails the turn (it is retried): a session in an
+        // agent state's subtree never runs a turn without its denial or, under a test, with live tools. Both are read before
+        // the session is created or resumed: the model is declared complete_workflow_node from this turn's config
+        // (session-manager), so the flag must be on it first; the turn's handlers alone are invisible to the model.
+        const workflowLineage = workflowRequestTurn && catalog?.workflowStore
+            ? await catalog.workflowStore().readWorkflowLineage(input.sessionId)
+            : null;
+        const workflowAgentChild = workflowLineage?.agentRoot?.distance === 0;
+        if (workflowAgentChild) (runConfig as ManagedSessionConfig).workflowAgentChild = true;
+        const workflowTestScope = workflowLineage?.agentRoot && catalog?.workflowStore
+            ? await workflowTestAgentScope(catalog.workflowStore(), workflowLineage)
+            : null;
         // Conditional epoch init (runTurn2): create a brand-new SDK session
         // ONLY when the epoch's chain is empty (preamble "fresh"). A committed
         // grounding turn recovers via already-committed above; a non-empty
@@ -2513,19 +2529,6 @@ export function registerActivities(
             }
             return { store: catalog.workflowStore(), duroxideClient: workflowBridgeClient };
         };
-        // Workflow agent states (INACTIVE: only on a turn of a worker that runs them): this session's stored lineage. An
-        // agent state's own child gets complete_workflow_node; every session in an agent state's subtree gets the ask_user
-        // refusal and nests up to level 3 (design 03 human-input denial and depth), and in a test run's agent state's
-        // subtree (design 05 agent mode real) its framework tool calls are intercepted. A session outside every agent state
-        // gets none of these. A lineage or test scope that cannot be read fails the turn (it is retried): a session in an
-        // agent state's subtree never runs a turn without its denial or, under a test, with live tools.
-        const workflowLineage = workflowRequestTurn && catalog?.workflowStore
-            ? await catalog.workflowStore().readWorkflowLineage(input.sessionId)
-            : null;
-        const workflowAgentChild = workflowLineage?.agentRoot?.distance === 0;
-        const workflowTestScope = workflowLineage?.agentRoot && catalog?.workflowStore
-            ? await workflowTestAgentScope(catalog.workflowStore(), workflowLineage)
-            : null;
 
         const isAutonomousSystemTurn = () => {
             if (!SYSTEM_AGENT_IDS.has(runConfig.agentIdentity || "")) return false;

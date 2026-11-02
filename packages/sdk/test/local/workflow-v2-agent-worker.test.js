@@ -162,12 +162,15 @@ describe("workflow v2 agent states on a real worker (test-only option, inactive)
                         controller: run && !run.readError ? await instanceEvidence(duroxide, run.controllerInstanceId) : null,
                         agentOrchestration: await instanceEvidence(duroxide, workflowAgentInstanceId(nodeExecutionId)),
                         workflowEvents: bounded(await read(() => events(workflowSessionId)), 6_000),
-                        model: model.requests.map(request => ({
-                            index: request.index, session: request.session, turn: request.position.turn, step: request.position.step,
-                            tools: (request.body?.tools ?? []).map(tool => tool.function?.name).filter(Boolean).slice(0, 40),
-                            user: String(request.position.lastUserText ?? "").slice(0, 200),
-                            toolResults: (request.position.toolResults ?? []).map(result => String(result).slice(0, 300)), answer: bounded(request.answer, 300),
-                        })),
+                        model: model.requests.map(request => {
+                            const tools = (request.body?.tools ?? []).map(tool => tool.function?.name).filter(Boolean);
+                            return {
+                                index: request.index, session: request.session, turn: request.position.turn, step: request.position.step,
+                                tools: tools.slice(0, 40), toolCount: tools.length, workflowTools: tools.filter(name => /workflow|session_request/.test(name)),
+                                user: String(request.position.lastUserText ?? "").slice(0, 200),
+                                toolResults: (request.position.toolResults ?? []).map(result => String(result).slice(0, 300)), answer: bounded(request.answer, 300),
+                            };
+                        }),
                         turns: bounded(turns, 2_000),
                         traces: traces.slice(-80),
                     };

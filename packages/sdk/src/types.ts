@@ -810,6 +810,15 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
      */
     workflowMilestoneTurn?: boolean;
     /**
+     * Workflow v2 (INACTIVE: only on a worker that runs controller 1.9.0): this
+     * turn's session is an agent state's own child (its stored lineage), so it
+     * is declared complete_workflow_node, whose handler the turn's bridge
+     * gives. With workflowMilestoneTurn, the session is also declared the
+     * workflow tools' milestone descriptions and respond_session_request.
+     * Set by the runTurn activity. Runtime-only.
+     */
+    workflowAgentChild?: boolean;
+    /**
      * Session workspaces: this turn's attach result, set by the runTurn
      * activity after the attach and the path check pass. Runtime-only;
      * never serialized, never stored across turns.

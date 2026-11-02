@@ -836,6 +836,29 @@ argument is taken behind the same gate, refused elsewhere, and the
 reference skill's operation table names exactly the operations the
 description lists.
 
+The model sees the same tools. The Copilot CLI shows the model only the
+tools declared when its handle is created or resumed (session-manager,
+`ManagedSession.subAgentToolDefs`); a turn's handlers only refresh the
+handler map. So the turn's config carries the flags (set by the runTurn
+activity, never kept from an earlier turn): `workflowMilestoneTurn` declares
+the milestone descriptions and `respond_session_request`, and
+`workflowAgentChild` (an agent state's own child, from its stored lineage,
+read before the session is created or resumed) also declares
+`complete_workflow_node`. A declared tool always has a handler, which
+refuses without the turn's bridge. A turn whose flags differ from the
+handle's gets a new handle at the turn boundary, as any declaration change
+does. Every other session's declarations are unchanged. Unit tests check
+the declarations of each flag and the handles a session gets as its flags
+change. The first full-worker run found this gap: the child's model request
+had no `complete_workflow_node`, because only its turn's handlers had it;
+the native-fixture tests call the bridge directly, so they did not see it.
+
+Residual: neither `respond_session_request` nor `complete_workflow_node` is
+a reserved package tool name, so a package that exports a tool of that name
+is not refused at validation; on a 1.9.0 turn a session that has that
+package tool could then declare the name twice. Reserving them changes
+production package validation, so it waits for activation.
+
 Such a turn's publications pin their named agents from the agent registry
 (`resolveAgent`, `agent-resolver.ts`). A worker created with the test-only
 option `testOptions.workflowRequests` also creates agent states' children

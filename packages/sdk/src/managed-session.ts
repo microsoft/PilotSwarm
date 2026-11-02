@@ -1298,7 +1298,7 @@ export class ManagedSession {
      * These are the LLM-visible tools for spawning and managing sub-agents.
      * Like wait/ask_user, handlers are stubs — real handlers set per-turn in runTurn().
      */
-    static subAgentToolDefs(opts?: { workspaceTools?: boolean }): Tool<any>[] {
+    static subAgentToolDefs(opts?: { workspaceTools?: boolean; workflowMilestone?: boolean; workflowAgentChild?: boolean }): Tool<any>[] {
         const spawnAgentTool = defineTool("spawn_agent", {
             description: DURABLE_SPAWN_DESCRIPTION,
             parameters: {
@@ -1438,12 +1438,28 @@ export class ManagedSession {
             handler: async () => "stub",
         });
 
-        const spawnWorkflowTool = defineTool("spawn_workflow", { ...SPAWN_WORKFLOW_TOOL_SPEC, handler: async () => "stub" });
-        const updateWorkflowTool = defineTool("update_workflow", { ...UPDATE_WORKFLOW_TOOL_SPEC, handler: async () => "stub" });
-        const readWorkflowTool = defineTool("read_workflow", { ...READ_WORKFLOW_TOOL_SPEC, handler: async () => "stub" });
+        // On a turn of a worker that runs controller 1.9.0 (INACTIVE: only tests; session-manager passes workflowMilestone
+        // and workflowAgentChild from the turn's config), the model is declared what the turn's handlers take (R26): the
+        // workflow tools' milestone descriptions and respond_session_request, and, for an agent state's own child,
+        // complete_workflow_node. Every other session's declarations are unchanged.
+        const workflowMilestone = opts?.workflowMilestone === true;
+        const spawnWorkflowTool = defineTool("spawn_workflow", {
+            ...(workflowMilestone ? SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC : SPAWN_WORKFLOW_TOOL_SPEC), handler: async () => "stub",
+        });
+        const updateWorkflowTool = defineTool("update_workflow", {
+            ...(workflowMilestone ? UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC : UPDATE_WORKFLOW_TOOL_SPEC), handler: async () => "stub",
+        });
+        const readWorkflowTool = defineTool("read_workflow", {
+            ...(workflowMilestone ? READ_WORKFLOW_MILESTONE_TOOL_SPEC : READ_WORKFLOW_TOOL_SPEC), handler: async () => "stub",
+        });
         const sendWorkflowInputTool = defineTool("send_workflow_input", { ...SEND_WORKFLOW_INPUT_TOOL_SPEC, handler: async () => "stub" });
+        const respondSessionRequestTools = workflowMilestone
+            ? [defineTool(RESPOND_SESSION_REQUEST_TOOL, { ...RESPOND_SESSION_REQUEST_TOOL_SPEC, handler: async () => "stub" })] : [];
+        const completeWorkflowNodeTools = opts?.workflowAgentChild === true
+            ? [defineTool(COMPLETE_WORKFLOW_NODE_TOOL, { ...COMPLETE_WORKFLOW_NODE_TOOL_SPEC, handler: async () => "stub" })] : [];
 
-        return [spawnAgentTool, spawnWorkflowTool, updateWorkflowTool, readWorkflowTool, sendWorkflowInputTool, messageAgentTool, checkAgentsTool, waitForAgentsTool, listSessionsTool,
+        return [spawnAgentTool, spawnWorkflowTool, updateWorkflowTool, readWorkflowTool, sendWorkflowInputTool, ...respondSessionRequestTools,
+            ...completeWorkflowNodeTools, messageAgentTool, checkAgentsTool, waitForAgentsTool, listSessionsTool,
             ...ManagedSession._childManagementToolDefs()];
     }
 
@@ -3125,8 +3141,9 @@ export class ManagedSession {
                 return await controlBridge.sendWorkflowInput(args ?? {});
             },
         });
-        // Workflow request states (INACTIVE): only a turn whose bridge can answer a request gets the tool.
-        const respondSessionRequestTools: Tool<any>[] = controlBridge?.respondSessionRequest
+        // Workflow request states (INACTIVE): a turn whose bridge can answer a request gets the tool; a session declared it
+        // (workflowMilestoneTurn) always has a handler, which refuses without the bridge rather than leave the call unanswered.
+        const respondSessionRequestTools: Tool<any>[] = controlBridge?.respondSessionRequest || this.config.workflowMilestoneTurn === true
             ? [defineTool(RESPOND_SESSION_REQUEST_TOOL, {
                 ...RESPOND_SESSION_REQUEST_TOOL_SPEC,
                 handler: async (args: Record<string, unknown>) => {
@@ -3136,8 +3153,9 @@ export class ManagedSession {
                 },
             })]
             : [];
-        // Workflow agent states (INACTIVE): only an agent state's child, on a turn whose bridge can complete it, gets the tool.
-        const completeWorkflowNodeTools: Tool<any>[] = controlBridge?.completeWorkflowNode
+        // Workflow agent states (INACTIVE): only an agent state's child, on a turn whose bridge can complete it, gets the tool; a
+        // session declared it (workflowAgentChild) always has a handler, which refuses without the bridge.
+        const completeWorkflowNodeTools: Tool<any>[] = controlBridge?.completeWorkflowNode || this.config.workflowAgentChild === true
             ? [defineTool(COMPLETE_WORKFLOW_NODE_TOOL, {
                 ...COMPLETE_WORKFLOW_NODE_TOOL_SPEC,
                 handler: async (args: Record<string, unknown>) => {

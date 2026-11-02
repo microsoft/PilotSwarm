@@ -1,11 +1,17 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { ManagedSession } from "../../dist/managed-session.js";
+import { SessionManager } from "../../dist/session-manager.js";
 import { SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC, SPAWN_WORKFLOW_TOOL_SPEC } from "../../dist/workflow/tool-spec.js";
 import {
     READ_WORKFLOW_MILESTONE_TOOL_SPEC, READ_WORKFLOW_TOOL_SPEC, UPDATE_WORKFLOW_MILESTONE_OPERATIONS, UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC,
     UPDATE_WORKFLOW_TOOL_SPEC, updateWorkflowFromTool,
 } from "../../dist/workflow/v2/tools.js";
+import { RESPOND_SESSION_REQUEST_TOOL, RESPOND_SESSION_REQUEST_TOOL_SPEC } from "../../dist/workflow/v2/request-service.js";
+import { COMPLETE_WORKFLOW_NODE_TOOL, COMPLETE_WORKFLOW_NODE_TOOL_SPEC } from "../../dist/workflow/v2/agent-node-service.js";
 
 /**
  * The workflow tools on a turn of a worker that runs controller 1.9.0 (R26,
@@ -50,6 +56,102 @@ test("on a 1.9.0 turn the descriptions and parameters add the milestone operatio
         assert.ok(spawn.includes(phrase), phrase);
     }
     assert.equal(SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC.parameters, SPAWN_WORKFLOW_TOOL_SPEC.parameters);
+});
+
+const names = defs => defs.map(def => def.name);
+const named = (defs, name) => defs.find(def => def.name === name);
+
+test("the model is declared what a 1.9.0 turn's handlers take; every other session's declarations are unchanged", () => {
+    // What the Copilot CLI shows the model comes only from these declarations (session-manager, at create or resume); a turn's
+    // handlers alone are invisible to it.
+    const production = ManagedSession.subAgentToolDefs();
+    for (const name of [RESPOND_SESSION_REQUEST_TOOL, COMPLETE_WORKFLOW_NODE_TOOL]) assert.ok(!names(production).includes(name), name);
+    assert.equal(named(production, "spawn_workflow").description, SPAWN_WORKFLOW_TOOL_SPEC.description);
+    assert.equal(named(production, "update_workflow").description, UPDATE_WORKFLOW_TOOL_SPEC.description);
+    assert.equal(named(production, "update_workflow").parameters, UPDATE_WORKFLOW_TOOL_SPEC.parameters);
+    assert.equal(named(production, "read_workflow").description, READ_WORKFLOW_TOOL_SPEC.description);
+    assert.deepEqual(names(ManagedSession.subAgentToolDefs({ workflowAgentChild: true })).filter(name => name !== COMPLETE_WORKFLOW_NODE_TOOL),
+        names(production), "the child flag adds only the completion tool");
+
+    const milestone = ManagedSession.subAgentToolDefs({ workflowMilestone: true });
+    assert.equal(named(milestone, "spawn_workflow").description, SPAWN_WORKFLOW_MILESTONE_TOOL_SPEC.description);
+    assert.equal(named(milestone, "update_workflow").description, UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC.description);
+    assert.equal(named(milestone, "update_workflow").parameters, UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC.parameters);
+    assert.equal(named(milestone, "read_workflow").description, READ_WORKFLOW_MILESTONE_TOOL_SPEC.description);
+    assert.equal(named(milestone, RESPOND_SESSION_REQUEST_TOOL).description, RESPOND_SESSION_REQUEST_TOOL_SPEC.description);
+    assert.equal(named(milestone, RESPOND_SESSION_REQUEST_TOOL).parameters, RESPOND_SESSION_REQUEST_TOOL_SPEC.parameters);
+    assert.ok(!names(milestone).includes(COMPLETE_WORKFLOW_NODE_TOOL), "only an agent state's own child completes a state");
+    assert.deepEqual(names(milestone).filter(name => name !== RESPOND_SESSION_REQUEST_TOOL), names(production));
+
+    const child = ManagedSession.subAgentToolDefs({ workflowMilestone: true, workflowAgentChild: true });
+    assert.equal(named(child, COMPLETE_WORKFLOW_NODE_TOOL).description, COMPLETE_WORKFLOW_NODE_TOOL_SPEC.description);
+    assert.equal(named(child, COMPLETE_WORKFLOW_NODE_TOOL).parameters, COMPLETE_WORKFLOW_NODE_TOOL_SPEC.parameters);
+    assert.deepEqual(names(child).filter(name => name !== COMPLETE_WORKFLOW_NODE_TOOL), names(milestone));
+    // The workspace flag still adds what it did.
+    assert.deepEqual(names(ManagedSession.subAgentToolDefs({ workspaceTools: true, workflowMilestone: true })),
+        names(ManagedSession.subAgentToolDefs({ workflowMilestone: true })));
+});
+
+/** A SessionManager whose Copilot transport is stubbed (the session-workspace-binding pattern): each handle's declarations. */
+function managerFixture(t) {
+    const home = fs.mkdtempSync(join(tmpdir(), "ps-wf-milestone-tools-"));
+    const calls = [];
+    const manager = new SessionManager(undefined, null, {}, home);
+    manager.workflowScriptsEnabled = true;
+    manager.setFactStore({
+        readFacts: async () => ({ count: 0, facts: [] }),
+        storeFact: async () => ({ stored: true }),
+        deleteFact: async () => ({ deleted: true }),
+    });
+    const open = (kind, config) => {
+        calls.push({ kind, tools: config.tools });
+        fs.mkdirSync(join(home, config.sessionId), { recursive: true });
+        return {
+            disconnect: async () => {},
+            rpc: { tasks: { list: async () => ({ tasks: [] }), cancel: async () => ({ cancelled: true }) } },
+        };
+    };
+    manager.ensureClient = async () => ({
+        createSession: async config => open("create", config),
+        resumeSession: async (_id, config) => open("resume", config),
+        deleteSession: async () => {},
+    });
+    t.after(async () => {
+        for (const id of [...manager.sessions.keys()]) await manager.dropWarmSession(id);
+        fs.rmSync(home, { recursive: true, force: true });
+    });
+    return { manager, calls };
+}
+
+test("a session's CLI handle is declared the tools of its turn's flags: set by the runTurn activity, never kept from an earlier turn", async (t) => {
+    const { manager, calls } = managerFixture(t);
+    const declared = () => calls.at(-1).tools;
+
+    await manager.getOrCreate("plain", { toolNames: [] }, { turnIndex: 0 });
+    for (const name of [RESPOND_SESSION_REQUEST_TOOL, COMPLETE_WORKFLOW_NODE_TOOL]) assert.ok(!names(declared()).includes(name), name);
+    assert.equal(named(declared(), "update_workflow").description, UPDATE_WORKFLOW_TOOL_SPEC.description);
+
+    // An agent state's own child on a 1.9.0 turn: the milestone descriptions, both tools, pinned like every PilotSwarm tool.
+    await manager.getOrCreate("child", { toolNames: [], workflowMilestoneTurn: true, workflowAgentChild: true }, { turnIndex: 0 });
+    assert.equal(calls.at(-1).kind, "create");
+    assert.equal(named(declared(), "update_workflow").description, UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC.description);
+    for (const name of [RESPOND_SESSION_REQUEST_TOOL, COMPLETE_WORKFLOW_NODE_TOOL]) assert.equal(named(declared(), name)?.defer, "never", name);
+    const childHandles = calls.length;
+    // The same flags keep the warm handle.
+    await manager.getOrCreate("child", { toolNames: [], workflowMilestoneTurn: true, workflowAgentChild: true }, { turnIndex: 1 });
+    assert.equal(calls.length, childHandles);
+
+    // A turn without the flags: the stored config's flags do not survive, and the changed declarations need a new handle.
+    await manager.getOrCreate("child", { toolNames: [] }, { turnIndex: 2 });
+    assert.equal(calls.length, childHandles + 1);
+    assert.equal(calls.at(-1).kind, "resume");
+    for (const name of [RESPOND_SESSION_REQUEST_TOOL, COMPLETE_WORKFLOW_NODE_TOOL]) assert.ok(!names(declared()).includes(name), name);
+    assert.equal(named(declared(), "update_workflow").description, UPDATE_WORKFLOW_TOOL_SPEC.description);
+
+    // A 1.9.0 turn of a session outside every agent state: respond_session_request only.
+    await manager.getOrCreate("parent", { toolNames: [], workflowMilestoneTurn: true }, { turnIndex: 0 });
+    assert.ok(names(declared()).includes(RESPOND_SESSION_REQUEST_TOOL));
+    assert.ok(!names(declared()).includes(COMPLETE_WORKFLOW_NODE_TOOL));
 });
 
 /** A host whose workflow child "wf" belongs to the caller "parent"; nothing past authorization is reached. */
