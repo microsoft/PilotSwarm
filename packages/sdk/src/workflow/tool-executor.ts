@@ -21,6 +21,8 @@ export interface WorkflowToolExecutorOptions {
     /** Stops this session's background work, disconnects it and releases its folders. */
     dispose: () => Promise<void>;
     invocationPrefix: string;
+    /** The workflow session the calls act as; guards its live canvas slot. */
+    workflowSessionId?: string;
     maxCalls?: number;
     cleanupTimeoutMs?: number;
 }
@@ -83,7 +85,7 @@ export async function createWorkflowToolExecutor(options: WorkflowToolExecutorOp
                 const current = await options.session.rpc.tools.getCurrentMetadata();
                 if (!current.tools) throw new Error("The Copilot tool catalog is unavailable.");
                 const tool = resolveWorkflowTool(name, options.grants, current.tools, options.excludedTools);
-                validateWorkflowToolArguments(tool.name, args);
+                validateWorkflowToolArguments(tool.name, args, { workflowSessionId: options.workflowSessionId });
                 await options.authorize({ name: tool.name, ...(tool.mcpServerName ? { mcpServerName: tool.mcpServerName } : {}) });
                 if (closed) throw cancelled();
                 const execution = options.session.rpc.tools.execute({

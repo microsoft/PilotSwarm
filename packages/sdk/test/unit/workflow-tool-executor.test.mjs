@@ -112,6 +112,24 @@ test("a tool that is no longer offered is refused", () => {
 
 // ── Argument guards and permissions ──────────────────────────────────
 
+test("canvas tools are allowed except writes to the workflow's own live slot", () => {
+    const own = { workflowSessionId: "wf-1" };
+    const refused = { code: "WORKFLOW_TOOL_ARGUMENTS_REFUSED", message: /slot 1 shows this workflow's live diagram/ };
+    assert.throws(() => validateWorkflowToolArguments("draw_canvas", { html: "<p/>" }, own), refused);
+    assert.throws(() => validateWorkflowToolArguments("draw_canvas", { html: "<p/>", slot: 1 }, own), refused);
+    assert.throws(() => validateWorkflowToolArguments("update_canvas", { patch: {}, slot: "1", session_id: "session-wf-1" }, own), refused);
+    assert.throws(() => validateWorkflowToolArguments("canvas_kv", { op: "put", key: "a", value: 1 }, own), refused);
+    assert.throws(() => validateWorkflowToolArguments("canvas_kv", { op: "delete", key: "a", session_id: "wf-1" }, own), refused);
+    assert.doesNotThrow(() => validateWorkflowToolArguments("draw_canvas", { html: "<p/>", slot: 2 }, own));
+    assert.doesNotThrow(() => validateWorkflowToolArguments("update_canvas", { patch: {}, slot: 5 }, own));
+    assert.doesNotThrow(() => validateWorkflowToolArguments("draw_canvas", { html: "<p/>", session_id: "session-parent" }, own));
+    assert.doesNotThrow(() => validateWorkflowToolArguments("canvas_kv", { op: "put", key: "a", value: 1, session_id: "parent" }, own));
+    assert.doesNotThrow(() => validateWorkflowToolArguments("canvas_kv", { op: "get", key: "a" }, own));
+    assert.doesNotThrow(() => validateWorkflowToolArguments("canvas_kv", { op: "list" }, own));
+    assert.doesNotThrow(() => validateWorkflowToolArguments("read_canvas", { slot: 1 }, own));
+    assert.doesNotThrow(() => validateWorkflowToolArguments("show_canvas", { slot: 1 }, own));
+});
+
 test("argument guards: no detached shell, no skill loading by path, no awaited replies", () => {
     assert.doesNotThrow(() => validateWorkflowToolArguments("bash", { command: "ls", mode: "async", detach: false }));
     assert.throws(() => validateWorkflowToolArguments("bash", { command: "x", mode: "async", detach: true }), { code: "WORKFLOW_TOOL_ARGUMENTS_REFUSED" });

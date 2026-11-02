@@ -238,11 +238,15 @@ change what its parent may do:
 | Sampling and context | `execute_sampling`, `mcp_sampling`, `context_health` | A script never asks a model for anything and has no model context. |
 
 A name is matched on its last `/` or `.` segment too, so an MCP tool called
-`wait` is excluded like the built-in one. Three arguments are refused even
+`wait` is excluded like the built-in one. Some arguments are refused even
 for an allowed tool: `detach: true` on `bash` or `powershell` (a shell must
-end with its state), `load_skill` with `path` or `unload`, and
+end with its state), `load_skill` with `path` or `unload`,
 `send_session_message` with `expects_response: true` (a workflow cannot
-receive replies). The tool session's permission handler approves the
+receive replies), and a write to the workflow's own canvas slot 1
+(`draw_canvas`, `update_canvas`, or `canvas_kv` `put`/`delete`), which
+shows the workflow's live diagram and is redrawn after every step. Canvas
+tools otherwise work as for the parent: a script can keep a dashboard on
+slots 2–5 or on the parent's canvas (`session_id`). The tool session's permission handler approves the
 ordinary permission kinds (shell, read, write, MCP, URL, custom tool) once
 per request and rejects MCP sampling and any unknown kind, so no tool can
 start a model request.

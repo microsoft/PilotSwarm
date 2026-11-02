@@ -4,6 +4,7 @@ import type { CapabilityState } from "../capability-catalog.js";
 import type { SerializableSessionConfig, SessionOwnerInfo } from "../types.js";
 import { sessionApprovalForPermissionRequest } from "../permissions.js";
 import type { CompiledWorkflow } from "./compiler.js";
+import { WORKFLOW_CANVAS_SLOT } from "./canvas.js";
 
 /**
  * The tool rule for workflow scripts: the tools of the parent agent, captured
@@ -257,8 +258,23 @@ export function resolveWorkflowTool(
 }
 
 /** Arguments a script may not pass even to a tool it was given. */
-export function validateWorkflowToolArguments(name: string, args: Record<string, unknown>): void {
+/** Canvas tools that change a canvas, and for canvas_kv the operations that write. */
+const CANVAS_WRITE_TOOLS: readonly string[] = ["draw_canvas", "update_canvas", "canvas_kv"];
+
+function writesOwnLiveCanvas(name: string, args: Record<string, unknown>, workflowSessionId: string | undefined): boolean {
+    if (!CANVAS_WRITE_TOOLS.includes(name)) return false;
+    if (name === "canvas_kv" && args.op !== "put" && args.op !== "delete") return false;
+    const target = typeof args.session_id === "string" ? args.session_id.trim().replace(/^session-/, "") : "";
+    if (target && target !== workflowSessionId) return false;
+    const slot = args.slot === undefined || args.slot === null ? 1 : Number(args.slot);
+    return slot === WORKFLOW_CANVAS_SLOT;
+}
+
+export function validateWorkflowToolArguments(name: string, args: Record<string, unknown>, context: { workflowSessionId?: string } = {}): void {
     const refuse = (message: string) => { throw new WorkflowToolError("WORKFLOW_TOOL_ARGUMENTS_REFUSED", message); };
+    if (writesOwnLiveCanvas(name, args, context.workflowSessionId)) {
+        refuse(`Canvas slot ${WORKFLOW_CANVAS_SLOT} shows this workflow's live diagram; use slots 2-5, or the parent's canvas with session_id.`);
+    }
     if (WORKFLOW_SHELL_TOOLS.includes(name) && args.detach === true) {
         refuse("A workflow shell must stay attached to the state that started it (detach: true is refused).");
     }

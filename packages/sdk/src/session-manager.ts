@@ -3679,6 +3679,7 @@ export class SessionManager {
                 excludedTools: binding.excludedTools,
                 authorize: (tool) => this.authorizeWorkflowTools(sessionId, binding, tool), dispose,
                 invocationPrefix: `${sessionId}/${step}/${randomUUID()}`,
+                workflowSessionId: sessionId,
                 maxCalls: SCRIPT_NODE_MAX_TOOL_CALLS,
             });
             this.workflowExecutors.set(sessionId, executor);
