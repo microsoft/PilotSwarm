@@ -6615,7 +6615,7 @@ body.is-resizing-pane-y iframe {
 .ps-admin-tree {
     display: flex;
     flex-direction: column;
-    overflow: hidden;
+    overflow: hidden auto;
     border-right: 1px solid var(--ps-border);
     padding: 8px 6px;
     background: var(--ps-chrome);
@@ -6637,7 +6637,9 @@ body.is-resizing-pane-y iframe {
 }
 .ps-admin-pkg-scroll {
     flex: 1 1 auto;
-    min-height: 0;
+    /* On a short window the list keeps a usable height; the settings tree
+       scrolls as a whole instead of squeezing the list to its header. */
+    min-height: min(200px, 40vh);
     overflow: auto;
     margin: 0 2px 6px;
     border: 1px solid var(--ps-border);
@@ -6653,6 +6655,11 @@ body.is-resizing-pane-y iframe {
     border-radius: var(--ps-radius-sm);
     background: var(--ps-background);
     padding: 0 8px;
+}
+/* The input itself draws no outline, so the box shows keyboard focus. */
+.ps-admin-pkg-search__box:focus-within {
+    outline: 2px solid var(--ps-selection-background);
+    outline-offset: 1px;
 }
 .ps-admin-pkg-search__kicker {
     color: var(--ps-muted);

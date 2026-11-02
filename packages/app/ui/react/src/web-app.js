@@ -16384,15 +16384,25 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
 
     // The theme's ambient sound, if it has one and the person turned sounds on.
     // Desktop only; the phone has no Appearance settings.
+    // Desktop only: re-evaluated when the window crosses the phone breakpoint,
+    // so shrinking a desktop window to phone width silences the sound.
+    const [narrowViewport, setNarrowViewport] = React.useState(isNarrowViewport);
+    React.useEffect(() => {
+        if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;
+        const query = window.matchMedia("(max-width: 920px)");
+        const onChange = () => setNarrowViewport(query.matches);
+        query.addEventListener?.("change", onChange);
+        return () => query.removeEventListener?.("change", onChange);
+    }, []);
     React.useEffect(() => {
         const theme = getTheme(state.themeId);
         const setting = state.themeSound || {};
         themeSoundPlayer().update({
             sound: theme?.sound || null,
-            enabled: setting.on === true && !isNarrowViewport(),
+            enabled: setting.on === true && !narrowViewport,
             volume: (Number(setting.volume) || 0) / 100,
         });
-    }, [state.themeId, state.themeSound]);
+    }, [state.themeId, state.themeSound, narrowViewport]);
     React.useEffect(() => () => themeSoundPlayer().update({ enabled: false }), []);
 
     React.useEffect(() => {
