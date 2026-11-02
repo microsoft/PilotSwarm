@@ -34,6 +34,7 @@ import {
 } from "../../src/workflow/v2/invocation-credentials.ts";
 import { REQUEST_TIMEOUT, requestFixture } from "../helpers/workflow-v2-request-fixture.js";
 import { createManagementClient, PilotSwarmManagementClient } from "../helpers/local-workers.js";
+import { WorkflowCredentialVault } from "../../src/workflow/v2/credential-vault.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const ACTOR = { kind: "system", name: "workflow-v2-invocation-credentials-test" };
@@ -229,6 +230,19 @@ describe("workflow v2 invocation credentials (inactive)", () => {
             expect(await h.store.readNodeExecution(exchangeId)).toMatchObject({ state: "completed", winner: "response" });
             await refusedWith(() => mgmt.respondToSessionRequest(exchangeId, { operationId: "op-5", response: { approved: false }, credential: respond.token }),
                 "CREDENTIAL_CLOSED", 409);
+
+            // A trusted runtime's vault: it issues through the management client, keeps the token in memory, and completes as the child.
+            const next = await agentState(h);
+            const vault = new WorkflowCredentialVault({ holderSessionIds: [next.child], issue: input => mgmt.issueWorkflowInvocationCredential(input) });
+            const receipt = await vault.withCredential({ audience: "workflow.complete", nodeExecutionId: next.nodeExecutionId, holderSessionId: next.child },
+                credential => mgmt.completeWorkflowNode(next.child, { nodeExecutionId: next.nodeExecutionId, operationId: "op-6", outcome: "accepted",
+                    output: { verdict: "ok" }, credential }));
+            expect(receipt).toMatchObject({ nodeExecutionId: next.nodeExecutionId, outcome: "accepted" });
+            expect(JSON.stringify(receipt)).not.toMatch(/pswic_/);
+            expect(JSON.stringify(vault)).not.toMatch(/pswic_/);
+            expect(await h.store.readNodeExecution(next.nodeExecutionId)).toMatchObject({ state: "completed", winner: "agent" });
+            await expect(vault.withCredential({ audience: "workflow.complete", nodeExecutionId: next.nodeExecutionId, holderSessionId: h.parent },
+                async () => "never")).rejects.toMatchObject({ code: "CREDENTIAL_HOLDER_NOT_SERVED" });
         } finally {
             await mgmt.stop();
             await plain.stop();

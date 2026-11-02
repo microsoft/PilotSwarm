@@ -1958,7 +1958,10 @@ export class PilotSwarmManagementClient {
      */
     async issueWorkflowInvocationCredential(input: {
         audience: WorkflowCredentialAudience; nodeExecutionId: string; holderSessionId: string; ttlSeconds?: number;
-    }): Promise<{ token: string; credential: Record<string, unknown> }> {
+    }): Promise<{ token: string; credential: {
+        credentialId: string; audience: WorkflowCredentialAudience; workflowSessionId: string; runId: string; nodeExecutionId: string;
+        holderSessionId: string; issuedAt: string; expiresAt: string;
+    } }> {
         const store = this._workflowCredentialStore();
         try {
             const { token, credential } = await issueWorkflowInvocationCredential(store, input);

@@ -548,13 +548,11 @@ Unfulfilled requirements (open, not waived; R26):
   design 04's separate `/test-runs` and `/inbox` paths, and the final path
   names, are API review item D11. No portal or TUI screen sends a command
   yet: the UI stays read-only.
-- **Credential hand-off, MCP and TUI commands** (design 04): the
-  credentialed REST routes exist (below), and a trusted host process
-  issues a credential through the direct management client; what does not
-  exist yet is the trigger that issues one when a holder's work runs
-  outside its in-process tools and hands the token to that runtime, and
-  the MCP tools and TUI commands that send a credentialed answer or
-  completion.
+- **Credentialed actions from other runtimes**: the MCP server can act for
+  configured holder sessions (below); a hand-off to runtimes other than an
+  MCP server in direct mode (a web-mode MCP server, a TUI command, an
+  external agent host) has no issuing path yet, because only a trusted
+  process that holds the database credential issues one.
 
 **Invocation credentials (design 04; migration 0102; INACTIVE).** A
 credential lets one holder session act on one pending workflow effect from
@@ -596,6 +594,19 @@ agent state (audience `workflow.complete`; the holder is its child)
   them; an absent field stays absent. Inactive: only the test-only option
   `workflowCredentials` (portal runtime, transport, management client)
   takes them; otherwise 501 `WORKFLOW_CREDENTIALS_UNAVAILABLE`.
+- **Hand-off through trusted runtime state.** A runtime that runs a holder
+  session's work outside its in-process tools keeps its credentials in a
+  `WorkflowCredentialVault`, in its own memory: it acts only for the holder
+  sessions its configuration names (never a model's or a caller's claim),
+  issues through the host's issuer when it holds none or the one it holds
+  nears expiry, retries once with a new one after a stale refusal, and
+  drops one whose effect was decided. The token reaches only the action's
+  `credential` field: nothing the vault returns, serializes or inspects
+  contains it, so no prompt, transcript, tool result, script, YAML or log
+  sees one. The MCP server (direct mode, test-only option
+  `workflowCredentials: { holderSessionIds }`) registers
+  `respond_session_request` and `complete_workflow_node` over its vault;
+  neither takes nor returns a credential.
 - **Use.** The action needs the token: a person's sign-in alone is
   `CREDENTIAL_REQUIRED`. An unknown or malformed token is
   `CREDENTIAL_INVALID`, an expired or revoked one `CREDENTIAL_EXPIRED` or
