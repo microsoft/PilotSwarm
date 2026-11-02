@@ -547,6 +547,10 @@ export type WorkflowRequestCallResult =
 export const WORKFLOW_V2_MAX_RESPONSE_BYTES = 16 * 1024;
 /** The operations one request binds at most; a new operation beyond them is refused (OPERATION_LIMIT) and nothing is written. */
 export const WORKFLOW_V2_MAX_REQUEST_OPERATIONS = 50;
+/** Leases of one response wake (each lease is one attempt) before a dispatch pass abandons it (design workflow-messaging-request.md 5). */
+export const WORKFLOW_V2_WAKE_MAX_ATTEMPTS = 100;
+/** How long one lease of a response wake lasts; a holder that has not settled it by then may lose it to another pass. */
+export const WORKFLOW_V2_WAKE_LEASE_MS = 30_000;
 /** The framework's strict decline schema: a reason of 1 to 2,000 characters and nothing else. */
 export const WORKFLOW_V2_DECLINE_SCHEMA: JsonValue = {
     type: "object", additionalProperties: false, required: ["reason"],
@@ -2772,7 +2776,8 @@ export class WorkflowStore {
                      UPDATE ${this.t.nodes}
                         SET state = 'completed', outcome = $2, result_kind = 'business', output = input, error = NULL,
                             winner = 'controller', completed_at = (SELECT at FROM decided)
-                      WHERE node_execution_id = $1 AND state = 'pending' AND node_type IN ('wait', 'messaging') AND deadline_at <= (SELECT at FROM decided)
+                      WHERE node_execution_id = $1 AND state = 'pending' AND (node_type = 'wait' OR (node_type = 'messaging' AND receive_contract IS NOT NULL))
+                        AND deadline_at <= (SELECT at FROM decided)
                       RETURNING *`,
                     [nodeExecutionId, WAIT_ELAPSED],
                 );
@@ -2788,7 +2793,8 @@ export class WorkflowStore {
             const node = nodeFrom(rows[0]);
             // The deletion that made the session not live also decided its pending work (migration 0086 trigger).
             if (node.state === "completed" || !live) return { result: "decided" as const, node };
-            if ((node.nodeType !== "wait" && node.nodeType !== "messaging") || node.deadlineAt === null) {
+            // A request's deadline is elapsed only by elapseRequest (its outcome is timed_out, never elapsed).
+            if ((node.nodeType !== "wait" && (node.nodeType !== "messaging" || node.receive === null)) || node.deadlineAt === null) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${nodeExecutionId} is not a pending wait with a deadline.`);
             }
             return { result: "not_due" as const, remainingMs: int(rows[0], "remaining_ms"), node };
@@ -3288,6 +3294,379 @@ export class WorkflowStore {
             await bind("closed", current.status);
             return { kind: "refused" as const, replayed: false, code: "REQUEST_CLOSED" as const, status: current.status, currentStatus: current.status };
         });
+    }
+
+    // ─── Request runtime: deadline, observation, delivery and wakes (controller 1.9.0; inactive: only tests run it) ──
+
+    /**
+     * Elapse a pending request (design workflow-messaging-request.md 4.3;
+     * decision request-durable-expiry-semantics): the deadline's terminal
+     * compare-and-swap, the only producer of timed_out (`result`, a runtime
+     * error the controller decides). Under the requester's session lock
+     * (FOR NO KEY UPDATE, which every producer that decides a request takes
+     * first), then the node's: one reading of the store's clock decides, and
+     * is stored as the node's completed_at. The request elapses when that
+     * reading is at or after its deadline, or when an operation of it was
+     * already bound expired (durable expiry: the clock can step back, and a
+     * committed expired binding is the request's expiry point). Otherwise it
+     * changes nothing and reports the milliseconds left (at least 1). A result
+     * stored first, and a deleted requester's (whose deletion decided it), is
+     * kept ("decided").
+     */
+    async elapseRequest(nodeExecutionId: string, result: NodeResultInput, projection?: SessionProjection): Promise<
+        { result: "elapsed" | "decided"; node: WorkflowNodeExecutionRow } | { result: "not_due"; remainingMs: number; node: WorkflowNodeExecutionRow }> {
+        if (result.resultKind !== "runtime_error" || result.outcome !== "timed_out" || result.winner !== "controller") {
+            throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Request ${nodeExecutionId} elapses only as timed_out, decided by the controller.`);
+        }
+        return this.transaction(async client => {
+            const live = await this.lockLiveSession(client, await this.workflowOfNode(client, nodeExecutionId));
+            const { rows: requests } = await client.query(`SELECT exchange_id FROM ${this.t.requests} WHERE exchange_id = $1`, [nodeExecutionId]);
+            if (!requests[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${nodeExecutionId} is not a request.`);
+            if (live) {
+                const { rows } = await client.query(
+                    `WITH decided AS (SELECT clock_timestamp() AS at)
+                     UPDATE ${this.t.nodes}
+                        SET state = 'completed', outcome = $2, result_kind = 'runtime_error', output = NULL, error = $3,
+                            winner = 'controller', completed_at = (SELECT at FROM decided)
+                      WHERE node_execution_id = $1 AND state = 'pending' AND node_type = 'messaging'
+                        AND (deadline_at <= (SELECT at FROM decided)
+                             OR EXISTS (SELECT 1 FROM ${this.t.requestOperations} WHERE exchange_id = $1 AND outcome = 'expired'))
+                      RETURNING *`,
+                    [nodeExecutionId, result.outcome, result.valueText]);
+                if (rows[0]) {
+                    await this.project(client, projection);
+                    return { result: "elapsed" as const, node: nodeFrom(rows[0]) };
+                }
+            }
+            const { rows } = await client.query(
+                `SELECT *, GREATEST(1, CEIL(EXTRACT(EPOCH FROM (deadline_at - clock_timestamp())) * 1000))::bigint AS remaining_ms
+                   FROM ${this.t.nodes} WHERE node_execution_id = $1`, [nodeExecutionId]);
+            if (!rows[0]) throw new WorkflowStoreError("NODE_NOT_FOUND", `Node execution ${nodeExecutionId} does not exist.`);
+            const node = nodeFrom(rows[0]);
+            if (node.state === "completed" || !live) return { result: "decided" as const, node };
+            if (node.nodeType !== "messaging" || node.deadlineAt === null) {
+                throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Request ${nodeExecutionId} is not pending with a deadline.`);
+            }
+            return { result: "not_due" as const, remainingMs: int(rows[0], "remaining_ms"), node };
+        });
+    }
+
+    /**
+     * Observe a pending request's responder (design 4.4; decision
+     * request-durable-expiry-semantics), as the controller does once per
+     * backstop period while the request waits. Under the session locks a
+     * response takes (lockSessionPair: the requester's row FOR NO KEY UPDATE,
+     * the responder's FOR SHARE, in ascending session id), then the node's,
+     * the responder is decided on the rows as they are now: missing or
+     * deleted fails the request unavailable, no longer allowed by the
+     * typed-input rule fails it forbidden, and `ended` (its session
+     * orchestration found in a terminal status by the caller just before)
+     * fails it with that result. One reading of the store's clock decides,
+     * and only while it is before the deadline and no operation was bound
+     * expired: at or after either, only the elapse decides ("expired"). A
+     * result stored first, and a deleted requester's, are kept ("decided");
+     * a live, allowed responder changes nothing ("live").
+     */
+    async observeRequestResponder(nodeExecutionId: string, results: {
+        refused: SendSpecInput["refused"];
+        ended: { result: NodeResultInput; projection?: SessionProjection } | null;
+    }): Promise<{ result: "failed" | "decided" | "live" | "expired"; node: WorkflowNodeExecutionRow }> {
+        return this.transaction(async client => {
+            const { rows: found } = await client.query(`SELECT ${REQUEST_COLUMNS} FROM ${this.t.requests} WHERE exchange_id = $1`, [nodeExecutionId]);
+            if (!found[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${nodeExecutionId} is not a request.`);
+            const request = requestFrom(found[0]);
+            const locked = await this.lockSessionPair(client, request.workflowSessionId, request.responderSessionId);
+            const { rows: nodes } = await client.query(`SELECT * FROM ${this.t.nodes} WHERE node_execution_id = $1 FOR UPDATE`, [nodeExecutionId]);
+            if (!nodes[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Request ${nodeExecutionId} has no node execution.`);
+            const node = nodeFrom(nodes[0]);
+            if (locked.workflow === null || locked.workflow.deleted || node.state !== "pending") return { result: "decided" as const, node };
+            const authority = decideTypedInputAuthority({
+                workflow: locked.workflow, definition: locked.definition, sender: locked.other, senderSessionId: request.responderSessionId,
+            });
+            const decision = authority !== "allowed" ? results.refused[authority] : results.ended;
+            if (decision === null) return { result: "live" as const, node };
+            const { result, projection } = decision;
+            const { rows: completed } = await client.query(
+                `WITH decided AS (SELECT clock_timestamp() AS at)
+                 UPDATE ${this.t.nodes}
+                    SET state = 'completed', outcome = $2, result_kind = $3,
+                        output = CASE WHEN $3 = 'business' THEN $4 END,
+                        error = CASE WHEN $3 = 'runtime_error' THEN $4 END,
+                        winner = $5, completed_at = (SELECT at FROM decided)
+                  WHERE node_execution_id = $1 AND state = 'pending' AND deadline_at > (SELECT at FROM decided)
+                    AND NOT EXISTS (SELECT 1 FROM ${this.t.requestOperations} WHERE exchange_id = $1 AND outcome = 'expired')
+                  RETURNING *`,
+                [nodeExecutionId, result.outcome, result.resultKind, result.valueText, result.winner]);
+            if (!completed[0]) return { result: "expired" as const, node };
+            await this.project(client, projection);
+            return { result: "failed" as const, node: nodeFrom(completed[0]) };
+        });
+    }
+
+    /**
+     * Begin one delivery attempt of a request state's request (design 4.4,
+     * 8.3, 8.5), in one transaction under the session locks its admission
+     * took (lockInputSessions: the requester's and the responder's), in this
+     * order: a message no longer pending is returned as stored ("decided");
+     * a request decided meanwhile (a response from an earlier attempt's
+     * prompt, the deadline, the run's end, a deletion) gets no delivery, and
+     * its message fails with the reason ("decided"); the responder is decided
+     * again on what this transaction reads: one deleted or no longer allowed
+     * fails the request with the refusal it carries, and its message with it
+     * ("refused"), as do `ended` (the responder's session orchestration found
+     * ended just before) and `unsupported` (the responder found without the
+     * response capability: an agent session at the intake version or later
+     * whose tools include the response tool); otherwise the attempt is
+     * counted and the message returned for delivery ("deliver"). A responder
+     * is always an agent session (its admission refuses a workflow).
+     */
+    async beginRequestDelivery(nodeExecutionId: string, refusals: {
+        refused: SendSpecInput["refused"];
+        ended: { result: NodeResultInput; projection?: SessionProjection } | null;
+        unsupported: { result: NodeResultInput; projection?: SessionProjection } | null;
+    }): Promise<{ kind: "decided" | "refused" | "deliver"; node: WorkflowNodeExecutionRow; message: WorkflowOutboxMessage }> {
+        return this.transaction(async client => {
+            const { rows: found } = await client.query(
+                `SELECT workflow_session_id, recipient_session_id FROM ${this.t.outbox} WHERE node_execution_id = $1`, [nodeExecutionId]);
+            if (!found[0]) throw new WorkflowStoreError("NODE_NOT_FOUND", `Node execution ${nodeExecutionId} has no outbox message.`);
+            const decided = await this.lockInputSessions(client, str(found[0], "workflow_session_id"), str(found[0], "recipient_session_id"));
+            const { rows: nodes } = await client.query(`SELECT * FROM ${this.t.nodes} WHERE node_execution_id = $1 FOR UPDATE`, [nodeExecutionId]);
+            const { rows: messages } = await client.query(
+                `SELECT ${OUTBOX_COLUMNS} FROM ${this.t.outbox} WHERE node_execution_id = $1 FOR UPDATE`, [nodeExecutionId]);
+            if (!nodes[0] || !messages[0]) throw new WorkflowStoreError("NODE_NOT_FOUND", `Node execution ${nodeExecutionId} is missing.`);
+            const node = nodeFrom(nodes[0]);
+            const message = outboxFrom(messages[0]);
+            if (message.mode !== "request" || message.recipientKind !== "agent") {
+                throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${nodeExecutionId} is not a request to an agent session.`);
+            }
+            if (message.state !== "pending") return { kind: "decided" as const, node, message };
+            if (!decided.live || node.state !== "pending") {
+                const { rows: abandoned } = await client.query(
+                    `UPDATE ${this.t.outbox} SET state = 'failed', decided_at = clock_timestamp(), error = $2
+                      WHERE node_execution_id = $1 AND state = 'pending' RETURNING ${OUTBOX_COLUMNS}`,
+                    [nodeExecutionId, undeliveredErrorText(node.outcome, message.attempts)]);
+                return { kind: "decided" as const, node, message: abandoned[0] ? outboxFrom(abandoned[0]) : message };
+            }
+            const responder = await this.recipientDecision(client, decided.authority, message.recipientSessionId);
+            if (responder.refusal === null && responder.kind !== "agent") {
+                throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Request ${nodeExecutionId} has a workflow responder.`);
+            }
+            const refused = responder.refusal !== null ? refusals.refused[responder.refusal] : refusals.ended ?? refusals.unsupported;
+            if (refused !== null) {
+                const { result, projection } = refused;
+                const { rows: completed } = await client.query(
+                    `UPDATE ${this.t.nodes}
+                        SET state = 'completed', outcome = $2, result_kind = $3,
+                            output = CASE WHEN $3 = 'business' THEN $4 END,
+                            error = CASE WHEN $3 = 'runtime_error' THEN $4 END,
+                            winner = $5, completed_at = now()
+                      WHERE node_execution_id = $1 AND state = 'pending' RETURNING *`,
+                    [nodeExecutionId, result.outcome, result.resultKind, result.valueText, result.winner]);
+                const { rows: failed } = await client.query(
+                    `UPDATE ${this.t.outbox} SET state = 'failed', decided_at = clock_timestamp(), error = $2
+                      WHERE node_execution_id = $1 AND state = 'pending' RETURNING ${OUTBOX_COLUMNS}`,
+                    [nodeExecutionId, result.valueText]);
+                if (!completed[0] || !failed[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Request ${nodeExecutionId} changed under its locks.`);
+                await this.project(client, projection);
+                return { kind: "refused" as const, node: nodeFrom(completed[0]), message: outboxFrom(failed[0]) };
+            }
+            const { rows: counted } = await client.query(
+                `UPDATE ${this.t.outbox} SET attempts = attempts + 1, last_attempt_at = clock_timestamp()
+                  WHERE node_execution_id = $1 RETURNING ${OUTBOX_COLUMNS}`, [nodeExecutionId]);
+            return { kind: "deliver" as const, node, message: outboxFrom(counted[0]) };
+        });
+    }
+
+    /**
+     * Record a request's delivery that its responder's session queue
+     * accepted, under the requester's session lock: the message from pending
+     * to delivered with its receipt, and the projection's events. The request
+     * stays pending: only a response, its deadline, an observation, its
+     * delivery's failure or the run's end decides it. A response may have
+     * decided it first (it reached the responder through an earlier attempt);
+     * the record then marks only the message. A message no longer pending is
+     * returned as stored: a repeat after this commit records nothing again.
+     */
+    async recordRequestDelivery(nodeExecutionId: string, delivery: { stateId: string; clientMessageId: string },
+        projection: (receipt: WorkflowSendReceipt) => SessionProjection)
+        : Promise<{ recorded: boolean; node: WorkflowNodeExecutionRow; message: WorkflowOutboxMessage }> {
+        return this.transaction(async client => {
+            const workflowSessionId = await this.workflowOfNode(client, nodeExecutionId);
+            const live = await this.lockLiveSession(client, workflowSessionId);
+            const { rows: messages } = await client.query(
+                `SELECT ${OUTBOX_COLUMNS} FROM ${this.t.outbox} WHERE node_execution_id = $1 FOR UPDATE`, [nodeExecutionId]);
+            if (!messages[0]) throw new WorkflowStoreError("NODE_NOT_FOUND", `Node execution ${nodeExecutionId} has no outbox message.`);
+            const message = outboxFrom(messages[0]);
+            if (message.mode !== "request" || message.recipientKind !== "agent") {
+                throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${nodeExecutionId} is not a request to an agent session.`);
+            }
+            if (message.state !== "pending") return { recorded: false, node: await this.nodeIn(client, nodeExecutionId), message };
+            const { rows: clock } = await client.query(`WITH c AS (SELECT clock_timestamp() AS at) SELECT at::text AS at, ${isoUtc("at")} AS iso FROM c`);
+            const receipt: WorkflowSendReceipt = {
+                exchangeId: message.exchangeId, workflowSessionId, runId: message.runId, nodeExecutionId, stateId: delivery.stateId,
+                recipientSessionId: message.recipientSessionId, recipientKind: "agent", contract: message.contract,
+                payloadSha256: message.payloadSha256, clientMessageId: delivery.clientMessageId, input: null,
+                attempts: Math.max(message.attempts, 1), deliveredAt: str(clock[0], "iso"),
+            };
+            const { rows: delivered } = await client.query(
+                `UPDATE ${this.t.outbox} SET state = 'delivered', decided_at = $2::timestamptz, receipt = $3
+                  WHERE node_execution_id = $1 AND state = 'pending' RETURNING ${OUTBOX_COLUMNS}`,
+                [nodeExecutionId, str(clock[0], "at"), canonicalJson(receipt)]);
+            if (!delivered[0]) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Request ${nodeExecutionId} changed under its locks.`);
+            if (live) await this.project(client, projection(receipt));
+            return { recorded: true, node: await this.nodeIn(client, nodeExecutionId), message: outboxFrom(delivered[0]) };
+        });
+    }
+
+    /**
+     * No delivery of a request will be recorded by its delivery
+     * orchestration (its attempts ran out, the worker delivers nothing, or
+     * the orchestration ended without recording one), under the requester's
+     * session lock: the message from pending to failed, and the request from
+     * pending to the given runtime error (delivery_failed). A delivery
+     * recorded first keeps the message, and a request decided first (a
+     * response, its deadline, an observation, the run's end) keeps its
+     * result.
+     */
+    async failRequestDelivery(nodeExecutionId: string, result: NodeResultInput, projection?: SessionProjection)
+        : Promise<{ won: boolean; node: WorkflowNodeExecutionRow; message: WorkflowOutboxMessage }> {
+        return this.transaction(async client => {
+            const live = await this.lockLiveSession(client, await this.workflowOfNode(client, nodeExecutionId));
+            const { rows: pendingRows } = await client.query(
+                `SELECT ${OUTBOX_COLUMNS} FROM ${this.t.outbox} WHERE node_execution_id = $1 FOR UPDATE`, [nodeExecutionId]);
+            if (!pendingRows[0]) throw new WorkflowStoreError("NODE_NOT_FOUND", `Node execution ${nodeExecutionId} has no outbox message.`);
+            const pending = outboxFrom(pendingRows[0]);
+            if (pending.mode !== "request") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Node execution ${nodeExecutionId} is not a request.`);
+            const { rows: failed } = await client.query(
+                `UPDATE ${this.t.outbox} SET state = 'failed', decided_at = clock_timestamp(), error = $2
+                  WHERE node_execution_id = $1 AND state = 'pending' RETURNING ${OUTBOX_COLUMNS}`, [nodeExecutionId, result.valueText]);
+            const { rows: completed } = live && failed[0] ? await client.query(
+                `UPDATE ${this.t.nodes}
+                    SET state = 'completed', outcome = $2, result_kind = $3,
+                        output = CASE WHEN $3 = 'business' THEN $4 END,
+                        error = CASE WHEN $3 = 'runtime_error' THEN $4 END,
+                        winner = $5, completed_at = now()
+                  WHERE node_execution_id = $1 AND state = 'pending' RETURNING *`,
+                [nodeExecutionId, result.outcome, result.resultKind, result.valueText, result.winner]) : { rows: [] };
+            if (completed[0]) await this.project(client, projection);
+            const node = completed[0] ? nodeFrom(completed[0]) : await this.nodeIn(client, nodeExecutionId);
+            return { won: Boolean(completed[0]), node, message: failed[0] ? outboxFrom(failed[0]) : pending };
+        });
+    }
+
+    /**
+     * Lease due response wakes (design 5): one statement locks up to `limit`
+     * due rows (FOR UPDATE SKIP LOCKED) with fewer than
+     * WORKFLOW_V2_WAKE_MAX_ATTEMPTS attempts, and sets each leased with a new
+     * random token, one more attempt and a lease that ends
+     * WORKFLOW_V2_WAKE_LEASE_MS after its reading. A row is due when it is
+     * pending with its next attempt at or before the reading, or leased with
+     * its lease ended (an expired holder). `exchangeId` leases that one row
+     * only (the responding worker's immediate try). Leasing touches no
+     * session.
+     */
+    async leaseResponseWakes(input: { limit: number; exchangeId?: string })
+        : Promise<Array<{ exchangeId: string; runId: string; controllerInstanceId: string; leaseToken: string; attempts: number }>> {
+        const limit = Math.max(1, Math.min(input.limit, 100));
+        const { rows } = await this.pool.query(
+            `WITH reading AS (SELECT clock_timestamp() AS at),
+                  due AS (
+                    SELECT exchange_id FROM ${this.t.responseWakes}
+                     WHERE attempts < $1 AND ($3::text IS NULL OR exchange_id = $3)
+                       AND ((state = 'pending' AND next_attempt_at <= (SELECT at FROM reading))
+                            OR (state = 'leased' AND lease_until <= (SELECT at FROM reading)))
+                     ORDER BY next_attempt_at, exchange_id
+                     LIMIT $2 FOR UPDATE SKIP LOCKED)
+             UPDATE ${this.t.responseWakes} wake
+                SET state = 'leased', lease_token = gen_random_uuid()::text, attempts = wake.attempts + 1,
+                    lease_until = (SELECT at FROM reading) + $4::integer * interval '1 millisecond'
+               FROM due WHERE wake.exchange_id = due.exchange_id
+             RETURNING wake.exchange_id, wake.run_id, wake.controller_instance_id, wake.lease_token, wake.attempts`,
+            [WORKFLOW_V2_WAKE_MAX_ATTEMPTS, limit, input.exchangeId ?? null, WORKFLOW_V2_WAKE_LEASE_MS]);
+        return rows.map(row => ({
+            exchangeId: str(row, "exchange_id"), runId: str(row, "run_id"), controllerInstanceId: str(row, "controller_instance_id"),
+            leaseToken: str(row, "lease_token"), attempts: int(row, "attempts"),
+        }));
+    }
+
+    /**
+     * Settle one leased response wake (design 5), by its holder only: every
+     * update has the condition exchange_id, lease_token and state leased, so
+     * a stale holder (its lease reclaimed, or the row settled) changes
+     * nothing (`settled` false). `dispatched`: the enqueue of the wake on the
+     * controller's command queue returned. `moot`: a successful read found the
+     * run ended or the controller in a terminal status. `retry`: the enqueue
+     * failed, or the lifecycle read failed or knew nothing (a missing instance
+     * included); the row is pending again with its next attempt after a
+     * backoff of 1 s doubling to 60 s, and the error kept (at most 1,000
+     * characters). A settled row never changes.
+     */
+    async settleResponseWake(exchangeId: string, leaseToken: string, outcome: { kind: "dispatched" | "moot" } | { kind: "retry"; error: string })
+        : Promise<{ settled: boolean }> {
+        if (outcome.kind === "retry") {
+            const { rowCount } = await this.pool.query(
+                `UPDATE ${this.t.responseWakes}
+                    SET state = 'pending', lease_token = NULL, lease_until = NULL, last_error = $3,
+                        next_attempt_at = clock_timestamp() + LEAST(60000, 1000 * power(2, GREATEST(attempts - 1, 0)))::integer * interval '1 millisecond'
+                  WHERE exchange_id = $1 AND lease_token = $2 AND state = 'leased'`,
+                [exchangeId, leaseToken, jsonbSafeText(outcome.error, 1_000)]);
+            return { settled: (rowCount ?? 0) > 0 };
+        }
+        const { rowCount } = await this.pool.query(
+            `UPDATE ${this.t.responseWakes}
+                SET state = $3, lease_token = NULL, lease_until = NULL, settled_at = clock_timestamp()
+              WHERE exchange_id = $1 AND lease_token = $2 AND state = 'leased'`,
+            [exchangeId, leaseToken, outcome.kind]);
+        return { settled: (rowCount ?? 0) > 0 };
+    }
+
+    /**
+     * Abandon the due response wakes that used every attempt (design 5;
+     * decision request-durable-expiry-semantics F3: the dispatch was not
+     * confirmed within the attempt budget, which does not mean no hint
+     * reached the controller). Each in its own transaction, in the
+     * source-before-wake order: the requester's session row FOR NO KEY
+     * UPDATE, then the wake row FOR UPDATE with the condition that it is
+     * still unsettled with every attempt used; then abandoned and settled,
+     * and, only for a live requester, one workflow.response_wake_abandoned
+     * event on it. A deleted requester gets no event and no session touch. No
+     * other path abandons a wake, so there is at most one event. The
+     * response stays accepted, and the controller's backstop still collects
+     * its node.
+     */
+    async abandonResponseWakes(limit: number): Promise<string[]> {
+        const { rows: candidates } = await this.pool.query(
+            `SELECT wake.exchange_id, request.workflow_session_id FROM ${this.t.responseWakes} wake
+               JOIN ${this.t.requests} request ON request.exchange_id = wake.exchange_id
+              WHERE wake.attempts >= $1
+                AND ((wake.state = 'pending' AND wake.next_attempt_at <= clock_timestamp())
+                     OR (wake.state = 'leased' AND wake.lease_until <= clock_timestamp()))
+              ORDER BY wake.next_attempt_at, wake.exchange_id LIMIT $2`,
+            [WORKFLOW_V2_WAKE_MAX_ATTEMPTS, Math.max(1, Math.min(limit, 100))]);
+        const abandoned: string[] = [];
+        for (const candidate of candidates) {
+            const exchangeId = str(candidate, "exchange_id");
+            const done = await this.transaction(async client => {
+                const live = await this.lockLiveSession(client, str(candidate, "workflow_session_id"));
+                const { rows } = await client.query(
+                    `UPDATE ${this.t.responseWakes}
+                        SET state = 'abandoned', lease_token = NULL, lease_until = NULL, settled_at = clock_timestamp()
+                      WHERE exchange_id = $1 AND attempts >= $2 AND state IN ('pending', 'leased')
+                        AND ((state = 'pending' AND next_attempt_at <= clock_timestamp()) OR (state = 'leased' AND lease_until <= clock_timestamp()))
+                      RETURNING run_id, attempts, last_error`,
+                    [exchangeId, WORKFLOW_V2_WAKE_MAX_ATTEMPTS]);
+                if (!rows[0]) return false;
+                if (live) {
+                    await this.project(client, { sessionId: str(candidate, "workflow_session_id"), events: [{ eventType: "workflow.response_wake_abandoned", data: {
+                        runId: str(rows[0], "run_id"), exchangeId, attempts: int(rows[0], "attempts"), lastError: strOrNull(rows[0], "last_error"),
+                        note: "The wake's dispatch was not confirmed within its attempts; the response stands, and the run's backstop collects it.",
+                    } }] });
+                }
+                return true;
+            });
+            if (done) abandoned.push(exchangeId);
+        }
+        return abandoned;
     }
 
     /**
