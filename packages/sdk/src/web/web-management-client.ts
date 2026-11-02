@@ -871,6 +871,68 @@ export class WebPilotSwarmManagementClient {
         return this.ops.listModels();
     }
 
+    async listComputeTargets(_viewer?: unknown): Promise<any> {
+        return this.ops.listComputeTargets();
+    }
+
+    async createComputeTarget(_viewer: unknown, input: {
+        name?: string;
+        label?: string;
+        kind: string;
+        displayName?: string | null;
+        config?: Record<string, unknown> | null;
+    }): Promise<any> {
+        return this.ops.createComputeTarget(input);
+    }
+
+    async createMyComputeTarget(_viewer: unknown, input: {
+        name?: string;
+        label?: string;
+        kind: string;
+        displayName?: string | null;
+        config?: Record<string, unknown> | null;
+    }): Promise<any> {
+        return this.ops.createMyComputeTarget(input);
+    }
+
+    async updateComputeTarget(_viewer: unknown, input: {
+        name: string;
+        displayName?: string | null;
+        config?: Record<string, unknown> | null;
+        enabled?: boolean | null;
+    }): Promise<any> {
+        return this.ops.updateComputeTarget(input);
+    }
+
+    async updateMyComputeTarget(_viewer: unknown, input: {
+        name: string;
+        displayName?: string | null;
+        config?: Record<string, unknown> | null;
+        enabled?: boolean | null;
+    }): Promise<any> {
+        return this.ops.updateMyComputeTarget(input);
+    }
+
+    async deleteComputeTarget(_viewer: unknown, name: string): Promise<any> {
+        return this.ops.deleteComputeTarget({ name });
+    }
+
+    async deleteMyComputeTarget(_viewer: unknown, name: string): Promise<any> {
+        return this.ops.deleteMyComputeTarget({ name });
+    }
+
+    async probeComputeTarget(_viewer: unknown, name: string): Promise<any> {
+        return this.ops.probeComputeTarget({ name });
+    }
+
+    async probeMyComputeTarget(_viewer: unknown, name: string): Promise<any> {
+        return this.ops.probeMyComputeTarget({ name });
+    }
+
+    async listComputeTargetModels(_viewer: unknown, name: string): Promise<any> {
+        return this.ops.listComputeTargetModels({ name });
+    }
+
     async setModelDefault(_viewer: unknown, input: { scope: "user" | "cluster"; provider: string | null; model: string | null; reasoningEffort?: string | null; contextTier?: string | null }): Promise<any> {
         return this.ops.setModelDefault(input);
     }
@@ -954,9 +1016,6 @@ export class WebPilotSwarmManagementClient {
         throw webModeUnsupported("getModelCredentialStatus", "credential checks happen server-side");
     }
 
-    listComputeTargetModels(): never {
-        throw webModeUnsupported("listComputeTargetModels", "compute targets have no web route yet; this is a direct-mode exploration");
-    }
 }
 
 /**

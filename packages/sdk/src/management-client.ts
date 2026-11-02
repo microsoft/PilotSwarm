@@ -80,7 +80,19 @@ import type {
     AgentPackageScope, AgentPackageSummary, AgentPackageDetail, AgentPackageEditorInfo, AgentWorkerStateRow, WorkerRow,
 } from "./cms.js";
 import { SYSTEM_USER_PRINCIPAL } from "./cms.js";
-import type { ComputeTargetModel } from "./compute-target-store.js";
+import { ComputeTargetError, type ComputeTargetModel, type ComputeTargetRow } from "./compute-target-store.js";
+import {
+    COMPUTE_ERROR_CODES,
+    computeTargetNameFor,
+    parseComputeTargetName,
+    resolveComputeTargetName,
+    type ComputeTarget,
+    type ComputeTargetClass,
+} from "./compute.js";
+import {
+    COMPUTE_TARGET_PROBE_ORCHESTRATION,
+    type ComputeTargetProbeResult,
+} from "./compute-target-probe.js";
 import { readCanvasKv, writeCanvasKv, CanvasKvError } from "./canvas-kv.js";
 import type { CanvasKvStore, CanvasKvPrincipal, CanvasKvReadResult, CanvasKvWriteOp, CanvasKvWriteResult, CanvasKvMe } from "./canvas-kv.js";
 import type {
@@ -4227,6 +4239,112 @@ export class PilotSwarmManagementClient {
         };
     }
 
+    private _requireComputeTargets() {
+        this._ensureStarted();
+        const store = this._catalog?.computeTargets;
+        if (!store) throw new Error("Compute targets are not available on this deployment.");
+        return store;
+    }
+
+    private async _computeTargetActor(viewer: ProviderViewer) {
+        const store = this._requireComputeTargets();
+        return {
+            store,
+            actor: await store.lookupUserId(viewer?.principal ?? null),
+            isAdmin: viewer?.isAdmin === true,
+        };
+    }
+
+    private _computeTargetCandidates(name: string, viewer: ProviderViewer): string[] {
+        const parsed = parseComputeTargetName(name);
+        return parsed
+            ? [`${parsed.owner.toLowerCase()}/${parsed.label}`]
+            : resolveComputeTargetName(name, viewer.principal);
+    }
+
+    private _findComputeTarget(
+        targets: ComputeTargetRow[],
+        name: string,
+        viewer: ProviderViewer,
+        requiredClass?: ComputeTargetClass,
+    ): ComputeTargetRow {
+        const candidates = this._computeTargetCandidates(name, viewer);
+        const target = targets.find((row) => candidates.includes(row.name)
+            && row.manageable && (!requiredClass || row.class === requiredClass));
+        if (!target) {
+            throw new ComputeTargetError(
+                COMPUTE_ERROR_CODES.NOT_FOUND,
+                `There is no compute target named "${name}".`,
+            );
+        }
+        return target;
+    }
+
+    private _newComputeTargetName(
+        targetClass: ComputeTargetClass,
+        input: { name?: string; label?: string },
+        viewer: ProviderViewer,
+    ): string {
+        if (input.name !== undefined && input.label !== undefined && input.name !== input.label) {
+            throw new ComputeTargetError(COMPUTE_ERROR_CODES.INVALID, "Provide either a target name or a label, not different values for both.");
+        }
+        const requested = input.name ?? input.label;
+        const parsed = parseComputeTargetName(requested);
+        if (parsed) {
+            const expectedOwner = targetClass === "shared"
+                ? "shared"
+                : viewer.principal?.email?.trim().toLowerCase() ?? "";
+            if (!expectedOwner || parsed.owner.toLowerCase() !== expectedOwner) {
+                throw new ComputeTargetError(
+                    COMPUTE_ERROR_CODES.FORBIDDEN,
+                    targetClass === "shared"
+                        ? 'An administrator may create targets only in the "shared" namespace.'
+                        : "A personal target name must use your sign-in address.",
+                );
+            }
+            const normalized = computeTargetNameFor(targetClass, parsed.label, viewer.principal);
+            if (!normalized.ok) throw new ComputeTargetError(normalized.code, normalized.message);
+            return normalized.name;
+        }
+        const normalized = computeTargetNameFor(targetClass, requested, viewer.principal);
+        if (!normalized.ok) throw new ComputeTargetError(normalized.code, normalized.message);
+        return normalized.name;
+    }
+
+    private async _probeComputeTarget(
+        viewer: ProviderViewer,
+        target: ComputeTargetRow,
+    ): Promise<{ ok: true; target: ComputeTarget } | { ok: false; code: string; message: string; retryAfterMs?: number }> {
+        const orchestrationId = `compute-target-probe-${crypto.randomUUID()}`;
+        await this._duroxideClient.startOrchestration(orchestrationId, COMPUTE_TARGET_PROBE_ORCHESTRATION, {
+            targetId: target.id,
+            principal: viewer.principal
+                ? { provider: viewer.principal.provider, subject: viewer.principal.subject, email: viewer.principal.email }
+                : null,
+        });
+        const orchestration = await this._duroxideClient.waitForOrchestration(orchestrationId, 90_000);
+        if (orchestration.status !== "Completed") {
+            const failure = {
+                ok: false as const,
+                code: COMPUTE_ERROR_CODES.UNAVAILABLE,
+                message: `The worker could not complete the compute target check (${orchestration.status ?? "unknown status"}).`,
+            };
+            await this._auditProviderMutation(viewer, "probeComputeTarget", target.name, { ok: false, code: failure.code });
+            return failure;
+        }
+        const result = orchestration.output as ComputeTargetProbeResult | undefined;
+        if (!result || typeof result.ok !== "boolean") {
+            throw new Error("The compute target probe worker returned an invalid result.");
+        }
+        await this._auditProviderMutation(viewer, "probeComputeTarget", target.name, {
+            ok: result.ok,
+            ...(!result.ok ? { code: result.code } : {}),
+        });
+        return result.ok
+            ? { ok: true, target: { ...result.target, config: target.config } }
+            : result;
+    }
+
     private async _auditProviderMutation(
         viewer: ProviderViewer,
         action: string,
@@ -5548,6 +5666,130 @@ export class PilotSwarmManagementClient {
         return out;
     }
 
+    /** List shared targets and the caller's own targets, as authorized by the store. */
+    async listComputeTargets(viewer: ProviderViewer): Promise<{ targets: ComputeTargetRow[] }> {
+        const { store, actor, isAdmin } = await this._computeTargetActor(viewer);
+        return { targets: await store.list(actor, isAdmin) };
+    }
+
+    /** Create a target in the shared namespace. */
+    async createComputeTarget(
+        viewer: ProviderViewer,
+        input: { name?: string; label?: string; kind: string; displayName?: string | null; config?: Record<string, unknown> | null },
+    ): Promise<{ target: ComputeTarget }> {
+        if (!viewer.isAdmin) {
+            throw new ComputeTargetError(COMPUTE_ERROR_CODES.FORBIDDEN, "Only an administrator can create a shared compute target.");
+        }
+        const { store, actor, isAdmin } = await this._computeTargetActor(viewer);
+        const name = this._newComputeTargetName("shared", input, viewer);
+        const target = await store.create({
+            name, kind: input.kind, class: "shared",
+            displayName: input.displayName, config: input.config,
+        }, actor, isAdmin);
+        await this._auditProviderMutation(viewer, "createComputeTarget", target.name, { class: target.class, kind: target.kind });
+        return { target };
+    }
+
+    /** Create a target owned by the caller. */
+    async createMyComputeTarget(
+        viewer: ProviderViewer,
+        input: { name?: string; label?: string; kind: string; displayName?: string | null; config?: Record<string, unknown> | null },
+    ): Promise<{ target: ComputeTarget }> {
+        const { store, actor } = await this._computeTargetActor(viewer);
+        if (actor === null) {
+            throw new ComputeTargetError(COMPUTE_ERROR_CODES.FORBIDDEN, "Sign in to add a personal compute target.");
+        }
+        const name = this._newComputeTargetName("personal", input, viewer);
+        const target = await store.create({
+            name, kind: input.kind, class: "personal",
+            displayName: input.displayName, config: input.config,
+        }, actor, false);
+        await this._auditProviderMutation(viewer, "createMyComputeTarget", target.name, { class: target.class, kind: target.kind });
+        return { target };
+    }
+
+    /** Update a shared target; enabled is the target's explicit on/off switch. */
+    async updateComputeTarget(
+        viewer: ProviderViewer,
+        input: { name: string; displayName?: string | null; config?: Record<string, unknown> | null; enabled?: boolean | null },
+    ): Promise<{ target: ComputeTarget }> {
+        if (!viewer.isAdmin) {
+            throw new ComputeTargetError(COMPUTE_ERROR_CODES.FORBIDDEN, "Only an administrator can change a shared compute target.");
+        }
+        const { store, actor, isAdmin } = await this._computeTargetActor(viewer);
+        const target = this._findComputeTarget(await store.list(actor, isAdmin), input.name, viewer, "shared");
+        const updated = await store.update(target.name, input, actor, isAdmin);
+        await this._auditProviderMutation(viewer, "updateComputeTarget", updated.name, {
+            enabled: updated.enabled,
+            changedDisplayName: input.displayName !== undefined,
+            changedConfig: input.config !== undefined,
+        });
+        return { target: updated };
+    }
+
+    /** Update the caller's own target. */
+    async updateMyComputeTarget(
+        viewer: ProviderViewer,
+        input: { name: string; displayName?: string | null; config?: Record<string, unknown> | null; enabled?: boolean | null },
+    ): Promise<{ target: ComputeTarget }> {
+        const { store, actor } = await this._computeTargetActor(viewer);
+        if (actor === null) {
+            throw new ComputeTargetError(COMPUTE_ERROR_CODES.FORBIDDEN, "Sign in to change a personal compute target.");
+        }
+        const target = this._findComputeTarget(await store.list(actor, false), input.name, viewer, "personal");
+        const updated = await store.update(target.name, input, actor, false);
+        await this._auditProviderMutation(viewer, "updateMyComputeTarget", updated.name, {
+            enabled: updated.enabled,
+            changedDisplayName: input.displayName !== undefined,
+            changedConfig: input.config !== undefined,
+        });
+        return { target: updated };
+    }
+
+    /** Delete a shared target. The result includes sessions still naming it. */
+    async deleteComputeTarget(viewer: ProviderViewer, name: string): Promise<{ name: string; waitingSessions: number }> {
+        if (!viewer.isAdmin) {
+            throw new ComputeTargetError(COMPUTE_ERROR_CODES.FORBIDDEN, "Only an administrator can delete a shared compute target.");
+        }
+        const { store, actor, isAdmin } = await this._computeTargetActor(viewer);
+        const target = this._findComputeTarget(await store.list(actor, isAdmin), name, viewer, "shared");
+        const waitingSessions = await store.delete(target.name, actor, isAdmin);
+        await this._auditProviderMutation(viewer, "deleteComputeTarget", target.name, { waitingSessions });
+        return { name: target.name, waitingSessions };
+    }
+
+    /** Delete the caller's own target. */
+    async deleteMyComputeTarget(viewer: ProviderViewer, name: string): Promise<{ name: string; waitingSessions: number }> {
+        const { store, actor } = await this._computeTargetActor(viewer);
+        if (actor === null) {
+            throw new ComputeTargetError(COMPUTE_ERROR_CODES.FORBIDDEN, "Sign in to delete a personal compute target.");
+        }
+        const target = this._findComputeTarget(await store.list(actor, false), name, viewer, "personal");
+        const waitingSessions = await store.delete(target.name, actor, false);
+        await this._auditProviderMutation(viewer, "deleteMyComputeTarget", target.name, { waitingSessions });
+        return { name: target.name, waitingSessions };
+    }
+
+    /** Check a shared target on a worker and record the host's advertisement. */
+    async probeComputeTarget(viewer: ProviderViewer, name: string) {
+        if (!viewer.isAdmin) {
+            throw new ComputeTargetError(COMPUTE_ERROR_CODES.FORBIDDEN, "Only an administrator can check a shared compute target.");
+        }
+        const { store, actor, isAdmin } = await this._computeTargetActor(viewer);
+        const target = this._findComputeTarget(await store.list(actor, isAdmin), name, viewer, "shared");
+        return this._probeComputeTarget(viewer, target);
+    }
+
+    /** Check the caller's own target on a worker and record its advertisement. */
+    async probeMyComputeTarget(viewer: ProviderViewer, name: string) {
+        const { store, actor } = await this._computeTargetActor(viewer);
+        if (actor === null) {
+            throw new ComputeTargetError(COMPUTE_ERROR_CODES.FORBIDDEN, "Sign in to check a personal compute target.");
+        }
+        const target = this._findComputeTarget(await store.list(actor, false), name, viewer, "personal");
+        return this._probeComputeTarget(viewer, target);
+    }
+
     /**
      * The models a session could run on a given compute target: the ones
      * PilotSwarm offers, and the ones that target says it offers itself,
@@ -5571,8 +5813,18 @@ export class PilotSwarmManagementClient {
         const catalog = await this.listRuntimeModels(viewer);
         const store = this._catalog?.computeTargets;
         if (!store) return { target: targetName, catalog, hostModels: [] };
-        const { actor, isAdmin } = await this._providerActor(viewer);
-        return { target: targetName, catalog, hostModels: await store.listTargetModels(actor, isAdmin, targetName) };
+        const actor = await store.lookupUserId(viewer?.principal ?? null);
+        const isAdmin = viewer?.isAdmin === true;
+        const targets = await store.list(actor, isAdmin);
+        const candidates = this._computeTargetCandidates(targetName, viewer);
+        const target = targets.find((row) => candidates.includes(row.name));
+        return {
+            target: target?.name ?? targetName,
+            catalog,
+            hostModels: target
+                ? await store.listTargetModels(actor, isAdmin, target.name)
+                : [],
+        };
     }
 
     /**

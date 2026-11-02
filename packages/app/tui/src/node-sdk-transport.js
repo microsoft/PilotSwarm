@@ -1370,7 +1370,7 @@ export class NodeSdkTransport {
         return model || null;
     }
 
-    async createSession({ model, reasoningEffort, contextTier, owner, groupId, visibility, workspace } = {}) {
+    async createSession({ model, reasoningEffort, contextTier, owner, groupId, visibility, workspace, computeTarget } = {}) {
         const session = await this.client.createSession({
             ...(model ? { model } : {}),
             ...(reasoningEffort ? { reasoningEffort } : {}),
@@ -1379,6 +1379,7 @@ export class NodeSdkTransport {
             ...(groupId ? { groupId } : {}),
             ...(visibility ? { visibility } : {}),
             ...(workspace != null ? { workspace } : {}),
+            ...(computeTarget != null ? { computeTarget } : {}),
         });
         this.sessionHandles.set(session.sessionId, session);
         const created = await this.mgmt.getSession(session.sessionId).catch(() => null);
@@ -1390,7 +1391,7 @@ export class NodeSdkTransport {
         };
     }
 
-    async createSessionForAgent(agentName, { model, reasoningEffort, contextTier, title, splash, splashMobile, initialPrompt, owner, isAdmin, groupId, visibility, workspace } = {}) {
+    async createSessionForAgent(agentName, { model, reasoningEffort, contextTier, title, splash, splashMobile, initialPrompt, owner, isAdmin, groupId, visibility, workspace, computeTarget } = {}) {
         // Registry (package) agents are not in the static baked allowlist —
         // resolve the union, enforce user-scope ownership, then delegate the
         // CANONICAL catalog name (the client's allowlist and the CMS row use
@@ -1408,6 +1409,7 @@ export class NodeSdkTransport {
             ...(groupId ? { groupId } : {}),
             ...(visibility ? { visibility } : {}),
             ...(workspace != null ? { workspace } : {}),
+            ...(computeTarget != null ? { computeTarget } : {}),
         });
         this.sessionHandles.set(session.sessionId, session);
         const created = await this.mgmt.getSession(session.sessionId).catch(() => null);
@@ -1590,6 +1592,46 @@ export class NodeSdkTransport {
 
     async listProviders() {
         return this.mgmt.listProviders(await this._modelProviderViewer());
+    }
+
+    async listComputeTargets() {
+        return this.mgmt.listComputeTargets(await this._modelProviderViewer());
+    }
+
+    async listComputeTargetModels(name) {
+        return this.mgmt.listComputeTargetModels(await this._modelProviderViewer(), name);
+    }
+
+    async createComputeTarget(input) {
+        return this.mgmt.createComputeTarget(await this._modelProviderViewer(), input || {});
+    }
+
+    async createMyComputeTarget(input) {
+        return this.mgmt.createMyComputeTarget(await this._modelProviderViewer(), input || {});
+    }
+
+    async updateComputeTarget(input) {
+        return this.mgmt.updateComputeTarget(await this._modelProviderViewer(), input || {});
+    }
+
+    async updateMyComputeTarget(input) {
+        return this.mgmt.updateMyComputeTarget(await this._modelProviderViewer(), input || {});
+    }
+
+    async deleteComputeTarget(name) {
+        return this.mgmt.deleteComputeTarget(await this._modelProviderViewer(), name);
+    }
+
+    async deleteMyComputeTarget(name) {
+        return this.mgmt.deleteMyComputeTarget(await this._modelProviderViewer(), name);
+    }
+
+    async probeComputeTarget(name) {
+        return this.mgmt.probeComputeTarget(await this._modelProviderViewer(), name);
+    }
+
+    async probeMyComputeTarget(name) {
+        return this.mgmt.probeMyComputeTarget(await this._modelProviderViewer(), name);
     }
 
     async listFeatureFlags() { return this.mgmt.listFeatureFlags(await this._modelProviderViewer()); }
