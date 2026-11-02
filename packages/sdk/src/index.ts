@@ -415,6 +415,7 @@ export type {
     AgentPrincipal,
     AgentPackageSummary,
     AgentPackageDetail,
+    AgentPackageContributor,
     AgentPackageEditorInfo,
     AgentPackageVersionRow,
     AgentPackageInstallEntry,

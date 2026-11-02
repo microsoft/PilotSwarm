@@ -854,6 +854,19 @@ export interface AgentPackageSummary {
     canEdit: boolean;
     /** Active version join; null only for a package with no versions (shouldn't happen). */
     active: AgentPackageVersionRow | null;
+    /**
+     * People who worked on the package: its granted editors and the recorded
+     * publisher of each version. The portal's package Find searches these
+     * without another request. Any viewer of a package can already see the
+     * same names on its detail (editors, version history).
+     */
+    contributors?: AgentPackageContributor[];
+}
+
+export interface AgentPackageContributor {
+    role: "editor" | "publisher";
+    displayName: string | null;
+    email: string | null;
 }
 
 export interface AgentPackageEditorInfo {
@@ -3773,7 +3786,49 @@ export class PgSessionCatalog implements SessionCatalog {
             `SELECT * FROM ${this.sql.fn.listAgentPackages}($1, $2, $3)`,
             [viewer?.provider ?? null, viewer?.subject ?? null, isAdmin],
         );
-        return rows.map(rowToAgentPackageSummary);
+        const packages: AgentPackageSummary[] = rows.map(rowToAgentPackageSummary);
+        const contributors = await this.listAgentPackageContributors(packages.map((p) => p.packageId));
+        for (const pkg of packages) pkg.contributors = contributors.get(pkg.packageId) ?? [];
+        return packages;
+    }
+
+    /**
+     * Editors and version publishers for packages the caller already listed
+     * for this viewer. One query for the whole list, so the portal's Find
+     * never fetches per keystroke. A failure here leaves the list usable.
+     */
+    private async listAgentPackageContributors(packageIds: string[]): Promise<Map<string, AgentPackageContributor[]>> {
+        const byPackage = new Map<string, AgentPackageContributor[]>();
+        if (packageIds.length === 0) return byPackage;
+        const s = `"${this.sql.schema}"`;
+        try {
+            const { rows } = await this.pool.query(
+                `SELECT e.package_id, 'editor' AS role, u.display_name, u.email, min(e.granted_at) AS seen_at
+                   FROM ${s}.agent_package_editors e
+                   JOIN ${s}.users u ON u.user_id = e.user_id
+                  WHERE e.package_id = ANY($1::text[])
+                  GROUP BY e.package_id, u.display_name, u.email
+                 UNION ALL
+                 SELECT v.package_id, 'publisher' AS role, v.created_by AS display_name, NULL AS email, min(v.created_at) AS seen_at
+                   FROM ${s}.agent_package_versions v
+                  WHERE v.package_id = ANY($1::text[]) AND btrim(coalesce(v.created_by, '')) <> ''
+                  GROUP BY v.package_id, v.created_by
+                  ORDER BY seen_at`,
+                [packageIds],
+            );
+            for (const row of rows) {
+                const list = byPackage.get(row.package_id) ?? [];
+                list.push({
+                    role: row.role === "editor" ? "editor" : "publisher",
+                    displayName: row.display_name ?? null,
+                    email: row.email ?? null,
+                });
+                byPackage.set(row.package_id, list);
+            }
+        } catch {
+            byPackage.clear();
+        }
+        return byPackage;
     }
 
     async getAgentPackage(name: string, viewer: AgentPrincipal | null, isAdmin: boolean, selector?: AgentPackageSelector | null): Promise<AgentPackageDetail | null> {

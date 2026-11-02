@@ -4616,11 +4616,8 @@ export function adminPackageSearchFields(pkg) {
             ...adminPackageTexts(pkg?.owner?.email),
             ...adminPackageTexts(manifest.author),
         ],
-        contributor: [
-            ...adminPackageTexts(manifest.contributors),
-            ...adminPackageTexts(pkg?.contributors),
-            ...adminPackageTexts(pkg?.editors),
-        ],
+        // Granted editors and version publishers, sent with the package list.
+        contributor: adminPackageTexts(pkg?.contributors),
     };
 }
 
