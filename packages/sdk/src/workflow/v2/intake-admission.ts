@@ -122,7 +122,7 @@ export async function admitWorkflowIntake(
     const delays = options.delaysMs ?? WORKFLOW_INTAKE_ADMISSION_RETRY_DELAYS_MS;
     for (let attempt = 0; ; attempt += 1) {
         if (options.signal?.aborted) throw stoppedWaiting();
-        let raw: unknown;
+        let raw: unknown = undefined;
         try {
             raw = await store.exposeWorkflowIntake(call);
         } catch (error) {
