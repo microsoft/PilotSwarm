@@ -19,8 +19,10 @@ Other state types of the workflow language (`agent`, `question`, `action`,
 document that uses one is refused with "not supported yet" before any session
 is created.
 
-A workflow session is a sibling of an agent session: it has a row in the
-session list (marked `⛓`), an owner, sharing, and a transcript.
+A workflow session is always the **child of an agent session**: an agent
+starts it with `spawn_workflow`, and there is no top-level workflow. It has a
+row in the session list (marked `⛓`) under its parent, the parent's owner,
+sharing, and a transcript.
 
 - The **live view** is the session's canvas. The worker draws the graph when
   the run starts and updates it after every step: the running state pulses,
@@ -207,14 +209,41 @@ JavaScript `Error`, a PowerShell error), so the script can catch it.
   time with `at`, or `seconds`) and calls `spawn_workflow` once; see
   [Polling and repeating work](#polling-and-repeating-work). Pass `key` only to
   guard against a repeated call: the same key names the same workflow session.
-- **From the portal:** New session → *Workflow* (in the agent chooser
-  beside *Generic Session*, or *Workflow instead* in the model step).
-  The editor starts with a working example.
-- **From the SDK or Web API:** `client.createWorkflowSession({ yaml, inputs })`,
-  or `POST /api/v1/sessions/workflow` (`createWorkflowSession`). An invalid
-  document or inputs that do not match its `inputs` schema are refused with
-  status 400 and a code such as `WORKFLOW_INVALID`,
-  `WORKFLOW_STATE_TYPE_UNSUPPORTED` or `WORKFLOW_INPUT_INVALID`.
+- **From the SDK (direct mode):**
+  `client.createWorkflowSession({ yaml, inputs, parentSessionId, notifyParent?, sessionId? })`.
+  `parentSessionId` is required: the workflow is a child of that agent
+  session. The Web API, the portal and the TUI do not start workflows; in web
+  mode the method refuses. Registering a workflow from YAML in the portal is a
+  possible later feature.
+
+An invalid document or inputs that do not match its `inputs` schema are
+refused with status 400 and a code such as `WORKFLOW_INVALID`,
+`WORKFLOW_STATE_TYPE_UNSUPPORTED` or `WORKFLOW_INPUT_INVALID`. The parent is
+checked when the workflow is created:
+
+| Code | Status | When |
+|---|---|---|
+| `WORKFLOW_PARENT_REQUIRED` | 400 | No `parentSessionId`. |
+| `WORKFLOW_PARENT_INVALID` | 400 | The parent does not exist or was deleted, has ended (`completed`, `failed` or `cancelled`), is itself a workflow session, or has a different owner than the caller. The message names the reason. |
+
+The workflow's owner is the parent's owner (through its lineage, as for a
+sub-agent). `spawn_workflow` reports each refusal to the agent as a
+`[SYSTEM: spawn_workflow refused — ...]` line.
+
+**The start request is saved.** The first create stores the full start
+request (the YAML, the inputs, the parent and the notification setting) in
+the session's creation config, and the run always starts from that saved
+copy. A second create with the same session id compares its request with
+the saved one (object key order does not matter):
+
+- The same request returns the existing session without a second run. If
+  the first create stopped before it started the run, the second one starts
+  it from the saved copy.
+- A different request is refused with `WORKFLOW_ADMISSION_CONFLICT` (409).
+  For `spawn_workflow`, that is the same `key` with a different YAML, inputs
+  or `notify_on_completion`.
+- A deleted session id starts a new run. While the deleted run has not
+  ended yet, the create is refused with `WORKFLOW_SESSION_ENDING` (409).
 
 A workflow session does not accept chat messages, answers, steers or session
 messages (refused with `WORKFLOW_SESSION_NOT_CONVERSATIONAL` or a clear

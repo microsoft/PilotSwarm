@@ -846,6 +846,9 @@ desired state rather than maintain a second long-lived configuration source.
 ## Workflows
 
 Off by default. See [Workflow sessions](../building/workflow-sessions.md).
+Workflow sessions are started only by agent sessions (`spawn_workflow`), or
+from the SDK with a `parentSessionId`; the Web API and the portal do not
+create them.
 
 | Variable | Default | Effect |
 |---|---|---|
