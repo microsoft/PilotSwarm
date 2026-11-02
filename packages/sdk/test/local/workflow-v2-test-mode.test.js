@@ -21,8 +21,9 @@
  *   input, and read_workflow shows the notice, the virtual clock, every
  *   interception and the coverage. Fixtures answer an agent state; an
  *   advance times a request out; a cancel leaves open interceptions
- *   unanswered; agent mode real is refused; a draft edit makes the tested
- *   revision stale and the live run is never touched.
+ *   unanswered; agent mode real on a worker without an agent host fails its
+ *   agent state unavailable (nothing is answered for it); a draft edit
+ *   makes the tested revision stale and the live run is never touched.
  *
  * Scripts run as real script processes (their direct effects are real, as
  * in any test run). No model runs. Not an activation proof.
@@ -37,7 +38,7 @@ import { canonicalJson, sha256Hex } from "../../src/workflow/v2/json.ts";
 import { createWorkflowV2 } from "../../src/workflow/v2/service.ts";
 import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool } from "../../src/workflow/v2/tools.ts";
 import {
-    matchTestFixture, parseTestFixtures, parseTestResponse, testResultFor, WORKFLOW_V2_TEST_NOTICE,
+    matchTestFixture, parseTestFixtures, parseTestResponse, testResultFor, WORKFLOW_V2_TEST_NOTICE, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE,
 } from "../../src/workflow/v2/test-mode.ts";
 import {
     registerWorkflowV2, sessionQueueTransport, WORKFLOW_V2_REQUEST_CONTROLLER_VERSION, workflowLiveControllerInstanceId, workflowTestControllerInstanceId,
@@ -483,9 +484,16 @@ describe("workflow v2 test runs: controller 1.9.0 (inactive, test-only registrat
             expect(await draft.respond(cancelled, open.interceptionId, { kind: "cancel" }, "x-1")).toMatchObject({ ok: false, error: { code: "RUN_ENDED" } });
             expect((await draft.read({ run_id: cancelled })).run.test.coverage.unanswered).toEqual([open.interceptionId]);
 
-            // Agent mode real is not available; a test names the exact current revision; a draft edit makes earlier results stale.
-            expect(await draft.update({ operation: "test", operation_id: "test-4", expected_revision: 1, definition_hash: draft.definitionHash, inputs: {},
-                agent_mode: "real" })).toMatchObject({ ok: false, error: { code: "TEST_AGENT_MODE_UNSUPPORTED" } });
+            // Agent mode real gives each agent state a real child (workflow-v2-test-agents.test.js); this worker has no agent host,
+            // so the state fails unavailable, as in a live run: nothing is intercepted or answered for it.
+            const real = await draft.test("test-4", { agent_mode: "real" });
+            expect(await ended(h, real)).toMatchObject({ status: "failed", terminalOutcome: "failed", terminalNodeId: "failed" });
+            expect(await h.store.readNodeExecution(nodeExecutionIdFor(real, "root", "review", 1)))
+                .toMatchObject({ outcome: "unavailable", winner: "controller" });
+            expect(await h.store.readInterception(`${nodeExecutionIdFor(real, "root", "review", 1)}/agent`)).toBeNull();
+            expect((await draft.read({ run_id: real })).run.test)
+                .toMatchObject({ agentMode: "real", agentNotice: WORKFLOW_V2_TEST_REAL_AGENT_NOTICE, agentPins: null });
+            // A test names the exact current revision; a draft edit makes earlier results stale.
             const edited = yamlOf({ ...mockedDoc(), description: "edited" });
             expect(await draft.update({ operation: "replace_definition", operation_id: "edit-1", expected_revision: 1, yaml: edited }))
                 .toMatchObject({ ok: true, revision: 2 });

@@ -258,6 +258,11 @@ export function projectWorkflowV2ReadModel(model) {
         const test = run.test;
         banners.push({ level: "warning", text: typeof test.notice === "string" && test.notice
             ? test.notice : "TEST — scripts run normally; framework tools are mocked." });
+        // Agent mode real: its agent states run real agent sessions (they spend model tokens), whose framework tools are mocked.
+        if (test.agentMode === "real") {
+            banners.push({ level: "warning", text: typeof test.agentNotice === "string" && test.agentNotice
+                ? test.agentNotice : "Agent states run real agent sessions; their framework tool calls are mocked." });
+        }
         if (test.stale === true) {
             banners.push({ level: "warning", text: `This test ran revision ${test.testedRevision}; the definition is now at revision ${lifecycle.currentRevision}, so its result is stale.` });
         }

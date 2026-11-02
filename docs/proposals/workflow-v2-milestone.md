@@ -265,7 +265,7 @@ the tool's published description and operation enum are unchanged):
 
 | Operation | Arguments | Effect |
 |---|---|---|
-| `test` | `expected_revision`, `definition_hash`, `inputs`, optional `vars`, `agent_mode` (`mocked`, the default), `fixtures` | Starts a test run of exactly that revision. `agent_mode: real` is refused (`TEST_AGENT_MODE_UNSUPPORTED`). |
+| `test` | `expected_revision`, `definition_hash`, `inputs`, optional `vars`, `agent_mode` (`mocked`, the default, or `real`), `fixtures` | Starts a test run of exactly that revision. |
 | `test_respond` | `run_id`, `interception_id`, `response: { kind: success \| error \| cancel, value }` | Answers one intercepted effect, once. |
 | `test_advance` | `run_id`, `seconds` (1 to 30 days) | Moves the run's virtual clock and decides what became due. |
 
@@ -283,7 +283,8 @@ the tool's published description and operation enum are unchanged):
   within its own timeout. A retried attempt that reaches the same call
   with the same arguments gets the same answer; with other arguments it
   fails (`mismatch`), never answered from the earlier call.
-- **Agent, send and request states are intercepted.** No child session is
+- **Agent, send and request states are intercepted** (an agent state only
+  in agent mode `mocked`; see "Real agents" below). No child session is
   created, no message is delivered, and no request exchange starts; the
   interception (`<node execution>/agent`, `/send`, `/request`) records
   what the live effect would have used: the agent's input, task, outcomes
@@ -320,11 +321,70 @@ the tool's published description and operation enum are unchanged):
   taken, the outcomes seen, and the interceptions still unanswered. The
   run row keeps the revision and hashes, inputs and every KV revision.
 
-Unfulfilled requirements (open, not waived): `agent_mode: real` (R19,
-R20: a real agent child whose tools are intercepted, with the test context
-inherited by its descendants) is refused with `TEST_AGENT_MODE_UNSUPPORTED`.
+**Real agents (`agent_mode: real`; R19, R20, D08, T112).** A real-agent
+test checks how a real agent behaves against mocked tools. It spends model
+tokens, and its results vary as a model's do; mocked mode stays the
+default.
+
+- **Ordinary child sessions.** Each agent state gets its child as a live
+  run's does (the agent orchestration and `agent-host.ts`): the same owner,
+  depth limit, model, wrapper prompt and stable id, and the same refusals:
+  an agent the workflow's owner cannot see is `unavailable`, a
+  worker-managed system agent `forbidden`. Its deadline is on the run's
+  virtual clock (the wrapper shows it), so only `test_advance` times it
+  out. When the state is decided, or the run ends, the child is ended as a
+  live run's is (`done` after its typed completion, `cancel` otherwise).
+  The child completes the state with `complete_workflow_node`, checked as
+  in a live run. A worker without an agent host fails the state
+  `unavailable`; nothing is answered for it.
+- **Pinned identity (R18).** The test pins its named agents when it is
+  admitted (migration 0101, `workflow_runs.test_agent_pins`): a test of the
+  published revision takes the publication's pins; a test of a draft is
+  pinned as its publication would be, so an agent the publication could
+  not pin (unavailable, a system agent, another package or version)
+  refuses the test with `AGENT_UNAVAILABLE` before anything is written. A
+  pin with a package revision runs that exact revision. A repeated test
+  operation returns its receipt and pins nothing again. Without a host
+  agent resolver (deployed enablement), nothing is pinned and the child is
+  bound by name when it is created, by the same visibility rules.
+- **Framework tools are intercepted.** In every turn of the child, and of
+  any session in its subtree, each framework tool call (a worker or
+  package tool, a system tool such as `wait`, `cron`, `cron_at` or
+  `spawn_agent`, a workflow tool) becomes the interception
+  `<agent node execution>/call-<n>` instead of running
+  (`test-agent-tools.ts`, `WorkflowStore.interceptAgentToolCall`). A
+  `tool.call` fixture (the tool and the exact hash of the arguments)
+  answers it at once; otherwise the parent is told and the call waits for
+  the parent's answer for at most 3 minutes (a silent turn ends after 5),
+  then fails without running. The answer is the tool's result: a success
+  value, or an error. A call after the state was decided or the run ended
+  is refused. Every call counts toward the run's limit of 1,000
+  intercepted effects (`TEST_INTERCEPTION_LIMIT`), which bounds what a real
+  agent can do in one test. Not intercepted: `complete_workflow_node` (the
+  state's completion) and `ask_user`, which is refused as in a live run
+  (R14). The model's own built-in tools (shell, files) are not framework
+  calls: they run normally, as a script's direct effects do. MCP tools
+  cannot be intercepted, so they are refused for such a session; none runs
+  live. The test mode never adds a package, agent or tool that a live run
+  would not have.
+- **Fail closed.** On a worker that runs agent states, a session's lineage
+  (and, under an agent state, its test run) is read before its turn; a
+  read that fails fails the turn, which is retried, so a session in an
+  agent state's subtree never runs without its human-input denial or,
+  under a test, with live tools.
+- **Evidence.** `read_workflow` labels the run `agentMode: real`, adds a
+  notice that its agents are real and spend model tokens, and shows the
+  agent pins. Each intercepted call is listed with the agent state it
+  belongs to (`operation: tool.call`, `stateId` of the agent state), and
+  `workflow.test_intercepted` events name the calling session.
+- **Retention.** A real-agent test run keeps its agent states' invocation
+  records, as a live run does (its children's denial and depth are read
+  from them), so test-run retention never deletes it.
+
 Deviations still open: typed input's expiry (`ttl_seconds`) runs on real
-time.
+time. A tool call the parent answers after its wait ended is recorded and
+changes nothing. Deployed enablement still needs a registry-backed agent
+resolver that reports package revisions.
 
 **Retention (design 05 cleanup; D07 configurable defaults).** After each new
 test admission, the workflow's ended test runs beyond the newest `keep`
@@ -333,8 +393,9 @@ controller instance has finished are deleted, each in one transaction
 (`WorkflowStore.pruneTestRun`): its interceptions, the typed input given to
 it, its node executions, its KV revisions and its run row. A live run, an
 active test run, a run within the grace, a run of a deleted workflow and a
-run that owns a live record (an outbox message, a request or an agent
-invocation, which a test run never has) are never deleted. Operation
+run that owns a live record (an outbox message or a request, which a test
+run never has, or an agent invocation, which a real-agent test run keeps)
+are never deleted. Operation
 receipts and the session's events stay as the audit trail
 (`workflow.test_run_deleted`); a repeated test operation returns its
 receipt and starts nothing. Retention is best effort: a failure is recorded
@@ -395,9 +456,9 @@ binds a publication and a test to the exact versions they used
 Still open (not waived): the resolver that reports `packageRevision` is a
 test-only host hook, as the agent host itself is, so a deployed worker pins
 revisions only once the agent host is enabled with a registry-backed
-resolver (the deployed enablement gap). A test run of a draft revision has
-no publication pins: its named agents are resolved when the child is
-created, which matters once real-agent test mode exists. Also not covered:
+resolver (the deployed enablement gap). A real-agent test run of a draft
+revision is pinned when it is admitted, as its publication would be
+(migration 0101; see "Real agents" above). Also not covered:
 package interface digests (`interface:` is refused at compile) and a
 publication gate on declared test scenarios (not in the YAML design).
 

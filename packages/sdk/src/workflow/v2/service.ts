@@ -1054,29 +1054,56 @@ async function wakeRun(host: Pick<WorkflowV2Host, "duroxideClient">, run: Pick<W
 }
 
 /**
+ * A real-agent test run's agent pins (design 05: package identities are
+ * pinned just as a live run's are; R18, R19): a test of the published
+ * revision takes its publication's pins; a test of a draft is pinned as its
+ * publication would be (publicationAgentPins, for the workflow's parent): a
+ * named agent that the workflow's owner cannot use, a worker-managed system
+ * agent, or a package or version that does not match refuses the test with
+ * AGENT_UNAVAILABLE before anything is written, so a test never runs an agent
+ * that its publication could not pin. Null when nothing is pinned (no named
+ * agent state, or a host that does not resolve agents: its children are then
+ * bound when they are created, by the same visibility rules).
+ */
+async function testAgentPins(host: Pick<WorkflowV2Host, "store" | "resolveAgent">, workflowSessionId: string, revision: number, ir: WorkflowIR | null)
+    : Promise<string | null> {
+    const definition = await host.store.readDefinition(workflowSessionId);
+    if (!definition) return null;
+    if (definition.publishedRevision === revision) return definition.publishedAgentPins === null ? null : canonicalJson(definition.publishedAgentPins);
+    return publicationAgentPins(host, ir, definition.parentSessionId ?? workflowSessionId);
+}
+
+/**
  * Start a test run (design 05; R19, R20; INACTIVE): the exact current
  * revision the request names (expected_revision and definition_hash), draft
  * or published, with its inputs (checked against inputs.schema), its own
- * initial KV, and the fixtures it answers intercepted effects from. Agent
- * mode mocked only: a real agent with intercepted tools is not available
- * yet (TEST_AGENT_MODE_UNSUPPORTED), and nothing falls back to a live agent.
- * The run runs at controller 1.9.0 under its own controller instance; its
- * scripts run normally, its framework effects are intercepted, and its
- * deadlines run on its virtual clock. It never changes the live run, and it
- * is never evidence that the definition is safe to run live.
+ * initial KV, and the fixtures it answers intercepted effects from. The run
+ * runs at controller 1.9.0 under its own controller instance; its scripts
+ * run normally, its framework effects are intercepted, and its deadlines run
+ * on its virtual clock. It never changes the live run, and it is never
+ * evidence that the definition is safe to run live.
+ *
+ * Agent mode mocked (the default): each agent state is intercepted, and the
+ * parent (or a fixture) supplies its typed result. Agent mode real: each
+ * agent state's child is an ordinary agent session, created and bound as a
+ * live run's is (same owner, visibility, depth and system-agent rules, and
+ * the package revision pinned at admission: testAgentPins), whose framework
+ * tool calls are intercepted instead of running (test-agent-tools.ts). Its
+ * deadline is on the run's virtual clock. Neither mode makes a package or a
+ * tool available that a live run would not have, and nothing falls back to a
+ * live call.
  */
 export async function startWorkflowV2Test(host: WorkflowV2Host, workflowSessionId: string, command: WorkflowV2TestCommand,
     context: { actor: WorkflowActor; operationId: string }): Promise<StoredOperation<WorkflowDefinitionReceipt>> {
     requireOperationId(context.operationId);
     requireTestHost(host);
-    if (command.agentMode !== "mocked") {
-        throw new WorkflowStoreError("TEST_AGENT_MODE_UNSUPPORTED",
-            "agent_mode real (a real agent child whose tools are intercepted) is not available in this build; use agent_mode mocked, "
-            + "where the parent supplies each agent state's typed result.");
+    if (command.agentMode !== "mocked" && command.agentMode !== "real") {
+        throw new WorkflowStoreError("WORKFLOW_COMMAND_INVALID", "agent_mode must be mocked or real.");
     }
     const revision = await host.store.readRevision(workflowSessionId, command.expectedRevision);
+    let ir: WorkflowIR | null = null;
     if (revision?.valid && revision.irSha256) {
-        const ir = await host.store.readRevisionIr(workflowSessionId, command.expectedRevision, revision.irSha256, irOptionsFor(host));
+        ir = await host.store.readRevisionIr(workflowSessionId, command.expectedRevision, revision.irSha256, irOptionsFor(host));
         const problems = ir.inputsSchema ? schemaSetFor(revision.irSha256, ir.schemaDefs).validate(ir.inputsSchema, command.inputs) : [];
         if (problems.length) {
             throw new WorkflowStoreError("WORKFLOW_INPUT_INVALID", "Workflow inputs do not match inputs.schema.",
@@ -1084,16 +1111,23 @@ export async function startWorkflowV2Test(host: WorkflowV2Host, workflowSessionI
         }
     }
     const fixturesText = canonicalJson(command.fixtures);
+    const requestSha256 = jsonSha256({ kind: "test", expectedRevision: command.expectedRevision, definitionHash: command.definitionHash,
+        inputs: canonicalJson(command.inputs), agentMode: command.agentMode, fixtures: fixturesText, ...varsDigestPart(command.vars),
+        ...(command.scenario ? { scenario: command.scenario } : {}) });
+    // A real-agent test is pinned once, when it is admitted; a repeat of its operation returns its receipt (the store reads it
+    // again under its lock) and pins nothing again.
+    const replay = command.agentMode === "real" ? await host.store.readOperationReceipt(workflowSessionId, context.operationId, "test", requestSha256) : null;
+    const testAgentPinsText = command.agentMode === "real" && replay === null
+        ? await testAgentPins(host, workflowSessionId, command.expectedRevision, ir) : null;
     const runId = randomUUID();
     const stored = await host.store.startTest({
         workflowSessionId, expectedRevision: command.expectedRevision, definitionHash: command.definitionHash, operationId: context.operationId,
-        requestSha256: jsonSha256({ kind: "test", expectedRevision: command.expectedRevision, definitionHash: command.definitionHash,
-            inputs: canonicalJson(command.inputs), agentMode: command.agentMode, fixtures: fixturesText, ...varsDigestPart(command.vars),
-            ...(command.scenario ? { scenario: command.scenario } : {}) }),
+        requestSha256,
         start: {
             runId, mode: "test", controllerInstanceId: workflowTestControllerInstanceId(runId),
-            inputsText: boundedCanonicalJson(command.inputs, "Workflow inputs"), kvText: checkedKvText(command.vars ?? {}), testAgentMode: "mocked",
+            inputsText: boundedCanonicalJson(command.inputs, "Workflow inputs"), kvText: checkedKvText(command.vars ?? {}), testAgentMode: command.agentMode,
             controllerVersion: controllerVersionFor(host), fixturesText, ...(command.scenario ? { testScenario: command.scenario } : {}),
+            ...(testAgentPinsText !== null ? { testAgentPinsText } : {}),
         },
     });
     if (stored.receipt.run) await dispatchWorkflowV2Run(host, stored.receipt);

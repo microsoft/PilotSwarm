@@ -90,6 +90,27 @@ test("an agent state's node names its child session and opens its actual chat; a
     assert.ok(byId(branched, "work").description.includes("In branch 0 of its parallel state."));
 });
 
+test("a real-agent test run says its agents are real, and lists their mocked tool calls under their agent state", () => {
+    const test = {
+        notice: "TEST — scripts run normally; framework tools are mocked.", agentMode: "real",
+        agentNotice: "Agent states run real agent sessions: they spend model tokens and their results vary as a model's do.",
+        agentPins: null, scenario: null, testedRevision: 1, stale: false, virtualClock: { now: "9000-01-01T00:00:00.000Z", elapsedSeconds: 0 },
+        interceptions: [{ interceptionId: "nx-1/call-1", operation: "tool.call", tool: "read_build", stateId: "review", state: "awaiting_parent", response: null }],
+        coverage: { unanswered: ["nx-1/call-1"] },
+    };
+    const project = item => projectWorkflowV2ReadModel(readModel({ graph, definition: { state: "draft", currentRevision: 1, publishedRevision: null },
+        run: { mode: "test", test: item }, runs: [{ runId: RUN, mode: "test", status: "running", revision: 1 }] })).banners.map(banner => banner.text);
+    const texts = project(test);
+    assert.ok(texts.includes(test.notice));
+    assert.ok(texts.includes(test.agentNotice));
+    // Without its text, the banner still says so; a mocked test has none.
+    assert.ok(project({ ...test, agentNotice: undefined }).includes("Agent states run real agent sessions; their framework tool calls are mocked."));
+    assert.ok(!project({ ...test, agentMode: "mocked" }).some(text => text.startsWith("Agent states run real agent sessions")));
+    const html = renderToStaticMarkup(React.createElement(WorkflowV2TestInterceptions, { test }));
+    assert.ok(html.includes("tool.call · read_build"));
+    assert.ok(html.includes("review"));
+});
+
 test("a test run keeps its notice visible, with its staleness, virtual clock and open interceptions", () => {
     const test = {
         notice: "TEST — scripts run normally; framework tools are mocked.", agentMode: "mocked", scenario: null, testedRevision: 1, stale: true,

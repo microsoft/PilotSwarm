@@ -3,7 +3,7 @@ import type { WorkflowToolBinding } from "../tool-policy.js";
 import { assertJsonValue, isJsonObject, isStorableText, jsonbSafeText, previewJson, WorkflowJsonError, type JsonValue } from "./json.js";
 import { WORKFLOW_V2_MILESTONE_IR_VERSION } from "./compiler.js";
 import { describeWorkflowV2States, parseBranchScope, ROOT_SCOPE } from "./runtime.js";
-import { parseTestFixtures, parseTestResponse, WORKFLOW_V2_TEST_NOTICE } from "./test-mode.js";
+import { parseTestFixtures, parseTestResponse, WORKFLOW_V2_TEST_NOTICE, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE } from "./test-mode.js";
 import {
     advanceWorkflowV2Test,
     controlWorkflowV2Run,
@@ -113,9 +113,10 @@ export const UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC = {
     description: UPDATE_WORKFLOW_TOOL_SPEC.description
         + " This host also takes: stop (run_id optional, reason, grace_seconds 0 to 3600, default 60: the run admits no new state, "
         + "the work it admitted may settle until the grace ends, then it ends stopped); "
-        + "test (expected_revision and definition_hash of the exact current revision, inputs, optional vars, agent_mode mocked, fixtures and "
-        + "scenario: a test run beside the live run whose tool calls, agents, sends and requests are intercepted and answered by you or a "
-        + "fixture, and whose deadlines run on a virtual clock; a script's own effects are real, and a test result is not a live result); "
+        + "test (expected_revision and definition_hash of the exact current revision, inputs, optional vars, agent_mode mocked or real, "
+        + "fixtures and scenario: a test run beside the live run whose tool calls, agents, sends and requests are intercepted and answered "
+        + "by you or a fixture (with agent_mode real, each agent state runs a real agent whose framework tool calls are intercepted), and "
+        + "whose deadlines run on a virtual clock; a script's own effects are real, and a test result is not a live result); "
         + "test_respond (run_id of the test run, interception_id, response { kind: success, error or cancel, value }: answers one "
         + "intercepted effect once); and test_advance (run_id of the test run, seconds 1 to 2592000: moves its virtual clock and decides "
         + "what became due).",
@@ -131,7 +132,12 @@ export const UPDATE_WORKFLOW_MILESTONE_TOOL_SPEC = {
             reason: { type: "string", description: "pause/resume/cancel/stop: an optional short reason." },
             run_id: { type: "string", description: "set_vars/pause/resume/cancel/recover/stop: the run, default the live run; test_respond/test_advance: the test run (required)." },
             grace_seconds: { type: "integer", description: "stop: how long admitted work may settle, 0 to 3600. Default 60." },
-            agent_mode: { type: "string", enum: ["mocked", "real"], description: "test: mocked (default): you supply each agent state's typed result. real is not available." },
+            agent_mode: {
+                type: "string", enum: ["mocked", "real"],
+                description: "test: mocked (default): you supply each agent state's typed result. real: each agent state runs a real agent child (it spends "
+                    + "model tokens) whose framework tool calls are intercepted for you to answer (tool.call fixtures answer them in advance); its "
+                    + "model's own built-in tools (shell, files) run normally, and MCP tools are refused.",
+            },
             fixtures: {
                 type: "array", items: { type: "object" },
                 description: "test: answers given in advance, each { operation?: tool.call (default), agent, send or request, tool (tool calls) or state "
@@ -352,7 +358,8 @@ async function testOperationFromTool(args: Record<string, unknown>, context: { c
             expectedRevision: revisionArg(args), definitionHash: requiredString(args, "definition_hash"), inputs: inputsArg(args),
             ...(vars !== null ? { vars } : {}), agentMode, fixtures: parseTestFixtures(args.fixtures), scenario,
         }, { actor, operationId });
-        return payload({ ok: true, ...receiptJson(stored.receipt, stored.replayed), test: { agentMode, scenario, notice: WORKFLOW_V2_TEST_NOTICE } });
+        return payload({ ok: true, ...receiptJson(stored.receipt, stored.replayed), test: { agentMode, scenario, notice: WORKFLOW_V2_TEST_NOTICE,
+            ...(agentMode === "real" ? { agentNotice: WORKFLOW_V2_TEST_REAL_AGENT_NOTICE } : {}) } });
     }
     const runId = requiredString(args, "run_id");
     if (args.operation === "test_advance") {
@@ -580,6 +587,8 @@ async function testViewOf(store: WorkflowStore, workflowSessionId: string, run: 
     return {
         notice: WORKFLOW_V2_TEST_NOTICE,
         agentMode: run.testAgentMode,
+        // What a real-agent test pinned its named agents to when it was admitted (migration 0101; R18, R28).
+        ...(run.testAgentMode === "real" ? { agentNotice: WORKFLOW_V2_TEST_REAL_AGENT_NOTICE, agentPins: run.testAgentPins } : {}),
         scenario: run.testScenario,
         testedRevision: run.revision,
         stale: run.revision !== currentRevision,

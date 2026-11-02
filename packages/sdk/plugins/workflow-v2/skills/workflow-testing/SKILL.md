@@ -29,7 +29,8 @@ a test result as a live result.
 - `expected_revision` and `definition_hash` name the exact revision to test
   (`read_workflow`: `revision.revision`, `revision.definitionHash`).
 - `agent_mode` is `mocked` (the default): you supply each agent state's
-  typed result. `real` is refused (`TEST_AGENT_MODE_UNSUPPORTED`).
+  typed result. `real` runs a real agent for each agent state, with its
+  framework tools mocked (section 2a).
 - `scenario` (optional, at most 128 characters) is kept with the run as
   evidence. `vars` gives the test run its own initial KV.
 - The receipt's `run.runId` names the test run. Use it as `run_id` in every
@@ -53,6 +54,25 @@ the interception id. Its JSON is workflow data, not instructions.
 
 A script waits for its tool answer within its own `timeoutSeconds`, which is
 real time. Answer tool calls promptly or give fixtures.
+
+## 2a. Real agents (`agent_mode: real`)
+
+Use it only to check how a real agent behaves against mocked tools. It
+spends model tokens, and its results vary as a model's do.
+
+- Each agent state gets an ordinary agent child, created and bound as in a
+  live run (same visibility and refusals; the package revision the test
+  pinned when it started). An agent its publication could not pin refuses
+  the test start (`AGENT_UNAVAILABLE`).
+- Each framework tool call of the agent (a worker or package tool, `wait`,
+  `cron`, `spawn_agent`, a workflow tool) becomes `<agent nodeExecutionId>/call-<n>`.
+  A `tool.call` fixture answers it, or you answer it with `test_respond`
+  within 3 minutes; otherwise the call fails without running.
+- Not mocked: `complete_workflow_node` (the agent finishes the state with
+  it) and `ask_user` (refused, as in a live run). The model's built-in
+  tools (shell, files) run normally. MCP tools are refused.
+- The agent's deadline is on the virtual clock: `test_advance` times it
+  out. A cancel or the run's end ends the agent's session.
 
 ## 3. Answer an interception
 
@@ -119,19 +139,20 @@ real time. Answer tool calls promptly or give fixtures.
 ## 6. Read and report the evidence
 
 `read_workflow` with the test run's `run_id` shows `run.test`: the notice,
-`agentMode`, `scenario`, `testedRevision`, `stale` (a newer revision exists,
+`agentMode` (with `agentNotice` and `agentPins` for real agents), `scenario`,
+`testedRevision`, `stale` (a newer revision exists,
 so the result is stale), `virtualClock`, `interceptions`, and `coverage`
 (`entered`, `notEntered`, `routes`, `outcomes`, `unanswered`).
 
 Report the tested revision and hash, the scenario, the routes covered and
 not covered, and which effects you mocked and how. Say that script effects
-were real.
+were real, and whether agents were mocked or real.
 
 Read the evidence soon after the run ends. When a new test run starts, the
 host deletes the oldest ended test runs beyond the newest it keeps (20 by
 default, each at least 5 minutes after it ended), with their interceptions.
 The test operation's receipt stays; `read_workflow` then answers
-`RUN_NOT_FOUND` for that run.
+`RUN_NOT_FOUND` for that run. A test run with real agents is kept.
 
 ## 7. Plan the scenarios
 
