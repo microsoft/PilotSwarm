@@ -31,7 +31,6 @@ import {
     CHILD_DIGEST_COALESCE_MS,
     childUpdateBatchMs,
     FIFO_BUCKET_COUNT,
-    INTERNAL_SYSTEM_TURN_PROMPT,
     MAX_BUCKET_BYTES,
     MAX_FIFO_ITEM_BYTES,
     MAX_DRAIN_PER_TURN,
@@ -49,7 +48,7 @@ import {
 import { handleTurnResult, processPrompt, processTimer } from "./turn.js";
 import { validClientMessageIds , noteMessageSender, applySenderAttribution, maybeQueueSharedPreamble } from "./utils.js";
 import { intakeDueAtMs } from "./intake-machine.js";
-import { intakeArrival, intakeOwnTurn, intakeWantsTurn, latchIntakeTombstones, runIntakeWake } from "./intake-wiring.js";
+import { intakeArrival, intakeOwnTurn, intakeOwnTurnPrompt, intakeWantsTurn, latchIntakeTombstones, runIntakeWake } from "./intake-wiring.js";
 
 // ─── KV FIFO bucket primitives ──────────────────────────────
 
@@ -532,7 +531,7 @@ function shouldRunQueuedWorkNow(runtime: DurableSessionRuntime, stash: any[]): b
     const digestOpen = Boolean(state.pendingChildDigest && !state.pendingChildDigest.ready);
     if (!timer && !digestOpen) return false;
     if (stash.some(isInteractiveFifoItem) || fifoHasInteractiveItems(runtime)) return true;
-    // 1.0.83 (design 5.5): a turn the intake wants runs now, as queued work does (no timer note, no digest taken: 6.2 deviation, recorded).
+    // 1.0.83 (design 5.5, 6.2): a turn the intake wants runs now, as queued work does; it takes the timer note and the digest.
     if (intakeWantsTurn(runtime)) return true;
     if (!timer || (stash.length === 0 && !hasFifoItems(runtime))) return false;
     return timer.type === "idle" || timer.type === "cron" || timer.type === "cron_at"
@@ -1607,9 +1606,10 @@ export function* decide(runtime: DurableSessionRuntime): Generator<any, boolean,
     }
 
     // 1.0.83 (design 5.5): with nothing else to dispatch, a ready invocation, or a parked one (not a gate's) that a newly
-    // claimed item resumes, starts a turn of its own on the internal system-turn prompt.
-    if (yield* intakeOwnTurn(runtime)) {
-        yield* processPrompt(runtime, INTERNAL_SYSTEM_TURN_PROMPT, true);
+    // claimed item resumes, starts a turn of its own on the internal system-turn prompt, with the timer note and digest (6.2).
+    // Never while a timer is armed: drain releases it first, as for queued work, so the intake's turn takes its note.
+    if (!state.activeTimer && (yield* intakeOwnTurn(runtime))) {
+        yield* processPrompt(runtime, intakeOwnTurnPrompt(runtime), true);
         return true;
     }
 

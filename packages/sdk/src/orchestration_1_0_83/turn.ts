@@ -68,7 +68,7 @@ import {
     mergePrompt,
     updateContextUsageFromEvents,
 } from "./utils.js";
-import { intakeBeforeAttempt, intakeResultEvent, noteIntakeAttempt, noteIntakeResult, noteIntakeThrew } from "./intake-wiring.js";
+import { intakeBeforeAttempt, intakeResultEvent, intakeReusesThrownTurnKey, noteIntakeAttempt, noteIntakeResult, noteIntakeThrew } from "./intake-wiring.js";
 
 // ─── runTurn error / retry handling ─────────────────────────
 
@@ -530,9 +530,11 @@ export function* processPrompt(
         // 1.0.83 (review D-W2-1): while a sent invocation's retry is held with
         // the pending prompt, any other turn neither takes nor clears that
         // retry's key: it would adopt the held retry's saved result, witness
-        // included. Only decide's dispatch of the pending prompt takes it.
+        // included. Only decide's dispatch of the pending prompt takes it. The
+        // intake asks the same before the attempt: an attempt that sends a
+        // thrown attempt's key carries only what that attempt carried (W2-WIT3).
         const intakeRetryHeld = state.intakeRetryInvocationId !== null;
-        const reusedTurnKey = state.blobEnabled && state.retryCount > 0 && state.thrownTurnKey && !intakeRetryHeld
+        const reusedTurnKey = intakeReusesThrownTurnKey(state)
             ? state.thrownTurnKey
             : null;
         if (reusedTurnKey) ctx.traceInfo(`[orch] retrying a thrown turn with its earlier turnKey ${reusedTurnKey}`);

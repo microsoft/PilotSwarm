@@ -107,12 +107,18 @@ type CarriedSteersConsumedCarrier = {
  * workflow-durable-intake.md 5.5): the dispatch witness of the attempt that
  * carried an invocation, on every result of that attempt. `sent` is true
  * only once the model request that included its items was about to be
- * issued. A saved result that a later attempt adopts keeps the witness it
- * was saved with, or none, which the orchestration reads as possibly sent.
+ * issued by the run whose result this is. A saved result that a later
+ * attempt adopts keeps the witness it was saved with, or none, which the
+ * orchestration reads as possibly sent. `exposed` (only with `sent: false`)
+ * is added to an adopted witness of the same invocation by an attempt that
+ * lost a racing commit after its own request had included the items: the
+ * winner's response stands, and the items were possibly seen (review
+ * W2-WIT4).
  */
 export interface IntakeDispatchWitness {
     invocationId: string;
     sent: boolean;
+    exposed?: true;
 }
 
 type IntakeDispatchCarrier = {

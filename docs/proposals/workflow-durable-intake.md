@@ -453,6 +453,16 @@ flag.
   attempt that carried the invocation returned `sent: false`. A returned
   result whose witness names another invocation is a broken invariant: the
   execution fails, and nothing is settled.
+  (Implementation clarification, review W2-WIT4.) Two executions of one
+  turn can race to save it (a work item run again after a lost lock). The
+  one that loses the commit returns the winner's result and the winner's
+  witness, never its own. When it had sent the items itself and the
+  winner's witness names the same invocation with `sent: false`, it adds
+  `exposed: true` to that witness: the items were possibly seen, though not
+  by the run whose result this is. `exposed` makes `sent` true as a possible
+  send does, and it never counts as this result's send, so row 8 never
+  applies to it. Any other adopted witness (none, `sent: true`, another
+  invocation's, malformed) is returned as it was saved.
 - **Who carries it.** A sent invocation rides only its own turn's retries
   (the retry's continue-as-new carry names it), with the same batch. An
   unsent one is `ready` (formed and bound, no attempt has carried it yet)
@@ -528,7 +538,14 @@ flag.
   runs, and the invocation ends `interrupted`, recorded. While the retry is
   held, another turn also neither reuses nor clears the held retry's turn key
   (1.0.81's thrown-turn key), so it never adopts the held retry's saved
-  result. The count of newly
+  result. (Review W2-WIT3.) An attempt that sends the key of the thrown
+  attempt it retries may adopt that attempt's saved result, whose witness
+  tells only of what that attempt carried. Such an attempt therefore
+  carries only that: the invocation its marker names, or nothing when there
+  is no marker. No invocation is formed for it, and decide starts no turn
+  for the intake alone while such a retry is pending; the next attempt
+  clears the thrown key, and the intake then forms and is carried as usual.
+  The count of newly
   claimed items that an attempt has not answered yet lives within one
   execution.
 - **Settlement.** The end is a settlement, never a new attempt. If the end
@@ -689,11 +706,18 @@ today; that growth is outside this design (section 13).
   Every recorded claim answer and every cancel the intake makes is one
   best-effort diagnostic event (`session.workflow_intake_recorded`); the
   refusals' own events are the store's (5.6).
-- (Implementation deviation, inactive wiring; open.) A turn that decide
-  starts for an invocation alone releases an armed timer as queued work does
-  (`shouldRunQueuedWorkNow`), but takes no timer note and no child digest
-  yet: the released wait or cron resumes after the turn, and the digest
-  waits for the next turn.
+- (Implementation, inactive wiring.) A turn that decide starts for an
+  invocation alone releases an armed timer as queued work does
+  (`shouldRunQueuedWorkNow`); decide starts it only once no timer is armed,
+  so it never runs beside a live one. Its prompt is the session's internal
+  system-turn prompt with the released timer's note and the buffered child
+  digest in the turn's system context, as drain gives them to a newly
+  arrived prompt; the released wait or cron resumes after the turn. The
+  worker records each carried item in the transcript at turn start, before
+  the turn's own prompt, with its canonical text, its canonical client id
+  and the system sender `workflow message`, as its plain copy would be
+  recorded; turn start records an item once, on the first attempt that
+  reaches it.
 
 ### 6.3 Parsing
 

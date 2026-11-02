@@ -38,6 +38,16 @@
  *   D-W2-1); a gate's park rides the next attempt but starts no turn; decide
  *   starts a turn for a ready invocation alone, and one per newly claimed
  *   item for a parked one.
+ * - The retry of a thrown turn sends the thrown attempt's key, so it may
+ *   adopt that attempt's saved result: it carries only what that attempt
+ *   carried (the invocation its marker names, or none), nothing is formed
+ *   for it, and decide starts no turn for the intake alone before it (review
+ *   W2-WIT3). An adopted witness that says exposed (its attempt sent before
+ *   it lost a racing commit) makes the invocation sent, never completed
+ *   (W2-WIT4).
+ * - Decide's turn for the intake alone takes what drain gives a newly
+ *   arrived prompt: the released timer's note and the buffered child digest,
+ *   in its system context; the released wait resumes after it (6.2).
  *
  * Run: node --test test/unit/orchestration-intake-wiring-1-0-83.test.mjs
  */
@@ -1119,4 +1129,148 @@ test("a parked invocation (not a gate's) starts no turn on its own, and one per 
     const ends = ops.filter(op => op.op === "activity" && op.input.op === "end").map(op => [op.input.invocationId, op.input.outcome]);
     assert.deepEqual(ends, [["inv-1", "completed"], [next, "completed"]]);
     assert.deepEqual(runtime.state.intake, EMPTY_INTAKE);
+});
+
+// ─── 6.2: decide's turn for the intake alone takes the timer note and the digest ──
+
+test("6.2: decide's turn for the intake alone takes the released wait's note and the buffered child digest in its system context; the wait resumes after it", () => {
+    const runtime = makeRuntime({
+        intake: carried({ queue: [heldEntry(1)] }),
+        subAgents: [{ orchId: "agent-1", sessionId: "child-1", task: "helper", status: "running" }],
+        pendingChildDigest: { startedAtMs: NOW, updates: [{ sessionId: "child-1", updateType: "completed", content: "child result" }] },
+    });
+    runtime.state.activeTimer = { deadlineMs: NOW + 60_000, originalDurationMs: 120_000, reason: "nap", type: "wait" };
+    const seen = [];
+    const { ops } = drive(runLoop(runtime), turnResponder({
+        guids: ["inv-1"], activity: storeAnswers([1]),
+        turn: op => {
+            seen.push({ prompt: op.input.prompt, intake: op.input.intake ?? null, digest: runtime.state.pendingChildDigest });
+            return op.input.intake ? completed(sentBy()) : completed();
+        },
+        stop: op => isTurn(op) && seen.length >= 2,
+    }));
+    assert.equal(seen.length, 2);
+    // The intake's own turn: its items in their own field; its prompt the internal one, with the note of the wait it
+    // released (120 s, 60 s left) and the digest it took in its system context. The digest is no longer buffered.
+    assert.deepEqual(seen[0].intake, payloadOf([1]));
+    assert.ok(seen[0].prompt.startsWith(INTERNAL_SYSTEM_TURN_PROMPT), seen[0].prompt);
+    assert.ok(seen[0].prompt.includes('interrupted your 120s timer (reason: "nap"). 60s elapsed, 60s remain.'), seen[0].prompt);
+    assert.ok(seen[0].prompt.includes("Buffered child updates arrived"), seen[0].prompt);
+    assert.ok(seen[0].prompt.includes("child result"), seen[0].prompt);
+    assert.equal(seen[0].digest, null);
+    // Its end is settled on the wake; the released wait resumed with its remaining 60 s and wakes the next turn.
+    assert.equal(endOf(ops).input.outcome, "completed");
+    assert.ok(ops.indexOf(endOf(ops)) < ops.indexOf(turnsOf(ops)[1]));
+    assert.equal(seen[1].intake, null);
+    assert.match(seen[1].prompt, /^The 60 second wait is now complete\./);
+});
+
+// ─── Review of 009109e2: W2-WIT3 and W2-WIT4 ────────────────
+
+test("W2-WIT3: the retry of a thrown turn that carried nothing sends that attempt's key and carries nothing; the held item is formed after it and rides the next attempt", () => {
+    const runtime = makeRuntime({
+        intake: carried({ queue: [heldEntry(1)] }), prompt: "retry words", retryCount: 1, blobEnabled: true, thrownTurnKey: "key-T",
+    });
+    // While that retry is pending, decide starts no turn for the intake alone, and drain releases no timer for one.
+    assert.equal(intakeWantsTurn(runtime), false);
+    const seen = [];
+    const { ops } = drive(runLoop(runtime), turnResponder({
+        activity: storeAnswers([1]),
+        turn: op => {
+            seen.push({ prompt: op.input.prompt, turnKey: op.input.snapshot?.turnKey ?? null, intake: op.input.intake ?? null });
+            // The retry may adopt the thrown attempt's saved result, which has no witness: that attempt carried nothing.
+            return op.input.intake ? completed({ invocationId: op.input.intake.invocationId, sent: true }) : completed();
+        },
+        stop: op => isTurn(op) && seen.length >= 2,
+    }));
+    assert.equal(seen.length, 2);
+    assert.match(seen[0].prompt, /^retry words/);
+    assert.equal(seen[0].turnKey, "key-T");
+    assert.equal(seen[0].intake, null);
+    // No invocation was formed or bound for the retry; the next attempt, under a key of its own, carries the item.
+    const bind = kinds(ops).indexOf("settleWorkflowIntake:bind");
+    assert.ok(bind > ops.indexOf(turnsOf(ops)[0]));
+    assert.notEqual(seen[1].turnKey, "key-T");
+    assert.ok(seen[1].intake !== null);
+    assert.deepEqual(seen[1].intake, payloadOf([1], seen[1].intake.invocationId));
+    assert.equal(endOf(ops).input.outcome, "completed");
+});
+
+test("W2-WIT3: a turn that runs while an agent wait holds a thrown turn's retry sends that attempt's key (as 1.0.82 does) and carries nothing; the retry's dispatch then carries the invocation", () => {
+    const runtime = makeRuntime({
+        intake: carried({ queue: [heldEntry(1)] }), prompt: "retry words", retryCount: 1, blobEnabled: true, thrownTurnKey: "key-T",
+        waitingForAgentIds: ["agent-1"], subAgents: [{ orchId: "agent-1", sessionId: "child-1", task: "helper", status: "running" }],
+    });
+    appendToFifo(runtime, [{ kind: "timer", timer: { type: "wait", deadlineMs: NOW, originalDurationMs: 60_000, reason: "nap" }, firedAtMs: NOW }]);
+    runtime.state.activeTimer = { deadlineMs: NOW + 30_000, originalDurationMs: 30_000, reason: "waiting for 1 agent(s)", type: "agent-poll", agentIds: ["agent-1"] };
+    const seen = [];
+    const { ops } = drive(runLoop(runtime), turnResponder({
+        activity: storeAnswers([1]),
+        turn: op => {
+            seen.push({ prompt: op.input.prompt, turnKey: op.input.snapshot?.turnKey ?? null, intake: op.input.intake ?? null });
+            return op.input.intake ? completed({ invocationId: op.input.intake.invocationId, sent: true }) : completed();
+        },
+        stop: op => isTurn(op) && seen.length >= 2,
+    }));
+    assert.equal(seen.length, 2);
+    // The wait's turn runs first and sends the thrown attempt's key: whatever it adopts, it carried no batch.
+    assert.match(seen[0].prompt, /second wait is now complete/);
+    assert.equal(seen[0].turnKey, "key-T");
+    assert.equal(seen[0].intake, null);
+    // The retry's dispatch, after the poll ends the agent wait, carries the newly formed invocation under a new key.
+    assert.match(seen[1].prompt, /^retry words/);
+    assert.notEqual(seen[1].turnKey, "key-T");
+    assert.ok(seen[1].intake !== null);
+    assert.deepEqual(seen[1].intake, payloadOf([1], seen[1].intake.invocationId));
+    assert.equal(endOf(ops).input.outcome, "completed");
+});
+
+test("W2-WIT3: a thrown attempt that carried an invocation: its retry sends that attempt's key and carries that invocation, so a saved result it adopts is that invocation's own", () => {
+    const runtime = makeRuntime({ intake: carried({ queue: [heldEntry(1)] }), blobEnabled: true });
+    const first = drive(runLoop(runtime), turnResponder({
+        activity: storeAnswers([1]), turn: () => ({ throw: new Error("the turn end failed after the save") }),
+    }));
+    const thrown = turnsOf(first.ops)[0];
+    const key = thrown.input.snapshot.turnKey;
+    const invocationId = thrown.input.intake.invocationId;
+    const can = first.ops.at(-1);
+    assert.equal(can.op, "continueAsNew");
+    assert.equal(can.canInput.thrownTurnKey, key);
+    assert.equal(can.canInput.intakeRetryInvocationId, invocationId);
+
+    const retried = makeRuntime(can.canInput);
+    const seen = [];
+    const second = drive(runLoop(retried), turnResponder({
+        activity: storeAnswers([1]),
+        turn: op => {
+            seen.push({ turnKey: op.input.snapshot?.turnKey ?? null, intake: op.input.intake ?? null });
+            return completed({ invocationId, sent: true });
+        },
+        stop: op => isTurn(op) && seen.length >= 1,
+    }));
+    assert.equal(seen.length, 1);
+    assert.deepEqual(seen[0], { turnKey: key, intake: payloadOf([1], invocationId) });
+    assert.equal(endOf(second.ops).input.outcome, "completed");
+});
+
+test("W2-WIT4: a carrying attempt whose adopted witness says exposed (it sent, then lost a racing commit) leaves the invocation sent: never completed, never parked unsent", () => {
+    const exposed = { invocationId: "inv-1", sent: false, exposed: true };
+    for (const [result, outcome] of [
+        [{ type: "completed", content: "winner output" }, "interrupted"],
+        [{ type: "error", message: 'Required tool "lookup" is not available in this session.', retryable: false }, "failed_indeterminate"],
+    ]) {
+        const runtime = makeRuntime({ intake: carried({ queue: [heldEntry(1)] }) });
+        const { ops } = drive(runLoop(runtime), turnResponder({
+            guids: ["inv-1"], activity: storeAnswers([1]), turn: () => turnResult(result, exposed),
+        }));
+        assert.equal(turnsOf(ops).length, 1, result.type);
+        assert.equal(endOf(ops).input.outcome, outcome, result.type);
+    }
+    // The same winner's witness without the loser's send parks the invocation unsent: the winner's own run never sent it.
+    const runtime = makeRuntime({ intake: carried({ queue: [heldEntry(1)] }) });
+    drive(runLoop(runtime), turnResponder({
+        guids: ["inv-1"], activity: storeAnswers([1]), turn: () => completed(notSentBy()),
+    }));
+    assert.equal(runtime.state.intake.invocation.parked, "not_sent");
+    assert.equal(runtime.state.intake.invocation.sent, false);
 });

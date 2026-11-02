@@ -157,8 +157,7 @@ const QUEUE_CHANGED_82 = [
  * The lines 1.0.83 adds to queue.ts that neither name the intake nor are a
  * comment or structure: the changed line above, the parts of
  * intakeDeadlineFirst and of drain's intake race that reuse 1.0.82's own
- * expressions, and decide's turn for the intake alone on the internal
- * system-turn prompt.
+ * expressions, and decide's return after the intake's own turn.
  */
 const QUEUE_ADDED_GENERIC = [
     "        !hasFifoItems(runtime) &&",
@@ -170,8 +169,6 @@ const QUEUE_ADDED_GENERIC = [
     "    });",
     "    return other === null || other.remainingMs > 0;",
     "            const now: number = yield ctx.utcNow();",
-    "    INTERNAL_SYSTEM_TURN_PROMPT,",
-    "        yield* processPrompt(runtime, INTERNAL_SYSTEM_TURN_PROMPT, true);",
     "        return true;",
 ];
 

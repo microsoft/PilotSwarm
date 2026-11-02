@@ -259,3 +259,24 @@ export function parseIntakeTurnField(raw: unknown, path = "intake"): IntakeTurnF
 export function composeIntakePrompt(prompt: string, field: IntakeTurnField): string {
     return [...field.items.map(item => item.text), prompt].join("\n\n");
 }
+
+/**
+ * The witness an attempt of invocation `invocationId` returns with a saved
+ * result it adopted after its own request had included the items (design
+ * 5.5; review W2-WIT4). The attempt lost a racing commit: the winner's result
+ * stands, since the winner's run is the one that holds the turn. When the
+ * saved witness is exactly the winner's own well-formed one of the same
+ * invocation and says not sent, the attempt returns it with `exposed`: the
+ * items were possibly seen, by this attempt's request, though not by the run
+ * whose result this is. Null for any other saved witness, which is returned
+ * as it was saved: none (already possibly sent), one that says sent or
+ * exposed, another invocation's or a malformed one (the orchestration fails
+ * on those).
+ */
+export function intakeExposedWitness(saved: unknown, invocationId: string): { invocationId: string; sent: false; exposed: true } | null {
+    if (!isJsonObject(saved)) return null;
+    const keys = Object.keys(saved);
+    if (keys.length !== 2 || !Object.hasOwn(saved, "invocationId") || !Object.hasOwn(saved, "sent")) return null;
+    if (saved.invocationId !== invocationId || saved.sent !== false) return null;
+    return { invocationId, sent: false, exposed: true };
+}

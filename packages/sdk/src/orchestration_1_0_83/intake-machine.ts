@@ -866,13 +866,20 @@ export function intakeOwnTurnStimulus(state: IntakeState, pendingArrivals: numbe
 
 // ─── Attempt results: the transition table (design 5.5) ──────
 
-/** An attempt's `intakeDispatch` witness, or null when it returned none. */
-export function intakeDispatchWitness(raw: unknown): { invocationId: string; sent: boolean } | null {
+/**
+ * An attempt's `intakeDispatch` witness, or null when it returned none.
+ * `exposed`, present only as `true` beside `sent: false`, says the items were
+ * possibly seen by another request of the same attempt's turn, though not by
+ * the run whose result this is (review W2-WIT4).
+ */
+export function intakeDispatchWitness(raw: unknown): { invocationId: string; sent: boolean; exposed: boolean } | null {
     if (raw === undefined || raw === null) return null;
-    const value = intakeObject(raw, "intakeDispatch", ["invocationId", "sent"]);
+    const exposed = typeof raw === "object" && raw !== null && Object.hasOwn(raw, "exposed");
+    const value = intakeObject(raw, "intakeDispatch", exposed ? ["invocationId", "sent", "exposed"] : ["invocationId", "sent"]);
     const sent = value.sent;
     if (typeof sent !== "boolean") throw new IntakeShapeError("intakeDispatch.sent", "is not a boolean");
-    return { invocationId: intakeId(value.invocationId, "intakeDispatch.invocationId"), sent };
+    if (exposed && (value.exposed !== true || sent)) throw new IntakeShapeError("intakeDispatch.exposed", "is not true beside sent false");
+    return { invocationId: intakeId(value.invocationId, "intakeDispatch.invocationId"), sent, exposed };
 }
 
 /** An attempt that carried no invocation returns no witness: one would name another invocation, a broken invariant (design 5.5). */
@@ -939,8 +946,10 @@ function attemptStep(event: IntakeAttemptEvent, sent: boolean, thisAttemptSent: 
 /**
  * Apply the attempt that carried invocation `invocationId` (design 5.5): `sent`
  * first becomes true when the attempt threw, returned no witness or a witness
- * `sent: true`, and never false again; then the first matching row decides.
- * `completed` needs this attempt's own `sent: true`; `not_dispatched` only an
+ * that says `sent: true` or `exposed` (an attempt that lost a racing commit
+ * after its own request; review W2-WIT4), and never false again; then the
+ * first matching row decides. `completed` needs the returned run's own
+ * `sent: true`, which `exposed` never gives; `not_dispatched` only an
  * invocation no attempt sent. An end records its outcome for the end
  * settlement (intakeEndCall); a witness for another invocation is a broken
  * invariant, and nothing is settled.
@@ -952,14 +961,14 @@ export function applyIntakeAttempt(state: IntakeState, invocationId: string, dis
         throw new IntakeInvariantError(null, `an attempt reported invocation ${invocationId}, which no attempt may carry now`);
     }
     checkAttempt(dispatch, event);
-    let witness: { invocationId: string; sent: boolean } | null = null;
+    let witness: { invocationId: string; sent: boolean; exposed: boolean } | null = null;
     let possiblySent = false;
     if (dispatch.ran) {
         if (dispatch.threw) {
             possiblySent = true;
         } else {
             witness = intakeDispatchWitness(dispatch.witness);
-            possiblySent = witness === null || witness.sent;
+            possiblySent = witness === null || witness.sent || witness.exposed;
         }
     }
     if (witness !== null && witness.invocationId !== invocationId) {

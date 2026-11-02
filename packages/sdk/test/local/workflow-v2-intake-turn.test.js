@@ -6,8 +6,10 @@
  * `intake` field carries, and only a test registers them.
  *
  * - The carried items' texts go before whatever prompt the attempt finally
- *   sends to the model, in a recovery re-run as well; the transcript records
- *   the prompt alone, as before.
+ *   sends to the model, in a recovery re-run as well. Turn start records
+ *   each item before the turn's own prompt, as its plain copy would be
+ *   recorded: its canonical text and client id and the workflow sender; it
+ *   is passed on every attempt, and turn start records it once by its id.
  * - Every result of an attempt names the invocation with its witness: sent
  *   only once the model session called back right before its initial send
  *   (ManagedSession does after every check that ends a run without one: a
@@ -16,6 +18,10 @@
  *   already-committed turn, or the winner of a racing commit) keeps the
  *   witness it was saved with, or none; another invocation's or a malformed
  *   one is passed on for the orchestration to fail on (review W2-WIT1, WIT2).
+ *   An attempt that sent and then lost the commit adds `exposed` to the
+ *   winner's own not-sent witness of the same invocation, and to nothing
+ *   else; the winner's response stands. Two executions of one turn on two
+ *   workers that share one versioned store reach it (review W2-WIT4).
  * - A malformed field fails the activity before any model run; runTurnV4
  *   ignores the field and passes no callback.
  *
@@ -99,30 +105,51 @@ const sends = (result) => async (opts) => {
     return { ...result };
 };
 
+/** A promise and its resolve, to order two concurrent runs. */
+function deferred() {
+    let resolve;
+    const promise = new Promise((done) => { resolve = done; });
+    return { promise, resolve };
+}
+
 describe("runTurnV5: the turn of an invocation", () => {
     it("is registered only with the test option; runTurnV4 ignores an intake field and passes no send callback", async () => {
         expect(makeRunTurnHarness().handlers.runTurnV5).toBeUndefined();
-        const h = intakeHarness({ catalogExtras: turnControlCatalog().extras });
+        const v4 = turnControlCatalog();
+        const h = intakeHarness({ catalogExtras: v4.extras });
         expect(Object.keys(h.handlers).filter((name) => name.endsWith("V5"))).toEqual(["runTurnV5", "runTurnEpochV5"]);
         const result = await h.runTurn("s", { turnIndex: 2, intake: INTAKE }, "runTurnV4");
         expect(h.session.runTurn.mock.calls[0][0]).toBe("go");
         expect(h.session.runTurn.mock.calls[0][1].onBeforeInitialSend).toBeUndefined();
         expect(result.intakeDispatch).toBeUndefined();
+        const [, , , records] = v4.calls.find((call) => call[0] === "turnStart");
+        expect(records).toEqual([{ eventType: "user.message", data: { content: "go" } }]);
     });
 
-    it("puts the carried items before the prompt the model gets; once the model session sends, the witness says sent; the transcript records the prompt alone", async () => {
+    it("puts the carried items before the prompt the model gets; once the model session sends, the witness says sent; the transcript records the items with their canonical ids, then the prompt", async () => {
         const v4 = turnControlCatalog();
         const h = intakeHarness({ catalogExtras: v4.extras, turn: sends({ type: "completed", content: "ok", events: [] }) });
         const result = await h.runTurnV5("s", { turnIndex: 2, intake: INTAKE });
         expect(h.session.runTurn).toHaveBeenCalledTimes(1);
         expect(h.session.runTurn.mock.calls[0][0]).toBe(`${TEXT}\n\ngo`);
         expect(result).toMatchObject({ type: "completed", intakeDispatch: { invocationId: "inv-1", sent: true } });
-        // Turn start records the turn's prompt, without the items.
+        // Turn start records each item as its plain copy would be (its text starts with [SYSTEM:]), then the turn's prompt.
         const [, , , records] = v4.calls.find((call) => call[0] === "turnStart");
-        expect(records).toEqual([{ eventType: "user.message", data: { content: "go" } }]);
+        expect(records).toEqual([
+            { eventType: "system.message", data: { content: TEXT, clientMessageIds: [INTAKE.items[0].clientMessageId], sender: { kind: "system", display: "workflow message" } } },
+            { eventType: "user.message", data: { content: "go" } },
+        ]);
         // The epoch-start name runs the same path.
         const epoch = await h.runTurnV5("s", { turnIndex: 3, intake: INTAKE }, "runTurnEpochV5");
         expect(epoch).toMatchObject({ intakeDispatch: { invocationId: "inv-1", sent: true } });
+    });
+
+    it("a retry passes the items to turn start again, which records each once by its canonical id; the retried prompt is not recorded again", async () => {
+        const v4 = turnControlCatalog();
+        const h = intakeHarness({ catalogExtras: v4.extras, turn: sends({ type: "completed", content: "ok" }) });
+        await h.runTurnV5("s", { turnIndex: 2, retryCount: 1, intake: INTAKE });
+        const [, , , records] = v4.calls.find((call) => call[0] === "turnStart");
+        expect(records.map((record) => record.data.clientMessageIds)).toEqual([[INTAKE.items[0].clientMessageId]]);
     });
 
     it("a Stop at turn start: no model run, and the witness says not sent", async () => {
@@ -236,22 +263,78 @@ describe("runTurnV5: an adopted saved result keeps its own witness (review W2-WI
         expect(adoptedMalformed.intakeDispatch).toBe("not a witness");
     });
 
-    it("a losing attempt whose racing winner committed first returns the winner's witness, or none, never its own", async () => {
-        for (const winnerWitness of [undefined, { invocationId: "inv-1", sent: false }]) {
-            const winner = { type: "completed", content: "winner output", ...(winnerWitness ? { intakeDispatch: winnerWitness } : {}) };
+    it("a losing attempt whose racing winner committed first returns the winner's result and witness, or none; only its own send adds exposed, to the winner's own not-sent witness of the same invocation (review W2-WIT4)", async () => {
+        const cases = [
+            // [the winner's saved witness, whether this losing attempt sent, the witness it returns]
+            [undefined, true, undefined],
+            [{ invocationId: "inv-1", sent: false }, true, { invocationId: "inv-1", sent: false, exposed: true }],
+            [{ invocationId: "inv-1", sent: false }, false, { invocationId: "inv-1", sent: false }],
+            [{ invocationId: "inv-1", sent: true }, true, { invocationId: "inv-1", sent: true }],
+            [{ invocationId: "inv-2", sent: false }, true, { invocationId: "inv-2", sent: false }],
+            ["not a witness", true, "not a witness"],
+        ];
+        for (const [winnerWitness, loserSends, expected] of cases) {
+            const name = JSON.stringify([winnerWitness, loserSends]);
+            const winner = { type: "completed", content: "winner output", ...(winnerWitness !== undefined ? { intakeDispatch: winnerWitness } : {}) };
             const { h, sessionId } = savedHarness(async (opts, { sessionStateDir, store, sessionId: id }) => {
-                // This attempt sends ...
-                opts.onBeforeInitialSend?.();
+                // This attempt sends, or ends its run before its send ...
+                if (loserSends) opts.onBeforeInitialSend?.();
                 // ... while a racing attempt of the same turn saves first, under the same key.
                 fs.writeFileSync(path.join(sessionStateDir, id, ".ps-turn-commit.json"), JSON.stringify({ turnKey: "k5", result: winner }));
                 await store.commitSnapshot(id, { baseVersion: 0, turnKey: "k5" });
                 return { type: "completed", content: "loser output" };
             });
             const result = await h.runTurnV5(sessionId, { turnIndex: 5, snapshot: { turnKey: "k5" }, intake: INTAKE });
-            expect(result).toMatchObject({ type: "completed", content: "winner output" }, JSON.stringify(winnerWitness));
-            if (winnerWitness) expect(result.intakeDispatch).toEqual(winnerWitness);
-            else expect(result.intakeDispatch).toBeUndefined();
+            // The winner's response stands, whatever this attempt did.
+            expect(result, name).toMatchObject({ type: "completed", content: "winner output" });
+            if (expected === undefined) expect(result.intakeDispatch, name).toBeUndefined();
+            else expect(result.intakeDispatch, name).toEqual(expected);
         }
+    });
+
+    it("two executions of one turn (its work item run twice) race: the one that sent loses the commit to one whose run ended before its send, and returns the winner's result with the witness exposed (review W2-WIT4)", async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), "ps-intake-race-"));
+        roots.push(root);
+        const storeDir = path.join(root, "session-store");
+        const sessionId = `intake-race-${randomUUID()}`;
+        const input = { turnIndex: 5, snapshot: { turnKey: "k5" }, intake: INTAKE };
+        // Two workers: each its own session state folder and session manager, one versioned snapshot store.
+        const worker = (name, turn) => {
+            const sessionStateDir = path.join(root, `state-${name}`);
+            fs.mkdirSync(sessionStateDir, { recursive: true });
+            const store = new FilesystemSessionStore(storeDir, sessionStateDir);
+            return intakeHarness({
+                catalogExtras: turnControlCatalog({ writeback: true }).extras, sessionStore: store, sessionStateDir,
+                turn: async (opts) => {
+                    makeSessionLayout(sessionStateDir, sessionId);
+                    return turn(opts);
+                },
+            });
+        };
+        const sending = deferred();
+        const resume = deferred();
+        // A: its request includes the items; then its model run stalls, as on a worker that lost its lock.
+        const a = worker("a", async (opts) => {
+            opts.onBeforeInitialSend?.();
+            sending.resolve();
+            await resume.promise;
+            return { type: "completed", content: "A's answer" };
+        });
+        // B: the same work item, run again; its run ends before its send (here a required tool it cannot find).
+        const b = worker("b", async () => ({ type: "error", message: 'Required tool "lookup" is not available in this session.', retryable: false }));
+        const first = a.runTurnV5(sessionId, input);
+        await sending.promise;
+        const winner = await b.runTurnV5(sessionId, input);
+        expect(winner).toMatchObject({ type: "error", retryable: false, snapshotVersion: 1, intakeDispatch: { invocationId: "inv-1", sent: false } });
+        resume.resolve();
+        const loser = await first;
+        // A's commit finds the turn saved by B under the same key (restore, not replay): B's result stands, and A's own
+        // send is reported, never as a send of the run whose result this is.
+        expect(loser).toMatchObject({ type: "error", retryable: false, snapshotVersion: 1 });
+        expect(loser.content).toBeUndefined();
+        expect(loser.intakeDispatch).toEqual({ invocationId: "inv-1", sent: false, exposed: true });
+        const probe = await new FilesystemSessionStore(storeDir, path.join(root, "state-a")).probeSnapshot(sessionId);
+        expect(probe).toMatchObject({ version: 1, turnKey: "k5" });
     });
 });
 

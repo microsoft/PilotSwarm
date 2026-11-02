@@ -52,10 +52,16 @@
  *   the attempt that sent it records the retry marker with the pending
  *   prompt, and only decide's dispatch of that prompt takes it; any other
  *   attempt, one that runs while the prompt is held, starts new and carries
- *   no sent invocation (review D-W2-1). With nothing else to dispatch,
- *   decide starts a turn for a ready invocation alone, or for a parked one
- *   that a newly claimed item resumes (not a gate's), on the internal
- *   system-turn prompt; never during a graceful shutdown.
+ *   no sent invocation (review D-W2-1). An attempt that sends the key of the
+ *   thrown attempt it retries, and so may adopt that attempt's saved result,
+ *   carries only what that attempt carried: the invocation its marker names,
+ *   or none; nothing is formed for it, and no turn for the intake alone
+ *   starts while such a retry is pending (review W2-WIT3). With nothing else
+ *   to dispatch and no timer armed, decide starts a turn for a ready
+ *   invocation alone, or for a parked one that a newly claimed item resumes
+ *   (not a gate's), on the internal system-turn prompt, with what drain gives
+ *   a newly arrived prompt as its system context: the released timer's note
+ *   and the buffered child digest (6.2); never during a graceful shutdown.
  *
  * Inactive: no production registry entry, latest version, start, upward
  * continue-as-new, worker capability or tool routes to this code; only
@@ -99,8 +105,9 @@ import {
     type IntakeTurnPayload,
 } from "./intake-machine.js";
 import { intakeAwaitingRetry } from "./intake-state.js";
-import { publishStatus } from "./lifecycle.js";
-import { touchRecentClientMessageIds, type DurableSessionRuntime } from "./state.js";
+import { flushPendingChildDigestIntoPrompt, publishStatus } from "./lifecycle.js";
+import { INTERNAL_SYSTEM_TURN_PROMPT, touchRecentClientMessageIds, type DurableSessionRuntime } from "./state.js";
+import { appendSystemContext } from "./utils.js";
 
 /** Where a copy is handled: drain, the sweep before a prompt's dispatch (design 6.2), or the wake's retry of a waiting copy. */
 export type IntakeSource = "drain" | "sweep" | "wake";
@@ -481,7 +488,9 @@ function* formAndBind(runtime: DurableSessionRuntime): Generator<any, void, any>
  * Only decide's dispatch of the pending prompt takes the retry marker, and
  * so carries the sent invocation it names, as its turn's retry; any other
  * attempt starts new with its stimulus, and a sent invocation stays with its
- * held prompt (I8; review D-W2-1). Returns the payload for the turn's
+ * held prompt (I8; review D-W2-1). An attempt that sends the key of the
+ * thrown attempt it retries carries only what that attempt carried (review
+ * W2-WIT3, intakeReusesThrownTurnKey). Returns the payload for the turn's
  * `intake` field, or null when the attempt carries none.
  */
 export function* intakeBeforeAttempt(runtime: DurableSessionRuntime): Generator<any, IntakeTurnPayload | null, any> {
@@ -508,6 +517,13 @@ function* beforeAttempt(runtime: DurableSessionRuntime): Generator<any, IntakeTu
         throw new IntakeInvariantError(null, `invocation ${awaiting.invocationId} awaits its turn's retry, but no pending prompt carries it`);
     }
     latchIntakeTombstones(runtime);
+    if (marker === null && intakeReusesThrownTurnKey(state)) {
+        // The saved result this attempt may adopt says nothing of any batch
+        // its thrown attempt did not carry, and that attempt carried none (it
+        // would have left the marker): this one carries none either.
+        runtime.intakeAttempt = null;
+        return null;
+    }
     if (intakeCanForm(state.intake)) yield* formAndBind(runtime);
     const start: IntakeAttemptStart = marker !== null ? { kind: "retry", invocationId: marker } : { kind: "new", stimulus };
     const carried = carryIntakeInvocation(state.intake, start);
@@ -606,7 +622,9 @@ function* noteAttempt(runtime: DurableSessionRuntime, event: IntakeAttemptEvent)
  * is formed and bound when none exists, and a turn starts for a ready
  * invocation, or for one parked for any cause but a gate that a newly
  * claimed item resumes; the attempt's stimulus is set for it. Never during a
- * graceful shutdown. Returns whether decide starts that turn.
+ * graceful shutdown, nor while a thrown turn's retry is pending: that turn
+ * would send the thrown attempt's key and could carry nothing (review
+ * W2-WIT3). Returns whether decide starts that turn.
  */
 export function* intakeOwnTurn(runtime: DurableSessionRuntime): Generator<any, boolean, any> {
     return yield* guarded(runtime, ownTurn(runtime));
@@ -614,7 +632,7 @@ export function* intakeOwnTurn(runtime: DurableSessionRuntime): Generator<any, b
 
 function* ownTurn(runtime: DurableSessionRuntime): Generator<any, boolean, any> {
     const { state } = runtime;
-    if (state.pendingShutdown) return false;
+    if (state.pendingShutdown || intakeReusesThrownTurnKey(state)) return false;
     latchIntakeTombstones(runtime);
     if (intakeCanForm(state.intake)) yield* formAndBind(runtime);
     const stimulus = intakeOwnTurnStimulus(state.intake, runtime.intakeArrivals ?? 0);
@@ -626,10 +644,77 @@ function* ownTurn(runtime: DurableSessionRuntime): Generator<any, boolean, any> 
 /**
  * Whether decide would start the intake's own turn now (intakeOwnTurn): drain
  * then neither blocks on the queue nor waits for an armed timer, as for
- * queued work. False during a graceful shutdown, when decide starts none.
+ * queued work. False during a graceful shutdown and while a thrown turn's
+ * retry is pending, when decide starts none.
  */
 export function intakeWantsTurn(runtime: DurableSessionRuntime): boolean {
     const { state } = runtime;
-    if (state.pendingShutdown) return false;
+    if (state.pendingShutdown || intakeReusesThrownTurnKey(state)) return false;
     return intakeCanForm(state.intake) || intakeOwnTurnStimulus(state.intake, runtime.intakeArrivals ?? 0) !== null;
+}
+
+/**
+ * Whether the next turn attempt sends the key of the thrown attempt it
+ * retries (turn.ts, which asks the same; 1.0.81): with snapshots, a retry
+ * after a throw, and no sent invocation's retry held for the pending prompt
+ * (review D-W2-1); the pending prompt's dispatch asks after taking that
+ * marker. Such an attempt adopts the thrown attempt's saved result when that
+ * attempt had committed, and so it carries only what that attempt carried
+ * (review W2-WIT3).
+ */
+export function intakeReusesThrownTurnKey(state: DurableSessionRuntime["state"]): boolean {
+    return state.blobEnabled && state.retryCount > 0 && state.thrownTurnKey !== null && state.thrownTurnKey !== ""
+        && state.intakeRetryInvocationId === null;
+}
+
+/**
+ * The note drain gives a newly arrived prompt about the timer it releases
+ * (queue.ts, the prompt path), here for the timer released for the intake's
+ * own turn (releaseTimerForQueuedWork): a wait's or a cron's remaining time,
+ * or a cron_at's preserved fire. None for any other timer.
+ */
+function releasedTimerNote(runtime: DurableSessionRuntime): string | undefined {
+    const released = runtime.releasedForQueuedWork;
+    if (!released) return undefined;
+    const { state } = runtime;
+    const timer = released.timer;
+    if (timer.type === "wait" && released.savedInterruptedWait) {
+        const remainingSec = released.savedInterruptedWait.remainingSec;
+        const totalSec = Math.round(timer.originalDurationMs / 1000);
+        const elapsedSec = Math.max(0, totalSec - remainingSec);
+        return `The above is a message that interrupted your ${totalSec}s timer (reason: "${timer.reason}"). ` +
+            `${elapsedSec}s elapsed, ${remainingSec}s remain. ` +
+            `Reply to the message. The timer will be automatically resumed after your reply.`;
+    }
+    if (timer.type === "cron" && released.savedInterruptedCron) {
+        const activeCron = state.cronSchedule;
+        return `This is an internal recurring schedule, not a new user prompt. ` +
+            `There is an active recurring schedule every ${activeCron?.intervalSeconds ?? "?"} seconds for "${activeCron?.reason ?? timer.reason}". ` +
+            `The next cron wake-up will keep the original schedule and resume after the remaining ${Math.round(released.savedInterruptedCron.remainingMs / 1000)} seconds unless you explicitly reset cron. ` +
+            `Do NOT call wait() just to keep the recurring loop alive. ` +
+            `Call cron(action="cancel") only if you need to stop it.`;
+    }
+    if (timer.type === "cron_at") {
+        const activeCronAt = state.cronAtSchedule;
+        const scheduledAt = activeCronAt?.nextFireAtMs ? new Date(activeCronAt.nextFireAtMs).toISOString() : "unknown";
+        return `This is an internal wall-clock recurring schedule, not a new user prompt. ` +
+            `There is an active wall-clock schedule for "${activeCronAt?.reason ?? timer.reason}". ` +
+            `The pending scheduled fire (${scheduledAt}) is preserved and will run after this turn completes; ` +
+            `if the scheduled time passes while you respond, it will fire immediately afterward unless you explicitly cancel or reset the schedule. ` +
+            `Do NOT call wait() just to keep the recurring loop alive. ` +
+            `Call cron_at(action="cancel") only if you need to stop it.`;
+    }
+    return undefined;
+}
+
+/**
+ * The prompt of decide's turn for the intake alone (design 3, 6.2): the
+ * session's internal system-turn prompt, with what drain gives a newly
+ * arrived prompt in the turn's system context, never in an item: the note of
+ * the timer released for this turn and the buffered child digest, which the
+ * turn takes. The items' canonical texts never change.
+ */
+export function intakeOwnTurnPrompt(runtime: DurableSessionRuntime): string {
+    const prompt = appendSystemContext(INTERNAL_SYSTEM_TURN_PROMPT, releasedTimerNote(runtime)) ?? INTERNAL_SYSTEM_TURN_PROMPT;
+    return flushPendingChildDigestIntoPrompt(runtime, prompt) ?? prompt;
 }

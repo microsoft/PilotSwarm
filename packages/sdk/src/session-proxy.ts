@@ -76,7 +76,7 @@ import type { NativeTasksPayload } from "./native-task-observer.js";
 import { spawnWorkflowFromTool } from "./workflow/spawn.js";
 import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool, type WorkflowToolHost } from "./workflow/v2/tools.js";
 import { applySessionCommandToWorkflowV2 } from "./workflow/v2/service.js";
-import { composeIntakePrompt, parseIntakeTurnField, type IntakeTurnField } from "./workflow/v2/intake.js";
+import { composeIntakePrompt, intakeExposedWitness, parseIntakeTurnField, type IntakeTurnField } from "./workflow/v2/intake.js";
 import type { SpawnWorkflowToolArgs } from "./workflow/tool-spec.js";
 
 const SYSTEM_AGENT_IDS = new Set(["pilotswarm", "sweeper", "resourcemgr", "facts-manager"]);
@@ -1659,11 +1659,18 @@ export function registerActivities(
         // the witness it was saved with, or none: evidence of another attempt
         // is never made up from this one's; the orchestration reads a missing
         // witness as possibly sent and fails visibly on a foreign or
-        // malformed one (review W2-WIT1, W2-WIT2).
+        // malformed one (review W2-WIT1, W2-WIT2). Only an attempt that sent
+        // before it lost the commit adds that the items were possibly seen,
+        // to the winner's own witness of the same invocation that says not
+        // sent; the winner's response stands (review W2-WIT4).
         let intakeSent = false;
         let adoptedSavedResult = false;
         const withIntakeWitness = (result: TurnResult): TurnResult => {
-            if (turnIntake === null || adoptedSavedResult) return result;
+            if (turnIntake === null) return result;
+            if (adoptedSavedResult) {
+                const exposed = intakeSent ? intakeExposedWitness(result.intakeDispatch, turnIntake.invocationId) : null;
+                return exposed === null ? result : { ...result, intakeDispatch: exposed };
+            }
             return { ...result, intakeDispatch: { invocationId: turnIntake.invocationId, sent: intakeSent } };
         };
 
@@ -4272,6 +4279,21 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                     eventType: "system.message",
                     data: { content: decorateRehydrationSystemPrompt(input.config.turnSystemPrompt, workerNodeId) },
                 });
+            }
+            // Workflow intake (runTurnV5, design section 3 and 5.5): the
+            // carried items, in batch order and before the turn's own prompt,
+            // as the model gets them. Each is recorded as its sender's plain
+            // copy of the same message would be: its canonical text, its
+            // canonical client id (which tombstones name) and the system
+            // sender `workflow message`. Each has an id, so turn start records
+            // it once, on whichever attempt first reaches it.
+            if (catalog && turnIntake && (tc || !isRetryAttempt)) {
+                for (const item of turnIntake.items) {
+                    promptRecords.push({
+                        eventType: isInternalSystemPrompt(item.text) ? "system.message" : "user.message",
+                        data: { content: item.text, clientMessageIds: [item.clientMessageId], sender: { kind: "system", display: "workflow message" } },
+                    });
+                }
             }
             if (catalog && !isTimerPrompt && !input.bootstrap && !isCarriedWake && promptForRecord
                 && (!isRetryAttempt || (tc && incomingClientMessageIds.length > 0))) {

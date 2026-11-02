@@ -22,8 +22,9 @@
  * - The wake: due claims, holder settles, held cancels, binds, cancel writes
  *   and ends only, the cancels with no other stimulus; never a turn.
  * - The invocation: formed and bound before any attempt carries it; who
- *   carries it; the transition table with cumulative `sent`; parking and its
- *   stimuli; the end settlement and its retry.
+ *   carries it; the transition table with cumulative `sent` (an adopted
+ *   witness that says exposed counts as sent, never as completed: review
+ *   W2-WIT4); parking and its stimuli; the end settlement and its retry.
  *
  * Run: node --test test/unit/orchestration-intake-machine-1-0-83.test.mjs
  */
@@ -158,6 +159,8 @@ const NOT_RUN = frozen({ ran: false });
 const THREW = frozen({ ran: true, threw: true });
 const NO_WITNESS = frozen({ ran: true, threw: false, witness: undefined });
 const witness = (sent, invocationId = "inv-1") => frozen({ ran: true, threw: false, witness: { invocationId, sent } });
+/** An adopted winner's witness, of the same invocation and not sent, returned by an attempt that sent and lost the commit (review W2-WIT4). */
+const EXPOSED = frozen({ ran: true, threw: false, witness: { invocationId: "inv-1", sent: false, exposed: true } });
 
 const attempt = (state, dispatch, event) => applyIntakeAttempt(frozen(state), "inv-1", dispatch, frozen(event));
 
@@ -803,6 +806,13 @@ const ROWS = [
     [false, { kind: "result" }, witness(false), { next: "parked", cause: "not_sent" }, false],
     [false, { kind: "hydration" }, NOT_RUN, { next: "parked", cause: "hydration" }, false],
     [true, { kind: "hydration" }, NOT_RUN, { next: "end", outcome: "interrupted" }, true],
+    // Review W2-WIT4: an exposed witness makes the invocation sent; the result's own run did not send it, so never completed.
+    [false, { kind: "stopped" }, EXPOSED, { next: "end", outcome: "interrupted" }, true],
+    [false, { kind: "gate" }, EXPOSED, { next: "end", outcome: "interrupted" }, true],
+    [false, { kind: "retrying" }, EXPOSED, { next: "retry" }, true],
+    [false, { kind: "failed", cause: "non_retryable" }, EXPOSED, { next: "end", outcome: "failed_indeterminate" }, true],
+    [false, { kind: "result" }, EXPOSED, { next: "end", outcome: "interrupted" }, true],
+    [true, { kind: "result" }, EXPOSED, { next: "end", outcome: "interrupted" }, true],
 ];
 
 test("the transition table: `sent` is cumulative and the first matching row decides; every result state restores", () => {
@@ -832,6 +842,19 @@ test("the transition table: `sent` is cumulative and the first matching row deci
     assert.throws(() => attempt(carried, witness(true, "inv-2"), { kind: "result" }), IntakeInvariantError);
     assert.throws(() => attempt(carried, frozen({ ran: true, threw: false, witness: { invocationId: "inv-1", sent: "yes" } }), { kind: "result" }),
         error => error instanceof IntakeShapeError && error.path === "intakeDispatch.sent");
+    // `exposed` is only `true` beside `sent: false`, of the same invocation; anything else is malformed or broken (W2-WIT4).
+    for (const raw of [
+        { invocationId: "inv-1", sent: false, exposed: false },
+        { invocationId: "inv-1", sent: true, exposed: true },
+        { invocationId: "inv-1", sent: false, exposed: "yes" },
+    ]) {
+        assert.throws(() => attempt(carried, frozen({ ran: true, threw: false, witness: raw }), { kind: "result" }),
+            error => error instanceof IntakeShapeError && error.path === "intakeDispatch.exposed", JSON.stringify(raw));
+    }
+    assert.throws(() => attempt(carried, frozen({ ran: true, threw: false, witness: { invocationId: "inv-1", sent: false, exposed: true, extra: 1 } }),
+        { kind: "result" }), error => error instanceof IntakeShapeError && error.path === "intakeDispatch");
+    assert.throws(() => attempt(carried, frozen({ ran: true, threw: false, witness: { invocationId: "inv-2", sent: false, exposed: true } }),
+        { kind: "result" }), IntakeInvariantError);
     // Only the invocation an attempt may carry: none, another, unbound, or one being settled.
     assert.throws(() => applyIntakeAttempt(EMPTY, "inv-1", witness(true), { kind: "result" }), IntakeInvariantError);
     assert.throws(() => applyIntakeAttempt(carried, "inv-2", witness(true, "inv-2"), { kind: "result" }), IntakeInvariantError);
