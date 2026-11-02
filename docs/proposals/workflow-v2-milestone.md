@@ -650,7 +650,7 @@ per schema file).
 | Portal and TUI composer, management client, SDK client | session access (`canSendPrompt`, `canAnswer`, `canSteer`; the TUI's direct mode reads `getWorkflowInputPolicy`) | human input, refused for an agent state's subtree at the SDK (both composers are read-only there) |
 | REST `POST /sessions/:id/workflow/commands`, SDK (direct and web) and TUI `updateWorkflow`, MCP `update_workflow` (INACTIVE: test-only option `workflowCommands`) | — | a person's `update_workflow` command (below) |
 | Bootstrap (`GET /api/bootstrap`, `/api/v1/bootstrap`), SDK `getWorkflowCapabilities` (direct and web), both transports | `workflows`: the workflow support the deployment takes now (below) | nothing |
-| TUI workflow view (`w` on a workflow session) | the states in graph order for the chosen run (←→), the selected state's details, transitions and history, an agent state's child session per occurrence, a test run's intercepted effects, and with `personCommands` (INACTIVE) the shown run's controls (below) | a person's `pause`, `resume`, `stop`, `cancel` of the shown run (p, r, s, c; stop and cancel ask first) as `updateWorkflow` commands; it opens a child session's chat to read |
+| TUI workflow view (`w` on a workflow session) | the states in graph order for the chosen run (←→), the selected state's details, transitions and history, an agent state's child session per occurrence, a test run's intercepted effects, and with `personCommands` (INACTIVE) the shown run's controls and variables (below) | a person's `pause`, `resume`, `stop`, `cancel` of the shown run (p, r, s, c; stop and cancel ask first) and `set_vars` of one variable (v: set, or remove after confirming) as `updateWorkflow` commands; it opens a child session's chat to read |
 
 All read surfaces serve one projection (`readWorkflowV2View`), so they show
 the same agent child, branch, stop, test and pin fields. The shared UI
@@ -931,7 +931,7 @@ Unfulfilled requirements (open, not waived; R26):
 - **The rest of the UI commands**: the portal sends every person's command
   (above). Test fixtures and a several-key variables update go through the
   API, MCP or the agent tool. The TUI's workflow view (below) sends only a
-  person's run controls.
+  person's run controls and variable changes.
 
 **The TUI's read-only workflow view (design 02 "Portal/TUI: graph, observed
 state, read-only child chats"; T115).** On a workflow session, `w` (outside
@@ -997,6 +997,36 @@ applies it once). The server decides every command again (its session
 gate, the subtree rule, the run's state). Long reasons and notices are
 wrapped, not cut. Nothing about the run lifecycle changes.
 
+**The TUI's run variables (design 02 open KV; R04, R05; mock M15;
+INACTIVE likewise).** The workflow view's details list the shown run's
+variables with their revision, as the portal's variables panel does
+(`workflowV2RunVariables`: name = value, the first 8, with the note or the
+start of a preview too long to list, and why a person cannot change them).
+`v` opens the variables form for that run: a name field and a JSON value
+field (Tab switches them; ←→, Home, End and Backspace edit the focused
+one), the run's variables now (↑↓ copy one, its whole value, into the
+fields), and the run's revision. Enter sets the name to the value
+(`workflowV2VariableDraft`: the name exactly as typed, 1 to 128 characters,
+kept as plain data whatever it is, `__proto__` included; the value any JSON);
+ctrl-r removes the name (`workflowV2VariableRemoval`) after the confirm
+dialog, which returns to the form. Each is one `set_vars` update of the run
+the form was opened for, sent as the portal sends it
+(`sendWorkflowRunCommand`), at the revision the view shows when it is
+sent. What was typed is checked first and the form says what is wrong. The
+form is not opened where the workflow (an agent state's subtree: people
+only pause, stop or cancel it), the run (ended, or its revision unknown),
+the viewer or the deployment does not allow a change; the status line says
+why. The server decides every update anyway: its refusal (for example a
+human-input denial) stays in the form and on the status line, with what was
+typed. A changed revision is refused (`KV_REVISION_CONFLICT`) and the
+workflow is read again, so the form shows the new variables and revision
+and the next Enter uses it; an answer that never came is sent again as
+itself (the same operation id). While an update is sent the form says so
+and sends nothing else. A form whose run the view no longer shows (a new
+live run) sends nothing. Accepted, the form returns to the view. While the
+form is open, q is text, not the quit key. Nothing else about the open KV
+changes.
+
 **The TUI composer of a session in an agent state's subtree (design 03
 human-input denial; T115 "no human composer", T116 in the TUI).** It is
 read-only, as the portal's is: it shows the server's reason and the
@@ -1015,9 +1045,10 @@ fails, the composer stays as it is and the server refuses the input
 reads the same policy through its session access), are unchanged.
 
 Not in the TUI yet (open, not waived):
-- a person's other workflow commands (variables, publication, draft
-  editing, test start, test answers and the virtual clock): the portal,
-  the API, MCP and the agent tools take them;
+- a person's other workflow commands (publication, draft editing, test
+  start, test answers and the virtual clock): the portal, the API, MCP and
+  the agent tools take them; a several-key variables update (the form sends
+  one name at a time, as the portal's panel does);
 - each execution's own output: the view shows the state's latest output or
   error (bounded), as the portal's Output tab does;
 - the TUI refuses a person's prompt, answer and steer to an agent state's

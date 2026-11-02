@@ -1,0 +1,308 @@
+// The shown run's variables in the TUI's workflow view (design 02 open KV; R04, R05; mock M15; INACTIVE: only a
+// deployment that takes a person's workflow commands offers them): the view lists them with their revision, and v opens
+// a form that sets a name to a JSON value (Enter) or removes a name (ctrl-r, after the confirm dialog), each as one
+// set_vars update of that run at the revision the view shows, as the portal's variables panel sends it (the shared
+// controller's sendWorkflowRunCommand; workflowV2RunVariables, workflowV2VariableDraft, workflowV2VariableRemoval). A
+// name is kept exactly as typed, and a value is typed JSON. What is typed is checked first. The form is not offered
+// where the workflow (an agent state's subtree), the run (ended, revision unknown), the viewer or the deployment does
+// not allow it, and the server decides every update anyway: its refusal stays in the form. A changed revision is
+// refused and the workflow is read again, so the next try uses the new revision; an answer that never came sends the
+// same update again. A form whose run the view no longer shows sends nothing.
+//
+// Run: node --test packages/app/ui/core/test/workflow-tui-variables.test.mjs
+import test from "node:test";
+import assert from "node:assert/strict";
+import {
+    PilotSwarmUiController, UI_COMMANDS, appReducer, buildHistoryModel, createInitialState, createStore, selectWorkflowVariableModal,
+    selectWorkflowViewModal,
+} from "../src/index.js";
+import { RUN, readModel } from "./workflow-v2-fixtures.mjs";
+
+const states = [
+    { id: "review", type: "agent", invoke: { source: "agent", name: "code-reviewer" }, timeoutSeconds: 600, outcomes: ["accepted"],
+        next: { accepted: "done", timed_out: "failed" } },
+    { id: "done", type: "terminal", outcome: "succeeded" },
+    { id: "failed", type: "terminal", outcome: "failed" },
+];
+const graph = { revision: 1, initial: "review", states };
+/** Every command a 1.9.0 host takes from people (human-commands.ts), in its order. */
+const ALL = ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel", "stop",
+    "test", "test_respond", "test_advance"];
+const SUBTREE = "This workflow runs in a workflow agent state's subtree: people can pause, stop or cancel it; only its controlling "
+    + "agent changes, resumes or tests it.";
+
+/** The live run with its variables (`vars`, at `revision`), and what its workflow takes from people (`commands`; null: none). */
+function model({ status = "running", vars = { a: 1, "b c": "x" }, revision = 3, runId = RUN,
+    commands = { operations: ALL, restriction: null, run: { runId: RUN, stop: true } } } = {}) {
+    const base = readModel({ graph, run: { runId, status, kv: JSON.stringify(vars), ...(revision === null ? { kvRevision: null } : { kvRevision: revision }) },
+        runs: [{ runId, mode: "live", status, revision: 1, outcome: null }] });
+    return commands ? { ...base, personCommands: commands } : base;
+}
+
+/** The workflow session wf with `initial` loaded; updateWorkflow answers with the next of `answers` (default: accepted). */
+function harness(initial, answers = []) {
+    let current = initial;
+    const calls = [];
+    const transport = {
+        getSessionEventsBefore: async () => [],
+        readWorkflow: async (...args) => { calls.push(["readWorkflow", ...args]); return current; },
+        updateWorkflow: async (...args) => {
+            calls.push(["updateWorkflow", ...args]);
+            const answer = answers.shift();
+            return answer ? answer(...args) : { kvRevision: 4 };
+        },
+    };
+    const store = createStore(appReducer, createInitialState({ mode: "local" }));
+    const controller = new PilotSwarmUiController({ store, transport });
+    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", title: "Workflow: review-flow", status: "running", sessionKind: "workflow" }] });
+    store.dispatch({ type: "sessions/selected", sessionId: "wf" });
+    store.dispatch({ type: "history/set", sessionId: "wf", history: buildHistoryModel([]) });
+    store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModel: initial, readModelRunId: null } });
+    return {
+        controller, store, calls, answers,
+        sent: () => calls.filter(call => call[0] === "updateWorkflow").map(call => call[2]),
+        serve: next => { current = next; },
+    };
+}
+
+const settle = async () => { for (let i = 0; i < 4; i++) await new Promise(resolve => setImmediate(resolve)); };
+const details = store => selectWorkflowViewModal(store.getState(), 110).detailsLines.map(line => line.text);
+const form = store => selectWorkflowVariableModal(store.getState(), 110);
+/** Lines as one text: a wrapped sentence reads whole. */
+const joined = lines => lines.map(line => (typeof line === "string" ? line : line.text).trim()).join(" ");
+const statusOf = store => store.getState().ui.statusText;
+const type = (h, text) => h.controller.insertWorkflowVariableText(text);
+
+async function opened(initial, answers = []) {
+    const h = harness(initial, answers);
+    await h.controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW);
+    await settle();
+    return h;
+}
+
+test("the view lists the shown run's variables; v opens the form, and Enter sets a name, kept as typed, to its typed JSON value", async () => {
+    const h = await opened(model());
+    const lines = details(h.store);
+    assert.ok(lines.includes("Variables · revision 3 — v sets or removes one"), lines.join("\n"));
+    assert.ok(lines.includes("  a = 1"));
+    assert.ok(lines.includes('  b c = "x"'));
+    const view = h.store.getState().ui.modal;
+
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_EDIT_VARIABLES);
+    let modal = h.store.getState().ui.modal;
+    assert.equal(modal.type, "workflowVariable");
+    assert.equal(modal.runId, RUN);
+    assert.deepEqual(modal.returnModal, view);
+    assert.equal(form(h.store).title, `Variables · run ${RUN} · revision 3`);
+    type(h, "my var");
+    h.controller.switchWorkflowVariableField();
+    type(h, '{"limit": 3, "tags": ["a"]}');
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    const [first] = h.sent();
+    const { operation_id: operationId, ...wire } = first;
+    assert.deepEqual(wire, { operation: "set_vars", run_id: RUN, set: { "my var": { limit: 3, tags: ["a"] } }, expected_kv_revision: 3 });
+    assert.match(operationId, /^ui-set_vars-/);
+    assert.equal(statusOf(h.store), `Variables of run ${RUN} updated: set 'my var' (revision 4). States that start from now on see them.`);
+    assert.deepEqual(h.store.getState().ui.modal, view, "back to the workflow view");
+
+    // Any allowed name stays plain data, spaces and "__proto__" included; a value is any JSON, null too.
+    for (const [name, value, expected] of [[" spaced  ", '"text"', "text"], ["__proto__", "null", null]]) {
+        await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_EDIT_VARIABLES);
+        type(h, name);
+        h.controller.switchWorkflowVariableField();
+        type(h, value);
+        await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+        const set = h.sent().at(-1).set;
+        assert.deepEqual(Object.keys(set), [name]);
+        assert.deepEqual(Object.getOwnPropertyDescriptor(set, name).value, expected);
+        assert.equal(Object.getPrototypeOf(set), Object.prototype);
+        modal = h.store.getState().ui.modal;
+        assert.equal(modal.type, "workflowView");
+    }
+});
+
+test("what is typed is checked first and the form says what is wrong; nothing is sent; the fields edit as text", async () => {
+    const h = await opened(model());
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_EDIT_VARIABLES);
+    const errorOf = () => h.store.getState().ui.modal.error;
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    assert.equal(errorOf(), "Name the variable (1 to 128 characters).");
+    assert.ok(joined(form(h.store).lines).includes("Name the variable (1 to 128 characters)."));
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VARIABLE_REMOVE);
+    assert.equal(errorOf(), "Name the variable to remove (1 to 128 characters).");
+    type(h, "a");
+    assert.equal(errorOf(), null, "typing clears the message");
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    assert.equal(errorOf(), 'Give the value as JSON, for example "text", 120, true or null.');
+    h.controller.switchWorkflowVariableField();
+    type(h, "abc");
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    assert.match(errorOf(), /^The value must be JSON \(a string needs quotes\): /);
+    h.controller.switchWorkflowVariableField();
+    type(h, "x".repeat(128));
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    assert.equal(errorOf(), "Name the variable (1 to 128 characters).");
+    assert.deepEqual(h.sent(), []);
+
+    // The focused field edits as text: the cursor moves, Home and End, and backspace.
+    const fresh = await opened(model());
+    await fresh.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_EDIT_VARIABLES);
+    type(fresh, "ab");
+    fresh.controller.moveWorkflowVariableCursor(-1);
+    type(fresh, "X");
+    fresh.controller.moveWorkflowVariableCursorToBoundary("start");
+    type(fresh, "0");
+    fresh.controller.moveWorkflowVariableCursorToBoundary("start");
+    fresh.controller.deleteWorkflowVariableChar();
+    fresh.controller.moveWorkflowVariableCursorToBoundary("end");
+    fresh.controller.deleteWorkflowVariableChar();
+    let modal = fresh.store.getState().ui.modal;
+    assert.equal(modal.name, "0aX");
+    assert.equal(modal.nameCursor, 3);
+    fresh.controller.switchWorkflowVariableField();
+    type(fresh, "1");
+    modal = fresh.store.getState().ui.modal;
+    assert.deepEqual([modal.field, modal.name, modal.value], ["value", "0aX", "1"]);
+    assert.equal(form(fresh.store).field, "value");
+});
+
+test("↑↓ copy a listed variable into the form; ctrl-r removes it after the confirm dialog, which returns to the form", async () => {
+    const h = await opened(model());
+    const view = h.store.getState().ui.modal;
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_EDIT_VARIABLES);
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_NEXT);
+    let modal = h.store.getState().ui.modal;
+    assert.deepEqual([modal.pick, modal.name, modal.value], [0, "a", "1"]);
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_NEXT);
+    modal = h.store.getState().ui.modal;
+    assert.deepEqual([modal.pick, modal.name, modal.value], [1, "b c", '"x"']);
+    assert.ok(form(h.store).lines.some(line => line.text === '▸ b c = "x"'));
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_PREV);
+    assert.equal(h.store.getState().ui.modal.name, "a");
+    const theForm = h.store.getState().ui.modal;
+
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VARIABLE_REMOVE);
+    modal = h.store.getState().ui.modal;
+    assert.equal(modal.type, "confirm");
+    assert.equal(modal.title, "Remove Workflow Variable");
+    assert.equal(modal.confirmLabel, "Remove");
+    assert.match(modal.message, new RegExp(`^Remove 'a' from the variables of run ${RUN}\\?`));
+    await h.controller.handleCommand(UI_COMMANDS.CLOSE_MODAL);
+    assert.deepEqual(h.store.getState().ui.modal, theForm, "back to the form, as it was");
+    assert.equal(statusOf(h.store), "The removal was not sent");
+    assert.deepEqual(h.sent(), []);
+
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VARIABLE_REMOVE);
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    const [removal] = h.sent();
+    const { operation_id: _id, ...wire } = removal;
+    assert.deepEqual(wire, { operation: "set_vars", run_id: RUN, delete: ["a"], expected_kv_revision: 3 });
+    assert.equal(statusOf(h.store), `Variables of run ${RUN} updated: removed 'a' (revision 4). States that start from now on see them.`);
+    assert.deepEqual(h.store.getState().ui.modal, view, "accepted: back to the workflow view");
+});
+
+test("the form is not offered where the workflow, the run, the viewer or the deployment does not allow it; the server decides anyway", async () => {
+    const all = [];
+    const refusedWith = async (initial, reason) => {
+        const h = await opened(initial);
+        all.push(h);
+        await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_EDIT_VARIABLES);
+        assert.equal(h.store.getState().ui.modal.type, "workflowView");
+        assert.equal(statusOf(h.store), `The variables cannot be changed here. ${reason}`);
+        return h;
+    };
+    const restriction = `${SUBTREE} Its controlling agent is session parent-1.`;
+    const subtree = await refusedWith(model({ commands: { operations: ["pause", "stop", "cancel"],
+        restriction: { reason: SUBTREE, workflowSessionId: "outer", controllingSessionId: "parent-1" }, run: { runId: RUN, stop: true } } }), restriction);
+    assert.ok(details(subtree.store).includes("Variables · revision 3"), "listed, without the key");
+    assert.ok(joined(details(subtree.store)).includes(restriction));
+    await refusedWith(model({ status: "completed" }), "This run has ended (completed); its variables no longer change.");
+    await refusedWith(model({ commands: { operations: ALL, restriction: null, run: { runId: RUN, stop: true },
+        viewer: { allowed: false, reason: "You may read this workflow but not command it." } } }), "You may read this workflow but not command it.");
+    await refusedWith(model({ revision: null }), "The variables' revision is not known, so they cannot be changed here. Read the workflow again.");
+    const none = await refusedWith(model({ commands: null }), "This deployment takes no workflow commands from people.");
+    assert.ok(!details(none.store).some(line => line.startsWith("Variables")));
+    for (const h of all) assert.deepEqual(h.sent(), []);
+
+    // Offered, and still refused by the server: its reason stays in the form, and on the status line.
+    const denied = await opened(model(), [async () => {
+        throw Object.assign(new Error("People cannot change this workflow."), { status: 403, code: "WORKFLOW_HUMAN_INPUT_DENIED" });
+    }]);
+    await denied.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_EDIT_VARIABLES);
+    type(denied, "a");
+    denied.controller.switchWorkflowVariableField();
+    type(denied, "2");
+    await denied.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    const refusal = `The variables update was refused for run ${RUN}: People cannot change this workflow.`;
+    assert.equal(denied.store.getState().ui.modal.type, "workflowVariable");
+    assert.equal(statusOf(denied.store), refusal);
+    assert.ok(joined(form(denied.store).lines).includes(`! ${refusal}`));
+});
+
+test("a changed revision is refused and read again, so the next try uses it; an unanswered update is sent again as itself", async () => {
+    let lose;
+    const h = await opened(model(), [
+        async () => { throw Object.assign(new Error("The variables changed; read them again."), { status: 409, code: "KV_REVISION_CONFLICT" }); },
+        () => new Promise((_, reject) => { lose = () => reject(Object.assign(new Error("upstream unavailable"), { status: 503 })); }),
+    ]);
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_EDIT_VARIABLES);
+    type(h, "a");
+    h.controller.switchWorkflowVariableField();
+    type(h, "5");
+    // Someone else changed the variables meanwhile: the server has revision 4.
+    h.serve(model({ vars: { a: 2, "b c": "x" }, revision: 4 }));
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    await settle();
+    assert.equal(h.sent()[0].expected_kv_revision, 3);
+    assert.equal(h.store.getState().ui.modal.type, "workflowVariable", "the form stays, with what was typed");
+    const conflict = `The variables update was refused for run ${RUN}: The variables changed; read them again.`;
+    assert.equal(statusOf(h.store), conflict);
+    let shown = form(h.store);
+    assert.equal(shown.title, `Variables · run ${RUN} · revision 4`, "the workflow was read again");
+    assert.ok(shown.lines.some(line => line.text === "  a = 2"));
+    assert.ok(joined(shown.lines).includes(`! ${conflict}`));
+    assert.deepEqual([shown.name, shown.value], ["a", "5"]);
+
+    // The next try uses the new revision; while it is sent, it says so and nothing else is sent.
+    const sending = h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    await settle();
+    assert.equal(h.sent()[1].expected_kv_revision, 4);
+    assert.notEqual(h.sent()[1].operation_id, h.sent()[0].operation_id);
+    shown = form(h.store);
+    assert.ok(shown.lines.some(line => line.text === "Saving…"));
+    assert.equal(shown.busy, true);
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    assert.equal(h.store.getState().ui.modal.error, "Another command for this workflow is being sent.");
+    assert.equal(h.sent().length, 2);
+
+    // Its answer never came: Enter sends the same update again, with the same operation id.
+    lose();
+    await sending;
+    const lost = `The variables update for run ${RUN} may not have reached the workflow: upstream unavailable. Retry sends the same command again.`;
+    assert.equal(statusOf(h.store), lost);
+    assert.ok(joined(form(h.store).lines).includes("Enter (or ctrl-r) sends the same update again; the server applies it once."));
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    const [, second, third] = h.sent();
+    assert.deepEqual(third, second);
+    assert.equal(h.store.getState().ui.modal.type, "workflowView", "accepted: back to the view");
+});
+
+test("a form whose run the view no longer shows sends nothing; Esc goes back to the view", async () => {
+    const h = await opened(model());
+    const view = h.store.getState().ui.modal;
+    await h.controller.handleCommand(UI_COMMANDS.WORKFLOW_VIEW_EDIT_VARIABLES);
+    type(h, "a");
+    h.controller.switchWorkflowVariableField();
+    type(h, "1");
+    // A new live run replaced the one the form was opened for.
+    h.store.dispatch({ type: "ui/workflowView", sessionId: "wf", view: { readModel: model({ runId: "run-2" }), readModelRunId: null } });
+    assert.ok(joined(form(h.store).lines).includes("The workflow view no longer shows the run this form was opened for, so it sends nothing."));
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM);
+    assert.match(h.store.getState().ui.modal.error, /^The workflow view no longer shows the run this form was opened for, so nothing was sent\./);
+    await h.controller.handleCommand(UI_COMMANDS.MODAL_NEXT);
+    assert.equal(statusOf(h.store), "No listed variable to copy");
+    assert.deepEqual(h.sent(), []);
+    await h.controller.handleCommand(UI_COMMANDS.CLOSE_MODAL);
+    assert.deepEqual(h.store.getState().ui.modal, view);
+    assert.equal(statusOf(h.store), "Back to the workflow view");
+});

@@ -3,10 +3,11 @@ import { workflowDefinition } from "./workflow-view.js";
 import {
     normalizeWorkflowInputPolicy, selectWorkflowInputNote, selectWorkflowViewModal, selectWorkflowViewSelection, workflowInputPolicyApplies,
     workflowViewDefaultNode, workflowViewNodes, workflowViewPanelWidth, workflowViewProjectionFor, workflowViewRunControlFor,
+    workflowViewVariablesFor,
 } from "./workflow-tui.js";
 import {
     workflowV2CommandNamesRun, workflowV2RunCommandAccepted, workflowV2RunCommandArgs, workflowV2RunCommandConfirm, workflowV2RunCommandFailure,
-    workflowV2RunCommandNotice, workflowV2RunCommandWire,
+    workflowV2RunCommandNotice, workflowV2RunCommandWire, workflowV2VariableDraft, workflowV2VariableRemoval,
 } from "./workflow-v2-commands.js";
 import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./commands.js";
 import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
@@ -6370,7 +6371,8 @@ export class PilotSwarmUiController {
      * `inputs` and optional `vars`) or start (the published `definitionHash`,
      * `inputs`, optional `vars`). Stop, cancel and an update that removes
      * variables open the confirm dialog first; one opened from the TUI's
-     * workflow view (a modal) returns to it when it closes, sent or not. One
+     * workflow view or its variables form (modals) returns to it when it
+     * closes, sent or not. One
      * command per session at a time: the view records it as `runCommand` ({
      * operation, runId, operationId, args, phase, message, code }). Accepted:
      * the record is cleared, the status line says what was accepted, and the
@@ -6400,7 +6402,7 @@ export class PilotSwarmUiController {
         if (previous?.phase === "pending") return { ok: false, reason: "pending" };
         const confirm = confirmed ? null : workflowV2RunCommandConfirm(operation, run, args);
         if (confirm) {
-            const returnModal = state.ui.modal?.type === "workflowView" ? state.ui.modal : null;
+            const returnModal = ["workflowView", "workflowVariable"].includes(state.ui.modal?.type) ? state.ui.modal : null;
             this.dispatch({ type: "ui/modal", modal: { type: "confirm", ...confirm, action: "workflowRunCommand",
                 workflowRunCommand: { sessionId, operation, runId: run, ...(args ?? {}) }, previousFocus: state.ui.focusRegion,
                 ...(returnModal ? { returnModal } : {}) } });
@@ -6466,6 +6468,146 @@ export class PilotSwarmUiController {
             if (notice) this.dispatch({ type: "ui/status", text: notice.text });
         }
         return result;
+    }
+
+    /**
+     * The TUI's workflow view: open the variables form (v) for the run it
+     * shows (R04, R05; mock M15; INACTIVE: only a run whose workflow takes a
+     * person's set_vars), when the portal's variables panel would let a person
+     * change them; otherwise the status line says why. The form returns to the
+     * view. Nothing is sent.
+     */
+    openWorkflowVariableForm() {
+        const state = this.getState();
+        const selection = selectWorkflowViewSelection(state);
+        if (!selection) return;
+        const decided = workflowViewVariablesFor(selection);
+        if (!decided.ok) {
+            this.dispatch({ type: "ui/status", text: decided.reason });
+            return;
+        }
+        this.dispatch({ type: "ui/modal", modal: { type: "workflowVariable", sessionId: selection.modal.sessionId, runId: decided.runId,
+            field: "name", name: "", nameCursor: 0, value: "", valueCursor: 0, pick: -1, error: null,
+            returnModal: selection.modal, previousFocus: state.ui.focusRegion } });
+        this.dispatch({ type: "ui/status", text: "Variables — Tab name/value · ↑↓ copy a listed variable · Enter set · ctrl-r remove · Esc back" });
+    }
+
+    /** The variables form: change its own state (what is typed, the field, the copied variable). */
+    updateWorkflowVariableForm(patch) {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "workflowVariable") return;
+        this.dispatch({ type: "ui/modal", modal: { ...modal, ...patch } });
+    }
+
+    /** The variables form's focused field ("name" or "value"), its text and its cursor. */
+    workflowVariableField() {
+        const modal = this.getState().ui.modal;
+        if (!modal || modal.type !== "workflowVariable") return null;
+        const field = modal.field === "value" ? "value" : "name";
+        return { field, text: String(modal[field] ?? ""), cursor: Number(modal[`${field}Cursor`]) || 0 };
+    }
+
+    /** The variables form: type into the focused field; a name keeps exactly what is typed (spaces included). */
+    insertWorkflowVariableText(text) {
+        const focused = this.workflowVariableField();
+        if (!focused) return;
+        const next = insertPromptTextAtCursor(focused.text, focused.cursor, String(text ?? ""));
+        this.updateWorkflowVariableForm({ [focused.field]: next.prompt, [`${focused.field}Cursor`]: next.cursor, error: null });
+    }
+
+    deleteWorkflowVariableChar() {
+        const focused = this.workflowVariableField();
+        if (!focused) return;
+        const next = deletePromptCharBackward(focused.text, focused.cursor);
+        this.updateWorkflowVariableForm({ [focused.field]: next.prompt, [`${focused.field}Cursor`]: next.cursor, error: null });
+    }
+
+    moveWorkflowVariableCursor(delta) {
+        const focused = this.workflowVariableField();
+        if (!focused) return;
+        this.updateWorkflowVariableForm({ [`${focused.field}Cursor`]: clampPromptCursor(focused.text, focused.cursor + delta) });
+    }
+
+    moveWorkflowVariableCursorToBoundary(kind) {
+        const focused = this.workflowVariableField();
+        if (!focused) return;
+        this.updateWorkflowVariableForm({ [`${focused.field}Cursor`]: kind === "start" ? 0 : focused.text.length });
+    }
+
+    /** The variables form: Tab moves between its name and value fields. */
+    switchWorkflowVariableField() {
+        const focused = this.workflowVariableField();
+        if (!focused) return;
+        this.updateWorkflowVariableForm({ field: focused.field === "name" ? "value" : "name" });
+    }
+
+    /** The variables form: ↑↓ copy the previous or next listed variable (its name and its whole JSON value) into the fields. */
+    pickWorkflowVariable(delta) {
+        const state = this.getState();
+        const modal = state.ui.modal;
+        if (!modal || modal.type !== "workflowVariable") return;
+        const variables = workflowViewProjectionFor(state, modal.sessionId).runVariables;
+        const entries = variables?.runId === modal.runId ? variables.entries : [];
+        if (!entries.length) {
+            this.dispatch({ type: "ui/status", text: "No listed variable to copy" });
+            return;
+        }
+        const current = Number.isSafeInteger(modal.pick) && modal.pick >= 0 && modal.pick < entries.length ? modal.pick : (delta > 0 ? -1 : entries.length);
+        const next = Math.max(0, Math.min(current + delta, entries.length - 1));
+        const entry = entries[next];
+        this.updateWorkflowVariableForm({ pick: next, name: entry.key, nameCursor: entry.key.length, value: entry.valueText,
+            valueCursor: entry.valueText.length, error: null });
+    }
+
+    /**
+     * The variables form: send what it names as one set_vars update of the
+     * run it was opened for, as the portal's panel sends it
+     * (sendWorkflowRunCommand), at the revision the view shows now: Enter
+     * sets the name to the JSON value (workflowV2VariableDraft), ctrl-r
+     * (`remove`) removes the name (workflowV2VariableRemoval) after the
+     * confirm dialog. What was typed is checked first and the form says what
+     * is wrong; nothing is sent while another command is, for a run the view
+     * no longer shows, or when the variables cannot be changed. Accepted: back
+     * to the view. Refused, or no answer: the form stays, with the reason (a
+     * changed revision reads the workflow again, so the next try uses the new
+     * one). The server decides every update again. Never throws.
+     */
+    async submitWorkflowVariable({ remove = false } = {}) {
+        const state = this.getState();
+        const modal = state.ui.modal;
+        if (!modal || modal.type !== "workflowVariable") return { ok: false, reason: "closed" };
+        const refuse = error => {
+            this.updateWorkflowVariableForm({ error });
+            return { ok: false, reason: "invalid" };
+        };
+        const variables = workflowViewProjectionFor(state, modal.sessionId).runVariables;
+        if (!variables || variables.runId !== modal.runId) {
+            return refuse("The workflow view no longer shows the run this form was opened for, so nothing was sent. Esc goes back.");
+        }
+        if (!variables.editable) return refuse(variables.reason);
+        if (variables.busy) return refuse("Another command for this workflow is being sent.");
+        const draft = remove ? workflowV2VariableRemoval(modal.name) : workflowV2VariableDraft(modal.name, modal.value);
+        if (!draft.ok) return refuse(draft.error);
+        this.updateWorkflowVariableForm({ error: null });
+        const result = await this.sendWorkflowRunCommand(modal.sessionId, { operation: "set_vars", runId: modal.runId,
+            expectedKvRevision: variables.revision, ...(remove ? { delete: draft.delete } : { set: draft.set }) });
+        this.afterWorkflowVariableUpdate(modal, result);
+        return result;
+    }
+
+    /** After an update sent from the variables form `form`: accepted, back to the workflow view; refused or unanswered, the status line says so too. */
+    afterWorkflowVariableUpdate(form, result) {
+        const current = this.getState().ui.modal;
+        if (result?.ok) {
+            if (current?.type === "workflowVariable" && current.sessionId === form.sessionId && current.runId === form.runId) {
+                this.dispatch({ type: "ui/modal", modal: current.returnModal ?? null });
+            }
+            return;
+        }
+        if (result?.reason === "failed" || result?.reason === "unconfirmed") {
+            const notice = workflowV2RunCommandNotice(this.getState().ui.workflowViews?.[form.sessionId]?.runCommand);
+            if (notice) this.dispatch({ type: "ui/status", text: notice.text });
+        }
     }
 
     /** The TUI's workflow view: clear the notice about its last run command (nothing is sent or undone). */
@@ -9436,12 +9578,13 @@ export class PilotSwarmUiController {
     closeModal() {
         const modal = this.getState().ui.modal;
         if (!modal) return;
-        // A confirm opened from the TUI's workflow view returns to it; its command was not sent.
-        if (modal.type === "confirm" && modal.returnModal) {
+        // A confirm opened from the TUI's workflow view or its variables form returns to it, and its command was not sent; the
+        // variables form returns to the view.
+        if (modal.returnModal && (modal.type === "confirm" || modal.type === "workflowVariable")) {
             this.dispatch({ type: "ui/modal", modal: modal.returnModal });
-            const operation = modal.workflowRunCommand?.operation;
-            const label = operation === "stop" ? "Stop" : operation === "cancel" ? "Cancel" : "The command";
-            this.dispatch({ type: "ui/status", text: `${label} was not sent` });
+            const operation = modal.type === "confirm" ? modal.workflowRunCommand?.operation : null;
+            const label = operation === "stop" ? "Stop" : operation === "cancel" ? "Cancel" : operation === "set_vars" ? "The removal" : "The command";
+            this.dispatch({ type: "ui/status", text: modal.type === "confirm" ? `${label} was not sent` : "Back to the workflow view" });
             return;
         }
         this.dispatch({ type: "ui/modal", modal: null });
@@ -9568,6 +9711,10 @@ export class PilotSwarmUiController {
             this.moveWorkflowViewSelection(delta);
             return;
         }
+        if (modal.type === "workflowVariable") {
+            this.pickWorkflowVariable(delta);
+            return;
+        }
         if (modal.type === "help") {
             const current = Math.max(0, Number(modal.selectedIndex) || 0);
             this.dispatch({ type: "ui/modalSelection", index: Math.max(0, current + delta) });
@@ -9645,6 +9792,10 @@ export class PilotSwarmUiController {
             await this.openWorkflowViewChild();
             return;
         }
+        if (modal.type === "workflowVariable") {
+            await this.submitWorkflowVariable();
+            return;
+        }
         if (modal.type === "confirm") {
             const previousFocus = modal.previousFocus;
             // A confirm opened from the TUI's workflow view returns to it.
@@ -9671,8 +9822,11 @@ export class PilotSwarmUiController {
             } else if (modal.action === "workflowRunCommand") {
                 const { sessionId, ...command } = modal.workflowRunCommand || {};
                 const result = await this.sendWorkflowRunCommand(sessionId, { ...command, confirmed: true });
-                // The TUI's workflow view also says a refusal on the status line (the portal shows its notice beside the graph).
-                if (modal.returnModal && !result.ok && (result.reason === "failed" || result.reason === "unconfirmed")) {
+                // A removal confirmed from the TUI's variables form goes back to the view once accepted; the TUI also says a
+                // refusal on the status line (the portal shows its notice beside the graph).
+                if (modal.returnModal?.type === "workflowVariable") {
+                    this.afterWorkflowVariableUpdate(modal.returnModal, result);
+                } else if (modal.returnModal && !result.ok && (result.reason === "failed" || result.reason === "unconfirmed")) {
                     const notice = workflowV2RunCommandNotice(this.getState().ui.workflowViews?.[sessionId]?.runCommand);
                     if (notice) this.dispatch({ type: "ui/status", text: notice.text });
                 }
@@ -12544,6 +12698,12 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.WORKFLOW_VIEW_DISMISS_NOTICE:
                 this.dismissWorkflowViewRunCommand();
+                return;
+            case UI_COMMANDS.WORKFLOW_VIEW_EDIT_VARIABLES:
+                this.openWorkflowVariableForm();
+                return;
+            case UI_COMMANDS.WORKFLOW_VARIABLE_REMOVE:
+                await this.submitWorkflowVariable({ remove: true });
                 return;
             case UI_COMMANDS.SEQUENCE_SELECT_PREV:
                 this.moveSequenceSelection(-1);

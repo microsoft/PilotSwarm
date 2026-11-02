@@ -3,7 +3,7 @@ import { workflowV2RunPickerModel } from "./workflow-v2-run-picker.js";
 import {
     compactWorkflowV2Executions, projectWorkflowV2, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2RouteKind,
 } from "./workflow-v2-view.js";
-import { workflowV2RunCommandNotice, workflowV2RunControls } from "./workflow-v2-commands.js";
+import { workflowV2RunCommandNotice, workflowV2RunControls, workflowV2RunVariables } from "./workflow-v2-commands.js";
 
 /**
  * The TUI's read-only workflow view (design 02 "Portal/TUI: graph, observed
@@ -25,11 +25,13 @@ import { workflowV2RunCommandNotice, workflowV2RunControls } from "./workflow-v2
  * s stop, c cancel, the portal's controls (workflowV2RunControls) sent as the
  * portal sends them (the controller's sendWorkflowRunCommand: stop and cancel
  * ask first, one command at a time, the same command again after an answer
- * that never came). A workflow in an agent state's subtree takes only pause,
- * stop and cancel from people. The server decides every command again. The
- * variables, the draft editor, publication, tests and their answers are not
- * part of it, and the server keeps refusing human input to an agent state's
- * subtree.
+ * that never came), and its variables (v opens a form: set a name to a JSON
+ * value, or remove a name after the confirm dialog, each as one set_vars
+ * update at the revision the view shows; the portal's workflowV2RunVariables
+ * and drafts). A workflow in an agent state's subtree takes only pause, stop
+ * and cancel from people. The server decides every command again. The draft
+ * editor, publication, tests and their answers are not part of it, and the
+ * server keeps refusing human input to an agent state's subtree.
  *
  * For an agent state it also shows the agent, the workflow interface the
  * state names and what the shown run pins it to (the package revision and
@@ -95,8 +97,10 @@ export function workflowSessionProjection({ session = null, events = EMPTY_EVENT
     const runCommand = safeView.runCommand ?? null;
     const runControls = v2 ? workflowV2RunControls(readModel, runCommand) : null;
     const runNotice = v2 ? workflowV2RunCommandNotice(runCommand) : null;
+    // The shown run's variables as the portal's panel lists them and a person changes them (set_vars), from the same model.
+    const runVariables = v2 ? workflowV2RunVariables(readModel, runCommand) : null;
     return {
-        definition, nodes, v2, status, live, runPicker, runControls, runNotice, runReadModel: v2 ? readModel ?? null : null,
+        definition, nodes, v2, status, live, runPicker, runControls, runNotice, runVariables, runReadModel: v2 ? readModel ?? null : null,
         name: definition?.name || String(session?.title || "").replace(/^Workflow: /, "") || "Workflow",
         banners: v2?.banners || [],
         readError: error,
@@ -283,6 +287,104 @@ function runControlLines(projection) {
     return lines;
 }
 
+/** At most this many of the shown run's variables are listed in the view's details; the variables form lists them all. */
+const VARIABLE_ROWS = 8;
+
+/**
+ * The shown run's variables as detail entries: its revision, its variables (name = value, cut to one line), the note
+ * or the start of a preview too long to list, and why a person cannot change them when they cannot. None without a
+ * person's commands. `clip` entries are cut to one line, the others wrapped.
+ */
+function runVariableLines(projection) {
+    const variables = projection.runVariables;
+    if (!variables) return [];
+    const lines = [{ text: `Variables${variables.revision === null ? "" : ` · revision ${variables.revision}`}`
+        + (variables.editable ? " — v sets or removes one" : ""), color: "cyan", indent: "" }];
+    for (const entry of variables.entries.slice(0, VARIABLE_ROWS)) lines.push({ text: `${entry.key} = ${entry.displayText}`, color: "white", indent: "  ", clip: true });
+    if (variables.entries.length > VARIABLE_ROWS) {
+        lines.push({ text: `… ${variables.entries.length - VARIABLE_ROWS} more; the variables form (v) lists them all`, color: "gray", indent: "  " });
+    }
+    if (variables.note) lines.push({ text: variables.note, color: "gray", indent: "  " });
+    if (variables.preview) lines.push({ text: variables.preview, color: "gray", indent: "  ", clip: true });
+    if (!variables.editable && variables.reason) lines.push({ text: variables.reason, color: "gray", indent: "  " });
+    return lines;
+}
+
+/**
+ * Whether the open workflow view can open the variables form for the run it shows, and why not: `{ ok: true, runId }`
+ * when the portal's variables panel (workflowV2RunVariables) would let a person change them, otherwise `{ ok: false,
+ * reason }`, a sentence for the status line. The server decides every update again. Pure.
+ */
+export function workflowViewVariablesFor(selection) {
+    const projection = selection?.projection ?? null;
+    const variables = projection?.runVariables ?? null;
+    if (!variables) {
+        const model = projection?.runReadModel ?? null;
+        const why = !isPlainRecord(model) ? "The shown run is not loaded yet." : !isPlainRecord(model.run) ? "No run is shown."
+            : !isPlainRecord(model.personCommands) ? "This deployment takes no workflow commands from people." : "The shown run's state is not known.";
+        return { ok: false, reason: `The variables cannot be changed here. ${why}` };
+    }
+    if (!variables.editable) return { ok: false, reason: `The variables cannot be changed here. ${variables.reason}` };
+    if (variables.busy) return { ok: false, reason: "The variables cannot be changed now. Another command for this workflow is being sent." };
+    return { ok: true, runId: variables.runId };
+}
+
+const shortRunId = id => (typeof id === "string" && id.length > 12 ? `${id.slice(0, 6)}…${id.slice(-4)}` : String(id ?? ""));
+
+/**
+ * The variables form (TUI modal "workflowVariable"; the portal's variables panel as a form): the run it was opened for,
+ * its variables now (the one ↑↓ copied into the fields marked), why they cannot be changed when they cannot, an update
+ * being sent, the last update's refusal or lost answer, the form's own check of what was typed, and its two fields
+ * (name, JSON value) with the focused one. Null unless the form is open. Pure.
+ */
+export function selectWorkflowVariableModal(state, maxWidth = 100, viewportHeight = null) {
+    const modal = state?.ui?.modal;
+    if (!modal || modal.type !== "workflowVariable") return null;
+    const projection = workflowViewProjectionFor(state, modal.sessionId);
+    const variables = projection.runVariables;
+    const sameRun = Boolean(variables) && variables.runId === modal.runId;
+    const width = Math.max(40, Number(maxWidth) || 100);
+    const contentWidth = width - 4;
+    const lines = [];
+    const add = (text, color = "white", extra = {}) => lines.push({ text: clip(text, contentWidth), color, ...extra });
+    const addWrapped = (text, color, indent = "") => { for (const piece of wrapped(text, contentWidth, indent)) add(piece, color); };
+    addWrapped("An open map: a new name needs no declaration. A state reads the variables as they are when it starts; work already "
+        + "running keeps the values it started with. They cannot change the published definition, permissions, join receipts or request winners.", "gray");
+    let pickLine = -1;
+    if (!sameRun) {
+        addWrapped("The workflow view no longer shows the run this form was opened for, so it sends nothing. Esc goes back.", "yellow");
+    } else {
+        variables.entries.forEach((entry, index) => {
+            const picked = index === modal.pick;
+            if (picked) pickLine = lines.length;
+            add(`${picked ? "▸" : " "} ${entry.key} = ${entry.displayText}`, picked ? "white" : "gray", picked ? { bold: true } : {});
+        });
+        if (variables.note) addWrapped(variables.note, "gray", "  ");
+        if (variables.preview) add(`  ${variables.preview}`, "gray");
+        if (!variables.editable && variables.reason) addWrapped(variables.reason, "yellow");
+        if (variables.pending) add("Saving…", "yellow");
+    }
+    const notice = projection.runNotice?.operation === "set_vars" ? projection.runNotice : null;
+    if (notice) {
+        addWrapped(`! ${notice.text}`, notice.level === "error" ? "red" : "yellow");
+        if (notice.retry) addWrapped("Enter (or ctrl-r) sends the same update again; the server applies it once.", "gray", "  ");
+    }
+    if (typeof modal.error === "string" && modal.error) addWrapped(modal.error, "red");
+    const listHeight = Math.max(6, Math.min(lines.length + 2, Math.max(6, (Number(viewportHeight ?? state?.ui?.layout?.viewportHeight) || 40) - 16)));
+    const rows = Math.max(1, listHeight - 2);
+    const scrollOffset = pickLine < 0 ? 0 : Math.max(0, Math.min(pickLine - Math.floor(rows / 2), Math.max(0, lines.length - rows)));
+    return {
+        title: `Variables · run ${shortRunId(modal.runId)}${sameRun && variables.revision !== null ? ` · revision ${variables.revision}` : ""}`,
+        lines, listHeight, scrollOffset,
+        field: modal.field === "value" ? "value" : "name",
+        name: String(modal.name ?? ""), nameCursor: Number(modal.nameCursor) || 0,
+        value: String(modal.value ?? ""), valueCursor: Number(modal.valueCursor) || 0,
+        busy: Boolean(variables?.busy),
+        hint: "Tab name/value · ↑↓ copy a listed variable · Enter set · ctrl-r remove (asks first) · Esc back to the view",
+        idealWidth: width,
+    };
+}
+
 /** `text` in lines of at most `limit` characters, broken at spaces; each starts with `indent`, a continuation with two more. */
 function wrapped(text, limit, indent = "") {
     const out = [];
@@ -381,8 +483,12 @@ function detailLines(selection, width) {
         add(`Run: ${option?.label ?? "Live run"}${picker.options.length > 1 ? ` (${index + 1} of ${picker.options.length} · ←→ choose)` : ""}`, "cyan");
         for (const note of picker.notes) add(`  ${note.text}`, note.level === "error" ? "red" : note.level === "warning" ? "yellow" : "gray");
     }
-    // The run controls and their notice are wrapped, not cut: a reason or a refusal is read whole.
-    for (const line of runControlLines(projection)) for (const text of wrapped(line.text, Math.max(20, width), line.indent)) add(text, line.color);
+    // The run controls, their notice and the variables are wrapped, not cut (a reason or a refusal is read whole); a
+    // variable's value is cut to one line.
+    for (const line of [...runControlLines(projection), ...runVariableLines(projection)]) {
+        if (line.clip) add(`${line.indent}${line.text}`, line.color);
+        else for (const text of wrapped(line.text, Math.max(20, width), line.indent)) add(text, line.color);
+    }
     for (const banner of projection.banners) add(`! ${banner.text}`, banner.level === "error" ? "red" : "yellow");
     if (projection.readError) add(`The workflow's current state could not be read: ${projection.readError}`, "red");
     if (!selected) {

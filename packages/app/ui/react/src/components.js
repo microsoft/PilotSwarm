@@ -27,6 +27,7 @@ import {
     selectRenameSessionModal,
     selectWorkflowCreateModal,
     selectWorkflowViewModal,
+    selectWorkflowVariableModal,
     selectWorkflowInputNote,
     workflowViewPanelWidth,
     selectSessionAgentPickerModal,
@@ -1831,6 +1832,94 @@ function WorkflowViewModalContainer({ controller }) {
     return React.createElement(WorkflowViewModal, { state: selectorState });
 }
 
+/**
+ * Workflow sessions (TUI): the shown run's variables form (selectWorkflowVariableModal): the variables now, the run's
+ * revision, why they cannot be changed when they cannot, the last update's refusal, and the two fields, a name and a JSON
+ * value. Enter sets, ctrl-r removes (the confirm dialog asks first), Esc goes back to the workflow view.
+ */
+export function WorkflowVariableModal({ state }) {
+    const platform = useUiPlatform();
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = workflowViewPanelWidth(viewport.width);
+    const modal = selectWorkflowVariableModal(state, width, viewport.height);
+    if (!modal) return null;
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: "cyan",
+                focused: false,
+                width,
+                height: modal.listHeight,
+                lines: modal.lines,
+                scrollOffset: modal.scrollOffset,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Input, {
+                label: "name",
+                value: modal.name,
+                cursorIndex: modal.nameCursor,
+                focused: modal.field === "name",
+                placeholder: "a variable name (spaces are part of it)",
+                rows: 1,
+            }),
+            React.createElement(platform.Input, {
+                label: "value (JSON)",
+                value: modal.value,
+                cursorIndex: modal.valueCursor,
+                focused: modal.field === "value",
+                placeholder: "\"text\", 120, true, null, [..] or {..}",
+                rows: 2,
+            }),
+            React.createElement(platform.Panel, {
+                title: modal.busy ? "Keys · an update is being sent" : "Keys",
+                color: "cyan",
+                focused: false,
+                width,
+                height: 3,
+                lines: [{ text: modal.hint, color: "gray" }],
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function WorkflowVariableModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => {
+        const modal = rootState.ui.modal;
+        const sessionId = modal?.type === "workflowVariable" ? modal.sessionId : null;
+        return {
+            modal,
+            layout: rootState.ui.layout,
+            session: sessionId ? rootState.sessions.byId[sessionId] || null : null,
+            history: sessionId ? rootState.history.bySessionId.get(sessionId) || null : null,
+            view: sessionId ? rootState.ui.workflowViews?.[sessionId] || null : null,
+            canvas: sessionId ? rootState.canvas?.bySessionId?.[sessionId] || null : null,
+        };
+    }, shallowEqualObject);
+    const sessionId = state.modal?.type === "workflowVariable" ? state.modal.sessionId : null;
+    const events = state.history?.events || EMPTY_WORKFLOW_EVENTS;
+    const sessionUpdatedAt = state.session?.updatedAt ?? null;
+    // While the form is open, new events or a changed session row read the workflow again, as the view does: the variables
+    // and their revision stay current.
+    React.useEffect(() => {
+        if (sessionId) controller.ensureWorkflowDefinition(sessionId).catch(() => {});
+    }, [controller, sessionId, events, sessionUpdatedAt]);
+    if (!sessionId) return null;
+    const selectorState = {
+        ui: { modal: state.modal, layout: state.layout, workflowViews: state.view ? { [sessionId]: state.view } : {} },
+        sessions: { byId: state.session ? { [sessionId]: state.session } : {} },
+        history: { bySessionId: new Map(state.history ? [[sessionId, state.history]] : []) },
+        canvas: { bySessionId: state.canvas ? { [sessionId]: state.canvas } : {} },
+    };
+    return React.createElement(WorkflowVariableModal, { state: selectorState });
+}
+
 function ArtifactPickerModalContainer({ controller }) {
     const state = useControllerSelector(controller, (rootState) => ({
         ui: {
@@ -2685,6 +2774,7 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
         React.createElement(ArtifactPickerModalContainer, { controller }),
         React.createElement(HelpModalContainer, { controller }),
         React.createElement(WorkflowViewModalContainer, { controller }),
+        React.createElement(WorkflowVariableModalContainer, { controller }),
         React.createElement(ModelPickerModalContainer, { controller }),
         React.createElement(ReasoningEffortPickerModalContainer, { controller }),
         React.createElement(ContextTierPickerModalContainer, { controller }),
