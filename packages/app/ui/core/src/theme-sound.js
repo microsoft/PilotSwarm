@@ -6,8 +6,8 @@
 // in when it starts and out when it stops. A theme may instead ask for a window:
 // `playSeconds` out of every `everySeconds`, fading in and out each time.
 // The setting is per device class, like touch size: `themeSound` for the
-// desktop (on by default) and `themeSoundMobile` for a phone (off by default,
-// so a phone never starts making noise on its own).
+// desktop and `themeSoundMobile` for a phone, both on by default at volume 40.
+// A phone in silent mode stays silent: Web Audio follows the ringer switch.
 
 export const THEME_SOUND_VOLUME_DEFAULT = 40;
 
@@ -16,7 +16,7 @@ export function defaultThemeSound() {
 }
 
 export function defaultThemeSoundMobile() {
-    return { on: false, volume: THEME_SOUND_VOLUME_DEFAULT };
+    return { on: true, volume: THEME_SOUND_VOLUME_DEFAULT };
 }
 
 export function normalizeThemeSound(value) {

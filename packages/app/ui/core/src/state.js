@@ -466,8 +466,8 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // Desktop chat column. Phone has no slot. Master of Agents does
             // not read this; only the main desktop chat does.
             chatReading: defaultChatReading(),
-            // Theme sounds, per device class: on by default on a desktop,
-            // off on a phone until the person turns them on there.
+            // Theme sounds, per device class (desktop and phone), both on by
+            // default; a phone in silent mode stays silent.
             themeSound: defaultThemeSound(),
             themeSoundMobile: defaultThemeSoundMobile(),
             // The session detail box starts folded to its one-line summary. It

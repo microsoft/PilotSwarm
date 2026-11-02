@@ -14629,7 +14629,7 @@ function ThemeSoundControl({ setting, theme, onChange }) {
 }
 
 function MobileThemeSoundRows({ setting, theme, onChange }) {
-    const value = setting || { on: false, volume: 40 };
+    const value = setting || { on: true, volume: 40 };
     const set = (patch) => onChange({ ...value, ...patch });
     return React.createElement(React.Fragment, null,
         React.createElement("label", { className: "ps-mobile-setting-row" },
@@ -16553,7 +16553,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     // The theme's ambient sound, if it has one and the person turned sounds on.
     // Each device class has its own setting: crossing the phone breakpoint
     // switches to the other one, so shrinking a desktop window to phone width
-    // follows the phone's choice (off by default).
+    // follows the phone's choice.
     const [narrowViewport, setNarrowViewport] = React.useState(isNarrowViewport);
     React.useEffect(() => {
         if (typeof window === "undefined" || typeof window.matchMedia !== "function") return undefined;

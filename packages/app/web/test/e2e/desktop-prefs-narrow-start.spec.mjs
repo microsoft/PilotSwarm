@@ -51,7 +51,7 @@ test("opening at phone width then widening keeps the saved desktop reading colum
 });
 
 test("Appearance at phone width edits the phone's own sound setting", async ({ page }) => {
-    let settings = { themeId: "hearth", themeSound: { on: true, volume: 35 } };
+    let settings = { themeId: "hearth", themeSound: { on: true, volume: 35 }, themeSoundMobile: { on: false, volume: 40 } };
     await page.route("**/api/v1/**", async (route) => {
         const request = route.request();
         const path = new URL(request.url()).pathname;
@@ -71,7 +71,7 @@ test("Appearance at phone width edits the phone's own sound setting", async ({ p
     await expect(pane.getByRole("switch", { name: "Theme sounds" })).toBeChecked();
 
     // At phone width the console becomes the phone console, and its sound
-    // switch is the phone's own setting: off by default, editable.
+    // switch is the phone's own setting (stored off here), editable.
     await page.setViewportSize({ width: 390, height: 844 });
     const phone = page.locator(".ps-admin-console.is-mobile");
     await expect(phone).toBeVisible();
@@ -84,4 +84,25 @@ test("Appearance at phone width edits the phone's own sound setting", async ({ p
     await expect(page.locator("html")).toHaveAttribute("data-ps-theme-sound", /playing|resting/);
     await expect.poll(() => settings.themeSoundMobile?.on).toBe(true);
     expect(settings.themeSound).toMatchObject({ on: true, volume: 35 });
+});
+
+test("a phone with no saved sound setting plays by default; the desktop slot is untouched", async ({ page }) => {
+    let settings = { themeId: "hearth", themeSound: { on: false, volume: 35 } };
+    await page.route("**/api/v1/**", async (route) => {
+        const request = route.request();
+        const path = new URL(request.url()).pathname;
+        const reply = (result) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true, result }) });
+        if (path.endsWith("/me/profile/settings")) {
+            settings = request.postDataJSON().settings;
+            return reply({ profileSettings: settings });
+        }
+        if (path.endsWith("/me/profile")) return reply({ isAdmin: false, profileSettings: settings });
+        return route.fallback();
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(base);
+    await expect(page.locator(".ps-mobile-workspace")).toBeVisible();
+    await expect(page.locator("html")).toHaveAttribute("data-ps-theme-sound", /playing|resting/);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await expect(page.locator("html")).not.toHaveAttribute("data-ps-theme-sound", /./);
 });

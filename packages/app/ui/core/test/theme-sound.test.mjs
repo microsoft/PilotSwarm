@@ -27,12 +27,12 @@ import {
 const read = (rel) => readFileSync(fileURLToPath(new URL(rel, import.meta.url)), "utf8");
 const close = (actual, expected, label) => assert.ok(Math.abs(actual - expected) < 1e-6, `${label}: ${actual} != ${expected}`);
 
-test("theme sounds are on by default at volume 40 on desktop, off on a phone", () => {
+test("theme sounds are on by default at volume 40 on desktop and on a phone", () => {
     const state = createInitialState({ mode: "web" });
     assert.deepEqual(state.ui.themeSound, defaultThemeSound());
     assert.deepEqual(state.ui.themeSound, { on: true, volume: 40 });
     assert.deepEqual(state.ui.themeSoundMobile, defaultThemeSoundMobile());
-    assert.deepEqual(state.ui.themeSoundMobile, { on: false, volume: 40 });
+    assert.deepEqual(state.ui.themeSoundMobile, { on: true, volume: 40 });
     assert.deepEqual(normalizeThemeSound({ on: false }), { on: false, volume: 40 }, "a missing volume takes the default");
 });
 
@@ -54,7 +54,7 @@ test("each device class edits only its own slot", () => {
     assert.deepEqual(state.ui.themeSound, { on: true, volume: 40 });
     state = appReducer(state, { type: "ui/themeSound", themeSound: { on: false, volume: 40 } });
     assert.deepEqual(state.ui.themeSound, { on: false, volume: 40 });
-    assert.deepEqual(state.ui.themeSoundMobile, { on: true, volume: 30 });
+    assert.deepEqual(state.ui.themeSoundMobile, { on: true, volume: 30 }, "turning the desktop off leaves the phone alone");
 });
 
 test("a repeat write is a no-op and bad values clamp or are ignored", () => {
