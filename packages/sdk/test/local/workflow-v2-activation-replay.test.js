@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { describe, it, expect } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import {
-    activationFixture, nativeBoundary, scheduledActivities, ACTIVATION_SLICE_TIMEOUT,
+    activationFixture, nativeBoundary, scheduledActivities, messageQueueSubscriptions, ACTIVATION_SLICE_TIMEOUT,
     ACTIVITY_FENCE_ORCHESTRATION, UNTAGGED_CONTROL_ORCHESTRATION,
 } from "../helpers/workflow-v2-activation-fixture.js";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
@@ -12,6 +12,19 @@ import { DURABLE_SESSION_ORCHESTRATION_NAME } from "../../src/orchestration-regi
 const getEnv = useSuiteEnv(import.meta.url);
 
 describe("workflow v2 activation first native slice (no activation)", () => {
+    it("decodes only the messages QueueSubscribed boundary and rejects malformed subscription data", () => {
+        const messages = { eventId: 5, kind: "QueueSubscribed", data: '{"name":"messages"}' };
+        expect(messageQueueSubscriptions([
+            { eventId: 1, kind: "QueueSubscribed", data: '{"name":"another-queue"}' },
+            { eventId: 2, kind: "ExternalSubscribed", data: '{"name":"messages"}' },
+            { eventId: 3, kind: "ActivityCompleted", data: "not subscription JSON" },
+            messages,
+        ])).toEqual([messages]);
+        for (const data of [undefined, null, { name: "messages" }, '{"name":', "null", "[]", "{}", '{"name":1}']) {
+            expect(() => messageQueueSubscriptions([{ eventId: 9, kind: "QueueSubscribed", data }])).toThrow("QueueSubscribed event 9");
+        }
+    });
+
     it("activity fence only: old traps cannot claim tagged intake work, which completes when a capable worker joins", { timeout: ACTIVATION_SLICE_TIMEOUT }, async () => {
         const h = await activationFixture(getEnv());
         try {
@@ -73,17 +86,17 @@ describe("workflow v2 activation first native slice (no activation)", () => {
             }, "1.0.82");
             const parked = await nativeBoundary(h, instanceId, "frozen82 initial persisted park", ({ info, history }) => ({
                 instanceVersionIs82: info.orchestrationVersion === "1.0.82",
-                hasExternalSubscribed: history.some(event => event.kind === "ExternalSubscribed"),
+                hasMessagesQueueSubscribed: messageQueueSubscriptions(history).length > 0,
                 hasActivityCompleted: history.some(event => event.kind === "ActivityCompleted"),
             }), sessionId);
             const command1 = "before-native-replacement";
             await h.client.enqueueEvent(instanceId, "messages", JSON.stringify({ type: "cmd", cmd: "get_info", id: command1 }));
             const committed = await nativeBoundary(h, instanceId, "frozen82 first command committed before replacement", ({ history }) => {
                 const done = history.filter(event => event.kind === "ActivityCompleted");
-                const subscribed = history.filter(event => event.kind === "ExternalSubscribed");
+                const subscribed = messageQueueSubscriptions(history);
                 return {
                     atLeastThreeActivitiesCompleted: done.length >= 3,
-                    externalSubscriptionCountAdvanced: subscribed.length > parked.history.filter(event => event.kind === "ExternalSubscribed").length,
+                    messagesSubscriptionCountAdvanced: subscribed.length > messageQueueSubscriptions(parked.history).length,
                     subscriptionFollowsLastCompletion: subscribed.length > 0 && done.length > 0
                         && Number(subscribed.at(-1).eventId) > Number(done.at(-1).eventId),
                 };
@@ -105,10 +118,10 @@ describe("workflow v2 activation first native slice (no activation)", () => {
             await h.client.enqueueEvent(instanceId, "messages", JSON.stringify({ type: "cmd", cmd: "get_info", id: command2 }));
             const replayed = await nativeBoundary(h, instanceId, "frozen82 second command replayed after replacement", ({ history }) => {
                 const done = history.filter(event => event.kind === "ActivityCompleted");
-                const subscribed = history.filter(event => event.kind === "ExternalSubscribed");
+                const subscribed = messageQueueSubscriptions(history);
                 return {
                     atLeastFiveActivitiesCompleted: done.length >= 5,
-                    externalSubscriptionCountAdvanced: subscribed.length > committed.history.filter(event => event.kind === "ExternalSubscribed").length,
+                    messagesSubscriptionCountAdvanced: subscribed.length > messageQueueSubscriptions(committed.history).length,
                     subscriptionFollowsLastCompletion: subscribed.length > 0 && done.length > 0
                         && Number(subscribed.at(-1).eventId) > Number(done.at(-1).eventId),
                 };

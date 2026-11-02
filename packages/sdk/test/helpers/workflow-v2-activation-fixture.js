@@ -31,6 +31,22 @@ export function scheduledActivities(history, name) {
     return history.filter(event => event.kind === "ActivityScheduled" && String(event.data).startsWith(prefix));
 }
 
+/** Native dequeueEvent("messages") persists this queue subscription, not waitForEvent's ExternalSubscribed. */
+export function messageQueueSubscriptions(history) {
+    return history.filter(event => {
+        if (event.kind !== "QueueSubscribed") return false;
+        if (typeof event.data !== "string") throw new Error(`QueueSubscribed event ${event.eventId} has no JSON text.`);
+        let payload;
+        try { payload = JSON.parse(event.data); } catch (cause) {
+            throw new Error(`QueueSubscribed event ${event.eventId} has invalid JSON data.`, { cause });
+        }
+        if (payload === null || typeof payload !== "object" || Array.isArray(payload) || typeof payload.name !== "string") {
+            throw new Error(`QueueSubscribed event ${event.eventId} has no string queue name.`);
+        }
+        return payload.name === "messages";
+    });
+}
+
 function errorDetails(error) {
     return error instanceof Error ? { name: error.name, message: error.message, code: error.code, stack: error.stack }
         : { thrown: String(error) };
