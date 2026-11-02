@@ -42,6 +42,15 @@
  *   an abort, a forced settle, a held Stop, the turn timeout or the
  *   inactivity watchdog while the answer is pending sends nothing, then or
  *   when the answer comes later; a failed admission sends nothing.
+ * - Review of c1bda7a2: after a recovery, the witness is the final run's own
+ *   (sent only when that run included the items; its refusal kept; otherwise
+ *   not sent, possibly seen by the earlier run), for both recovery families
+ *   (W1). The activity's cancellation is latched across runs and read before
+ *   each run, at the admission, immediately before each send and at each
+ *   steer: a cancelled activity starts no run and sends nothing (W2). A bare
+ *   abort, or an activity that may no longer send, stops the run's
+ *   corrective sends; a run neither aborted nor cancelled still corrects
+ *   (W3). V4 turns are unchanged.
  *
  * The activity runs with a fake session manager, model session and catalog
  * (its workflow store's admission a fake); the adoption cases use a real
@@ -132,7 +141,8 @@ function lifecycleDirs() {
  * the same fakes, as a test registers them (registerActivities' test option),
  * and a catalog whose workflow store admits the items (`store`, by default one
  * that always allows; `store: null` for a worker without one). The admission's
- * transient retries wait 1 ms.
+ * transient retries wait 1 ms. `isCancelled` plays the activity context's
+ * cancellation (the native runtime's, sticky once true).
  */
 function intakeHarness(options = {}) {
     const store = options.store === undefined ? admissionStore() : options.store;
@@ -142,7 +152,7 @@ function intakeHarness(options = {}) {
     registerActivities({ registerActivity(name, handler) { handlers[name] = handler; } }, h.sessionManager, options.sessionStore ?? null, undefined,
         h.catalog, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, "worker-1", undefined, undefined,
         { workflowIntakeTurns: true, intakeAdmissionRetryDelaysMs: [1, 1, 1] });
-    const activityCtx = { traceInfo: () => {}, traceWarn: () => {}, isCancelled: () => false };
+    const activityCtx = { traceInfo: () => {}, traceWarn: () => {}, isCancelled: () => (options.isCancelled ? options.isCancelled() === true : false) };
     return {
         ...h,
         store,
@@ -155,13 +165,16 @@ function intakeHarness(options = {}) {
 
 /**
  * Before its initial send, as ManagedSession does (exposure r2, section 4):
- * the admission, then the include callback when admitted. Returns what the run
- * sends: "include", "omit", or "plain" for a run that carries nothing; an
- * admission that fails rejects.
+ * the admission; then, read again immediately before the send, the
+ * activity's eligibility (review of c1bda7a2, W2); then the include callback
+ * when admitted. Returns what the run sends: "include", "omit", "plain" for
+ * a run that carries nothing, or "ended" when the activity may no longer
+ * send (nothing is sent); an admission that fails rejects.
  */
 async function admitted(opts) {
     if (!opts.intakeAdmission) return "plain";
     const decision = await opts.intakeAdmission.admit(new AbortController().signal);
+    if (opts.intakeAdmission.eligible?.() === false) return "ended";
     if (decision === "include") opts.intakeAdmission.included();
     return decision;
 }
@@ -283,7 +296,7 @@ describe("runTurnV5: the turn of an invocation", () => {
         expect(result).toMatchObject({ type: "error", message: "model failed", intakeDispatch: { invocationId: "inv-1", sent: true } });
     });
 
-    it("an in-attempt recovery re-run puts the carried items before its own prompt again; sent stays sent though the re-run never sends", async () => {
+    it("an in-attempt recovery re-run puts the carried items before its own prompt again; a re-run that never sends is not sent, its items possibly seen by the earlier run (review of c1bda7a2, W1)", async () => {
         const lost = { type: "error", message: "Request session.send failed with message: Session not found: s" };
         let calls = 0;
         const v4 = turnControlCatalog({ writeback: true });
@@ -310,8 +323,113 @@ describe("runTurnV5: the turn of an invocation", () => {
         expect(offered[0]).toBe("check the tree");
         expect(rerun).toBe(`${TEXT}\n\n${offered[1]}`);
         expect(h.store.calls).toEqual([admissionOf("s")]);
-        expect(result).toMatchObject({ type: "completed", intakeDispatch: { invocationId: "inv-1", sent: true } });
+        // The result is the re-run's, which sent nothing: never sent, and possibly seen (the first run included the items).
+        expect(result).toMatchObject({ type: "completed", intakeDispatch: { invocationId: "inv-1", sent: false, exposed: true } });
     });
+
+    it("review of c1bda7a2, W1: after a recovery, the result's witness is the final run's own: sent only when that run included the items; its refusal kept; otherwise possibly seen by the earlier run", async () => {
+        const families = {
+            "live session lost": { type: "error", message: "Request session.send failed with message: Session not found: s" },
+            "transcript corrupted": { type: "error", message: "assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'" },
+        };
+        const finals = {
+            // [the final run, the store's answer to its admission, the witness expected]
+            "includes": [async (opts) => (expect(await admitted(opts)).toBe("include"), { type: "completed", content: "answered" }),
+                { allowed: true }, { invocationId: "inv-1", sent: true }],
+            "fails before its send": [async () => ({ type: "error", message: 'Required tool "lookup" is not available in this session.', retryable: false }),
+                { allowed: true }, { invocationId: "inv-1", sent: false, exposed: true }],
+            "stops before its send": [async () => ({ type: "stopped", reason: "Stopped by user" }),
+                { allowed: true }, { invocationId: "inv-1", sent: false, exposed: true }],
+            "omits after a settled refusal": [async (opts) => (expect(await admitted(opts)).toBe("omit"), { type: "completed", content: "answered without them" }),
+                { allowed: false, reason: "settled" }, { invocationId: "inv-1", sent: false, refused: "settled" }],
+        };
+        for (const [family, failure] of Object.entries(families)) {
+            for (const [final, [run, answer, witness]] of Object.entries(finals)) {
+                const label = `${family}, then the final run ${final}`;
+                let calls = 0;
+                const h = intakeHarness({
+                    catalogExtras: turnControlCatalog({ writeback: true }).extras, store: admissionStore({ allowed: true }, answer),
+                    turn: async (opts) => {
+                        calls += 1;
+                        if (calls === 1) {
+                            expect(await admitted(opts), label).toBe("include");
+                            return { ...failure };
+                        }
+                        return run(opts);
+                    },
+                });
+                const result = await h.runTurnV5("s", { turnIndex: 6, intake: INTAKE });
+                expect(h.session.runTurn, label).toHaveBeenCalledTimes(2);
+                expect(result.intakeDispatch, label).toEqual(witness);
+            }
+        }
+    });
+
+    it("review of c1bda7a2, W2: an activity already cancelled starts no run and asks nothing; one cancelled while its admission is answered sends nothing, for an include and an omit", async () => {
+        const before = intakeHarness({ catalogExtras: turnControlCatalog().extras, isCancelled: () => true, turn: sends({ type: "completed", content: "never" }) });
+        const skipped = await before.runTurnV5("s", { turnIndex: 2, intake: INTAKE });
+        expect(before.session.runTurn).not.toHaveBeenCalled();
+        expect(before.store.calls).toEqual([]);
+        expect(skipped.intakeDispatch).toEqual({ invocationId: "inv-1", sent: false });
+        for (const [answer, witness] of [
+            [{ allowed: true }, { invocationId: "inv-1", sent: false }],
+            [{ allowed: false, reason: "exposed" }, { invocationId: "inv-1", sent: false, refused: "exposed" }],
+        ]) {
+            let cancelledNow = false;
+            const store = admissionStore(answer);
+            const answering = store.exposeWorkflowIntake.getMockImplementation();
+            // The activity loses its lock while the store answers, before any poll could see it.
+            store.exposeWorkflowIntake.mockImplementation(async (request) => {
+                const result = await answering(request);
+                cancelledNow = true;
+                return result;
+            });
+            let sent = null;
+            const h = intakeHarness({
+                catalogExtras: turnControlCatalog().extras, store, isCancelled: () => cancelledNow,
+                turn: async (opts) => {
+                    sent = await admitted(opts);
+                    return { type: "error", message: "the run ended before its send" };
+                },
+            });
+            const result = await h.runTurnV5("s", { turnIndex: 2, intake: INTAKE });
+            expect(sent, JSON.stringify(answer)).toBe("ended");
+            expect(result.intakeDispatch, JSON.stringify(answer)).toEqual(witness);
+        }
+    });
+
+    it("review of c1bda7a2, W2: a cancellation observed between recovery runs, after the poll stopped, keeps the recovered run from starting: nothing more is sent", async () => {
+        const lost = { type: "error", message: "Request session.send failed with message: Session not found: s" };
+        let cancelledNow = false;
+        let opened = 0;
+        let h;
+        h = intakeHarness({
+            catalogExtras: turnControlCatalog({ writeback: true }).extras,
+            isCancelled: () => cancelledNow,
+            managerExtras: {
+                // The recovery's session: the activity is cancelled while it is made, long enough for the poll (every 2 s) to
+                // see it, abort the session and stop.
+                getOrCreate: vi.fn(async () => {
+                    opened += 1;
+                    if (opened === 2) {
+                        cancelledNow = true;
+                        await new Promise((resolve) => setTimeout(resolve, 2_300));
+                    }
+                    return h.session;
+                }),
+            },
+            turn: async (opts) => {
+                expect(await admitted(opts)).toBe("include");
+                return lost;
+            },
+        });
+        const result = await h.runTurnV5("s", { turnIndex: 6, intake: INTAKE });
+        expect(opened).toBe(2);
+        expect(h.session.abort).toHaveBeenCalled();
+        expect(h.session.runTurn).toHaveBeenCalledTimes(1);
+        expect(h.store.calls).toEqual([admissionOf("s")]);
+        expect(result).toMatchObject({ type: "cancelled", intakeDispatch: { invocationId: "inv-1", sent: false, exposed: true } });
+    }, 15_000);
 
     it("a malformed intake field fails the activity before any model run", async () => {
         const h = intakeHarness({ catalogExtras: turnControlCatalog().extras });
@@ -570,7 +688,7 @@ describe("ManagedSession: the intake's admission and send (review W2-WIT1; expos
      * An intake admission the test answers: `admit` resolves (or rejects) when the test says, the signal it was given is
      * kept, and `included` counts its calls with the sends made before each.
      */
-    function heldAdmission(promptWithoutIntake = "work") {
+    function heldAdmission(promptWithoutIntake = "work", eligible = undefined) {
         let answer;
         let fail;
         const asked = deferred();
@@ -582,6 +700,7 @@ describe("ManagedSession: the intake's admission and send (review W2-WIT1; expos
         };
         admission.option = (fake) => ({
             promptWithoutIntake,
+            ...(eligible ? { eligible } : {}),
             admit: (signal) => {
                 admission.signal = signal;
                 asked.resolve();
@@ -591,6 +710,13 @@ describe("ManagedSession: the intake's admission and send (review W2-WIT1; expos
         });
         return admission;
     }
+
+    /** Wait until the fake has `n` sends (at most 50 ticks). */
+    const sentCount = async (fake, n) => {
+        for (let i = 0; i < 50 && fake.sent.length < n; i++) await new Promise((resolve) => setImmediate(resolve));
+        expect(fake.sent.length).toBeGreaterThanOrEqual(n);
+    };
+    const TEXT_TOOL_CALL = '<invoke name="bash">\n<parameter name="command">ls</parameter>\n</invoke>';
 
     const settle = async (fake, turn) => {
         for (let i = 0; i < 50 && fake.sent.length === 0; i++) await new Promise((resolve) => setImmediate(resolve));
@@ -770,6 +896,104 @@ describe("ManagedSession: the intake's admission and send (review W2-WIT1; expos
         expect(admission.signal).toBeNull();
         expect(admission.included).toEqual([]);
         expect(fake.sent).toEqual([]);
+    });
+
+    it("review of c1bda7a2, W2: an activity that may no longer send when the answer comes sends nothing, for an include and an omit", async () => {
+        for (const decision of ["include", "omit"]) {
+            let eligible = true;
+            const fake = fakeCopilotSession();
+            const managed = new ManagedSession(`intake-ineligible-${decision}`, fake, { waitThreshold: 30 });
+            const admission = heldAdmission("work", () => eligible);
+            const turn = managed.runTurn(`${TEXT}\n\nwork`, { intakeAdmission: admission.option(fake) });
+            await admission.asked;
+            eligible = false;
+            admission.answer(decision);
+            expect(await turn, decision).toMatchObject({ type: "error", message: INTAKE_ENDED_BEFORE_SEND_MESSAGE });
+            expect(fake.sent, decision).toEqual([]);
+            expect(admission.included, decision).toEqual([]);
+        }
+    });
+
+    it("review of c1bda7a2, W3: a bare abort after the admitted initial send stops the run's corrective sends, for a required tool and a tool call written as text", async () => {
+        for (const variant of ["required tool", "tool call as text"]) {
+            const fake = fakeCopilotSession();
+            const managed = new ManagedSession(`intake-abort-${variant}`, fake, { waitThreshold: 30 });
+            const admission = heldAdmission("work");
+            const turn = managed.runTurn(`${TEXT}\n\nwork`, {
+                intakeAdmission: admission.option(fake), ...(variant === "required tool" ? { requiredTool: "wait" } : {}),
+            });
+            await admission.asked;
+            admission.answer("include");
+            await sentCount(fake, 1);
+            if (variant === "tool call as text") fake._emit("assistant.message", { content: TEXT_TOOL_CALL });
+            // The activity's cancellation: a bare abort, with no Stop; the fake's abort ends the run with session.idle.
+            managed.abort();
+            await turn;
+            await ticks();
+            expect(fake.sent, variant).toHaveLength(1);
+            expect(admission.included, variant).toEqual([0]);
+        }
+    });
+
+    it("review of c1bda7a2, W2, W3: corrective sends are refused once the activity may no longer send, and a run neither aborted nor cancelled still corrects", async () => {
+        for (const [variant, cancelBeforeCorrection] of [
+            ["required tool", false], ["tool call as text", false], ["required tool", true], ["tool call as text", true],
+        ]) {
+            const label = `${variant}, ${cancelBeforeCorrection ? "activity cancelled" : "still eligible"}`;
+            let eligible = true;
+            const fake = fakeCopilotSession();
+            const managed = new ManagedSession(`intake-correct-${label}`, fake, { waitThreshold: 30 });
+            const admission = heldAdmission("work", () => eligible);
+            const turn = managed.runTurn(`${TEXT}\n\nwork`, {
+                intakeAdmission: admission.option(fake), ...(variant === "required tool" ? { requiredTool: "wait" } : {}),
+            });
+            await admission.asked;
+            admission.answer("include");
+            await sentCount(fake, 1);
+            if (variant === "tool call as text") fake._emit("assistant.message", { content: TEXT_TOOL_CALL });
+            if (cancelBeforeCorrection) eligible = false;
+            // The initial run ends without the tool's execution (or with the tool call written as text).
+            fake._emit("session.idle");
+            if (!cancelBeforeCorrection) {
+                await sentCount(fake, 2);
+                fake._emit("session.idle");
+            }
+            await turn;
+            await ticks();
+            expect(fake.sent, label).toHaveLength(cancelBeforeCorrection ? 1 : 2);
+            if (!cancelBeforeCorrection) {
+                expect(fake.sent[1].prompt, label).toMatch(variant === "required tool" ? /Required-tool contract violation/ : /Tool-call protocol error/);
+            }
+            expect(admission.included, label).toEqual([0]);
+        }
+    });
+
+    it("review of c1bda7a2, W2: a steer of the run is refused once the activity may no longer send; nothing more is sent", async () => {
+        let eligible = true;
+        const fake = fakeCopilotSession();
+        const managed = new ManagedSession("intake-steer", fake, { waitThreshold: 30 });
+        const live = new LiveTurnControl({
+            sessionId: "intake-steer", turn: 4, start: 0,
+            abort: async (reason) => { managed.requestStop(reason); managed.abort(); },
+            record: async () => {},
+        });
+        const binding = {
+            port: null,
+            attach: (port) => { binding.port = port; live.attach(port); },
+            heldStop: () => live.heldStop(),
+            gateOpened: () => live.gateOpened(),
+            detach: () => live.detach(),
+        };
+        const admission = heldAdmission("work", () => eligible);
+        const turn = managed.runTurn(`${TEXT}\n\nwork`, { turnIndex: 4, turnControl: binding, intakeAdmission: admission.option(fake) });
+        await admission.asked;
+        admission.answer("include");
+        await sentCount(fake, 1);
+        eligible = false;
+        await live.enqueue([control(81, "steer", "one more thing")]);
+        const result = await turn;
+        expect(result.type).toBe("error");
+        expect(fake.sent.map((message) => message.prompt)).toEqual([`${TEXT}\n\nwork`]);
     });
 
     it("a turn that carries nothing is sent as before: no admission, no wait", async () => {

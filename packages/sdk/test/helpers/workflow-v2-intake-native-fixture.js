@@ -115,6 +115,8 @@ export function eventText(event) {
 export async function admitAndSend(opts) {
     if (!opts?.intakeAdmission) return "plain";
     const decision = await opts.intakeAdmission.admit(new AbortController().signal);
+    // Read immediately before the send, as ManagedSession does: an activity that may no longer send sends nothing.
+    if (opts.intakeAdmission.eligible?.() === false) return "ended";
     if (decision === "include") opts.intakeAdmission.included();
     return decision;
 }

@@ -12,6 +12,7 @@ import { holdsManagerBundle } from "./agent-manager-tools.js";
 // the declarations in systemToolDefs() and the handlers in runTurn().
 import { holdsProviderTools, providerToolDefs, providerToolsUnavailable } from "./provider-tools.js";
 import type { CycleReport, TurnAction, TurnResult, TurnOptions, ManagedSessionConfig, CapturedEvent } from "./types.js";
+import { INTAKE_ENDED_BEFORE_SEND_MESSAGE } from "./types.js";
 import type { MessageAgentDelivery } from "./parent-turn-control.js";
 import type { ReasoningEffort, ContextTier } from "./model-providers.js";
 import { LiveTurnCoalescer } from "./live-turn.js";
@@ -728,8 +729,7 @@ export const DEFAULT_TURN_INACTIVITY_TIMEOUT_MS = 5 * 60_000;
 // release affinity, delayed retry on a fresh subprocess, bounded by
 // COPILOT_CONNECTION_CLOSED_MAX_RETRIES with a lossy-handoff fallback.
 export const TURN_INACTIVITY_ERROR_MARKER = "connection is closed or the subprocess is wedged";
-/** Workflow intake (runTurnV5): a run that an abort or a forced settle ended while it awaited its admission, with nothing sent. */
-export const INTAKE_ENDED_BEFORE_SEND_MESSAGE = "The turn ended before its request was sent.";
+export { INTAKE_ENDED_BEFORE_SEND_MESSAGE };
 
 /**
  * Workflow intake (runTurnV5): a running turn's interruption, for a run that
@@ -1525,7 +1525,10 @@ export class ManagedSession {
         const binding = opts?.turnControl ?? null;
         const steer = binding ? new SteerTurnState() : null;
         this.steer = steer;
-        if (binding && steer) binding.attach(this.steerPort(steer));
+        // Workflow intake (runTurnV5; review of c1bda7a2, W2): a run's steers are sends too, refused once its activity may
+        // no longer send. Every other turn's steers are unchanged.
+        const intakeEligible = opts?.intakeAdmission?.eligible ?? null;
+        if (binding && steer) binding.attach(this.steerPort(steer, intakeEligible === null ? null : () => intakeEligible() !== false));
         let result: TurnResult | undefined;
         let turnError: unknown;
         let failed = false;
@@ -1578,14 +1581,15 @@ export class ManagedSession {
     /**
      * The send-gate port of one controlled run. Every call is bound to `steer`:
      * once that run ended, or another run started, the gate reads closed, a
-     * send is refused and a failure reaches no turn.
+     * send is refused and a failure reaches no turn. `sendable`, when given,
+     * must also allow each steer at its send.
      */
-    private steerPort(steer: SteerTurnState): import("./turn-control.js").TurnControlSessionPort {
+    private steerPort(steer: SteerTurnState, sendable: (() => boolean) | null = null): import("./turn-control.js").TurnControlSessionPort {
         const current = () => this.steer === steer && !steer.ended;
         return {
             gate: () => (current() ? steer.gate : "closed"),
             close: () => { steer.gate = "closed"; },
-            sendSteer: (text, onConfirmed) => this.sendSteerOn(steer, text, onConfirmed),
+            sendSteer: (text, onConfirmed) => this.sendSteerOn(steer, text, onConfirmed, sendable),
             failTurn: (err) => {
                 if (!current()) return;
                 steer.gate = "closed";
@@ -1601,8 +1605,11 @@ export class ManagedSession {
      * the steer. A send that throws fails the turn (the caller's chain does).
      * A send that resolves after its run ended confirms nothing.
      */
-    private async sendSteerOn(steer: SteerTurnState, text: string, onConfirmed: (messageId: string) => void): Promise<void> {
-        if (this.steer !== steer || steer.ended || steer.gate !== "open") throw new Error("The steer gate is not open");
+    private async sendSteerOn(steer: SteerTurnState, text: string, onConfirmed: (messageId: string) => void,
+        sendable: (() => boolean) | null = null): Promise<void> {
+        if (this.steer !== steer || steer.ended || steer.gate !== "open" || (sendable !== null && !sendable())) {
+            throw new Error("The steer gate is not open");
+        }
         steer.inFlight += 1;
         let messageId: string;
         try {
@@ -4017,6 +4024,11 @@ export class ManagedSession {
             const heldStop = this.steer ? opts?.turnControl?.heldStop() ?? null : null;
             if (heldStop !== null && !this.stopRequest) this.stopRequest = { reason: heldStop, requestedAt: Date.now() };
             if (this.stopRequest) return false;
+            // Workflow intake (runTurnV5; review of c1bda7a2, W3): a run that was aborted (the activity's cancellation), or
+            // whose activity may no longer send, sends no corrective prompt either. A run neither aborted nor cancelled
+            // still corrects. Every other turn is unchanged.
+            const intake = opts?.intakeAdmission;
+            if (intake && (this.runInterrupt?.reason != null || intake.eligible?.() === false)) return false;
             const done = nextRun();
             if (this.steer) this.steer.gate = "pending";
             await this.copilotSession.send(message as any);
@@ -4071,7 +4083,9 @@ export class ManagedSession {
                 if (admitted.kind === "ended") return admitted.result;
                 const stopNow = this.steer ? opts?.turnControl?.heldStop() ?? null : null;
                 if (stopNow !== null && !this.stopRequest) this.stopRequest = { reason: stopNow, requestedAt: Date.now() };
-                if (this.stopRequest || this.runInterrupt?.reason != null || this.steer?.gate === "closed") {
+                // Review of c1bda7a2, W2: the activity's own eligibility (false once it is cancelled) is read here, synchronously,
+                // for an include and an omit alike.
+                if (this.stopRequest || this.runInterrupt?.reason != null || this.steer?.gate === "closed" || intake.eligible?.() === false) {
                     this.closeSteerGate();
                     return this.stopRequest
                         ? { type: "stopped", reason: this.stopRequest.reason }

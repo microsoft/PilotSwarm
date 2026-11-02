@@ -874,12 +874,13 @@ export function intakeOwnTurnStimulus(state: IntakeState, pendingArrivals: numbe
 /**
  * An attempt's `intakeDispatch` witness, or null when it returned none.
  * `exposed`, present only as `true` beside `sent: false`, says the items were
- * possibly seen by another request of the same attempt's turn, though not by
- * the run whose result this is (review W2-WIT4). `refused`, present only
- * beside `sent: false` and never with `exposed`, says the store refused the
- * items to the attempt, which ran without them (exposure protocol revision
- * 2, section 4): `exposed`, they were possibly seen under another attempt;
- * `settled`, the attempt's payload was stale.
+ * possibly seen by another request of the same attempt, though not by the
+ * run whose result this is: one that lost a racing commit (review W2-WIT4),
+ * or an earlier run before a recovery (review of c1bda7a2, W1). `refused`,
+ * present only beside `sent: false` and never with `exposed`, says the store
+ * refused the items to the run, which ran without them (exposure protocol
+ * revision 2, section 4): `exposed`, they were possibly seen under another
+ * attempt; `settled`, the attempt's payload was stale.
  */
 export function intakeDispatchWitness(raw: unknown)
     : { invocationId: string; sent: boolean; exposed: boolean; refused: "exposed" | "settled" | null } | null {

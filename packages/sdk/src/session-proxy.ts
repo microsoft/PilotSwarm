@@ -28,7 +28,7 @@ import { loadAdminScope } from "../api/src/admin-scope.js";
 import { parseAgentFqn } from "./agent-fqn.js";
 import { decideSessionControl } from "./agent-manager-tools.js";
 import type { StorageConfig } from "./storage-config.js";
-import { SESSION_STATE_MISSING_PREFIX, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type ManagedSessionConfig, type SerializableSessionConfig, type TurnResult, type TurnOptions, type OrchestrationInput, type LateSteer, type TurnEndKind, type TurnStartRecord } from "./types.js";
+import { SESSION_STATE_MISSING_PREFIX, INTAKE_ENDED_BEFORE_SEND_MESSAGE, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type ManagedSessionConfig, type SerializableSessionConfig, type TurnResult, type TurnOptions, type OrchestrationInput, type LateSteer, type TurnEndKind, type TurnStartRecord } from "./types.js";
 import type { ArtifactStore } from "./session-store.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { systemChildAgentUUID } from "./agent-loader.js";
@@ -77,7 +77,7 @@ import { spawnWorkflowFromTool } from "./workflow/spawn.js";
 import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool, type WorkflowToolHost } from "./workflow/v2/tools.js";
 import { applySessionCommandToWorkflowV2 } from "./workflow/v2/service.js";
 import { composeIntakePrompt, intakeExposedWitness, parseIntakeTurnField, type IntakeTurnField } from "./workflow/v2/intake.js";
-import { admitWorkflowIntake } from "./workflow/v2/intake-admission.js";
+import { admitWorkflowIntake, WorkflowIntakeAdmissionError } from "./workflow/v2/intake-admission.js";
 import type { SpawnWorkflowToolArgs } from "./workflow/tool-spec.js";
 
 const SYSTEM_AGENT_IDS = new Set(["pilotswarm", "sweeper", "resourcemgr", "facts-manager"]);
@@ -1651,55 +1651,68 @@ export function registerActivities(
         let inlineSdkClientPromise: Promise<PilotSwarmClient> | null = null;
         let cancelPoll: ReturnType<typeof setInterval> | null = null;
         let finalTurnResult: TurnResult | null = null;
-        // Workflow intake (runTurnV5, design 5.5): whether this attempt issued
-        // the model request that included the carried items: set only by the
-        // model session's callback right before an initial send that
+        // Workflow intake (runTurnV5, design 5.5; exposure protocol revision
+        // 2, section 4; review of c1bda7a2, W1): each run of this attempt (the
+        // first, and each recovery re-run) keeps its own evidence: whether
+        // that run's model request included the carried items (set only by
+        // the model session's callback right before an initial send that
         // includes them, once the store admitted them and after every check
-        // that ends a run without a send (a missing required tool, a held
-        // Stop), and never false again within the attempt (recovery re-runs).
-        // An admission that refused the items (exposure protocol revision 2,
-        // section 4) is kept by its reason; the run sent its prompt without
-        // them. Every result this attempt produces names the invocation with
-        // it. A saved result that this attempt adopts (the preamble's
-        // already-committed turn, or the racing winner of the commit) keeps
-        // the witness it was saved with, or none: evidence of another attempt
-        // is never made up from this one's; the orchestration reads a missing
-        // witness as possibly sent and fails visibly on a foreign or
-        // malformed one (review W2-WIT1, W2-WIT2). Only an attempt that sent
-        // before it lost the commit adds that the items were possibly seen,
-        // to the winner's own witness of the same invocation that says not
-        // sent; the winner's response stands (review W2-WIT4).
-        let intakeSent = false;
-        let intakeRefused: "exposed" | "settled" | null = null;
+        // that ends a run without a send), and the store's refusal of them to
+        // that run, which then sent its prompt without them. The result's
+        // witness is the latest run's own: sent only when that run included
+        // the items; refused with its reason; otherwise not sent, and
+        // `exposed` when an earlier run of the attempt included them (they
+        // were possibly seen, though not by the run whose result this is). An
+        // earlier run's include never makes a later run's result sent, and
+        // never hides its refusal. A saved result that this attempt adopts
+        // (the preamble's already-committed turn, or the racing winner of the
+        // commit) keeps the witness it was saved with, or none: evidence of
+        // another attempt is never made up from this one's; the orchestration
+        // reads a missing witness as possibly sent and fails visibly on a
+        // foreign or malformed one (review W2-WIT1, W2-WIT2). Only an attempt
+        // that sent before it lost the commit adds that the items were
+        // possibly seen, to the winner's own witness of the same invocation
+        // that says not sent; the winner's response stands (review W2-WIT4).
+        let intakeIncludedAny = false;
+        let intakeRun: { included: boolean; refused: "exposed" | "settled" | null } | null = null;
         let adoptedSavedResult = false;
         const withIntakeWitness = (result: TurnResult): TurnResult => {
             if (turnIntake === null) return result;
+            const invocationId = turnIntake.invocationId;
             if (adoptedSavedResult) {
-                const exposed = intakeSent ? intakeExposedWitness(result.intakeDispatch, turnIntake.invocationId) : null;
+                const exposed = intakeIncludedAny ? intakeExposedWitness(result.intakeDispatch, invocationId) : null;
                 return exposed === null ? result : { ...result, intakeDispatch: exposed };
             }
-            if (!intakeSent && intakeRefused !== null) {
-                return { ...result, intakeDispatch: { invocationId: turnIntake.invocationId, sent: false, refused: intakeRefused } };
-            }
-            return { ...result, intakeDispatch: { invocationId: turnIntake.invocationId, sent: intakeSent } };
+            if (intakeRun?.included) return { ...result, intakeDispatch: { invocationId, sent: true } };
+            if (intakeRun?.refused) return { ...result, intakeDispatch: { invocationId, sent: false, refused: intakeRun.refused } };
+            if (intakeIncludedAny) return { ...result, intakeDispatch: { invocationId, sent: false, exposed: true } };
+            return { ...result, intakeDispatch: { invocationId, sent: false } };
         };
-        // The admission of this attempt's include, for each run of it (the first and each recovery re-run): the same request,
-        // so a redelivery or a re-run of the attempt is the same attempt to the store.
-        const intakeAdmissionFor = (promptWithoutIntake: string): NonNullable<TurnOptions["intakeAdmission"]> | undefined => {
+        // The admission of one run's include (the first run's and each recovery re-run's): the same request, so a redelivery
+        // or a re-run of the attempt is the same attempt to the store. `eligible` says whether the activity may still send (it
+        // is false once the activity is cancelled; review of c1bda7a2, W2): asked before the store is, and by the model
+        // session immediately before every send of the run.
+        const intakeAdmissionFor = (promptWithoutIntake: string, run: NonNullable<typeof intakeRun>, eligible: () => boolean)
+            : NonNullable<TurnOptions["intakeAdmission"]> | undefined => {
             if (turnIntake === null) return undefined;
             const field = turnIntake;
             return {
                 promptWithoutIntake,
+                eligible,
                 admit: async (signal: AbortSignal) => {
+                    if (!eligible()) throw new WorkflowIntakeAdmissionError("Workflow intake admission: the activity was cancelled.", true);
                     const admission = await admitWorkflowIntake(catalog?.workflowStore ? catalog.workflowStore() : null, {
                         recipientSessionId: input.sessionId, invocationId: field.invocationId, attemptId: field.attemptId,
                         sentBefore: field.sentBefore, items: field.items,
                     }, { signal, ...(testOptions?.intakeAdmissionRetryDelaysMs ? { delaysMs: testOptions.intakeAdmissionRetryDelaysMs } : {}) });
                     if (admission.allowed) return "include";
-                    intakeRefused ??= admission.reason;
+                    run.refused = admission.reason;
                     return "omit";
                 },
-                included: () => { intakeSent = true; },
+                included: () => {
+                    run.included = true;
+                    intakeIncludedAny = true;
+                },
             };
         };
 
@@ -4621,9 +4634,29 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 // re-run's alike, each admitted by the store before its send.
                 // A refused run sends that prompt without them. The model
                 // session says when a request that includes them is about to
-                // be issued (review W2-WIT1).
+                // be issued (review W2-WIT1). Each run keeps its own evidence
+                // (review of c1bda7a2, W1). The activity's cancellation outlives
+                // every run and the poll (review of c1bda7a2, W2): read again
+                // before a run starts and by the model session immediately
+                // before each of its sends, a cancelled activity starts no run
+                // and sends nothing.
                 const modelPrompt = turnIntake ? composeIntakePrompt(prompt, turnIntake) : prompt;
-                const intakeAdmission = intakeAdmissionFor(prompt);
+                let intakeAdmission: NonNullable<TurnOptions["intakeAdmission"]> | undefined;
+                if (turnIntake) {
+                    const run: NonNullable<typeof intakeRun> = { included: false, refused: null };
+                    intakeRun = run;
+                    // The activity's cancellation, latched: once read true it stays so for every later run and send of this
+                    // activity, and its tail returns cancelled, as when the poll observes it.
+                    const eligible = () => {
+                        if (!cancelled && typeof activityCtx.isCancelled === "function" && activityCtx.isCancelled() === true) cancelled = true;
+                        return !cancelled;
+                    };
+                    if (!eligible()) {
+                        traceWarn(`[runTurn] activity cancelled for ${input.sessionId}; this run of the attempt does not start, and nothing is sent`);
+                        return { type: "error", message: INTAKE_ENDED_BEFORE_SEND_MESSAGE } as TurnResult;
+                    }
+                    intakeAdmission = intakeAdmissionFor(prompt, run, eligible);
+                }
                 return await targetSession.runTurn(modelPrompt, {
                     ...(intakeAdmission ? { intakeAdmission } : {}),
                     onEvent,

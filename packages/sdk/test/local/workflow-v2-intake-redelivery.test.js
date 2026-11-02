@@ -17,10 +17,14 @@
  * - Crash after the send: the redelivered run is admitted again as the same
  *   attempt and sends (a duplicate request: at least once, never exactly
  *   once); the invocation completes.
- * - The crashed execution admits only after the redelivered run's accepted
- *   negative result: before the end, the end is applied interrupted; after
- *   it, the admission is refused settled, nothing is sent and the end stands
- *   not_dispatched.
+ * - A crashed execution that has not observed its cancellation (a
+ *   partitioned worker) asks the store, with its run's exact admission
+ *   request, only after the redelivered run's accepted negative result:
+ *   before the end, the end is applied interrupted; after it, the admission
+ *   is refused settled, nothing is recorded and the end stands
+ *   not_dispatched. (An execution that observes its cancellation sends
+ *   nothing; the activity-level cases of workflow-v2-intake-turn.test.js
+ *   cover that, and these cases only log what the crashed execution read.)
  * - Crash after the send: the redelivered run fails before its send (asking
  *   nothing), and the invocation parks unsent, unaware of the record; the
  *   next carrying attempt, another attempt, is refused as possibly seen,
@@ -35,6 +39,7 @@ import { describe, it, expect } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { admitAndSend, eventText, intakeNativeCase, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-v2-intake-native-fixture.js";
 import { WORKFLOW_INTAKE_ACTIVITIES } from "../../src/workflow/v2/intake.ts";
+import { sha256Hex } from "../../src/workflow/v2/json.ts";
 import { INTAKE_RECORDED_EVENT } from "../../src/orchestration_1_0_83/intake-wiring.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
@@ -176,9 +181,9 @@ describe("workflow v2 durable intake: crash redelivery of a carrying attempt (ex
     });
 
     for (const [label, admitsBeforeEnd] of [["before the end", true], ["after the end", false]]) {
-        it(`the crashed execution admits only after the redelivered run's accepted negative result, ${label}: ${admitsBeforeEnd
-            ? "the end is applied interrupted" : "it is refused settled, sends nothing, and the end stands not_dispatched"}`, { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
-            const flags = { started: false, admitted: null };
+        it(`a crashed execution that has not observed its cancellation asks the store only after the redelivered run's accepted negative result, ${label}: ${admitsBeforeEnd
+            ? "the end is applied interrupted" : "it is refused settled, nothing is recorded, and the end stands not_dispatched"}`, { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
+            const flags = { started: false, eligibleAfterRestart: null };
             const zombieGo = deferred();
             const endGate = deferred();
             const options = {
@@ -186,11 +191,13 @@ describe("workflow v2 durable intake: crash redelivery of a carrying attempt (ex
                 // The redelivered attempt's end is held until the test lets it through.
                 beforeActivity: (name, input) => (name === WORKFLOW_INTAKE_ACTIVITIES.settle && input?.op === "end" ? endGate.promise : null),
             };
-            await intakeNativeCase(getEnv(), `the crashed execution admits ${label}`, async (call, _prompt, opts) => {
+            await intakeNativeCase(getEnv(), `a crashed execution asks the store ${label}`, async (call, _prompt, opts) => {
                 if (call === 1) {
                     flags.started = true;
                     await zombieGo.promise;
-                    flags.admitted = await admitAndSend(opts);
+                    // Observed only: whether this execution's activity reads its cancellation once its runtime is gone (review
+                    // of c1bda7a2, W2: a run that does sends nothing). It sends nothing here either way.
+                    flags.eligibleAfterRestart = opts.intakeAdmission?.eligible?.() ?? null;
                     return { type: "completed", content: "never accepted", events: [] };
                 }
                 return STOPPED;
@@ -203,13 +210,17 @@ describe("workflow v2 durable intake: crash redelivery of a carrying attempt (ex
                     await h.until(() => flags.started, "the first execution started, before its admission");
                     await h.restart();
                     await h.until(() => settlesOf(h).some(call => call.input.op === "end"), "the redelivered attempt's end is asked, and held");
-                    const { redelivered, attemptId, invocationId } = expectRedelivered(h);
+                    const { crashed, redelivered, attemptId, invocationId } = expectRedelivered(h);
                     expect(redelivered.result.intakeDispatch).toEqual({ invocationId, sent: false });
                     expect(await acceptedWitnesses(h)).toEqual([{ invocationId, sent: false }]);
+                    // The crashed execution's admission as its run makes it (a partitioned worker that has not observed its
+                    // cancellation): its activity's session, the scheduled attempt id, and the hash of each exact text.
+                    const late = () => h.store.exposeWorkflowIntake({
+                        recipientSessionId: h.sessionId, invocationId, attemptId, sentBefore: crashed.input.intake.sentBefore,
+                        items: crashed.input.intake.items.map(item => ({ exchangeId: item.exchangeId, claimId: item.claimId, textSha256: sha256Hex(item.text) })),
+                    });
                     if (admitsBeforeEnd) {
-                        zombieGo.resolve();
-                        await h.until(() => flags.admitted !== null, "the crashed execution asked its admission");
-                        expect(flags.admitted).toBe("include");
+                        expect(await late()).toEqual({ allowed: true });
                         expect(await h.store.readWorkflowIntakeExposure(invocationId)).toMatchObject({ attemptId });
                         endGate.resolve();
                         await h.until(async () => (await rowOf(h, input))?.processing === "interrupted", "the end is applied interrupted");
@@ -217,9 +228,7 @@ describe("workflow v2 durable intake: crash redelivery of a carrying attempt (ex
                     } else {
                         endGate.resolve();
                         await h.until(async () => (await rowOf(h, input))?.processing === "not_dispatched", "the end stands not_dispatched");
-                        zombieGo.resolve();
-                        await h.until(() => flags.admitted !== null, "the crashed execution asked its admission");
-                        expect(flags.admitted).toBe("omit");
+                        expect(await late()).toEqual({ allowed: false, reason: "settled" });
                         expect(await h.store.readWorkflowIntakeExposure(invocationId)).toBeNull();
                         expect(settlesOf(h)[1].result).toEqual({ ok: true, result: { ended: true } });
                         expect(await rowOf(h, input)).toMatchObject({ processing: "not_dispatched", reason: null });
@@ -230,6 +239,7 @@ describe("workflow v2 durable intake: crash redelivery of a carrying attempt (ex
                     endGate.resolve();
                 }
                 await h.until(() => turnsOf(h)[0]?.result !== undefined || turnsOf(h)[0]?.error !== undefined, "the crashed execution returns, unanswered");
+                console.info("workflow intake native observation", JSON.stringify({ case: label, crashedExecutionEligibleAfterRestart: flags.eligibleAfterRestart }));
             });
         });
     }

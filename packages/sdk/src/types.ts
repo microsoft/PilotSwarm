@@ -5,6 +5,13 @@ import type { EmbeddingEndpointConfig } from "./facts-store.js";
 import type { StorageConfig } from "./storage-config.js";
 
 export const SESSION_STATE_MISSING_PREFIX = "SESSION_STATE_MISSING:";
+/**
+ * Workflow intake (runTurnV5, INACTIVE): a run that ended before its request
+ * was sent, with nothing sent: a Stop's abort, a forced settle or the
+ * activity's cancellation while it awaited its admission, or an activity
+ * cancelled before the run started.
+ */
+export const INTAKE_ENDED_BEFORE_SEND_MESSAGE = "The turn ended before its request was sent.";
 
 /** Runtime implementation behind a session. Omitted persisted values are agent sessions. */
 export type SessionKind = "agent" | "workflow";
@@ -111,13 +118,16 @@ type CarriedSteersConsumedCarrier = {
  * by the run whose result this is. A saved result that a later attempt
  * adopts keeps the witness it was saved with, or none, which the
  * orchestration reads as possibly sent. `exposed` (only with `sent: false`)
- * is added to an adopted witness of the same invocation by an attempt that
- * lost a racing commit after its own request had included the items: the
- * winner's response stands, and the items were possibly seen (review
- * W2-WIT4). `refused` (only with `sent: false`) says the store refused the
- * items to this attempt, which ran without them: `exposed`, they were
- * possibly seen under another attempt; `settled`, the invocation had ended
- * or an item was cancelled, which is never evidence of exposure.
+ * says the items were possibly seen by another request of the same attempt,
+ * though not by the run whose result this is: added to an adopted witness of
+ * the same invocation by an attempt that lost a racing commit after its own
+ * request had included the items (the winner's response stands; review
+ * W2-WIT4), or given to a run's result when an earlier run of the same
+ * attempt (before a recovery) had included them (review of c1bda7a2, W1).
+ * `refused` (only with `sent: false`) says the store refused the items to
+ * the run whose result this is, which ran without them: `exposed`, they
+ * were possibly seen under another attempt; `settled`, the invocation had
+ * ended or an item was cancelled, which is never evidence of exposure.
  */
 export interface IntakeDispatchWitness {
     invocationId: string;
@@ -198,19 +208,23 @@ export interface TurnOptions {
      * awaits `admit`, raced with its guards (the turn timeout, the inactivity
      * watchdog) and with a Stop, an abort or a forced settle, then checks
      * again, immediately before its initial send, that no Stop is held or
-     * applied, it was not aborted and its send gate is not closed. On
-     * `include` it calls `included`, then sends its prompt, which includes
-     * the items; on `omit` it sends `promptWithoutIntake`. A run that ends
-     * before the answer, or whose admission fails, sends nothing, and a late
-     * answer sends nothing either; `admit`'s signal is aborted once the run no
-     * longer waits for it. A failure whose `retryable` is false ends the run
-     * with a non-retryable error. Absent on every other turn, whose send is
-     * unchanged.
+     * applied, it was not aborted, its send gate is not closed and the
+     * activity may still send (`eligible`, false once the activity is
+     * cancelled). On `include` it calls `included`, then sends its prompt,
+     * which includes the items; on `omit` it sends `promptWithoutIntake`. A
+     * run that ends before the answer, or whose admission fails, sends
+     * nothing, and a late answer sends nothing either; `admit`'s signal is
+     * aborted once the run no longer waits for it. A failure whose
+     * `retryable` is false ends the run with a non-retryable error. A
+     * corrective prompt of such a run (a required tool, a tool call written as
+     * text) is sent only while the run was not aborted and the activity is
+     * eligible. Absent on every other turn, whose sends are unchanged.
      */
     intakeAdmission?: {
         admit: (signal: AbortSignal) => Promise<"include" | "omit">;
         included: () => void;
         promptWithoutIntake: string;
+        eligible?: () => boolean;
     };
     /** Model summary text for the list_available_models tool. */
     modelSummary?: string;
