@@ -317,8 +317,6 @@ plug-in. **(built)**
 interface ComputeProvider {
   readonly kind: string;
   readonly capabilities: {
-    os: string[];                     // platform names the runtime can run on
-    sandboxed: boolean;
     files: "worker-local" | "shared-mount" | "provider-api" | "none";
   };
   readonly transport?: "direct" | "pipe";                                  // default: direct
@@ -358,19 +356,20 @@ interface ComputeProvider {
 
 ### 4.3 Provider capabilities
 
-A provider declares, in its own code, what its hosts are like. These are the
-provider's capabilities: the same for every target of that kind, and never
-sent by a host. **(built)**
+A provider declares, in its own code, one thing about its hosts: how the
+worker's file tools reach them. It is the same for every target of that kind
+and never sent by a host. **(built)**
 
 | Field | Meaning |
 |---|---|
-| `os` | Operating systems of its hosts, as Node names them |
-| `sandboxed` | Whether the host is an isolation boundary for model-chosen code |
 | `files` | How PilotSwarm tools in the worker reach the host's files: `worker-local`, `shared-mount`, `provider-api` or `none` |
 
-`files` is the one that decides anything: artifact file tools that name worker
-files are allowed for a remote session only when the provider says the host
-shares them with the worker.
+That is the only one because it is the only one PilotSwarm acts on: artifact
+file tools that name worker files are allowed for a remote session only when
+the provider says the host shares those files with the worker. Descriptive
+fields that nothing reads — which operating systems a provider's hosts run,
+whether a host is an isolation boundary — were left out rather than carried
+unused; a provider that needs to say more can say it where it is used.
 
 **Not in this change.** A target saying what it offers — its own capabilities,
 refreshed as the worker reaches it — and a target offering models of its own

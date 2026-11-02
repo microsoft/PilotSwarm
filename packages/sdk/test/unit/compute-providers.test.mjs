@@ -21,7 +21,7 @@ import { CMS_MIGRATIONS } from "../../dist/cms-migrations.js";
 function fakeProvider(kind, overrides = {}) {
     return {
         kind,
-        capabilities: { os: ["linux"], sandboxed: true, files: "provider-api" },
+        capabilities: { files: "provider-api" },
         async bind(req) { return { ok: true, host: { kind, id: `host-${req.rootSessionId}`, incarnation: "1" } }; },
         async connect() { return { ok: true, endpoint: { transport: "uri", address: "10.0.0.5:7777", connectionToken: "t" }, workspace: { cwd: "/work" } }; },
         ...overrides,
@@ -59,8 +59,7 @@ test("the local provider binds to the worker and connects locally with the same 
         workspace: { cwd: "/ws/a", additionalDirectories: ["/ws/shared"] },
     });
     assert.deepEqual(connected, { ok: true, endpoint: { transport: "local" }, workspace: { cwd: "/ws/a", additionalDirectories: ["/ws/shared"] } });
-    assert.equal(local.capabilities.sandboxed, false);
-    assert.deepEqual(local.capabilities.os, [process.platform]);
+    assert.equal(local.capabilities.files, "worker-local");
 });
 
 test("a target is named after whoever owns it", () => {

@@ -87,12 +87,16 @@ export interface ComputePrincipal {
     email?: string | null;
 }
 
-/** What a provider says about the hosts it creates. Descriptive; used for policy and display. */
+/**
+ * What a provider says about the hosts it creates. Fixed in provider code,
+ * the same for every target of that kind.
+ *
+ * One field, because one field is all PilotSwarm acts on: whether the worker
+ * may let a remote session's file tools reach the worker's own folders.
+ * Anything else a provider wants to say about its hosts belongs where it is
+ * used, not here.
+ */
 export interface ComputeCapabilities {
-    /** Operating systems of its hosts, as Node names them ("linux", "win32", "darwin", ...). */
-    os: string[];
-    /** Whether the host is an isolation boundary for model-chosen code. */
-    sandboxed: boolean;
     /** How PilotSwarm tools in the worker reach the host's files. */
     files: "worker-local" | "shared-mount" | "provider-api" | "none";
 }
@@ -348,7 +352,7 @@ export interface ComputeDoneRequest extends ComputeCall {
 export function createLocalComputeProvider(): ComputeProvider {
     return {
         kind: LOCAL_COMPUTE_KIND,
-        capabilities: { os: [process.platform], sandboxed: false, files: "worker-local" },
+        capabilities: { files: "worker-local" },
         async bind(req) {
             return { ok: true, host: { kind: LOCAL_COMPUTE_KIND, id: req.workerNodeId, incarnation: req.workerNodeId } };
         },

@@ -206,7 +206,7 @@ test("the bridge will not carry more connections than it said", async (t) => {
 
 test("a provider declares one transport, and the registry holds it to it", () => {
     const base = {
-        capabilities: { os: ["linux"], sandboxed: true, files: "none" },
+        capabilities: { files: "none" },
         async bind() { return { ok: true, host: { kind: "k", id: "h", incarnation: "1" } }; },
         async connect() { return { ok: true, endpoint: { transport: "pipe" }, workspace: {} }; },
     };

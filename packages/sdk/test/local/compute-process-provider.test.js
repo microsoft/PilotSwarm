@@ -162,7 +162,7 @@ describe("process compute provider", () => {
         const released = [];
         const farAway = {
             kind: "far-away",
-            capabilities: { os: [process.platform], sandboxed: true, files: "none" },
+            capabilities: { files: "none" },
             async bind(req) { return { ok: true, host: { kind: "far-away", id: req.rootSessionId, incarnation: "1" } }; },
             async connect() { return { ok: true, endpoint: { transport: "uri", address: "192.0.2.10:7777", connectionToken: "t" }, workspace: {} }; },
             async release(req) { released.push(req.reason); },

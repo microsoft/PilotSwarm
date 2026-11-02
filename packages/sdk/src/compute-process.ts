@@ -232,7 +232,7 @@ export function createProcessComputeProvider(options: ProcessComputeProviderOpti
 
     return {
         kind: PROCESS_COMPUTE_KIND,
-        capabilities: { os: [process.platform], sandboxed: false, files: "worker-local" },
+        capabilities: { files: "worker-local" },
 
         async bind(req) {
             const key = hostKey(req.target.id, req.rootSessionId);
