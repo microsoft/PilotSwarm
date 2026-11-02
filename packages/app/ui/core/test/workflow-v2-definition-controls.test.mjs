@@ -1,0 +1,248 @@
+/**
+ * Workflow v2: a person publishes and starts a workflow from the workflow
+ * view (design 04 publish and start; mocks M01 and M03; R17, R18, R26;
+ * INACTIVE):
+ *   - no publication controls without `personCommands` (the view stays as it
+ *     was), for a deleted definition, or in a workflow agent state's subtree
+ *     (where the restriction says why)
+ *   - a draft offers Publish only and Publish and start for the exact revision
+ *     shown and its definition hash; a revision with compile errors cannot be
+ *     published; a published definition offers Start live run until it has
+ *     its live run, and nothing after
+ *   - the commands carry the revision and hash shown (a definition command
+ *     names no run); inputs and initial variables are JSON objects
+ *   - a stale publish (the draft moved on, 409) is refused, reported and read
+ *     again; an input its schema refuses is reported with its problems; an
+ *     unanswered command is sent again with the same operation id
+ *   - the review panel opens from the header (server render)
+ *
+ * Run: node --test test/workflow-v2-definition-controls.test.mjs
+ */
+import test from "node:test";
+import assert from "node:assert/strict";
+import React from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { PilotSwarmUiController, appReducer, createInitialState, createStore } from "../src/index.js";
+import {
+    workflowV2CommandNamesRun, workflowV2DefinitionControls, workflowV2JsonObjectDraft, workflowV2RunCommandAccepted, workflowV2RunCommandArgs,
+    workflowV2RunCommandFailure, workflowV2RunCommandNotice, workflowV2RunCommandWire,
+} from "../src/workflow-v2-commands.js";
+import { WorkflowMainPane } from "../../react/src/workflow-workspace.js";
+import { readModel } from "./workflow-v2-fixtures.mjs";
+
+const SID = "wf-publication";
+const EVERY = ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel",
+    "stop", "test", "test_respond", "test_advance"];
+const commands = (extra = {}) => ({ operations: EVERY, restriction: null, run: null, ...extra });
+const SUBTREE = {
+    operations: ["pause", "stop", "cancel"],
+    restriction: { reason: "This workflow runs in a workflow agent state's subtree: people can pause, stop or cancel it; only its controlling agent changes, resumes or tests it.",
+        workflowSessionId: "wf-container", controllingSessionId: "parent-agent" },
+    run: null,
+};
+const HASH_2 = "a".repeat(64);
+const DRAFT = { state: "draft", currentRevision: 2, publishedRevision: null, publishedDefinitionHash: null };
+const draftModel = (revision = {}, personCommands = commands()) => ({
+    ...readModel({ definition: DRAFT, revision: { revision: 2, definitionHash: HASH_2, ...revision }, noRun: true }), personCommands });
+const publishedModel = ({ live = false, personCommands = commands() } = {}) => ({
+    ...readModel({ noRun: !live }), ...(live ? {} : { runs: [] }), personCommands });
+const operations = model => model?.controls.map(control => control.operation);
+
+test("no publication controls without personCommands, for a deleted definition, or in an agent state's subtree", () => {
+    assert.equal(workflowV2DefinitionControls(readModel()), null);
+    assert.equal(workflowV2DefinitionControls({ ...readModel({ definition: { state: "deleted" } }), personCommands: commands() }), null);
+    assert.equal(workflowV2DefinitionControls({ workflowId: "w", personCommands: commands() }), null);
+    const subtree = workflowV2DefinitionControls(draftModel({}, SUBTREE));
+    assert.deepEqual(operations(subtree), []);
+    assert.equal(subtree.note, `${SUBTREE.restriction.reason} Its controlling agent is session parent-agent.`);
+});
+
+test("a draft offers Publish only and Publish and start for the exact revision shown; errors block publishing", () => {
+    const draft = workflowV2DefinitionControls(draftModel());
+    assert.deepEqual(operations(draft), ["publish", "publish_and_start"]);
+    assert.deepEqual(draft.controls.map(control => [control.label, control.enabled]), [["Publish only", true], ["Publish and start", true]]);
+    assert.deepEqual({ state: draft.state, revision: draft.revision, definitionHash: draft.definitionHash, valid: draft.valid, name: draft.name, semver: draft.semver },
+        { state: "draft", revision: 2, definitionHash: HASH_2, valid: true, name: "watch-v2", semver: "1.0.0" });
+    assert.match(draft.controls[0].title, /no longer changes afterwards; no run starts/);
+
+    const invalid = workflowV2DefinitionControls(draftModel({ valid: false, diagnostics: [
+        { severity: "error", code: "E1", path: "states.a", message: "x" }, { severity: "error", code: "E2", path: "states.b", message: "y" },
+        { severity: "warning", code: "W1", path: "states.c", message: "z" }] }));
+    assert.ok(invalid.controls.every(control => !control.enabled
+        && control.title === "Revision 2 has 2 errors and cannot be published; fix them first."));
+    const unknown = workflowV2DefinitionControls(draftModel({ definitionHash: undefined }));
+    assert.ok(unknown.controls.every(control => !control.enabled && /definition hash is not known/.test(control.title)));
+});
+
+test("a published definition offers Start live run until it has its live run, and nothing after", () => {
+    const ready = workflowV2DefinitionControls(publishedModel());
+    assert.deepEqual(ready.controls.map(control => [control.operation, control.label, control.enabled]), [["start", "Start live run", true]]);
+    assert.deepEqual([ready.state, ready.publishedRevision, ready.publishedDefinitionHash, ready.liveRun], ["published", 1, "hash-1", false]);
+    const running = workflowV2DefinitionControls(publishedModel({ live: true }));
+    assert.deepEqual(operations(running), []);
+    assert.equal(running.note, "This workflow has its live run; a new live run needs a new workflow.");
+});
+
+test("a viewer who may not command it, or a command in flight, disables the controls with the reason", () => {
+    const denied = workflowV2DefinitionControls(draftModel({}, commands({ viewer: { allowed: false, reason: "Only the session owner (Alice) or an admin can do this." } })));
+    assert.ok(denied.controls.every(control => !control.enabled && control.title === "Only the session owner (Alice) or an admin can do this."));
+    const pending = workflowV2DefinitionControls(draftModel(), { operation: "publish", runId: null, phase: "pending" });
+    assert.deepEqual(pending.controls.map(control => [control.label, control.enabled, control.pending]),
+        [["Publishing…", false, true], ["Publish and start", false, false]]);
+    const starting = workflowV2DefinitionControls(publishedModel(), { operation: "start", runId: null, phase: "pending" });
+    assert.equal(starting.controls[0].label, "Starting…");
+});
+
+test("the commands carry the revision and hash shown and name no run; inputs and initial variables are JSON objects", () => {
+    assert.equal(workflowV2CommandNamesRun("publish"), false);
+    assert.equal(workflowV2CommandNamesRun("start"), false);
+    assert.equal(workflowV2CommandNamesRun("pause"), true);
+    assert.equal(workflowV2CommandNamesRun("set_vars"), true);
+    assert.deepEqual(workflowV2RunCommandArgs("publish", { expectedRevision: 2, definitionHash: HASH_2, inputs: { ignored: true } }),
+        { ok: true, args: { expectedRevision: 2, definitionHash: HASH_2 } });
+    assert.deepEqual(workflowV2RunCommandArgs("publish_and_start", { expectedRevision: 2, definitionHash: HASH_2, inputs: { repo: "r" }, vars: { note: 1 } }),
+        { ok: true, args: { expectedRevision: 2, definitionHash: HASH_2, inputs: { repo: "r" }, vars: { note: 1 } } });
+    assert.deepEqual(workflowV2RunCommandArgs("start", { definitionHash: "hash-1" }), { ok: true, args: { definitionHash: "hash-1", inputs: {} } });
+    for (const [operation, input] of [["publish", { expectedRevision: 2 }], ["publish", { expectedRevision: 0, definitionHash: HASH_2 }],
+        ["publish_and_start", { definitionHash: HASH_2, inputs: {} }], ["publish_and_start", { expectedRevision: 2, definitionHash: HASH_2, inputs: [1] }],
+        ["start", { definitionHash: "" }], ["start", { definitionHash: "h", vars: "x" }], ["publish", null]]) {
+        assert.deepEqual(workflowV2RunCommandArgs(operation, input), { ok: false }, `${operation} ${JSON.stringify(input)}`);
+    }
+    assert.deepEqual(workflowV2RunCommandWire("publish", null, "op-1", { expectedRevision: 2, definitionHash: HASH_2 }),
+        { operation: "publish", operation_id: "op-1", expected_revision: 2, definition_hash: HASH_2 });
+    assert.deepEqual(workflowV2RunCommandWire("publish_and_start", null, "op-2", { expectedRevision: 2, definitionHash: HASH_2, inputs: {}, vars: { a: 1 } }),
+        { operation: "publish_and_start", operation_id: "op-2", expected_revision: 2, definition_hash: HASH_2, inputs: {}, vars: { a: 1 } });
+    assert.deepEqual(workflowV2RunCommandWire("start", "ignored-run", "op-3", { definitionHash: "hash-1", inputs: { repo: "r" } }),
+        { operation: "start", operation_id: "op-3", definition_hash: "hash-1", inputs: { repo: "r" } });
+
+    assert.deepEqual(workflowV2JsonObjectDraft("", { label: "Inputs" }), { ok: true, value: {} });
+    assert.deepEqual(workflowV2JsonObjectDraft("  ", { label: "Initial variables", optional: true }), { ok: true, value: undefined });
+    assert.deepEqual(workflowV2JsonObjectDraft("{\"repo\":\"r\"}"), { ok: true, value: { repo: "r" } });
+    assert.match(workflowV2JsonObjectDraft("[1]", { label: "Inputs" }).error, /^Inputs must be a JSON object, for example/);
+    assert.match(workflowV2JsonObjectDraft("{repo}", { label: "Inputs" }).error, /^Inputs must be a JSON object: /);
+});
+
+test("the status line and notices name the revision, not a run; a refused input lists its problems", () => {
+    assert.equal(workflowV2RunCommandAccepted("publish", null, { publishedRevision: 2, replayed: false }, { expectedRevision: 2, definitionHash: HASH_2 }),
+        "Published revision 2. It no longer changes; its live run starts only when someone starts it.");
+    assert.equal(workflowV2RunCommandAccepted("publish_and_start", null, { publishedRevision: 2, run: { runId: "run-9", mode: "live", revision: 2 } }),
+        "Published revision 2 and started its live run run-9.");
+    assert.equal(workflowV2RunCommandAccepted("start", null, { publishedRevision: 1, run: { runId: "run-9", mode: "live", revision: 1 }, replayed: true }),
+        "Started the live run run-9 of published revision 1. It had already been accepted.");
+    assert.equal(workflowV2RunCommandNotice({ operation: "publish", runId: null, phase: "failed", message: "The draft is at revision 3, not 2." }).text,
+        "Publish was refused: The draft is at revision 3, not 2.");
+    assert.equal(workflowV2RunCommandNotice({ operation: "start", runId: null, phase: "unconfirmed", message: "Failed to fetch" }).text,
+        "Start may not have reached the workflow: Failed to fetch. Retry sends the same command again.");
+    const input = workflowV2RunCommandFailure(Object.assign(new Error("Workflow inputs do not match inputs.schema."),
+        { status: 422, code: "WORKFLOW_INPUT_INVALID", details: [{ path: "/repo", message: "is required" }, { path: "", message: "has an extra key" }] }));
+    assert.deepEqual(input, { phase: "failed", code: "WORKFLOW_INPUT_INVALID",
+        message: "Workflow inputs do not match inputs.schema. /repo: is required; has an extra key" });
+});
+
+/** Let pending promise callbacks run, a bounded number of turns. */
+async function until(check, label) {
+    for (let turn = 0; turn < 200; turn += 1) {
+        if (check()) return;
+        await new Promise(resolve => setImmediate(resolve));
+    }
+    assert.fail(`never reached: ${label}`);
+}
+
+function seeded(answer) {
+    const store = createStore(appReducer, createInitialState({ mode: "web" }));
+    const updates = [];
+    const reads = [];
+    const transport = {
+        listSessions: async () => [],
+        subscribeSession: () => () => {},
+        getSessionEventsBefore: async () => [],
+        readWorkflow: async (sessionId, options) => { reads.push([sessionId, options]); return draftModel(); },
+        updateWorkflow: async (sessionId, command) => { updates.push([sessionId, command]); return answer(command); },
+    };
+    const controller = new PilotSwarmUiController({ store, transport });
+    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: SID, title: "Workflow: w", status: "pending", sessionKind: "workflow", updatedAt: 1 }] });
+    store.dispatch({ type: "sessions/selected", sessionId: SID });
+    const view = () => store.getState().ui.workflowViews?.[SID] || {};
+    return { controller, store, updates, reads, view };
+}
+
+const receiptOf = command => ({ workflowId: SID, operation: command.operation, replayed: false, state: "published", revision: 2,
+    definitionHash: HASH_2, publishedRevision: 2, run: command.operation === "publish" ? null : { runId: "run-9", mode: "live", revision: 2 } });
+const without = (command, key) => Object.fromEntries(Object.entries(command).filter(([name]) => name !== key));
+
+test("Publish sends the exact revision and hash shown, names no run, and reads the workflow again", async () => {
+    const h = seeded(receiptOf);
+    const sent = await h.controller.sendWorkflowRunCommand(SID, { operation: "publish", expectedRevision: 2, definitionHash: HASH_2 });
+    assert.equal(sent.ok, true);
+    const [sessionId, command] = h.updates[0];
+    assert.equal(sessionId, SID);
+    assert.match(command.operation_id, /^ui-publish-./);
+    assert.deepEqual(without(command, "operation_id"), { operation: "publish", expected_revision: 2, definition_hash: HASH_2 });
+    assert.equal(h.store.getState().ui.statusText, "Published revision 2. It no longer changes; its live run starts only when someone starts it.");
+    await until(() => h.reads.length === 1, "the read model read again");
+    // Start sends the published hash with its inputs and initial variables.
+    await h.controller.sendWorkflowRunCommand(SID, { operation: "start", definitionHash: HASH_2, inputs: { repo: "r" }, vars: { note: "x" } });
+    assert.deepEqual(without(h.updates[1][1], "operation_id"), { operation: "start", definition_hash: HASH_2, inputs: { repo: "r" }, vars: { note: "x" } });
+    assert.match(h.store.getState().ui.statusText, /^Started the live run run-9 of published revision 2\./);
+    // Nothing is sent for a definition command that is not one.
+    assert.deepEqual(await h.controller.sendWorkflowRunCommand(SID, { operation: "publish", expectedRevision: 2 }), { ok: false, reason: "invalid" });
+    assert.equal(h.updates.length, 2);
+});
+
+test("a stale publish is refused, reported and read again; an unanswered one is sent again with the same operation id", async () => {
+    let fail = Object.assign(new Error("The draft is at revision 3, not 2."), { status: 409, code: "REVISION_CONFLICT", details: { currentRevision: 3 } });
+    const h = seeded(command => { if (fail) throw fail; return receiptOf(command); });
+    const refused = await h.controller.sendWorkflowRunCommand(SID, { operation: "publish", expectedRevision: 2, definitionHash: HASH_2 });
+    assert.equal(refused.reason, "failed");
+    assert.deepEqual(without(h.view().runCommand, "operationId"), { operation: "publish", runId: null, args: { expectedRevision: 2, definitionHash: HASH_2 },
+        phase: "failed", message: "The draft is at revision 3, not 2.", code: "REVISION_CONFLICT" });
+    assert.equal(workflowV2RunCommandNotice(h.view().runCommand).text, "Publish was refused: The draft is at revision 3, not 2.");
+    await until(() => h.reads.length === 1, "the read model read again after the stale publish");
+    h.controller.dismissWorkflowRunCommand(SID);
+
+    fail = new TypeError("Failed to fetch");
+    await h.controller.sendWorkflowRunCommand(SID, { operation: "publish_and_start", expectedRevision: 3, definitionHash: HASH_2, inputs: { repo: "r" } });
+    assert.equal(h.view().runCommand.phase, "unconfirmed");
+    const first = h.updates.at(-1)[1];
+    assert.equal(Object.hasOwn(first, "run_id"), false);
+    fail = null;
+    assert.equal((await h.controller.retryWorkflowRunCommand(SID)).ok, true);
+    assert.deepEqual(h.updates.at(-1)[1], first, "the same command, with the same operation id");
+    assert.match(h.store.getState().ui.statusText, /^Published revision 2 and started its live run run-9\./);
+});
+
+function mount(view) {
+    const store = createStore(appReducer, createInitialState({ mode: "api" }));
+    store.dispatch({ type: "sessions/loaded", sessions: [{ sessionId: "wf", sessionKind: "workflow", title: "Watch" }] });
+    store.dispatch({ type: "sessions/selected", sessionId: "wf" });
+    store.dispatch({ type: "ui/workflowView", sessionId: "wf", view });
+    return new PilotSwarmUiController({ store, transport: {} });
+}
+const main = controller => renderToStaticMarkup(React.createElement(WorkflowMainPane, { controller, log: null, icon: null }));
+
+test("the review panel opens from the header: the exact revision and hash with Publish only and Publish and start, or Start for a published workflow", () => {
+    const plain = main(mount({ readModel: readModel({ definition: DRAFT, noRun: true }), readModelRunId: null, definitionOpen: true }));
+    assert.ok(!plain.includes("Publish…") && !plain.includes("Publish review"), "no controls without personCommands");
+
+    const closed = main(mount({ readModel: draftModel(), readModelRunId: null }));
+    assert.ok(closed.includes(">Publish…</button>"));
+    assert.ok(closed.includes("data-definition-state=\"draft\""));
+    assert.ok(!closed.includes("Publish review"));
+
+    const open = main(mount({ readModel: draftModel(), readModelRunId: null, definitionOpen: true }));
+    assert.ok(open.includes("aria-label=\"Publish review\""));
+    assert.ok(open.includes(`>${HASH_2}</code>`), "the full definition hash is shown");
+    assert.deepEqual([...open.matchAll(/data-operation="([a-z_]+)"/g)].map(match => match[1]), ["publish", "publish_and_start"]);
+    assert.ok(open.includes("data-field=\"inputs\"") && open.includes("data-field=\"vars\""));
+    assert.ok(open.includes("Publishing freezes this exact revision"));
+
+    const start = main(mount({ readModel: publishedModel(), readModelRunId: null, definitionOpen: true }));
+    assert.ok(start.includes(">Start…</button>"));
+    assert.ok(start.includes("aria-label=\"Start the live run\""));
+    assert.deepEqual([...start.matchAll(/data-operation="([a-z_]+)"/g)].map(match => match[1]), ["start"]);
+
+    const live = main(mount({ readModel: publishedModel({ live: true }), readModelRunId: null, definitionOpen: true }));
+    assert.ok(!live.includes("Start…") && !live.includes("Start the live run"), "no start once the live run exists");
+    const subtree = main(mount({ readModel: draftModel({}, SUBTREE), readModelRunId: null, definitionOpen: true }));
+    assert.ok(!subtree.includes("Publish…") && !subtree.includes("Publish review"), "nothing to publish in an agent state's subtree");
+});

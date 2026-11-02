@@ -1,7 +1,8 @@
 import { applyNativeTaskSnapshot } from "./native-tasks.js";
 import { workflowDefinition } from "./workflow-view.js";
 import {
-    workflowV2RunCommandAccepted, workflowV2RunCommandArgs, workflowV2RunCommandConfirm, workflowV2RunCommandFailure, workflowV2RunCommandWire,
+    workflowV2CommandNamesRun, workflowV2RunCommandAccepted, workflowV2RunCommandArgs, workflowV2RunCommandConfirm, workflowV2RunCommandFailure,
+    workflowV2RunCommandWire,
 } from "./workflow-v2-commands.js";
 import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./commands.js";
 import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
@@ -6354,13 +6355,17 @@ export class PilotSwarmUiController {
 
     /**
      * Workflow v2 (INACTIVE unless the deployment takes a person's workflow
-     * commands): a person's run command for run `runId`, the run the workflow
-     * view shows: a run control (pause, resume, stop or cancel) or a variables
-     * update (set_vars: `set` and `delete`, at `expectedKvRevision`, the KV
-     * revision the person saw), sent as an updateWorkflow command through the
-     * transport (POST /sessions/:id/workflow/commands, session:manage), with
-     * that run's id, so it never lands on another run. Stop, cancel and an
-     * update that removes variables open the confirm dialog first. One
+     * commands): a person's workflow command, sent as an updateWorkflow
+     * command through the transport (POST /sessions/:id/workflow/commands,
+     * session:manage). A run command names run `runId`, the run the workflow
+     * view shows, so it never lands on another run: a run control (pause,
+     * resume, stop or cancel) or a variables update (set_vars: `set` and
+     * `delete`, at `expectedKvRevision`, the KV revision the person saw). A
+     * definition command names no run: publish (`expectedRevision` and the
+     * exact `definitionHash` shown), publish_and_start (the same, with
+     * `inputs` and optional `vars`) or start (the published `definitionHash`,
+     * `inputs`, optional `vars`). Stop, cancel and an update that removes
+     * variables open the confirm dialog first. One
      * command per session at a time: the view records it as `runCommand` ({
      * operation, runId, operationId, args, phase, message, code }). Accepted:
      * the record is cleared, the status line says what was accepted, and the
@@ -6376,8 +6381,10 @@ export class PilotSwarmUiController {
      */
     async sendWorkflowRunCommand(sessionId, { operation, runId, confirmed = false, ...input } = {}) {
         const checked = workflowV2RunCommandArgs(operation, input);
-        if (!checked.ok || typeof runId !== "string" || !runId) return { ok: false, reason: "invalid" };
+        const namesRun = workflowV2CommandNamesRun(operation);
+        if (!checked.ok || (namesRun && (typeof runId !== "string" || !runId))) return { ok: false, reason: "invalid" };
         const args = checked.args;
+        const run = namesRun ? runId : null;
         const state = this.getState();
         if (state.sessions.byId[sessionId]?.sessionKind !== "workflow") return { ok: false, reason: "not a workflow" };
         if (typeof this.transport?.updateWorkflow !== "function") {
@@ -6386,21 +6393,21 @@ export class PilotSwarmUiController {
         }
         const previous = state.ui.workflowViews?.[sessionId]?.runCommand || null;
         if (previous?.phase === "pending") return { ok: false, reason: "pending" };
-        const confirm = confirmed ? null : workflowV2RunCommandConfirm(operation, runId, args);
+        const confirm = confirmed ? null : workflowV2RunCommandConfirm(operation, run, args);
         if (confirm) {
             this.dispatch({ type: "ui/modal", modal: { type: "confirm", ...confirm, action: "workflowRunCommand",
-                workflowRunCommand: { sessionId, operation, runId, ...(args ?? {}) }, previousFocus: state.ui.focusRegion } });
+                workflowRunCommand: { sessionId, operation, runId: run, ...(args ?? {}) }, previousFocus: state.ui.focusRegion } });
             return { ok: false, reason: "confirming" };
         }
-        const same = previous?.phase === "unconfirmed" && previous.operation === operation && previous.runId === runId
+        const same = previous?.phase === "unconfirmed" && previous.operation === operation && (previous.runId ?? null) === run
             && JSON.stringify(previous.args ?? null) === JSON.stringify(args) && typeof previous.operationId === "string";
         const operationId = same ? previous.operationId : `ui-${operation}-${this._newTurnControlRequestId()}`;
-        const record = { operation, runId, operationId, args };
+        const record = { operation, runId: run, operationId, args };
         this.dispatch({ type: "ui/workflowView", sessionId, view: { runCommand: { ...record, phase: "pending", message: null, code: null } } });
         try {
-            const receipt = await this.transport.updateWorkflow(sessionId, workflowV2RunCommandWire(operation, runId, operationId, args));
+            const receipt = await this.transport.updateWorkflow(sessionId, workflowV2RunCommandWire(operation, run, operationId, args));
             this.dispatch({ type: "ui/workflowView", sessionId, view: { runCommand: null } });
-            this.dispatch({ type: "ui/status", text: workflowV2RunCommandAccepted(operation, runId, receipt, args) });
+            this.dispatch({ type: "ui/status", text: workflowV2RunCommandAccepted(operation, run, receipt, args) });
             this.ensureWorkflowReadModel(sessionId, { force: true }).catch(() => {});
             return { ok: true, receipt };
         } catch (error) {

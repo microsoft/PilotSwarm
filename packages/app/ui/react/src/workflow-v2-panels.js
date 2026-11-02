@@ -2,7 +2,7 @@ import React from "react";
 import {
     compactWorkflowV2Executions, formatSeconds, formatWorkflowValue, projectWorkflowV2ReadModel, workflowV2RouteKind,
 } from "../../core/src/workflow-v2-view.js";
-import { workflowV2VariableDraft, workflowV2VariableRemoval } from "../../core/src/workflow-v2-commands.js";
+import { workflowV2JsonObjectDraft, workflowV2VariableDraft, workflowV2VariableRemoval } from "../../core/src/workflow-v2-commands.js";
 
 const h = React.createElement;
 const TONES = { error: "var(--ps-danger)", warning: "var(--ps-warning)", info: "var(--ps-muted)" };
@@ -406,4 +406,75 @@ export function WorkflowV2Variables({ controller, sessionId, model, id }) {
 export function WorkflowV2VariablesToggle({ controller, sessionId, open, controls }) {
     return h("button", { type: "button", className: "ps-mini-button", "aria-expanded": Boolean(open), "aria-controls": open ? controls : undefined,
         onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { variablesOpen: !open } }) }, "Variables");
+}
+
+/** The header button that opens and closes the publication panel (the view's `definitionOpen`): "Publish…" for a draft, "Start…" otherwise. */
+export function WorkflowV2DefinitionToggle({ controller, sessionId, model, open, controls }) {
+    if (!model?.controls?.length) return null;
+    return h("button", { type: "button", className: "ps-mini-button", "aria-expanded": Boolean(open), "aria-controls": open ? controls : undefined,
+        "data-definition-state": model.state,
+        onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { definitionOpen: !open } }) },
+    model.state === "draft" ? "Publish…" : "Start…");
+}
+
+/**
+ * Publication review (design 04; mocks M01 and M03; R17, R18, R26; INACTIVE: only a read model that says which commands
+ * the workflow takes from people has it). `model` is workflowV2DefinitionControls' answer. It shows exactly what is
+ * published or started (the definition, the revision and its full definition hash), then sends the command for that
+ * revision and hash: Publish only, Publish and start (with the run's inputs and optional initial variables, as JSON
+ * objects), or Start live run for a published definition. A revision that changed meanwhile is refused by the server and
+ * the workflow is read again; what the person typed stays. Publishing and starting are separate, explicit choices.
+ */
+export function WorkflowV2DefinitionPanel({ controller, sessionId, model, id }) {
+    const [inputs, setInputs] = React.useState("{}");
+    const [vars, setVars] = React.useState("");
+    const [error, setError] = React.useState(null);
+    const mounted = React.useRef(true);
+    React.useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+    if (!model?.controls?.length) return null;
+    const runs = model.controls.some(control => control.operation !== "publish");
+    const send = async operation => {
+        let run = {};
+        if (operation !== "publish") {
+            const parsedInputs = workflowV2JsonObjectDraft(inputs, { label: "Inputs" });
+            const parsedVars = workflowV2JsonObjectDraft(vars, { label: "Initial variables", optional: true });
+            const refused = !parsedInputs.ok ? parsedInputs : !parsedVars.ok ? parsedVars : null;
+            if (refused) { setError(refused.error); return; }
+            run = { inputs: parsedInputs.value, ...(parsedVars.value !== undefined ? { vars: parsedVars.value } : {}) };
+        }
+        setError(null);
+        const result = await controller.sendWorkflowRunCommand(sessionId, operation === "start"
+            ? { operation, definitionHash: model.publishedDefinitionHash, ...run }
+            : { operation, expectedRevision: model.revision, definitionHash: model.definitionHash, ...run });
+        if (result?.ok && mounted.current) controller.dispatch({ type: "ui/workflowView", sessionId, view: { definitionOpen: false } });
+    };
+    const draft = model.state === "draft";
+    const shownRevision = draft ? model.revision : model.publishedRevision;
+    const shownHash = draft ? model.definitionHash : model.publishedDefinitionHash;
+    const row = (label, value, extra = {}) => h("div", { className: "ps-workflow-property", key: label, ...extra }, h("span", null, label), h("strong", null, value));
+    return h("section", { id, className: "ps-workflow-definition", "aria-label": draft ? "Publish review" : "Start the live run",
+        "data-definition-state": model.state,
+        style: { display: "grid", gap: 6, padding: "6px 12px", fontSize: "0.75rem", borderBottom: "1px solid var(--ps-border)" } },
+    h("h3", { style: { margin: 0, fontSize: "0.8rem" } }, draft ? "Publish review" : "Start the live run"),
+    row("Definition", [model.name, model.semver].filter(Boolean).join(" ") || "Not named"),
+    row(draft ? "Revision" : "Published revision", shownRevision === null ? "Not known" : String(shownRevision)),
+    row("Definition hash", h("code", { style: { overflowWrap: "anywhere" }, "data-field": "definition-hash" }, shownHash ?? "Not known")),
+    draft ? row("Validity", model.valid ? "Valid" : `${model.errors || "Unlisted"} error${model.errors === 1 ? "" : "s"}: it cannot be published`) : null,
+    row("Live effects", runs ? "Only when its live run starts" : "None until a live run starts"),
+    h("p", { style: { margin: 0, color: "var(--ps-muted)" } }, draft
+        ? "Publishing freezes this exact revision: it no longer changes, and a new version needs a new workflow. Publication starts no run, approves no repository write and grants no tool."
+        : "Starting runs the published revision with real effects. A workflow has one live run."),
+    runs ? h("label", { style: { display: "grid", gap: 2 } }, "Inputs (JSON object)",
+        h("textarea", { value: inputs, rows: 3, onChange: event => setInputs(event.target.value), "data-field": "inputs",
+            style: { fontFamily: "var(--ps-font-mono, monospace)", width: "100%" } })) : null,
+    runs ? h("label", { style: { display: "grid", gap: 2 } }, "Initial variables (JSON object, optional)",
+        h("textarea", { value: vars, rows: 2, onChange: event => setVars(event.target.value), "data-field": "vars",
+            style: { fontFamily: "var(--ps-font-mono, monospace)", width: "100%" } })) : null,
+    h("div", { style: { display: "flex", flexWrap: "wrap", gap: 6 } },
+        model.controls.map(control => h("button", { key: control.operation, type: "button", className: "ps-mini-button",
+            "data-operation": control.operation, disabled: !control.enabled, title: control.title,
+            onClick: () => { send(control.operation); } }, control.label)),
+        h("button", { type: "button", className: "ps-mini-button",
+            onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { definitionOpen: false } }) }, "Close")),
+    error ? h("span", { role: "alert", style: { color: TONES.error } }, error) : null);
 }

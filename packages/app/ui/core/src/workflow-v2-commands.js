@@ -1,12 +1,14 @@
 /**
- * Workflow v2: a person's run commands in the workflow view (design 04 and
- * 07, mocks M04, M15 and M16; R04, R05, R17, R26; INACTIVE): the run controls
- * (pause, resume, stop, cancel) and the run's variables (set_vars: set or
- * remove a key at the expected KV revision). Pure: nothing here calls
- * anything. The controller sends a command (sendWorkflowRunCommand) as an
- * updateWorkflow command through the transport; this module says which
- * commands a run offers, checks what a person typed, and says what the view
- * shows about the last command.
+ * Workflow v2: a person's workflow commands in the workflow view (design 04
+ * and 07, mocks M03, M04, M15 and M16; R04, R05, R17, R18, R26; INACTIVE): the
+ * run controls (pause, resume, stop, cancel), the run's variables (set_vars:
+ * set or remove a key at the expected KV revision) and the definition's
+ * publication (publish the exact revision shown, publish it and start its
+ * live run, start the published revision's live run). Pure: nothing here
+ * calls anything. The controller sends a command (sendWorkflowRunCommand) as
+ * an updateWorkflow command through the transport; this module says which
+ * commands the workflow offers, checks what a person typed, and says what the
+ * view shows about the last command.
  *
  * The read model says which commands the workflow takes from people
  * (`personCommands`). A server adds it only when its deployment takes them,
@@ -22,7 +24,9 @@ const ACTIVE = new Set(["admitted", "running", "paused"]);
 const ENDED = new Set(["completed", "failed", "cancelled", "stopped"]);
 const LABELS = { pause: "Pause", resume: "Resume", stop: "Stop", cancel: "Cancel" };
 /** How a notice names each command. */
-const NOTICE_LABELS = { ...LABELS, set_vars: "The variables update" };
+const NOTICE_LABELS = { ...LABELS, set_vars: "The variables update", publish: "Publish", publish_and_start: "Publish and start", start: "Start" };
+/** The definition's commands: they name no run. */
+const DEFINITION_OPERATIONS = new Set(["publish", "publish_and_start", "start"]);
 /** The longest KV key (store.ts WORKFLOW_V2_KV_LIMITS.maxKeyLength). */
 const KV_KEY_MAX = 128;
 /** The longest value shown in the variables list; editing uses the whole value. */
@@ -116,6 +120,7 @@ export function workflowV2RunControls(model, command = null) {
  */
 export function workflowV2RunCommandArgs(operation, input = {}) {
     if (WORKFLOW_V2_RUN_CONTROL_OPERATIONS.includes(operation)) return { ok: true, args: null };
+    if (DEFINITION_OPERATIONS.has(operation)) return definitionArgs(operation, input);
     if (operation !== "set_vars" || !isRecord(input)) return { ok: false };
     const set = input.set === undefined ? {} : input.set;
     const removed = input.delete === undefined ? [] : input.delete;
@@ -126,8 +131,48 @@ export function workflowV2RunCommandArgs(operation, input = {}) {
     return { ok: true, args: { set, delete: removed, expectedKvRevision: input.expectedKvRevision } };
 }
 
-/** The updateWorkflow command a checked command is sent as: always for the named run, with its own operation id. */
+/**
+ * A definition command's arguments (design 04): publish takes the revision
+ * shown (`expectedRevision`) and its exact `definitionHash`; publish_and_start
+ * also takes the run's `inputs` (a JSON object, `{}` when absent) and,
+ * optionally, its initial variables (`vars`, a JSON object); start takes the
+ * published revision's `definitionHash`, `inputs` and optional `vars`. The
+ * server refuses a revision or hash that is no longer current (a stale
+ * publish), inputs its schema refuses, and anything else it refuses.
+ */
+function definitionArgs(operation, input) {
+    if (!isRecord(input)) return { ok: false };
+    const hash = typeof input.definitionHash === "string" && input.definitionHash ? input.definitionHash : null;
+    if (hash === null) return { ok: false };
+    if (operation === "publish" || operation === "publish_and_start") {
+        if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 1) return { ok: false };
+        if (operation === "publish") return { ok: true, args: { expectedRevision: input.expectedRevision, definitionHash: hash } };
+    }
+    const inputs = input.inputs === undefined ? {} : input.inputs;
+    if (!isRecord(inputs) || (input.vars !== undefined && !isRecord(input.vars))) return { ok: false };
+    return { ok: true, args: { ...(operation === "publish_and_start" ? { expectedRevision: input.expectedRevision } : {}), definitionHash: hash, inputs,
+        ...(input.vars !== undefined ? { vars: input.vars } : {}) } };
+}
+
+/** Whether a command acts on a run (and so needs the run's id): every command but the definition's. */
+export function workflowV2CommandNamesRun(operation) {
+    return !DEFINITION_OPERATIONS.has(operation);
+}
+
+/**
+ * The updateWorkflow command a checked command is sent as, with its own
+ * operation id: a run command always for the named run, a definition command
+ * for the revision and hash it names.
+ */
 export function workflowV2RunCommandWire(operation, runId, operationId, args = null) {
+    if (DEFINITION_OPERATIONS.has(operation)) {
+        const command = { operation, operation_id: operationId };
+        if (args?.expectedRevision !== undefined) command.expected_revision = args.expectedRevision;
+        command.definition_hash = args?.definitionHash;
+        if (args?.inputs !== undefined) command.inputs = args.inputs;
+        if (args?.vars !== undefined) command.vars = args.vars;
+        return command;
+    }
     const command = { operation, operation_id: operationId, run_id: runId };
     if (!args) return command;
     if (Object.keys(args.set).length) command.set = args.set;
@@ -216,6 +261,79 @@ export function workflowV2RunVariables(model, command = null) {
 }
 
 /**
+ * A JSON object a person typed for a run's inputs or initial variables, or
+ * the reason it is not one. Empty text is `{}` for inputs and nothing (the
+ * field is left out) when `optional`.
+ */
+export function workflowV2JsonObjectDraft(source, { label = "The value", optional = false } = {}) {
+    const textValue = typeof source === "string" ? source : "";
+    if (!textValue.trim()) return optional ? { ok: true, value: undefined } : { ok: true, value: {} };
+    let parsed;
+    try {
+        parsed = JSON.parse(textValue);
+    } catch (error) {
+        return { ok: false, error: `${label} must be a JSON object: ${bounded(String(error?.message || error))}` };
+    }
+    return isRecord(parsed) ? { ok: true, value: parsed } : { ok: false, error: `${label} must be a JSON object, for example {"repo": "name"}.` };
+}
+
+/**
+ * The definition's publication controls (design 04 publish and start; mocks
+ * M01 and M03; R17, R18, R26) given the view's last command, or null: without
+ * `personCommands` (the deployment takes no person's commands: the view stays
+ * as it was) or without a definition in a recognized state. Never throws.
+ *
+ * A draft offers Publish (the exact revision shown, with its definition hash)
+ * and Publish and start (the same, then its live run with the inputs given);
+ * a published definition without its live run offers Start (the published
+ * revision's hash). Only commands the workflow takes from people are listed:
+ * a workflow in a workflow agent state's subtree takes none of them, and
+ * `restriction` says why. A control is disabled, with the reason as its
+ * title, for a revision with compile errors, a viewer who may not command the
+ * workflow, a revision or hash the read model does not give, and while a
+ * command is being sent. The server checks the revision and hash again and
+ * refuses a stale publish; publishing freezes the revision.
+ */
+export function workflowV2DefinitionControls(model, command = null) {
+    if (!isRecord(model) || !isRecord(model.personCommands) || !isRecord(model.definition) || !isRecord(model.revision)) return null;
+    const definition = model.definition;
+    const state = definition.state === "draft" || definition.state === "published" ? definition.state : null;
+    if (state === null) return null;
+    const commands = model.personCommands;
+    const offered = new Set(Array.isArray(commands.operations) ? commands.operations.filter(item => typeof item === "string") : []);
+    const viewer = isRecord(commands.viewer) ? commands.viewer : null;
+    const denied = viewer?.allowed === false ? text(viewer.reason) ?? "You cannot command this workflow." : null;
+    const busy = isRecord(command) && command.phase === "pending";
+    const liveRun = Array.isArray(model.runs) && model.runs.some(run => isRecord(run) && run.mode === "live");
+    const revision = Number.isSafeInteger(model.revision.revision) && model.revision.revision >= 1 ? model.revision.revision : null;
+    const definitionHash = text(model.revision.definitionHash);
+    const publishedRevision = Number.isSafeInteger(definition.publishedRevision) ? definition.publishedRevision : null;
+    const publishedDefinitionHash = text(definition.publishedDefinitionHash);
+    const valid = model.revision.valid === true;
+    const errors = Array.isArray(model.revision.diagnostics)
+        ? model.revision.diagnostics.filter(item => isRecord(item) && item.severity !== "warning").length : 0;
+    const candidates = state === "draft" ? ["publish", "publish_and_start"] : liveRun ? [] : ["start"];
+    const controls = candidates.filter(operation => offered.has(operation)).map(operation => {
+        const pending = busy && command.operation === operation;
+        const known = operation === "start" ? publishedDefinitionHash !== null : revision !== null && definitionHash !== null;
+        const reason = busy ? (pending ? "This command is being sent." : "Another command for this workflow is being sent.")
+            : denied ?? (operation !== "start" && !valid ? `Revision ${revision ?? "shown"} has ${errors || "unlisted"} error${errors === 1 ? "" : "s"} and cannot be published; fix them first.`
+                : !known ? "The revision or its definition hash is not known; read the workflow again." : null);
+        const label = operation === "publish" ? "Publish only" : operation === "publish_and_start" ? "Publish and start" : "Start live run";
+        return { operation, label: pending ? (operation === "start" ? "Starting…" : "Publishing…") : label, enabled: reason === null, pending,
+            title: reason ?? (operation === "publish" ? "Publish this exact revision. It no longer changes afterwards; no run starts."
+                : operation === "publish_and_start" ? "Publish this exact revision and start its live run with the inputs given. The live run's effects are real."
+                    : "Start the live run of the published revision with the inputs given. The live run's effects are real.") };
+    });
+    const restriction = restrictionText(commands);
+    const note = controls.length ? null
+        : restriction ?? (state === "published" && liveRun ? "This workflow has its live run; a new live run needs a new workflow."
+            : "This workflow takes no publication commands from people.");
+    return { state, name: text(model.revision.name), semver: text(definition.semver), revision, definitionHash, valid, errors,
+        publishedRevision, publishedDefinitionHash, liveRun, controls, busy, note, viewerReason: denied };
+}
+
+/**
  * The confirm dialog of a command that ends work or loses data, or null for
  * one that needs none: stop and cancel (mock M16: neither undoes effects
  * that already happened), and a variables update that removes keys.
@@ -249,6 +367,14 @@ export function workflowV2RunCommandAccepted(operation, runId, receipt, args = n
     const run = `run ${shortId(String(runId ?? ""))}`;
     const again = isRecord(receipt) && receipt.replayed === true ? " It had already been accepted." : "";
     const status = isRecord(receipt) ? text(receipt.status) : null;
+    if (DEFINITION_OPERATIONS.has(operation)) {
+        const published = isRecord(receipt) && Number.isSafeInteger(receipt.publishedRevision) ? receipt.publishedRevision : args?.expectedRevision;
+        const revision = Number.isSafeInteger(published) ? `revision ${published}` : "the revision";
+        const started = isRecord(receipt) && isRecord(receipt.run) && typeof receipt.run.runId === "string" ? shortId(receipt.run.runId) : null;
+        if (operation === "publish") return `Published ${revision}. It no longer changes; its live run starts only when someone starts it.${again}`;
+        if (operation === "publish_and_start") return `Published ${revision} and started its live run${started ? ` ${started}` : ""}.${again}`;
+        return `Started the live run${started ? ` ${started}` : ""} of published ${revision}.${again}`;
+    }
     if (operation === "set_vars") {
         const set = isRecord(args?.set) ? Object.keys(args.set) : [];
         const removed = Array.isArray(args?.delete) ? args.delete : [];
@@ -274,7 +400,10 @@ export function workflowV2RunCommandAccepted(operation, runId, receipt, args = n
 export function workflowV2RunCommandFailure(error) {
     const status = Number(error?.status);
     const refused = Number.isSafeInteger(status) && ((status >= 400 && status < 500) || status === 501);
-    const message = bounded(String(error?.message || error || "The request failed."));
+    // A contract's refusal lists its problems (WORKFLOW_INPUT_INVALID: path and message); the first few are shown with it.
+    const problems = Array.isArray(error?.details) ? error.details.filter(item => isRecord(item) && typeof item.message === "string")
+        .slice(0, 3).map(item => `${typeof item.path === "string" && item.path ? `${item.path}: ` : ""}${item.message}`) : [];
+    const message = bounded(`${String(error?.message || error || "The request failed.")}${problems.length ? ` ${problems.join("; ")}` : ""}`);
     return { phase: refused ? "failed" : "unconfirmed", message, code: typeof error?.code === "string" ? error.code : null };
 }
 
@@ -287,11 +416,13 @@ export function workflowV2RunCommandNotice(command) {
     if (!isRecord(command) || !NOTICE_LABELS[command.operation] || (command.phase !== "failed" && command.phase !== "unconfirmed")) return null;
     const label = NOTICE_LABELS[command.operation];
     const run = typeof command.runId === "string" ? command.runId : "";
+    // A definition command names no run.
+    const target = run ? ` for run ${shortId(run)}` : "";
     const given = typeof command.message === "string" && command.message ? command.message : "No reason was given.";
     const message = /[.!?…]$/.test(given) ? given : `${given}.`;
     return command.phase === "failed"
         ? { level: "error", operation: command.operation, runId: run, retry: false,
-            text: `${label} was refused for run ${shortId(run)}: ${message}` }
+            text: `${label} was refused${target}: ${message}` }
         : { level: "warning", operation: command.operation, runId: run, retry: true,
-            text: `${label} for run ${shortId(run)} may not have reached the workflow: ${message} Retry sends the same command again.` };
+            text: `${label}${target} may not have reached the workflow: ${message} Retry sends the same command again.` };
 }
