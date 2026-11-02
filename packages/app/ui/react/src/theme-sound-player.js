@@ -168,11 +168,28 @@ export function createThemeSoundPlayer({ win = typeof window === "undefined" ? n
         return ctx;
     };
 
+    // iPhone Safari also reports "interrupted" (after a call, a lock or another
+    // app taking the audio) and stays silent until resumed by a gesture.
     const resume = () => {
-        if (ctx && ctx.state === "suspended") ctx.resume().catch(() => {});
+        if (ctx && (ctx.state === "suspended" || ctx.state === "interrupted")) ctx.resume().catch(() => {});
     };
 
-    const onGesture = () => resume();
+    // Older iOS unlocks audio only when a sound starts inside the gesture
+    // itself; resume() alone is not enough there. One silent sample does it.
+    const unlock = () => {
+        if (!ctx) return;
+        try {
+            const blip = ctx.createBufferSource();
+            blip.buffer = ctx.createBuffer(1, 1, ctx.sampleRate || 22050);
+            blip.connect(ctx.destination);
+            blip.start(0);
+        } catch { /* nothing to unlock */ }
+    };
+
+    const onGesture = () => {
+        if (ctx && ctx.state !== "running") unlock();
+        resume();
+    };
 
     // Fade to silence over `seconds`, then stop the voice so it costs nothing.
     const silence = (seconds = 0.3) => {
@@ -236,7 +253,9 @@ export function createThemeSoundPlayer({ win = typeof window === "undefined" ? n
     return {
         /** Call inside a click or key handler so the browser allows sound. */
         prime() {
-            if (ensureContext()) resume();
+            if (!ensureContext()) return;
+            unlock();
+            resume();
         },
         update(next = {}) {
             const nextSound = next.sound && VOICES[next.sound.id] ? next.sound : null;

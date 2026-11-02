@@ -25,11 +25,12 @@ function param(value = 0) {
 }
 
 function fakeAudio() {
-    const stats = { beds: 0, bedsStopped: 0, contexts: 0 };
+    const stats = { beds: 0, bedsStopped: 0, contexts: 0, resumes: 0, unlocks: 0, ctx: null };
     const node = (extra = {}) => ({ connect() {}, disconnect() {}, ...extra });
     class FakeAudioContext {
         constructor() {
             stats.contexts += 1;
+            stats.ctx = this;
             this.sampleRate = 100;
             this.currentTime = 0;
             this.state = "running";
@@ -41,7 +42,7 @@ function fakeAudio() {
         }
         createBuffer(_channels, length) {
             const data = new Float32Array(length);
-            return { getChannelData: () => data };
+            return { length, getChannelData: () => data };
         }
         createBufferSource() {
             let started = false;
@@ -52,6 +53,7 @@ function fakeAudio() {
                 start() {
                     started = true;
                     if (source.loop) stats.beds += 1;
+                    if (source.buffer?.length === 1) stats.unlocks += 1;
                 },
                 stop() {
                     if (!started || stopped) throw new Error("not running");
@@ -63,16 +65,16 @@ function fakeAudio() {
         }
         createBiquadFilter() { return node({ type: "", frequency: param(), Q: param() }); }
         createOscillator() { return node({ frequency: param(), start() {}, stop() {} }); }
-        resume() { return Promise.resolve(); }
+        resume() { stats.resumes += 1; this.state = "running"; return Promise.resolve(); }
         close() { return Promise.resolve(); }
     }
-    const listeners = new Set();
+    const listeners = new Map();
     const win = {
         AudioContext: FakeAudioContext,
         document: { hidden: false, documentElement: { dataset: {} } },
         setInterval: (fn, ms) => setInterval(fn, ms),
         clearInterval: (handle) => clearInterval(handle),
-        addEventListener: (type) => listeners.add(type),
+        addEventListener: (type, fn) => listeners.set(type, fn),
         removeEventListener: (type) => listeners.delete(type),
     };
     return { win, stats, listeners, running: () => stats.beds - stats.bedsStopped };
@@ -137,4 +139,21 @@ test("dispose stops a fading fire at once", (t) => {
     assert.equal(audio.running(), 0);
     advance(t, 10_000);
     assert.equal(audio.running(), 0);
+});
+
+test("a tap starts sound on iPhone: unlock inside the gesture, resume an interrupted context", (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+    const audio = fakeAudio();
+    const player = createThemeSoundPlayer({ win: audio.win });
+    player.prime();
+    assert.equal(audio.stats.unlocks, 1, "the switch's own tap plays one silent sample");
+    player.update({ sound: fire, enabled: true, volume: 0.4 });
+    advance(t, 3000);
+    audio.stats.ctx.state = "interrupted";
+    const before = audio.stats.resumes;
+    audio.listeners.get("touchend")();
+    assert.equal(audio.stats.resumes, before + 1, "an interrupted context resumes on the next tap");
+    assert.equal(audio.stats.unlocks, 2, "and is unlocked inside that tap");
+    assert.equal(audio.stats.ctx.state, "running");
+    player.dispose();
 });
