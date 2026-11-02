@@ -71,6 +71,18 @@ export const COMPUTE_ERROR_CODES = {
     HANDSHAKE_FAILED: COMPUTE_HANDSHAKE_FAILED,
 } as const;
 
+/**
+ * Why a GitHub Copilot model cannot run on a compute host yet.
+ *
+ * Those models authenticate inside the runtime with a GitHub token. A
+ * runtime on somebody else's machine must not hold the worker's token, and
+ * asking the worker for each request is not built. Said in one place so
+ * creation, a model switch, the model list and the worker's own start all
+ * say the same thing.
+ */
+export const COMPUTE_GITHUB_MODEL_REFUSAL =
+    "GitHub Copilot models cannot run on a remote compute target yet; choose a model from a configured provider";
+
 export type ComputeTargetClass = "shared";
 
 /** A registered compute target, as the CMS stores it. `config` belongs to the provider of `kind`. */

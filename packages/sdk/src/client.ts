@@ -23,7 +23,7 @@ import type {
     SessionWorkspace,
 } from "./types.js";
 import { validateWorkspaceText } from "./workspace-check.js";
-import { COMPUTE_ERROR_CODES, resolveComputeTargetName, validateComputeTargetName } from "./compute.js";
+import { COMPUTE_ERROR_CODES, COMPUTE_GITHUB_MODEL_REFUSAL, resolveComputeTargetName, validateComputeTargetName } from "./compute.js";
 import type { SessionCatalog, SessionEvent, SessionVisibility, SessionRow } from "./cms.js";
 import type { MessageSender } from "./message-sender.js";
 import { normalizeMessageSender } from "./message-sender.js";
@@ -263,6 +263,13 @@ export class PilotSwarmClient {
 
         const sessionId = config?.sessionId ?? crypto.randomUUID();
         const resolved = await this._resolveCreationModel(config ?? {}, false);
+        // Compute providers: a session is refused here rather than at its
+        // first turn, where the model is only found out after three failed
+        // attempts and about three quarters of a minute.
+        if (computeTarget && resolved) {
+            const refusal = await this._computeModelRefusal(resolved.provider);
+            if (refusal) throw Object.assign(new Error(refusal), { code: COMPUTE_ERROR_CODES.UNSUPPORTED, status: 400 });
+        }
         const { workspace: _rawWorkspace, ...configWithoutWorkspace } = config ?? {};
         const resolvedConfig = {
             ...configWithoutWorkspace,
@@ -711,6 +718,22 @@ export class PilotSwarmClient {
         const code = checked.ok ? COMPUTE_ERROR_CODES.INVALID : checked.code;
         const message = checked.ok ? "that is not a compute target name" : checked.message;
         throw Object.assign(new Error(`${code}: ${message}`), { code, status: 400 });
+    }
+
+    /**
+     * Compute providers: why a model served by this provider cannot run on
+     * a compute host, or null. GitHub Copilot models authenticate inside
+     * the runtime with a GitHub token, and a runtime on another machine
+     * must not hold the worker's.
+     */
+    private async _computeModelRefusal(providerName: string): Promise<string | null> {
+        const store = this._catalog?.providers;
+        if (!store || !this._modelProviderTypes) return null;
+        const credentials = await store.allCredentials().catch(() => []);
+        const instance = credentials.find((candidate) => candidate.name === providerName);
+        if (!instance) return null;
+        const type = this._modelProviderTypes.allProviders.find((provider) => provider.id === instance.typeId)?.type;
+        return type === "github" ? COMPUTE_GITHUB_MODEL_REFUSAL : null;
     }
 
     private async _resolveCreationModel(

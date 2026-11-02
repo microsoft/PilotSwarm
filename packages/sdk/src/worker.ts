@@ -1,4 +1,4 @@
-import { LOCAL_COMPUTE_KIND, type ComputeProvider } from "./compute.js";
+import { COMPUTE_GITHUB_MODEL_REFUSAL, LOCAL_COMPUTE_KIND, type ComputeProvider } from "./compute.js";
 import { capabilityHash, type CapabilitySource } from "./capability-catalog.js";
 import { AGENT_HANDOFF_CAPABILITY, COMPUTE_CAPABILITY, TURN_CONTROL_CAPABILITY, WORKSPACE_CAPABILITY } from "./activity-routing.js";
 import { resolveNativeSubagents } from "./native-subagents.js";
@@ -2414,12 +2414,29 @@ export class PilotSwarmWorker {
         }
 
         const overrideByAgent = new Map(overrides.map((override) => [override.agentId, override]));
+        // Compute providers: a deployment that names a default compute
+        // target puts every system session on a host. A GitHub Copilot
+        // model cannot run there, and without this check every system
+        // session fails three times a turn, for ever, with nothing said at
+        // start about why.
+        const defaultTarget = this._catalog.defaultComputeTarget ?? "";
+        const typeOfProvider = (providerName: string): string | undefined => {
+            const instance = credentials.find((candidate) => candidate.name === providerName);
+            return this._modelProviderTypes?.allProviders.find((provider) => provider.id === instance?.typeId)?.type;
+        };
         for (const plan of resolveSystemAgentSessionPlans(this._loadedSystemAgents)) {
             if (!this._providerReconciliationEnabled) return;
             const override = overrideByAgent.get(plan.agent.id);
             const route = override ?? systemDefault;
             if (!route.model || !this._modelProviders?.hasModel(route.model)) {
                 console.warn(`[PilotSwarmWorker] system agent ${plan.agent.id} blocked: configured model ${route.model ?? "(none)"} is unavailable`);
+                continue;
+            }
+            if (defaultTarget && route.provider && typeOfProvider(route.provider) === "github") {
+                console.error(
+                    `[PilotSwarmWorker] system agent ${plan.agent.id} blocked: this deployment runs new sessions on the compute target `
+                    + `"${defaultTarget}", and its model ${route.model} is a GitHub Copilot model. ${COMPUTE_GITHUB_MODEL_REFUSAL}. `
+                    + "Set a system model from another provider, or set an agent override for this agent.");
                 continue;
             }
             await startSystemAgents({

@@ -1,4 +1,4 @@
-import { COMPUTE_ERROR_CODES, ComputeProviderRegistry, checkRemoteEndpoint, computeBindingKey, computeSharesWorkerFiles, isLoopbackAddress, runtimeConnectionFor, runtimeEndpointKey, type ComputeFailure, type ComputeHostRef, type ComputePrincipal, type ComputeProvider, type ComputeReleaseReason, type ComputeRuntimeEndpoint, type ComputeTarget, type ComputeWorkspacePaths } from "./compute.js";
+import { COMPUTE_ERROR_CODES, COMPUTE_GITHUB_MODEL_REFUSAL, LOCAL_COMPUTE_KIND, ComputeFolderMap, ComputeProviderRegistry, checkRemoteEndpoint, computeBindingKey, computeFolderMapOf, computeSharesWorkerFiles, isLoopbackAddress, runtimeConnectionFor, runtimeEndpointKey, type ComputeFailure, type ComputeHostRef, type ComputePrincipal, type ComputeProvider, type ComputeReleaseReason, type ComputeRuntimeEndpoint, type ComputeTarget, type ComputeWorkspacePaths } from "./compute.js";
 import { computeCopyLimits, planComputeCopy, type ComputeCopyLimits, type ComputeCopyRefusal } from "./compute-assets.js";
 import { COMPUTE_CONTROL_COPY_TIMEOUT_MS, ComputeControlLink, type ComputeCallerStatement } from "./compute-control.js";
 import { computeCopyName, mcpOriginKey, packageMcpFolders, packageMcpFoldersForAgents, remoteMcpCustomAgents, remoteMcpServers, type McpServerOrigin } from "./compute-mcp.js";
@@ -1057,12 +1057,54 @@ export class SessionManager {
             .map((provider) => provider.name));
     }
 
-    /** Get a viewer-scoped model summary for in-session LLM tools. */
+    /**
+     * Get a viewer-scoped model summary for in-session LLM tools.
+     *
+     * Compute providers: a session whose agent runs on a host is not shown
+     * models it cannot use. Offering them and refusing afterwards costs the
+     * session three failed attempts and about three quarters of a minute,
+     * for a choice it was told to make.
+     */
     async getModelSummary(sessionId: string): Promise<string | undefined> {
         const registry = this.workerDefaults.modelProviders;
         if (!registry) return undefined;
-        const allowed = await this._allowedModelProviderIds(sessionId);
+        let allowed = await this._allowedModelProviderIds(sessionId);
+        if (await this.sessionRunsRemotely(sessionId)) {
+            const usable = registry.allProviders
+                .filter((provider) => provider.type !== "github")
+                .map((provider) => provider.id);
+            allowed = new Set(allowed ? usable.filter((id) => allowed!.has(id)) : usable);
+        }
         return registry.getModelSummaryForLLM(allowed ?? undefined);
+    }
+
+    /**
+     * Compute providers: whether this session's tree runs its agent on a
+     * compute host. Answered from what this worker has already read where
+     * it can, and from the catalog otherwise, so a surface that is not in
+     * the middle of a turn can ask.
+     */
+    async sessionRunsRemotely(sessionId: string): Promise<boolean> {
+        if (this.computeRemoteSessions.has(sessionId)) return true;
+        const catalog = this.sessionCatalog;
+        if (!catalog?.getSessionCreationConfig) return false;
+        const config = await catalog.getSessionCreationConfig(sessionId).catch(() => null);
+        if (typeof config?.computeTarget === "string" && config.computeTarget) return true;
+        const row = await catalog.getSession(sessionId).catch(() => null);
+        const rootId = row?.rootSessionId;
+        if (!rootId || rootId === sessionId) return false;
+        const rootConfig = await catalog.getSessionCreationConfig(rootId).catch(() => null);
+        return typeof rootConfig?.computeTarget === "string" && Boolean(rootConfig.computeTarget);
+    }
+
+    /**
+     * Compute providers: why this session cannot run this model, or null.
+     * The one rule today is the GitHub Copilot one.
+     */
+    computeModelRefusal(model: string | undefined, remote: boolean): string | null {
+        if (!remote) return null;
+        const resolved = this.workerDefaults.modelProviders?.resolve(model);
+        return resolved?.type === "github" ? COMPUTE_GITHUB_MODEL_REFUSAL : null;
     }
 
     async normalizeModelRefForSession(
@@ -1146,6 +1188,10 @@ export class SessionManager {
         const normalized = await this.normalizeModelRefForSession(
             sessionId, model, { requireQualified: true },
         );
+        // Compute providers: refused here rather than at the first turn on
+        // the new model, which is three failed attempts later.
+        const refusal = this.computeModelRefusal(normalized, await this.sessionRunsRemotely(sessionId));
+        if (refusal) throw Object.assign(new Error(refusal), { code: COMPUTE_ERROR_CODES.UNSUPPORTED });
         const descriptor = this.workerDefaults.modelProviders?.getDescriptor(normalized);
         if (reasoningEffort) {
             const supported = descriptor?.supportedReasoningEfforts ?? [];
@@ -3100,14 +3146,15 @@ export class SessionManager {
                 hostIncarnation: this.computeHosts.get(sessionId)?.host.incarnation ?? "",
                 files: compute.provider.capabilities?.files ?? "none",
                 sharesWorkerFiles: computeSharesWorkerFiles(compute.provider.capabilities?.files),
+                folders: [...(this.computeHosts.get(sessionId)?.folderMap.folders ?? [])],
             }
             : undefined;
         if (remoteEndpoint && !resolvedProviderConfig.provider) {
-            // GitHub Copilot models authenticate inside the runtime with a
-            // GitHub token. A remote runtime must not hold the worker's, and
-            // per-request auth for them through the worker is not built yet.
+            // The last line of this defence: creation, the model switch and
+            // the model list all refuse a GitHub Copilot model on a remote
+            // target before a turn gets here.
             throw Object.assign(
-                computeFailureError({ code: COMPUTE_ERROR_CODES.UNSUPPORTED, message: `GitHub Copilot models cannot run on a remote compute target yet; choose a model from a configured provider` }),
+                computeFailureError({ code: COMPUTE_ERROR_CODES.UNSUPPORTED, message: COMPUTE_GITHUB_MODEL_REFUSAL }),
                 { status: 400 },
             );
         }

@@ -979,6 +979,11 @@ export interface SessionCatalog {
     readonly features?: FeatureStore;
     /** Compute targets (migration 0084). Optional, like providers. See compute-target-store.ts. */
     readonly computeTargets?: ComputeTargetStore;
+    /**
+     * Compute providers: the target a new root session gets when it names
+     * none, or "" for none. Optional, so a test double need not have it.
+     */
+    readonly defaultComputeTarget?: string;
 
     /** Per-slot canvas cache (migration 0045); optional so test doubles need not implement it. */
     upsertSessionCanvas?(sessionId: string, slot: number, name: string | null, latestRev: number, sizeBytes: number | null): Promise<void>;
