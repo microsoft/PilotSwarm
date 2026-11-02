@@ -266,21 +266,62 @@ test("two turns of one tree starting together get one bridge, not two", async (t
     };
 
     const [a, b] = await Promise.all([
-        registry.acquire("host-1", "fp", slowMake),
-        registry.acquire("host-1", "fp", slowMake),
+        registry.acquire("host-1", "fp", "session-parent", slowMake),
+        registry.acquire("host-1", "fp", "session-child", slowMake),
     ]);
     t.after(() => registry.retire("host-1"));
 
     assert.equal(made, 1, "the second turn waits for the first bridge instead of building another");
     assert.equal(a, b, "and both reach the host down one address");
     assert.equal(registry.size, 1);
+    assert.deepEqual(registry.holdersOf("host-1").sort(), ["session-child", "session-parent"]);
 
     // One holder letting go leaves the bridge up for the other.
-    await registry.release("host-1", a);
+    await registry.release("host-1", a, "session-child");
     assert.equal(a.isClosed, false, "a sub-agent finishing does not take the parent's bridge away");
-    await registry.release("host-1", b);
+    await registry.release("host-1", b, "session-parent");
     assert.equal(a.isClosed, true, "the last one to let go closes it");
     assert.equal(registry.size, 0);
+});
+
+test("a session asking for its bridge every turn still lets go of it once", async (t) => {
+    // A session asks at the start of every turn and lets go once, when it
+    // leaves the host. Counting the asks meant the count never came back
+    // to zero and the bridge was left listening with nobody on it.
+    const host = await echoHost(t);
+    const registry = new ComputeBridgeRegistry();
+    t.after(() => registry.retire("host-1"));
+    const make = async () => {
+        const bridge = new ComputeRuntimeBridge(() => connect(host.port));
+        await bridge.start();
+        return bridge;
+    };
+
+    let bridge;
+    for (let turn = 0; turn < 5; turn++) bridge = await registry.acquire("host-1", "fp", "session-1", make);
+    assert.deepEqual(registry.holdersOf("host-1"), ["session-1"], "five turns, one holder");
+
+    await registry.release("host-1", bridge, "session-1");
+    assert.equal(bridge.isClosed, true, "and letting go once closes it");
+    assert.equal(registry.size, 0);
+});
+
+test("every bridge a worker still holds is closed when the worker stops", async (t) => {
+    const host = await echoHost(t);
+    const registry = new ComputeBridgeRegistry();
+    const make = async () => {
+        const bridge = new ComputeRuntimeBridge(() => connect(host.port));
+        await bridge.start();
+        return bridge;
+    };
+    const one = await registry.acquire("host-1", "fp", "session-1", make);
+    const two = await registry.acquire("host-2", "fp", "session-2", make);
+    assert.equal(registry.size, 2);
+
+    await registry.closeAll();
+    assert.equal(one.isClosed, true);
+    assert.equal(two.isClosed, true);
+    assert.equal(registry.size, 0, "nothing of this worker's is left listening");
 });
 
 test("a bridge is rebuilt when what it was built for has changed", async (t) => {
@@ -293,8 +334,8 @@ test("a bridge is rebuilt when what it was built for has changed", async (t) => 
         return bridge;
     };
 
-    const first = await registry.acquire("host-1", "provider-a", make);
-    const second = await registry.acquire("host-1", "provider-b", make);
+    const first = await registry.acquire("host-1", "provider-a", "session-1", make);
+    const second = await registry.acquire("host-1", "provider-b", "session-1", make);
 
     assert.notEqual(first, second, "a bridge built for one provider is never handed to another");
     assert.equal(first.isClosed, true, "and the one it replaces is closed rather than left listening");
@@ -311,12 +352,12 @@ test("a bridge whose handshake has failed is retired, so the next turn is told w
         return bridge;
     };
 
-    const first = await registry.acquire("host-1", "fp", make);
+    const first = await registry.acquire("host-1", "fp", "session-1", make);
     // What the bridge records when a connection cannot prove the host.
     first.lastHandshakeError = Object.assign(new Error("COMPUTE_HANDSHAKE_FAILED: the host did not prove it holds this binding's secret"),
         { code: "COMPUTE_HANDSHAKE_FAILED" });
 
-    const second = await registry.acquire("host-1", "fp", make);
+    const second = await registry.acquire("host-1", "fp", "session-1", make);
     assert.notEqual(second, first, "it is not handed out again");
     assert.equal(first.isClosed, true);
 });

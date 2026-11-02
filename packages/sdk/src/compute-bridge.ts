@@ -358,13 +358,23 @@ export class ComputeRuntimeBridge {
 export class ComputeBridgeRegistry {
     private readonly entries = new Map<string, {
         fingerprint: string;
-        holders: number;
+        /**
+         * Who is using this bridge, by name — not how many times it has
+         * been asked for.
+         *
+         * A session asks for its bridge at the start of every turn and
+         * lets go of it once, when it leaves the host. Counting the asks
+         * meant the count never came back to zero: after two turns and a
+         * release a bridge was still listening with nobody on it.
+         */
+        holders: Set<string>;
         bridge: Promise<ComputeRuntimeBridge>;
     }>();
 
     /**
      * The bridge for this key, made if there is none. `make` is called at
-     * most once per bridge, however many callers arrive together.
+     * most once per bridge, however many callers arrive together, and
+     * asking again for a bridge already held is free.
      *
      * A cached bridge is retired and rebuilt when its fingerprint has
      * changed, when it has been closed, or when a connection through it
@@ -372,7 +382,7 @@ export class ComputeBridgeRegistry {
      * fail with a coded handshake error at the point where a compute
      * failure can be named, instead of as a socket that died.
      */
-    async acquire(key: string, fingerprint: string, make: () => Promise<ComputeRuntimeBridge>): Promise<ComputeRuntimeBridge> {
+    async acquire(key: string, fingerprint: string, holder: string, make: () => Promise<ComputeRuntimeBridge>): Promise<ComputeRuntimeBridge> {
         const held = this.entries.get(key);
         if (held) {
             let usable: ComputeRuntimeBridge | undefined;
@@ -385,14 +395,14 @@ export class ComputeBridgeRegistry {
             if (usable && this.entries.get(key) === held) {
                 const stale = held.fingerprint !== fingerprint || usable.isClosed || usable.lastHandshakeError;
                 if (!stale) {
-                    held.holders += 1;
+                    held.holders.add(holder);
                     return usable;
                 }
                 this.entries.delete(key);
                 await usable.close().catch(() => { /* going away anyway */ });
             }
         }
-        const entry = { fingerprint, holders: 1, bridge: make() };
+        const entry = { fingerprint, holders: new Set([holder]), bridge: make() };
         this.entries.set(key, entry);
         try {
             const bridge = await entry.bridge;
@@ -412,7 +422,7 @@ export class ComputeBridgeRegistry {
      * only if it is still the bridge this key names — a bridge already
      * replaced was closed when it was replaced.
      */
-    async release(key: string, bridge: ComputeRuntimeBridge): Promise<void> {
+    async release(key: string, bridge: ComputeRuntimeBridge, holder: string): Promise<void> {
         const held = this.entries.get(key);
         if (!held) {
             await bridge.close().catch(() => { /* already gone */ });
@@ -420,10 +430,25 @@ export class ComputeBridgeRegistry {
         }
         const current = await held.bridge.catch(() => undefined);
         if (current !== bridge) return;
-        held.holders -= 1;
-        if (held.holders > 0) return;
+        held.holders.delete(holder);
+        if (held.holders.size > 0) return;
         this.entries.delete(key);
         await bridge.close().catch(() => { /* already gone */ });
+    }
+
+    /** Close every bridge this registry still holds: the worker is stopping. */
+    async closeAll(): Promise<void> {
+        const held = [...this.entries.values()];
+        this.entries.clear();
+        await Promise.all(held.map(async (entry) => {
+            const bridge = await entry.bridge.catch(() => undefined);
+            if (bridge) await bridge.close().catch(() => { /* going away anyway */ });
+        }));
+    }
+
+    /** Test and diagnostic view: who holds the bridge for this key. */
+    holdersOf(key: string): string[] {
+        return [...(this.entries.get(key)?.holders ?? [])];
     }
 
     /** Drop this key's bridge whoever still holds it: the host has gone. */
