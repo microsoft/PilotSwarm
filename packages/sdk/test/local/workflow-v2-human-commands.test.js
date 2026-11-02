@@ -147,9 +147,9 @@ describe("workflow v2: a person's workflow command (direct management client, in
             const runId = started.run.runId;
             // The shown run: this host stops no run gracefully (controller 1.8.0), so it offers no stop; a published
             // definition has no draft to edit.
-            const published = (await mgmt.readWorkflow(draft.workflowSessionId)).personCommands;
-            expect(published.run).toEqual({ runId, stop: false });
-            expect(Object.hasOwn(published, "draft")).toBe(false);
+            const publishedCommands = (await mgmt.readWorkflow(draft.workflowSessionId)).personCommands;
+            expect(publishedCommands.run).toEqual({ runId, stop: false });
+            expect(Object.hasOwn(publishedCommands, "draft")).toBe(false);
             // A repeat of an operation id returns its receipt.
             expect(await mgmt.updateWorkflow(draft.workflowSessionId, { operation: "start", operation_id: "start-1",
                 definition_hash: replaced.definitionHash, inputs: {} }, { principal: PERSON })).toMatchObject({ replayed: true, run: { runId } });
