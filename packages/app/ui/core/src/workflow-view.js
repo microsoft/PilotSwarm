@@ -88,7 +88,10 @@ export function workflowNodeViews(definition, events = [], live = null, options 
 export function layoutWorkflowGraph(definition, availableWidth = 640) {
     const nodes = definition?.states || [];
     const byId = new Map(nodes.map(node => [node.id, node]));
-    const successors = id => [...new Set(Object.values(byId.get(id)?.next || {}))].filter(target => byId.has(target));
+    // A parallel state (workflow v2, IR 8) also leads to its body's first state: each branch starts there.
+    const branchStart = node => node?.type === "parallel" && typeof node.body?.initial === "string" && byId.has(node.body.initial) ? node.body.initial : null;
+    const successors = id => [...new Set([...Object.values(byId.get(id)?.next || {}), ...(branchStart(byId.get(id)) ? [branchStart(byId.get(id))] : [])])]
+        .filter(target => byId.has(target));
     const indices = new Map(), low = new Map(), stack = [], onStack = new Set(), component = new Map();
     let nextIndex = 0, componentCount = 0;
     // Collapse cycles before ranking so reconverging DAG paths retain their
@@ -139,6 +142,12 @@ export function layoutWorkflowGraph(definition, availableWidth = 640) {
             }
             const edge = { from: node.id, to: target, outcome, outcomes: [outcome] };
             pairs.set(pair, edge);
+            edges.push(edge);
+        }
+        const start = branchStart(node);
+        if (start && !pairs.has(JSON.stringify([node.id, start]))) {
+            const edge = { from: node.id, to: start, outcome: "each branch", outcomes: [], branch: true };
+            pairs.set(JSON.stringify([node.id, start]), edge);
             edges.push(edge);
         }
     }

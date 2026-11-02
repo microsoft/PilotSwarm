@@ -7136,12 +7136,26 @@ function SessionModifyModal({ controller, sessionId, initialTitle, currentModel,
             error ? React.createElement("div", { className: "ps-share-error" }, error) : null));
 }
 
+/**
+ * Why a session in a workflow agent state's subtree has no composer (design 03 human-input denial): the reason the
+ * server reports, and where to go instead. Text only.
+ */
+function workflowInputNote(access) {
+    const reason = typeof access?.workflowInput?.reason === "string" && access.workflowInput.reason
+        ? access.workflowInput.reason
+        : "This session runs a workflow state. People cannot send it prompts, answers or steers.";
+    const parent = access?.workflowInput?.controllingSessionId;
+    return parent ? `${reason} Its controlling agent is session ${parent}.` : reason;
+}
+
 function SessionComposer({ controller, onReadOnlyFocus = null, mobile = false, compact = false, autoFocus = !mobile }) {
     const modal = useControllerSelector(controller, state => state.ui.modal);
     const session = useControllerSelector(controller, state => state.sessions.byId[state.sessions.activeSessionId]);
     const { access } = useActiveSessionAccess(controller, session?.sessionId, session?.isGroup);
     const isWorkflow = session?.sessionKind === "workflow";
-    const readOnly = session?.serviceKind || isWorkflow || access?.canWrite === false;
+    // A session in a workflow agent state's subtree takes no prompts from people (design 03; the server refuses them too).
+    const workflowInputDenied = access?.canSendPrompt === false;
+    const readOnly = session?.serviceKind || isWorkflow || access?.canWrite === false || workflowInputDenied;
     React.useLayoutEffect(() => { if (readOnly && !modal) onReadOnlyFocus?.(); }, [readOnly, modal, onReadOnlyFocus]);
     if (!session || session.isGroup || modal) return null;
     return React.createElement("div", { className: `ps-chat-composer${isWorkflow ? " is-workflow" : ""}` }, readOnly
@@ -7149,7 +7163,9 @@ function SessionComposer({ controller, onReadOnlyFocus = null, mobile = false, c
             ? "⚗ Service session — runtime machinery. Its transcript is a read-only trace; it does not accept messages."
             : isWorkflow
                 ? WORKFLOW_COMPOSER_NOTE
-                : `You have view access to this session. Ask ${access.owner?.displayName || access.owner?.email || "the owner"} for write access to participate.`)
+                : workflowInputDenied
+                    ? workflowInputNote(access)
+                    : `You have view access to this session. Ask ${access.owner?.displayName || access.owner?.email || "the owner"} for write access to participate.`)
         : React.createElement(PromptComposer, { controller, mobile, compact, autoFocus, active: true }));
 }
 
@@ -7395,7 +7411,8 @@ function ChatTranscriptPane({ controller, mobile = false, fullWidth = false, sho
     // never a conversation surface — no prompt for anyone, owner included.
     const activeIsService = Boolean(viewState.sessionsById?.[viewState.activeSessionId]?.serviceKind);
     const activeIsWorkflow = viewState.sessionsById?.[viewState.activeSessionId]?.sessionKind === "workflow";
-    const readOnly = activeIsService || activeIsWorkflow || (Boolean(access) && access.canWrite === false);
+    const workflowInputDenied = Boolean(access) && access.canSendPrompt === false;
+    const readOnly = activeIsService || activeIsWorkflow || (Boolean(access) && access.canWrite === false) || workflowInputDenied;
     const composer = composerBase
         ? React.createElement("div", { className: `ps-chat-composer${activeIsWorkflow ? " is-workflow" : ""}` },
             readOnly
@@ -7404,6 +7421,8 @@ function ChatTranscriptPane({ controller, mobile = false, fullWidth = false, sho
                         ? "⚗ Service session — runtime machinery. Its transcript is a read-only trace; it does not accept messages."
                         : activeIsWorkflow
                         ? WORKFLOW_COMPOSER_NOTE
+                        : workflowInputDenied
+                        ? workflowInputNote(access)
                         : `You have view access to this session. Ask ${access.owner?.displayName || access.owner?.email || "the owner"} for write access to participate.`)
                 : React.createElement(PromptComposer, { controller, mobile, active: true }))
         : null;

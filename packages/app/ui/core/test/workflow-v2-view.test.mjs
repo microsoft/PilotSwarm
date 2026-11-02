@@ -21,7 +21,7 @@ test("shape discrimination keeps legacy payloads legacy and refuses mixed or uns
     assert.equal(definition.shape, "v2");
     assert.deepEqual(definition.states, states);
     assert.equal(definition.name, "watch-v2");
-    assert.throws(() => workflowDefinition({ ...startedData, states: [...states, { id: "x", type: "agent", next: {} }] }), /invalid or unsupported state/);
+    assert.throws(() => workflowDefinition({ ...startedData, states: [...states, { id: "x", type: "teleport", next: {} }] }), /invalid or unsupported state/);
     assert.throws(() => workflowDefinition({ ...startedData, states: [{ id: "poll", type: "script", runtime: "node", next: {} }, states[4]] }), /valid workflow v2 script state/);
     assert.throws(() => workflowDefinition({ ...startedData, states: [{ ...states[0], next: { changed: "nowhere" } }] }), /undefined state/);
     assert.throws(() => workflowDefinition({ ...startedData, states: [states[2], states[4], states[5]], initial: "elsewhere" }), /initial state/);
@@ -189,7 +189,7 @@ test("payloads of the wrong shape are refused with a reason, never read as anoth
         assert.equal(model.status, "unrecognized");
         assert.match(model.banners[0].text, /not a workflow v2 read model/);
     }
-    const badGraph = projectWorkflowV2ReadModel(readModel({ graph: { revision: 1, initial: "x", states: [{ id: "x", type: "agent" }] } }));
+    const badGraph = projectWorkflowV2ReadModel(readModel({ graph: { revision: 1, initial: "x", states: [{ id: "x", type: "teleport" }] } }));
     assert.equal(badGraph.status, "invalid-graph");
     const bad = projectWorkflowV2({ definition: workflowDefinition(legacyStartedData), readModel: { nope: true } });
     assert.equal(bad.definition, null, "a legacy definition is never shown as v2");

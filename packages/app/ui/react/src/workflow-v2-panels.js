@@ -75,11 +75,43 @@ function kindProperties(node, current) {
         rows.push(["Contract", node.contract], ["Recipient", node.recipient === "parent" ? "Parent session" : String(node.recipient)]);
         if (node.kind === "request" && node.timeoutSeconds !== undefined) rows.push(["Response deadline", typeof node.timeoutSeconds === "number" ? formatSeconds(node.timeoutSeconds) : String(node.timeoutSeconds)]);
     }
+    if (node.kind === "agent") {
+        const task = node.invoke?.source === "agent"
+            ? `${node.invoke.name}${node.invoke.package ? ` · ${node.invoke.package}${node.invoke.version ? ` ${node.invoke.version}` : ""}` : ""}`
+            : "Inline prompt";
+        rows.push(["Agent", task], ["Outcomes", (node.outcomes || []).join(", ") || "—"]);
+        if (node.timeoutSeconds !== undefined) rows.push(["Deadline", typeof node.timeoutSeconds === "number" ? formatSeconds(node.timeoutSeconds) : String(node.timeoutSeconds)]);
+        if (current?.deadline) rows.push(["Deadline at", current.deadline]);
+    }
+    if (node.kind === "parallel") {
+        rows.push(["Branches start at", String(node.body?.initial ?? "—")],
+            ["Concurrency", node.concurrency === 1 ? "One branch at a time" : `Up to ${node.concurrency} branches at a time`],
+            ["Join", `${node.join === "all_required" ? "Every branch must succeed" : String(node.join)}${node.failFast ? " · the first failure cancels the others" : ""}`]);
+        if (Number.isSafeInteger(current?.branches)) rows.push(["Branches", String(current.branches)]);
+    }
+    if (node.parallel) rows.push(["Parallel state", String(node.parallel)]);
+    if (current?.branch && Number.isSafeInteger(current.branch.index)) rows.push(["Branch", String(current.branch.index)]);
     return rows;
 }
 
+/**
+ * An agent state's child session (design 03, R23): a click opens its actual chat, which people read but cannot
+ * write to. Nothing is opened when the child has not been created yet.
+ */
+function AgentChild({ agent, openSession }) {
+    if (!agent?.childSessionId) return null;
+    return h("div", { className: "ps-workflow-agent-child" },
+        h("h3", null, "Agent session"),
+        h("div", { className: "ps-workflow-property" }, h("span", null, "Child session"), h("strong", null, agent.childSessionId)),
+        h("div", { className: "ps-workflow-property" }, h("span", null, "Lifecycle"),
+            h("strong", null, `${agent.spawned ? "Created" : "Not created yet"}${agent.end ? ` · ended (${agent.end})` : ""}`)),
+        openSession && agent.spawned ? h("button", { type: "button", className: "ps-workflow-transition",
+            onClick: () => openSession(agent.childSessionId) }, "Open the agent's chat (read-only)") : null,
+        h("p", null, "People can read this chat. Only the workflow's parent agent can message it, and only the agent's typed result completes the state."));
+}
+
 /** The tab panel body of a v2 node. The caller owns the tab strip so its tab semantics are unchanged. */
-export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput, runError }) {
+export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput, runError, openSession = null }) {
     const property = (label, value) => h("div", { className: "ps-workflow-property", key: label },
         h("span", null, label), h("strong", null, value));
     const current = selected.current;
@@ -98,6 +130,7 @@ export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput,
                 h("button", { key: label, type: "button", className: "ps-workflow-transition",
                     disabled: !nodes.some(node => node.id === target), onClick: () => select(target) },
                 label, " → ", target, workflowV2RouteKind(selected, label) === "error" ? " · runtime error route" : "")),
+            current?.agent ? h(AgentChild, { agent: current.agent, openSession }) : null,
             current?.inbox ? h(React.Fragment, null, h("h3", null, "Message taken"),
                 property("Contract", current.inbox.contract), property("From", current.inbox.senderSessionId),
                 h(Value, { value: current.inbox.payloadPreview })) : null,
@@ -141,7 +174,7 @@ export function WorkflowV2NodeContent({ tab, selected, nodes, select, runOutput,
 // `ui.workflowViews[sessionId].selectedRunId`, where null is the live run. Nothing here fetches: the controller's
 // ensureWorkflowReadModel reads the selected run, and the projection overlays only that run's own model.
 
-const RUN_STATUS_WORDS = new Set(["admitted", "running", "paused", "completed", "failed", "cancelled"]);
+const RUN_STATUS_WORDS = new Set(["admitted", "running", "paused", "completed", "failed", "cancelled", "stopped"]);
 const RUN_OPTION_LIMIT = 100;
 const OUTCOME_LABEL_LIMIT = 20;
 const TITLE_OUTCOME_LIMIT = 300;
@@ -251,4 +284,22 @@ export function WorkflowV2RunPicker({ controller, sessionId, workflowModel, sele
         model.options.map(option => h("option", { key: option.value === "" ? "live" : `run:${option.value}`, value: option.value, title: option.title, "data-kind": option.kind }, option.label))),
         model.notes.length ? h("span", { id: noteId, role: "status", "aria-live": "polite", style: { color: "var(--ps-muted)", overflowWrap: "anywhere" } },
             model.notes.map((note, i) => h("span", { key: i, "data-level": note.level, style: { marginRight: 6, color: TONES[note.level] || TONES.info } }, note.text))) : null);
+}
+
+/**
+ * A test run's intercepted effects (design 05; INACTIVE outside controller 1.9.0's tests): what each reached, the
+ * schema its answer must match and its answer. Read-only: the parent answers through its own tools. The notice that
+ * scripts run normally stays in the banners above.
+ */
+export function WorkflowV2TestInterceptions({ test }) {
+    const items = Array.isArray(test?.interceptions) ? test.interceptions : [];
+    if (!items.length) return null;
+    return h("section", { className: "ps-workflow-test", "aria-label": "Test interceptions", style: { padding: "6px 10px", fontSize: "0.75rem" } },
+        h("h3", null, `Intercepted effects (${items.length})`),
+        h("table", null,
+            h("thead", null, h("tr", null, ["Effect", "State", "Answer"].map(label => h("th", { key: label }, label)))),
+            h("tbody", null, items.map((item, i) => h("tr", { key: item.interceptionId || i },
+                h("td", { title: item.interceptionId }, item.tool ? `${item.operation} · ${item.tool}` : String(item.operation)),
+                h("td", null, item.stateId || "—"),
+                h("td", null, item.response ? `${item.response.kind} · ${item.response.disposition}` : "Waiting for the parent"))))));
 }

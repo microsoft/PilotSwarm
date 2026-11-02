@@ -13,12 +13,14 @@
  * Canvas ticks are not read at all: V2 does not draw a workflow canvas.
  */
 
-const STATE_TYPES = new Set(["script", "wait", "messaging", "terminal"]);
+// Agent and parallel states (IR 8) and stopped runs are written only by controller 1.9.0 (INACTIVE: only tests run it);
+// they are read here so a test deployment shows them, and nothing else changes for the others.
+const STATE_TYPES = new Set(["script", "wait", "messaging", "agent", "parallel", "terminal"]);
 const MESSAGING_MODES = new Set(["receive", "send", "request"]);
 const TERMINAL_OUTCOMES = new Set(["succeeded", "blocked", "failed", "cancelled"]);
-const RUN_STATUSES = new Set(["admitted", "running", "paused", "completed", "failed", "cancelled"]);
+const RUN_STATUSES = new Set(["admitted", "running", "paused", "completed", "failed", "cancelled", "stopped"]);
 const STATE_EVENTS = new Set(["workflow.state_started", "workflow.state_completed", "workflow.state_failed", "workflow.state_cancelled"]);
-const END_EVENTS = { "workflow.completed": "completed", "workflow.failed": "failed", "workflow.cancelled": "cancelled" };
+const END_EVENTS = { "workflow.completed": "completed", "workflow.failed": "failed", "workflow.cancelled": "cancelled", "workflow.stopped": "stopped" };
 
 /** The read view lists at most this many node executions, 50 inbox rows and 50 outbox rows (tools.ts). */
 export const WORKFLOW_V2_READ_LIMITS = { nodeExecutions: 200, inbox: 50, outbox: 50 };
@@ -56,6 +58,13 @@ function checkState(node) {
     if (node.type === "wait" && typeof node.seconds !== "number" && typeof node.seconds !== "string") throw invalidState(node, "it has no duration");
     if (node.type === "messaging" && (!MESSAGING_MODES.has(node.mode) || typeof node.contract !== "string")) {
         throw invalidState(node, "its messaging mode or contract is unknown");
+    }
+    if (node.type === "agent" && (!isRecord(node.invoke) || (node.invoke.source !== "prompt" && node.invoke.source !== "agent"))) {
+        throw invalidState(node, "it has no task");
+    }
+    if (node.type === "parallel" && (!isRecord(node.body) || typeof node.body.initial !== "string" || !Array.isArray(node.body.states)
+        || !Number.isSafeInteger(node.concurrency))) {
+        throw invalidState(node, "it has no body or concurrency");
     }
 }
 
@@ -123,6 +132,8 @@ export function workflowV2NodeLabel(node) {
         case "receive": return `receive · ${node.contract}`;
         case "send": return `send · ${node.contract}`;
         case "request": return `request · ${node.contract}`;
+        case "agent": return node.invoke?.source === "agent" ? `agent · ${node.invoke.name}` : "agent · inline prompt";
+        case "parallel": return `parallel · ${node.concurrency === 1 ? "one branch at a time" : `up to ${node.concurrency} branches`}`;
         case "terminal": return `ends · ${node.outcome}`;
         default: return String(node?.type || "state");
     }
@@ -138,6 +149,8 @@ export function workflowV2RouteKind(node, label) {
 export function annotateWorkflowV2Edges(definition, layout) {
     const byId = new Map(definition.states.map(node => [node.id, node]));
     for (const edge of layout.edges) {
+        // A parallel state's edge to its body's first state is how each branch starts, not a route.
+        if (edge.branch) { edge.kind = "branch"; continue; }
         const kinds = new Set(edge.outcomes.map(label => workflowV2RouteKind(byId.get(edge.from), label)));
         edge.kind = kinds.size > 1 ? "mixed" : [...kinds][0];
     }
@@ -166,6 +179,8 @@ function normalizeRun(raw) {
     return {
         runId: raw.runId, mode: raw.mode, status: raw.status, outcome: raw.outcome ?? null,
         pausedFrom: raw.pausedFrom ?? null, pauseSettled: typeof raw.pauseSettled === "boolean" ? raw.pauseSettled : null,
+        // A graceful stop (controller 1.9.0) and a test run's evidence (notice, virtual clock, interceptions, coverage).
+        stop: isRecord(raw.stop) ? raw.stop : null, test: isRecord(raw.test) ? raw.test : null,
         terminalState: raw.terminalState ?? null, output: raw.output ?? null, error: raw.error ?? null,
         kvRevision: raw.kvRevision, kv: raw.kv, nodeExecutions, inbox, outbox,
         executionsTruncated: nodeExecutions.length >= WORKFLOW_V2_READ_LIMITS.nodeExecutions,
@@ -236,6 +251,21 @@ export function projectWorkflowV2ReadModel(model) {
     } else if (!run) {
         banners.push({ level: "info", text: model.runs.length
             ? `No live run is selected; ${model.runs.length === 1 ? "1 other run exists" : `${model.runs.length} other runs exist`}.` : "No run yet." });
+    }
+    // A test run (design 05; INACTIVE outside controller 1.9.0's tests): its notice stays visible, with the revision it tested,
+    // its virtual clock and what still waits for the parent's answer. Never shown as a production result.
+    if (run?.test) {
+        const test = run.test;
+        banners.push({ level: "warning", text: typeof test.notice === "string" && test.notice
+            ? test.notice : "TEST — scripts run normally; framework tools are mocked." });
+        if (test.stale === true) {
+            banners.push({ level: "warning", text: `This test ran revision ${test.testedRevision}; the definition is now at revision ${lifecycle.currentRevision}, so its result is stale.` });
+        }
+        if (isRecord(test.virtualClock) && Number.isSafeInteger(test.virtualClock.elapsedSeconds)) {
+            banners.push({ level: "info", text: `Virtual clock: ${formatSeconds(test.virtualClock.elapsedSeconds)} after the test began. Script clocks are real.` });
+        }
+        const open = Array.isArray(test.coverage?.unanswered) ? test.coverage.unanswered.length : 0;
+        if (open) banners.push({ level: "info", text: `${open} intercepted effect${open === 1 ? " waits" : "s wait"} for the parent's answer.` });
     }
     if (run?.executionsTruncated) banners.push({ level: "info", text: `Only the first ${WORKFLOW_V2_READ_LIMITS.nodeExecutions} node executions are listed, so counts may be incomplete.` });
     return {
@@ -317,7 +347,10 @@ function collectExecutions(events, runId, run, overlay) {
             add({ id: row.nodeExecutionId, stateId: row.stateId, ordinal: Number.isSafeInteger(row.ordinal) ? row.ordinal : undefined,
                 status: row.state, outcome: text(row.outcome), resultKind: row.resultKind ?? undefined, outputPreview: row.outputPreview,
                 errorPreview: row.errorPreview, winner: text(row.winner), attempts: Number.isSafeInteger(row.attempts) ? row.attempts : undefined,
-                kvRevision: row.kvRevision ?? undefined, deadline: text(row.deadline), receive: isRecord(row.receive) ? row.receive : undefined }, "read");
+                kvRevision: row.kvRevision ?? undefined, deadline: text(row.deadline), receive: isRecord(row.receive) ? row.receive : undefined,
+                agent: isRecord(row.agent) && typeof row.agent.childSessionId === "string" ? row.agent : undefined,
+                scopeId: text(row.scopeId), branch: isRecord(row.branch) ? row.branch : undefined,
+                branches: Number.isSafeInteger(row.branches) ? row.branches : undefined }, "read");
         }
     }
     if (runId && (overlay || !run)) {
@@ -369,7 +402,7 @@ export function workflowV2RunStatus({ run = null, events = [], runId = null, rea
         else if (event.eventType === "workflow.resumed") control = { kind: "running", seq: event.seq };
         else if (event.eventType === "workflow.started" || STATE_EVENTS.has(event.eventType)) begun = true;
     }
-    if (!end && run && ["completed", "failed", "cancelled"].includes(run.status)) {
+    if (!end && run && ["completed", "failed", "cancelled", "stopped"].includes(run.status)) {
         end = { status: run.status, outcome: run.outcome, stateId: run.terminalState, error: run.error ?? undefined, code: undefined };
     }
     const mode = run?.mode === "test" ? "Test run · " : "";
@@ -378,6 +411,7 @@ export function workflowV2RunStatus({ run = null, events = [], runId = null, rea
         const business = end.stateId !== null && end.outcome !== null;
         const label = end.status === "completed" ? `Completed · ${end.outcome ?? "ended"}`
             : end.status === "cancelled" ? "Cancelled"
+            : end.status === "stopped" ? "Stopped · no new state was started after the stop"
                 : business ? `Failed · ended at '${end.stateId}' (${end.outcome})` : `Failed · ${end.code || "runtime error"}`;
         return { phase: end.status, ended: true, label: mode + label, businessOutcome: business ? end.outcome : null, error: end.error,
             terminalState: end.stateId };
@@ -401,7 +435,9 @@ export function workflowV2RunStatus({ run = null, events = [], runId = null, rea
                 : run?.pauseSettled === false ? "Pausing · waiting for running states to settle" : "Paused";
             return { phase: run?.pauseSettled === false ? "pausing" : "paused", ended: false, label: mode + label };
         }
-        case "running": return { phase: "running", ended: false, label: `${mode}Running` };
+        case "running": return run?.stop
+            ? { phase: "stopping", ended: false, label: `${mode}Stopping · admitted work may settle until ${run.stop.deadline ?? "its deadline"}` }
+            : { phase: "running", ended: false, label: `${mode}Running` };
         default:
             return control?.kind === "paused" ? { phase: "paused", ended: false, label: "Paused" } : { phase: "none", ended: false, label: "No run yet" };
     }
@@ -412,6 +448,8 @@ const outcomeText = (kind, outcome) => {
     if (kind === "wait") return outcome === "elapsed" ? "Elapsed" : `Done · ${outcome}`;
     if (kind === "send") return outcome === "sent" ? "Sent · queued at recipient" : `Done · ${outcome}`;
     if (kind === "request") return outcome === "responded" ? "Responded" : outcome === "declined" ? "Declined" : `Done · ${outcome}`;
+    if (kind === "parallel") return outcome === "joined" ? "Joined · every branch succeeded" : outcome === "blocked" ? "Blocked · a branch did not succeed" : `Done · ${outcome}`;
+    if (kind === "agent") return `Completed by its agent · ${outcome}`;
     return outcome ? `Done · ${outcome}` : "Done";
 };
 
@@ -420,6 +458,8 @@ const pendingText = (kind, execution) => {
     if (kind === "receive") return "Waiting for message";
     if (kind === "send") return execution?.outbox?.state === "delivered" ? "Sent · queued at recipient" : "Delivering";
     if (kind === "request") return "Awaiting response";
+    if (kind === "agent") return "Agent working · waiting for its typed result";
+    if (kind === "parallel") return "Running its branches";
     return execution?.immediateOutcome ? "Deciding" : "Running";
 };
 
@@ -453,7 +493,14 @@ export function describeWorkflowV2Execution(node, execution) {
         if (pending) lines.push(`Awaiting a response to ${node.contract} from ${to}.`);
         else if (execution.outcome === "responded") lines.push(`${execution.responderSessionId || to} responded.`);
         else if (execution.outcome === "declined") lines.push(`${execution.responderSessionId || to} declined the request.`);
+    } else if (kind === "agent") {
+        if (execution.agent?.childSessionId) lines.push(`Its agent works in child session ${execution.agent.childSessionId}; open it to read the actual chat.`);
+        if (pending) lines.push("Only the agent's typed result completes this state; its chat messages do not.");
+    } else if (kind === "parallel") {
+        if (Number.isSafeInteger(execution.branches)) lines.push(`${execution.branches} branch${execution.branches === 1 ? "" : "es"} from its manifest.`);
+        if (pending) lines.push(`Branches start at '${node.body?.initial}', ${node.concurrency === 1 ? "one at a time" : `up to ${node.concurrency} at a time`}.`);
     }
+    if (execution.branch && Number.isSafeInteger(execution.branch.index)) lines.push(`In branch ${execution.branch.index} of its parallel state.`);
     if (execution.catchAll) lines.push("Entered as the workflow's catch-all state after an unhandled runtime error.");
     return lines;
 }

@@ -2,7 +2,7 @@ import React from "react";
 import { useControllerSelector } from "./use-controller-state.js";
 import { layoutWorkflowGraph, workflowLogBounds, workflowNodeViews, workflowReadModelView } from "../../core/src/workflow-view.js";
 import { projectWorkflowV2 } from "../../core/src/workflow-v2-view.js";
-import { WorkflowV2Banners, WorkflowV2NoGraph, WorkflowV2NodeContent, WorkflowV2RunPicker } from "./workflow-v2-panels.js";
+import { WorkflowV2Banners, WorkflowV2NoGraph, WorkflowV2NodeContent, WorkflowV2RunPicker, WorkflowV2TestInterceptions } from "./workflow-v2-panels.js";
 
 const EMPTY_EVENTS = [];
 const EMPTY_VIEW = {};
@@ -164,6 +164,7 @@ export function WorkflowMainPane({ controller, log, icon, showFooter = true, onN
             React.createElement("button", { type: "button", className: "ps-mini-button", disabled: !selected,
                 onClick: () => selectNode(selected.id) }, "Node details")),
         React.createElement(WorkflowReadError, { controller, sessionId, message: readError }),
+        v2?.readModel?.run?.test ? React.createElement(WorkflowV2TestInterceptions, { test: v2.readModel.run.test }) : null,
         React.createElement("div", { ref: splitRef, className: "ps-workflow-split",
             style: { gridTemplateRows: `minmax(150px, 1fr) 12px ${height}px` } },
             React.createElement("div", { className: "ps-workflow-graph-region" },
@@ -223,7 +224,7 @@ export function WorkflowNodePane({ controller }) {
                     "aria-selected": tab === id, onClick: () => setTab(id) }, title))),
         React.createElement("div", { className: "ps-workflow-detail-content", role: "tabpanel", "aria-labelledby": `${tabId}-${tab}` },
             selected.shape === "v2" ? React.createElement(WorkflowV2NodeContent, {
-                tab, selected, nodes, select,
+                tab, selected, nodes, select, openSession: sessionId => { controller.loadSession(sessionId).catch(() => {}); },
                 runOutput: v2?.status.terminalState === selected.id ? v2.output : null,
                 runError: v2?.status.terminalState === selected.id ? v2.error : null,
             }) :

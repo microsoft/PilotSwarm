@@ -360,3 +360,48 @@ Not covered: resolving an older package revision that the registry still
 keeps (the host binds only what it sees now and refuses otherwise),
 package interface digests (`interface:` is refused at compile), and a
 publication gate on declared test scenarios (not in the YAML design).
+
+## Surfaces: what each one shows and takes (design 04, 07; R13, R23, R26)
+
+| Surface | Reads | Takes |
+|---|---|---|
+| Agent tools (the workflow's parent) | `read_workflow` | `update_workflow` (draft, publish, start, KV, pause, resume, cancel; on a 1.9.0 host also stop, test, test_respond, test_advance), `send_workflow_input` |
+| Agent tools (a request's responder, an agent state's child) | — | `respond_session_request`, `complete_workflow_node` (in-process, bound by the host) |
+| REST `GET /sessions/:id/workflow`, SDK and TUI `readWorkflow`, portal | the same `readWorkflowV2View` | nothing |
+| Portal and TUI composer, management client, SDK client | session access (`canSendPrompt`, `canAnswer`, `canSteer`) | human input, refused for an agent state's subtree at the SDK |
+
+All read surfaces serve one projection (`readWorkflowV2View`), so they show
+the same agent child, branch, stop, test and pin fields. The shared UI
+(`packages/app/ui`) now reads them:
+
+- **Agent states.** The node shows its agent (name, package and version, or
+  an inline prompt), outcomes and deadline, and, once its child exists, the
+  child session with a button that opens its actual chat (read-only for
+  people; R23). The node text says that only the typed result completes
+  the state.
+- **Parallel states.** The graph draws an edge from the parallel state to its
+  body's first state ("each branch"); the node shows where branches start,
+  the concurrency, the join and failFast, and the number of branches; a body
+  state's execution names its branch.
+- **Stop.** A run with an accepted stop reads "Stopping · admitted work may
+  settle until …"; a stopped run is ended ("Stopped"), and the run picker
+  names it.
+- **Test runs.** The notice stays as a banner ("TEST — scripts run
+  normally…"), with the stale flag, the virtual clock, the number of
+  interceptions waiting for the parent and a read-only table of intercepted
+  effects and their answers. Answers go through the parent's tools.
+- **Human input.** A session whose access reports `canSendPrompt: false` has
+  no composer; the note gives the reason and the controlling agent. The
+  server refuses the input anyway.
+
+Not added, by design or pending a decision:
+
+- **Human command routes** (REST/MCP `updateWorkflow`, test runs, typed
+  input): the human REST surface stays read-only. Design 04 proposes
+  `/sessions/{id}/workflow/commands`, `/test-runs` and `/inbox`; their
+  authority model for people and the path names are API review item D11.
+- **Response and completion routes** (REST/MCP for `respond_session_request`
+  and `complete_workflow_node`): design 04 requires scoped, service-issued
+  invocation credentials (caller, audience, session/run/node binding, expiry,
+  revocation); an ordinary human bearer token must not complete a node.
+  That credential design is not resolved, so these stay in-process tools.
