@@ -83,6 +83,7 @@ function frame(type: number, streamId: number, payload: Buffer): Buffer {
 export class ComputeChannelStream extends EventEmitter {
     private writeEnded = false;
     private closed = false;
+    private holding = false;
 
     constructor(
         private readonly channel: ComputeChannel,
@@ -116,10 +117,32 @@ export class ComputeChannelStream extends EventEmitter {
         await this.channel.send(TYPE_END, this.id, Buffer.alloc(0));
     }
 
+    /**
+     * Stop reading the connection until this stream lets go.
+     *
+     * What a stream hands on — a server's own input, a response being
+     * written — can take bytes more slowly than the link delivers them.
+     * Holding here stops more arriving, instead of letting them pile up
+     * in the worker's memory. One stream holds at most once.
+     */
+    holdChannel(): void {
+        if (this.holding || this.closed) return;
+        this.holding = true;
+        this.channel.hold();
+    }
+
+    /** Let go of the hold this stream took, if it took one. */
+    releaseChannel(): void {
+        if (!this.holding) return;
+        this.holding = false;
+        this.channel.release();
+    }
+
     /** Finish the stream in both directions. */
     close(reason?: string): void {
         if (this.closed) return;
         this.closed = true;
+        this.releaseChannel();
         this.channel.forget(this.id);
         void this.channel.send(TYPE_CLOSE, this.id, Buffer.from(JSON.stringify(reason ? { reason } : {}), "utf8"))
             .catch(() => { /* the channel is already going */ });
@@ -130,6 +153,7 @@ export class ComputeChannelStream extends EventEmitter {
     closedByPeer(reason?: string): void {
         if (this.closed) return;
         this.closed = true;
+        this.releaseChannel();
         this.emit("close", reason);
     }
 }
@@ -145,9 +169,20 @@ export class ComputeChannel extends EventEmitter {
     readonly maxFrameBytes: number;
     private readonly maxStreams: number;
     private readonly streams = new Map<number, ComputeChannelStream>();
-    private buffered: Buffer = Buffer.alloc(0);
+    /**
+     * What has arrived and is not yet a whole frame.
+     *
+     * Kept as the pieces it arrived in rather than one growing buffer:
+     * concatenating on every chunk copies everything held so far each
+     * time, so a frame delivered in many small pieces costs the square of
+     * its size to receive.
+     */
+    private parts: Buffer[] = [];
+    private held = 0;
     private nextId: number;
     private closed = false;
+    private holds = 0;
+    private started = false;
 
     constructor(private readonly connection: Duplex, private readonly options: ComputeChannelOptions) {
         super();
@@ -166,8 +201,29 @@ export class ComputeChannel extends EventEmitter {
      * never delivered to nobody.
      */
     start(): this {
-        this.connection.resume();
+        this.started = true;
+        if (this.holds === 0) this.connection.resume();
         return this;
+    }
+
+    /** Internal: a stream asks for nothing more to be read until it lets go. */
+    hold(): void {
+        this.holds += 1;
+        if (this.holds === 1) this.connection.pause();
+    }
+
+    /** Internal: a stream lets go; reading starts again when the last one has. */
+    release(): void {
+        if (this.holds === 0) return;
+        this.holds -= 1;
+        if (this.holds > 0 || this.closed) return;
+        if (this.started) this.connection.resume();
+        // Whole frames may already be held from before the hold. Nothing
+        // new has to arrive for them to be delivered.
+        queueMicrotask(() => {
+            if (this.closed || this.holds > 0) return;
+            this.receive(Buffer.alloc(0));
+        });
     }
 
     get isClosed(): boolean {
@@ -230,21 +286,58 @@ export class ComputeChannel extends EventEmitter {
         this.emit("close", reason);
     }
 
+    /** The first `count` bytes held, taken out of the pieces they arrived in. */
+    private take(count: number): Buffer {
+        if (this.parts.length === 1 && this.parts[0].length === count) {
+            const only = this.parts[0];
+            this.parts = [];
+            this.held = 0;
+            return only;
+        }
+        const out = Buffer.allocUnsafe(count);
+        let at = 0;
+        while (at < count) {
+            const piece = this.parts[0];
+            const want = Math.min(piece.length, count - at);
+            piece.copy(out, at, 0, want);
+            at += want;
+            if (want === piece.length) this.parts.shift();
+            else this.parts[0] = piece.subarray(want);
+        }
+        this.held -= count;
+        return out;
+    }
+
+    /** Read `count` bytes of the head without taking them. */
+    private peek(count: number): Buffer {
+        if (this.parts.length > 0 && this.parts[0].length >= count) return this.parts[0];
+        const out = Buffer.allocUnsafe(count);
+        let at = 0;
+        for (const piece of this.parts) {
+            const want = Math.min(piece.length, count - at);
+            piece.copy(out, at, 0, want);
+            at += want;
+            if (at === count) break;
+        }
+        return out;
+    }
+
     private receive(chunk: Buffer): void {
         if (this.closed) return;
-        this.buffered = this.buffered.length ? Buffer.concat([this.buffered, chunk]) : chunk;
+        if (chunk.length) { this.parts.push(chunk); this.held += chunk.length; }
         for (;;) {
-            if (this.buffered.length < FRAME_HEADER_BYTES) return;
-            const length = this.buffered.readUInt32BE(5);
+            if (this.held < FRAME_HEADER_BYTES) return;
+            const header = this.peek(FRAME_HEADER_BYTES);
+            const length = header.readUInt32BE(5);
             if (length > this.maxFrameBytes) {
                 this.close(`a channel frame says it is ${length} bytes; this build reads at most ${this.maxFrameBytes}`);
                 return;
             }
-            if (this.buffered.length < FRAME_HEADER_BYTES + length) return;
-            const type = this.buffered.readUInt8(0);
-            const streamId = this.buffered.readUInt32BE(1);
-            const payload = this.buffered.subarray(FRAME_HEADER_BYTES, FRAME_HEADER_BYTES + length);
-            this.buffered = this.buffered.subarray(FRAME_HEADER_BYTES + length);
+            if (this.held < FRAME_HEADER_BYTES + length) return;
+            const type = header.readUInt8(0);
+            const streamId = header.readUInt32BE(1);
+            this.take(FRAME_HEADER_BYTES);
+            const payload = length ? this.take(length) : Buffer.alloc(0);
             try {
                 this.dispatch(type, streamId, payload);
             } catch (error) {
@@ -252,6 +345,10 @@ export class ComputeChannel extends EventEmitter {
                 return;
             }
             if (this.closed) return;
+            // A stream may have asked for the link to stop while this
+            // frame was dispatched. Stop reading the frames already held
+            // too, or the hold would only slow new arrivals.
+            if (this.holds > 0) return;
         }
     }
 

@@ -12,9 +12,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import http from "node:http";
+import zlib from "node:zlib";
 import net from "node:net";
 import { ComputeChannel } from "../../dist/compute-channel.js";
-import { ComputeControlLink, forwardHeaders, forwardUrl } from "../../dist/compute-control.js";
+import { ComputeControlLink, forwardDestination, forwardHeaders, forwardUrl } from "../../dist/compute-control.js";
 
 const CALLER = {
     sessionId: "session-1",
@@ -105,7 +106,7 @@ test("a server that speaks over its own input and output is started here, and to
     assert.equal(said.configured, "worker-only-secret", "the deployment's own configuration still applies here");
 });
 
-test("the headers of a forwarded call: configured first, the caller's own unchanged, the worker's statement last", () => {
+test("the headers of a forwarded call: the caller's own, what the deployment set winning, the worker's statement last", () => {
     const headers = forwardHeaders(
         { Authorization: "Bearer deployment-standing-credential", "x-source": "deployment" },
         {
@@ -116,14 +117,23 @@ test("the headers of a forwarded call: configured first, the caller's own unchan
             accept: "application/json",
         },
         CALLER);
-    assert.equal(headers.authorization, "Bearer the-callers-own-token", "the caller's own token goes through unchanged");
+    // What the deployment configured for this server is the deployment's
+    // decision. A caller that sends the same header name does not replace
+    // it: the configuration is how the server is reached today, for a
+    // session on the worker as much as for one on a host.
+    assert.equal(headers.authorization, "Bearer deployment-standing-credential",
+        "a header the deployment set for this server is not a caller's to replace");
     assert.equal(headers["x-source"], "deployment", "what the caller did not send, the configuration still provides");
+    assert.equal(headers.accept, "application/json", "and everything else the caller sent goes through unchanged");
     assert.equal(headers.host, undefined, "a header that belongs to one hop is not forwarded");
     assert.equal(headers["content-length"], undefined);
     assert.equal(headers["pilotswarm-caller-owner-subject"], "subject-9", "the statement cannot be forged from the host");
     assert.equal(headers["pilotswarm-caller-session"], "session-1");
     assert.equal(headers["pilotswarm-caller-runs-remotely"], "1");
-    assert.equal(headers.accept, "application/json");
+    // Where the deployment configured nothing, the caller's own travels
+    // exactly as it arrived and the worker adds none of its own.
+    const callerOnly = forwardHeaders(undefined, { authorization: "Bearer the-callers-own-token" }, CALLER);
+    assert.equal(callerOnly.authorization, "Bearer the-callers-own-token");
     // Nothing of the worker's own identity is added beyond the statement.
     const added = Object.keys(headers).filter((name) => name.startsWith("pilotswarm-"));
     assert.deepEqual(added.sort(), [
@@ -140,6 +150,144 @@ test("what the runtime asked for is joined onto the address the deployment confi
     assert.equal(forwardUrl("https://x.invalid/mcp/", "/messages"), "https://x.invalid/mcp/messages");
     assert.equal(forwardUrl("https://x.invalid/mcp?v=1", "/messages"), "https://x.invalid/mcp/messages?v=1");
     assert.equal(forwardUrl("https://x.invalid/mcp", "/messages?id=2"), "https://x.invalid/mcp/messages?id=2");
+    // Both queries survive: what the deployment configured, and what the
+    // caller sent beside it.
+    assert.equal(forwardUrl("https://x.invalid/mcp?v=1", "/messages?id=2"), "https://x.invalid/mcp/messages?id=2&v=1");
+});
+
+test("the configured address pins where a forwarded call may go", () => {
+    // The host decides this path. Every one of these is a way to make a
+    // path mean somewhere else, and each must be refused rather than
+    // joined: the worker sends the deployment's own configured headers to
+    // whatever comes out of it.
+    const hostile = [
+        [".attacker.invalid/tools", "another host by suffix"],
+        ["@attacker.invalid/x", "another host through user info"],
+        ["//attacker.invalid/x", "another host through an authority"],
+        ["https://attacker.invalid/x", "a whole address of its own"],
+        ["/../admin", "a step out of the configured path"],
+        ["/sub/../../admin", "a step out after going in"],
+        ["/%2e%2e/admin", "an encoded step out"],
+        ["/%2E%2E/admin", "an encoded step out, upper case"],
+        ["/%2fadmin", "an encoded separator"],
+        ["/x%5Cadmin", "an encoded backslash"],
+        ["/x\\admin", "a backslash"],
+        ["/messages#somewhere", "a fragment"],
+        ["/messages\u0000", "a null byte"],
+        ["messages", "a path that does not begin with a separator"],
+    ];
+    for (const [rest, why] of hostile) {
+        const answer = forwardDestination("https://mcp.invalid/mcp", rest);
+        assert.equal(answer.ok, false, `${why} (${rest}) must be refused`);
+        assert.match(String(answer.reason), /\S/);
+        assert.throws(() => forwardUrl("https://mcp.invalid/mcp", rest));
+    }
+    // And a configured address that is not one the worker will call at all.
+    for (const configured of ["", "not-an-address", "file:///etc/passwd", "ws://x.invalid/", "https://someone:something@x.invalid/mcp"]) {
+        assert.equal(forwardDestination(configured, "/messages").ok, false, `${configured} must be refused`);
+    }
+    // A configured address whose path is the root still pins the origin.
+    assert.equal(forwardDestination("https://mcp.invalid", "//attacker.invalid/x").ok, false);
+    assert.equal(forwardUrl("https://mcp.invalid", "/messages"), "https://mcp.invalid/messages");
+});
+
+test("a host that asks for a path outside the configured one reaches nothing", async (t) => {
+    let reached = 0;
+    const server = http.createServer((request, response) => { reached++; response.writeHead(200).end("{}"); });
+    await new Promise((resolve) => server.listen({ host: "127.0.0.1", port: 0 }, resolve));
+    t.after(() => server.close());
+
+    const refusals = [];
+    const { link: made, hostSide } = await link(t, { onRefusal: (refusal) => refusals.push(refusal) });
+    const ticket = made.mintTicket({
+        sessionId: "session-1", server: "tools", caller: CALLER,
+        config: { type: "http", url: `http://127.0.0.1:${server.address().port}/mcp`, headers: { "x-configured": "a deployment value" } },
+    });
+    const stream = hostSide.open("mcp-http", { ticket, method: "POST", path: "/../admin", headers: {} });
+    assert.match(String(await once(stream, "close")), /outside the path|step through/);
+    assert.equal(reached, 0, "and nothing was called at all, so no configured header left the worker");
+    assert.equal(refusals.length, 1);
+});
+
+test("a method the worker does not forward is refused before any call is made", async (t) => {
+    const { link: made, hostSide } = await link(t);
+    const ticket = made.mintTicket({
+        sessionId: "session-1", server: "tools", caller: CALLER,
+        config: { type: "http", url: "http://127.0.0.1:1/mcp" },
+    });
+    const stream = hostSide.open("mcp-http", { ticket, method: "TRACE", path: "/", headers: {} });
+    assert.match(String(await once(stream, "close")), /does not forward a "TRACE" call/);
+});
+
+test("a ticket is revoked when the session is no longer authorized for that server", async (t) => {
+    const { link: made, hostSide } = await link(t);
+    const ticket = made.mintTicket({ sessionId: "s", server: "catalog", caller: CALLER, config: { command: "a" } });
+    const other = made.mintTicket({ sessionId: "s", server: "kept", caller: CALLER, config: { command: "a" } });
+    assert.equal(made.ticketCount, 2);
+
+    // The whole set this session may reach, as it now stands.
+    made.reconcileSession("s", ["kept"]);
+    assert.equal(made.ticketCount, 1);
+    const gone = hostSide.open("mcp", { ticket });
+    assert.match(String(await once(gone, "close")), /no such forwarding ticket/);
+    // The one still authorized is untouched, and keeps its ticket, so a
+    // warm runtime goes on working.
+    assert.equal(made.mintTicket({ sessionId: "s", server: "kept", caller: CALLER, config: { command: "b" } }), other);
+
+    // An empty set revokes everything the session held.
+    made.reconcileSession("s", []);
+    assert.equal(made.ticketCount, 0);
+});
+
+test("revoking a grant ends what was open under it", async (t) => {
+    const { link: made, hostSide } = await link(t);
+    const ticket = made.mintTicket({
+        sessionId: "s", server: "long-lived", caller: CALLER,
+        // Says nothing and never exits on its own.
+        config: { command: process.execPath, args: ["-e", "setInterval(()=>{},1000)"] },
+    });
+    const stream = hostSide.open("mcp", { ticket });
+    await stream.write(Buffer.from("x"));
+    while (made.activeForwards === 0) await new Promise((resolve) => setImmediate(resolve));
+
+    const closed = once(stream, "close");
+    made.reconcileSession("s", []);
+    assert.match(String(await closed), /no longer reaches that server/);
+    assert.equal(made.activeForwards, 0, "and the server it started is not left running");
+});
+
+test("a host that gives up on a call does not leave the worker making it", async (t) => {
+    let reached = 0;
+    const server = http.createServer((request, response) => {
+        reached++;
+        request.resume();
+        response.writeHead(200).end("{}");
+    });
+    await new Promise((resolve) => server.listen({ host: "127.0.0.1", port: 0 }, resolve));
+    t.after(() => server.close());
+
+    const refusals = [];
+    const { link: made, hostSide } = await link(t, { onRefusal: (refusal) => refusals.push(refusal.reason) });
+    const ticket = made.mintTicket({
+        sessionId: "s", server: "tools", caller: CALLER,
+        config: { type: "http", url: `http://127.0.0.1:${server.address().port}/mcp` },
+    });
+    // Opened, a partial body sent, then closed without ever ending.
+    const stream = hostSide.open("mcp-http", { ticket, method: "POST", path: "/", headers: {} });
+    await stream.write(Buffer.from("{\"partial\":"));
+    stream.close("the host changed its mind");
+    // Wait for the call to have been given up on, not merely for the
+    // bookkeeping to be tidy: without this the check below can run
+    // before a call that was started has reached anything.
+    const deadline = Date.now() + 10_000;
+    while (!refusals.some((reason) => /gave up on this call/.test(reason))) {
+        if (Date.now() > deadline) break;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    assert.ok(refusals.some((reason) => /gave up on this call/.test(reason)),
+        "a stream that closes before it ends is the host giving up, never a finished body");
+    assert.equal(made.activeForwards, 0);
+    assert.equal(reached, 0, "so nothing was called at all");
 });
 
 test("a server reached over HTTP is called from the worker, with the caller's own credentials and no others", async (t) => {
@@ -201,4 +349,43 @@ test("a stream of a kind the worker does not forward is refused", async (t) => {
     const ticket = made.mintTicket({ sessionId: "session-1", server: "catalog", caller: CALLER, config: {} });
     const stream = hostSide.open("something-else", { ticket });
     assert.match(String(await once(stream, "close")), /does not forward streams of that kind/);
+});
+
+test("a compressed answer is forwarded as the bytes the host actually receives", async (t) => {
+    const body = JSON.stringify({ jsonrpc: "2.0", result: { tools: [] }, id: 1 });
+    const server = http.createServer((request, response) => {
+        // The worker's own call decodes this before the broker sees it.
+        // Passing the original encoding on with the decoded bytes tells
+        // the runtime to decode plain JSON a second time.
+        const packed = zlib.gzipSync(Buffer.from(body, "utf8"));
+        response.writeHead(200, {
+            "content-type": "application/json",
+            "content-encoding": "gzip",
+            "content-length": String(packed.length),
+            "x-answered-by": "the server",
+        });
+        response.end(packed);
+    });
+    await new Promise((resolve) => server.listen({ host: "127.0.0.1", port: 0 }, resolve));
+    t.after(() => server.close());
+
+    const { link: made, hostSide } = await link(t);
+    const ticket = made.mintTicket({
+        sessionId: "s", server: "tools", caller: CALLER,
+        config: { type: "http", url: `http://127.0.0.1:${server.address().port}/mcp` },
+    });
+    const stream = hostSide.open("mcp-http", { ticket, method: "GET", path: "/", headers: {} });
+    const chunks = [];
+    stream.on("data", (chunk) => chunks.push(chunk));
+    const ended = once(stream, "end");
+    await ended;
+
+    const head = JSON.parse(chunks[0].toString());
+    assert.equal(head.status, 200);
+    assert.equal(head.headers["x-answered-by"], "the server", "what the server said about itself still travels");
+    const encoding = Object.keys(head.headers).find((name) => name.toLowerCase() === "content-encoding");
+    assert.equal(encoding, undefined, "but not a claim about bytes the worker no longer has");
+    const length = Object.keys(head.headers).find((name) => name.toLowerCase() === "content-length");
+    assert.equal(length, undefined);
+    assert.equal(Buffer.concat(chunks.slice(1)).toString(), body, "and the body is the decoded one");
 });
