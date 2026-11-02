@@ -1883,6 +1883,28 @@ export class SessionManager {
         } catch { /* best effort */ }
     }
 
+    /**
+     * Compute providers: let go of this session's host because the session
+     * is leaving this worker.
+     *
+     * The warm handle goes first: it is the thing driving the runtime, and
+     * it holds the pooled client that reaches the host. Nothing on the host
+     * is stopped — the session is moving, not ending, and the shells it
+     * started there are its own. Answers whether this worker was holding
+     * anything.
+     */
+    async releaseComputeForMove(sessionId: string): Promise<boolean> {
+        const warm = this.sessions.get(sessionId);
+        const bound = this.computeHosts.has(sessionId);
+        if (!warm && !bound) return false;
+        if (warm) {
+            await warm.destroy().catch(() => { /* the connection is going anyway */ });
+            this._forgetWarmSession(sessionId);
+        }
+        if (bound) await this.releaseCompute(sessionId, "moved");
+        return true;
+    }
+
     /** Compute providers: tell the provider a session no longer needs its host here. Best effort. */
     async releaseCompute(sessionId: string, reason: ComputeReleaseReason): Promise<void> {
         const binding = this.computeHosts.get(sessionId);

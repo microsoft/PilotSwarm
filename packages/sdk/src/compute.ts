@@ -267,6 +267,14 @@ export interface ComputeReleaseRequest extends ComputeCall {
  * several sessions of a tree share a host, so a host is only free of
  * PilotSwarm once no session uses it.
  *
+ * `bind` and `release` are per (session, worker), not per session. A
+ * session moves between workers while it stays open, and more than one
+ * worker can hold sessions of the same tree on the same host at the same
+ * time. A provider that counts its users by session id alone will have one
+ * worker's release take a host away from another worker that is still
+ * using it. Count `(workerNodeId, sessionId)` pairs: both calls carry
+ * `workerNodeId` for exactly this.
+ *
  * A provider must not rely on PilotSwarm to clean up a host. `release` is
  * a hint and may never arrive: a worker can crash, a session can move, a
  * network can go away. What does arrive is the host component's idle

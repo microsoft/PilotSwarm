@@ -56,6 +56,7 @@ interface ProcessHost {
     homeDir: string;
     workDir: string;
     sharedDir: string;
+    /** Who holds this host: one entry per (worker, session), see `userKey`. */
     sessions: Set<string>;
     exited: boolean;
     /** The PilotSwarm host component in front of this runtime. */
@@ -111,8 +112,8 @@ function removeHostDir(dir: string): void {
 }
 
 export function createProcessComputeProvider(options: ProcessComputeProviderOptions = {}): ComputeProvider & {
-    /** Test and diagnostic view: the live hosts. */
-    hosts(): Array<{ targetId: string; rootSessionId: string; pid: number | undefined; port: number; homeDir: string; workDir: string; sharedDir: string; sessions: string[] }>;
+    /** Test and diagnostic view: the live hosts. `holders` is one entry per (worker, session). */
+    hosts(): Array<{ targetId: string; rootSessionId: string; pid: number | undefined; port: number; homeDir: string; workDir: string; sharedDir: string; sessions: string[]; holders: string[] }>;
     /** Stop every host. */
     stopAll(): Promise<void>;
 } {
@@ -243,6 +244,15 @@ export function createProcessComputeProvider(options: ProcessComputeProviderOpti
         removeHostDir(host.hostDir);
     }
 
+    /**
+     * One user of a host: a session as one worker holds it. A session that
+     * moves is held by both workers for a moment, and the worker letting go
+     * must not take the host away from the one picking it up.
+     */
+    function userKey(workerNodeId: string, sessionId: string): string {
+        return `${workerNodeId}\u001f${sessionId}`;
+    }
+
     function live(ref: ComputeHostRef): ProcessHost | undefined {
         for (const host of hosts.values()) {
             if (!host.exited && host.ref.id === ref.id && host.ref.incarnation === ref.incarnation) return host;
@@ -270,7 +280,10 @@ export function createProcessComputeProvider(options: ProcessComputeProviderOpti
                 }
                 hosts.set(key, host);
             }
-            host.sessions.add(req.sessionId);
+            // Per (session, worker): the same session can be held by two
+            // workers at once while it moves, and one worker's release
+            // must not take the host from the other.
+            host.sessions.add(userKey(req.workerNodeId, req.sessionId));
             return { ok: true, host: host.ref };
         },
 
@@ -297,14 +310,17 @@ export function createProcessComputeProvider(options: ProcessComputeProviderOpti
         async release(req) {
             const host = live(req.host);
             if (!host) return;
-            host.sessions.delete(req.sessionId);
+            host.sessions.delete(userKey(req.workerNodeId, req.sessionId));
             if (host.sessions.size === 0) await stop(host);
         },
 
         hosts() {
             return [...hosts.values()].map((host) => {
                 const [targetId, rootSessionId] = host.key.split("\0");
-                return { targetId, rootSessionId, pid: host.child.pid, port: host.port, homeDir: host.homeDir, workDir: host.workDir, sharedDir: host.sharedDir, sessions: [...host.sessions] };
+                // Reported as session ids: a session held by two workers
+                // while it moves is one session to anyone reading this.
+                const sessions = [...new Set([...host.sessions].map((entry) => entry.slice(entry.indexOf("\u001f") + 1)))];
+                return { targetId, rootSessionId, pid: host.child.pid, port: host.port, homeDir: host.homeDir, workDir: host.workDir, sharedDir: host.sharedDir, sessions, holders: [...host.sessions] };
             });
         },
 

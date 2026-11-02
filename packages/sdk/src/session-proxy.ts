@@ -852,6 +852,22 @@ export function createSessionProxy(
                 affinityKey,
             ));
         },
+        /**
+         * Compute providers: let go of this session's host on the worker
+         * that holds it, before the session can move to another one.
+         *
+         * Without this the worker that ran the last turn keeps its bridge,
+         * its pooled client and its warm handle until it evicts the session
+         * much later, while another worker resumes the same session on the
+         * same host. Two workers would then drive one runtime.
+         */
+        releaseCompute(args: { reason: string }) {
+            return routeComputeActivity(ctx.scheduleActivityOnSession(
+                "releaseCompute",
+                { sessionId, ...args },
+                affinityKey,
+            ));
+        },
         checkpoint() {
             return ctx.scheduleActivityOnSession(
                 "checkpointSession",
@@ -5310,6 +5326,30 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             );
         }
         return result;
+    });
+
+    // ── releaseCompute (compute providers) ──────────────────
+    // Session-pinned, like releaseWorkspace: it runs on the worker that
+    // holds the session, before the orchestration releases affinity, so no
+    // second worker can drive the same runtime. The orchestration races it
+    // against a cap and releases affinity anyway if it does not finish.
+    runtime.registerActivity("releaseCompute", async (
+        activityCtx: any,
+        input: { sessionId: string; reason: string },
+    ): Promise<{ released: boolean }> => {
+        const released = await sessionManager.releaseComputeForMove(input.sessionId);
+        activityCtx.traceInfo?.(`[releaseCompute] session=${input.sessionId} reason=${input.reason} released=${released}`);
+        if (catalog && released) {
+            await cmsRetryBestEffort(
+                `releaseCompute.recordEvent session=${input.sessionId}`,
+                () => catalog!.recordEvents(input.sessionId, [{
+                    eventType: "session.compute_released",
+                    data: { reason: input.reason, workerNodeId: workerNodeId ?? os.hostname() },
+                }], workerNodeId),
+                (msg) => activityCtx.traceInfo?.(msg),
+            );
+        }
+        return { released };
     });
 
     // ── checkpointSession ───────────────────────────────────
