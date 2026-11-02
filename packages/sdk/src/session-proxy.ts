@@ -1586,6 +1586,9 @@ export function registerActivities(
         if (!orchestrationSupportsWorkspaces(activityCtx?.orchestrationVersion)) {
             (runConfig as ManagedSessionConfig).workspaceToolsBlocked = true;
         }
+        // Workflow v2 (INACTIVE: only on a worker that runs controller 1.9.0): the session's permission handler can refuse MCP
+        // tools while it runs under a real-agent test.
+        if (workflowRequestTurn) (runConfig as ManagedSessionConfig).workflowMilestoneTurn = true;
         // Session workspaces: a cleared workspace still sends its revision;
         // the worker then passes an explicit folder and keeps hooks off.
         if (!runConfig.workspace && (input.workspaceRevision ?? 0) > 0) {

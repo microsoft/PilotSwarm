@@ -114,6 +114,36 @@ describe("Permission handler contracts", () => {
         assertEqual(urlResult.kind, "approve-once", "unsupported session approval kinds should fall back to one-shot approval");
     });
 
+    it("on a turn of a worker that runs workflow agent states, refuses MCP tools only while the session runs under a real-agent test", async () => {
+        // Workflow v2 (INACTIVE: only the test option workflowRequests marks a turn so); every other turn keeps its handler as it is.
+        const harness = createManagerHarness();
+        try {
+            const managed = await harness.manager.getOrCreate("milestone-permission-session", {
+                toolNames: [],
+                workflowMilestoneTurn: true,
+            }, { turnIndex: 0 });
+
+            const sessionConfig = harness.fakeClient.createdSessionConfigs[0];
+            assertNotNull(sessionConfig, "SDK session config should be captured");
+            const mcp = { kind: "mcp", serverName: "server-a", toolName: "tool-a" };
+            const before = await sessionConfig.onPermissionRequest(mcp, { sessionId: "milestone-permission-session" });
+            assertEqual(before.kind, "approve-for-session", "an MCP tool is approved as before while the session is not under a test");
+            assertEqual(before.approval.kind, "mcp", "the approval is the default handler's");
+
+            // The session's turn ran under a real-agent test (ManagedSession sets this from the turn's bridge).
+            managed.workflowTestSessionActive = () => true;
+            const refused = await sessionConfig.onPermissionRequest(mcp, { sessionId: "milestone-permission-session" });
+            assertEqual(refused.kind, "reject", "an MCP tool cannot be intercepted, so it is refused under a real-agent test");
+            assertEqual((await sessionConfig.onPermissionRequest({ kind: "mcp-sampling", serverName: "server-a" })).kind, "reject",
+                "MCP sampling is refused too");
+            const shell = await sessionConfig.onPermissionRequest({ kind: "shell", commands: [{ identifier: "echo" }] },
+                { sessionId: "milestone-permission-session" });
+            assertEqual(shell.kind, "approve-for-session", "a built-in tool's permission is the default handler's, as in a live run");
+        } finally {
+            harness.cleanup();
+        }
+    });
+
     it("forwards worker-side custom permission handlers without changing the result shape", async () => {
         const harness = createManagerHarness();
         const seenRequests = [];

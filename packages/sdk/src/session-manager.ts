@@ -1998,7 +1998,7 @@ export class SessionManager {
         // attach result the stored config still holds from an earlier turn
         // must not survive a clear.
         if (!effectiveSerializableConfig.workspace) delete config.workspace;
-        for (const key of ["workspaceAttach", "workspaceToolsBlocked", "workspaceCleared"] as const) {
+        for (const key of ["workspaceAttach", "workspaceToolsBlocked", "workspaceCleared", "workflowMilestoneTurn"] as const) {
             if (!(effectiveSerializableConfig as ManagedSessionConfig)[key]) delete config[key];
         }
         // Section 4.11: with no record, a turn still attaches the deployment's
@@ -2638,10 +2638,13 @@ export class SessionManager {
                     noteRequested: () => this.sessions.get(sessionId)?.noteWorkspaceChangeRequested(),
                 } : null,
             ),
-            // Workflow v2 real-agent test runs (INACTIVE): a session whose turn ran under such a test refuses MCP tools, which
-            // cannot be intercepted; every other request, and every other session, goes to the handler unchanged.
-            onPermissionRequest: workflowTestPermission((config as any).onPermissionRequest ?? approvePermissionForSession,
-                () => this.sessions.get(sessionId)?.workflowTestSessionActive() === true),
+            // Workflow v2 real-agent test runs (INACTIVE: only on a worker that runs controller 1.9.0): a session whose turn ran
+            // under such a test refuses MCP tools, which cannot be intercepted; its other requests go to its handler unchanged.
+            // Every other session gets its handler as it is.
+            onPermissionRequest: config.workflowMilestoneTurn === true
+                ? workflowTestPermission((config as any).onPermissionRequest ?? approvePermissionForSession,
+                    () => this.sessions.get(sessionId)?.workflowTestSessionActive() === true)
+                : (config as any).onPermissionRequest ?? approvePermissionForSession,
             infiniteSessions: { enabled: true },
             // Enable token-level streaming so the catch-all event handler in
             // ManagedSession sees `assistant.message_delta` /

@@ -801,6 +801,15 @@ export interface ManagedSessionConfig extends SerializableSessionConfig {
      */
     workspaceCleared?: boolean;
     /**
+     * Workflow v2 (INACTIVE: only the test option workflowRequests sets it):
+     * this turn runs on a worker that runs controller 1.9.0, so a session
+     * created or resumed for it gets the permission handler that refuses MCP
+     * tools while the session runs under a real-agent test
+     * (workflowTestPermission). Every other session's handler is the one it
+     * was given, unchanged. Set by the runTurn activity. Runtime-only.
+     */
+    workflowMilestoneTurn?: boolean;
+    /**
      * Session workspaces: this turn's attach result, set by the runTurn
      * activity after the attach and the path check pass. Runtime-only;
      * never serialized, never stored across turns.
