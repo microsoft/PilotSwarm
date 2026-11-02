@@ -455,11 +455,21 @@ PilotSwarm defines — the same for every provider and every kind of connection.
   connection token is still used. The handshake proves the two ends; the token
   still guards the runtime.
 
-A machine that merely claims to be the host cannot take part. The handshake
-proves who each end is; it does not protect the stream, so a connection that
-crosses something untrusted must be made private by the provider (section
-4.4). The provider's whole part is to put the secret on the host and hand the
-same secret to PilotSwarm; a reserved, ignored version field leaves room for
+A machine that merely claims to be the host cannot take part.
+
+**What the handshake does not do.** It proves who is at each end of the
+connection. It does not protect what crosses it: after `ok` the stream is a
+plain pass-through, with no key derived from the exchange and nothing bound to
+the channel. A party that can sit in the middle of the connection and relay
+the four frames can then read or change everything that follows — the
+runtime's token, the prompts, the tool results. The host also answers a hello
+before the worker has proved anything, which is what makes relaying them
+possible at all. So the network between a worker and its hosts must be private
+or otherwise protected; PilotSwarm does not encrypt it and cannot check that
+anything else does. Encrypting it is designed in section 12.
+
+The provider's whole part is to put the secret on the host and hand the same
+secret to PilotSwarm; a reserved, ignored version field leaves room for
 provider extras later (see section 9, open items), which would add to the
 handshake and never replace it.
 
@@ -494,8 +504,8 @@ The trust boundary, concern by concern:
 |---|---|
 | Model requests | The runtime holds per-session, per-binding placeholders, not keys. Each pooled connection has its own request handler, serving only its sessions. A request must go to the session's model origin and path prefix, by `GET` or `POST`; the worker swaps placeholders for real keys and sends it with redirects refused. Anything else is refused. |
 | Session state (SessionFs) | Confined to the worker's folder for that session. Only the virtual root, the runtime's own session-state form and relative paths are accepted; no link inside is followed; one write carries at most 64 MiB. |
-| Worker files named by tools | Artifact file tools from a remote session may use only that session's workspace folders, and only when the provider says the host shares them with the worker; otherwise none. |
-| Skills and MCP servers | Not sent to a remote runtime: their configs are worker-local. |
+| Worker files named by tools | Any tool that names a worker path from a remote session — the artifact file tools, and loading an agent or skill by path — may use only that session's own workspace folders, and only when the provider says the host shares them with the worker; otherwise none. For those sessions a path is resolved before it is checked, so a link inside a folder that points out of it is refused. A session that runs on the worker is unchanged. |
+| Skills and MCP servers | Not yet sent to a remote runtime: their configs are worker-local. Giving a remote session the same skills and MCP servers as one on the worker is part of this change and still to be built on this branch. |
 | Runtime-authenticated models | A model that signs inside the runtime with a credential the worker holds is refused on a remote target. |
 
 ### 4.7 Where a provider runs
@@ -691,7 +701,7 @@ Finish:   the tree ends and core releases the host; the provider discards the
 
 | K6 | The connection breaks mid-turn | A fresh pipe replaces it. A pipe that cannot be opened, or is too slow, fails the turn with a clear reason rather than hanging. |
 | K7 | A session tree ends while not loaded anywhere | No `release` is sent, because no worker has it. Nothing connects to the host, so its component's idle shutdown ends it. |
-| K8 | The handshake fails (wrong secret, a replayed nonce, an oversized frame, a timeout) | The connection closes and the turn fails with a "handshake failed" reason; the model is never called. |
+| K8 | The handshake fails (wrong secret, a replayed nonce, an oversized frame, a timeout) | The connection closes and the turn fails with a "handshake failed" reason, including when the connection that carries the turn is the one that fails; the model is never called. The handshake proves who each end is, not that the stream between them is private — see 4.5. |
 | K9 | A target names a kind this worker has no provider for | The turn fails with that reason, naming the kind. |
 | K10 | A remote runtime asks for a model it was not granted, or a different destination | The request handler refuses it; no placeholder is resolved and nothing is sent. |
 | K11 | A host shares no files with the worker | Artifact file tools that name worker files are refused for that session; only `worker-local` or `shared-mount` hosts allow them. |
@@ -1042,3 +1052,82 @@ turn itself is unaffected. What is lost is anything that lived only on the old
 host: files outside the session's folders, and background processes started
 there. Making those survive — or saying plainly in the session that they did
 not — is not built.
+
+### 12.8 Encrypting the connection between worker and host
+
+**Value.** The connection between a worker and a host stops needing a network
+that is already private. Today the handshake proves who is at each end and
+nothing more, so a party that can sit in the middle of that connection can
+read and change the runtime's token, the prompts and the tool results. A
+deployment whose workers and hosts are not on a network it controls has no
+safe way to use this.
+
+**What it adds.** A session key derived from the handshake — HKDF over the
+secret, the binding id and both nonces — and the stream framed under an AEAD
+from then on; or the connection bound to TLS, with the handshake proving the
+same certificate both ends saw. Either makes relaying the exchange useless.
+
+**Requirements when it is built.**
+
+- The handshake version goes up, and a worker and a host that disagree refuse
+  each other rather than falling back to an unprotected stream.
+- The order of the frames changes so the host does not sign anything before
+  the worker has proved itself, which is the opening a relay uses.
+- The contract that leaves no bytes behind between the handshake and whatever
+  takes the stream over is re-proved through the new frame layer; today the
+  reader puts back what it read past the last frame, and an AEAD layer must
+  not lose or duplicate those bytes.
+- A test with a party in the middle: it relays the exchange and is then unable
+  to read or change a byte of what follows.
+
+### 12.9 File-based tools on remote sessions
+
+**Value.** The rule that a remote session reaches only its own folders stays
+true as features are added, rather than being re-established tool by tool.
+
+**What it adds.** SQL tools on a remote session, which need SessionFs to carry
+SQLite; and a sweep of every worker feature that takes a path, so each one
+either goes through the same per-session roots or is refused for a remote
+session, the way the artifact tools and loading by path already are.
+
+**Requirements when it is built.**
+
+- One place decides which worker folders a session may name, and every tool
+  that takes a path asks it. A second copy of the rule will drift from the
+  first.
+- A session that runs on the worker keeps today's behaviour exactly; the
+  narrowing is for sessions whose agent is elsewhere.
+
+### 12.10 Canvas and workspace for remote sessions
+
+This change hardens the boundary between an agent and the database: the agent
+runs where the CMS and the orchestration cannot be reached. These are the
+known gaps left around it, accepted for now and written down rather than
+implied.
+
+**What is still true today.**
+
+- A canvas command an agent declared runs in the trusted portal process. The
+  programs it may run are allow-listed and there is no shell, but a repository
+  inside the session's folders can carry settings that make one of them start
+  another program there.
+- A person's folder and the shared folder are reachable by more than one
+  session. An agent on a host can write a file that another session later
+  reads as instructions — including a session that runs on the worker, which
+  is what mixed mode means while some sessions have a compute target and some
+  do not.
+- A provider that mounts the session's folders on a host must mount only that
+  session's own folders, with access control on the file server. PilotSwarm
+  states the rule and cannot enforce it.
+- Traffic between a worker and a host is not encrypted (section 12.8), so the
+  network between them must be private.
+
+**Where this goes.**
+
+- The trusted side handles an agent's files only as data: it never executes
+  them and never treats them as its own configuration.
+- Anything that runs on an agent's behalf runs on that session's own host,
+  over the connection the handshake has already proved — canvas commands and
+  the Workspace tab's git operations included.
+- Mounts are per session.
+- Agents get read-only access to the shared folder.

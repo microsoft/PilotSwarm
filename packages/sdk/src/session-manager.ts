@@ -2890,6 +2890,10 @@ export class SessionManager {
         Object.assign(effectiveMcpServers, attached.mcpServers);
         config.capabilityFingerprint = attached.fingerprint;
         config.capabilityServices = {
+            // Compute providers: the same rule the artifact tools use, so a
+            // session whose agent runs elsewhere reaches only its own
+            // folders whichever tool names a path.
+            localPathRoots: () => this.computeLocalPathRoots(sessionId),
             search: async args => {
                 const result = await capabilityCatalog.search(await getOwner(), sessionId, args);
                 // The working folder's adopted repo agents and skills are not

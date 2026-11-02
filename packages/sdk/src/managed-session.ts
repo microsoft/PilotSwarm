@@ -17,7 +17,7 @@ import type { ReasoningEffort, ContextTier } from "./model-providers.js";
 import { LiveTurnCoalescer } from "./live-turn.js";
 import { STREAMING_EVENT_TYPES, TURN_RESULT_EXCLUDED_EVENT_TYPES } from "./turn-result-events.js";
 import { mergeWorkspaceChange, sameWorkspace, validateWorkspaceText } from "./workspace-check.js";
-import { attachedFoldersOf, parseSkillFile, readLoadFiles, resolveLoadPath } from "./workspace-loads.js";
+import { attachedFoldersOf, loadFoldersFor, parseSkillFile, readLoadFiles, resolveLoadPath } from "./workspace-loads.js";
 import { groupSkipped, parseRepoAgentFile } from "./workspace-repo-agents.js";
 import path from "node:path";
 import { NativeTaskObserver, nativeTaskAgentMarks } from "./native-task-observer.js";
@@ -855,7 +855,12 @@ export class ManagedSession {
         if (!services?.saveWorkspaceLoad) return { ok: false, error: "this session cannot save loaded agents or skills" };
         const busy = await this.busyForLoad();
         if (busy) return { ok: false, error: busy };
-        const where = resolveLoadPath(input, attachedFoldersOf(this.config.workspaceAttach));
+        // A session whose agent runs on another host may name only the
+        // folders that host shares, and its paths are resolved before they
+        // are checked. A session that runs on the worker is unchanged.
+        const allowed = loadFoldersFor(attachedFoldersOf(this.config.workspaceAttach), services.localPathRoots?.());
+        if (!allowed.ok) return { ok: false, error: allowed.reason };
+        const where = resolveLoadPath(input, allowed.folders, { linkSafe: allowed.linkSafe });
         if (!where.ok) return { ok: false, error: where.reason };
         const [read] = await readLoadFiles([{ kind, absolute: where.absolute, folder: where.folder }]);
         if (!read?.ok) return { ok: false, error: `cannot load ${where.absolute}: ${read?.reason ?? "unreadable"}` };

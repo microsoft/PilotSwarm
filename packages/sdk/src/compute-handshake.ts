@@ -31,6 +31,15 @@
  * into COMPUTE_HANDSHAKE_FAILED. After `ok` the stream carries the
  * runtime's own protocol and nothing else — including the runtime's
  * connection token, which is still checked at the far end.
+ *
+ * What it does NOT do: protect the stream. No key is derived from the
+ * exchange and nothing is bound to the channel, so after `ok` the stream
+ * is a plain pass-through. A party that can sit in the middle and relay
+ * these four frames can then read or change everything that follows; the
+ * host answering a hello before the worker has proved anything is what
+ * makes relaying them possible. The network between the worker and the
+ * host must therefore be private or otherwise protected. Encrypting it is
+ * designed in the proposal's future work.
  */
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Duplex } from "node:stream";

@@ -14,6 +14,13 @@ export interface CapabilityServices {
     load(ref: string, kind: "skill" | "agent"): Promise<unknown>;
     list(): Promise<unknown>;
     use(args: PackageRequest): Promise<{ changed: boolean; revision: number }>;
+    /**
+     * Compute providers: the only worker folders this session's path tools
+     * may name, or undefined when it runs on the worker and the ordinary
+     * rules apply. Empty means its host shares none of them. The artifact
+     * tools read the same thing.
+     */
+    localPathRoots?(): string[] | undefined;
     /** Section 4.12: save or drop an agent or skill loaded by path. */
     saveWorkspaceLoad?(change: { add: import("./capability-catalog.js").WorkspaceLoad } | { remove: { kind: "agent" | "skill"; name: string } }): Promise<{ loads: import("./capability-catalog.js").WorkspaceLoad[] }>;
 }

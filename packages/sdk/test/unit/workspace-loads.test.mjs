@@ -14,6 +14,8 @@
  *   L6  the declarations: load_agent and load_skill's path only with the
  *       workspace tools; load_agent is a reserved name
  *   L7  the load helpers behind the tools: what is saved, and what is refused
+ *   L8  a session whose agent runs on another host: which folders it may
+ *       load from, and a link that points out of them
  */
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
@@ -23,7 +25,7 @@ import path from "node:path";
 import { MAX_WORKSPACE_LOADS, normalizeCapabilityState, withWorkspaceLoad } from "../../dist/capability-catalog.js";
 import { nextCapabilityState } from "../../dist/capability-runtime.js";
 import { readWorkspaceFiles, MAX_LOAD_FILE_BYTES } from "../../dist/workspace-check.js";
-import { attachedFoldersOf, parseSkillFile, resolveLoadPath, resolveWorkspaceLoads } from "../../dist/workspace-loads.js";
+import { attachedFoldersOf, loadFoldersFor, parseSkillFile, resolveLoadPath, resolveWorkspaceLoads } from "../../dist/workspace-loads.js";
 import { findReservedPackageToolName } from "../../dist/reserved-tool-names.js";
 import { ManagedSession } from "../../dist/managed-session.js";
 
@@ -335,5 +337,70 @@ describe("L7 the load helpers behind the tools", () => {
         assert.deepEqual(saved.at(-1), { remove: { kind: "agent", name: "finder" } });
         assert.deepEqual(await session.unloadByPath("skill", "nope"), { ok: false, error: "no skill named \"nope\" is loaded by path in this session" });
         assert.deepEqual(await session.unloadByPath("skill", ""), { ok: false, error: "unload needs the name" });
+    });
+});
+
+describe("L8 a session whose agent runs on another host", () => {
+    // realpath first: on some systems the temp folder is itself a link,
+    // and the point here is what resolves where.
+    const base = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "ps-remote-loads-")));
+    const work = path.join(base, "work");
+    const shared = path.join(base, "shared");
+    const outside = path.join(base, "outside");
+    const folders = [
+        { root: "work", rootPath: work, path: work },
+        { root: "shared", rootPath: shared, path: shared },
+    ];
+
+    before(() => {
+        write(path.join(work, "helper.agent.md"), agentText("helper"));
+        write(path.join(outside, "stolen.agent.md"), agentText("stolen"));
+        write(path.join(shared, "note.md"), "not an agent");
+    });
+    after(() => fs.rmSync(base, { recursive: true, force: true }));
+
+    it("a session on the worker may load from every attached folder, as it always could", () => {
+        const allowed = loadFoldersFor(folders, undefined);
+        assert.equal(allowed.ok, true);
+        assert.deepEqual(allowed.folders, folders);
+        assert.equal(allowed.linkSafe, false, "its paths are taken as written, exactly as before");
+    });
+
+    it("a host that shares no folders cannot load an agent or skill by path at all", () => {
+        const refused = loadFoldersFor(folders, []);
+        assert.equal(refused.ok, false);
+        assert.match(refused.reason, /does not share the worker's folders/);
+    });
+
+    it("a host that shares the session's folders may load from those and no others", () => {
+        const allowed = loadFoldersFor(folders, [work]);
+        assert.equal(allowed.ok, true);
+        assert.deepEqual(allowed.folders.map((f) => f.root), ["work"],
+            "the shared folder is not one this host was given");
+        assert.equal(allowed.linkSafe, true);
+    });
+
+    it("a link out of a folder is refused for a remote session, and the same file still loads for a local one", (t) => {
+        const link = path.join(work, "escape.agent.md");
+        try {
+            fs.symlinkSync(path.join(outside, "stolen.agent.md"), link);
+        } catch (error) {
+            // Making a link needs a privilege on some systems; the rest of
+            // this group still covers the rule.
+            t.skip(`this system does not allow the test to make a link (${error.code})`);
+            return;
+        }
+
+        const remote = resolveLoadPath(link, folders, { linkSafe: true });
+        assert.equal(remote.ok, false, "where it points is what counts, not where it sits");
+        assert.match(remote.reason, /not inside the working folder or an extra folder/);
+
+        const local = resolveLoadPath(link, folders);
+        assert.equal(local.ok, true, "a session on the worker is unchanged by this");
+
+        // A real file beside it is still fine either way.
+        const real = resolveLoadPath(path.join(work, "helper.agent.md"), folders, { linkSafe: true });
+        assert.equal(real.ok, true);
+        assert.equal(real.rootRelative, "helper.agent.md");
     });
 });
