@@ -867,6 +867,13 @@ export class SessionManager {
     private computeReach = new Map<string, Exclude<ComputeRuntimeEndpoint, { transport: "local" }>>();
     /** Whether a provider may hand back a runtime address that is not on this machine. */
     private computeAllowNonLoopbackEndpoints = false;
+    /**
+     * Whether this worker refuses to run an agent runtime as its own child
+     * process. Off by default; a deployment turns it on once every session
+     * has a compute target, which is when the agent is reliably somewhere
+     * the CMS and the orchestration cannot be reached.
+     */
+    private computeRequired = false;
     private unsubscribeFeatureFlags: (() => void) | null = null;
 
     /** Live in-memory session count — worker-registry health reporting. */
@@ -1305,7 +1312,16 @@ export class SessionManager {
         if (ownTargetId && ownTargetId !== targetId) {
             return fail(COMPUTE_ERROR_CODES.INVALID, "this session names a different compute target than its session tree");
         }
-        if (!targetName && !targetId) return null;
+        if (!targetName && !targetId) {
+            // Nothing to run on, and this worker will not run an agent of
+            // its own. Fail here, before a runtime is started or a prompt
+            // moves.
+            if (this.computeRequired) {
+                return fail(COMPUTE_ERROR_CODES.REQUIRED,
+                    "this deployment runs every session's agent on a compute host, and this session has no compute target");
+            }
+            return null;
+        }
         if (!targetId) return fail(COMPUTE_ERROR_CODES.NOT_FOUND, `the compute target "${targetName}" of this session has no recorded id`);
         const owner: ComputePrincipal | null = rootRow.owner?.provider && rootRow.owner?.subject
             ? { provider: rootRow.owner.provider, subject: rootRow.owner.subject, email: rootRow.owner.email ?? null }
@@ -1353,6 +1369,15 @@ export class SessionManager {
         if (!connected.ok) {
             await this.releaseCompute(sessionId, "failed");
             return fail(connected.code, connected.message, connected.retryAfterMs);
+        }
+        if (this.computeRequired && connected.endpoint.transport === "local") {
+            // A target whose provider runs the runtime here is still the
+            // worker's own child process, which is the thing this
+            // deployment has turned off. Checking the target alone would
+            // miss it.
+            await this.releaseCompute(sessionId, "failed");
+            return fail(COMPUTE_ERROR_CODES.REQUIRED,
+                `this deployment runs every session's agent on a compute host, and the compute target "${target.name}" runs it on the worker`);
         }
         if (connected.endpoint.transport === "uri" && !this.computeAllowNonLoopbackEndpoints && !isLoopbackAddress(connected.endpoint.address)) {
             await this.releaseCompute(sessionId, "failed");
@@ -1545,8 +1570,9 @@ export class SessionManager {
     }
 
     /** Compute providers: whether a provider may return a runtime address that is not on this machine. */
-    setComputeOptions(options: { allowNonLoopbackEndpoints?: boolean }): void {
+    setComputeOptions(options: { allowNonLoopbackEndpoints?: boolean; requireCompute?: boolean }): void {
         this.computeAllowNonLoopbackEndpoints = options.allowNonLoopbackEndpoints === true;
+        this.computeRequired = options.requireCompute === true;
     }
 
     /** Compute providers: add one plug-in per compute type. */

@@ -213,6 +213,28 @@ describe("process compute provider", () => {
         }
     });
 
+    it("a deployment that requires compute never runs an agent on the worker", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        await withScriptedModel(env, { respond: () => ({ content: "should not run" }), worker: { requireCompute: true } },
+            async ({ client, model, qualifiedModel }) => {
+                // No target, and no deployment default: there is nowhere
+                // for this session's agent to run, so the turn fails
+                // instead of the worker starting a runtime of its own.
+                const session = await client.createSession({ model: qualifiedModel });
+                await session.send("hello");
+                expect(await waitForSessionError(env, session.sessionId, /COMPUTE_REQUIRED/)).toBeTruthy();
+                expect(model.sessionRequests(), "no model request, so no agent ran").toHaveLength(0);
+            });
+    });
+
+    it("with the policy off, a session with no target runs on the worker as it always has", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        await withScriptedModel(env, { respond: () => ({ content: "ran here" }) }, async ({ client, qualifiedModel }) => {
+            const session = await client.createSession({ model: qualifiedModel });
+            expect(await session.sendAndWait("hello", TIMEOUT)).toBe("ran here");
+        });
+    });
+
     it("refuses an unknown target at create and an unknown kind at the turn", { timeout: TIMEOUT }, async () => {
         const env = await getEnv();
         await registerTarget(env, "nowhere", "no-such-kind");

@@ -217,6 +217,8 @@ export class PilotSwarmWorker {
     private _evictionTimer: ReturnType<typeof setInterval> | null = null;
     private _provider: any = null;
     private _catalog: SessionCatalog | null = null;
+    /** Compute providers: this worker's default target, when it sets one. */
+    private _defaultComputeTarget: string | undefined;
     /** Session turn control: the worker's LISTEN hub (design 4.4). */
     private _turnControlHub: TurnControlHub | null = null;
     private _started = false;
@@ -446,7 +448,12 @@ export class PilotSwarmWorker {
         for (const provider of options.computeProviders ?? []) {
             this.sessionManager.registerComputeProvider(provider, { replace: provider.kind === LOCAL_COMPUTE_KIND });
         }
-        this.sessionManager.setComputeOptions({ allowNonLoopbackEndpoints: options.computeAllowNonLoopbackEndpoints });
+        this._defaultComputeTarget = options.defaultComputeTarget;
+        this.sessionManager.setComputeOptions({
+            allowNonLoopbackEndpoints: options.computeAllowNonLoopbackEndpoints,
+            requireCompute: options.requireCompute
+                ?? ["1", "true", "yes", "on"].includes((process.env.PILOTSWARM_REQUIRE_COMPUTE ?? "").trim().toLowerCase()),
+        });
     }
 
     private _startProviderPolling(): void {
@@ -720,6 +727,14 @@ export class PilotSwarmWorker {
             for (let attempt = 1; attempt <= attempts; attempt += 1) {
                 try {
                     this._catalog = await runtimeStorageProvider.createSessionCatalog(storage.runtime);
+                    // Compute providers: the catalog resolves the
+                    // deployment's default target at creation, exactly as
+                    // it resolves a named one, so every surface that
+                    // creates a session records the same id. It reads the
+                    // environment itself; a worker option wins over that.
+                    if (this._defaultComputeTarget !== undefined) {
+                        (this._catalog as { defaultComputeTarget?: string }).defaultComputeTarget = this._defaultComputeTarget.trim();
+                    }
                     await this._catalog.initialize();
                     lastErr = null;
                     break;

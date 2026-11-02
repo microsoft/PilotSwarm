@@ -1652,6 +1652,18 @@ export class PgSessionCatalog implements SessionCatalog {
         return this._providers;
     }
 
+    /**
+     * Compute providers: the target a new root session gets when it names
+     * none, as `shared/<label>`. Empty for a deployment that leaves
+     * sessions on the worker, which is the default.
+     *
+     * Read here, from the environment, so that every surface that creates
+     * a session — the worker, the Web API, the CLI — gets the same answer
+     * without each of them having to pass it down. A worker may also set
+     * it from its own options.
+     */
+    defaultComputeTarget = (process.env.PILOTSWARM_DEFAULT_COMPUTE_TARGET ?? "").trim();
+
     static readonly DEFAULT_POOL_MAX = 3;
 
     /** Factory: create and connect a PgSessionCatalog. */
@@ -1755,8 +1767,18 @@ export class PgSessionCatalog implements SessionCatalog {
         const providerModel = opts?.model ?? null;
         const validateProviderModel = Boolean(providerModel && opts?.modelResolutionSource)
             && await this.supportsProviderSessionModelValidation();
-        const computeTarget = typeof opts?.creationConfig?.computeTarget === "string"
+        // Compute providers: a deployment may name a target for sessions
+        // that choose none. It applies to a new root session only — a
+        // sub-agent inherits its tree's target through the root's record,
+        // and recording one of its own would make it disagree with a tree
+        // that named a different one.
+        const named = typeof opts?.creationConfig?.computeTarget === "string"
             ? opts.creationConfig.computeTarget as string : null;
+        const computeTarget = named
+            ?? (opts?.parentSessionId ? null : (this.defaultComputeTarget || null));
+        if (computeTarget && !named) {
+            opts = { ...(opts ?? {}), creationConfig: { ...(opts?.creationConfig ?? {}), computeTarget } };
+        }
         if (computeTarget && !await this.supportsComputeTargets()) {
             throw Object.assign(
                 new Error("COMPUTE_TARGET_NOT_FOUND: this deployment has no compute targets yet"),

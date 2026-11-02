@@ -10,6 +10,7 @@ import pg from "pg";
 import { randomBytes } from "node:crypto";
 import { runCmsMigrations } from "../../src/cms-migrator.ts";
 import { ComputeTargetStore, ComputeTargetError } from "../../src/compute-target-store.ts";
+import { PgSessionCatalog } from "../../src/cms.ts";
 
 const DATABASE_URL = process.env.PS_TEST_DATABASE_URL
     || process.env.TEST_DATABASE_URL
@@ -127,6 +128,43 @@ describe("compute targets", () => {
         const reused = await store.create({ name: "shared/pool-c", kind: "sandbox" }, null, true);
         expect(reused.id).not.toBe(shared.id);
         expect(await store.resolveForSession(shared.id)).toBeNull();
+    });
+
+    it("a deployment's default target is recorded at creation, and sub-agents keep inheriting", async () => {
+        const target = await store.create({ name: "shared/default-pool", kind: "sandbox" }, null, true);
+        const catalog = await PgSessionCatalog.create(DATABASE_URL, SCHEMA);
+        try {
+            catalog.defaultComputeTarget = "shared/default-pool";
+
+            // A new root session that names none is given the default, and
+            // records its id exactly as a named one would.
+            await catalog.createSession("s-default", { creationConfig: {} });
+            const root = await catalog.getSessionCreationConfig("s-default");
+            expect(root).toMatchObject({ computeTarget: "shared/default-pool", computeTargetId: target.id });
+
+            // A sub-agent records nothing of its own: it inherits its
+            // tree's target through the root, and a target of its own
+            // could disagree with it.
+            await catalog.createSession("s-child", { parentSessionId: "s-default", creationConfig: {} });
+            const child = await catalog.getSessionCreationConfig("s-child");
+            expect(child?.computeTarget).toBeUndefined();
+            expect(child?.computeTargetId).toBeUndefined();
+
+            // A session that names one still gets what it asked for.
+            const other = await store.create({ name: "shared/named-pool", kind: "sandbox" }, null, true);
+            await catalog.createSession("s-named", { creationConfig: { computeTarget: "shared/named-pool" } });
+            expect(await catalog.getSessionCreationConfig("s-named"))
+                .toMatchObject({ computeTarget: "shared/named-pool", computeTargetId: other.id });
+
+            // And with no default set, a session that names none records
+            // none — which is every deployment that has not turned this on.
+            catalog.defaultComputeTarget = "";
+            await catalog.createSession("s-plain", { creationConfig: {} });
+            expect((await catalog.getSessionCreationConfig("s-plain"))?.computeTarget).toBeUndefined();
+        } finally {
+            await catalog.close?.();
+            await sql(`DELETE FROM @sessions WHERE session_id LIKE 's-%'`);
+        }
     });
 
     it("every target lives in the shared space, and a name is always two parts", async () => {

@@ -59,6 +59,11 @@ export const COMPUTE_ERROR_CODES = {
     /** The provider returned a runtime address this worker does not accept. */
     ENDPOINT_REFUSED: "COMPUTE_ENDPOINT_REFUSED",
     /**
+     * This worker will not run an agent runtime as its own child process,
+     * and this session has no compute target to run on.
+     */
+    REQUIRED: "COMPUTE_REQUIRED",
+    /**
      * The worker and the host did not prove to each other that they hold
      * this binding's secret, or the provider gave the worker no secret to
      * prove it with. Nothing of the session crossed the connection.

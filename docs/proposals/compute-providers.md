@@ -442,7 +442,7 @@ PilotSwarm defines — the same for every provider and every kind of connection.
   size-bounded, with a deadline; comparisons are constant-time; the host
   remembers the worker nonces it has answered and refuses a repeat, so a
   recorded exchange is worthless. Any failure closes the connection, and the
-  turn fails with a "handshake failed" reason (section 4.9).
+  turn fails with a "handshake failed" reason (section 4.10).
 - **The host component.** A small PilotSwarm program runs on the host, in front
   of the runtime. It answers the handshake, then forwards the stream to the
   runtime's local port, and reaches nothing else. It serves exactly one binding
@@ -504,6 +504,7 @@ The trust boundary, concern by concern:
 |---|---|
 | Model requests | The runtime holds per-session, per-binding placeholders, not keys. Each pooled connection has its own request handler, serving only its sessions. A request must go to the session's model origin and path prefix, by `GET` or `POST`; the worker swaps placeholders for real keys and sends it with redirects refused. Anything else is refused. |
 | Session state (SessionFs) | Confined to the worker's folder for that session. Only the virtual root, the runtime's own session-state form and relative paths are accepted; no link inside is followed; one write carries at most 64 MiB. |
+| Folders mounted on a host | A provider whose `files` capability says it mounts the session's folders must mount only that session's own folders, with access control on the file server, so a host can never reach another session's or another person's folders. PilotSwarm states the rule and cannot enforce it. |
 | Worker files named by tools | Any tool that names a worker path from a remote session — the artifact file tools, and loading an agent or skill by path — may use only that session's own workspace folders, and only when the provider says the host shares them with the worker; otherwise none. For those sessions a path is resolved before it is checked, so a link inside a folder that points out of it is refused. A session that runs on the worker is unchanged. |
 | Skills and MCP servers | Not yet sent to a remote runtime: their configs are worker-local. Giving a remote session the same skills and MCP servers as one on the worker is part of this change and still to be built on this branch. |
 | Runtime-authenticated models | A model that signs inside the runtime with a credential the worker holds is refused on a remote target. |
@@ -523,7 +524,40 @@ administrator, and be reached through one generic connector so the worker
 holds neither the code nor the rights. That is designed and was built on the
 exploration branch, and is **future work** — see section 12.
 
-### 4.8 Host lifecycle: idle shutdown and reuse
+### 4.8 Turning it on: a default target, and requiring compute
+
+The rule this design serves — an agent never runs where the CMS and the
+orchestration can be reached — holds for a session that has a compute target.
+It does not hold for a session that has none, and nothing so far stopped a
+deployment having both. Two settings close that, in two stages. Both are off
+by default, so an existing deployment and local development are unchanged.
+**(built)**
+
+| Setting | What it does |
+|---|---|
+| A default compute target | A new root session that names no target is given this one, as `shared/<label>`. It is resolved and recorded at creation exactly as a named target is, so the per-turn re-check is unchanged, and sub-agents keep inheriting their tree's target. System sessions get it too. |
+| Require compute | The worker refuses to run an agent runtime as its own child process. A session with no target, and no default, fails its turn with `COMPUTE_REQUIRED` before a runtime is started or a prompt moves. A target whose provider runs the runtime on the worker is refused the same way: what matters is where the agent ends up, not whether a target was named. |
+
+Whether a session has a target is read from its own record, never from
+anything the agent can set.
+
+**The two stages.** With require-compute off, the deployment is in mixed mode:
+some sessions run on hosts, some on the worker, and the gaps in section 12.10
+apply. With it on, every session's agent runs where the CMS and the
+orchestration cannot be reached, which is when the invariant actually holds.
+Removing the worker-local path altogether — so there is no mode to be in — is
+section 12.11.
+
+**What this does not cover.** Three helpers run a model over text without an
+agent: generating a session title, listing models, and distilling a transcript
+when context is regenerated. They run no tools, start no shell and read no
+files on a model's instruction, so they are not agents and the policy leaves
+them alone; refusing them would break titles and context regeneration for no
+gain in where agents run. What they do carry is content: for a remote session
+the transcript came from an untrusted host, so an injection there could colour
+a title or a summary. It cannot call a tool. They must stay tool-free.
+
+### 4.9 Host lifecycle: idle shutdown and reuse
 
 PilotSwarm says when it is finished with a host, and the host looks after
 itself. **(built)**
@@ -564,7 +598,7 @@ PilotSwarm records no host bindings of its own. Telling a provider exactly when
 a tree is finished, rather than letting a timeout do it, is designed in section
 12.
 
-### 4.9 Failures
+### 4.10 Failures
 
 Every compute failure carries a `code`, a human `message`, and an optional
 `retryAfterMs`. The worker builds every compute error it raises through one
@@ -578,7 +612,7 @@ That affects only sessions that use a compute target.
 cannot fix from ones that may pass, and stopping the first kind at once with a
 clear reason, was left out to keep this work small. See section 12.
 
-### 4.10 APIs, events and errors
+### 4.11 APIs, events and errors
 
 Compute targets are managed through the management client and the Web API,
 the way model providers are. **(built)**
@@ -596,7 +630,7 @@ the CLI, and choosing one in the portal and the TUI, are future work (section
 offers itself. The API reference docs are updated alongside; this proposal is
 not that reference.
 
-### 4.11 Compatibility
+### 4.12 Compatibility
 
 The design is additive. A session without a target runs exactly as today: the
 runtime runs in the worker, with the same tools, the same prompt and the same
@@ -1131,3 +1165,24 @@ implied.
   the Workspace tab's git operations included.
 - Mounts are per session.
 - Agents get read-only access to the shared folder.
+
+### 12.11 Every session runs on a compute target
+
+**Value.** There is no mixed mode left to reason about. Today a deployment can
+require compute (section 4.7a), which is what makes the invariant hold, but
+the worker-local path still exists behind it, and every gap in section 12.10
+is a gap only because some sessions may run on the worker.
+
+**What it adds.** Running an agent as the worker's own child process is
+removed. Every session has a compute target — the one it named or the
+deployment's default — so the trusted side never runs model-chosen code at
+all.
+
+**Requirements when it is built.**
+
+- A deployment has a target to give every session before the worker-local
+  path goes, or it cannot start a session at all.
+- Local development has a way to run without one, or a target that is cheap
+  enough to be the default there.
+- The helpers that run a model over text without an agent (titles, model
+  listing, distillation) either move with it or are shown to need no agent.

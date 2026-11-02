@@ -1437,6 +1437,29 @@ export interface PilotSwarmWorkerOptions {
      */
     computeAllowNonLoopbackEndpoints?: boolean;
 
+    /**
+     * Compute providers: the compute target a new root session is given
+     * when it names none, as `shared/<label>`. The session records the
+     * target's id at creation exactly as if it had asked for it, and
+     * sub-agents keep inheriting their tree's target. Unset by default, so
+     * sessions stay on the worker. Env:
+     * `PILOTSWARM_DEFAULT_COMPUTE_TARGET`.
+     */
+    defaultComputeTarget?: string;
+
+    /**
+     * Compute providers: refuse to run any agent runtime as this worker's
+     * own child process. A session with no compute target — and no
+     * deployment default — then fails its turn with `COMPUTE_REQUIRED`
+     * rather than running here. Off by default. Env:
+     * `PILOTSWARM_REQUIRE_COMPUTE`.
+     *
+     * With it on, every session's agent runs where the CMS and the
+     * orchestration cannot be reached, which is when the invariant this
+     * design serves actually holds.
+     */
+    requireCompute?: boolean;
+
     /** Optional session state store. When set, enables durable session dehydration without Azure Blob Storage. */
     sessionStore?: SessionStateStore;
 

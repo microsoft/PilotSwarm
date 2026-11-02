@@ -16,8 +16,10 @@ session lets go of a host, and the component on a host ends itself after a set
 time with no connection, so a host nobody came back to is freed without the
 worker having to say so; what happens to a host nobody needs is the provider's
 decision. Compute targets are
-managed through the management client and the Web API. Sessions without a
-compute target are unchanged. The exported interface is experimental and may
+managed through the management client and the Web API. A deployment may name a
+default target for sessions that choose none, and may require compute, after
+which the worker refuses to run an agent runtime of its own; both are off by
+default, so sessions without a compute target are unchanged. The exported interface is experimental and may
 change before release.
 
 **Provider request headers.** A provider type in the model catalog may set
