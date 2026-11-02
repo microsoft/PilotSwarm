@@ -332,9 +332,16 @@ defines runs on that host out of the copy, with only what its own entry states;
 a server the deployment configured keeps running on the trusted side with its
 own command, environment, headers and credentials, and the runtime reaches it
 through the host component. PilotSwarm forwards that traffic without reading
-it, to the configured servers only, with the caller's own credentials passed
-through unchanged, none of the worker's added, and a worker-vouched statement
-of the session and its owner attached for the server's own checks.
+it, and only to the servers the deployment configured for that session and
+only to the address and path each was configured with. The caller's own
+headers go through unchanged, except that a header the deployment set for that
+server wins over a caller's of the same name; nothing is added beyond what the
+deployment configured for that server. A statement of the session and its
+owner is attached for the server's own checks. That statement is not signed:
+it is trustworthy only because it arrives over a connection only the worker
+can make, so a server that decides anything from it must be reachable from the
+worker and nowhere else. A server that speaks only the older event-stream
+transport is unavailable to these sessions, with the reason.
 
 **A server offered to these sessions should act as the caller.** One that uses
 its own standing credentials gives every remote agent whatever those
@@ -346,13 +353,28 @@ runtime.
 
 | Worker option | Environment variable | Default | Meaning |
 |---|---|---|---|
+| `defaultComputeTarget` | `PILOTSWARM_DEFAULT_COMPUTE_TARGET` | none | The target a new root session is given when it names none, as `shared/<label>` or its bare label. Recorded on the session at creation exactly as a named target is. **Every process that creates sessions — the worker, the Web API, the CLI — needs the same setting**, or they disagree about what a session with no named target gets. |
+| `requireCompute` | `PILOTSWARM_REQUIRE_COMPUTE` | off | The worker refuses to run an agent runtime as its own child process. A session with no target and no default fails its turn with `COMPUTE_REQUIRED` before a runtime is started or a prompt moves, and so does a target whose provider would run the runtime on the worker. |
 | `computeCopyMaxBytes` | `PILOTSWARM_COMPUTE_COPY_MAX_BYTES` | 67108864 (64 MiB) | The most bytes one session's copy of its folders carries to its host. |
 | `computeCopyMaxFiles` | `PILOTSWARM_COMPUTE_COPY_MAX_FILES` | 4096 | The most files one session's copy carries. |
+| `computeAllowNonLoopbackEndpoints` | — | off | Whether a provider may return a runtime address that is not on this machine. Off, a provider that reaches a host elsewhere supplies the connection itself. |
 
 Anything that cannot be copied — too large, missing, unreadable, or a link out
 of its folder — is unavailable, the reason is recorded in the session's events
-as `session.compute_capabilities`, and the turn goes on. If nothing can be
-delivered to the host, the turn fails with `COMPUTE_UNAVAILABLE`.
+as `session.compute_capabilities`, and the turn goes on. A host that serves
+the turn but not the side channel is the same: the session's skills and
+servers are unavailable with that reason and the turn runs without them. If
+the side channel is there and nothing can be delivered over it, the turn fails
+with `COMPUTE_UNAVAILABLE`.
+
+The host component is run as `pilotswarm-compute-host --binding <id> --runtime
+<host:port|port> --listen <host:port>`. It serves the side channel by default
+— a session with any skill folder or any MCP server needs it — writing the
+copies and the relay under `--services-dir` (a folder of this binding's own
+under the system temporary folder by default). `--no-services` turns it off,
+`--copy-max-bytes` and `--copy-max-files` bound what one session's copy may
+lay out, and `--idle-timeout` is a whole number of milliseconds (0 keeps the
+component up for ever).
 
 Trusted session creation resolves `explicit → user default → cluster default →
 first usable provider/model`, validates capabilities, and writes the exact

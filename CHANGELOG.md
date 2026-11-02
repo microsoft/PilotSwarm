@@ -16,13 +16,20 @@ session lets go of a host, and the component on a host ends itself after a set
 time with no connection, so a host nobody came back to is freed without the
 worker having to say so; what happens to a host nobody needs is the provider's
 decision. Compute targets are
-managed through the management client and the Web API. A deployment may name a
-default target for sessions that choose none, and may require compute, after
-which the worker refuses to run an agent runtime of its own; both are off by
-default, so sessions without a compute target are unchanged.
+managed through the management client and the Web API; the CLI, portal and MCP
+surfaces are not part of this change. A deployment may name a default target
+for sessions that choose none (`defaultComputeTarget`, or
+`PILOTSWARM_DEFAULT_COMPUTE_TARGET` — every process that creates sessions needs
+the same setting), and may require compute (`requireCompute`, or
+`PILOTSWARM_REQUIRE_COMPUTE`), after which the worker refuses to run an agent
+runtime of its own. Both are off by default, so sessions without a compute
+target are unchanged. Every turn of every session in a tree that has a target —
+sub-agents and system sessions included — is routed only to workers that can
+drive a remote runtime, and the worker refuses to start a local runtime for
+such a session whatever route reached it.
 
 A session that runs on a host gets the same skill folders and the same MCP
-servers as one that runs on the worker, and the worker still lends nothing.
+servers as one that runs on the worker.
 Beside the runtime connection the worker opens a second connection to the same
 host component, proved by the same handshake and named in its hello, and over
 it: the skill folders the session is authorized to see are copied to the host
@@ -35,19 +42,31 @@ keeps running on the trusted side with its own command, environment, headers
 and credentials, reached by the runtime through the host component. PilotSwarm
 forwards that traffic without interpreting it, so whatever the runtime and the
 server support keeps working. On that path it forwards only to servers the
-deployment configured for that session, bounds message sizes and call
-durations, passes the caller's own credentials through unchanged, adds none of
-its own, and attaches a worker-vouched statement of the session and its owner
-for the server's checks and audit. Repository MCP servers stay off.
+deployment configured for that session, and only to the address and path that
+server was configured with; it bounds message sizes, how long a call may wait
+to be answered and the gap between bytes, and how many servers one host may
+have the worker start; it passes the caller's own headers through unchanged
+while a header the deployment set for that server wins over a caller's of the
+same name; and it adds nothing beyond what the deployment configured for that
+server — no worker identity and no worker credential. It also attaches a
+statement of the session and its owner for the server's checks and audit. That
+statement is not signed: it is trustworthy only because it arrives over a
+connection only the worker can make, so a server that decides anything from it
+must be reachable from the worker and nowhere else. Servers that speak only the
+older event-stream transport are unavailable to these sessions, with the
+reason. Repository MCP servers stay off.
 
 A session's copy carries 64 MiB and 4,096 files by default
 (`computeCopyMaxBytes` / `computeCopyMaxFiles`, or
 `PILOTSWARM_COMPUTE_COPY_MAX_BYTES` / `PILOTSWARM_COMPUTE_COPY_MAX_FILES`).
 Anything that cannot be copied is unavailable with the reason in the session's
-events and the turn goes on. A deployment catalog entry may carry
-`"remote": false` to keep that server away from sessions whose agent runs
-elsewhere; servers are available by default, and the field is deployment-only,
-like `default` and `allowedAgents`. **A server offered to these sessions should
+events and the turn goes on, and so does a host that serves the turn but not
+the side channel. A deployment catalog entry may carry `"remote": false` to
+keep that server away from sessions whose agent runs elsewhere; servers are
+available by default, because a deployment's servers already run on the trusted
+side with the deployment's own configuration and a remote session reaches the
+same server the same way. The field is deployment-only, like `default` and
+`allowedAgents`. **A server offered to these sessions should
 act as the caller:** one that uses its own standing credentials gives every
 remote agent whatever those credentials reach, which is the deployment's
 choice to make.

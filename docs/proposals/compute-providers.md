@@ -1,27 +1,31 @@
 # Compute providers: run a session's agent somewhere other than the worker
 
-**Status:** exploration on a feature branch, draft PR for discussion. Built
-on the branch: targets and names, the provider interface and its connection
-contract, the bridge, the handshake and the host component, the remote turn
-and its trust boundary, the host's idle shutdown, and the management
-surfaces. Three pieces of the design were taken out of this change
-to keep it easy to review — clear failure reasons, running providers as
-registered services, and a target's own capabilities and models. They are
-designed in section 12 (Future work) and the code for them is on the
-exploration branch history of this PR.
+**Status:** exploration on a feature branch, draft PR for discussion.
 
-**Still to be built on this branch:** skills and MCP servers for a remote
-session. A session on a host does not yet get the skill folders and MCP
-servers a deployment configures, so it is not at parity with a session that
-runs on the worker. That gap is part of this change, not future work, and
-its design is being written separately. **Date:** 2026-11-02, revision 4.
-Revision 1 restructured the proposal to match
-`docs/proposals/session-workspaces.md`: a high-level design for a human
-reader first, then numbered sections. Revision 2 records the built behaviour
-after the parts were brought together. Revision 3 defers clear failure
-reasons to a follow-up that needs no orchestration change. Revision 4 moves
-provider services and target capabilities/host models into Future work, so
-this change is only the provider seam, the connection and the targets.
+**Built on the branch:** shared compute targets and their names; the
+provider interface and its connection contract, for providers whose hosts
+are reachable at an address; the bridge; the handshake and the host
+component; the remote turn and its trust boundary; the host's idle
+shutdown; the skill folders and MCP servers a remote session gets; and
+the deployment settings for a default target and for requiring compute.
+Target management is built in the management client and the Web API.
+
+**Deliberately not in this change,** designed in section 12 (Future work):
+clear failure reasons that stop a turn at once; running providers as
+registered services; a target's own capabilities and models; leases and
+end-of-tree notices; personal targets; hosts that can only reach outwards;
+and target management from the CLI, the portal and MCP.
+
+**Date:** 2026-11-02, revision 5. Revision 1 restructured the proposal to
+match `docs/proposals/session-workspaces.md`: a high-level design for a
+human reader first, then numbered sections. Revision 2 records the built
+behaviour after the parts were brought together. Revision 3 defers clear
+failure reasons to a follow-up that needs no orchestration change.
+Revision 4 moves provider services and target capabilities/host models
+into Future work, so this change is only the provider seam, the connection
+and the targets. Revision 5 records skills and MCP servers as built, and
+brings the terms, the decisions and the implementation map in line with
+what is on the branch.
 
 A session's agent runs on a host chosen for that session, not inside the
 worker that serves the turn. The worker stays the trusted side: it keeps the
@@ -203,14 +207,14 @@ Defined before use, in the order the rest of the document needs them.
 | Binding | One (target, session tree) pairing to a host. It carries a per-binding secret. |
 | Idle shutdown | The host component ending itself after a set time with no connection, which is what frees a host nobody came back to. |
 | Pipe | A two-way, ordered, reliable byte stream to one host's runtime. Everything above the provider sees only a pipe. |
-| Transport | How a provider's pipe is made: `direct` (the host is reachable at an address) or `pipe` (the provider opens the connection itself). Exactly one per provider. |
-| Bridge | A loopback listener the worker runs, one per binding. It turns a provider-opened pipe into an address the runtime connection can dial. |
+| Transport | How a provider's hosts are reached. This change builds one: the host is reachable at an address, which the worker dials. A provider that opens the connection itself is future work (section 12). |
+| Bridge | A loopback listener the worker runs, one per binding. It gives every remote runtime an address on this machine, so the handshake happens in one place whatever is behind it. |
 | Handshake | One mutual proof PilotSwarm defines, run on every remote connection before any session traffic. Each end proves it holds the binding's secret. |
-| Endpoint | What `connect` returns: `uri` (an address the worker dials) or `pipe` (open the connection through the provider). |
-| Capabilities | What a provider says about the hosts it makes. Fixed in provider code. |
+| Endpoint | What `connect` returns: `uri`, an address the worker dials. |
+| Capabilities | What a provider says about the hosts it makes. Fixed in provider code. This change uses one: `files`, which says whether the host shares the worker's folders. |
 | Placeholder credentials | Per-session, per-binding random stand-ins the runtime holds instead of real model keys. The worker swaps them for real keys on each request. |
 | SessionFs | The session-state file surface the runtime reads and writes. It is confined to the worker's folder for that session. |
-| Session tree | A root session and all of its sub-agents. It runs on one target, fixed at the root. |
+| Session tree | A root session and all of its sub-agents. It runs on one target, fixed at the root; every turn of every session in it is routed to a worker that can drive a remote runtime. |
 | CMS | The session catalog database: sessions, events, and the new `compute_targets` table. |
 
 ## 3. Architecture and who owns what
@@ -256,7 +260,7 @@ is everything the operator runs: the network between workers and hosts.
 | Session-state files | SessionFs confined to the worker's session folder (**built**) | `files` capability says whether the host shares the worker's files | the SessionFs provider |
 | Finishing with a host | `release` per leaving session, as a hint; the host component's idle shutdown as the backstop (**built**) | Running the runtime under the host component; deciding the host's fate | `release(req)`, the idle timeout |
 | Failures | One shape for every compute error (`CODE: message`); a failure goes through the ordinary turn retry (**built**). Clear reasons that stop a turn at once are future work (section 12) | A code, a message and an optional retry hint | the `ComputeFailure` shape |
-| Management surfaces | List, create, update, enable/disable and delete targets, across the client, Web API and MCP (**built**) | Nothing | the management client and API |
+| Management surfaces | List, create, update, enable/disable and delete targets, in the management client and the Web API (**built**). The CLI, portal and MCP surfaces are future work (section 12) | Nothing | the management client and API |
 
 How the two sides work together, end to end:
 
@@ -546,20 +550,41 @@ Whether a session has a target is read from its own record, never from
 anything the agent can set.
 
 **Rolling deploys.** Workers that can drive a runtime on another host declare
-a capability tag, `pilotswarm.compute.v1`, and the turns of a session that has
-a compute target are routed only to those. Without it, a worker from before
-this change would pick such a turn up and run the session's agent as its own
-child process, beside the CMS, the orchestration and the model keys — which is
-the one thing the design exists to prevent, and it would happen silently.
-Routing fails closed: a turn like that is never scheduled untagged, because an
+a capability tag, `pilotswarm.compute.v1`, and the turns of a session in a
+compute tree are routed only to those. Without it, a worker from before this
+change would pick such a turn up and run the session's agent as its own child
+process, beside the CMS, the orchestration and the model keys — which is the
+one thing the design exists to prevent, and it would happen silently. Routing
+fails closed: a turn like that is never scheduled untagged, because an
 untagged turn is exactly the one an older worker would take.
 
-This needs no new orchestration version. The tag is chosen from the session's
-own compute target, and a session can only have one on a build that already
-understands compute, so no history written by an older build can take that
-branch and every existing history replays exactly as it did. It is the same
-shape as the workspace tag, which was added for the turns of sessions that
-have a workspace without versioning the contracts it applied to.
+**Every** turn of such a tree carries it, not only the root's. The tag is
+taken from the target recorded for the tree's root, in the catalog, and
+written into the orchestration's input when the orchestration starts —
+never from a field a caller passed. That matters because the two cases
+where nobody passes one are the common ones: a sub-agent is never given a
+target of its own, and a root that was given the deployment's default has
+it only in its catalog record. Reading the caller's field alone left
+exactly those turns untagged.
+
+**And the worker checks again.** Before it starts a runtime, the worker
+asks what target this session's tree has. If the tree has one and what is
+about to start is the worker's own child process — for any reason: the
+catalog cannot resolve targets, the tag did not route, a path that was
+missed — the turn fails with `COMPUTE_REQUIRED` instead. The tag keeps
+those turns away from workers that cannot serve them; this makes sure a
+worker that does serve them never quietly falls back.
+
+**Open: whether the orchestration version should be bumped.** The tag is
+chosen inside the orchestration, so a worker running an *older build of
+the orchestration itself* during a rolling deploy would not choose it. The
+argument that no version is needed is that a session can only have a
+compute target on a build that already understands compute, so no history
+written by an older build takes that branch — the same shape as the
+workspace tag. The argument against is that an older worker may execute
+the next step of a *new* session's orchestration while both builds are
+registered. The worker-side refusal above is what holds in the meantime.
+Whether to add a version is being decided separately from this change.
 
 **The two stages.** With require-compute off, the deployment is in mixed mode:
 some sessions run on hosts, some on the worker, and the gaps in section 12.10
@@ -568,14 +593,23 @@ orchestration cannot be reached, which is when the invariant actually holds.
 Removing the worker-local path altogether — so there is no mode to be in — is
 section 12.11.
 
-**What this does not cover.** Three helpers run a model over text without an
-agent: generating a session title, listing models, and distilling a transcript
-when context is regenerated. They run no tools, start no shell and read no
-files on a model's instruction, so they are not agents and the policy leaves
-them alone; refusing them would break titles and context regeneration for no
-gain in where agents run. What they do carry is content: for a remote session
-the transcript came from an untrusted host, so an injection there could colour
-a title or a summary. It cannot call a tool. They must stay tool-free.
+**The worker's own model helpers.** A few things run a model over text
+without being an agent: generating a session title, listing models, and
+distilling a transcript when context is regenerated. They are not agents
+and the require-compute policy leaves them alone — refusing them would
+break titles and context regeneration for no gain in where agents run.
+
+But they do read content, and for a remote session that content came from
+an untrusted host, so an injection in it could try to make the helper do
+something on the worker. So they are not merely expected to be tool-free:
+they are **made** tool-free, for every session and every deployment, with
+or without compute targets. Each one is created with no built-in tools,
+no MCP servers, no skill folders, and a permission handler that refuses
+whatever is asked for. None of them needs a tool to do its job, so there
+is nothing to lose; what there is to gain is that no prompt in a
+transcript can start a shell beside the CMS and the model keys. Anything
+added later that runs a model over a session's content belongs in the
+same shape (`permissions.ts`, `TOOL_FREE_HELPER_SESSION`).
 
 ### 4.9 Host lifecycle: idle shutdown and reuse
 
@@ -737,17 +771,50 @@ all. Its rules on that path are few and all of them are about the loan:
   worker did not mint, or minted for a session that has let go of the
   host, reaches nothing. A session keeps the same ticket for a server for
   as long as it is on that host, so a warm runtime keeps working.
-- **The caller's own credentials, unchanged.** Where the transport
-  carries one — an `Authorization` from the runtime side — it goes
-  through as it arrived. The worker never swaps in one of its own and
-  never adds its own identity.
+- **Only what the deployment configured, plus what the caller sent.** The
+  server is started, or called, exactly as it is for a session on the
+  worker: the same command, the same environment, the same headers, the
+  same address. The worker adds nothing of its own on top of that — no
+  worker identity, no worker credential. Where the caller sends a header
+  of its own it goes through as it arrived; where the deployment
+  configured a header of the same name, the deployment's wins, because a
+  header the deployment set for that server is the deployment's decision
+  and not a caller's to replace.
+- **Only where the deployment pointed it.** The configured address pins
+  both the host and the path. What the runtime asks for is joined under
+  that path and checked first: it must begin with a single `/`, carry no
+  fragment, no `.` or `..` step and no encoded separator or dot, and the
+  result must still be the configured origin and still inside the
+  configured path. Anything else is refused with a reason, and so is a
+  method the worker does not forward.
 - **A statement of who is calling.** The worker attaches the session, its
   tree, its owner and its target — as headers for a server reached over
   HTTP, as environment for one the worker starts — so the server can make
   its own checks and keep its own record. It is attached last, so nothing
-  from the host can be passed off as it.
-- **Bounded.** One conversation has a byte ceiling in each direction and
-  one HTTP call has a deadline, the server's own setting when it has one.
+  from the host can be passed off as it. It is **not signed**: it is
+  trustworthy only because it arrives over a connection only the worker
+  can make, so a server that reads it must be reachable from the worker
+  and nowhere else. Signing it is future work (section 12.14).
+- **Only while the session is authorized.** The whole set of servers a
+  session may reach is reconciled at every turn, including when the set
+  is empty. A ticket for a server the session is no longer authorized
+  for — a selection removed, an allowlist narrowed, a deployment that has
+  set the server away from remote sessions — is revoked, and whatever was
+  open under it is ended with it.
+- **Bounded.** One conversation has a byte ceiling in each direction; one
+  HTTP call has a deadline for being answered and for the gap between
+  bytes (the server's own setting when it has one), so a server that
+  streams for a long time still works; request bodies are carried as they
+  arrive rather than collected; and how many servers one host may have
+  started, how fast, and how many bytes they may hold at once are all
+  capped per host.
+- **The older event-stream transport is refused.** That transport
+  announces, inside the stream, the address the runtime must post to. The
+  worker forwards the stream without reading it, so that announcement
+  would arrive naming somewhere the runtime cannot reach — and reading
+  the stream to rewrite it would put PilotSwarm in the middle of an MCP
+  conversation, which is what this deliberately does not do. Such a
+  server is unavailable with that reason.
 
 **Repository MCP servers stay off**, exactly as they are for a session on
 the worker.
@@ -779,7 +846,11 @@ from these sessions:
 `remote` is a deployment-catalog field, like `default` and
 `allowedAgents`: a package `.mcp.json` may not carry it, it is stripped
 before any configuration reaches a runtime, and servers are available by
-default. A server kept away this way is unavailable with that reason in
+default. Available by default is deliberate: a deployment's servers
+already run on the trusted side for a session on the worker, with the
+deployment's own configuration, and a remote session reaches the same
+server the same way. `remote: false` is how a deployment says one of them
+is not for agents it does not trust. A server kept away this way is unavailable with that reason in
 the session's events, and the rest of the session's map is unaffected.
 
 #### What this does not do
@@ -945,11 +1016,13 @@ and Windows, so nothing may assume a path separator or a shell.
 | Everything above the provider sees only a pipe | Core knowing the medium |
 | One mutual handshake PilotSwarm defines for every connection, answered by a host component | Each provider inventing its own trust scheme |
 | A per-binding secret, fresh for every binding, never stored in the CMS | A per-host or per-target secret |
-| The provider decides a host's fate; PilotSwarm only reports use (a lease) and finish (a done notice) | PilotSwarm deleting hosts; release meaning destroy |
+| The provider decides a host's fate; PilotSwarm only says when a session has finished with a host, and the host component's idle shutdown is the backstop. Leases and end-of-tree notices are future work (section 12) | PilotSwarm deleting hosts; release meaning destroy |
 | A host is reusable only with nothing left over | Trusting a host to be clean |
 | Owner-qualified names (`shared/<label>`); sessions reference a permanent id | Free-form global names |
 | Target `config` holds no secrets; providers get credentials from the deployment | A secret reference in the config |
-| Clear failure reasons, provider services and target capabilities/host models left out of this change and designed in section 12 | One large change carrying all of it |
+| Clear failure reasons, provider services, target capabilities/host models, leases, personal targets, and CLI/portal/MCP target management left out of this change and designed in section 12 | One large change carrying all of it |
+| A deployment may name a target for sessions that choose none, and may refuse to run any agent on the worker. Both are off by default | Every deployment having to name a target on every session |
+| A remote session's skill folders are copied read-only to its host, named by content; a package's MCP server runs on the host out of that copy; a deployment's MCP server stays on the trusted side and is reached through the host component | Mounting the worker's file system on a host, or sending the deployment's own configuration to one |
 
 **Verified on the branch (with the `process` provider, real workers and PostgreSQL)**
 
@@ -959,7 +1032,8 @@ and Windows, so nothing may assume a path separator or a shell.
 | Placeholders in the runtime, real keys only in the worker; other destinations refused | Holds |
 | Session state round-trips through SessionFs and resumes on a new worker | Holds |
 | A sub-agent runs in its tree's runtime | Holds |
-| A full turn through a provider-opened pipe and the bridge | Holds |
+| A full turn through the bridge, over a proved connection | Holds |
+| A remote session's skill folders copied to its host, and its MCP servers reachable from it | Holds |
 | Owner-qualified names, shorthand resolution, and the deleted/reused-name rules | Hold |
 
 **Unverified (designed and wired, not proven)**
@@ -977,11 +1051,12 @@ and Windows, so nothing may assume a path separator or a shell.
 | Demand hints | Telling a provider how much demand there is per target, so it can size spare capacity. Deferred; the design leaves room. |
 | A secret reference for a provider that needs per-user credentials | Deferred (secrets option A for now: none in the config). |
 | A tree spanning more than one target | An open question; today a tree runs on exactly one. |
-| Personal compute targets | A later change. |
+| Personal compute targets | A later change (section 12). |
+| Target management from the CLI, the portal and MCP | A later change (section 12); the management client and Web API are built. |
 
 | Portal and TUI views for compute | Future work (section 12). |
 | Provisioning (creating hosts on demand) | Out of scope; a compute provisioner can come later. |
-| SessionFs quotas (total size and file count per session), and SQL tools on remote sessions | To do. |
+| SQL tools on remote sessions | To do. |
 | Which skill folders a remote session's copy covers | Exactly the list a session on the worker is given this turn, built by the same code: for a base-V2 session the owner-filtered folders, otherwise the deployment's own. The copy widens nothing; if that selection should be narrower for a remote session, it is a change to the selection and applies to both. |
 | The sessions of one tree on one host | Not separated from each other; the host is the boundary (section 12.12). |
 | What a package's MCP server needs to run | It runs out of the read-only copy, so its dependencies must be in the package folder or already on the host; nothing is installed on a host (section 12.13). |
@@ -993,8 +1068,8 @@ branch; section 12 lists what was deliberately left out.
 
 | File / area | Change | State |
 |---|---|---|
-| `compute.ts` | Provider interface, registry, the always-available local provider, endpoint-to-connection, the rules a remote endpoint must meet | built |
-| `compute-bridge.ts` | The loopback bridge, one per host, in front of every remote runtime, plus the built-in pipe that opens a plain connection to an address | built |
+| `compute.ts` | Provider interface, registry, target names, endpoint-to-connection, the rules a remote endpoint must meet | built |
+| `compute-bridge.ts` | The loopback bridge, one per host, in front of every remote runtime, and the registry that keeps one per host and closes it when its last session lets go | built |
 | `migrations/compute-targets-0084.ts`, `0084_diff.md` | `compute_targets` and its procedures (extended in place; never edit 0083 or older) | built |
 | `compute-target-store.ts`, `cms.ts` | The target store; the create-time check | built |
 | `types.ts`, `client.ts` | `computeTarget` on the session config | built |
@@ -1009,7 +1084,9 @@ branch; section 12 lists what was deliberately left out.
 | `compute-host-services.ts` | The host's end: laying the copies out, the relay the runtime starts, and the local address for a server reached over HTTP | built |
 | `compute-mcp.ts` | Which servers run where, and what a remote runtime's map looks like | built |
 | `mcp-loader.ts`, `worker.ts` | The entry as it was written kept beside the resolved one, where each catalog entry came from, and the `remote` field | built |
-| `management-client.ts`, `web/*`, `api/*`, `packages/app/mcp/*` | The target-management surfaces | built |
+| `management-client.ts`, `web/*`, `api/*` | Listing, creating, updating, enabling and deleting targets, for an administrator. The CLI, portal and MCP surfaces are future work (section 12) | built |
+| `activity-routing.ts`, `client.ts`, `system-agents.ts` | The routing tag every turn of a compute tree carries, taken from the target recorded for the tree's root | built |
+| `permissions.ts`, `session-proxy.ts`, `regen-worker.ts` | The worker's own model helpers, with no tools, no servers and no skills | built |
 
 ## 11. Delivery plan
 
@@ -1344,7 +1421,7 @@ implied.
 ### 12.11 Every session runs on a compute target
 
 **Value.** There is no mixed mode left to reason about. Today a deployment can
-require compute (section 4.7a), which is what makes the invariant hold, but
+require compute (section 4.7), which is what makes the invariant hold, but
 the worker-local path still exists behind it, and every gap in section 12.10
 is a gap only because some sessions may run on the worker.
 
@@ -1394,3 +1471,49 @@ is a way to run code nobody reviewed.
 - Whatever resolves dependencies runs on the host, from a manifest the package
   declared, and never reaches the worker's network or registry credentials.
 - A failure is the server being unavailable with a reason, not a failed turn.
+
+### 12.14 Signing the worker's statement of who is calling
+
+**Value.** A deployment's MCP server can decide what it will do from the
+calling session and owner without having to be unreachable from anywhere
+else.
+
+**What it adds.** Today the worker attaches the session, its tree, its
+owner and its target to every forwarded call, and a server may read them.
+They are plain: nothing in them proves the worker wrote them. That is
+sound only while the server is reachable from the worker and from nowhere
+else, because then nothing else can present them. A server that is also
+reachable from somewhere an agent can get to must not decide anything
+from them.
+
+**Requirements when it is built.**
+
+- The statement carries a proof bound to the ticket, the session and a
+  time, so a server can tell the worker wrote it and cannot replay it.
+- A server can check it without holding a secret of the worker's, or with
+  one the deployment places alongside the server's own configuration.
+- The unsigned form keeps working, so a deployment that does not check it
+  is not broken by the change.
+- The documentation stops telling a deployment that reachability is what
+  makes the statement trustworthy.
+
+### 12.15 The older event-stream MCP transport for remote sessions
+
+**Value.** A deployment MCP server that speaks only the older event-stream
+transport can be offered to a session whose agent runs elsewhere.
+
+**What it adds.** That transport announces, inside the stream, the address
+the runtime must post to. The worker forwards the stream without reading
+it, so the announcement reaches the runtime naming the trusted side's own
+address, or a path outside the one its ticket stands for, and the
+conversation cannot go on. Such a server is refused today, with that
+reason.
+
+**Requirements when it is built.**
+
+- Whatever rewrites the announcement produces a ticket-scoped address on
+  the host, inside the origin and path the server was configured with.
+- It reads only what it must to find the announcement, and the rest of the
+  conversation stays unread.
+- A stream it cannot make sense of leaves the server unavailable with a
+  reason, never a half-working one.

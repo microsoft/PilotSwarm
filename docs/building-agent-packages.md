@@ -285,7 +285,7 @@ export default {
   (`unknown_mcp_server`): it must exist in the deployment catalog, or the
   reference is dropped at load.
 
-Two fields are **deployment-catalog only** and rejected in a package
+Three fields are **deployment-catalog only** and rejected in a package
 `.mcp.json`:
 
 - `"default": true` (`mcp_default_forbidden`) — it would add the server to
