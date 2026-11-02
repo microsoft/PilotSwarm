@@ -14,6 +14,10 @@ import { themeSoundEnvelope, themeSoundTiming } from "pilotswarm/ui-core";
 const TICK_MS = 200;
 // Peak gain at volume 100. The fire is ambience, not an alert.
 const MAX_GAIN = 0.7;
+// Gap between crackle events: the minimum plus a spread skewed toward short
+// gaps. Mean about 360 ms; it was about 120 ms, which read as constant hiss.
+const CRACKLE_GAP_MIN_MS = 140;
+const CRACKLE_GAP_SPREAD_MS = 880;
 
 function brownNoise(ctx, seconds) {
     const buffer = ctx.createBuffer(1, Math.floor(ctx.sampleRate * seconds), ctx.sampleRate);
@@ -34,9 +38,9 @@ function whiteNoise(ctx, seconds) {
     return buffer;
 }
 
-// A fire that is mostly crackle: frequent small crackles and snaps at
-// irregular intervals, now and then the deeper pop of a settling log, over a
-// quiet low rumble that breathes slowly.
+// A fire that is mostly crackle: small crackles and snaps at irregular,
+// unhurried intervals (about three a second on average), now and then the
+// deeper pop of a settling log, over a quiet low rumble that breathes slowly.
 function startFire(ctx, output, cache) {
     cache.bed = cache.bed || brownNoise(ctx, 5);
     cache.white = cache.white || whiteNoise(ctx, 0.08);
@@ -81,7 +85,7 @@ function startFire(ctx, output, cache) {
             filter.Q.value = 0.7 + Math.random() * 2.2;
         }
         const gain = ctx.createGain();
-        const peak = kind === "pop" ? 0.65 : kind === "snap" ? 0.35 + Math.random() * 0.4 : 0.12 + Math.random() * 0.6;
+        const peak = kind === "pop" ? 0.8 : kind === "snap" ? 0.45 + Math.random() * 0.5 : 0.16 + Math.random() * 0.74;
         const length = kind === "pop" ? 0.11 : kind === "snap" ? 0.025 + Math.random() * 0.035 : 0.004 + Math.random() * 0.026;
         gain.gain.setValueAtTime(0.0001, at);
         gain.gain.linearRampToValueAtTime(peak, at + 0.0015);
@@ -94,11 +98,11 @@ function startFire(ctx, output, cache) {
     const crackle = () => {
         if (!running) return;
         const at = ctx.currentTime + 0.01;
-        const count = Math.random() < 0.35 ? 2 + Math.floor(Math.random() * 5) : 1;
+        const count = Math.random() < 0.3 ? 2 + Math.floor(Math.random() * 4) : 1;
         for (let k = 0; k < count; k += 1) pop(at + k * (0.008 + Math.random() * 0.04), "crackle");
-        if (Math.random() < 0.12) pop(at + 0.015, "snap");
-        if (Math.random() < 0.05) pop(at + 0.02, "pop");
-        timer = setTimeout(crackle, 25 + Math.random() * Math.random() * 380);
+        if (Math.random() < 0.15) pop(at + 0.015, "snap");
+        if (Math.random() < 0.08) pop(at + 0.02, "pop");
+        timer = setTimeout(crackle, CRACKLE_GAP_MIN_MS + Math.random() * Math.random() * CRACKLE_GAP_SPREAD_MS);
     };
     crackle();
 

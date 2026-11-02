@@ -87,5 +87,9 @@ test("the portal wires the setting to Appearance, the profile, and the player", 
     assert.match(player, /themeSoundEnvelope\(elapsed, sound\)/);
     assert.match(player, /doc\.hidden/, "silent while the tab is hidden");
     assert.match(player, /bedGain\.gain\.value = 0\.09/, "the low rumble stays quiet under the crackle");
+    const gapMin = Number(/CRACKLE_GAP_MIN_MS = (\d+)/.exec(player)?.[1]);
+    const gapSpread = Number(/CRACKLE_GAP_SPREAD_MS = (\d+)/.exec(player)?.[1]);
+    assert.ok(gapMin + gapSpread / 4 >= 300, "crackle events average at least 300 ms apart, not a constant hiss");
+    assert.match(player, /setTimeout\(crackle, CRACKLE_GAP_MIN_MS \+ Math\.random\(\) \* Math\.random\(\) \* CRACKLE_GAP_SPREAD_MS\)/);
     assert.match(player, /silence\(themeSoundTiming\(previous\)\.fadeOut\)/, "switching off fades out");
 });
