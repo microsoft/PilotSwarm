@@ -221,33 +221,53 @@ export function intakeTextWithinCap(text: string): boolean {
 
 /**
  * What a turn attempt of orchestration 1.0.83 carries in its own `intake`
- * field (design 5.5): the bound invocation and its items' canonical texts in
- * batch order. It is never part of the prompt; the worker puts the texts
- * before whatever prompt the attempt finally sends (composeIntakePrompt).
+ * field (design 5.5; exposure protocol revision 2, section 2): the bound
+ * invocation, its items' claims and canonical texts in batch order, the
+ * attempt's id, recorded once by the orchestration for this carrying
+ * activity (the same on every delivery of it and in every recovery re-run in
+ * it; another for any other carrying activity), and `sentBefore`, true only
+ * on the invocation's own retry, whose earlier attempt possibly sent it (the
+ * attempt that takes the invocation's retry marker): an internal scheduler
+ * fact, not a credential and not evidence that a request was sent. It is
+ * never part of the prompt: the worker puts the texts before whatever prompt
+ * the attempt finally sends (composeIntakePrompt), and only once the store
+ * admitted them (intake-admission.ts).
  */
 export interface IntakeTurnField {
     invocationId: string;
-    items: Array<{ exchangeId: string; clientMessageId: string; text: string }>;
+    attemptId: string;
+    sentBefore: boolean;
+    items: Array<{ exchangeId: string; claimId: string; clientMessageId: string; text: string }>;
 }
 
 /** A turn's `intake` field, checked whole: null when absent; anything else that does not have its shape fails with its path. */
 export function parseIntakeTurnField(raw: unknown, path = "intake"): IntakeTurnField | null {
     if (raw === undefined) return null;
-    const value = intakeObject(raw, path, ["invocationId", "items"]);
+    const value = intakeObject(raw, path, ["invocationId", "attemptId", "sentBefore", "items"]);
     const invocationId = intakeId(value.invocationId, `${path}.invocationId`);
+    const attemptId = intakeId(value.attemptId, `${path}.attemptId`);
+    const sentBefore = value.sentBefore;
+    if (typeof sentBefore !== "boolean") throw new IntakeShapeError(`${path}.sentBefore`, "is not a boolean");
     const items = value.items;
     if (!Array.isArray(items) || items.length === 0 || items.length > INTAKE_MAX_HELD) {
         throw new IntakeShapeError(`${path}.items`, `is not a list of 1 to ${INTAKE_MAX_HELD} items`);
     }
+    const seen = new Set<string>();
     return {
         invocationId,
+        attemptId,
+        sentBefore,
         items: items.map((entry: unknown, index: number) => {
             const itemPath = `${path}.items[${index}]`;
-            const item = intakeObject(entry, itemPath, ["exchangeId", "clientMessageId", "text"]);
+            const item = intakeObject(entry, itemPath, ["exchangeId", "claimId", "clientMessageId", "text"]);
             const text = item.text;
             if (typeof text !== "string" || !intakeTextWithinCap(text)) throw new IntakeShapeError(`${itemPath}.text`, "is not a text within its cap");
+            const exchangeId = intakeExchangeId(item.exchangeId, `${itemPath}.exchangeId`);
+            if (seen.has(exchangeId)) throw new IntakeShapeError(`${itemPath}.exchangeId`, "names an exchange twice");
+            seen.add(exchangeId);
             return {
-                exchangeId: intakeExchangeId(item.exchangeId, `${itemPath}.exchangeId`),
+                exchangeId,
+                claimId: intakeId(item.claimId, `${itemPath}.claimId`),
                 clientMessageId: intakeClientMessageId(item.clientMessageId, `${itemPath}.clientMessageId`),
                 text,
             };

@@ -28,7 +28,7 @@ import { loadAdminScope } from "../api/src/admin-scope.js";
 import { parseAgentFqn } from "./agent-fqn.js";
 import { decideSessionControl } from "./agent-manager-tools.js";
 import type { StorageConfig } from "./storage-config.js";
-import { SESSION_STATE_MISSING_PREFIX, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type ManagedSessionConfig, type SerializableSessionConfig, type TurnResult, type OrchestrationInput, type LateSteer, type TurnEndKind, type TurnStartRecord } from "./types.js";
+import { SESSION_STATE_MISSING_PREFIX, sanitizePromptAttachmentRefs, IMAGE_ATTACHMENT_CONTENT_TYPES, ATTACHMENT_MAX_BYTES, ATTACHMENTS_MAX_TOTAL_BYTES, type AbortTurnResult, type PromptAttachmentRef, type ManagedSessionConfig, type SerializableSessionConfig, type TurnResult, type TurnOptions, type OrchestrationInput, type LateSteer, type TurnEndKind, type TurnStartRecord } from "./types.js";
 import type { ArtifactStore } from "./session-store.js";
 import type { AgentConfig } from "./agent-loader.js";
 import { systemChildAgentUUID } from "./agent-loader.js";
@@ -77,6 +77,7 @@ import { spawnWorkflowFromTool } from "./workflow/spawn.js";
 import { readWorkflowFromTool, sendWorkflowInputFromTool, updateWorkflowFromTool, type WorkflowToolHost } from "./workflow/v2/tools.js";
 import { applySessionCommandToWorkflowV2 } from "./workflow/v2/service.js";
 import { composeIntakePrompt, intakeExposedWitness, parseIntakeTurnField, type IntakeTurnField } from "./workflow/v2/intake.js";
+import { admitWorkflowIntake } from "./workflow/v2/intake-admission.js";
 import type { SpawnWorkflowToolArgs } from "./workflow/tool-spec.js";
 
 const SYSTEM_AGENT_IDS = new Set(["pilotswarm", "sweeper", "resourcemgr", "facts-manager"]);
@@ -1253,9 +1254,11 @@ export function registerActivities(
     /**
      * Test-only switches. `workflowIntakeTurns` registers orchestration
      * 1.0.83's turn activities (runTurnV5 / runTurnEpochV5), whose input may
-     * carry an invocation's `intake` field. INACTIVE: no worker passes it.
+     * carry an invocation's `intake` field; `intakeAdmissionRetryDelaysMs`
+     * replaces the in-place waits of their admission's transient retries
+     * (intake-admission.ts). INACTIVE: no worker passes them.
      */
-    testOptions?: { workflowIntakeTurns?: boolean },
+    testOptions?: { workflowIntakeTurns?: boolean; intakeAdmissionRetryDelaysMs?: readonly number[] },
 ) {
     // Shared config for every activity-layer internal PilotSwarmClient /
     // PilotSwarmManagementClient. Carries the FULL facts/CMS target (07 P3) so
@@ -1650,11 +1653,14 @@ export function registerActivities(
         let finalTurnResult: TurnResult | null = null;
         // Workflow intake (runTurnV5, design 5.5): whether this attempt issued
         // the model request that included the carried items: set only by the
-        // model session's callback right before an initial send, after every
-        // check that ends a run without one (a missing required tool, a held
+        // model session's callback right before an initial send that
+        // includes them, once the store admitted them and after every check
+        // that ends a run without a send (a missing required tool, a held
         // Stop), and never false again within the attempt (recovery re-runs).
-        // Every result this attempt produces names the invocation with it. A
-        // saved result that this attempt adopts (the preamble's
+        // An admission that refused the items (exposure protocol revision 2,
+        // section 4) is kept by its reason; the run sent its prompt without
+        // them. Every result this attempt produces names the invocation with
+        // it. A saved result that this attempt adopts (the preamble's
         // already-committed turn, or the racing winner of the commit) keeps
         // the witness it was saved with, or none: evidence of another attempt
         // is never made up from this one's; the orchestration reads a missing
@@ -1664,6 +1670,7 @@ export function registerActivities(
         // to the winner's own witness of the same invocation that says not
         // sent; the winner's response stands (review W2-WIT4).
         let intakeSent = false;
+        let intakeRefused: "exposed" | "settled" | null = null;
         let adoptedSavedResult = false;
         const withIntakeWitness = (result: TurnResult): TurnResult => {
             if (turnIntake === null) return result;
@@ -1671,7 +1678,29 @@ export function registerActivities(
                 const exposed = intakeSent ? intakeExposedWitness(result.intakeDispatch, turnIntake.invocationId) : null;
                 return exposed === null ? result : { ...result, intakeDispatch: exposed };
             }
+            if (!intakeSent && intakeRefused !== null) {
+                return { ...result, intakeDispatch: { invocationId: turnIntake.invocationId, sent: false, refused: intakeRefused } };
+            }
             return { ...result, intakeDispatch: { invocationId: turnIntake.invocationId, sent: intakeSent } };
+        };
+        // The admission of this attempt's include, for each run of it (the first and each recovery re-run): the same request,
+        // so a redelivery or a re-run of the attempt is the same attempt to the store.
+        const intakeAdmissionFor = (promptWithoutIntake: string): NonNullable<TurnOptions["intakeAdmission"]> | undefined => {
+            if (turnIntake === null) return undefined;
+            const field = turnIntake;
+            return {
+                promptWithoutIntake,
+                admit: async (signal: AbortSignal) => {
+                    const admission = await admitWorkflowIntake(catalog?.workflowStore ? catalog.workflowStore() : null, {
+                        recipientSessionId: input.sessionId, invocationId: field.invocationId, attemptId: field.attemptId,
+                        sentBefore: field.sentBefore, items: field.items,
+                    }, { signal, ...(testOptions?.intakeAdmissionRetryDelaysMs ? { delaysMs: testOptions.intakeAdmissionRetryDelaysMs } : {}) });
+                    if (admission.allowed) return "include";
+                    intakeRefused ??= admission.reason;
+                    return "omit";
+                },
+                included: () => { intakeSent = true; },
+            };
         };
 
         // ── Session turn control (runTurnV4, design 4.7) ───────────────
@@ -4585,14 +4614,18 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
             }
 
             const runTurnWithPrompt = async (targetSession: any, prompt: string) => {
-                // Workflow intake (runTurnV5, design 5.5): the carried items
-                // come before whatever prompt this attempt finally sends, after
-                // any stash or bootstrap replacement: the first run's and each
-                // recovery re-run's alike. The model session says when the
-                // request is about to be issued (review W2-WIT1).
+                // Workflow intake (runTurnV5, design 5.5; exposure protocol
+                // revision 2, section 4): the carried items come before
+                // whatever prompt this attempt finally sends, after any stash
+                // or bootstrap replacement: the first run's and each recovery
+                // re-run's alike, each admitted by the store before its send.
+                // A refused run sends that prompt without them. The model
+                // session says when a request that includes them is about to
+                // be issued (review W2-WIT1).
                 const modelPrompt = turnIntake ? composeIntakePrompt(prompt, turnIntake) : prompt;
+                const intakeAdmission = intakeAdmissionFor(prompt);
                 return await targetSession.runTurn(modelPrompt, {
-                    ...(turnIntake ? { onBeforeInitialSend: () => { intakeSent = true; } } : {}),
+                    ...(intakeAdmission ? { intakeAdmission } : {}),
                     onEvent,
                     trace: traceWarn,
                     liveTurn: liveTurnEnabled,

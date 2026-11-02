@@ -71,7 +71,7 @@
  * tests register 1.0.83 and the turn activities that carry `intake`.
  */
 import { routeWorkflowRequestActivity } from "../activity-routing.js";
-import { IntakeShapeError, WORKFLOW_INTAKE_ACTIVITIES, WORKFLOW_INTAKE_NON_RETRYABLE, intakeObject } from "../workflow/v2/intake.js";
+import { IntakeShapeError, WORKFLOW_INTAKE_ACTIVITIES, WORKFLOW_INTAKE_NON_RETRYABLE, intakeObject, type IntakeTurnField } from "../workflow/v2/intake.js";
 import {
     IntakeInvariantError,
     applyIntakeAttempt,
@@ -105,7 +105,6 @@ import {
     type IntakeClaimCall,
     type IntakeClaimResult,
     type IntakeHolderSettle,
-    type IntakeTurnPayload,
 } from "./intake-machine.js";
 import { intakeAwaitingRetry } from "./intake-state.js";
 import { flushPendingChildDigestIntoPrompt, publishStatus } from "./lifecycle.js";
@@ -208,17 +207,31 @@ function* intakeWrite(runtime: DurableSessionRuntime, activity: keyof typeof WOR
     return { answered: true, result: answer.result };
 }
 
-/** A settle list's answer names the call's items in order, each with its flag (true: written now; false: already so, a replay). */
-function checkListAnswer(raw: unknown, label: string, flag: "cancelled" | "settled", items: ReadonlyArray<{ exchangeId: string }>): void {
+/**
+ * A settle list's answer names the call's items in order, each with its flag (true: written now; false: already so, a replay).
+ * With `exposedAllowed` (an unsent invocation's cancel write; exposure protocol revision 2, section 6), an item may instead be
+ * answered `exposed: true`: its invocation was possibly seen, and its cancel was recorded as requested. Returns those items.
+ */
+function checkListAnswer(raw: unknown, label: string, flag: "cancelled" | "settled", items: ReadonlyArray<{ exchangeId: string }>,
+    exposedAllowed = false): Set<string> {
     const listed = intakeObject(raw, label, ["items"]).items;
     if (!Array.isArray(listed) || listed.length !== items.length) throw new IntakeShapeError(`${label}.items`, `is not a list of ${items.length} items`);
+    const exposed = new Set<string>();
     listed.forEach((entry: unknown, index: number) => {
-        const answered = intakeObject(entry, `${label}.items[${index}]`, ["exchangeId", flag]);
+        const path = `${label}.items[${index}]`;
+        const isExposed = exposedAllowed && typeof entry === "object" && entry !== null && Object.hasOwn(entry, "exposed");
+        const answered = intakeObject(entry, path, ["exchangeId", isExposed ? "exposed" : flag]);
         if (answered.exchangeId !== items[index].exchangeId) {
             throw new IntakeInvariantError(items[index].exchangeId, `the ${label} answer names ${String(answered.exchangeId)} in its place`);
         }
-        if (typeof answered[flag] !== "boolean") throw new IntakeShapeError(`${label}.items[${index}].${flag}`, "is not a boolean");
+        if (isExposed) {
+            if (answered.exposed !== true) throw new IntakeShapeError(`${path}.exposed`, "is not true");
+            exposed.add(items[index].exchangeId);
+        } else if (typeof answered[flag] !== "boolean") {
+            throw new IntakeShapeError(`${path}.${flag}`, "is not a boolean");
+        }
     });
+    return exposed;
 }
 
 // ─── Failing visibly ─────────────────────────────────────────
@@ -449,10 +462,12 @@ function* cancelInvocation(runtime: DurableSessionRuntime): Generator<any, void,
         state.intake = applyIntakeInvocationCancelFailure(state.intake, call, failedAt).state;
         return;
     }
-    checkListAnswer(written.result, op, "settled", call.items);
-    state.intake = applyIntakeInvocationCancelled(state.intake, call);
+    const exposed = checkListAnswer(written.result, op, "settled", call.items, call.kind === "unsent");
+    state.intake = applyIntakeInvocationCancelled(state.intake, call, exposed);
     yield* recordIntake(runtime, {
         outcome: call.kind === "unsent" ? "cancelled" : "cancel_requested", source: "invocation", invocationId: call.invocationId, items: call.items,
+        // Exposure protocol revision 2: these were possibly seen; their cancels were recorded as requested, and the invocation ends interrupted.
+        ...(exposed.size > 0 ? { exposed: [...exposed] } : {}),
     });
 }
 
@@ -468,7 +483,12 @@ function* endInvocation(runtime: DurableSessionRuntime): Generator<any, void, an
         state.intake = applyIntakeEndFailure(state.intake, call, failedAt).state;
         return;
     }
-    state.intake = applyIntakeEnded(state.intake, call, written.result).state;
+    const step = applyIntakeEnded(state.intake, call, written.result);
+    state.intake = step.state;
+    if (step.decision.applied !== call.outcome) {
+        // Exposure protocol revision 2, section 6: the items were possibly seen, so the store applied interrupted.
+        yield* recordIntake(runtime, { outcome: "end_applied", invocationId: call.invocationId, requested: call.outcome, applied: step.decision.applied });
+    }
 }
 
 // ─── Turns: forming, carrying and the attempt's outcome (design 5.5) ──
@@ -497,11 +517,11 @@ function* formAndBind(runtime: DurableSessionRuntime): Generator<any, void, any>
  * W2-WIT3, intakeReusesThrownTurnKey). Returns the payload for the turn's
  * `intake` field, or null when the attempt carries none.
  */
-export function* intakeBeforeAttempt(runtime: DurableSessionRuntime): Generator<any, IntakeTurnPayload | null, any> {
+export function* intakeBeforeAttempt(runtime: DurableSessionRuntime): Generator<any, IntakeTurnField | null, any> {
     return yield* guarded(runtime, beforeAttempt(runtime));
 }
 
-function* beforeAttempt(runtime: DurableSessionRuntime): Generator<any, IntakeTurnPayload | null, any> {
+function* beforeAttempt(runtime: DurableSessionRuntime): Generator<any, IntakeTurnField | null, any> {
     const { state } = runtime;
     const stimulus = runtime.intakeStimulus ?? "other";
     const pendingDispatch = runtime.intakePendingDispatch === true;
@@ -546,10 +566,21 @@ function* beforeAttempt(runtime: DurableSessionRuntime): Generator<any, IntakeTu
         runtime.intakeAttempt = null;
         return null;
     }
+    // Exposure protocol revision 2, section 2: the attempt's id, recorded once for this carrying activity, so that every delivery
+    // of it and every recovery re-run in it is the same attempt to the store's admission; and `sentBefore`, true only on the
+    // invocation's own retry, which takes its marker. A sent invocation rides nothing else (carryIntakeInvocation) and a marker is
+    // set only for a sent invocation (noteAttempt); any other pairing is a broken invariant.
+    const sentBefore = start.kind === "retry";
+    if (sentBefore !== state.intake.invocation?.sent) {
+        throw new IntakeInvariantError(null, sentBefore
+            ? `the retry marker names invocation ${carried.carry.invocationId}, which was never sent`
+            : `invocation ${carried.carry.invocationId} was sent, but an attempt that is not its retry carries it`);
+    }
+    const attemptId: string = yield runtime.ctx.newGuid();
     runtime.intakeAttempt = { invocationId: carried.carry.invocationId, dispatch: null };
     // This attempt answers every item claimed so far: one attempt per arrival (5.5).
     state.intakeArrivalPending = false;
-    return carried.carry;
+    return { invocationId: carried.carry.invocationId, attemptId, sentBefore, items: carried.carry.items };
 }
 
 /** The attempt that would carry the invocation threw (design 5.5): it possibly sent it. Its turn's handling then notes how the turn went. */

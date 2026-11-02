@@ -104,21 +104,26 @@ type CarriedSteersConsumedCarrier = {
 
 /**
  * Workflow intake (1.0.83, runTurnV5, INACTIVE; design
- * workflow-durable-intake.md 5.5): the dispatch witness of the attempt that
- * carried an invocation, on every result of that attempt. `sent` is true
- * only once the model request that included its items was about to be
- * issued by the run whose result this is. A saved result that a later
- * attempt adopts keeps the witness it was saved with, or none, which the
+ * workflow-durable-intake.md 5.5, exposure protocol revision 2): the
+ * dispatch witness of the attempt that carried an invocation, on every
+ * result of that attempt. `sent` is true only once the model request that
+ * included its items, after the store admitted them, was about to be issued
+ * by the run whose result this is. A saved result that a later attempt
+ * adopts keeps the witness it was saved with, or none, which the
  * orchestration reads as possibly sent. `exposed` (only with `sent: false`)
  * is added to an adopted witness of the same invocation by an attempt that
  * lost a racing commit after its own request had included the items: the
  * winner's response stands, and the items were possibly seen (review
- * W2-WIT4).
+ * W2-WIT4). `refused` (only with `sent: false`) says the store refused the
+ * items to this attempt, which ran without them: `exposed`, they were
+ * possibly seen under another attempt; `settled`, the invocation had ended
+ * or an item was cancelled, which is never evidence of exposure.
  */
 export interface IntakeDispatchWitness {
     invocationId: string;
     sent: boolean;
     exposed?: true;
+    refused?: "exposed" | "settled";
 }
 
 type IntakeDispatchCarrier = {
@@ -187,13 +192,26 @@ export interface TurnOptions {
      */
     turnControl?: import("./turn-control.js").TurnControlBinding;
     /**
-     * Workflow intake (runTurnV5, INACTIVE): called once per run, right
-     * before its initial prompt is sent to the model, after every check that
-     * ends the run without a send (a missing required tool, a held Stop). The
-     * worker's dispatch witness says sent only once it was called. Absent on
-     * every other turn.
+     * Workflow intake (runTurnV5, INACTIVE; exposure protocol revision 2,
+     * section 4): the carried items' admission. After every check that ends
+     * a run without a send (a missing required tool, a held Stop), the run
+     * awaits `admit`, raced with its guards (the turn timeout, the inactivity
+     * watchdog) and with a Stop, an abort or a forced settle, then checks
+     * again, immediately before its initial send, that no Stop is held or
+     * applied, it was not aborted and its send gate is not closed. On
+     * `include` it calls `included`, then sends its prompt, which includes
+     * the items; on `omit` it sends `promptWithoutIntake`. A run that ends
+     * before the answer, or whose admission fails, sends nothing, and a late
+     * answer sends nothing either; `admit`'s signal is aborted once the run no
+     * longer waits for it. A failure whose `retryable` is false ends the run
+     * with a non-retryable error. Absent on every other turn, whose send is
+     * unchanged.
      */
-    onBeforeInitialSend?: () => void;
+    intakeAdmission?: {
+        admit: (signal: AbortSignal) => Promise<"include" | "omit">;
+        included: () => void;
+        promptWithoutIntake: string;
+    };
     /** Model summary text for the list_available_models tool. */
     modelSummary?: string;
     /** Internal: startup/bootstrap turn that should not be recorded as a user message. */

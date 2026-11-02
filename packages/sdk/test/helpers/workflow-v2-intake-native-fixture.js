@@ -14,11 +14,12 @@
  *   recipient session (intakeActivityFixture).
  *
  * Test doubles (TEST_DOUBLES, also in every evidence record): the model
- * session is scripted by the test (it calls the intake's send callback when
- * it "sends"); the session manager is a fake that hands out that model
- * session; a workspace provider, when a case gives one, is the fake
- * provider; the CMS catalog's provider budget store is hidden (the budget
- * gate is not under test here). Everything else listed above is real.
+ * session is scripted by the test (it asks the store's admission and calls
+ * the include callback when it "sends", as ManagedSession does); the session
+ * manager is a fake that hands out that model session; a workspace provider,
+ * when a case gives one, is the fake provider; the CMS catalog's provider
+ * budget store is hidden (the budget gate is not under test here). Everything
+ * else listed above is real, the admission's store included.
  *
  * Evidence: a failure (a boundary that is not reached, an assertion after
  * it, a fixture setup that fails once its stores exist) records, before the
@@ -56,8 +57,8 @@ const TAGS = [AGENT_HANDOFF_CAPABILITY, WORKSPACE_CAPABILITY, TURN_CONTROL_CAPAB
 export const TEST_DOUBLES = Object.freeze({
     real: ["orchestration 1.0.83 (registered by this test only)", "duroxide native runtime and PostgreSQL provider",
         "worker activities (registerActivities, runTurnV5 by its test option)", "intake activities and workflow store", "CMS catalog"],
-    doubles: ["model session: scripted by the case", "session manager: fake", "workspace provider: fake, when the case gives one",
-        "CMS provider budget store: hidden"],
+    doubles: ["model session: scripted by the case (it asks the real store's admission when it sends)", "session manager: fake",
+        "workspace provider: fake, when the case gives one", "CMS provider budget store: hidden"],
 });
 const EVIDENCE_LIMIT = 6_000;
 
@@ -104,9 +105,23 @@ export function eventText(event) {
 }
 
 /**
+ * As ManagedSession does before its initial send (exposure protocol revision
+ * 2, section 4): the store's admission of the carried items, then, when
+ * admitted, the include callback. Returns what the run sends ("include",
+ * "omit", or "plain" when it carries nothing); a failed admission rejects.
+ */
+export async function admitAndSend(opts) {
+    if (!opts?.intakeAdmission) return "plain";
+    const decision = await opts.intakeAdmission.admit(new AbortController().signal);
+    if (decision === "include") opts.intakeAdmission.included();
+    return decision;
+}
+
+/**
  * A model session scripted by `script(call, prompt, opts)`: the n-th call's
- * result. The script calls `opts.onBeforeInitialSend()` when its run "sends",
- * as ManagedSession does right before its initial send.
+ * result. The script calls `admitAndSend(opts)` when its run "sends", as
+ * ManagedSession admits and includes the items right before its initial
+ * send; a run that ends before its send calls nothing.
  */
 function scriptedModelSession(script) {
     const prompts = [];
@@ -219,7 +234,7 @@ export async function intakeNativeFixture(env, script, options = {}) {
             for (const executionId of executions) all.push(await client.readExecutionHistory(instanceId, executionId));
             return all;
         };
-        /** The recipient's intake rows, invocation rows and canonical transcript records (bounded), for evidence. */
+        /** The recipient's intake rows, invocation rows, exposure records and canonical transcript records (bounded), for evidence. */
         const persisted = async () => {
             const reads = await Promise.allSettled([
                 intake.q(`SELECT row_to_json(i)::text AS row FROM SCHEMA.workflow_intake i WHERE recipient_session_id = $1 ORDER BY exchange_id`,
@@ -227,15 +242,19 @@ export async function intakeNativeFixture(env, script, options = {}) {
                 intake.q(`SELECT row_to_json(v)::text AS row FROM SCHEMA.workflow_intake_invocations v WHERE recipient_session_id = $1
                     ORDER BY invocation_id`, [sessionId]),
                 intake.catalog.getSessionEvents(sessionId, 0, 1000),
+                intake.q(`SELECT row_to_json(x)::text AS row FROM SCHEMA.workflow_intake_exposures x WHERE recipient_session_id = $1
+                    ORDER BY invocation_id`, [sessionId]),
             ]);
             const records = reads[2].status === "fulfilled"
                 ? { ok: true, value: reads[2].value
                     .filter(event => Array.isArray(event.data?.clientMessageIds) || String(event.eventType).startsWith("session.workflow_intake"))
                     .map(event => ({ seq: event.seq, eventType: event.eventType, data: bounded(event.data, 2_000) })) }
                 : readOutcome(reads[2]);
+            const rowsOf = read => (read.status === "fulfilled" ? { ok: true, value: read.value.map(row => JSON.parse(row.row)) } : readOutcome(read));
             return {
-                intakeRows: reads[0].status === "fulfilled" ? { ok: true, value: reads[0].value.map(row => JSON.parse(row.row)) } : readOutcome(reads[0]),
-                invocationRows: reads[1].status === "fulfilled" ? { ok: true, value: reads[1].value.map(row => JSON.parse(row.row)) } : readOutcome(reads[1]),
+                intakeRows: rowsOf(reads[0]),
+                invocationRows: rowsOf(reads[1]),
+                exposureRows: rowsOf(reads[3]),
                 transcriptRecords: records,
             };
         };
@@ -322,6 +341,8 @@ export async function intakeNativeFixture(env, script, options = {}) {
                     intakeRows: rows.intakeRows.ok ? rows.intakeRows.value.map(row => ({ exchange_id: row.exchange_id, state: row.state,
                         processing: row.processing, invocation_id: row.invocation_id, cancel_requested: row.cancel_requested })) : rows.intakeRows,
                     invocations: rows.invocationRows.ok ? rows.invocationRows.value.length : rows.invocationRows,
+                    exposures: rows.exposureRows.ok
+                        ? rows.exposureRows.value.map(row => ({ invocation_id: row.invocation_id, attempt_id: row.attempt_id })) : rows.exposureRows,
                     transcriptRecords: rows.transcriptRecords.ok ? rows.transcriptRecords.value.length : rows.transcriptRecords,
                 }));
             } catch (error) {

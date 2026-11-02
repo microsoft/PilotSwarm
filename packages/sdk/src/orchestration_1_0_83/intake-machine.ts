@@ -793,10 +793,15 @@ export type IntakeAttemptStart =
     | { kind: "retry"; invocationId: string | null }
     | { kind: "new"; stimulus: IntakeStimulus };
 
-/** What a carrying attempt sends in its own `intake` field, never inside the prompt (design 5.5). */
+/**
+ * What a carrying attempt sends in its own `intake` field, never inside the
+ * prompt (design 5.5): the invocation and its items, each with its claim, in
+ * batch order. The attempt's id and its retry flag are added by the attempt
+ * that carries it (exposure protocol revision 2, section 2; intake-wiring.ts).
+ */
 export interface IntakeTurnPayload {
     invocationId: string;
-    items: Array<{ exchangeId: string; clientMessageId: string; text: string }>;
+    items: Array<{ exchangeId: string; claimId: string; clientMessageId: string; text: string }>;
 }
 
 /** The payload of a bound invocation, its items in batch order. */
@@ -808,7 +813,7 @@ export function intakeTurnPayload(invocation: IntakeInvocation): IntakeTurnPaylo
         invocationId: invocation.invocationId,
         items: invocation.items.map(item => {
             if (item.text === null) throw new IntakeInvariantError(item.exchangeId, "it has no bound text");
-            return { exchangeId: item.exchangeId, clientMessageId: item.clientMessageId, text: item.text };
+            return { exchangeId: item.exchangeId, claimId: item.claimId, clientMessageId: item.clientMessageId, text: item.text };
         }),
     };
 }
@@ -870,16 +875,31 @@ export function intakeOwnTurnStimulus(state: IntakeState, pendingArrivals: numbe
  * An attempt's `intakeDispatch` witness, or null when it returned none.
  * `exposed`, present only as `true` beside `sent: false`, says the items were
  * possibly seen by another request of the same attempt's turn, though not by
- * the run whose result this is (review W2-WIT4).
+ * the run whose result this is (review W2-WIT4). `refused`, present only
+ * beside `sent: false` and never with `exposed`, says the store refused the
+ * items to the attempt, which ran without them (exposure protocol revision
+ * 2, section 4): `exposed`, they were possibly seen under another attempt;
+ * `settled`, the attempt's payload was stale.
  */
-export function intakeDispatchWitness(raw: unknown): { invocationId: string; sent: boolean; exposed: boolean } | null {
+export function intakeDispatchWitness(raw: unknown)
+    : { invocationId: string; sent: boolean; exposed: boolean; refused: "exposed" | "settled" | null } | null {
     if (raw === undefined || raw === null) return null;
     const exposed = typeof raw === "object" && raw !== null && Object.hasOwn(raw, "exposed");
-    const value = intakeObject(raw, "intakeDispatch", exposed ? ["invocationId", "sent", "exposed"] : ["invocationId", "sent"]);
+    const refused = typeof raw === "object" && raw !== null && Object.hasOwn(raw, "refused");
+    if (exposed && refused) throw new IntakeShapeError("intakeDispatch", "says both exposed and refused");
+    const value = intakeObject(raw, "intakeDispatch",
+        exposed ? ["invocationId", "sent", "exposed"] : refused ? ["invocationId", "sent", "refused"] : ["invocationId", "sent"]);
     const sent = value.sent;
     if (typeof sent !== "boolean") throw new IntakeShapeError("intakeDispatch.sent", "is not a boolean");
     if (exposed && (value.exposed !== true || sent)) throw new IntakeShapeError("intakeDispatch.exposed", "is not true beside sent false");
-    return { invocationId: intakeId(value.invocationId, "intakeDispatch.invocationId"), sent, exposed };
+    const reason = value.refused;
+    if (refused && ((reason !== "exposed" && reason !== "settled") || sent)) {
+        throw new IntakeShapeError("intakeDispatch.refused", "is not exposed or settled beside sent false");
+    }
+    return {
+        invocationId: intakeId(value.invocationId, "intakeDispatch.invocationId"), sent, exposed,
+        refused: refused ? reason as "exposed" | "settled" : null,
+    };
 }
 
 /** An attempt that carried no invocation returns no witness: one would name another invocation, a broken invariant (design 5.5). */
@@ -953,6 +973,13 @@ function attemptStep(event: IntakeAttemptEvent, sent: boolean, thisAttemptSent: 
  * invocation no attempt sent. An end records its outcome for the end
  * settlement (intakeEndCall); a witness for another invocation is a broken
  * invariant, and nothing is settled.
+ *
+ * A store refusal (exposure protocol revision 2, section 5): `exposed`, the
+ * items were possibly seen under another attempt, so the invocation is sent
+ * and ends now, interrupted, or failed_indeterminate after a failure; it is
+ * never parked or put on a retry, and the turn goes on by its own rules
+ * without it. `settled` cannot be the answer to the attempt that carries a
+ * bound invocation not ended: a broken invariant, and nothing is settled.
  */
 export function applyIntakeAttempt(state: IntakeState, invocationId: string, dispatch: IntakeAttemptDispatch, event: IntakeAttemptEvent)
     : IntakeStep<IntakeAttemptNext> {
@@ -961,21 +988,26 @@ export function applyIntakeAttempt(state: IntakeState, invocationId: string, dis
         throw new IntakeInvariantError(null, `an attempt reported invocation ${invocationId}, which no attempt may carry now`);
     }
     checkAttempt(dispatch, event);
-    let witness: { invocationId: string; sent: boolean; exposed: boolean } | null = null;
+    let witness: ReturnType<typeof intakeDispatchWitness> = null;
     let possiblySent = false;
     if (dispatch.ran) {
         if (dispatch.threw) {
             possiblySent = true;
         } else {
             witness = intakeDispatchWitness(dispatch.witness);
-            possiblySent = witness === null || witness.sent || witness.exposed;
+            possiblySent = witness === null || witness.sent || witness.exposed || witness.refused === "exposed";
         }
     }
     if (witness !== null && witness.invocationId !== invocationId) {
         throw new IntakeInvariantError(null, `the attempt that carried invocation ${invocationId} returned a witness for ${witness.invocationId}`);
     }
+    if (witness?.refused === "settled") {
+        throw new IntakeInvariantError(null, `the store refused invocation ${invocationId} to the attempt that carried it as settled, but it is bound and not ended`);
+    }
     const sent = invocation.sent || possiblySent;
-    const step = attemptStep(event, sent, witness !== null && witness.sent);
+    const step: IntakeAttemptNext = witness?.refused === "exposed"
+        ? { next: "end", outcome: event.kind === "failed" ? "failed_indeterminate" : "interrupted" }
+        : attemptStep(event, sent, witness !== null && witness.sent);
     let next: IntakeInvocation;
     if (step.next === "end") next = { ...invocation, sent, parked: null, settle: { outcome: step.outcome, retry: null } };
     else if (step.next === "parked") next = { ...invocation, sent, parked: step.cause };
@@ -1047,19 +1079,35 @@ function answeredEnd(state: IntakeState, call: IntakeEndCall): IntakeInvocation 
  * is kept as the decision, and the end stays pending, made again after that
  * write with the item's flag set, which the store answers as the same end
  * (design 5.2); it is never refused or lost (review of 813de112).
+ *
+ * The answer names an `outcome` only when the store applied another one
+ * (exposure protocol revision 2, section 6): the items were possibly seen,
+ * so a requested not_dispatched was applied interrupted. The call is checked
+ * first, as it was made; then only that one change is accepted, and the
+ * outcome applied is the one kept (the invocation possibly sent): a later
+ * cancel is then recorded as requested, and the end made again names it.
  */
 export function applyIntakeEnded(state: IntakeState, call: IntakeEndCall, raw: unknown)
-    : IntakeStep<{ kind: "ended"; ended: boolean } | { kind: "end_after_cancel"; ended: boolean }> {
+    : IntakeStep<{ kind: "ended" | "end_after_cancel"; ended: boolean; applied: IntakeOutcome }> {
     const invocation = answeredEnd(state, call);
-    const value = intakeObject(raw, "end", ["ended"]);
+    const coerced = typeof raw === "object" && raw !== null && Object.hasOwn(raw, "outcome");
+    const value = intakeObject(raw, "end", coerced ? ["ended", "outcome"] : ["ended"]);
     if (typeof value.ended !== "boolean") throw new IntakeShapeError("end.ended", "is not a boolean");
+    let applied: IntakeOutcome = call.outcome;
+    if (coerced) {
+        if (value.outcome !== "interrupted" || call.outcome !== "not_dispatched") {
+            throw new IntakeInvariantError(null,
+                `the end of invocation ${call.invocationId} asked for ${call.outcome}, but the store applied ${String(value.outcome)}`);
+        }
+        applied = "interrupted";
+    }
     if (invocation.cancelWrite !== null) {
         return {
-            state: withInvocation(state, { ...invocation, settle: { outcome: invocation.settle.outcome, retry: null } }),
-            decision: { kind: "end_after_cancel", ended: value.ended },
+            state: withInvocation(state, { ...invocation, sent: invocation.sent || coerced, settle: { outcome: applied, retry: null } }),
+            decision: { kind: "end_after_cancel", ended: value.ended, applied },
         };
     }
-    return { state: withInvocation(state, null), decision: { kind: "ended", ended: value.ended } };
+    return { state: withInvocation(state, null), decision: { kind: "ended", ended: value.ended, applied } };
 }
 
 /**
@@ -1136,16 +1184,34 @@ function answeredCancel(state: IntakeState, call: IntakeInvocationCancelCall)
  * with their sizes, in the same step; when none is left the invocation ends
  * not_dispatched with an empty batch, whose end names no exchange. Sent: the
  * cancels are recorded; the items keep their flags for the end to name.
+ *
+ * `exposed` (exposure protocol revision 2, sections 5 and 6) names the items
+ * of an unsent write that the store found possibly seen under another
+ * attempt: it recorded their cancels as requested. They keep their flags;
+ * the others named leave the batch as before; the invocation is then
+ * possibly sent and ends interrupted, never carried or parked again. Only
+ * an unsent write's named item may be answered so.
  */
-export function applyIntakeInvocationCancelled(state: IntakeState, call: IntakeInvocationCancelCall): IntakeState {
+export function applyIntakeInvocationCancelled(state: IntakeState, call: IntakeInvocationCancelCall, exposed: ReadonlySet<string> = new Set())
+    : IntakeState {
     const invocation = answeredCancel(state, call);
     const written = new Set(call.items.map(item => item.exchangeId));
+    for (const exchangeId of exposed) {
+        if (call.kind !== "unsent" || !written.has(exchangeId)) {
+            throw new IntakeInvariantError(exchangeId, `its cancel was answered as possibly seen, but invocation ${invocation.invocationId}'s write did not cancel it unsent`);
+        }
+    }
     const cancelWrite: IntakeInvocation["cancelWrite"] = invocation.items.some(item => item.cancelRequested && !written.has(item.exchangeId))
         ? { retry: null } : null;
     if (invocation.sent) return withInvocation(state, { ...invocation, cancelWrite });
-    const keep = invocation.items.map(item => !written.has(item.exchangeId));
+    const keep = invocation.items.map(item => !written.has(item.exchangeId) || exposed.has(item.exchangeId));
     const items = invocation.items.filter((_, index) => keep[index]);
     const itemBytes = invocation.itemBytes.filter((_, index) => keep[index]);
+    if (exposed.size > 0) {
+        return withInvocation(state, {
+            ...invocation, items, itemBytes, sent: true, parked: null, cancelWrite, settle: { outcome: "interrupted", retry: null },
+        });
+    }
     const next: IntakeInvocation = items.length > 0
         ? { ...invocation, items, itemBytes, cancelWrite }
         : { ...invocation, items, itemBytes, cancelWrite: null, parked: null, settle: { outcome: "not_dispatched", retry: null } };

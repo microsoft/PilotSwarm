@@ -28,6 +28,11 @@
  *   any model run, and the invocation is parked for the gate; a person's
  *   message ends the gate's wait, and its turn, past the gate this time,
  *   carries the same invocation to completion.
+ * - Exposure protocol revision 2: each carrying turn's `intake` field has the
+ *   batch with its claims, an attempt id recorded for that activity, and
+ *   `sentBefore` only on the invocation's own retry; the real store admits
+ *   an attempt's include before its send (its exposure record names the
+ *   first admitted attempt), and a run that never asks leaves none.
  *
  * These cover the orchestration's own boundaries natively; they are not an
  * activation, a mixed-version, a crash-redelivery or a model qualification.
@@ -38,7 +43,7 @@ import path from "node:path";
 import { describe, it, expect, vi } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { createFakeWorkspaceProvider } from "../helpers/fake-workspace-provider.mjs";
-import { intakeNativeCase, scheduled, eventText, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-v2-intake-native-fixture.js";
+import { admitAndSend, intakeNativeCase, scheduled, eventText, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-v2-intake-native-fixture.js";
 import { WORKFLOW_REQUEST_CAPABILITY } from "../../src/activity-routing.ts";
 import { WORKFLOW_INTAKE_ACTIVITIES } from "../../src/workflow/v2/intake.ts";
 import { INTERNAL_SYSTEM_TURN_PROMPT } from "../../src/orchestration_1_0_83/state.ts";
@@ -46,8 +51,9 @@ import { INTERNAL_SYSTEM_TURN_PROMPT } from "../../src/orchestration_1_0_83/stat
 const getEnv = useSuiteEnv(import.meta.url);
 const WORKFLOW_SENDER = { kind: "system", display: "workflow message" };
 
-const sends = result => (_call, _prompt, opts) => {
-    opts.onBeforeInitialSend?.();
+/** A run that sends: the real store admits the carried items first (exposure r2), as ManagedSession asks before its send. */
+const sends = result => async (_call, _prompt, opts) => {
+    expect(await admitAndSend(opts)).not.toBe("omit");
     return { events: [], ...result };
 };
 const callsOf = (h, name) => h.calls.filter(call => call.name === name
@@ -79,12 +85,17 @@ describe("workflow v2 durable intake: orchestration 1.0.83 on the native runtime
             expect(h.prompts).toHaveLength(1);
             expect(h.prompts[0].startsWith(`${expected.text}\n\n`)).toBe(true);
             expect(h.prompts[0]).toContain(INTERNAL_SYSTEM_TURN_PROMPT);
-            // The turn ran as runTurnV5 under the workflow-request tag with the bound invocation in its own field.
+            // The turn ran as runTurnV5 under the workflow-request tag with the bound invocation in its own field: the batch with
+            // its claims, the attempt's recorded id, and no retry flag (exposure r2, section 2).
             const turns = callsOf(h, "runTurnV5");
             expect(turns.map(turn => turn.tag)).toEqual([WORKFLOW_REQUEST_CAPABILITY]);
             expect(turns[0].input.intake).toEqual({
-                invocationId: row.invocationId, items: [{ exchangeId: input.envelope.exchangeId, clientMessageId: expected.clientMessageId, text: expected.text }],
+                invocationId: row.invocationId, attemptId: expect.any(String), sentBefore: false,
+                items: [{ exchangeId: input.envelope.exchangeId, claimId: row.claimId, clientMessageId: expected.clientMessageId, text: expected.text }],
             });
+            // The store admitted the include before the send: its exposure record names this attempt.
+            expect(await h.store.readWorkflowIntakeExposure(row.invocationId))
+                .toMatchObject({ invocationId: row.invocationId, recipientSessionId: h.sessionId, attemptId: turns[0].input.intake.attemptId });
             expect(h.calls.some(call => /^runTurn(2|V3|V4|EpochV4)?$/.test(call.name))).toBe(false);
             // The store writes, each under the workflow-request tag: the claim, the bind, then the end.
             expect(callsOf(h, WORKFLOW_INTAKE_ACTIVITIES.claim).map(call => call.tag)).toEqual([WORKFLOW_REQUEST_CAPABILITY]);
@@ -112,8 +123,8 @@ describe("workflow v2 durable intake: orchestration 1.0.83 on the native runtime
     });
 
     it("an attempt that sends and fails retries across a continue-as-new carrying the marker; the retry carries the same invocation to completion, recorded once", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
-        await intakeNativeCase(getEnv(), "error retry across continue-as-new", (call, _prompt, opts) => {
-            opts.onBeforeInitialSend?.();
+        await intakeNativeCase(getEnv(), "error retry across continue-as-new", async (call, _prompt, opts) => {
+            expect(await admitAndSend(opts)).toBe("include");
             return call === 1 ? { type: "error", message: "the model call failed", events: [] } : { type: "completed", content: "noted", events: [] };
         }, {}, async h => {
             const input = await h.send(1);
@@ -133,6 +144,12 @@ describe("workflow v2 durable intake: orchestration 1.0.83 on the native runtime
             for (const prompt of h.prompts) expect(prompt.startsWith(`${expected.text}\n\n`)).toBe(true);
             const turns = callsOf(h, "runTurnV5");
             expect(turns.map(turn => [turn.input.intake.invocationId, turn.input.retryCount ?? 0])).toEqual([[row.invocationId, 0], [row.invocationId, 1]]);
+            // Exposure r2: each carrying activity has its own recorded attempt id; only the retry, which took the marker, says
+            // sentBefore. The first attempt's admission recorded the exposure; the retry was admitted as the invocation's own retry.
+            const [firstAttempt, retryAttempt] = turns.map(turn => turn.input.intake);
+            expect([firstAttempt.sentBefore, retryAttempt.sentBefore]).toEqual([false, true]);
+            expect(retryAttempt.attemptId).not.toBe(firstAttempt.attemptId);
+            expect(await h.store.readWorkflowIntakeExposure(row.invocationId)).toMatchObject({ attemptId: firstAttempt.attemptId });
             // One bind; one end, completed.
             expect(callsOf(h, WORKFLOW_INTAKE_ACTIVITIES.settle).map(call => [call.input.op, call.input.outcome ?? null])).toEqual([
                 ["bind", null], ["end", "completed"],
@@ -155,7 +172,7 @@ describe("workflow v2 durable intake: orchestration 1.0.83 on the native runtime
     });
 
     it("a run that ends before its send leaves the invocation not dispatched, and the store settles it so", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
-        // As ManagedSession answers a held Stop: before its send, so without the intake's callback.
+        // As ManagedSession answers a held Stop: before its send, so without asking the admission or including the items.
         await intakeNativeCase(getEnv(), "run ends before its send", () => ({ type: "stopped", reason: "Stopped by user", events: [] }), {}, async h => {
             const input = await h.send(1);
             await h.start();
@@ -169,6 +186,9 @@ describe("workflow v2 durable intake: orchestration 1.0.83 on the native runtime
             expect(callsOf(h, WORKFLOW_INTAKE_ACTIVITIES.settle).map(call => [call.input.op, call.input.outcome ?? null])).toEqual([
                 ["bind", null], ["end", "not_dispatched"],
             ]);
+            // The run never asked the admission: no exposure is recorded, and the end stands as asked.
+            expect(await h.store.readWorkflowIntakeExposure(row.invocationId)).toBeNull();
+            expect(callsOf(h, WORKFLOW_INTAKE_ACTIVITIES.settle)[1].result).toEqual({ ok: true, result: { ended: true } });
         });
     });
 
@@ -208,6 +228,10 @@ describe("workflow v2 durable intake: orchestration 1.0.83 on the native runtime
                 expect(callsOf(h, WORKFLOW_INTAKE_ACTIVITIES.settle).map(call => [call.input.op, call.input.outcome ?? null])).toEqual([
                     ["bind", null], ["end", "completed"],
                 ]);
+                // Exposure r2: the refused attempt never asked the admission; the message's attempt, with its own id, was admitted.
+                expect(turns[1].input.intake.attemptId).not.toBe(turns[0].input.intake.attemptId);
+                expect(turns.map(turn => turn.input.intake.sentBefore)).toEqual([false, false]);
+                expect(await h.store.readWorkflowIntakeExposure(invocationId)).toMatchObject({ attemptId: turns[1].input.intake.attemptId });
             });
         } finally {
             fs.rmSync(root, { recursive: true, force: true });

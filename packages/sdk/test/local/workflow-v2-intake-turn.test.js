@@ -26,22 +26,39 @@
  *   ignores the field and passes no callback.
  * - Decision A1: a closed budget or workspace gate refuses the attempt
  *   before turn start and any send, and its witness says not sent.
+ * - Exposure protocol revision 2, section 4: before a run's initial send the
+ *   store admits the carried items (exposeWorkflowIntake), asked with the
+ *   activity's own session, the field's attempt id and retry flag, and each
+ *   item's claim with the hash of the exact text the run would include. An
+ *   admitted run includes them and says sent; a refused one sends its prompt
+ *   without them, and its witness says refused (exposed or settled), never
+ *   sent. A transient failure is asked again in place with the same request
+ *   (a lost COMMIT answer is reconfirmed); one that runs out, an unknown
+ *   failure or a worker without a workflow store ends the run, retryable,
+ *   with nothing sent; one no retry can fix ends it not retryable. Every
+ *   recovery re-run of the attempt is asked again as the same attempt.
+ * - ManagedSession awaits the admission against the run's guards and its
+ *   Stop, abort or forced settle, and checks again before its send: a Stop,
+ *   an abort, a forced settle, a held Stop, the turn timeout or the
+ *   inactivity watchdog while the answer is pending sends nothing, then or
+ *   when the answer comes later; a failed admission sends nothing.
  *
- * The activity runs with a fake session manager, model session and catalog;
- * the adoption cases use a real filesystem snapshot store, and the send
- * callback is checked on a real ManagedSession over a fake Copilot session.
+ * The activity runs with a fake session manager, model session and catalog
+ * (its workflow store's admission a fake); the adoption cases use a real
+ * filesystem snapshot store, and the admission and send are checked on a
+ * real ManagedSession over a fake Copilot session.
  */
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeRunTurnHarness } from "../helpers/run-turn-activity-harness.mjs";
 import { createFakeWorkspaceProvider } from "../helpers/fake-workspace-provider.mjs";
 import { makeSessionLayout } from "../helpers/snapshot-conformance.js";
 import { FilesystemSessionStore } from "../../src/session-store.ts";
 import { registerActivities } from "../../src/session-proxy.ts";
-import { ManagedSession } from "../../src/managed-session.js";
+import { INTAKE_ENDED_BEFORE_SEND_MESSAGE, ManagedSession, TURN_INACTIVITY_ERROR_MARKER } from "../../src/managed-session.js";
 import { LiveTurnControl } from "../../src/turn-control.js";
 
 const roots = [];
@@ -54,8 +71,36 @@ afterEach(() => {
 const TEXT = "[SYSTEM: A workflow sent you a typed message.]\n{\"n\":1}";
 const INTAKE = {
     invocationId: "inv-1",
-    items: [{ exchangeId: `nx-${"1".repeat(40)}`, clientMessageId: `workflow:wf:run:send:nx-${"1".repeat(40)}`, text: TEXT }],
+    attemptId: "att-1",
+    sentBefore: false,
+    items: [{ exchangeId: `nx-${"1".repeat(40)}`, claimId: "claim-1", clientMessageId: `workflow:wf:run:send:nx-${"1".repeat(40)}`, text: TEXT }],
 };
+/** The admission a run of INTAKE's attempt asks of the store for session `sessionId` (exposure r2, section 3). */
+const admissionOf = (sessionId, field = INTAKE) => ({
+    recipientSessionId: sessionId, invocationId: field.invocationId, attemptId: field.attemptId, sentBefore: field.sentBefore,
+    items: field.items.map((item) => ({ exchangeId: item.exchangeId, claimId: item.claimId, textSha256: createHash("sha256").update(item.text, "utf8").digest("hex") })),
+});
+/** A transient store failure (a serialization failure), retried in place; and one no retry can fix (a division by zero). */
+const transient = () => Object.assign(new Error("could not serialize access due to concurrent update"), { code: "40001" });
+const deterministic = () => Object.assign(new Error("division by zero"), { code: "22012" });
+
+/**
+ * A workflow store whose admission plays `answers` in order (an answer, or an
+ * error to throw), then repeats the last; it records each request.
+ */
+function admissionStore(...answers) {
+    const plays = answers.length > 0 ? answers : [{ allowed: true }];
+    const calls = [];
+    return {
+        calls,
+        exposeWorkflowIntake: vi.fn(async (request) => {
+            calls.push(request);
+            const answer = plays[Math.min(calls.length, plays.length) - 1];
+            if (answer instanceof Error) throw answer;
+            return answer;
+        }),
+    };
+}
 
 /** A fake turn-control catalog, as in turn-control-run-turn.test.js: records calls in order and plays back answers. */
 function turnControlCatalog({ start = { stopped: false, controls: [] }, writeback = false, end = { stopped: false, late: [] }, endFailures = 0 } = {}) {
@@ -84,17 +129,23 @@ function lifecycleDirs() {
 
 /**
  * The runTurn activity harness, with 1.0.83's turn activities registered over
- * the same fakes, as a test registers them (registerActivities' test option).
+ * the same fakes, as a test registers them (registerActivities' test option),
+ * and a catalog whose workflow store admits the items (`store`, by default one
+ * that always allows; `store: null` for a worker without one). The admission's
+ * transient retries wait 1 ms.
  */
 function intakeHarness(options = {}) {
-    const h = makeRunTurnHarness(options);
+    const store = options.store === undefined ? admissionStore() : options.store;
+    const catalogExtras = { ...(store === null ? {} : { workflowStore: () => store }), ...(options.catalogExtras ?? {}) };
+    const h = makeRunTurnHarness({ ...options, catalogExtras });
     const handlers = {};
     registerActivities({ registerActivity(name, handler) { handlers[name] = handler; } }, h.sessionManager, options.sessionStore ?? null, undefined,
         h.catalog, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, "worker-1", undefined, undefined,
-        { workflowIntakeTurns: true });
+        { workflowIntakeTurns: true, intakeAdmissionRetryDelaysMs: [1, 1, 1] });
     const activityCtx = { traceInfo: () => {}, traceWarn: () => {}, isCancelled: () => false };
     return {
         ...h,
+        store,
         handlers,
         runTurnV5: (sessionId, inputOverrides = {}, name = "runTurnV5") => handlers[name](activityCtx, {
             sessionId, prompt: "go", config: {}, turnIndex: 0, ...inputOverrides,
@@ -102,9 +153,26 @@ function intakeHarness(options = {}) {
     };
 }
 
-/** A model session's run that issues its request: it calls the intake's callback first, as ManagedSession does right before its send. */
+/**
+ * Before its initial send, as ManagedSession does (exposure r2, section 4):
+ * the admission, then the include callback when admitted. Returns what the run
+ * sends: "include", "omit", or "plain" for a run that carries nothing; an
+ * admission that fails rejects.
+ */
+async function admitted(opts) {
+    if (!opts.intakeAdmission) return "plain";
+    const decision = await opts.intakeAdmission.admit(new AbortController().signal);
+    if (decision === "include") opts.intakeAdmission.included();
+    return decision;
+}
+
+/** A model session's run that issues its request, admitted first; a failed admission ends it with nothing sent, as ManagedSession's does. */
 const sends = (result) => async (opts) => {
-    opts.onBeforeInitialSend?.();
+    try {
+        await admitted(opts);
+    } catch (error) {
+        return { type: "error", message: error.message, ...(error.retryable === false ? { retryable: false } : {}) };
+    }
     return { ...result };
 };
 
@@ -116,14 +184,15 @@ function deferred() {
 }
 
 describe("runTurnV5: the turn of an invocation", () => {
-    it("is registered only with the test option; runTurnV4 ignores an intake field and passes no send callback", async () => {
+    it("is registered only with the test option; runTurnV4 ignores an intake field and asks no admission", async () => {
         expect(makeRunTurnHarness().handlers.runTurnV5).toBeUndefined();
         const v4 = turnControlCatalog();
         const h = intakeHarness({ catalogExtras: v4.extras });
         expect(Object.keys(h.handlers).filter((name) => name.endsWith("V5"))).toEqual(["runTurnV5", "runTurnEpochV5"]);
         const result = await h.runTurn("s", { turnIndex: 2, intake: INTAKE }, "runTurnV4");
         expect(h.session.runTurn.mock.calls[0][0]).toBe("go");
-        expect(h.session.runTurn.mock.calls[0][1].onBeforeInitialSend).toBeUndefined();
+        expect(h.session.runTurn.mock.calls[0][1].intakeAdmission).toBeUndefined();
+        expect(h.store.calls).toEqual([]);
         expect(result.intakeDispatch).toBeUndefined();
         const [, , , records] = v4.calls.find((call) => call[0] === "turnStart");
         expect(records).toEqual([{ eventType: "user.message", data: { content: "go" } }]);
@@ -223,7 +292,7 @@ describe("runTurnV5: the turn of an invocation", () => {
             turn: async (opts) => {
                 calls += 1;
                 if (calls === 1) {
-                    opts.onBeforeInitialSend?.();
+                    expect(await admitted(opts)).toBe("include");
                     return lost;
                 }
                 return { type: "completed", content: "recovered" };
@@ -236,15 +305,106 @@ describe("runTurnV5: the turn of an invocation", () => {
         expect(rerun.startsWith(`${TEXT}\n\n`)).toBe(true);
         expect(rerun).toContain("runtime recovered this session");
         expect(rerun).toContain("check the tree");
+        // The re-run is offered its own prompt without the items, should its admission refuse them.
+        const offered = h.session.runTurn.mock.calls.map((call) => call[1].intakeAdmission.promptWithoutIntake);
+        expect(offered[0]).toBe("check the tree");
+        expect(rerun).toBe(`${TEXT}\n\n${offered[1]}`);
+        expect(h.store.calls).toEqual([admissionOf("s")]);
         expect(result).toMatchObject({ type: "completed", intakeDispatch: { invocationId: "inv-1", sent: true } });
     });
 
     it("a malformed intake field fails the activity before any model run", async () => {
         const h = intakeHarness({ catalogExtras: turnControlCatalog().extras });
-        await expect(h.runTurnV5("s", { intake: { invocationId: "inv-1", items: [] } })).rejects.toThrow(/intake\.items/);
+        await expect(h.runTurnV5("s", { intake: { ...INTAKE, items: [] } })).rejects.toThrow(/intake\.items/);
         await expect(h.runTurnV5("s", { intake: { ...INTAKE, items: [{ ...INTAKE.items[0], exchangeId: "nx-1" }] } }))
             .rejects.toThrow(/intake\.items\[0\]\.exchangeId/);
+        await expect(h.runTurnV5("s", { intake: { invocationId: "inv-1", items: INTAKE.items } })).rejects.toThrow(/intake\.attemptId/);
         expect(h.session.runTurn).not.toHaveBeenCalled();
+        expect(h.store.calls).toEqual([]);
+    });
+});
+
+describe("runTurnV5: the store admits the carried items before a run includes them (exposure protocol revision 2, section 4)", () => {
+    it("asks with the activity's own session, the attempt's id and retry flag, and each item's claim with the hash of the exact text it would include; admitted, the run includes them", async () => {
+        const v4 = turnControlCatalog();
+        const h = intakeHarness({ catalogExtras: v4.extras, turn: sends({ type: "completed", content: "ok" }) });
+        const retry = { ...INTAKE, attemptId: "att-2", sentBefore: true };
+        expect(await h.runTurnV5("recipient-1", { turnIndex: 2, intake: retry }))
+            .toMatchObject({ type: "completed", intakeDispatch: { invocationId: "inv-1", sent: true } });
+        expect(h.store.calls).toEqual([admissionOf("recipient-1", retry)]);
+        expect(h.store.calls[0].items[0].textSha256).toBe(createHash("sha256").update(TEXT, "utf8").digest("hex"));
+    });
+
+    it("refused (exposed, or settled), the run sends its prompt without the items: its witness says refused, never sent", async () => {
+        for (const reason of ["exposed", "settled"]) {
+            const v4 = turnControlCatalog();
+            let sent = null;
+            const h = intakeHarness({
+                catalogExtras: v4.extras, store: admissionStore({ allowed: false, reason }),
+                turn: async (opts) => {
+                    sent = await admitted(opts);
+                    return { type: "completed", content: "answered without them" };
+                },
+            });
+            const result = await h.runTurnV5("s", { turnIndex: 2, intake: INTAKE });
+            expect(sent, reason).toBe("omit");
+            expect(h.session.runTurn.mock.calls[0][1].intakeAdmission.promptWithoutIntake, reason).toBe("go");
+            expect(result, reason).toMatchObject({ type: "completed", content: "answered without them",
+                intakeDispatch: { invocationId: "inv-1", sent: false, refused: reason } });
+            expect(Object.hasOwn(result.intakeDispatch, "exposed"), reason).toBe(false);
+        }
+    });
+
+    it("a transient failure is asked again in place with the same request: a COMMIT whose answer was lost is reconfirmed, and the run includes the items once", async () => {
+        const h = intakeHarness({
+            catalogExtras: turnControlCatalog().extras, store: admissionStore(transient(), { allowed: true }), turn: sends({ type: "completed", content: "ok" }),
+        });
+        expect(await h.runTurnV5("s", { turnIndex: 2, intake: INTAKE })).toMatchObject({ intakeDispatch: { invocationId: "inv-1", sent: true } });
+        expect(h.store.calls).toEqual([admissionOf("s"), admissionOf("s")]);
+        expect(h.session.runTurn).toHaveBeenCalledTimes(1);
+    });
+
+    it("no answer, no send: transient failures that run out, an unknown failure, or a worker without a workflow store end the run, retryable; a failure no retry can fix ends it not retryable", async () => {
+        for (const [label, store, retryable, asks] of [
+            ["transient, run out", admissionStore(transient()), true, 4],
+            ["unknown", admissionStore(new Error("socket hung up")), true, 1],
+            ["no workflow store", null, true, 0],
+            ["no retry can fix it", admissionStore(deterministic()), false, 1],
+        ]) {
+            let decision = null;
+            const h = intakeHarness({
+                catalogExtras: turnControlCatalog().extras, store,
+                turn: async (opts) => {
+                    try {
+                        decision = await admitted(opts);
+                    } catch (error) {
+                        expect(error.code, label).toBe("WORKFLOW_INTAKE_ADMISSION_FAILED");
+                        return { type: "error", message: error.message, ...(error.retryable === false ? { retryable: false } : {}) };
+                    }
+                    return { type: "completed", content: "never" };
+                },
+            });
+            const result = await h.runTurnV5("s", { turnIndex: 2, intake: INTAKE });
+            expect(decision, label).toBeNull();
+            expect(result, label).toMatchObject({ type: "error", intakeDispatch: { invocationId: "inv-1", sent: false } });
+            expect(result.retryable === false, label).toBe(!retryable);
+            expect(store?.calls.length ?? 0, label).toBe(asks);
+        }
+    });
+
+    it("every recovery re-run of the attempt is admitted again as the same attempt", async () => {
+        const lost = { type: "error", message: "Request session.send failed with message: Session not found: s" };
+        let calls = 0;
+        const h = intakeHarness({
+            catalogExtras: turnControlCatalog({ writeback: true }).extras,
+            turn: async (opts) => {
+                calls += 1;
+                expect(await admitted(opts)).toBe("include");
+                return calls === 1 ? lost : { type: "completed", content: "recovered" };
+            },
+        });
+        expect(await h.runTurnV5("s", { turnIndex: 6, intake: INTAKE })).toMatchObject({ intakeDispatch: { invocationId: "inv-1", sent: true } });
+        expect(h.store.calls).toEqual([admissionOf("s"), admissionOf("s")]);
     });
 });
 
@@ -314,7 +474,7 @@ describe("runTurnV5: an adopted saved result keeps its own witness (review W2-WI
             const winner = { type: "completed", content: "winner output", ...(winnerWitness !== undefined ? { intakeDispatch: winnerWitness } : {}) };
             const { h, sessionId } = savedHarness(async (opts, { sessionStateDir, store, sessionId: id }) => {
                 // This attempt sends, or ends its run before its send ...
-                if (loserSends) opts.onBeforeInitialSend?.();
+                if (loserSends) expect(await admitted(opts)).toBe("include");
                 // ... while a racing attempt of the same turn saves first, under the same key.
                 fs.writeFileSync(path.join(sessionStateDir, id, ".ps-turn-commit.json"), JSON.stringify({ turnKey: "k5", result: winner }));
                 await store.commitSnapshot(id, { baseVersion: 0, turnKey: "k5" });
@@ -351,7 +511,7 @@ describe("runTurnV5: an adopted saved result keeps its own witness (review W2-WI
         const resume = deferred();
         // A: its request includes the items; then its model run stalls, as on a worker that lost its lock.
         const a = worker("a", async (opts) => {
-            opts.onBeforeInitialSend?.();
+            expect(await admitted(opts)).toBe("include");
             sending.resolve();
             await resume.promise;
             return { type: "completed", content: "A's answer" };
@@ -374,7 +534,7 @@ describe("runTurnV5: an adopted saved result keeps its own witness (review W2-WI
     });
 });
 
-describe("ManagedSession: the intake's send callback (review W2-WIT1)", () => {
+describe("ManagedSession: the intake's admission and send (review W2-WIT1; exposure protocol revision 2, section 4)", () => {
     const control = (seq, kind, text = `${kind}-${seq}`) => ({ seq, kind, text, createdAt: new Date().toISOString() });
 
     /** A fake Copilot session, as in turn-control-live.test.js: it records each send and the test drives every event. */
@@ -382,6 +542,7 @@ describe("ManagedSession: the intake's send callback (review W2-WIT1)", () => {
         const handlers = [];
         const fake = {
             sent: [],
+            aborts: 0,
             registerTools() {},
             on(a, b) {
                 const h = typeof a === "function" ? { type: null, fn: a } : { type: a, fn: b };
@@ -395,7 +556,7 @@ describe("ManagedSession: the intake's send callback (review W2-WIT1)", () => {
                 fake.sent.push(msg);
                 return `msg-${fake.sent.length}`;
             },
-            abort() { queueMicrotask(() => fake._emit("session.idle")); },
+            abort() { fake.aborts += 1; queueMicrotask(() => fake._emit("session.idle")); },
             async disconnect() {},
             getMessages() { return []; },
             _emit(type, data = {}) {
@@ -405,19 +566,178 @@ describe("ManagedSession: the intake's send callback (review W2-WIT1)", () => {
         return fake;
     }
 
-    it("is called once, right before the initial prompt is sent", async () => {
-        const fake = fakeCopilotSession();
-        const managed = new ManagedSession("intake-send", fake, { waitThreshold: 30 });
-        const sentBeforeCallback = [];
-        const turn = managed.runTurn("work", { onBeforeInitialSend: () => sentBeforeCallback.push(fake.sent.length) });
+    /**
+     * An intake admission the test answers: `admit` resolves (or rejects) when the test says, the signal it was given is
+     * kept, and `included` counts its calls with the sends made before each.
+     */
+    function heldAdmission(promptWithoutIntake = "work") {
+        let answer;
+        let fail;
+        const asked = deferred();
+        const admission = {
+            signal: null, included: [], promptWithoutIntake,
+            asked: asked.promise,
+            answer: (decision) => answer(decision),
+            fail: (error) => fail(error),
+        };
+        admission.option = (fake) => ({
+            promptWithoutIntake,
+            admit: (signal) => {
+                admission.signal = signal;
+                asked.resolve();
+                return new Promise((resolve, reject) => { answer = resolve; fail = reject; });
+            },
+            included: () => { admission.included.push(fake.sent.length); },
+        });
+        return admission;
+    }
+
+    const settle = async (fake, turn) => {
         for (let i = 0; i < 50 && fake.sent.length === 0; i++) await new Promise((resolve) => setImmediate(resolve));
         fake._emit("session.idle");
-        expect((await turn).type).toBe("completed");
-        expect(sentBeforeCallback).toEqual([0]);
-        expect(fake.sent.map((message) => message.prompt)).toEqual(["work"]);
+        return turn;
+    };
+    const ticks = async (n = 5) => { for (let i = 0; i < n; i++) await new Promise((resolve) => setImmediate(resolve)); };
+
+    it("admitted: `included` is called once, right before the initial prompt with the items is sent", async () => {
+        const fake = fakeCopilotSession();
+        const managed = new ManagedSession("intake-send", fake, { waitThreshold: 30 });
+        const admission = heldAdmission("work");
+        const turn = managed.runTurn(`${TEXT}\n\nwork`, { intakeAdmission: admission.option(fake) });
+        await admission.asked;
+        expect(fake.sent).toEqual([]);
+        admission.answer("include");
+        expect((await settle(fake, turn)).type).toBe("completed");
+        expect(admission.included).toEqual([0]);
+        expect(fake.sent.map((message) => message.prompt)).toEqual([`${TEXT}\n\nwork`]);
+        expect(admission.signal.aborted).toBe(true);
     });
 
-    it("is not called when a held Stop ends the run before its send", async () => {
+    it("refused: the run sends its prompt without the items, wrapped for a required tool as its own prompt would be, and `included` is never called", async () => {
+        for (const requiredTool of [undefined, "wait"]) {
+            const fake = fakeCopilotSession();
+            const managed = new ManagedSession("intake-omit", fake, { waitThreshold: 30 });
+            const admission = heldAdmission("work");
+            const turn = managed.runTurn(`${TEXT}\n\nwork`, { intakeAdmission: admission.option(fake), ...(requiredTool ? { requiredTool } : {}) });
+            await admission.asked;
+            admission.answer("omit");
+            for (let i = 0; i < 50 && fake.sent.length === 0; i++) await new Promise((resolve) => setImmediate(resolve));
+            // The run ends here (a Stop): a required tool's corrective prompts are not under test.
+            managed.requestStop("done");
+            managed.abort();
+            await turn;
+            expect(admission.included, String(requiredTool)).toEqual([]);
+            expect(fake.sent, String(requiredTool)).toHaveLength(1);
+            const [message] = fake.sent;
+            if (requiredTool) {
+                expect(message.prompt.startsWith(`[SYSTEM: For this request, you MUST invoke the tool "wait"`)).toBe(true);
+                expect(message.prompt.endsWith("\nwork")).toBe(true);
+                expect(message.prompt).not.toContain(TEXT);
+                expect(message.displayPrompt).toBe("work");
+            } else {
+                expect(message).toMatchObject({ prompt: "work" });
+                expect(Object.hasOwn(message, "displayPrompt")).toBe(false);
+            }
+        }
+    });
+
+    it("a Stop, an abort or a forced settle while the answer is pending ends the run with nothing sent, then and when the answer comes", async () => {
+        for (const [label, interrupt, expected] of [
+            ["stop", (managed) => { managed.requestStop("Stopped by user"); managed.abort(); }, { type: "stopped", reason: "Stopped by user" }],
+            ["abort (the activity's lock was lost)", (managed) => managed.abort(), { type: "error", message: INTAKE_ENDED_BEFORE_SEND_MESSAGE }],
+            ["forced settle", (managed) => managed.forceSettleTurn("hung"), { type: "stopped", reason: "hung" }],
+        ]) {
+            const fake = fakeCopilotSession();
+            const managed = new ManagedSession(`intake-interrupt-${label}`, fake, { waitThreshold: 30 });
+            const admission = heldAdmission();
+            const turn = managed.runTurn(`${TEXT}\n\nwork`, { intakeAdmission: admission.option(fake) });
+            await admission.asked;
+            interrupt(managed);
+            expect(await turn, label).toMatchObject(expected);
+            expect(admission.signal.aborted, label).toBe(true);
+            // The admission commits late: nothing is sent, and the run's own send is never reported.
+            admission.answer("include");
+            await ticks();
+            expect(fake.sent, label).toEqual([]);
+            expect(admission.included, label).toEqual([]);
+        }
+    });
+
+    it("the turn timeout or the inactivity watchdog while the answer is pending ends the run with nothing sent, then and when the answer comes", async () => {
+        for (const [label, config, message] of [
+            ["turn timeout", { turnTimeoutMs: 30, turnInactivityTimeoutMs: 0 }, /taking too long/],
+            ["inactivity watchdog", { turnTimeoutMs: 0, turnInactivityTimeoutMs: 30 }, new RegExp(TURN_INACTIVITY_ERROR_MARKER)],
+        ]) {
+            const fake = fakeCopilotSession();
+            const managed = new ManagedSession(`intake-guard-${label}`, fake, { waitThreshold: 30, ...config });
+            const admission = heldAdmission();
+            const result = await managed.runTurn(`${TEXT}\n\nwork`, { intakeAdmission: admission.option(fake) });
+            expect(result.type, label).toBe("error");
+            expect(result.message, label).toMatch(message);
+            expect(admission.signal.aborted, label).toBe(true);
+            admission.answer("include");
+            await ticks();
+            expect(fake.sent, label).toEqual([]);
+            expect(admission.included, label).toEqual([]);
+        }
+    });
+
+    it("a Stop held while the answer is pending is found by the check before the send: nothing is sent", async () => {
+        const fake = fakeCopilotSession();
+        const managed = new ManagedSession("intake-held-late", fake, { waitThreshold: 30 });
+        const live = new LiveTurnControl({
+            sessionId: "intake-held-late", turn: 4, start: 0,
+            abort: async (reason) => { managed.requestStop(reason); managed.abort(); },
+            record: async () => {},
+        });
+        const binding = {
+            port: null,
+            attach: (port) => { binding.port = port; live.attach(port); },
+            heldStop: () => live.heldStop(),
+            gateOpened: () => live.gateOpened(),
+            detach: () => live.detach(),
+        };
+        const admission = heldAdmission();
+        const turn = managed.runTurn(`${TEXT}\n\nwork`, { turnIndex: 4, turnControl: binding, intakeAdmission: admission.option(fake) });
+        await admission.asked;
+        // Before the send the gate is pending: the Stop is held, not applied.
+        await live.enqueue([control(72, "stop", "not now")]);
+        admission.answer("include");
+        expect(await turn).toMatchObject({ type: "stopped", reason: "not now" });
+        expect(fake.sent).toEqual([]);
+        expect(admission.included).toEqual([]);
+    });
+
+    it("a failed admission ends the run with nothing sent: not retryable when it says so", async () => {
+        for (const [label, error, retryable] of [
+            ["retryable", Object.assign(new Error("the store is unavailable"), { retryable: true }), true],
+            ["not retryable", Object.assign(new Error("no retry can fix it"), { retryable: false }), false],
+            ["plain", new Error("socket hung up"), true],
+        ]) {
+            const fake = fakeCopilotSession();
+            const managed = new ManagedSession(`intake-failed-${label}`, fake, { waitThreshold: 30 });
+            const admission = heldAdmission();
+            const turn = managed.runTurn(`${TEXT}\n\nwork`, { intakeAdmission: admission.option(fake) });
+            await admission.asked;
+            admission.fail(error);
+            const result = await turn;
+            expect(result, label).toMatchObject({ type: "error", message: error.message });
+            expect(result.retryable === false, label).toBe(!retryable);
+            expect(fake.sent, label).toEqual([]);
+            expect(admission.included, label).toEqual([]);
+        }
+        // An answer that is neither include nor omit is a broken protocol: not retryable, nothing sent.
+        const fake = fakeCopilotSession();
+        const managed = new ManagedSession("intake-unknown-answer", fake, { waitThreshold: 30 });
+        const admission = heldAdmission();
+        const turn = managed.runTurn(`${TEXT}\n\nwork`, { intakeAdmission: admission.option(fake) });
+        await admission.asked;
+        admission.answer("maybe");
+        expect(await turn).toMatchObject({ type: "error", retryable: false });
+        expect(fake.sent).toEqual([]);
+    });
+
+    it("is not asked when a held Stop ends the run before its send", async () => {
         const fake = fakeCopilotSession();
         const managed = new ManagedSession("intake-held-stop", fake, { waitThreshold: 30 });
         const live = new LiveTurnControl({
@@ -433,20 +753,30 @@ describe("ManagedSession: the intake's send callback (review W2-WIT1)", () => {
             detach: () => live.detach(),
         };
         await live.enqueue([control(71, "stop", "never mind")]);
-        let called = 0;
-        const result = await managed.runTurn("work", { turnIndex: 4, turnControl: binding, onBeforeInitialSend: () => { called += 1; } });
+        const admission = heldAdmission();
+        const result = await managed.runTurn("work", { turnIndex: 4, turnControl: binding, intakeAdmission: admission.option(fake) });
         expect(result).toMatchObject({ type: "stopped", reason: "never mind" });
-        expect(called).toBe(0);
+        expect(admission.signal).toBeNull();
+        expect(admission.included).toEqual([]);
         expect(fake.sent).toEqual([]);
     });
 
-    it("is not called when a required tool is missing: the run ends before its send", async () => {
+    it("is not asked when a required tool is missing: the run ends before its send", async () => {
         const fake = fakeCopilotSession();
         const managed = new ManagedSession("intake-required-tool", fake, { waitThreshold: 30 });
-        let called = 0;
-        const result = await managed.runTurn("work", { requiredTool: "package_catalog", onBeforeInitialSend: () => { called += 1; } });
+        const admission = heldAdmission();
+        const result = await managed.runTurn("work", { requiredTool: "package_catalog", intakeAdmission: admission.option(fake) });
         expect(result).toMatchObject({ type: "error", retryable: false, message: 'Required tool "package_catalog" is not available in this session.' });
-        expect(called).toBe(0);
+        expect(admission.signal).toBeNull();
+        expect(admission.included).toEqual([]);
         expect(fake.sent).toEqual([]);
+    });
+
+    it("a turn that carries nothing is sent as before: no admission, no wait", async () => {
+        const fake = fakeCopilotSession();
+        const managed = new ManagedSession("intake-plain", fake, { waitThreshold: 30 });
+        const turn = managed.runTurn("work", {});
+        expect((await settle(fake, turn)).type).toBe("completed");
+        expect(fake.sent.map((message) => message.prompt)).toEqual(["work"]);
     });
 });

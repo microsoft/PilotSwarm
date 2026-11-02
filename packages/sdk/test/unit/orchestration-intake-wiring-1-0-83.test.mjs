@@ -66,6 +66,15 @@
  * - Decide's turn for the intake alone takes what drain gives a newly
  *   arrived prompt: the released timer's note and the buffered child digest,
  *   in its system context; the released wait resumes after it (6.2).
+ * - Exposure protocol revision 2: each carrying attempt records its own
+ *   attempt id in its scheduled input, and only the invocation's own retry
+ *   says sentBefore; an attempt refused as possibly seen elsewhere ends its
+ *   invocation (interrupted, or failed_indeterminate after a failure), never
+ *   parked or retried, and the turn goes on without it; a refusal as settled
+ *   fails the execution visibly; an unsent cancel answered exposed makes the
+ *   invocation sent and ends it interrupted, the item's cancel named; an end
+ *   asked as not_dispatched may be answered applied interrupted, and no
+ *   other change is accepted.
  *
  * Run: node --test test/unit/orchestration-intake-wiring-1-0-83.test.mjs
  */
@@ -271,10 +280,15 @@ function boundInvocation(ns, fields = {}) {
     };
 }
 
-/** The `intake` field a turn of invocation `invocationId` carries for exchanges `ns`. */
+/** The batch a turn of invocation `invocationId` carries for exchanges `ns`, under `claim-n` (its attempt's id and retry flag aside). */
 const payloadOf = (ns, invocationId = "inv-1") => ({
-    invocationId, items: ns.map(n => ({ exchangeId: exchange(n), clientMessageId: canonical(n), text: textOf(n) })),
+    invocationId, items: ns.map(n => ({ exchangeId: exchange(n), claimId: `claim-${n}`, clientMessageId: canonical(n), text: textOf(n) })),
 });
+/** The whole `intake` field a turn carries (exposure protocol revision 2, section 2): the batch, the attempt's id and its retry flag. */
+const fieldOf = (ns, { invocationId = "inv-1", attemptId = "att-1", sentBefore = false } = {}) => {
+    const { items } = payloadOf(ns, invocationId);
+    return { invocationId, attemptId, sentBefore, items };
+};
 
 /** A turn's result, with the attempt's witness when one is given. */
 const turnResult = (result, witness) => ({ value: { ...result, ...(witness ? { intakeDispatch: witness } : {}) } });
@@ -284,6 +298,24 @@ const notSentBy = (invocationId = "inv-1") => ({ invocationId, sent: false });
 
 const isTurn = op => op?.op === "session" && op.name.startsWith("runTurn");
 const turnsOf = ops => ops.filter(isTurn);
+
+/**
+ * A carrying turn's attempt (exposure protocol revision 2, section 2): its
+ * `intake` field is checked whole (the batch, a drawn attempt id and a retry
+ * flag, nothing else), then the attempt's id and flag are moved to
+ * `input.intakeAttempt`, so the comparisons read the batch alone and a test
+ * of the attempt reads them there. The recorded operation is the same object.
+ */
+function takeIntakeAttempt(op) {
+    const field = op.input.intake;
+    if (field === undefined || Object.hasOwn(op.input, "intakeAttempt")) return;
+    assert.deepEqual(Object.keys(field), ["invocationId", "attemptId", "sentBefore", "items"]);
+    assert.equal(typeof field.attemptId, "string");
+    assert.ok(field.attemptId.length > 0);
+    assert.equal(typeof field.sentBefore, "boolean");
+    op.input.intakeAttempt = { attemptId: field.attemptId, sentBefore: field.sentBefore };
+    op.input.intake = { invocationId: field.invocationId, items: field.items };
+}
 
 /**
  * An answer for every operation a turn yields: queued messages for the
@@ -327,7 +359,9 @@ function turnResponder({
                 assert.equal(op.tag, WORKFLOW_REQUEST_CAPABILITY, `${op.name} is routed with the workflow-request tag`);
                 return activity(op);
             case "session":
-                return isTurn(op) ? turn(op) : sessionActivity(op);
+                if (!isTurn(op)) return sessionActivity(op);
+                takeIntakeAttempt(op);
+                return turn(op);
             case "manager":
                 return { value: op.method === "listChildSessions" ? "[]" : undefined };
             case "continueAsNew":
@@ -608,6 +642,71 @@ test("the wake writes a bound invocation's latched cancels for exactly the items
     assert.deepEqual(kinds(wrongOps), ["settleWorkflowIntake:cancel_unsent", "cms"]);
 });
 
+test("exposure r2: an unsent invocation's cancel answered exposed is recorded as requested; the invocation is possibly sent, ends interrupted with the item's flag, and is never carried again", () => {
+    const invocation = boundInvocation([1, 2]);
+    invocation.items[0].cancelRequested = true;
+    invocation.cancelWrite = { retry: null };
+    const runtime = makeRuntime({ intake: carried({ invocation }) });
+    const writes = [];
+    const { ops } = drive(runIntakeWake(runtime, NOW), responder({
+        activity: op => {
+            writes.push(op.input);
+            return op.input.op === "cancel_unsent" ? ok({ items: [{ exchangeId: exchange(1), exposed: true }] }) : assert.fail(`unexpected ${op.input.op}`);
+        },
+    }));
+    assert.deepEqual(kinds(ops), ["settleWorkflowIntake:cancel_unsent", "record"]);
+    const recorded = ops.find(op => op.op === "record").events[0];
+    assert.deepEqual(recorded, { eventType: INTAKE_RECORDED_EVENT, data: {
+        outcome: "cancelled", source: "invocation", invocationId: "inv-1", items: [{ exchangeId: exchange(1), claimId: "claim-1" }], exposed: [exchange(1)],
+    } });
+    const after = runtime.state.intake.invocation;
+    assert.equal(after.sent, true);
+    assert.deepEqual(after.settle, { outcome: "interrupted", retry: null });
+    assert.deepEqual(after.items.map(entry => [entry.exchangeId, entry.cancelRequested]), [[exchange(1), true], [exchange(2), false]]);
+    assert.equal(intakeWantsTurn(runtime), false);
+    // The next wake ends it interrupted, naming the item's cancel.
+    const next = drive(runIntakeWake(runtime, NOW + 1), responder({ activity: op => (writes.push(op.input), ok({ ended: true })) }));
+    assert.deepEqual(kinds(next.ops), ["settleWorkflowIntake:end"]);
+    assert.deepEqual(writes.at(-1), {
+        op: "end", recipientSessionId: SESSION, invocationId: "inv-1", outcome: "interrupted",
+        items: [{ exchangeId: exchange(1), claimId: "claim-1", cancelRequested: true }, { exchangeId: exchange(2), claimId: "claim-2", cancelRequested: false }],
+    });
+    assert.equal(runtime.state.intake.invocation, null);
+    // An answer exposed for an item the write did not name, or on a sent invocation's request_cancel, fails visibly.
+    for (const [sent, answer] of [
+        [false, ok({ items: [{ exchangeId: exchange(1), exposed: false }] })],
+        [true, ok({ items: [{ exchangeId: exchange(1), exposed: true }] })],
+    ]) {
+        const wrong = makeRuntime({ intake: carried({ invocation: { ...invocation, sent } }) });
+        const wrongOps = [];
+        assert.throws(() => drive(runIntakeWake(wrong, NOW), responder({ activity: () => answer }), wrongOps),
+            error => error.code === "WORKFLOW_INTAKE_INVALID" || error.code === "WORKFLOW_INTAKE_BROKEN", JSON.stringify([sent, answer]));
+        assert.equal(wrongOps.at(-1).op, "cms");
+    }
+});
+
+test("exposure r2: an end asked as not_dispatched and answered as applied interrupted is accepted after its call is checked; any other applied outcome fails visibly", () => {
+    const ending = boundInvocation([1], { settle: { outcome: "not_dispatched", retry: null } });
+    const runtime = makeRuntime({ intake: carried({ invocation: ending }) });
+    const { ops } = drive(runIntakeWake(runtime, NOW), responder({ activity: () => ok({ ended: true, outcome: "interrupted" }) }));
+    assert.deepEqual(kinds(ops), ["settleWorkflowIntake:end", "record"]);
+    assert.equal(ops[0].input.outcome, "not_dispatched");
+    assert.deepEqual(ops[1].events[0].data, { outcome: "end_applied", invocationId: "inv-1", requested: "not_dispatched", applied: "interrupted" });
+    assert.equal(runtime.state.intake.invocation, null);
+    for (const [invocation, answer] of [
+        [ending, ok({ ended: true, outcome: "completed" })],
+        [boundInvocation([1], { sent: true, settle: { outcome: "interrupted", retry: null } }), ok({ ended: true, outcome: "interrupted" })],
+        [ending, ok({ ended: true, outcome: "interrupted", extra: 1 })],
+    ]) {
+        const wrong = makeRuntime({ intake: carried({ invocation }) });
+        const wrongOps = [];
+        assert.throws(() => drive(runIntakeWake(wrong, NOW), responder({ activity: () => answer }), wrongOps),
+            error => error.code === "WORKFLOW_INTAKE_BROKEN" || error.code === "WORKFLOW_INTAKE_INVALID", JSON.stringify(answer));
+        assert.equal(wrongOps.at(-1).op, "cms");
+        assert.notEqual(wrong.state.intake.invocation, null);
+    }
+});
+
 // ─── The sweep ───────────────────────────────────────────────
 
 test("the sweep before a prompt's dispatch claims an enveloped copy (no clock read) and latches a tombstone; its write waits for drain's wake", () => {
@@ -841,21 +940,30 @@ test("a tombstone of more than 200 ids in the sweep is latched before the bounde
 
 test("a turn's intake field is checked whole: absent is none; its items keep batch order; anything malformed fails with its path", () => {
     assert.equal(parseIntakeTurnField(undefined), null);
-    const field = payloadOf([1, 2]);
+    const field = fieldOf([1, 2]);
     assert.deepEqual(parseIntakeTurnField(JSON.parse(JSON.stringify(field))), field);
+    assert.deepEqual(parseIntakeTurnField({ ...field, sentBefore: true }), { ...field, sentBefore: true });
     const first = field.items[0];
+    const withItems = items => ({ ...field, items });
     for (const [raw, path] of [
         [null, "intake"],
         [{ ...field, extra: 1 }, "intake"],
-        [{ invocationId: "", items: field.items }, "intake.invocationId"],
-        [{ invocationId: "inv-1", items: [] }, "intake.items"],
-        [{ invocationId: "inv-1", items: {} }, "intake.items"],
-        [{ invocationId: "inv-1", items: payloadOf(range(1, 65)).items }, "intake.items"],
-        [{ invocationId: "inv-1", items: [{ ...first, extra: true }] }, "intake.items[0]"],
-        [{ invocationId: "inv-1", items: [{ ...first, text: 5 }] }, "intake.items[0].text"],
-        [{ invocationId: "inv-1", items: [{ ...first, text: "x".repeat(INTAKE_MAX_TEXT_BYTES + 1) }] }, "intake.items[0].text"],
-        [{ invocationId: "inv-1", items: [{ ...first, exchangeId: "nx-1" }] }, "intake.items[0].exchangeId"],
-        [{ invocationId: "inv-1", items: [{ ...first, clientMessageId: "" }] }, "intake.items[0].clientMessageId"],
+        [{ invocationId: "inv-1", items: field.items }, "intake.attemptId"],
+        [{ ...field, invocationId: "" }, "intake.invocationId"],
+        [{ ...field, attemptId: "" }, "intake.attemptId"],
+        [{ ...field, attemptId: 7 }, "intake.attemptId"],
+        [{ ...field, sentBefore: "true" }, "intake.sentBefore"],
+        [withItems([]), "intake.items"],
+        [withItems({}), "intake.items"],
+        [withItems(payloadOf(range(1, 65)).items), "intake.items"],
+        [withItems([{ ...first, extra: true }]), "intake.items[0]"],
+        [withItems([{ exchangeId: first.exchangeId, clientMessageId: first.clientMessageId, text: first.text }]), "intake.items[0].claimId"],
+        [withItems([{ ...first, text: 5 }]), "intake.items[0].text"],
+        [withItems([{ ...first, text: "x".repeat(INTAKE_MAX_TEXT_BYTES + 1) }]), "intake.items[0].text"],
+        [withItems([{ ...first, exchangeId: "nx-1" }]), "intake.items[0].exchangeId"],
+        [withItems([first, { ...field.items[1], exchangeId: first.exchangeId }]), "intake.items[1].exchangeId"],
+        [withItems([{ ...first, claimId: "" }]), "intake.items[0].claimId"],
+        [withItems([{ ...first, clientMessageId: "" }]), "intake.items[0].clientMessageId"],
     ]) {
         assert.throws(() => parseIntakeTurnField(raw), error => error.code === "WORKFLOW_INTAKE_INVALID" && error.path === path, path);
     }
@@ -865,7 +973,7 @@ test("a turn's intake field is checked whole: absent is none; its items keep bat
 
 test("1.0.83's turns run as runTurnV5 / runTurnEpochV5 with only the workflow-request tag and the intake field; turn-control-v1 is unchanged", () => {
     const { ctx } = makeRuntime();
-    const intake = payloadOf([1]);
+    const intake = fieldOf([1]);
     const proxy = createSessionProxy(ctx, SESSION, "affinity", { model: "m" }, "workflow-intake-v1");
     const plain = proxy.runTurn("work", false, 3, { intake });
     assert.deepEqual([plain.name, plain.tag, plain.affinity], ["runTurnV5", WORKFLOW_REQUEST_CAPABILITY, "affinity"]);
@@ -1594,4 +1702,85 @@ test("W2-WIT4: a carrying attempt whose adopted witness says exposed (it sent, t
     }));
     assert.equal(runtime.state.intake.invocation.parked, "not_sent");
     assert.equal(runtime.state.intake.invocation.sent, false);
+});
+
+// ─── Exposure protocol revision 2 (sections 2 and 5) ─────────
+
+test("exposure r2: each carrying attempt records its own attempt id in its scheduled input; only the invocation's own retry says sentBefore", () => {
+    const runtime = makeRuntime({ intake: carried({ queue: [heldEntry(1)] }) });
+    const first = drive(runLoop(runtime), turnResponder({
+        guids: ["inv-1", "att-1"], activity: storeAnswers([1]), turn: () => turnResult({ type: "error", message: "the model call failed" }, sentBy()),
+    }));
+    const [failed] = turnsOf(first.ops);
+    assert.deepEqual(failed.input.intakeAttempt, { attemptId: "att-1", sentBefore: false });
+    // The attempt's id was drawn after the bind, before the turn: one recorded id for this carrying activity.
+    const k = kinds(first.ops);
+    assert.ok(k.indexOf("settleWorkflowIntake:bind") < first.ops.indexOf(failed));
+    const can = first.ops.at(-1);
+    assert.equal(can.canInput.intakeRetryInvocationId, "inv-1");
+    // The retry takes the marker: a new id of its own, and sentBefore.
+    const retried = makeRuntime(can.canInput);
+    const second = drive(runLoop(retried), turnResponder({ guids: ["att-2"], activity: storeAnswers([1]), turn: () => completed(sentBy()) }));
+    assert.deepEqual(turnsOf(second.ops)[0].input.intakeAttempt, { attemptId: "att-2", sentBefore: true });
+    // A gate's park is carried by a new attempt: a new id, and no sentBefore.
+    const gated = makeRuntime({ intake: carried({ queue: [heldEntry(1)] }) });
+    let turnsRun = 0;
+    let delivered = false;
+    const third = drive(runLoop(gated), turnResponder({
+        guids: ["inv-1"], activity: storeAnswers([1]),
+        turn: () => (++turnsRun === 1 ? turnResult({ type: "wait", seconds: 60, reason: "provider budget paused", gate: "budget" }, notSentBy()) : completed(sentBy())),
+        onRace: () => {
+            if (delivered || gated.state.intake.invocation?.parked !== "gate") return undefined;
+            delivered = true;
+            return { value: { index: 0, value: { prompt: "hello" } } };
+        },
+    }));
+    const attempts = turnsOf(third.ops).map(turn => turn.input.intakeAttempt);
+    assert.equal(attempts.length, 2);
+    assert.deepEqual(attempts.map(attempt => attempt.sentBefore), [false, false]);
+    assert.notEqual(attempts[0].attemptId, attempts[1].attemptId);
+});
+
+test("exposure r2: a carrying attempt refused as possibly seen under another attempt ends its invocation, interrupted or failed_indeterminate after a failure; it is never parked or put on a retry, and the turn goes on without it", () => {
+    const refused = { invocationId: "inv-1", sent: false, refused: "exposed" };
+    for (const [result, outcome] of [
+        [{ type: "completed", content: "answered without it" }, "interrupted"],
+        [{ type: "stopped", reason: "Stopped by user" }, "interrupted"],
+        [{ type: "error", message: 'Required tool "lookup" is not available in this session.', retryable: false }, "failed_indeterminate"],
+    ]) {
+        const runtime = makeRuntime({ intake: carried({ queue: [heldEntry(1)] }) });
+        const { ops } = drive(runLoop(runtime), turnResponder({ guids: ["inv-1"], activity: storeAnswers([1]), turn: () => turnResult(result, refused) }));
+        assert.equal(turnsOf(ops).length, 1, result.type);
+        assert.equal(endOf(ops).input.outcome, outcome, result.type);
+        assert.deepEqual(runtime.state.intake, EMPTY_INTAKE, result.type);
+    }
+    // A retryable error: the invocation ends interrupted (its end due on the wake), and the turn's retry carries no marker.
+    const runtime = makeRuntime({ intake: carried({ queue: [heldEntry(1)] }) });
+    const { ops } = drive(runLoop(runtime), turnResponder({
+        guids: ["inv-1"], activity: storeAnswers([1]), turn: () => turnResult({ type: "error", message: "the model call failed" }, refused),
+    }));
+    const can = ops.at(-1);
+    assert.equal(can.op, "continueAsNew");
+    assert.equal(Object.hasOwn(can.canInput, "intakeRetryInvocationId"), false);
+    assert.equal(can.canInput.retryCount, 1);
+    assert.deepEqual(can.canInput.intake.invocation.settle, { outcome: "interrupted", retry: null });
+    assert.equal(can.canInput.intake.invocation.sent, true);
+    // The retry runs the turn's own prompt, without the invocation, whose end is made on the wake.
+    const retried = makeRuntime(can.canInput);
+    const second = drive(runLoop(retried), turnResponder({ activity: storeAnswers([1]), turn: () => completed() }));
+    assert.equal(endOf(second.ops).input.outcome, "interrupted");
+    assert.equal(turnsOf(second.ops).length, 1);
+    assert.equal(Object.hasOwn(turnsOf(second.ops)[0].input, "intake"), false);
+    assert.deepEqual(retried.state.intake, EMPTY_INTAKE);
+});
+
+test("exposure r2: a carrying attempt refused as settled cannot be accepted while its invocation is bound and not ended: the execution fails visibly, nothing is settled", () => {
+    const runtime = makeRuntime({ intake: carried({ queue: [heldEntry(1)] }) });
+    const ops = [];
+    assert.throws(() => drive(runLoop(runtime), turnResponder({
+        guids: ["inv-1"], activity: storeAnswers([1]), turn: () => completed({ invocationId: "inv-1", sent: false, refused: "settled" }),
+    }), ops), error => error.code === "WORKFLOW_INTAKE_BROKEN");
+    assert.equal(turnsOf(ops).length, 1);
+    assert.equal(ops.find(op => op.op === "cms").status, "failed");
+    assert.equal(endOf(ops), undefined);
 });

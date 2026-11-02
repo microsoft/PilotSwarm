@@ -728,6 +728,20 @@ export const DEFAULT_TURN_INACTIVITY_TIMEOUT_MS = 5 * 60_000;
 // release affinity, delayed retry on a fresh subprocess, bounded by
 // COPILOT_CONNECTION_CLOSED_MAX_RETRIES with a lossy-handoff fallback.
 export const TURN_INACTIVITY_ERROR_MARKER = "connection is closed or the subprocess is wedged";
+/** Workflow intake (runTurnV5): a run that an abort or a forced settle ended while it awaited its admission, with nothing sent. */
+export const INTAKE_ENDED_BEFORE_SEND_MESSAGE = "The turn ended before its request was sent.";
+
+/**
+ * Workflow intake (runTurnV5): a running turn's interruption, for a run that
+ * awaits its admission before its initial send: the first Stop, abort or
+ * forced settle while the run lives (`aborted` when the Copilot session was
+ * aborted), and the wake of the awaited admission.
+ */
+interface RunInterrupt {
+    reason: string | null;
+    aborted: boolean;
+    wake: ((reason: string) => void) | null;
+}
 
 /**
  * Detect a tool call the model emitted as literal text instead of a real
@@ -924,6 +938,10 @@ export class ManagedSession {
     }
     /** Set only by requestStop(); classifies the turn unwind as "stopped". */
     private stopRequest: { reason: string; requestedAt: number } | null = null;
+    /**
+     * Workflow intake (runTurnV5): the running turn's interruption (RunInterrupt), read before its initial send. Null between runs.
+     */
+    private runInterrupt: RunInterrupt | null = null;
     /** Resolver for the current turn's completion promise — hang escalation hook. */
     private settleTurnResolver: (() => void) | null = null;
     /** Rejecter for the current turn's completion promise — failTurn(). */
@@ -1502,6 +1520,8 @@ export class ManagedSession {
     async runTurn(prompt: string, opts?: TurnOptions): Promise<TurnResult> {
         this.nativeFeatureRevoked = false;
         this.activeTurn = { turnIndex: opts?.turnIndex ?? -1, startedAt: Date.now() };
+        const interrupt: RunInterrupt = { reason: null, aborted: false, wake: null };
+        this.runInterrupt = interrupt;
         const binding = opts?.turnControl ?? null;
         const steer = binding ? new SteerTurnState() : null;
         this.steer = steer;
@@ -1536,6 +1556,7 @@ export class ManagedSession {
         } finally {
             this.activeTurn = null;
             this.stopRequest = null;
+            if (this.runInterrupt === interrupt) this.runInterrupt = null;
             this.settleTurnResolver = null;
             this.settleTurnRejecter = null;
             if (steer) {
@@ -1617,7 +1638,21 @@ export class ManagedSession {
         // Never send a steer after a Stop or an abort (spike cell C5b).
         this.closeSteerGate();
         this.stopRequest = { reason, requestedAt: Date.now() };
+        this.noteRunInterrupted(reason, false);
         return { turnIndex: this.activeTurn.turnIndex };
+    }
+
+    /**
+     * Workflow intake (runTurnV5): record that the running turn was stopped,
+     * aborted or settled by force, and wake the admission it may await, so
+     * it never sends after that (exposure protocol revision 2, section 4).
+     */
+    private noteRunInterrupted(reason: string, aborted: boolean): void {
+        const interrupt = this.runInterrupt;
+        if (interrupt === null) return;
+        interrupt.reason ??= reason;
+        if (aborted) interrupt.aborted = true;
+        interrupt.wake?.(interrupt.reason);
     }
 
     /**
@@ -1631,8 +1666,76 @@ export class ManagedSession {
         if (!this.activeTurn) return false;
         this.closeSteerGate();
         if (!this.stopRequest) this.stopRequest = { reason, requestedAt: Date.now() };
+        this.noteRunInterrupted(reason, false);
         try { this.settleTurnResolver?.(); } catch {}
         return true;
+    }
+
+    /**
+     * Workflow intake (runTurnV5; exposure protocol revision 2, section 4):
+     * await the carried items' admission, raced with the run's guards (a
+     * guard's rejection propagates: the run's own timeout or watchdog
+     * handling ends it) and with its interruption. An interruption, a failed
+     * admission (not retryable when it says so) or an answer that is neither
+     * `include` nor `omit` ends the run with nothing sent. The admission's
+     * signal is aborted once the run no longer waits for it, so a late answer
+     * leads to no send.
+     */
+    private async awaitIntakeAdmission(intake: NonNullable<TurnOptions["intakeAdmission"]>, guards: Promise<void>[])
+        : Promise<{ kind: "include" | "omit" } | { kind: "ended"; result: TurnResult }> {
+        const interrupt = this.runInterrupt;
+        const controller = new AbortController();
+        let wake: (reason: string) => void = () => {};
+        const interrupted = new Promise<string>((resolve) => { wake = resolve; });
+        if (interrupt) {
+            interrupt.wake = wake;
+            if (interrupt.reason !== null) wake(interrupt.reason);
+        }
+        let admission: Promise<unknown>;
+        try {
+            admission = Promise.resolve(intake.admit(controller.signal));
+        } catch (err) {
+            admission = Promise.reject(err);
+        }
+        try {
+            const raced = await Promise.race([
+                admission.then(
+                    (decision) => ({ kind: "decided" as const, decision }),
+                    (error: unknown) => ({ kind: "failed" as const, error }),
+                ),
+                interrupted.then((reason) => ({ kind: "interrupted" as const, reason })),
+                ...guards.map((guard) => guard.then(() => ({ kind: "guard" as const }))),
+            ]);
+            if (raced.kind === "interrupted" || raced.kind === "guard") {
+                // An abort may leave a session.idle behind for no run: the next run ignores one that comes before its own work.
+                if (interrupt?.aborted) this.staleIdlePending = true;
+                return {
+                    kind: "ended",
+                    result: this.stopRequest
+                        ? { type: "stopped", reason: this.stopRequest.reason }
+                        : { type: "error", message: INTAKE_ENDED_BEFORE_SEND_MESSAGE } as TurnResult,
+                };
+            }
+            if (raced.kind === "failed") {
+                const error = raced.error as { message?: unknown; retryable?: unknown } | null | undefined;
+                const message = typeof error?.message === "string" ? error.message : String(raced.error);
+                return {
+                    kind: "ended",
+                    result: { type: "error", message, ...(error?.retryable === false ? { retryable: false } : {}) } as TurnResult,
+                };
+            }
+            if (raced.decision === "include" || raced.decision === "omit") return { kind: raced.decision };
+            return {
+                kind: "ended",
+                result: {
+                    type: "error", retryable: false,
+                    message: `Workflow intake admission answered ${JSON.stringify(raced.decision) ?? String(raced.decision)}, not include or omit.`,
+                } as TurnResult,
+            };
+        } finally {
+            controller.abort();
+            if (interrupt && interrupt.wake === wake) interrupt.wake = null;
+        }
     }
 
     private async _runTurnInner(prompt: string, opts?: TurnOptions): Promise<TurnResult> {
@@ -3929,15 +4032,16 @@ export class ManagedSession {
             return true;
         };
 
-        const effectivePrompt = opts?.requiredTool
+        const withRequiredTool = (text: string): string => (opts?.requiredTool
             ? [
                 `[SYSTEM: For this request, you MUST invoke the tool "${opts.requiredTool}" before giving your answer.`,
                 `Do not answer from memory, estimation, or mental math.`,
                 `If the tool is available, calling it is mandatory for this turn.]`,
                 "",
-                prompt,
+                text,
             ].join("\n")
-            : prompt;
+            : text);
+        const effectivePrompt = withRequiredTool(prompt);
 
         try {
             normalizeCopilotSessionMessageHistory(this.copilotSession as any);
@@ -3951,16 +4055,43 @@ export class ManagedSession {
                 return { type: "stopped", reason: heldStop };
             }
 
+            // Workflow intake (runTurnV5; exposure protocol revision 2,
+            // section 4): every check that ends this run without a send is
+            // behind us. The carried items are admitted first, the answer
+            // awaited against the run's guards and its Stop, abort or forced
+            // settle, then the run checks again, immediately before its send,
+            // that it may still send. It sends the prompt with the items only
+            // when admitted, the prompt without them when refused, and nothing
+            // when it ends first or the admission fails.
+            let initialPrompt = effectivePrompt;
+            let initialDisplay: string | null = effectivePrompt !== prompt ? prompt : null;
+            const intake = opts?.intakeAdmission;
+            if (intake) {
+                const admitted = await this.awaitIntakeAdmission(intake, guards);
+                if (admitted.kind === "ended") return admitted.result;
+                const stopNow = this.steer ? opts?.turnControl?.heldStop() ?? null : null;
+                if (stopNow !== null && !this.stopRequest) this.stopRequest = { reason: stopNow, requestedAt: Date.now() };
+                if (this.stopRequest || this.runInterrupt?.reason != null || this.steer?.gate === "closed") {
+                    this.closeSteerGate();
+                    return this.stopRequest
+                        ? { type: "stopped", reason: this.stopRequest.reason }
+                        : { type: "error", message: INTAKE_ENDED_BEFORE_SEND_MESSAGE };
+                }
+                if (admitted.kind === "omit") {
+                    initialPrompt = withRequiredTool(intake.promptWithoutIntake);
+                    initialDisplay = initialPrompt !== intake.promptWithoutIntake ? intake.promptWithoutIntake : null;
+                } else {
+                    intake.included();
+                }
+            }
+
             // Fire the prompt — non-blocking. Image attachments arrive as
             // ready-to-send base64 blobs (fetched + vision-gated by the runTurn
             // activity host); the Copilot runtime packs them into the
             // provider-specific multimodal content.
-            // Workflow intake (runTurnV5): every check that ends this run
-            // without a send is behind us; from here the request may be issued.
-            opts?.onBeforeInitialSend?.();
             await this.copilotSession.send({
-                prompt: effectivePrompt,
-                ...(effectivePrompt !== prompt ? { displayPrompt: prompt } : {}),
+                prompt: initialPrompt,
+                ...(initialDisplay !== null ? { displayPrompt: initialDisplay } : {}),
                 ...(opts?.requiredTool ? { requiredTool: opts.requiredTool } : {}),
                 ...(opts?.attachments && opts.attachments.length > 0
                     ? {
@@ -4203,6 +4334,7 @@ export class ManagedSession {
      */
     abort(): void {
         this.closeSteerGate();
+        this.noteRunInterrupted("aborted", true);
         void Promise.resolve(this.copilotSession.abort()).catch(() => {});
     }
 

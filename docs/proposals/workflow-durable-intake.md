@@ -617,6 +617,47 @@ flag.
   and stash behavior. 1.0.83's turns run under new activity names and a
   capability tag (section 8), because an older worker would ignore the
   `intake` field.
+- **Possible exposure** (exposure protocol revision 2; decision
+  intake-exposure-r2-implementation; migration 0095). The installed native
+  runtime gives an activity no delivery count, so a crash after a request
+  included the items and before its result was accepted would otherwise
+  leave no durable trace. Before any request may include an invocation's
+  items, the store admits it (`exposeWorkflowIntake`), in one READ
+  COMMITTED transaction under the invocation's lock and its member rows,
+  with no outbox or session lock:
+  - The turn field carries the batch with each item's claim, one attempt
+    id recorded by the orchestration for that carrying activity (the same
+    on every delivery of it and in every recovery re-run; another for any
+    other activity), and `sentBefore`, true only when the attempt takes the
+    invocation's own retry marker. The worker hashes the exact text it
+    would send; the store compares it with the stored canonical hash.
+  - Members cancelled unsent are set aside first; a payload naming one, or
+    an ended invocation, is refused `settled` and never shrunk. The named
+    items must be exactly the remaining members, in member order, under
+    their claims; anything else is a broken invariant.
+  - The first admission inserts the invocation's one exposure record
+    (`workflow_intake_exposures`, insert-only). The same attempt again and
+    the invocation's own retry are allowed (duplicate requests are
+    possible: at least once, never exactly once); any other attempt is
+    refused `exposed`.
+  - ManagedSession awaits the admission against the run's guards and its
+    Stop, abort or forced settle, and checks again immediately before the
+    send; a run that ends first sends nothing, even when the admission
+    commits later. Admitted, it includes the items and only then says
+    `sent`; refused, it sends its prompt without them, and the witness says
+    `refused`. A transient failure is asked again in place with the same
+    request; with no positive answer, nothing is sent.
+  - The orchestration ends an invocation refused `exposed` (interrupted, or
+    failed_indeterminate after a failure), never parked or retried; a
+    `settled` refusal of the attempt that carries a bound invocation not
+    ended is a broken invariant. Under the same lock, an end asked as
+    `not_dispatched` beside an exposure record is applied `interrupted`
+    (answered with that `outcome`, the only change accepted, after the call
+    is checked), and an unsent cancel beside one records `cancel_requested`
+    and answers `exposed` (an item cancelled before the exposure stays
+    settled): the invocation is then possibly sent and ends interrupted.
+    The record is a possible exposure only: it never makes a run's own
+    `sent`, nor `completed`.
 
 ### 5.6 The refusal transaction and the sender's view (N5)
 
