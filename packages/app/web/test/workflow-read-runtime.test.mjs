@@ -108,14 +108,15 @@ test("with the ownership switch off, readWorkflow behaves as every other session
  * The actual HTTP route, end to end in-process: the generated Express route, the real PortalRuntime gate, the real
  * NodeSdkTransport.readWorkflow and the real PilotSwarmManagementClient.readWorkflow adapter (its runId validation, its
  * session lookup and readWorkflowV2View), over a stand-in catalog and workflow store (no database): alice owns every
- * session; wf1 is a version 2 workflow with a live run and run R; any other session is an agent session.
+ * session; wf1 is a version 2 workflow with a live run and run R; any other session is an agent session. The adapter has
+ * no options unless `config` is given (the test-only workflowCommands option, INACTIVE).
  */
-async function routeHarness() {
+async function routeHarness({ config } = {}) {
     const owner = { provider: "dev", subject: "alice" };
     const adapterCalls = [];
     // The stand-in rows have every field of the store's current rows: these runs have no stop, virtual clock or scenario,
     // and the definition pins no agent.
-    const run = (runId, mode, status) => ({ runId, mode, status, revision: 1, irSha256: "i", terminalOutcome: null, pausedFrom: null, terminalNodeId: null,
+    const run = (runId, mode, status) => ({ runId, workflowSessionId: "wf1", mode, status, revision: 1, irSha256: "i", terminalOutcome: null, pausedFrom: null, terminalNodeId: null,
         terminalOutput: null, terminalError: null, kvRevision: 0, kv: {}, controllerVersion: null, stop: null,
         testAgentMode: mode === "test" ? "mocked" : null, virtualNow: null, testScenario: null, deadlineAt: null });
     const runs = [run("run-live", "live", "running"), run("R", "test", "running")];
@@ -130,6 +131,9 @@ async function routeHarness() {
         listInbox: async () => [],
         listOutbox: async () => [],
         listInterceptions: async () => [],
+        // Read only for the commands a person may send (workflowCommands): wf1 is in no agent state's subtree.
+        readWorkflowLineage: async () => null,
+        readRun: async (runId) => runs.find((item) => item.runId === runId) ?? null,
     };
     const mgmt = {
         _ensureStarted() {},
@@ -143,6 +147,7 @@ async function routeHarness() {
             return PilotSwarmManagementClient.prototype.readWorkflow.call(this, sessionId, options);
         },
     };
+    if (config) mgmt.config = config;
     const runtime = new PortalRuntime({ store: "sqlite::memory:", mode: "local" });
     runtime.start = async () => {};
     runtime.authz = { ...runtime.authz, enforce: true };
@@ -226,7 +231,10 @@ test("READ-WIRE-04: both HTTP-backed clients and the route carry a run that is n
             // A run that is one string is read as itself; an absent one is the live run.
             assert.equal((await alice.readWorkflow("wf1", { runId: "R" })).run.runId, "R", name);
             assert.ok(urls.at(-1).endsWith("/api/v1/sessions/wf1/workflow?runId=R"), name);
-            assert.equal((await alice.readWorkflow("wf1")).run.runId, "run-live", name);
+            const live = await alice.readWorkflow("wf1");
+            assert.equal(live.run.runId, "run-live", name);
+            // Inactive: an adapter without the workflowCommands option reads exactly the tool's view.
+            assert.equal(Object.hasOwn(live, "personCommands"), false, name);
             // A list holding that run, a number, a repeated run and an object are sent as invalid and refused after the gate:
             // neither run R nor a run named "5" is read.
             for (const runId of [["R"], 5, ["R", "R"], { runId: "R" }]) {
@@ -258,6 +266,30 @@ test("READ-WIRE-04: both HTTP-backed clients and the route carry a run that is n
         const single = await h.get("/sessions/wf1/workflow?runId=R");
         assert.equal(single.status, 200);
         assert.equal(single.body.result.run.runId, "R");
+    } finally {
+        await h.close();
+    }
+});
+
+test("with the test-only workflowCommands option, the real adapter says which commands the workflow takes and the route adds the caller's own decision", async () => {
+    const h = await routeHarness({ config: { workflowCommands: { requests: false } } });
+    try {
+        const read = await h.get("/sessions/wf1/workflow");
+        assert.equal(read.status, 200);
+        assert.equal(read.body.result.run.runId, "run-live");
+        assert.deepEqual(read.body.result.personCommands, {
+            operations: ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel"],
+            restriction: null, run: { runId: "run-live", stop: false }, viewer: { allowed: true, reason: null },
+        });
+        // The run that was asked for is the one described.
+        const test = await h.get("/sessions/wf1/workflow?runId=R");
+        assert.deepEqual(test.body.result.personCommands.run, { runId: "R", stop: false });
+        // An invalid run is still refused after the gate (400), and a reader without access still gets not-found.
+        const invalid = await h.get("/sessions/wf1/workflow?runId=");
+        assert.deepEqual([invalid.status, invalid.body.error.code], [400, "INVALID_REQUEST"]);
+        const hidden = await h.get("/sessions/wf1/workflow", "bob");
+        assert.deepEqual([hidden.status, hidden.body.error.code], [404, "NOT_FOUND"]);
+        assert.deepEqual(h.adapterCalls, [["wf1", {}], ["wf1", { runId: "R" }], ["wf1", { runId: "" }]]);
     } finally {
         await h.close();
     }

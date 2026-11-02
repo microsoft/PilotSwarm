@@ -1929,7 +1929,9 @@ export class PilotSwarmManagementClient {
             }
             throw error;
         }
-        const enabled = this.config.workflowCommands;
+        // The read never depends on the option: absent (or no options at all, as for a host that lends this adapter its
+        // catalog), the view is exactly the tool's.
+        const enabled = this.config?.workflowCommands;
         if (!enabled) return view;
         const run = view.run as { runId?: unknown } | null | undefined;
         const shown = run !== null && typeof run === "object" && typeof run.runId === "string" ? run.runId : null;
