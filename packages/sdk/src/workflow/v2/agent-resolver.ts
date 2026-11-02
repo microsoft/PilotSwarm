@@ -27,6 +27,8 @@ import { WorkflowStoreError } from "./store.js";
  * by name, scope and owner; the caller's own copy comes first, as for a
  * spawn. A state that names a package resolves among that package's agents
  * only, so another package's agent of the same name never takes its place.
+ * A package agent's definition carries the workflow interface its manifest
+ * exports at that revision, as the registry keeps it (workflowInterface).
  */
 
 /** An agent as a worker loads it (registerActivities' userAgents and systemAgents); its other fields are carried as they are. */
@@ -113,7 +115,11 @@ export function createWorkflowAgentResolver(options: WorkflowAgentResolverOption
         const entry = entries.find(candidate => candidate.packageId === resolved.packageId);
         // Only the registry's agents carry a package id here.
         if (!entry) return null;
-        return { ...definition, packageId: entry.packageId, packageName: entry.name, packageVersion: entry.semver, packageRevision: entry.sha256 };
+        // The workflow interface the agent exports at this exact revision, as the registry keeps it (checked where it is
+        // used: publication matches it against the state's contract, package-interface.ts).
+        const exported = manifestAgents(entry).find(agent => agent.name === resolved.name)?.workflowInterface;
+        return { ...definition, packageId: entry.packageId, packageName: entry.name, packageVersion: entry.semver, packageRevision: entry.sha256,
+            ...(exported !== undefined ? { workflowInterface: exported } : {}) };
     };
 }
 

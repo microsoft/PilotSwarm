@@ -17,6 +17,10 @@
  * - A host without deployment agents (a management client) refuses any
  *   other name as AGENT_UNAVAILABLE, saying it pins package agents only.
  * - A registry that cannot be read rejects the resolution.
+ * - A package agent's definition carries the workflow interface its manifest
+ *   exports at that revision, as the registry keeps it (publication checks
+ *   it: workflow-v2-package-interface.test.mjs); one that exports none
+ *   carries none.
  *
  * Run: node --test test/unit/workflow-v2-agent-resolver.test.mjs
  */
@@ -147,4 +151,22 @@ test("a registry that cannot be read rejects the resolution", async () => {
     await assert.rejects(resolve("local-helper", "parent-b"), fail);
     await assert.rejects(createRegistryWorkflowAgentResolver(catalog)("reviewer", "parent-b"), fail);
     assert.equal(catalog.reads.manifest, 2);
+});
+
+test("a package agent's definition carries the workflow interface its manifest exports at that revision, as the registry keeps it", async () => {
+    const IFACE = { name: "review_change", version: "1", inputSchema: null, outputSchema: { type: "object" }, outcomes: ["accepted"], digest: "f".repeat(64) };
+    const CONTRACT_REVISION = "e".repeat(64);
+    const contract = (agents) => entry({ packageId: "pkg-contract", name: "contract-kit", semver: "2.0.0", sha256: CONTRACT_REVISION, agents });
+    const resolve = createWorkflowAgentResolver({ catalog: catalogOf({ packages: [...PACKAGES,
+        contract([{ name: "contract-reviewer", workflowInterface: IFACE }, { name: "plain-reviewer" }])] }) });
+    assert.deepEqual(await resolve("contract-reviewer", "parent-b", "contract-kit"), {
+        name: "contract-reviewer", namespace: "contract-kit", system: false, creatable: true,
+        packageId: "pkg-contract", packageName: "contract-kit", packageVersion: "2.0.0", packageRevision: CONTRACT_REVISION, workflowInterface: IFACE,
+    });
+    assert.equal("workflowInterface" in await resolve("plain-reviewer", "parent-b", "contract-kit"), false);
+    // Carried as it is kept: publication, not resolution, decides whether it is well formed.
+    const kept = createWorkflowAgentResolver({ catalog: catalogOf({ packages: [contract([{ name: "contract-reviewer", workflowInterface: "not an interface" }])] }) });
+    assert.equal((await kept("contract-reviewer", "parent-b")).workflowInterface, "not an interface");
+    // Other agents resolve as before.
+    assert.deepEqual(await resolve("reviewer", "parent-b", "review-kit"), SHARED_REVIEWER);
 });

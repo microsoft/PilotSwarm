@@ -17,6 +17,15 @@
  *   that cannot be read, refuse the publication with AGENT_UNAVAILABLE (409):
  *   the draft stays a draft, and the refusal does not repeat the registry
  *   failure's own text.
+ * - A state that names its package agent's workflow interface
+ *   (`interface: name@version`) is published only when the agent exports
+ *   that interface at the pinned revision and the state's outcomes and
+ *   schemas are exactly the interface's; the pin then also holds the
+ *   interface's name, version and digest. A mismatch, an agent that exports
+ *   no interface, or an export whose digest does not match refuses the
+ *   publication with CONTRACT_MISMATCH (409) and every problem; so does a
+ *   real-agent test of the draft, before anything is written. A republish
+ *   with another interface changes nothing published.
  * - A worker's publication (its update_workflow tool in a real 1.0.83 turn,
  *   the model scripted): a package agent is pinned at the registry's exact
  *   revision, never from the worker's installed copy; the worker's own
@@ -34,6 +43,7 @@ import { useSuiteEnv } from "../helpers/local-env.js";
 import { PilotSwarmManagementClient } from "../helpers/local-workers.js";
 import { PgSessionCatalog } from "../../src/cms.ts";
 import { compileWorkflowV2 } from "../../src/workflow/v2/compiler.ts";
+import { workflowInterfaceDigest } from "../../src/workflow/v2/package-interface.ts";
 import { intakeNativeCase, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-v2-intake-native-fixture.js";
 
 const getEnv = useSuiteEnv(import.meta.url);
@@ -52,7 +62,16 @@ function packageInput(name, semver, sha256, agents, { owner = ADMIN, scope = "us
     };
 }
 
-/** A workflow whose agent states name `agents` ({ stateId: { name, package? } }), in order. As a document (JSON is YAML). */
+/** The output schema of every agent state `naming` writes. */
+const REVIEW_SCHEMA = { type: "object", required: ["verdict"], properties: { verdict: { type: "string" } }, additionalProperties: false };
+
+/** A package agent's exported workflow interface review_change@1, as the package validator writes it into the manifest. */
+function exportOf(outcomes, outputSchema = REVIEW_SCHEMA) {
+    const body = { name: "review_change", version: "1", inputSchema: null, outputSchema, outcomes };
+    return { ...body, digest: workflowInterfaceDigest(body) };
+}
+
+/** A workflow whose agent states name `agents` ({ stateId: { name, package?, interface? } }), in order. As a document (JSON is YAML). */
 function naming(agents) {
     const ids = Object.keys(agents);
     const states = Object.fromEntries(ids.map((id, index) => [id, {
@@ -61,7 +80,7 @@ function naming(agents) {
     }]));
     return JSON.stringify({
         apiVersion: "pilotswarm.dev/v2-draft", kind: "Workflow", metadata: { name: "pinned", version: "1.0.0" }, initial: ids[0],
-        schemas: { Review: { type: "object", required: ["verdict"], properties: { verdict: { type: "string" } }, additionalProperties: false } },
+        schemas: { Review: REVIEW_SCHEMA },
         states: { ...states, done: { type: "terminal", outcome: "succeeded" }, failed: { type: "terminal", outcome: "failed" } },
     }, null, 2);
 }
@@ -165,6 +184,74 @@ describe("workflow v2: a person's publication pins named agents from the agent r
             expect((await store.readDefinition(retry.workflowSessionId)).state).toBe("draft");
             expect(await publish(retry, "pub-3")).toMatchObject({ state: "published", replayed: false });
             expect((await store.readDefinition(retry.workflowSessionId)).publishedAgentPins).toEqual(republished);
+        } finally {
+            await mgmt.stop();
+            await catalog.close();
+        }
+    });
+});
+
+describe("workflow v2: a person's publication matches a state's contract against its package agent's workflow interface (management client, inactive)", () => {
+    it("pins the interface's digest with the exact revision on a match, and refuses a mismatch, a missing or forged export, and such a test", { timeout: TIMEOUT }, async () => {
+        const env = getEnv();
+        const catalog = await PgSessionCatalog.create(env.store, env.cmsSchema);
+        await catalog.initialize();
+        const mgmt = new PilotSwarmManagementClient({
+            store: env.store, duroxideSchema: env.duroxideSchema, cmsSchema: env.cmsSchema, factsSchema: env.factsSchema,
+            workflowCommands: { requests: true },
+        });
+        await mgmt.start();
+        try {
+            const store = catalog.workflowStore();
+            const kit = `contract-kit-${randomUUID().slice(0, 8)}`;
+            const [R1, R2] = [hex(), hex()];
+            const v1 = exportOf(["accepted"]);
+            const kitV1 = await catalog.publishAgentPackage(packageInput(kit, "1.0.0", R1, [
+                { name: "contract-reviewer", workflowInterface: v1 },
+                { name: "plain-reviewer" },
+                { name: "forged-reviewer", workflowInterface: { ...v1, digest: "0".repeat(64) } },
+                { name: "loose-reviewer", workflowInterface: exportOf(["accepted"], { type: "object" }) },
+            ], { scope: "shared" }));
+            const parent = randomUUID();
+            await catalog.createSession(parent, { owner: PERSON });
+            const publish = (draft, operationId) => mgmt.updateWorkflow(draft.workflowSessionId, { operation: "publish", operation_id: operationId,
+                expected_revision: 1, definition_hash: draft.definitionHash }, { principal: PERSON });
+            const contracted = (agent, iface = "review_change@1") => naming({ only: { name: agent, package: kit, interface: iface } });
+
+            // Its outcomes and output schema are exactly the interface's: published, and the pin holds the interface's digest.
+            const matching = await draftOf(catalog, store, parent, contracted("contract-reviewer"));
+            expect(await publish(matching, "pub-1")).toMatchObject({ operation: "publish", state: "published", publishedRevision: 1 });
+            const pins = { only: { name: "contract-reviewer", package: kit, version: "1.0.0", packageId: kitV1.packageId, revision: R1,
+                interface: { name: "review_change", version: "1", digest: v1.digest } } };
+            expect((await store.readDefinition(matching.workflowSessionId)).publishedAgentPins).toEqual(pins);
+
+            // Anything else refuses the publication with every problem, and the draft stays a draft: nothing is inferred.
+            const mismatch = async (agent, iface, problems, operationId) => {
+                const draft = await draftOf(catalog, store, parent, contracted(agent, iface));
+                const error = await refused(() => publish(draft, operationId), "CONTRACT_MISMATCH", 409);
+                expect(error.details).toEqual({ stateId: "only", agent, package: kit, version: null, interface: iface,
+                    packageVersion: expect.any(String), problems });
+                expect(error.message).toMatch(new RegExp(`^State 'only' does not match the workflow interface ${iface} of agent "${agent}"`));
+                expect(await store.readDefinition(draft.workflowSessionId)).toMatchObject({ state: "draft", publishedRevision: null, publishedAgentPins: null });
+            };
+            await mismatch("plain-reviewer", "review_change@1", ["its agent exports no workflow interface (expected review_change@1)"], "pub-2");
+            await mismatch("forged-reviewer", "review_change@1", ["its agent's workflow interface record is not well formed"], "pub-3");
+            await mismatch("contract-reviewer", "review_change@2", ["its agent exports review_change@1, not review_change@2"], "pub-4");
+            await mismatch("loose-reviewer", "review_change@1", ["its outputSchema is not exactly the interface's output schema"], "pub-5");
+
+            // Republished with another interface: what is published keeps its pin; a new publication is checked against the new export.
+            await catalog.publishAgentPackage(packageInput(kit, "1.1.0", R2, [{ name: "contract-reviewer", workflowInterface: exportOf(["accepted", "changes_required"]) }],
+                { scope: "shared" }));
+            expect((await store.readDefinition(matching.workflowSessionId)).publishedAgentPins).toEqual(pins);
+            const changed = ["its outcomes [accepted] are not the interface's [accepted, changes_required]"];
+            await mismatch("contract-reviewer", "review_change@1", changed, "pub-6");
+
+            // A real-agent test of a draft is checked as its publication would be, before anything is written.
+            const tested = await draftOf(catalog, store, parent, contracted("contract-reviewer"));
+            const testError = await refused(() => mgmt.updateWorkflow(tested.workflowSessionId, { operation: "test", operation_id: "test-1", expected_revision: 1,
+                definition_hash: tested.definitionHash, inputs: {}, agent_mode: "real" }, { principal: PERSON }), "CONTRACT_MISMATCH", 409);
+            expect(testError.details).toMatchObject({ stateId: "only", problems: changed });
+            expect((await mgmt.readWorkflow(tested.workflowSessionId)).runs).toEqual([]);
         } finally {
             await mgmt.stop();
             await catalog.close();

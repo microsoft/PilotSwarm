@@ -25,6 +25,7 @@ import {
     type ControllerInput,
 } from "./runtime.js";
 import { testResultFor, workflowTestAnsweredProjection, type WorkflowTestFixture, type WorkflowTestResponse } from "./test-mode.js";
+import { readWorkflowInterfaceExport, workflowInterfaceMismatches } from "./package-interface.js";
 import { WORKFLOW_COMMAND_QUEUE } from "../orchestration.js";
 import {
     ACTIVE_RUN_STATUSES,
@@ -117,22 +118,43 @@ export interface WorkflowPublicationAgent {
     packageVersion?: string;
     /** The content hash of the exact package version (R18): pinned with it, so a run keeps that revision after a republish. */
     packageRevision?: string;
+    /**
+     * The workflow interface the package agent exports at that revision, as
+     * the agent registry keeps it (absent when it exports none). A state that
+     * names an interface is published only when its contract matches it.
+     */
+    workflowInterface?: JsonValue;
 }
 
 /**
  * The agent pins of a revision to publish (design 03, 02 publication;
- * T011, T018): for each agent state that names an agent, what the host
- * resolves it to for the workflow's parent (the agent states' controlling
- * agent), as the child's binding would: its agent, package, package version
- * and package id. A named agent that the host cannot resolve, that is a
- * worker-managed system agent, or that does not match the package or
- * version the state names refuses the publication (AGENT_UNAVAILABLE); a
- * generic agent is never substituted. Null when the revision has no named
- * agent state or the host does not resolve agents (its children are then
- * bound when they are created, as before).
+ * T011, T018, T071, mock M17): for each agent state that names an agent,
+ * what the host resolves it to for the workflow's parent (the agent states'
+ * controlling agent), as the child's binding would: its agent, package,
+ * package version and package id. A named agent that the host cannot
+ * resolve, that is a worker-managed system agent, or that does not match
+ * the package or version the state names refuses the publication
+ * (AGENT_UNAVAILABLE); a generic agent is never substituted. A state that
+ * names a workflow interface (`interface: name@version`) is pinned only
+ * when the agent exports that interface at the resolved revision and the
+ * state's outcomes and schemas are exactly the interface's
+ * (package-interface.ts); otherwise the publication is refused
+ * (CONTRACT_MISMATCH, with each problem), and on a match the pin also holds
+ * the interface's name, version and digest. Null when the revision has no
+ * named agent state or the host does not resolve agents (its children are
+ * then bound when they are created, as before); such a host refuses a state
+ * that names an interface (AGENT_UNAVAILABLE), since it cannot check it.
  */
 async function publicationAgentPins(host: Pick<WorkflowV2Host, "resolveAgent">, ir: WorkflowIR | null, callerSessionId: string): Promise<string | null> {
-    if (!ir || !host.resolveAgent) return null;
+    if (!ir) return null;
+    if (!host.resolveAgent) {
+        const unchecked = Object.values(ir.nodes).find(node => node.type === "agent" && "agent" in node.invoke && node.invoke.agent.interface !== undefined);
+        if (unchecked) {
+            throw new WorkflowStoreError("AGENT_UNAVAILABLE", `State '${unchecked.id}' names a workflow interface, and this host does not resolve `
+                + "package agents, so it cannot check it. Nothing was changed.", { stateId: unchecked.id });
+        }
+        return null;
+    }
     const pins: { [stateId: string]: JsonValue } = {};
     for (const node of Object.values(ir.nodes)) {
         if (node.type !== "agent" || !("agent" in node.invoke)) continue;
@@ -163,10 +185,26 @@ async function publicationAgentPins(host: Pick<WorkflowV2Host, "resolveAgent">, 
             if (named.version !== null && resolved.packageVersion !== named.version) {
                 refuse(`Agent "${named.name}" of state '${node.id}' is not available at version ${named.version} (it is at ${resolved.packageVersion ?? "no version"}).`);
             }
+            let interfacePin: JsonValue | undefined;
+            if (named.interface !== undefined) {
+                const wanted = named.interface;
+                const label = `${wanted.name}@${wanted.version}`;
+                const problems = workflowInterfaceMismatches(node, ir, wanted, resolved.workflowInterface);
+                const exported = problems.length === 0 ? readWorkflowInterfaceExport(resolved.workflowInterface) : null;
+                if (exported === null) {
+                    throw new WorkflowStoreError("CONTRACT_MISMATCH", `State '${node.id}' does not match the workflow interface ${label} of agent `
+                        + `"${named.name}" of package "${named.package}" (version ${resolved.packageVersion ?? "unknown"}): `
+                        + `${(problems.length > 0 ? problems : ["its interface could not be read"]).join("; ")}. Nothing was changed.`,
+                    { ...about, interface: label, packageVersion: resolved.packageVersion ?? null, problems });
+                }
+                interfacePin = { name: exported.name, version: exported.version, digest: exported.digest };
+            }
             pins[node.id] = {
                 name: resolved.name, package: resolved.packageName ?? null, version: resolved.packageVersion ?? null, packageId: resolved.packageId ?? null,
                 // The exact revision (R18), when the host knows it; a run of this publication then keeps it after a republish.
                 ...(resolved.packageId && resolved.packageRevision ? { revision: resolved.packageRevision } : {}),
+                // The interface the state matched at that revision (its digest covers its schemas and outcomes).
+                ...(interfacePin !== undefined ? { interface: interfacePin } : {}),
             };
         }
     }
@@ -1079,8 +1117,9 @@ async function wakeRun(host: Pick<WorkflowV2Host, "duroxideClient">, run: Pick<W
  * publication would be (publicationAgentPins, for the workflow's parent): a
  * named agent that the workflow's owner cannot use, a worker-managed system
  * agent, or a package or version that does not match refuses the test with
- * AGENT_UNAVAILABLE before anything is written, so a test never runs an agent
- * that its publication could not pin. Null when nothing is pinned (no named
+ * AGENT_UNAVAILABLE, and a workflow interface that does not match with
+ * CONTRACT_MISMATCH, before anything is written, so a test never runs an
+ * agent that its publication could not pin. Null when nothing is pinned (no named
  * agent state, or a host that does not resolve agents: its children are then
  * bound when they are created, by the same visibility rules).
  */

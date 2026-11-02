@@ -4,6 +4,7 @@ import type { MessageSender } from "../../message-sender.js";
 import type { WorkflowAgentNodeHost, WorkflowAgentSpawnRequest } from "./runtime.js";
 import { WORKFLOW_V2_MAX_DESCENDANT_LEVEL } from "./input-policy.js";
 import { pinnedAgentPackageId } from "../../agent-package-pins.js";
+import type { JsonValue } from "./json.js";
 
 /**
  * Workflow v2 agent states (IR 8; design 03 agent node, R09 to R11, R16):
@@ -66,6 +67,13 @@ export interface WorkflowAgentDefinition {
     packageVersion?: string;
     /** The content hash of the package's active version, when known. */
     packageRevision?: string;
+    /**
+     * The workflow interface the package agent exports at that revision, as
+     * the agent registry keeps it in the package manifest (unchecked here;
+     * package-interface.ts readWorkflowInterfaceExport checks it). Absent
+     * when it exports none.
+     */
+    workflowInterface?: JsonValue;
 }
 
 /** What the host asks its client to create: the child session and its first prompt. */

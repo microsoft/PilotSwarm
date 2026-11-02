@@ -30,7 +30,8 @@ import * as zlib from "zlib";
 import * as os from "os";
 import * as crypto from "crypto";
 import { spawn } from "child_process";
-import { loadAgentFiles, validateAgentDefinition, type AgentConfig } from "./agent-loader.js";
+import { agentFrontmatterProblem, loadAgentFiles, validateAgentDefinition, type AgentConfig } from "./agent-loader.js";
+import { exportWorkflowInterface, type WorkflowInterfaceExport } from "./workflow/v2/package-interface.js";
 import { loadSkillsSync, type Skill } from "./skills.js";
 
 // ─── Reserved artifact identity ──────────────────────────────────
@@ -635,6 +636,13 @@ export interface AgentPackageManifest {
         // package's agent files.
         startedBy?: string[];
         supportsDirectStart?: boolean;
+        // A schemaVersion 5 agent's workflow interface (design 04 "Package-agent
+        // I/O export"): its schemas read from the package and checked, its
+        // outcomes and its digest. Present only when the agent declares one.
+        // The registry keeps it with each published version, so a workflow
+        // publication matches and pins the interface of the exact revision it
+        // pins (workflow/v2/package-interface.ts).
+        workflowInterface?: WorkflowInterfaceExport;
     }>;
     skills: Array<{ name: string; description?: string }>;
     mcpServers: string[];
@@ -783,6 +791,7 @@ export async function validateAgentPackageDir(
     // Agents.
     const agentsDir = path.join(rootDir, "agents");
     let agents: AgentConfig[] = [];
+    const workflowInterfaces = new Map<AgentConfig, WorkflowInterfaceExport>();
     if (fs.existsSync(agentsDir)) {
         const agentFiles = fs.readdirSync(agentsDir).filter((f) => f.endsWith(".agent.md")).sort();
         agents = loadAgentFiles(agentsDir, { includeInvalid: true });
@@ -797,15 +806,16 @@ export async function validateAgentPackageDir(
                 try { raw = fs.readFileSync(path.join(agentsDir, f), "utf8"); } catch { /* fallthrough */ }
                 const schemaMatch = /(?:^|\n)schemaVersion:\s*(\S+)/.exec(raw);
                 const body = raw.replace(/^---\n[\s\S]*?\n---\n?/, "").trim();
-                if (schemaMatch && !["1", "2", "3", "4"].includes(schemaMatch[1])) {
+                if (schemaMatch && !["1", "2", "3", "4", "5"].includes(schemaMatch[1])) {
                     err(errors, "unsupported_agent_schema_version",
-                        `agents/${f}: schemaVersion ${schemaMatch[1]} is not supported (use 1, 2, 3, or 4)`, `agents/${f}`);
+                        `agents/${f}: schemaVersion ${schemaMatch[1]} is not supported (use 1, 2, 3, 4, or 5)`, `agents/${f}`);
                 } else if (!body) {
                     err(errors, "empty_agent_body",
                         `agents/${f}: the markdown body is empty — it becomes the agent's prompt and cannot be blank`, `agents/${f}`);
                 } else {
+                    const problem = agentFrontmatterProblem(raw);
                     err(errors, "invalid_agent",
-                        `agents/${f} failed to parse (check frontmatter and schemaVersion)`, `agents/${f}`);
+                        `agents/${f} failed to parse (check frontmatter and schemaVersion)${problem ? `: ${problem}` : ""}`, `agents/${f}`);
                 }
             }
         }
@@ -823,6 +833,13 @@ export async function validateAgentPackageDir(
             }
             for (const issue of validateAgentDefinition(agent)) {
                 err(errors, issue.code, `${file}: ${issue.message}`, file);
+            }
+            // Its schema files are read from this tree (the staged one for a
+            // manifest layout), so they must be in the package that is packed.
+            if (agent.workflowInterface !== undefined) {
+                const { exported, issues } = exportWorkflowInterface(rootDir, agent.workflowInterface);
+                for (const issue of issues) err(errors, issue.code, `${file}: ${issue.message}`, file);
+                if (exported) workflowInterfaces.set(agent, exported);
             }
             // Collision checks use the RESOLVER's normalization: the runtime
             // matches case/punctuation-insensitively with an "agent"-suffix
@@ -1009,6 +1026,7 @@ export async function validateAgentPackageDir(
                 initialRequiredTool: a.initialRequiredTool,
                 startedBy: a.startedBy,
                 supportsDirectStart: a.supportsDirectStart,
+                ...(workflowInterfaces.has(a) ? { workflowInterface: workflowInterfaces.get(a)! } : {}),
             })),
             skills: skills.map((s) => ({ name: s.name, description: s.description })),
             mcpServers: mcpServerNames,

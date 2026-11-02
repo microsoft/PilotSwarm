@@ -122,7 +122,7 @@ deadline is `timed_out`. The recipient answers with
 
 | Field | Rule |
 |---|---|
-| `invoke` | Required. `{ prompt: <text, at most 32 KB> }` or `{ agent: { name, package?, version? } }`; `version` needs `package`. |
+| `invoke` | Required. `{ prompt: <text, at most 32 KB> }` or `{ agent: { name, package?, version?, interface? } }`; `version` and `interface` need `package`. |
 | `timeoutSeconds` | Required. 1 to 86,400, or one binding. |
 | `input` | Optional template; checked against `inputSchema`. |
 | `inputSchema`, `outputSchema` | Optional. |
@@ -131,6 +131,15 @@ deadline is `timed_out`. The recipient answers with
 Output: the agent's validated output. The agent may report `needs_input` or
 `execution_failed`. The workflow decides `timed_out`, `invalid_output` (three
 invalid completions), `unavailable`, `forbidden` and `cancelled`.
+
+`interface: <name>@<version>` (for example `review_change@1`) names the
+workflow interface that the package agent exports. The state must declare
+`outputSchema`. At publication, and when a real-agent test starts, the
+state's outcomes and `outputSchema` must be exactly the interface's, and so
+must `inputSchema` when the interface has one. Copy the interface's schemas
+into `schemas` as they are, without `$ref`. A stricter or looser schema does
+not match. A mismatch refuses with `CONTRACT_MISMATCH` and its `problems`; a
+match pins the interface's digest with the package revision.
 
 ### parallel
 
@@ -169,8 +178,7 @@ both are required.
 ## Not supported: do not write
 
 `transition.function`, `transition.delaySeconds` (version 1 only; use a wait
-state), `invoke.agent.interface`, join states, quorum or any-of joins, a
-parallel state in a body, `inputSchema` or `outputSchema` on a receive,
+state), join states, quorum or any-of joins, a parallel state in a body, `inputSchema` or `outputSchema` on a receive,
 `parentNotification`, the request field `request`
 and the route `timeout`, and text around a binding.
 
@@ -227,6 +235,7 @@ execution_failed, message, details? }`.
 | `WORKFLOW_INPUT_INVALID`, `INPUT_INVALID` | Inputs or a payload do not match the schema; read the field errors. |
 | `RUN_STOP_UNSUPPORTED` | The run's controller does not stop gracefully; cancel it. |
 | `AGENT_UNAVAILABLE` | Publication could not pin a named agent. |
+| `CONTRACT_MISMATCH` | The state is not exactly its agent's workflow interface; read `problems`. |
 | `FORBIDDEN`, `WORKFLOW_NOT_FOUND` | Only the creating agent changes or reads its workflow child. |
 
 ## Example: review fan-out with bounded rework

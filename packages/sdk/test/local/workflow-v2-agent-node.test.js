@@ -116,15 +116,22 @@ describe("workflow v2 agent states: compiler and IR 8", () => {
             next: compiled.ir.nodes.review.next,
         });
 
-        // A named agent, pinned to a package and version; a version needs its package; an interface is not supported yet.
+        // A named agent, pinned to a package and version; a version needs its package; so does a workflow interface, which
+        // the IR keeps (publication matches it against the package's export: workflow-v2-agent-resolver.test.js).
         const named = compileWorkflowV2(AGENT_YAML({ invoke: `{ agent: { name: code-reviewer, package: review-kit, version: "1.2.0" } }` }), AGENTS);
         expect(named.valid, JSON.stringify(named.diagnostics)).toBe(true);
         expect(named.ir.nodes.review.invoke).toEqual({ agent: { name: "code-reviewer", package: "review-kit", version: "1.2.0" } });
         expect(compileWorkflowV2(AGENT_YAML({ invoke: `{ agent: { name: code-reviewer } }` }), AGENTS).ir.nodes.review.invoke)
             .toEqual({ agent: { name: "code-reviewer", package: null, version: null } });
+        const contracted = compileWorkflowV2(AGENT_YAML({ invoke: `{ agent: { name: code-reviewer, package: review-kit, interface: "review_change@1" } }` }), AGENTS);
+        expect(contracted.valid, JSON.stringify(contracted.diagnostics)).toBe(true);
+        expect(contracted.ir.nodes.review.invoke).toEqual({ agent: { name: "code-reviewer", package: "review-kit", version: null,
+            interface: { name: "review_change", version: "1" } } });
+        expect(parseWorkflowIr(JSON.parse(canonicalJson(contracted.ir)), { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION })).toEqual(contracted.ir);
         for (const [invoke, code, path] of [
             [`{ agent: { name: code-reviewer, version: "1.2.0" } }`, "WORKFLOW_FIELD_INVALID", "states.review.invoke.agent.version"],
-            [`{ agent: { name: code-reviewer, package: review-kit, interface: "review_change@1" } }`, "WORKFLOW_FEATURE_UNSUPPORTED",
+            [`{ agent: { name: code-reviewer, interface: "review_change@1" } }`, "WORKFLOW_FIELD_INVALID", "states.review.invoke.agent.interface"],
+            [`{ agent: { name: code-reviewer, package: review-kit, interface: "review_change" } }`, "WORKFLOW_FIELD_INVALID",
                 "states.review.invoke.agent.interface"],
             [`{ prompt: "${TASK}", agent: { name: code-reviewer } }`, "WORKFLOW_FIELD_INVALID", "states.review.invoke"],
             [`{}`, "WORKFLOW_FIELD_INVALID", "states.review.invoke"],

@@ -113,6 +113,12 @@ export type TerminalOutcome = typeof TERMINAL_OUTCOMES[number];
 export type RuntimeErrorCode = typeof RUNTIME_ERROR_CODES[number];
 
 const ID_PATTERN = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+/** A state id, route label or outcome: a letter, then up to 63 letters, digits, '_' or '-'. */
+export const WORKFLOW_V2_ID_PATTERN = ID_PATTERN;
+/** A package workflow interface's name, as `interface: <name>@<version>` names it (design 04, 09). */
+export const WORKFLOW_INTERFACE_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
+/** A package workflow interface's version label, such as `1`. */
+export const WORKFLOW_INTERFACE_VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,31}$/;
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
 const V2_MARKER = /^apiVersion:\s*["']?pilotswarm\.dev\/v2-draft["']?\s*(?:#.*)?$/m;
 
@@ -250,8 +256,12 @@ export interface WorkflowIRAgent {
     id: string;
     type: "agent";
     description: string | null;
-    /** Exactly one task source: an inline prompt, or a named agent definition (resolved when the state is entered, then pinned). */
-    invoke: { prompt: string } | { agent: { name: string; package: string | null; version: string | null } };
+    /**
+     * Exactly one task source: an inline prompt, or a named agent definition (resolved when the state is entered, then
+     * pinned). A package agent may also name the workflow interface it exports (present only when named): publication
+     * then requires the state's contract to match that interface exactly and pins its digest (package-interface.ts).
+     */
+    invoke: { prompt: string } | { agent: { name: string; package: string | null; version: string | null; interface?: { name: string; version: string } } };
     /** The state's input: the input binding's value, or without one the value that arrived. */
     hasInput: boolean;
     input: JsonValue;
@@ -806,15 +816,29 @@ function compileMessaging(id: string, raw: Record<string, unknown>, nodeIds: Rea
 /** An agent definition's name, or its package's: a letter or digit, then up to 127 letters, digits, '_', '.' or '-'. */
 const AGENT_NAME_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/;
 
+/** `name@version`, as an agent state names a package's workflow interface (design 09: `interface: review_change@1`); null when it is not one. */
+export function parseWorkflowInterfaceRef(text: unknown): { name: string; version: string } | null {
+    if (typeof text !== "string") return null;
+    const at = text.lastIndexOf("@");
+    if (at <= 0) return null;
+    const name = text.slice(0, at);
+    const version = text.slice(at + 1);
+    return WORKFLOW_INTERFACE_NAME_PATTERN.test(name) && WORKFLOW_INTERFACE_VERSION_PATTERN.test(version) ? { name, version } : null;
+}
+
 /**
  * An agent state (IR 8; enabled only with enableAgents): an ordinary child
  * agent session (the standard base, normal capabilities) given the state's
  * input in a host-generated wrapper. `invoke` names exactly one task
- * source: an inline `prompt`, or `agent: {name, package?, version?}`, a
- * visible agent definition resolved when the state is entered and pinned
- * for that entry (a package's workflow interface is not supported yet:
- * the state's own inputSchema and outputSchema are its contract). The
- * agent finishes the state only with complete_workflow_node: one of its
+ * source: an inline `prompt`, or `agent: {name, package?, version?,
+ * interface?}`, a visible agent definition resolved when the state is
+ * entered and pinned for that entry. The state's own inputSchema and
+ * outputSchema are its contract. `interface: <name>@<version>` (it needs
+ * `package` and an outputSchema) names the workflow interface the package
+ * agent exports: publication then requires the state's outcomes and
+ * schemas to be exactly the interface's (CONTRACT_MISMATCH otherwise) and
+ * pins the interface's digest; nothing is inferred here. The agent
+ * finishes the state only with complete_workflow_node: one of its
  * outcomes (declared, or by default its routes that are not runtime
  * routes) with an output that satisfies outputSchema, or needs_input or
  * execution_failed. timeoutSeconds is its outer deadline (timed_out).
@@ -824,6 +848,7 @@ function compileAgent(id: string, raw: Record<string, unknown>, nodeIds: Readonl
     const path = `states.${id}`;
     checkKeys(raw, ["type", "description", "invoke", "input", "inputSchema", "outputSchema", "outcomes", "timeoutSeconds", "transition"], path, diagnostics);
     let invoke: WorkflowIRAgent["invoke"] | null = null;
+    let namesInterface = false;
     if (!isJsonObject(raw.invoke)) {
         diagnostics.error("WORKFLOW_FIELD_REQUIRED", `${path}.invoke`, "an agent state needs invoke: { prompt: <task> } or { agent: { name: <agent> } }.");
     } else {
@@ -840,12 +865,18 @@ function compileAgent(id: string, raw: Record<string, unknown>, nodeIds: Readonl
             const agent = raw.invoke.agent;
             const agentPath = `${path}.invoke.agent`;
             if (!isJsonObject(agent)) {
-                diagnostics.error("WORKFLOW_FIELD_INVALID", agentPath, "agent must be { name: <agent>, package?: <package>, version?: <semver> }.");
+                diagnostics.error("WORKFLOW_FIELD_INVALID", agentPath, "agent must be { name: <agent>, package?: <package>, version?: <semver>, interface?: <name>@<version> }.");
             } else {
                 checkKeys(agent, ["name", "package", "version", "interface"], agentPath, diagnostics);
+                let iface: { name: string; version: string } | null = null;
                 if (agent.interface !== undefined) {
-                    diagnostics.error("WORKFLOW_FEATURE_UNSUPPORTED", `${agentPath}.interface`,
-                        "a package's workflow interface is not supported yet; declare the state's inputSchema and outputSchema instead.");
+                    namesInterface = true;
+                    iface = parseWorkflowInterfaceRef(agent.interface);
+                    if (iface === null) {
+                        diagnostics.error("WORKFLOW_FIELD_INVALID", `${agentPath}.interface`,
+                            "agent.interface must be <name>@<version> of the workflow interface its package agent exports, such as review_change@1.");
+                    }
+                    if (agent.package === undefined) diagnostics.error("WORKFLOW_FIELD_INVALID", `${agentPath}.interface`, "agent.interface needs agent.package.");
                 }
                 const name = typeof agent.name === "string" && AGENT_NAME_PATTERN.test(agent.name) ? agent.name : null;
                 if (name === null) diagnostics.error("WORKFLOW_FIELD_INVALID", `${agentPath}.name`, "agent.name must name an agent: a letter or digit, then letters, digits, '_', '.' or '-'.");
@@ -860,7 +891,7 @@ function compileAgent(id: string, raw: Record<string, unknown>, nodeIds: Readonl
                     else diagnostics.error("WORKFLOW_SEMVER_INVALID", `${agentPath}.version`, "agent.version must be a semantic version string (quote it in YAML).");
                     if (agent.package === undefined) diagnostics.error("WORKFLOW_FIELD_INVALID", `${agentPath}.version`, "agent.version needs agent.package.");
                 }
-                if (name !== null) invoke = { agent: { name, package: packageName, version } };
+                if (name !== null) invoke = { agent: { name, package: packageName, version, ...(iface !== null ? { interface: iface } : {}) } };
             }
         }
     }
@@ -868,6 +899,10 @@ function compileAgent(id: string, raw: Record<string, unknown>, nodeIds: Readonl
     const input = hasInput ? bindingValue(raw.input, `${path}.input`, diagnostics) : null;
     const inputSchema = schemaField(raw.inputSchema, `node.${id}.input`, `${path}.inputSchema`, schemas, diagnostics);
     const outputSchema = schemaField(raw.outputSchema, `node.${id}.output`, `${path}.outputSchema`, schemas, diagnostics);
+    if (namesInterface && raw.outputSchema === undefined) {
+        diagnostics.error("WORKFLOW_FIELD_REQUIRED", `${path}.outputSchema`,
+            "a state that names a workflow interface declares its outputSchema: the interface's output schema, exactly.");
+    }
     const timeoutSeconds = secondsField(raw.timeoutSeconds, `${path}.timeoutSeconds`, diagnostics, "timeoutSeconds");
     const next = compileRoutes(raw, path, "an agent state", nodeIds, diagnostics);
     let outcomes: string[];
@@ -1540,18 +1575,26 @@ export function parseWorkflowIr(value: JsonValue, options: { maxIrVersion?: numb
         } else if (node.type === "agent") {
             const invoke = node.invoke;
             const agent = isJsonObject(invoke) && isJsonObject(invoke.agent) ? invoke.agent : null;
+            // A named package agent may name its workflow interface (present only when named, with its package).
+            const storedInterface = agent !== null && Object.hasOwn(agent, "interface") ? agent.interface : undefined;
+            const validInterface = storedInterface === undefined || (isJsonObject(storedInterface) && Object.keys(storedInterface).length === 2
+                && typeof storedInterface.name === "string" && WORKFLOW_INTERFACE_NAME_PATTERN.test(storedInterface.name)
+                && typeof storedInterface.version === "string" && WORKFLOW_INTERFACE_VERSION_PATTERN.test(storedInterface.version)
+                && typeof agent?.package === "string");
             const validInvoke = isJsonObject(invoke) && Object.keys(invoke).length === 1
-                && (typeof invoke.prompt === "string" || (agent !== null && Object.keys(agent).length === 3 && typeof agent.name === "string"
-                    && nullableString(agent.package) && nullableString(agent.version)));
+                && (typeof invoke.prompt === "string" || (agent !== null && Object.keys(agent).length === (storedInterface === undefined ? 3 : 4)
+                    && typeof agent.name === "string" && nullableString(agent.package) && nullableString(agent.version) && validInterface));
             const timeoutSeconds = node.timeoutSeconds;
             need(irVersion >= WORKFLOW_V2_AGENT_IR_VERSION && validInvoke && typeof node.hasInput === "boolean" && Object.hasOwn(node, "input")
                 && nullableString(node.inputSchema) && nullableString(node.outputSchema) && stringArray(node.outcomes) && node.outcomes.length > 0
                 && (typeof timeoutSeconds === "number" || typeof timeoutSeconds === "string") && stringMap(node.next),
                 `stored IR agent state ${id} is invalid`);
+            const named = isJsonObject(storedInterface) ? { name: storedInterface.name as string, version: storedInterface.version as string } : null;
             nodes[id] = {
                 id, type: "agent", description: node.description,
                 invoke: agent !== null
-                    ? { agent: { name: agent.name as string, package: agent.package as string | null, version: agent.version as string | null } }
+                    ? { agent: { name: agent.name as string, package: agent.package as string | null, version: agent.version as string | null,
+                        ...(named !== null ? { interface: named } : {}) } }
                     : { prompt: (invoke as { prompt: string }).prompt },
                 hasInput: node.hasInput, input: node.input, inputSchema: node.inputSchema, outputSchema: node.outputSchema,
                 outcomes: node.outcomes, timeoutSeconds, next: node.next,

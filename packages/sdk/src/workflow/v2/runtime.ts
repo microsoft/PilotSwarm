@@ -2174,7 +2174,9 @@ export function describeWorkflowV2State(node: WorkflowIRNode): { [key: string]: 
         return {
             id: node.id, type: "agent",
             invoke: "prompt" in node.invoke ? { source: "prompt" }
-                : { source: "agent", name: node.invoke.agent.name, package: node.invoke.agent.package, version: node.invoke.agent.version },
+                : { source: "agent", name: node.invoke.agent.name, package: node.invoke.agent.package, version: node.invoke.agent.version,
+                    ...(node.invoke.agent.interface !== undefined
+                        ? { interface: `${node.invoke.agent.interface.name}@${node.invoke.agent.interface.version}` } : {}) },
             timeoutSeconds: node.timeoutSeconds, outcomes: node.outcomes, next: node.next,
         };
     }

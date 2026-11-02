@@ -132,9 +132,10 @@ review:
   `agent.childSessionId`, the session a click on the state opens, and its
   lifecycle (spawned, end, end sent).
 
-Not yet covered here: human-input denial and the depth allowance for the
-node agent's own child (B5), the UI read model and click-through (B9), and
-package workflow interfaces. A worker created with the test-only option
+Human-input denial and the depth allowance for the node agent's own child
+(B5) and the UI read model and click-through (B9) have their own sections
+below; so do package workflow interfaces ("Package workflow interfaces"). A
+worker created with the test-only option
 `testOptions.workflowRequests` runs agent states with its own agent host
 ("A worker that runs the milestone" below); an agent state has run there
 with a scripted model, not yet with a live provider.
@@ -501,9 +502,105 @@ keeps its pin and everyone else keeps the active version. A person's
 publication pins package agents only (the management client does not see a
 worker's deployment agents). A real-agent test run of a draft
 revision is pinned when it is admitted, as its publication would be
-(migration 0101; see "Real agents" above). Also not covered:
-package interface digests (`interface:` is refused at compile) and a
-publication gate on declared test scenarios (not in the YAML design).
+(migration 0101; see "Real agents" above). A package agent's workflow
+interface is matched and its digest pinned too ("Package workflow
+interfaces" below). Not covered: a publication gate on declared test
+scenarios (not in the YAML design).
+
+## Package workflow interfaces (design 04 package-agent I/O export, 03, 09; R09, T011, T071, M17)
+
+INACTIVE in effect: only Workflow V2 publication reads an interface, and
+only the hosts that run controller 1.9.0 publish agent states. The package
+format support below is in the loader and the package validator of this
+build.
+
+- **Declaration (`agent-loader.ts`).** A package agent declares the
+  interface in its front matter, at `schemaVersion: 5`:
+  `workflowInterface:` with two-space-indented `name`, `version` (a quoted
+  label such as `"1"`), `outputSchema`, optional `inputSchema` (package
+  files, relative to the package root) and `outcomes` (an inline list or
+  `- item` lines). The loader parses the mapping out of the front matter as
+  it does `nativeTaskTools`; a malformed or duplicate entry fails the
+  agent's parse, and the package validator names that reason. A
+  declaration under schemaVersion 1 to 4 is refused
+  (`workflow_interface_requires_schema_v5`). Version 5 keeps what 2 to 4
+  declare (`nativeTaskTools` and `initialRequiredTool` are taken at 5 too).
+  A worker that does not know version 5 skips the agent, as for every new
+  schemaVersion; nothing is dropped silently.
+- **Export (`package-interface.ts`, `agent-package-format.ts`).** The
+  package validator reads each schema file from the tree that is packed
+  (the staged tree of a manifest layout, so its files must be listed under
+  `include`): a relative path inside the package (no `..`, absolute path,
+  URL scheme, backslash, symbolic link or directory, and its real path
+  inside the package), at most 64 KiB of JSON, a workflow JSON Schema
+  (`normalizeSchema`'s rules) that stands alone (no `$ref`) and compiles
+  (strict Ajv). The outcomes are 1 to 32 distinct labels that are not
+  runtime routes. A problem is a validation error
+  (`invalid_workflow_interface` for the declaration's fields,
+  `workflow_interface_schema` for a file), so no package is published with
+  it. The manifest entry of that agent gets `workflowInterface: { name,
+  version, inputSchema (or null), outputSchema, outcomes, digest }`, where
+  `digest` is the SHA-256 of the canonical JSON of the other five fields.
+  An agent without an interface has no such field: other manifests are
+  unchanged.
+- **Registry.** The manifest is kept with each published version, so the
+  interface of an exact package revision never changes. The agent resolver
+  carries the export of the revision it resolves (`workflowInterface` on
+  the definition), unchecked; publication checks it.
+- **Workflow.** An agent state names the interface:
+  `invoke.agent.interface: <name>@<version>` (for example
+  `review_change@1`). It needs `package` and an `outputSchema`
+  (`WORKFLOW_FIELD_INVALID`, `WORKFLOW_FIELD_REQUIRED`). IR 8 keeps it as
+  `invoke.agent.interface: { name, version }` only when it is named, so
+  every other IR and its hash are as before; the stored-IR reader takes it
+  (with a package) and refuses any other shape. IR 8 has not been released,
+  so this needs no new IR version. The read view's graph shows it on the
+  state's `invoke` (`interface: "review_change@1"`).
+- **Publication (`service.ts` `publicationAgentPins`).** After the agent is
+  resolved and its package and version are checked, a state that names an
+  interface is pinned only when the agent exports that interface at the
+  resolved revision and the state's contract is exactly the interface's:
+  the same outcome set, the same output schema (`schemaDefs` of the state's
+  `outputSchema`, compared as canonical JSON), and the same input schema
+  when the interface has one. Nothing is inferred: a stricter or a looser
+  schema, or a workflow schema that refers to another one, does not match.
+  Otherwise the publication is refused with `CONTRACT_MISMATCH` (409)
+  before anything is written; its details are the state, agent, package,
+  named version, interface, the resolved package version and every
+  problem (an agent that exports no interface, another name or version, a
+  record whose digest does not match, the outcomes, either schema). A match
+  adds `interface: { name, version, digest }` to the state's pin, beside the
+  package id and exact revision. A real-agent test of a draft is pinned
+  the same way, so it is refused the same way. A host that does not
+  resolve agents refuses a state that names an interface
+  (`AGENT_UNAVAILABLE`), since it cannot check it.
+- **Runtime.** Unchanged: the run binds the child to the pinned revision
+  (R18), whose interface cannot change, and checks the child's output
+  against the state's own `outputSchema`, which is the interface's.
+- **Compatibility.** A publication without an interface, its pins and its
+  runs are as before (a pin's extra `interface` field is ignored by the
+  binding). A package without a `workflowInterface`, at schemaVersion 1 to
+  4, validates, publishes and installs as before.
+
+Tests: `workflow-v2-package-interface.test.mjs` (declaration, export, files,
+read-back, compiler and stored IR, the exact-match rules, front matter),
+`agent-package-format.test.mjs` (the manifest export, the version and file
+refusals, a manifest layout's `include`), `agent-mcp-servers.test.mjs`
+(version 5 loads), `workflow-v2-agent-resolver.test.mjs` (the definition
+carries the export), and on PostgreSQL `workflow-v2-agent-resolver.test.js`
+(a person's publication: digest pinned with the revision; mismatch,
+missing and forged exports refused; a republish keeps the pin; a real-agent
+test refused) and `workflow-v2-agent-node.test.js` (the compiler).
+
+Not covered (required, not waived): an authoring agent cannot yet discover
+which interface a package agent exports, or its schemas, through the agent
+catalog (`ps_list_agents`); only the registry's package manifest holds it.
+The portal and TUI do not show a state's interface or the pinned digest. A
+run on a worker is not yet exercised with an interface-pinned publication
+(its binding is the revision's, unchanged). No adapter maps a workflow
+schema to an interface other than exact equality. The interface schemas
+ride the install manifest that every worker reads (at most 64 KiB per
+schema file).
 
 ## Surfaces: what each one shows and takes (design 04, 07; R13, R23, R26)
 
@@ -899,8 +996,8 @@ Three on-demand skills in `packages/sdk/plugins/workflow-v2/skills`:
   fixtures, the virtual clock, test evidence and scenario planning.
 
 Each skill describes the implemented syntax only; the design examples'
-`transition.function`, `interface`, `request:` and `timeout` spellings are
-listed as not supported. Each complete example (`# example:` blocks) is
+`transition.function`, `request:` and `timeout` spellings are listed as not
+supported; `interface` is documented with the agent state. Each complete example (`# example:` blocks) is
 compiled by a unit test with the milestone options and has no diagnostics;
 together they use every state type.
 
