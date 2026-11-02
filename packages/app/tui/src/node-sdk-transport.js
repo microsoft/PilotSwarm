@@ -1142,6 +1142,15 @@ export class NodeSdkTransport {
         return this.mgmt.updateWorkflow(sessionId, command, { principal });
     }
 
+    /**
+     * Workflow support as this host takes it now (design 04, D11): what the
+     * portal's bootstrap advertises as `workflows`, from the management
+     * client's configuration (getWorkflowCapabilities). It changes nothing.
+     */
+    async getWorkflowCapabilities() {
+        return this.mgmt.getWorkflowCapabilities();
+    }
+
     async setSessionWorkspace(sessionId, input = {}, options = {}) {
         return this.mgmt.setSessionWorkspace(sessionId, input, options);
     }

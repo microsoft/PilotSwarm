@@ -354,6 +354,16 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("updateWorkflow", { sessionId, command });
     }
 
+    /**
+     * Workflow support as the server advertises it in its bootstrap (design
+     * 04, D11; the direct client's getWorkflowCapabilities): its `workflows`
+     * field, or null from a server that advertises none (an older server).
+     */
+    async getWorkflowCapabilities(): Promise<Record<string, unknown> | null> {
+        const workflows = (await this._api.getBootstrap())?.workflows;
+        return workflows !== null && typeof workflows === "object" && !Array.isArray(workflows) ? workflows : null;
+    }
+
     /** Session workspaces: set or clear the workspace (external flow). */
     async setSessionWorkspace(
         sessionId: string,

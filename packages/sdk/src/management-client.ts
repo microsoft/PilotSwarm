@@ -162,7 +162,7 @@ import {
 } from "./system-agents.js";
 import type { ArtifactStore } from "./session-store.js";
 import { readWorkflowV2View } from "./workflow/v2/tools.js";
-import { updateWorkflowForPerson, workflowCommandsForPerson, workflowCommandStatus } from "./workflow/v2/human-commands.js";
+import { updateWorkflowForPerson, workflowCapabilities, workflowCommandsForPerson, workflowCommandStatus } from "./workflow/v2/human-commands.js";
 import { createRegistryWorkflowAgentResolver } from "./workflow/v2/agent-resolver.js";
 import { assertWorkflowHumanInputAllowed, workflowInputCapabilities, type WorkflowInputCapabilities } from "./workflow/v2/input-policy.js";
 import { WorkflowStoreError, type WorkflowActor } from "./workflow/v2/store.js";
@@ -1988,6 +1988,25 @@ export class PilotSwarmManagementClient {
             if ((error as { code?: unknown })?.code === "WORKFLOW_HUMAN_INPUT_DENIED") throw Object.assign(error as Error, { exposeDetails: true });
             throw error;
         }
+    }
+
+    /**
+     * Workflow support as this client's host takes it now (design 04
+     * "Advertise capability/version in bootstrap"; D11), for a server's
+     * bootstrap and any client that gates its workflow surface
+     * (workflowCapabilities, human-commands.ts): version 2 reads when the
+     * catalog has a workflow store; a person's commands only with the
+     * test-only option `workflowCommands` (INACTIVE; otherwise the refusal
+     * every command gets), with the controller version the runs they start run
+     * at and the operations they take. It reports configuration and changes
+     * nothing. Async, as the Web client's answer is (from the server's
+     * bootstrap).
+     */
+    async getWorkflowCapabilities(): Promise<Record<string, unknown> | null> {
+        return workflowCapabilities({
+            read: typeof this._catalog?.workflowStore === "function",
+            commands: this.config?.workflowCommands ?? null,
+        });
     }
 
     /**

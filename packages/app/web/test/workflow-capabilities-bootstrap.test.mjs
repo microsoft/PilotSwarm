@@ -1,0 +1,135 @@
+/**
+ * Workflow support in the bootstrap (design 04 "Advertise capability/version
+ * in bootstrap"; D11): GET /api/v1/bootstrap carries `workflows`, what the
+ * deployment takes now, so a client gates its workflow surface before a call
+ * is refused. It is the management client's own answer
+ * (getWorkflowCapabilities) through the real NodeSdkTransport and
+ * PortalRuntime.getBootstrap, over a stand-in catalog (no database):
+ * - as a deployment is configured today (no workflowCommands): version 2
+ *   reads on, a person's commands off, with the refusal that every command
+ *   then gets, which is the refusal the real adapter gives;
+ * - with the test-only option (INACTIVE): the controller version the runs
+ *   start at and the operations a person may send (1.8.0, or 1.9.0 with
+ *   stop and the test operations);
+ * - the legacy create keeps its version 1 semantics (never a v2 draft);
+ * - an older host without the getter advertises nothing (null).
+ * Both HTTP-backed clients read the same value back over real fetch. The
+ * route names are unchanged (their final names are API review item D11).
+ *
+ * Run: node --test web/test/workflow-capabilities-bootstrap.test.mjs
+ */
+import test from "node:test";
+import assert from "node:assert/strict";
+import http from "node:http";
+import express from "express";
+import { NodeSdkTransport } from "pilotswarm/host";
+import { PilotSwarmManagementClient, WebPilotSwarmManagementClient } from "pilotswarm-sdk";
+import { ApiClient, HttpApiTransport } from "pilotswarm-sdk/api";
+
+import { createApiRouter } from "../api/router.js";
+import { PortalRuntime } from "../runtime.js";
+
+const EVERY_HOST = ["replace_definition", "publish", "publish_and_start", "start", "set_vars", "pause", "resume", "cancel"];
+const MILESTONE = ["stop", "test", "test_respond", "test_advance"];
+
+/**
+ * The actual bootstrap route over the real runtime and transport getter, with a management client stand-in that answers
+ * with the real method: its catalog has a workflow store, and its options are `config` (none: a deployment's).
+ */
+async function bootstrapHarness({ config, getter = true } = {}) {
+    const mgmt = {
+        _ensureStarted() {},
+        _catalog: {
+            workflowStore: () => ({}),
+            getSession: async (sessionId) => ({ sessionId, sessionKind: "workflow", deletedAt: null }),
+        },
+        config: config ?? {},
+        getWorkflowCapabilities() { return PilotSwarmManagementClient.prototype.getWorkflowCapabilities.call(this); },
+        updateWorkflow(...args) { return PilotSwarmManagementClient.prototype.updateWorkflow.apply(this, args); },
+    };
+    const runtime = new PortalRuntime({ store: "sqlite::memory:", mode: "local" });
+    runtime.start = async () => {};
+    runtime.transport = getter ? { getWorkflowCapabilities: (...args) => NodeSdkTransport.prototype.getWorkflowCapabilities.apply({ mgmt }, args) } : {};
+    const requireAuth = (req, _res, next) => {
+        req.auth = { principal: { provider: "dev", subject: "alice" }, authorization: { allowed: true, role: "user", reason: "test", matchedGroups: [] } };
+        next();
+    };
+    const app = express();
+    app.use(express.json());
+    app.use("/api/v1", createApiRouter({ runtime, requireAuth }));
+    const server = http.createServer(app);
+    await new Promise((resolve) => server.listen(0, resolve));
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    const bootstrap = async () => {
+        const response = await fetch(`${origin}/api/v1/bootstrap`);
+        assert.equal(response.status, 200);
+        return response.json();
+    };
+    return { mgmt, origin, bootstrap, close: () => new Promise((resolve) => server.close(resolve)) };
+}
+
+test("a deployment as configured today advertises version 2 reads and a person's commands off, with the refusal they get", async () => {
+    const h = await bootstrapHarness();
+    try {
+        const body = await h.bootstrap();
+        assert.equal(body.ok, true);
+        assert.deepEqual(body.workflows, {
+            schema: 1,
+            v2: {
+                apiVersion: "pilotswarm.dev/v2-draft", read: true, create: false, input: false,
+                commands: { available: false, refusal: { code: "WORKFLOW_COMMANDS_UNAVAILABLE", status: 501 } },
+            },
+            legacyCreate: { workflowVersion: 1, draft: false },
+        });
+        // The advertised refusal is the adapter's own: a person's command to this deployment changes nothing and gets it.
+        await assert.rejects(h.mgmt.updateWorkflow("wf1", { operation: "pause", operation_id: "p-1" }, { principal: null }), (error) => {
+            assert.deepEqual({ code: error.code, status: error.status }, body.workflows.v2.commands.refusal);
+            return true;
+        });
+    } finally {
+        await h.close();
+    }
+});
+
+test("with the test-only option, it advertises the controller version and the operations a person may send", async () => {
+    for (const [config, controllerVersion, operations] of [
+        [{ workflowCommands: {} }, "1.8.0", EVERY_HOST],
+        [{ workflowCommands: { requests: false } }, "1.8.0", EVERY_HOST],
+        [{ workflowCommands: { requests: true } }, "1.9.0", [...EVERY_HOST, ...MILESTONE]],
+    ]) {
+        const h = await bootstrapHarness({ config });
+        try {
+            const { workflows } = await h.bootstrap();
+            assert.deepEqual(workflows.v2.commands, { available: true, controllerVersion, operations }, JSON.stringify(config));
+            assert.equal(workflows.v2.read, true);
+            assert.ok(!workflows.v2.commands.operations.includes("recover"), "recover stays the agent's");
+            assert.deepEqual(workflows.legacyCreate, { workflowVersion: 1, draft: false });
+        } finally {
+            await h.close();
+        }
+    }
+});
+
+test("both HTTP-backed clients read the advertisement back, and an older host advertises none", async () => {
+    const h = await bootstrapHarness({ config: { workflowCommands: { requests: true } } });
+    try {
+        const advertised = (await h.bootstrap()).workflows;
+        const api = () => new ApiClient({ apiUrl: h.origin });
+        const transport = new HttpApiTransport({ api: api() });
+        await transport.start();
+        assert.deepEqual(await transport.getWorkflowCapabilities(), advertised);
+        assert.deepEqual(await new WebPilotSwarmManagementClient({ api: api() }).getWorkflowCapabilities(), advertised);
+    } finally {
+        await h.close();
+    }
+    const older = await bootstrapHarness({ getter: false });
+    try {
+        assert.equal((await older.bootstrap()).workflows, null);
+        const transport = new HttpApiTransport({ api: new ApiClient({ apiUrl: older.origin }) });
+        await transport.start();
+        assert.equal(await transport.getWorkflowCapabilities(), null);
+        assert.equal(await new WebPilotSwarmManagementClient({ api: new ApiClient({ apiUrl: older.origin }) }).getWorkflowCapabilities(), null);
+    } finally {
+        await older.close();
+    }
+});

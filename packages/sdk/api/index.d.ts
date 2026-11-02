@@ -131,6 +131,8 @@ export declare class HttpApiTransport {
     start(): Promise<void>;
     stop(): Promise<void>;
     getLive(sessionId: string, topics?: string[]): Promise<LiveStateRow[]>;
+    /** Workflow support the server advertised in its bootstrap (design 04, D11), or null from a server that advertises none. */
+    getWorkflowCapabilities(): Promise<Record<string, unknown> | null>;
     [method: string]: any;
 }
 

@@ -93,6 +93,22 @@ test("every shim maps its positional arguments onto the right wire call", async 
     }
 });
 
+test("getWorkflowCapabilities reads the server's bootstrap advertisement, or null from a server that has none", async () => {
+    const workflows = { schema: 1, v2: { read: true, commands: { available: false } } };
+    for (const [bootstrap, expected] of [
+        [{ ok: true, workflows }, workflows],
+        [{ ok: true }, null],
+        [{ ok: true, workflows: null }, null],
+        [{ ok: true, workflows: ["v2"] }, null],
+        [{ ok: true, workflows: "v2" }, null],
+    ]) {
+        const { client, calls } = clientWithFakeApi();
+        client._api.getBootstrap = async () => bootstrap;
+        assert.deepEqual(await client.getWorkflowCapabilities(), expected);
+        assert.deepEqual(calls, [], "no operation call: the bootstrap is the source");
+    }
+});
+
 test("placeSessionsInGroup accepts both calling conventions", async () => {
     const { client, calls } = clientWithFakeApi();
 

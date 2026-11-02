@@ -11,13 +11,24 @@
  *   brakes (403 WORKFLOW_HUMAN_INPUT_DENIED with its details); a brake is not
  *   checked against the lineage and reaches the tool's own command parsing,
  *   as every command of a workflow outside such a subtree does.
+ * - The workflow support a server advertises in its bootstrap (design 04,
+ *   D11): what the host was configured with, a person's commands off by
+ *   default with the refusal each then gets, the controller version and
+ *   operations when they are on, and the legacy create's version 1 semantics;
+ *   the management client answers from its own configuration and catalog.
  *
  * Run: node --test test/unit/workflow-v2-human-commands.test.mjs
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { updateWorkflowForPerson, workflowCommandStatus, WORKFLOW_HUMAN_BRAKE_OPERATIONS } from "../../dist/workflow/v2/human-commands.js";
+import {
+    updateWorkflowForPerson, workflowCapabilities, workflowCommandStatus, WORKFLOW_CAPABILITIES_SCHEMA, WORKFLOW_HUMAN_BRAKE_OPERATIONS,
+    WORKFLOW_HUMAN_MILESTONE_OPERATIONS, WORKFLOW_HUMAN_OPERATIONS,
+} from "../../dist/workflow/v2/human-commands.js";
 import { WORKFLOW_HUMAN_INPUT_DENIED } from "../../dist/workflow/v2/input-policy.js";
+import { WORKFLOW_V2_API_VERSION } from "../../dist/workflow/v2/compiler.js";
+import { WORKFLOW_V2_CONTROLLER_VERSION, WORKFLOW_V2_REQUEST_CONTROLLER_VERSION } from "../../dist/workflow/v2/runtime.js";
+import { PilotSwarmManagementClient } from "../../dist/management-client.js";
 
 const PERSON = { kind: "user", provider: "test", subject: "alice" };
 const ROOT = { childSessionId: "C", nodeExecutionId: "nx-1", workflowSessionId: "W1", controllingSessionId: "P", distance: 1 };
@@ -87,4 +98,51 @@ test("lets a person only brake a workflow in an agent state's subtree", async ()
     // Outside such a subtree every command reaches the tool's own parsing.
     await assert.rejects(updateWorkflowForPerson({ operation: "set_vars", operation_id: "o" }, { host, workflowSessionId: "W", actor: PERSON }),
         error => error.code === "WORKFLOW_COMMAND_INVALID" && /set_vars needs set or delete/.test(error.message));
+});
+
+test("advertises the workflow support the host was configured with: a person's commands off by default, with the refusal each gets", () => {
+    const off = workflowCapabilities({ read: true, commands: null });
+    assert.deepEqual(off, {
+        schema: WORKFLOW_CAPABILITIES_SCHEMA,
+        v2: {
+            apiVersion: WORKFLOW_V2_API_VERSION, read: true, create: false, input: false,
+            commands: { available: false, refusal: { code: "WORKFLOW_COMMANDS_UNAVAILABLE", status: 501 } },
+        },
+        legacyCreate: { workflowVersion: 1, draft: false },
+    });
+    assert.equal(off.v2.apiVersion, "pilotswarm.dev/v2-draft");
+    assert.deepEqual(workflowCapabilities({ read: true, commands: undefined }), off);
+    // Without a workflow store, reads are not advertised.
+    assert.equal(workflowCapabilities({ read: false, commands: null }).v2.read, false);
+    // On: the production controller and the operations every host takes; the 1.9.0 host's adds stop and the test operations.
+    assert.deepEqual(workflowCapabilities({ read: true, commands: {} }).v2.commands,
+        { available: true, controllerVersion: WORKFLOW_V2_CONTROLLER_VERSION, operations: [...WORKFLOW_HUMAN_OPERATIONS] });
+    assert.deepEqual(workflowCapabilities({ read: true, commands: { requests: false } }).v2.commands.controllerVersion, "1.8.0");
+    const milestone = workflowCapabilities({ read: true, commands: { requests: true } }).v2.commands;
+    assert.deepEqual(milestone, { available: true, controllerVersion: WORKFLOW_V2_REQUEST_CONTROLLER_VERSION,
+        operations: [...WORKFLOW_HUMAN_OPERATIONS, ...WORKFLOW_HUMAN_MILESTONE_OPERATIONS] });
+    assert.equal(milestone.controllerVersion, "1.9.0");
+    // recover stays the agent's: never advertised to a person.
+    assert.ok(!milestone.operations.includes("recover"));
+    // Each answer is a fresh value: a client that changes it changes nothing here.
+    milestone.operations.push("recover");
+    assert.ok(!workflowCapabilities({ read: true, commands: { requests: true } }).v2.commands.operations.includes("recover"));
+});
+
+test("the management client answers from its own configuration and catalog, before and after it starts", async () => {
+    const as = fields => Object.assign(Object.create(PilotSwarmManagementClient.prototype), fields);
+    // Not started (no catalog): no reads; a person's commands as configured.
+    assert.deepEqual(await as({ config: {}, _catalog: null }).getWorkflowCapabilities(), workflowCapabilities({ read: false, commands: null }));
+    // A catalog with a workflow store, and the production default (no workflowCommands): reads on, commands off.
+    const store = { workflowStore: () => ({}) };
+    assert.deepEqual(await as({ config: {}, _catalog: store }).getWorkflowCapabilities(), workflowCapabilities({ read: true, commands: null }));
+    // A catalog without one (no version 2 workflows here): reads off.
+    assert.equal((await as({ config: {}, _catalog: {} }).getWorkflowCapabilities()).v2.read, false);
+    // The test-only option, as the portal or MCP host would be created with it.
+    assert.deepEqual((await as({ config: { workflowCommands: { requests: true } }, _catalog: store }).getWorkflowCapabilities()).v2.commands,
+        workflowCapabilities({ read: true, commands: { requests: true } }).v2.commands);
+    assert.equal((await as({ config: { workflowCommands: {} }, _catalog: store }).getWorkflowCapabilities()).v2.commands.controllerVersion, "1.8.0");
+    // A real client, constructed as a deployment constructs it: commands off.
+    const client = new PilotSwarmManagementClient({ store: "postgres://capabilities.invalid/none" });
+    assert.equal((await client.getWorkflowCapabilities()).v2.commands.available, false);
 });

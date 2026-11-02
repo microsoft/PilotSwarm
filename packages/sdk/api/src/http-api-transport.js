@@ -104,6 +104,16 @@ export class HttpApiTransport {
         return this.bootstrap?.defaultModel || null;
     }
 
+    /**
+     * Workflow support as the server advertised it in its bootstrap (design
+     * 04, D11): its `workflows` field from the snapshot taken at start, or
+     * null from a server that advertises none.
+     */
+    async getWorkflowCapabilities() {
+        const workflows = this.bootstrap?.workflows;
+        return workflows !== null && typeof workflows === "object" && !Array.isArray(workflows) ? workflows : null;
+    }
+
     getAuthContext() {
         if (this.bootstrap?.auth) return { ...this.bootstrap.auth, adminScope: this.bootstrap.authz?.adminScope ?? "unrestricted" };
         return {

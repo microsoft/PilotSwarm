@@ -520,6 +520,7 @@ publication gate on declared test scenarios (not in the YAML design).
 | Portal workflow view publication review (INACTIVE: only with `personCommands`) | the definition's state, revision, definition hash, validity and runs | a person's `publish`, `publish_and_start` (exact revision and hash) or `start` (published hash), with JSON inputs and optional initial variables |
 | Portal and TUI composer, management client, SDK client | session access (`canSendPrompt`, `canAnswer`, `canSteer`) | human input, refused for an agent state's subtree at the SDK |
 | REST `POST /sessions/:id/workflow/commands`, SDK (direct and web) and TUI `updateWorkflow`, MCP `update_workflow` (INACTIVE: test-only option `workflowCommands`) | — | a person's `update_workflow` command (below) |
+| Bootstrap (`GET /api/bootstrap`, `/api/v1/bootstrap`), SDK `getWorkflowCapabilities` (direct and web), both transports | `workflows`: the workflow support the deployment takes now (below) | nothing |
 
 All read surfaces serve one projection (`readWorkflowV2View`), so they show
 the same agent child, branch, stop, test and pin fields. The shared UI
@@ -547,6 +548,26 @@ the same agent child, branch, stop, test and pin fields. The shared UI
 - **Run controls, variables, the draft editor, publication and test starts
   (R03, R04, R05, R17 to R20, R26, R28; mocks M01 to M04, M15, M16, M18 to
   M20; INACTIVE).** See below.
+
+**Capability advertisement (design 04 "Advertise capability/version in
+bootstrap"; D11).** The bootstrap carries `workflows`, what the deployment
+takes now, so a client gates its workflow surface before a call is refused
+(`workflowCapabilities`, `human-commands.ts`; the management client's
+`getWorkflowCapabilities`, which the portal runtime's bootstrap,
+`NodeSdkTransport`, `HttpApiTransport` and the Web management client
+expose). `v2.apiVersion` is the workflow document version; `v2.read` says
+whether `readWorkflow` reads version 2 workflows (false without a workflow
+store); `v2.create` and `v2.input` are false (a person creates no version 2
+workflow and sends it no typed input; its parent agent does); `v2.commands`
+is off as every deployment is configured today, naming the refusal each
+command gets (501 `WORKFLOW_COMMANDS_UNAVAILABLE`), and, with the test-only
+option `workflowCommands`, names the controller version the runs it starts
+run at (1.8.0, or 1.9.0 with `requests`) and the operations a person may
+send; `legacyCreate` says that `createWorkflowSession` keeps its version 1
+semantics and never makes a version 2 draft. It reports configuration only:
+it serves, registers and activates nothing, the route names are unchanged
+(their final names stay API review item D11), and the server decides every
+call again. An older server advertises none (null).
 
 **A person's workflow command (`updateWorkflow`; design 04, R26; INACTIVE).**
 The direct management client takes a person's command to a workflow

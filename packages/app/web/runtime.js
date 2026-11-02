@@ -680,6 +680,12 @@ export class PortalRuntime {
                 defaultVisibility: this.authz.defaultVisibility,
                 systemVisibility: this.authz.systemVisibility,
             },
+            // Workflow support (design 04 "Advertise capability/version in bootstrap"; D11): what this deployment takes now
+            // (version 2 reads, a person's commands off unless enabled, the legacy create's version 1 semantics), so clients
+            // gate their workflow surface before a call is refused. Configuration only; every call is decided again.
+            workflows: typeof this.transport.getWorkflowCapabilities === "function"
+                ? await this.transport.getWorkflowCapabilities()
+                : null,
         };
     }
 

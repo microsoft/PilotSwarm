@@ -82,6 +82,12 @@ describe("web api e2e", () => {
         assertEqual(bootstrap.ok, true, "bootstrap ok");
         assert(Array.isArray(bootstrap.modelsByProvider), "bootstrap carries models");
         assertNotNull(bootstrap.auth, "bootstrap carries auth context");
+        // Workflow support (design 04, D11) as a deployment is configured: version 2 reads, a person's commands off.
+        assertEqual(bootstrap.workflows?.v2?.read, true, "bootstrap advertises version 2 workflow reads");
+        assertEqual(bootstrap.workflows?.v2?.commands?.available, false, "a person's workflow commands are off by default");
+        assertEqual(bootstrap.workflows?.v2?.commands?.refusal?.code, "WORKFLOW_COMMANDS_UNAVAILABLE", "with the refusal every command gets");
+        assertEqual(JSON.stringify(await mgmt.getWorkflowCapabilities()), JSON.stringify(bootstrap.workflows),
+            "the web management client reads the same advertisement");
     });
 
     it("runs a real model turn through the SDK web client", { timeout: TIMEOUT }, async () => {
