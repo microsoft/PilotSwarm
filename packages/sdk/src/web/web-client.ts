@@ -77,6 +77,14 @@ export class WebPilotSwarmClient {
         return new WebPilotSwarmSession(view.sessionId, this._api, config?.onUserInputRequest);
     }
 
+    /**
+     * Not available over the Web API: a workflow session is always the
+     * child of an agent session, and agents start one with spawn_workflow.
+     */
+    async createWorkflowSession(_config?: unknown): Promise<never> {
+        throw webModeUnsupported("createWorkflowSession", "workflow sessions are started by agent sessions with spawn_workflow");
+    }
+
     async createSessionForAgent(agentName: string, opts?: {
         model?: string;
         reasoningEffort?: string;

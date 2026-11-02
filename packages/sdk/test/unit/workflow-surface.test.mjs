@@ -1,0 +1,540 @@
+/**
+ * Workflow surfaces: the spawn_workflow tool, the tools a script may
+ * call, the worker switch, the Web API operation and the compiler limits.
+ */
+import test from "node:test";
+import assert from "node:assert/strict";
+import { ManagedSession } from "../../dist/managed-session.js";
+import { SessionManager } from "../../dist/session-manager.js";
+import { findReservedPackageToolName } from "../../dist/reserved-tool-names.js";
+import { resolveWorkflowSettings } from "../../dist/worker.js";
+import {
+    buildParentNotification,
+    compileWorkflow,
+    WorkflowCompileError,
+    SPAWN_WORKFLOW_TOOL_SPEC,
+    workflowAwareSchedulingTool,
+    WORKFLOW_AWARE_CRON_DESCRIPTION,
+    WORKFLOW_AWARE_CRON_AT_DESCRIPTION,
+    WORKFLOW_MAX_YAML_BYTES,
+    workflowErrorMessage,
+    workflowStatusForOutcome,
+    spawnWorkflowFromTool,
+    workflowChildSessionId,
+} from "../../dist/workflow/index.js";
+import { OPERATIONS } from "../../api/src/protocol.js";
+import { NON_MANAGEMENT_OPERATION_OWNERS } from "../../api/src/surface-contract.js";
+
+const yaml = (stateExtra = "", stateId = "only") => `
+apiVersion: pilotswarm.dev/v1alpha1
+kind: Workflow
+metadata: { name: limits, version: 1.0.0 }
+initial: ${stateId}
+states:
+  ${stateId}:
+    type: script
+    runtime: python
+    source: print(1)
+${stateExtra}    completion: { outcomes: [success] }
+    transition: { next: { success: done } }
+  done: { type: terminal, outcome: succeeded }
+`;
+
+test("spawn_workflow is declared for agent sessions and carries the YAML contract", () => {
+    const defs = ManagedSession.subAgentToolDefs();
+    const tool = defs.find((def) => def.name === "spawn_workflow");
+    assert.ok(tool, "spawn_workflow must be declared beside spawn_agent");
+    assert.deepEqual(tool.parameters.required, ["yaml"]);
+    assert.deepEqual(Object.keys(tool.parameters.properties).sort(), ["inputs", "key", "notify_on_completion", "yaml"]);
+    for (const phrase of ["kind: Workflow", "type: script", "type: wait", "type: terminal", "completion: { outcomes:", "transition:", "call_tool", "callTool", "Invoke-PilotSwarmTool", "set_result", "cron"]) {
+        assert.ok(tool.description.includes(phrase), `description should mention ${phrase}`);
+    }
+    // Models are steered to put polling inside the workflow, not on an agent timer.
+    assert.match(tool.description, /call spawn_workflow ONCE\. Do not use cron or cron_at for it/);
+    assert.match(tool.description, /each cron wake-up costs a model turn/);
+    assert.match(tool.description, /every night at 02:00 do Z/);
+    assert.match(tool.description, /at: \{ hour: 2, minute: 0, tz: America\/Los_Angeles \}/);
+    assert.equal(tool.description, SPAWN_WORKFLOW_TOOL_SPEC.description);
+});
+
+test("where workflows run, cron and cron_at are for wake-ups that need the agent's judgment", () => {
+    const cron = { name: "cron", description: "Declare a recurring durable schedule.", parameters: { type: "object" } };
+    const aware = workflowAwareSchedulingTool(cron);
+    assert.equal(aware.description, WORKFLOW_AWARE_CRON_DESCRIPTION);
+    assert.deepEqual(aware.parameters, cron.parameters, "only the description changes");
+    assert.equal(cron.description, "Declare a recurring durable schedule.", "the original declaration is not changed");
+    assert.match(WORKFLOW_AWARE_CRON_DESCRIPTION, /^Wake THIS AGENT on a recurring interval\. Use it only when each wake-up needs this agent's own judgment/);
+    assert.match(WORKFLOW_AWARE_CRON_DESCRIPTION, /do NOT use cron: call spawn_workflow ONCE with a loop through a wait state/);
+    assert.doesNotMatch(WORKFLOW_AWARE_CRON_DESCRIPTION, /external polling/);
+    // The rules of the default wording are kept.
+    for (const rule of [/Do not use cron solely to poll sub-agent status/, /clarify that intent before setting cron/, /Minimum interval is 15 seconds/]) {
+        assert.match(WORKFLOW_AWARE_CRON_DESCRIPTION, rule);
+    }
+    const cronAt = workflowAwareSchedulingTool({ name: "cron_at", description: "x" });
+    assert.equal(cronAt.description, WORKFLOW_AWARE_CRON_AT_DESCRIPTION);
+    assert.match(WORKFLOW_AWARE_CRON_AT_DESCRIPTION, /do NOT use cron_at: call spawn_workflow ONCE with a loop through a wait state that has `at`/);
+    for (const rule of [/minute \(hourly\), minute\+hour \(daily\)/, /max_fires=1/, /Do NOT implement wall-clock schedules by polling/]) {
+        assert.match(WORKFLOW_AWARE_CRON_AT_DESCRIPTION, rule);
+    }
+    const other = { name: "wait", description: "w" };
+    assert.equal(workflowAwareSchedulingTool(other), other);
+});
+
+test("a package cannot shadow spawn_workflow", () => {
+    const platform = [...ManagedSession.systemToolDefs(), ...ManagedSession.subAgentToolDefs()].map((def) => def.name);
+    assert.equal(findReservedPackageToolName(["spawn_workflow"], platform, []), "spawn_workflow");
+});
+
+test("workflow scripts have no generic tool list: the session manager offers none", () => {
+    const manager = new SessionManager(undefined, null, {});
+    assert.equal(typeof manager.resolveScriptTools, "undefined");
+    assert.equal(typeof manager.scriptMcpServers, "undefined");
+    assert.equal(typeof manager.captureWorkflowToolBinding, "function");
+    assert.equal(typeof manager.openWorkflowToolExecutor, "function");
+});
+
+test("workflows run only the state types an operator lists; unset, blank or malformed turns them off", () => {
+    const types = (config, env) => [...resolveWorkflowSettings(config, env).stateTypes];
+    assert.deepEqual(types(undefined, {}), []);
+    assert.deepEqual(types(undefined, { PILOTSWARM_WORKFLOW_STATE_TYPES: "" }), []);
+    assert.deepEqual(types(undefined, { PILOTSWARM_WORKFLOW_STATE_TYPES: "  ,  " }), []);
+    assert.deepEqual(types(undefined, { PILOTSWARM_WORKFLOW_STATE_TYPES: "script" }), ["script"]);
+    assert.deepEqual(types(undefined, { PILOTSWARM_WORKFLOW_STATE_TYPES: " Script , script " }), ["script"]);
+    // Malformed: an unknown or empty entry turns workflows off and says why.
+    for (const value of ["scrpit", "script,agent", "script,,", "1", "true"]) {
+        const settings = resolveWorkflowSettings(undefined, { PILOTSWARM_WORKFLOW_STATE_TYPES: value });
+        assert.equal(settings.stateTypes.size, 0, value);
+        assert.match(settings.problem, /PILOTSWARM_WORKFLOW_STATE_TYPES lists .*; this worker runs only 'script'\. Workflows are off until the list is fixed\./, value);
+    }
+    // The old switch does nothing.
+    assert.deepEqual(types(undefined, { PILOTSWARM_WORKFLOW_SCRIPTS: "1" }), []);
+    // The worker option wins over the environment.
+    assert.deepEqual(types({ stateTypes: [] }, { PILOTSWARM_WORKFLOW_STATE_TYPES: "script" }), []);
+    assert.deepEqual(types({ stateTypes: ["script"] }, {}), ["script"]);
+    assert.match(resolveWorkflowSettings({ stateTypes: ["script", "agent"] }, {}).problem, /^workflows\.stateTypes lists 'agent'/);
+    assert.deepEqual(
+        resolveWorkflowSettings({ executables: { powershell: "/opt/pwsh" } }, { PILOTSWARM_WORKFLOW_PYTHON: "/usr/bin/python3.12" }).executables,
+        { python: "/usr/bin/python3.12", powershell: "/opt/pwsh" },
+    );
+});
+
+test("the Web API has no way to start a top-level workflow session", () => {
+    assert.equal(OPERATIONS.find((entry) => entry.name === "createWorkflowSession"), undefined);
+    assert.equal(OPERATIONS.some((entry) => /workflow/i.test(entry.path) && entry.method === "POST"), false);
+    assert.equal(NON_MANAGEMENT_OPERATION_OWNERS.createWorkflowSession, undefined);
+});
+
+test("the parent hears only the id, status, terminal outcome and step count, and is told to read the result", () => {
+    assert.equal(
+        buildParentNotification({ sessionId: "s1", workflowName: "nightly", status: "completed", outcome: "succeeded", summary: "Done.", stateId: "done", output: { n: 2 }, steps: 3, notifyParent: true }),
+        '[SYSTEM: Workflow s1 finished: completed, outcome "succeeded", 3 steps. Read its result with read_workflow_result("s1").]',
+    );
+    assert.equal(
+        buildParentNotification({ sessionId: "s1", workflowName: null, status: "failed", error: "boom", steps: 0, notifyParent: true }),
+        '[SYSTEM: Workflow s1 failed after 0 steps. Read its result with read_workflow_result("s1").]',
+    );
+    assert.equal(
+        buildParentNotification({ sessionId: "s1", workflowName: "n", status: "cancelled", reason: "no longer needed", steps: 1, notifyParent: true }),
+        '[SYSTEM: Workflow s1 was cancelled after 1 step. Read its result with read_workflow_result("s1").]',
+    );
+});
+
+test("a terminal outcome sets the session status", () => {
+    assert.equal(workflowStatusForOutcome("succeeded"), "completed");
+    assert.equal(workflowStatusForOutcome("blocked"), "completed");
+    assert.equal(workflowStatusForOutcome("failed"), "failed");
+    assert.equal(workflowStatusForOutcome("cancelled"), "cancelled");
+});
+
+test("activity error wrappers are removed from the reason people read", () => {
+    assert.equal(
+        workflowErrorMessage(new Error("Activity 'scriptWorkflow.runNode' JS execution failed: GenericFailure, Error: Script node 'x' timed out")),
+        "Script node 'x' timed out",
+    );
+    assert.equal(workflowErrorMessage(new Error("plain")), "plain");
+});
+
+// ── spawn_workflow behind the control bridge ─────────────────────────
+
+
+
+function spawnDeps(overrides = {}) {
+    const created = [];
+    const admissions = [];
+    const sessions = new Map();
+    return {
+        created,
+        admissions,
+        sessions,
+        deps: {
+            parentSessionId: "parent-agent",
+            stateTypes: () => new Set(["script"]),
+            getSession: async (id) => sessions.get(id) ?? null,
+            resolveOwner: async () => ({ provider: "dev", subject: "alice" }),
+            captureToolBinding: async () => ({
+                policy: "parent-tools-v1", parentSessionId: "parent-agent", owner: { provider: "dev", subject: "alice" },
+                config: {}, capabilities: { revision: 0, selections: [] }, excludedTools: [],
+                tools: [{ name: "bash", schemaHash: "x" }, { name: "store_fact", schemaHash: "y" }],
+            }),
+            createWorkflowSession: async (config, admission) => {
+                created.push(config);
+                admissions.push(admission);
+                sessions.set(config.sessionId, { title: "Workflow: limits", state: "running" });
+                return { sessionId: config.sessionId, workflowName: "limits" };
+            },
+            ...overrides,
+        },
+    };
+}
+
+test("spawn_workflow starts a child workflow owned like its parent and says how the result comes back", async () => {
+    const { created, deps } = spawnDeps();
+    const text = await spawnWorkflowFromTool({ yaml: yaml(), inputs: { day: "mon" } }, { toolCallId: "call-1" }, deps);
+    const expectedId = workflowChildSessionId("parent-agent", undefined, "call-1");
+    assert.match(text, new RegExp(`started workflow session ${expectedId} running "limits"`));
+    assert.match(text, /woken with a short notice when it ends; then call read_workflow_result\("[0-9a-f-]+"\) for its output\. Do not poll for it\./);
+    assert.deepEqual(created, [{
+        sessionId: expectedId,
+        yaml: yaml(),
+        inputs: { day: "mon" },
+        parentSessionId: "parent-agent",
+        owner: { provider: "dev", subject: "alice" },
+        notifyParent: true,
+    }]);
+    assert.doesNotMatch(text, /repeats through its wait state/);
+});
+
+test("spawn_workflow tells the agent a waiting loop repeats by itself and needs no cron", async () => {
+    const { deps } = spawnDeps();
+    const looping = `
+apiVersion: pilotswarm.dev/v1alpha1
+kind: Workflow
+metadata: { name: poll, version: 1.0.0 }
+initial: check
+states:
+  check: { type: script, runtime: node, source: x, completion: { outcomes: [idle] }, transition: { next: { idle: sleep } } }
+  sleep: { type: wait, seconds: 600, transition: { next: check } }
+`;
+    const text = await spawnWorkflowFromTool({ yaml: looping }, { toolCallId: "call-loop" }, deps);
+    assert.match(text, /started workflow session \S+ running "poll"\. It repeats through its wait state by itself until it reaches a terminal state or is cancelled \(cancel_agent\); do not also schedule it with cron\./);
+});
+
+test("spawn_workflow is idempotent per key, and per tool call without one", async () => {
+    assert.equal(workflowChildSessionId("p", "nightly", "a"), workflowChildSessionId("p", "nightly", "b"));
+    assert.notEqual(workflowChildSessionId("p", undefined, "a"), workflowChildSessionId("p", undefined, "b"));
+    assert.equal(workflowChildSessionId("p", undefined, "a"), workflowChildSessionId("p", undefined, "a"));
+    assert.notEqual(workflowChildSessionId("p", "nightly"), workflowChildSessionId("q", "nightly"));
+
+    const { created, deps } = spawnDeps();
+    await spawnWorkflowFromTool({ yaml: yaml(), key: "nightly" }, { toolCallId: "c1" }, deps);
+    const again = await spawnWorkflowFromTool({ yaml: yaml(), key: "nightly" }, { toolCallId: "c2" }, deps);
+    assert.equal(created.length, 1);
+    assert.match(again, /found the existing workflow session .* state running\)\. Nothing new was started/);
+});
+
+test("spawn_workflow retries a create whose start did not go through, and explains a key whose run is still ending", async () => {
+    // A pending row: the session was written but its run may not have started.
+    const pending = spawnDeps();
+    const id = workflowChildSessionId("parent-agent", "nightly");
+    pending.sessions.set(id, { title: "Workflow: limits", state: "pending" });
+    const text = await spawnWorkflowFromTool({ yaml: yaml(), key: "nightly" }, { toolCallId: "c1" }, pending.deps);
+    assert.equal(pending.created.length, 1, "the idempotent create runs again");
+    assert.match(text, /started workflow session/);
+
+    const ending = spawnDeps({
+        createWorkflowSession: async () => {
+            throw Object.assign(new Error("Session x was deleted, but its workflow run has not ended yet. Try again shortly, or use another id."), { code: "WORKFLOW_SESSION_ENDING" });
+        },
+    });
+    assert.match(await spawnWorkflowFromTool({ yaml: yaml(), key: "nightly" }, { toolCallId: "c2" }, ending.deps),
+        /refused — Session x was deleted, but its workflow run has not ended yet\..* Pass a different key for a new run\./);
+});
+
+test("spawn_workflow refuses when workflows are off or the YAML is wrong, without creating anything", async () => {
+    const off = spawnDeps({ stateTypes: () => new Set() });
+    assert.match(await spawnWorkflowFromTool({ yaml: yaml() }, {}, off.deps), /refused — Workflows are not enabled on this worker/);
+    assert.equal(off.created.length, 0);
+
+    // A worker that runs other state types refuses a workflow with script states, naming the type.
+    const noScripts = spawnDeps({ stateTypes: () => new Set(["agent"]) });
+    assert.match(await spawnWorkflowFromTool({ yaml: yaml() }, {}, noScripts.deps),
+        /refused — This workflow uses state type 'script', which this worker does not run\. An operator adds it to PILOTSWARM_WORKFLOW_STATE_TYPES/);
+    assert.equal(noScripts.created.length, 0);
+
+    const bad = spawnDeps();
+    const text = await spawnWorkflowFromTool({ yaml: yaml().replace("type: script", "type: agent") }, {}, bad.deps);
+    assert.match(text, /the workflow is not valid: .*type 'agent' is not supported yet.*Fix it/);
+    const missingInput = spawnDeps();
+    const typed = yaml().replace("initial: only", "inputs: { day: { type: string, required: true } }\ninitial: only");
+    assert.match(await spawnWorkflowFromTool({ yaml: typed }, {}, missingInput.deps), /Input 'day' is required/);
+    assert.equal(missingInput.created.length, 0);
+    assert.equal(bad.created.length, 0);
+});
+
+test("spawn_workflow can run without waking the parent, and reports a failed create plainly", async () => {
+    const quiet = spawnDeps();
+    const text = await spawnWorkflowFromTool({ yaml: yaml(), notify_on_completion: false }, { toolCallId: "q" }, quiet.deps);
+    assert.equal(quiet.created[0].notifyParent, false);
+    assert.match(text, /will not be told when it ends; read its result with read_workflow_result\("[0-9a-f-]+"\)/);
+
+    const broken = spawnDeps({ createWorkflowSession: async () => { throw new Error("catalog unavailable"); } });
+    assert.equal(
+        await spawnWorkflowFromTool({ yaml: yaml() }, { toolCallId: "x" }, broken.deps),
+        "[SYSTEM: spawn_workflow failed — catalog unavailable]",
+    );
+});
+
+test("spawn_workflow keeps spawn_agent's limits: nesting depth and running children", async () => {
+    const limits = (nestingLevel, running) => ({
+        nestingLevel, maxNestingLevel: 2, maxRunningChildren: 50, runningChildren: async () => running,
+    });
+    const deep = spawnDeps({ limits: limits(2, 0) });
+    assert.equal(
+        await spawnWorkflowFromTool({ yaml: yaml() }, { toolCallId: "n1" }, deep.deps),
+        "[SYSTEM: spawn_workflow refused — you are already at nesting level 2 (max 2). "
+            + "Sessions at this depth cannot start child sessions. Handle the task directly instead. Nothing was started.]",
+    );
+    assert.equal(deep.created.length, 0);
+    const full = spawnDeps({ limits: limits(1, 50) });
+    assert.equal(
+        await spawnWorkflowFromTool({ yaml: yaml() }, { toolCallId: "n2" }, full.deps),
+        "[SYSTEM: spawn_workflow refused — you already have 50 running child sessions (sub-agents and workflows; max 50). "
+            + "Wait for some to finish before starting another. Nothing was started.]",
+    );
+    assert.equal(full.created.length, 0);
+    const room = spawnDeps({ limits: limits(1, 49) });
+    assert.match(await spawnWorkflowFromTool({ yaml: yaml() }, { toolCallId: "n3" }, room.deps), /started workflow session/);
+    assert.equal(room.created.length, 1);
+    // A re-sent call for an existing run still answers with that run, even at the cap.
+    const again = spawnDeps({ limits: limits(1, 50) });
+    again.sessions.set(workflowChildSessionId("parent-agent", "nightly", undefined), { title: "Workflow: limits", state: "running" });
+    assert.match(await spawnWorkflowFromTool({ yaml: yaml(), key: "nightly" }, { toolCallId: "n4" }, again.deps), /found the existing workflow session/);
+});
+
+test("spawn_workflow turns a parent or admission refusal into a plain refusal", async () => {
+    const refusing = (code, message) => spawnDeps({
+        createWorkflowSession: async () => { throw Object.assign(new Error(message), { code }); },
+    }).deps;
+    assert.equal(
+        await spawnWorkflowFromTool({ yaml: yaml() }, { toolCallId: "r1" }, refusing("WORKFLOW_PARENT_REQUIRED",
+            "A workflow session must be started by an agent session: parentSessionId is required. Agents start workflows with spawn_workflow.")),
+        "[SYSTEM: spawn_workflow refused — A workflow session must be started by an agent session: parentSessionId is required. "
+            + "Agents start workflows with spawn_workflow. Nothing was started.]",
+    );
+    assert.equal(
+        await spawnWorkflowFromTool({ yaml: yaml() }, { toolCallId: "r2" }, refusing("WORKFLOW_PARENT_INVALID",
+            "Session parent-agent cannot be the parent of a workflow session: it has ended (state completed).")),
+        "[SYSTEM: spawn_workflow refused — Session parent-agent cannot be the parent of a workflow session: it has ended (state completed). Nothing was started.]",
+    );
+    const conflict = await spawnWorkflowFromTool({ yaml: yaml(), key: "nightly" }, { toolCallId: "r3" }, refusing("WORKFLOW_ADMISSION_CONFLICT",
+        "Workflow session w was already started with a different request (YAML, inputs, parent or notification setting). Use a different id for a new run."));
+    assert.match(conflict, /^\[SYSTEM: spawn_workflow refused — Workflow session w was already started with a different request .*This key already names a workflow run with a different YAML, inputs or notify_on_completion\. Call again with the same arguments to resume it, or pass a different key for a new run\.\]$/);
+    assert.doesNotMatch(conflict, /failed/);
+});
+
+// ── Live view, cancellation commands, MCP and session tools ─────────
+
+import {
+    buildWorkflowCanvasHtml,
+    fitWorkflowCanvasState,
+    foldWorkflowCanvasState,
+    parseWorkflowCommand,
+    shortWaitAt,
+} from "../../dist/workflow/index.js";
+import { createScriptSessionTools } from "../../dist/workflow/session-tools.js";
+
+test("lifecycle commands are recognised; everything else is not a command", () => {
+    assert.deepEqual(parseWorkflowCommand(JSON.stringify({ type: "cmd", cmd: "cancel", args: { reason: " stop " }, requestedBy: "p" })),
+        { cmd: "cancel", reason: "stop", requestedBy: "p" });
+    assert.deepEqual(parseWorkflowCommand({ type: "cmd", cmd: "delete" }), { cmd: "delete" });
+    assert.equal(parseWorkflowCommand({ type: "cmd", cmd: "set_model" }), null);
+    assert.equal(parseWorkflowCommand({ prompt: "hi" }), null);
+    assert.equal(parseWorkflowCommand("not json"), null);
+});
+
+test("the canvas page carries the definition as data, never as markup", () => {
+    const workflow = compileWorkflow(`
+apiVersion: pilotswarm.dev/v1alpha1
+kind: Workflow
+metadata: { name: "</script><img src=x onerror=alert(1)>", version: "1" }
+initial: a
+states:
+  a:
+    type: script
+    runtime: node
+    source: x
+    completion: { outcomes: ["</script><b>"] }
+    transition: { next: { "</script><b>": done } }
+  done: { type: terminal, outcome: succeeded }
+`);
+    const html = buildWorkflowCanvasHtml(workflow, foldWorkflowCanvasState([], workflow));
+    assert.equal((html.match(/<\/script>/g) || []).length, 3, "only the page's own script elements close");
+    assert.ok(!html.includes("<img src=x"));
+    assert.ok(html.includes("\\u003c/script\\u003e\\u003cimg"));
+    assert.match(html, /textContent/);
+    assert.ok(!/innerHTML/.test(html));
+});
+
+test("the canvas state is folded from the workflow log and fits a data tick", () => {
+    const events = [
+        { eventType: "workflow.started", data: { name: "loop", states: [{ id: "a" }, { id: "b" }] } },
+        { eventType: "workflow.state_started", data: { stateId: "a", step: 1 } },
+        { eventType: "workflow.state_completed", data: { stateId: "a", step: 1, outcome: "again", resultSource: "reported", durationMs: 5, toolCalls: [{ ok: true }, { ok: false }] } },
+        { eventType: "workflow.state_started", data: { stateId: "a", step: 2 } },
+        { eventType: "workflow.state_completed", data: { stateId: "a", step: 2, outcome: "next", exitCode: 1, resultSource: "exit" } },
+        { eventType: "workflow.state_started", data: { stateId: "b", step: 3 } },
+        { eventType: "workflow.failed", data: { steps: 3, error: "boom" } },
+    ];
+    const state = foldWorkflowCanvasState(events);
+    assert.equal(state.status, "failed");
+    assert.equal(state.error, "boom");
+    assert.deepEqual(state.nodes.a, { state: "failed", runs: 2, lastOutcome: "next", lastDurationMs: undefined });
+    assert.equal(state.nodes.b.state, "cancelled", "a node still running when the run ended was stopped");
+    assert.deepEqual(state.taken, { "a\u0001again": 1, "a\u0001next": 1 });
+    assert.deepEqual(state.steps.map((s) => [s.step, s.state, s.tools ?? 0, s.failedTools ?? 0]), [[1, "done", 2, 1], [2, "failed", 0, 0], [3, "cancelled", 0, 0]]);
+
+    const big = { ...state, steps: Array.from({ length: 400 }, (_, i) => ({ step: i, node: "a".repeat(60), outcome: "x".repeat(80), state: "done" })) };
+    const fitted = fitWorkflowCanvasState(big);
+    assert.ok(Buffer.byteLength(JSON.stringify(fitted)) <= 32_768);
+    assert.equal(fitted.steps.at(-1).step, 399, "the newest steps are kept");
+});
+
+test("a wait shows as waiting with its end time, counts its loops, and settles when the next state starts", () => {
+    const started = { eventType: "workflow.started", data: { name: "poll", states: [{ id: "check", type: "script" }, { id: "sleep", type: "wait", seconds: 600 }] } };
+    const loop = (n, base) => [
+        { eventType: "workflow.state_started", data: { stateId: "check", step: base, visit: n } },
+        { eventType: "workflow.state_completed", data: { stateId: "check", step: base, visit: n, outcome: "idle", resultSource: "reported" } },
+        { eventType: "workflow.state_waiting", data: { stateId: "sleep", step: base + 1, seconds: 600, until: 1_700_000_000_000 + n, visit: n } },
+    ];
+    const waiting = foldWorkflowCanvasState([started, ...loop(1, 1), ...loop(2, 3)]);
+    assert.equal(waiting.status, "running");
+    assert.equal(waiting.current, "sleep");
+    assert.equal(waiting.waitingUntil, 1_700_000_000_002);
+    assert.equal(waiting.nodes.sleep.state, "waiting");
+    assert.equal(waiting.nodes.sleep.runs, 2);
+    assert.equal(waiting.nodes.check.runs, 2);
+    assert.deepEqual(waiting.taken, { "check\u0001idle": 2, "sleep\u0001elapsed": 1 });
+    assert.deepEqual(waiting.steps.map((s) => [s.step, s.node, s.state, s.outcome]), [
+        [1, "check", "done", "idle"], [2, "sleep", "done", "elapsed"], [3, "check", "done", "idle"], [4, "sleep", "waiting", undefined],
+    ]);
+
+    // A fold that sees only a recent window of a long run still counts loops exactly.
+    const windowed = foldWorkflowCanvasState([started, ...loop(41, 81)]);
+    assert.equal(windowed.nodes.check.runs, 41);
+    assert.equal(windowed.nodes.sleep.runs, 41);
+
+    // Cancelled while waiting: the wait shows as stopped and nothing still reads as waiting.
+    const cancelled = foldWorkflowCanvasState([started, ...loop(1, 1),
+        { eventType: "workflow.cancelled", data: { steps: 2, stateId: "sleep", reason: "no longer needed" } }]);
+    assert.equal(cancelled.status, "cancelled");
+    assert.equal(cancelled.nodes.sleep.state, "cancelled");
+    assert.equal(cancelled.waitingUntil, undefined);
+    assert.equal(cancelled.steps.at(-1).state, "cancelled");
+    assert.equal(cancelled.reason, "no longer needed");
+});
+
+test("a clock wait reads in a few characters on the graph, and in full on hover", () => {
+    assert.equal(shortWaitAt({ minute: 0, hour: 2, tz: "UTC" }), "daily 02:00");
+    assert.equal(shortWaitAt({ minute: 30, hour: 9, dayOfWeek: 1, tz: "UTC" }), "Mon 09:30");
+    assert.equal(shortWaitAt({ minute: 0, hour: 6, dayOfMonth: 1, tz: "UTC" }), "day 1 06:00");
+    assert.equal(shortWaitAt({ minute: 15, tz: "UTC" }), "hourly :15");
+    const workflow = compileWorkflow(`
+apiVersion: pilotswarm.dev/v1alpha1
+kind: Workflow
+metadata: { name: nightly, version: "1" }
+initial: nightly
+states:
+  nightly: { type: wait, at: { hour: 2, minute: 0, tz: America/Los_Angeles }, transition: { next: report } }
+  report: { type: script, runtime: node, source: x, completion: { outcomes: [done] }, transition: { next: { done: nightly } } }
+`);
+    const html = buildWorkflowCanvasHtml(workflow, foldWorkflowCanvasState([], workflow));
+    assert.match(html, /"type":"wait","at":"daily 02:00","schedule":"daily at 02:00 America\/Los_Angeles"/);
+    assert.match(html, /"wait · " \+ n\.at/);
+});
+
+test("the canvas page draws wait states and shows when a wait ends", () => {
+    const workflow = compileWorkflow(`
+apiVersion: pilotswarm.dev/v1alpha1
+kind: Workflow
+metadata: { name: poll, version: "1" }
+initial: check
+states:
+  check:
+    type: script
+    runtime: node
+    source: x
+    completion: { outcomes: [idle] }
+    transition: { next: { idle: sleep } }
+  sleep: { type: wait, seconds: 600, transition: { next: check } }
+`);
+    const html = buildWorkflowCanvasHtml(workflow, foldWorkflowCanvasState([], workflow));
+    assert.match(html, /"type":"wait","seconds":600,"schedule":"10 min","next":\{"elapsed":"check"\}/);
+    assert.match(html, /"wait · " \+ secs\(n\.seconds\)/);
+    assert.match(html, /waiting until " \+ clock\(state\.waitingUntil\)/);
+});
+
+test("a run that reaches a terminal state marks it and the edge into it", () => {
+    const state = foldWorkflowCanvasState([
+        { eventType: "workflow.started", data: { name: "w", states: [{ id: "a", type: "script" }, { id: "done", type: "terminal", outcome: "succeeded" }] } },
+        { eventType: "workflow.state_started", data: { stateId: "a", step: 1 } },
+        { eventType: "workflow.state_completed", data: { stateId: "a", step: 1, outcome: "ok", resultSource: "reported" } },
+        { eventType: "workflow.completed", data: { steps: 1, stateId: "done", outcome: "succeeded", summary: "All good.", outputPreview: "{}" } },
+    ]);
+    assert.equal(state.status, "completed");
+    assert.equal(state.nodes.done.state, "done");
+    assert.equal(state.current, "done");
+    assert.equal(state.summary, "All good.");
+    assert.deepEqual(state.taken, { "a\u0001ok": 1 });
+});
+
+function sessionCatalog(rows) {
+    return {
+        async listSessions() { return rows; },
+        async getSession(id) { return rows.find((r) => r.sessionId === id) ?? null; },
+    };
+}
+
+test("list_sessions for scripts filters like the agent tool and returns JSON", async () => {
+    const now = Date.now();
+    const rows = [
+        { sessionId: "wf", title: "Workflow: x", state: "running", sessionKind: "workflow", parentSessionId: "agent", owner: { provider: "dev", subject: "alice" }, createdAt: new Date(now), updatedAt: new Date(now) },
+        { sessionId: "agent", title: "Release agent", state: "idle", agentId: "release", owner: { provider: "dev", subject: "alice" }, createdAt: new Date(now - 1000), updatedAt: new Date(now - 1000) },
+        { sessionId: "sys", title: "Sweeper", state: "running", isSystem: true, createdAt: new Date(now), updatedAt: new Date(now) },
+        { sessionId: "gone", title: "Deleted", state: "idle", deletedAt: new Date(now), createdAt: new Date(now), updatedAt: new Date(now) },
+    ];
+    const tools = createScriptSessionTools({ sessionId: "wf", catalog: sessionCatalog(rows), duroxideClient: null });
+    const top = await tools.get("list_sessions")({});
+    assert.deepEqual(top.sessions.map((s) => s.sessionId), ["agent"]);
+    const all = await tools.get("list_sessions")({ include_children: true });
+    assert.deepEqual(all.sessions.map((s) => [s.sessionId, s.kind, s.self ?? false]), [["wf", "workflow", true], ["agent", "agent", false]]);
+    const byParent = await tools.get("list_sessions")({ parent_session_id: "session-agent" });
+    assert.deepEqual(byParent.sessions.map((s) => s.sessionId), ["wf"]);
+    const byQuery = await tools.get("list_sessions")({ query: "release" });
+    assert.deepEqual(byQuery.sessions.map((s) => s.sessionId), ["agent"]);
+    const withSystem = await tools.get("list_sessions")({ include_system: true });
+    assert.ok(withSystem.sessions.some((s) => s.sessionId === "sys"));
+});
+
+test("send_session_message from a script is one-way, and workflow sessions accept no messages", async () => {
+    const rows = [
+        { sessionId: "wf", title: "Workflow: x", state: "running", sessionKind: "workflow" },
+        { sessionId: "agent", title: "Agent", state: "idle" },
+        { sessionId: "wf2", title: "Workflow: y", state: "running", sessionKind: "workflow" },
+    ];
+    const enqueued = [];
+    const duroxideClient = {
+        async getStatus() { return { status: "Running" }; },
+        async getInstanceInfo() { return { status: "Running" }; },
+        async enqueueEvent(id, queue, data) { enqueued.push({ id, queue, data: JSON.parse(data) }); },
+    };
+    const tools = createScriptSessionTools({ sessionId: "wf", catalog: sessionCatalog(rows), duroxideClient });
+    await assert.rejects(() => tools.get("send_session_message")({ session_id: "agent", subject: "s", body: "b", expects_response: true }), /cannot receive replies/);
+    const sent = await tools.get("send_session_message")({ session_id: "session-agent", subject: "Report", body: "3 rows", reason: "handoff" });
+    assert.equal(sent.target, "agent");
+    assert.equal(enqueued.length, 1);
+    assert.equal(enqueued[0].id, "session-agent");
+    assert.match(enqueued[0].data.prompt, /\[SESSION_MESSAGE request_id=\S+ from=wf subject=Report reason=handoff\]/);
+    await assert.rejects(() => tools.get("send_session_message")({ session_id: "wf2", subject: "s", body: "b" }), /workflow session; .*takes no session messages/);
+    await assert.rejects(() => tools.get("reply_session_message")({ request_id: "r", session_id: "wf2", body: "b" }), /workflow session; .*takes no session replies/);
+});
+

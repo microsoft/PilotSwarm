@@ -6,6 +6,8 @@ import { matchesSessionError } from "./session-warning.js";
 import { appendNativeTaskEvent, appendNativeTaskCall } from "./native-tasks.js";
 import { buildSessionWarning } from "./session-errors.js";
 import { appendChatCall, CHAT_CALL_EVENT_TYPES } from "./chat-activity.js";
+import { describeWorkflowEvent, isWorkflowEvent, WORKFLOW_EVENT_TYPES } from "./workflow-sessions.js";
+import { appendWorkflowEvent, workflowStepInfo } from "./workflow-progress.js";
 
 export const DEFAULT_HISTORY_EVENT_LIMIT = 300;
 export const HISTORY_EVENT_LIMIT_STEPS = [
@@ -60,6 +62,8 @@ export const CHAT_HISTORY_EVENT_TYPES = [
     "session.control_outcome",
     "session.carried_steers_closed",
     "session.steer_confirmed",
+    // Workflow sessions: their execution log is the transcript.
+    ...WORKFLOW_EVENT_TYPES,
 ];
 
 // ─── Session turn control (Stop and Steer) ──────────────────────
@@ -729,6 +733,23 @@ function stripLeadingSenderMarker(text) {
     return typeof text === "string"
         ? text.replace(/^\[FROM:[^\]\n]*\]\n?/, "")
         : text;
+}
+
+/** A workflow execution event as a system chat line (see workflow-sessions.js). */
+function buildWorkflowChatMessage(event) {
+    const view = describeWorkflowEvent(event);
+    if (!view) return null;
+    const message = buildChatMessage({ ...event, data: { content: view.text } }, "system");
+    if (!message) return null;
+    return {
+        ...message,
+        sessionId: event.sessionId,
+        workflowEvent: event.eventType,
+        ...(event.eventType.startsWith("workflow.state_") ? { workflowStep: workflowStepInfo(event) } : {}),
+        ...(view.kind === "card"
+            ? { cardTitle: view.title, cardTitleColor: view.color }
+            : { workflowNotice: { title: view.title, summary: view.summary, color: view.color } }),
+    };
 }
 
 function buildChatMessage(event, role) {
@@ -1485,6 +1506,11 @@ export function buildHistoryModel(events = [], options = {}) {
         if (["user.message", "session.turn_completed", "session.turn_stopped", "session.epoch_committed"].includes(event.eventType)) {
             settleAssistantResponses(chat, event);
         }
+        if (isWorkflowEvent(event)) {
+            const message = buildWorkflowChatMessage(event);
+            if (message) appendWorkflowEvent(chat, event, message);
+            continue;
+        }
         if (event.eventType === "user.message") {
             activity.push(...buildEmbeddedSystemNoticeActivityItems(event, "user"));
             const message = buildChatMessage(event, "user");
@@ -1596,6 +1622,17 @@ export function appendEventToHistory(history, event) {
     appendParentChatCall(next.chat, event);
     appendSessionWarning(next.chat, event);
     next.chat = clampHistoryItems(next.chat, loadedEventLimit);
+
+    if (isWorkflowEvent(event)) {
+        const message = buildWorkflowChatMessage(event);
+        if (message) {
+            // Folds a polling loop into one row that updates in place (workflow-progress.js).
+            next.chat = [...next.chat];
+            appendWorkflowEvent(next.chat, event, message);
+            next.chat = clampHistoryItems(next.chat, loadedEventLimit);
+        }
+        return next;
+    }
 
     if (["user.message", "session.turn_completed", "session.turn_stopped", "session.epoch_committed"].includes(event.eventType)) {
         settleAssistantResponses(next.chat, event);

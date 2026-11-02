@@ -15,6 +15,28 @@ import { modelEventLoggingFlagMigration } from "./migrations/model-event-logging
 import { turnControlMigration } from "./migrations/turn-control-0082.js";
 import { turnControlConvertMigration } from "./migrations/turn-control-0083.js";
 
+function workflowSessionKindMigration(schema: string): string {
+    const s = `"${schema}"`;
+    return `
+ALTER TABLE ${s}.sessions
+    ADD COLUMN IF NOT EXISTS session_kind TEXT NOT NULL DEFAULT 'agent';
+
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+          FROM pg_constraint
+         WHERE conname = 'sessions_session_kind_check'
+           AND conrelid = '${schema}.sessions'::regclass
+    ) THEN
+        ALTER TABLE ${s}.sessions
+            ADD CONSTRAINT sessions_session_kind_check
+            CHECK (session_kind IN ('agent', 'workflow'));
+    END IF;
+END $$;
+`;
+}
+
 /**
  * Return the ordered list of CMS migrations for a given schema.
  * Migrations are idempotent (CREATE IF NOT EXISTS / ADD COLUMN IF NOT EXISTS).
@@ -408,6 +430,7 @@ export function CMS_MIGRATIONS(schema: string): MigrationEntry[] {
         { version: "0081", name: "model_event_logging_flag", sql: modelEventLoggingFlagMigration(schema) },
         { version: "0082", name: "turn_control", sql: turnControlMigration(schema) },
         { version: "0083", name: "turn_control_convert", sql: turnControlConvertMigration(schema) },
+        { version: "0084", name: "workflow_session_kind", sql: workflowSessionKindMigration(schema) },
     ];
 }
 

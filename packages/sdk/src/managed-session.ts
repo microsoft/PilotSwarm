@@ -21,6 +21,8 @@ import { attachedFoldersOf, parseSkillFile, readLoadFiles, resolveLoadPath } fro
 import { groupSkipped, parseRepoAgentFile } from "./workspace-repo-agents.js";
 import path from "node:path";
 import { NativeTaskObserver, nativeTaskAgentMarks } from "./native-task-observer.js";
+import { READ_WORKFLOW_RESULT_TOOL_SPEC, SPAWN_WORKFLOW_TOOL_SPEC, type SpawnWorkflowToolArgs } from "./workflow/tool-spec.js";
+import { AGENT_CRON_MIN_INTERVAL_SECONDS, agentCronIntervalAllowed } from "./wait-rules.js";
 
 /**
  * Mutable state shared between the wait tool handler and runTurn().
@@ -1401,7 +1403,10 @@ export class ManagedSession {
             handler: async () => "stub",
         });
 
-        return [spawnAgentTool, messageAgentTool, checkAgentsTool, waitForAgentsTool, listSessionsTool,
+        const spawnWorkflowTool = defineTool("spawn_workflow", { ...SPAWN_WORKFLOW_TOOL_SPEC, handler: async () => "stub" });
+        const readWorkflowResultTool = defineTool("read_workflow_result", { ...READ_WORKFLOW_RESULT_TOOL_SPEC, handler: async () => "stub" });
+
+        return [spawnAgentTool, spawnWorkflowTool, readWorkflowResultTool, messageAgentTool, checkAgentsTool, waitForAgentsTool, listSessionsTool,
             ...ManagedSession._childManagementToolDefs()];
     }
 
@@ -1643,7 +1648,7 @@ export class ManagedSession {
         }
     }
 
-    private async _runTurnWithState(prompt: string, turnState: TurnState, opts?: TurnOptions): Promise<TurnResult> {
+    private buildToolHandlers(turnState: TurnState, opts?: TurnOptions): Tool<any>[] {
         const controlBridge = opts?.controlToolBridge;
 
         // Build system tools (wait tool + ask_user tool)
@@ -1831,8 +1836,8 @@ export class ManagedSession {
                 if (!Number.isFinite(intervalSeconds)) {
                     return "Error: cron requires seconds or action='cancel'.";
                 }
-                if (intervalSeconds < 15) {
-                    return "Error: cron interval must be at least 15 seconds.";
+                if (!agentCronIntervalAllowed(intervalSeconds)) {
+                    return `Error: cron interval must be at least ${AGENT_CRON_MIN_INTERVAL_SECONDS} seconds.`;
                 }
 
                 const reason = typeof args.reason === "string" ? args.reason.trim() : "";
@@ -2867,7 +2872,7 @@ export class ManagedSession {
         });
 
         const SYSTEM_TOOL_NAMES = new Set([
-    "update_canvas","wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "send_session_message", "reply_session_message", "show_artifact", "draw_canvas", "read_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "find_canvas_app", "load_skill", "load_agent", "search_capabilities", "load_agent_guidelines", "list_session_capabilities", "use_package", "spawn_agent", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "stop_agent_turn", "delete_agent"]);
+    "update_canvas","wait", "wait_on_worker", "cron", "cron_at", "ask_user", "report_cycle", "list_available_models", "set_session_model", "send_session_message", "reply_session_message", "show_artifact", "draw_canvas", "read_canvas", "show_canvas", "canvas_kv", "publish_canvas_app", "find_canvas_app", "load_skill", "load_agent", "search_capabilities", "load_agent_guidelines", "list_session_capabilities", "use_package", "spawn_agent", "spawn_workflow", "read_workflow_result", "message_agent", "check_agents", "wait_for_agents", "list_sessions", "complete_agent", "cancel_agent", "stop_agent_turn", "delete_agent"]);
 
         // Merge user tools with system tools
         const userTools = this.config.tools ?? [];
@@ -2962,12 +2967,38 @@ export class ManagedSession {
                 .filter((tool: any) => !wiredToolNames.has(tool.name))
             : [];
 
+        // spawn_workflow runs inline through the control bridge and does not
+        // end the turn. Without a bridge it refuses rather than staying
+        // silent: a declared tool with no answer hangs the turn.
+        const spawnWorkflowTool = defineTool("spawn_workflow", {
+            ...SPAWN_WORKFLOW_TOOL_SPEC,
+            handler: async (args: SpawnWorkflowToolArgs, invocation?: { toolCallId?: string }) => {
+                if (hasTerminalTurnBoundary(turnState)) return blockedAfterTurnBoundary("spawn_workflow");
+                if (typeof args?.yaml !== "string" || !args.yaml.trim()) return "Error: yaml is required.";
+                if (args.inputs !== undefined && (args.inputs === null || typeof args.inputs !== "object" || Array.isArray(args.inputs))) {
+                    return "Error: inputs must be a JSON object.";
+                }
+                if (!controlBridge?.spawnWorkflow) return "Error: spawn_workflow is not available in this session.";
+                return await controlBridge.spawnWorkflow(args, { toolCallId: invocation?.toolCallId });
+            },
+        });
+
+        const readWorkflowResultTool = defineTool("read_workflow_result", {
+            ...READ_WORKFLOW_RESULT_TOOL_SPEC,
+            handler: async (args: { session_id: string }) => {
+                if (!controlBridge?.readWorkflowResult) return JSON.stringify({ error: "read_workflow_result is not available in this session." });
+                return await controlBridge.readWorkflowResult(args);
+            },
+        });
+
         const subAgentToolsForTurn = isServiceSession
             ? []
             : isReadOnlyTuner
                 ? [checkAgentsTool, listSessionsTool]
                 : [
                     spawnAgentTool,
+                    spawnWorkflowTool,
+                    readWorkflowResultTool,
                     messageAgentTool,
                     checkAgentsTool,
                     waitForAgentsTool,
@@ -3263,6 +3294,49 @@ export class ManagedSession {
             ...manageAgentSessionForTurn,
             ...workspaceToolsForTurn,
         ];
+        return allTools;
+    }
+
+    /**
+     * Reuse the same data-tool handlers without a conversational turn or model send.
+     * The caller supplies declarations already restricted to the captured tool ceiling.
+     */
+    async prepareWorkflowTools(
+        allowedNames: ReadonlySet<string>,
+        overrides: Map<string, (args: Record<string, unknown>) => Promise<unknown>>,
+    ): Promise<void> {
+        const state: TurnState = {
+            pendingActions: [], queuedActions: [], session: this.copilotSession,
+            waitThreshold: this.config.waitThreshold ?? 30,
+        };
+        const tools = this.buildToolHandlers(state).filter(tool => allowedNames.has(tool.name)).map(tool => {
+            const handler = overrides.get(tool.name) ?? tool.handler;
+            if (!handler) throw new Error(`Workflow tool '${tool.name}' has no handler.`);
+            return { ...tool, handler: async (args: Record<string, unknown>, invocation: Parameters<NonNullable<typeof tool.handler>>[1]) => {
+                const result = await handler(args, invocation);
+                if (state.pendingActions.length || state.queuedActions.length) {
+                    throw new Error(`Workflow tool '${tool.name}' attempted conversational control.`);
+                }
+                if (result !== null && typeof result === "object" && !("resultType" in result)) {
+                    return { resultType: "success" as const, textResultForLlm: JSON.stringify(result), structuredContent: result };
+                }
+                return result;
+            } };
+        });
+        // The pinned SDK keeps handler registration separate from RPC declarations.
+        const handlerRegistry = this.copilotSession as CopilotSession & { registerTools(tools: Tool<any>[]): void };
+        if (typeof handlerRegistry.registerTools !== "function") throw new Error("Copilot handler registration is unavailable.");
+        handlerRegistry.registerTools(tools);
+        await this.copilotSession.rpc.tools.initializeAndValidate();
+    }
+
+    getWorkflowToolSession(): CopilotSession {
+        return this.copilotSession;
+    }
+
+    private async _runTurnWithState(prompt: string, turnState: TurnState, opts?: TurnOptions): Promise<TurnResult> {
+        const durableSessionId = this.sessionId;
+        const allTools = this.buildToolHandlers(turnState, opts);
 
         if (opts?.requiredTool && !allTools.some((tool: any) => tool.name === opts.requiredTool)) {
             return {

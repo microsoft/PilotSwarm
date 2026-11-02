@@ -787,6 +787,7 @@ Current grouped npm scripts are:
 - `test:local:system-agents`
 - `test:local:session-policy`
 - `test:local:reliability`
+- `test:local:workflows` (workflow sessions: compiler and UI unit tests, the Duroxide runtime tests, and real-worker end-to-end runs including a synthetic workflow that uses every runtime; needs no model and no `.env`)
 
 One improvement here would be to add a dedicated grouped runner for nested-spawn or other especially slow/high-risk sub-agent scenarios when debugging regressions locally.
 

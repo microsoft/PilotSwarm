@@ -113,6 +113,8 @@ export interface HourlyTokenBucketRow {
 /** A row in the sessions table. */
 export interface SessionRow {
     sessionId: string;
+    /** "workflow" for a workflow session; absent or "agent" for an agent session. */
+    sessionKind?: import("./types.js").SessionKind;
     orchestrationId: string | null;
     title: string | null;
     titleLocked: boolean;
@@ -1139,6 +1141,7 @@ export interface SessionCatalog {
 
     /** Insert a new session. No-op if session already exists. */
     createSession(sessionId: string, opts?: {
+        sessionKind?: import("./types.js").SessionKind;
         model?: string;
         reasoningEffort?: string;
         contextTier?: string | null;
@@ -1715,6 +1718,7 @@ export class PgSessionCatalog implements SessionCatalog {
     // ── Writes ───────────────────────────────────────────────
 
     async createSession(sessionId: string, opts?: {
+        sessionKind?: import("./types.js").SessionKind;
         model?: string;
         reasoningEffort?: string;
         contextTier?: string | null;
@@ -1759,6 +1763,19 @@ export class PgSessionCatalog implements SessionCatalog {
                     [providerModel, opts?.owner?.provider ?? null, opts?.owner?.subject ?? null, opts?.isSystem ?? false],
                 );
             }
+            // A workflow session's first create saves its start request; a
+            // concurrent or repeated create of the same live id must not
+            // replace it. A deleted id is revived by the create proc and may
+            // take a new one.
+            const guardWorkflowStart = opts?.sessionKind === "workflow" && useCreationConfig;
+            let priorDeleted = false;
+            if (guardWorkflowStart) {
+                const { rows } = await client.query(
+                    `SELECT deleted_at FROM "${this.sql.schema}".sessions WHERE session_id = $1 FOR UPDATE`,
+                    [sessionId],
+                );
+                priorDeleted = rows[0]?.deleted_at != null;
+            }
             const baseArgs = [sessionId, opts?.model ?? null, opts?.reasoningEffort ?? null, opts?.parentSessionId ?? null, opts?.isSystem ?? false, opts?.agentId ?? null, opts?.splash ?? null, null];
             if (useVisibilityCreate) {
                 await client.query(
@@ -1775,6 +1792,17 @@ export class PgSessionCatalog implements SessionCatalog {
                     `SELECT ${this.sql.fn.createSession}($1, $2, $3, $4, $5, $6, $7, $8)`,
                     baseArgs,
                 );
+            }
+
+            if (guardWorkflowStart && !priorDeleted) {
+                const { rows } = await client.query(
+                    `SELECT creation_config FROM "${this.sql.schema}".sessions WHERE session_id = $1 FOR UPDATE`,
+                    [sessionId],
+                );
+                if (rows[0]?.creation_config?.workflowStart) {
+                    await client.query("ROLLBACK");
+                    return;
+                }
             }
 
             // Creation config rides the same transaction as a raw UPDATE, like
@@ -1794,6 +1822,13 @@ export class PgSessionCatalog implements SessionCatalog {
                 await client.query(
                     `UPDATE "${this.sql.schema}".sessions SET service_kind = $2, service_of = $3 WHERE session_id = $1`,
                     [sessionId, opts.serviceKind, opts.serviceOf ?? null],
+                );
+            }
+
+            if (opts?.sessionKind === "workflow") {
+                await client.query(
+                    `UPDATE "${this.sql.schema}".sessions SET session_kind = 'workflow' WHERE session_id = $1`,
+                    [sessionId],
                 );
             }
 
@@ -2057,7 +2092,7 @@ export class PgSessionCatalog implements SessionCatalog {
         // Service columns join the raw table (same reasoning as getSession —
         // never widen a shared proc's RETURNS TABLE).
         const { rows } = await this.pool.query(
-            `SELECT g.*, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
+            `SELECT g.*, s.session_kind, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
                FROM ${this.sql.fn.listSessions}($1, $2) g
                JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [placement?.provider ?? null, placement?.subject ?? null],
@@ -2075,7 +2110,7 @@ export class PgSessionCatalog implements SessionCatalog {
         placement?: { provider: string; subject: string } | null;
     }): Promise<SessionRow[]> {
         const { rows } = await this.pool.query(
-            `SELECT g.*, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
+            `SELECT g.*, s.session_kind, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
                FROM ${this.sql.fn.listSessionsPage}($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) g
                JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [
@@ -2099,7 +2134,7 @@ export class PgSessionCatalog implements SessionCatalog {
         placement?: { provider: string; subject: string } | null,
     ): Promise<SessionRow[]> {
         const { rows } = await this.pool.query(
-            `SELECT g.*, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
+            `SELECT g.*, s.session_kind, s.service_kind, s.service_of, s.context_tier, s.model_resolution_source
                FROM ${this.sql.fn.listSessionsVisible}($1, $2, $3, $4, $5) g
                JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [viewer.provider, viewer.subject, viewer.systemVisible ?? true, placement?.provider ?? null, placement?.subject ?? null],
@@ -2126,7 +2161,7 @@ export class PgSessionCatalog implements SessionCatalog {
         // proc's RETURNS TABLE — a proc-shape change breaks re-application of
         // the earlier migration that CREATE-OR-REPLACEs it with the old shape.
         const { rows } = await this.pool.query(
-                `SELECT g.*, s.transcript_epoch, s.last_regenerated_at, s.service_kind, s.service_of,
+                `SELECT g.*, s.transcript_epoch, s.last_regenerated_at, s.session_kind, s.service_kind, s.service_of,
                     s.context_tier, s.model_resolution_source, s.turn_high
                FROM ${this.sql.fn.getSession}($1, $2, $3) g
                JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
@@ -2366,7 +2401,9 @@ export class PgSessionCatalog implements SessionCatalog {
 
     async listGroupSessions(groupId: string, placement?: { provider: string; subject: string } | null): Promise<SessionRow[]> {
         const { rows } = await this.pool.query(
-            `SELECT * FROM ${this.sql.fn.listGroupSessions}($1, $2, $3)`,
+            `SELECT g.*, s.session_kind
+               FROM ${this.sql.fn.listGroupSessions}($1, $2, $3) g
+               JOIN "${this.sql.schema}".sessions s ON s.session_id = g.session_id`,
             [groupId, placement?.provider ?? null, placement?.subject ?? null],
         );
         return rows.map(rowToSessionRow);
@@ -3983,6 +4020,7 @@ function rowToSessionRow(row: any): SessionRow {
         : null;
     return {
         sessionId: row.session_id,
+        sessionKind: row.session_kind === "workflow" ? "workflow" : "agent",
         orchestrationId: row.orchestration_id ?? null,
         title: row.title ?? null,
         titleLocked: row.title_locked ?? false,

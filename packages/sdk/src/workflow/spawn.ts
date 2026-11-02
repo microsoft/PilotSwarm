@@ -1,0 +1,137 @@
+import { randomUUID } from "node:crypto";
+import { systemChildAgentUUID } from "../agent-loader.js";
+import type { WorkflowSessionConfig, SessionOwnerInfo } from "../types.js";
+import { compileWorkflow, validateWorkflowInputs, workflowHasWaits, workflowNotRunnableReason, WORKFLOWS_DISABLED_MESSAGE } from "./compiler.js";
+import type { SpawnWorkflowToolArgs } from "./tool-spec.js";
+import { workflowRuntimeRefusal, type WorkflowToolBinding } from "./tool-policy.js";
+import { routeWorkflowApiVersion } from "./api-versions.js";
+
+export interface SpawnWorkflowDeps {
+    /** The agent session calling spawn_workflow; it becomes the workflow's parent. */
+    parentSessionId: string;
+    /** The workflow state types this worker runs; empty when workflows are off. */
+    stateTypes: () => ReadonlySet<string>;
+    getSession: (sessionId: string) => Promise<{ title?: string | null; state?: string | null } | null>;
+    resolveOwner: () => Promise<SessionOwnerInfo | null>;
+    /** The calling agent's own tools, read from its live session (minus the workflow excluded list). */
+    captureToolBinding: () => Promise<WorkflowToolBinding>;
+    createWorkflowSession: (
+        config: WorkflowSessionConfig & { notifyParent?: boolean },
+        admission: { toolBinding: WorkflowToolBinding },
+    ) => Promise<{ sessionId: string; workflowName: string }>;
+    /**
+     * spawn_agent's limits: a workflow is a child like a sub-agent, so the
+     * caller's nesting level and its running children count the same way.
+     */
+    limits?: {
+        nestingLevel: number;
+        maxNestingLevel: number;
+        runningChildren: () => Promise<number>;
+        maxRunningChildren: number;
+    };
+}
+
+/**
+ * The workflow child's session id. The same key in the same parent always
+ * gives the same id; without a key the tool call id is used, so each call is
+ * a new run while a re-sent call is not.
+ */
+export function workflowChildSessionId(parentSessionId: string, key: string | undefined, toolCallId: string | undefined): string {
+    const slug = typeof key === "string" && key.trim()
+        ? `key:${key.trim()}`
+        : `call:${toolCallId || randomUUID()}`;
+    return systemChildAgentUUID(parentSessionId, `workflow:${slug}`);
+}
+
+/**
+ * spawn_workflow, behind the inline control bridge. Every outcome is a
+ * `[SYSTEM: ...]` line for the model; nothing here throws into the turn.
+ */
+export async function spawnWorkflowFromTool(
+    args: SpawnWorkflowToolArgs,
+    call: { toolCallId?: string } | undefined,
+    deps: SpawnWorkflowDeps,
+): Promise<string> {
+    try {
+        const allowed = deps.stateTypes();
+        if (allowed.size === 0) {
+            return `[SYSTEM: spawn_workflow refused — ${WORKFLOWS_DISABLED_MESSAGE}]`;
+        }
+        const limits = deps.limits;
+        if (limits && limits.nestingLevel + 1 > limits.maxNestingLevel) {
+            return `[SYSTEM: spawn_workflow refused — you are already at nesting level ${limits.nestingLevel} (max ${limits.maxNestingLevel}). `
+                + "Sessions at this depth cannot start child sessions. Handle the task directly instead. Nothing was started.]";
+        }
+        // apiVersion first: the routing table picks the engine, or refuses.
+        const route = routeWorkflowApiVersion(args.yaml);
+        if (!route.ok) return `[SYSTEM: spawn_workflow refused — ${route.message} Nothing was started.]`;
+        let workflowName: string;
+        let loops = false;
+        let compiled: ReturnType<typeof compileWorkflow>;
+        try {
+            compiled = route.engine.compile(args.yaml);
+            validateWorkflowInputs(compiled, args.inputs ?? {});
+            workflowName = compiled.name;
+            loops = workflowHasWaits(compiled);
+            const notRunnable = workflowNotRunnableReason(compiled, allowed);
+            if (notRunnable) return `[SYSTEM: spawn_workflow refused — ${notRunnable}]`;
+        } catch (error) {
+            return `[SYSTEM: spawn_workflow refused — the workflow is not valid: ${error instanceof Error ? error.message : String(error)} `
+                + "Fix it and call spawn_workflow again.]";
+        }
+        const workflowSessionId = workflowChildSessionId(deps.parentSessionId, args.key, call?.toolCallId);
+        const existing = await deps.getSession(workflowSessionId).catch(() => null);
+        // A "pending" row is a create whose start may not have gone through
+        // (the worker sets the state when the run begins). Creating again is
+        // idempotent, so it is retried instead of reported as started.
+        if (existing && existing.state !== "pending") {
+            return `[SYSTEM: spawn_workflow found the existing workflow session ${workflowSessionId} for this key `
+                + `("${existing.title ?? workflowName}", state ${existing.state ?? "unknown"}). Nothing new was started; pass a different key for another run.]`;
+        }
+        if (limits) {
+            const running = await limits.runningChildren();
+            if (running >= limits.maxRunningChildren) {
+                return `[SYSTEM: spawn_workflow refused — you already have ${running} running child sessions (sub-agents and workflows; max ${limits.maxRunningChildren}). `
+                    + "Wait for some to finish before starting another. Nothing was started.]";
+            }
+        }
+        const owner = await deps.resolveOwner().catch(() => null);
+        const notify = args.notify_on_completion !== false;
+        const toolBinding = await deps.captureToolBinding();
+        const runtimeRefusal = workflowRuntimeRefusal(compiled, toolBinding.tools);
+        if (runtimeRefusal) return `[SYSTEM: spawn_workflow refused — ${runtimeRefusal} Nothing was started.]`;
+        await deps.createWorkflowSession({
+            sessionId: workflowSessionId,
+            yaml: args.yaml,
+            inputs: args.inputs ?? {},
+            parentSessionId: deps.parentSessionId,
+            ...(owner ? { owner } : {}),
+            notifyParent: notify,
+        }, { toolBinding });
+        return `[SYSTEM: started workflow session ${workflowSessionId} running "${workflowName}". `
+            + (loops
+                ? "It repeats through its wait state by itself until it reaches a terminal state or is cancelled (cancel_agent); "
+                    + "do not also schedule it with cron. "
+                : "")
+            + (notify
+                ? "You will be woken with a short notice when it ends; then call read_workflow_result(\"" + workflowSessionId + "\") "
+                    + "for its output. Do not poll for it. "
+                : "You will not be told when it ends; read its result with read_workflow_result(\"" + workflowSessionId + "\"). ")
+            + "The user can follow each step in the portal, under this session.]";
+    } catch (error) {
+        const code = (error as any)?.code;
+        const message = error instanceof Error ? error.message : String(error);
+        if (code === "WORKFLOW_SESSION_ENDING") {
+            return `[SYSTEM: spawn_workflow refused — ${message} Pass a different key for a new run.]`;
+        }
+        if (code === "WORKFLOW_ADMISSION_CONFLICT") {
+            return `[SYSTEM: spawn_workflow refused — ${message} This key already names a workflow run with a different YAML, inputs `
+                + "or notify_on_completion. Call again with the same arguments to resume it, or pass a different key for a new run.]";
+        }
+        if (code === "WORKFLOW_PARENT_REQUIRED" || code === "WORKFLOW_PARENT_INVALID" || code === "WORKFLOW_PARENT_CONTEXT_REQUIRED"
+            || code === "WORKFLOW_TOOLS_NOT_DELEGABLE" || code === "WORKFLOW_RUNTIME_REQUIRES_SHELL") {
+            return `[SYSTEM: spawn_workflow refused — ${message} Nothing was started.]`;
+        }
+        return `[SYSTEM: spawn_workflow failed — ${error instanceof Error ? error.message : String(error)}]`;
+    }
+}

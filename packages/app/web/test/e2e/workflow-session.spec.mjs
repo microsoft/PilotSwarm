@@ -1,0 +1,371 @@
+// Workflow sessions in the portal, in a real browser:
+//   - the session list marks a workflow session (◇) beside agent sessions
+//   - its transcript is the execution log: a one-line start notice that
+//     opens to the graph, and a polling loop folded into one row; the
+//     composer says why there is no chat box
+//   - a workflow session is always an agent's child (spawn_workflow): New
+//     offers no way to start one, neither at the model step nor in the
+//     agent chooser
+//
+// PS_E2E_SHOT_DIR, when set, receives screenshots of each state for review.
+import { test, expect } from "@playwright/test";
+import fs from "node:fs";
+import path from "node:path";
+import { startStubServer } from "./stub-server.mjs";
+import { buildWorkflowCanvasHtml, compileWorkflow, foldWorkflowCanvasState } from "../../../../sdk/dist/workflow/index.js";
+
+const AGENT_ID = "11111110-2222-3333-4444-555555555550";
+const WORKFLOW_ID = "77777777-2222-3333-4444-555555555555";
+const LOOP_ID = "88888888-2222-3333-4444-555555555555";
+const SHOTS = process.env.PS_E2E_SHOT_DIR || null;
+
+const now = Date.now();
+const SESSIONS = [
+    { sessionId: AGENT_ID, title: "Release triage agent", status: "idle", model: "test:test-model", createdAt: now - 60_000, updatedAt: now - 60_000 },
+    {
+        sessionId: WORKFLOW_ID, title: "Workflow: nightly-report", status: "completed", sessionKind: "workflow",
+        parentSessionId: AGENT_ID, createdAt: now - 30_000, updatedAt: now - 20_000,
+    },
+    {
+        sessionId: LOOP_ID, title: "Workflow: poll-builds", status: "running", sessionKind: "workflow",
+        parentSessionId: AGENT_ID, createdAt: now - 25_000, updatedAt: now - 1_000,
+    },
+];
+
+let seq = 0;
+const ev = (eventType, data, offsetMs) => ({ seq: ++seq, sessionId: WORKFLOW_ID, eventType, data, timestamp: now - 30_000 + offsetMs });
+const WORKFLOW_EVENTS = [
+    ev("workflow.started", {
+        name: "nightly-report",
+        version: "1.0.0",
+        initial: "collect",
+        states: [
+            { id: "collect", type: "script", runtime: "python", timeoutSeconds: 300, next: { found: "report", empty: "nothing", failure: "failed" } },
+            { id: "report", type: "script", runtime: "node", timeoutSeconds: 300, next: { done: "published" } },
+            { id: "published", type: "terminal", outcome: "succeeded" },
+            { id: "nothing", type: "terminal", outcome: "blocked" },
+            { id: "failed", type: "terminal", outcome: "failed" },
+        ],
+    }, 0),
+    ev("workflow.state_started", { stateId: "collect", runtime: "python", step: 1 }, 100),
+    ev("workflow.state_completed", {
+        stateId: "collect", step: 1, outcome: "found", resultSource: "reported", exitCode: 0, durationMs: 1840,
+        toolCalls: [{ name: "read_facts", ok: true, durationMs: 40 }], outputPreview: "{\"count\":3}",
+    }, 2000),
+    ev("workflow.state_started", { stateId: "report", runtime: "node", step: 2 }, 2100),
+    ev("workflow.state_completed", {
+        stateId: "report", step: 2, outcome: "done", resultSource: "reported", exitCode: 0, durationMs: 420,
+        toolCalls: [{ name: "store_fact", ok: true, durationMs: 30 }], outputPreview: "{\"count\":3}",
+    }, 2600),
+    ev("workflow.completed", { name: "nightly-report", steps: 2, stateId: "published", outcome: "succeeded", summary: "Report published.", outputPreview: "{\"count\":3}" }, 2700),
+];
+
+// A polling loop: check, wait, check, wait, check, wait.
+const loopEv = (eventType, data, offsetMs) => ({ seq: ++seq, sessionId: LOOP_ID, eventType, data, timestamp: now - 25_000 + offsetMs, createdAt: now - 25_000 + offsetMs });
+const LOOP_EVENTS = [
+    loopEv("workflow.started", {
+        name: "poll-builds", version: "1.0.0", initial: "check",
+        states: [
+            { id: "check", type: "script", runtime: "node", timeoutSeconds: 300, next: { idle: "sleep", found: "handle" } },
+            { id: "sleep", type: "wait", seconds: 600, next: { elapsed: "check" } },
+            { id: "handle", type: "script", runtime: "node", timeoutSeconds: 300, next: { done: "done" } },
+            { id: "done", type: "terminal", outcome: "succeeded" },
+        ],
+    }, 0),
+    ...[1, 2, 3].flatMap((visit) => {
+        const step = visit * 2 - 1;
+        const at = visit * 1_000;
+        return [
+            loopEv("workflow.state_started", { stateId: "check", runtime: "node", step, visit }, at),
+            loopEv("workflow.state_completed", {
+                stateId: "check", step, visit, outcome: "idle", resultSource: "reported", exitCode: 0, durationMs: 800,
+                toolCalls: [{ name: "read_facts", ok: true, durationMs: 40 }], outputPreview: `{"failed":0,"visit":${visit}}`,
+            }, at + 100),
+            loopEv("workflow.state_waiting", { stateId: "sleep", step: step + 1, seconds: 600, until: now + 600_000, visit }, at + 200),
+        ];
+    }),
+];
+
+let stub;
+test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 1 }); });
+test.afterAll(async () => { await new Promise((resolve) => stub.server.close(resolve)); });
+
+async function shot(page, name) {
+    if (!SHOTS) return;
+    fs.mkdirSync(SHOTS, { recursive: true });
+    await page.screenshot({ path: path.join(SHOTS, `${name}.png`), fullPage: false });
+}
+
+async function routeApi(page, { agents = null } = {}) {
+    await page.routeWebSocket("**/api/v1/ws", () => {});
+    await page.route("**/api/v1/**", async (route) => {
+        const req = route.request();
+        const pathname = new URL(req.url()).pathname;
+        const answer = (result) => route.fulfill({ json: { ok: true, result } });
+        if (pathname.endsWith("/models")) return answer([{ providerId: "test", modelName: "test-model", qualifiedName: "test:test-model" }]);
+        if (pathname.endsWith("/providers")) return answer({ providers: [{ name: "test", typeId: "test", class: "shared", hasCredential: true, usableByMe: true }] });
+        if (pathname.endsWith("/providers/status")) return answer({ providers: [] });
+        if (pathname.endsWith("/defaults")) return answer({});
+        if (pathname.endsWith("/management/sessions")) return answer({ sessions: SESSIONS, hasMore: false, nextCursor: null });
+        if (pathname.endsWith("/sessions") && req.method() === "GET") return answer({ sessions: SESSIONS, hasMore: false });
+        if (agents && pathname.endsWith("/agents") && req.method() === "GET") return answer(agents);
+        if (pathname.includes(`/sessions/${WORKFLOW_ID}/events`)) return answer(WORKFLOW_EVENTS);
+        if (pathname.includes(`/sessions/${LOOP_ID}/events`)) return answer(LOOP_EVENTS);
+        if (pathname.endsWith(`/sessions/${LOOP_ID}`)) return answer({ ...SESSIONS[2], events: [], messages: [] });
+        if (pathname.endsWith(`/sessions/${WORKFLOW_ID}`)) return answer({ ...SESSIONS[1], events: [], messages: [] });
+        return route.fallback();
+    });
+}
+
+test("a workflow session is marked in the list, shows its execution log and has no chat box", async ({ page }) => {
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await routeApi(page);
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${WORKFLOW_ID}`);
+
+    const workflowRow = page.locator(".ps-session-row-content", { hasText: "Workflow: nightly-report" }).first();
+    await expect(workflowRow).toBeVisible();
+    await expect(workflowRow).toContainText("◇");
+    await expect(workflowRow).not.toContainText("⛓");
+    await expect(page.locator(".ps-session-row-content", { hasText: "Release triage agent" }).first()).not.toContainText("◇");
+
+    const chat = page.locator(".ps-chat-panel");
+    // The start is one line; it opens to the graph.
+    const start = chat.locator(".ps-system-notice-summary", { hasText: "nightly-report 1.0.0: 5 states · initial collect" });
+    await expect(start).toBeVisible();
+    await expect(chat).not.toContainText("found → report, empty → nothing, failure → failed");
+    await start.click();
+    await expect(chat).toContainText("found → report, empty → nothing, failure → failed");
+    await expect(chat).toContainText("ends: succeeded");
+    await expect(chat).toContainText("Step 1: collect → found in 1.8 s · 1 tool call (read_facts)");
+    await expect(chat).toContainText("Step 2: report → done");
+    await expect(chat).toContainText("Workflow nightly-report reached published after 2 steps: outcome succeeded. Report published.");
+
+    await expect(page.locator(".ps-composer-readonly")).toContainText("Workflow session — it runs a workflow graph");
+    await expect(page.locator(".ps-prompt-input")).toHaveCount(0);
+    await shot(page, "1-workflow-session-execution-log");
+    expect(errors).toEqual([]);
+});
+
+test("New offers no way to start a workflow: agents start them with spawn_workflow", async ({ page }) => {
+    const errors = [];
+    const workflowPosts = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("request", (req) => {
+        if (req.method() === "POST" && /\/sessions\/workflow/.test(new URL(req.url()).pathname)) workflowPosts.push(req.url());
+    });
+    await routeApi(page, { agents: [{ name: "alpha", title: "Alpha", description: "An ordinary agent." }] });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${AGENT_ID}`);
+    await expect(page.locator(".ps-prompt-input")).toBeVisible();
+
+    await page.getByRole("button", { name: "New session — choose model and agent", exact: true }).click();
+    await expect(page.getByText("Select model for new session", { exact: true })).toBeVisible();
+    await expect(page.getByRole("button", { name: /Workflow/ })).toHaveCount(0);
+    await shot(page, "2-new-session-model-step");
+
+    await page.getByRole("button", { name: "Create Session", exact: true }).click();
+    await expect(page.getByText("Select agent for new session", { exact: true })).toBeVisible();
+    const chooser = page.locator(".ps-modal");
+    await expect(chooser).toContainText("Alpha");
+    await expect(chooser).not.toContainText("Workflow");
+    await expect(chooser).not.toContainText("◇");
+    await expect(page.locator("#ps-workflow-yaml")).toHaveCount(0);
+    await shot(page, "3-agent-chooser-without-workflow");
+    expect(workflowPosts).toEqual([]);
+    expect(errors).toEqual([]);
+});
+
+test("a polling loop through a wait state reads as one row that opens to its checks", async ({ page }) => {
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await routeApi(page);
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${LOOP_ID}`);
+
+    const chat = page.locator(".ps-chat-panel");
+    const row = chat.locator(".ps-system-notice-summary", { hasText: "◇ check: Waiting · 3 checks · idle" });
+    await expect(row).toHaveCount(1);
+    await expect(row).toContainText("last 800 ms");
+    await expect(row).toContainText("next check");
+    // The individual checks and waits are folded into it.
+    await expect(chat).not.toContainText("Step 1: check");
+    await expect(chat).not.toContainText("sleep waiting");
+    await row.click();
+    await expect(chat).toContainText("Latest output:");
+    await expect(chat).toContainText('{"failed":0,"visit":3}');
+    await shot(page, "4-workflow-polling-row");
+    expect(errors).toEqual([]);
+});
+
+// ── The live canvas ────────────────────────────────────────────────
+
+const LIVE_ID = "66666666-2222-3333-4444-555555555555";
+const LIVE_YAML = `
+apiVersion: pilotswarm.dev/v1alpha1
+kind: Workflow
+metadata: { name: nightly-report, version: 1.0.0 }
+initial: collect
+states:
+  collect: { type: script, runtime: python, source: x, completion: { outcomes: [found, empty] }, transition: { next: { found: summarize, empty: nothing } } }
+  summarize: { type: script, runtime: node, source: x, completion: { outcomes: [again, done, failure] }, transition: { next: { again: summarize, done: publish, failure: failed } } }
+  publish: { type: script, runtime: powershell, source: x, completion: { outcomes: [success] }, transition: { next: { success: published } } }
+  published: { type: terminal, outcome: succeeded, summary: Report published. }
+  nothing: { type: terminal, outcome: blocked }
+  failed: { type: terminal, outcome: failed }
+`;
+
+test("a workflow's live canvas opens with the session and follows each step", async ({ page }) => {
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const graph = compileWorkflow(LIVE_YAML);
+    const html = buildWorkflowCanvasHtml(graph, foldWorkflowCanvasState([], graph));
+    const log = [
+        { eventType: "workflow.started", data: { name: "nightly-report", states: Object.values(graph.states).map((n) => ({ id: n.id, type: n.type })) } },
+        { eventType: "workflow.state_started", data: { stateId: "collect", step: 1 } },
+        { eventType: "workflow.state_completed", data: { stateId: "collect", step: 1, outcome: "found", resultSource: "reported", durationMs: 1840, toolCalls: [{ name: "read_facts", ok: true }] } },
+        { eventType: "workflow.state_started", data: { stateId: "summarize", step: 2 } },
+        { eventType: "workflow.state_completed", data: { stateId: "summarize", step: 2, outcome: "again", resultSource: "reported", durationMs: 920, toolCalls: [] } },
+        { eventType: "workflow.state_started", data: { stateId: "summarize", step: 3 } },
+    ];
+    const running = foldWorkflowCanvasState(log);
+    const sockets = [];
+    let subscribed = false;
+    const session = { sessionId: LIVE_ID, title: "Workflow: nightly-report", status: "running", sessionKind: "workflow", createdAt: now - 10_000, updatedAt: now };
+    await page.routeWebSocket("**/api/v1/ws", (socket) => {
+        sockets.push(socket);
+        socket.onMessage((raw) => { if (JSON.parse(raw).type === "subscribeSession") subscribed = true; });
+    });
+    await page.route("**/api/v1/**", async (route) => {
+        const url = new URL(route.request().url());
+        const answer = (result) => route.fulfill({ json: { ok: true, result } });
+        if (url.pathname.endsWith("/events-before") && url.search.includes("session.canvas_updated")) {
+            return answer([{ seq: 1, eventType: "session.canvas_updated", data: { slot: 1, rev: 1, sizeBytes: html.length, name: "Workflow" } }]);
+        }
+        if (url.pathname.endsWith("/events-before") && url.search.includes("session.canvas_data")) {
+            return answer([{ seq: 2, eventType: "session.canvas_data", data: { slot: 1, dataRev: 1, payload: running } }]);
+        }
+        if (url.pathname.includes("/artifacts/") && url.pathname.includes("canvas.html")) {
+            return route.fulfill({ contentType: "text/html", body: html });
+        }
+        if (url.pathname.endsWith("/management/sessions")) return answer({ sessions: [session], hasMore: false, nextCursor: null });
+        if (url.pathname.endsWith("/sessions") && route.request().method() === "GET") return answer({ sessions: [session], hasMore: false });
+        if (url.pathname.endsWith(`/sessions/${LIVE_ID}`)) return answer({ ...session, events: [], messages: [] });
+        if (url.pathname.endsWith("/events")) return answer([]);
+        return route.fallback();
+    });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${LIVE_ID}`);
+
+    // No click: a workflow session opens on its canvas.
+    const frame = page.frameLocator(".ps-side-pane-layer:not(.is-parked) iframe.ps-html-preview-frame:not(.is-staging)");
+    await expect(frame.locator("#status")).toHaveText("running");
+    await expect(frame.locator("#where")).toHaveText("step 3 · running summarize");
+    await expect(frame.locator("g.node.done")).toHaveCount(1);
+    await expect(frame.locator("g.node.running")).toHaveCount(1);
+    await expect(frame.locator("g.node.running text").first()).toHaveText("summarize");
+    await expect(frame.locator("g.node.running .runs")).toHaveText("×2");
+    await expect(frame.locator("g.edge.taken")).toHaveCount(2);
+    await expect(frame.locator("#steps tr")).toHaveCount(3);
+    await shot(page, "6-live-canvas-running");
+
+    // A live tick: the run finishes.
+    await expect.poll(() => subscribed).toBe(true);
+    const done = foldWorkflowCanvasState([
+        ...log,
+        { eventType: "workflow.state_completed", data: { stateId: "summarize", step: 3, outcome: "done", resultSource: "reported", durationMs: 610, toolCalls: [] } },
+        { eventType: "workflow.state_started", data: { stateId: "publish", step: 4 } },
+        { eventType: "workflow.state_completed", data: { stateId: "publish", step: 4, outcome: "success", resultSource: "reported", durationMs: 300, toolCalls: [{ name: "write_artifact", ok: true }] } },
+        { eventType: "workflow.completed", data: { name: "nightly-report", steps: 4, stateId: "published", outcome: "succeeded", summary: "Report published.", outputPreview: "{\"rows\":3}" } },
+    ]);
+    for (const socket of sockets) {
+        socket.send(JSON.stringify({ type: "sessionEvent", sessionId: LIVE_ID, event: {
+            sessionId: LIVE_ID, seq: 3, eventType: "session.canvas_data", createdAt: new Date().toISOString(),
+            data: { slot: 1, dataRev: 2, payload: done },
+        } }));
+    }
+    await expect(frame.locator("#status")).toHaveText("completed");
+    await expect(frame.locator("g.node.done")).toHaveCount(4);
+    await expect(frame.locator("g.node.terminal.done text").first()).toHaveText("published");
+    await expect(frame.locator("g.node.running")).toHaveCount(0);
+    await expect(frame.locator("g.node.terminal")).toHaveCount(3);
+    await expect(frame.locator("#note")).toContainText("Outcome succeeded — Report published.");
+    await shot(page, "7-live-canvas-completed");
+    expect(errors).toEqual([]);
+});
+
+
+const POLL_ID = "55555555-2222-3333-4444-555555555555";
+const POLL_YAML = `
+apiVersion: pilotswarm.dev/v1alpha1
+kind: Workflow
+metadata: { name: poll-builds, version: 1.0.0 }
+initial: check
+states:
+  check:
+    type: script
+    runtime: python
+    source: x
+    completion: { outcomes: [found, idle] }
+    transition: { next: { found: handle, idle: sleep } }
+  handle:
+    type: script
+    runtime: node
+    source: x
+    completion: { outcomes: [done] }
+    transition: { next: { done: sleep } }
+  sleep: { type: wait, seconds: 600, transition: { next: check } }
+  nightly: { type: wait, at: { hour: 2, minute: 0, tz: UTC }, transition: { next: check } }
+`;
+
+test("a polling workflow's canvas shows the wait, when it ends, and how many times it looped", async ({ page }) => {
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    const graph = compileWorkflow(POLL_YAML);
+    const html = buildWorkflowCanvasHtml(graph, foldWorkflowCanvasState([], graph));
+    const until = Date.now() + 9 * 60_000;
+    const log = [{ eventType: "workflow.started", data: { name: "poll-builds", states: Object.values(graph.states).map((n) => ({ id: n.id, type: n.type })) } }];
+    for (let visit = 1; visit <= 3; visit += 1) {
+        const step = visit * 2 - 1;
+        log.push(
+            { eventType: "workflow.state_started", data: { stateId: "check", step, visit } },
+            { eventType: "workflow.state_completed", data: { stateId: "check", step, visit, outcome: "idle", resultSource: "reported", durationMs: 380, toolCalls: [{ name: "ci/list_failed_builds", ok: true }] } },
+            { eventType: "workflow.state_waiting", data: { stateId: "sleep", step: step + 1, seconds: 600, until: visit === 3 ? until : until - (3 - visit) * 600_000, visit } },
+        );
+    }
+    const waiting = foldWorkflowCanvasState(log);
+    const session = { sessionId: POLL_ID, title: "Workflow: poll-builds", status: "running", sessionKind: "workflow", createdAt: now - 10_000, updatedAt: now };
+    await page.routeWebSocket("**/api/v1/ws", () => {});
+    await page.route("**/api/v1/**", async (route) => {
+        const url = new URL(route.request().url());
+        const answer = (result) => route.fulfill({ json: { ok: true, result } });
+        if (url.pathname.endsWith("/events-before") && url.search.includes("session.canvas_updated")) {
+            return answer([{ seq: 1, eventType: "session.canvas_updated", data: { slot: 1, rev: 1, sizeBytes: html.length, name: "Workflow" } }]);
+        }
+        if (url.pathname.endsWith("/events-before") && url.search.includes("session.canvas_data")) {
+            return answer([{ seq: 2, eventType: "session.canvas_data", data: { slot: 1, dataRev: 1, payload: waiting } }]);
+        }
+        if (url.pathname.includes("/artifacts/") && url.pathname.includes("canvas.html")) {
+            return route.fulfill({ contentType: "text/html", body: html });
+        }
+        if (url.pathname.endsWith("/management/sessions")) return answer({ sessions: [session], hasMore: false, nextCursor: null });
+        if (url.pathname.endsWith("/sessions") && route.request().method() === "GET") return answer({ sessions: [session], hasMore: false });
+        if (url.pathname.endsWith(`/sessions/${POLL_ID}`)) return answer({ ...session, events: [], messages: [] });
+        if (url.pathname.endsWith("/events")) return answer([]);
+        return route.fallback();
+    });
+    await page.goto(`http://127.0.0.1:${stub.port}/?session=${POLL_ID}`);
+
+    const frame = page.frameLocator(".ps-side-pane-layer:not(.is-parked) iframe.ps-html-preview-frame:not(.is-staging)");
+    await expect(frame.locator("#status")).toHaveText("running");
+    await expect(frame.locator("#where")).toContainText("step 6 · sleep waiting until ");
+    await expect(frame.locator("g.node.waiting")).toHaveCount(1);
+    await expect(frame.locator("g.node.waiting text").first()).toHaveText("sleep");
+    await expect(frame.locator("g.node.waiting .sub")).toHaveText("wait · 10 min → elapsed");
+    await expect(frame.locator("g.node.waiting .runs")).toHaveText("×3");
+    await expect(frame.locator("g.node.done .runs")).toHaveText("×3");
+    await expect(frame.locator("#steps tr").first().locator("td").nth(2)).toContainText("waiting until ");
+    await expect(frame.locator("g.edge.taken")).toHaveCount(2);
+    // A clock wait reads as its schedule, in full on hover.
+    await expect(frame.locator("g.node.wait:not(.waiting) .sub")).toHaveText("wait · daily 02:00");
+    await expect(frame.locator("g.node.wait:not(.waiting) title")).toHaveText("nightly · daily at 02:00 UTC");
+    await shot(page, "8-live-canvas-waiting");
+    expect(errors).toEqual([]);
+});

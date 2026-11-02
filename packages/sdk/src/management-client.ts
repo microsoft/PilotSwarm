@@ -402,10 +402,33 @@ function normalizeSystemRestartDisposition(disposition: SystemSessionRestartDisp
     );
 }
 
+/** Stop's answer for a workflow session, which has no turns to stop. */
+const WORKFLOW_STOP_DETAIL = "workflow sessions have no turns; cancel the session to stop the run";
+
+/** The commands a workflow session acts on; any other message would interrupt its running script. */
+const WORKFLOW_LIFECYCLE_COMMANDS = new Set(["cancel", "done", "delete"]);
+
+/** A workflow session takes only cancel, complete and delete. */
+function workflowCommandUnsupportedError(sessionId: string, cmd: string): Error {
+    return Object.assign(
+        new Error(`Session ${sessionId.slice(0, 8)} is a workflow session; it takes only cancel, complete and delete, not '${cmd}'.`),
+        { code: "WORKFLOW_SESSION_NOT_CONVERSATIONAL", status: 409 },
+    );
+}
+
+/** A workflow session runs a workflow graph; it has no conversation to send to. */
+function workflowNotConversationalError(sessionId: string): Error {
+    return Object.assign(
+        new Error(`Session ${sessionId.slice(0, 8)} is a workflow session; it runs a workflow graph and does not accept chat messages.`),
+        { code: "WORKFLOW_SESSION_NOT_CONVERSATIONAL", status: 409 },
+    );
+}
+
 function sessionViewFromCmsRow(row: SessionRow): PilotSwarmSessionView {
     const liveStatus: PilotSwarmSessionStatus = (row.state as PilotSwarmSessionStatus) || "pending";
     return {
         sessionId: row.sessionId,
+        sessionKind: row.sessionKind ?? "agent",
         title: row.title ?? undefined,
         agentId: row.agentId ?? undefined,
         splash: row.splash ?? undefined,
@@ -441,6 +464,8 @@ function sessionViewFromCmsRow(row: SessionRow): PilotSwarmSessionView {
 /** Merged view of a session for management UIs. */
 export interface PilotSwarmSessionView {
     sessionId: string;
+    /** Runtime implementation. Existing sessions are "agent". */
+    sessionKind: import("./types.js").SessionKind;
     title?: string;
     agentId?: string;
     splash?: string;
@@ -1381,6 +1406,7 @@ export class PilotSwarmManagementClient {
 
         return {
             sessionId: row.sessionId,
+            sessionKind: row.sessionKind ?? "agent",
             title: row.title ?? undefined,
             agentId: row.agentId ?? undefined,
             splash: row.splash ?? undefined,
@@ -1702,11 +1728,15 @@ export class PilotSwarmManagementClient {
             args: { reason: deleteReason },
         });
 
-        await this._waitForSession(
+        // A workflow that reaches its terminal state before it reads the
+        // delete ends without removing itself; the row is then removed here.
+        const settled = await this._waitForSession(
             sessionId,
-            (current) => current == null,
+            (current) => current == null
+                || (session.sessionKind === "workflow" && isTerminalOrchestrationStatus(current.orchestrationStatus)),
             SESSION_COMMAND_SETTLE_TIMEOUT_MS,
         );
+        if (settled) await this._forceDeleteSession(sessionId, deleteReason);
     }
 
     /**
@@ -1724,6 +1754,7 @@ export class PilotSwarmManagementClient {
         if (!trimmed) throw new Error("setSessionModel requires a model id");
         const session = await this.getSession(sessionId).catch(() => null);
         if (!session) throw new Error(`Session ${sessionId.slice(0, 8)} was not found`);
+        if (session.sessionKind === "workflow") throw workflowCommandUnsupportedError(sessionId, "set_model");
         const store = this._requireProviders();
         if (!this._modelProviders) throw new Error("Provider type catalog is unavailable");
         const actor = session.owner
@@ -2456,6 +2487,12 @@ export class PilotSwarmManagementClient {
                 { code: "REGENERATE_UNSUPPORTED" },
             );
         }
+        if (session.sessionKind === "workflow") {
+            throw Object.assign(
+                new Error("Workflow sessions run a workflow graph and have no conversation to regenerate"),
+                { code: "REGENERATE_UNSUPPORTED" },
+            );
+        }
         const store = this._requireProviders();
         if (!this._modelProviders) throw new Error("Provider type catalog is unavailable");
         const actor = session.owner ? await store.lookupUserId(session.owner) : null;
@@ -2590,6 +2627,9 @@ export class PilotSwarmManagementClient {
             throw invalidTurnControlRequest("steerSessionTurn requires a requestId");
         }
         const replaces = validReplacesClientMessageId(opts?.replacesClientMessageId);
+        if ((await this._catalog!.getSession(sessionId).catch(() => null))?.sessionKind === "workflow") {
+            throw workflowNotConversationalError(sessionId);
+        }
         // The flag gates new steers only. The catalog checks it under the
         // session row lock after its request-id retry lookup, so a retry of
         // an already recorded request id still gets its first answer (or
@@ -2625,7 +2665,9 @@ export class PilotSwarmManagementClient {
      *    finished; the turn completed normally.
      *  - stop_forced: legacy path only.
      *  - no_active_turn: nothing was running (`detail` names any other
-     *    refusal, for example `not_found`).
+     *    refusal, for example `not_found`). A workflow session has no turns:
+     *    Stop always answers no_active_turn and leaves the run alone; cancel
+     *    the session to stop it.
      *  - timeout: no outcome was observed before `timeoutMs`. `controlSeq`
      *    identifies the accepted Stop, not proof that it is still open.
      *    Read its outcome before deciding whether another action is needed.
@@ -2638,6 +2680,9 @@ export class PilotSwarmManagementClient {
         }
         const requestId = validTurnControlRequestId(opts?.requestId, "stopSessionTurn") ?? crypto.randomUUID();
         const timeoutMs = validStopTimeoutMs(opts?.timeoutMs);
+        if ((await this._catalog!.getSession(sessionId).catch(() => null))?.sessionKind === "workflow") {
+            return { outcome: "no_active_turn", detail: WORKFLOW_STOP_DETAIL };
+        }
         const added = await this._turnControlAdd(sessionId, "stop", reason, requestId, opts?.caller);
         if ("refused" in added) {
             if (added.refused === "legacy_turn") {
@@ -4052,6 +4097,9 @@ export class PilotSwarmManagementClient {
                 `Session ${sessionId.slice(0, 8)} is a service session (runtime machinery) — its transcript is a read-only trace and it does not accept messages.`,
             );
         }
+        if (session.sessionKind === "workflow") {
+            throw workflowNotConversationalError(sessionId);
+        }
         if (session.status === "failed" || session.status === "cancelled") {
             throw new Error(
                 `Session ${sessionId.slice(0, 8)} is a terminal orchestration and cannot accept new messages.`,
@@ -4142,6 +4190,9 @@ export class PilotSwarmManagementClient {
      */
     async sendAnswer(sessionId: string, answer: string, options?: { sender?: MessageSender; expectedQuestion?: { question: string; iteration?: number } | null }): Promise<void> {
         this._ensureStarted();
+        if ((await this.getSession(sessionId))?.sessionKind === "workflow") {
+            throw workflowNotConversationalError(sessionId);
+        }
         const orchId = `session-${sessionId}`;
         await this._assertOrchestrationLive(orchId, sessionId, "sendAnswer");
         const expectedQuestion = options?.expectedQuestion !== undefined
@@ -4168,6 +4219,8 @@ export class PilotSwarmManagementClient {
         this._ensureStarted();
         const ids = (clientMessageIds || []).filter((id): id is string => typeof id === "string" && Boolean(id));
         if (ids.length === 0) return;
+        // A workflow session has no pending chat messages to cancel.
+        if (await this._isWorkflowSession(sessionId)) return;
         const orchId = `session-${sessionId}`;
         await this._assertOrchestrationLive(orchId, sessionId, "cancelPendingMessage");
         await this._duroxideClient.enqueueEvent(
@@ -4177,11 +4230,21 @@ export class PilotSwarmManagementClient {
         );
     }
 
+    /** Whether a session is a workflow session (false when it cannot be read). */
+    private async _isWorkflowSession(sessionId: string): Promise<boolean> {
+        return (await this._catalog?.getSession(sessionId).catch(() => null))?.sessionKind === "workflow";
+    }
+
     /**
      * Send a command to a session's orchestration.
      */
     async sendCommand(sessionId: string, command: { cmd: string; id: string; args?: Record<string, unknown> }): Promise<void> {
         this._ensureStarted();
+        // A workflow session reads only lifecycle commands; anything else on
+        // its queue would stop the running script and start it over.
+        if (!WORKFLOW_LIFECYCLE_COMMANDS.has(command.cmd) && await this._isWorkflowSession(sessionId)) {
+            throw workflowCommandUnsupportedError(sessionId, command.cmd);
+        }
         const orchId = `session-${sessionId}`;
         await this._assertOrchestrationLive(orchId, sessionId, "sendCommand");
         await this._duroxideClient.enqueueEvent(

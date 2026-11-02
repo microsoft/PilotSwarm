@@ -180,6 +180,7 @@ function supportsLocalFileOpen(controller) {
     return typeof controller?.transport?.openPathInDefaultApp === "function";
 }
 
+const WORKFLOW_COMPOSER_NOTE = "◇ Workflow session — it runs a workflow graph, not a conversation, and does not accept messages. Each step appears above as it runs.";
 const SESSION_LINK_COPIED_STATUS = "Session link copied to clipboard";
 const ARTIFACT_LINK_COPIED_STATUS = "Artifact link copied to clipboard";
 // Mirrors SESSION_NAV_SETTLE_MS in the controller: the access probe rides the
@@ -7116,13 +7117,16 @@ function SessionComposer({ controller, onReadOnlyFocus = null, mobile = false, c
     const modal = useControllerSelector(controller, state => state.ui.modal);
     const session = useControllerSelector(controller, state => state.sessions.byId[state.sessions.activeSessionId]);
     const { access } = useActiveSessionAccess(controller, session?.sessionId, session?.isGroup);
-    const readOnly = session?.serviceKind || access?.canWrite === false;
+    const isWorkflow = session?.sessionKind === "workflow";
+    const readOnly = session?.serviceKind || isWorkflow || access?.canWrite === false;
     React.useLayoutEffect(() => { if (readOnly && !modal) onReadOnlyFocus?.(); }, [readOnly, modal, onReadOnlyFocus]);
     if (!session || session.isGroup || modal) return null;
     return React.createElement("div", { className: "ps-chat-composer" }, readOnly
         ? React.createElement("div", { className: "ps-composer-readonly" }, session.serviceKind
             ? "⚗ Service session — runtime machinery. Its transcript is a read-only trace; it does not accept messages."
-            : `You have view access to this session. Ask ${access.owner?.displayName || access.owner?.email || "the owner"} for write access to participate.`)
+            : isWorkflow
+                ? WORKFLOW_COMPOSER_NOTE
+                : `You have view access to this session. Ask ${access.owner?.displayName || access.owner?.email || "the owner"} for write access to participate.`)
         : React.createElement(PromptComposer, { controller, mobile, compact, autoFocus, active: true }));
 }
 
@@ -7354,13 +7358,16 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
     // read-only BY KIND: their transcript is the trace of runtime machinery,
     // never a conversation surface — no prompt for anyone, owner included.
     const activeIsService = Boolean(viewState.sessionsById?.[viewState.activeSessionId]?.serviceKind);
-    const readOnly = activeIsService || (Boolean(access) && access.canWrite === false);
+    const activeIsWorkflow = viewState.sessionsById?.[viewState.activeSessionId]?.sessionKind === "workflow";
+    const readOnly = activeIsService || activeIsWorkflow || (Boolean(access) && access.canWrite === false);
     const composer = composerBase
         ? React.createElement("div", { className: "ps-chat-composer" },
             readOnly
                 ? React.createElement("div", { className: "ps-composer-readonly" },
                     activeIsService
                         ? "⚗ Service session — runtime machinery. Its transcript is a read-only trace; it does not accept messages."
+                        : activeIsWorkflow
+                        ? WORKFLOW_COMPOSER_NOTE
                         : `You have view access to this session. Ask ${access.owner?.displayName || access.owner?.email || "the owner"} for write access to participate.`)
                 : React.createElement(PromptComposer, { controller, mobile, active: true }))
         : null;

@@ -6131,6 +6131,16 @@ export class PilotSwarmUiController {
             .catch((error) => ({ ok: false, reason: error?.message || String(error) }));
     }
 
+    revealWorkflowCanvas(sessionId, drawn) {
+        if (!drawn) return;
+        const state = this.getState();
+        if (state.sessions.activeSessionId !== sessionId) return;
+        if (state.sessions.byId[sessionId]?.sessionKind !== "workflow") return;
+        if (state.canvas.prefs[canvasPrefKey(sessionId, 1)]?.optedOut) return;
+        if (state.ui.rightPaneMode === "canvas" && state.ui.canvasOpen && (state.ui.canvasSlot || 1) === 1) return;
+        this.dispatch({ type: "canvas/flip", sessionId, slot: 1 });
+    }
+
     async ensureCanvasSnapshot(sessionId) {
         if (!sessionId) return;
         if (this.getState().canvas.bySessionId[sessionId]?.snapshotLoaded) return;
@@ -6196,6 +6206,9 @@ export class PilotSwarmUiController {
                     });
                 }
             }
+            // A workflow session's canvas IS its execution view: show it when
+            // the session is opened, unless the person closed it here.
+            this.revealWorkflowCanvas(sessionId, anyDrawn);
         } catch {
             // Leave snapshotLoaded unset — the next selection retries.
         }
@@ -7747,6 +7760,11 @@ export class PilotSwarmUiController {
         if (!session || session.isGroup) {
             this._onSwitchModelApplied = null;
             this.dispatch({ type: "ui/status", text: "Select a session before switching model" });
+            return;
+        }
+        if (session.sessionKind === "workflow") {
+            this._onSwitchModelApplied = null;
+            this.dispatch({ type: "ui/status", text: "Workflow sessions run no model; there is nothing to switch." });
             return;
         }
         if (typeof this.transport.setSessionModel !== "function") {
@@ -10762,6 +10780,10 @@ export class PilotSwarmUiController {
             this.dispatch({ type: "ui/status", text: "Service sessions are runtime machinery and cannot be regenerated." });
             return;
         }
+        if (activeSession?.sessionKind === "workflow") {
+            this.dispatch({ type: "ui/status", text: "Workflow sessions run a workflow graph and have no conversation to regenerate." });
+            return;
+        }
         if (!confirmed) {
             const label = activeSession?.title || sessionId.slice(0, 8);
             this.dispatch({
@@ -11354,6 +11376,10 @@ export class PilotSwarmUiController {
         const session = state.sessions.byId[sessionId];
         if (!session || session.isGroup) {
             this.dispatch({ type: "ui/status", text: "Select a session to stop its turn." });
+            return;
+        }
+        if (session.sessionKind === "workflow") {
+            this.dispatch({ type: "ui/status", text: "Workflow sessions have no turns; cancel the session to stop the run." });
             return;
         }
         if (typeof this.transport.stopSessionTurn !== "function") {

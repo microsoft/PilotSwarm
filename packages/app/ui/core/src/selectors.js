@@ -36,6 +36,7 @@ import {
     getContextHeaderBadge,
 } from "./context-usage.js";
 import { canonicalSystemTitle } from "./system-titles.js";
+import { isWorkflowSession, WORKFLOW_SESSION_GLYPH } from "./workflow-sessions.js";
 import { matchesSessionError } from "./session-warning.js";
 import { normalizeQuestionForDisplay } from "./question-display.js";
 import { withSessionWarnings, isActivityOnlySessionError } from "./session-errors.js";
@@ -1075,6 +1076,11 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
             color: sessionStatusColor(session, mode),
             role: "status",
         });
+        if (isWorkflowSession(session)) {
+            // Workflow sessions run a workflow graph, not a conversation: the
+            // chain mark tells them apart from agent sessions at a glance.
+            prefixRuns.push({ text: `${WORKFLOW_SESSION_GLYPH} `, color: "magenta", bold: true, role: "sessionKind" });
+        }
     }
 
     const mainColor = session?.isGroup ? "cyan" : session?.isSystem ? "yellow" : sessionStatusColor(session, mode);
@@ -1264,6 +1270,7 @@ function buildSessionRowView(entry, session, state, totalDescendantCounts, visib
             kind: session?.isGroup ? "group"
                 : session?.isSystem ? "system"
                 : session?.serviceKind ? "service"
+                : isWorkflowSession(session) ? "workflow"
                 : "session",
             title: hasRealTitle ? rawTitle : shortId,
             untitled: !hasRealTitle,
@@ -1698,7 +1705,8 @@ export function selectSessionFilterExceptionNotice(state) {
  * Applies to user AND system sessions; group/container rows are not sessions.
  */
 export function canStopSessionTurn(session) {
-    if (!session || session.isGroup) return false;
+    // A workflow session has no turns; Cancel is how it is stopped.
+    if (!session || session.isGroup || isWorkflowSession(session)) return false;
     return (session.status || "") === "running";
 }
 
@@ -2871,6 +2879,18 @@ function buildChatMessageLinesUncached(message, maxWidth, options = {}) {
         if (message?.role === "system" && !strippedSystemText) {
             return [];
         }
+        // A workflow step: one line that opens to its output (workflow-sessions.js).
+        if (message?.workflowNotice) {
+            // A folded polling row updates in place; a fixed timestamp would be its first check's.
+            const line = buildSystemNoticeLine({
+                title: message.workflowNotice.title,
+                summary: message.workflowNotice.summary,
+                body: message.text || "",
+                timestamp: message.workflowNotice.progress ? "" : formatTimestamp(message?.createdAt || message?.time),
+                color: message.workflowNotice.color || "gray",
+            });
+            return [message.workflowNotice.progress ? { ...line, workflowProgress: true } : line];
+        }
         // System-role messages that carry an explicit non-"System" cardTitle
         // (e.g. "Question", "Error", "Warning") are real product cards built by
         // selectors like buildPendingQuestionMessage / buildSessionErrorMessage.
@@ -3427,7 +3447,7 @@ export function selectTurnControlView(state, sessionId = state?.sessions?.active
         acceptsControls,
         steeringEnabled,
         canStop: canStopSessionTurn(session),
-        canSteer: Boolean(session && !session.isGroup && !session.serviceKind && acceptsControls && steeringEnabled),
+        canSteer: Boolean(session && !session.isGroup && !session.serviceKind && !isWorkflowSession(session) && acceptsControls && steeringEnabled),
         steer: entry?.steer || null,
         stop: entry?.stop || null,
         // The queue is being steered (one batch per session at a time).
@@ -7095,7 +7115,8 @@ function buildNodeMapCell(session, brandingTitle, width, active) {
             ? canonicalSystemTitle(session, brandingTitle)
             : (session?.title || shortSessionId(session?.sessionId)))
         : shortSessionId(session?.sessionId);
-    const prefix = session?.isSystem ? "⚙ " : session?.serviceKind ? "⚗ " : `${sessionStatusIcon(session) || "."} `;
+    const prefix = session?.isSystem ? "⚙ " : session?.serviceKind ? "⚗ "
+        : isWorkflowSession(session) ? `${WORKFLOW_SESSION_GLYPH} ` : `${sessionStatusIcon(session) || "."} `;
     const text = padDisplayText(`${prefix}${label}`, width);
 
     if (active) {
@@ -7128,7 +7149,8 @@ function nodeMapSessionEntry(session, brandingTitle, active) {
     const label = session?.isSystem
         ? canonicalSystemTitle(session, brandingTitle)
         : (session?.title || shortSessionId(session?.sessionId));
-    const prefix = session?.isSystem ? "⚙ " : session?.serviceKind ? "⚗ " : `${sessionStatusIcon(session) || "."} `;
+    const prefix = session?.isSystem ? "⚙ " : session?.serviceKind ? "⚗ "
+        : isWorkflowSession(session) ? `${WORKFLOW_SESSION_GLYPH} ` : `${sessionStatusIcon(session) || "."} `;
     return {
         sessionId: session?.sessionId || null,
         text: `${prefix}${label}`,
