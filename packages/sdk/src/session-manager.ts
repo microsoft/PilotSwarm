@@ -1439,6 +1439,21 @@ export class SessionManager {
             // The session's host was replaced: leave the old one.
             this.computeHosts.delete(sessionId);
             await this._releaseBinding(sessionId, previous, "failed", true);
+            // Worth recording: the session's processes, its scratch files
+            // and anything it started on the old host are gone, and the
+            // only sign of it otherwise is a turn that finds an empty
+            // folder.
+            this._recordComputeEvent(sessionId, "session.compute_host_replaced", {
+                target: target.name,
+                previousHost: previous.host.id,
+                previousIncarnation: previous.host.incarnation,
+                host: bound.host.id,
+                incarnation: bound.host.incarnation,
+            });
+        } else if (!previous) {
+            this._recordComputeEvent(sessionId, "session.compute_bound", {
+                target: target.name, host: bound.host.id, incarnation: bound.host.incarnation, workerNodeId,
+            });
         }
         // Record the binding before connect, so a failed connect still releases it.
         const workspace: ComputeWorkspacePaths = {
@@ -1497,11 +1512,36 @@ export class SessionManager {
                         `the connection to the compute host could not be prepared: ${String((error as Error)?.message ?? error)}`, 5_000);
             }
         }
+        // The session's folders as each side names them. The provider
+        // answers `connect` with the host's view of the same folders, in
+        // the same order, so the two line up by position.
+        binding.folderMap = computeFolderMapOf(workspace, connected.workspace, workspaceAttach?.extras?.map((extra) => extra.name) ?? []);
         const endpointKey = runtimeEndpointKey(endpoint, bound.host);
         const oldKey = binding.endpointKey;
         binding.endpointKey = endpointKey;
-        if (oldKey && oldKey !== endpointKey) await this._retireEndpointIfUnused(oldKey);
+        if (oldKey && oldKey !== endpointKey) {
+            await this._retireEndpointIfUnused(oldKey);
+            // A different connection to the same host: a replaced bridge
+            // or a rotated token, which costs the session a cold resume.
+            this._recordComputeEvent(sessionId, "session.compute_connected", {
+                target: target.name, host: bound.host.id, incarnation: bound.host.incarnation, workerNodeId, reconnected: true,
+            });
+        } else if (!oldKey && endpoint.transport !== "local") {
+            this._recordComputeEvent(sessionId, "session.compute_connected", {
+                target: target.name, host: bound.host.id, incarnation: bound.host.incarnation, workerNodeId, reconnected: false,
+            });
+        }
         return { endpoint, workspace: connected.workspace, endpointKey, target, provider };
+    }
+
+    /**
+     * Compute providers: PilotSwarm's own note of what happened to a
+     * session's host. Best effort and never on the turn's path: a session
+     * that ran is not failed because its history could not be written.
+     */
+    private _recordComputeEvent(sessionId: string, eventType: string, data: Record<string, unknown>): void {
+        void this.sessionCatalog?.recordEvents(sessionId, [{ eventType, data }])
+            .catch(() => { /* observability only */ });
     }
 
     /**

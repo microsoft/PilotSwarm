@@ -2,6 +2,8 @@ import { CAPABILITY_TOOL_SPECS, capabilityToolDeclarations } from "./capability-
 import { DURABLE_SPAWN_DESCRIPTION } from "./base-agent-policy.js";
 import { isNativeChildEvent, settleNativeSubagents, guardNativeExternalTools } from "./native-subagents.js";
 import { killProcessTree, taskProcessAlive } from "./process-tree.js";
+import { remoteRuntimeEventType } from "./compute-events.js";
+import { ComputeFolderMap } from "./compute.js";
 import { defineTool, type Tool, type CopilotSession } from "@github/copilot-sdk";
 import type { ToolFactsAccessor } from "./tool-facts-accessor.js";
 import { normalizeCanvasResponseContract as normalizeCanvasContractShared } from "./canvas-app-manifest.js";
@@ -3496,10 +3498,22 @@ export class ManagedSession {
             this.settleTurnResolver = () => settleRun();
             this.settleTurnRejecter = (err) => failRun(err);
             // Catch-all event handler — captures every event and fires onEvent immediately.
+            const remote = this.runsRemotely();
             unsubscribers.push(
                 this.copilotSession.on((event: any) => {
                     lastEventAt = Date.now();
-                    const eventType = event.type ?? event.eventType ?? "unknown";
+                    const sentType = event.type ?? event.eventType ?? "unknown";
+                    // Compute providers: a runtime the worker did not start
+                    // is model-chosen code on another machine, and the
+                    // events PilotSwarm emits about a session are read as
+                    // PilotSwarm's own word — two of them change what the
+                    // CMS says the session is doing. One it claims keeps
+                    // the fact that it was sent and loses the authority,
+                    // under a name that says so.
+                    const eventType = remote ? remoteRuntimeEventType(sentType) : sentType;
+                    if (eventType !== sentType) {
+                        console.warn(`[ManagedSession] ${this.sessionId}: its compute host sent "${sentType}", which only PilotSwarm emits; recorded as "${eventType}"`);
+                    }
                     if (isStaleIdle(eventType, event)) return;
                     const rawEventData = event.data ?? event;
                     let eventData = rawEventData;
