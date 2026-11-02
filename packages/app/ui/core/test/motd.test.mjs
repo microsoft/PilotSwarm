@@ -244,3 +244,23 @@ test("a reply that is not a message never reaches the splash", async () => {
     assert.doesNotThrow(() => formatMotdWindow({ fromAt: undefined, toAt: null }));
     assert.match(formatMotdWindow({ fromAt: "garbage", toAt: "also garbage" }), /^an unknown time until an unknown time \(/);
 });
+test("publishing works on a plain-HTTP origin without crypto.randomUUID", async () => {
+    const { motdRequestId } = await import("../src/motd.js");
+    const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+    assert.match(motdRequestId({ getRandomValues: bytes => globalThis.crypto.getRandomValues(bytes) }), uuid);
+    assert.match(motdRequestId({}), uuid);
+    const original = Object.getOwnPropertyDescriptor(globalThis.crypto, "randomUUID");
+    const sent = [];
+    try {
+        Object.defineProperty(globalThis.crypto, "randomUUID", { value: undefined, configurable: true });
+        const { controller, store } = setup({ createMotd: async input => { sent.push(input); return { motdId: "9" }; }, listMotds: async () => [] });
+        controller.setMotdDraft?.({ bodyMd: "QA plain HTTP", startMode: "now", endMode: "never" });
+        if (!controller.setMotdDraft) store.dispatch({ type: "admin/motds", patch: { draft: { ...store.getState().admin.motds.draft, bodyMd: "QA plain HTTP" } } });
+        await controller.createAdminMotd();
+        assert.equal(sent.length, 1);
+        assert.match(sent[0].requestId, uuid);
+        assert.equal(store.getState().admin.motds.error, null);
+    } finally {
+        if (original) Object.defineProperty(globalThis.crypto, "randomUUID", original);
+    }
+});

@@ -18,6 +18,19 @@ export function motdLocalParts(time) {
     const local = new Date(time - date.getTimezoneOffset() * 60_000).toISOString();
     return { date: local.slice(0, 10), time: local.slice(11, 16) };
 }
+// crypto.randomUUID exists only on secure origins (HTTPS or localhost). A
+// portal reached over plain HTTP still needs a request id, so fall back to a
+// version 4 UUID built from crypto.getRandomValues, which every origin has.
+export function motdRequestId(cryptoApi = globalThis.crypto) {
+    if (typeof cryptoApi?.randomUUID === "function") return cryptoApi.randomUUID();
+    const bytes = new Uint8Array(16);
+    if (typeof cryptoApi?.getRandomValues === "function") cryptoApi.getRandomValues(bytes);
+    else for (let i = 0; i < 16; i += 1) bytes[i] = Math.floor(Math.random() * 256);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = [...bytes].map(b => b.toString(16).padStart(2, "0")).join("");
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
 export function motdStartsAt(message) { return message.startsAt ?? message.fromAt; }
 // A server reply that is not a message (an empty body, an error shape) must
 // never reach the splash: one bad timestamp would crash the whole portal.

@@ -3,7 +3,7 @@ import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./comman
 import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
 import { parseAgentSourceLink } from "./repo-links.js";
 import { importPackageFilesFromLink, readImportedPackageName } from "./repo-import.js";
-import { MOTD_REFRESH_MS, canReadMotd, motdPrincipal, duplicateMotdDraft, motdDraftWindow, createMotdDraft, motdLocalParts, isMotdMessage } from "./motd.js";
+import { MOTD_REFRESH_MS, canReadMotd, motdPrincipal, duplicateMotdDraft, motdDraftWindow, createMotdDraft, motdLocalParts, isMotdMessage, motdRequestId } from "./motd.js";
 import {
     appendEventToHistory,
     applyLiveTurnToHistory,
@@ -4153,7 +4153,7 @@ export class PilotSwarmUiController {
             imagePlacement: draft.imagePlacement, ...(draft.image ? { image: draft.image } : {}),
             ...(draft.mobileImage ? { mobileImage: draft.mobileImage } : {}) };
         const retry = state.retry?.fingerprint === fingerprint ? state.retry
-            : { fingerprint, input, requestId: globalThis.crypto.randomUUID() };
+            : { fingerprint, input, requestId: motdRequestId() };
         this._motdAdminReadSerial = (this._motdAdminReadSerial || 0) + 1;
         this.dispatch({ type: "admin/motds", patch: { saving: true, loading: false, error: null, retry } });
         try {
