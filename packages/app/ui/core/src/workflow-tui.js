@@ -3,6 +3,7 @@ import { workflowV2RunPickerModel } from "./workflow-v2-run-picker.js";
 import {
     compactWorkflowV2Executions, projectWorkflowV2, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2RouteKind,
 } from "./workflow-v2-view.js";
+import { workflowV2RunCommandNotice, workflowV2RunControls } from "./workflow-v2-commands.js";
 
 /**
  * The TUI's read-only workflow view (design 02 "Portal/TUI: graph, observed
@@ -16,10 +17,19 @@ import {
  * (ensureWorkflowDefinition, ensureWorkflowReadModel: the same reads the
  * portal makes), through the same projection (projectWorkflowV2, or the
  * legacy node views), for the run the person chose (the portal's run picker
- * model: the live run, or any run in the workflow's run list). It sends
- * nothing and changes nothing: a person's commands, the draft editor and test
- * controls are not part of it, and the server keeps refusing human input to
- * an agent state's subtree.
+ * model: the live run, or any run in the workflow's run list).
+ *
+ * The only commands it sends are a person's run controls for the run it
+ * shows (design 04, 07, mocks M04, M16; R17, R26; INACTIVE: only a deployment
+ * that takes a person's workflow commands offers any): p pause, r resume,
+ * s stop, c cancel, the portal's controls (workflowV2RunControls) sent as the
+ * portal sends them (the controller's sendWorkflowRunCommand: stop and cancel
+ * ask first, one command at a time, the same command again after an answer
+ * that never came). A workflow in an agent state's subtree takes only pause,
+ * stop and cancel from people. The server decides every command again. The
+ * variables, the draft editor, publication, tests and their answers are not
+ * part of it, and the server keeps refusing human input to an agent state's
+ * subtree.
  *
  * For an agent state it also shows the agent, the workflow interface the
  * state names and what the shown run pins it to (the package revision and
@@ -80,8 +90,13 @@ export function workflowSessionProjection({ session = null, events = EMPTY_EVENT
         || (["completed", "failed", "cancelled"].includes(session?.status) ? session.status : live?.status || session?.status || "Starting");
     // The runs a person can choose (v2): the portal's run picker model, from the workflow's last read model.
     const runPicker = v2 ? workflowV2RunPickerModel({ workflowModel, selectedRunId, ownModelLoaded: readModel != null, error }) : null;
+    // A person's run controls for the shown run, and the notice about the last one: the portal's, from the selection's own
+    // read model only (its run is the one shown), and only when it says which commands the workflow takes from people.
+    const runCommand = safeView.runCommand ?? null;
+    const runControls = v2 ? workflowV2RunControls(readModel, runCommand) : null;
+    const runNotice = v2 ? workflowV2RunCommandNotice(runCommand) : null;
     return {
-        definition, nodes, v2, status, live, runPicker,
+        definition, nodes, v2, status, live, runPicker, runControls, runNotice, runReadModel: v2 ? readModel ?? null : null,
         name: definition?.name || String(session?.title || "").replace(/^Workflow: /, "") || "Workflow",
         banners: v2?.banners || [],
         readError: error,
@@ -198,6 +213,92 @@ export function selectWorkflowViewSelection(state) {
     return { modal, projection, nodes, selectedIndex, selected, occurrences, occurrenceIndex, occurrence: occurrences[occurrenceIndex] || null };
 }
 
+/** The keys of a person's run controls in the workflow view. */
+export const WORKFLOW_VIEW_RUN_CONTROL_KEYS = Object.freeze({ pause: "p", resume: "r", stop: "s", cancel: "c" });
+const RUN_CONTROL_LABELS = { pause: "Pause", resume: "Resume", stop: "Stop", cancel: "Cancel" };
+const ENDED_RUN_STATUSES = new Set(["completed", "failed", "cancelled", "stopped"]);
+const isPlainRecord = value => value !== null && typeof value === "object" && !Array.isArray(value);
+
+/** Why the shown run does not take a run control the view does not list, as a sentence. */
+function runControlAbsentReason(model, controls, operation) {
+    if (!isPlainRecord(model)) return "The shown run is not loaded yet.";
+    if (!isPlainRecord(model.run)) return "No run is shown.";
+    if (!isPlainRecord(model.personCommands)) return "This deployment takes no workflow commands from people.";
+    const offered = Array.isArray(model.personCommands.operations) && model.personCommands.operations.includes(operation);
+    if (!offered) return controls?.restriction ?? "This workflow does not take it from people.";
+    const status = typeof model.run.status === "string" ? model.run.status : "unknown";
+    if (ENDED_RUN_STATUSES.has(status)) return `The run has ended (${status}).`;
+    if (isPlainRecord(model.run.stop)) return "The run is stopping; only cancel applies.";
+    if (operation === "resume") return "The run is not paused.";
+    if (operation === "pause" && status === "paused") return "The run is already paused.";
+    return `The run is ${status}.`;
+}
+
+/**
+ * Whether the open workflow view sends a person's run control `operation` for the run it shows, and why not:
+ * `{ ok: true, operation, runId }` when the portal's run controls (workflowV2RunControls) offer it enabled, otherwise
+ * `{ ok: false, reason }`, a sentence for the status line. The server decides every command again. Pure.
+ */
+export function workflowViewRunControlFor(selection, operation) {
+    const label = Object.hasOwn(RUN_CONTROL_LABELS, operation) ? RUN_CONTROL_LABELS[operation] : null;
+    if (!label) return { ok: false, reason: "That is not a run control." };
+    const projection = selection?.projection ?? null;
+    const controls = projection?.runControls ?? null;
+    const control = controls?.controls.find(item => item.operation === operation) ?? null;
+    if (control?.enabled) return { ok: true, operation, runId: controls.runId };
+    if (control) return { ok: false, reason: `${label} is not available now. ${control.title}` };
+    return { ok: false, reason: `${label} is not available for this run. ${runControlAbsentReason(projection?.runReadModel ?? null, controls, operation)}` };
+}
+
+/**
+ * The shown run's controls and the notice about the last one, as detail entries ({ text, color, indent }, wrapped by
+ * the caller): each control the run takes now with its key (one being sent says so), why one is not available now, the
+ * subtree rule when it applies, and a refusal or an answer that never came, with what to press. None without a
+ * person's commands: the view stays read-only.
+ */
+function runControlLines(projection) {
+    const lines = [];
+    const controls = projection.runControls;
+    if (controls) {
+        if (controls.controls.length) {
+            const parts = controls.controls.map(control => `${WORKFLOW_VIEW_RUN_CONTROL_KEYS[control.operation]} ${control.label.toLowerCase()}`
+                + (control.enabled || control.pending ? "" : " (not now)"));
+            lines.push({ text: `Run controls: ${parts.join(" · ")} — stop and cancel ask first`, color: controls.busy ? "yellow" : "cyan", indent: "" });
+            for (const reason of new Set(controls.controls.filter(control => !control.enabled).map(control => control.title))) {
+                lines.push({ text: reason, color: "gray", indent: "  " });
+            }
+        } else {
+            const status = projection.runReadModel?.run?.status;
+            lines.push({ text: `Run controls: none for this run${typeof status === "string" ? ` (${status})` : ""}.`, color: "gray", indent: "" });
+        }
+        if (controls.restriction) lines.push({ text: controls.restriction, color: "gray", indent: "  " });
+    }
+    const notice = projection.runNotice;
+    if (notice) {
+        lines.push({ text: `! ${notice.text}`, color: notice.level === "error" ? "red" : "yellow", indent: "" });
+        const key = Object.hasOwn(WORKFLOW_VIEW_RUN_CONTROL_KEYS, notice.operation) ? WORKFLOW_VIEW_RUN_CONTROL_KEYS[notice.operation] : null;
+        lines.push({ text: `${notice.retry && key ? `${key} sends the same command again (the server applies it once) · ` : ""}d dismisses this notice`,
+            color: "gray", indent: "  " });
+    }
+    return lines;
+}
+
+/** `text` in lines of at most `limit` characters, broken at spaces; each starts with `indent`, a continuation with two more. */
+function wrapped(text, limit, indent = "") {
+    const out = [];
+    let rest = String(text ?? "").replace(/\s+/g, " ").trim();
+    for (let first = true; rest.length; first = false) {
+        const prefix = first ? indent : `${indent}  `;
+        const room = Math.max(10, limit - prefix.length);
+        if (rest.length <= room) { out.push(prefix + rest); break; }
+        let cut = rest.lastIndexOf(" ", room);
+        if (cut <= 0) cut = room;
+        out.push(prefix + rest.slice(0, cut));
+        rest = rest.slice(cut).trimStart();
+    }
+    return out;
+}
+
 function nodeRow(entry, selected, idWidth, labelWidth, width) {
     const marker = selected ? "▶ " : "  ";
     const id = bounded(entry.id, idWidth).padEnd(idWidth);
@@ -280,6 +381,8 @@ function detailLines(selection, width) {
         add(`Run: ${option?.label ?? "Live run"}${picker.options.length > 1 ? ` (${index + 1} of ${picker.options.length} · ←→ choose)` : ""}`, "cyan");
         for (const note of picker.notes) add(`  ${note.text}`, note.level === "error" ? "red" : note.level === "warning" ? "yellow" : "gray");
     }
+    // The run controls and their notice are wrapped, not cut: a reason or a refusal is read whole.
+    for (const line of runControlLines(projection)) for (const text of wrapped(line.text, Math.max(20, width), line.indent)) add(text, line.color);
     for (const banner of projection.banners) add(`! ${banner.text}`, banner.level === "error" ? "red" : "yellow");
     if (projection.readError) add(`The workflow's current state could not be read: ${projection.readError}`, "red");
     if (!selected) {

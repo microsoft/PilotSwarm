@@ -1,6 +1,7 @@
-// The TUI's read-only workflow view (design 02 "Portal/TUI: graph, observed state, read-only child chats"; T115):
-// `w` opens it outside the prompt (the prompt keeps typing w), the shared Ink app draws it from the shared view model,
-// and `?` lists it.
+// The TUI's workflow view (design 02 "Portal/TUI: graph, observed state, read-only child chats"; T115): `w` opens it
+// outside the prompt (the prompt keeps typing w), the shared Ink app draws it from the shared view model, `?` lists it,
+// and inside it p r s c send a person's run controls for the shown run and d dismisses their notice (INACTIVE: only a
+// deployment that takes a person's workflow commands offers any).
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -92,9 +93,30 @@ test("the help lists the workflow view", async () => {
     const help = selectHelpModal(store.getState(), 120);
     assert.ok(help, "the help is open");
     const text = JSON.stringify(help);
-    assert.match(text, /workflow session: read-only workflow view/);
+    assert.match(text, /workflow session: workflow view/);
     assert.match(text, /←→ run/);
     assert.match(text, /PgUp\/PgDn details/);
+    assert.match(text, /p r s c  d/);
+    assert.match(text, /workflow view: pause \/ resume \/ stop \/ cancel the shown run/);
+    assert.match(text, /stop and cancel ask first/);
+});
+
+test("p r s c in the open workflow view send its run controls and d dismisses their notice; elsewhere the keys keep their meaning", () => {
+    const binding = APP.indexOf('if (modal.type === "workflowView" && plainShortcut && Object.hasOwn(WORKFLOW_VIEW_RUN_KEYS, input)) {');
+    assert.ok(binding > 0, "the binding exists");
+    assert.match(APP.slice(binding, binding + 200), /controller\.handleCommand\(WORKFLOW_VIEW_RUN_KEYS\[input\]\)/);
+    // Inside the modal branch, after the confirm dialog's own keys (y, n, Enter, Esc) and before every global shortcut.
+    const modalBranch = APP.indexOf("if (modal) {");
+    assert.ok(modalBranch > 0 && modalBranch < binding);
+    assert.ok(APP.indexOf('if (modal.type === "confirm") {', modalBranch) < binding);
+    assert.ok(binding < APP.indexOf('if (plainShortcut && input === "w") {'));
+    assert.ok(binding < APP.indexOf('if (plainShortcut && input === "c") {'), "c cancels the session only outside the view");
+    const keys = APP.slice(APP.indexOf("const WORKFLOW_VIEW_RUN_KEYS"), APP.indexOf("});", APP.indexOf("const WORKFLOW_VIEW_RUN_KEYS")));
+    for (const [key, command] of [["p", "WORKFLOW_VIEW_PAUSE_RUN"], ["r", "WORKFLOW_VIEW_RESUME_RUN"], ["s", "WORKFLOW_VIEW_STOP_RUN"],
+        ["c", "WORKFLOW_VIEW_CANCEL_RUN"], ["d", "WORKFLOW_VIEW_DISMISS_NOTICE"]]) {
+        assert.match(keys, new RegExp(`${key}: UI_COMMANDS\\.${command},`), key);
+        assert.equal(typeof UI_COMMANDS[command], "string", command);
+    }
 });
 
 test("← → in the open workflow view choose its run; elsewhere they keep their meaning", () => {

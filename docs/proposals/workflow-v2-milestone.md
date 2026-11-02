@@ -650,7 +650,7 @@ per schema file).
 | Portal and TUI composer, management client, SDK client | session access (`canSendPrompt`, `canAnswer`, `canSteer`; the TUI's direct mode reads `getWorkflowInputPolicy`) | human input, refused for an agent state's subtree at the SDK (both composers are read-only there) |
 | REST `POST /sessions/:id/workflow/commands`, SDK (direct and web) and TUI `updateWorkflow`, MCP `update_workflow` (INACTIVE: test-only option `workflowCommands`) | — | a person's `update_workflow` command (below) |
 | Bootstrap (`GET /api/bootstrap`, `/api/v1/bootstrap`), SDK `getWorkflowCapabilities` (direct and web), both transports | `workflows`: the workflow support the deployment takes now (below) | nothing |
-| TUI workflow view (`w` on a workflow session; read-only) | the states in graph order for the chosen run (←→), the selected state's details, transitions and history, an agent state's child session per occurrence, a test run's intercepted effects (below) | nothing: it opens a child session's chat to read |
+| TUI workflow view (`w` on a workflow session) | the states in graph order for the chosen run (←→), the selected state's details, transitions and history, an agent state's child session per occurrence, a test run's intercepted effects, and with `personCommands` (INACTIVE) the shown run's controls (below) | a person's `pause`, `resume`, `stop`, `cancel` of the shown run (p, r, s, c; stop and cancel ask first) as `updateWorkflow` commands; it opens a child session's chat to read |
 
 All read surfaces serve one projection (`readWorkflowV2View`), so they show
 the same agent child, branch, stop, test and pin fields. The shared UI
@@ -930,8 +930,8 @@ Unfulfilled requirements (open, not waived; R26):
   names, are API review item D11.
 - **The rest of the UI commands**: the portal sends every person's command
   (above). Test fixtures and a several-key variables update go through the
-  API, MCP or the agent tool. The TUI draws a read-only workflow view
-  (below) and has no workflow command keys.
+  API, MCP or the agent tool. The TUI's workflow view (below) sends only a
+  person's run controls.
 
 **The TUI's read-only workflow view (design 02 "Portal/TUI: graph, observed
 state, read-only child chats"; T115).** On a workflow session, `w` (outside
@@ -963,9 +963,39 @@ portal's table lists them (the effect, its state, and its answer or that it
 waits for the parent; those of the selected state marked), from that run's
 own read model only. PgUp and PgDn (ctrl-u, ctrl-d) scroll the details a
 page at a time, never past their last line; another state or run starts at
-the top. The view sends nothing and changes nothing (the run's parent
-agent, a fixture or a person in the portal answers an intercepted effect);
-the server keeps refusing human input to an agent state's subtree.
+the top. Apart from the run controls below, the view sends nothing and
+changes nothing (the run's parent agent, a fixture or a person in the
+portal answers an intercepted effect); the server keeps refusing human
+input to an agent state's subtree.
+
+**The TUI's run controls (design 04, 07, mocks M04, M16; R17, R26;
+INACTIVE: only a deployment that takes a person's workflow commands offers
+any).** In the workflow view, p pauses, r resumes, s stops and c cancels the
+run the view shows, and d dismisses the notice about the last command. They
+are the portal's controls (`workflowV2RunControls`, from the shown run's own
+read model and its `personCommands`), sent as the portal sends them (the
+shared controller's `sendWorkflowRunCommand`, an `updateWorkflow` command
+through the transport, for that run's id). The details list the controls
+the run takes now, with their keys: pause while the run waits to start or
+runs, resume while it is paused, stop and cancel until it ends, only cancel
+while it stops. A control that is listed but not available now (a command
+being sent, a controller that cannot stop gracefully, a viewer the portal
+refuses) says why, and so does a key for a control the run does not take,
+on the status line: the subtree rule (a workflow in an agent state's
+subtree takes only pause, stop and cancel from people, with the
+controlling agent named), a run that ended or is stopping, a run that is
+not paused, or a deployment that takes no person's commands (the view then
+lists no controls and stays read-only). Stop and cancel open the confirm
+dialog first (neither undoes effects that already happened); it returns to
+the view as it was, and closing it sends nothing. One command at a time:
+the control being sent says so (`pausing…`), and the others wait. An
+accepted command is said on the status line and the workflow is read again
+at once. A refusal, and an answer that never came, are shown in the
+details and on the status line; after an answer that never came, the same
+control sends the same command again (the same operation id, so the server
+applies it once). The server decides every command again (its session
+gate, the subtree rule, the run's state). Long reasons and notices are
+wrapped, not cut. Nothing about the run lifecycle changes.
 
 **The TUI composer of a session in an agent state's subtree (design 03
 human-input denial; T115 "no human composer", T116 in the TUI).** It is
@@ -985,9 +1015,9 @@ fails, the composer stays as it is and the server refuses the input
 reads the same policy through its session access), are unchanged.
 
 Not in the TUI yet (open, not waived):
-- a person's workflow commands (run controls, variables, publication,
-  draft editing, test start, test answers and the virtual clock): the
-  portal, the API, MCP and the agent tools take them;
+- a person's other workflow commands (variables, publication, draft
+  editing, test start, test answers and the virtual clock): the portal,
+  the API, MCP and the agent tools take them;
 - each execution's own output: the view shows the state's latest output or
   error (bounded), as the portal's Output tab does;
 - the TUI refuses a person's prompt, answer and steer to an agent state's

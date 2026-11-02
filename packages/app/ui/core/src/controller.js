@@ -2,11 +2,11 @@ import { applyNativeTaskSnapshot } from "./native-tasks.js";
 import { workflowDefinition } from "./workflow-view.js";
 import {
     normalizeWorkflowInputPolicy, selectWorkflowInputNote, selectWorkflowViewModal, selectWorkflowViewSelection, workflowInputPolicyApplies,
-    workflowViewDefaultNode, workflowViewNodes, workflowViewPanelWidth, workflowViewProjectionFor,
+    workflowViewDefaultNode, workflowViewNodes, workflowViewPanelWidth, workflowViewProjectionFor, workflowViewRunControlFor,
 } from "./workflow-tui.js";
 import {
     workflowV2CommandNamesRun, workflowV2RunCommandAccepted, workflowV2RunCommandArgs, workflowV2RunCommandConfirm, workflowV2RunCommandFailure,
-    workflowV2RunCommandWire,
+    workflowV2RunCommandNotice, workflowV2RunCommandWire,
 } from "./workflow-v2-commands.js";
 import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./commands.js";
 import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
@@ -6369,7 +6369,8 @@ export class PilotSwarmUiController {
      * exact `definitionHash` shown), publish_and_start (the same, with
      * `inputs` and optional `vars`) or start (the published `definitionHash`,
      * `inputs`, optional `vars`). Stop, cancel and an update that removes
-     * variables open the confirm dialog first. One
+     * variables open the confirm dialog first; one opened from the TUI's
+     * workflow view (a modal) returns to it when it closes, sent or not. One
      * command per session at a time: the view records it as `runCommand` ({
      * operation, runId, operationId, args, phase, message, code }). Accepted:
      * the record is cleared, the status line says what was accepted, and the
@@ -6399,8 +6400,10 @@ export class PilotSwarmUiController {
         if (previous?.phase === "pending") return { ok: false, reason: "pending" };
         const confirm = confirmed ? null : workflowV2RunCommandConfirm(operation, run, args);
         if (confirm) {
+            const returnModal = state.ui.modal?.type === "workflowView" ? state.ui.modal : null;
             this.dispatch({ type: "ui/modal", modal: { type: "confirm", ...confirm, action: "workflowRunCommand",
-                workflowRunCommand: { sessionId, operation, runId: run, ...(args ?? {}) }, previousFocus: state.ui.focusRegion } });
+                workflowRunCommand: { sessionId, operation, runId: run, ...(args ?? {}) }, previousFocus: state.ui.focusRegion,
+                ...(returnModal ? { returnModal } : {}) } });
             return { ok: false, reason: "confirming" };
         }
         const same = previous?.phase === "unconfirmed" && previous.operation === operation && (previous.runId ?? null) === run
@@ -6434,6 +6437,49 @@ export class PilotSwarmUiController {
         const command = this.getState().ui.workflowViews?.[sessionId]?.runCommand;
         if (!command || command.phase === "pending") return;
         this.dispatch({ type: "ui/workflowView", sessionId, view: { runCommand: null } });
+    }
+
+    /**
+     * The TUI's workflow view: a person's run control (pause, resume, stop or
+     * cancel; design 04, 07, mocks M04, M16; R17, R26; INACTIVE: only a
+     * deployment that takes a person's workflow commands offers any) for the
+     * run the view shows, sent as the portal's run controls send it
+     * (sendWorkflowRunCommand: stop and cancel open the confirm dialog first,
+     * which returns to the view; one command at a time; after an answer that
+     * never came, the same control sends the same command again). A control
+     * the view does not offer, or offers but not now, is not sent: the status
+     * line says why, as it says why a sent one was refused. The server decides
+     * every command again. Never throws.
+     */
+    async sendWorkflowViewRunControl(operation) {
+        const selection = selectWorkflowViewSelection(this.getState());
+        if (!selection) return { ok: false, reason: "closed" };
+        const decided = workflowViewRunControlFor(selection, operation);
+        if (!decided.ok) {
+            this.dispatch({ type: "ui/status", text: decided.reason });
+            return { ok: false, reason: "unavailable" };
+        }
+        const sessionId = selection.modal.sessionId;
+        const result = await this.sendWorkflowRunCommand(sessionId, { operation, runId: decided.runId });
+        if (!result.ok && (result.reason === "failed" || result.reason === "unconfirmed")) {
+            const notice = workflowV2RunCommandNotice(this.getState().ui.workflowViews?.[sessionId]?.runCommand);
+            if (notice) this.dispatch({ type: "ui/status", text: notice.text });
+        }
+        return result;
+    }
+
+    /** The TUI's workflow view: clear the notice about its last run command (nothing is sent or undone). */
+    dismissWorkflowViewRunCommand() {
+        const selection = selectWorkflowViewSelection(this.getState());
+        if (!selection) return;
+        const sessionId = selection.modal.sessionId;
+        const command = this.getState().ui.workflowViews?.[sessionId]?.runCommand;
+        if (!command || command.phase === "pending") {
+            this.dispatch({ type: "ui/status", text: command ? "The command is still being sent" : "No notice to dismiss" });
+            return;
+        }
+        this.dismissWorkflowRunCommand(sessionId);
+        this.dispatch({ type: "ui/status", text: "Notice dismissed" });
     }
 
     async ensureCanvasSnapshot(sessionId) {
@@ -9390,6 +9436,14 @@ export class PilotSwarmUiController {
     closeModal() {
         const modal = this.getState().ui.modal;
         if (!modal) return;
+        // A confirm opened from the TUI's workflow view returns to it; its command was not sent.
+        if (modal.type === "confirm" && modal.returnModal) {
+            this.dispatch({ type: "ui/modal", modal: modal.returnModal });
+            const operation = modal.workflowRunCommand?.operation;
+            const label = operation === "stop" ? "Stop" : operation === "cancel" ? "Cancel" : "The command";
+            this.dispatch({ type: "ui/status", text: `${label} was not sent` });
+            return;
+        }
         this.dispatch({ type: "ui/modal", modal: null });
         if (modal.type === "themePicker" && modal.currentThemeId) {
             this.dispatch({ type: "ui/theme", themeId: modal.currentThemeId });
@@ -9593,8 +9647,9 @@ export class PilotSwarmUiController {
         }
         if (modal.type === "confirm") {
             const previousFocus = modal.previousFocus;
-            this.dispatch({ type: "ui/modal", modal: null });
-            if (previousFocus) this.setFocus(previousFocus);
+            // A confirm opened from the TUI's workflow view returns to it.
+            this.dispatch({ type: "ui/modal", modal: modal.returnModal ?? null });
+            if (previousFocus && !modal.returnModal) this.setFocus(previousFocus);
             if (modal.action === "cancelSession") {
                 await this.cancelActiveSession({ confirmed: true });
             } else if (modal.action === "completeSession") {
@@ -9615,7 +9670,12 @@ export class PilotSwarmUiController {
                 await this.deleteSelectedAdminProvider();
             } else if (modal.action === "workflowRunCommand") {
                 const { sessionId, ...command } = modal.workflowRunCommand || {};
-                await this.sendWorkflowRunCommand(sessionId, { ...command, confirmed: true });
+                const result = await this.sendWorkflowRunCommand(sessionId, { ...command, confirmed: true });
+                // The TUI's workflow view also says a refusal on the status line (the portal shows its notice beside the graph).
+                if (modal.returnModal && !result.ok && (result.reason === "failed" || result.reason === "unconfirmed")) {
+                    const notice = workflowV2RunCommandNotice(this.getState().ui.workflowViews?.[sessionId]?.runCommand);
+                    if (notice) this.dispatch({ type: "ui/status", text: notice.text });
+                }
             }
             return;
         }
@@ -12469,6 +12529,21 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.WORKFLOW_VIEW_DETAILS_DOWN:
                 this.scrollWorkflowViewDetails(1);
+                return;
+            case UI_COMMANDS.WORKFLOW_VIEW_PAUSE_RUN:
+                await this.sendWorkflowViewRunControl("pause");
+                return;
+            case UI_COMMANDS.WORKFLOW_VIEW_RESUME_RUN:
+                await this.sendWorkflowViewRunControl("resume");
+                return;
+            case UI_COMMANDS.WORKFLOW_VIEW_STOP_RUN:
+                await this.sendWorkflowViewRunControl("stop");
+                return;
+            case UI_COMMANDS.WORKFLOW_VIEW_CANCEL_RUN:
+                await this.sendWorkflowViewRunControl("cancel");
+                return;
+            case UI_COMMANDS.WORKFLOW_VIEW_DISMISS_NOTICE:
+                this.dismissWorkflowViewRunCommand();
                 return;
             case UI_COMMANDS.SEQUENCE_SELECT_PREV:
                 this.moveSequenceSelection(-1);

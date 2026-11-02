@@ -49,12 +49,19 @@ export const UI_COMMANDS = {
     SHRINK_FOCUSED_PANE: "shrinkFocusedPane",
     OPEN_ARTIFACT_PICKER: "openArtifactPicker",
     OPEN_HELP: "openHelp",
-    // Workflow sessions (TUI): the read-only workflow view (states, details, an agent state's child chats).
+    // Workflow sessions (TUI): the workflow view (states, details, an agent state's child chats; read-only but for the run controls).
     OPEN_WORKFLOW_VIEW: "openWorkflowView",
     WORKFLOW_VIEW_PREV_RUN: "workflowViewPrevRun",
     WORKFLOW_VIEW_NEXT_RUN: "workflowViewNextRun",
     WORKFLOW_VIEW_DETAILS_UP: "workflowViewDetailsUp",
     WORKFLOW_VIEW_DETAILS_DOWN: "workflowViewDetailsDown",
+    // A person's run controls for the run the workflow view shows (INACTIVE: only a deployment that takes them offers any),
+    // and dismissing the notice about the last one.
+    WORKFLOW_VIEW_PAUSE_RUN: "workflowViewPauseRun",
+    WORKFLOW_VIEW_RESUME_RUN: "workflowViewResumeRun",
+    WORKFLOW_VIEW_STOP_RUN: "workflowViewStopRun",
+    WORKFLOW_VIEW_CANCEL_RUN: "workflowViewCancelRun",
+    WORKFLOW_VIEW_DISMISS_NOTICE: "workflowViewDismissNotice",
     SEQUENCE_SELECT_PREV: "sequenceSelectPrev",
     SEQUENCE_SELECT_NEXT: "sequenceSelectNext",
     TOGGLE_SEQUENCE_TURN: "toggleSequenceTurn",

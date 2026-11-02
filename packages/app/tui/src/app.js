@@ -63,6 +63,19 @@ export function isPlainShortcutKey(key = {}) {
     return !key.ctrl && !key.meta;
 }
 
+/**
+ * The workflow view's run controls for the run it shows (p pause · r resume · s stop · c cancel; stop and cancel ask
+ * first) and d, which dismisses the notice about the last one. INACTIVE: only a deployment that takes a person's
+ * workflow commands offers a control; otherwise the status line says why nothing was sent.
+ */
+const WORKFLOW_VIEW_RUN_KEYS = Object.freeze({
+    p: UI_COMMANDS.WORKFLOW_VIEW_PAUSE_RUN,
+    r: UI_COMMANDS.WORKFLOW_VIEW_RESUME_RUN,
+    s: UI_COMMANDS.WORKFLOW_VIEW_STOP_RUN,
+    c: UI_COMMANDS.WORKFLOW_VIEW_CANCEL_RUN,
+    d: UI_COMMANDS.WORKFLOW_VIEW_DISMISS_NOTICE,
+});
+
 export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
     const { stdin } = useStdin();
     const mouseInputRef = React.useRef({ ignoreUntil: 0 });
@@ -599,6 +612,11 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                 controller.handleCommand(key.pageUp || isCtrlU ? UI_COMMANDS.WORKFLOW_VIEW_DETAILS_UP : UI_COMMANDS.WORKFLOW_VIEW_DETAILS_DOWN).catch(() => {});
                 return;
             }
+            // The workflow view: a person's run controls for the shown run, and d dismisses the last command's notice.
+            if (modal.type === "workflowView" && plainShortcut && Object.hasOwn(WORKFLOW_VIEW_RUN_KEYS, input)) {
+                controller.handleCommand(WORKFLOW_VIEW_RUN_KEYS[input]).catch(() => {});
+                return;
+            }
             if (key.tab && key.shift) {
                 controller.handleCommand(UI_COMMANDS.MODAL_PANE_PREV).catch(() => {});
                 return;
@@ -972,7 +990,8 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             controller.handleCommand(UI_COMMANDS.OPEN_HELP).catch(() => {});
             return;
         }
-        // Workflow sessions: w opens the read-only workflow view (states, details, an agent state's child chats).
+        // Workflow sessions: w opens the workflow view (states, details, an agent state's child chats; read-only but for the
+        // run controls a deployment that takes a person's workflow commands offers).
         if (plainShortcut && input === "w") {
             controller.handleCommand(UI_COMMANDS.OPEN_WORKFLOW_VIEW).catch(() => {});
             return;
