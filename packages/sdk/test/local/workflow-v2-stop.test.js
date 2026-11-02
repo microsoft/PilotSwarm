@@ -368,8 +368,13 @@ describe("workflow v2 graceful stop: controller 1.9.0 (inactive, test-only regis
             expect(run).toMatchObject({ status: "stopped" });
             expect(run.terminalError).toMatchObject({ code: "stopped", message: "Stopped", details: { graceExpired: true, cancelledCount: 1, cancelled: [work] } });
             expect(await h.store.readNodeExecution(work)).toMatchObject({ state: "completed", outcome: "cancelled", winner: "stop" });
-            const events = await h.catalog.getSessionEvents(id, 0, 200);
-            expect(events.filter(event => event.eventType === "workflow.cancel_requested").map(event => event.data))
+            // The run ends stopped in the store's transaction; the stop activity asks the effect to stop after it, and records that.
+            const requested = await until(async () => {
+                const events = await h.catalog.getSessionEvents(id, 0, 200);
+                const found = events.filter(event => event.eventType === "workflow.cancel_requested");
+                return found.length > 0 ? found : null;
+            }, "the stop's request to the effect");
+            expect(requested.map(event => event.data))
                 .toEqual([expect.objectContaining({ runId, stop: true, effects: [expect.objectContaining({ nodeExecutionId: work, instanceId: workflowEffectInstanceId(work) })] })]);
             // The held script starts after its node was decided: its result is not taken, and nothing else is admitted.
             held.open();

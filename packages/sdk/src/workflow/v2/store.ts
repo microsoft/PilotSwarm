@@ -1959,14 +1959,17 @@ export class WorkflowStore {
                     { runId: str(rows[0], "run_id") });
             }
         }
+        // A run admitted without a controller version records none and names no column of migration 0096, so a schema
+        // before it (an upgrade test's populated one) admits it as before.
+        const versioned = typeof start.controllerVersion === "string";
         await client.query(
             `INSERT INTO ${this.t.runs}
-                (run_id, workflow_session_id, mode, revision, yaml_sha256, ir_sha256, inputs, controller_instance_id, status, test_agent_mode, start_operation_id, kv, kv_revision,
-                 controller_version)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'admitted', $9, $10, $11, 1, $12)`,
+                (run_id, workflow_session_id, mode, revision, yaml_sha256, ir_sha256, inputs, controller_instance_id, status, test_agent_mode, start_operation_id, kv, kv_revision
+                 ${versioned ? ", controller_version" : ""})
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'admitted', $9, $10, $11, 1 ${versioned ? ", $12" : ""})`,
             [start.runId, definition.workflowSessionId, start.mode, revision.revision, revision.yamlSha256, revision.irSha256,
                 start.inputsText, start.controllerInstanceId, start.mode === "test" ? start.testAgentMode : null, operationId, start.kvText,
-                start.controllerVersion],
+                ...(versioned ? [start.controllerVersion] : [])],
         );
         await client.query(`INSERT INTO ${this.t.kvRevisions} (run_id, revision, kv, operation_id) VALUES ($1, 1, $2, $3)`,
             [start.runId, start.kvText, operationId]);
@@ -5409,8 +5412,11 @@ export interface RunAdmission {
     /** The initial open KV map as canonical JSON text (revision 1). */
     kvText: string;
     testAgentMode: "mocked" | "real" | null;
-    /** The controller version this run is admitted for (migration 0096); stored once and never changed. */
-    controllerVersion: string;
+    /**
+     * The controller version this run is admitted for (migration 0096); stored once and never changed. The service always
+     * names it; omitted (or null), the run records none, as a run admitted before 0096 (only a store test does that).
+     */
+    controllerVersion?: string | null;
 }
 
 /** The receipt of a run command (set_vars, pause, resume, cancel). */
