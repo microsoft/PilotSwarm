@@ -118,3 +118,11 @@ test("Find highlights matches inline in package rows only", async () => {
     const html = renderToStaticMarkup(React.createElement("span", { className: "ps-admin-tree__text" }, ["", React.createElement("mark", { key: "hit" }, "a"), "gent-manager"]));
     assert.equal(html, "<span class=\"ps-admin-tree__text\"><mark>a</mark>gent-manager</span>");
 });
+
+test("a short window keeps the package list usable and shows Find focus", async () => {
+    const { readFileSync } = await import("node:fs");
+    const css = readFileSync(new URL("../../../web/src/index.css", import.meta.url), "utf8");
+    assert.match(css, /\.ps-admin-pkg-scroll \{[^}]*min-height: min\(200px, 40vh\);/);
+    assert.match(css, /\.ps-admin-tree \{[^}]*overflow: hidden auto;/);
+    assert.match(css, /\.ps-admin-pkg-search__box:focus-within \{[^}]*outline: 2px solid/);
+});

@@ -84,7 +84,8 @@ test("the portal wires the setting to Appearance, the profile, and the player", 
     assert.match(webApp, /function ThemeSoundControl/);
     assert.match(webApp, /"Theme sounds"/);
     assert.match(webApp, /themeSoundPlayer\(\)\.prime\(\)/, "the switch primes audio inside its click");
-    assert.match(webApp, /enabled: setting\.on === true && !isNarrowViewport\(\)/, "desktop only");
+    assert.match(webApp, /enabled: setting\.on === true && !narrowViewport/, "desktop only");
+    assert.match(webApp, /\[state\.themeId, state\.themeSound, narrowViewport\]/, "crossing the phone breakpoint re-evaluates the sound");
     assert.match(webApp, /themeSound: normalizedRemote\.themeSound/, "applied from the profile on desktop");
     assert.match(player, /themeSoundEnvelope\(elapsed, sound\)/);
     assert.match(player, /doc\.hidden/, "silent while the tab is hidden");
