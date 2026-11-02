@@ -109,7 +109,6 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "listArtifacts",
     "listAuthzAudit",
     "listChildOutcomes",
-    "listComputeTargetModels",
     "listComputeTargets",
     "listCreatableAgents",
     "listFeatureFlagChanges",
@@ -129,8 +128,6 @@ export const GENERATED_OP_NAMES: readonly string[] = [
     "moveSessionsToGroup",
     "pinAgentPackageVersion",
     "placeSessionsInGroup",
-    "probeComputeTarget",
-    "probeMyComputeTarget",
     "pruneDeletedSummaries",
     "readArtifactBase64",
     "readCanvasKv",
@@ -1096,14 +1093,6 @@ export interface ManagementOps {
     }): Promise<any>;
 
     /**
-     * List PilotSwarm models and the selected target's advertised host models.
-     * @remarks `GET /compute-targets/models` — access: `authed`
-     */
-    listComputeTargetModels(params: {
-        name?: string;
-    }): Promise<any>;
-
-    /**
      * List shared targets and the caller's own targets.
      * @remarks `GET /compute-targets` — access: `authed`
      */
@@ -1247,22 +1236,6 @@ export interface ManagementOps {
     placeSessionsInGroup(params: {
         groupId?: any;
         sessionIds?: any;
-    }): Promise<any>;
-
-    /**
-     * Check a shared target on a worker and record its advertised options. [admin]
-     * @remarks `POST /management/compute-targets/:name/probe` — access: `fleet:admin`
-     */
-    probeComputeTarget(params: {
-        name: string;
-    }): Promise<any>;
-
-    /**
-     * Check a personal target on a worker and record its advertised options.
-     * @remarks `POST /me/compute-targets/:name/probe` — access: `authed`
-     */
-    probeMyComputeTarget(params: {
-        name: string;
     }): Promise<any>;
 
     /**
@@ -2005,7 +1978,6 @@ export function createManagementOps(
         listArtifacts: (params: Record<string, unknown> = {}) => callOp("listArtifacts", params),
         listAuthzAudit: (params: Record<string, unknown> = {}) => callOp("listAuthzAudit", params),
         listChildOutcomes: (params: Record<string, unknown> = {}) => callOp("listChildOutcomes", params),
-        listComputeTargetModels: (params: Record<string, unknown> = {}) => callOp("listComputeTargetModels", params),
         listComputeTargets: (params: Record<string, unknown> = {}) => callOp("listComputeTargets", params),
         listCreatableAgents: (params: Record<string, unknown> = {}) => callOp("listCreatableAgents", params),
         listFeatureFlagChanges: (params: Record<string, unknown> = {}) => callOp("listFeatureFlagChanges", params),
@@ -2025,8 +1997,6 @@ export function createManagementOps(
         moveSessionsToGroup: (params: Record<string, unknown> = {}) => callOp("moveSessionsToGroup", params),
         pinAgentPackageVersion: (params: Record<string, unknown> = {}) => callOp("pinAgentPackageVersion", params),
         placeSessionsInGroup: (params: Record<string, unknown> = {}) => callOp("placeSessionsInGroup", params),
-        probeComputeTarget: (params: Record<string, unknown> = {}) => callOp("probeComputeTarget", params),
-        probeMyComputeTarget: (params: Record<string, unknown> = {}) => callOp("probeMyComputeTarget", params),
         pruneDeletedSummaries: (params: Record<string, unknown> = {}) => callOp("pruneDeletedSummaries", params),
         readArtifactBase64: (params: Record<string, unknown> = {}) => callOp("readArtifactBase64", params),
         readCanvasKv: (params: Record<string, unknown> = {}) => callOp("readCanvasKv", params),

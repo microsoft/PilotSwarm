@@ -19,27 +19,14 @@ export function registerComputeTargetTools(server: McpServer, ctx: ServerContext
     );
 
     server.registerTool(
-        "list_compute_target_models",
-        {
-            title: "List Compute Target Models",
-            description: "List PilotSwarm models and the selected target's advertised host model options.",
-            inputSchema: {
-                name: z.string().min(1).describe("Full target name or a supported shorthand"),
-            },
-        },
-        withToolErrors(async ({ name }) => jsonResult(await ctx.mgmt.listComputeTargetModels(viewer, name))),
-    );
-
-    server.registerTool(
         "manage_compute_target",
         {
             title: "Manage Compute Target",
             description:
-                "Create, update, enable or disable, delete, or check a compute target. "
-                + "Set mine=true for a personal target; mine=false selects the shared namespace and requires an administrator. "
-                + "A check runs on a worker and records the target's advertised options.",
+                "Create, update, enable or disable, or delete a compute target. "
+                + "Set mine=true for a personal target; mine=false selects the shared namespace and requires an administrator.",
             inputSchema: {
-                action: z.enum(["create", "update", "delete", "probe"]).describe("The operation to perform"),
+                action: z.enum(["create", "update", "delete"]).describe("The operation to perform"),
                 mine: z.boolean().describe("true = your personal target; false = shared target (admin)"),
                 name: z.string().min(1).optional().describe("Full owner/label name or a supported shorthand"),
                 label: z.string().min(1).optional().describe("Label used when creating a target; the owner namespace is assigned by PilotSwarm"),
@@ -62,11 +49,6 @@ export function registerComputeTargetTools(server: McpServer, ctx: ServerContext
                 return jsonResult(mine
                     ? await ctx.mgmt.deleteMyComputeTarget(viewer, name)
                     : await ctx.mgmt.deleteComputeTarget(viewer, name));
-            }
-            if (action === "probe") {
-                return jsonResult(mine
-                    ? await ctx.mgmt.probeMyComputeTarget(viewer, name)
-                    : await ctx.mgmt.probeComputeTarget(viewer, name));
             }
             const input = { name, displayName: display_name, config, enabled };
             return jsonResult(mine

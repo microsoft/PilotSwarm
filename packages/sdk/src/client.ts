@@ -23,7 +23,7 @@ import type {
     SessionWorkspace,
 } from "./types.js";
 import { validateWorkspaceText } from "./workspace-check.js";
-import { COMPUTE_ERROR_CODES, parseTargetModelRef, resolveComputeTargetName, validateComputeTargetName } from "./compute.js";
+import { COMPUTE_ERROR_CODES, resolveComputeTargetName, validateComputeTargetName } from "./compute.js";
 import type { SessionCatalog, SessionEvent, SessionVisibility, SessionRow } from "./cms.js";
 import type { MessageSender } from "./message-sender.js";
 import { normalizeMessageSender } from "./message-sender.js";
@@ -238,8 +238,7 @@ export class PilotSwarmClient {
         // The target is chosen before the model, and a model the target
         // offers itself is checked against that target rather than against
         // PilotSwarm's catalog: the host runs it with its own model access.
-        const hostModel = await this._resolveHostModel(config?.model, computeTarget, config?.owner ?? null);
-        const resolved = hostModel ? null : await this._resolveCreationModel(config ?? {}, false);
+        const resolved = await this._resolveCreationModel(config ?? {}, false);
         const { workspace: _rawWorkspace, ...configWithoutWorkspace } = config ?? {};
         const resolvedConfig = {
             ...configWithoutWorkspace,
@@ -706,49 +705,6 @@ export class PilotSwarmClient {
                 `there is no compute target you can use named "${requested}" (tried ${candidates.join(" and ")})`);
         }
         return hit;
-    }
-
-    /**
-     * A model name of the form `@<target>:<model>` names a model the compute
-     * target offers itself, not one of PilotSwarm's. It is checked against
-     * what that target advertises to this owner — never against the provider
-     * catalog, which knows nothing about it — and only a target the owner
-     * can use offers them at all.
-     *
-     * Returns null for an ordinary model name, so the usual resolution runs.
-     * Throws when the name is one of a target's own and the owner cannot
-     * have it.
-     */
-    private async _resolveHostModel(
-        model: string | undefined,
-        computeTarget: string | undefined,
-        owner: SessionOwnerInfo | null,
-    ): Promise<{ target: string; model: string } | null> {
-        const ref = parseTargetModelRef(model);
-        if (!ref) return null;
-        const refuse = (code: string, message: string): never => {
-            throw Object.assign(new Error(`${code}: ${message}`), { code, status: 400 });
-        };
-        if (!computeTarget) {
-            return refuse(COMPUTE_ERROR_CODES.HOST_MODEL_UNAVAILABLE,
-                `"${model}" is a model of a compute target; choose that compute target for the session as well`);
-        }
-        if (computeTarget !== ref.target) {
-            return refuse(COMPUTE_ERROR_CODES.HOST_MODEL_UNAVAILABLE,
-                `"${model}" is a model of the compute target "${ref.target}", but this session would run on "${computeTarget}"`);
-        }
-        const store = this._catalog?.computeTargets;
-        if (!store) {
-            return refuse(COMPUTE_ERROR_CODES.HOST_MODEL_UNAVAILABLE,
-                "this deployment does not keep what compute targets offer, so a target's own model cannot be used");
-        }
-        const viewer = await store.lookupUserId(owner ?? null);
-        const offered = await store.listTargetModels(viewer, false, ref.target);
-        if (!offered.some((candidate) => candidate.id === ref.model)) {
-            return refuse(COMPUTE_ERROR_CODES.HOST_MODEL_UNAVAILABLE,
-                `the compute target "${ref.target}" does not offer a model named "${ref.model}"`);
-        }
-        return ref;
     }
 
     private async _resolveCreationModel(

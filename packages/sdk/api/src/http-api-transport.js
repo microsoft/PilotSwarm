@@ -461,15 +461,12 @@ export class HttpApiTransport {
 
     listProviders() { return this.api.call("listProviders"); }
     listComputeTargets() { return this.api.call("listComputeTargets"); }
-    listComputeTargetModels(name) { return this.api.call("listComputeTargetModels", { name }); }
     createComputeTarget(input = {}) { return this.api.call("createComputeTarget", input); }
     updateComputeTarget(input = {}) { return this.api.call("updateComputeTarget", input); }
     deleteComputeTarget(name) { return this.api.call("deleteComputeTarget", { name }); }
-    probeComputeTarget(name) { return this.api.call("probeComputeTarget", { name }); }
     createMyComputeTarget(input = {}) { return this.api.call("createMyComputeTarget", input); }
     updateMyComputeTarget(input = {}) { return this.api.call("updateMyComputeTarget", input); }
     deleteMyComputeTarget(name) { return this.api.call("deleteMyComputeTarget", { name }); }
-    probeMyComputeTarget(name) { return this.api.call("probeMyComputeTarget", { name }); }
     listFeatureFlags() { return this.api.call("listFeatureFlags"); }
     getClusterFeatureFlags() { return this.api.call("getClusterFeatureFlags"); }
     getMyFeatureFlags() { return this.api.call("getMyFeatureFlags"); }

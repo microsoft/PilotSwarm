@@ -303,15 +303,12 @@ export const OPERATIONS = [
 
     // ── Compute targets (docs/proposals/compute-providers.md) ───────────
     { name: "listComputeTargets", access: "authed", method: "GET", path: "/compute-targets", summary: "List shared targets and the caller's own targets." },
-    { name: "listComputeTargetModels", access: "authed", method: "GET", path: "/compute-targets/models", params: { name: query() }, summary: "List PilotSwarm models and the selected target's advertised host models." },
     { name: "createComputeTarget", access: "fleet:admin", method: "POST", path: "/management/compute-targets", params: { name: body(), label: body(), kind: body(), displayName: body(), config: body() }, summary: "Create a shared compute target. [admin]" },
     { name: "updateComputeTarget", access: "fleet:admin", method: "PATCH", path: "/management/compute-targets/:name", params: { name: path("name"), displayName: body(), config: body(), enabled: body() }, summary: "Update or enable/disable a shared compute target. [admin]" },
     { name: "deleteComputeTarget", access: "fleet:admin", method: "DELETE", path: "/management/compute-targets/:name", params: { name: path("name") }, summary: "Delete a shared compute target. [admin]" },
-    { name: "probeComputeTarget", access: "fleet:admin", method: "POST", path: "/management/compute-targets/:name/probe", params: { name: path("name") }, summary: "Check a shared target on a worker and record its advertised options. [admin]" },
     { name: "createMyComputeTarget", access: "authed", method: "POST", path: "/me/compute-targets", params: { name: body(), label: body(), kind: body(), displayName: body(), config: body() }, summary: "Create a personal compute target." },
     { name: "updateMyComputeTarget", access: "authed", method: "PATCH", path: "/me/compute-targets/:name", params: { name: path("name"), displayName: body(), config: body(), enabled: body() }, summary: "Update or enable/disable a personal compute target." },
     { name: "deleteMyComputeTarget", access: "authed", method: "DELETE", path: "/me/compute-targets/:name", params: { name: path("name") }, summary: "Delete a personal compute target." },
-    { name: "probeMyComputeTarget", access: "authed", method: "POST", path: "/me/compute-targets/:name/probe", params: { name: path("name") }, summary: "Check a personal target on a worker and record its advertised options." },
 
     // ── System ──────────────────────────────────────────────────────────
     { name: "getLogConfig", access: "authed", method: "GET", path: "/system/log-config", summary: "Log tail availability." },

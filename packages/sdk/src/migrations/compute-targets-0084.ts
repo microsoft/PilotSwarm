@@ -21,12 +21,6 @@
  * The worker re-checks before every turn that the session's owner may still
  * use the target.
  *
- * A target also advertises what it offers (`advertised`): the models its
- * host can serve with its own model access, its operating system and other
- * facts. Workers refresh it as they reach the host. It shapes the options
- * users see and is never used to decide who may do what. Only personal
- * targets may advertise models.
- *
  * `compute_bindings` is what PilotSwarm is using right now: one row per
  * (session tree, target, host). A worker renews its lease while it holds
  * a binding, so renewals that stop mean nobody is using the host; and a
@@ -36,14 +30,6 @@
  *
  * Additive: two tables and their procedures; no session column changes.
  */
-/**
- * The most a stored advertisement may take. A migration's SQL must keep
- * meaning for ever, so the number is written here rather than imported;
- * `MAX_COMPUTE_ADVERTISEMENT_BYTES` in compute.ts is the worker's own cap
- * and a unit test keeps the two the same.
- */
-export const COMPUTE_ADVERTISEMENT_MAX_BYTES = 16384;
-
 export function computeTargetsMigration(schema: string): string {
     const s = `"${schema}"`;
     return `
@@ -59,8 +45,6 @@ CREATE TABLE IF NOT EXISTS ${s}.compute_targets (
     display_name   TEXT,
     config         JSONB NOT NULL DEFAULT '{}'::jsonb,
     enabled        BOOLEAN NOT NULL DEFAULT TRUE,
-    advertised     JSONB,
-    advertised_at  TIMESTAMPTZ,
     created_by     BIGINT,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -80,9 +64,7 @@ CREATE TABLE IF NOT EXISTS ${s}.compute_targets (
     CONSTRAINT compute_targets_kind_shape CHECK (
         kind ~ '^[a-z0-9][a-z0-9-]{0,63}$'),
     CONSTRAINT compute_targets_config_object CHECK (
-        jsonb_typeof(config) = 'object'),
-    CONSTRAINT compute_targets_advertised_object CHECK (
-        advertised IS NULL OR jsonb_typeof(advertised) = 'object')
+        jsonb_typeof(config) = 'object')
 );
 
 CREATE INDEX IF NOT EXISTS compute_targets_owner
@@ -224,7 +206,7 @@ CREATE OR REPLACE FUNCTION ${s}.cms_compute_target_list(
     name TEXT, kind TEXT, class TEXT, owner_user_id BIGINT,
     display_name TEXT, config JSONB, enabled BOOLEAN,
     created_at TIMESTAMPTZ, updated_at TIMESTAMPTZ, manageable BOOLEAN,
-    target_id UUID, advertised JSONB, advertised_at TIMESTAMPTZ
+    target_id UUID
 ) AS $$
     SELECT ct.name, ct.kind, ct.class, ct.owner_user_id,
            ct.display_name,
@@ -233,7 +215,7 @@ CREATE OR REPLACE FUNCTION ${s}.cms_compute_target_list(
            ct.enabled,
            ct.created_at, ct.updated_at,
            (ct.class = 'personal' OR COALESCE(p_is_admin, FALSE)) AS manageable,
-           ct.target_id, ct.advertised, ct.advertised_at
+           ct.target_id
       FROM ${s}.compute_targets ct
      WHERE ct.class = 'shared'
         OR (p_viewer IS NOT NULL AND ct.owner_user_id = p_viewer)
@@ -300,37 +282,6 @@ CREATE OR REPLACE FUNCTION ${s}.cms_compute_target_by_id(p_target_id UUID)
 RETURNS SETOF ${s}.compute_targets AS $$
     SELECT ct.* FROM ${s}.compute_targets ct WHERE ct.target_id = p_target_id;
 $$ LANGUAGE sql STABLE;
-
--- Worker side: store what a target advertises. The worker has already kept
--- only the well-formed parts, but the advertisement comes from a host, so
--- the two rules that matter are repeated here, where nothing can skip them:
---   * it is a JSON object and no larger than the cap;
---   * only a personal target may offer models of its own, so a shared
---     target's models are dropped rather than refused (the rest of its
---     advertisement is still worth showing).
--- No row when the target is gone.
-CREATE OR REPLACE FUNCTION ${s}.cms_compute_target_record_advertisement(
-    p_target_id UUID, p_advertised JSONB
-) RETURNS SETOF ${s}.compute_targets AS $$
-BEGIN
-    IF p_advertised IS NULL OR jsonb_typeof(p_advertised) <> 'object' THEN
-        RAISE EXCEPTION 'COMPUTE_TARGET_INVALID: an advertisement must be a JSON object';
-    END IF;
-    IF octet_length(p_advertised::text) > ${COMPUTE_ADVERTISEMENT_MAX_BYTES} THEN
-        RAISE EXCEPTION 'COMPUTE_TARGET_INVALID: an advertisement is larger than % bytes', ${COMPUTE_ADVERTISEMENT_MAX_BYTES};
-    END IF;
-    IF p_advertised ? 'models' AND jsonb_typeof(p_advertised->'models') <> 'array' THEN
-        RAISE EXCEPTION 'COMPUTE_TARGET_INVALID: the models of an advertisement must be an array';
-    END IF;
-    RETURN QUERY
-        UPDATE ${s}.compute_targets ct
-           SET advertised = CASE WHEN ct.class = 'shared' THEN p_advertised - 'models'
-                                 ELSE p_advertised END,
-               advertised_at = now()
-         WHERE ct.target_id = p_target_id
-        RETURNING ct.*;
-END;
-$$ LANGUAGE plpgsql VOLATILE;
 
 -- ---------------------------------------------------------------------
 -- Host bindings: what PilotSwarm is using, and what it has finished with

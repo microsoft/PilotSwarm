@@ -159,57 +159,6 @@ describe("compute targets", () => {
         expect(await store.resolveForSession(shared.id, bobs, false)).toBeNull();
     });
 
-    it("a target's own models are kept for a personal target and dropped for a shared one", async () => {
-        const alice = await makeUser("alice");
-        const own = await store.create({ name: "alice@example.test/alice-box", kind: "user-machine", class: "personal" }, alice, false);
-        const pool = await store.create({ name: "shared/pool-d", kind: "sandbox", class: "shared" }, null, true);
-        const advertisement = { models: [{ id: "m1", name: "First" }, { id: "m2" }], os: "linux", details: { tools: "git" } };
-
-        const personal = await store.recordAdvertisement(own.id, advertisement);
-        expect(personal.advertised).toMatchObject({ models: [{ id: "m1", name: "First" }, { id: "m2" }], os: "linux", details: { tools: "git" } });
-        expect(personal.advertised.observedAt).toMatch(/^\d{4}-/);
-
-        const sharedRow = await store.recordAdvertisement(pool.id, advertisement);
-        expect(sharedRow.advertised.models, "rule M1: only a personal target may offer models").toBeUndefined();
-        expect(sharedRow.advertised, "the rest of a shared target's advertisement is still worth showing")
-            .toMatchObject({ os: "linux", details: { tools: "git" } });
-
-        // Visible where the target is visible, and only there.
-        const asAlice = await store.list(alice, false);
-        expect(asAlice.find((t) => t.name === "alice@example.test/alice-box").advertised.models).toHaveLength(2);
-        const asAdmin = await store.list(null, true);
-        expect(asAdmin.find((t) => t.name === "alice@example.test/alice-box"), "a personal target stays invisible to an admin").toBeUndefined();
-
-        // And the worker sees it again before a turn.
-        const forTurn = await store.resolveForSession(own.id, { provider: "test-idp", subject: "alice" }, false);
-        expect(forTurn.advertised.models).toHaveLength(2);
-
-        expect(await store.recordAdvertisement("00000000-0000-4000-8000-000000000000", advertisement)).toBeNull();
-    });
-
-    it("the models a target offers are listed under names of their own", async () => {
-        const alice = await makeUser("alice");
-        const bob = await makeUser("bob");
-        const own = await store.create({ name: "alice@example.test/alice-box", kind: "user-machine", class: "personal" }, alice, false);
-        const pool = await store.create({ name: "shared/pool-e", kind: "sandbox", class: "shared" }, null, true);
-        await store.recordAdvertisement(own.id, { models: [{ id: "m1", name: "First" }, { id: "m2" }] });
-        await store.recordAdvertisement(pool.id, { models: [{ id: "shared-model" }] });
-
-        const mine = await store.listTargetModels(alice, false);
-        expect(mine.map((m) => m.ref)).toEqual(["@alice@example.test/alice-box:m1", "@alice@example.test/alice-box:m2"]);
-        expect(mine[0]).toMatchObject({ target: "alice@example.test/alice-box", id: "m1", name: "First" });
-        expect(mine[0].advertisedAt).toMatch(/^\d{4}-/);
-
-        expect(await store.listTargetModels(bob, false), "another user's target offers them nothing").toEqual([]);
-        expect(await store.listTargetModels(null, true), "and no shared target offers models at all").toEqual([]);
-        expect((await store.listTargetModels(alice, false, "alice@example.test/alice-box")).map((m) => m.id)).toEqual(["m1", "m2"]);
-        expect(await store.listTargetModels(alice, false, "shared/pool-e")).toEqual([]);
-
-        // A disabled target is not an option.
-        await store.update("alice@example.test/alice-box", { enabled: false }, alice, false);
-        expect(await store.listTargetModels(alice, false)).toEqual([]);
-    });
-
     it("names say who owns a target, and nobody can take a name that is not theirs", async () => {
         const alice = await makeUser("alice");
         const bob = await makeUser("bob");
@@ -235,18 +184,5 @@ describe("compute targets", () => {
             expect((await rejects(store.create({ name, kind: "x", class: "shared" }, null, true))).code, name)
                 .toBe("COMPUTE_TARGET_INVALID");
         }
-    });
-
-    it("an advertisement must be a JSON object, with models as a list, and is capped", async () => {
-        const alice = await makeUser("alice");
-        const own = await store.create({ name: "alice@example.test/alice-box", kind: "user-machine", class: "personal" }, alice, false);
-        const record = (value) => sql(`SELECT * FROM @cms_compute_target_record_advertisement($1,$2::jsonb)`, [own.id, value]);
-
-        expect(String((await rejects(record("[1]"))).message)).toMatch(/COMPUTE_TARGET_INVALID/);
-        expect(String((await rejects(record(null))).message)).toMatch(/COMPUTE_TARGET_INVALID/);
-        expect(String((await rejects(record(JSON.stringify({ models: "all of them" })))).message)).toMatch(/COMPUTE_TARGET_INVALID/);
-
-        const tooBig = JSON.stringify({ details: { note: "x".repeat(20_000) } });
-        expect(String((await rejects(record(tooBig))).message)).toMatch(/larger than/);
     });
 });

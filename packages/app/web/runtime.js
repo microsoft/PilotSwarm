@@ -1083,15 +1083,12 @@ export class PortalRuntime {
                 return this._callProvider(method, safeParams, { principal: owner, isAdmin, adminScope: this.authz.adminScope });
 
             case "listComputeTargets":
-            case "listComputeTargetModels":
             case "createComputeTarget":
             case "updateComputeTarget":
             case "deleteComputeTarget":
-            case "probeComputeTarget":
             case "createMyComputeTarget":
             case "updateMyComputeTarget":
             case "deleteMyComputeTarget":
-            case "probeMyComputeTarget":
                 return this._callComputeTarget(method, safeParams, { principal: owner, isAdmin, adminScope: this.authz.adminScope });
 
             case "sendMessage": {
@@ -1578,8 +1575,6 @@ export class PortalRuntime {
             switch (method) {
                 case "listComputeTargets":
                     return await mgmt.listComputeTargets(viewer);
-                case "listComputeTargetModels":
-                    return await mgmt.listComputeTargetModels(viewer, params.name);
                 case "createComputeTarget":
                     return await mgmt.createComputeTarget(viewer, {
                         name: params.name,
@@ -1597,8 +1592,6 @@ export class PortalRuntime {
                     });
                 case "deleteComputeTarget":
                     return await mgmt.deleteComputeTarget(viewer, params.name);
-                case "probeComputeTarget":
-                    return await mgmt.probeComputeTarget(viewer, params.name);
                 case "createMyComputeTarget":
                     return await mgmt.createMyComputeTarget(viewer, {
                         name: params.name,
@@ -1616,8 +1609,6 @@ export class PortalRuntime {
                     });
                 case "deleteMyComputeTarget":
                     return await mgmt.deleteMyComputeTarget(viewer, params.name);
-                case "probeMyComputeTarget":
-                    return await mgmt.probeMyComputeTarget(viewer, params.name);
                 default:
                     throw new Error(`Unsupported portal compute-target operation: ${method}`);
             }

@@ -67,17 +67,7 @@ export const COMPUTE_ERROR_CODES = {
      * prove it with. Nothing of the session crossed the connection.
      */
     HANDSHAKE_FAILED: COMPUTE_HANDSHAKE_FAILED,
-    /**
-     * The session's model is one of the target's own, and the target no
-     * longer offers it (or may not offer models at all).
-     */
-    HOST_MODEL_UNAVAILABLE: "COMPUTE_HOST_MODEL_UNAVAILABLE",
 } as const;
-
-/** The most an advertisement may take once stored, after shaping. */
-export const MAX_COMPUTE_ADVERTISEMENT_BYTES = 16 * 1024;
-/** The most models one target may offer. */
-export const MAX_COMPUTE_HOST_MODELS = 200;
 
 export type ComputeTargetClass = "shared" | "personal";
 
@@ -92,44 +82,6 @@ export interface ComputeTarget {
     displayName: string | null;
     config: Record<string, unknown>;
     enabled: boolean;
-    /** What the target last advertised, or null before it has advertised anything. */
-    advertised?: ComputeTargetAdvertisement | null;
-}
-
-/** A model the host offers with its own model access, by the name the host uses. */
-export interface ComputeHostModel {
-    id: string;
-    name?: string;
-}
-
-/**
- * What a target says it offers. Advertised by the target's host and refreshed
- * as the worker reaches it, so it may be out of date: it shapes the options a
- * user sees (for example when creating a session or listing models), and is
- * never used to decide who may do what.
- *
- * It comes from the host, which is untrusted. The worker keeps only the
- * well-formed parts (normalizeAdvertisement) and caps what it stores.
- */
-export interface ComputeAdvertisement {
-    /**
-     * Models the host offers with its own model access. Only personal
-     * targets may offer models; for a shared target they are dropped. A
-     * session names one `@<target>:<model>` (targetModelRef); its calls go
-     * from the host, not through the worker, so PilotSwarm's budgets and
-     * credentials do not apply to them.
-     */
-    models?: ComputeHostModel[];
-    /** The host's operating system, as Node names it ("linux", "win32", "darwin", ...). */
-    os?: string;
-    /** Other facts the provider wants users to see, such as installed tools. */
-    details?: Record<string, string>;
-}
-
-/** An advertisement as PilotSwarm stores it. */
-export interface ComputeTargetAdvertisement extends ComputeAdvertisement {
-    /** When it was last refreshed. */
-    observedAt: string;
 }
 
 /** Who acts: a signed-in principal, or none for system work. */
@@ -147,12 +99,6 @@ export interface ComputeCapabilities {
     sandboxed: boolean;
     /** How PilotSwarm tools in the worker reach the host's files. */
     files: "worker-local" | "shared-mount" | "provider-api" | "none";
-    /**
-     * Whether hosts of this kind can have model access of their own. When
-     * true, the worker asks the host's runtime which models it offers and
-     * advertises them for personal targets.
-     */
-    offersModels?: boolean;
 }
 
 /**
@@ -274,15 +220,14 @@ export interface ComputeOpenConnectionRequest extends ComputeCall {
 }
 
 /**
- * Why a session leaves its host (`probe` is a short test connection made
- * when a target is registered or checked, with no session behind it):
+ * Why a session leaves its host:
  *   ended    the session ended
  *   moved    the session left this worker and stays open
  *   evicted  the worker dropped the idle session
  *   shutdown the worker is shutting down
  *   failed   bind succeeded but the session could not use the host
  */
-export type ComputeReleaseReason = "ended" | "moved" | "evicted" | "shutdown" | "failed" | "probe";
+export type ComputeReleaseReason = "ended" | "moved" | "evicted" | "shutdown" | "failed";
 
 export interface ComputeReleaseRequest extends ComputeCall {
     target: ComputeTarget;
@@ -352,12 +297,6 @@ export interface ComputeProvider {
     validateTarget?(req: ComputeValidateRequest): Promise<{ ok: true } | ComputeFailure>;
     bind(req: ComputeBindRequest): Promise<{ ok: true; host: ComputeHostRef } | ComputeFailure>;
     connect(req: ComputeConnectRequest): Promise<ComputeConnectResult>;
-    /**
-     * Facts about a host for its target's advertisement (operating system,
-     * installed tools, ...). Models are not listed here: the worker asks the
-     * host's runtime for those when `capabilities.offersModels` is set.
-     */
-    describeHost?(req: ComputeDescribeRequest): Promise<Omit<ComputeAdvertisement, "models">>;
     release?(req: ComputeReleaseRequest): Promise<void>;
     /**
      * PilotSwarm is still using this host, and asks for it to be held for
@@ -380,11 +319,6 @@ export interface ComputeProvider {
      * since a worker can record the notice and then fail.
      */
     done?(req: ComputeDoneRequest): Promise<{ ok: true } | ComputeFailure>;
-}
-
-export interface ComputeDescribeRequest extends ComputeCall {
-    target: ComputeTarget;
-    host: ComputeHostRef;
 }
 
 /**
@@ -662,92 +596,4 @@ export function isLoopbackAddress(address: string): boolean {
     }
     host = host.replace(/^\[|\]$/g, "").toLowerCase();
     return host === "localhost" || host === "::1" || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host);
-}
-
-/**
- * A model a target offers is named `@<target>:<model>`, so it can sit next
- * to PilotSwarm's own `provider:model` names without colliding: a model
- * provider's name never starts with "@".
- *
- * The target's own name holds no colon, so the first colon is always the
- * one that separates the target from the model — and a model name may
- * hold as many more as it likes.
- */
-export function targetModelRef(targetName: string, modelId: string): string {
-    return `@${targetName}:${modelId}`;
-}
-
-/** The target and model of a `@<target>:<model>` name, or null for any other name. */
-export function parseTargetModelRef(ref: unknown): { target: string; model: string } | null {
-    if (typeof ref !== "string" || !ref.startsWith("@")) return null;
-    const at = ref.indexOf(":");
-    if (at < 2 || at === ref.length - 1) return null;
-    const target = ref.slice(1, at);
-    const model = ref.slice(at + 1);
-    if (!COMPUTE_TARGET_NAME_PATTERN.test(target) || !model.trim()) return null;
-    return { target, model };
-}
-
-/**
- * Keep only the well-formed parts of an advertisement and cap what is kept:
- * a host may send anything, it is stored, and it is shown to users.
- *
- * Unknown fields are dropped, every string is bounded, duplicate model ids
- * are collapsed, and the result as a whole stays under
- * MAX_COMPUTE_ADVERTISEMENT_BYTES — models are dropped from the end until
- * it fits, so a host cannot grow a row without limit.
- */
-export function normalizeAdvertisement(input: unknown): ComputeAdvertisement {
-    const out: ComputeAdvertisement = {};
-    if (!input || typeof input !== "object" || Array.isArray(input)) return out;
-    const raw = input as Record<string, unknown>;
-    if (Array.isArray(raw.models)) {
-        const models: ComputeHostModel[] = [];
-        const seen = new Set<string>();
-        for (const entry of raw.models) {
-            const m: Record<string, unknown> = entry && typeof entry === "object"
-                ? entry as Record<string, unknown>
-                : { id: entry };
-            const id = typeof m.id === "string" ? m.id.trim() : "";
-            if (!id || id.length > 200 || seen.has(id)) continue;
-            seen.add(id);
-            const name = typeof m.name === "string" && m.name.trim() ? m.name.trim().slice(0, 200) : undefined;
-            models.push(name ? { id, name } : { id });
-            if (models.length >= MAX_COMPUTE_HOST_MODELS) break;
-        }
-        out.models = models;
-    }
-    if (typeof raw.os === "string" && raw.os.trim()) out.os = raw.os.trim().slice(0, 40);
-    if (raw.details && typeof raw.details === "object" && !Array.isArray(raw.details)) {
-        const details: Record<string, string> = {};
-        for (const [key, value] of Object.entries(raw.details as Record<string, unknown>).slice(0, 50)) {
-            if (typeof value === "string" && key.length <= 100) details[key] = value.slice(0, 500);
-        }
-        if (Object.keys(details).length) out.details = details;
-    }
-    const size = () => Buffer.byteLength(JSON.stringify(out), "utf8");
-    while (size() > MAX_COMPUTE_ADVERTISEMENT_BYTES && out.models?.length) out.models.pop();
-    if (size() > MAX_COMPUTE_ADVERTISEMENT_BYTES) delete out.details;
-    return out;
-}
-
-/**
- * Whether a target may offer models of its own: its provider's hosts can
- * have model access (a provider capability, fixed in provider code) and the
- * target is one person's own (rule M1). A shared target never offers
- * models, however it advertises itself.
- */
-export function targetMayOfferHostModels(
-    target: Pick<ComputeTarget, "class"> | null | undefined,
-    capabilities: ComputeCapabilities | undefined,
-): boolean {
-    return Boolean(target && target.class === "personal" && capabilities?.offersModels === true);
-}
-
-/** The host models a target currently offers, after rule M1. */
-export function advertisedHostModels(
-    target: Pick<ComputeTarget, "class" | "advertised"> | null | undefined,
-): ComputeHostModel[] {
-    if (!target || target.class !== "personal") return [];
-    return target.advertised?.models ?? [];
 }

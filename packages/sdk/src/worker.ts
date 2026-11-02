@@ -23,13 +23,6 @@ import { firstRuntimeModel } from "./provider-catalog.js";
 import { loadMcpConfig, mcpAllowlistAdmits, type McpAllowlistAgent } from "./mcp-loader.js";
 
 import { createModelProvidersReloader, type ModelProviderRegistry } from "./model-providers.js";
-import {
-    COMPUTE_TARGET_PROBE_ACTIVITY,
-    COMPUTE_TARGET_PROBE_ORCHESTRATION,
-    computeTargetProbeOrchestration,
-    type ComputeTargetProbeInput,
-    withoutComputeTargetConfig,
-} from "./compute-target-probe.js";
 import { createArtifactTools } from "./artifact-tools.js";
 import { createDistillerTools } from "./distiller-tools.js";
 import { isEnhancedFactStore, PgFactStore, type FactStore } from "./facts-store.js";
@@ -993,10 +986,6 @@ export class PilotSwarmWorker {
             this.config.workerNodeId,
             this.artifactStore,
         );
-
-        this.runtime.registerActivity(COMPUTE_TARGET_PROBE_ACTIVITY, async (_ctx: any, input: ComputeTargetProbeInput) =>
-            withoutComputeTargetConfig(await this.sessionManager.probeComputeTargetById(input.targetId, input.principal)));
-        this.runtime.registerOrchestration(COMPUTE_TARGET_PROBE_ORCHESTRATION, computeTargetProbeOrchestration);
 
         for (const registration of DURABLE_SESSION_ORCHESTRATION_REGISTRY) {
             this.runtime.registerOrchestrationVersioned(

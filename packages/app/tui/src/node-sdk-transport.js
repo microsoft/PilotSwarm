@@ -1598,10 +1598,6 @@ export class NodeSdkTransport {
         return this.mgmt.listComputeTargets(await this._modelProviderViewer());
     }
 
-    async listComputeTargetModels(name) {
-        return this.mgmt.listComputeTargetModels(await this._modelProviderViewer(), name);
-    }
-
     async createComputeTarget(input) {
         return this.mgmt.createComputeTarget(await this._modelProviderViewer(), input || {});
     }
@@ -1624,14 +1620,6 @@ export class NodeSdkTransport {
 
     async deleteMyComputeTarget(name) {
         return this.mgmt.deleteMyComputeTarget(await this._modelProviderViewer(), name);
-    }
-
-    async probeComputeTarget(name) {
-        return this.mgmt.probeComputeTarget(await this._modelProviderViewer(), name);
-    }
-
-    async probeMyComputeTarget(name) {
-        return this.mgmt.probeMyComputeTarget(await this._modelProviderViewer(), name);
     }
 
     async listFeatureFlags() { return this.mgmt.listFeatureFlags(await this._modelProviderViewer()); }

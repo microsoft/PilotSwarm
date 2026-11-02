@@ -921,18 +921,6 @@ export class WebPilotSwarmManagementClient {
         return this.ops.deleteMyComputeTarget({ name });
     }
 
-    async probeComputeTarget(_viewer: unknown, name: string): Promise<any> {
-        return this.ops.probeComputeTarget({ name });
-    }
-
-    async probeMyComputeTarget(_viewer: unknown, name: string): Promise<any> {
-        return this.ops.probeMyComputeTarget({ name });
-    }
-
-    async listComputeTargetModels(_viewer: unknown, name: string): Promise<any> {
-        return this.ops.listComputeTargetModels({ name });
-    }
-
     async setModelDefault(_viewer: unknown, input: { scope: "user" | "cluster"; provider: string | null; model: string | null; reasoningEffort?: string | null; contextTier?: string | null }): Promise<any> {
         return this.ops.setModelDefault(input);
     }
