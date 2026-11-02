@@ -71,3 +71,17 @@ export function themeSoundEnvelope(elapsedSeconds, sound) {
     if (phase > play - fadeOut) return ease((play - phase) / fadeOut);
     return 1;
 }
+
+/**
+ * Milliseconds until the fire's next crackle. Real fires are irregular:
+ * mostly a random (exponential) wait averaging about a second, sometimes a
+ * quick burst of crackles close together, and now and then a quiet lull.
+ * `random` is injectable so the shape can be tested.
+ */
+export function nextCrackleGapMs(random = Math.random) {
+    const roll = random();
+    if (roll < 0.15) return 60 + random() * 190;
+    if (roll < 0.25) return 2000 + random() * 2000;
+    const wait = -Math.log(1 - random() * 0.98) * 1000;
+    return Math.min(4000, Math.max(120, wait));
+}

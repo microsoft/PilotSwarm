@@ -9,15 +9,12 @@
 // player waits for a click or key press before it resumes its context, and a
 // settings switch can prime it directly inside its own click.
 
-import { themeSoundEnvelope, themeSoundTiming } from "pilotswarm/ui-core";
+import { nextCrackleGapMs, themeSoundEnvelope, themeSoundTiming } from "pilotswarm/ui-core";
 
 const TICK_MS = 200;
-// Peak gain at volume 100. The fire is ambience, not an alert.
-const MAX_GAIN = 0.7;
-// Gap between crackle events: the minimum plus a spread skewed toward short
-// gaps. Mean about 1.1 s, so each crackle stands on its own.
-const CRACKLE_GAP_MIN_MS = 500;
-const CRACKLE_GAP_SPREAD_MS = 2400;
+// Peak gain at volume 100. The fire is ambience, not an alert. A limiter on
+// the output keeps the loudest pops from clipping.
+const MAX_GAIN = 1;
 
 function brownNoise(ctx, seconds) {
     const buffer = ctx.createBuffer(1, Math.floor(ctx.sampleRate * seconds), ctx.sampleRate);
@@ -38,8 +35,8 @@ function whiteNoise(ctx, seconds) {
     return buffer;
 }
 
-// A fire that is mostly crackle: distinct crackles and snaps at irregular,
-// unhurried intervals (about one a second on average), now and then the
+// A fire that is mostly crackle: distinct crackles and snaps at random
+// intervals (about one a second on average, with bursts and lulls), now and then the
 // deeper pop of a settling log, over a quiet low rumble that breathes slowly.
 function startFire(ctx, output, cache) {
     cache.bed = cache.bed || brownNoise(ctx, 5);
@@ -51,7 +48,7 @@ function startFire(ctx, output, cache) {
     lowpass.type = "lowpass";
     lowpass.frequency.value = 300;
     const bedGain = ctx.createGain();
-    bedGain.gain.value = 0.09;
+    bedGain.gain.value = 0.11;
     bed.connect(lowpass);
     lowpass.connect(bedGain);
     bedGain.connect(output);
@@ -59,7 +56,7 @@ function startFire(ctx, output, cache) {
     const breath = ctx.createOscillator();
     breath.frequency.value = 0.11;
     const breathDepth = ctx.createGain();
-    breathDepth.gain.value = 0.03;
+    breathDepth.gain.value = 0.035;
     breath.connect(breathDepth);
     breathDepth.connect(bedGain.gain);
     breath.start();
@@ -102,7 +99,7 @@ function startFire(ctx, output, cache) {
         for (let k = 0; k < count; k += 1) pop(at + k * (0.008 + Math.random() * 0.04), "crackle");
         if (Math.random() < 0.2) pop(at + 0.015, "snap");
         if (Math.random() < 0.1) pop(at + 0.02, "pop");
-        timer = setTimeout(crackle, CRACKLE_GAP_MIN_MS + Math.random() * Math.random() * CRACKLE_GAP_SPREAD_MS);
+        timer = setTimeout(crackle, nextCrackleGapMs());
     };
     crackle();
 
@@ -143,7 +140,14 @@ export function createThemeSoundPlayer({ win = typeof window === "undefined" ? n
             ctx = new AudioContextClass();
             master = ctx.createGain();
             master.gain.value = 0;
-            master.connect(ctx.destination);
+            const limiter = ctx.createDynamicsCompressor();
+            limiter.threshold.value = -3;
+            limiter.knee.value = 0;
+            limiter.ratio.value = 20;
+            limiter.attack.value = 0.001;
+            limiter.release.value = 0.1;
+            master.connect(limiter);
+            limiter.connect(ctx.destination);
         } catch {
             ctx = null;
         }

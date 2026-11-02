@@ -17,6 +17,7 @@ import { createInitialState } from "../src/state.js";
 import { getTheme } from "../src/themes/index.js";
 import {
     defaultThemeSound,
+    nextCrackleGapMs,
     normalizeThemeSound,
     themeSoundEnvelope,
     themeSoundTiming,
@@ -86,11 +87,27 @@ test("the portal wires the setting to Appearance, the profile, and the player", 
     assert.match(webApp, /themeSound: normalizedRemote\.themeSound/, "applied from the profile on desktop");
     assert.match(player, /themeSoundEnvelope\(elapsed, sound\)/);
     assert.match(player, /doc\.hidden/, "silent while the tab is hidden");
-    assert.match(player, /bedGain\.gain\.value = 0\.09/, "the low rumble stays quiet under the crackle");
-    const gapMin = Number(/CRACKLE_GAP_MIN_MS = (\d+)/.exec(player)?.[1]);
-    const gapSpread = Number(/CRACKLE_GAP_SPREAD_MS = (\d+)/.exec(player)?.[1]);
-    assert.ok(gapMin + gapSpread / 4 >= 1000, "crackle events average at least a second apart, each one distinct");
+    assert.match(player, /bedGain\.gain\.value = 0\.11/, "the low rumble stays under the crackle");
     assert.match(player, /0\.35 \+ Math\.random\(\) \* 0\.95/, "crackles are clearly audible over the rumble");
-    assert.match(player, /setTimeout\(crackle, CRACKLE_GAP_MIN_MS \+ Math\.random\(\) \* Math\.random\(\) \* CRACKLE_GAP_SPREAD_MS\)/);
+    assert.match(player, /setTimeout\(crackle, nextCrackleGapMs\(\)\)/, "crackle timing comes from the random gap model");
+    assert.match(player, /createDynamicsCompressor\(\)/, "a limiter keeps the loudest pops from clipping");
     assert.match(player, /silence\(themeSoundTiming\(previous\)\.fadeOut\)/, "switching off fades out");
+});
+
+test("crackle gaps are random: about a second on average, with bursts and lulls", () => {
+    let seed = 12345;
+    const random = () => {
+        seed = (seed + 0x6D2B79F5) | 0;
+        let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    const gaps = Array.from({ length: 20000 }, () => nextCrackleGapMs(random));
+    const mean = gaps.reduce((a, b) => a + b, 0) / gaps.length;
+    const sd = Math.sqrt(gaps.reduce((a, b) => a + (b - mean) ** 2, 0) / gaps.length);
+    assert.ok(mean > 900 && mean < 1400, `mean gap ${mean} ms`);
+    assert.ok(sd / mean > 0.8, `irregular, not metronomic: cv ${sd / mean}`);
+    assert.ok(Math.min(...gaps) >= 60 && Math.max(...gaps) <= 4000, "bounded");
+    assert.ok(gaps.filter(g => g < 250).length / gaps.length > 0.12, "quick bursts happen");
+    assert.ok(gaps.filter(g => g > 2000).length / gaps.length > 0.12, "quiet lulls happen");
 });
