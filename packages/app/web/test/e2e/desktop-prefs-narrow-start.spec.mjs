@@ -1,0 +1,70 @@
+import { test, expect } from "@playwright/test";
+import { startStubServer } from "./stub-server.mjs";
+
+// Desktop-only preferences (the reading column and theme sounds) must survive
+// a portal that opens at phone width and is then widened: the saved values are
+// hydrated at every width, and only their use is gated by width.
+test.use({ browserName: process.env.PS_TEST_BROWSER || "chromium" });
+let stub, base;
+test.beforeAll(async () => { stub = await startStubServer(0, { sessionCount: 3, admin: true }); base = `http://127.0.0.1:${stub.port}`; });
+test.afterAll(async () => { await new Promise((resolve) => stub.server.close(resolve)); });
+
+test("opening at phone width then widening keeps the saved desktop reading column and sound", async ({ page }) => {
+    let settings = {
+        themeId: "hearth",
+        chatReading: { on: true, width: 720, align: "left", pad: 40 },
+        themeSound: { on: false, volume: 35 },
+    };
+    const saves = [];
+    await page.route("**/api/v1/**", async (route) => {
+        const request = route.request();
+        const path = new URL(request.url()).pathname;
+        const reply = (result) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true, result }) });
+        if (path.endsWith("/me/profile/settings")) {
+            settings = request.postDataJSON().settings;
+            saves.push(settings);
+            return reply({ profileSettings: settings });
+        }
+        if (path.endsWith("/me/profile")) return reply({ isAdmin: false, profileSettings: settings });
+        return route.fallback();
+    });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(base);
+    await expect(page.locator("html")).toHaveAttribute("data-ps-theme", "hearth");
+    await expect(page.locator(".ps-mobile-workspace")).toBeVisible();
+
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.locator(".ps-session-list-button").nth(1).click();
+    await expect.poll(() => saves.length).toBeGreaterThan(0);
+    await page.waitForTimeout(600);
+
+    const last = saves.at(-1);
+    expect(last.themeSound).toMatchObject({ on: false, volume: 35 });
+    expect(last.chatReading).toMatchObject({ on: true, width: 720, align: "left", pad: 40 });
+    await expect(page.locator("html")).not.toHaveAttribute("data-ps-theme-sound", /./);
+    await expect(page.locator(".ps-chat-panel.is-reading")).toHaveCount(1);
+});
+
+test("Appearance at phone width shows the desktop settings read-only", async ({ page }) => {
+    const settings = { themeId: "hearth", themeSound: { on: false, volume: 35 } };
+    await page.route("**/api/v1/**", async (route) => {
+        const path = new URL(route.request().url()).pathname;
+        const reply = (result) => route.fulfill({ contentType: "application/json", body: JSON.stringify({ ok: true, result }) });
+        if (path.endsWith("/me/profile/settings")) return reply({ profileSettings: settings });
+        if (path.endsWith("/me/profile")) return reply({ isAdmin: true, profileSettings: settings });
+        return route.fallback();
+    });
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(base);
+    await page.locator('button[aria-label="Admin console"]').click();
+    await page.getByRole("button", { name: "Appearance", exact: true }).click();
+    const pane = page.getByRole("region", { name: "Appearance" });
+    const sound = pane.getByRole("switch", { name: "Theme sounds" });
+    await expect(sound).toBeEnabled();
+    await expect(pane.locator("[data-appearance-desktop-only]")).toHaveCount(0);
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect(pane.locator("[data-appearance-desktop-only]")).toBeVisible();
+    await expect(sound).toBeDisabled();
+    await expect(sound).not.toBeChecked();
+});

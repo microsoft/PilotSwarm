@@ -3492,6 +3492,18 @@ body.is-resizing-pane-y iframe {
   flex-direction: column;
   gap: 12px;
 }
+.ps-appearance__desktop {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+}
+.ps-appearance__desktop:disabled {
+  opacity: 0.6;
+}
 .ps-appearance h3 {
   margin: 0;
   font-size: var(--ps-font-size-base);
@@ -5960,6 +5972,9 @@ body.is-resizing-pane-y iframe {
   border-radius: 0;
   box-shadow: none;
 }
+/* The shape rule above outranks the shared state colours, so restate them. */
+:root[data-ps-theme="win95"] .ps-chat-panel .ps-activity-run.is-working { border-left-color: var(--ps-chat-card-accent, var(--ps-accent)); }
+:root[data-ps-theme="win95"] .ps-chat-panel .ps-activity-run.is-failed { border-left-color: var(--ps-chat-card-warning); }
 :root[data-ps-theme="win95"] .ps-chat-panel .ps-activity-run-viewport,
 :root[data-ps-theme="win95"] .ps-chat-panel .ps-native-task-detail,
 :root[data-ps-theme="win95"] .ps-chat-panel .ps-chat-call {

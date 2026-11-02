@@ -22,12 +22,13 @@ function pkg(name, extras = {}) {
         enabled: true,
         owner: extras.owner || null,
         createdBy: extras.createdBy || "agent-manager",
+        // The shape listAgentPackages returns: editors and version publishers.
+        contributors: extras.contributors || [],
         active: {
             semver: "0.1.0",
             manifest: {
                 agents: extras.agents || [],
                 author: extras.author,
-                contributors: extras.contributors,
             },
         },
     };
@@ -62,7 +63,10 @@ test("search matches package, agent, author, and contributor without a reload", 
     loaded(store, [
         pkg("director-sovereign", { agents: [{ name: "director-sovereign" }], createdBy: "Affan Dar" }),
         pkg("pgrelay-engineer", { agents: [{ name: "nux" }, { name: "slit" }], createdBy: "Affan Dar" }),
-        pkg("cawl", { createdBy: "Affan Dar", contributors: ["sample-editor"] }),
+        pkg("cawl", { createdBy: "Affan Dar", contributors: [
+            { role: "editor", displayName: "Sample Editor", email: "sample-editor@example.com" },
+            { role: "publisher", displayName: "publisher@example.com", email: null },
+        ] }),
     ]);
 
     controller.setAdminPackageQuery("nux");
@@ -72,6 +76,8 @@ test("search matches package, agent, author, and contributor without a reload", 
     assert.equal(hit.matchText, "nux");
 
     controller.setAdminPackageQuery("sample-editor", "contributor");
+    assert.deepEqual(packageNames(store), ["cawl"]);
+    controller.setAdminPackageQuery("publisher@", "contributor");
     assert.deepEqual(packageNames(store), ["cawl"]);
 
     controller.setAdminPackageQuery("Affan", "author");
@@ -86,7 +92,7 @@ test("search matches package, agent, author, and contributor without a reload", 
 });
 
 test("matchAdminPackage reads only the loaded record", () => {
-    const row = pkg("kit", { agents: ["runner"], author: { name: "Ada" }, contributors: [{ name: "Gus" }] });
+    const row = pkg("kit", { agents: ["runner"], author: { name: "Ada" }, contributors: [{ role: "editor", displayName: "Gus", email: null }] });
     assert.equal(matchAdminPackage(row, "runner", "agent").matched, true);
     assert.equal(matchAdminPackage(row, "Ada", "author").matched, true);
     assert.equal(matchAdminPackage(row, "Gus", "contributor").matched, true);
