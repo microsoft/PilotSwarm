@@ -4589,6 +4589,57 @@ function adminPkgLanguage(filePath) {
     return "text";
 }
 
+const ADMIN_PACKAGE_QUERY_FIELDS = new Set(["all", "package", "agent", "author", "contributor"]);
+
+function adminPackageTexts(value) {
+    if (value == null) return [];
+    if (typeof value === "string") return [value];
+    if (Array.isArray(value)) return value.flatMap(adminPackageTexts);
+    if (typeof value === "object") {
+        return [value.name, value.title, value.email, value.displayName, value.login]
+            .filter((part) => typeof part === "string" && part.trim());
+    }
+    return [];
+}
+
+/**
+ * Fields the package list already holds after one load. Search reads these.
+ * It does not fetch.
+ */
+export function adminPackageSearchFields(pkg) {
+    const manifest = pkg?.active?.manifest || {};
+    return {
+        package: adminPackageTexts(pkg?.name),
+        agent: adminPackageTexts(manifest.agents),
+        author: [
+            ...adminPackageTexts(pkg?.createdBy),
+            ...adminPackageTexts(pkg?.owner?.displayName),
+            ...adminPackageTexts(pkg?.owner?.email),
+            ...adminPackageTexts(manifest.author),
+        ],
+        contributor: [
+            ...adminPackageTexts(manifest.contributors),
+            ...adminPackageTexts(pkg?.contributors),
+            ...adminPackageTexts(pkg?.editors),
+        ],
+    };
+}
+
+export function matchAdminPackage(pkg, query, field = "all") {
+    const needle = String(query || "").trim().toLowerCase();
+    if (!needle) return { matched: true, hits: [] };
+    const want = ADMIN_PACKAGE_QUERY_FIELDS.has(field) ? field : "all";
+    const fields = adminPackageSearchFields(pkg);
+    const keys = want === "all" ? ["package", "agent", "author", "contributor"] : [want];
+    const hits = [];
+    for (const key of keys) {
+        for (const value of fields[key]) {
+            if (value.toLowerCase().includes(needle)) hits.push({ field: key, text: value });
+        }
+    }
+    return { matched: hits.length > 0, hits };
+}
+
 export function selectAdminConsole(state) {
     const admin = state.admin || {};
     const profile = admin.profile || null;
@@ -4851,35 +4902,49 @@ export function selectAdminConsole(state) {
         if (!ownerKey) return ownerFilter.includeUnowned === true;
         return Array.isArray(ownerFilter.ownerKeys) && ownerFilter.ownerKeys.includes(ownerKey);
     };
-    const sharedRows = pkgList.filter((pkg) => pkg.scope === "shared").map(packageRow);
-    const userRows = pkgList
-        .filter((pkg) => pkg.scope !== "shared" && isMinePackage(pkg))
-        .map(packageRow);
-    const otherUserRows = pkgList
-        .filter((pkg) => pkg.scope !== "shared" && !isMinePackage(pkg) && passesOwnerFilter(pkg))
-        .map((pkg) => ({ ...packageRow(pkg), ownerLabel: pkg?.createdBy || pkg?.owner?.subject || "another user" }));
+    const packageQuery = String(pkgState.query || "");
+    const packageQueryField = ADMIN_PACKAGE_QUERY_FIELDS.has(pkgState.queryField) ? pkgState.queryField : "all";
+    const packageQueryActive = packageQuery.trim().length > 0;
+    const withMatch = (row, pkg) => {
+        const extra = matchAdminPackage(pkg, packageQuery, packageQueryField).hits
+            .filter((hit) => hit.field !== "package");
+        return {
+            ...row,
+            matchField: extra[0]?.field || null,
+            matchText: extra[0]?.text || null,
+            matchExtra: Math.max(0, extra.length - 1),
+        };
+    };
+    const passesQuery = (pkg) => matchAdminPackage(pkg, packageQuery, packageQueryField).matched;
+    const sharedAll = pkgList.filter((pkg) => pkg.scope === "shared");
+    const userAll = pkgList.filter((pkg) => pkg.scope !== "shared" && isMinePackage(pkg));
+    const otherAll = pkgList.filter((pkg) => pkg.scope !== "shared" && !isMinePackage(pkg) && passesOwnerFilter(pkg));
+    const sharedRows = sharedAll.filter(passesQuery).map((pkg) => withMatch(packageRow(pkg), pkg));
+    const userRows = userAll.filter(passesQuery).map((pkg) => withMatch(packageRow(pkg), pkg));
+    const otherUserRows = otherAll.filter(passesQuery)
+        .map((pkg) => withMatch({ ...packageRow(pkg), ownerLabel: pkg?.createdBy || pkg?.owner?.subject || "another user" }, pkg));
+    const packageGroup = (id, label, rows, total) => (
+        packageQueryActive && rows.length === 0 ? [] : [
+            { id, kind: "group", depth: 1, label, count: rows.length, total },
+            ...rows.map((row) => ({ id: `${id}:${row.owner?.subject ?? ""}:${row.name}`, kind: "package", depth: 2, label: row.name, ...row })),
+        ]
+    );
 
     // Settings tree — the session-list-slot navigation. Rendered by both
     // hosts; `kind` drives affordances (section rows switch panes, package
     // rows select a package).
     const motdReadable = canReadMotd(state);
-    const section = ["providers", "packages", "workers", "features", ...(motdReadable ? ["motd"] : [])].includes(admin.section) ? admin.section : "providers";
+    const section = ["providers", "packages", "workers", "features", "appearance", ...(motdReadable ? ["motd"] : [])].includes(admin.section) ? admin.section : "providers";
     const settingsTree = [
+        { id: "appearance", kind: "section", depth: 0, label: "Appearance", selected: section === "appearance" },
         { id: "providers", kind: "section", depth: 0, label: "Model Providers", selected: false },
         { id: "myProviders", kind: "subsection", depth: 1, label: "My Providers", selected: section === "providers" && providerPage === "mine" },
         ...(isAdmin ? [{ id: "sharedProviders", kind: "subsection", depth: 1, label: "Shared Providers", selected: section === "providers" && providerPage === "shared" }] : []),
         { id: "features", kind: "section", depth: 0, label: "Feature flags", selected: section === "features" },
         { id: "agents", kind: "section", depth: 0, label: "Packages", selected: section === "packages" && !pkgState.selectedName },
-        { id: "group:shared", kind: "group", depth: 1, label: "Shared", count: sharedRows.length },
-        ...sharedRows.map((row) => ({ id: `pkg:shared:${row.name}`, kind: "package", depth: 2, label: row.name, ...row })),
-        { id: "group:user", kind: "group", depth: 1, label: "User", count: userRows.length },
-        ...userRows.map((row) => ({ id: `pkg:user:${row.name}`, kind: "package", depth: 2, label: row.name, ...row })),
-        ...(otherUserRows.length > 0
-            ? [
-                { id: "group:others", kind: "group", depth: 1, label: "Other users", count: otherUserRows.length },
-                ...otherUserRows.map((row) => ({ id: `pkg:user:${row.owner?.subject ?? "?"}:${row.name}`, kind: "package", depth: 2, label: row.name, ...row })),
-            ]
-            : []),
+        ...packageGroup("group:shared", "Shared", sharedRows, sharedAll.length),
+        ...packageGroup("group:user", "User", userRows, userAll.length),
+        ...(otherUserRows.length > 0 ? packageGroup("group:others", "Other users", otherUserRows, otherAll.length) : []),
         // The worker registry is a hard-gated admin read; hide the section
         // entirely from non-admins rather than showing a doomed pane.
         ...(motdReadable ? [{ id: "motd", kind: "section", depth: 0, label: "Message of the day", selected: section === "motd" }] : []),
@@ -5115,6 +5180,10 @@ export function selectAdminConsole(state) {
         loading: Boolean(pkgState.loading),
         error: pkgState.error || null,
         empty: pkgList.length === 0 && !pkgState.loading,
+        query: packageQuery,
+        queryField: packageQueryField,
+        visibleCount: sharedRows.length + userRows.length + otherUserRows.length,
+        totalCount: sharedAll.length + userAll.length + otherAll.length,
         sharedCount: sharedRows.length,
         userCount: userRows.length,
         selectedName: pkgState.selectedName || null,

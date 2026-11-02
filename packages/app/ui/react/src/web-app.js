@@ -5,6 +5,7 @@ import { FeatureFlagsPanel } from "./feature-flags-panel.js";
 import { MotdOverlay, MotdAdminPanel } from "./motd.js";
 import { imageFiles, handleImagePaste, handleImageDrop, hasFileDrag } from "./image-transfer.js";
 import { NativeTaskCard } from "./native-task-card.js";
+import { themeSoundPlayer } from "./theme-sound-player.js";
 import { WorkspacePane, WORKSPACE_CHANGED_EVENT, announceWorkspaceChange, downloadBase64, workspaceToolActivity } from "./workspace-pane.js";
 // createPortal is only invoked by browser-only surfaces (tooltips, toolbar
 // slots, and viewport-level dialogs); the import itself is side-effect-free
@@ -84,6 +85,8 @@ import {
     selectConfirmModal,
     defaultOwnerFilterForPrincipal,
     normalizeStoredLayoutAdjustments,
+    normalizeChatReading,
+    normalizeThemeSound,
     normalizeStoredSessionViews,
     normalizeStoredPinnedSessionIds,
     normalizeStoredSessionOrder,
@@ -357,6 +360,17 @@ function normalizeProfileSettings(settings) {
     if (typeof candidate.touchScaleMobile === "boolean") {
         normalized.touchScaleMobile = candidate.touchScaleMobile;
     }
+    // Desktop only. A phone must not invent a mobile slot; it carries this
+    // object through unchanged when the save path passes it in.
+    if (hasOwn(candidate, "chatReading")) {
+        const chatReading = normalizeChatReading(candidate.chatReading);
+        if (chatReading) normalized.chatReading = chatReading;
+    }
+    // Desktop only, carried through a phone save like chatReading.
+    if (hasOwn(candidate, "themeSound")) {
+        const themeSound = normalizeThemeSound(candidate.themeSound);
+        if (themeSound) normalized.themeSound = themeSound;
+    }
     if (hasOwn(candidate, "sessionOwnerFilter") && candidate.sessionOwnerFilter && typeof candidate.sessionOwnerFilter === "object") {
         const storedFilter = candidate.sessionOwnerFilter;
         // Profiles saved before the "Shared with me" bucket existed have no
@@ -478,7 +492,7 @@ function profileViewState(root) {
     };
 }
 
-function profileSettingsFromViewState(state, preservedOtherTouchScale = null, preservedRightPaneMode = null, preservedDesktopPanes = null) {
+function profileSettingsFromViewState(state, preservedOtherTouchScale = null, preservedRightPaneMode = null, preservedDesktopPanes = null, preservedChatReading = null, preservedThemeSound = null) {
     return normalizeProfileSettings({
         ...(state.moa ? { moa: state.moa } : {}),
         themeId: state.themeId,
@@ -543,6 +557,14 @@ function profileSettingsFromViewState(state, preservedOtherTouchScale = null, pr
             && Object.keys(state.agentPickerUsage).length > 0
             ? { agentPickerUsage: state.agentPickerUsage }
             : {}),
+        // Desktop writes the live column. A phone has no column setting, so
+        // it writes the last desktop value back or the replace would delete it.
+        ...(isNarrowViewport()
+            ? (preservedChatReading ? { chatReading: preservedChatReading } : {})
+            : { chatReading: state.chatReading }),
+        ...(isNarrowViewport()
+            ? (preservedThemeSound ? { themeSound: preservedThemeSound } : {})
+            : (state.themeSound ? { themeSound: state.themeSound } : {})),
     });
 }
 
@@ -650,6 +672,14 @@ function materializeProfileSettings(remoteSettings, defaults) {
         ...(hasOwn(normalizedRemote, touchScaleKey())
             ? { touchScale: normalizedRemote[touchScaleKey()] }
             // Never inherit the other device class's preference.
+            : {}),
+        // Desktop only. A phone must not apply the column, and must not
+        // synthesize one: an omitted key leaves the current value alone.
+        ...(!isNarrowViewport() && hasOwn(normalizedRemote, "chatReading")
+            ? { chatReading: normalizedRemote.chatReading }
+            : {}),
+        ...(!isNarrowViewport() && hasOwn(normalizedRemote, "themeSound")
+            ? { themeSound: normalizedRemote.themeSound }
             : {}),
         // Read back for the same reason as touchScale above: written but never
         // merged means the fold state resets on every reload. No default here
@@ -1601,7 +1631,7 @@ function ChatActivityRun({ calls }) {
     }, [open, calls.length, updateKey]);
 
     return React.createElement("details", {
-        className: "ps-native-tasks ps-activity-run",
+        className: `ps-native-tasks ps-activity-run${failed ? " is-failed" : active ? " is-working" : " is-done"}`,
         open,
         onToggle: (event) => setOpen(event.currentTarget.open),
     },
@@ -7233,9 +7263,78 @@ function OutboxStrip({ controller, sessionId, header, blocks, theme }) {
 }
 const OUTBOX_SELECTABLE_PHASES = new Set(["pending", "queued", "cancelling"]);
 
-function ChatPane({ controller, mobile = false, fullWidth = false, showComposer = true, onEnterZen = null, activityInHeader = false }) {
+function ChatReadingControl({ reading, onChange }) {
+    const set = (patch) => onChange({ ...reading, ...patch });
+    const full = reading.width == null;
+    return React.createElement("div", { className: "ps-reading-control is-stacked" },
+        React.createElement("label", { className: "ps-reading-switch" },
+            React.createElement("input", {
+                type: "checkbox",
+                role: "switch",
+                checked: reading.on,
+                "aria-checked": reading.on,
+                onChange: (event) => set({ on: event.target.checked }),
+            }),
+            "Reading column"),
+        React.createElement("div", { className: "ps-reading-width" },
+            React.createElement("span", null, "Maximum width"),
+            React.createElement("button", {
+                type: "button",
+                className: full ? "is-on" : "",
+                onClick: () => set({ width: null }),
+            }, "Full"),
+            full
+                ? null
+                : React.createElement("input", {
+                    type: "range",
+                    min: 480,
+                    max: 1100,
+                    step: 20,
+                    value: reading.width,
+                    "aria-label": "Maximum width",
+                    onChange: (event) => set({ width: Number(event.target.value) }),
+                }),
+            React.createElement("span", null, full ? "Full" : String(reading.width)),
+            full
+                ? React.createElement("button", {
+                    type: "button",
+                    onClick: () => set({ width: 1100 }),
+                }, "Set a maximum")
+                : null),
+        full
+            ? null
+            : React.createElement("span", { className: "ps-reading-align", role: "group", "aria-label": "Column alignment" },
+                ["left", "center"].map((align) => React.createElement("button", {
+                    key: align,
+                    type: "button",
+                    className: reading.align === align ? "is-on" : "",
+                    onClick: () => set({ align }),
+                }, align === "left" ? "Left" : "Center"))),
+        !full && reading.align === "left"
+            ? React.createElement("label", { className: "ps-reading-width" },
+                React.createElement("span", null, "Left inset"),
+                React.createElement("input", {
+                    type: "range",
+                    min: 0,
+                    max: 160,
+                    step: 4,
+                    value: reading.pad,
+                    "aria-label": "Left inset",
+                    onChange: (event) => set({ pad: Number(event.target.value) }),
+                }),
+                React.createElement("span", null, String(reading.pad)))
+            : null);
+}
+
+function ChatPane({ controller, mobile = false, fullWidth = false, showComposer = true, onEnterZen = null, activityInHeader = false, readingColumn = false }) {
     const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
     const theme = getTheme(themeId);
+    // Only the main desktop chat opts in. Master of Agents panels, zen, and
+    // the phone chat pass readingColumn false, so this setting cannot reach them.
+    const storedReading = useControllerSelector(controller, (state) => state.ui.chatReading);
+    const reading = readingColumn && storedReading?.on && Number.isFinite(storedReading.width)
+        ? storedReading
+        : null;
     const viewState = useControllerSelector(controller, (state) => {
         const activeSessionId = state.sessions.activeSessionId;
         const layout = computeStateLayout(state);
@@ -7420,7 +7519,7 @@ function ChatPane({ controller, mobile = false, fullWidth = false, showComposer 
         historyPullEnabled: Boolean(viewState.activeHistory?.hasOlderEvents && !showLoadOlder),
         ariaLive: "polite",
         className: "is-wrapped",
-        panelClassName: "ps-chat-panel",
+        panelClassName: `ps-chat-panel${reading ? ` is-reading is-reading-${reading.align}` : ""}`,
         panelRef,
         bottomContent: composer,
         topContent: ({ topPullDistance, loadingOlderHistory }) => {
@@ -14483,6 +14582,57 @@ function formatAdminPrincipalLabel(principal) {
     return [provider, subject].filter(Boolean).join(":") || "user";
 }
 
+function ThemeSoundControl({ setting, theme, onChange }) {
+    const value = setting || { on: false, volume: 35 };
+    const set = (patch) => onChange({ ...value, ...patch });
+    return React.createElement("div", { className: "ps-reading-control is-stacked ps-theme-sound-control" },
+        React.createElement("label", { className: "ps-reading-switch" },
+            React.createElement("input", {
+                type: "checkbox",
+                role: "switch",
+                checked: value.on,
+                "aria-checked": value.on,
+                onChange: (event) => {
+                    // Inside the click, so the browser allows the sound to start.
+                    if (event.target.checked) themeSoundPlayer().prime();
+                    set({ on: event.target.checked });
+                },
+            }),
+            "Theme sounds"),
+        React.createElement("label", { className: "ps-reading-width" },
+            React.createElement("span", null, "Volume"),
+            React.createElement("input", {
+                type: "range",
+                min: 0,
+                max: 100,
+                step: 5,
+                value: value.volume,
+                "aria-label": "Theme sound volume",
+                onChange: (event) => set({ volume: Number(event.target.value) }),
+            }),
+            React.createElement("span", null, String(value.volume))),
+        theme?.sound
+            ? null
+            : React.createElement("p", { className: "ps-admin-console__hint" }, "This theme has no sound."));
+}
+
+function AppearanceSettingsPane({ controller }) {
+    const reading = useControllerSelector(controller, (state) => state.ui.chatReading);
+    const themeSound = useControllerSelector(controller, (state) => state.ui.themeSound);
+    const themeId = useControllerSelector(controller, (state) => state.ui.themeId);
+    return React.createElement("section", { className: "ps-appearance", "aria-label": "Appearance" },
+        React.createElement("h3", null, "Appearance"),
+        React.createElement(ChatReadingControl, {
+            reading,
+            onChange: (next) => controller.dispatch({ type: "ui/chatReading", reading: next }),
+        }),
+        React.createElement(ThemeSoundControl, {
+            setting: themeSound,
+            theme: getTheme(themeId),
+            onChange: (next) => controller.dispatch({ type: "ui/themeSound", themeSound: next }),
+        }));
+}
+
 function AdminConsolePanel({ controller, mobile = false }) {
     const view = useControllerSelector(controller, selectAdminConsole, shallowEqualObject);
     const features = useControllerSelector(controller, state => state.admin.features);
@@ -14495,6 +14645,7 @@ function AdminConsolePanel({ controller, mobile = false }) {
     const showPackages = view.section === "packages";
     const showWorkers = view.section === "workers";
     const showFeatures = view.section === "features";
+    const showAppearance = view.section === "appearance";
     const showMotd = view.section === "motd";
     const motdSection = React.createElement(MotdAdminPanel, { controller, state: motds, images: motdImages, canRead: motdReadable, mobile,
         isAdmin: view.isAdmin && (!featureRole || featureRole === "admin" || featureRole === "anonymous") });
@@ -14649,7 +14800,10 @@ function AdminConsolePanel({ controller, mobile = false }) {
             body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree,
                 React.createElement(AdminWorkersPane, { controller, view }));
         } else {
-            body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree, showMotd ? motdSection : showFeatures ? featureSection : providerSection);
+            body = React.createElement("div", { className: "ps-admin-mobile-stack" }, tree,
+                showAppearance
+                    ? React.createElement(AppearanceSettingsPane, { controller })
+                    : showMotd ? motdSection : showFeatures ? featureSection : providerSection);
         }
         return React.createElement("div", { className: "ps-admin-console is-mobile" },
             header,
@@ -14678,7 +14832,13 @@ function AdminConsolePanel({ controller, mobile = false }) {
                     "aria-label": "Resize settings column",
                 })),
             React.createElement("div", { className: "ps-admin-main" },
-                showPackages ? detail : showWorkers ? React.createElement(AdminWorkersPane, { controller, view }) : showMotd ? motdSection : showFeatures ? featureSection : providerSection),
+                showPackages
+                    ? detail
+                    : showWorkers
+                        ? React.createElement(AdminWorkersPane, { controller, view })
+                        : showAppearance
+                            ? React.createElement(AppearanceSettingsPane, { controller })
+                            : showMotd ? motdSection : showFeatures ? featureSection : providerSection),
             workspacePane),
         dialog,
         createProviderDialog);
@@ -14747,69 +14907,157 @@ function AdminWorkersPane({ controller, view }) {
                         React.createElement("td", null, row.sdkVersion ?? "—")))))));
 }
 
+// The Find box searches packages only, so only package rows show a match.
+// The text sits in its own inline span: the name column is a flex column, and
+// a bare <mark> beside bare text would become its own line.
+function highlightPackageQuery(text, query) {
+    const value = String(text || "");
+    const needle = String(query || "").trim();
+    if (!needle) return value;
+    const at = value.toLowerCase().indexOf(needle.toLowerCase());
+    if (at < 0) return value;
+    return [
+        value.slice(0, at),
+        React.createElement("mark", { key: "hit", className: "ps-admin-tree__mark" }, value.slice(at, at + needle.length)),
+        value.slice(at + needle.length),
+    ];
+}
+
 function AdminSettingsTree({ controller, view }) {
     const packages = view.packages || {};
+    const query = packages.query || "";
+    const field = packages.queryField || "all";
+    const renderRow = (row) => {
+        if (row.kind === "group") {
+            const count = row.total != null && row.total !== row.count
+                ? `${row.count} of ${row.total}`
+                : String(row.count ?? 0);
+            return React.createElement("div", { key: row.id, className: "ps-admin-tree__group" },
+                row.label, React.createElement("span", { className: "ps-admin-tree__count" }, count));
+        }
+        const onClick = row.kind === "package"
+            // The selector says WHICH copy this row is — one name can be a
+            // shared package and a user copy at once (scope shadowing).
+            ? () => controller.selectAdminPackage(row.name, {
+                scope: row.scope === "shared" ? "shared" : "user",
+                ...(row.scope !== "shared" && row.owner?.provider && row.owner?.subject
+                    ? { owner: { provider: row.owner.provider, subject: row.owner.subject } }
+                    : {}),
+            })
+            : () => {
+                if (row.id === "providers" || row.id === "myProviders") {
+                    controller.setAdminSection("providers");
+                    controller.setAdminModelProviderPage("mine");
+                } else if (row.id === "sharedProviders") {
+                    controller.setAdminSection("providers");
+                    controller.setAdminModelProviderPage("shared");
+                } else if (row.id === "features") {
+                    controller.setAdminSection("features");
+                } else if (row.id === "appearance") {
+                    controller.setAdminSection("appearance");
+                } else if (row.id === "motd") {
+                    controller.setAdminSection("motd");
+                } else {
+                    controller.setAdminSection(row.id === "agents" ? "packages" : "workers");
+                }
+            };
+        return React.createElement("button", {
+            key: row.id,
+            type: "button",
+            className: `ps-admin-tree__row depth-${row.depth}${row.selected ? " is-selected" : ""}${row.kind === "package" && !row.enabled ? " is-disabled" : ""}`,
+            onClick,
+        },
+            // A user-scope package shows WHOSE it is, using the same
+            // owner-initials chip the session rows use, so "[ad]" means
+            // the same thing on both sides of the app. Shared packages
+            // belong to the deployment, so they keep the scope badge.
+            row.kind === "package"
+                ? (row.ownerBadge
+                    ? React.createElement(OwnerAvatar, { badge: row.ownerBadge })
+                    : React.createElement("span", {
+                        className: "ps-scope-badge is-shared",
+                        title: "shared with the whole deployment",
+                    }, "S"))
+                : null,
+            React.createElement("span", { className: "ps-admin-tree__name" },
+                React.createElement("span", { className: "ps-admin-tree__text" },
+                    row.kind === "package" ? highlightPackageQuery(row.label, query) : row.label),
+                row.kind === "package" && row.matchText
+                    ? React.createElement("span", { className: "ps-admin-tree__match" },
+                        highlightPackageQuery(`${row.matchField} · ${row.matchText}${row.matchExtra ? ` · +${row.matchExtra}` : ""}`, query))
+                    : null),
+            row.kind === "package" && row.semver
+                ? React.createElement("span", { className: "ps-admin-tree__ver" }, row.semver)
+                : null);
+    };
+    const tree = view.settingsTree || [];
+    const agentsIndex = tree.findIndex((row) => row.id === "agents");
+    const headEnd = agentsIndex >= 0 ? agentsIndex + 1 : 0;
+    // Only package groups and package rows scroll. The first section after
+    // them (Workers, Message of the day, or any later one) stays outside.
+    const nextSection = tree.findIndex((row, index) => index >= headEnd && row.kind !== "group" && row.kind !== "package");
+    const tailStart = nextSection >= 0 ? nextSection : tree.length;
+    const filtering = query.trim().length > 0;
+    const fields = [
+        ["all", "All"],
+        ["package", "Package"],
+        ["agent", "Agent"],
+        ["author", "Author"],
+        ["contributor", "Contributor"],
+    ];
     return React.createElement("nav", { className: "ps-admin-tree" },
         React.createElement("div", { className: "ps-admin-tree__label" }, "Settings"),
-        (view.settingsTree || []).map((row) => {
-            if (row.kind === "group") {
-                return React.createElement("div", { key: row.id, className: "ps-admin-tree__group" },
-                    `${row.label}`, React.createElement("span", { className: "ps-admin-tree__count" }, String(row.count ?? 0)));
-            }
-            const onClick = row.kind === "package"
-                // The selector says WHICH copy this row is — one name can be a
-                // shared package and a user copy at once (scope shadowing).
-                ? () => controller.selectAdminPackage(row.name, {
-                    scope: row.scope === "shared" ? "shared" : "user",
-                    ...(row.scope !== "shared" && row.owner?.provider && row.owner?.subject
-                        ? { owner: { provider: row.owner.provider, subject: row.owner.subject } }
-                        : {}),
-                })
-                : () => {
-                    if (row.id === "providers" || row.id === "myProviders") {
-                        controller.setAdminSection("providers");
-                        controller.setAdminModelProviderPage("mine");
-                    } else if (row.id === "sharedProviders") {
-                        controller.setAdminSection("providers");
-                        controller.setAdminModelProviderPage("shared");
-                    } else if (row.id === "features") {
-                        controller.setAdminSection("features");
-                    } else if (row.id === "motd") {
-                        controller.setAdminSection("motd");
-                    } else {
-                        controller.setAdminSection(row.id === "agents" ? "packages" : "workers");
-                    }
-                };
-            return React.createElement("button", {
-                key: row.id,
-                type: "button",
-                className: `ps-admin-tree__row depth-${row.depth}${row.selected ? " is-selected" : ""}${row.kind === "package" && !row.enabled ? " is-disabled" : ""}`,
-                onClick,
-            },
-                // A user-scope package shows WHOSE it is, using the same
-                // owner-initials chip the session rows use, so "[ad]" means
-                // the same thing on both sides of the app. Shared packages
-                // belong to the deployment, so they keep the scope badge.
-                row.kind === "package"
-                    ? (row.ownerBadge
-                        ? React.createElement(OwnerAvatar, { badge: row.ownerBadge })
-                        : React.createElement("span", {
-                            className: "ps-scope-badge is-shared",
-                            title: "shared with the whole deployment",
-                        }, "S"))
-                    : null,
-                React.createElement("span", { className: "ps-admin-tree__name" }, row.label),
-                row.kind === "package" && row.semver
-                    ? React.createElement("span", { className: "ps-admin-tree__ver" }, row.semver)
-                    : null);
-        }),
+        tree.slice(0, headEnd).map(renderRow),
+        React.createElement("div", { className: "ps-admin-pkg-search" },
+            React.createElement("label", { className: "ps-admin-pkg-search__box" },
+                React.createElement("span", { className: "ps-admin-pkg-search__kicker" }, "Find"),
+                React.createElement("input", {
+                    type: "search",
+                    value: query,
+                    placeholder: "Package, agent, author, contributor",
+                    autoComplete: "off",
+                    "aria-label": "Find a package",
+                    onChange: (event) => controller.setAdminPackageQuery(event.target.value),
+                    onKeyDown: (event) => {
+                        if (event.key === "Escape") {
+                            event.preventDefault();
+                            controller.setAdminPackageQuery("");
+                        }
+                    },
+                }),
+                query ? React.createElement("button", {
+                    type: "button",
+                    className: "ps-admin-pkg-search__clear",
+                    "aria-label": "Clear search",
+                    onClick: () => controller.setAdminPackageQuery(""),
+                }, "×") : null),
+            React.createElement("div", { className: "ps-admin-pkg-search__fields", role: "group", "aria-label": "Which field to search" },
+                fields.map(([id, label]) => React.createElement("button", {
+                    key: id,
+                    type: "button",
+                    className: field === id ? "is-on" : "",
+                    onClick: () => controller.setAdminPackageQuery(query, id),
+                }, label))),
+            React.createElement("div", { className: "ps-admin-pkg-search__meta" },
+                React.createElement("b", null, String(packages.visibleCount ?? 0)),
+                ` of ${packages.totalCount ?? 0}`)),
+        React.createElement("div", { className: "ps-admin-pkg-scroll", role: "listbox", "aria-label": "Packages" },
+            listRows(tree, headEnd, tailStart, renderRow),
+            filtering && (packages.visibleCount ?? 0) === 0
+                ? React.createElement("div", { className: "ps-admin-tree__hint" }, `No package matches “${query.trim()}”.`)
+                : null),
         packages.loading ? React.createElement("div", { className: "ps-admin-tree__hint" }, "Loading packages…") : null,
         packages.error ? React.createElement("div", { className: "ps-admin-tree__hint is-error" }, packages.error) : null,
         view.section === "packages" ? React.createElement("button", {
             type: "button",
             className: "ps-admin-tree__add",
             onClick: () => controller.openAdminAddPackage(),
-        }, "+ Add package") : null);
+        }, "+ Add package") : null,
+        tree.slice(tailStart).map(renderRow));
+}
+
+function listRows(tree, headEnd, tailStart, renderRow) {
+    return tree.slice(headEnd, tailStart).map(renderRow);
 }
 
 function AdminPackageDetailPane({ controller, view }) {
@@ -15763,6 +16011,8 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         moa: rootState.ui.moa,
         themeId: rootState.ui.themeId,
         touchScale: Boolean(rootState.ui.touchScale),
+        chatReading: rootState.ui.chatReading,
+        themeSound: rootState.ui.themeSound,
         sessionDetailCollapsed: Boolean(rootState.ui.sessionDetailCollapsed),
         agentPickerUsage: rootState.ui.agentPickerUsage,
         ownerFilter: rootState.sessions.ownerFilter,
@@ -15823,6 +16073,9 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
     // Same preservation contract as desktopRightPaneModeRef: a phone must not
     // overwrite the desktop's column toggles with its own (absent) ones.
     const desktopPanesRef = React.useRef(null);
+    // Desktop column, preserved across a phone save. There is no phone slot.
+    const desktopChatReadingRef = React.useRef(null);
+    const desktopThemeSoundRef = React.useRef(null);
     const profileSettingsSaveTimerRef = React.useRef(null);
     const profileSettingsPollTimerRef = React.useRef(null);
     const profileSettingsPollInFlightRef = React.useRef(false);
@@ -16000,6 +16253,12 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                 if (remoteNormalized.desktopPanes) {
                     desktopPanesRef.current = remoteNormalized.desktopPanes;
                 }
+                if (remoteNormalized.chatReading) {
+                    desktopChatReadingRef.current = remoteNormalized.chatReading;
+                }
+                if (remoteNormalized.themeSound) {
+                    desktopThemeSoundRef.current = remoteNormalized.themeSound;
+                }
                 defaultProfileSettingsRef.current = buildDefaultProfileSettingsFromState(
                     controller.getState(), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current,
                 );
@@ -16014,7 +16273,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                 );
                 const settingsJson = JSON.stringify(settings);
                 const currentSettingsBeforeApply = profileSettingsFromViewState(
-                    profileViewState(controller.getState()), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current,
+                    profileViewState(controller.getState()), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current, desktopChatReadingRef.current, desktopThemeSoundRef.current,
                 );
                 const currentSettingsBeforeApplyJson = JSON.stringify(currentSettingsBeforeApply);
                 const hasUnpersistedLocalChange = profileSettingsHydratedRef.current
@@ -16059,10 +16318,11 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                 // remote state by definition and there is nothing to lose).
                 if (!profileSettingsHydratedRef.current || !hasPendingLocalWrite) {
                     const currentSettings = profileSettingsFromViewState(
-                        profileViewState(controller.getState()), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current,
+                        profileViewState(controller.getState()), otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current, desktopChatReadingRef.current, desktopThemeSoundRef.current,
                     );
                     lastProfileSettingsJsonRef.current = JSON.stringify(currentSettings);
                 }
+                try { window.localStorage.removeItem("ps-chat-reading"); } catch { /* private mode */ }
                 profileSettingsHydratedRef.current = true;
             } catch {
                 if (!active) return;
@@ -16093,7 +16353,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
 
     React.useEffect(() => {
         if (!profileSettingsHydratedRef.current) return undefined;
-        const settings = profileSettingsFromViewState(state, otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current);
+        const settings = profileSettingsFromViewState(state, otherTouchScaleRef.current, desktopRightPaneModeRef.current, desktopPanesRef.current, desktopChatReadingRef.current, desktopThemeSoundRef.current);
         const settingsJson = JSON.stringify(settings);
         if (lastProfileSettingsJsonRef.current === settingsJson) return undefined;
         lastProfileSettingsJsonRef.current = settingsJson;
@@ -16117,12 +16377,36 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
                 });
         }, 400);
         return undefined;
-    }, [controller, state.moa, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.sidePaneTab, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.sessionSortMode, state.sessionUsedAt, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale]);
+    }, [controller, state.moa, state.activeSessionId, state.activityPaneAdjust, state.agentPickerUsage, state.canvasOpen, state.canvasPaneAdjust, state.canvasPrefs, state.canvasZen, state.sidePaneTab, state.collapsedSessionIds, state.diagnosticsOpen, state.diagnosticsPaneAdjust, state.diagnosticsSplitAdjust, state.ownerFilter, state.paneAdjust, state.manualOrder, state.sessionSortMode, state.sessionUsedAt, state.pinnedIds, state.portalSessionColumnAdjust, state.rightPaneMode, state.sessionDetailCollapsed, state.sessionPaneAdjust, state.sessionViews, state.themeId, state.touchScale, state.chatReading, state.themeSound]);
 
     React.useEffect(() => {
         applyDocumentTheme(state.themeId);
         applyTouchScale(state.touchScale);
     }, [state.themeId, state.touchScale]);
+
+    // The theme's ambient sound, if it has one and the person turned sounds on.
+    // Desktop only; the phone has no Appearance settings.
+    React.useEffect(() => {
+        const theme = getTheme(state.themeId);
+        const setting = state.themeSound || {};
+        themeSoundPlayer().update({
+            sound: theme?.sound || null,
+            enabled: setting.on === true && !isNarrowViewport(),
+            volume: (Number(setting.volume) || 0) / 100,
+        });
+    }, [state.themeId, state.themeSound]);
+    React.useEffect(() => () => themeSoundPlayer().update({ enabled: false }), []);
+
+    React.useEffect(() => {
+        const reading = state.chatReading;
+        if (!reading || typeof document === "undefined") return;
+        if (Number.isFinite(reading.width)) {
+            document.documentElement.style.setProperty("--ps-reading-width", `${reading.width}px`);
+        } else {
+            document.documentElement.style.removeProperty("--ps-reading-width");
+        }
+        document.documentElement.style.setProperty("--ps-reading-pad", reading.align === "left" ? `${reading.pad || 0}px` : "0px");
+    }, [state.chatReading]);
 
     // Follow focus only on an actual TRANSITION, never on the first run.
     //
@@ -16327,7 +16611,7 @@ export function PilotSwarmWebApp({ controller, suspended = false, moa = null, vi
         className: "ps-workspace-pane-slot",
         style: { gridColumn: "3" },
     },
-        React.createElement(ChatPane, { controller }))),
+        React.createElement(ChatPane, { controller, readingColumn: true }))),
     rightSideActive
         ? (artifactPaneActive
             ? React.createElement(ColumnResizeHandle, { controller, paneAdjust: state.paneAdjust })

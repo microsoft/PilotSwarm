@@ -8,6 +8,7 @@ export * from "./repo-import.js";
 export * from "./session-tree.js";
 export * from "./session-search.js";
 export * from "./state.js";
+export * from "./theme-sound.js";
 export * from "./reducer.js";
 export * from "./portal-links.js";
 export * from "./store.js";

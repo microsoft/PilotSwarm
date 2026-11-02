@@ -1,5 +1,6 @@
 import { normalizeSessionSortMode, normalizeSessionUsage, reconcileSessionSort } from "./session-sort.js";
 import { normalizeMoa } from "./moa.js";
+import { normalizeThemeSound } from "./theme-sound.js";
 import { retainSessionWarnings } from "./session-errors.js";
 import { buildSessionTree, isManuallyOrderableSession } from "./session-tree.js";
 import { FOCUS_REGIONS } from "./commands.js";
@@ -27,6 +28,7 @@ import {
     SESSION_VIEW_LAYOUT_KEYS,
     defaultSessionView,
     normalizeStoredSessionViews,
+    normalizeChatReading,
 } from "./state.js";
 
 /**
@@ -1029,6 +1031,28 @@ function baseReducer(state, action) {
             if (Boolean(action.enabled) === Boolean(state.ui.touchScale)) return state;
             return { ...state, ui: { ...state.ui, touchScale: Boolean(action.enabled) } };
 
+        case "ui/themeSound": {
+            const next = normalizeThemeSound(action.themeSound);
+            if (!next) return state;
+            const current = state.ui.themeSound;
+            if (current && current.on === next.on && current.volume === next.volume) return state;
+            return { ...state, ui: { ...state.ui, themeSound: next } };
+        }
+
+        case "ui/chatReading": {
+            const next = normalizeChatReading(action.reading);
+            if (!next) return state;
+            const current = state.ui.chatReading;
+            if (current
+                && current.on === next.on
+                && current.width === next.width
+                && current.align === next.align
+                && current.pad === next.pad) {
+                return state;
+            }
+            return { ...state, ui: { ...state.ui, chatReading: next } };
+        }
+
         case "ui/agentPickerUsage": {
             const usage = action.usage && typeof action.usage === "object" && !Array.isArray(action.usage)
                 ? action.usage
@@ -1057,6 +1081,12 @@ function baseReducer(state, action) {
             // say "rich" fall through to the transcript below.
             const hasTouchScale = Object.prototype.hasOwnProperty.call(settings, "touchScale")
                 && typeof settings.touchScale === "boolean";
+            const nextChatReading = Object.prototype.hasOwnProperty.call(settings, "chatReading")
+                ? normalizeChatReading(settings.chatReading)
+                : null;
+            const nextThemeSound = Object.prototype.hasOwnProperty.call(settings, "themeSound")
+                ? normalizeThemeSound(settings.themeSound)
+                : null;
             const hasSessionDetailCollapsed = Object.prototype.hasOwnProperty.call(settings, "sessionDetailCollapsed")
                 && typeof settings.sessionDetailCollapsed === "boolean";
             const hasAgentPickerUsage = Object.prototype.hasOwnProperty.call(settings, "agentPickerUsage")
@@ -1158,6 +1188,8 @@ function baseReducer(state, action) {
                     moaLoaded: true,
                     themeId: hasTheme ? settings.themeId.trim() : selection.ui.themeId,
                     touchScale: hasTouchScale ? settings.touchScale : selection.ui.touchScale,
+                    chatReading: nextChatReading || selection.ui.chatReading,
+                    themeSound: nextThemeSound || selection.ui.themeSound,
                     sessionDetailCollapsed: hasSessionDetailCollapsed
                         ? settings.sessionDetailCollapsed
                         : selection.ui.sessionDetailCollapsed,
@@ -3050,7 +3082,7 @@ function baseReducer(state, action) {
             };
         }
         case "admin/section": {
-            const section = ["providers", "packages", "workers", "features", "motd", "ghcp"].includes(action.section) ? action.section : "ghcp";
+            const section = ["providers", "packages", "workers", "features", "appearance", "motd", "ghcp"].includes(action.section) ? action.section : "ghcp";
             if (section === "motd" && !canReadMotd(state)) return state;
             return { ...state, admin: { ...state.admin, section } };
         }
@@ -3089,6 +3121,22 @@ function baseReducer(state, action) {
         }
         case "admin/workers/loadFailed": {
             return { ...state, admin: { ...state.admin, workers: { ...state.admin.workers, loading: false, error: action.error || "Failed to load workers" } } };
+        }
+        case "admin/packages/query": {
+            const allowed = new Set(["all", "package", "agent", "author", "contributor"]);
+            const current = state.admin.packages.queryField || "all";
+            const field = action.field == null ? current : (allowed.has(action.field) ? action.field : current);
+            return {
+                ...state,
+                admin: {
+                    ...state.admin,
+                    packages: {
+                        ...state.admin.packages,
+                        query: String(action.query ?? ""),
+                        queryField: field,
+                    },
+                },
+            };
         }
         case "admin/packages/loading": {
             return { ...state, admin: { ...state.admin, packages: { ...state.admin.packages, loading: true, error: null } } };

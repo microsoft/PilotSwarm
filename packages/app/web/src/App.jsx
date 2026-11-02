@@ -264,13 +264,21 @@ function useThemeIcon(controller) {
     return icon;
 }
 
+// Small named movements a theme mark may ask for. The stylesheet owns how
+// each one moves and stops them all when motion is reduced. Anything else is
+// ignored, so a theme cannot put an arbitrary class into the header.
+const THEME_ICON_MOTIONS = new Set(["flame", "flame-core", "glow"]);
+
 function ThemeIconMark({ icon, className = "portal-logo" }) {
     return React.createElement("svg", {
         className: `${className} portal-logo-theme`,
         viewBox: icon.viewBox,
         "aria-hidden": "true",
     }, icon.paths.map((path, index) => React.createElement("path", {
-        key: index, d: path.d, fill: path.fill,
+        key: index,
+        d: path.d,
+        fill: path.fill,
+        className: THEME_ICON_MOTIONS.has(path.motion) ? `ps-icon-motion-${path.motion}` : undefined,
     })));
 }
 
