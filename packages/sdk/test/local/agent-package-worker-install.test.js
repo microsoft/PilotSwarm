@@ -236,4 +236,57 @@ describe("agent-package worker install", () => {
             await catalog.close();
         }
     });
+
+    it("quarantines a package whose worker module exports a workflow turn tool name, which an ordinary session never declares", { timeout: TIMEOUT }, async () => {
+        // A 1.9.0 turn declares respond_session_request, and an agent state's own child complete_workflow_node; a package tool of
+        // either name would be declared twice there, so the worker refuses it at install, as any reserved name.
+        const env = await getEnv();
+        const catalog = await createCatalog(env);
+        const artifactStore = new FilesystemArtifactStore(path.join(path.dirname(env.sessionStateDir), "artifacts"));
+        const ctx = { catalog, artifactStore };
+        const fixtures = path.join(env.baseDir, "reserved-name-fixtures");
+        const modelProvidersPath = path.join(env.baseDir, "model-providers.reserved-name.json");
+        const workerNodeId = `pkg-reserved-${env.runId}`;
+        const kits = { complete_workflow_node: "completion-kit", respond_session_request: "request-kit", reserved_name_echo: "healthy-kit" };
+        try {
+            // No LLM turn runs here; an isolated fake provider, as above.
+            fs.writeFileSync(modelProvidersPath, JSON.stringify({
+                providers: [{ id: "fixture-openai-type", type: "openai", baseUrl: "https://example.invalid/v1", models: [{ name: "fixture-model" }] }],
+            }));
+            await catalog.providers.createProvider({
+                name: "fixture-provider", typeId: "fixture-openai-type", class: "shared", secretRef: { apiKey: "fixture-key" },
+            }, null, true);
+            await catalog.providers.setClusterDefault({ provider: "fixture-provider", model: "fixture-provider:fixture-model", reasoning: null, context: null }, true);
+            for (const [toolName, name] of Object.entries(kits)) {
+                await publishAgentPackageDir(ctx, {
+                    dir: writeFixturePackage(path.join(fixtures, name), { name, version: "1.0.0", agentName: `${name}-agent`, toolName }),
+                    scope: "shared", owner: OWNER, createdBy: "fixture@test", isAdmin: false,
+                });
+            }
+
+            await withClient(env, {
+                workerNodeId,
+                worker: { workerPool: "default", modelProvidersPath, agentPackages: { cacheDir: path.join(env.baseDir, "agent-packages-reserved"), refreshIntervalMs: 0 } },
+                client: { modelProvidersPath },
+            }, async (_client, worker) => {
+                await worker.refreshAgentPackages({ force: true });
+                const mine = (await catalog.listAgentWorkerState()).find((s) => s.workerNodeId === workerNodeId);
+                assert(mine, "worker reported agent_worker_state");
+                for (const toolName of ["complete_workflow_node", "respond_session_request"]) {
+                    const name = kits[toolName];
+                    assert(!worker.loadedAgents.some((a) => a.name === `${name}-agent`), `${name} contributes no agents`);
+                    assertEqual(worker.sessionManager.toolRegistry?.get?.(toolName), undefined, `no package handler named ${toolName}`);
+                    assertEqual(mine.installed[name].status, "error", `${name} is quarantined`);
+                    assert(String(mine.installed[name].error).includes(`package tool "${toolName}" conflicts with a reserved platform or deployment tool`),
+                        `${name}'s quarantine names the reserved tool: ${mine.installed[name].error}`);
+                }
+                // A package tool of any other name installs beside them.
+                assert(worker.loadedAgents.some((a) => a.name === "healthy-kit-agent"), "a healthy package installs");
+                assert(worker.sessionManager.toolRegistry?.get?.("reserved_name_echo"), "its tool is a package tool");
+                assertEqual(mine.installed["healthy-kit"].status, "ok");
+            });
+        } finally {
+            await catalog.close();
+        }
+    });
 });

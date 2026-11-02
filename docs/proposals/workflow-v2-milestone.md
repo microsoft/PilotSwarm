@@ -4,8 +4,11 @@ Status: **inactive**. Everything in this note runs only on controller 1.9.0
 and the orchestrations it starts, which only tests register (the worker
 option `workflowRequests`) and only a test host starts runs at
 (`WorkflowV2Host.requests`). Production workers keep controller 1.8.0, its
-activities and its tool surface unchanged. Nothing here is an activation, a
-deployment or a qualification result.
+activities and its tool surface unchanged. One exception applies on every
+worker: the names of the two workflow turn tools are reserved, so packages
+and capabilities cannot export them ("The agent tools on a turn of a 1.9.0
+worker" below). Nothing here is an activation, a deployment or a
+qualification result.
 
 The approved design is the execution package of 31 October 2026 (documents
 01 to 11, requirements R01 to R28). Request states have their own design
@@ -863,11 +866,18 @@ because only its turn's handlers had it; the native-fixture tests call the
 bridge directly and their session manager declares nothing, so they did not
 see it.
 
-Residual: neither `respond_session_request` nor `complete_workflow_node` is
-a reserved package tool name, so a package that exports a tool of that name
-is not refused at validation; on a 1.9.0 turn a session that has that
-package tool could then declare the name twice. Reserving them changes
-production package validation, so it waits for activation.
+Both names are reserved platform tool names (`WORKFLOW_TURN_TOOL_NAMES`,
+`reserved-tool-names.ts`), whatever a session declares: an ordinary session
+never declares them, so without that a package or capability tool of either
+name would pass validation and then be declared twice beside the platform's
+on a 1.9.0 turn. The worker quarantines a package whose worker module
+exports one (as for every reserved name: its agents and tools are not
+installed, and the worker's reported state names the conflict), and a
+capability selection of one is refused (or, when not strict, unavailable as
+a whole). Unlike the rest of the milestone, this reservation applies on
+every worker, active or not: it refuses those two names only and grants
+nothing, and ordinary sessions' declarations and permissions are
+unchanged. Unit and local regressions check each path.
 
 Such a turn's publications pin their named agents from the agent registry
 (`resolveAgent`, `agent-resolver.ts`). A worker created with the test-only

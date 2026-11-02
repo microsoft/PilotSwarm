@@ -146,6 +146,18 @@ describe("capability binding exact identity and access boundaries", () => {
         }
     });
 
+    it("rejects the workflow turn tools as exports, though an ordinary session never declares them", () => {
+        // A 1.9.0 turn declares respond_session_request, and an agent state's own child complete_workflow_node; a capability
+        // export of either name would be declared twice there, so it is refused for every session, as a reserved name.
+        for (const name of ["complete_workflow_node", "respond_session_request"]) {
+            const src = source("shared", { tools: [tool("lookup"), tool(name)] });
+            expect(() => bindCapabilities([src], ALICE, [select("shared", [name])], [], {}, null, true)).toThrow(/reserved/);
+            // Not strict: the whole selection is unavailable, and nothing of the source is attached.
+            expect(bindCapabilities([src], ALICE, [select("shared", ["lookup", name])], [tool("spawn_agent")], {}, null))
+                .toMatchObject({ tools: [], mcpServers: {}, unavailable: ["shared"] });
+        }
+    });
+
     it("enforces deployment MCP identity and strips allowlist metadata from the bound config", () => {
         const cfg = { type: "http", url: "https://restricted.test", tools: ["read"], allowedAgents: ["ops:analyst"] };
         const src = source("static-ops", { mcp: { restricted: cfg } });
