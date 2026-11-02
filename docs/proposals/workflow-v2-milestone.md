@@ -650,7 +650,7 @@ per schema file).
 | Portal and TUI composer, management client, SDK client | session access (`canSendPrompt`, `canAnswer`, `canSteer`; the TUI's direct mode reads `getWorkflowInputPolicy`) | human input, refused for an agent state's subtree at the SDK (both composers are read-only there) |
 | REST `POST /sessions/:id/workflow/commands`, SDK (direct and web) and TUI `updateWorkflow`, MCP `update_workflow` (INACTIVE: test-only option `workflowCommands`) | — | a person's `update_workflow` command (below) |
 | Bootstrap (`GET /api/bootstrap`, `/api/v1/bootstrap`), SDK `getWorkflowCapabilities` (direct and web), both transports | `workflows`: the workflow support the deployment takes now (below) | nothing |
-| TUI workflow view (`w` on a workflow session) | the states in graph order for the chosen run (←→), the selected state's details, transitions and history, an agent state's child session per occurrence, a test run's intercepted effects, and with `personCommands` (INACTIVE) the shown run's controls and variables (below) | a person's `pause`, `resume`, `stop`, `cancel` of the shown run (p, r, s, c; stop and cancel ask first) and `set_vars` of one variable (v: set, or remove after confirming) as `updateWorkflow` commands; it opens a child session's chat to read |
+| TUI workflow view (`w` on a workflow session) | the states in graph order for the chosen run (←→), the selected state's details, transitions and history, an agent state's child session per occurrence, a test run's intercepted effects, and with `personCommands` (INACTIVE) the shown run's controls and variables and, with `personCommands.draft`, the draft's revision and YAML (below) | a person's `pause`, `resume`, `stop`, `cancel` of the shown run (p, r, s, c; stop and cancel ask first), `set_vars` of one variable (v: set, or remove after confirming) and `replace_definition` of the draft (e: the editor; ctrl-o saves at the revision the edit started from) as `updateWorkflow` commands; it opens a child session's chat to read |
 
 All read surfaces serve one projection (`readWorkflowV2View`), so they show
 the same agent child, branch, stop, test and pin fields. The shared UI
@@ -931,7 +931,7 @@ Unfulfilled requirements (open, not waived; R26):
 - **The rest of the UI commands**: the portal sends every person's command
   (above). Test fixtures and a several-key variables update go through the
   API, MCP or the agent tool. The TUI's workflow view (below) sends only a
-  person's run controls and variable changes.
+  person's run controls, variable changes and draft saves.
 
 **The TUI's read-only workflow view (design 02 "Portal/TUI: graph, observed
 state, read-only child chats"; T115).** On a workflow session, `w` (outside
@@ -1027,6 +1027,43 @@ live run) sends nothing. Accepted, the form returns to the view. While the
 form is open, q is text, not the quit key. Nothing else about the open KV
 changes.
 
+**The TUI's draft editor (design 04 replace_definition; mocks M01, M02;
+R03, R17, R26; INACTIVE likewise).** The workflow view's details name the
+draft's revision and version when the read model gives this person the
+draft's YAML (`personCommands.draft`: a draft, `replace_definition` offered,
+a viewer who may change it), and an edit kept unsaved. `e` opens the editor
+on that YAML: the portal's editor model (`workflowV2DraftEditor`,
+`workflowV2DraftEdit`) as a terminal editor, with line numbers and the
+cursor (a long line is shown around the cursor, never wrapped), the
+revision the edit started from and the version, which cannot change (the
+server refuses a new one). The YAML edits as text: Enter is a new line (a
+pasted CR or CRLF too), Tab two spaces, the cursor keys, PgUp/PgDn ten
+lines, Home/End, Backspace; q is text, not the quit key. ctrl-o saves the
+edit as one `replace_definition` at the revision it started from, sent as
+the portal sends it (`sendWorkflowRunCommand`); an edit with no change,
+empty YAML or more than 256 KiB is not sent, and the editor says why.
+Accepted, the editor stays open on the new revision, with anything typed
+while it was sent kept as an edit of it; a revision with compile errors is
+saved and its diagnostics are listed under the YAML, which stays. A revision
+the view has not read yet is shown as saved, and the older YAML does not
+come back. A draft someone else saved meanwhile is refused
+(`REVISION_CONFLICT`) and the workflow is read again: the edit stays on the
+revision it started from, saving waits, and the editor offers ctrl-r to load
+the newer revision or ctrl-k to keep the edit on it. Outside a conflict
+ctrl-r discards the edit, back to the revision it started from. Discarding
+changes asks first in the confirm dialog, which returns to the editor. A refusal
+(a new version, `SEMVER_IMMUTABLE`; a human-input denial) stays in the
+editor and on the status line, with the edit. After an answer that never came,
+ctrl-o sends the same save again (the same operation id). While a save is
+sent the editor says so and nothing else is sent or discarded. Esc closes
+the editor and keeps the edit in the view (`e` shows it again where it
+was). The editor is not opened for a published definition, a workflow in an
+agent state's subtree (with the controlling agent named), a caller the YAML
+is not given to, or a deployment that takes no person's commands; the status
+line says why, and an open editor whose draft is published meanwhile edits
+and sends nothing. The server decides every save again. Publication, test
+start, test answers and the virtual clock stay in the portal (below).
+
 **The TUI composer of a session in an agent state's subtree (design 03
 human-input denial; T115 "no human composer", T116 in the TUI).** It is
 read-only, as the portal's is: it shows the server's reason and the
@@ -1045,10 +1082,11 @@ fails, the composer stays as it is and the server refuses the input
 reads the same policy through its session access), are unchanged.
 
 Not in the TUI yet (open, not waived):
-- a person's other workflow commands (publication, draft editing, test
-  start, test answers and the virtual clock): the portal, the API, MCP and
-  the agent tools take them; a several-key variables update (the form sends
-  one name at a time, as the portal's panel does);
+- a person's other workflow commands (publication review and start with the
+  exact revision, definition hash and inputs; test start; test answers; the
+  virtual clock): the portal, the API, MCP and the agent tools take them; a
+  several-key variables update (the form sends one name at a time, as the
+  portal's panel does);
 - each execution's own output: the view shows the state's latest output or
   error (bounded), as the portal's Output tab does;
 - the TUI refuses a person's prompt, answer and steer to an agent state's

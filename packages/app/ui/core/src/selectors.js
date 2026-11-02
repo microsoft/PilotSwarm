@@ -9649,6 +9649,7 @@ const KEYBINDING_HELP = [
         ["w", "workflow session: workflow view (↑↓ state · ←→ run · PgUp/PgDn details · Tab agent chat · Enter open its chat)"],
         ["p r s c  d", "workflow view: pause / resume / stop / cancel the shown run where the deployment takes people's workflow commands (stop and cancel ask first) · dismiss a notice"],
         ["v", "workflow view: the shown run's variables — set a name to a JSON value or remove one (Tab name/value · ↑↓ copy a listed one · Enter set · ctrl-r remove · Esc back)"],
+        ["e", "workflow view: edit the draft's YAML (ctrl-o save as a new revision · ctrl-r discard edits · ctrl-k keep edits on a newer revision · Esc close, edits kept)"],
         ["c / d / D", "cancel / done / delete session"],
         ["ctrl-x  (ctrl-esc)", "stop the current turn (again: retry an unconfirmed stop)", { dim: true }],
         ["ctrl-t", "prompt: steer the running turn with the prompt text, a selected queued message, or (empty prompt) every queued message (steering feature)", { dim: true }],

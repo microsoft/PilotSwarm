@@ -65,6 +65,11 @@ export const UI_COMMANDS = {
     // The shown run's variables (INACTIVE likewise): open the variables form, and remove the variable it names.
     WORKFLOW_VIEW_EDIT_VARIABLES: "workflowViewEditVariables",
     WORKFLOW_VARIABLE_REMOVE: "workflowVariableRemove",
+    // The draft's YAML (INACTIVE likewise): open the draft editor, save the edit, discard it, keep it on a newer revision.
+    WORKFLOW_VIEW_EDIT_DRAFT: "workflowViewEditDraft",
+    WORKFLOW_DRAFT_SAVE: "workflowDraftSave",
+    WORKFLOW_DRAFT_DISCARD: "workflowDraftDiscard",
+    WORKFLOW_DRAFT_KEEP: "workflowDraftKeep",
     SEQUENCE_SELECT_PREV: "sequenceSelectPrev",
     SEQUENCE_SELECT_NEXT: "sequenceSelectNext",
     TOGGLE_SEQUENCE_TURN: "toggleSequenceTurn",

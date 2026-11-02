@@ -65,9 +65,9 @@ export function isPlainShortcutKey(key = {}) {
 
 /**
  * The workflow view's run controls for the run it shows (p pause · r resume · s stop · c cancel; stop and cancel ask
- * first), d, which dismisses the notice about the last one, and v, which opens the shown run's variables form.
- * INACTIVE: only a deployment that takes a person's workflow commands offers them; otherwise the status line says why
- * nothing was sent.
+ * first), d, which dismisses the notice about the last one, v, which opens the shown run's variables form, and e, which
+ * opens the draft editor. INACTIVE: only a deployment that takes a person's workflow commands offers them; otherwise the
+ * status line says why nothing was sent.
  */
 const WORKFLOW_VIEW_RUN_KEYS = Object.freeze({
     p: UI_COMMANDS.WORKFLOW_VIEW_PAUSE_RUN,
@@ -76,6 +76,7 @@ const WORKFLOW_VIEW_RUN_KEYS = Object.freeze({
     c: UI_COMMANDS.WORKFLOW_VIEW_CANCEL_RUN,
     d: UI_COMMANDS.WORKFLOW_VIEW_DISMISS_NOTICE,
     v: UI_COMMANDS.WORKFLOW_VIEW_EDIT_VARIABLES,
+    e: UI_COMMANDS.WORKFLOW_VIEW_EDIT_DRAFT,
 });
 
 export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
@@ -309,8 +310,8 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
             && controller.giveUpTurnControl()) {
             return;
         }
-        // The workflow variables form takes typed text, q included.
-        const typingInForm = modal?.type === "workflowVariable";
+        // The workflow variables form and the draft editor take typed text, q included.
+        const typingInForm = modal?.type === "workflowVariable" || modal?.type === "workflowDraft";
         if (focus !== "prompt" && !typingInForm && input === "q" && quitStateRef.current.armedUntil > Date.now()) {
             clearQuitArm(false);
             requestExit();
@@ -542,6 +543,53 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                     controller.handleCommand(UI_COMMANDS.MODAL_CONFIRM).catch(() => {});
                     return;
                 }
+                return;
+            }
+            // The draft editor: the YAML is text (Enter a new line, Tab two spaces, the cursor keys, PgUp/PgDn, Home/End,
+            // Backspace). ctrl-o saves it as a new revision, ctrl-r discards the edit (it asks first), ctrl-k keeps the edit on a
+            // newer revision, and Esc closes the editor (the edit is kept).
+            if (modal.type === "workflowDraft") {
+                if (key.escape) {
+                    controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
+                    return;
+                }
+                if (matchesCtrlKey("o", "\u000f")) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_DRAFT_SAVE).catch(() => {});
+                    return;
+                }
+                if (matchesCtrlKey("r", "\u0012")) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_DRAFT_DISCARD).catch(() => {});
+                    return;
+                }
+                if (matchesCtrlKey("k", "\u000b")) {
+                    controller.handleCommand(UI_COMMANDS.WORKFLOW_DRAFT_KEEP).catch(() => {});
+                    return;
+                }
+                if (key.return) {
+                    controller.editWorkflowDraft({ type: "insert", text: "\n" });
+                    return;
+                }
+                if (key.tab) {
+                    controller.editWorkflowDraft({ type: "insert", text: "  " });
+                    return;
+                }
+                if (key.upArrow || key.downArrow || key.pageUp || key.pageDown) {
+                    controller.editWorkflowDraft({ type: "move", lines: key.upArrow ? -1 : key.downArrow ? 1 : key.pageUp ? -10 : 10 });
+                    return;
+                }
+                if (key.leftArrow || key.rightArrow) {
+                    controller.editWorkflowDraft({ type: "move", chars: key.leftArrow ? -1 : 1 });
+                    return;
+                }
+                if (key.home || key.end) {
+                    controller.editWorkflowDraft({ type: "edge", edge: key.home ? "start" : "end" });
+                    return;
+                }
+                if (key.backspace || key.delete) {
+                    controller.editWorkflowDraft({ type: "backspace" });
+                    return;
+                }
+                if (!key.ctrl && !key.meta && input) controller.editWorkflowDraft({ type: "insert", text: input });
                 return;
             }
             // The workflow variables form: two text fields, a name and a JSON value. Tab switches them, ↑↓ copy a listed

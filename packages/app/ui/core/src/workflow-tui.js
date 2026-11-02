@@ -3,7 +3,10 @@ import { workflowV2RunPickerModel } from "./workflow-v2-run-picker.js";
 import {
     compactWorkflowV2Executions, projectWorkflowV2, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2RouteKind,
 } from "./workflow-v2-view.js";
-import { workflowV2RunCommandNotice, workflowV2RunControls, workflowV2RunVariables } from "./workflow-v2-commands.js";
+import {
+    workflowV2DraftEdit, workflowV2DraftEditor, workflowV2RestrictionText, workflowV2RunCommandNotice, workflowV2RunControls,
+    workflowV2RunVariables,
+} from "./workflow-v2-commands.js";
 
 /**
  * The TUI's read-only workflow view (design 02 "Portal/TUI: graph, observed
@@ -28,10 +31,14 @@ import { workflowV2RunCommandNotice, workflowV2RunControls, workflowV2RunVariabl
  * that never came), and its variables (v opens a form: set a name to a JSON
  * value, or remove a name after the confirm dialog, each as one set_vars
  * update at the revision the view shows; the portal's workflowV2RunVariables
- * and drafts). A workflow in an agent state's subtree takes only pause, stop
- * and cancel from people. The server decides every command again. The draft
- * editor, publication, tests and their answers are not part of it, and the
- * server keeps refusing human input to an agent state's subtree.
+ * and drafts), and a draft's YAML (e opens an editor: ctrl-o saves it as a
+ * new revision after the one the edit started from, replace_definition, the
+ * portal's workflowV2DraftEditor and workflowV2DraftEdit; a draft someone
+ * else saved meanwhile is refused, never overwritten, and the edit is kept).
+ * A workflow in an agent state's subtree takes only pause, stop and cancel
+ * from people. The server decides every command again. Publication, tests
+ * and their answers are not part of it, and the server keeps refusing human
+ * input to an agent state's subtree.
  *
  * For an agent state it also shows the agent, the workflow interface the
  * state names and what the shown run pins it to (the package revision and
@@ -99,8 +106,16 @@ export function workflowSessionProjection({ session = null, events = EMPTY_EVENT
     const runNotice = v2 ? workflowV2RunCommandNotice(runCommand) : null;
     // The shown run's variables as the portal's panel lists them and a person changes them (set_vars), from the same model.
     const runVariables = v2 ? workflowV2RunVariables(readModel, runCommand) : null;
+    // The draft's YAML as the portal's editor edits it (the definition is the workflow's, whichever run is shown), the
+    // person's edit of it (kept in the view, so closing the editor loses nothing) and what that edit is: against the
+    // revision it started from, which is one this person just saved when the read model does not show it yet.
+    const draftEditor = v2 ? workflowV2DraftEditor(readModel ?? workflowModel, runCommand) : null;
+    const draftBuffer = workflowDraftBuffer(safeView.draftEdit, draftEditor);
+    const draftEdit = draftBuffer ? workflowV2DraftEdit(draftBuffer.base, draftBuffer.text,
+        draftBuffer.base.revision > draftEditor.revision ? { ...draftEditor, revision: draftBuffer.base.revision } : draftEditor) : null;
     return {
         definition, nodes, v2, status, live, runPicker, runControls, runNotice, runVariables, runReadModel: v2 ? readModel ?? null : null,
+        draftEditor, draftBuffer, draftEdit, definitionModel: v2 ? readModel ?? workflowModel ?? null : null,
         name: definition?.name || String(session?.title || "").replace(/^Workflow: /, "") || "Workflow",
         banners: v2?.banners || [],
         readError: error,
@@ -385,6 +400,159 @@ export function selectWorkflowVariableModal(state, maxWidth = 100, viewportHeigh
     };
 }
 
+/**
+ * A person's edit of the draft's YAML as the editor shows it: the view's kept edit (`draftEdit`: `base`, the revision
+ * it started from and that revision's YAML, its `text` and its `cursor`), or the current revision untouched. As the
+ * portal's editor does, a newer revision read while nothing was edited (or one that is exactly this edit, once saved)
+ * is taken as it is; an edit that starts from a revision the read model does not show yet (one this person just saved)
+ * is kept. Null without an editor (no draft a person may change). Pure.
+ */
+export function workflowDraftBuffer(edit, editor) {
+    if (!editor) return null;
+    const fresh = cursor => ({ base: { revision: editor.revision, yaml: editor.yaml }, text: editor.yaml,
+        cursor: Math.max(0, Math.min(Number(cursor) || 0, editor.yaml.length)) });
+    if (!isPlainRecord(edit) || !isPlainRecord(edit.base) || !Number.isSafeInteger(edit.base.revision) || typeof edit.base.yaml !== "string"
+        || typeof edit.text !== "string") return fresh(0);
+    const cursor = Math.max(0, Math.min(Number(edit.cursor) || 0, edit.text.length));
+    if (edit.base.revision < editor.revision && (edit.text === edit.base.yaml || edit.text === editor.yaml)) return fresh(cursor);
+    return { base: { revision: edit.base.revision, yaml: edit.base.yaml }, text: edit.text, cursor };
+}
+
+/**
+ * Why the open workflow view has no draft editor, as a sentence; null when it has one (a draft whose YAML the read model
+ * gives a person who may change it: the portal's workflowV2DraftEditor). Pure.
+ */
+export function workflowViewDraftRefusal(selection) {
+    const projection = selection?.projection ?? null;
+    if (projection?.draftEditor) return null;
+    const model = projection?.definitionModel ?? null;
+    const commands = isPlainRecord(model?.personCommands) ? model.personCommands : null;
+    const offered = Array.isArray(commands?.operations) && commands.operations.includes("replace_definition");
+    const viewer = isPlainRecord(commands?.viewer) ? commands.viewer : null;
+    const why = !isPlainRecord(model) ? "The workflow is not loaded yet."
+        : !commands ? "This deployment takes no workflow commands from people."
+            : model.definition?.state === "published" ? "The definition is published; it no longer changes. A new version needs a new workflow."
+                : model.definition?.state !== "draft" ? "The workflow has no draft."
+                    : !offered ? workflowV2RestrictionText(commands) ?? "This workflow takes no draft changes from people."
+                        : viewer?.allowed === false ? (typeof viewer.reason === "string" && viewer.reason ? viewer.reason : "You cannot command this workflow.")
+                            : "Its YAML is not given to you.";
+    return `The draft cannot be edited here. ${why}`;
+}
+
+/** The draft's place in the view's details: its revision and how to edit it, and an edit kept unsaved. */
+function draftLines(projection) {
+    const editor = projection.draftEditor;
+    if (!editor) return [];
+    const lines = [{ text: `Draft · revision ${editor.revision}${editor.semver ? ` · version ${editor.semver}` : ""} — e edits its YAML`, color: "cyan", indent: "" }];
+    if (projection.draftEdit?.changed) {
+        lines.push({ text: `Unsaved edits, started from revision ${projection.draftBuffer.base.revision}: e shows them`, color: "yellow", indent: "  " });
+    }
+    return lines;
+}
+
+/** The draft editor's line and column of character `cursor` of `text`. */
+function lineAndColumn(text, cursor) {
+    const before = text.slice(0, Math.max(0, Math.min(cursor, text.length)));
+    const line = before.split("\n").length - 1;
+    return { line, column: before.length - (before.lastIndexOf("\n") + 1) };
+}
+
+/**
+ * One editor row of at most `width` characters (the panel never wraps it, so a row is a line): the line, cut with "…"
+ * where it goes on; the cursor's line (`column`) is shown around the cursor, a cursor after its end being a blank cell,
+ * so a long line never hides it. A tab is one space.
+ */
+function editorRow(line, width, column = null) {
+    const text = line.replace(/\t/g, " ");
+    if (column === null) return text.length > width ? [{ text: text.slice(0, width - 1), color: "white" }, { text: "…", color: "gray" }] : [{ text, color: "white" }];
+    const cells = column < text.length ? text : `${text} `;
+    let start = 0;
+    let end = cells.length;
+    if (cells.length > width) {
+        // Room for "…" at either end; the cursor stays three quarters of the way across where the line goes on.
+        const room = width - 2;
+        start = Math.min(Math.max(0, column - Math.floor(room * 3 / 4)), cells.length - room);
+        end = start + room;
+    }
+    return [
+        ...(start > 0 ? [{ text: "…", color: "gray" }] : []),
+        { text: cells.slice(start, column), color: "white" },
+        { text: cells[column], color: "promptCursorForeground", backgroundColor: "promptCursorBackground" },
+        { text: cells.slice(column + 1, end), color: "white" },
+        ...(end < cells.length ? [{ text: "…", color: "gray" }] : []),
+    ];
+}
+
+/**
+ * The draft editor (TUI modal "workflowDraft"; the portal's draft editor as a terminal editor): the revision the edit
+ * started from, the version that cannot change, the YAML with line numbers and the cursor, and below it what the edit
+ * is (no unsaved edits, unsaved, in conflict with a newer revision, or why it cannot be saved), a save being sent or
+ * another command, the last save's refusal or lost answer, a just-saved revision the view has not read yet, and the
+ * current revision's compile diagnostics. Null unless the editor is open. Pure.
+ */
+export function selectWorkflowDraftModal(state, maxWidth = 100, viewportHeight = null) {
+    const modal = state?.ui?.modal;
+    if (!modal || modal.type !== "workflowDraft") return null;
+    const projection = workflowViewProjectionFor(state, modal.sessionId);
+    const editor = projection.draftEditor;
+    const buffer = projection.draftBuffer;
+    const width = Math.max(40, Number(maxWidth) || 100);
+    const contentWidth = width - 4;
+    const height = Number(viewportHeight ?? state?.ui?.layout?.viewportHeight) || 40;
+    const status = [];
+    const add = (text, color = "white", indent = "") => { for (const piece of wrapped(text, contentWidth, indent)) status.push({ text: piece, color }); };
+    const keys = hint => {
+        const hintLines = wrapped(hint, contentWidth).map(text => ({ text, color: "gray" }));
+        return { hint, hintLines, hintHeight: hintLines.length + 2 };
+    };
+    if (!editor || !buffer) {
+        add(workflowViewDraftRefusal({ projection }) ?? "The draft cannot be edited here.", "yellow");
+        return { title: "Draft", lines: [], editorHeight: 3, scrollOffset: 0, statusLines: status, statusHeight: Math.min(8, status.length + 2),
+            ...keys("Esc close"), idealWidth: width, changed: false };
+    }
+    const edit = projection.draftEdit;
+    const textLines = buffer.text.split("\n");
+    const gutter = String(textLines.length).length + 1;
+    const at = lineAndColumn(buffer.text, buffer.cursor);
+    const lines = textLines.map((line, index) => [{ text: `${String(index + 1).padStart(gutter - 1)} `, color: "gray" },
+        ...editorRow(line, Math.max(10, contentWidth - gutter), index === at.line ? at.column : null)]);
+    const editorHeight = Math.max(8, height - 16);
+    const rows = Math.max(1, editorHeight - 2);
+    const scrollOffset = Math.max(0, Math.min(at.line - Math.floor(rows / 2), Math.max(0, lines.length - rows)));
+    // A revision this person just saved, which the read model does not show yet.
+    const unread = buffer.base.revision > editor.revision;
+    if (edit.conflict) add(edit.reason, "yellow");
+    else if (edit.changed) add(edit.reason ?? `Unsaved edits. ctrl-o saves them as a new revision after revision ${buffer.base.revision}.`, edit.reason ? "red" : "yellow");
+    else add("No unsaved edits.", "gray");
+    if (editor.pending) add("Saving…", "yellow");
+    else if (editor.busy) add("Another command for this workflow is being sent; a save waits for its answer.", "gray");
+    const notice = projection.runNotice?.operation === "replace_definition" ? projection.runNotice : null;
+    if (notice) {
+        add(`! ${notice.text}`, notice.level === "error" ? "red" : "yellow");
+        if (notice.retry) add("ctrl-o sends the same save again; the server applies it once.", "gray");
+    }
+    if (unread) add(`Saved as revision ${buffer.base.revision}; the view has not read it yet.`, "gray");
+    const diagnostics = (projection.v2?.diagnostics || []).filter(item => item && typeof item === "object");
+    if (diagnostics.length && editor.current && !unread) {
+        const errors = diagnostics.filter(item => item.severity !== "warning").length;
+        add(`Revision ${editor.revision}: ${errors} error${errors === 1 ? "" : "s"}${diagnostics.length > errors ? `, ${diagnostics.length - errors} warning${diagnostics.length - errors === 1 ? "" : "s"}` : ""}.`,
+            errors ? "red" : "yellow");
+        for (const item of diagnostics.slice(0, 5)) {
+            add(`${item.severity} ${item.code}${item.path ? ` · ${item.path}` : ""}${Number.isSafeInteger(item.line) ? ` · line ${item.line}` : ""}: ${item.message}`,
+                item.severity === "warning" ? "yellow" : "red", "  ");
+        }
+        if (diagnostics.length > 5) add(`… ${diagnostics.length - 5} more`, "gray", "  ");
+    }
+    return {
+        title: `Draft · editing revision ${buffer.base.revision}${editor.semver ? ` · version ${editor.semver} (it cannot change)` : ""} · line ${at.line + 1}, column ${at.column + 1}`,
+        lines, editorHeight, scrollOffset, statusLines: status, statusHeight: Math.max(3, Math.min(10, status.length + 2)),
+        ...keys(edit.conflict
+            ? `ctrl-r load revision ${editor.revision} (asks first) · ctrl-k keep my edits on revision ${editor.revision} · Esc close (edits kept)`
+            : "ctrl-o save · ctrl-r discard edits (asks first) · Enter new line · Tab two spaces · Esc close (edits kept)"),
+        idealWidth: width, changed: Boolean(edit.changed),
+    };
+}
+
 /** `text` in lines of at most `limit` characters, broken at spaces; each starts with `indent`, a continuation with two more. */
 function wrapped(text, limit, indent = "") {
     const out = [];
@@ -485,7 +653,7 @@ function detailLines(selection, width) {
     }
     // The run controls, their notice and the variables are wrapped, not cut (a reason or a refusal is read whole); a
     // variable's value is cut to one line.
-    for (const line of [...runControlLines(projection), ...runVariableLines(projection)]) {
+    for (const line of [...runControlLines(projection), ...runVariableLines(projection), ...draftLines(projection)]) {
         if (line.clip) add(`${line.indent}${line.text}`, line.color);
         else for (const text of wrapped(line.text, Math.max(20, width), line.indent)) add(text, line.color);
     }

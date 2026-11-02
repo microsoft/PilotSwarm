@@ -3,7 +3,7 @@ import { workflowDefinition } from "./workflow-view.js";
 import {
     normalizeWorkflowInputPolicy, selectWorkflowInputNote, selectWorkflowViewModal, selectWorkflowViewSelection, workflowInputPolicyApplies,
     workflowViewDefaultNode, workflowViewNodes, workflowViewPanelWidth, workflowViewProjectionFor, workflowViewRunControlFor,
-    workflowViewVariablesFor,
+    workflowViewDraftRefusal, workflowViewVariablesFor,
 } from "./workflow-tui.js";
 import {
     workflowV2CommandNamesRun, workflowV2RunCommandAccepted, workflowV2RunCommandArgs, workflowV2RunCommandConfirm, workflowV2RunCommandFailure,
@@ -6610,6 +6610,156 @@ export class PilotSwarmUiController {
         }
     }
 
+    /**
+     * The TUI's workflow view: open the draft editor (e; design 04
+     * replace_definition; mocks M01, M02; R03, R17, R26; INACTIVE: only a
+     * draft whose YAML the read model gives a person who may change it, the
+     * portal's workflowV2DraftEditor) on the edit the view keeps, or on the
+     * current revision; otherwise the status line says why. It returns to the
+     * view. Nothing is sent.
+     */
+    openWorkflowDraftEditor() {
+        const state = this.getState();
+        const selection = selectWorkflowViewSelection(state);
+        if (!selection) return;
+        const refusal = workflowViewDraftRefusal(selection);
+        if (refusal) {
+            this.dispatch({ type: "ui/status", text: refusal });
+            return;
+        }
+        this.dispatch({ type: "ui/modal", modal: { type: "workflowDraft", sessionId: selection.modal.sessionId, returnModal: selection.modal,
+            previousFocus: state.ui.focusRegion } });
+        this.dispatch({ type: "ui/status", text: "Draft editor — ctrl-o save · ctrl-r discard edits · Esc close (edits kept)" });
+    }
+
+    /** The open draft editor's session, editor model, effective edit and what that edit is; null when it is not open or has no draft. */
+    workflowDraftContext() {
+        const state = this.getState();
+        const modal = state.ui.modal;
+        if (!modal || modal.type !== "workflowDraft") return null;
+        const projection = workflowViewProjectionFor(state, modal.sessionId);
+        if (!projection.draftEditor || !projection.draftBuffer || !projection.draftEdit) return null;
+        return { sessionId: modal.sessionId, modal, editor: projection.draftEditor, buffer: projection.draftBuffer, edit: projection.draftEdit };
+    }
+
+    /**
+     * The draft editor: type into the YAML at the cursor (`insert`: a pasted
+     * CR or CRLF is a new line; Enter is "\n" and Tab two spaces), delete
+     * backward (`backspace`), or move the cursor (`move`: `chars`, or `lines`
+     * keeping the column; `edge`: the line's start or end). The edit is kept
+     * in the view, so closing the editor loses nothing.
+     */
+    editWorkflowDraft(action = {}) {
+        const context = this.workflowDraftContext();
+        if (!context) return;
+        const { buffer } = context;
+        let text = buffer.text;
+        let cursor = buffer.cursor;
+        if (action.type === "insert") {
+            const inserted = insertPromptTextAtCursor(text, cursor, String(action.text ?? "").replace(/\r\n?/g, "\n"));
+            text = inserted.prompt;
+            cursor = inserted.cursor;
+        } else if (action.type === "backspace") {
+            const deleted = deletePromptCharBackward(text, cursor);
+            text = deleted.prompt;
+            cursor = deleted.cursor;
+        } else if (action.type === "move") {
+            const position = getPromptCursorPosition(text, cursor);
+            cursor = Number(action.lines)
+                ? getPromptCursorIndex(text, position.line + Number(action.lines), position.column)
+                : clampPromptCursor(text, cursor + (Number(action.chars) || 0));
+        } else if (action.type === "edge") {
+            const position = getPromptCursorPosition(text, cursor);
+            cursor = getPromptCursorIndex(text, position.line, action.edge === "start" ? 0 : Number.MAX_SAFE_INTEGER);
+        } else {
+            return;
+        }
+        this.dispatch({ type: "ui/workflowView", sessionId: context.sessionId, view: { draftEdit: { base: buffer.base, text, cursor } } });
+    }
+
+    /**
+     * The draft editor: save the edit (ctrl-o) as one replace_definition at
+     * the revision it started from, as the portal's editor saves it
+     * (sendWorkflowRunCommand), when workflowV2DraftEdit says it can be
+     * saved; otherwise the status line says why (nothing changed, empty, too
+     * large, a newer revision, a command being sent). Accepted: the edit now
+     * starts from the new revision and the editor stays open (the workflow is
+     * read again; a revision with compile errors shows them). Refused or
+     * unanswered: the edit stays, with the reason in the editor and on the
+     * status line; a newer revision (409) also reads the workflow again. The
+     * server decides every save again. Never throws.
+     */
+    async saveWorkflowDraft() {
+        const context = this.workflowDraftContext();
+        if (!context) return { ok: false, reason: "closed" };
+        const { sessionId, editor, buffer, edit } = context;
+        if (!edit.canSave) {
+            this.dispatch({ type: "ui/status", text: edit.reason
+                ?? (editor.pending ? "The draft is being saved; wait for its answer" : "Another command for this workflow is being sent.") });
+            return { ok: false, reason: "invalid" };
+        }
+        const result = await this.sendWorkflowRunCommand(sessionId, { operation: "replace_definition", expectedRevision: buffer.base.revision,
+            yaml: buffer.text });
+        if (result.ok && Number.isSafeInteger(result.receipt?.revision)) {
+            // The saved text is the new revision's YAML; what was typed while it was sent stays, on that revision.
+            const kept = this.getState().ui.workflowViews?.[sessionId]?.draftEdit;
+            const text = typeof kept?.text === "string" ? kept.text : buffer.text;
+            const cursor = Number.isSafeInteger(kept?.cursor) ? kept.cursor : buffer.cursor;
+            this.dispatch({ type: "ui/workflowView", sessionId, view: { draftEdit: {
+                base: { revision: result.receipt.revision, yaml: buffer.text }, text, cursor } } });
+        } else if (result.reason === "failed" || result.reason === "unconfirmed") {
+            const notice = workflowV2RunCommandNotice(this.getState().ui.workflowViews?.[sessionId]?.runCommand);
+            if (notice) this.dispatch({ type: "ui/status", text: notice.text });
+        }
+        return result;
+    }
+
+    /**
+     * The draft editor: discard the edit (ctrl-r), as the portal's editor
+     * does: the text goes back to the revision it started from, or, in a
+     * conflict, the newer revision is loaded instead. An edit with changes
+     * asks first, in the confirm dialog, which returns to the editor. Nothing
+     * is sent.
+     */
+    discardWorkflowDraftEdits({ confirmed = false } = {}) {
+        const context = this.workflowDraftContext();
+        if (!context) return;
+        const { sessionId, editor, buffer, edit, modal } = context;
+        if (editor.pending) {
+            this.dispatch({ type: "ui/status", text: "The draft is being saved; wait for its answer" });
+            return;
+        }
+        const target = edit.conflict ? { revision: editor.revision, yaml: editor.yaml } : buffer.base;
+        if (!confirmed && (edit.changed || edit.conflict)) {
+            this.dispatch({ type: "ui/modal", modal: { type: "confirm", title: edit.conflict ? `Load Revision ${target.revision}` : "Discard Draft Edits",
+                confirmLabel: edit.conflict ? "Load" : "Discard",
+                message: `Discard your edits and show revision ${target.revision} as it is saved? Nothing is sent, and no saved revision changes.`,
+                action: "discardWorkflowDraftEdits", returnModal: modal, previousFocus: this.getState().ui.focusRegion } });
+            return;
+        }
+        this.dispatch({ type: "ui/workflowView", sessionId, view: { draftEdit: { base: { revision: target.revision, yaml: target.yaml },
+            text: target.yaml, cursor: Math.min(buffer.cursor, target.yaml.length) } } });
+        this.dispatch({ type: "ui/status", text: `Showing revision ${target.revision} as it is saved` });
+    }
+
+    /** The draft editor, in a conflict: keep the edit on the newer revision (ctrl-k); saving then makes a revision after that one. */
+    keepWorkflowDraftEdits() {
+        const context = this.workflowDraftContext();
+        if (!context) return;
+        const { sessionId, editor, edit, buffer } = context;
+        if (editor.pending) {
+            this.dispatch({ type: "ui/status", text: "The draft is being saved; wait for its answer" });
+            return;
+        }
+        if (!edit.conflict) {
+            this.dispatch({ type: "ui/status", text: "There is no newer revision to move your edits onto" });
+            return;
+        }
+        this.dispatch({ type: "ui/workflowView", sessionId, view: { draftEdit: {
+            base: { revision: editor.revision, yaml: editor.yaml }, text: buffer.text, cursor: buffer.cursor } } });
+        this.dispatch({ type: "ui/status", text: `Your edits now apply to revision ${editor.revision}; ctrl-o saves them as a new revision after it` });
+    }
+
     /** The TUI's workflow view: clear the notice about its last run command (nothing is sent or undone). */
     dismissWorkflowViewRunCommand() {
         const selection = selectWorkflowViewSelection(this.getState());
@@ -9578,13 +9728,16 @@ export class PilotSwarmUiController {
     closeModal() {
         const modal = this.getState().ui.modal;
         if (!modal) return;
-        // A confirm opened from the TUI's workflow view or its variables form returns to it, and its command was not sent; the
-        // variables form returns to the view.
-        if (modal.returnModal && (modal.type === "confirm" || modal.type === "workflowVariable")) {
+        // A confirm opened from the TUI's workflow view, its variables form or its draft editor returns to it, and what it
+        // asked about was not done; the variables form and the draft editor return to the view (the draft's edit is kept).
+        if (modal.returnModal && ["confirm", "workflowVariable", "workflowDraft"].includes(modal.type)) {
             this.dispatch({ type: "ui/modal", modal: modal.returnModal });
             const operation = modal.type === "confirm" ? modal.workflowRunCommand?.operation : null;
             const label = operation === "stop" ? "Stop" : operation === "cancel" ? "Cancel" : operation === "set_vars" ? "The removal" : "The command";
-            this.dispatch({ type: "ui/status", text: modal.type === "confirm" ? `${label} was not sent` : "Back to the workflow view" });
+            const unsaved = modal.type === "workflowDraft" && workflowViewProjectionFor(this.getState(), modal.sessionId).draftEdit?.changed;
+            this.dispatch({ type: "ui/status", text: modal.type === "workflowVariable" ? "Back to the workflow view"
+                : modal.type === "workflowDraft" ? (unsaved ? "Closed the draft editor; your unsaved edits are kept (e shows them)" : "Closed the draft editor")
+                    : modal.action === "discardWorkflowDraftEdits" ? "Your edits are kept" : `${label} was not sent` });
             return;
         }
         this.dispatch({ type: "ui/modal", modal: null });
@@ -9819,6 +9972,8 @@ export class PilotSwarmUiController {
                 await this.deleteMarkedArtifacts({ confirmed: true });
             } else if (modal.action === "deleteAdminProvider") {
                 await this.deleteSelectedAdminProvider();
+            } else if (modal.action === "discardWorkflowDraftEdits") {
+                this.discardWorkflowDraftEdits({ confirmed: true });
             } else if (modal.action === "workflowRunCommand") {
                 const { sessionId, ...command } = modal.workflowRunCommand || {};
                 const result = await this.sendWorkflowRunCommand(sessionId, { ...command, confirmed: true });
@@ -12704,6 +12859,18 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.WORKFLOW_VARIABLE_REMOVE:
                 await this.submitWorkflowVariable({ remove: true });
+                return;
+            case UI_COMMANDS.WORKFLOW_VIEW_EDIT_DRAFT:
+                this.openWorkflowDraftEditor();
+                return;
+            case UI_COMMANDS.WORKFLOW_DRAFT_SAVE:
+                await this.saveWorkflowDraft();
+                return;
+            case UI_COMMANDS.WORKFLOW_DRAFT_DISCARD:
+                this.discardWorkflowDraftEdits();
+                return;
+            case UI_COMMANDS.WORKFLOW_DRAFT_KEEP:
+                this.keepWorkflowDraftEdits();
                 return;
             case UI_COMMANDS.SEQUENCE_SELECT_PREV:
                 this.moveSequenceSelection(-1);

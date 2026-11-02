@@ -28,6 +28,7 @@ import {
     selectWorkflowCreateModal,
     selectWorkflowViewModal,
     selectWorkflowVariableModal,
+    selectWorkflowDraftModal,
     selectWorkflowInputNote,
     workflowViewPanelWidth,
     selectSessionAgentPickerModal,
@@ -1920,6 +1921,91 @@ function WorkflowVariableModalContainer({ controller }) {
     return React.createElement(WorkflowVariableModal, { state: selectorState });
 }
 
+/**
+ * Workflow sessions (TUI): the draft editor (selectWorkflowDraftModal): the YAML with line numbers and the cursor, the
+ * revision the edit started from (the border turns yellow with unsaved edits), and below it what the edit is, the last
+ * save's refusal and the current revision's diagnostics. ctrl-o saves, ctrl-r discards the edit (asking first), Esc
+ * closes (the edit is kept).
+ */
+export function WorkflowDraftModal({ state }) {
+    const platform = useUiPlatform();
+    const viewport = typeof platform.getViewport === "function"
+        ? platform.getViewport()
+        : { width: 120, height: 40 };
+    const width = workflowViewPanelWidth(viewport.width);
+    const modal = selectWorkflowDraftModal(state, width, viewport.height);
+    if (!modal) return null;
+    return React.createElement(platform.Overlay, null,
+        React.createElement(platform.Column, { width },
+            React.createElement(platform.Panel, {
+                title: modal.title,
+                color: modal.changed ? "yellow" : "cyan",
+                focused: false,
+                width,
+                height: modal.editorHeight,
+                lines: modal.lines,
+                scrollOffset: modal.scrollOffset,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Panel, {
+                title: "Draft",
+                color: "cyan",
+                focused: false,
+                width,
+                height: modal.statusHeight,
+                lines: modal.statusLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                marginBottom: 1,
+                fillColor: "surface",
+            }),
+            React.createElement(platform.Panel, {
+                title: "Keys",
+                color: "cyan",
+                focused: false,
+                width,
+                height: modal.hintHeight,
+                lines: modal.hintLines,
+                scrollOffset: 0,
+                scrollMode: "top",
+                fillColor: "surface",
+            }),
+        ));
+}
+
+function WorkflowDraftModalContainer({ controller }) {
+    const state = useControllerSelector(controller, (rootState) => {
+        const modal = rootState.ui.modal;
+        const sessionId = modal?.type === "workflowDraft" ? modal.sessionId : null;
+        return {
+            modal,
+            layout: rootState.ui.layout,
+            session: sessionId ? rootState.sessions.byId[sessionId] || null : null,
+            history: sessionId ? rootState.history.bySessionId.get(sessionId) || null : null,
+            view: sessionId ? rootState.ui.workflowViews?.[sessionId] || null : null,
+            canvas: sessionId ? rootState.canvas?.bySessionId?.[sessionId] || null : null,
+        };
+    }, shallowEqualObject);
+    const sessionId = state.modal?.type === "workflowDraft" ? state.modal.sessionId : null;
+    const events = state.history?.events || EMPTY_WORKFLOW_EVENTS;
+    const sessionUpdatedAt = state.session?.updatedAt ?? null;
+    // While the editor is open, new events or a changed session row read the workflow again: a revision saved elsewhere
+    // shows as a conflict, never under the edit.
+    React.useEffect(() => {
+        if (sessionId) controller.ensureWorkflowDefinition(sessionId).catch(() => {});
+    }, [controller, sessionId, events, sessionUpdatedAt]);
+    if (!sessionId) return null;
+    const selectorState = {
+        ui: { modal: state.modal, layout: state.layout, workflowViews: state.view ? { [sessionId]: state.view } : {} },
+        sessions: { byId: state.session ? { [sessionId]: state.session } : {} },
+        history: { bySessionId: new Map(state.history ? [[sessionId, state.history]] : []) },
+        canvas: { bySessionId: state.canvas ? { [sessionId]: state.canvas } : {} },
+    };
+    return React.createElement(WorkflowDraftModal, { state: selectorState });
+}
+
 function ArtifactPickerModalContainer({ controller }) {
     const state = useControllerSelector(controller, (rootState) => ({
         ui: {
@@ -2775,6 +2861,7 @@ export function SharedPilotSwarmApp({ controller, versionLabel = null }) {
         React.createElement(HelpModalContainer, { controller }),
         React.createElement(WorkflowViewModalContainer, { controller }),
         React.createElement(WorkflowVariableModalContainer, { controller }),
+        React.createElement(WorkflowDraftModalContainer, { controller }),
         React.createElement(ModelPickerModalContainer, { controller }),
         React.createElement(ReasoningEffortPickerModalContainer, { controller }),
         React.createElement(ContextTierPickerModalContainer, { controller }),

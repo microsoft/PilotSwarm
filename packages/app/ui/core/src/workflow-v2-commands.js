@@ -79,6 +79,10 @@ function keyNames(keys) {
 }
 
 /** Why a workflow in a workflow agent state's subtree takes only a person's brakes, naming its controlling agent, or null. */
+export function workflowV2RestrictionText(commands) {
+    return isRecord(commands) ? restrictionText(commands) : null;
+}
+
 function restrictionText(commands) {
     if (!isRecord(commands.restriction)) return null;
     const reason = text(commands.restriction.reason) ?? "This workflow runs in a workflow agent state's subtree: people can only pause, stop or cancel it.";
