@@ -7,13 +7,15 @@ import { assertJsonValue, isJsonObject, type JsonValue } from "./json.js";
  *
  * Roots: `inputs` (static run inputs), `input` (the value arriving at the
  * node: the predecessor's output, or its runtime error envelope on an error
- * route), `kv` (the pinned KV snapshot) and `runtime` (`runtime.error`).
+ * route), `kv` (the pinned KV snapshot), `runtime` (`runtime.error`) and,
+ * only in a parallel state's body (the compiler refuses it elsewhere),
+ * `branch` (`branch.item` and `branch.index` of the branch).
  * Segments: `.name`, `[index]` or `["any key"]` (a JSON string, so any open
  * KV key can be named). The operator `??` and a nested `${` count only
  * outside JSON strings: a quoted key or a string default may contain them.
  */
 
-export const BINDING_ROOTS = ["inputs", "input", "kv", "runtime"] as const;
+export const BINDING_ROOTS = ["inputs", "input", "kv", "runtime", "branch"] as const;
 export type BindingRoot = typeof BINDING_ROOTS[number];
 
 function isBindingRoot(value: string | undefined): value is BindingRoot {
@@ -32,6 +34,8 @@ export interface BindingScope {
     input: JsonValue;
     kv: JsonValue;
     runtime: JsonValue;
+    /** A parallel branch's `{ item, index }`; absent (null) outside a branch. */
+    branch?: JsonValue;
 }
 
 export class WorkflowBindingError extends Error {
@@ -165,7 +169,7 @@ export function validateBindingTemplate(template: unknown, path: string): JsonVa
 }
 
 function resolvePath(scope: BindingScope, expression: BindingExpression, path: string): JsonValue {
-    let current: JsonValue = scope[expression.root];
+    let current: JsonValue = scope[expression.root] ?? null;
     for (const segment of expression.segments) {
         if (typeof segment === "number") {
             if (Array.isArray(current) && segment < current.length) { current = current[segment]; continue; }
@@ -177,6 +181,20 @@ function resolvePath(scope: BindingScope, expression: BindingExpression, path: s
         throw new WorkflowBindingError(`could not resolve '${String(segment)}' of ${expression.root}`, path);
     }
     return current;
+}
+
+/** The roots a template's expressions use (a plain value uses none). */
+export function bindingRootsOf(template: unknown, path = "$"): Set<BindingRoot> {
+    const roots = new Set<BindingRoot>();
+    const visit = (value: unknown, at: string): void => {
+        if (typeof value === "string") {
+            const expression = parseBindingExpression(value, at);
+            if (expression) roots.add(expression.root);
+        } else if (Array.isArray(value)) value.forEach((item, index) => visit(item, `${at}[${index}]`));
+        else if (isJsonObject(value)) for (const [key, item] of Object.entries(value)) visit(item, `${at}.${key}`);
+    };
+    visit(template, path);
+    return roots;
 }
 
 /** Evaluate a template against a scope. Throws WorkflowBindingError on an unresolved path without default. */

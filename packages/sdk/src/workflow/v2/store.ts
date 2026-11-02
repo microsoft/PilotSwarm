@@ -1725,10 +1725,13 @@ export class WorkflowStore {
      * fails. A message to an agent session stays pending: an attempt may be
      * queuing it, and records it if so.
      */
-    private async decidePendingSendsIn(client: PoolClient, workflowSessionId: string, runId: string): Promise<void> {
+    private async decidePendingSendsIn(client: PoolClient, workflowSessionId: string, runId: string, onlyNodes: string[] | null = null): Promise<void> {
+        // `onlyNodes`: only the messages of these node executions (a parallel state's cancelled branches); null: every one of the run.
         const { rows } = await client.query(
             `SELECT ${OUTBOX_COLUMNS} FROM ${this.t.outbox}
-              WHERE run_id = $1 AND mode = 'send' AND state = 'pending' AND recipient_kind = 'workflow' ORDER BY exchange_id FOR UPDATE`, [runId]);
+              WHERE run_id = $1 AND mode = 'send' AND state = 'pending' AND recipient_kind = 'workflow'
+                AND ($2::text[] IS NULL OR node_execution_id = ANY($2::text[]))
+              ORDER BY exchange_id FOR UPDATE`, [runId, onlyNodes]);
         for (const row of rows) {
             const message = outboxFrom(row);
             const node = await this.nodeIn(client, message.nodeExecutionId);
@@ -3019,10 +3022,13 @@ export class WorkflowStore {
         });
     }
 
-    /** Whether a run has a node execution that still awaits its result. */
+    /**
+     * Whether a run has work that still awaits its result: a pending node execution other than a parallel state's own
+     * (IR 8), which waits on its branches' node executions and is not work.
+     */
     async hasPendingNodes(runId: string): Promise<boolean> {
         const { rows } = await this.pool.query(
-            `SELECT EXISTS (SELECT 1 FROM ${this.t.nodes} WHERE run_id = $1 AND state = 'pending') AS pending`, [runId]);
+            `SELECT EXISTS (SELECT 1 FROM ${this.t.nodes} WHERE run_id = $1 AND state = 'pending' AND node_type <> 'parallel') AS pending`, [runId]);
         return rows[0]?.pending === true;
     }
 
@@ -3267,8 +3273,11 @@ export class WorkflowStore {
     }
 
     /** Node executions of a run whose stored result is the run's cancellation. */
-    /** The node executions of a run decided by a cancel (winner `cancel`), or by another such end (a stop's: `stop`). */
-    async listCancelledNodeIds(runId: string, winner: "cancel" | "stop" = "cancel"): Promise<string[]> {
+    /**
+     * The node executions of a run decided by a cancel (winner `cancel`), or by another such end (a stop's: `stop`; a
+     * parallel state's failFast cancellation of its other branches: `fail_fast`).
+     */
+    async listCancelledNodeIds(runId: string, winner: "cancel" | "stop" | "fail_fast" = "cancel"): Promise<string[]> {
         const { rows } = await this.pool.query(
             `SELECT node_execution_id FROM ${this.t.nodes} WHERE run_id = $1 AND winner = $2 ORDER BY node_execution_id`, [runId, winner]);
         return rows.map(row => str(row, "node_execution_id"));
@@ -5343,9 +5352,11 @@ export class WorkflowStore {
      * End a stopping run stopped (migration 0096; its controller, 1.9.0,
      * asks): in one transaction under the session and run locks, with one
      * reading of the store's clock, kept as exact SQL text, deciding. When no
-     * node execution of the run is pending, or that reading is at or after
+     * work of the run is pending (a parallel state's own node execution waits
+     * on its branches and is not work), or that reading is at or after
      * the stop's deadline, the run ends stopped: every node execution still
-     * pending is cancelled with winner `stop` (the grace expired), a message
+     * pending is cancelled with winner `stop` (the grace expired when work was
+     * still pending), a message
      * one of its send states sent to a workflow and still pending is decided
      * with it (decidePendingSendsIn), and the run's terminal error records
      * the stop (code stopped, its request, whether the grace expired, and
@@ -5371,18 +5382,23 @@ export class WorkflowStore {
                         GREATEST(1, CEIL(EXTRACT(EPOCH FROM (run.stop_deadline_at - reading.at)) * 1000))::bigint AS remaining_ms
                    FROM (SELECT clock_timestamp() AS at) AS reading, ${this.t.runs} AS run WHERE run.run_id = $1`, [run.runId]);
             const at = str(clock[0], "at");
+            // A parallel state (IR 8) waits on its branches' node executions, not on work of its own: it neither holds the
+            // stop past their settling nor counts as an expired grace; it is cancelled with what is pending when the run ends.
             const { rows: pendingRows } = await client.query(
-                `SELECT node_execution_id FROM ${this.t.nodes} WHERE run_id = $1 AND state = 'pending' ORDER BY node_execution_id FOR UPDATE`, [run.runId]);
+                `SELECT node_execution_id, node_type FROM ${this.t.nodes} WHERE run_id = $1 AND state = 'pending' ORDER BY node_execution_id FOR UPDATE`, [run.runId]);
             const cancelled = pendingRows.map(row => str(row, "node_execution_id"));
-            if (cancelled.length > 0 && clock[0].due !== true) return { result: "not_due" as const, remainingMs: int(clock[0], "remaining_ms") };
-            const graceExpired = cancelled.length > 0;
-            if (graceExpired) {
+            const working = pendingRows.filter(row => str(row, "node_type") !== "parallel").length;
+            if (working > 0 && clock[0].due !== true) return { result: "not_due" as const, remainingMs: int(clock[0], "remaining_ms") };
+            const graceExpired = working > 0;
+            if (cancelled.length > 0) {
                 await client.query(
                     `UPDATE ${this.t.nodes}
-                        SET state = 'completed', outcome = 'cancelled', result_kind = 'runtime_error', error = $2, output = NULL,
+                        SET state = 'completed', outcome = 'cancelled', result_kind = 'runtime_error',
+                            error = CASE WHEN node_type = 'parallel' THEN $4 ELSE $2 END, output = NULL,
                             winner = 'stop', completed_at = $3::timestamptz
                       WHERE run_id = $1 AND state = 'pending'`,
-                    [run.runId, canonicalJson({ code: "cancelled", message: "The run's stop ended its grace period before this state finished." }), at]);
+                    [run.runId, canonicalJson({ code: "cancelled", message: "The run's stop ended its grace period before this state finished." }), at,
+                        canonicalJson({ code: "cancelled", message: "The run stopped before this parallel state joined its branches." })]);
             }
             const stop = run.stop;
             const errorText = canonicalJson({ code: "stopped", message: jsonbSafeText(stop.reason ?? "Stopped", 4_000), details: {
@@ -5400,6 +5416,49 @@ export class WorkflowStore {
             const ended = { run: runFrom(rows[0]), graceExpired, cancelled };
             await this.project(client, input.projection(ended));
             return { result: "ended" as const, ...ended };
+        });
+    }
+
+    /**
+     * Cancel the other branches of a parallel state whose failFast policy
+     * met a branch that did not succeed (controller 1.9.0; IR 8): in one
+     * transaction under the session and run locks, every node execution of
+     * these branch scopes still pending is decided cancelled (winner
+     * `fail_fast`), and a message one of their send states sent to a workflow
+     * and still pending is decided with it (decidePendingSendsIn). A result
+     * that won its node's compare-and-swap first stands. Returns every node
+     * execution of these scopes that a failFast cancellation decided, this
+     * call's and an earlier attempt's, so a retry still asks their effects to
+     * stop. A run that has ended, or whose session was deleted, changes
+     * nothing here: its end decided what was pending.
+     */
+    async cancelBranchScopes(input: { runId: string; scopeIds: string[]; projection?: (cancelled: string[]) => SessionProjection })
+        : Promise<{ active: boolean; cancelled: Array<{ nodeExecutionId: string; nodeType: string }> }> {
+        return this.transaction(async client => {
+            const workflowSessionId = await this.workflowOfRun(client, input.runId);
+            const live = await this.lockLiveSession(client, workflowSessionId);
+            const run = await this.lockRun(client, input.runId);
+            const active = live && ACTIVE_RUN_STATUSES.includes(run.status);
+            if (active && input.scopeIds.length > 0) {
+                const { rows: decided } = await client.query(
+                    `UPDATE ${this.t.nodes}
+                        SET state = 'completed', outcome = 'cancelled', result_kind = 'runtime_error', error = $3, output = NULL,
+                            winner = 'fail_fast', completed_at = clock_timestamp()
+                      WHERE run_id = $1 AND scope_id = ANY($2::text[]) AND state = 'pending'
+                      RETURNING node_execution_id`,
+                    [input.runId, input.scopeIds,
+                        canonicalJson({ code: "cancelled", message: "Another branch of this parallel state did not succeed, and its failFast policy cancelled this branch." })]);
+                const now = decided.map(row => str(row, "node_execution_id")).sort();
+                if (now.length > 0) {
+                    await this.decidePendingSendsIn(client, workflowSessionId, input.runId, now);
+                    await this.project(client, input.projection?.(now));
+                }
+            }
+            const { rows } = await client.query(
+                `SELECT node_execution_id, node_type FROM ${this.t.nodes}
+                  WHERE run_id = $1 AND scope_id = ANY($2::text[]) AND winner = 'fail_fast' ORDER BY node_execution_id`,
+                [input.runId, input.scopeIds]);
+            return { active, cancelled: rows.map(row => ({ nodeExecutionId: str(row, "node_execution_id"), nodeType: str(row, "node_type") })) };
         });
     }
 }

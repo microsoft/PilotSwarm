@@ -83,12 +83,12 @@ function notifyVersionFor(host: Pick<WorkflowV2Host, "requests">): string {
     return host.requests === true ? WORKFLOW_V2_TAGGED_ORCHESTRATION_VERSION : WORKFLOW_V2_NOTIFY_VERSION;
 }
 
-/** A definition as a host compiles it (WorkflowV2Host.requests). */
+/** A definition as a host compiles it (WorkflowV2Host.requests): a host that starts 1.9.0 runs compiles request, agent and parallel states. */
 function compileFor(host: Pick<WorkflowV2Host, "requests">, yaml: string): WorkflowCompileResult {
-    return compileWorkflowV2(yaml, host.requests === true ? { enableRequests: true, enableAgents: true } : {});
+    return compileWorkflowV2(yaml, host.requests === true ? { enableRequests: true, enableAgents: true, enableParallel: true } : {});
 }
 
-/** How a host reads stored IR: a host that starts 1.9.0 runs reads its request and agent states (IR 7 and 8). */
+/** How a host reads stored IR: a host that starts 1.9.0 runs reads its request, agent and parallel states (IR 7 and 8). */
 function irOptionsFor(host: Pick<WorkflowV2Host, "requests">): { maxIrVersion?: number } {
     return host.requests === true ? { maxIrVersion: WORKFLOW_V2_MILESTONE_IR_VERSION } : {};
 }

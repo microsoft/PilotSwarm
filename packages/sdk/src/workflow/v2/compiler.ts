@@ -1,5 +1,5 @@
 import { parseDocument } from "yaml";
-import { parseBindingExpression, validateBindingTemplate, WorkflowBindingError } from "./bindings.js";
+import { bindingRootsOf, parseBindingExpression, validateBindingTemplate, WorkflowBindingError } from "./bindings.js";
 import { canonicalJson, isJsonObject, isStorableText, sha256Hex, WorkflowJsonError, type JsonValue } from "./json.js";
 import { normalizeSchema, SCHEMA_NAME_PATTERN, schemaReferences, WorkflowSchemaError, WorkflowSchemaSet } from "./schema.js";
 
@@ -36,9 +36,11 @@ export const WORKFLOW_V2_KIND = "Workflow";
  *   A reader takes it only when asked to (parseWorkflowIr's maxIrVersion):
  *   a build that does not run request states refuses it explicitly and
  *   never reads it as version 6.
- * - 8: version 7 plus agent states (WORKFLOW_V2_AGENT_IR_VERSION), written
- *   only for a workflow that has one and only when agents are enabled
- *   (WorkflowCompileOptions; INACTIVE: only controller 1.9.0 runs them). A
+ * - 8: version 7 plus agent states and parallel states
+ *   (WORKFLOW_V2_AGENT_IR_VERSION), written only for a workflow that has one
+ *   of them and only when they are enabled (WorkflowCompileOptions;
+ *   INACTIVE: only controller 1.9.0 runs them). A parallel state's body
+ *   states are in `nodes` with the others, named by its `body.states`. A
  *   reader takes it only when asked to, as version 7.
  */
 export const WORKFLOW_V2_IR_VERSION = 3;
@@ -62,6 +64,13 @@ export const MESSAGE_SENT = "sent";
 /** A request state's business outcomes: an accepted response, or the responder's declared refusal. */
 export const REQUEST_RESPONDED = "responded";
 export const REQUEST_DECLINED = "declined";
+/** A parallel state's business outcomes: every branch succeeded, or not (design 02 parallel scope and join; D10). */
+export const PARALLEL_JOINED = "joined";
+export const PARALLEL_BLOCKED = "blocked";
+/** The most branches one parallel state runs (its manifest's items). */
+export const WORKFLOW_V2_PARALLEL_MAX_ITEMS = 64;
+/** The most branches of one parallel state that are active at once. */
+export const WORKFLOW_V2_PARALLEL_MAX_CONCURRENCY = 16;
 /** The largest inline task prompt of an agent state, in UTF-8 bytes. */
 export const AGENT_PROMPT_MAX_BYTES = 32 * 1024;
 /** The runtime error codes an agent state's agent may report itself (complete_workflow_node), apart from its business outcomes. */
@@ -250,6 +259,38 @@ export interface WorkflowIRAgent {
     next: Record<string, string>;
 }
 
+/**
+ * A parallel state (IR 8; INACTIVE): its manifest (`forEach`, evaluated once
+ * on entry and frozen as the state's input; a JSON array of at most
+ * WORKFLOW_V2_PARALLEL_MAX_ITEMS items) runs one branch per item through
+ * its body, at most `concurrency` at a time. A branch starts at the body's
+ * initial state with its item as input (`branch.item` and `branch.index` in
+ * its bindings) and ends at a body terminal. The join is all_required: when
+ * every branch ended, the state's outcome is `joined` (every branch ended
+ * succeeded; its output is their outputs in manifest order) or `blocked`
+ * (its output lists every branch's outcome and output). With `failFast`, the
+ * first branch that does not succeed cancels the others, and the state is
+ * blocked.
+ */
+export interface WorkflowIRParallel {
+    id: string;
+    type: "parallel";
+    description: string | null;
+    /** A JSON template (a binding or a literal array) that gives the manifest. */
+    forEach: JsonValue;
+    concurrency: number;
+    join: "all_required";
+    failFast: boolean;
+    /** The manifest's schema (the whole array). */
+    inputSchema: string | null;
+    /** The schema of the joined output (the array of branch outputs). */
+    outputSchema: string | null;
+    /** Its body: the initial state and every body state's id (each in `nodes`). */
+    body: { initial: string; states: string[] };
+    /** Route label -> target node: joined, blocked, and runtime routes. */
+    next: Record<string, string>;
+}
+
 export interface WorkflowIRContract {
     /** The schema (in schemaDefs) every payload of this contract must satisfy. */
     schema: string;
@@ -257,12 +298,12 @@ export interface WorkflowIRContract {
     response?: { schema: string };
 }
 
-export type WorkflowIRNode = WorkflowIRScript | WorkflowIRWait | WorkflowIRMessaging | WorkflowIRAgent | WorkflowIRTerminal;
+export type WorkflowIRNode = WorkflowIRScript | WorkflowIRWait | WorkflowIRMessaging | WorkflowIRAgent | WorkflowIRParallel | WorkflowIRTerminal;
 
 export interface WorkflowIR {
     /**
      * 1 and 2 are read-only earlier shapes (outputSchema and catchAll null when absent); 3, 4 with wait states, 5 with
-     * receive states, 6 with send states, 7 with request states or contract responses, or 8 with agent states is written now.
+     * receive states, 6 with send states, 7 with request states or contract responses, or 8 with agent or parallel states is written now.
      */
     irVersion: 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
     apiVersion: typeof WORKFLOW_V2_API_VERSION;
@@ -311,6 +352,12 @@ export interface WorkflowCompileOptions {
      * stays unsupported, as before.
      */
     enableAgents?: boolean;
+    /**
+     * Compile parallel states to IR 8 (INACTIVE: only a host that starts runs
+     * at controller 1.9.0 sets it). Off by default: a state of type parallel
+     * stays unsupported, as before.
+     */
+    enableParallel?: boolean;
 }
 
 /** True when the text declares the v2 apiVersion (used to route spawn_workflow; legacy YAML keeps its path). */
@@ -836,6 +883,102 @@ function compileAgent(id: string, raw: Record<string, unknown>, nodeIds: Readonl
     };
 }
 
+/** The binding templates a compiled state holds, by field (for checks over every binding). */
+function nodeTemplates(node: WorkflowIRNode): Array<[string, JsonValue]> {
+    const templates: Array<[string, JsonValue]> = [];
+    const add = (field: string, value: JsonValue | undefined): void => { if (value !== undefined && value !== null) templates.push([field, value]); };
+    if (node.type === "terminal") { if (node.hasOutput) add("output", node.output); return templates; }
+    if (node.type === "parallel") { add("forEach", node.forEach); return templates; }
+    if (node.hasInput) add("input", node.input);
+    if (node.type === "wait") add("seconds", node.seconds);
+    if (node.type === "agent") add("timeoutSeconds", node.timeoutSeconds);
+    if (node.type === "messaging") {
+        add("correlate", node.correlate);
+        if (node.mode === "receive") { add("wait.seconds", node.waitSeconds); if (node.from && "sessionId" in node.from) add("from", node.from.sessionId); }
+        else {
+            if ("sessionId" in node.recipient) add("recipient", node.recipient.sessionId);
+            if (node.mode === "request") add("timeoutSeconds", node.timeoutSeconds);
+        }
+    }
+    return templates;
+}
+
+/**
+ * A parallel state (IR 8; enabled only with enableParallel): `forEach` (a
+ * binding, or a literal array) gives its manifest when the state is entered;
+ * `concurrency` (1 to WORKFLOW_V2_PARALLEL_MAX_CONCURRENCY, default 1) bounds
+ * the active branches; `join` is all_required (the only join of this
+ * release; D10); `failFast` (default false) cancels the other branches when
+ * one does not succeed. `body` is a graph of its own (`initial`, `states`):
+ * its routes stay in it, it holds no parallel state, and its terminals end a
+ * branch (succeeded is accepted; any other outcome blocks the join). Its
+ * outcomes are joined and blocked; both need routes.
+ */
+function compileParallel(id: string, raw: Record<string, unknown>, nodeIds: ReadonlySet<string>, schemas: SchemaCollector, hasCatchAll: boolean,
+    diagnostics: Diagnostics, compileBody: (bodyIds: ReadonlySet<string>, states: Array<[string, unknown]>) => void): WorkflowIRParallel | null {
+    const path = `states.${id}`;
+    checkKeys(raw, ["type", "description", "forEach", "concurrency", "join", "failFast", "inputSchema", "outputSchema", "body", "transition"], path, diagnostics);
+    let forEach: JsonValue = null;
+    if (raw.forEach === undefined) diagnostics.error("WORKFLOW_FIELD_REQUIRED", `${path}.forEach`, "a parallel state needs forEach: one ${...} binding, or a list.");
+    else {
+        forEach = bindingValue(raw.forEach, `${path}.forEach`, diagnostics);
+        const binding = typeof raw.forEach === "string" ? (() => { try { return parseBindingExpression(raw.forEach as string, `${path}.forEach`); } catch { return null; } })() : null;
+        if (!Array.isArray(raw.forEach) && binding === null) {
+            diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.forEach`, "forEach must be one ${...} binding that gives a list, or a list.");
+        } else if (Array.isArray(raw.forEach) && raw.forEach.length > WORKFLOW_V2_PARALLEL_MAX_ITEMS) {
+            diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.forEach`, `a parallel state runs at most ${WORKFLOW_V2_PARALLEL_MAX_ITEMS} branches.`);
+        }
+    }
+    let concurrency = 1;
+    if (raw.concurrency !== undefined) {
+        if (typeof raw.concurrency !== "number" || !Number.isInteger(raw.concurrency) || raw.concurrency < 1 || raw.concurrency > WORKFLOW_V2_PARALLEL_MAX_CONCURRENCY) {
+            diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.concurrency`, `concurrency must be an integer from 1 to ${WORKFLOW_V2_PARALLEL_MAX_CONCURRENCY}.`);
+        } else concurrency = raw.concurrency;
+    }
+    if (raw.join !== undefined && raw.join !== "all_required") {
+        diagnostics.error("WORKFLOW_FEATURE_UNSUPPORTED", `${path}.join`, "join must be all_required: every branch must succeed (no quorum or any join in this release).");
+    }
+    let failFast = false;
+    if (raw.failFast !== undefined) {
+        if (typeof raw.failFast !== "boolean") diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.failFast`, "failFast must be true or false.");
+        else failFast = raw.failFast;
+    }
+    const inputSchema = schemaField(raw.inputSchema, `node.${id}.input`, `${path}.inputSchema`, schemas, diagnostics);
+    const outputSchema = schemaField(raw.outputSchema, `node.${id}.output`, `${path}.outputSchema`, schemas, diagnostics);
+    const next = compileRoutes(raw, path, "a parallel state", nodeIds, diagnostics);
+    for (const label of Object.keys(next)) {
+        if (label !== PARALLEL_JOINED && label !== PARALLEL_BLOCKED && !isRuntimeRoute(label)) {
+            diagnostics.error("WORKFLOW_ROUTE_INVALID", `${path}.transition.next.${label}`,
+                `a parallel state's outcomes are '${PARALLEL_JOINED}' and '${PARALLEL_BLOCKED}'; its other routes must be runtime error codes or '${FAILURE_ROUTE}'.`);
+        }
+    }
+    if (isJsonObject(raw.transition) && isJsonObject(raw.transition.next)) {
+        for (const outcome of [PARALLEL_JOINED, PARALLEL_BLOCKED]) {
+            if (!Object.hasOwn(next, outcome)) diagnostics.error("WORKFLOW_ROUTE_MISSING", `${path}.transition.next`, `a parallel state needs a '${outcome}' route.`);
+        }
+    }
+    warnUnhandledFailure(path, next, hasCatchAll, diagnostics);
+    let body: WorkflowIRParallel["body"] | null = null;
+    if (!isJsonObject(raw.body) || !isJsonObject(raw.body.states) || typeof raw.body.initial !== "string") {
+        diagnostics.error("WORKFLOW_FIELD_REQUIRED", `${path}.body`, "a parallel state needs body: { initial: <state>, states: { ... } }.");
+    } else {
+        checkKeys(raw.body, ["initial", "states"], `${path}.body`, diagnostics);
+        const entries = Object.entries(raw.body.states);
+        const bodyIds = new Set(entries.map(([bodyId]) => bodyId));
+        if (entries.length === 0) diagnostics.error("WORKFLOW_FIELD_INVALID", `${path}.body.states`, "a parallel state's body needs at least one state.");
+        if (!bodyIds.has(raw.body.initial)) {
+            diagnostics.error("WORKFLOW_INITIAL_INVALID", `${path}.body.initial`, `body.initial must name a body state (got '${raw.body.initial}').`);
+        }
+        compileBody(bodyIds, entries);
+        body = { initial: raw.body.initial, states: [...bodyIds] };
+    }
+    if (body === null || raw.forEach === undefined) return null;
+    return {
+        id, type: "parallel", description: optionalText(raw.description, `${path}.description`, diagnostics),
+        forEach, concurrency, join: "all_required", failFast, inputSchema, outputSchema, body, next,
+    };
+}
+
 function compileTerminal(id: string, raw: Record<string, unknown>, schemas: SchemaCollector, diagnostics: Diagnostics): WorkflowIRTerminal | null {
     const path = `states.${id}`;
     checkKeys(raw, ["type", "description", "outcome", "output", "summary", "outputSchema"], path, diagnostics);
@@ -860,30 +1003,41 @@ function checkGraph(ir: { initial: string; catchAll: string | null; nodes: Recor
         const node = ir.nodes[id];
         return node && node.type !== "terminal" ? Object.values(node.next) : [];
     };
-    const reachable = new Set<string>();
-    // Any script or wait may fail into the catch-all state, so it is reachable when declared.
-    const stack = ir.catchAll !== null && Object.values(ir.nodes).some(node => node.type !== "terminal") ? [ir.initial, ir.catchAll] : [ir.initial];
-    while (stack.length) {
-        const id = stack.pop()!;
-        if (reachable.has(id) || !ir.nodes[id]) continue;
-        reachable.add(id);
-        stack.push(...successors(id));
-    }
-    for (const id of Object.keys(ir.nodes)) {
-        if (!reachable.has(id)) diagnostics.warning("WORKFLOW_STATE_UNREACHABLE", `states.${id}`, `state '${id}' is not reachable from initial.`);
-    }
-    // Every reachable state must be able to reach a terminal through its own
-    // routes; the catch-all is an error path, not a way to finish.
-    const canFinish = new Set(Object.values(ir.nodes).filter(node => node.type === "terminal").map(node => node.id));
-    let changed = true;
-    while (changed) {
-        changed = false;
-        for (const id of reachable) {
-            if (!canFinish.has(id) && successors(id).some(target => canFinish.has(target))) { canFinish.add(id); changed = true; }
+    // A parallel state's body is a graph of its own: its states are reached from its initial and end at its terminals.
+    const bodies = Object.values(ir.nodes).flatMap(node => node.type === "parallel" ? [{ id: node.id, initial: node.body.initial, states: new Set(node.body.states) }] : []);
+    const inBody = new Set(bodies.flatMap(body => [...body.states]));
+    const check = (start: string[], members: (id: string) => boolean, where: (id: string) => string, from: string): void => {
+        const reachable = new Set<string>();
+        const stack = [...start];
+        while (stack.length) {
+            const id = stack.pop()!;
+            if (reachable.has(id) || !ir.nodes[id] || !members(id)) continue;
+            reachable.add(id);
+            stack.push(...successors(id));
         }
-    }
-    for (const id of reachable) {
-        if (!canFinish.has(id)) diagnostics.error("WORKFLOW_NO_TERMINAL_PATH", `states.${id}`, `state '${id}' cannot reach a terminal state.`);
+        for (const id of Object.keys(ir.nodes)) {
+            if (members(id) && !reachable.has(id)) diagnostics.warning("WORKFLOW_STATE_UNREACHABLE", where(id), `state '${id}' is not reachable from ${from}.`);
+        }
+        // Every reachable state must be able to reach a terminal through its own
+        // routes; the catch-all is an error path, not a way to finish.
+        const canFinish = new Set(Object.values(ir.nodes).filter(node => node.type === "terminal" && members(node.id)).map(node => node.id));
+        let changed = true;
+        while (changed) {
+            changed = false;
+            for (const id of reachable) {
+                if (!canFinish.has(id) && successors(id).some(target => canFinish.has(target))) { canFinish.add(id); changed = true; }
+            }
+        }
+        for (const id of reachable) {
+            if (!canFinish.has(id)) diagnostics.error("WORKFLOW_NO_TERMINAL_PATH", where(id), `state '${id}' cannot reach a terminal state.`);
+        }
+    };
+    // Any script or wait may fail into the catch-all state, so it is reachable when declared.
+    const outerStart = ir.catchAll !== null && Object.values(ir.nodes).some(node => node.type !== "terminal" && !inBody.has(node.id))
+        ? [ir.initial, ir.catchAll] : [ir.initial];
+    check(outerStart, id => !inBody.has(id), id => `states.${id}`, "initial");
+    for (const body of bodies) {
+        check([body.initial], id => body.states.has(id), id => `states.${body.id}.body.states.${id}`, `the body initial of '${body.id}'`);
     }
 }
 
@@ -892,6 +1046,7 @@ export function compileWorkflowV2(yaml: string, options: WorkflowCompileOptions 
     const diagnostics = new Diagnostics();
     const enableRequests = options.enableRequests === true;
     const enableAgents = options.enableAgents === true;
+    const enableParallel = options.enableParallel === true;
     if (typeof yaml !== "string") throw new TypeError("Workflow YAML must be a string.");
     const yamlSha256 = sha256Hex(yaml);
     const result = (name: string | null, version: string | null, ir: WorkflowIR | null): WorkflowCompileResult => {
@@ -1025,6 +1180,63 @@ export function compileWorkflowV2(yaml: string, options: WorkflowCompileOptions 
 
     const hasCatchAll = typeof root.catchAll === "string";
     const nodes: Record<string, WorkflowIRNode> = {};
+    /** Body state id -> its parallel state's id (a body's states are compiled with the body's own ids as their targets). */
+    const bodyOf = new Map<string, string>();
+    /** Compile one state of the outer graph (`body` null) or of a parallel state's body (`body` its id) into `nodes`. */
+    const compileState = (id: string, rawNode: unknown, nodeIds: ReadonlySet<string>, body: string | null, into: Diagnostics): void => {
+        const path = `states.${id}`;
+        if (!ID_PATTERN.test(id)) { into.error("WORKFLOW_STATE_ID", path, "state ids use a letter followed by up to 63 letters, digits, '_' or '-'."); return; }
+        if (!isJsonObject(rawNode)) { into.error("WORKFLOW_FIELD_INVALID", path, "a state must be a mapping."); return; }
+        const type = rawNode.type;
+        // The catch-all state takes the outer graph's unhandled runtime errors only: in a body, one ends the branch.
+        const catchAllApplies = body === null && hasCatchAll;
+        if (type === "script") {
+            const node = compileScript(id, rawNode, nodeIds, schemas, catchAllApplies, into);
+            if (node) nodes[id] = node;
+        } else if (type === "wait") {
+            const node = compileWait(id, rawNode, nodeIds, catchAllApplies, into);
+            if (node) nodes[id] = node;
+        } else if (type === "messaging") {
+            const node = compileMessaging(id, rawNode, nodeIds, declaredContracts, catchAllApplies, into,
+                { responding: respondingContracts, enabled: enableRequests });
+            if (node) nodes[id] = node;
+        } else if (type === "terminal") {
+            const node = compileTerminal(id, rawNode, schemas, into);
+            if (node) nodes[id] = node;
+        } else if (type === "agent" && enableAgents) {
+            const node = compileAgent(id, rawNode, nodeIds, schemas, catchAllApplies, into);
+            if (node) nodes[id] = node;
+        } else if (type === "parallel" && enableParallel && body !== null) {
+            into.error("WORKFLOW_FEATURE_UNSUPPORTED", `${path}.type`, "a parallel state's body cannot hold another parallel state.");
+        } else if (type === "parallel" && enableParallel) {
+            const node = compileParallel(id, rawNode, nodeIds, schemas, hasCatchAll, into, (bodyIds, bodyStates) => {
+                // A body's diagnostics name the body's path, not an outer state's.
+                const scoped = new Diagnostics();
+                for (const [bodyId, rawBodyNode] of bodyStates) {
+                    if (bodyOf.has(bodyId)) {
+                        scoped.error("WORKFLOW_STATE_ID", `states.${bodyId}`, `state id '${bodyId}' is used twice; state ids are unique across the workflow.`);
+                        continue;
+                    }
+                    bodyOf.set(bodyId, id);
+                    compileState(bodyId, rawBodyNode, bodyIds, id, scoped);
+                }
+                for (const item of scoped.items) {
+                    const rewritten = item.path.replace(/^states\.([^.]+)/, (_match, bodyId: string) => `states.${id}.body.states.${bodyId}`);
+                    // In a body, a runtime error no route takes ends the branch (never the run, and never at the catch-all state).
+                    const message = item.code === "WORKFLOW_FAILURE_UNHANDLED"
+                        ? "no failure route: a runtime error at this state (crash, timeout, invalid input or output) ends its branch without success, "
+                            + "which blocks the parallel state's join."
+                        : item.message;
+                    into.items.push({ ...item, path: rewritten, message });
+                }
+            });
+            if (node) nodes[id] = node;
+        } else if (typeof type === "string" && KNOWN_NODE_TYPES.includes(type)) {
+            into.error("WORKFLOW_NODE_TYPE_UNSUPPORTED", `${path}.type`, `state type '${type}' is not supported by this build yet (supported: ${SUPPORTED_NODE_TYPES.join(", ")}).`);
+        } else {
+            into.error("WORKFLOW_NODE_TYPE_UNKNOWN", `${path}.type`, `'${String(type)}' is not a workflow state type.`);
+        }
+    };
     if (!isJsonObject(root.states)) {
         diagnostics.error("WORKFLOW_FIELD_REQUIRED", "states", "states must map state ids to states.");
     } else {
@@ -1033,32 +1245,33 @@ export function compileWorkflowV2(yaml: string, options: WorkflowCompileOptions 
             diagnostics.error("WORKFLOW_FIELD_INVALID", "states", `states must contain between 1 and ${WORKFLOW_V2_MAX_NODES} states.`);
         }
         const nodeIds = new Set(entries.map(([id]) => id));
-        for (const [id, rawNode] of entries) {
-            const path = `states.${id}`;
-            if (!ID_PATTERN.test(id)) { diagnostics.error("WORKFLOW_STATE_ID", path, "state ids use a letter followed by up to 63 letters, digits, '_' or '-'."); continue; }
-            if (!isJsonObject(rawNode)) { diagnostics.error("WORKFLOW_FIELD_INVALID", path, "a state must be a mapping."); continue; }
-            const type = rawNode.type;
-            if (type === "script") {
-                const node = compileScript(id, rawNode, nodeIds, schemas, hasCatchAll, diagnostics);
-                if (node) nodes[id] = node;
-            } else if (type === "wait") {
-                const node = compileWait(id, rawNode, nodeIds, hasCatchAll, diagnostics);
-                if (node) nodes[id] = node;
-            } else if (type === "messaging") {
-                const node = compileMessaging(id, rawNode, nodeIds, declaredContracts, hasCatchAll, diagnostics,
-                    { responding: respondingContracts, enabled: enableRequests });
-                if (node) nodes[id] = node;
-            } else if (type === "terminal") {
-                const node = compileTerminal(id, rawNode, schemas, diagnostics);
-                if (node) nodes[id] = node;
-            } else if (type === "agent" && enableAgents) {
-                const node = compileAgent(id, rawNode, nodeIds, schemas, hasCatchAll, diagnostics);
-                if (node) nodes[id] = node;
-            } else if (typeof type === "string" && KNOWN_NODE_TYPES.includes(type)) {
-                diagnostics.error("WORKFLOW_NODE_TYPE_UNSUPPORTED", `${path}.type`, `state type '${type}' is not supported by this build yet (supported: ${SUPPORTED_NODE_TYPES.join(", ")}).`);
-            } else {
-                diagnostics.error("WORKFLOW_NODE_TYPE_UNKNOWN", `${path}.type`, `'${String(type)}' is not a workflow state type.`);
+        for (const [id, rawNode] of entries) compileState(id, rawNode, nodeIds, null, diagnostics);
+        // State ids are unique across the workflow, body states included (a node execution names its state by id).
+        const seen = new Set(nodeIds);
+        for (const [bodyId, parallel] of bodyOf) {
+            if (nodeIds.has(bodyId)) {
+                diagnostics.error("WORKFLOW_STATE_ID", `states.${parallel}.body.states.${bodyId}`, `state id '${bodyId}' is used twice; state ids are unique across the workflow.`);
             }
+            seen.add(bodyId);
+        }
+        if (seen.size > WORKFLOW_V2_MAX_NODES) {
+            diagnostics.error("WORKFLOW_FIELD_INVALID", "states", `a workflow holds at most ${WORKFLOW_V2_MAX_NODES} states, body states included.`);
+        }
+        // `branch` is bound only in a parallel state's body.
+        for (const node of Object.values(nodes)) {
+            if (bodyOf.has(node.id)) continue;
+            for (const [field, template] of nodeTemplates(node)) {
+                let roots: Set<string>;
+                try { roots = bindingRootsOf(template); } catch { continue; }
+                if (roots.has("branch")) {
+                    diagnostics.error("WORKFLOW_BINDING_INVALID", `states.${node.id}.${field}`, "branch is bound only in a parallel state's body.");
+                }
+            }
+        }
+        if (Object.hasOwn(root, "initialInput")) {
+            try {
+                if (bindingRootsOf(root.initialInput).has("branch")) diagnostics.error("WORKFLOW_BINDING_INVALID", "initialInput", "branch is bound only in a parallel state's body.");
+            } catch { /* reported by its own check */ }
         }
     }
     const initial = typeof root.initial === "string" ? root.initial : "";
@@ -1103,7 +1316,7 @@ export function compileWorkflowV2(yaml: string, options: WorkflowCompileOptions 
         }
     }
     const responds = Object.values(contracts).some(contract => contract.response !== undefined);
-    const irVersion: WorkflowIR["irVersion"] = Object.values(nodes).some(node => node.type === "agent") ? WORKFLOW_V2_AGENT_IR_VERSION
+    const irVersion: WorkflowIR["irVersion"] = Object.values(nodes).some(node => node.type === "agent" || node.type === "parallel") ? WORKFLOW_V2_AGENT_IR_VERSION
         : requested.size > 0 || responds ? WORKFLOW_V2_REQUEST_IR_VERSION
             : sent.size > 0 ? WORKFLOW_V2_SEND_IR_VERSION
                 : received.size > 0 ? WORKFLOW_V2_MESSAGING_IR_VERSION
@@ -1301,6 +1514,18 @@ export function parseWorkflowIr(value: JsonValue, options: { maxIrVersion?: numb
                 hasInput: node.hasInput, input: node.input, inputSchema: node.inputSchema, outputSchema: node.outputSchema,
                 outcomes: node.outcomes, timeoutSeconds, next: node.next,
             };
+        } else if (node.type === "parallel") {
+            const body = node.body;
+            need(irVersion >= WORKFLOW_V2_AGENT_IR_VERSION && Object.hasOwn(node, "forEach") && typeof node.concurrency === "number"
+                && Number.isInteger(node.concurrency) && node.concurrency >= 1 && node.concurrency <= WORKFLOW_V2_PARALLEL_MAX_CONCURRENCY && node.join === "all_required" && typeof node.failFast === "boolean"
+                && nullableString(node.inputSchema) && nullableString(node.outputSchema)
+                && isJsonObject(body) && typeof body.initial === "string" && stringArray(body.states) && body.states.includes(body.initial)
+                && stringMap(node.next), `stored IR parallel state ${id} is invalid`);
+            nodes[id] = {
+                id, type: "parallel", description: node.description, forEach: node.forEach, concurrency: node.concurrency, join: "all_required",
+                failFast: node.failFast, inputSchema: node.inputSchema, outputSchema: node.outputSchema,
+                body: { initial: body.initial, states: [...body.states] }, next: node.next,
+            };
         } else if (node.type === "terminal") {
             need(isTerminalOutcome(node.outcome)
                 && nullableString(node.summary) && typeof node.hasOutput === "boolean" && Object.hasOwn(node, "output")
@@ -1314,7 +1539,18 @@ export function parseWorkflowIr(value: JsonValue, options: { maxIrVersion?: numb
         }
     }
     need(Object.hasOwn(nodes, value.initial), "stored IR initial state is missing");
+    // A parallel state's body states exist, hold no parallel state, and belong to one body only.
+    const bodyMembers = new Set<string>();
+    for (const node of Object.values(nodes)) {
+        if (node.type !== "parallel") continue;
+        for (const member of node.body.states) {
+            need(Object.hasOwn(nodes, member) && nodes[member].type !== "parallel" && !bodyMembers.has(member), `stored IR parallel state ${node.id} has an invalid body`);
+            bodyMembers.add(member);
+        }
+    }
+    need(!bodyMembers.has(value.initial), "stored IR initial state is a body state");
     need(catchAll === null || Object.hasOwn(nodes, catchAll), "stored IR catch-all state is missing");
+    need(catchAll === null || !bodyMembers.has(catchAll), "stored IR catch-all state is a body state");
     return {
         irVersion, apiVersion: WORKFLOW_V2_API_VERSION, name: value.name, version: value.version,
         description: value.description, initial: value.initial, initialInput: value.initialInput,

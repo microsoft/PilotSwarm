@@ -11,12 +11,15 @@ import { TYPED_INPUT_REFUSALS } from "./authority.js";
 import {
     FAILURE_ROUTE,
     MESSAGE_SENT,
+    PARALLEL_BLOCKED,
+    PARALLEL_JOINED,
     RECEIVE_RECEIVED,
     REQUEST_DECLINED,
     REQUEST_RESPONDED,
     WAIT_ELAPSED,
     WAIT_MAX_SECONDS,
     WORKFLOW_V2_MILESTONE_IR_VERSION,
+    WORKFLOW_V2_PARALLEL_MAX_ITEMS,
     type RuntimeErrorCode,
     type TerminalOutcome,
     type WorkflowIR,
@@ -189,6 +192,27 @@ export const WORKFLOW_V2_FINALIZE_DELAYS_MS: readonly number[] = [1_000, 5_000, 
 /** The arrival route of the workflow's catch-all state (not a valid route label, so it never collides with one). */
 export const CATCH_ALL_ROUTE = "@catchAll";
 export const ROOT_SCOPE = "root";
+/** The arrival route of a parallel branch's first state (not a valid route label): its item, from the parallel state's manifest. */
+export const BRANCH_ROUTE = "@branch";
+
+/** The scope of branch `index` of the parallel state's node execution `parallelNodeExecutionId`. */
+export function branchScopeId(parallelNodeExecutionId: string, index: number): string {
+    return `${parallelNodeExecutionId}#${index}`;
+}
+
+/** A branch scope's parallel node execution and index; null for the root scope (or any other text). */
+export function parseBranchScope(scopeId: string): { parallelNodeExecutionId: string; index: number } | null {
+    const match = /^(nx-[0-9a-f]+)#(0|[1-9]\d{0,5})$/.exec(scopeId);
+    return match ? { parallelNodeExecutionId: match[1], index: Number(match[2]) } : null;
+}
+
+/** A branch's `branch` binding (its manifest item and index) and the parallel state's node execution it belongs to. */
+interface BranchBinding {
+    parallelNodeExecutionId: string;
+    parallelNodeId: string;
+    item: JsonValue;
+    index: number;
+}
 /** duroxide statuses after which an orchestration does no more work. */
 const TERMINAL_ORCHESTRATION_STATUSES: readonly string[] = ["Completed", "Failed", "Terminated"];
 
@@ -238,6 +262,9 @@ export const WORKFLOW_V2_REQUEST_ACTIVITIES = {
     agentSpawnFailed: "workflow.v2.r1.agentSpawnFailed",
     endAgent: "workflow.v2.r1.endAgent",
     endAgents: "workflow.v2.r1.endAgents",
+    endBranch: "workflow.v2.r1.endBranch",
+    cancelBranches: "workflow.v2.r1.cancelBranches",
+    join: "workflow.v2.r1.join",
 } as const;
 
 type WorkflowV2ActivityKey = keyof typeof WORKFLOW_V2_ACTIVITIES;
@@ -321,6 +348,26 @@ export interface ControllerState {
     cursors: ControllerCursor[];
     /** The catch-all state was admitted (by any route); it is admitted at most once per run. */
     catchAllEntered: boolean;
+    /** Controller 1.9.0: the parallel states whose branches run (absent: none; 1.8.0 never has any). */
+    parallels?: ControllerParallel[];
+}
+
+/**
+ * A parallel state's branches, as controller 1.9.0 runs them: its node
+ * execution (pending until the join), how many items its manifest has, the
+ * next item without a branch, and how each branch that ended ended: the node
+ * execution that ended it (its terminal, the state whose error had no route,
+ * or the state a cancellation decided) or none (a branch that never started).
+ */
+export interface ControllerParallel {
+    nodeExecutionId: string;
+    /** The parallel state's id in the plan. */
+    nodeId: string;
+    total: number;
+    nextIndex: number;
+    results: Array<{ index: number; nodeExecutionId: string | null; via: "terminal" | "error" | "cancelled" | "not_started" }>;
+    /** failFast cancelled the remaining branches. */
+    cancelled: boolean;
 }
 
 export interface ControllerInput {
@@ -341,7 +388,13 @@ export interface ControllerPlan {
     /** The state an unhandled runtime error (or a terminal's invalid output) routes to, once per run; null without one. */
     catchAll: string | null;
     /** A messaging state names its mode (1.8.0; a request state only in a 1.9.0 plan); no other state has one. An agent state only in a 1.9.0 plan. */
-    nodes: Record<string, { type: "script" | "wait" | "messaging" | "agent" | "terminal"; mode?: "receive" | "send" | "request"; next: Record<string, string> }>;
+    nodes: Record<string, {
+        type: "script" | "wait" | "messaging" | "agent" | "parallel" | "terminal";
+        mode?: "receive" | "send" | "request";
+        next: Record<string, string>;
+        /** A parallel state's body initial, concurrency and failure policy (1.9.0 plans only). */
+        parallel?: { initial: string; concurrency: number; failFast: boolean };
+    }>;
 }
 
 export interface ControllerResult {
@@ -409,11 +462,30 @@ function parseControllerState(value: unknown): ControllerState {
         parsedOrdinals[key] = ordinal;
     }
     expect(state.catchAllEntered === undefined || typeof state.catchAllEntered === "boolean", "catchAllEntered is not a boolean");
+    expect(state.parallels === undefined || Array.isArray(state.parallels), "parallels is not a list");
+    const parallels = state.parallels === undefined ? undefined : (state.parallels as unknown[]).map((raw, index) => {
+        const item = record(raw, `parallel ${index}`);
+        const count = (value: unknown, what: string) => { expect(typeof value === "number" && Number.isSafeInteger(value) && value >= 0, `parallel ${index} ${what} is invalid`); return value as number; };
+        expect(Array.isArray(item.results) && typeof item.cancelled === "boolean", `parallel ${index} is invalid`);
+        return {
+            nodeExecutionId: text(item.nodeExecutionId, "nodeExecutionId"), nodeId: text(item.nodeId, "nodeId"),
+            total: count(item.total, "total"), nextIndex: count(item.nextIndex, "nextIndex"),
+            results: (item.results as unknown[]).map((rawResult, at) => {
+                const result = record(rawResult, `parallel ${index} result ${at}`);
+                expect(result.via === "terminal" || result.via === "error" || result.via === "cancelled" || result.via === "not_started",
+                    `parallel ${index} result ${at} is invalid`);
+                return { index: count(result.index, "result index"), nodeExecutionId: textOrNull(result.nodeExecutionId, "nodeExecutionId"),
+                    via: result.via as ControllerParallel["results"][number]["via"] };
+            }),
+            cancelled: item.cancelled as boolean,
+        };
+    });
     return {
         irSha256: text(state.irSha256, "irSha256"),
         steps: state.steps,
         ordinals: parsedOrdinals,
         catchAllEntered: state.catchAllEntered === true,
+        ...(parallels !== undefined ? { parallels } : {}),
         cursors: state.cursors.map((cursor, index) => {
             const item = record(cursor, `cursor ${index}`);
             const deadlineMs = item.deadlineMs === undefined || item.deadlineMs === null ? null : item.deadlineMs;
@@ -437,13 +509,21 @@ function parsePlan(value: unknown, requests = false): ControllerPlan {
     const parsed: ControllerPlan["nodes"] = {};
     for (const [id, node] of Object.entries(nodes)) {
         const item = record(node, `plan node ${id}`);
-        expect(item.type === "script" || item.type === "wait" || item.type === "messaging" || item.type === "terminal" || (requests && item.type === "agent"),
-            `plan node ${id} type is invalid`);
+        expect(item.type === "script" || item.type === "wait" || item.type === "messaging" || item.type === "terminal"
+            || (requests && (item.type === "agent" || item.type === "parallel")), `plan node ${id} type is invalid`);
         expect(item.type === "messaging" ? item.mode === "receive" || item.mode === "send" || (requests && item.mode === "request") : item.mode === undefined,
             `plan node ${id} mode is invalid`);
         const next = record(item.next, `plan node ${id} next`);
         const routes: Record<string, string> = {};
         for (const [label, target] of Object.entries(next)) routes[label] = text(target, `route ${label}`);
+        if (item.type === "parallel") {
+            const parallel = record(item.parallel, `plan node ${id} parallel`);
+            expect(typeof parallel.concurrency === "number" && Number.isSafeInteger(parallel.concurrency) && parallel.concurrency >= 1
+                && typeof parallel.failFast === "boolean", `plan node ${id} parallel is invalid`);
+            parsed[id] = { type: "parallel", next: routes,
+                parallel: { initial: text(parallel.initial, "parallel initial"), concurrency: parallel.concurrency, failFast: parallel.failFast } };
+            continue;
+        }
         parsed[id] = item.type === "messaging"
             ? { type: item.type, mode: item.mode === "send" ? "send" : item.mode === "request" ? "request" : "receive", next: routes }
             : { type: item.type, next: routes };
@@ -488,7 +568,7 @@ function parseStopping(value: unknown, what: string): { deadlineMs: number } | n
  * carries the stop's deadline (`stopping`; only controller 1.9.0's
  * activities report one).
  */
-function parseEnter(value: unknown): { admitted: true; nodeExecutionId: string; state: "pending" | "completed"; deadlineMs: number | null }
+function parseEnter(value: unknown): { admitted: true; nodeExecutionId: string; state: "pending" | "completed"; deadlineMs: number | null; branches: number | null }
     | { admitted: false; status: WorkflowRunStatus; outcome: string | null; stopping: { deadlineMs: number } | null } {
     const entered = record(value, "enter result");
     if (entered.admitted === false) {
@@ -499,7 +579,10 @@ function parseEnter(value: unknown): { admitted: true; nodeExecutionId: string; 
     expect(entered.state === "pending" || entered.state === "completed", "enter state is invalid");
     const deadlineMs = entered.deadlineMs === undefined || entered.deadlineMs === null ? null : entered.deadlineMs;
     expect(deadlineMs === null || (typeof deadlineMs === "number" && Number.isSafeInteger(deadlineMs)), "enter deadline is invalid");
-    return { admitted: true, nodeExecutionId: text(entered.nodeExecutionId, "nodeExecutionId"), state: entered.state, deadlineMs };
+    const branches = entered.branches === undefined || entered.branches === null ? null : entered.branches;
+    expect(branches === null || (typeof branches === "number" && Number.isSafeInteger(branches) && branches >= 0 && branches <= WORKFLOW_V2_PARALLEL_MAX_ITEMS),
+        "enter branches is invalid");
+    return { admitted: true, nodeExecutionId: text(entered.nodeExecutionId, "nodeExecutionId"), state: entered.state, deadlineMs, branches };
 }
 
 /** The waits the store did not find due yet, with the milliseconds it reported left (at least 1). */
@@ -1021,6 +1104,57 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
         return null;
     };
 
+    // ── Parallel states (IR 8; design 02 parallel scope and join) ──
+    const parallels = (): ControllerParallel[] => (state.parallels ??= []);
+    const branchesOf = (parallel: ControllerParallel) => state.cursors.filter(item => parseBranchScope(item.scopeId)?.parallelNodeExecutionId === parallel.nodeExecutionId);
+    /** Start branches of `parallel` while fewer than its concurrency are active (each a cursor at the body's initial state). */
+    const startBranches = (parallel: ControllerParallel): void => {
+        const spec = plan.nodes[parallel.nodeId]?.parallel;
+        expect(spec !== undefined, `plan state ${parallel.nodeId} is not a parallel state`);
+        let room = spec.concurrency - branchesOf(parallel).length;
+        while (room > 0 && parallel.nextIndex < parallel.total && !parallel.cancelled) {
+            state.cursors.push({ scopeId: branchScopeId(parallel.nodeExecutionId, parallel.nextIndex), nodeId: spec.initial,
+                predecessorId: parallel.nodeExecutionId, arrivalRoute: BRANCH_ROUTE, pending: null, deadlineMs: null });
+            parallel.nextIndex += 1;
+            room -= 1;
+        }
+    };
+    /** Join `parallel` once every branch ended: the join decides its node (joined or blocked) for its cursor to collect. */
+    const joinIfDone = function* (parallel: ControllerParallel): Generator<ScheduledTask, void, unknown> {
+        if (parallel.results.length < parallel.total) return;
+        yield* persistentlyTagged(ctx, R.join, { runId: input.runId, parallelNodeExecutionId: parallel.nodeExecutionId, results: parallel.results });
+        state.parallels = parallels().filter(item => item !== parallel);
+    };
+    /** Node executions whose branches a failFast cancellation dropped in this pass (their results go nowhere). */
+    const dropped = new Set<string>();
+    /**
+     * A branch ended (at its terminal, by an error no route takes, or by a
+     * cancellation): record how, drop its cursor, cancel the others when it did
+     * not succeed under failFast, start the next ones, and join when all ended.
+     */
+    const endBranch = function* (cursor: ControllerCursor, via: "terminal" | "error", nodeExecutionId: string, succeeded: boolean)
+        : Generator<ScheduledTask, void, unknown> {
+        const scope = parseBranchScope(cursor.scopeId);
+        const parallel = scope === null ? undefined : parallels().find(item => item.nodeExecutionId === scope.parallelNodeExecutionId);
+        expect(scope !== null && parallel !== undefined, `cursor ${cursor.scopeId} is not a running branch`);
+        state.cursors = state.cursors.filter(item => item !== cursor);
+        parallel.results.push({ index: scope.index, nodeExecutionId, via });
+        const spec = plan.nodes[parallel.nodeId]?.parallel;
+        if (!succeeded && spec?.failFast === true && !parallel.cancelled) {
+            parallel.cancelled = true;
+            const others = branchesOf(parallel);
+            if (others.length > 0) yield* persistentlyTagged(ctx, R.cancelBranches, { runId: input.runId, scopeIds: others.map(item => item.scopeId) });
+            for (const other of others) {
+                parallel.results.push({ index: parseBranchScope(other.scopeId)!.index, nodeExecutionId: other.pending, via: "cancelled" });
+                if (other.pending !== null) dropped.add(other.pending);
+            }
+            state.cursors = state.cursors.filter(item => !others.includes(item));
+            for (let index = parallel.nextIndex; index < parallel.total; index += 1) parallel.results.push({ index, nodeExecutionId: null, via: "not_started" });
+            parallel.nextIndex = parallel.total;
+        } else startBranches(parallel);
+        yield* joinIfDone(parallel);
+    };
+
     for (;;) {
         // 0. Commands first, as 1.8.0.
         if (state.cursors.some(cursor => cursor.pending === null)) {
@@ -1028,11 +1162,13 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
             if (command) return yield* applyCommand(ctx, input, command, REQUEST_PROFILE);
         }
 
-        // 1. Admit the next node of every cursor that is not waiting on work (none while the run is stopping).
+        // 1. Admit the next node of every cursor that is not waiting on work (none while the run is stopping). A branch's
+        // end may add or drop cursors: this pass goes over the cursors it started with that are still there.
         let rerouted = false;
         let paused = false;
-        for (const cursor of state.cursors) {
-            if (cursor.pending !== null || stopping !== null) continue;
+        dropped.clear();
+        for (const cursor of [...state.cursors]) {
+            if (cursor.pending !== null || stopping !== null || !state.cursors.includes(cursor)) continue;
             const node: ControllerPlan["nodes"][string] | undefined = plan.nodes[cursor.nodeId];
             expect(node !== undefined, `plan has no state ${cursor.nodeId}`);
             if (state.steps >= plan.maxNodeExecutions) {
@@ -1060,6 +1196,13 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
             state.steps += 1;
             admittedThisExecution += 1;
             if (cursor.nodeId === plan.catchAll) state.catchAllEntered = true;
+            // A branch's terminal ends its branch (its output, checked against its own schema, is its result), not the run.
+            if (node.type === "terminal" && cursor.scopeId !== ROOT_SCOPE) {
+                const ended = record(yield* persistentlyTagged(ctx, R.endBranch, { runId: input.runId, nodeExecutionId: entered.nodeExecutionId }), "branch end");
+                yield* endBranch(cursor, "terminal", entered.nodeExecutionId, ended.succeeded === true);
+                rerouted = true;
+                continue;
+            }
             if (node.type === "terminal") {
                 const catchAll = !state.catchAllEntered ? plan.catchAll : null;
                 const finished = parseTerminalFinish(yield* persistentlyTagged(ctx, R.finish, {
@@ -1093,6 +1236,21 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
                     yield ctx.startOrchestrationVersioned(WORKFLOW_V2_REQUEST_NAME, WORKFLOW_V2_REQUEST_VERSION,
                         workflowRequestInstanceId(entered.nodeExecutionId),
                         { runId: input.runId, nodeExecutionId: entered.nodeExecutionId, controllerInstanceId: ctx.instanceId });
+                }
+                continue;
+            }
+            // A parallel state (IR 8) waits for its join: its branches run as cursors of their own, at most its concurrency at
+            // a time; each starts at the body's initial state with its manifest item.
+            if (node.type === "parallel") {
+                cursor.deadlineMs = null;
+                if (entered.state === "pending" && !parallels().some(item => item.nodeExecutionId === entered.nodeExecutionId)) {
+                    expect(entered.branches !== null, `parallel ${entered.nodeExecutionId} reported no branches`);
+                    const parallel: ControllerParallel = { nodeExecutionId: entered.nodeExecutionId, nodeId: cursor.nodeId, total: entered.branches,
+                        nextIndex: 0, results: [], cancelled: false };
+                    parallels().push(parallel);
+                    startBranches(parallel);
+                    yield* joinIfDone(parallel);
+                    rerouted = true;
                 }
                 continue;
             }
@@ -1186,7 +1344,8 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
             }
             const current = now ?? parseNow(yield ctx.utcNow());
             now = current;
-            if (!state.cursors.some(cursor => cursor.pending !== null) || current >= stopping.deadlineMs) {
+            // A parallel state waits on its branches, not on work of its own.
+            if (!state.cursors.some(cursor => cursor.pending !== null && plan.nodes[cursor.nodeId]?.type !== "parallel") || current >= stopping.deadlineMs) {
                 const finished = parseStopFinish(yield* persistentlyTagged(ctx, R.stop, { runId: input.runId }));
                 if (finished.ended) {
                     // Another end decided the run first (a cancel, a deletion): it is done, as when an admission finds it so.
@@ -1201,11 +1360,28 @@ function* controlRequestRun(ctx: OrchestrationContext, input: ControllerInput): 
                 stopping = { deadlineMs: read + finished.remainingMs };
             }
         } else if (collected.length > 0) {
+            dropped.clear();
             for (const result of collected) {
                 const owner = state.cursors.find(item => item.pending === result.nodeExecutionId);
+                // A branch a failFast cancellation dropped in this pass: its result goes nowhere (the join reports it).
+                if (owner === undefined && dropped.has(result.nodeExecutionId)) continue;
                 expect(owner !== undefined, `collected ${result.nodeExecutionId} is not pending`);
                 const next = plan.nodes[owner.nodeId].next;
                 const route = selectRoute(next, result);
+                // In a branch: its routes stay in its body; an error no route takes ends the branch (not the run, and never at
+                // the workflow's catch-all state).
+                if (owner.scopeId !== ROOT_SCOPE) {
+                    if (route === null) {
+                        yield* endBranch(owner, "error", result.nodeExecutionId, false);
+                        continue;
+                    }
+                    owner.nodeId = next[route];
+                    owner.arrivalRoute = route;
+                    owner.predecessorId = result.nodeExecutionId;
+                    owner.pending = null;
+                    owner.deadlineMs = null;
+                    continue;
+                }
                 let target: { nodeId: string; arrivalRoute: string } | null = null;
                 if (route !== null) target = { nodeId: next[route], arrivalRoute: route };
                 else if (result.resultKind === "runtime_error" && plan.catchAll !== null && !state.catchAllEntered) {
@@ -1842,6 +2018,12 @@ export function describeWorkflowV2State(node: WorkflowIRNode): { [key: string]: 
             outcomes: node.waitSeconds !== null ? [RECEIVE_RECEIVED, WAIT_ELAPSED] : [RECEIVE_RECEIVED], next: node.next,
         };
     }
+    if (node.type === "parallel") {
+        return {
+            id: node.id, type: "parallel", forEach: node.forEach, concurrency: node.concurrency, join: node.join, failFast: node.failFast,
+            body: { initial: node.body.initial, states: node.body.states }, outcomes: [PARALLEL_JOINED, PARALLEL_BLOCKED], next: node.next,
+        };
+    }
     if (node.type === "agent") {
         return {
             id: node.id, type: "agent",
@@ -1854,7 +2036,14 @@ export function describeWorkflowV2State(node: WorkflowIRNode): { [key: string]: 
 }
 
 export function describeWorkflowV2States(ir: WorkflowIR): Array<{ [key: string]: JsonValue }> {
-    return Object.values(ir.nodes).map(describeWorkflowV2State);
+    // A parallel state's body states (IR 8) name the parallel state they belong to.
+    const bodyOf = new Map<string, string>();
+    for (const node of Object.values(ir.nodes)) if (node.type === "parallel") for (const member of node.body.states) bodyOf.set(member, node.id);
+    return Object.values(ir.nodes).map(node => {
+        const described = describeWorkflowV2State(node);
+        const parallel = bodyOf.get(node.id);
+        return parallel === undefined ? described : { ...described, parallel };
+    });
 }
 
 /** The handler of an unsupported pre-release controller version: it fails the instance with a reason. */
@@ -1981,9 +2170,27 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         }
         if (failed.length > 0) throw new Error(`The children of agent states ${failed.join(", ")} were not ended yet.`);
     };
-    const scopeFor = (run: WorkflowRunRow, incoming: JsonValue, runtimeErrorValue: JsonValue, kv: JsonValue): BindingScope => ({
+    /** The bindings of a state: its run's inputs, its incoming value, its pinned KV, the runtime error, and a branch's own `branch`. */
+    const scopeFor = (run: WorkflowRunRow, incoming: JsonValue, runtimeErrorValue: JsonValue, kv: JsonValue, branch: BranchBinding | null = null): BindingScope => ({
         inputs: run.inputs, input: incoming, kv: isJsonObject(kv) ? kv : {}, runtime: { error: runtimeErrorValue },
+        ...(branch !== null ? { branch: { item: branch.item, index: branch.index } } : {}),
     });
+    /**
+     * The `branch` binding of a node execution's scope (IR 8): its item in the
+     * manifest its parallel state's node execution froze as its input, and its
+     * index; null in the root scope. A scope that names no branch of the run
+     * is corrupt.
+     */
+    const branchOf = async (run: WorkflowRunRow, scopeId: string): Promise<BranchBinding | null> => {
+        if (scopeId === ROOT_SCOPE) return null;
+        const scope = parseBranchScope(scopeId);
+        const parallel = scope === null ? null : await store.readNodeExecution(scope.parallelNodeExecutionId);
+        if (scope === null || !parallel || parallel.runId !== run.runId || parallel.nodeType !== "parallel" || parallel.scopeId !== ROOT_SCOPE
+            || !Array.isArray(parallel.input) || scope.index >= parallel.input.length) {
+            throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Scope ${scopeId} names no branch of run ${run.runId}.`);
+        }
+        return { parallelNodeExecutionId: parallel.nodeExecutionId, parallelNodeId: parallel.nodeId, item: parallel.input[scope.index], index: scope.index };
+    };
     /**
      * A receive state's sender, correlation and contract, resolved when it
      * is entered. The parent selector names the definition's parent; a
@@ -2105,9 +2312,11 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
     };
     /** The KV a node execution was admitted with (an execution from before KV revisions sees an empty map). */
     const kvOf = (runId: string, revision: number | null): Promise<JsonValue> => revision === null ? Promise.resolve({}) : store.readKv(runId, revision);
-    const arrival = async (run: WorkflowRunRow, ir: WorkflowIR, kv: JsonValue, nodeId: string, predecessorId: string | null, arrivalRoute: string | null)
+    const arrival = async (run: WorkflowRunRow, ir: WorkflowIR, kv: JsonValue, nodeId: string, predecessorId: string | null, arrivalRoute: string | null,
+        scopeId: string = ROOT_SCOPE)
         : Promise<{ incoming: JsonValue; runtimeError: JsonValue } | { failure: NodeResultInput }> => {
         if (predecessorId === null) {
+            if (scopeId !== ROOT_SCOPE) throw new WorkflowStoreError("NONDETERMINISTIC_ADMISSION", `A state of branch ${scopeId} has no predecessor.`);
             try {
                 return { incoming: evaluateBindingTemplate(ir.initialInput, scopeFor(run, null, null, kv), "initialInput"), runtimeError: null };
             } catch (error) {
@@ -2118,6 +2327,10 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         const predecessor = await store.readNodeExecution(predecessorId);
         if (!predecessor || predecessor.runId !== run.runId || predecessor.state !== "completed" || !predecessor.resultKind) {
             throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Predecessor ${predecessorId} is not a completed execution of run ${run.runId}.`);
+        }
+        // A branch's routes stay in its body: its predecessor is a state of the same branch (its first state's is the branch route).
+        if (scopeId !== ROOT_SCOPE && predecessor.scopeId !== scopeId) {
+            throw new WorkflowStoreError("NONDETERMINISTIC_ADMISSION", `Predecessor ${predecessorId} is not a state of branch ${scopeId}.`);
         }
         const predecessorNode = nodeOf(ir, predecessor.nodeId);
         if (predecessor.outcome === null) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Predecessor ${predecessorId} has no outcome.`);
@@ -2133,6 +2346,23 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             ? { incoming: predecessor.output, runtimeError: null }
             : { incoming: predecessor.error, runtimeError: predecessor.error };
     };
+    /**
+     * The value arriving at a parallel branch's first state (IR 8; the branch
+     * route): its item in the manifest its parallel state's node execution
+     * froze. That node execution is its predecessor, and the state is its
+     * body's initial state.
+     */
+    const branchArrival = (ir: WorkflowIR, nodeId: string, predecessorId: string | null, branch: BranchBinding | null)
+        : { incoming: JsonValue; runtimeError: JsonValue } => {
+        const parallel = branch === null ? undefined : ir.nodes[branch.parallelNodeId];
+        if (branch === null || predecessorId !== branch.parallelNodeExecutionId || parallel?.type !== "parallel" || parallel.body.initial !== nodeId) {
+            throw new WorkflowStoreError("NONDETERMINISTIC_ADMISSION", `Route ${BRANCH_ROUTE} does not start a branch at state '${nodeId}'.`);
+        }
+        return { incoming: branch.item, runtimeError: null };
+    };
+    /** How many branches a parallel state's pending node execution runs (its frozen manifest's items); null otherwise. */
+    const manifestSize = (row: WorkflowNodeExecutionRow): number | null =>
+        row.nodeType === "parallel" && row.state === "pending" && Array.isArray(row.input) ? row.input.length : null;
 
     register("begin", async (actx, rawInput, requests) => {
         const runId = text(record(rawInput, "begin input").runId, "runId");
@@ -2176,6 +2406,9 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                     throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `State ${node.id} is a request state, which this build does not run.`);
                 }
                 nodes[node.id] = { type: node.type, mode: node.mode, next: node.next };
+            } else if (node.type === "parallel") {
+                nodes[node.id] = { type: "parallel", next: node.next,
+                    parallel: { initial: node.body.initial, concurrency: node.concurrency, failFast: node.failFast } };
             } else nodes[node.id] = { type: node.type, next: node.type === "terminal" ? {} : node.next };
         }
         const plan: ControllerPlan = {
@@ -2206,11 +2439,14 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 || admitted.predecessorId !== predecessorId || admitted.arrivalRoute !== arrivalRoute) {
                 throw new WorkflowStoreError("NONDETERMINISTIC_ADMISSION", `Node execution ${nodeExecutionId} was admitted with different coordinates.`);
             }
-            return { admitted: true, nodeExecutionId, state: admitted.state, deadlineMs: admitted.deadlineAt === null ? null : admitted.deadlineAt.getTime() };
+            return { admitted: true, nodeExecutionId, state: admitted.state, deadlineMs: admitted.deadlineAt === null ? null : admitted.deadlineAt.getTime(),
+                ...(node.type === "parallel" ? { branches: manifestSize(admitted) } : {}) };
         }
         // A run with an accepted stop admits nothing (store.enterNode decides it again under the locks; a stop is never
         // withdrawn, so this early answer only saves the evaluation).
         if (ACTIVE_RUN_STATUSES.includes(run.status) && run.stop !== null) return stoppingRefusal(run, requests);
+        // A branch's states see its manifest item and index (IR 8; only controller 1.9.0 admits a branch scope).
+        const branch = await branchOf(run, scopeId);
         // The admission pins the KV revision that is current when it commits.
         // set_vars locks the run row as the admission does, so every set_vars
         // is ordered before or after it: when the revision this evaluation
@@ -2230,12 +2466,13 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 recipient: string; contract: string; payloadText: string; correlationText: string; timeoutSeconds: number; responseSchema: string;
             } | null = null;
             let agent: AgentSpecInput | null = null;
-            const arrived = await arrival(current, ir, kv, nodeId, predecessorId, arrivalRoute);
+            const arrived = arrivalRoute === BRANCH_ROUTE ? branchArrival(ir, nodeId, predecessorId, branch)
+                : await arrival(current, ir, kv, nodeId, predecessorId, arrivalRoute, scopeId);
             if ("failure" in arrived) immediate = arrived.failure;
             else {
                 value = arrived.incoming;
-                if (node.type !== "terminal" && node.hasInput) {
-                    try { value = evaluateBindingTemplate(node.input, scopeFor(current, arrived.incoming, arrived.runtimeError, kv), `states.${nodeId}.input`); }
+                if (node.type !== "terminal" && node.type !== "parallel" && node.hasInput) {
+                    try { value = evaluateBindingTemplate(node.input, scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch), `states.${nodeId}.input`); }
                     catch (error) {
                         if (!(error instanceof WorkflowBindingError)) throw error;
                         immediate = runtimeError("invalid_input", error.message);
@@ -2245,16 +2482,39 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                     const problems = schemaSetFor(current.irSha256, ir.schemaDefs).validate(node.inputSchema, value);
                     if (problems.length) immediate = runtimeError("invalid_input", `Input does not match ${node.inputSchema}.`, problemsJson(problems));
                 }
+                // A parallel state's manifest is evaluated once, here, and frozen as its input (IR 8; controller 1.9.0): a list
+                // of at most WORKFLOW_V2_PARALLEL_MAX_ITEMS items that matches its inputSchema. Its branches start from it.
+                if (!immediate && node.type === "parallel") {
+                    let manifest: JsonValue = null;
+                    try { manifest = evaluateBindingTemplate(node.forEach, scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch), `states.${nodeId}.forEach`); }
+                    catch (error) {
+                        if (!(error instanceof WorkflowBindingError)) throw error;
+                        immediate = runtimeError("invalid_input", error.message);
+                    }
+                    if (!immediate && !Array.isArray(manifest)) {
+                        immediate = runtimeError("invalid_input", `The manifest of state '${nodeId}' (forEach) must be a list; it is ${manifest === null ? "null" : typeof manifest}.`);
+                    } else if (!immediate && Array.isArray(manifest) && manifest.length > WORKFLOW_V2_PARALLEL_MAX_ITEMS) {
+                        immediate = runtimeError("invalid_input", `The manifest of state '${nodeId}' has ${manifest.length} items; a parallel state runs at most `
+                            + `${WORKFLOW_V2_PARALLEL_MAX_ITEMS} branches.`);
+                    }
+                    if (!immediate) {
+                        value = manifest;
+                        if (node.inputSchema) {
+                            const problems = schemaSetFor(current.irSha256, ir.schemaDefs).validate(node.inputSchema, value);
+                            if (problems.length) immediate = runtimeError("invalid_input", `The manifest does not match ${node.inputSchema}.`, problemsJson(problems));
+                        }
+                    }
+                }
                 // A wait's seconds are read once, here; the store counts them
                 // from its own clock when it accepts the admission (store.enterNode).
                 if (!immediate && node.type === "wait") {
-                    const seconds = waitSeconds(node.seconds, scopeFor(current, arrived.incoming, arrived.runtimeError, kv), `states.${nodeId}.seconds`);
+                    const seconds = waitSeconds(node.seconds, scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch), `states.${nodeId}.seconds`);
                     if (typeof seconds === "number") waitFor = seconds;
                     else immediate = seconds;
                 }
                 // A receive's sender, correlation and wait are resolved once, here, and frozen for this occurrence.
                 if (!immediate && node.type === "messaging" && node.mode === "receive") {
-                    const scope = scopeFor(current, arrived.incoming, arrived.runtimeError, kv);
+                    const scope = scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch);
                     const resolved = await resolveReceive(node, current, scope);
                     if ("failure" in resolved) immediate = resolved.failure;
                     else if (node.waitSeconds !== null) {
@@ -2265,7 +2525,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 }
                 // A send's recipient and message are resolved once, here, and frozen for this occurrence.
                 if (!immediate && node.type === "messaging" && node.mode === "send") {
-                    const resolved = await resolveSend(node, current, ir, scopeFor(current, arrived.incoming, arrived.runtimeError, kv), value);
+                    const resolved = await resolveSend(node, current, ir, scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch), value);
                     if ("failure" in resolved) immediate = resolved.failure;
                     else send = { recipient: resolved.recipient, contract: node.contract, payloadText: resolved.payloadText, correlationText: resolved.correlationText };
                 }
@@ -2273,7 +2533,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 // occurrence (controller 1.9.0; IR 8): its input as a script's, its seconds as a wait's, its child's id
                 // derived from this node execution, and the workflow's parent as its controlling agent.
                 if (!immediate && node.type === "agent") {
-                    const seconds = waitSeconds(node.timeoutSeconds, scopeFor(current, arrived.incoming, arrived.runtimeError, kv), `states.${nodeId}.timeoutSeconds`);
+                    const seconds = waitSeconds(node.timeoutSeconds, scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch), `states.${nodeId}.timeoutSeconds`);
                     if (typeof seconds !== "number") immediate = seconds;
                     else {
                         const definition = await store.readDefinition(current.workflowSessionId);
@@ -2289,7 +2549,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
                 // (controller 1.9.0; design workflow-messaging-request.md 2): its seconds as a wait's, its response
                 // schema the one its contract declares.
                 if (!immediate && node.type === "messaging" && node.mode === "request") {
-                    const scope = scopeFor(current, arrived.incoming, arrived.runtimeError, kv);
+                    const scope = scopeFor(current, arrived.incoming, arrived.runtimeError, kv, branch);
                     const resolved = await resolveSend(node, current, ir, scope, value);
                     const seconds = "failure" in resolved ? null : waitSeconds(node.timeoutSeconds, scope, `states.${nodeId}.timeoutSeconds`);
                     const responseSchema = ir.contracts?.[node.contract]?.response?.schema;
@@ -2356,7 +2616,8 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             });
             if (result.admitted) {
                 return { admitted: true, nodeExecutionId, state: result.node.state,
-                    deadlineMs: result.node.deadlineAt === null ? null : result.node.deadlineAt.getTime() };
+                    deadlineMs: result.node.deadlineAt === null ? null : result.node.deadlineAt.getTime(),
+                    ...(node.type === "parallel" ? { branches: manifestSize(result.node) } : {}) };
             }
             if (result.reason === "inactive") return { admitted: false, status: result.run.status, outcome: result.run.terminalOutcome };
             if (result.reason === "stopping") return stoppingRefusal(result.run, requests);
@@ -2723,12 +2984,14 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             tools.executor ??= await deps.openToolExecutor(run.workflowSessionId, binding, executed.ordinal);
             return tools.executor.call(call.name, call.arguments);
         };
-        // The script sees the KV snapshot its node execution pinned at admission.
+        // The script sees the KV snapshot its node execution pinned at admission, and in a parallel branch its `branch`.
         const scriptKv = await kvOf(run.runId, executed.kvRevision);
+        const scriptBranch = await branchOf(run, executed.scopeId);
         const scriptContext = (attempt: number): Record<string, unknown> => ({
             sessionId: run.workflowSessionId, workflowSessionId: run.workflowSessionId, runId: run.runId, mode: run.mode,
             workflow: ir.name, version: ir.version, node: node.id, nodeExecutionId: executed.nodeExecutionId,
             step: executed.ordinal, attempt, inputs: run.inputs, input: executed.input, kv: scriptKv,
+            ...(scriptBranch !== null ? { branch: { item: scriptBranch.item, index: scriptBranch.index } } : {}),
         });
         // A deletion or cancellation that commits after the entry stops the
         // started script through this check. A failed check leaves it running;
@@ -3066,6 +3329,216 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
         if (!client) throw new Error("Workflow agent end needs the durable client.");
         await endRunAgents(client, runId);
         return null;
+    });
+
+    /**
+     * End a parallel branch at its terminal (controller 1.9.0; IR 8): the
+     * terminal's output (its template, with the branch's bindings) checked
+     * against the terminal's own schema is the branch's result, with the
+     * terminal's outcome; an output that cannot be evaluated or stored, or
+     * that does not match, is invalid_output. It is decided once
+     * (completeNode): a retry, or a result another end decided first (a
+     * cancel, a stop, a deletion), is read as stored. Returns whether the
+     * branch succeeded (its terminal's outcome succeeded, as a business
+     * result).
+     */
+    runtime.registerActivity(WORKFLOW_V2_REQUEST_ACTIVITIES.endBranch, async (_actx, rawInput) => {
+        const input = record(rawInput, "end branch input");
+        const run = await runOf(text(input.runId, "runId"));
+        const nodeExecutionId = text(input.nodeExecutionId, "nodeExecutionId");
+        const executed = await store.readNodeExecution(nodeExecutionId);
+        if (!executed || executed.runId !== run.runId || executed.scopeId === ROOT_SCOPE) {
+            throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${nodeExecutionId} is not a branch state of run ${run.runId}.`);
+        }
+        const ir = await irOf(run, true);
+        const node = nodeOf(ir, executed.nodeId);
+        if (node.type !== "terminal") throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${executed.nodeId} is not a terminal state.`);
+        let stored = executed;
+        if (executed.state === "pending") {
+            const branch = await branchOf(run, executed.scopeId);
+            const predecessor = executed.predecessorId ? await store.readNodeExecution(executed.predecessorId) : null;
+            const errorValue = predecessor?.resultKind === "runtime_error" ? predecessor.error : null;
+            let result: NodeResultInput;
+            try {
+                const output = node.hasOutput
+                    ? evaluateBindingTemplate(node.output, scopeFor(run, executed.input, errorValue, await kvOf(run.runId, executed.kvRevision), branch),
+                        `states.${node.id}.output`)
+                    : null;
+                const problems = node.outputSchema ? schemaSetFor(run.irSha256, ir.schemaDefs).validate(node.outputSchema, output) : [];
+                result = problems.length > 0
+                    ? { ...runtimeError("invalid_output", `The branch's output does not match ${node.outputSchema}.`, problemsJson(problems)), winner: "controller" }
+                    : { outcome: node.outcome, resultKind: "business", valueText: boundedCanonicalJson(output, "The branch's output"), winner: "controller" };
+            } catch (error) {
+                if (!(error instanceof WorkflowBindingError) && !(error instanceof WorkflowJsonError)) throw error;
+                result = { ...runtimeError("invalid_output", error.message), winner: "controller" };
+            }
+            stored = (await store.completeNode(nodeExecutionId, result, {
+                sessionId: run.workflowSessionId,
+                events: [{ eventType: result.resultKind === "business" ? "workflow.state_completed" : "workflow.state_failed", data: {
+                    runId: run.runId, nodeExecutionId, stateId: node.id, step: executed.ordinal, scopeId: executed.scopeId,
+                    branch: branch?.index ?? null, branchEnded: true, outcome: result.outcome, resultKind: result.resultKind,
+                    ...(result.resultKind === "business"
+                        ? { outputPreview: jsonbSafeText(result.valueText, 1_000) }
+                        : { error: jsonbSafeText(result.valueText, 2_000) }),
+                } }],
+                update: { touch: true },
+            })).node;
+        }
+        return { succeeded: stored.state === "completed" && stored.resultKind === "business" && stored.outcome === "succeeded", outcome: stored.outcome };
+    });
+
+    /**
+     * Cancel the other branches of a parallel state whose failFast policy met
+     * a branch that did not succeed (controller 1.9.0; IR 8;
+     * store.cancelBranchScopes): their pending states are decided cancelled
+     * (winner fail_fast). Then the effect of every such script is asked to
+     * stop, and the child of every such agent state is ended (a child that
+     * cannot be ended now is ended when the run ends). The list comes from
+     * the store on every execution, so a retry still sends the requests.
+     */
+    runtime.registerActivity(WORKFLOW_V2_REQUEST_ACTIVITIES.cancelBranches, async (actx, rawInput) => {
+        const input = record(rawInput, "cancel branches input");
+        const run = await runOf(text(input.runId, "runId"));
+        expect(Array.isArray(input.scopeIds), "scopeIds is not a list");
+        const scopeIds = input.scopeIds.map((id, index) => text(id, `scopeIds[${index}]`));
+        for (const scopeId of scopeIds) {
+            if (parseBranchScope(scopeId) === null) throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${scopeId} is not a branch scope.`);
+        }
+        const client = actx.getClient();
+        if (!client) throw new Error("Workflow branch cancellation needs the durable client.");
+        const { cancelled } = await store.cancelBranchScopes({
+            runId: run.runId, scopeIds,
+            projection: decided => ({
+                sessionId: run.workflowSessionId,
+                events: [{ eventType: "workflow.branches_cancelled", data: {
+                    runId: run.runId, scopeIds: scopeIds.slice(0, WORKFLOW_V2_PARALLEL_MAX_ITEMS), cancelledCount: decided.length,
+                    cancelled: decided.slice(0, WORKFLOW_V2_PARALLEL_MAX_ITEMS),
+                } }],
+                update: { touch: true },
+            }),
+        });
+        const requested: Array<{ nodeExecutionId: string; instanceId: string; status: string }> = [];
+        for (const item of cancelled) {
+            if (item.nodeType === "script") {
+                const instanceId = workflowEffectInstanceId(item.nodeExecutionId);
+                const status = await client.getStatus(instanceId);
+                if (status.status === "Running" || status.status === "Suspended") {
+                    await client.cancelInstance(instanceId, "Another branch of its parallel state did not succeed, and its failFast policy cancelled this branch.");
+                    requested.push({ nodeExecutionId: item.nodeExecutionId, instanceId, status: status.status });
+                }
+            } else if (item.nodeType === "agent") {
+                try {
+                    await endAgentChild(client, item.nodeExecutionId);
+                } catch (error) {
+                    await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.agent_end_failed", data: {
+                        runId: run.runId, nodeExecutionId: item.nodeExecutionId, error: jsonbSafeText(workflowErrorMessage(error), 1_000),
+                    } }]);
+                }
+            }
+        }
+        if (requested.length) {
+            await store.recordSessionEvents(run.workflowSessionId, [{ eventType: "workflow.cancel_requested", data: { runId: run.runId, effects: requested, failFast: true } }]);
+        }
+        return { cancelled: cancelled.length };
+    });
+
+    /**
+     * Join a parallel state (controller 1.9.0; IR 8; all_required, D10) once
+     * every branch ended: its node is decided in one compare-and-swap.
+     * Joined when every branch ended at a terminal with outcome succeeded:
+     * the output is their outputs in manifest order, checked against the
+     * state's outputSchema (a mismatch, or an output too large to store, is
+     * invalid_output). Blocked otherwise: the output lists every branch in
+     * manifest order with how it ended (terminal; error: a result its routes
+     * do not take; cancelled; not_started), the node execution that ended
+     * it, its outcome and its output or error (dropped, with truncated true,
+     * when the list would not fit). The controller names the node execution
+     * that ended each branch, and each one is read from the store. A retry,
+     * or a run end that decided the state first, finds the node decided.
+     */
+    runtime.registerActivity(WORKFLOW_V2_REQUEST_ACTIVITIES.join, async (_actx, rawInput) => {
+        const input = record(rawInput, "join input");
+        const run = await runOf(text(input.runId, "runId"));
+        const parallelNodeExecutionId = text(input.parallelNodeExecutionId, "parallelNodeExecutionId");
+        const executed = await store.readNodeExecution(parallelNodeExecutionId);
+        if (!executed || executed.runId !== run.runId || executed.nodeType !== "parallel") {
+            throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${parallelNodeExecutionId} is not a parallel state of run ${run.runId}.`);
+        }
+        if (executed.state === "completed") return { outcome: executed.outcome };
+        const ir = await irOf(run, true);
+        const node = nodeOf(ir, executed.nodeId);
+        if (node.type !== "parallel" || !Array.isArray(executed.input)) {
+            throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${executed.nodeId} is not a parallel state with a manifest.`);
+        }
+        const total = executed.input.length;
+        expect(Array.isArray(input.results), "results is not a list");
+        const ends = new Map<number, { nodeExecutionId: string | null; via: string }>();
+        input.results.forEach((raw, at) => {
+            const item = record(raw, `results[${at}]`);
+            const index = item.index;
+            expect(typeof index === "number" && Number.isSafeInteger(index) && index >= 0 && index < total && !ends.has(index), `results[${at}] index is invalid`);
+            expect(item.via === "terminal" || item.via === "error" || item.via === "cancelled" || item.via === "not_started", `results[${at}] is invalid`);
+            ends.set(index as number, { nodeExecutionId: textOrNull(item.nodeExecutionId, "nodeExecutionId"), via: item.via as string });
+        });
+        expect(ends.size === total, `the join of ${parallelNodeExecutionId} accounts for ${ends.size} of its ${total} branches`);
+        const ids = [...ends.values()].flatMap(item => item.nodeExecutionId === null ? [] : [item.nodeExecutionId]);
+        const rows = new Map((await store.readCompletedNodes(run.runId, ids)).map(row => [row.nodeExecutionId, row]));
+        const branches = [...ends.entries()].sort(([a], [b]) => a - b).map(([index, item]) => {
+            const row = item.nodeExecutionId === null ? undefined : rows.get(item.nodeExecutionId);
+            if (row !== undefined && row.scopeId !== branchScopeId(parallelNodeExecutionId, index)) {
+                throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `${row.nodeExecutionId} is not a state of branch ${index} of ${parallelNodeExecutionId}.`);
+            }
+            // A branch that ended at its terminal or by an unrouted result ended with a decided state.
+            if ((item.via === "terminal" || item.via === "error") && row === undefined) {
+                throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Branch ${index} of ${parallelNodeExecutionId} ended without a decided state.`);
+            }
+            return { index, ended: item.via, nodeExecutionId: item.nodeExecutionId, row };
+        });
+        const succeeded = branches.filter(item => item.ended === "terminal" && item.row?.resultKind === "business" && item.row.outcome === "succeeded").length;
+        let result: NodeResultInput;
+        if (succeeded === total) {
+            const output: JsonValue = branches.map(item => item.row?.output ?? null);
+            const problems = node.outputSchema ? schemaSetFor(run.irSha256, ir.schemaDefs).validate(node.outputSchema, output) : [];
+            if (problems.length > 0) {
+                result = { ...runtimeError("invalid_output", `The joined output does not match ${node.outputSchema}.`, problemsJson(problems)), winner: "controller" };
+            } else {
+                try {
+                    result = { outcome: PARALLEL_JOINED, resultKind: "business", valueText: boundedCanonicalJson(output, "The joined output"), winner: "controller" };
+                } catch (error) {
+                    if (!(error instanceof WorkflowJsonError)) throw error;
+                    result = { ...runtimeError("invalid_output", error.message), winner: "controller" };
+                }
+            }
+        } else {
+            const report = (full: boolean): JsonValue => ({
+                joined: false, total, succeeded, failFast: node.failFast,
+                branches: branches.map(item => ({
+                    index: item.index, ended: item.ended, nodeExecutionId: item.nodeExecutionId,
+                    outcome: item.row?.outcome ?? null, resultKind: item.row?.resultKind ?? null,
+                    ...(full && item.row !== undefined ? (item.row.resultKind === "business" ? { output: item.row.output } : { error: item.row.error }) : {}),
+                })),
+                ...(full ? {} : { truncated: true }),
+            });
+            let valueText: string;
+            try { valueText = boundedCanonicalJson(report(true), "The blocked join's report"); }
+            catch (error) {
+                if (!(error instanceof WorkflowJsonError)) throw error;
+                valueText = boundedCanonicalJson(report(false), "The blocked join's report");
+            }
+            result = { outcome: PARALLEL_BLOCKED, resultKind: "business", valueText, winner: "controller" };
+        }
+        const stored = await store.completeNode(parallelNodeExecutionId, result, {
+            sessionId: run.workflowSessionId,
+            events: [{ eventType: result.resultKind === "business" ? "workflow.state_completed" : "workflow.state_failed", data: {
+                runId: run.runId, nodeExecutionId: parallelNodeExecutionId, stateId: node.id, step: executed.ordinal, outcome: result.outcome,
+                resultKind: result.resultKind, branches: total, succeeded,
+                ...(result.resultKind === "business"
+                    ? { outputPreview: jsonbSafeText(result.valueText, 1_000) }
+                    : { error: jsonbSafeText(result.valueText, 2_000) }),
+            } }],
+            update: { touch: true },
+        });
+        return { outcome: stored.node.outcome };
     });
 
     /**

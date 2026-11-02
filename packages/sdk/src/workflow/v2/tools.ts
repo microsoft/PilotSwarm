@@ -2,7 +2,7 @@ import type { SessionOwnerInfo } from "../../types.js";
 import type { WorkflowToolBinding } from "../tool-policy.js";
 import { assertJsonValue, isJsonObject, jsonbSafeText, previewJson, WorkflowJsonError, type JsonValue } from "./json.js";
 import { WORKFLOW_V2_MILESTONE_IR_VERSION } from "./compiler.js";
-import { describeWorkflowV2States } from "./runtime.js";
+import { describeWorkflowV2States, parseBranchScope, ROOT_SCOPE } from "./runtime.js";
 import {
     controlWorkflowV2Run,
     createWorkflowV2,
@@ -386,6 +386,9 @@ export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId
             nodeExecutions: nodes.map(node => ({
                 nodeExecutionId: node.nodeExecutionId, stateId: node.nodeId, ordinal: node.ordinal, state: node.state,
                 outcome: node.outcome, resultKind: node.resultKind, winner: node.winner, attempts: node.effectAttempts, kvRevision: node.kvRevision,
+                // A parallel branch's state (IR 8, INACTIVE): its branch's parallel state execution and index.
+                ...(node.scopeId !== ROOT_SCOPE ? { scopeId: node.scopeId, ...branchViewOf(node.scopeId) } : {}),
+                ...(node.nodeType === "parallel" && Array.isArray(node.input) ? { branches: node.input.length } : {}),
                 ...(node.deadlineAt !== null ? { deadline: node.deadlineAt.toISOString() } : {}),
                 ...(node.receive !== null ? { receive: { contract: node.receive.contract, from: node.receive.from, correlation: node.receive.correlation } } : {}),
                 ...(agents.has(node.nodeExecutionId) ? { agent: agentViewOf(agents.get(node.nodeExecutionId)!) } : {}),
@@ -407,6 +410,12 @@ export async function readWorkflowV2View(store: WorkflowStore, workflowSessionId
             })),
         } : null,
     };
+}
+
+/** A parallel branch's state, as read_workflow shows it: the parallel state execution its branch belongs to, and its index. */
+function branchViewOf(scopeId: string): { [key: string]: JsonValue } {
+    const scope = parseBranchScope(scopeId);
+    return scope === null ? {} : { branch: { parallelNodeExecutionId: scope.parallelNodeExecutionId, index: scope.index } };
 }
 
 /** An agent state's child, as read_workflow shows it: the session to open for its chat, and where its lifecycle is. */

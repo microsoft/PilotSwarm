@@ -178,3 +178,75 @@ by a turn without the inline control bridge, keeps the ordinary limit.
 
 Not covered here: the UI's composer and controls (B9), and denying a
 person's artifact upload into such a session (not in the design's list).
+
+## Parallel states and their join (design 02 parallel scope and join; D10; R21)
+
+A state of `type: parallel` runs one branch per item of a work manifest
+through a body graph of its own, and joins them. It compiles to IR 8 only
+when parallel states are enabled (the compile option `enableParallel`, set
+by a host that starts 1.9.0 runs); elsewhere it stays unsupported, exactly
+as before.
+
+```yaml
+review_changes:
+  type: parallel
+  forEach: "${inputs.changes}"   # one binding that gives a list, or a list
+  concurrency: 6                 # 1 to 16 active branches; default 1
+  join: all_required             # the only join of this release (D10)
+  failFast: false                # default: every branch ends, then the join
+  inputSchema: { $ref: "#/schemas/ChangeManifest" }   # the whole manifest
+  outputSchema: { $ref: "#/schemas/AcceptedReviews" } # the joined outputs
+  body:
+    initial: review
+    states: { ... }              # any state except another parallel state
+  transition:
+    next: { joined: integrate, blocked: report, failure: failed }
+```
+
+- **The manifest is frozen at entry.** `forEach` is evaluated once, when the
+  state is admitted, and stored as the state's input: a list of at most 64
+  items that matches `inputSchema`. A value that is not a list, too many
+  items, or a schema mismatch fails the state with `invalid_input`.
+  Membership never changes afterwards; KV updates do not reach it.
+- **Branches.** Each item runs as a branch with its own scope
+  (`<parallel node execution>#<index>`), cursor, occurrence counters, input,
+  output and pending work. A branch starts at `body.initial` with its item
+  as its input; its states see `branch.item` and `branch.index` in their
+  bindings (scripts see `context.branch`). `branch` is refused outside a
+  body. Body routes stay in the body. State ids are unique across the
+  workflow, body states included.
+- **Concurrency is a ceiling.** At most `concurrency` branches are active;
+  the next item starts when one ends.
+- **A branch ends** at a body terminal (its output, checked against the
+  terminal's own schema, with the terminal's outcome; `succeeded` is
+  success, any other outcome is not), or when a result has no route in the
+  body (a runtime error or an undeclared outcome ends the branch; it never
+  reaches the workflow's catch-all state or fails the run).
+- **The join is all_required.** When every branch ended, the state's node
+  is decided in one compare-and-swap: `joined` when every branch succeeded
+  (its output is their outputs in manifest order, checked against
+  `outputSchema`; a mismatch is `invalid_output`), otherwise `blocked`. A
+  blocked join's output lists every branch in manifest order: how it ended
+  (`terminal`, `error`, `cancelled`, `not_started`), the node execution that
+  ended it, its outcome and its output or error. No failed branch is
+  silently excluded. An empty manifest joins at once with `[]`.
+- **failFast.** Off by default: every branch ends before the join. With
+  `failFast: true`, the first branch that does not succeed cancels the
+  others: their pending states are decided `cancelled` with winner
+  `fail_fast` (`cancelBranchScopes`, one transaction), the effect of each
+  such script is asked to stop, the child of each such agent state is ended,
+  and the items not started are reported `not_started`.
+- **Lifecycle.** A cancel, deletion or stop of the run decides the pending
+  parallel state with its branches' pending work. A parallel state's own
+  pending node is not work: it neither holds a stop past its branches'
+  settling nor counts as an expired grace, and `read_workflow`'s `settled`
+  ignores it.
+- **Reading.** `read_workflow`'s graph marks each body state with its
+  `parallel` state; a branch's node execution shows its `scopeId` and
+  `branch` (parallel node execution and index); a parallel node execution
+  shows its number of `branches`.
+
+Not covered here: explicit `join` states, quorum or any-of joins (refused,
+D10), per-branch attempt/head/round identity (a definition carries that in
+its items and outputs), the UI's branch view (B9) and the formal model of
+the join.
