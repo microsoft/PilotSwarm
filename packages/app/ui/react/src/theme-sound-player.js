@@ -125,8 +125,19 @@ export function createThemeSoundPlayer({ win = typeof window === "undefined" ? n
     let volume = 0;
     let startedAt = 0;
     let timer = null;
-    let stopTimer = null;
+    // A voice that is fading out, with the timer that will stop it. Kept so
+    // that turning the sound back on during the fade reuses it, and so that a
+    // second fade or dispose() can never lose track of it.
+    let fading = null;
     const cache = {};
+
+    const stopFadingNow = () => {
+        if (!fading) return;
+        clearTimeout(fading.handle);
+        const { stop } = fading;
+        fading = null;
+        stop();
+    };
 
     const setMarker = (value) => {
         if (!doc) return;
@@ -167,10 +178,14 @@ export function createThemeSoundPlayer({ win = typeof window === "undefined" ? n
             master.gain.setTargetAtTime(0, ctx.currentTime, Math.max(0.02, seconds / 4));
         }
         if (stopVoice) {
-            const stop = stopVoice;
+            stopFadingNow();
+            const entry = { stop: stopVoice, id: sound?.id ?? null, handle: null };
             stopVoice = null;
-            clearTimeout(stopTimer);
-            stopTimer = setTimeout(stop, seconds * 1000 + 300);
+            entry.handle = setTimeout(() => {
+                if (fading === entry) fading = null;
+                entry.stop();
+            }, seconds * 1000 + 300);
+            fading = entry;
         }
     };
 
@@ -184,6 +199,15 @@ export function createThemeSoundPlayer({ win = typeof window === "undefined" ? n
         if (!ensureContext()) return;
         const elapsed = (Date.now() - startedAt) / 1000;
         const level = themeSoundEnvelope(elapsed, sound);
+        if (level > 0 && !stopVoice && fading) {
+            if (fading.id === sound.id) {
+                clearTimeout(fading.handle);
+                stopVoice = fading.stop;
+                fading = null;
+            } else {
+                stopFadingNow();
+            }
+        }
         if (level > 0 && !stopVoice && ctx.state === "running") stopVoice = VOICES[sound.id](ctx, master, cache);
         if (level === 0 && stopVoice) {
             stopVoice();
@@ -234,6 +258,7 @@ export function createThemeSoundPlayer({ win = typeof window === "undefined" ? n
         dispose() {
             enabled = false;
             silence(0.05);
+            stopFadingNow();
             setMarker(null);
             unschedule();
             if (ctx) ctx.close().catch(() => {});
