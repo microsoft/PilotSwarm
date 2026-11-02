@@ -317,6 +317,14 @@ use runtime: node."
   Registering a workflow from YAML in the portal is a possible later
   feature.
 
+`spawn_workflow` is offered and limited like `spawn_agent`: every agent
+session has it where workflows run (the read-only tuner does not), a
+workflow is a child, so the session-creation allow-list in
+`session-policy.json` does not apply to it, and the same two limits hold.
+An agent at the deepest nesting level (2) cannot start one, and an agent
+with 50 running child sessions, sub-agents and workflows together, must
+wait for one to finish.
+
 An invalid document or inputs that do not match its `inputs` schema are
 refused with status 400 and a code such as `WORKFLOW_INVALID`,
 `WORKFLOW_STATE_TYPE_UNSUPPORTED` or `WORKFLOW_INPUT_INVALID`. The parent is

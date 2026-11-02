@@ -2697,6 +2697,13 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 // Read from this session's live CLI session, during its turn, on this worker.
                 captureToolBinding: () => sessionManager.captureWorkflowToolBinding(input.sessionId),
                 createWorkflowSession: async (config, admission) => (await getInlineClient()).createWorkflowSession(config, admission),
+                limits: {
+                    nestingLevel: input.nestingLevel ?? 0,
+                    maxNestingLevel: MAX_NESTING_LEVEL,
+                    runningChildren: async () => (await loadDirectChildSessions())
+                        .filter(child => !child.isSystem && child.status === "running").length,
+                    maxRunningChildren: MAX_SUB_AGENTS,
+                },
             }),
 
             /**

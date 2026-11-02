@@ -19,6 +19,16 @@ export interface SpawnWorkflowDeps {
         config: WorkflowSessionConfig & { notifyParent?: boolean },
         admission: { toolBinding: WorkflowToolBinding },
     ) => Promise<{ sessionId: string; workflowName: string }>;
+    /**
+     * spawn_agent's limits: a workflow is a child like a sub-agent, so the
+     * caller's nesting level and its running children count the same way.
+     */
+    limits?: {
+        nestingLevel: number;
+        maxNestingLevel: number;
+        runningChildren: () => Promise<number>;
+        maxRunningChildren: number;
+    };
 }
 
 /**
@@ -47,6 +57,11 @@ export async function spawnWorkflowFromTool(
         if (allowed.size === 0) {
             return `[SYSTEM: spawn_workflow refused — ${WORKFLOWS_DISABLED_MESSAGE}]`;
         }
+        const limits = deps.limits;
+        if (limits && limits.nestingLevel + 1 > limits.maxNestingLevel) {
+            return `[SYSTEM: spawn_workflow refused — you are already at nesting level ${limits.nestingLevel} (max ${limits.maxNestingLevel}). `
+                + "Sessions at this depth cannot start child sessions. Handle the task directly instead. Nothing was started.]";
+        }
         // apiVersion first: the routing table picks the engine, or refuses.
         const route = routeWorkflowApiVersion(args.yaml);
         if (!route.ok) return `[SYSTEM: spawn_workflow refused — ${route.message} Nothing was started.]`;
@@ -72,6 +87,13 @@ export async function spawnWorkflowFromTool(
         if (existing && existing.state !== "pending") {
             return `[SYSTEM: spawn_workflow found the existing workflow session ${workflowSessionId} for this key `
                 + `("${existing.title ?? workflowName}", state ${existing.state ?? "unknown"}). Nothing new was started; pass a different key for another run.]`;
+        }
+        if (limits) {
+            const running = await limits.runningChildren();
+            if (running >= limits.maxRunningChildren) {
+                return `[SYSTEM: spawn_workflow refused — you already have ${running} running child sessions (sub-agents and workflows; max ${limits.maxRunningChildren}). `
+                    + "Wait for some to finish before starting another. Nothing was started.]";
+            }
         }
         const owner = await deps.resolveOwner().catch(() => null);
         const notify = args.notify_on_completion !== false;

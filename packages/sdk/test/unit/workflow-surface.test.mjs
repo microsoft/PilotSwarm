@@ -284,6 +284,33 @@ test("spawn_workflow can run without waking the parent, and reports a failed cre
     );
 });
 
+test("spawn_workflow keeps spawn_agent's limits: nesting depth and running children", async () => {
+    const limits = (nestingLevel, running) => ({
+        nestingLevel, maxNestingLevel: 2, maxRunningChildren: 50, runningChildren: async () => running,
+    });
+    const deep = spawnDeps({ limits: limits(2, 0) });
+    assert.equal(
+        await spawnWorkflowFromTool({ yaml: yaml() }, { toolCallId: "n1" }, deep.deps),
+        "[SYSTEM: spawn_workflow refused — you are already at nesting level 2 (max 2). "
+            + "Sessions at this depth cannot start child sessions. Handle the task directly instead. Nothing was started.]",
+    );
+    assert.equal(deep.created.length, 0);
+    const full = spawnDeps({ limits: limits(1, 50) });
+    assert.equal(
+        await spawnWorkflowFromTool({ yaml: yaml() }, { toolCallId: "n2" }, full.deps),
+        "[SYSTEM: spawn_workflow refused — you already have 50 running child sessions (sub-agents and workflows; max 50). "
+            + "Wait for some to finish before starting another. Nothing was started.]",
+    );
+    assert.equal(full.created.length, 0);
+    const room = spawnDeps({ limits: limits(1, 49) });
+    assert.match(await spawnWorkflowFromTool({ yaml: yaml() }, { toolCallId: "n3" }, room.deps), /started workflow session/);
+    assert.equal(room.created.length, 1);
+    // A re-sent call for an existing run still answers with that run, even at the cap.
+    const again = spawnDeps({ limits: limits(1, 50) });
+    again.sessions.set(workflowChildSessionId("parent-agent", "nightly", undefined), { title: "Workflow: limits", state: "running" });
+    assert.match(await spawnWorkflowFromTool({ yaml: yaml(), key: "nightly" }, { toolCallId: "n4" }, again.deps), /found the existing workflow session/);
+});
+
 test("spawn_workflow turns a parent or admission refusal into a plain refusal", async () => {
     const refusing = (code, message) => spawnDeps({
         createWorkflowSession: async () => { throw Object.assign(new Error(message), { code }); },
