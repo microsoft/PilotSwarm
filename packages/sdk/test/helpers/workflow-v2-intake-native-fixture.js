@@ -35,7 +35,9 @@
  * what it persisted.
  *
  * Nothing is registered in a production registry, and no session starts on
- * 1.0.83 outside the test's own provider schema.
+ * 1.0.83 outside the test's own provider schema. A case may crash its
+ * runtime and start another on the same provider (`restart`), to have a
+ * work item delivered again with the same scheduled input.
  */
 import { createRequire } from "node:module";
 import { vi, expect } from "vitest";
@@ -150,7 +152,15 @@ function withoutBudgetGate(catalog) {
  * `script(call, prompt, opts)` plays the model session's n-th run (see
  * scriptedModelSession). `options.workspaceProvider` serves workspace
  * attaches (a fake provider), with `options.managerExtras` for the session
- * manager methods a workspace session needs.
+ * manager methods a workspace session needs. `options.runtimeOptions` are
+ * merged into each native runtime's options (shorter lock timeouts for a
+ * crash case). `options.beforeActivity(name, input)`, when it returns a
+ * promise, holds that activity's real handler until it settles (a held
+ * write, to order a race); the handler itself is never replaced.
+ * `restart()` crashes the running runtime (its in-flight activity is never
+ * completed by it: the lock it held runs out) and starts another on the
+ * same provider with the same registrations, so a work item it held is
+ * delivered again with the same scheduled input.
  */
 export async function intakeNativeFixture(env, script, options = {}) {
     const intake = await intakeActivityFixture(env);
@@ -158,12 +168,6 @@ export async function intakeNativeFixture(env, script, options = {}) {
     try {
         const provider = await PostgresProvider.connectWithSchema(env.store, env.duroxideSchema);
         const client = new Client(provider);
-        const workerNodeId = `${env.runId}-intake-native`;
-        worker = new Runtime(provider, {
-            workerNodeId, workerConcurrency: 2, orchestrationConcurrency: 1,
-            dispatcherPollIntervalMs: 20, workerLockTimeoutMs: 10_000, maxSessionsPerRuntime: 10, sessionIdleTimeoutMs: 3_600_000,
-            workerTagFilter: { defaultAnd: TAGS }, logLevel: "error",
-        });
         const model = scriptedModelSession(script);
         // Only this fixture's session runs on this worker's scripted model; an instance an earlier test left in the schema
         // never reaches it.
@@ -189,29 +193,52 @@ export async function intakeNativeFixture(env, script, options = {}) {
             // The history size check reads this test's own provider.
             getOrchestrationStats: async (_ctx, input) => client.getOrchestrationStats(`session-${input.sessionId}`),
         };
-        const adapter = {
-            registerActivity(name, handler) {
-                worker.registerActivity(name, async (ctx, input) => {
-                    const call = { name, tag: ctx.tag?.() ?? null, input };
-                    calls.push(call);
-                    try {
-                        const result = await (overrides[name] ?? handler)(ctx, input);
-                        call.result = result;
-                        return result;
-                    } catch (error) {
-                        call.error = errorDetails(error);
-                        throw error;
-                    }
-                });
-            },
+        let generation = 0;
+        /** A native runtime on the provider with every registration of a worker that runs 1.0.83; started. */
+        const startRuntime = async () => {
+            generation += 1;
+            const workerNodeId = `${env.runId}-intake-native-${generation}`;
+            const runtime = new Runtime(provider, {
+                workerNodeId, workerConcurrency: 2, orchestrationConcurrency: 1,
+                dispatcherPollIntervalMs: 20, workerLockTimeoutMs: 10_000, maxSessionsPerRuntime: 10, sessionIdleTimeoutMs: 3_600_000,
+                workerTagFilter: { defaultAnd: TAGS }, logLevel: "error", ...(options.runtimeOptions ?? {}),
+            });
+            const runtimeGeneration = generation;
+            const adapter = {
+                registerActivity(name, handler) {
+                    runtime.registerActivity(name, async (ctx, input) => {
+                        const call = { name, tag: ctx.tag?.() ?? null, input, runtime: runtimeGeneration };
+                        calls.push(call);
+                        try {
+                            const held = options.beforeActivity?.(name, input);
+                            if (held) await held;
+                            const result = await (overrides[name] ?? handler)(ctx, input);
+                            call.result = result;
+                            return result;
+                        } catch (error) {
+                            call.error = errorDetails(error);
+                            throw error;
+                        }
+                    });
+                },
+            };
+            registerActivities(adapter, sessionManager, null, undefined, withoutBudgetGate(intake.catalog), provider,
+                undefined, undefined, undefined, undefined, null, [], undefined, null, workerNodeId, null, { workflowIntakeTurns: true });
+            // No fact store here: the knowledge index is empty.
+            adapter.registerActivity("loadKnowledgeIndex", async () => ({ skills: [], asks: [] }));
+            registerWorkflowIntakeActivities(adapter, intake.deps);
+            runtime.registerOrchestrationVersioned(DURABLE_SESSION_ORCHESTRATION_NAME, VERSION, intakeOrchestration83);
+            await runtime.start();
+            return runtime;
         };
-        registerActivities(adapter, sessionManager, null, undefined, withoutBudgetGate(intake.catalog), provider,
-            undefined, undefined, undefined, undefined, null, [], undefined, null, workerNodeId, null, { workflowIntakeTurns: true });
-        // No fact store here: the knowledge index is empty.
-        adapter.registerActivity("loadKnowledgeIndex", async () => ({ skills: [], asks: [] }));
-        registerWorkflowIntakeActivities(adapter, intake.deps);
-        worker.registerOrchestrationVersioned(DURABLE_SESSION_ORCHESTRATION_NAME, VERSION, intakeOrchestration83);
-        await worker.start();
+        worker = await startRuntime();
+        /** Crash the running runtime, its in-flight work never completed by it, and start another (see the fixture's comment). */
+        const restart = async () => {
+            const crashed = worker;
+            worker = null;
+            await crashed.shutdown(500);
+            worker = await startRuntime();
+        };
 
         const sessionId = intake.recipientSessionId;
         const instanceId = `session-${sessionId}`;
@@ -350,10 +377,12 @@ export async function intakeNativeFixture(env, script, options = {}) {
             }
         };
         return {
-            ...intake, client, provider, worker, calls, prompts: model.prompts, sessionId, instanceId, start, deliver, say, customStatus, until,
-            histories, failure, receipt,
+            ...intake, client, provider, calls, prompts: model.prompts, sessionId, instanceId, start, deliver, say, customStatus, until,
+            histories, failure, receipt, restart,
+            /** The runtime running now (after a restart, the new one). */
+            get worker() { return worker; },
             async close() {
-                try { await worker.shutdown(3_000); } finally { await intake.close(); }
+                try { if (worker) await worker.shutdown(3_000); } finally { await intake.close(); }
             },
         };
     } catch (error) {
