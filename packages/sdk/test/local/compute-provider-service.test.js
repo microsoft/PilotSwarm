@@ -377,3 +377,71 @@ describe("a compute provider served as a registered provider service", () => {
         });
     });
 });
+
+describe("checking a compute target", () => {
+    it("takes the same bridged, handshaken path a turn does", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const inner = createProcessComputeProvider({ rootDir: join(env.baseDir, "compute-probe") });
+        const service = await serveComputeProvider(inner, { auth: recognizesPilotSwarm });
+        try {
+            await registerService(env, "probe-provider", service.baseUrl);
+            const target = await registerTarget(env, "probe", "process");
+
+            await withScriptedModel(env, {
+                respond: () => ({ content: "nothing to say" }),
+                worker: { computeServiceCredentials },
+            }, async ({ worker }) => {
+                // What the management probe runs on a worker.
+                const checked = await worker.sessionManager.probeComputeTargetById(target.id, null);
+                expect(checked.ok, JSON.stringify(checked)).toBe(true);
+                expect(checked.target.advertised, "a check records what the target offers").toBeTruthy();
+                expect(checked.target.advertised.os).toBeTruthy();
+
+                // It really went through the service, and through a host
+                // component that answered the handshake: the runtime was
+                // reached, and no connection was refused on the way.
+                expect(service.calls.bind).toBeGreaterThanOrEqual(1);
+                expect(service.calls.connect).toBeGreaterThanOrEqual(1);
+                expect(service.calls.release).toBeGreaterThanOrEqual(1);
+                expect(inner.hosts(), "the probe leaves no host behind").toHaveLength(0);
+            });
+        } finally {
+            await service.close();
+            await inner.stopAll();
+        }
+    });
+
+    it("refuses to check a target whose host cannot prove itself", { timeout: TIMEOUT }, async () => {
+        const env = await getEnv();
+        const inner = createProcessComputeProvider({ rootDir: join(env.baseDir, "compute-probe-bad") });
+        const liar = {
+            ...inner,
+            kind: "process",
+            async connect(req) {
+                const connected = await inner.connect(req);
+                if (!connected.ok) return connected;
+                return {
+                    ...connected,
+                    endpoint: { ...connected.endpoint, handshake: { bindingId: connected.endpoint.handshake.bindingId, secret: "0".repeat(64) } },
+                };
+            },
+        };
+        const service = await serveComputeProvider(liar, { auth: recognizesPilotSwarm });
+        try {
+            await registerService(env, "probe-bad-provider", service.baseUrl);
+            const target = await registerTarget(env, "probe-bad", "process");
+
+            await withScriptedModel(env, {
+                respond: () => ({ content: "nothing to say" }),
+                worker: { computeServiceCredentials },
+            }, async ({ worker }) => {
+                const checked = await worker.sessionManager.probeComputeTargetById(target.id, null);
+                expect(checked.ok).toBe(false);
+                expect(checked.code).toBe("COMPUTE_HANDSHAKE_FAILED");
+            });
+        } finally {
+            await service.close();
+            await inner.stopAll();
+        }
+    });
+});

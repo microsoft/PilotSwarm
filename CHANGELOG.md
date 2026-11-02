@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+**Compute providers (experimental).** A session's agent runtime can run on a
+host chosen for that session instead of inside the worker. An administrator
+registers a compute target, and a user picks one when creating a session;
+targets advertise what they offer, including models a host serves with its own
+access. Real providers run as their own services, registered with the identity
+a worker must see from them, and reached through one generic built-in adapter
+over a versioned HTTPS protocol; the credential a worker presents comes from a
+deployment hook, never from the database. Every connection to a runtime outside
+the worker goes through a local bridge and a mutual handshake with a small
+PilotSwarm component on the host, so each end proves it holds that binding's
+secret before anything of the turn crosses. PilotSwarm keeps a lease while it
+uses a host and sends one notice when a session tree is finished with it; what
+happens to a host nobody needs is the provider's decision. Compute failures say
+whether retrying can help: a permanent one stops the turn at once with a clear
+reason and leaves the session ready for the next prompt, while a temporary one
+keeps today's retries. Compute targets are managed through the management
+client, the Web API and MCP, and can be checked before use. Sessions without a
+compute target are unchanged. The exported interface is experimental and may
+change before release.
+
 **Provider request headers.** A provider type in the model catalog may set
 `headers`: fixed HTTP headers sent on every model request, for endpoints that
 need a header besides the credential. Shared and personal instances inherit
