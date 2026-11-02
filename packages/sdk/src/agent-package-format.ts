@@ -895,6 +895,10 @@ export async function validateAgentPackageDir(
                         err(errors, "mcp_allowed_agents_forbidden",
                             `.mcp.json server "${serverName}": "allowedAgents" is a deployment-catalog field — a package cannot restrict who uses a server (the worker ignores it)`, ".mcp.json");
                     }
+                    if ("remote" in cfg) {
+                        err(errors, "mcp_remote_forbidden",
+                            `.mcp.json server "${serverName}": "remote" is a deployment-catalog field — only a deployment decides whether one of ITS servers may be reached by a session whose agent runs on a compute host (the worker ignores it)`, ".mcp.json");
+                    }
                     if (reservedMcp.has(serverName)) {
                         err(errors, "reserved_mcp_server_name",
                             `.mcp.json server "${serverName}" collides with a deployment catalog entry; workers drop a package definition of that name — pick another name`, ".mcp.json");

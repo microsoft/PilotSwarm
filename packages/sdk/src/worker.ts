@@ -20,7 +20,8 @@ import { loadAgentFiles, validateAgentDefinition } from "./agent-loader.js";
 import { clipDescription, composeDeclaredSkillsPrompt, loadSkillsSync, type Skill } from "./skills.js";
 import { resolveSystemAgentSessionPlans, startSystemAgents } from "./system-agents.js";
 import { firstRuntimeModel } from "./provider-catalog.js";
-import { loadMcpConfig, mcpAllowlistAdmits, type McpAllowlistAgent } from "./mcp-loader.js";
+import { mcpAllowlistAdmits, readMcpConfig, type McpAllowlistAgent } from "./mcp-loader.js";
+import type { McpServerOrigin } from "./compute-mcp.js";
 
 import { createModelProvidersReloader, type ModelProviderRegistry } from "./model-providers.js";
 import { createArtifactTools } from "./artifact-tools.js";
@@ -273,6 +274,16 @@ export class PilotSwarmWorker {
     private _directConfigMcpNames: string[] = [];
     /** Resolved base MCP map applied to EVERY session (base-agent opt-ins + direct config). */
     private _baseMcpServers: Record<string, any> = {};
+    /**
+     * Where each catalog entry came from, and what it was before any
+     * worker value was resolved into it.
+     *
+     * Only a session whose agent runs on a compute host reads this: it is
+     * what decides whether a server's code is the deployment's, and so
+     * stays on the trusted side, or a package's, and so goes to the host
+     * built from the entry as it was written (see compute-mcp.ts).
+     */
+    private _mcpServerOrigins = new Map<string, McpServerOrigin>();
     /** Model provider registry — multi-provider LLM config. */
     private _modelProviders: ModelProviderRegistry | null = null;
     /** Provider-type templates, including types with no static credential. */
@@ -434,6 +445,7 @@ export class PilotSwarmWorker {
                 baseMcpServers: this._baseMcpServers,
                 mcpAllowedAgents: this._mcpAllowedAgents,
                 deploymentMcpNames: this._deploymentMcpNames,
+                mcpServerOrigins: this._mcpServerOrigins,
                 provider: options.provider,
                 modelProviders: this._modelProviders ?? undefined,
                 turnTimeoutMs: this.config.turnTimeoutMs,
@@ -453,6 +465,10 @@ export class PilotSwarmWorker {
             allowNonLoopbackEndpoints: options.computeAllowNonLoopbackEndpoints,
             requireCompute: options.requireCompute
                 ?? ["1", "true", "yes", "on"].includes((process.env.PILOTSWARM_REQUIRE_COMPUTE ?? "").trim().toLowerCase()),
+            copyLimits: {
+                maxBytes: options.computeCopyMaxBytes ?? parsePositiveInt(process.env.PILOTSWARM_COMPUTE_COPY_MAX_BYTES),
+                maxFiles: options.computeCopyMaxFiles ?? parsePositiveInt(process.env.PILOTSWARM_COMPUTE_COPY_MAX_FILES),
+            },
         });
     }
 
@@ -1292,6 +1308,7 @@ export class PilotSwarmWorker {
         this._availableBundledAgents.clear();
         for (const key of Object.keys(this._loadedMcpServers)) delete this._loadedMcpServers[key];
         for (const key of Object.keys(this._agentMcpServers)) delete this._agentMcpServers[key];
+        this._mcpServerOrigins.clear();
         for (const key of Object.keys(this._agentPromptLookup)) delete this._agentPromptLookup[key];
         this._defaultMcpServerNames.length = 0;
         this._mcpAllowedAgents.clear();
@@ -1656,7 +1673,17 @@ export class PilotSwarmWorker {
             // Direct worker-config servers keep their documented every-session
             // semantics (legacy): they join the catalog AND the base map.
             this._directConfigMcpNames = Object.keys(this.config.mcpServers);
-            for (const name of this._directConfigMcpNames) this._deploymentMcpNames.add(name);
+            for (const name of this._directConfigMcpNames) {
+                this._deploymentMcpNames.add(name);
+                // Configured by the deployment in its own worker options:
+                // the deployment's code, with the deployment's values in
+                // it, so it stays on the trusted side like any other.
+                this._mcpServerOrigins.set(name, {
+                    origin: "deployment", dir: "",
+                    raw: (this.config.mcpServers as any)[name],
+                    remote: (this.config.mcpServers as any)[name]?.remote !== false,
+                });
+            }
         }
         source.revision = capabilityHash({ artifacts: source.artifacts, mcp: source.mcpServers });
         this._capabilitySources.push(source);
@@ -1783,6 +1810,11 @@ export class PilotSwarmWorker {
                 this._mcpAllowedAgents.set(name, allowed);
             }
             if ("allowedAgents" in cfg) delete cfg.allowedAgents;
+            // `remote` — a deployment's own choice about whether this
+            // server may be reached by a session whose agent runs
+            // elsewhere. Remembered with the entry's origin, then
+            // stripped: it must never reach the Copilot CLI either.
+            if ("remote" in cfg) delete cfg.remote;
             // A restricted server never joins the default set: "default": true
             // would hand it to every agent that inherits defaults, which is
             // exactly what the allowlist exists to prevent.
@@ -2243,9 +2275,10 @@ export class PilotSwarmWorker {
         // or not), and may not restrict entries itself — `allowedAgents` is a
         // deployment-catalog field. Deployment dirs load before package dirs,
         // so every deployment name is known when a package tries to shadow it.
-        const mcpConfig = loadMcpConfig(absDir);
+        const mcpConfig = readMcpConfig(absDir);
         const mcpPackageProvenance = this._packageDirOwners.get(absDir);
-        for (const [name, cfg] of Object.entries(mcpConfig)) {
+        for (const [name, entry] of Object.entries(mcpConfig)) {
+            const cfg = entry.config as any;
             if (mcpPackageProvenance) {
                 if (this._deploymentMcpNames.has(name)) {
                     console.warn(`[PilotSwarmWorker] Package MCP server "${name}" cannot override a deployment catalog entry; definition dropped.`);
@@ -2259,9 +2292,23 @@ export class PilotSwarmWorker {
                     console.warn(`[PilotSwarmWorker] Package MCP server "${name}": "default" is a deployment-catalog field; ignored.`);
                     delete (cfg as any).default;
                 }
+                if (cfg && typeof cfg === "object" && "remote" in cfg) {
+                    console.warn(`[PilotSwarmWorker] Package MCP server "${name}": "remote" is a deployment-catalog field; ignored.`);
+                    delete (cfg as any).remote;
+                }
             } else {
                 this._deploymentMcpNames.add(name);
             }
+            // Where this entry came from, and what it said before any
+            // worker value was resolved into it. A package's server is
+            // built from the raw form for a session that runs elsewhere.
+            this._mcpServerOrigins.set(name, {
+                origin: mcpPackageProvenance ? "package" : "deployment",
+                dir: absDir,
+                packageId: mcpPackageProvenance?.packageId ?? null,
+                raw: entry.raw,
+                ...(mcpPackageProvenance ? {} : { remote: (entry.raw as any)?.remote !== false }),
+            });
             source.mcpServers[name] = structuredClone(cfg);
             source.artifacts.push({ kind: "mcp", name, description: `MCP server exported by ${namespace}` });
             this._loadedMcpServers[name] = cfg;
