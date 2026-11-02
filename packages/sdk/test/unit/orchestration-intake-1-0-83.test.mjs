@@ -24,7 +24,7 @@ import assert from "node:assert/strict";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { DURABLE_SESSION_ORCHESTRATION_REGISTRY } from "../../dist/orchestration-registry.js";
-import { createInitialState, deriveOptions } from "../../dist/orchestration_1_0_83/state.js";
+import { createInitialState, deriveOptions, ownedRetryOverrides } from "../../dist/orchestration_1_0_83/state.js";
 import { continueInput, continueInputWithPrompt, versionedContinueAsNew } from "../../dist/orchestration_1_0_83/lifecycle.js";
 import {
     INTAKE_MAX_HELD, INTAKE_MAX_HELD_ENTRY_BYTES, INTAKE_MAX_UNCLAIMED, IntakeShapeError, assertIntakeContinueAsNewTarget, carriedIntakeBytes,
@@ -154,10 +154,13 @@ const QUEUE_CHANGED_82 = [
 ];
 
 /**
- * The lines 1.0.83 adds to queue.ts that neither name the intake nor are a
- * comment or structure: the changed line above, the parts of
+ * The lines 1.0.83 adds to queue.ts that neither name the intake or the owed
+ * retry nor are a comment or structure: the changed line above, the parts of
  * intakeDeadlineFirst and of drain's intake race that reuse 1.0.82's own
- * expressions, and decide's return after the intake's own turn.
+ * expressions, decide's return after the intake's own turn, and, for the owed
+ * retry (ordinary retry ownership, review Q-W2-7), decide's dispatch, which
+ * reuses 1.0.82's processPrompt call shape, and the armed agent-poll timer
+ * that drain queues as a fired poll after it.
  */
 const QUEUE_ADDED_GENERIC = [
     "        !hasFifoItems(runtime) &&",
@@ -170,26 +173,38 @@ const QUEUE_ADDED_GENERIC = [
     "    return other === null || other.remainingMs > 0;",
     "            const now: number = yield ctx.utcNow();",
     "        return true;",
+    "        yield* processPrompt(",
+    "            runtime,",
+    "        );",
+    "    runtime.state.activeTimer = null;",
 ];
 
 /**
  * The lines of the frozen 1.0.82 turn.ts that 1.0.83 changes: its turns run
  * under the workflow-intake contract, a hydration give-up is noted to the
- * intake, and while a sent invocation's retry is held another turn neither
- * takes nor clears the retry's thrown-turn key (review D-W2-1).
+ * intake, the thrown-turn key is reused only by the attempt the intake asks
+ * about (intakeReusesThrownTurnKey), and a failed turn's retry continues as
+ * new owed apart from the pending prompt (ordinary retry ownership, review
+ * Q-W2-7: state.ts ownedRetryOverrides).
  */
 const TURN_CHANGED_82 = [
     '                runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "turn-control-v1");',
     "        if (state.needsHydration) return;",
     "        const reusedTurnKey = state.blobEnabled && state.retryCount > 0 && state.thrownTurnKey",
-    "        state.thrownTurnKey = null;",
     '    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "turn-control-v1");',
+    "        yield* versionedContinueAsNew(runtime, continueInput(runtime, retryContinueOverrides(state, rc)));",
+    "            ...retryContinueOverrides(state, rc),",
+    "    yield* versionedContinueAsNew(runtime, continueInput(runtime, retryContinueOverrides(state, rc)));",
 ];
 
-/** Lines the file `name` of 1.0.83 adds that neither name the intake nor are a comment or structure must be listed in `generic`. */
+/**
+ * Lines the file `name` of 1.0.83 adds that neither name the intake or the
+ * owed retry (ownedRetry, review Q-W2-7) nor are a comment or structure must
+ * be listed in `generic`.
+ */
 function assertIntakeOnlyAdditions(name, added, generic = []) {
     for (const line of added) {
-        assert.ok(/intake|Intake/.test(line) || /^\s*(\}|continue;|\/\/.*|\/\*\*|\*\/|\*( .*)?)?\s*$/.test(line) || generic.includes(line), `${name}: ${line}`);
+        assert.ok(/intake|Intake|ownedRetry|OwnedRetry/.test(line) || /^\s*(\}|continue;|\/\/.*|\/\*\*|\*\/|\*( .*)?)?\s*$/.test(line) || generic.includes(line), `${name}: ${line}`);
     }
 }
 
@@ -212,15 +227,17 @@ test("1.0.83 is the frozen 1.0.82 plus the intake: the files it does not change 
             "        if (state.activeTimer) continue;        // drain will race the timer next iteration\n"
             + "        if (intakeDueAtMs(state.intake) !== null) continue; // 1.0.83: drain will race the intake's due write\n"));
     // queue.ts: only the intake's hooks (arrival in drain and the sweep, the tombstone latch first in both, the intake
-    // deadline's own race and its wake, each turn's stimulus, the pending prompt's dispatch and decide's turn for the
-    // intake alone). The one frozen line it changes is listed; every line it adds names the intake, is a comment or
+    // deadline's own race and its wake, each turn's stimulus and decide's turn for the intake alone) and the owed retry's
+    // (drain's sweep while it is owed, its timer release and decide's dispatch of it first; review Q-W2-7). The one
+    // frozen line it changes is listed; every line it adds names the intake or the owed retry, is a comment or
     // structure, or is one of the listed reuses of 1.0.82's own expressions.
     const queue82 = read("orchestration_1_0_82/queue.ts");
     const queue83 = read("orchestration_1_0_83/queue.ts");
     assert.deepEqual(linesOnly(queue82, queue83).sort(), [...QUEUE_CHANGED_82].sort());
     assertIntakeOnlyAdditions("queue.ts", linesOnly(queue83, queue82), QUEUE_ADDED_GENERIC);
-    // turn.ts: only the intake's hooks (each attempt's carry, its dispatch and outcome, each timer turn's stimulus) and
-    // the listed frozen lines; every line it adds names the intake or is a comment or structure.
+    // turn.ts: only the intake's hooks (each attempt's carry, its dispatch and outcome, each timer turn's stimulus), the
+    // owed retry of a failed turn and the listed frozen lines; every line it adds names the intake or the owed retry or
+    // is a comment or structure.
     const turn82 = read("orchestration_1_0_82/turn.ts");
     const turn83 = read("orchestration_1_0_83/turn.ts");
     assert.deepEqual(linesOnly(turn82, turn83).sort(), [...TURN_CHANGED_82].sort());
@@ -240,9 +257,9 @@ const CAN_CALL_SITES = {
     "lifecycle.ts": ["continueInputWithPrompt(runtime, `Continue on ${newModelLabel}.`, {", "canInput);"],
     "runtime.ts": ["continueInput(runtime));", "continueInput(runtime));", "continueInput(runtime));"],
     "turn.ts": [
-        "continueInput(runtime, retryContinueOverrides(state, rc)));",
+        "continueInput(runtime, ownedRetryOverrides(retryContinueOverrides(state, rc))));",
         "continueInput(runtime, {",
-        "continueInput(runtime, retryContinueOverrides(state, rc)));",
+        "continueInput(runtime, ownedRetryOverrides(retryContinueOverrides(state, rc))));",
         "continueInputWithPrompt(runtime, result.forceContinuePrompt, {",
     ],
 };
@@ -294,11 +311,17 @@ function continuedAsNew(runtime, canInput, can = versionedContinueAsNew) {
 }
 
 const INPUT = { sessionId: "44444444-4444-4444-8444-444444444444", config: { model: "m" }, iteration: 3 };
+/** An owed retry (ordinary retry ownership, review Q-W2-7): a failed turn's whole prompt contract, its count and key. */
+const OWNED = {
+    prompt: "the failed turn's prompt", bootstrap: false, requiredTool: "report", cycleOrigin: null, clientMessageIds: ["cm-p"],
+    sender: { kind: "user", display: "Ann" }, attachments: [{ filename: "p.png", contentType: "image/png", sizeBytes: 10 }],
+    retryCount: 1, thrownTurnKey: null, fresh: false,
+};
 /**
- * VALID's sent invocation awaits its turn's retry, so an input that carries it carries the pending prompt's retry marker
- * (review D-W2-1), with that retry's count and thrown-turn key (review O-W2-3).
+ * VALID's sent invocation awaits its turn's retry, so an input that carries it carries the retry marker (review
+ * D-W2-1) and the owed retry that takes it (review Q-W2-7).
  */
-const RETRY = { intakeRetryInvocationId: "inv-1", intakeRetryAttempt: { retryCount: 1, thrownTurnKey: null } };
+const RETRY = { intakeRetryInvocationId: "inv-1", ownedRetry: OWNED };
 
 test("versionedContinueAsNew carries the intake state whatever built the input, and adds nothing when it is empty", () => {
     const withIntake = runtimeFor({ ...INPUT, intake: VALID, ...RETRY });
@@ -312,21 +335,25 @@ test("versionedContinueAsNew carries the intake state whatever built the input, 
     ]) {
         const can = continuedAsNew(withIntake, build(withIntake));
         assert.deepEqual(can.canInput.intake, VALID);
-        // The retry marker rides every continue-as-new with the pending prompt, and with it the retry's count and key.
+        // The retry marker rides every continue-as-new with the owed retry, apart from the pending prompt (review Q-W2-7).
         assert.equal(can.canInput.intakeRetryInvocationId, "inv-1");
-        assert.deepEqual(can.canInput.intakeRetryAttempt, { retryCount: 1, thrownTurnKey: null });
+        assert.deepEqual(can.canInput.ownedRetry, OWNED);
+        assert.notEqual(can.canInput.prompt, OWNED.prompt);
         assert.equal(Object.hasOwn(can.canInput, "intakeArrivalPending"), false);
         assert.equal(can.version, "1.0.83");
         assert.equal(can.canInput.sourceOrchestrationVersion, "1.0.83");
         // The carried form is a copy: changing it changes nothing in the state.
         can.canInput.intake.queue.length = 0;
         assert.equal(withIntake.state.intake.queue.length, 2);
+        can.canInput.ownedRetry.clientMessageIds.length = 0;
+        assert.deepEqual(withIntake.state.ownedRetry.clientMessageIds, ["cm-p"]);
     }
     // The carried form restores to the same state in the next execution.
     const next = runtimeFor(continuedAsNew(withIntake, continueInput(withIntake)).canInput);
     assert.deepEqual(next.state.intake, withIntake.state.intake);
     assert.equal(next.state.intakeRetryInvocationId, "inv-1");
-    assert.deepEqual(next.state.intakeRetryAttempt, { retryCount: 1, thrownTurnKey: null });
+    assert.deepEqual(next.state.ownedRetry, OWNED);
+    assert.equal(next.state.pendingPrompt, undefined);
 
     // Empty: no intake field, and the input is the one 1.0.82 builds, but for the version that wrote it.
     const empty = runtimeFor(INPUT);
@@ -335,31 +362,72 @@ test("versionedContinueAsNew carries the intake state whatever built the input, 
     const theirs = continuedAsNew(frozen, continueInput82(frozen), versionedContinueAsNew82).canInput;
     assert.equal(Object.hasOwn(ours, "intake"), false);
     assert.equal(Object.hasOwn(ours, "intakeRetryInvocationId"), false);
-    assert.equal(Object.hasOwn(ours, "intakeRetryAttempt"), false);
+    assert.equal(Object.hasOwn(ours, "ownedRetry"), false);
     assert.equal(Object.hasOwn(ours, "intakeArrivalPending"), false);
     assert.deepEqual({ ...ours, sourceOrchestrationVersion: "1.0.82" }, theirs);
-    // Stale fields on a built input are not carried for an empty state.
-    const stale = continuedAsNew(empty, { ...continueInput(empty), intake: VALID, ...RETRY, intakeArrivalPending: true }).canInput;
+    // Stale intake fields on a built input are not carried for an empty state.
+    const stale = continuedAsNew(empty, {
+        ...continueInput(empty), intake: VALID, intakeRetryInvocationId: "inv-1", intakeArrivalPending: true,
+    }).canInput;
     assert.equal(Object.hasOwn(stale, "intake"), false);
     assert.equal(Object.hasOwn(stale, "intakeRetryInvocationId"), false);
-    assert.equal(Object.hasOwn(stale, "intakeRetryAttempt"), false);
+    assert.equal(Object.hasOwn(stale, "ownedRetry"), false);
     assert.equal(Object.hasOwn(stale, "intakeArrivalPending"), false);
 });
 
-test("review O-W2-3: a retry's own continue-as-new gives the held retry its count and key, kept through every later one; review O-W2-5: an unanswered arrival's flag rides", () => {
-    // The first continue-as-new after the marker is set is the retry's own: its count and key are taken from it.
-    const marked = runtimeFor({ ...INPUT, intake: VALID, ...RETRY });
-    marked.state.intakeRetryAttempt = null;
-    const first = continuedAsNew(marked, { ...continueInput(marked), retryCount: 2, thrownTurnKey: "key-T" }).canInput;
-    assert.deepEqual(first.intakeRetryAttempt, { retryCount: 2, thrownTurnKey: "key-T" });
-    // A later continue-as-new keeps them, whatever the session's own count and key became meanwhile.
-    const held = runtimeFor(first);
-    assert.deepEqual(held.state.intakeRetryAttempt, { retryCount: 2, thrownTurnKey: "key-T" });
-    held.state.retryCount = 0;
-    held.state.thrownTurnKey = null;
-    const later = continuedAsNew(held, continueInput(held)).canInput;
-    assert.deepEqual(later.intakeRetryAttempt, { retryCount: 2, thrownTurnKey: "key-T" });
-    assert.equal(later.retryCount, 0);
+test("review Q-W2-7: a failed turn's retry continues as new owed apart from the pending prompt, and every later continue-as-new carries both; review O-W2-5: an unanswered arrival's flag rides", () => {
+    // A follow-up U is pending with its own fields when turn P fails and retries.
+    const U = {
+        prompt: "U: a child's summary", clientMessageIds: ["cm-u"], sender: { kind: "agent", display: "child" },
+        attachments: [{ filename: "u.png", contentType: "image/png", sizeBytes: 20 }], requiredTool: "other", cycleOrigin: "cron",
+        bootstrapPrompt: true,
+    };
+    const failing = runtimeFor({ ...INPUT, ...U });
+    failing.state.retryCount = 2;
+    // What 1.0.82 gives P's retry (turn.ts retryContinueOverrides): P's prompt and envelope, its count and the thrown key.
+    const retry = {
+        prompt: OWNED.prompt, requiredTool: OWNED.requiredTool, clientMessageIds: OWNED.clientMessageIds, sender: OWNED.sender,
+        attachments: OWNED.attachments, retryCount: 2, needsHydration: true, thrownTurnKey: "key-T",
+    };
+    const owed = { ...OWNED, retryCount: 2, thrownTurnKey: "key-T" };
+    const can = continuedAsNew(failing, continueInput(failing, ownedRetryOverrides(retry))).canInput;
+    // U keeps the top-level prompt and every one of its own fields; P is owed whole, and nothing of either leaks.
+    assert.equal(can.prompt, U.prompt);
+    assert.deepEqual(can.clientMessageIds, U.clientMessageIds);
+    assert.deepEqual(can.sender, U.sender);
+    assert.deepEqual(can.attachments, U.attachments);
+    assert.equal(can.requiredTool, U.requiredTool);
+    assert.equal(can.cycleOrigin, U.cycleOrigin);
+    assert.equal(can.bootstrapPrompt, true);
+    assert.deepEqual(can.ownedRetry, owed);
+    assert.equal(can.needsHydration, true);
+    assert.equal(Object.hasOwn(can, "thrownTurnKey"), false);
+    // The next execution restores both apart: U pending with its fields, P owed; no attempt holds a key before P's dispatch.
+    const held = runtimeFor(can);
+    assert.equal(held.state.pendingPrompt, U.prompt);
+    assert.deepEqual(held.state.pendingClientMessageIds, U.clientMessageIds);
+    assert.deepEqual(held.state.pendingSender, U.sender);
+    assert.deepEqual(held.state.pendingAttachments, U.attachments);
+    assert.equal(held.state.pendingRequiredTool, U.requiredTool);
+    assert.equal(held.state.pendingCycleOrigin, U.cycleOrigin);
+    assert.equal(held.state.bootstrapPrompt, true);
+    assert.deepEqual(held.state.ownedRetry, owed);
+    assert.equal(held.state.thrownTurnKey, null);
+    // A later continue-as-new that merges new text (set_model's) merges it into U and carries P unchanged.
+    const later = continuedAsNew(held, continueInputWithPrompt(held, "Continue on another model.")).canInput;
+    assert.equal(later.prompt, `${U.prompt}\n\nContinue on another model.`);
+    assert.deepEqual(later.clientMessageIds, U.clientMessageIds);
+    assert.deepEqual(later.ownedRetry, owed);
+    // A lossy handoff's retry is fresh: count 0 and no key, so it never adopts a saved turn.
+    assert.deepEqual(ownedRetryOverrides(retry, true).ownedRetry, { ...OWNED, retryCount: 0, thrownTurnKey: null, fresh: true });
+    // Never two owed retries, and never the marker without one: both are broken invariants and fail the execution.
+    const invariant = error => error?.name === "IntakeInvariantError";
+    assert.throws(() => versionedContinueAsNew(held, continueInput(held, ownedRetryOverrides(retry))).next(), invariant);
+    const orphan = runtimeFor({ ...INPUT, intake: VALID, ...RETRY });
+    orphan.state.ownedRetry = null;
+    assert.throws(() => versionedContinueAsNew(orphan, continueInput(orphan)).next(), invariant);
+    // An empty retry prompt is no retry: it fails at once.
+    assert.throws(() => ownedRetryOverrides({ ...retry, prompt: "" }), error => error instanceof IntakeShapeError && error.path === "$.ownedRetry.prompt");
     // The arrival flag rides while set, and restores.
     const arrived = runtimeFor({ ...INPUT, intakeArrivalPending: true });
     assert.equal(arrived.state.intakeArrivalPending, true);
@@ -414,26 +482,64 @@ test("the pending prompt's retry marker is restored exactly while a sent invocat
     }
 });
 
-test("the held retry's count and key are restored exactly with the marker; the arrival flag is true or absent (reviews O-W2-3, O-W2-5)", () => {
+test("the owed retry is restored whole, and the marker requires it; a 1.0.82 thrown turn's retry input is owed; the arrival flag is true or absent (reviews Q-W2-7, O-W2-5)", () => {
     const restore = input => createInitialState({ ...INPUT, ...input }, deriveOptions(INPUT));
     const failsAt = path => error => error instanceof IntakeShapeError && error.path === path;
-    assert.deepEqual(restore({ intake: VALID, ...RETRY }).intakeRetryAttempt, { retryCount: 1, thrownTurnKey: null });
-    assert.deepEqual(restore({ intake: VALID, ...RETRY, intakeRetryAttempt: { retryCount: 3, thrownTurnKey: "key-T" } }).intakeRetryAttempt,
-        { retryCount: 3, thrownTurnKey: "key-T" });
-    assert.equal(restore({}).intakeRetryAttempt, null);
-    // Missing with the marker, present without it, or malformed.
-    assert.throws(() => restore({ intake: VALID, intakeRetryInvocationId: "inv-1" }), failsAt("$.intakeRetryAttempt"));
-    const unsent = carried({ invocation: boundInvocation([TEXT_B]) });
-    assert.throws(() => restore({ intake: unsent, intakeRetryAttempt: RETRY.intakeRetryAttempt }), failsAt("$.intakeRetryAttempt"));
+    assert.deepEqual(restore({ intake: VALID, ...RETRY }).ownedRetry, OWNED);
+    assert.equal(restore({}).ownedRetry, null);
+    // An owed retry needs no marker (a turn that carried no sent invocation), and is never a pending prompt.
+    const owedOnly = restore({ ownedRetry: OWNED, prompt: "U", sourceOrchestrationVersion: "1.0.83" });
+    assert.deepEqual(owedOnly.ownedRetry, OWNED);
+    assert.equal(owedOnly.pendingPrompt, "U");
+    assert.equal(owedOnly.thrownTurnKey, null);
+    // The marker without an owed retry: nothing would take it.
+    assert.throws(() => restore({ intake: VALID, intakeRetryInvocationId: "inv-1" }), failsAt("$.ownedRetry"));
+    const { bootstrap: _bootstrap, ...noBootstrap } = OWNED;
     for (const [raw, path] of [
-        [null, "$.intakeRetryAttempt"],
-        [{ retryCount: 1 }, "$.intakeRetryAttempt.thrownTurnKey"],
-        [{ retryCount: -1, thrownTurnKey: null }, "$.intakeRetryAttempt.retryCount"],
-        [{ retryCount: 1.5, thrownTurnKey: null }, "$.intakeRetryAttempt.retryCount"],
-        [{ retryCount: 1, thrownTurnKey: "" }, "$.intakeRetryAttempt.thrownTurnKey"],
-        [{ retryCount: 1, thrownTurnKey: null, extra: 1 }, "$.intakeRetryAttempt"],
+        [null, "$.ownedRetry"],
+        [[], "$.ownedRetry"],
+        [{ ...OWNED, extra: 1 }, "$.ownedRetry"],
+        [noBootstrap, "$.ownedRetry.bootstrap"],
+        [{ ...OWNED, prompt: "" }, "$.ownedRetry.prompt"],
+        [{ ...OWNED, bootstrap: "yes" }, "$.ownedRetry.bootstrap"],
+        [{ ...OWNED, requiredTool: "" }, "$.ownedRetry.requiredTool"],
+        [{ ...OWNED, cycleOrigin: "daily" }, "$.ownedRetry.cycleOrigin"],
+        [{ ...OWNED, clientMessageIds: ["cm-p", ""] }, "$.ownedRetry.clientMessageIds"],
+        [{ ...OWNED, sender: { kind: "robot" } }, "$.ownedRetry.sender"],
+        [{ ...OWNED, attachments: [{ filename: "", contentType: "image/png", sizeBytes: 1 }] }, "$.ownedRetry.attachments"],
+        [{ ...OWNED, retryCount: -1 }, "$.ownedRetry.retryCount"],
+        [{ ...OWNED, retryCount: 1.5 }, "$.ownedRetry.retryCount"],
+        [{ ...OWNED, thrownTurnKey: "" }, "$.ownedRetry.thrownTurnKey"],
+        // A fresh retry (a lossy handoff's) has count 0 and no key.
+        [{ ...OWNED, fresh: true }, "$.ownedRetry.fresh"],
+        [{ ...OWNED, retryCount: 0, thrownTurnKey: "key-T", fresh: true }, "$.ownedRetry.fresh"],
     ]) {
-        assert.throws(() => restore({ intake: VALID, ...RETRY, intakeRetryAttempt: raw }), failsAt(path), JSON.stringify(raw));
+        assert.throws(() => restore({ intake: VALID, ...RETRY, ownedRetry: raw }), failsAt(path), JSON.stringify(raw));
+    }
+    // A 1.0.82 thrown turn's retry continues as new with its prompt as the input's: it is owed, with its key, and not pending.
+    const legacy = {
+        prompt: "P", requiredTool: "report", clientMessageIds: ["cm-p"], sender: OWNED.sender, attachments: OWNED.attachments,
+        retryCount: 2, thrownTurnKey: "key-T", sourceOrchestrationVersion: "1.0.82",
+    };
+    const converted = restore(legacy);
+    assert.deepEqual(converted.ownedRetry, { ...OWNED, prompt: "P", retryCount: 2, thrownTurnKey: "key-T" });
+    assert.equal(converted.pendingPrompt, undefined);
+    assert.deepEqual(converted.pendingAttachments, []);
+    assert.equal(converted.pendingClientMessageIds, undefined);
+    assert.equal(converted.pendingSender, undefined);
+    assert.equal(converted.pendingRequiredTool, undefined);
+    assert.equal(converted.thrownTurnKey, null);
+    // Any other such input keeps its prompt pending, as 1.0.82 does: a returned error's retry (no key), a lossy handoff's
+    // (count 0), and every input 1.0.83 writes, whose owed retry is only ever `ownedRetry`.
+    for (const input of [
+        { ...legacy, thrownTurnKey: undefined },
+        { ...legacy, retryCount: 0 },
+        { ...legacy, sourceOrchestrationVersion: "1.0.83" },
+    ]) {
+        const kept = restore(input);
+        assert.equal(kept.ownedRetry, null, JSON.stringify(input));
+        assert.equal(kept.pendingPrompt, "P");
+        assert.equal(kept.thrownTurnKey, null);
     }
     // The arrival flag: absent is false; only true is accepted.
     assert.equal(restore({}).intakeArrivalPending, false);
