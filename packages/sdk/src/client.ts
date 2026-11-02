@@ -86,6 +86,32 @@ function throwIfAborted(signal: AbortSignal | undefined, message: string): void 
  *
  * @internal exported for tests
  */
+/**
+ * The compute target recorded for a session's tree, or nothing.
+ *
+ * The root's creation config is where a target is written — by the caller
+ * that named one, or by the catalog applying the deployment's default. A
+ * sub-agent is never given one of its own, so it reads its root's. That
+ * is why this exists at all: taking the caller's field alone left a
+ * sub-agent's turns, and a default-target root's turns, routed as if they
+ * ran on the worker.
+ *
+ * A catalog that cannot answer leaves the session as it was. This decides
+ * routing; failing closed is the worker's job, which refuses to run a
+ * remote session's agent on itself whatever route got there.
+ */
+export async function treeComputeTarget(
+    catalog: Pick<SessionCatalog, "getSessionCreationConfig">,
+    sessionId: string,
+    cmsRow: Pick<SessionRow, "rootSessionId"> | null,
+): Promise<string | undefined> {
+    if (!catalog.getSessionCreationConfig) return undefined;
+    const rootSessionId = cmsRow?.rootSessionId || sessionId;
+    const stored = await catalog.getSessionCreationConfig(rootSessionId).catch(() => null);
+    const name = typeof stored?.computeTarget === "string" ? stored.computeTarget : "";
+    return name || undefined;
+}
+
 export function projectSerializableSessionConfig(
     fullConfig: ManagedSessionConfig | undefined,
     fallbackWaitThreshold: number | undefined,
@@ -887,6 +913,22 @@ export class PilotSwarmClient {
 
         if (!this.activeOrchestrations.has(sessionId)) {
             const { parentSessionId, nestingLevel } = await this._restoreLineageForStart(sessionId, cmsRow, bootstrapNestingLevel);
+            // Compute providers: every session of a tree that runs its
+            // agent elsewhere carries its target into the orchestration,
+            // so every one of its turns is routed to a worker that can
+            // drive a remote runtime.
+            //
+            // It is read from what was recorded for the tree's root, not
+            // from what a caller passed: a sub-agent is never given a
+            // target of its own, and a root that was given the
+            // deployment's default has it only in the catalog. Taking the
+            // caller's field alone left exactly those turns untagged, and
+            // an untagged turn is the one an older worker picks up and
+            // runs as its own child process.
+            const treeTarget = await treeComputeTarget(this._catalog, sessionId, cmsRow);
+            if (treeTarget && serializableConfig && serializableConfig.computeTarget !== treeTarget) {
+                serializableConfig = { ...serializableConfig, computeTarget: treeTarget };
+            }
             // Explicit local identity keeps its precedence; another process
             // reconstructs the named agent's startup contract from the row.
             const agentId = this.sessionAgentIds.get(sessionId) ?? cmsRow?.agentId;

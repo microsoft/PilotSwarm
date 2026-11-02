@@ -11,6 +11,7 @@ import { randomBytes } from "node:crypto";
 import { runCmsMigrations } from "../../src/cms-migrator.ts";
 import { ComputeTargetStore, ComputeTargetError } from "../../src/compute-target-store.ts";
 import { PgSessionCatalog } from "../../src/cms.ts";
+import { treeComputeTarget } from "../../src/client.ts";
 
 const DATABASE_URL = process.env.PS_TEST_DATABASE_URL
     || process.env.TEST_DATABASE_URL
@@ -164,6 +165,55 @@ describe("compute targets", () => {
         } finally {
             await catalog.close?.();
             await sql(`DELETE FROM @sessions WHERE session_id LIKE 's-%'`);
+        }
+    });
+
+    it("every turn of a compute tree carries its target, including a sub-agent's and a default root's", async () => {
+        // The tag that keeps these turns away from workers that would run
+        // the agent on the worker is chosen from this. Reading the
+        // caller's own field instead left exactly these two cases
+        // untagged: nobody passes a target for either of them.
+        const target = await store.create({ name: "shared/routing-pool", kind: "sandbox" }, null, true);
+        const catalog = await PgSessionCatalog.create(DATABASE_URL, SCHEMA);
+        try {
+            catalog.defaultComputeTarget = "shared/routing-pool";
+            await catalog.createSession("r-root", { creationConfig: {} });
+            await catalog.createSession("r-child", { parentSessionId: "r-root", creationConfig: {} });
+            await catalog.createSession("r-grandchild", { parentSessionId: "r-child", creationConfig: {} });
+
+            // A root that was given the deployment's default: it is in the
+            // catalog and nowhere else.
+            const rootRow = await catalog.getSession("r-root");
+            expect(await treeComputeTarget(catalog, "r-root", rootRow)).toBe("shared/routing-pool");
+
+            // A sub-agent, and a sub-agent of a sub-agent: neither records
+            // a target of its own, and both read the tree's.
+            for (const sessionId of ["r-child", "r-grandchild"]) {
+                const row = await catalog.getSession(sessionId);
+                expect((await catalog.getSessionCreationConfig(sessionId))?.computeTarget).toBeUndefined();
+                expect(await treeComputeTarget(catalog, sessionId, row), sessionId).toBe("shared/routing-pool");
+            }
+
+            // A tree with no target reads none, so an ordinary session is
+            // routed exactly as it was before.
+            catalog.defaultComputeTarget = "";
+            await catalog.createSession("r-plain", { creationConfig: {} });
+            await catalog.createSession("r-plain-child", { parentSessionId: "r-plain", creationConfig: {} });
+            for (const sessionId of ["r-plain", "r-plain-child"]) {
+                const row = await catalog.getSession(sessionId);
+                expect(await treeComputeTarget(catalog, sessionId, row), sessionId).toBeUndefined();
+            }
+
+            // And a tree whose root named one explicitly behaves the same way.
+            await store.create({ name: "shared/named-routing", kind: "sandbox" }, null, true);
+            await catalog.createSession("r-named", { creationConfig: { computeTarget: "shared/named-routing" } });
+            await catalog.createSession("r-named-child", { parentSessionId: "r-named", creationConfig: {} });
+            const namedChildRow = await catalog.getSession("r-named-child");
+            expect(await treeComputeTarget(catalog, "r-named-child", namedChildRow)).toBe("shared/named-routing");
+            expect(target.id).toBeTruthy();
+        } finally {
+            await catalog.close?.();
+            await sql(`DELETE FROM @sessions WHERE session_id LIKE 'r-%'`);
         }
     });
 

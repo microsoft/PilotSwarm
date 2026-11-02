@@ -13,6 +13,7 @@ import { randomUUID } from "crypto";
 import { runCmsMigrations } from "./cms-migrator.js";
 import { ProviderStore } from "./provider-store.js";
 import { ComputeTargetStore } from "./compute-target-store.js";
+import { resolveComputeTargetName } from "./compute.js";
 import { FeatureStore } from "./feature-store.js";
 import { systemSessionProtectedError, type SessionOwnerInfo, type SessionSummaryState, type TurnControlKind, type TurnControlAddResult, type TurnStartResult, type TurnLookInput, type TurnLookRow, type TurnEndKind, type TurnEndResult, type TurnControl, type TurnStartRecord } from "./types.js";
 import type { MessageSender } from "./message-sender.js";
@@ -1624,6 +1625,24 @@ function sqlForSchema(schema: string) {
  * Uses the `pg` package (node-postgres) directly.
  * Must be created via the async `PgSessionCatalog.create()` factory.
  */
+/**
+ * The deployment's default compute target, as a whole name.
+ *
+ * A bare label is shorthand for the shared target of that label, exactly
+ * as it is for a caller who names one. Anything that is not a target name
+ * at all is refused here, when the setting is made, rather than at every
+ * session creation from then on.
+ */
+export function normalizedDefaultComputeTarget(value: unknown): string {
+    const raw = typeof value === "string" ? value.trim() : "";
+    if (!raw) return "";
+    const [name] = resolveComputeTargetName(raw);
+    if (name) return name;
+    throw Object.assign(
+        new Error(`COMPUTE_TARGET_INVALID: "${raw}" is not a compute target name; a default is "shared/<label>" or a bare label`),
+        { code: "COMPUTE_TARGET_INVALID" });
+}
+
 export class PgSessionCatalog implements SessionCatalog {
     private pool: any;
     private initialized = false;
@@ -1659,10 +1678,25 @@ export class PgSessionCatalog implements SessionCatalog {
      *
      * Read here, from the environment, so that every surface that creates
      * a session — the worker, the Web API, the CLI — gets the same answer
-     * without each of them having to pass it down. A worker may also set
-     * it from its own options.
+     * without each of them having to pass it down. **Every process that
+     * creates sessions needs the same setting**, or they disagree about
+     * what a session that names no target gets. A worker may also set it
+     * from its own options.
+     *
+     * Set through the accessor below, which normalizes a bare label into
+     * a whole name. A bare label stored as it was would fail every
+     * session creation with `COMPUTE_TARGET_NOT_FOUND`, long after the
+     * setting was made.
      */
-    defaultComputeTarget = (process.env.PILOTSWARM_DEFAULT_COMPUTE_TARGET ?? "").trim();
+    private _defaultComputeTarget = normalizedDefaultComputeTarget(process.env.PILOTSWARM_DEFAULT_COMPUTE_TARGET);
+
+    get defaultComputeTarget(): string {
+        return this._defaultComputeTarget;
+    }
+
+    set defaultComputeTarget(value: string) {
+        this._defaultComputeTarget = normalizedDefaultComputeTarget(value);
+    }
 
     static readonly DEFAULT_POOL_MAX = 3;
 

@@ -23,7 +23,7 @@
  *
  * The table never holds a handshake secret.
  *
- * PilotSwarm records no host bindings of its own: a host is held while a
+ * Nothing records which host a session is on: a host is held while a
  * session uses it, and a host component ends itself after a set time with
  * no connection, so nothing has to be written down to know a host is
  * free.
@@ -37,8 +37,7 @@ export function computeTargetsMigration(schema: string): string {
 
 CREATE TABLE IF NOT EXISTS ${s}.compute_targets (
     name           TEXT PRIMARY KEY,
-    target_id      UUID NOT NULL UNIQUE
-                   DEFAULT md5(random()::text || clock_timestamp()::text)::uuid,
+    target_id      UUID NOT NULL UNIQUE DEFAULT gen_random_uuid(),
     kind           TEXT NOT NULL,
     class          TEXT NOT NULL DEFAULT 'shared' CHECK (class IN ('shared')),
     display_name   TEXT,
@@ -143,10 +142,13 @@ DECLARE
     v_row ${s}.compute_targets;
 BEGIN
     v_row := ${s}.cms_compute_target_assert_manage(p_name, p_actor, p_is_admin);
+    -- 'error' is a live state: a session in it can still be sent a
+    -- message and take another turn, so it counts as one this removal
+    -- affects. Only the states a session never leaves do not.
     SELECT count(*) INTO v_waiting
       FROM ${s}.sessions ss
      WHERE ss.deleted_at IS NULL
-       AND ss.state NOT IN ('completed', 'failed', 'error', 'cancelled')
+       AND ss.state NOT IN ('completed', 'failed', 'cancelled')
        AND ss.creation_config->>'computeTargetId' = v_row.target_id::text;
     DELETE FROM ${s}.compute_targets ct WHERE ct.name = p_name;
     RETURN v_waiting;

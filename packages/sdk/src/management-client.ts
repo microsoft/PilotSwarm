@@ -83,6 +83,7 @@ import { SYSTEM_USER_PRINCIPAL } from "./cms.js";
 import { ComputeTargetError, type ComputeTargetRow } from "./compute-target-store.js";
 import {
     COMPUTE_ERROR_CODES,
+    LOCAL_COMPUTE_KIND,
     computeTargetNameFor,
     parseComputeTargetName,
     resolveComputeTargetName,
@@ -5623,6 +5624,15 @@ export class PilotSwarmManagementClient {
     ): Promise<{ target: ComputeTarget }> {
         if (!viewer.isAdmin) {
             throw new ComputeTargetError(COMPUTE_ERROR_CODES.FORBIDDEN, "Only an administrator can create a shared compute target.");
+        }
+        if (input.kind === LOCAL_COMPUTE_KIND) {
+            // That kind runs the agent in the worker's own process, which
+            // is what a session with no target already does. Registering
+            // it as a target would mean sessions that look like they run
+            // elsewhere and do not, and turns routed to workers by a tag
+            // that says nothing about which kinds a worker has.
+            throw new ComputeTargetError(COMPUTE_ERROR_CODES.INVALID,
+                `"${LOCAL_COMPUTE_KIND}" runs a session's agent on the worker, which is what a session with no compute target already does; it cannot be registered as a target.`);
         }
         const { store, actor, isAdmin } = await this._computeTargetActor(viewer);
         const name = this._newComputeTargetName(input);
