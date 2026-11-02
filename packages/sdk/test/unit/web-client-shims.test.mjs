@@ -44,11 +44,6 @@ const SHIM_CASES = [
     // — workflow v2: a person's command (the server stamps the actor; options are not sent) —
     { call: (c) => c.updateWorkflow("wf-1", { operation: "pause", operation_id: "p-1" }, { principal: USER }), op: "updateWorkflow",
         params: { sessionId: "wf-1", command: { operation: "pause", operation_id: "p-1" } } },
-    // — workflow v2: credentialed answer and completion (an absent field is not sent) —
-    { call: (c) => c.respondToSessionRequest("nx-9", { operationId: "op-1", response: { approved: true }, credential: "pswic_x" }), op: "respondToSessionRequest",
-        params: { requestId: "nx-9", operationId: "op-1", response: { approved: true }, credential: "pswic_x" } },
-    { call: (c) => c.completeWorkflowNode("child-1", { operationId: "op-2", outcome: "accepted", output: null, credential: "pswic_y" }), op: "completeWorkflowNode",
-        params: { sessionId: "child-1", operationId: "op-2", outcome: "accepted", output: null, credential: "pswic_y" } },
     // — facts —
     { call: (c) => c.readFacts({ keyPattern: "k*", scope: "shared" }), op: "readFacts", params: { keyPattern: "k*", scope: "shared" } },
     { call: (c) => c.storeFact({ key: "k", value: 1 }), op: "storeFact", params: { input: { key: "k", value: 1 } } },
@@ -129,8 +124,6 @@ test("direct-only plumbing refuses loudly with WEB_MODE_UNSUPPORTED", () => {
         "listGroupSessions",
         "normalizeModel",
         "getModelCredentialStatus",
-        // Workflow v2: only a trusted host process (direct mode) issues an invocation credential.
-        "issueWorkflowInvocationCredential",
     ]) {
         assert.throws(
             () => client[method](),

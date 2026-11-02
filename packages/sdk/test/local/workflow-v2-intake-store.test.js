@@ -442,7 +442,7 @@ describe("workflow v2 durable intake: the outbox fence (migration 0094)", () => 
             const message = await h.store.readOutboxMessage(exchangeId);
 
             await h.catalog.initialize();
-            expect(await versions()).toEqual([...before, "0094", "0095", "0096", "0097", "0098", "0099", "0100", "0101", "0102"]);
+            expect(await versions()).toEqual([...before, "0094", "0095", "0096", "0097", "0098", "0099", "0100", "0101"]);
             expect(await h.q(`SELECT intake_mode, attempt_token, intake_outcome, intake_outcome_at FROM SCHEMA.workflow_outbox WHERE exchange_id = $1`,
                 [exchangeId])).toEqual([{ intake_mode: null, attempt_token: null, intake_outcome: null, intake_outcome_at: null }]);
             expect(await h.store.readOutboxMessage(exchangeId)).toEqual(message);
@@ -456,7 +456,7 @@ describe("workflow v2 durable intake: the outbox fence (migration 0094)", () => 
                 WHERE exchange_id = $1`, [exchangeId])).rejects.toThrow(/first attempt/);
             // Applying the registered migrations again changes nothing.
             await runMigrations(h.pool, env.cmsSchema, CMS_MIGRATIONS(env.cmsSchema), CMS_LOCK_SEED);
-            expect(await versions()).toEqual([...before, "0094", "0095", "0096", "0097", "0098", "0099", "0100", "0101", "0102"]);
+            expect(await versions()).toEqual([...before, "0094", "0095", "0096", "0097", "0098", "0099", "0100", "0101"]);
         } finally { await h.stop(); }
     });
 });
@@ -1553,7 +1553,7 @@ describe("workflow v2 durable intake: the possible-exposure record and its fence
             const invocations = await h.q("SELECT * FROM SCHEMA.workflow_intake_invocations ORDER BY invocation_id");
 
             await h.catalog.initialize();
-            expect(await versions()).toEqual([...before, "0095", "0096", "0097", "0098", "0099", "0100", "0101", "0102"]);
+            expect(await versions()).toEqual([...before, "0095", "0096", "0097", "0098", "0099", "0100", "0101"]);
             expect(await x.read(a)).toEqual(bound);
             expect(await h.q("SELECT * FROM SCHEMA.workflow_intake_invocations ORDER BY invocation_id")).toEqual(invocations);
             expect((await h.q("SELECT count(*)::int AS n FROM SCHEMA.workflow_intake_exposures"))[0].n).toBe(0);
@@ -1568,7 +1568,7 @@ describe("workflow v2 durable intake: the possible-exposure record and its fence
             expect(await x.exposure("inv-1")).toEqual(record);
             // Applying the registered migrations again changes nothing.
             await runMigrations(h.pool, env.cmsSchema, CMS_MIGRATIONS(env.cmsSchema), CMS_LOCK_SEED);
-            expect(await versions()).toEqual([...before, "0095", "0096", "0097", "0098", "0099", "0100", "0101", "0102"]);
+            expect(await versions()).toEqual([...before, "0095", "0096", "0097", "0098", "0099", "0100", "0101"]);
             expect(await x.exposure("inv-1")).toEqual(record);
             expect(await x.read(a)).toEqual(bound);
         } finally { await h.stop(); }

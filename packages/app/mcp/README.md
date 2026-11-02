@@ -413,8 +413,6 @@ pending, not refused. `stopped` is true only for `stopped` or `stop_forced`.
 | Tool | Description |
 |------|-------------|
 | `update_workflow` | A person's command to a version 2 workflow session: the `update_workflow` agent tool's `operation`, `operation_id` and arguments (`POST /api/v1/sessions/:sessionId/workflow/commands` in web mode). A workflow inside a workflow agent state's subtree takes only `pause`, `stop` and `cancel` |
-| `respond_session_request` | *(direct mode, `workflowCredentials` holders only)* Answer a workflow's typed request as a responder session this server acts for: `request_id`, `operation_id`, `response` or `decline` |
-| `complete_workflow_node` | *(direct mode, `workflowCredentials` holders only)* Complete a workflow agent state as its child session this server acts for: `node_execution_id`, `operation_id`, `outcome` and `output`, or `error`. The invocation credential stays in this server's memory: no tool takes or returns one |
 
 ### Artifacts *(web)*
 

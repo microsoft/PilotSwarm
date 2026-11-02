@@ -228,8 +228,6 @@ export {
 } from "./types.js";
 // Session workspaces
 export { validateWorkspaceText, sameWorkspace, sameWorkingFolder, mergeWorkspaceChange, MAX_WORKSPACE_EXTRAS } from "./workspace-check.js";
-// Workflow v2 (INACTIVE): a trusted runtime's invocation credentials, held in its own memory and never shown to a model.
-export { WorkflowCredentialVault, type WorkflowCredentialBinding, type WorkflowCredentialIssuer, type WorkflowCredentialVaultOptions } from "./workflow/v2/credential-vault.js";
 export { createBuiltInWorkspaceProvider, combineWorkspaceProviders, applyWorkspaceDefaults } from "./workspace.js";
 export {
     DEFAULT_WORKSPACE_FILE_MAX_BYTES,

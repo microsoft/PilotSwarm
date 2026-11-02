@@ -354,28 +354,6 @@ export class WebPilotSwarmManagementClient {
         return this._api.call("updateWorkflow", { sessionId, command });
     }
 
-    /**
-     * Workflow v2: an invocation credential is issued only by a trusted host
-     * process holding the database credential (the direct client), never over
-     * the Web API, so a person's sign-in cannot obtain one.
-     */
-    issueWorkflowInvocationCredential(): never {
-        throw webModeUnsupported("issueWorkflowInvocationCredential", "invocation credentials are issued only by a trusted host process (direct mode)");
-    }
-
-    /** Workflow v2: answer a workflow's request with an invocation credential (respondToSessionRequest; INACTIVE unless the deployment enables it). */
-    async respondToSessionRequest(requestId: string, input: { operationId?: unknown; response?: unknown; decline?: unknown; credential?: unknown } = {}): Promise<any> {
-        return this._api.call("respondToSessionRequest", { requestId, ...credentialedFields(input, ["operationId", "response", "decline", "credential"]) });
-    }
-
-    /** Workflow v2: complete an agent state with an invocation credential (completeWorkflowNode; INACTIVE unless the deployment enables it). */
-    async completeWorkflowNode(sessionId: string, input: {
-        nodeExecutionId?: unknown; operationId?: unknown; outcome?: unknown; output?: unknown; error?: unknown; credential?: unknown;
-    } = {}): Promise<any> {
-        return this._api.call("completeWorkflowNode", { sessionId,
-            ...credentialedFields(input, ["nodeExecutionId", "operationId", "outcome", "output", "error", "credential"]) });
-    }
-
     /** Session workspaces: set or clear the workspace (external flow). */
     async setSessionWorkspace(
         sessionId: string,
@@ -1066,13 +1044,6 @@ type KnownDivergences = "getDefaultModel" | "getModelsByProvider" | "listModels"
 
 type PublicSurface<T> = Pick<T, Exclude<keyof T, KnownDivergences>>;
 type AssertExtends<A extends B, B> = A;
-/** The fields of a credentialed workflow call that are present (an absent answer field is not sent as undefined). */
-function credentialedFields(input: Record<string, unknown>, names: string[]): Record<string, unknown> {
-    const fields: Record<string, unknown> = {};
-    for (const name of names) if (input?.[name] !== undefined) fields[name] = input[name];
-    return fields;
-}
-
 export type _WebSatisfiesManagementSurface = AssertExtends<
     PublicSurface<WebPilotSwarmManagementClient>,
     PublicSurface<import("../management-client.js").PilotSwarmManagementClient>

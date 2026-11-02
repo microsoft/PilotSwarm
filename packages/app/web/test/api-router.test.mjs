@@ -337,9 +337,6 @@ const VALID_ACCESS_CLASSES = new Set([
     // The canvas KV store: both gate on session READ in the runtime; whether
     // a reader may write is the canvas policy's call inside the chokepoint.
     "canvas:read", "canvas:write",
-    // Workflow v2 (inactive): the invocation credential in the body is the authority; admission only at the gate, and
-    // the transport refuses anything without a valid credential for the effect.
-    "workflow:credential",
 ]);
 
 test("every protocol operation declares a known access class", () => {

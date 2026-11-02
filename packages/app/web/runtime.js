@@ -118,13 +118,6 @@ function requireUserPrincipal(authContext, methodName) {
     return principal;
 }
 
-/** The named params that are present (an absent field is not passed as undefined). */
-function presentParams(params, names) {
-    const present = {};
-    for (const name of names) if (params?.[name] !== undefined) present[name] = params[name];
-    return present;
-}
-
 // New operations with no pre-model behavior to preserve: their session gate is
 // enforced even during the ownership dark-launch, as session:share's is.
 const ENFORCED_NEW_METHODS = new Set(["updateWorkflow"]);
@@ -190,11 +183,10 @@ function providerNames(raw) {
 }
 
 export class PortalRuntime {
-    constructor({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser, workflowCommands, workflowCredentials } = {}) {
+    constructor({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser, workflowCommands } = {}) {
         // workflowCommands (Workflow v2, INACTIVE; test-only): a person's workflow commands. Unset, updateWorkflow answers 501.
-        // workflowCredentials (Workflow v2, INACTIVE; test-only): credentialed responses and completions. Unset, they answer 501.
         this.transport = new NodeSdkTransport({ store, mode, useManagedIdentity, cmsFactsDatabaseUrl, aadDbUser,
-            ...(workflowCommands ? { workflowCommands } : {}), ...(workflowCredentials ? { workflowCredentials: true } : {}) });
+            ...(workflowCommands ? { workflowCommands } : {}) });
         this.mode = mode;
         this.started = false;
         this.startPromise = null;
@@ -337,10 +329,6 @@ export class PortalRuntime {
         if (access === "canvas:read" || access === "canvas:write") {
             return this._gateSession(method, "session:read", safeParams.sessionId, authContext, { owner, isAdmin });
         }
-
-        // A workflow invocation credential is the authority of these operations (Workflow v2): admission only here; the
-        // transport refuses anything without a valid credential for the effect.
-        if (access === "workflow:credential") return { snapshot: null };
 
         if (access === "group:manage") {
             await this._authorizeGroupManage(method, safeParams, authContext, { owner, isAdmin });
@@ -776,15 +764,6 @@ export class PortalRuntime {
             case "updateWorkflow":
                 return this.transport.updateWorkflow(safeParams.sessionId, safeParams.command,
                     { principal: owner ? { provider: owner.provider, subject: owner.subject } : null });
-            // Workflow v2 (INACTIVE unless the deployment enables it): an answer and a completion whose authority is the
-            // invocation credential in the body (access workflow:credential: admission only). The caller's identity is not
-            // passed: it grants nothing here. An absent field stays absent.
-            case "respondToSessionRequest":
-                return this.transport.respondToSessionRequest(safeParams.requestId,
-                    presentParams(safeParams, ["operationId", "response", "decline", "credential"]));
-            case "completeWorkflowNode":
-                return this.transport.completeWorkflowNode(safeParams.sessionId,
-                    presentParams(safeParams, ["nodeExecutionId", "operationId", "outcome", "output", "error", "credential"]));
             // Session workspaces: the wait for the answer holds this request,
             // so the caller's timeout is bounded like the other long waits.
             case "setSessionWorkspace":

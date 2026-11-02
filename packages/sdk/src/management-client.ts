@@ -163,11 +163,8 @@ import {
 import type { ArtifactStore } from "./session-store.js";
 import { readWorkflowV2View } from "./workflow/v2/tools.js";
 import { updateWorkflowForPerson, workflowCommandsForPerson, workflowCommandStatus } from "./workflow/v2/human-commands.js";
-import {
-    completeWorkflowNodeWithCredential, issueWorkflowInvocationCredential, respondSessionRequestWithCredential, WorkflowCredentialError,
-} from "./workflow/v2/invocation-credentials.js";
 import { assertWorkflowHumanInputAllowed, workflowInputCapabilities, type WorkflowInputCapabilities } from "./workflow/v2/input-policy.js";
-import { WorkflowStoreError, type WorkflowActor, type WorkflowCredentialAudience } from "./workflow/v2/store.js";
+import { WorkflowStoreError, type WorkflowActor } from "./workflow/v2/store.js";
 import type { WorkflowV2Host } from "./workflow/v2/service.js";
 import {
     AgentPackageValidationError,
@@ -827,14 +824,6 @@ export interface PilotSwarmManagementClientOptions {
      * answers WORKFLOW_COMMANDS_UNAVAILABLE (501) and changes nothing.
      */
     workflowCommands?: { requests?: boolean } | null;
-    /**
-     * Workflow v2 (INACTIVE; test-only): take credentialed responses and
-     * completions (respondToSessionRequest, completeWorkflowNode) and issue
-     * invocation credentials (issueWorkflowInvocationCredential, this direct
-     * client only). Unset: they answer WORKFLOW_CREDENTIALS_UNAVAILABLE (501)
-     * and change nothing.
-     */
-    workflowCredentials?: boolean | null;
 }
 
 // ─── Management Client ──────────────────────────────────────────
@@ -1955,128 +1944,6 @@ export class PilotSwarmManagementClient {
      * (403 WORKFLOW_HUMAN_INPUT_DENIED). Returns the receipt; a refusal
      * carries its code, its HTTP status and its details.
      */
-    /**
-     * Workflow v2: issue an invocation credential (design 04; INACTIVE: only
-     * a client created with the test-only option `workflowCredentials`). For
-     * the trusted host process that runs a holder session's work outside its
-     * in-process tools (this direct client holds the database credential;
-     * the Web API never issues one, so a person's sign-in cannot obtain
-     * one): `holderSessionId` may then answer request `nodeExecutionId`
-     * (audience workflow.respond; it is the responder) or complete agent
-     * state `nodeExecutionId` (audience workflow.complete; it is the child).
-     * Returns the token once, and the credential's binding and lifetime;
-     * the store keeps only the token's hash.
-     */
-    async issueWorkflowInvocationCredential(input: {
-        audience: WorkflowCredentialAudience; nodeExecutionId: string; holderSessionId: string; ttlSeconds?: number;
-    }): Promise<{ token: string; credential: {
-        credentialId: string; audience: WorkflowCredentialAudience; workflowSessionId: string; runId: string; nodeExecutionId: string;
-        holderSessionId: string; issuedAt: string; expiresAt: string;
-    } }> {
-        const store = this._workflowCredentialStore();
-        try {
-            const { token, credential } = await issueWorkflowInvocationCredential(store, input);
-            return { token, credential: {
-                credentialId: credential.credentialId, audience: credential.audience, workflowSessionId: credential.workflowSessionId,
-                runId: credential.runId, nodeExecutionId: credential.nodeExecutionId, holderSessionId: credential.holderSessionId,
-                issuedAt: credential.issuedAt.toISOString(), expiresAt: credential.expiresAt.toISOString(),
-            } };
-        } catch (error) {
-            throw this._workflowCredentialFailure(error);
-        }
-    }
-
-    /**
-     * Workflow v2: answer a workflow's request with an invocation credential
-     * (respondToSessionRequest, POST /session-requests/:requestId/responses;
-     * design 04; INACTIVE unless `workflowCredentials`). The credential is the
-     * authority: it must be a workflow.respond credential for this request,
-     * and the answer is given as its holder, the request's responder, by
-     * respond_session_request's own implementation; a caller's sign-in alone
-     * is CREDENTIAL_REQUIRED (403). Returns the receipt; a refusal carries
-     * its code, status and details.
-     */
-    async respondToSessionRequest(requestId: string, input: {
-        operationId?: unknown; response?: unknown; decline?: unknown; credential?: unknown;
-    } = {}): Promise<Record<string, unknown>> {
-        const store = this._workflowCredentialStore();
-        const args: Record<string, unknown> = { request_id: requestId, operation_id: input.operationId };
-        if (input.response !== undefined) args.response = input.response;
-        if (input.decline !== undefined) args.decline = input.decline;
-        try {
-            return this._workflowCredentialAnswer(await respondSessionRequestWithCredential(args, { token: input.credential, store }));
-        } catch (error) {
-            throw this._workflowCredentialFailure(error);
-        }
-    }
-
-    /**
-     * Workflow v2: complete an agent state with an invocation credential
-     * (completeWorkflowNode, POST /sessions/:sessionId/workflow-node/result;
-     * design 04; INACTIVE unless `workflowCredentials`). The credential is the
-     * authority: it must be a workflow.complete credential held by
-     * `sessionId` (the state's child), and for `nodeExecutionId` when given;
-     * the completion is given as that child by complete_workflow_node's own
-     * implementation; a caller's sign-in alone is CREDENTIAL_REQUIRED (403).
-     * Returns the receipt; a refusal carries its code, status and details.
-     */
-    async completeWorkflowNode(sessionId: string, input: {
-        nodeExecutionId?: unknown; operationId?: unknown; outcome?: unknown; output?: unknown; error?: unknown; credential?: unknown;
-    } = {}): Promise<Record<string, unknown>> {
-        const store = this._workflowCredentialStore();
-        const args: Record<string, unknown> = { operation_id: input.operationId };
-        if (input.nodeExecutionId !== undefined) args.node_execution_id = input.nodeExecutionId;
-        if (input.outcome !== undefined) args.outcome = input.outcome;
-        if (input.output !== undefined) args.output = input.output;
-        if (input.error !== undefined) args.error = input.error;
-        try {
-            return this._workflowCredentialAnswer(await completeWorkflowNodeWithCredential(args,
-                { token: input.credential, store, client: this._duroxideClient, holderSessionId: sessionId }));
-        } catch (error) {
-            throw this._workflowCredentialFailure(error);
-        }
-    }
-
-    /** The workflow store, when this client takes credentialed workflow actions (the test-only option), else 501. */
-    private _workflowCredentialStore(): import("./workflow/v2/store.js").WorkflowStore {
-        this._ensureStarted();
-        const store = this.config.workflowCredentials ? this._workflowStoreOrNull() : null;
-        if (!store) {
-            throw Object.assign(new Error("This deployment does not take workflow invocation credentials yet; the session's in-process tools "
-                + "answer requests and complete workflow states."), { code: "WORKFLOW_CREDENTIALS_UNAVAILABLE", status: 501, expose: true });
-        }
-        return store;
-    }
-
-    /** A credentialed action's JSON answer: the receipt (without ok), or its refusal thrown with an HTTP status. */
-    private _workflowCredentialAnswer(text: string): Record<string, unknown> {
-        const answer = JSON.parse(text) as Record<string, unknown>;
-        if (answer.ok === true) {
-            const receipt = { ...answer };
-            delete receipt.ok;
-            return receipt;
-        }
-        const error = (answer.error ?? {}) as Record<string, unknown>;
-        const code = typeof error.code === "string" ? error.code : "WORKFLOW_ERROR";
-        const status = code === "REQUEST_NOT_FOUND" ? 404
-            : ["RESPONSE_INVALID", "COMPLETION_INVALID", "OUTPUT_INVALID", "OUTPUT_ATTEMPTS_EXHAUSTED", "WORKFLOW_COMMAND_INVALID"].includes(code) ? 422 : 409;
-        const details: Record<string, unknown> = {};
-        for (const key of ["details", "problems", "attemptsLeft"]) if (error[key] !== undefined && error[key] !== null) details[key] = error[key];
-        for (const key of ["state", "status", "currentStatus", "replayed"]) if (answer[key] !== undefined && answer[key] !== null) details[key] = answer[key];
-        throw Object.assign(new Error(typeof error.message === "string" ? error.message : code), { code, status, details, exposeDetails: true });
-    }
-
-    /** A refused credential (or a store refusal) as an error with its HTTP status and safe details. */
-    private _workflowCredentialFailure(error: unknown): unknown {
-        if (error instanceof WorkflowCredentialError) {
-            return Object.assign(new Error(error.message), { code: error.code, status: error.status, details: error.details, exposeDetails: true });
-        }
-        if (error instanceof WorkflowStoreError) {
-            return Object.assign(new Error(error.message), { code: error.code, status: workflowCommandStatus(error.code), details: error.details, exposeDetails: true });
-        }
-        return error;
-    }
-
     async updateWorkflow(sessionId: string, command: Record<string, unknown>,
         options: { principal?: { provider?: string | null; subject?: string | null } | null } = {}): Promise<Record<string, unknown>> {
         this._ensureStarted();

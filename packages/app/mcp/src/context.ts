@@ -17,7 +17,6 @@ import {
     type FactStore,
     type EnhancedFactStore,
     type GraphStore,
-    WorkflowCredentialVault,
 } from "pilotswarm-sdk";
 import { ApiClient } from "pilotswarm-sdk/api";
 import { createApiTokenProvider } from "./auth.js";
@@ -91,15 +90,6 @@ interface ServerContextBase {
      */
     workflowCommands?: boolean;
     /**
-     * Workflow v2 (INACTIVE; test-only): this server acts for the holder
-     * sessions its configuration names (direct mode only: it issues their
-     * invocation credentials through its own management client), and
-     * registers respond_session_request and complete_workflow_node. The
-     * credentials stay in the vault's memory; no tool takes or returns one.
-     * Absent (the default): the tools are absent.
-     */
-    workflowCredentialVault?: WorkflowCredentialVault | null;
-    /**
      * The caller's normalized role (`admin` | `user` | `anonymous` | null),
      * and the deployment's ownership/visibility posture. Web mode reads these
      * from /auth/me and /bootstrap; direct mode is privileged (`admin`) with
@@ -156,19 +146,11 @@ export interface CreateContextOptions {
      * deployment decides (501 unless it enables them).
      */
     workflowCommands?: { requests?: boolean } | null;
-    /**
-     * Workflow v2 (INACTIVE; test-only): the holder sessions this server acts
-     * for with invocation credentials (direct mode only; trusted
-     * configuration, never a client's claim). Unset: the credentialed tools are
-     * absent.
-     */
-    workflowCredentials?: { holderSessionIds: string[] } | null;
 }
 
 export async function createContext(opts: CreateContextOptions): Promise<ServerContext> {
     let client: PilotSwarmClient;
     let mgmt: SharedManagementSurface;
-    let workflowCredentialVault: WorkflowCredentialVault | null = null;
     // One value, so the api/web pair can only ever be set together.
     let handles: WebHandles = { api: null, web: null };
     let facts: FactStore;
@@ -254,18 +236,8 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
         ctxRole = "admin";
         client = new PilotSwarmClient({ store: opts.store });
         await client.start();
-        const directMgmt = new PilotSwarmManagementClient({ store: opts.store, ...(opts.workflowCommands ? { workflowCommands: opts.workflowCommands } : {}),
-            ...(opts.workflowCredentials ? { workflowCredentials: true } : {}) });
-        await directMgmt.start();
-        mgmt = directMgmt;
-        // Workflow v2 (INACTIVE; test-only): the credentials of the holder sessions this server acts for, issued by its own
-        // management client and kept in the vault's memory only.
-        if (opts.workflowCredentials) {
-            workflowCredentialVault = new WorkflowCredentialVault({
-                holderSessionIds: opts.workflowCredentials.holderSessionIds,
-                issue: input => directMgmt.issueWorkflowInvocationCredential(input),
-            });
-        }
+        mgmt = new PilotSwarmManagementClient({ store: opts.store, ...(opts.workflowCommands ? { workflowCommands: opts.workflowCommands } : {}) });
+        await mgmt.start();
 
         // Enhanced facts + graph provisioning from HORIZON_* env — the same
         // mapping the worker uses, so an MCP server co-located with workers
@@ -381,7 +353,6 @@ export async function createContext(opts: CreateContextOptions): Promise<ServerC
         role: ctxRole,
         authz: ctxAuthz,
         ...(opts.workflowCommands ? { workflowCommands: true } : {}),
-        ...(workflowCredentialVault ? { workflowCredentialVault } : {}),
         webMode: Boolean(opts.apiUrl),
         models,
         skills,

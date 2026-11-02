@@ -630,75 +630,25 @@ Unfulfilled requirements (open, not waived; R26):
   the test operations (start, answer an interception, advance the virtual
   clock) have no screen yet, and the TUI has no workflow command keys (it
   does not draw the workflow view).
-- **Credentialed actions from other runtimes**: the MCP server can act for
-  configured holder sessions (below); a hand-off to runtimes other than an
-  MCP server in direct mode (a web-mode MCP server, a TUI command, an
-  external agent host) has no issuing path yet, because only a trusted
-  process that holds the database credential issues one.
 
-**Invocation credentials (design 04; migration 0102; INACTIVE).** A
-credential lets one holder session act on one pending workflow effect from
-outside its in-process tools: answer the request of a request state
-(audience `workflow.respond`; the holder is its responder) or complete an
-agent state (audience `workflow.complete`; the holder is its child)
-(`invocation-credentials.ts`, `WorkflowStore.issueInvocationCredential`,
-`verifyInvocationCredential`, `revokeInvocationCredentials`).
-
-- **No signing key.** A credential is an opaque random token (`pswic_` and
-  32 random bytes); only its SHA-256 is stored, with its binding (workflow,
-  run, node execution, holder, audience). The token is returned once to the
-  in-process issuer; it is never stored, logged, or placed in a script, the
-  YAML or a prompt.
-- **Binding.** The store issues one only for the effect's own holder (the
-  request's responder, the agent state's child), only while the effect is
-  pending in an active run of a live workflow; anything else is
-  `CREDENTIAL_BINDING_INVALID` or `CREDENTIAL_BINDING_CLOSED`, and nothing is
-  written.
-- **Expiry and revocation.** It lives `ttlSeconds` (default 3,600, at most
-  86,400) and never past the effect's deadline. Issuing another for the
-  same binding revokes the earlier one (`rotated`); the first use after the
-  effect is decided or its run ended revokes it (`decided`); a revocation by
-  id or by node execution holds (its reason is kept).
-- **Issue.** Only a trusted host process issues a credential: the direct
-  management client's `issueWorkflowInvocationCredential` (a process that
-  holds the database credential). The Web API has no issuing operation, so
-  a person's sign-in cannot obtain one (the web client refuses with
-  `WEB_MODE_UNSUPPORTED`).
-- **Routes.** `POST /api/v1/session-requests/:requestId/responses`
-  (`respondToSessionRequest`: `operationId`, `response` or `decline`,
-  `credential`) and `POST /api/v1/sessions/:sessionId/workflow-node/result`
-  (`completeWorkflowNode`: `nodeExecutionId`, `operationId`, `outcome` and
-  `output` or `error`, `credential`). Their access class
-  `workflow:credential` admits the caller and runs no session gate; the
-  caller's identity is not passed on, because the credential is the only
-  authority. A completion must be held by the session in the path. The
-  web client, `HttpApiTransport` and the portal's and TUI's transport carry
-  them; an absent field stays absent. Inactive: only the test-only option
-  `workflowCredentials` (portal runtime, transport, management client)
-  takes them; otherwise 501 `WORKFLOW_CREDENTIALS_UNAVAILABLE`.
-- **Hand-off through trusted runtime state.** A runtime that runs a holder
-  session's work outside its in-process tools keeps its credentials in a
-  `WorkflowCredentialVault`, in its own memory: it acts only for the holder
-  sessions its configuration names (never a model's or a caller's claim),
-  issues through the host's issuer when it holds none or the one it holds
-  nears expiry, retries once with a new one after a stale refusal, and
-  drops one whose effect was decided. The token reaches only the action's
-  `credential` field: nothing the vault returns, serializes or inspects
-  contains it, so no prompt, transcript, tool result, script, YAML or log
-  sees one. The MCP server (direct mode, test-only option
-  `workflowCredentials: { holderSessionIds }`) registers
-  `respond_session_request` and `complete_workflow_node` over its vault;
-  neither takes nor returns a credential.
-- **Use.** The action needs the token: a person's sign-in alone is
-  `CREDENTIAL_REQUIRED`. An unknown or malformed token is
-  `CREDENTIAL_INVALID`, an expired or revoked one `CREDENTIAL_EXPIRED` or
-  `CREDENTIAL_REVOKED`; another audience, request or node is
-  `CREDENTIAL_SCOPE` (each 403, never 401: a client reads a 401 as its own
-  sign-in failing); a decided effect `CREDENTIAL_CLOSED` (409). A valid
-  credential then acts as its holder, on its own effect, through the
-  in-process tools' implementation (`respondSessionRequestWithCredential`,
-  `completeWorkflowNodeWithCredential`), which decides again under its locks;
-  the call never names the acting session.
+**Responses and completions stay in process (owner scope, 2026-11-02).**
+External agents are not in scope: agents run only within PilotSwarm, as
+agent-to-agent communication does today. A request's responder answers with
+its in-process `respond_session_request` tool, and an agent state's child
+completes its state with `complete_workflow_node` (`request-service.ts`,
+`agent-node-service.ts`). The host binds each call to the calling session
+(the request's responder, the state's assigned child), never to a field of
+the call, and the store decides it under its locks: the request or node must
+be pending in an active run, within its deadline and contract, with an
+operation id that makes a repeat return the first result, and human input
+to an agent state's subtree stays refused. Design 04 accepts this trusted
+in-process context for completions; its suggested REST routes
+(`/session-requests/{request}/responses`, `/sessions/{id}/workflow-node/result`)
+and the scoped invocation credentials it allows for them serve callers
+outside a worker, so they are not part of this milestone. The credential
+surface built for them earlier (migration 0102, the two routes, the
+credential vault and the MCP tools over it) was removed from this candidate
+before any deployment; no database outside disposable test schemas ran 0102.
 
 ## Authoring skills (design 04; R24, T124)
 
