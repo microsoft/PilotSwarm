@@ -117,7 +117,9 @@ function controlEventView(event) {
         }
         case "workflow.recovered": {
             const action = nonEmpty(data.action) ? data.action : null;
-            const text = action === "dispatched" ? "the run was started again" : action ? `action ${inline(action, 60)}` : "recovery recorded";
+            // The event and its receipt are stored before the controller is started (service.ts), so it records a request, not a start.
+            const text = action === "dispatched" ? "a restart of the run was recorded; this does not show that it has started"
+                : action ? `action ${inline(action, 60)} recorded` : "recovery recorded";
             const by = nonEmpty(data.requestedBy) ? ` by ${inline(String(data.requestedBy).slice(0, 8), 20)}` : "";
             return { text: `↻ Recovery requested${by}: ${text}.`, summary: "recovery requested", color: "yellow" };
         }
@@ -192,6 +194,12 @@ export function formatWorkflowEventText(event) {
         case "workflow.state_started":
             return `▶ Step ${data.step ?? "?"}: ${code(data.stateId)} started (${data.runtime ?? data.type ?? "script"}).`;
         case "workflow.state_completed": {
+            // An explicit runtime error recorded as a completion contradicts itself; it is never shown as a success.
+            if (data.resultKind === "runtime_error") {
+                const detail = nonEmpty(data.error) ? data.error : nonEmpty(data.outputPreview) && data.outputPreview !== "null" ? data.outputPreview : null;
+                return `✗ Step ${data.step ?? "?"}: ${code(data.stateId)} runtime error${nonEmpty(data.outcome) ? ` ${inline(data.outcome, 60)}` : ""}`
+                    + `, recorded as a completion${detail ? `: ${inline(detail, 300)}` : ""}`;
+            }
             const parts = [`✓ Step ${data.step ?? "?"}: ${code(data.stateId)} → **${data.outcome ?? "?"}**`];
             const duration = formatDuration(data.durationMs);
             if (duration) parts.push(`in ${duration}`);
@@ -258,12 +266,17 @@ export function describeWorkflowEvent(event) {
         case "workflow.state_completed": {
             const duration = formatDuration(data.durationMs);
             const tools = formatToolCalls(data.toolCalls);
-            const summary = `${data.stateId ?? "?"} → ${data.outcome ?? "?"}${duration ? ` in ${duration}` : ""}${tools ? ` · ${tools}` : ""}`;
+            const runtimeError = data.resultKind === "runtime_error";
+            const summary = runtimeError ? `${data.stateId ?? "?"} runtime error${nonEmpty(data.outcome) ? ` ${data.outcome}` : ""}`
+                : `${data.stateId ?? "?"} → ${data.outcome ?? "?"}${duration ? ` in ${duration}` : ""}${tools ? ` · ${tools}` : ""}`;
             // A v2 business result is a normal completion; its outcome only draws attention when the workflow's author named it so.
+            // An explicit result kind this build does not know is never green. Legacy rules apply only when there is no kind.
+            const hasKind = data.resultKind !== undefined && data.resultKind !== null;
             const color = data.resultKind === "business"
                 ? (WORKFLOW_ATTENTION_OUTCOMES.has(String(data.outcome ?? "").toLowerCase()) ? "yellow" : "green")
-                : data.resultKind === "runtime_error" ? "red"
-                    : data.exitCode === 0 || data.resultSource === "reported" ? "green" : "yellow";
+                : runtimeError ? "red"
+                    : hasKind ? "yellow"
+                        : data.exitCode === 0 || data.resultSource === "reported" ? "green" : "yellow";
             return { kind: "notice", title: stepTitle, color, summary, text };
         }
         case "workflow.state_failed":

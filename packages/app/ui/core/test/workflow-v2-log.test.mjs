@@ -112,6 +112,17 @@ test("legacy steps keep their rules and an unclassified step is never a quiet re
     assert.deepEqual(counts(bare), [1], "no exit code, result source or v2 result kind: not a quiet repeat");
     const odd = buildHistoryModel([started(), begin(1), done(1), begin(2), done(2, "unchanged", "run-a", { resultKind: "unexpected" })]);
     assert.deepEqual(counts(odd), [1], "an unknown result kind is not trusted");
+    // An explicit unknown kind is not rescued by legacy fields, and an empty kind is explicit too.
+    for (const resultKind of ["unexpected", "", "Business"]) {
+        const rescued = buildHistoryModel([started(), begin(1), done(1), begin(2),
+            done(2, "unchanged", "run-a", { resultKind, exitCode: 0, resultSource: "reported" })]);
+        assert.deepEqual(counts(rescued), [1], JSON.stringify(resultKind));
+        assert.equal(rescued.chat.length, 3);
+        assert.equal(rescued.chat.at(-1).workflowNotice.color, "yellow", JSON.stringify(resultKind));
+    }
+    // A null kind is absent: the legacy rule still applies.
+    const nullKind = buildHistoryModel([legacy(), lstart(1), ldone(1, { resultKind: null }), lstart(2), ldone(2, { resultKind: null })]);
+    assert.deepEqual(counts(nullKind), [2]);
 });
 
 test("the eight control events are workflow events, in the history paging types, and each is logged from its real payload", () => {
@@ -139,7 +150,7 @@ test("the eight control events are workflow events, in the history paging types,
         [event("workflow.input_accepted", { runId: "r", messageId: "m1", contract: "Ack@1", senderSessionId: "1234567890", claimedBy: "nx-1" }),
             "a waiting receive state took it", "input accepted and taken", "gray"],
         [event("workflow.recovered", { runId: "r", action: "dispatched", requestedBy: "abcdef1234", operationId: "op" }),
-            "↻ Recovery requested by `abcdef12`: the run was started again.", "recovery requested", "yellow"],
+            "↻ Recovery requested by `abcdef12`: a restart of the run was recorded; this does not show that it has started.", "recovery requested", "yellow"],
         [event("workflow.cancel_requested", { runId: "r", effects: [{ nodeExecutionId: "n", instanceId: "i", status: "Running" }, { nodeExecutionId: "m", instanceId: "j", status: "Suspended" }] }),
             "⏹ Asked 2 running effects to stop.", "2 effects asked to stop", "yellow"],
         [event("workflow.parent_notified", { runId: "r", parentSessionId: "parent-123456" }),
@@ -193,6 +204,8 @@ test("missing or malformed control payloads still read sensibly and never throw"
     assert.equal(bare("workflow.vars_set"), "✎ Workflow variables updated.");
     assert.equal(bare("workflow.input_accepted"), "✉ Input accepted by the workflow; it waits for a receive state.");
     assert.equal(bare("workflow.recovered"), "↻ Recovery requested: recovery recorded.");
+    assert.equal(formatWorkflowEventText(event("workflow.recovered", { action: "other" })), "↻ Recovery requested: action `other` recorded.");
+    assert.ok(!/started again|was started/.test(formatWorkflowEventText(event("workflow.recovered", { action: "dispatched" }))), "the event is recorded before the start, so it never claims one");
     assert.equal(bare("workflow.cancel_requested"), "⏹ Asked 0 running effects to stop. They may take a moment to end.");
     assert.equal(bare("workflow.parent_notified"), "✉ The parent session was told that the run ended.");
     assert.equal(bare("workflow.parent_notification_skipped"), "✉ The parent session was not told that the run ended.");
@@ -231,6 +244,10 @@ test("the step notice colour follows the result kind, and legacy colours do not 
     assert.equal(colour(done(1, "changed")), "yellow");
     assert.equal(colour(done(1, "failure")), "yellow");
     assert.equal(colour(done(1, "unchanged", "run-a", { resultKind: "runtime_error" })), "red");
+    for (const resultKind of ["unexpected", ""]) {
+        assert.equal(colour(done(1, "unchanged", "run-a", { resultKind, exitCode: 0, resultSource: "reported" })), "yellow", JSON.stringify(resultKind));
+    }
+    assert.equal(colour(event("workflow.state_completed", { stateId: "poll", step: 1, outcome: "unchanged", resultKind: null, exitCode: 0 })), "green", "a null kind is absent");
     assert.equal(colour(runtimeError(1)), "red");
     const legacy = extra => event("workflow.state_completed", { stateId: "poll", step: 1, outcome: "unchanged", ...extra });
     assert.equal(colour(legacy({ exitCode: 0 })), "green");
@@ -239,6 +256,23 @@ test("the step notice colour follows the result kind, and legacy colours do not 
     assert.equal(colour(legacy({})), "yellow");
     assert.equal(describeWorkflowEvent(event("workflow.state_failed", { stateId: "poll", step: 1, error: "boom" })).summary, "poll could not run: boom");
     assert.equal(formatWorkflowEventText(event("workflow.state_failed", { stateId: "poll", step: 1, error: "boom" })), "✗ Step 1: `poll` could not run: boom");
+});
+
+test("an explicit runtime error recorded as a completion reads as a runtime error, not a success", () => {
+    const contradictory = done(2, "invalid_output", "run-a", { resultKind: "runtime_error", outputPreview: '{"detail":"x"}' });
+    const text = formatWorkflowEventText(contradictory);
+    assert.equal(text, "✗ Step 2: `poll` runtime error `invalid_output`, recorded as a completion: `{\"detail\":\"x\"}`");
+    assert.ok(!text.includes("✓") && !text.includes("→ **"));
+    const view = describeWorkflowEvent(contradictory);
+    assert.deepEqual([view.color, view.summary], ["red", "poll runtime error invalid_output"]);
+    assert.equal(formatWorkflowEventText(done(2, "x", "run-a", { resultKind: "runtime_error", outputPreview: undefined })), "✗ Step 2: `poll` runtime error `x`, recorded as a completion");
+    assert.match(formatWorkflowEventText(done(2, "x", "run-a", { resultKind: "runtime_error", error: "`bad`\nline" })), /: `'bad' line`$/);
+    // Business results, including a business "failure", and legacy completions keep their text.
+    assert.equal(formatWorkflowEventText(done(3, "failure")), "✓ Step 3: `poll` → **failure**.\nOutput: `{\"n\":1}`");
+    assert.match(formatWorkflowEventText(event("workflow.state_completed", { stateId: "poll", step: 1, outcome: "unchanged", exitCode: 1 })), /^✓ Step 1: `poll` → \*\*unchanged\*\*\.$/);
+    const history = buildHistoryModel([started(), begin(1), done(1), begin(2), contradictory]);
+    assert.equal(history.chat.at(-1).workflowNotice.color, "red");
+    assert.match(history.chat.at(-1).text, /^✗ Step 2: `poll` runtime error `invalid_output`, recorded as a completion/);
 });
 
 test("a v2 runtime error with no error text names the effect or says nothing was recorded", () => {

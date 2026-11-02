@@ -102,10 +102,12 @@ export function appendWorkflowProgress(chat, event, message) {
     const sameState = prior?.stateId === data.stateId && (prior.runId ?? null) === runId;
     const selfLoop = definition && Object.values(definition.next ?? {}).includes(data.stateId);
     const eligible = definition ? (started ? selfLoop : definition.next?.[data.outcome] === data.stateId) : Boolean(sameState);
-    // A v2 business result completed normally and carries no exit code; a v2 runtime error is never a quiet repeat. A business
+    // A v2 business result completed normally and carries no exit code; a v2 runtime error or an unknown result kind is never a quiet repeat. A business
     // outcome the author named as significant (failure, blocked, ...) stays its own row, as it does for legacy steps.
-    const completedCleanly = data.resultKind === "runtime_error" ? false
-        : data.resultKind === "business" ? true
+    // The old exit-code rule applies only when there is no result kind at all; an explicit kind this build does not know never groups.
+    const hasKind = data.resultKind !== undefined && data.resultKind !== null;
+    const completedCleanly = data.resultKind === "business" ? true
+        : hasKind ? false
             : data.exitCode === 0 || data.resultSource === "reported" || data.resultSource === "stdout";
     const healthy = started || (!significantOutcomes.has(String(data.outcome ?? "").toLowerCase())
         && completedCleanly
