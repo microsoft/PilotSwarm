@@ -21,6 +21,11 @@
  *   fault point before the compare-and-swap) leaves nothing under T. The
  *   retry sends T again, rehydrates the last saved version, runs P once more
  *   and saves it under T; the failed attempt's run is not in the store.
+ * - Review W2-WIT3: P's attempt carried no workflow item; a workflow's copy
+ *   that arrives while its retry waits is not attached to that retry, which
+ *   adopts a saved turn with no witness. The invocation is bound after the
+ *   retry and the next attempt, under a key of its own, carries, sends and
+ *   completes it.
  * - Lossy-fresh control: attempts whose completions are lost to a closed
  *   connection retry with T and adopt the saved turn; once those retries are
  *   spent, the lossy handoff's retry has count 0 and no key, so it never
@@ -32,7 +37,7 @@
  * given; the hidden provider budget store; and, in the last case only, the
  * transport: the fixture throws "Connection is closed" in place of a
  * completed turn's result (afterActivity), a completion lost on the way
- * back. The first two cases fail inside the real worker activity, at its own
+ * back. The other cases fail inside the real worker activity, at its own
  * fault points (PILOTSWARM_FAULT_INJECT, armed for one attempt). Limits: the
  * forced continue-as-new is set_model's (the iteration and history caps are
  * unit-tested); the child is a tracked entry with no orchestration of its
@@ -42,6 +47,8 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { useSuiteEnv } from "../helpers/local-env.js";
 import { admitAndSend, eventText, intakeNativeCase, scheduled, INTAKE_NATIVE_TIMEOUT } from "../helpers/workflow-v2-intake-native-fixture.js";
+import { WORKFLOW_INTAKE_ACTIVITIES } from "../../src/workflow/v2/intake.ts";
+import { INTERNAL_SYSTEM_TURN_PROMPT } from "../../src/orchestration_1_0_83/state.ts";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const FAULT = "PILOTSWARM_FAULT_INJECT";
@@ -204,6 +211,51 @@ describe("workflow v2 durable intake: the owed retry on the real session lifecyc
             const owing = all.findIndex(history => eventText(history[0]).includes(owedP(T, 1)));
             expect(owing).toBeGreaterThan(0);
             expect(scheduled(all[owing], "runTurnV5")).toHaveLength(1);
+        });
+    });
+
+    it("review W2-WIT3: P's owed retry adopts the turn its attempt saved, which carried nothing, and carries nothing itself; a workflow's copy that arrived meanwhile is bound after it and completed by the next attempt", { timeout: INTAKE_NATIVE_TIMEOUT }, async () => {
+        const fault = oneAttemptFault();
+        await intakeNativeCase(getEnv(), "W2-WIT3: the adopting retry carries nothing", script, { snapshots: true, beforeActivity: fault.beforeActivity }, async h => {
+            const input = await h.send(1);
+            const expected = await h.expectedItem(input);
+            await h.start({ blobEnabled: true });
+            await h.until(waiting, "the session waits for its messages");
+            fault.arm("turn.control.after-commit");
+            await h.say(P, "p-1");
+            await h.until(() => turnsOf(h).some(call => call.error !== undefined), "P's attempt fails after its commit");
+            const T = keyOf(turnsOf(h)[0]);
+            expect(Object.hasOwn(turnsOf(h)[0].input, "intake")).toBe(false);
+            // While the retry waits, the workflow's copy arrives; the retry's execution claims it first.
+            await h.deliver(input);
+            await h.until(async () => (await h.store.readWorkflowIntake(input.envelope.exchangeId))?.processing === "completed",
+                "the copy's invocation completes", 120_000);
+            const row = await h.store.readWorkflowIntake(input.envelope.exchangeId);
+
+            const turns = turnsOf(h);
+            expect(turns).toHaveLength(3);
+            const [, retry, carrying] = turns;
+            // The retry sends T with its count and no batch; it adopts the saved turn, which has no witness: no model run.
+            expect([keyOf(retry), retry.input.retryCount, Object.hasOwn(retry.input, "intake")]).toEqual([T, 1, false]);
+            expect(retry.result).toMatchObject({ type: "completed", content: "P answered", snapshotVersion: 1 });
+            expect(retry.result.intakeDispatch).toBeUndefined();
+            // The invocation is bound only after the retry, and the next attempt, under a key of its own, carries and sends it.
+            const settles = h.calls.filter(call => call.name === WORKFLOW_INTAKE_ACTIVITIES.settle && call.input?.recipientSessionId === h.sessionId);
+            expect(settles.map(call => [call.input.op, call.input.outcome ?? null])).toEqual([["bind", null], ["end", "completed"]]);
+            expect(h.calls.indexOf(settles[0])).toBeGreaterThan(h.calls.indexOf(retry));
+            expect(keyOf(carrying)).not.toBe(T);
+            expect(carrying.input.intake).toMatchObject({
+                invocationId: row.invocationId, sentBefore: false,
+                items: [{ exchangeId: input.envelope.exchangeId, clientMessageId: expected.clientMessageId, text: expected.text }],
+            });
+            expect(carrying.result).toMatchObject({ intakeDispatch: { invocationId: row.invocationId, sent: true }, snapshotVersion: 2 });
+            expect(await h.store.readWorkflowIntakeExposure(row.invocationId)).toMatchObject({ attemptId: carrying.input.intake.attemptId });
+            // Two model runs: P's, then the carrying turn's, with the item's canonical text first; both saved, in order.
+            expect(h.prompts).toHaveLength(2);
+            expect(h.prompts[1].startsWith(`${expected.text}\n\n`)).toBe(true);
+            expect(h.prompts[1]).toContain(INTERNAL_SYSTEM_TURN_PROMPT);
+            expect(await h.snapshots.probe()).toMatchObject({ version: 2, turnKey: keyOf(carrying) });
+            expect(h.snapshots.modelRuns().map(run => run.modelRun)).toEqual([1, 2]);
         });
     });
 

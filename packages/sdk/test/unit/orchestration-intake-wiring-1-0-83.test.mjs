@@ -1694,6 +1694,53 @@ test("6.2: decide's turn for the intake alone takes the released wait's note and
     assert.match(seen[1].prompt, /^The 60 second wait is now complete\./);
 });
 
+test("6.2: decide's turn for the intake alone takes a released cron's note in its system context; the cron resumes with its remaining time and its wake-up is a turn of its own", () => {
+    const runtime = makeRuntime({ intake: carried({ queue: [heldEntry(1)] }), cronSchedule: { intervalSeconds: 1800, reason: "digest" } });
+    runtime.state.activeTimer = { deadlineMs: NOW + 600_000, originalDurationMs: 1_800_000, reason: "digest", type: "cron" };
+    const seen = [];
+    const { ops } = drive(runLoop(runtime), turnResponder({
+        guids: ["inv-1"], activity: storeAnswers([1]),
+        turn: op => {
+            seen.push({ prompt: op.input.prompt, intake: op.input.intake ?? null });
+            return op.input.intake ? completed(sentBy()) : completed();
+        },
+        stop: op => isTurn(op) && seen.length >= 2,
+    }));
+    assert.equal(seen.length, 2);
+    // The intake's own turn: its items in their own field; its prompt the internal one, with the released cron's note.
+    assert.deepEqual(seen[0].intake, payloadOf([1]));
+    assert.ok(seen[0].prompt.startsWith(INTERNAL_SYSTEM_TURN_PROMPT), seen[0].prompt);
+    assert.ok(seen[0].prompt.includes('There is an active recurring schedule every 1800 seconds for "digest".'), seen[0].prompt);
+    assert.match(seen[0].prompt, /resume after the remaining 600 seconds unless you explicitly reset cron\./);
+    assert.equal(endOf(ops).input.outcome, "completed");
+    // The cron was armed again with its remaining time; its wake-up runs next, carrying nothing.
+    assert.equal(seen[1].intake, null);
+    assert.ok(seen[1].prompt.includes('Scheduled cron wake-up for: "digest"'), seen[1].prompt);
+});
+
+test("6.2: decide's turn for the intake alone takes a released cron_at's note, with its pending fire, in its system context", () => {
+    const nextFireAtMs = NOW + 600_000;
+    const runtime = makeRuntime({
+        intake: carried({ queue: [heldEntry(1)] }),
+        cronAtSchedule: { minute: 0, tz: "UTC", reason: "hourly digest", firesCompleted: 0, nextFireAtMs, nextOccurrenceKey: "occurrence-1" },
+    });
+    runtime.state.activeTimer = { deadlineMs: nextFireAtMs, originalDurationMs: 600_000, reason: "hourly digest", type: "cron_at" };
+    const seen = [];
+    drive(runLoop(runtime), turnResponder({
+        guids: ["inv-1"], activity: storeAnswers([1]),
+        turn: op => {
+            seen.push({ prompt: op.input.prompt, intake: op.input.intake ?? null });
+            return op.input.intake ? completed(sentBy()) : completed();
+        },
+        stop: op => isTurn(op) && seen.length >= 1,
+    }));
+    assert.equal(seen.length, 1);
+    assert.deepEqual(seen[0].intake, payloadOf([1]));
+    assert.ok(seen[0].prompt.startsWith(INTERNAL_SYSTEM_TURN_PROMPT), seen[0].prompt);
+    assert.ok(seen[0].prompt.includes('There is an active wall-clock schedule for "hourly digest".'), seen[0].prompt);
+    assert.ok(seen[0].prompt.includes(`The pending scheduled fire (${new Date(nextFireAtMs).toISOString()}) is preserved`), seen[0].prompt);
+});
+
 // ─── Review of 009109e2: W2-WIT3 and W2-WIT4 ────────────────
 
 test("W2-WIT3: the owed retry of a thrown turn that carried nothing sends that attempt's key and carries nothing; the held item is formed after it and rides the next attempt", () => {
