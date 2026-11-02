@@ -470,6 +470,7 @@ publication gate on declared test scenarios (not in the YAML design).
 | Agent tools (a request's responder, an agent state's child) | — | `respond_session_request`, `complete_workflow_node` (in-process, bound by the host) |
 | REST `GET /sessions/:id/workflow`, SDK and TUI `readWorkflow`, portal | the same `readWorkflowV2View`; with `workflowCommands` (INACTIVE) also `personCommands` | nothing |
 | Portal workflow view run controls (INACTIVE: only with `personCommands`) | `personCommands` and the shown run | a person's `pause`, `resume`, `stop`, `cancel` of the shown run, as `updateWorkflow` commands |
+| Portal workflow view variables panel (INACTIVE: only with `personCommands`) | the shown run's `kv` preview and `kvRevision` | a person's `set_vars` of one variable (set, or remove after confirming) at the revision shown |
 | Portal and TUI composer, management client, SDK client | session access (`canSendPrompt`, `canAnswer`, `canSteer`) | human input, refused for an agent state's subtree at the SDK |
 | REST `POST /sessions/:id/workflow/commands`, SDK (direct and web) and TUI `updateWorkflow`, MCP `update_workflow` (INACTIVE: test-only option `workflowCommands`) | — | a person's `update_workflow` command (below) |
 
@@ -496,7 +497,8 @@ the same agent child, branch, stop, test and pin fields. The shared UI
 - **Human input.** A session whose access reports `canSendPrompt: false` has
   no composer; the note gives the reason and the controlling agent. The
   server refuses the input anyway.
-- **Run controls (R17, R26; mocks M04, M16; INACTIVE).** See below.
+- **Run controls and variables (R04, R05, R17, R26; mocks M04, M15, M16;
+  INACTIVE).** See below.
 
 **A person's workflow command (`updateWorkflow`; design 04, R26; INACTIVE).**
 The direct management client takes a person's command to a workflow
@@ -578,7 +580,9 @@ run it shows, through the transport's `updateWorkflow`, with no new route.
   cancel is a request its controller applies; the run's status says when it
   ends) and the read model is read again at once. Refused (a 4xx answer, or
   501 where the deployment takes no person's commands): a notice gives the
-  reason; nothing changed. No answer (or a server failure): a notice says
+  reason; nothing changed, and a conflict with the workflow's state (409:
+  the run moved on, the variables changed) also reads the workflow again,
+  so the view shows what the server saw. No answer (or a server failure): a notice says
   the command may not have arrived, and Retry sends it again with the same
   operation id, so the server answers with the first command's receipt
   instead of applying it twice.
@@ -587,17 +591,45 @@ run it shows, through the transport's `updateWorkflow`, with no new route.
   "Cancelled by an operator"); the agent tool's default stays "Cancelled by
   its parent".
 
+**Variables in the workflow view (R04, R05, R26; mock M15; INACTIVE).** The
+same view lets a person read and change the shown run's variables (its open
+KV), through the same `updateWorkflow` transport, with no new route.
+
+- **What a person sees.** A Variables button in the header opens a panel
+  (only when the read model has `personCommands`): the revision, each name
+  and its JSON value from the read model's preview of the map (canonical
+  JSON, cut at 4,000 characters: a longer map shows only its start, and a
+  variable can still be named), and a note that a new name needs no
+  declaration, that a state reads the variables as they are when it
+  starts, and that they cannot change the published definition,
+  permissions, join receipts or request winners.
+- **Who may change them.** A person may change them when the workflow takes
+  `set_vars` from people (never in a workflow agent state's subtree: the
+  panel is read-only there and names the controlling agent), the run has
+  not ended, the caller may command the workflow (the portal's `viewer`),
+  and the revision is known; otherwise the panel says why and has no form.
+- **Changing one.** A form takes a name (1 to 128 characters, kept exactly
+  as typed) and a JSON value (a string needs its quotes; `null` is a
+  value); Edit copies a listed variable into it. Set sends one update at
+  once; Remove asks first (states that start later do not see the
+  variable; running work keeps the values it started with). Each is one
+  `set_vars` of that run at the revision shown (`expected_kv_revision`), with
+  its own operation id: if the variables changed meanwhile, the server
+  refuses it (409 `KV_REVISION_CONFLICT`), the notice says so, and the view
+  reads the workflow again, keeping what the person typed. A batch of
+  several keys in one update goes through the API, MCP or the agent tool.
+
 Unfulfilled requirements (open, not waived; R26):
 
 - **Human test-run and typed-input routes** (`/test-runs`, `/inbox`): a
   person's test operations travel as `updateWorkflow` commands (above);
   design 04's separate `/test-runs` and `/inbox` paths, and the final path
   names, are API review item D11.
-- **The rest of the UI commands**: the portal sends only the run controls
-  (above). Setting KV (`set_vars`), the draft's replace, publish and start,
-  and the test operations (start, answer an interception, advance the
-  virtual clock) have no screen yet, and the TUI has no workflow command
-  keys (it does not draw the workflow view).
+- **The rest of the UI commands**: the portal sends the run controls and
+  one-variable updates (above). The draft's replace, publish and start, and
+  the test operations (start, answer an interception, advance the virtual
+  clock) have no screen yet, and the TUI has no workflow command keys (it
+  does not draw the workflow view).
 - **Credentialed actions from other runtimes**: the MCP server can act for
   configured holder sessions (below); a hand-off to runtimes other than an
   MCP server in direct mode (a web-mode MCP server, a TUI command, an

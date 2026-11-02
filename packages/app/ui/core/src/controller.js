@@ -1,7 +1,7 @@
 import { applyNativeTaskSnapshot } from "./native-tasks.js";
 import { workflowDefinition } from "./workflow-view.js";
 import {
-    WORKFLOW_V2_RUN_CONTROL_OPERATIONS, workflowV2RunCommandAccepted, workflowV2RunCommandConfirm, workflowV2RunCommandFailure,
+    workflowV2RunCommandAccepted, workflowV2RunCommandArgs, workflowV2RunCommandConfirm, workflowV2RunCommandFailure, workflowV2RunCommandWire,
 } from "./workflow-v2-commands.js";
 import { UI_COMMANDS, FOCUS_REGIONS, INSPECTOR_TABS, cycleValue } from "./commands.js";
 import { BUDGET_SERIES_DAYS, BUDGET_SERIES_RANGES, canvasKey as canvasPrefKey } from "./state.js";
@@ -6354,23 +6354,30 @@ export class PilotSwarmUiController {
 
     /**
      * Workflow v2 (INACTIVE unless the deployment takes a person's workflow
-     * commands): a person's run control (pause, resume, stop or cancel of
-     * run `runId`, the run the workflow view shows), sent as an
-     * updateWorkflow command through the transport (POST
-     * /sessions/:id/workflow/commands, session:manage), with that run's id,
-     * so it never lands on another run. Stop and cancel open the confirm
-     * dialog first. One command per session at a time: the view records it
-     * as `runCommand` ({ operation, runId, operationId, phase, message, code
-     * }). Accepted: the record is cleared, the status line says what was
-     * accepted, and the read model is read again at once. Refused (a 4xx
-     * answer, or 501): "failed", with the reason. Anything else is "unconfirmed":
-     * sending the same control for the same run again reuses its operation
-     * id, so the server answers with the first command's receipt instead of
-     * applying it twice. The server decides every command; nothing here
-     * grants one. Never throws.
+     * commands): a person's run command for run `runId`, the run the workflow
+     * view shows: a run control (pause, resume, stop or cancel) or a variables
+     * update (set_vars: `set` and `delete`, at `expectedKvRevision`, the KV
+     * revision the person saw), sent as an updateWorkflow command through the
+     * transport (POST /sessions/:id/workflow/commands, session:manage), with
+     * that run's id, so it never lands on another run. Stop, cancel and an
+     * update that removes variables open the confirm dialog first. One
+     * command per session at a time: the view records it as `runCommand` ({
+     * operation, runId, operationId, args, phase, message, code }). Accepted:
+     * the record is cleared, the status line says what was accepted, and the
+     * read model is read again at once. Refused (a 4xx answer, or 501):
+     * "failed", with the reason; a conflict with the workflow's state (409:
+     * the run moved on, the variables changed) also reads the workflow again,
+     * so the view shows what the server saw. Anything else is "unconfirmed":
+     * sending the same command for the same run again
+     * (retryWorkflowRunCommand) reuses its operation id, so the server
+     * answers with the first command's receipt instead of applying it twice.
+     * The server decides every command; nothing here grants one. Never
+     * throws.
      */
-    async sendWorkflowRunCommand(sessionId, { operation, runId, confirmed = false } = {}) {
-        if (!WORKFLOW_V2_RUN_CONTROL_OPERATIONS.includes(operation) || typeof runId !== "string" || !runId) return { ok: false, reason: "invalid" };
+    async sendWorkflowRunCommand(sessionId, { operation, runId, confirmed = false, ...input } = {}) {
+        const checked = workflowV2RunCommandArgs(operation, input);
+        if (!checked.ok || typeof runId !== "string" || !runId) return { ok: false, reason: "invalid" };
+        const args = checked.args;
         const state = this.getState();
         if (state.sessions.byId[sessionId]?.sessionKind !== "workflow") return { ok: false, reason: "not a workflow" };
         if (typeof this.transport?.updateWorkflow !== "function") {
@@ -6379,30 +6386,39 @@ export class PilotSwarmUiController {
         }
         const previous = state.ui.workflowViews?.[sessionId]?.runCommand || null;
         if (previous?.phase === "pending") return { ok: false, reason: "pending" };
-        const confirm = confirmed ? null : workflowV2RunCommandConfirm(operation, runId);
+        const confirm = confirmed ? null : workflowV2RunCommandConfirm(operation, runId, args);
         if (confirm) {
             this.dispatch({ type: "ui/modal", modal: { type: "confirm", ...confirm, action: "workflowRunCommand",
-                workflowRunCommand: { sessionId, operation, runId }, previousFocus: state.ui.focusRegion } });
+                workflowRunCommand: { sessionId, operation, runId, ...(args ?? {}) }, previousFocus: state.ui.focusRegion } });
             return { ok: false, reason: "confirming" };
         }
-        const operationId = previous?.phase === "unconfirmed" && previous.operation === operation && previous.runId === runId
-            && typeof previous.operationId === "string" ? previous.operationId : `ui-${operation}-${this._newTurnControlRequestId()}`;
-        const record = { operation, runId, operationId };
+        const same = previous?.phase === "unconfirmed" && previous.operation === operation && previous.runId === runId
+            && JSON.stringify(previous.args ?? null) === JSON.stringify(args) && typeof previous.operationId === "string";
+        const operationId = same ? previous.operationId : `ui-${operation}-${this._newTurnControlRequestId()}`;
+        const record = { operation, runId, operationId, args };
         this.dispatch({ type: "ui/workflowView", sessionId, view: { runCommand: { ...record, phase: "pending", message: null, code: null } } });
         try {
-            const receipt = await this.transport.updateWorkflow(sessionId, { operation, operation_id: operationId, run_id: runId });
+            const receipt = await this.transport.updateWorkflow(sessionId, workflowV2RunCommandWire(operation, runId, operationId, args));
             this.dispatch({ type: "ui/workflowView", sessionId, view: { runCommand: null } });
-            this.dispatch({ type: "ui/status", text: workflowV2RunCommandAccepted(operation, runId, receipt) });
+            this.dispatch({ type: "ui/status", text: workflowV2RunCommandAccepted(operation, runId, receipt, args) });
             this.ensureWorkflowReadModel(sessionId, { force: true }).catch(() => {});
             return { ok: true, receipt };
         } catch (error) {
             const failure = workflowV2RunCommandFailure(error);
             this.dispatch({ type: "ui/workflowView", sessionId, view: { runCommand: { ...record, ...failure } } });
+            if (failure.phase === "failed" && Number(error?.status) === 409) this.ensureWorkflowReadModel(sessionId, { force: true }).catch(() => {});
             return { ok: false, reason: failure.phase, error };
         }
     }
 
-    /** Clear the workflow view's notice about its last run control (nothing is sent or undone). */
+    /** Send the view's unconfirmed run command again: the same command, with the same operation id. */
+    async retryWorkflowRunCommand(sessionId) {
+        const command = this.getState().ui.workflowViews?.[sessionId]?.runCommand;
+        if (!command || command.phase !== "unconfirmed") return { ok: false, reason: "nothing to retry" };
+        return this.sendWorkflowRunCommand(sessionId, { operation: command.operation, runId: command.runId, confirmed: true, ...(command.args ?? {}) });
+    }
+
+    /** Clear the workflow view's notice about its last run command (nothing is sent or undone). */
     dismissWorkflowRunCommand(sessionId) {
         const command = this.getState().ui.workflowViews?.[sessionId]?.runCommand;
         if (!command || command.phase === "pending") return;
@@ -9424,8 +9440,8 @@ export class PilotSwarmUiController {
             } else if (modal.action === "deleteAdminProvider") {
                 await this.deleteSelectedAdminProvider();
             } else if (modal.action === "workflowRunCommand") {
-                const command = modal.workflowRunCommand || {};
-                await this.sendWorkflowRunCommand(command.sessionId, { operation: command.operation, runId: command.runId, confirmed: true });
+                const { sessionId, ...command } = modal.workflowRunCommand || {};
+                await this.sendWorkflowRunCommand(sessionId, { ...command, confirmed: true });
             }
             return;
         }

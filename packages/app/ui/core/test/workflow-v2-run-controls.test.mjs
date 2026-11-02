@@ -16,8 +16,9 @@
  *   - the controller sends the shown run's control as an updateWorkflow
  *     command with the run's id and a new operation id; stop and cancel only
  *     after the confirm dialog; the read model is read again; a refusal is
- *     reported; an unanswered send keeps its operation id for Retry; one
- *     command at a time per workflow
+ *     reported (a 409 conflict also reads the workflow again); an unanswered
+ *     send keeps its operation id for Retry; one command at a time per
+ *     workflow
  *   - the controls and the notice render in the workflow pane (server render)
  *
  * Run: node --test test/workflow-v2-run-controls.test.mjs
@@ -220,11 +221,18 @@ test("a refusal is reported and sends nothing more; an unanswered send keeps its
     const h = seeded({ answer: command => { if (fail) throw fail; return receipt(command, "paused"); } });
     const refused = await h.controller.sendWorkflowRunCommand(SID, { operation: "pause", runId: RUN });
     assert.equal(refused.reason, "failed");
-    assert.deepEqual({ ...h.view().runCommand, operationId: "id" }, { operation: "pause", runId: RUN, operationId: "id", phase: "failed",
+    assert.deepEqual({ ...h.view().runCommand, operationId: "id" }, { operation: "pause", runId: RUN, operationId: "id", args: null, phase: "failed",
         message: "Run run-1 is already paused.", code: "RUN_ALREADY_PAUSED" });
-    assert.equal(h.reads.length, 0, "a refusal changed nothing, so nothing is read again");
+    // A conflict says the view is stale: the workflow is read again, so it shows what the server saw.
+    await until(() => h.reads.length === 1, "the read model read again after a conflict");
     h.controller.dismissWorkflowRunCommand(SID);
     assert.equal(h.view().runCommand, null);
+    // Another refusal (403: not the viewer's to command) changes nothing that a read would show.
+    fail = Object.assign(new Error("Only the session owner can do this."), { status: 403, code: "FORBIDDEN" });
+    assert.equal((await h.controller.sendWorkflowRunCommand(SID, { operation: "pause", runId: RUN })).reason, "failed");
+    for (let turn = 0; turn < 20; turn += 1) await new Promise(resolve => setImmediate(resolve));
+    assert.equal(h.reads.length, 1);
+    h.controller.dismissWorkflowRunCommand(SID);
 
     // No answer: the same control for the same run is sent again with the same operation id.
     fail = new TypeError("Failed to fetch");
@@ -232,10 +240,11 @@ test("a refusal is reported and sends nothing more; an unanswered send keeps its
     assert.equal(h.view().runCommand.phase, "unconfirmed");
     const first = h.updates.at(-1)[1].operation_id;
     fail = null;
-    const retried = await h.controller.sendWorkflowRunCommand(SID, { operation: "pause", runId: RUN, confirmed: true });
+    const retried = await h.controller.retryWorkflowRunCommand(SID);
     assert.equal(retried.ok, true);
     assert.equal(h.updates.at(-1)[1].operation_id, first);
     assert.equal(h.view().runCommand, null);
+    assert.deepEqual(await h.controller.retryWorkflowRunCommand(SID), { ok: false, reason: "nothing to retry" });
     // Another control, or the same one for another run, is a new command.
     fail = new TypeError("Failed to fetch");
     await h.controller.sendWorkflowRunCommand(SID, { operation: "pause", runId: RUN });

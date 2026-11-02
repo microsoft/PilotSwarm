@@ -2,6 +2,7 @@ import React from "react";
 import {
     compactWorkflowV2Executions, formatSeconds, formatWorkflowValue, projectWorkflowV2ReadModel, workflowV2RouteKind,
 } from "../../core/src/workflow-v2-view.js";
+import { workflowV2VariableDraft, workflowV2VariableRemoval } from "../../core/src/workflow-v2-commands.js";
 
 const h = React.createElement;
 const TONES = { error: "var(--ps-danger)", warning: "var(--ps-warning)", info: "var(--ps-muted)" };
@@ -334,6 +335,75 @@ export function WorkflowV2RunCommandNotice({ controller, sessionId, notice }) {
             color: TONES[notice.level] || TONES.info, borderBottom: "1px solid var(--ps-border)", overflowWrap: "anywhere" } },
     h("span", { style: { flex: 1, minWidth: 0 } }, notice.text),
     notice.retry ? h("button", { type: "button", className: "ps-mini-button",
-        onClick: () => { controller.sendWorkflowRunCommand(sessionId, { operation: notice.operation, runId: notice.runId, confirmed: true }); } }, "Retry") : null,
+        onClick: () => { controller.retryWorkflowRunCommand(sessionId); } }, "Retry") : null,
     h("button", { type: "button", className: "ps-mini-button", onClick: () => controller.dismissWorkflowRunCommand(sessionId) }, "Dismiss"));
+}
+
+/**
+ * The run's variables (its open KV; R04, R05; mock M15; INACTIVE: only a read model that says which commands the
+ * workflow takes from people has this panel). `model` is workflowV2RunVariables' answer. The list is read-only text; a
+ * person who may change the variables sets one (a name and a JSON value) or removes one (by name, after the confirm
+ * dialog), each as one update at the revision shown. Edit copies a listed variable into the form. The server checks the
+ * revision (a changed map is refused and read again) and everything else.
+ */
+export function WorkflowV2Variables({ controller, sessionId, model, id }) {
+    const [key, setKey] = React.useState("");
+    const [value, setValue] = React.useState("");
+    const [error, setError] = React.useState(null);
+    const mounted = React.useRef(true);
+    React.useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+    // A draft belongs to the run it was typed for: another run starts with an empty form.
+    const runId = model?.runId ?? null;
+    React.useEffect(() => { setKey(""); setValue(""); setError(null); }, [runId]);
+    if (!model) return null;
+    const send = async input => {
+        const result = await controller.sendWorkflowRunCommand(sessionId, { operation: "set_vars", runId: model.runId,
+            expectedKvRevision: model.revision, ...input });
+        if (result?.ok && mounted.current) { setKey(""); setValue(""); setError(null); }
+    };
+    const onSet = event => {
+        event.preventDefault();
+        const draft = workflowV2VariableDraft(key, value);
+        setError(draft.ok ? null : draft.error);
+        if (draft.ok) send({ set: draft.set });
+    };
+    const onRemove = () => {
+        const removal = workflowV2VariableRemoval(key);
+        setError(removal.ok ? null : removal.error);
+        if (removal.ok) send({ delete: removal.delete });
+    };
+    const cell = { padding: "2px 8px 2px 0", verticalAlign: "top", overflowWrap: "anywhere" };
+    return h("section", { id, className: "ps-workflow-variables", "aria-label": "Workflow variables", "data-run-id": model.runId,
+        style: { display: "grid", gap: 6, padding: "6px 12px", fontSize: "0.75rem", borderBottom: "1px solid var(--ps-border)" } },
+    h("h3", { style: { margin: 0, fontSize: "0.8rem" } }, model.revision === null ? "Variables" : `Variables · revision ${model.revision}`),
+    h("p", { style: { margin: 0, color: "var(--ps-muted)" } },
+        "An open map: a new name needs no declaration. A state reads the variables as they are when it starts; work already running keeps the values it started with. They cannot change the published definition, permissions, join receipts or request winners."),
+    model.note ? h("p", { role: "status", style: { margin: 0 } }, model.note) : null,
+    model.preview ? h("pre", { style: { margin: 0, whiteSpace: "pre-wrap", overflowWrap: "anywhere", maxHeight: "8em", overflow: "auto" } }, model.preview) : null,
+    model.entries.length ? h("table", { style: { borderCollapse: "collapse", width: "100%" } },
+        h("thead", null, h("tr", null, ["Name", "Value", ""].map((label, i) => h("th", { key: i, style: { ...cell, textAlign: "left" } }, label)))),
+        h("tbody", null, model.entries.map(entry => h("tr", { key: entry.key, "data-key": entry.key },
+            h("td", { style: cell }, entry.key),
+            h("td", { style: cell }, h("code", null, entry.displayText)),
+            h("td", { style: { ...cell, whiteSpace: "nowrap" } }, model.editable ? h("button", { type: "button", className: "ps-mini-button",
+                "aria-label": `Edit ${entry.key}`, disabled: model.busy,
+                onClick: () => { setKey(entry.key); setValue(entry.valueText); setError(null); } }, "Edit") : null))))) : null,
+    model.editable
+        ? h("form", { "aria-label": "Set or remove a variable", onSubmit: onSet,
+            style: { display: "flex", flexWrap: "wrap", alignItems: "flex-end", gap: 6 } },
+        h("label", { style: { display: "grid", gap: 2 } }, "Name",
+            h("input", { type: "text", value: key, maxLength: 128, onChange: event => setKey(event.target.value), "data-field": "name" })),
+        h("label", { style: { display: "grid", gap: 2, flex: "1 1 14em", minWidth: 0 } }, "Value (JSON)",
+            h("textarea", { value, rows: 2, onChange: event => setValue(event.target.value), "data-field": "value",
+                style: { fontFamily: "var(--ps-font-mono, monospace)", width: "100%" } })),
+        h("button", { type: "submit", className: "ps-mini-button", disabled: model.busy, "data-operation": "set" }, model.pending ? "Saving…" : "Set"),
+        h("button", { type: "button", className: "ps-mini-button is-danger", disabled: model.busy, "data-operation": "remove", onClick: onRemove }, "Remove"),
+        error ? h("span", { role: "alert", style: { flexBasis: "100%", color: TONES.error } }, error) : null)
+        : h("p", { className: "ps-workflow-variables-readonly", style: { margin: 0, color: "var(--ps-muted)" } }, model.reason));
+}
+
+/** The header button that opens and closes the variables panel (the view's `variablesOpen`). */
+export function WorkflowV2VariablesToggle({ controller, sessionId, open, controls }) {
+    return h("button", { type: "button", className: "ps-mini-button", "aria-expanded": Boolean(open), "aria-controls": open ? controls : undefined,
+        onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { variablesOpen: !open } }) }, "Variables");
 }
