@@ -13,9 +13,11 @@ function fieldSchema(property: MotdToolProperty): z.ZodTypeAny {
     }
     if (property.type === "boolean") return z.boolean();
     if (property.type === "integer") return z.number().int().min(property.minimum ?? 0).max(property.maximum ?? Number.MAX_SAFE_INTEGER);
+    // z.enum publishes the allowed values in tools/list; a refine would hide them.
+    if (property.enum?.length) return z.enum(property.enum as [string, ...string[]]);
     let field = z.string().min(property.minLength ?? 0).max(property.maxLength ?? 4096);
     if (property.pattern) field = field.regex(new RegExp(property.pattern));
-    return property.enum ? field.refine(value => property.enum!.includes(value), "Unknown value") : field;
+    return field;
 }
 export function registerMotdTools(server: McpServer, ctx: ServerContext) {
     const provider = process.env.PILOTSWARM_MCP_ACTOR_PROVIDER;

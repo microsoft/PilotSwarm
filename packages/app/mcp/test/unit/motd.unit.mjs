@@ -69,6 +69,8 @@ test("MCP creation accepts omitted times and documents open-ended delivery", asy
         assert.ok(!create.inputSchema.required.includes("startsAt"));
         assert.ok(!create.inputSchema.required.includes("endsAt"));
         assert.match(create.inputSchema.properties.endsAt.description, /until replaced or deleted/);
+        assert.deepEqual(create.inputSchema.properties.imagePlacement.enum, ["above", "beside", "background"]);
+        assert.deepEqual(create.inputSchema.properties.image.properties.contentType.enum, ["image/png", "image/jpeg", "image/webp", "image/gif"]);
         const response = await client.callTool({ name: "create_motd", arguments: { bodyMd: "Now, no end", requestId: "optional" } });
         assert.ok(!response.isError);
         assert.equal(calls[0].args[1].startsAt, undefined);
