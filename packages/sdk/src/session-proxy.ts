@@ -14,6 +14,7 @@ import { canvasArtifactFilename, normalizeCanvasSlot, eventSlot, latestCanvasEve
 import type { SessionStateStore } from "./session-store.js";
 import { resolveEffectiveSpawnOwner, type SessionCatalog } from "./cms.js";
 import { admissionToWait, PROVIDER_BUDGET_WAKE_PROMPT } from "./provider-budgets.js";
+import { orchestrationSupportsCompute } from "./orchestration-version.js";
 import { applyWorkspaceDefaults, checkWorkspaceForSpawn, defaultsRecordOf, orchestrationSupportsWorkspaces, prepareWorkspace, prepareWorkspaceExtras, readDefaultsRecord, resolveWorkspaceDefaults, sameDefaultsRecord, WORKSPACE_PARTIAL_CHANGES_NOTE, workspaceOpenedKey } from "./workspace.js";
 import { workingFolderOf } from "./workspace-check.js";
 import { changedExtraNames, sameWorkingFolder } from "./workspace-check.js";
@@ -718,7 +719,15 @@ export function createSessionProxy(
     affinityKey: string,
     config: SerializableSessionConfig,
     routingContract?: ActivityRoutingContract,
+    /**
+     * Compute providers: the orchestration version running this session.
+     * Only a version that knows about compute may choose the compute
+     * routing tag — a frozen older one must schedule exactly what it
+     * always did, whichever build replays it. Absent counts as older.
+     */
+    orchestrationVersion?: string,
 ) {
+    const computeAware = orchestrationSupportsCompute(orchestrationVersion);
     return {
         runTurn(
             prompt: string,
@@ -792,7 +801,7 @@ export function createSessionProxy(
             // worker would run it as its own child process, beside the CMS
             // and the model keys. Those workers declare the turn-control,
             // workspace and handoff tags too.
-            if ((config as { computeTarget?: unknown }).computeTarget) return routeComputeActivity(task);
+            if (computeAware && (config as { computeTarget?: unknown }).computeTarget) return routeComputeActivity(task);
             // Session turn control (1.0.81): every turn goes only to workers
             // that listen for controls. Those workers also declare the
             // handoff and workspace tags.

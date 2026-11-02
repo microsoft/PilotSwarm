@@ -575,15 +575,25 @@ missed — the turn fails with `COMPUTE_REQUIRED` instead. The tag keeps
 those turns away from workers that cannot serve them; this makes sure a
 worker that does serve them never quietly falls back.
 
-**Open: whether the orchestration version should be bumped.** The tag is
-chosen inside the orchestration, so a worker running an *older build of
-the orchestration itself* during a rolling deploy would not choose it. The
-argument that no version is needed is that a session can only have a
-compute target on a build that already understands compute, so no history
-written by an older build takes that branch — the same shape as the
-workspace tag. The argument against is that an older worker may execute
-the next step of a *new* session's orchestration while both builds are
-registered. The worker-side refusal above does **not** hold in the meantime for this case: it is code in the new build, and the worker at risk is the old one. Until this is decided, the operational rule is to register no target and set no default target until the rollout has finished, so no session with a target exists while two builds are registered (corner case K13).
+**A new orchestration version carries this, not the tag alone.** The tag is
+chosen inside the orchestration, so a worker running an *older build of the
+orchestration itself* during a rolling deploy would not choose it, and would
+then run the turn as its own child process. So compute is gated on the
+orchestration version, the way session workspaces were gated on 1.0.80:
+**1.0.82 is frozen and 1.0.83 is the latest**. Every new session starts on
+1.0.83, and only an orchestration at 1.0.83 or later chooses the compute
+routing tag.
+
+An old worker does not register 1.0.83 at all, so during a rolling deploy —
+or after a rollback to the previous build — it cannot run any step of a
+compute session: those sessions wait for a worker that can, which is the
+behaviour a session already has when no worker serves its tag. A session
+already in flight on 1.0.82 keeps replaying on the frozen copy, which is
+byte for byte what the previous build ran and has no compute branch in it.
+
+The routing tag and the worker's own refusal to start a local runtime for a
+session recorded as remote both stay, as the two layers behind the version
+gate.
 Whether to add a version is being decided separately from this change.
 
 **The two stages.** With require-compute off, the deployment is in mixed mode:
@@ -703,9 +713,16 @@ not that reference.
 
 The design is additive. A session without a target runs exactly as today: the
 runtime runs in the worker, with the same tools, the same prompt and the same
-steps. Migration 0084 only adds a table and its procedures; it changes no
-existing row. It adds no orchestration version. There is no feature flag: the new
-behaviour appears only for a session that names a target.
+steps — on 1.0.83 as it did on 1.0.82, because the only new branch in the
+orchestration is the one a compute target opens. Migration 0084 only adds a
+table and its procedures; it changes no existing row. There is no feature
+flag: the new behaviour appears only for a session that names a target.
+
+It does add an orchestration version. 1.0.82 is frozen in
+`orchestration_1_0_82/`, replay-only and byte for byte what the previous
+build ran, and 1.0.83 is the latest: what new sessions start on, and the
+only version that chooses the compute routing tag. That is what makes a
+rolling deploy safe — see 4.8 and corner case K13.
 
 ### 4.13 Skills and MCP servers on remote sessions
 
@@ -920,6 +937,7 @@ and future work says what it would take.
 | System and management agents with a default target | works differently | Each system tree holds its own host for as long as it lives, and cron keeps it warm. Their principal is null, so a provider that refuses a null principal blocks every system session. |
 | Model transport | works differently | Model requests come back through the worker over the runtime connection. A provider or wire format the runtime would drive over a WebSocket is refused; `wireApi: responses` has not been exercised remotely. |
 | Portal Workspace tab, canvas files and declared commands, portal git | works differently | These use the portal's own storage and executables, as they always have. With a host that shares the session's folders they describe the same bytes; with one that does not they describe the worker's copy, and a change made there never reaches the host. Nothing in this change alters them (12.10). |
+| Rolling deploys and rollbacks | changed here | Compute lives in orchestration version 1.0.83; 1.0.82 is frozen. An old worker does not register 1.0.83, so it cannot run a step of a compute session — those sessions wait for a worker that can. The routing tag and the worker's refusal to run a remote session's agent locally stay as the layers behind it. |
 | A worker crash or shutdown mid-turn | works differently | The host and the commands it is running survive. The turn is redelivered and replayed into the same host, so a side-effecting command can run twice or alongside itself. Fencing is 12.6. |
 | Host-local state: scratch files, processes, the runtime's logs | not yet | None of it is in a snapshot, none of it is rolled back by a reset or a lineage jump, and nothing collects the runtime's logs from the host. A replaced host loses all of it with no notice to the session (12.7, 12.17). |
 | Artifact file modes on a host that shares no folders | not yet | `fromFile` and `toFile` are refused with the reason, and the session's instructions say so. Moving bytes over the side channel is 12.16. |
@@ -1072,7 +1090,7 @@ Finish:   the tree ends and core releases the host; the provider discards the
 | K10 | A remote runtime asks for a model it was not granted, or a different destination | The request handler refuses it; no placeholder is resolved and nothing is sent. |
 | K11 | A host shares no files with the worker | Artifact file tools that name worker files are refused for that session; only `worker-local` or `shared-mount` hosts allow them. |
 | K12 | A reused host carries state from before | Not allowed: the provider must hand over a clean host, and PilotSwarm uses a fresh secret per binding. |
-| K13 | A worker too old to drive remote runtimes | A new worker that somehow reaches a remote session's turn refuses to start a runtime of its own, whatever route got it there. That refusal is in the new build, so it is not what keeps an *old* worker away: the routing tag is chosen inside the orchestration, and a worker running an older build of the orchestration does not choose it. During a rolling deploy an old worker can therefore run the next step of a new session's orchestration and schedule its turn without the tag, and then run that turn locally. What closes that gap is being decided separately (section 4.8, "Open: whether the orchestration version should be bumped"); until it is decided, register no target and set no default until the rollout has finished. |
+| K13 | A worker too old to drive remote runtimes | Compute lives in orchestration version 1.0.83, which an old worker does not register, so it can run no step of a compute session during a rolling deploy or after a rollback — such a session waits for a worker that can, as any session does when no worker serves its tag. A session in flight on 1.0.82 keeps replaying on the frozen copy, which has no compute branch. Behind that: the turns of a session with a target carry the compute routing tag, and a worker that somehow reaches one refuses to start a runtime of its own whatever route got it there. |
 | K14 | The worker crashes or shuts down mid-turn | The host and the shells it is running survive the worker. The model request fails because the request handler went with the worker, but commands already started keep running until the host's idle shutdown. The turn is redelivered, reaches the same host with a provider that keeps it, and replays the prompt in the same folder — so a side-effecting command can run a second time, or alongside the first. Ending the previous runtime session on the first connect from a new worker is section 12.6. |
 | K15 | A host is full | A tree wide enough to spread over many workers can reach the host component's connection limit while every worker is behaving correctly. The host answers `COMPUTE_HOST_AT_CAPACITY` and the limit is configurable (`--max-connections`); see 4.15. |
 

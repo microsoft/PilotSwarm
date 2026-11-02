@@ -99,6 +99,16 @@ pipe keeps the connection checked. The host component's connection limit is
 configurable (`--max-connections`) and a full host answers
 `COMPUTE_HOST_AT_CAPACITY`.
 
+Compute lives in a new session orchestration version, 1.0.83. 1.0.82 is
+frozen and replay-only, so a session already running keeps replaying on
+exactly what the previous build ran. Only 1.0.83 and later choose the
+routing tag that keeps a remote session's turns away from workers which
+cannot drive one, and only they release a session's host when it leaves a
+worker. An old worker does not register 1.0.83, so during a rolling deploy
+or after a rollback it can run no step of a compute session; those sessions
+wait for a worker that can. A session with no compute target behaves
+identically on either version.
+
 The exported interface is experimental and may change before release.
 
 **Provider request headers.** A provider type in the model catalog may set

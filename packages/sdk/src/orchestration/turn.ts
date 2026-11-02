@@ -6,6 +6,7 @@ import type { PromptAttachmentRef } from "../types.js";
 import type { OrchestrationInput, TurnResult } from "../types.js";
 import { SESSION_STATE_MISSING_PREFIX, sanitizePromptAttachmentRefs } from "../types.js";
 import { createSessionProxy } from "../session-proxy.js";
+import { DURABLE_SESSION_LATEST_VERSION as CURRENT_ORCHESTRATION_VERSION } from "../orchestration-version.js";
 import { sameWorkspace, validateWorkspaceText } from "../workspace-check.js";
 import { planHoldRelease } from "../wait-affinity.js";
 import {
@@ -447,7 +448,7 @@ export function* processPrompt(
                 if (!state.preserveAffinityOnHydrate) {
                     state.affinityKey = yield ctx.newGuid();
                 }
-                runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "turn-control-v1");
+                runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "turn-control-v1", CURRENT_ORCHESTRATION_VERSION);
                 yield runtime.session.hydrate();
                 state.needsHydration = false;
                 state.preserveAffinityOnHydrate = false;
@@ -1114,7 +1115,7 @@ function* applyAgentWorkspaceChange(runtime: DurableSessionRuntime, result: Turn
     const extraPaths = action.extraPaths && typeof action.extraPaths === "object" ? action.extraPaths as Record<string, string> : null;
     if (next) state.config.workspace = next;
     else delete state.config.workspace;
-    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "turn-control-v1");
+    runtime.session = createSessionProxy(ctx, runtime.input.sessionId, state.affinityKey, state.config, "turn-control-v1", CURRENT_ORCHESTRATION_VERSION);
     state.workspaceRevision = revision;
     state.workspaceNotice = [workspaceChangedNote(previous, next, path), next ? extraFoldersChangedNote(previous, next, extraPaths) : undefined]
         .filter(Boolean).join(" ");

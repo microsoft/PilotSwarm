@@ -54,7 +54,7 @@ for (const [name, hash] of Object.entries(selectorFreezeHashes)) {
 }
 
 test("registry retains 1.0.74 through 1.0.81 separately and activates 1.0.82", () => {
-    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).version, "1.0.82");
+    assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.at(-1).version, "1.0.83");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.81").handler.name, "durableSessionOrchestration_1_0_81");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.80").handler.name, "durableSessionOrchestration_1_0_80");
     assert.equal(DURABLE_SESSION_ORCHESTRATION_REGISTRY.find(r => r.version === "1.0.79").handler.name, "durableSessionOrchestration_1_0_79");
@@ -186,7 +186,7 @@ test("a session whose agent runs on a host goes only to workers that can drive o
     // An older worker would run this session's agent as its own child
     // process, beside the CMS and the model keys, which is the one thing
     // the compute design exists to prevent.
-    const remote = createSessionProxy(ctx, "child", "affinity", { model: "m", computeTarget: "shared/pool" }, "turn-control-v1");
+    const remote = createSessionProxy(ctx, "child", "affinity", { model: "m", computeTarget: "shared/pool" }, "turn-control-v1", "1.0.83");
     const turns = [
         remote.runTurn("work", false, 1),
         remote.runTurn("work", true, 0, { epochStart: true }),
@@ -195,6 +195,14 @@ test("a session whose agent runs on a host goes only to workers that can drive o
         ["runTurnV4", COMPUTE_CAPABILITY],
         ["runTurnEpochV4", COMPUTE_CAPABILITY],
     ]);
+
+    // The tag is chosen inside the orchestration, so an orchestration that
+    // predates compute must schedule exactly what it always did — whichever
+    // build is replaying it. Not knowing the version counts as older.
+    const frozen = createSessionProxy(ctx, "child", "affinity", { model: "m", computeTarget: "shared/pool" }, "turn-control-v1", "1.0.82");
+    assert.equal(frozen.runTurn("work", false, 1).tag, TURN_CONTROL_CAPABILITY);
+    const unversioned = createSessionProxy(ctx, "child", "affinity", { model: "m", computeTarget: "shared/pool" }, "turn-control-v1");
+    assert.equal(unversioned.runTurn("work", false, 1).tag, TURN_CONTROL_CAPABILITY);
 
     // A session with no target is untouched: it still goes wherever a turn
     // of its contract has always gone.
@@ -206,7 +214,7 @@ test("a session whose agent runs on a host goes only to workers that can drive o
 
 test("compute routing fails closed if the SDK cannot express capability tags", () => {
     const ctx = context();
-    const proxy = createSessionProxy(ctx, "child", "affinity", { model: "m", computeTarget: "shared/pool" }, "turn-control-v1");
+    const proxy = createSessionProxy(ctx, "child", "affinity", { model: "m", computeTarget: "shared/pool" }, "turn-control-v1", "1.0.83");
     const schedule = ctx.scheduleActivityOnSession ?? ctx.scheduleActivity;
     const tagless = (...args) => {
         const task = schedule.apply(ctx, args);
