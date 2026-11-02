@@ -600,6 +600,13 @@ export interface WorkflowSendReceipt {
     attempts: number;
     /** The store's clock reading that recorded the delivery (ISO 8601 UTC, microseconds). */
     deliveredAt: string;
+    /**
+     * Durable recipient intake (design workflow-durable-intake.md section 4):
+     * "durable" when the exchange was delivered in durable intake mode, every
+     * copy carrying the intake envelope. Written only then, and frozen with
+     * the receipt; a receipt without it reads as "legacy_window".
+     */
+    intake?: "durable" | "legacy_window";
 }
 
 /**
@@ -693,10 +700,19 @@ export function parseSendReceipt(value: JsonValue): WorkflowSendReceipt {
     }
     const clientMessageId = value.clientMessageId === null ? null : text("clientMessageId");
     if ((kind === "agent") !== (clientMessageId !== null) || (kind === "workflow") !== (input !== null)) throw invalid();
+    // Durable intake: only on an agent recipient's receipt; absent reads as legacy_window (and is kept absent).
+    const rawIntake = value.intake;
+    let intake: "durable" | "legacy_window" | undefined;
+    if (rawIntake !== undefined) {
+        if (rawIntake !== "durable" && rawIntake !== "legacy_window") throw invalid();
+        if (kind !== "agent") throw invalid();
+        intake = rawIntake;
+    }
     return {
         exchangeId: text("exchangeId"), workflowSessionId: text("workflowSessionId"), runId: text("runId"), nodeExecutionId: text("nodeExecutionId"),
         stateId: text("stateId"), recipientSessionId: text("recipientSessionId"), recipientKind: kind, contract: text("contract"),
         payloadSha256: text("payloadSha256"), clientMessageId, input, attempts, deliveredAt: text("deliveredAt"),
+        ...(intake !== undefined ? { intake } : {}),
     };
 }
 
@@ -1446,7 +1462,7 @@ export class WorkflowStore {
      * state's completed_at. A state decided first keeps its result.
      */
     private async deliverIn(client: PoolClient, workflowSessionId: string, live: boolean, message: WorkflowOutboxMessage,
-        delivery: { stateId: string; clientMessageId: string | null; input: WorkflowSendInputAcceptance | null },
+        delivery: { stateId: string; clientMessageId: string | null; input: WorkflowSendInputAcceptance | null; intake?: "durable" },
         projection?: (receipt: WorkflowSendReceipt) => SessionProjection)
         : Promise<{ won: boolean; node: WorkflowNodeExecutionRow; message: WorkflowOutboxMessage }> {
         const nodeExecutionId = message.nodeExecutionId;
@@ -1456,6 +1472,7 @@ export class WorkflowStore {
             recipientSessionId: message.recipientSessionId, recipientKind: message.recipientKind, contract: message.contract,
             payloadSha256: message.payloadSha256, clientMessageId: delivery.clientMessageId, input: delivery.input,
             attempts: Math.max(message.attempts, 1), deliveredAt: str(clock[0], "iso"),
+            ...(delivery.intake === "durable" ? { intake: "durable" as const } : {}),
         };
         const receiptText = canonicalJson(receipt);
         const { rows: delivered } = await client.query(
@@ -3264,13 +3281,27 @@ export class WorkflowStore {
      * workflow inbox's) is outside this transaction; recordDelivery records
      * it. A message refused here was not delivered in this attempt; an
      * earlier counted attempt may have queued it for an agent session.
+     *
+     * Durable recipient intake (design workflow-durable-intake.md section
+     * 4): an intake-capable caller passes `intake`, and the count is one
+     * statement that also decides the message's intake mode on its first
+     * count: `durable` with a new attempt token when `intake.durable` (the
+     * deployment capability is on and the recipient was observed at 1.0.83
+     * or later), otherwise `legacy_window`; a mode is never decided later,
+     * and every count of a durable message sets a new token, whatever
+     * `intake.durable` says now. `durable` in the answer says the copies of
+     * this attempt carry the intake envelope. Without `intake` the count is
+     * the one a build without the intake makes: it leaves the mode unset,
+     * and the outbox's fence refuses it on a durable message.
      */
     async beginDelivery(nodeExecutionId: string, refusals: {
         refused: SendSpecInput["refused"];
         ended: { result: NodeResultInput; projection?: SessionProjection } | null;
         /** How a workflow recipient's earlier acceptance is recorded (as recordDelivery records a delivery). */
         delivered: { stateId: string; projection: (receipt: WorkflowSendReceipt) => SessionProjection };
-    }): Promise<{ kind: "decided" | "delivered" | "refused" | "deliver"; node: WorkflowNodeExecutionRow; message: WorkflowOutboxMessage }> {
+    }, intake?: { durable: boolean; attemptToken: string })
+        : Promise<{ kind: "decided" | "delivered" | "refused" | "deliver"; node: WorkflowNodeExecutionRow; message: WorkflowOutboxMessage; durable?: boolean }> {
+        const attemptToken = intake === undefined ? null : intakeId(intake.attemptToken, "attemptToken");
         return this.transaction(async client => {
             const { rows: found } = await client.query(
                 `SELECT workflow_session_id, recipient_session_id FROM ${this.t.outbox} WHERE node_execution_id = $1`, [nodeExecutionId]);
@@ -3321,10 +3352,23 @@ export class WorkflowStore {
                 await this.project(client, projection);
                 return { kind: "refused" as const, node: nodeFrom(completed[0]), message: outboxFrom(failed[0]) };
             }
+            if (intake === undefined || attemptToken === null) {
+                const { rows: counted } = await client.query(
+                    `UPDATE ${this.t.outbox} SET attempts = attempts + 1, last_attempt_at = clock_timestamp()
+                      WHERE node_execution_id = $1 RETURNING ${OUTBOX_COLUMNS}`, [nodeExecutionId]);
+                return { kind: "deliver" as const, node, message: outboxFrom(counted[0]) };
+            }
             const { rows: counted } = await client.query(
-                `UPDATE ${this.t.outbox} SET attempts = attempts + 1, last_attempt_at = clock_timestamp()
-                  WHERE node_execution_id = $1 RETURNING ${OUTBOX_COLUMNS}`, [nodeExecutionId]);
-            return { kind: "deliver" as const, node, message: outboxFrom(counted[0]) };
+                `UPDATE ${this.t.outbox}
+                    SET attempts = attempts + 1, last_attempt_at = clock_timestamp(),
+                        intake_mode = CASE WHEN attempts = 0 AND intake_mode IS NULL
+                                           THEN CASE WHEN $2::boolean THEN 'durable' ELSE 'legacy_window' END
+                                           ELSE intake_mode END,
+                        attempt_token = CASE WHEN (attempts = 0 AND intake_mode IS NULL AND $2::boolean)
+                                                  OR intake_mode IS NOT DISTINCT FROM 'durable'
+                                             THEN $3 ELSE attempt_token END
+                  WHERE node_execution_id = $1 RETURNING ${OUTBOX_COLUMNS}, intake_mode`, [nodeExecutionId, intake.durable === true, attemptToken]);
+            return { kind: "deliver" as const, node, message: outboxFrom(counted[0]), durable: strOrNull(counted[0], "intake_mode") === "durable" };
         });
     }
 
@@ -3338,10 +3382,13 @@ export class WorkflowStore {
      * message is recorded as delivered all the same. A workflow recipient's
      * acceptance is recorded as the store holds it, and only when it is this
      * message's (sendAcceptanceIn). A message no longer pending is returned
-     * as stored: a repeat after this commit records nothing again.
+     * as stored: a repeat after this commit records nothing again. A delivery
+     * in durable intake mode (`intake`, design workflow-durable-intake.md
+     * section 4) is recorded only on a message whose count made it durable,
+     * and its receipt says so.
      */
     async recordDelivery(nodeExecutionId: string,
-        delivery: { stateId: string; clientMessageId: string | null; input: WorkflowSendInputAcceptance | null },
+        delivery: { stateId: string; clientMessageId: string | null; input: WorkflowSendInputAcceptance | null; intake?: "durable" },
         projection: (receipt: WorkflowSendReceipt) => SessionProjection)
         : Promise<{ recorded: boolean; won: boolean; node: WorkflowNodeExecutionRow; message: WorkflowOutboxMessage }> {
         return this.transaction(async client => {
@@ -3357,6 +3404,13 @@ export class WorkflowStore {
                 || (message.recipientKind === "workflow") !== (delivery.input !== null)) {
                 throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Send ${nodeExecutionId} was delivered as another kind of recipient.`);
             }
+            if (delivery.intake === "durable") {
+                // Durable intake (design section 4): only a message its count made durable is delivered so.
+                const { rows: modes } = await client.query(`SELECT intake_mode FROM ${this.t.outbox} WHERE node_execution_id = $1`, [nodeExecutionId]);
+                if (message.recipientKind !== "agent" || strOrNull(modes[0], "intake_mode") !== "durable") {
+                    throw new WorkflowStoreError("WORKFLOW_STORE_CORRUPT", `Send ${nodeExecutionId} was delivered in durable intake mode, but its message is not durable.`);
+                }
+            }
             let input = delivery.input;
             if (message.recipientKind === "workflow") {
                 const accepted = await this.sendAcceptanceIn(client, message);
@@ -3366,7 +3420,8 @@ export class WorkflowStore {
                 input = accepted.input;
             }
             const recorded = await this.deliverIn(client, workflowSessionId, live, message,
-                { stateId: delivery.stateId, clientMessageId: delivery.clientMessageId, input }, projection);
+                { stateId: delivery.stateId, clientMessageId: delivery.clientMessageId, input, ...(delivery.intake === "durable" ? { intake: "durable" as const } : {}) },
+                projection);
             return { recorded: true, ...recorded };
         });
     }

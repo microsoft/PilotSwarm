@@ -35,6 +35,8 @@ import {
     type JsonValue,
 } from "./json.js";
 import { schemaSetFor, type SchemaProblem } from "./schema.js";
+import { intakeEnvelopeSha256, type IntakeEnvelope } from "./intake.js";
+import { randomUUID } from "node:crypto";
 import {
     ACTIVE_RUN_STATUSES,
     nodeExecutionIdFor,
@@ -841,7 +843,18 @@ function parseEffectOutcome(value: unknown): NodeResultInput | null {
  */
 export interface WorkflowSessionQueue {
     status(sessionId: string): Promise<string>;
-    enqueue(sessionId: string, message: { prompt: string; sender: { kind: "system"; display: string }; clientMessageId: string }): Promise<void>;
+    /**
+     * The orchestration version the session's current execution runs, as last
+     * observed; null when unknown. Durable intake (design
+     * workflow-durable-intake.md section 4) reads it before an attempt's
+     * transaction: an observation, not a fence. A queue without it is never
+     * durable.
+     */
+    version?(sessionId: string): Promise<string | null>;
+    /** `workflowIntake`: the intake envelope, on every copy of a durable exchange and on no other. */
+    enqueue(sessionId: string, message: {
+        prompt: string; sender: { kind: "system"; display: string }; clientMessageId: string; workflowIntake?: IntakeEnvelope;
+    }): Promise<void>;
 }
 
 /**
@@ -852,12 +865,50 @@ export interface WorkflowSessionQueue {
 export function sessionQueueTransport(client: {
     getStatus(instanceId: string): Promise<{ status: string }>;
     enqueueEvent(instanceId: string, queueName: string, data: string): Promise<void>;
+    getInstanceInfo?(instanceId: string): Promise<{ orchestrationVersion?: string | null } | null>;
 }): WorkflowSessionQueue {
     return {
         status: async sessionId => (await client.getStatus(`session-${sessionId}`)).status,
+        version: async sessionId => {
+            if (typeof client.getInstanceInfo !== "function") return null;
+            try {
+                const version = (await client.getInstanceInfo(`session-${sessionId}`))?.orchestrationVersion;
+                return typeof version === "string" && version ? version : null;
+            } catch {
+                return null;
+            }
+        },
         enqueue: (sessionId, message) => client.enqueueEvent(`session-${sessionId}`, "messages",
-            JSON.stringify({ prompt: message.prompt, sender: message.sender, clientMessageIds: [message.clientMessageId] })),
+            JSON.stringify({
+                prompt: message.prompt, sender: message.sender, clientMessageIds: [message.clientMessageId],
+                ...(message.workflowIntake ? { workflowIntake: message.workflowIntake } : {}),
+            })),
     };
+}
+
+/** The first session orchestration version with the durable recipient intake (design workflow-durable-intake.md section 8). */
+export const WORKFLOW_INTAKE_MIN_RECIPIENT_VERSION = "1.0.83";
+
+/** Whether an observed session orchestration version has the durable intake; a missing or unparseable one has not (fail closed). */
+export function intakeCapableVersion(version: string | null | undefined): boolean {
+    const numbers = (value: string) => (/^\d+\.\d+\.\d+$/.test(value) ? value.split(".").map(Number) : null);
+    const observed = typeof version === "string" ? numbers(version) : null;
+    const minimum = numbers(WORKFLOW_INTAKE_MIN_RECIPIENT_VERSION)!;
+    if (observed === null) return false;
+    for (let index = 0; index < 3; index += 1) {
+        if (observed[index] !== minimum[index]) return observed[index] > minimum[index];
+    }
+    return true;
+}
+
+/** The intake envelope of a durable exchange's copies (design section 3): the message's immutable fields and their hash. */
+export function workflowSendIntakeEnvelope(message: Pick<WorkflowOutboxMessage,
+    "exchangeId" | "workflowSessionId" | "runId" | "recipientSessionId" | "contract" | "payloadSha256">): IntakeEnvelope {
+    const fields = {
+        v: 1 as const, exchangeId: message.exchangeId, workflowSessionId: message.workflowSessionId, runId: message.runId,
+        recipientSessionId: message.recipientSessionId, contract: message.contract, payloadSha256: message.payloadSha256,
+    };
+    return { ...fields, envelopeSha256: intakeEnvelopeSha256(fields) };
 }
 
 /** Statuses of a session orchestration that no longer reads its queue (or that has none). */
@@ -875,6 +926,14 @@ export interface WorkflowV2RuntimeDeps {
     deleteSession: (sessionId: string) => Promise<void>;
     /** The agent sessions' message queues a send state delivers to; default: sessionQueueTransport on the activity's durable client. */
     sessionQueue?: WorkflowSessionQueue;
+    /**
+     * The deployment capability of the durable recipient intake
+     * (`workflowIntakeV1`, design workflow-durable-intake.md section 4): with
+     * it on, a send to an agent session observed at 1.0.83 or later is
+     * delivered in durable intake mode. Absent or false: every exchange is
+     * legacy_window. INACTIVE: no worker sets it.
+     */
+    workflowIntake?: () => boolean;
     runnerOptions?: ScriptRunnerOptions;
     /** Backstop collection interval for new controller executions (default 30 s). */
     wakeBackstopMs?: number;
@@ -1887,7 +1946,7 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
 
     /** Record a send state's delivery (store.recordDelivery) with what its recipient accepted. */
     const recordSend = (message: WorkflowOutboxMessage, executed: WorkflowNodeExecutionRow,
-        delivery: { clientMessageId: string | null; input: WorkflowSendInputAcceptance | null }) => {
+        delivery: { clientMessageId: string | null; input: WorkflowSendInputAcceptance | null; intake?: "durable" }) => {
         const record = sendDeliveredRecord(message, executed);
         return store.recordDelivery(message.nodeExecutionId, { stateId: record.stateId, ...delivery }, record.projection);
     };
@@ -1912,6 +1971,11 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
      *   a session whose orchestration ends in between may never read the
      *   message. A failure after the queue accepted the message and before the
      *   record queues it again with the same id: delivery is at least once.
+     *   Durable intake (design workflow-durable-intake.md section 4; inactive
+     *   while the deployment capability is off): the count decides the
+     *   exchange's intake mode once, and every copy of a durable exchange
+     *   carries the intake envelope, which the recipient's claim verifies;
+     *   its receipt says durable.
      * - A workflow: the message is given to it as typed input
      *   (acceptSendAsWorkflowInputV2) from this workflow's session, with the
      *   exchange id as its operation id, the state's correlation and the
@@ -1955,6 +2019,11 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             { sessionId: recipient, attempts: message.attempts }), "disabled");
         }
         const status = message.recipientKind === "agent" ? await queue.status(recipient) : null;
+        // Durable recipient intake (design workflow-durable-intake.md section 4; INACTIVE unless the deployment capability
+        // is on): an agent recipient whose session orchestration was observed at 1.0.83 or later. Read before the
+        // transaction: an observation, not a fence; the count decides the mode once, under the outbox lock.
+        const durable = message.recipientKind === "agent" && deps.workflowIntake?.() === true
+            && intakeCapableVersion(await queue.version?.(recipient) ?? null);
         const begun = await store.beginDelivery(input.nodeExecutionId, {
             refused: {
                 unavailable: atDelivery(recipientRefusalResult("unavailable", recipient)),
@@ -1962,16 +2031,19 @@ export function registerWorkflowV2(runtime: WorkflowV2ActivityRuntime, deps: Wor
             },
             ended: status !== null && ENDED_SESSION_STATUSES.includes(status) ? atDelivery(endedRecipientResult(recipient, status)) : null,
             delivered,
-        });
+        }, { durable, attemptToken: randomUUID() });
         if (begun.kind !== "deliver") return { kind: begun.kind, outcome: begun.node.outcome };
-        let delivery: { clientMessageId: string | null; input: WorkflowSendInputAcceptance | null };
+        let delivery: { clientMessageId: string | null; input: WorkflowSendInputAcceptance | null; intake?: "durable" };
         if (begun.message.recipientKind === "agent") {
             const clientMessageId = workflowSendClientMessageId(message.workflowSessionId, message.runId, message.nodeExecutionId);
+            // A durable exchange's every copy carries the intake envelope (its count made it durable); a legacy one's none.
+            const workflowIntake = begun.durable === true ? workflowSendIntakeEnvelope(begun.message) : null;
             await queue.enqueue(recipient, {
                 prompt: workflowSendPrompt({ ...message, stateId: executed.nodeId }),
                 sender: { kind: "system", display: "workflow message" }, clientMessageId,
+                ...(workflowIntake ? { workflowIntake } : {}),
             });
-            delivery = { clientMessageId, input: null };
+            delivery = { clientMessageId, input: null, ...(workflowIntake ? { intake: "durable" as const } : {}) };
         } else {
             // Loaded here: the service imports this module.
             const { acceptSendAsWorkflowInputV2 } = await import("./service.js");

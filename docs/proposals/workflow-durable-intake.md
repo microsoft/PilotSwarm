@@ -241,6 +241,18 @@ a read.
   that the delivery record writes once; the parser reads a receipt without
   the field as `legacy_window`. A later intake outcome is a separate field
   of the outbox row (5.6) and never rewrites the receipt.
+- (Implementation, inactive.) The deployment capability is the runtime's
+  `workflowIntake` dependency, which no worker sets, so every exchange
+  stays `legacy_window`. The observed version is the recipient session
+  orchestration's current execution version (`getInstanceInfo`), read
+  before the counting transaction; a queue that cannot tell it is never
+  durable. The deliver activity always counts with the deciding statement
+  (`beginDelivery` with `intake`), so a message that became durable keeps
+  its new token on every later count, also after the capability is turned
+  off; the store's count without `intake` is the older build's. The receipt
+  field is written only on a durable delivery, which the store records only
+  for a message whose count made it durable; every other receipt keeps its
+  shape and reads as `legacy_window`.
 
 ## 5. Recipient (orchestration 1.0.83)
 
