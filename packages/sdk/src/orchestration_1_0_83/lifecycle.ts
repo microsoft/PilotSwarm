@@ -714,7 +714,10 @@ export function buildContinueInputWithPrompt(
  * as new with exactly the input 1.0.82 builds. The pending prompt's retry
  * marker rides with that prompt in the same way, present only while set
  * (review D-W2-1): every continue-as-new carries the pending prompt, merged
- * or as a retry's own.
+ * or as a retry's own. With the marker ride its retry's count and thrown-turn
+ * key, taken from that retry's own continue-as-new, the first after the
+ * marker is set (review O-W2-3); and an unanswered arrival's flag rides
+ * while set (review O-W2-5).
  */
 export function* versionedContinueAsNew(
     runtime: DurableSessionRuntime,
@@ -725,8 +728,16 @@ export function* versionedContinueAsNew(
     const carriedIntake = carryIntakeState(state.intake);
     if (carriedIntake !== undefined) (canInput as IntakeCarryingInput).intake = carriedIntake;
     else delete (canInput as IntakeCarryingInput).intake;
-    if (state.intakeRetryInvocationId !== null) (canInput as IntakeCarryingInput).intakeRetryInvocationId = state.intakeRetryInvocationId;
-    else delete (canInput as IntakeCarryingInput).intakeRetryInvocationId;
+    if (state.intakeRetryInvocationId !== null) {
+        (canInput as IntakeCarryingInput).intakeRetryInvocationId = state.intakeRetryInvocationId;
+        state.intakeRetryAttempt ??= { retryCount: canInput.retryCount ?? 0, thrownTurnKey: canInput.thrownTurnKey || null };
+        (canInput as IntakeCarryingInput).intakeRetryAttempt = { ...state.intakeRetryAttempt };
+    } else {
+        delete (canInput as IntakeCarryingInput).intakeRetryInvocationId;
+        delete (canInput as IntakeCarryingInput).intakeRetryAttempt;
+    }
+    if (state.intakeArrivalPending) (canInput as IntakeCarryingInput).intakeArrivalPending = true;
+    else delete (canInput as IntakeCarryingInput).intakeArrivalPending;
     if (state.activeTimer) {
         const now: number = yield runtime.ctx.utcNow();
         const remainingMs = Math.max(0, state.activeTimer.deadlineMs - now);

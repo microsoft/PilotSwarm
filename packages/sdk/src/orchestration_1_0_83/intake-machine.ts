@@ -819,8 +819,8 @@ export function intakeTurnPayload(invocation: IntakeInvocation): IntakeTurnPaylo
  * An unsent one rides any attempt when ready; parked for a gate, any attempt
  * as well, since every attempt is checked by the gates again (as the gates'
  * held prompts ride every attempt), though it starts no turn of its own
- * (intakeOwnTurnStimulus; implementation clarification of the resume table,
- * see the design's 5.5); parked for any other cause, only a new turn that a
+ * (intakeOwnTurnStimulus; the gate row of the design's 5.5 resume table,
+ * decision A1); parked for any other cause, only a new turn that a
  * message, a timer or a newly claimed item starts. Carrying unparks it: the
  * attempt applies the transition table again. An unbound invocation, one
  * whose end is being settled, and an unsent one with a latched cancel (its

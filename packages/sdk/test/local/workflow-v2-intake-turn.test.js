@@ -24,6 +24,8 @@
  *   workers that share one versioned store reach it (review W2-WIT4).
  * - A malformed field fails the activity before any model run; runTurnV4
  *   ignores the field and passes no callback.
+ * - Decision A1: a closed budget or workspace gate refuses the attempt
+ *   before turn start and any send, and its witness says not sent.
  *
  * The activity runs with a fake session manager, model session and catalog;
  * the adoption cases use a real filesystem snapshot store, and the send
@@ -35,6 +37,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { makeRunTurnHarness } from "../helpers/run-turn-activity-harness.mjs";
+import { createFakeWorkspaceProvider } from "../helpers/fake-workspace-provider.mjs";
 import { makeSessionLayout } from "../helpers/snapshot-conformance.js";
 import { FilesystemSessionStore } from "../../src/session-store.ts";
 import { registerActivities } from "../../src/session-proxy.ts";
@@ -158,6 +161,39 @@ describe("runTurnV5: the turn of an invocation", () => {
         const result = await h.runTurnV5("s", { turnIndex: 5, intake: INTAKE });
         expect(h.session.runTurn).not.toHaveBeenCalled();
         expect(result).toMatchObject({ type: "stopped", intakeDispatch: { invocationId: "inv-1", sent: false } });
+    });
+
+    it("decision A1: a closed budget gate refuses the attempt before turn start and any send; the witness says not sent", async () => {
+        const v4 = turnControlCatalog();
+        const checkTurn = vi.fn(async () => ({
+            verdict: "paused", providerName: "p", modelQualified: null, exempt: false, pause: { kind: "limit", provider: "p" }, rules: [],
+        }));
+        const h = intakeHarness({ catalogExtras: { ...v4.extras, providers: { checkTurn } }, turn: sends({ type: "completed", content: "never" }) });
+        const result = await h.runTurnV5("s", { turnIndex: 6, intake: INTAKE });
+        expect(checkTurn).toHaveBeenCalled();
+        expect(result).toMatchObject({ type: "wait", budget: true, intakeDispatch: { invocationId: "inv-1", sent: false } });
+        expect(v4.calls).toEqual([]);
+        expect(h.session.runTurn).not.toHaveBeenCalled();
+    });
+
+    it("decision A1: a closed workspace gate refuses the attempt before turn start and any send; the witness says not sent", async () => {
+        const root = fs.mkdtempSync(path.join(os.tmpdir(), "ps-intake-ws-"));
+        roots.push(root);
+        fs.mkdirSync(path.join(root, "repo"), { recursive: true });
+        const provider = createFakeWorkspaceProvider({ roots: [{ name: "a", path: root }] });
+        provider.script({ type: "fail", code: "WORKSPACE_IN_USE", message: "held elsewhere" });
+        const v4 = turnControlCatalog();
+        const h = intakeHarness({
+            catalogExtras: v4.extras, workspaceProvider: provider,
+            managerExtras: { holdWorkspaceFolders: vi.fn(), noteWorkspaceAttached: vi.fn() },
+            turn: sends({ type: "completed", content: "never" }),
+        });
+        const result = await h.runTurnV5("s", {
+            turnIndex: 3, workspaceRevision: 1, config: { workspace: { schema: 1, root: "a", folder: "repo" } }, intake: INTAKE,
+        });
+        expect(result).toMatchObject({ type: "wait", gate: "workspace", intakeDispatch: { invocationId: "inv-1", sent: false } });
+        expect(v4.calls).toEqual([]);
+        expect(h.session.runTurn).not.toHaveBeenCalled();
     });
 
     it("a model session that ends its run before the send (a missing required tool, a held Stop) leaves the witness not sent (review W2-WIT1)", async () => {

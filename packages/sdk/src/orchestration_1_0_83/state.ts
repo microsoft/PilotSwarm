@@ -12,7 +12,10 @@ import type {
     LateSteer,
 } from "../types.js";
 import { cloneContextUsage, validClientMessageIds } from "./utils.js";
-import { restoreIntakeRetryInvocationId, restoreIntakeState, type IntakeCarryingInput, type IntakeState } from "./intake-state.js";
+import {
+    restoreIntakeArrivalPending, restoreIntakeRetryAttempt, restoreIntakeRetryInvocationId, restoreIntakeState,
+    type IntakeCarryingInput, type IntakeRetryAttempt, type IntakeState,
+} from "./intake-state.js";
 import type { IntakeAttemptDispatch, IntakeStimulus } from "./intake-machine.js";
 
 export interface ActiveTimer {
@@ -256,6 +259,21 @@ export interface DurableSessionState {
      * Present exactly while a sent invocation awaits its retry.
      */
     intakeRetryInvocationId: string | null;
+    /**
+     * The retry count and thrown-turn key of that retry (review O-W2-3), as
+     * its own continue-as-new carried them: a turn that runs while the
+     * retry is held changes the session's count and key as 1.0.82 does, and
+     * the dispatch that takes the marker takes these back. Present exactly
+     * with the marker.
+     */
+    intakeRetryAttempt: IntakeRetryAttempt | null;
+    /**
+     * A newly claimed item that no attempt carrying the invocation has
+     * answered yet (design 5.5, one attempt per arrival; review O-W2-5): it
+     * starts one turn for a parked invocation (not a gate's). Carried by
+     * every continue-as-new.
+     */
+    intakeArrivalPending: boolean;
 }
 
 
@@ -312,14 +330,12 @@ export interface DurableSessionRuntime {
      * (intake-wiring.ts intakeBeforeAttempt); "other" when unset.
      */
     intakeStimulus?: IntakeStimulus;
-    /** 1.0.83 (review D-W2-1): the attempt about to run is decide's dispatch of the pending prompt, the only one that takes the retry marker. */
-    intakePendingDispatch?: boolean;
     /**
-     * 1.0.83 (design 5.5): items claimed in this execution that no attempt
-     * carrying the invocation has answered yet; each starts at most one turn
-     * for a parked invocation. Lives within one execution.
+     * 1.0.83 (design 5.5): the attempt about to run is decide's dispatch of
+     * the pending prompt, the only one that takes the retry marker (review
+     * D-W2-1).
      */
-    intakeArrivals?: number;
+    intakePendingDispatch?: boolean;
     /** 1.0.83 (design 5.5): the attempt in flight that carries the invocation, and what it reported so far; null when it carries none. */
     intakeAttempt?: { invocationId: string; dispatch: IntakeAttemptDispatch | null } | null;
 }
@@ -542,8 +558,9 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
     if (input.agentId) {
         config.agentIdentity = input.agentId;
     }
-    // 1.0.83: the carried intake state, and the retry marker checked against it.
+    // 1.0.83: the carried intake state, and the retry marker, the held retry's count and key and the arrival flag checked against it.
     const intake = restoreIntakeState((input as IntakeCarryingInput).intake);
+    const intakeRetryInvocationId = restoreIntakeRetryInvocationId((input as IntakeCarryingInput).intakeRetryInvocationId, intake);
 
     return {
         config,
@@ -643,7 +660,9 @@ export function createInitialState(input: OrchestrationInput, options: DurableSe
         pendingEpochCommit: input.pendingEpochCommit ? { ...input.pendingEpochCommit } : null,
 
         intake,
-        intakeRetryInvocationId: restoreIntakeRetryInvocationId((input as IntakeCarryingInput).intakeRetryInvocationId, intake),
+        intakeRetryInvocationId,
+        intakeRetryAttempt: restoreIntakeRetryAttempt((input as IntakeCarryingInput).intakeRetryAttempt, intakeRetryInvocationId),
+        intakeArrivalPending: restoreIntakeArrivalPending((input as IntakeCarryingInput).intakeArrivalPending),
     };
 }
 

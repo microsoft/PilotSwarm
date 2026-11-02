@@ -45,6 +45,12 @@
  *   W2-WIT3). An adopted witness that says exposed (its attempt sent before
  *   it lost a racing commit) makes the invocation sent, never completed
  *   (W2-WIT4).
+ * - Decision A1: a gate's park rides any otherwise eligible attempt, which
+ *   the gates check again; a workspace retry command's wake carries it, and
+ *   a refusal parks it again, unsent, with no turn of its own.
+ * - Reviews O-W2-3 and O-W2-5: a held retry keeps its own retry count and
+ *   thrown-turn key through interposed turns and continue-as-new; an
+ *   unanswered arrival is carried by continue-as-new.
  * - Decide's turn for the intake alone takes what drain gives a newly
  *   arrived prompt: the released timer's note and the buffered child digest,
  *   in its system context; the released wait resumes after it (6.2).
@@ -892,10 +898,14 @@ const storeAnswers = (bind = [1]) => op => {
 
 const endOf = ops => ops.find(op => op.op === "activity" && op.input.op === "end");
 
-/** A runtime restored from a turn's retry continue-as-new: the sent invocation `inv-1` of exchange 1, its marker, the retried prompt and an agent wait. */
+/**
+ * A runtime restored from a turn's retry continue-as-new: the sent invocation `inv-1` of exchange 1, its marker with the
+ * retry's count and key (review O-W2-3), the retried prompt and an agent wait.
+ */
 function heldRetryRuntime(extraInput = {}) {
     const runtime = makeRuntime({
         intake: carried({ invocation: boundInvocation([1], { sent: true }) }), intakeRetryInvocationId: "inv-1",
+        intakeRetryAttempt: { retryCount: 1, thrownTurnKey: extraInput.thrownTurnKey ?? null },
         prompt: "retry words", retryCount: 1,
         waitingForAgentIds: ["agent-1"], subAgents: [{ orchId: "agent-1", sessionId: "child-1", task: "helper", status: "running" }],
         ...extraInput,
@@ -945,6 +955,8 @@ test("an attempt that sends and errors keeps its invocation for its own retry: t
     const can = first.ops.at(-1);
     assert.equal(can.op, "continueAsNew");
     assert.equal(can.canInput.intakeRetryInvocationId, "inv-1");
+    // The retry's own count and key ride with the marker (review O-W2-3); an error result keeps no thrown key.
+    assert.deepEqual(can.canInput.intakeRetryAttempt, { retryCount: 1, thrownTurnKey: null });
     assert.equal(can.canInput.intake.invocation.sent, true);
     assert.equal(can.canInput.intake.invocation.settle, null);
     assert.equal(can.canInput.prompt, INTERNAL_SYSTEM_TURN_PROMPT);
@@ -986,6 +998,7 @@ test("D-W2-1: after a retry's continue-as-new, a turn that runs while an agent w
 test("D-W2-1: after a retry's continue-as-new, a queued tool action runs first and starts no turn; the pending prompt's dispatch, merged with its continuation, carries the sent invocation", () => {
     const runtime = makeRuntime({
         intake: carried({ invocation: boundInvocation([1], { sent: true }) }), intakeRetryInvocationId: "inv-1",
+        intakeRetryAttempt: { retryCount: 1, thrownTurnKey: null },
         prompt: "retry words", retryCount: 1,
         // A workspace change that the failed attempt had accepted (an error result keeps it): the retry's input carries it.
         pendingToolActions: [{ type: "set_workspace", workspace: { root: "a", folder: "repo-x" }, path: "/w/repo-x" }],
@@ -1026,7 +1039,10 @@ test("D-W2-1: while a sent invocation's retry is held, another turn neither take
     drive(runLoop(runtime), turnResponder({
         activity: storeAnswers([1]),
         turn: op => {
-            seen.push({ turnKey: op.input.snapshot?.turnKey ?? null, held: runtime.state.thrownTurnKey, carries: Boolean(op.input.intake) });
+            seen.push({
+                turnKey: op.input.snapshot?.turnKey ?? null, held: runtime.state.thrownTurnKey, carries: Boolean(op.input.intake),
+                retryCount: op.input.retryCount ?? 0,
+            });
             return op.input.intake ? completed(sentBy()) : completed();
         },
     }));
@@ -1038,6 +1054,68 @@ test("D-W2-1: while a sent invocation's retry is held, another turn neither take
     // The retry's dispatch carries the invocation, and the key is cleared there.
     assert.equal(seen[1].carries, true);
     assert.equal(seen[1].held, null);
+    // Review O-W2-3: the wait's turn succeeded, which resets the session's retry count, yet the retry runs as the retry it
+    // is: its own count, and its thrown attempt's key again, so a saved result of that attempt is adopted, not run twice.
+    assert.equal(seen[1].turnKey, "key-A");
+    assert.equal(seen[1].retryCount, 1);
+});
+
+test("review O-W2-3: a held retry keeps its count and key through an ordinary continue-as-new while it waits, which resets the session's own", () => {
+    const runtime = heldRetryRuntime({ blobEnabled: true, thrownTurnKey: "key-A" });
+    // The execution reaches its iteration cap while the agent wait holds the retry: the cap's continue-as-new carries a
+    // retry count of 0 and no thrown key for the session, and the held retry's own with the marker.
+    runtime.state.loopIteration = 10;
+    const { ops } = drive(runLoop(runtime), turnResponder({ turn: () => assert.fail("no turn runs before the cap") }));
+    const can = ops.at(-1);
+    assert.equal(can.op, "continueAsNew");
+    assert.equal(can.canInput.retryCount, 0);
+    assert.equal(Object.hasOwn(can.canInput, "thrownTurnKey"), false);
+    assert.equal(can.canInput.intakeRetryInvocationId, "inv-1");
+    assert.deepEqual(can.canInput.intakeRetryAttempt, { retryCount: 1, thrownTurnKey: "key-A" });
+    // The next execution's retry dispatch sends the key again, with its count.
+    const next = makeRuntime(can.canInput);
+    next.state.waitingForAgentIds = null;
+    next.state.activeTimer = null;
+    const seen = [];
+    drive(runLoop(next), turnResponder({
+        activity: storeAnswers([1]),
+        turn: op => {
+            seen.push({ turnKey: op.input.snapshot?.turnKey ?? null, retryCount: op.input.retryCount ?? 0, intake: op.input.intake ?? null });
+            return completed(sentBy());
+        },
+        stop: op => isTurn(op) && seen.length >= 1,
+    }));
+    assert.deepEqual(seen, [{ turnKey: "key-A", retryCount: 1, intake: payloadOf([1]) }]);
+});
+
+test("review O-W2-5: an arrival that resumes a parked invocation is carried by a continue-as-new that comes before its turn", () => {
+    const runtime = makeRuntime({ intake: carried({ invocation: boundInvocation([1], { parked: "credential" }) }) });
+    // A fired hold-window timer queued before the copy arrives: decide runs it first, and it starts no turn.
+    appendToFifo(runtime, [{ kind: "timer", timer: { type: "idle", deadlineMs: NOW, originalDurationMs: 1_000, reason: "idle timeout" }, firedAtMs: NOW }]);
+    // The execution's last loop before its iteration cap.
+    runtime.state.loopIteration = 9;
+    const first = drive(runLoop(runtime), turnResponder({
+        messages: [copy(2)], guids: ["claim-2"],
+        activity: op => (op.name === WORKFLOW_INTAKE_ACTIVITIES.claim ? accepted(2, "claim-2") : assert.fail(`unexpected ${op.name}`)),
+        turn: () => assert.fail("no turn runs before the cap"),
+    }));
+    const can = first.ops.at(-1);
+    assert.equal(can.op, "continueAsNew");
+    assert.equal(can.canInput.intakeArrivalPending, true);
+    assert.deepEqual(can.canInput.intake.queue.map(entry => [entry.kind, entry.claimId]), [["held", "claim-2"]]);
+    // The next execution starts the arrival's one turn for the parked invocation; the new item waits for the next invocation.
+    const next = makeRuntime(can.canInput);
+    assert.equal(next.state.intakeArrivalPending, true);
+    const { ops } = drive(runLoop(next), turnResponder({
+        activity: storeAnswers([2]),
+        turn: op => completed({ invocationId: op.input.intake.invocationId, sent: true }),
+    }));
+    const turns = turnsOf(ops);
+    assert.equal(turns.length, 2);
+    assert.deepEqual(turns[0].input.intake, payloadOf([1]));
+    assert.deepEqual(turns[1].input.intake, payloadOf([2], turns[1].input.intake.invocationId));
+    assert.equal(next.state.intakeArrivalPending, false);
+    assert.deepEqual(next.state.intake, EMPTY_INTAKE);
 });
 
 test("an attempt that carried no invocation and returns a witness is a broken invariant: the execution fails visibly", () => {
@@ -1096,6 +1174,72 @@ test("a gate refusal before the send parks the invocation, which starts no turn 
     assert.match(turns[1].input.prompt, /^hello/);
     assert.equal(endOf(ops).input.outcome, "completed");
     assert.deepEqual(runtime.state.intake, EMPTY_INTAKE);
+});
+
+test("decision A1: a workspace refusal parks the invocation unsent; a retry_workspace command ends the wait, and the pending prompt's dispatch carries the same invocation", () => {
+    const runtime = makeRuntime({ intake: carried({ queue: [heldEntry(1)] }) });
+    let turnsRun = 0;
+    let commanded = false;
+    const { ops } = drive(runLoop(runtime), turnResponder({
+        guids: ["inv-1"], activity: storeAnswers([1]),
+        turn: () => (++turnsRun === 1
+            ? turnResult({ type: "wait", seconds: 30, reason: "workspace unavailable: held elsewhere", gate: "workspace",
+                code: "WORKSPACE_IN_USE", workerNodeId: "worker-a" }, notSentBy())
+            : completed(sentBy())),
+        // The person asks to retry the workspace while its wait is armed and the invocation is parked for it.
+        onRace: () => {
+            if (commanded || runtime.state.intake.invocation?.parked !== "gate" || runtime.state.activeTimer?.type !== "workspace_retry") {
+                return undefined;
+            }
+            commanded = true;
+            return { value: { index: 0, value: { type: "cmd", cmd: "retry_workspace", id: "retry-1" } } };
+        },
+    }));
+    assert.ok(commanded);
+    const turns = turnsOf(ops);
+    assert.equal(turns.length, 2);
+    // The refused attempt sent nothing; the invocation stayed unsent and parked for the gate, and started no turn of its own.
+    assert.deepEqual(turns[0].input.intake, payloadOf([1]));
+    // The command's wake is the pending prompt's dispatch: the gates are checked again, and it carries the same invocation.
+    assert.deepEqual(turns[1].input.intake, payloadOf([1]));
+    assert.ok(turns[1].input.prompt.startsWith(INTERNAL_SYSTEM_TURN_PROMPT), turns[1].input.prompt);
+    assert.ok(turns[1].input.prompt.includes("Retrying the workspace"), turns[1].input.prompt);
+    const ends = ops.filter(op => op.op === "activity" && op.input.op === "end").map(op => [op.input.invocationId, op.input.outcome]);
+    assert.deepEqual(ends, [["inv-1", "completed"]]);
+    assert.deepEqual(runtime.state.intake, EMPTY_INTAKE);
+});
+
+test("decision A1: an attempt that ends a gate's wait and is refused again parks the invocation again, unsent; it starts no turn of its own", () => {
+    const runtime = makeRuntime({ intake: carried({ queue: [heldEntry(1)] }) });
+    let turnsRun = 0;
+    let delivered = false;
+    const { ops } = drive(runLoop(runtime), turnResponder({
+        guids: ["inv-1"], activity: storeAnswers([1]),
+        // Both attempts are refused by the budget gate before any send.
+        turn: () => {
+            turnsRun += 1;
+            return turnResult({ type: "wait", seconds: 60, reason: "provider budget paused", gate: "budget" }, notSentBy());
+        },
+        onRace: () => {
+            if (delivered || runtime.state.intake.invocation?.parked !== "gate") return undefined;
+            delivered = true;
+            return { value: { index: 0, value: { prompt: "hello" } } };
+        },
+        // Stop at drain's race for the budget wait that the second refusal armed.
+        stop: op => turnsRun >= 2 && op?.op === "race",
+    }));
+    assert.ok(delivered);
+    const turns = turnsOf(ops);
+    assert.equal(turns.length, 2);
+    // The message's turn carried the gate-parked invocation, and the gate refused it before any send.
+    assert.deepEqual(turns[1].input.intake, payloadOf([1]));
+    assert.match(turns[1].input.prompt, /^hello/);
+    // Parked for the gate again, unsent and not ended; it wants no turn of its own, and drain waits for the gate's timer.
+    assert.equal(runtime.state.intake.invocation.parked, "gate");
+    assert.equal(runtime.state.intake.invocation.sent, false);
+    assert.equal(endOf(ops), undefined);
+    assert.equal(intakeWantsTurn(runtime), false);
+    assert.equal(runtime.state.activeTimer?.type, "wait");
 });
 
 test("a hydration give-up before the attempt that would carry an unsent invocation parks it, and no turn runs", () => {

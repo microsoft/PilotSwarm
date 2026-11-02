@@ -184,10 +184,14 @@ export interface IntakeState {
 /**
  * The continue-as-new input as 1.0.83 writes and reads it: OrchestrationInput
  * with the carried intake and, while a sent invocation awaits its turn's
- * retry, the pending prompt's retry marker (both carried by every
- * continue-as-new, lifecycle.ts versionedContinueAsNew).
+ * retry, the pending prompt's retry marker and the count and key of that
+ * retry (review O-W2-3), and, while a newly claimed item is unanswered, the
+ * arrival flag (review O-W2-5); all carried by every continue-as-new
+ * (lifecycle.ts versionedContinueAsNew).
  */
-export type IntakeCarryingInput = OrchestrationInput & { intake?: unknown; intakeRetryInvocationId?: unknown };
+export type IntakeCarryingInput = OrchestrationInput & {
+    intake?: unknown; intakeRetryInvocationId?: unknown; intakeRetryAttempt?: unknown; intakeArrivalPending?: unknown;
+};
 
 /** The carried form: what a continue-as-new input holds under `intake`. */
 export interface CarriedIntakeState {
@@ -456,6 +460,52 @@ export function restoreIntakeRetryInvocationId(raw: unknown, intake: IntakeState
     const invocationId = intakeId(raw, path);
     if (awaiting === null || awaiting.invocationId !== invocationId) throw new IntakeShapeError(path, "names no sent invocation that awaits its turn's retry");
     return invocationId;
+}
+
+/**
+ * The retry count and thrown-turn key of the turn's retry that a sent
+ * invocation awaits (review O-W2-3): what that retry's own continue-as-new
+ * carried, kept apart from the session's retry count and thrown-turn key,
+ * which a turn that runs while the retry is held changes as 1.0.82 does
+ * (its success resets the count). The pending prompt's dispatch, which takes
+ * the retry marker, takes these back (intake-wiring.ts beforeAttempt).
+ */
+export interface IntakeRetryAttempt {
+    retryCount: number;
+    thrownTurnKey: string | null;
+}
+
+/**
+ * The held retry's count and key that `raw` (an input's
+ * `intakeRetryAttempt`) carries: present exactly with the retry marker
+ * `marker`. Anything else fails the execution with the field's path.
+ */
+export function restoreIntakeRetryAttempt(raw: unknown, marker: string | null, path = "$.intakeRetryAttempt"): IntakeRetryAttempt | null {
+    if (raw === undefined) {
+        if (marker !== null) throw new IntakeShapeError(path, `is missing while invocation ${marker} awaits its turn's retry`);
+        return null;
+    }
+    if (marker === null) throw new IntakeShapeError(path, "is present while no invocation awaits its turn's retry");
+    const value = intakeObject(raw, path, ["retryCount", "thrownTurnKey"]);
+    const retryCount = value.retryCount;
+    if (typeof retryCount !== "number" || !Number.isSafeInteger(retryCount) || retryCount < 0) {
+        throw new IntakeShapeError(`${path}.retryCount`, "is not a count");
+    }
+    const key = value.thrownTurnKey;
+    return { retryCount, thrownTurnKey: key === null ? null : intakeId(key, `${path}.thrownTurnKey`) };
+}
+
+/**
+ * The arrival flag that `raw` (an input's `intakeArrivalPending`) carries
+ * (review O-W2-5): a newly claimed item that no attempt carrying the
+ * invocation has answered yet, so that a continue-as-new does not drop the
+ * one turn it starts for a parked invocation. Absent is false; anything but
+ * true fails the execution with the field's path.
+ */
+export function restoreIntakeArrivalPending(raw: unknown, path = "$.intakeArrivalPending"): boolean {
+    if (raw === undefined) return false;
+    if (raw !== true) throw new IntakeShapeError(path, "is not true");
+    return true;
 }
 
 /**

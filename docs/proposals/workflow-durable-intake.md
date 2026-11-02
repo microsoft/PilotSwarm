@@ -508,21 +508,25 @@ flag.
 
   | Cause | Resumes on |
   |---|---|
-  | gate | the gate's own retry attempt, on its existing timer, which runs a turn whether or not a prompt was stashed (budget: `turn.ts` 1663-1665; workspace: `lifecycle.ts` 951, 1132) |
+  | gate (budget or workspace) | any otherwise eligible turn attempt, whatever started it: the gate's own retry (budget: `turn.ts` 1663-1665; workspace: `lifecycle.ts` 951, 1132), or a turn whose message, command, digest or queued work ended the gate's wait. That attempt checks every applicable gate again before any model send; a refusal leaves the invocation unsent and parks it again. It never starts a turn of its own (I11). (Decision A1, `gate-resume-clarification`, accepted 2026-11-02.) |
   | credential, non-retryable, exhausted, not sent, hydration | the next turn that a new stimulus starts: a message admitted from a person or a session (a prompt, an answer, a child update), a timer that runs a turn (cron, cron_at, wait), or a newly claimed intake item (one attempt per arrival) |
 
   The attempt it rides applies the table again. A lasting failure therefore
-  repeats only once per new stimulus, never on its own.
-- **Resume stimuli and the retry marker (implementation clarification,
-  inactive wiring; for review).** A gate refusal does not keep its wait: a
-  budget pause is never re-armed after a turn that passes the gate, and a
-  workspace wait ends at a person's message (`queue.ts`, its own turn is the
-  next attempt), a `retry_workspace` or `set_workspace` command, or its
-  timer. Every attempt is checked by the gates again, and the gates' held
-  prompts ride every attempt. So an invocation parked for a gate rides every
-  attempt as well; it still never starts a turn of its own (I11), and a
-  refused attempt parks it again. Riding only the gate's own timer would
-  strand it whenever another attempt ended the gate's wait. The stimuli are
+  repeats only once per new stimulus, never on its own. A sent invocation
+  still rides only its own turn's retries, and an unsent invocation with a
+  latched cancel rides no attempt, whatever its park.
+- **Resume stimuli and the retry marker (decision A1 and implementation
+  clarifications, inactive wiring).** The gate row above replaces the first
+  rule, under which a gate park resumed only on the gate's own retry timer.
+  A gate refusal does not keep its wait: a budget pause is never re-armed
+  after a turn that passes the gate, and a workspace wait ends at a person's
+  message (`queue.ts`, its own turn is the next attempt), a
+  `retry_workspace` or `set_workspace` command, or its timer. So under the
+  first rule another attempt that ended the gate's wait stranded the parked
+  invocation, with no retry left to resume it; the formal runs of both rules
+  are kept as provenance (`gate-a1-first-r1`). Every attempt is checked by
+  the gates again, as the gates' held prompts ride every attempt, so the
+  gate checks stay the enforcement and are never bypassed. The stimuli are
   set where each turn starts: an answer, a queued prompt and a child digest
   are `message`; a wait, cron or cron_at timer is `timer`; the budget and
   workspace wakes are `gate_retry`; decide's own turn is `intake_turn` or
@@ -545,9 +549,18 @@ flag.
   is no marker. No invocation is formed for it, and decide starts no turn
   for the intake alone while such a retry is pending; the next attempt
   clears the thrown key, and the intake then forms and is carried as usual.
-  The count of newly
-  claimed items that an attempt has not answered yet lives within one
-  execution.
+  (Review O-W2-3.) The held retry keeps its own retry count and thrown-turn
+  key: its continue-as-new carries them with the marker
+  (`intakeRetryAttempt`), every later continue-as-new keeps them, and the
+  dispatch that takes the marker restores them. So a turn that runs while
+  the retry is held, and whose success resets the session's retry count, or
+  an ordinary continue-as-new, which carries none, never makes the retry run
+  fresh: it sends its thrown attempt's key again and adopts that attempt's
+  saved result instead of running the model a second time. (Review O-W2-5.)
+  A newly claimed item that no attempt carrying the invocation has answered
+  yet is a flag that every continue-as-new carries
+  (`intakeArrivalPending`), so a continue-as-new between the arrival and its
+  turn does not drop the one turn it starts for a parked invocation.
 - **Settlement.** The end is a settlement, never a new attempt. If the end
   settle fails after its retries, the invocation keeps `settle: {outcome}`
   and a due time on the N2 wake (5.4), and the settlement is retried as a

@@ -294,8 +294,11 @@ function continuedAsNew(runtime, canInput, can = versionedContinueAsNew) {
 }
 
 const INPUT = { sessionId: "44444444-4444-4444-8444-444444444444", config: { model: "m" }, iteration: 3 };
-/** VALID's sent invocation awaits its turn's retry, so an input that carries it carries the pending prompt's retry marker (review D-W2-1). */
-const RETRY = { intakeRetryInvocationId: "inv-1" };
+/**
+ * VALID's sent invocation awaits its turn's retry, so an input that carries it carries the pending prompt's retry marker
+ * (review D-W2-1), with that retry's count and thrown-turn key (review O-W2-3).
+ */
+const RETRY = { intakeRetryInvocationId: "inv-1", intakeRetryAttempt: { retryCount: 1, thrownTurnKey: null } };
 
 test("versionedContinueAsNew carries the intake state whatever built the input, and adds nothing when it is empty", () => {
     const withIntake = runtimeFor({ ...INPUT, intake: VALID, ...RETRY });
@@ -309,8 +312,10 @@ test("versionedContinueAsNew carries the intake state whatever built the input, 
     ]) {
         const can = continuedAsNew(withIntake, build(withIntake));
         assert.deepEqual(can.canInput.intake, VALID);
-        // The retry marker rides every continue-as-new with the pending prompt.
+        // The retry marker rides every continue-as-new with the pending prompt, and with it the retry's count and key.
         assert.equal(can.canInput.intakeRetryInvocationId, "inv-1");
+        assert.deepEqual(can.canInput.intakeRetryAttempt, { retryCount: 1, thrownTurnKey: null });
+        assert.equal(Object.hasOwn(can.canInput, "intakeArrivalPending"), false);
         assert.equal(can.version, "1.0.83");
         assert.equal(can.canInput.sourceOrchestrationVersion, "1.0.83");
         // The carried form is a copy: changing it changes nothing in the state.
@@ -321,6 +326,7 @@ test("versionedContinueAsNew carries the intake state whatever built the input, 
     const next = runtimeFor(continuedAsNew(withIntake, continueInput(withIntake)).canInput);
     assert.deepEqual(next.state.intake, withIntake.state.intake);
     assert.equal(next.state.intakeRetryInvocationId, "inv-1");
+    assert.deepEqual(next.state.intakeRetryAttempt, { retryCount: 1, thrownTurnKey: null });
 
     // Empty: no intake field, and the input is the one 1.0.82 builds, but for the version that wrote it.
     const empty = runtimeFor(INPUT);
@@ -329,11 +335,37 @@ test("versionedContinueAsNew carries the intake state whatever built the input, 
     const theirs = continuedAsNew(frozen, continueInput82(frozen), versionedContinueAsNew82).canInput;
     assert.equal(Object.hasOwn(ours, "intake"), false);
     assert.equal(Object.hasOwn(ours, "intakeRetryInvocationId"), false);
+    assert.equal(Object.hasOwn(ours, "intakeRetryAttempt"), false);
+    assert.equal(Object.hasOwn(ours, "intakeArrivalPending"), false);
     assert.deepEqual({ ...ours, sourceOrchestrationVersion: "1.0.82" }, theirs);
     // Stale fields on a built input are not carried for an empty state.
-    const stale = continuedAsNew(empty, { ...continueInput(empty), intake: VALID, ...RETRY }).canInput;
+    const stale = continuedAsNew(empty, { ...continueInput(empty), intake: VALID, ...RETRY, intakeArrivalPending: true }).canInput;
     assert.equal(Object.hasOwn(stale, "intake"), false);
     assert.equal(Object.hasOwn(stale, "intakeRetryInvocationId"), false);
+    assert.equal(Object.hasOwn(stale, "intakeRetryAttempt"), false);
+    assert.equal(Object.hasOwn(stale, "intakeArrivalPending"), false);
+});
+
+test("review O-W2-3: a retry's own continue-as-new gives the held retry its count and key, kept through every later one; review O-W2-5: an unanswered arrival's flag rides", () => {
+    // The first continue-as-new after the marker is set is the retry's own: its count and key are taken from it.
+    const marked = runtimeFor({ ...INPUT, intake: VALID, ...RETRY });
+    marked.state.intakeRetryAttempt = null;
+    const first = continuedAsNew(marked, { ...continueInput(marked), retryCount: 2, thrownTurnKey: "key-T" }).canInput;
+    assert.deepEqual(first.intakeRetryAttempt, { retryCount: 2, thrownTurnKey: "key-T" });
+    // A later continue-as-new keeps them, whatever the session's own count and key became meanwhile.
+    const held = runtimeFor(first);
+    assert.deepEqual(held.state.intakeRetryAttempt, { retryCount: 2, thrownTurnKey: "key-T" });
+    held.state.retryCount = 0;
+    held.state.thrownTurnKey = null;
+    const later = continuedAsNew(held, continueInput(held)).canInput;
+    assert.deepEqual(later.intakeRetryAttempt, { retryCount: 2, thrownTurnKey: "key-T" });
+    assert.equal(later.retryCount, 0);
+    // The arrival flag rides while set, and restores.
+    const arrived = runtimeFor({ ...INPUT, intakeArrivalPending: true });
+    assert.equal(arrived.state.intakeArrivalPending, true);
+    assert.equal(continuedAsNew(arrived, continueInput(arrived)).canInput.intakeArrivalPending, true);
+    arrived.state.intakeArrivalPending = false;
+    assert.equal(Object.hasOwn(continuedAsNew(arrived, continueInput(arrived)).canInput, "intakeArrivalPending"), false);
 });
 
 test("1.0.83 never continues as new to an older or unreadable version, and stops before any yield", () => {
@@ -379,6 +411,35 @@ test("the pending prompt's retry marker is restored exactly while a sent invocat
     for (const intake of [unsent, ending]) {
         assert.equal(restore({ intake }).intakeRetryInvocationId, null);
         assert.throws(() => restore({ intake, ...RETRY }), failsAtMarker);
+    }
+});
+
+test("the held retry's count and key are restored exactly with the marker; the arrival flag is true or absent (reviews O-W2-3, O-W2-5)", () => {
+    const restore = input => createInitialState({ ...INPUT, ...input }, deriveOptions(INPUT));
+    const failsAt = path => error => error instanceof IntakeShapeError && error.path === path;
+    assert.deepEqual(restore({ intake: VALID, ...RETRY }).intakeRetryAttempt, { retryCount: 1, thrownTurnKey: null });
+    assert.deepEqual(restore({ intake: VALID, ...RETRY, intakeRetryAttempt: { retryCount: 3, thrownTurnKey: "key-T" } }).intakeRetryAttempt,
+        { retryCount: 3, thrownTurnKey: "key-T" });
+    assert.equal(restore({}).intakeRetryAttempt, null);
+    // Missing with the marker, present without it, or malformed.
+    assert.throws(() => restore({ intake: VALID, intakeRetryInvocationId: "inv-1" }), failsAt("$.intakeRetryAttempt"));
+    const unsent = carried({ invocation: boundInvocation([TEXT_B]) });
+    assert.throws(() => restore({ intake: unsent, intakeRetryAttempt: RETRY.intakeRetryAttempt }), failsAt("$.intakeRetryAttempt"));
+    for (const [raw, path] of [
+        [null, "$.intakeRetryAttempt"],
+        [{ retryCount: 1 }, "$.intakeRetryAttempt.thrownTurnKey"],
+        [{ retryCount: -1, thrownTurnKey: null }, "$.intakeRetryAttempt.retryCount"],
+        [{ retryCount: 1.5, thrownTurnKey: null }, "$.intakeRetryAttempt.retryCount"],
+        [{ retryCount: 1, thrownTurnKey: "" }, "$.intakeRetryAttempt.thrownTurnKey"],
+        [{ retryCount: 1, thrownTurnKey: null, extra: 1 }, "$.intakeRetryAttempt"],
+    ]) {
+        assert.throws(() => restore({ intake: VALID, ...RETRY, intakeRetryAttempt: raw }), failsAt(path), JSON.stringify(raw));
+    }
+    // The arrival flag: absent is false; only true is accepted.
+    assert.equal(restore({}).intakeArrivalPending, false);
+    assert.equal(restore({ intakeArrivalPending: true }).intakeArrivalPending, true);
+    for (const raw of [false, 1, "true", null]) {
+        assert.throws(() => restore({ intakeArrivalPending: raw }), failsAt("$.intakeArrivalPending"), String(raw));
     }
 });
 
