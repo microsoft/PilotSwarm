@@ -9646,7 +9646,7 @@ const KEYBINDING_HELP = [
         ["n / r", "new session / refresh"],
         ["a", "linked items — artifacts to download, links to open"],
         ["m", "cycle inspector tab"],
-        ["w", "workflow session: read-only workflow view (↑↓ state · ←→ run · Tab agent chat · Enter open its chat)"],
+        ["w", "workflow session: read-only workflow view (↑↓ state · ←→ run · PgUp/PgDn details · Tab agent chat · Enter open its chat)"],
         ["c / d / D", "cancel / done / delete session"],
         ["ctrl-x  (ctrl-esc)", "stop the current turn (again: retry an unconfirmed stop)", { dim: true }],
         ["ctrl-t", "prompt: steer the running turn with the prompt text, a selected queued message, or (empty prompt) every queued message (steering feature)", { dim: true }],

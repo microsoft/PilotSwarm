@@ -521,7 +521,7 @@ publication gate on declared test scenarios (not in the YAML design).
 | Portal and TUI composer, management client, SDK client | session access (`canSendPrompt`, `canAnswer`, `canSteer`; the TUI's direct mode reads `getWorkflowInputPolicy`) | human input, refused for an agent state's subtree at the SDK (both composers are read-only there) |
 | REST `POST /sessions/:id/workflow/commands`, SDK (direct and web) and TUI `updateWorkflow`, MCP `update_workflow` (INACTIVE: test-only option `workflowCommands`) | — | a person's `update_workflow` command (below) |
 | Bootstrap (`GET /api/bootstrap`, `/api/v1/bootstrap`), SDK `getWorkflowCapabilities` (direct and web), both transports | `workflows`: the workflow support the deployment takes now (below) | nothing |
-| TUI workflow view (`w` on a workflow session; read-only) | the states in graph order for the chosen run (←→), the selected state's details and transitions, an agent state's child session per occurrence (below) | nothing: it opens a child session's chat to read |
+| TUI workflow view (`w` on a workflow session; read-only) | the states in graph order for the chosen run (←→), the selected state's details, transitions and history, an agent state's child session per occurrence, a test run's intercepted effects (below) | nothing: it opens a child session's chat to read |
 
 All read surfaces serve one projection (`readWorkflowV2View`), so they show
 the same agent child, branch, stop, test and pin fields. The shared UI
@@ -825,9 +825,18 @@ ui-core and re-exported unchanged by the portal's panels), with the same
 labels and notes (a run still being read, a run that could not be read);
 choosing one sets the same selection as the portal's picker
 (`selectedRunId`) and reads that run's own model, so the view shows only
-that run (its agent states' own children included). The view sends nothing
-and changes nothing; the server keeps refusing human input to an agent
-state's subtree.
+that run (its agent states' own children included). The selected state's
+details end with its history, newest first, as the portal's History tab
+lists it (a v2 state's visits with a loop's unchanged repeats combined,
+`compactWorkflowV2Executions`; a legacy state's steps with their outcome and
+duration), and, for a test run, that run's intercepted effects as the
+portal's table lists them (the effect, its state, and its answer or that it
+waits for the parent; those of the selected state marked), from that run's
+own read model only. PgUp and PgDn (ctrl-u, ctrl-d) scroll the details a
+page at a time, never past their last line; another state or run starts at
+the top. The view sends nothing and changes nothing (the run's parent
+agent, a fixture or a person in the portal answers an intercepted effect);
+the server keeps refusing human input to an agent state's subtree.
 
 **The TUI composer of a session in an agent state's subtree (design 03
 human-input denial; T115 "no human composer", T116 in the TUI).** It is
@@ -850,9 +859,8 @@ Not in the TUI yet (open, not waived):
 - a person's workflow commands (run controls, variables, publication,
   draft editing, test start, test answers and the virtual clock): the
   portal, the API, MCP and the agent tools take them;
-- the test run's interceptions panel;
-- the full execution history and output of a state (the view shows its
-  latest output or error, bounded);
+- each execution's own output: the view shows the state's latest output or
+  error (bounded), as the portal's Output tab does;
 - the TUI refuses a person's prompt, answer and steer to an agent state's
   subtree locally; its other human input there (a workspace command, for
   one) is refused by the server only.

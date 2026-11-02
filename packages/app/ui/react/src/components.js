@@ -28,6 +28,7 @@ import {
     selectWorkflowCreateModal,
     selectWorkflowViewModal,
     selectWorkflowInputNote,
+    workflowViewPanelWidth,
     selectSessionAgentPickerModal,
     selectShareSessionModal,
     selectSessionGroupNameModal,
@@ -1761,12 +1762,10 @@ export function WorkflowViewModal({ state }) {
     const viewport = typeof platform.getViewport === "function"
         ? platform.getViewport()
         : { width: 120, height: 40 };
-    const width = Math.max(56, Math.min(110, (viewport.width || 120) - 8));
-    const modal = selectWorkflowViewModal(state, width);
+    const width = workflowViewPanelWidth(viewport.width);
+    const modal = selectWorkflowViewModal(state, width, viewport.height);
     if (!modal) return null;
-    const available = Math.max(16, (viewport.height || 40) - 6);
-    const listHeight = Math.max(6, Math.min(modal.rows.length + 2, Math.floor(available / 2)));
-    const detailsHeight = Math.max(8, available - listHeight - 1);
+    const { listHeight, detailsHeight } = modal;
     const contentRows = Math.max(1, listHeight - 2);
     const maxOffset = Math.max(0, modal.rows.length - contentRows);
     const scrollOffset = Math.max(0, Math.min(modal.selectedRowIndex - Math.floor(contentRows / 2), maxOffset));
@@ -1791,7 +1790,7 @@ export function WorkflowViewModal({ state }) {
                 width,
                 height: detailsHeight,
                 lines: modal.detailsLines,
-                scrollOffset: 0,
+                scrollOffset: modal.detailsScroll,
                 scrollMode: "top",
                 fillColor: "surface",
             }),
@@ -1806,6 +1805,7 @@ function WorkflowViewModalContainer({ controller }) {
         const sessionId = modal?.type === "workflowView" ? modal.sessionId : null;
         return {
             modal,
+            layout: rootState.ui.layout,
             session: sessionId ? rootState.sessions.byId[sessionId] || null : null,
             history: sessionId ? rootState.history.bySessionId.get(sessionId) || null : null,
             view: sessionId ? rootState.ui.workflowViews?.[sessionId] || null : null,
@@ -1823,7 +1823,7 @@ function WorkflowViewModalContainer({ controller }) {
     }, [controller, sessionId, events, sessionUpdatedAt, selectedRunId]);
     if (!sessionId) return null;
     const selectorState = {
-        ui: { modal: state.modal, workflowViews: state.view ? { [sessionId]: state.view } : {} },
+        ui: { modal: state.modal, layout: state.layout, workflowViews: state.view ? { [sessionId]: state.view } : {} },
         sessions: { byId: state.session ? { [sessionId]: state.session } : {} },
         history: { bySessionId: new Map(state.history ? [[sessionId, state.history]] : []) },
         canvas: { bySessionId: state.canvas ? { [sessionId]: state.canvas } : {} },

@@ -1,8 +1,8 @@
 import { applyNativeTaskSnapshot } from "./native-tasks.js";
 import { workflowDefinition } from "./workflow-view.js";
 import {
-    normalizeWorkflowInputPolicy, selectWorkflowInputNote, selectWorkflowViewSelection, workflowInputPolicyApplies, workflowViewDefaultNode,
-    workflowViewNodes, workflowViewProjectionFor,
+    normalizeWorkflowInputPolicy, selectWorkflowInputNote, selectWorkflowViewModal, selectWorkflowViewSelection, workflowInputPolicyApplies,
+    workflowViewDefaultNode, workflowViewNodes, workflowViewPanelWidth, workflowViewProjectionFor,
 } from "./workflow-tui.js";
 import {
     workflowV2CommandNamesRun, workflowV2RunCommandAccepted, workflowV2RunCommandArgs, workflowV2RunCommandConfirm, workflowV2RunCommandFailure,
@@ -8176,7 +8176,7 @@ export class PilotSwarmUiController {
             type: "ui/modal",
             modal: { type: "workflowView", sessionId, selectedNodeId, occurrenceIndex: 0, previousFocus: state.ui.focusRegion },
         });
-        this.dispatch({ type: "ui/status", text: "Workflow view — ↑↓ state · ←→ run · Tab agent chat · Enter open · Esc close" });
+        this.dispatch({ type: "ui/status", text: "Workflow view — ↑↓ state · ←→ run · PgUp/PgDn details · Tab agent chat · Enter open · Esc close" });
     }
 
     /** The workflow view: select the state `delta` rows away, in graph order (clamped), and its newest agent chat. */
@@ -8184,7 +8184,25 @@ export class PilotSwarmUiController {
         const selection = selectWorkflowViewSelection(this.getState());
         if (!selection || selection.nodes.length === 0) return;
         const next = Math.max(0, Math.min(selection.selectedIndex + delta, selection.nodes.length - 1));
-        this.dispatch({ type: "ui/modal", modal: { ...selection.modal, selectedNodeId: selection.nodes[next].id, occurrenceIndex: 0 } });
+        this.dispatch({ type: "ui/modal", modal: { ...selection.modal, selectedNodeId: selection.nodes[next].id, occurrenceIndex: 0, detailsScroll: 0 } });
+    }
+
+    /**
+     * The workflow view: scroll the selected state's details by `pages`
+     * pages (PgUp/PgDn), within what the details panel can show at the
+     * terminal size the state records (its last line is the last shown).
+     */
+    scrollWorkflowViewDetails(pages) {
+        const state = this.getState();
+        const selection = selectWorkflowViewSelection(state);
+        if (!selection) return;
+        const layout = state.ui.layout || {};
+        const view = selectWorkflowViewModal(state, workflowViewPanelWidth(layout.viewportWidth), layout.viewportHeight);
+        if (!view) return;
+        const page = Math.max(1, view.detailsHeight - 3);
+        const next = Math.max(0, Math.min(view.detailsScroll + pages * page, view.detailsMaxScroll));
+        if (next === view.detailsScroll) return;
+        this.dispatch({ type: "ui/modal", modal: { ...selection.modal, detailsScroll: next } });
     }
 
     /** The workflow view: choose another occurrence of the selected agent state (Tab, Shift-Tab), cycling. */
@@ -8218,7 +8236,7 @@ export class PilotSwarmUiController {
         const option = picker.options[next];
         const sessionId = selection.modal.sessionId;
         this.dispatch({ type: "ui/workflowView", sessionId, view: { selectedRunId: option.value || null } });
-        this.dispatch({ type: "ui/modal", modal: { ...selection.modal, occurrenceIndex: 0 } });
+        this.dispatch({ type: "ui/modal", modal: { ...selection.modal, occurrenceIndex: 0, detailsScroll: 0 } });
         this.dispatch({ type: "ui/status", text: `Showing ${option.label}` });
         this.ensureWorkflowReadModel(sessionId).catch(() => {});
     }
@@ -12445,6 +12463,12 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.WORKFLOW_VIEW_NEXT_RUN:
                 this.moveWorkflowViewRun(1);
+                return;
+            case UI_COMMANDS.WORKFLOW_VIEW_DETAILS_UP:
+                this.scrollWorkflowViewDetails(-1);
+                return;
+            case UI_COMMANDS.WORKFLOW_VIEW_DETAILS_DOWN:
+                this.scrollWorkflowViewDetails(1);
                 return;
             case UI_COMMANDS.SEQUENCE_SELECT_PREV:
                 this.moveSequenceSelection(-1);

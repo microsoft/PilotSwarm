@@ -94,6 +94,7 @@ test("the help lists the workflow view", async () => {
     const text = JSON.stringify(help);
     assert.match(text, /workflow session: read-only workflow view/);
     assert.match(text, /←→ run/);
+    assert.match(text, /PgUp\/PgDn details/);
 });
 
 test("← → in the open workflow view choose its run; elsewhere they keep their meaning", () => {
@@ -106,4 +107,12 @@ test("← → in the open workflow view choose its run; elsewhere they keep thei
     assert.ok(modalBranch > 0 && modalBranch < binding);
     assert.ok(APP.indexOf('modal.type === "renameSession" || modal.type === "artifactUpload"') < binding);
     assert.ok(binding < APP.indexOf('if (plainShortcut && input === "w") {'));
+});
+
+test("PgUp/PgDn (ctrl-u/ctrl-d) in the open workflow view scroll its details", () => {
+    const binding = APP.indexOf('if (modal.type === "workflowView" && (key.pageUp || key.pageDown || isCtrlU || isCtrlD)) {');
+    assert.ok(binding > 0, "the binding exists");
+    assert.match(APP.slice(binding, binding + 260),
+        /key\.pageUp \|\| isCtrlU \? UI_COMMANDS\.WORKFLOW_VIEW_DETAILS_UP : UI_COMMANDS\.WORKFLOW_VIEW_DETAILS_DOWN/);
+    assert.ok(APP.indexOf("if (modal) {") < binding && binding < APP.indexOf('if (plainShortcut && input === "w") {'));
 });

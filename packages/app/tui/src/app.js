@@ -594,6 +594,11 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                 controller.handleCommand(key.leftArrow ? UI_COMMANDS.WORKFLOW_VIEW_PREV_RUN : UI_COMMANDS.WORKFLOW_VIEW_NEXT_RUN).catch(() => {});
                 return;
             }
+            // The workflow view: PgUp/PgDn (ctrl-u/ctrl-d) scroll the selected state's details.
+            if (modal.type === "workflowView" && (key.pageUp || key.pageDown || isCtrlU || isCtrlD)) {
+                controller.handleCommand(key.pageUp || isCtrlU ? UI_COMMANDS.WORKFLOW_VIEW_DETAILS_UP : UI_COMMANDS.WORKFLOW_VIEW_DETAILS_DOWN).catch(() => {});
+                return;
+            }
             if (key.tab && key.shift) {
                 controller.handleCommand(UI_COMMANDS.MODAL_PANE_PREV).catch(() => {});
                 return;

@@ -1,6 +1,6 @@
 import { layoutWorkflowGraph, workflowNodeViews, workflowReadModelView } from "./workflow-view.js";
 import { workflowV2RunPickerModel } from "./workflow-v2-run-picker.js";
-import { projectWorkflowV2, workflowV2RouteKind } from "./workflow-v2-view.js";
+import { compactWorkflowV2Executions, projectWorkflowV2, workflowV2RouteKind } from "./workflow-v2-view.js";
 
 /**
  * The TUI's read-only workflow view (design 02 "Portal/TUI: graph, observed
@@ -31,6 +31,8 @@ const EMPTY_EVENTS = Object.freeze([]);
 const STATE_GLYPHS = { running: "●", done: "✓", failed: "✗", cancelled: "⊘", idle: "○" };
 const STATE_COLORS = { running: "yellow", done: "green", failed: "red", cancelled: "gray", idle: "gray" };
 const VALUE_LIMIT = 240;
+const HISTORY_ROW_LIMIT = 12;
+const EFFECT_LIMIT = 20;
 
 const bounded = (value, limit) => {
     const text = String(value ?? "").replace(/\s+/g, " ").trim();
@@ -207,6 +209,60 @@ function nodeRow(entry, selected, idWidth, labelWidth, width) {
     ];
 }
 
+/** The portal's history wording (its Result column). */
+const resultWord = execution => execution.status === "pending" ? "Pending"
+    : execution.resultKind === "business" ? "Business result"
+        : execution.resultKind === "runtime_error" ? "Runtime error" : "Result kind not recorded";
+
+const durationText = ms => typeof ms === "number" && Number.isFinite(ms)
+    ? (ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`) : "not recorded";
+
+/**
+ * The selected state's executions in the loaded history, newest first, as the portal's History tab lists them: a v2
+ * state's visits with neighbouring unchanged repeats combined (compactWorkflowV2Executions), a legacy state's steps.
+ */
+function historyLines(node) {
+    if (node.shape === "v2") {
+        const rows = compactWorkflowV2Executions(Array.isArray(node.executions) ? node.executions : []);
+        const lines = rows.slice(0, HISTORY_ROW_LIMIT).map(({ execution, count, from, to }) =>
+            `  ${count > 1 ? `visits ${from}–${to} (×${count})` : `visit ${execution.ordinal ?? "—"}`} · ${resultWord(execution)} · ${execution.outcome || "—"}`);
+        if (rows.length > HISTORY_ROW_LIMIT) lines.push(`  … ${rows.length - HISTORY_ROW_LIMIT} more rows in the loaded history`);
+        return { title: "History (newest first; unchanged repeats combined):", lines };
+    }
+    const history = Array.isArray(node.history) ? node.history : [];
+    const lines = history.slice(0, HISTORY_ROW_LIMIT).map(event => {
+        const data = event?.data && typeof event.data === "object" ? event.data : {};
+        return `  step ${data.step ?? data.steps ?? "—"} · ${data.outcome || String(event?.eventType || "").split(".").at(-1)} · ${durationText(data.durationMs)}`;
+    });
+    if (history.length > HISTORY_ROW_LIMIT) lines.push(`  … ${history.length - HISTORY_ROW_LIMIT} more in the loaded history`);
+    return { title: "History (newest first):", lines };
+}
+
+/**
+ * A test run's intercepted effects (design 05), as the portal's table lists them: the effect, its state and its answer,
+ * from the shown run's own read model only. The TUI shows them; the run's parent agent, a fixture or a person in the
+ * portal answers them. Null when the shown run has none.
+ */
+function testEffectLines(projection, selectedId) {
+    const test = projection.v2?.readModel?.run?.test;
+    const items = Array.isArray(test?.interceptions) ? test.interceptions.filter(item => item && typeof item === "object" && !Array.isArray(item)) : [];
+    if (!items.length) return null;
+    const waiting = items.filter(item => !item.response).length;
+    const lines = items.slice(0, EFFECT_LIMIT).map(item => {
+        const effect = `${item.operation ?? "effect"}${item.tool ? ` · ${item.tool}` : ""}`;
+        const answered = Boolean(item.response && typeof item.response === "object");
+        const answer = answered ? `${item.response.kind ?? "answered"} · ${item.response.disposition ?? "—"}` : "waiting for the parent";
+        return { text: `  ${effect} · state ${item.stateId ?? "—"} · ${answer}${item.stateId && item.stateId === selectedId ? " ◂ this state" : ""}`,
+            color: answered ? "white" : "yellow" };
+    });
+    if (items.length > EFFECT_LIMIT) lines.push({ text: `  … ${items.length - EFFECT_LIMIT} more`, color: "gray" });
+    return {
+        title: `Intercepted effects of this test run (${items.length}${waiting ? `; ${waiting} wait${waiting === 1 ? "s" : ""} for the parent` : ""}):`,
+        lines,
+        note: "The TUI shows them; the run's parent agent, a fixture or a person in the portal answers them.",
+    };
+}
+
 function detailLines(selection, width) {
     const { projection, selected, occurrences, occurrenceIndex } = selection;
     const lines = [];
@@ -273,28 +329,59 @@ function detailLines(selection, width) {
         const runValue = projection.v2.error ?? projection.v2.output;
         if (runValue !== null && runValue !== undefined) add(`Run ${projection.v2.error != null ? "error" : "output"}: ${bounded(valueText(runValue), VALUE_LIMIT)}`);
     }
+    const history = historyLines(node);
+    add(history.title, "cyan");
+    if (history.lines.length) for (const line of history.lines) add(line);
+    else add("  No executions in the loaded history.", "gray");
+    const effects = testEffectLines(projection, selected.id);
+    if (effects) {
+        add(effects.title, "cyan");
+        for (const line of effects.lines) add(line.text, line.color);
+        add(effects.note, "gray");
+    }
     return lines;
+}
+
+/** The workflow view's panel width in a terminal `viewportWidth` columns wide. Pure. */
+export function workflowViewPanelWidth(viewportWidth) {
+    return Math.max(56, Math.min(110, (Number(viewportWidth) || 120) - 8));
+}
+
+/** The heights of the workflow view's two panels in a terminal `viewportHeight` rows high, for `rowCount` state rows. Pure. */
+function panelHeights(viewportHeight, rowCount) {
+    const available = Math.max(16, (Number(viewportHeight) || 40) - 6);
+    const listHeight = Math.max(6, Math.min(Math.max(1, rowCount) + 2, Math.floor(available / 2)));
+    return { listHeight, detailsHeight: Math.max(8, available - listHeight - 1) };
 }
 
 /**
  * The workflow view's presentation (TUI modal): the title (workflow name and status), one row per state in graph order
  * with the selected row, and the selected state's detail lines. Null unless the workflow view is open. Pure.
  */
-export function selectWorkflowViewModal(state, maxWidth = 100) {
+export function selectWorkflowViewModal(state, maxWidth = 100, viewportHeight = null) {
     const selection = selectWorkflowViewSelection(state);
     if (!selection) return null;
     const width = Math.max(40, Number(maxWidth) || 100);
     const contentWidth = width - 4;
     const idWidth = Math.min(20, Math.max(4, ...selection.nodes.map(entry => entry.id.length)));
     const labelWidth = Math.min(24, Math.max(6, ...selection.nodes.map(entry => entry.label.length)));
-    const rows = selection.nodes.map((entry, index) => nodeRow(entry, index === selection.selectedIndex, idWidth, labelWidth, contentWidth));
+    const nodeRows = selection.nodes.map((entry, index) => nodeRow(entry, index === selection.selectedIndex, idWidth, labelWidth, contentWidth));
+    const rows = nodeRows.length ? nodeRows : [[{ text: selection.projection.loading ? "Loading workflow graph…" : "No states to show.", color: "gray" }]];
+    const detailsLines = detailLines(selection, contentWidth);
+    // The details scroll (PgUp/PgDn) within what its panel can show: never past its last line.
+    const { listHeight, detailsHeight } = panelHeights(viewportHeight ?? state?.ui?.layout?.viewportHeight ?? 40, rows.length);
+    const detailsMaxScroll = Math.max(0, detailsLines.length - Math.max(1, detailsHeight - 2));
     return {
         title: bounded(`Workflow: ${selection.projection.name} · ${selection.projection.status}`, contentWidth),
-        rows: rows.length ? rows : [[{ text: selection.projection.loading ? "Loading workflow graph…" : "No states to show.", color: "gray" }]],
+        rows,
         selectedRowIndex: selection.selectedIndex,
         detailsTitle: selection.selected
             ? `State ${bounded(selection.selected.id, 30)} — ↑↓ state · ←→ run · Tab agent chat · Enter open · Esc close` : "Workflow",
-        detailsLines: detailLines(selection, contentWidth),
+        detailsLines,
+        listHeight,
+        detailsHeight,
+        detailsScroll: Math.max(0, Math.min(Number(selection.modal.detailsScroll) || 0, detailsMaxScroll)),
+        detailsMaxScroll,
         idealWidth: width,
         childSessionId: selection.occurrence?.childSessionId ?? null,
     };
