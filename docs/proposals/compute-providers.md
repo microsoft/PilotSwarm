@@ -130,7 +130,7 @@ a reason. The agent never falls back to running on the worker.
 | Names that include the owner | Free-form global names | Names never collide between people, and nobody can take a name administrators need. |
 
 For details, see section 3 (the parts and who owns what), 4 (the PilotSwarm
-design), 5 (the reference `process` provider), 6 (walkthroughs), 9 (decisions
+design), 5 (the `process` test provider), 6 (walkthroughs), 9 (decisions
 and open items), 11 (what is built) and 12 (future work).
 
 ## Contents
@@ -139,7 +139,7 @@ and open items), 11 (what is built) and 12 (future work).
 2. [Terms](#2-terms)
 3. [Architecture and who owns what](#3-architecture-and-who-owns-what)
 4. [PilotSwarm design](#4-pilotswarm-design)
-5. [The `process` provider as the reference](#5-the-process-provider-as-the-reference)
+5. [The `process` provider: the test provider](#5-the-process-provider-the-test-provider)
 6. [Walkthroughs](#6-walkthroughs)
 7. [Corner cases](#7-corner-cases)
 8. [Test plan](#8-test-plan)
@@ -349,10 +349,10 @@ interface ComputeProvider {
   loopback addresses: a provider that reaches a host elsewhere secures that
   path itself. A worker can accept other addresses only when its network
   secures them.
-- The reference provider that runs each tree's runtime in a separate local
-  process (the `process` provider, section 5) ships in the SDK; a worker that
-  wants it registers it. Sessions without a target run as today. Applications
-  add providers in the worker options (`computeProviders`) or at runtime
+- The `process` provider (section 5) is the test provider the SDK uses to
+  exercise this path; it is internal and never registered by default.
+  Sessions without a target run as today. Applications add providers in the
+  worker options (`computeProviders`) or at runtime
   (`registerComputeProvider`). Running a provider as a registered service,
   outside the worker, is future work (section 12).
 
@@ -459,7 +459,7 @@ PilotSwarm defines — the same for every provider and every kind of connection.
   runtime's local port, and reaches nothing else. It serves exactly one binding
   and refuses any other. It either listens for the worker's side or dials out,
   for a host that can only reach outwards. It ships in the SDK as a function and
-  as a command, and the reference `process` provider runs it in front of its
+  as a command, and the `process` test provider runs it in front of its
   runtime, so the tests do the real handshake. A `direct` provider's `connect`
   therefore returns the host component's address, never the runtime's own port.
 - **The runtime token still counts.** Inside the tunnel, the runtime's own
@@ -516,7 +516,7 @@ passes it in the worker options, or registers it at runtime, and the registry
 holds one provider per `kind`. A kind with no provider on this worker fails
 the turn with a clear code rather than silently running locally. **(built)**
 
-That is enough for the `process` reference provider and for a deployment that
+That is enough for the `process` test provider and for a deployment that
 is happy to ship provider code in its workers. It is not enough for a provider
 that needs rights on whatever it makes hosts out of, or for a third party's
 provider: those should run as their own service, registered by an
@@ -599,18 +599,23 @@ steps. Migration 0084 only adds a table and its procedures; it changes no
 existing row. It adds no orchestration version. There is no feature flag: the new
 behaviour appears only for a session that names a target.
 
-## 5. The `process` provider as the reference
+## 5. The `process` provider: the test provider
 
 `createProcessComputeProvider()` (kind `process`) runs each session tree's
 runtime as a separate local process on the worker's machine and returns its
-loopback address and a fresh connection token. **(built)** It is not a sandbox.
-It exercises exactly the remote path a real provider uses, so the plumbing can
-be built and tested on a laptop or in CI. The runtime gets a scrubbed
-environment — its own home, a `PATH`, the connection token, nothing from the
-worker — and leads its own process group, so stopping it stops the commands it
-started. It starts the host component (section 4.5) in front of its runtime,
-so tests run the real handshake. It is not registered by default: a worker
-that wants it registers it like any other provider.
+loopback address and a fresh connection token. **(built)**
+
+It is the **test provider**: it exists so the remote path can be exercised on
+a laptop and in CI, and as the smallest readable example of a provider. It is
+internal to the SDK — not exported from the package, not registered by
+default — and it is not a sandbox. A deployment that wants compute brings a
+provider of its own.
+
+It exercises exactly the remote path a real provider uses. The runtime gets a
+scrubbed environment — its own home, a `PATH`, the connection token, nothing
+from the worker — and leads its own process group, so stopping it stops the
+commands it started. It starts the host component (section 4.5) in front of
+its runtime, so tests run the real handshake.
 
 A local test drives it through real workers and PostgreSQL and checks:
 
@@ -802,7 +807,7 @@ branch; section 12 lists what was deliberately left out.
 | `compute-target-store.ts`, `compute-binding-store.ts`, `cms.ts` | The target and binding stores; the create-time check | built |
 | `types.ts`, `client.ts` | `computeTarget` on the session config | built |
 | `compute-runtime.ts` | Placeholder credentials, the request handler, worker-backed SessionFs | built |
-| `compute-process.ts` | The `process` reference provider | built |
+| `compute-process.ts` | The `process` test provider, internal to the package | built |
 | `copilot-client.ts`, `session-manager.ts` | The remote connection and turn wiring | built |
 | `compute-handshake.ts`, `compute-host.ts`, `compute-host-cli.ts` | The handshake, the host component, and the command that runs it on a host | built |
 | `compute-failures.ts` | The one shape every compute error the worker raises takes | built |
@@ -812,7 +817,7 @@ branch; section 12 lists what was deliberately left out.
 
 | Stage | Scope | State |
 |---|---|---|
-| Core | Targets and names; the provider interface and transport; the remote turn and trust boundary; the bridge; the `process` reference provider | **built** |
+| Core | Targets and names; the provider interface and transport; the remote turn and trust boundary; the bridge; the `process` test provider | **built** |
 | The handshake | The mutual handshake and the host component, run for real by the `process` provider | **built** |
 | Host lifecycle | Leases and renewals; the done notice for trees that end while unloaded | **built** |
 | Management surfaces | Targets across the management client and the Web API; audit; API reference docs | **built** |

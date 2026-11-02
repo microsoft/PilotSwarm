@@ -3,11 +3,13 @@
  * runtime, a separate `copilot --headless` process on this machine that
  * the worker reaches over TCP like any remote runtime.
  *
- * It is not an isolation boundary. It exists so the remote-runtime path
- * (connection token, SessionFs, credential placeholders, release) can be
- * exercised and developed without a cluster, and as the smallest example
- * of a provider. A real provider replaces `spawn` with its platform's call
- * and returns the address its platform gives.
+ * **Test provider. Not part of the SDK's public surface** — it is not
+ * exported from `index.ts`, so nothing outside this package can reach it.
+ * It exists so the remote-runtime path (connection token, handshake,
+ * SessionFs, credential placeholders, release) can be exercised without a
+ * cluster, and as the smallest readable example of a provider. It is not an
+ * isolation boundary. A real provider replaces `spawn` with its platform's
+ * call and returns the address its platform gives.
  *
  * The runtime gets a scrubbed environment: no worker variables, so no
  * database URLs, tokens or keys reach the commands the model runs.

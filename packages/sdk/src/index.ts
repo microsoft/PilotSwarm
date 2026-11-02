@@ -270,8 +270,6 @@ export type {
     ComputeDoneRequest,
 } from "./compute.js";
 export { ComputeRuntimeBridge, COMPUTE_PIPE_OPEN_TIMEOUT_MS, COMPUTE_BRIDGE_MAX_CONNECTIONS, openTcpPipe } from "./compute-bridge.js";
-export { createProcessComputeProvider, PROCESS_COMPUTE_KIND } from "./compute-process.js";
-export type { ProcessComputeProviderOptions } from "./compute-process.js";
 export { ComputeTargetStore, ComputeTargetError } from "./compute-target-store.js";
 export { formatComputeFailure, computeFailureError, computeFailureMessage } from "./compute-failures.js";
 export type { ComputeTargetRow } from "./compute-target-store.js";
