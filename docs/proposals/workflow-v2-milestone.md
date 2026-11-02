@@ -320,11 +320,12 @@ the tool's published description and operation enum are unchanged):
   taken, the outcomes seen, and the interceptions still unanswered. The
   run row keeps the revision and hashes, inputs and every KV revision.
 
-Deviations and gaps: `agent_mode: real` (a real agent child whose tools
-are intercepted, with the test context inherited by its descendants) is not
-available; typed input's expiry (`ttl_seconds`) runs on real time; a test
-run's interceptions are not deleted by any retention policy yet (B11); the
-UI's test panel and mock editor are B9.
+Unfulfilled requirements (open, not waived): `agent_mode: real` (R19,
+R20: a real agent child whose tools are intercepted, with the test context
+inherited by its descendants) is refused with `TEST_AGENT_MODE_UNSUPPORTED`.
+Deviations still open: typed input's expiry (`ttl_seconds`) runs on real
+time; a test run's interceptions are not deleted by any retention policy yet
+(B11).
 
 ## Publication pins and test evidence (design 02 publication record, 03 package agents; R18, R28)
 
@@ -356,10 +357,12 @@ binds a publication and a test to the exact versions they used
   tested revision and the stale flag. Test results, publication receipts
   and pins stay separate records; a test never stands in for publication.
 
-Not covered: resolving an older package revision that the registry still
-keeps (the host binds only what it sees now and refuses otherwise),
-package interface digests (`interface:` is refused at compile), and a
-publication gate on declared test scenarios (not in the YAML design).
+Unfulfilled requirement (open, not waived): resolving the pinned package
+revision when the registry has a newer one (R18). The host binds only what
+it sees now and refuses a mismatch, so a republished package fails the
+state `unavailable` instead of running the pinned revision. Also not
+covered: package interface digests (`interface:` is refused at compile) and
+a publication gate on declared test scenarios (not in the YAML design).
 
 ## Surfaces: what each one shows and takes (design 04, 07; R13, R23, R26)
 
@@ -394,7 +397,7 @@ the same agent child, branch, stop, test and pin fields. The shared UI
   no composer; the note gives the reason and the controlling agent. The
   server refuses the input anyway.
 
-Not added, by design or pending a decision:
+Unfulfilled requirements (open, not waived; R26):
 
 - **Human command routes** (REST/MCP `updateWorkflow`, test runs, typed
   input): the human REST surface stays read-only. Design 04 proposes

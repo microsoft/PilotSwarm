@@ -96,6 +96,26 @@ test("the handler takes the milestone operations behind the same gate as the des
     for (const operation of [...PRODUCTION_OPERATIONS, ...MILESTONE_OPERATIONS]) assert.ok(unknown.error.message.includes(operation), operation);
 });
 
+test("the milestone operations keep the production authorization: only the agent that created the workflow uses them", async () => {
+    const as = async (callerSessionId, workflowId, args) => JSON.parse(await updateWorkflowFromTool({ workflow_id: workflowId, operation_id: "op-1", ...args },
+        { callerSessionId, host: hostOf(true) }));
+    // Each with arguments that parse, so only authorization can refuse it; pause is a production operation, for comparison.
+    const valid = {
+        pause: { operation: "pause" },
+        stop: { operation: "stop", grace_seconds: 30 },
+        test: { operation: "test", expected_revision: 1, definition_hash: "h", inputs: {} },
+        test_respond: { operation: "test_respond", run_id: "run-1", interception_id: "nx-1/agent", response: { kind: "cancel" } },
+        test_advance: { operation: "test_advance", run_id: "run-1", seconds: 60 },
+    };
+    for (const [operation, args] of Object.entries(valid)) {
+        const other = await as("someone-else", "wf", args);
+        assert.deepEqual([other.ok, other.error.code], [false, "FORBIDDEN"], operation);
+        assert.equal(other.error.message, "Only the agent that created this workflow may change or read it with this tool.", operation);
+        const missing = await as("parent", "nope", args);
+        assert.deepEqual([missing.ok, missing.error.code], [false, "WORKFLOW_NOT_FOUND"], operation);
+    }
+});
+
 test("the reference skill's update_workflow table names exactly the operations a 1.9.0 host takes", () => {
     const text = fs.readFileSync(new URL("../../plugins/workflow-v2/skills/workflow-reference/SKILL.md", import.meta.url), "utf8");
     const table = text.slice(text.indexOf("| Operation | Arguments | Effect |"), text.indexOf("`read_workflow`:"));
