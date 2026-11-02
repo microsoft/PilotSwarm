@@ -198,6 +198,15 @@ const TURN_CHANGED_82 = [
 ];
 
 /**
+ * The frozen 1.0.82 history-size check and 1.0.83's: 1.0.83 tolerates only a
+ * failed stats read, so the continue-as-new's own refusals (its version floor,
+ * the intake's carried-state checks) fail the execution there too, as at
+ * every other continue-as-new (residual of review Q-W2-7's owner invariant).
+ */
+const HISTORY_CHECK_82 = "        if (state.loopIteration % HISTORY_SIZE_CHECK_INTERVAL_ITERATIONS === 0) {\n            try {\n                const stats = yield runtime.manager.getOrchestrationStats(runtime.input.sessionId);\n                const historySizeBytes = Number(stats?.historySizeBytes) || 0;\n                if (historySizeBytes >= MAX_HISTORY_SIZE_BEFORE_CONTINUE_AS_NEW_BYTES) {\n                    ctx.traceInfo(\n                        `[orch] history size cap (${historySizeBytes} >= ${MAX_HISTORY_SIZE_BEFORE_CONTINUE_AS_NEW_BYTES}) ` +\n                        `at loop ${state.loopIteration} \u2014 continuing as new`,\n                    );\n                    yield* versionedContinueAsNew(runtime, continueInput(runtime));\n                    return \"\";\n                }\n            } catch (err: any) {\n                ctx.traceInfo(`[orch] history size check failed at loop ${state.loopIteration}: ${err?.message ?? err}`);\n            }\n        }\n";
+const HISTORY_CHECK_83 = "        if (state.loopIteration % HISTORY_SIZE_CHECK_INTERVAL_ITERATIONS === 0) {\n            // 1.0.83: only the stats read is tolerated; the continue-as-new's own refusals (its version floor, the intake's\n            // carried-state checks) fail the execution, as at every other continue-as-new.\n            let historySizeBytes = 0;\n            try {\n                const stats = yield runtime.manager.getOrchestrationStats(runtime.input.sessionId);\n                historySizeBytes = Number(stats?.historySizeBytes) || 0;\n            } catch (err: any) {\n                ctx.traceInfo(`[orch] history size check failed at loop ${state.loopIteration}: ${err?.message ?? err}`);\n            }\n            if (historySizeBytes >= MAX_HISTORY_SIZE_BEFORE_CONTINUE_AS_NEW_BYTES) {\n                ctx.traceInfo(\n                    `[orch] history size cap (${historySizeBytes} >= ${MAX_HISTORY_SIZE_BEFORE_CONTINUE_AS_NEW_BYTES}) ` +\n                    `at loop ${state.loopIteration} \u2014 continuing as new`,\n                );\n                yield* versionedContinueAsNew(runtime, continueInput(runtime));\n                return \"\";\n            }\n        }\n";
+
+/**
  * Lines the file `name` of 1.0.83 adds that neither name the intake or the
  * owed retry (ownedRetry, review Q-W2-7) nor are a comment or structure must
  * be listed in `generic`.
@@ -217,8 +226,11 @@ test("1.0.83 is the frozen 1.0.82 plus the intake: the files it does not change 
     for (const name of tsFiles("orchestration_1_0_83")) {
         assert.ok(!read(`orchestration_1_0_83/${name}`).includes('"turn-control-v1"'), `${name} names the turn-control contract`);
     }
-    // runtime.ts: its version, the workflow-intake contract, and no continue-as-new while an intake write is due (drain races it).
+    // runtime.ts: its version, the workflow-intake contract, no continue-as-new while an intake write is due (drain races
+    // it), and a history-size continue-as-new whose own refusal fails the execution.
+    assert.equal(read("orchestration_1_0_82/runtime.ts").split(HISTORY_CHECK_82).length, 2);
     assert.equal(read("orchestration_1_0_83/runtime.ts"), read("orchestration_1_0_82/runtime.ts")
+        .replace(HISTORY_CHECK_82, HISTORY_CHECK_83)
         .replace('export const CURRENT_ORCHESTRATION_VERSION = "1.0.82";', 'export const CURRENT_ORCHESTRATION_VERSION = "1.0.83";')
         .replaceAll('"turn-control-v1"', '"workflow-intake-v1"')
         .replace('import { decide, drain, settleQueuedWorkAfterDecide, turnsStarted } from "./queue.js";\n',

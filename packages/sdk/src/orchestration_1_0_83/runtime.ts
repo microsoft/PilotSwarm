@@ -254,19 +254,22 @@ export function* runLoop(runtime: DurableSessionRuntime): Generator<any, string,
 
         // Periodic history-size check forces a CAN before duroxide history grows too large.
         if (state.loopIteration % HISTORY_SIZE_CHECK_INTERVAL_ITERATIONS === 0) {
+            // 1.0.83: only the stats read is tolerated; the continue-as-new's own refusals (its version floor, the intake's
+            // carried-state checks) fail the execution, as at every other continue-as-new.
+            let historySizeBytes = 0;
             try {
                 const stats = yield runtime.manager.getOrchestrationStats(runtime.input.sessionId);
-                const historySizeBytes = Number(stats?.historySizeBytes) || 0;
-                if (historySizeBytes >= MAX_HISTORY_SIZE_BEFORE_CONTINUE_AS_NEW_BYTES) {
-                    ctx.traceInfo(
-                        `[orch] history size cap (${historySizeBytes} >= ${MAX_HISTORY_SIZE_BEFORE_CONTINUE_AS_NEW_BYTES}) ` +
-                        `at loop ${state.loopIteration} — continuing as new`,
-                    );
-                    yield* versionedContinueAsNew(runtime, continueInput(runtime));
-                    return "";
-                }
+                historySizeBytes = Number(stats?.historySizeBytes) || 0;
             } catch (err: any) {
                 ctx.traceInfo(`[orch] history size check failed at loop ${state.loopIteration}: ${err?.message ?? err}`);
+            }
+            if (historySizeBytes >= MAX_HISTORY_SIZE_BEFORE_CONTINUE_AS_NEW_BYTES) {
+                ctx.traceInfo(
+                    `[orch] history size cap (${historySizeBytes} >= ${MAX_HISTORY_SIZE_BEFORE_CONTINUE_AS_NEW_BYTES}) ` +
+                    `at loop ${state.loopIteration} — continuing as new`,
+                );
+                yield* versionedContinueAsNew(runtime, continueInput(runtime));
+                return "";
             }
         }
 

@@ -1857,3 +1857,43 @@ test("exposure r2: a carrying attempt refused as settled cannot be accepted whil
     assert.equal(ops.find(op => op.op === "cms").status, "failed");
     assert.equal(endOf(ops), undefined);
 });
+
+/**
+ * runLoop at its history-size check (every third loop iteration): `stats`
+ * answers the stats read; a continue-as-new is answered; any other operation
+ * means the loop went on, and the drive stops there.
+ */
+function historyCheck(stats, versions = {}) {
+    const runtime = makeRuntime();
+    Object.assign(runtime.versions, versions);
+    runtime.state.loopIteration = 2;
+    const ops = [];
+    const respond = op => {
+        if (op.op === "manager" && op.method === "getOrchestrationStats") return stats;
+        if (op.op === "continueAsNew") return { value: undefined };
+        return { stop: true };
+    };
+    return { ops, run: () => drive(runLoop(runtime), respond, ops) };
+}
+
+test("the history-size continue-as-new: a large history continues as new, a failed stats read is tolerated, and the continue-as-new's own refusal fails the execution", () => {
+    const LARGE = { value: { historySizeBytes: 900 * 1024 } };
+    const big = historyCheck(LARGE);
+    const continued = big.run();
+    assert.deepEqual(big.ops.map(op => op.method ?? op.op), ["getOrchestrationStats", "continueAsNew"]);
+    assert.equal(big.ops[1].version, "1.0.83");
+    assert.equal(continued.result, "");
+
+    // A failed stats read is only traced: no continue-as-new, and the loop goes on.
+    const failed = historyCheck({ throw: new Error("the stats read failed") });
+    failed.run();
+    assert.equal(failed.ops[0].method, "getOrchestrationStats");
+    assert.ok(failed.ops.length >= 2);
+    assert.ok(!failed.ops.some(op => op.op === "continueAsNew"));
+
+    // The floor refuses an older target: the execution fails, as at every other continue-as-new, instead of the refusal
+    // being traced as a failed stats read while the loop goes on.
+    const older = historyCheck(LARGE, { latestVersion: "1.0.82" });
+    assert.throws(() => older.run(), /does not continue as new to the older 1\.0\.82/);
+    assert.deepEqual(older.ops.map(op => op.method ?? op.op), ["getOrchestrationStats"]);
+});
