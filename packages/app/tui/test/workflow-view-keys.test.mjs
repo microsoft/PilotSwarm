@@ -85,9 +85,13 @@ test("the shared Ink app draws the view: the states, the selected one's details 
     assert.deepEqual(calls.map(call => call[0]), ["readWorkflow"], "it reads the workflow and nothing else");
 });
 
-test("the help lists the workflow view", () => {
-    const { store } = harness();
-    const text = JSON.stringify(selectHelpModal(store.getState(), 120));
+test("the help lists the workflow view", async () => {
+    const { controller, store } = harness();
+    // selectHelpModal answers only while the help is open (the r2 run at 02ae7510 read it closed, so it was null).
+    await controller.handleCommand(UI_COMMANDS.OPEN_HELP);
+    const help = selectHelpModal(store.getState(), 120);
+    assert.ok(help, "the help is open");
+    const text = JSON.stringify(help);
     assert.match(text, /workflow session: read-only workflow view/);
     assert.match(text, /←→ run/);
 });
