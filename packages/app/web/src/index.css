@@ -6717,6 +6717,10 @@ body.is-resizing-pane-y iframe {
     cursor: pointer;
     white-space: nowrap;
     overflow: hidden;
+    /* A button sizes to its content; inside the block scroller a long name
+       made the row wider than the list and clipped the version. */
+    width: 100%;
+    box-sizing: border-box;
 }
 .ps-admin-tree__row.depth-1 { padding-left: 22px; }
 .ps-admin-tree__row.depth-2 { padding-left: 36px; }
