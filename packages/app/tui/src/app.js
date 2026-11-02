@@ -589,6 +589,11 @@ export function PilotSwarmTuiApp({ controller, platform, onRequestExit }) {
                 controller.handleCommand(UI_COMMANDS.CLOSE_MODAL).catch(() => {});
                 return;
             }
+            // The workflow view: ← → show another run of the workflow (the live run, then its runs).
+            if (modal.type === "workflowView" && (key.leftArrow || key.rightArrow)) {
+                controller.handleCommand(key.leftArrow ? UI_COMMANDS.WORKFLOW_VIEW_PREV_RUN : UI_COMMANDS.WORKFLOW_VIEW_NEXT_RUN).catch(() => {});
+                return;
+            }
             if (key.tab && key.shift) {
                 controller.handleCommand(UI_COMMANDS.MODAL_PANE_PREV).catch(() => {});
                 return;

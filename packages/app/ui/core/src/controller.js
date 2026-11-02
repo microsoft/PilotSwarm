@@ -1,6 +1,9 @@
 import { applyNativeTaskSnapshot } from "./native-tasks.js";
 import { workflowDefinition } from "./workflow-view.js";
-import { selectWorkflowViewSelection, workflowViewDefaultNode, workflowViewNodes, workflowViewProjectionFor } from "./workflow-tui.js";
+import {
+    normalizeWorkflowInputPolicy, selectWorkflowInputNote, selectWorkflowViewSelection, workflowInputPolicyApplies, workflowViewDefaultNode,
+    workflowViewNodes, workflowViewProjectionFor,
+} from "./workflow-tui.js";
 import {
     workflowV2CommandNamesRun, workflowV2RunCommandAccepted, workflowV2RunCommandArgs, workflowV2RunCommandConfirm, workflowV2RunCommandFailure,
     workflowV2RunCommandWire,
@@ -8173,7 +8176,7 @@ export class PilotSwarmUiController {
             type: "ui/modal",
             modal: { type: "workflowView", sessionId, selectedNodeId, occurrenceIndex: 0, previousFocus: state.ui.focusRegion },
         });
-        this.dispatch({ type: "ui/status", text: "Workflow view — ↑↓ state · Tab agent chat · Enter open · Esc close" });
+        this.dispatch({ type: "ui/status", text: "Workflow view — ↑↓ state · ←→ run · Tab agent chat · Enter open · Esc close" });
     }
 
     /** The workflow view: select the state `delta` rows away, in graph order (clamped), and its newest agent chat. */
@@ -8191,6 +8194,33 @@ export class PilotSwarmUiController {
         const count = selection.occurrences.length;
         const next = (selection.occurrenceIndex + delta + count) % count;
         this.dispatch({ type: "ui/modal", modal: { ...selection.modal, selectedNodeId: selection.selected.id, occurrenceIndex: next } });
+    }
+
+    /**
+     * The workflow view: show the run `delta` options away (←→), among the
+     * portal's run picker options (the live run, then the workflow's runs),
+     * without wrapping. Only the selection changes (selectedRunId, as the
+     * portal's picker sets it, null for the live run); the controller then
+     * reads that run's read model, and the view shows only its own run.
+     * A legacy workflow has no runs to choose.
+     */
+    moveWorkflowViewRun(delta) {
+        const selection = selectWorkflowViewSelection(this.getState());
+        if (!selection) return;
+        const picker = selection.projection.runPicker;
+        if (!picker || picker.options.length < 2) {
+            this.dispatch({ type: "ui/status", text: picker ? "This workflow has no other run to show" : "This workflow has no runs to choose" });
+            return;
+        }
+        const current = Math.max(0, picker.options.findIndex(option => option.value === picker.value));
+        const next = Math.max(0, Math.min(current + delta, picker.options.length - 1));
+        if (next === current) return;
+        const option = picker.options[next];
+        const sessionId = selection.modal.sessionId;
+        this.dispatch({ type: "ui/workflowView", sessionId, view: { selectedRunId: option.value || null } });
+        this.dispatch({ type: "ui/modal", modal: { ...selection.modal, occurrenceIndex: 0 } });
+        this.dispatch({ type: "ui/status", text: `Showing ${option.label}` });
+        this.ensureWorkflowReadModel(sessionId).catch(() => {});
     }
 
     /**
@@ -8215,6 +8245,44 @@ export class PilotSwarmUiController {
         this.dispatch({ type: "ui/status", text: `Opened the agent chat of ${selection.selected.id}`
             + `${occurrence.ordinal === null ? "" : ` (visit ${occurrence.ordinal})`}: people can read it; the server refuses their input to it` });
         await this.loadSession(occurrence.childSessionId);
+    }
+
+    /**
+     * Human input to a workflow agent state's subtree (design 03; T115, T116
+     * in the TUI): read what a person may send to `sessionId` from the
+     * server, once per session (its lineage never changes), and record it
+     * (ui.workflowInputPolicies), so the TUI's composer is read-only where
+     * the server refuses input. The server decides: getWorkflowInputPolicy
+     * (the TUI's direct transport) or the session access the Web API
+     * reports (its API mode). Only a session that may be in such a subtree
+     * by its loaded ancestry is asked about (workflowInputPolicyApplies): a
+     * root session, an ordinary agent tree and a workflow session never are.
+     * A read that fails records nothing: the composer stays, and the server
+     * refuses the input anyway. Never throws.
+     */
+    async ensureWorkflowInputPolicy(sessionId) {
+        const state = this.getState();
+        if (!sessionId || state.ui.workflowInputPolicies?.[sessionId]) return state.ui.workflowInputPolicies?.[sessionId] ?? null;
+        if (!workflowInputPolicyApplies(state, sessionId)) return null;
+        const read = typeof this.transport?.getWorkflowInputPolicy === "function"
+            ? () => this.transport.getWorkflowInputPolicy(sessionId)
+            : typeof this.transport?.getSessionAccess === "function" ? () => this.transport.getSessionAccess(sessionId) : null;
+        if (!read) return null;
+        if (!this.workflowInputPolicyReads) this.workflowInputPolicyReads = new Map();
+        if (this.workflowInputPolicyReads.has(sessionId)) return this.workflowInputPolicyReads.get(sessionId);
+        const request = (async () => {
+            try {
+                const policy = normalizeWorkflowInputPolicy(await read());
+                if (policy) this.dispatch({ type: "ui/workflowInputPolicy", sessionId, policy });
+                return policy;
+            } catch {
+                return null;
+            } finally {
+                this.workflowInputPolicyReads.delete(sessionId);
+            }
+        })();
+        this.workflowInputPolicyReads.set(sessionId, request);
+        return request;
     }
 
     openThemePicker() {
@@ -9842,6 +9910,13 @@ export class PilotSwarmUiController {
         }
         if (activeSession?.sessionKind === "workflow") {
             this.dispatch({ type: "ui/status", text: "Workflow session" });
+            return;
+        }
+        // A session in a workflow agent state's subtree takes no prompt or answer from a person (the server refuses it
+        // too): the draft is kept, and nothing is queued or sent.
+        const inputNote = selectWorkflowInputNote(this.getState(), sessionId);
+        if (inputNote) {
+            this.dispatch({ type: "ui/status", text: inputNote });
             return;
         }
         if (!sessionId) {
@@ -11479,6 +11554,12 @@ export class PilotSwarmUiController {
         if (!sessionId) return;
         const session = state.sessions.byId[sessionId];
         if (!session || session.isGroup) return;
+        // A session in a workflow agent state's subtree takes no steer from a person (the server refuses it too).
+        if (state.ui.workflowInputPolicies?.[sessionId]?.canSteer === false) {
+            this.dispatch({ type: "ui/status", text: selectWorkflowInputNote(state, sessionId)
+                || "This session runs a workflow state. People cannot steer it." });
+            return;
+        }
         if (typeof this.transport.steerSessionTurn !== "function") {
             this.dispatch({ type: "ui/status", text: "Steer is not supported by this transport" });
             return;
@@ -12358,6 +12439,12 @@ export class PilotSwarmUiController {
                 return;
             case UI_COMMANDS.OPEN_WORKFLOW_VIEW:
                 this.openWorkflowViewModal();
+                return;
+            case UI_COMMANDS.WORKFLOW_VIEW_PREV_RUN:
+                this.moveWorkflowViewRun(-1);
+                return;
+            case UI_COMMANDS.WORKFLOW_VIEW_NEXT_RUN:
+                this.moveWorkflowViewRun(1);
                 return;
             case UI_COMMANDS.SEQUENCE_SELECT_PREV:
                 this.moveSequenceSelection(-1);

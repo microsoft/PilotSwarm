@@ -406,6 +406,9 @@ export function createInitialState({ mode = "local", branding = null, docs = nul
             // chat and no session list would read as a broken app.
             canvasMaximized: false,
             workflowViews: {},
+            // What a person may send to a session in a workflow agent state's subtree, as the server reported it
+            // (normalizeWorkflowInputPolicy; read by the TUI's composer). Per session; absent until read.
+            workflowInputPolicies: {},
             // Per-session desktop views (see normalizeStoredSessionViews).
             // Applied when the active session changes, recorded when the
             // columns or the right-side sizes change — desktop only, and only

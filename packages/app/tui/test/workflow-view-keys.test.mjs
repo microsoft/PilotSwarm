@@ -78,7 +78,7 @@ test("the shared Ink app draws the view: the states, the selected one's details 
     assert.match(html, /data-title="Workflow: review-once · Running"/);
     assert.match(html, /▶ ● review\s+agent · code-reviewer\s+Agent working · waiting for its typed result/);
     assert.match(html, /○ done\s+ends · succeeded/);
-    assert.match(html, /data-title="State review — ↑↓ state · Tab agent chat · Enter open · Esc close"/);
+    assert.match(html, /data-title="State review — ↑↓ state · ←→ run · Tab agent chat · Enter open · Esc close"/);
     assert.match(html, /  accepted → done/);
     assert.match(html, /▸ visit 1 · working · child-1/);
     assert.match(html, /People can read these chats; the server refuses their prompts, answers and steers\./);
@@ -89,4 +89,17 @@ test("the help lists the workflow view", () => {
     const { store } = harness();
     const text = JSON.stringify(selectHelpModal(store.getState(), 120));
     assert.match(text, /workflow session: read-only workflow view/);
+    assert.match(text, /←→ run/);
+});
+
+test("← → in the open workflow view choose its run; elsewhere they keep their meaning", () => {
+    const binding = APP.indexOf('if (modal.type === "workflowView" && (key.leftArrow || key.rightArrow)) {');
+    assert.ok(binding > 0, "the binding exists");
+    assert.match(APP.slice(binding, binding + 260),
+        /key\.leftArrow \? UI_COMMANDS\.WORKFLOW_VIEW_PREV_RUN : UI_COMMANDS\.WORKFLOW_VIEW_NEXT_RUN/);
+    // Inside the modal branch, after the text-input modals (whose arrows move a cursor) and before the pane keys.
+    const modalBranch = APP.indexOf("if (modal) {");
+    assert.ok(modalBranch > 0 && modalBranch < binding);
+    assert.ok(APP.indexOf('modal.type === "renameSession" || modal.type === "artifactUpload"') < binding);
+    assert.ok(binding < APP.indexOf('if (plainShortcut && input === "w") {'));
 });

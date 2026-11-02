@@ -27,6 +27,7 @@ import {
     selectRenameSessionModal,
     selectWorkflowCreateModal,
     selectWorkflowViewModal,
+    selectWorkflowInputNote,
     selectSessionAgentPickerModal,
     selectShareSessionModal,
     selectSessionGroupNameModal,
@@ -934,9 +935,12 @@ export const PromptBar = React.memo(function PromptBar({ controller, rows }) {
             ? state.outbox.bySessionId[activeSessionId]
             : [];
         return {
+            activeSessionId,
             prompt: state.ui.prompt,
             promptCursor: state.ui.promptCursor,
             workflow: activeSession?.sessionKind === "workflow",
+            // A session in a workflow agent state's subtree: what the server reported a person may send (design 03).
+            inputNote: selectWorkflowInputNote(state, activeSessionId),
             focused: state.ui.focusRegion === "prompt",
             answeringQuestion: Boolean(activeSession?.pendingQuestion?.question),
             editingPending: state.ui.promptEdit?.sessionId === activeSessionId,
@@ -944,8 +948,19 @@ export const PromptBar = React.memo(function PromptBar({ controller, rows }) {
             hasPendingOutbox: outbox.some((item) => item?.phase === "pending"),
         };
     }, shallowEqualObject);
+    // The server says, once per session, whether a person may send it input; only a session that may be in a workflow
+    // agent state's subtree is asked about (ensureWorkflowInputPolicy).
+    const activeSessionId = promptState.activeSessionId;
+    React.useEffect(() => {
+        if (activeSessionId && typeof controller.ensureWorkflowInputPolicy === "function") {
+            controller.ensureWorkflowInputPolicy(activeSessionId).catch(() => {});
+        }
+    }, [controller, activeSessionId]);
     if (promptState.workflow) {
         return React.createElement(platform.Lines, { lines: [{ text: "Workflow session", color: "gray" }] });
+    }
+    if (promptState.inputNote) {
+        return React.createElement(platform.Lines, { lines: [{ text: promptState.inputNote, color: "gray" }] });
     }
     return React.createElement(platform.Input, {
         label: promptState.answeringQuestion ? "answer" : promptState.editingPending ? "pending" : "you",
@@ -1800,10 +1815,12 @@ function WorkflowViewModalContainer({ controller }) {
     const sessionId = state.modal?.type === "workflowView" ? state.modal.sessionId : null;
     const events = state.history?.events || EMPTY_WORKFLOW_EVENTS;
     const sessionUpdatedAt = state.session?.updatedAt ?? null;
-    // While the view is open, new events or a changed session row read the workflow again, as the portal's pane does.
+    const selectedRunId = state.view?.selectedRunId ?? null;
+    // While the view is open, new events, a changed session row or another run read the workflow again, as the portal's
+    // pane does.
     React.useEffect(() => {
         if (sessionId) controller.ensureWorkflowDefinition(sessionId).catch(() => {});
-    }, [controller, sessionId, events, sessionUpdatedAt]);
+    }, [controller, sessionId, events, sessionUpdatedAt, selectedRunId]);
     if (!sessionId) return null;
     const selectorState = {
         ui: { modal: state.modal, workflowViews: state.view ? { [sessionId]: state.view } : {} },

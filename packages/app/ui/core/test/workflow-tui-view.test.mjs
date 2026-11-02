@@ -100,7 +100,9 @@ test("w opens the view on the pending agent state: its state, transitions with t
     assert.equal(view.selectedRowIndex, 0);
     assert.match(rowText(view.rows[0]), /agent · code-reviewer\s+Agent working · waiting for its typed result ×3/);
     const details = lineTexts(view);
-    assert.equal(details[0], "review · agent · code-reviewer · initial state");
+    // The run it shows comes first (the live run here), then the selected state.
+    assert.match(details[0], /^Run: Live run · running · run-1 \(1 of 2 · ←→ choose\)$/);
+    assert.ok(details.includes("review · agent · code-reviewer · initial state"));
     assert.ok(details.includes("State: Agent working · waiting for its typed result"));
     assert.ok(details.includes("Transitions:"));
     assert.ok(details.includes("  accepted → fan"));

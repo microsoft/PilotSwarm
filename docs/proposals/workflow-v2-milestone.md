@@ -518,10 +518,10 @@ publication gate on declared test scenarios (not in the YAML design).
 | Portal workflow view test review (INACTIVE: only with `personCommands` listing `test`) | the definition's current revision, definition hash and validity | a person's `test` of that exact revision, with inputs, agent mode and an optional scenario name |
 | Portal workflow view test answers and clock (INACTIVE: only with `personCommands` listing `test_respond` or `test_advance`) | the shown test run's interceptions, what each reached and must match, its virtual clock | a person's `test_respond` to one waiting interception, and `test_advance` of the run's virtual clock |
 | Portal workflow view publication review (INACTIVE: only with `personCommands`) | the definition's state, revision, definition hash, validity and runs | a person's `publish`, `publish_and_start` (exact revision and hash) or `start` (published hash), with JSON inputs and optional initial variables |
-| Portal and TUI composer, management client, SDK client | session access (`canSendPrompt`, `canAnswer`, `canSteer`) | human input, refused for an agent state's subtree at the SDK |
+| Portal and TUI composer, management client, SDK client | session access (`canSendPrompt`, `canAnswer`, `canSteer`; the TUI's direct mode reads `getWorkflowInputPolicy`) | human input, refused for an agent state's subtree at the SDK (both composers are read-only there) |
 | REST `POST /sessions/:id/workflow/commands`, SDK (direct and web) and TUI `updateWorkflow`, MCP `update_workflow` (INACTIVE: test-only option `workflowCommands`) | — | a person's `update_workflow` command (below) |
 | Bootstrap (`GET /api/bootstrap`, `/api/v1/bootstrap`), SDK `getWorkflowCapabilities` (direct and web), both transports | `workflows`: the workflow support the deployment takes now (below) | nothing |
-| TUI workflow view (`w` on a workflow session; read-only) | the states in graph order, the selected state's details and transitions, an agent state's child session per occurrence (below) | nothing: it opens a child session's chat to read |
+| TUI workflow view (`w` on a workflow session; read-only) | the states in graph order for the chosen run (←→), the selected state's details and transitions, an agent state's child session per occurrence (below) | nothing: it opens a child session's chat to read |
 
 All read surfaces serve one projection (`readWorkflowV2View`), so they show
 the same agent child, branch, stop, test and pin fields. The shared UI
@@ -817,20 +817,45 @@ outcome and description, its transitions (an outcome, a runtime-error
 route, where a parallel state's branches start, and a transition inside a
 loop marked as one), the latest output or runtime error, and for an agent
 state the child session of each occurrence, newest first. ↑↓ select a
-state, Tab chooses an occurrence, Enter opens that occurrence's actual chat
-(`loadSession`, as the portal's node details open it) and Esc closes. The
-view sends nothing and changes nothing; the server keeps refusing human
-input to an agent state's subtree. Not in the TUI yet (open, not waived):
+state, ←→ choose the run it shows, Tab chooses an occurrence, Enter opens
+that occurrence's actual chat (`loadSession`, as the portal's node details
+open it) and Esc closes. The runs are the portal's run picker options (the
+live run, then the workflow's runs; `workflowV2RunPickerModel`, now in
+ui-core and re-exported unchanged by the portal's panels), with the same
+labels and notes (a run still being read, a run that could not be read);
+choosing one sets the same selection as the portal's picker
+(`selectedRunId`) and reads that run's own model, so the view shows only
+that run (its agent states' own children included). The view sends nothing
+and changes nothing; the server keeps refusing human input to an agent
+state's subtree.
+
+**The TUI composer of a session in an agent state's subtree (design 03
+human-input denial; T115 "no human composer", T116 in the TUI).** It is
+read-only, as the portal's is: it shows the server's reason and the
+controlling agent. What a person may send comes from the server
+(`ensureWorkflowInputPolicy`: the direct transport's
+`getWorkflowInputPolicy`, the stored lineage; in API mode the session
+access the Web API reports), read once per session (a session's lineage
+never changes) and only for a session that may be in such a subtree by its
+loaded ancestry (`workflowInputPolicyApplies`: an agent state's child is
+created under its workflow session, so a root session, an ordinary agent
+tree and a workflow session are never asked about; an ancestor that is not
+loaded is asked about). A prompt, an answer or a steer to such a session is
+not sent and its draft is kept. Until the server answered, or when the read
+fails, the composer stays as it is and the server refuses the input
+(403 `WORKFLOW_HUMAN_INPUT_DENIED`). Ordinary sessions, and the portal (which
+reads the same policy through its session access), are unchanged.
+
+Not in the TUI yet (open, not waived):
 - a person's workflow commands (run controls, variables, publication,
   draft editing, test start, test answers and the virtual clock): the
   portal, the API, MCP and the agent tools take them;
-- the run picker (the view shows the live run) and the test run's
-  interceptions panel;
+- the test run's interceptions panel;
 - the full execution history and output of a state (the view shows its
   latest output or error, bounded);
-- a read-only composer for a session in an agent state's subtree (T115 "no
-  human composer", T116 in the TUI): the TUI still shows its prompt there,
-  and the SDK refuses what is sent (403 `WORKFLOW_HUMAN_INPUT_DENIED`).
+- the TUI refuses a person's prompt, answer and steer to an agent state's
+  subtree locally; its other human input there (a workspace command, for
+  one) is refused by the server only.
 
 **Responses and completions stay in process (owner scope, 2026-11-02).**
 External agents are not in scope: agents run only within PilotSwarm, as

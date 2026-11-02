@@ -1,4 +1,5 @@
 import { layoutWorkflowGraph, workflowNodeViews, workflowReadModelView } from "./workflow-view.js";
+import { workflowV2RunPickerModel } from "./workflow-v2-run-picker.js";
 import { projectWorkflowV2, workflowV2RouteKind } from "./workflow-v2-view.js";
 
 /**
@@ -12,9 +13,18 @@ import { projectWorkflowV2, workflowV2RouteKind } from "./workflow-v2-view.js";
  * It reads only what the shared controller has loaded for the session
  * (ensureWorkflowDefinition, ensureWorkflowReadModel: the same reads the
  * portal makes), through the same projection (projectWorkflowV2, or the
- * legacy node views). It sends nothing and changes nothing: a person's
- * commands, the draft editor and test controls are not part of it, and the
- * server keeps refusing human input to an agent state's subtree.
+ * legacy node views), for the run the person chose (the portal's run picker
+ * model: the live run, or any run in the workflow's run list). It sends
+ * nothing and changes nothing: a person's commands, the draft editor and test
+ * controls are not part of it, and the server keeps refusing human input to
+ * an agent state's subtree.
+ *
+ * The TUI's composer for a session in an agent state's subtree (design 03
+ * human-input denial; T115, T116) is read-only, as the portal's is: what a
+ * person may send comes from the server's lineage read
+ * (getWorkflowInputPolicy, or the session access the Web API reports), never
+ * from the client, and the server refuses such input whatever the client
+ * shows.
  */
 
 const EMPTY_EVENTS = Object.freeze([]);
@@ -60,8 +70,10 @@ export function workflowSessionProjection({ session = null, events = EMPTY_EVENT
     const terminal = list.findLast(event => ["workflow.completed", "workflow.failed", "workflow.cancelled"].includes(event?.eventType));
     const status = v2 ? v2.status.label : terminal?.eventType.slice("workflow.".length)
         || (["completed", "failed", "cancelled"].includes(session?.status) ? session.status : live?.status || session?.status || "Starting");
+    // The runs a person can choose (v2): the portal's run picker model, from the workflow's last read model.
+    const runPicker = v2 ? workflowV2RunPickerModel({ workflowModel, selectedRunId, ownModelLoaded: readModel != null, error }) : null;
     return {
-        definition, nodes, v2, status, live,
+        definition, nodes, v2, status, live, runPicker,
         name: definition?.name || String(session?.title || "").replace(/^Workflow: /, "") || "Workflow",
         banners: v2?.banners || [],
         readError: error,
@@ -199,6 +211,13 @@ function detailLines(selection, width) {
     const { projection, selected, occurrences, occurrenceIndex } = selection;
     const lines = [];
     const add = (text, color = "white", extra = {}) => lines.push({ text: clip(text, Math.max(20, width)), color, ...extra });
+    const picker = projection.runPicker;
+    if (picker) {
+        const index = Math.max(0, picker.options.findIndex(option => option.value === picker.value));
+        const option = picker.options[index];
+        add(`Run: ${option?.label ?? "Live run"}${picker.options.length > 1 ? ` (${index + 1} of ${picker.options.length} · ←→ choose)` : ""}`, "cyan");
+        for (const note of picker.notes) add(`  ${note.text}`, note.level === "error" ? "red" : note.level === "warning" ? "yellow" : "gray");
+    }
     for (const banner of projection.banners) add(`! ${banner.text}`, banner.level === "error" ? "red" : "yellow");
     if (projection.readError) add(`The workflow's current state could not be read: ${projection.readError}`, "red");
     if (!selected) {
@@ -273,9 +292,64 @@ export function selectWorkflowViewModal(state, maxWidth = 100) {
         title: bounded(`Workflow: ${selection.projection.name} · ${selection.projection.status}`, contentWidth),
         rows: rows.length ? rows : [[{ text: selection.projection.loading ? "Loading workflow graph…" : "No states to show.", color: "gray" }]],
         selectedRowIndex: selection.selectedIndex,
-        detailsTitle: selection.selected ? `State ${bounded(selection.selected.id, 30)} — ↑↓ state · Tab agent chat · Enter open · Esc close` : "Workflow",
+        detailsTitle: selection.selected
+            ? `State ${bounded(selection.selected.id, 30)} — ↑↓ state · ←→ run · Tab agent chat · Enter open · Esc close` : "Workflow",
         detailsLines: detailLines(selection, contentWidth),
         idealWidth: width,
         childSessionId: selection.occurrence?.childSessionId ?? null,
     };
+}
+
+/** The note a read-only composer shows when the session's input policy (normalizeWorkflowInputPolicy) refuses prompts. */
+export const WORKFLOW_INPUT_DENIED_TEXT = "This session runs a workflow state. People cannot send it prompts, answers or steers.";
+
+/**
+ * What a person may send to a session, as the server reports it: getWorkflowInputPolicy's answer (the TUI's direct
+ * transport), or the session access the Web API reports (canSendPrompt, canAnswer, canSteer and workflowInput, present
+ * only when refused). Anything else is null (unknown: the composer stays, and the server refuses what it must). Pure.
+ */
+export function normalizeWorkflowInputPolicy(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+    const detail = value.workflowInput && typeof value.workflowInput === "object" ? value.workflowInput : value;
+    const text = field => typeof field === "string" && field ? field : null;
+    return {
+        canSendPrompt: value.canSendPrompt !== false,
+        canAnswer: value.canAnswer !== false,
+        canSteer: value.canSteer !== false,
+        reason: text(detail.reason),
+        workflowSessionId: text(detail.workflowSessionId),
+        controllingSessionId: text(detail.controllingSessionId),
+    };
+}
+
+/**
+ * Whether a session may be in a workflow agent state's subtree, from the loaded session rows, so that the server is
+ * asked only then: an agent state's child is created under its workflow session, so a session none of whose loaded
+ * ancestors is a workflow session, up to a root, cannot be in one. A session with an ancestor that is not loaded, or a
+ * cycle, is asked about. A root session, a group and a workflow session itself are not (a workflow session's composer
+ * is read-only anyway). Pure.
+ */
+export function workflowInputPolicyApplies(state, sessionId) {
+    const byId = state?.sessions?.byId || {};
+    const session = sessionId ? byId[sessionId] : null;
+    if (!session || session.isGroup || session.sessionKind === "workflow" || !session.parentSessionId) return false;
+    const seen = new Set([sessionId]);
+    let parentId = session.parentSessionId;
+    for (let hops = 0; parentId && hops < 32; hops++) {
+        if (seen.has(parentId)) return true;
+        seen.add(parentId);
+        const parent = byId[parentId];
+        if (!parent) return true;
+        if (parent.sessionKind === "workflow") return true;
+        parentId = parent.parentSessionId || null;
+    }
+    return Boolean(parentId);
+}
+
+/** The read-only composer's note for a session whose recorded input policy refuses prompts, or null. Pure. */
+export function selectWorkflowInputNote(state, sessionId) {
+    const policy = sessionId ? state?.ui?.workflowInputPolicies?.[sessionId] : null;
+    if (!policy || policy.canSendPrompt !== false) return null;
+    const reason = policy.reason || WORKFLOW_INPUT_DENIED_TEXT;
+    return policy.controllingSessionId ? `${reason} Its controlling agent is session ${policy.controllingSessionId}.` : reason;
 }

@@ -3505,6 +3505,17 @@ function baseReducer(state, action) {
             } } };
         }
 
+        // A session's input policy as the server reported it (workflow agent states' human-input denial). A session's
+        // lineage never changes, so the policy read once is kept for it.
+        case "ui/workflowInputPolicy": {
+            const sessionId = action.sessionId;
+            if (!sessionId || !action.policy || typeof action.policy !== "object") return state;
+            return { ...state, ui: { ...state.ui, workflowInputPolicies: {
+                ...state.ui.workflowInputPolicies,
+                [sessionId]: action.policy,
+            } } };
+        }
+
         case "ui/canvasOpen": {
             const open = typeof action.open === "boolean" ? action.open : !state.ui.canvasOpen;
             const sessionId = action.sessionId || state.sessions.activeSessionId || null;
