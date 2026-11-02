@@ -24,8 +24,6 @@ import {
     WORKFLOW_SCRIPTS_DISABLED_MESSAGE,
 } from "../../src/workflow/activities.js";
 import fs from "node:fs";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 
 const { Runtime, Client, SqliteProvider } = createRequire(import.meta.url)("duroxide");
 
@@ -241,9 +239,41 @@ function fakeCatalog() {
     };
 }
 
+/**
+ * These controller tests give scripts a fixed set of tools by name. In a
+ * worker the tools are the parent agent's, run through a Copilot CLI tool
+ * session (see workflow-tool-session.test.js); here a fake executor stands
+ * in for that session, with a captured set that includes a shell so every
+ * runtime is allowed.
+ */
+function withFakeTools(deps) {
+    const { resolveTools, ...rest } = deps;
+    if (rest.resolveToolBinding) return rest;
+    const lookup = resolveTools ?? (async () => new Map());
+    return {
+        ...rest,
+        resolveToolBinding: async (sessionId) => ({
+            policy: "parent-tools-v1", parentSessionId: "parent", owner: { provider: "test", subject: "t" }, config: {},
+            capabilities: { revision: 0, selections: [] }, excludedTools: [], tools: [{ name: "bash", schemaHash: "h" }], sessionId,
+        }),
+        openToolExecutor: async (sessionId) => {
+            let tools = null;
+            return {
+                async call(name, args) {
+                    tools ??= await lookup(sessionId);
+                    const handler = tools.get(name);
+                    if (!handler) throw new Error(`Tool '${name}' is not available to workflow scripts.`);
+                    return handler(args);
+                },
+                async close() {},
+            };
+        },
+    };
+}
+
 async function startRuntime(provider, deps, runtimeOptions = {}) {
     const runtime = new Runtime(provider, { dispatcherPollIntervalMs: 10, logLevel: "error", ...runtimeOptions });
-    registerWorkflowActivities(runtime, deps);
+    registerWorkflowActivities(runtime, withFakeTools(deps));
     for (const registration of WORKFLOW_SESSION_ORCHESTRATION_REGISTRY) {
         runtime.registerOrchestrationVersioned(WORKFLOW_SESSION_ORCHESTRATION_NAME, registration.version, registration.handler);
     }
@@ -851,88 +881,6 @@ describe("workflow live canvas (duroxide)", () => {
             },
         });
         expect(status.output).toMatchObject({ status: "completed", outcome: "blocked", stateId: "nothing" });
-    });
-});
-
-// ─── MCP server tools ───────────────────────────────────────────
-
-const CALC_SERVER = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../fixtures/workflow-mcp/calc-server.mjs");
-
-describe("MCP server tools for scripts", () => {
-    it("a node script calls MCP tools as <server>/<tool>, lists them, and is held to the server's tools list", async () => {
-        const yaml = `
-apiVersion: pilotswarm.dev/v1alpha1
-kind: Workflow
-metadata: { name: mcp-use, version: "1" }
-initial: use
-states:
-  use:
-    type: script
-    runtime: node
-    source: |
-      const sum = await callTool("calc/add", { a: 2, b: 40 });
-      const info = await callTool("calc/info", {});
-      const listed = await callTool("list_mcp_tools", {});
-      let secret = null, failed = null, unknown = null;
-      try { await callTool("calc/secret", {}); } catch (e) { secret = e.message; }
-      try { await callTool("calc/fail", {}); } catch (e) { failed = e.message; }
-      try { await callTool("nope/tool", {}); } catch (e) { unknown = e.message; }
-      await setResult("success", { sum, info, listed, secret, failed, unknown });
-    completion: { outcomes: [success] }
-    transition: { next: { success: done } }
-  done: { type: terminal, outcome: succeeded, output: "\${states.use.result}" }
-`;
-        const { status, catalog } = await runWorkflow(yaml, {
-            deps: {
-                resolveMcpServers: async () => ({
-                    calc: { command: process.execPath, args: [CALC_SERVER], tools: ["add", "info", "fail"], env: { CALC_LABEL: "from-config" } },
-                }),
-            },
-        });
-        expect(status.output.status).toBe("completed");
-        const out = status.output.output;
-        expect(out.sum).toBe("42");
-        expect(out.info).toMatchObject({ env: "from-config" });
-        expect(out.listed.servers).toEqual(["calc"]);
-        expect(out.listed.tools.map((t) => t.name).sort()).toEqual(["calc/add", "calc/fail", "calc/info"]);
-        expect(out.secret).toMatch(/not enabled on MCP server 'calc'/);
-        expect(out.failed).toMatch(/calc refused/);
-        expect(out.unknown).toMatch(/not available to workflow scripts.*MCP servers .*calc/);
-        const done = catalog.events.find((e) => e.eventType === "workflow.state_completed");
-        expect(done.data.toolCalls.map((c) => [c.name, c.ok])).toEqual([
-            ["calc/add", true], ["calc/info", true], ["list_mcp_tools", true],
-            ["calc/secret", false], ["calc/fail", false], ["nope/tool", false],
-        ]);
-    });
-
-    it("the node's MCP server process ends when the node ends", async () => {
-        const yaml = `
-apiVersion: pilotswarm.dev/v1alpha1
-kind: Workflow
-metadata: { name: mcp-lifetime, version: "1" }
-initial: use
-states:
-  use:
-    type: script
-    runtime: node
-    source: |
-      const info = await callTool("calc/info", {});
-      await setResult("success", { pid: info.pid });
-    completion: { outcomes: [success] }
-    transition: { next: { success: done } }
-  done: { type: terminal, outcome: succeeded, output: "\${states.use.result}" }
-`;
-        const { status } = await runWorkflow(yaml, {
-            deps: { resolveMcpServers: async () => ({ calc: { command: process.execPath, args: [CALC_SERVER], tools: ["*"] } }) },
-        });
-        const pid = status.output.output.pid;
-        expect(Number.isInteger(pid)).toBe(true);
-        const deadline = Date.now() + 5_000;
-        let alive = true;
-        while (alive && Date.now() < deadline) {
-            try { process.kill(pid, 0); await new Promise((r) => setTimeout(r, 50)); } catch { alive = false; }
-        }
-        expect(alive).toBe(false);
     });
 });
 

@@ -85,59 +85,12 @@ test("a package cannot shadow spawn_workflow", () => {
     assert.equal(findReservedPackageToolName(["spawn_workflow"], platform, []), "spawn_workflow");
 });
 
-test("script tools are the generic agent's data-plane tools, bound to the workflow session", async () => {
-    const seen = [];
-    const workerTool = (name) => ({
-        name,
-        description: name,
-        parameters: { type: "object", properties: {} },
-        handler: async (args, invocation) => {
-            seen.push({ name, args, sessionId: invocation.durableSessionId, hasFacts: Boolean(invocation.facts) });
-            return { ok: name };
-        },
-    });
-    const stored = [];
-    const factStore = {
-        capabilities: {},
-        async storeFact(inputs) {
-            const list = Array.isArray(inputs) ? inputs : [inputs];
-            stored.push(...list);
-            const facts = list.map((input) => ({ key: input.key, shared: Boolean(input.shared), stored: true }));
-            return Array.isArray(inputs) ? { stored: facts.length, facts } : facts[0];
-        },
-        async readFacts() { return { count: 0, facts: [] }; },
-        async deleteFact() { return { deleted: true }; },
-    };
-    const manager = new SessionManager(undefined, null, {
-        frameworkBaseToolNames: ["echo_default"],
-        appDefaultToolNames: ["package_only"],
-    });
-    manager.setToolRegistry(
-        new Map([["echo_default", workerTool("echo_default")], ["not_default", workerTool("not_default")], ["package_only", workerTool("package_only")]]),
-        {
-            staticNames: new Set(["echo_default", "not_default"]),
-            byPackage: new Map([["pkg-1", new Map([["package_only", workerTool("package_only")]])]]),
-        },
-    );
-    manager.setFactStore(factStore);
-
-    const tools = await manager.resolveScriptTools("wf-session");
-    const names = [...tools.keys()];
-    assert.ok(names.includes("echo_default"));
-    assert.ok(names.includes("store_fact") && names.includes("read_facts"));
-    assert.ok(!names.includes("not_default"), "only the default agent's worker tools");
-    assert.ok(!names.includes("package_only"), "package tools belong to a bound named agent");
-    for (const control of ["wait", "cron", "cron_at", "ask_user", "spawn_agent", "spawn_workflow", "draw_canvas"]) {
-        assert.ok(!names.includes(control), `${control} is a turn-control tool and must not reach scripts`);
-    }
-
-    assert.deepEqual(await tools.get("echo_default")({ x: 1 }), { ok: "echo_default" });
-    assert.deepEqual(seen, [{ name: "echo_default", args: { x: 1 }, sessionId: "wf-session", hasFacts: true }]);
-
-    await tools.get("store_fact")({ key: "results/run", value: { n: 1 } });
-    assert.equal(stored.length, 1);
-    assert.equal(stored[0].key, "results/run");
-    assert.equal(stored[0].sessionId, "wf-session");
+test("workflow scripts have no generic tool list: the session manager offers none", () => {
+    const manager = new SessionManager(undefined, null, {});
+    assert.equal(typeof manager.resolveScriptTools, "undefined");
+    assert.equal(typeof manager.scriptMcpServers, "undefined");
+    assert.equal(typeof manager.captureWorkflowToolBinding, "function");
+    assert.equal(typeof manager.openWorkflowToolExecutor, "function");
 });
 
 test("workflows run only the state types an operator lists; unset, blank or malformed turns them off", () => {
@@ -207,17 +160,25 @@ test("activity error wrappers are removed from the reason people read", () => {
 
 function spawnDeps(overrides = {}) {
     const created = [];
+    const admissions = [];
     const sessions = new Map();
     return {
         created,
+        admissions,
         sessions,
         deps: {
             parentSessionId: "parent-agent",
             stateTypes: () => new Set(["script"]),
             getSession: async (id) => sessions.get(id) ?? null,
             resolveOwner: async () => ({ provider: "dev", subject: "alice" }),
-            createWorkflowSession: async (config) => {
+            captureToolBinding: async () => ({
+                policy: "parent-tools-v1", parentSessionId: "parent-agent", owner: { provider: "dev", subject: "alice" },
+                config: {}, capabilities: { revision: 0, selections: [] }, excludedTools: [],
+                tools: [{ name: "bash", schemaHash: "x" }, { name: "store_fact", schemaHash: "y" }],
+            }),
+            createWorkflowSession: async (config, admission) => {
                 created.push(config);
+                admissions.push(admission);
                 sessions.set(config.sessionId, { title: "Workflow: limits", state: "running" });
                 return { sessionId: config.sessionId, workflowName: "limits" };
             },
@@ -350,10 +311,7 @@ import {
     buildWorkflowCanvasHtml,
     fitWorkflowCanvasState,
     foldWorkflowCanvasState,
-    mcpConfigAllowsTool,
-    parseScriptMcpToolName,
     parseWorkflowCommand,
-    scriptMcpResult,
     shortWaitAt,
 } from "../../dist/workflow/index.js";
 import { createScriptSessionTools } from "../../dist/workflow/session-tools.js";
@@ -502,20 +460,6 @@ test("a run that reaches a terminal state marks it and the edge into it", () => 
     assert.deepEqual(state.taken, { "a\u0001ok": 1 });
 });
 
-test("MCP tool names, tool lists and results", () => {
-    assert.deepEqual(parseScriptMcpToolName("github/search_issues"), { server: "github", tool: "search_issues" });
-    assert.deepEqual(parseScriptMcpToolName("a/b/c"), { server: "a", tool: "b/c" });
-    assert.equal(parseScriptMcpToolName("store_fact"), null);
-    assert.equal(parseScriptMcpToolName("/x"), null);
-    assert.equal(mcpConfigAllowsTool({ tools: ["*"] }, "any"), true);
-    assert.equal(mcpConfigAllowsTool({ tools: ["a"] }, "b"), false);
-    assert.equal(mcpConfigAllowsTool({}, "any"), true);
-    assert.equal(scriptMcpResult({ content: [{ type: "text", text: "a" }, { type: "text", text: "b" }] }), "a\nb");
-    assert.deepEqual(scriptMcpResult({ content: [{ type: "text", text: "{}" }], structuredContent: { n: 1 } }), { n: 1 });
-    assert.deepEqual(scriptMcpResult({ content: [{ type: "image", data: "x", mimeType: "image/png" }] }), [{ type: "image", data: "x", mimeType: "image/png" }]);
-    assert.throws(() => scriptMcpResult({ isError: true, content: [{ type: "text", text: "nope" }] }), /nope/);
-});
-
 function sessionCatalog(rows) {
     return {
         async listSessions() { return rows; },
@@ -567,14 +511,3 @@ test("send_session_message from a script is one-way, and workflow sessions accep
     await assert.rejects(() => tools.get("reply_session_message")({ request_id: "r", session_id: "wf2", body: "b" }), /workflow session; .*takes no session replies/);
 });
 
-test("scripts get the session and inspect tools, without context_health", async () => {
-    const manager = new SessionManager(undefined, null, {});
-    manager.setSessionCatalog({ async listSessions() { return []; }, async getSession() { return null; } });
-    const names = [...(await manager.resolveScriptTools("wf-session")).keys()];
-    for (const name of ["list_sessions", "send_session_message", "reply_session_message", "read_agent_events"]) {
-        assert.ok(names.includes(name), `${name} should be available to scripts`);
-    }
-    assert.ok(!names.includes("context_health"));
-    const servers = new SessionManager(undefined, null, { baseMcpServers: { github: { type: "http", url: "https://example.invalid/mcp", tools: ["*"] } } }).scriptMcpServers();
-    assert.deepEqual(Object.keys(servers), ["github"]);
-});

@@ -36,7 +36,8 @@ import { assertUnambiguousProvider, isWebOptions, type PilotSwarmWebOptions } fr
 import { WebPilotSwarmClient } from "./web/web-client.js";
 import { loadModelProviderTypes, type ModelProviderRegistry } from "./model-providers.js";
 import { resolveRuntimeModelSelection, type RuntimeModelSelection } from "./provider-catalog.js";
-import { compileWorkflow, validateWorkflowInputs, WorkflowCompileError } from "./workflow/compiler.js";
+import { compileWorkflow, validateWorkflowInputs, WorkflowCompileError, type CompiledWorkflow } from "./workflow/compiler.js";
+import { readWorkflowToolBinding, workflowRuntimeRefusal, WORKFLOW_TOOL_POLICY, type WorkflowToolBinding } from "./workflow/tool-policy.js";
 import {
     WORKFLOW_SESSION_LATEST_VERSION,
     WORKFLOW_SESSION_ORCHESTRATION_NAME,
@@ -147,6 +148,27 @@ function assertSameWorkflowStart(sessionId: string, stored: WorkflowOrchestratio
     );
 }
 
+/** A tool binding must come from this parent and owner, and allow the workflow's runtimes. */
+function assertWorkflowToolBinding(
+    binding: WorkflowToolBinding,
+    parentSessionId: string,
+    owner: SessionOwnerInfo | null,
+    workflow: CompiledWorkflow,
+): void {
+    let valid: WorkflowToolBinding | null = null;
+    try { valid = readWorkflowToolBinding(binding); } catch { valid = null; }
+    if (!valid || valid.policy !== WORKFLOW_TOOL_POLICY || valid.parentSessionId !== parentSessionId
+        || (owner && (valid.owner.provider !== owner.provider || valid.owner.subject !== owner.subject))) {
+        throw workflowError(
+            `The captured tool set does not belong to parent session ${parentSessionId} and its owner.`,
+            "WORKFLOW_PARENT_INVALID",
+            400,
+        );
+    }
+    const refusal = workflowRuntimeRefusal(workflow, valid.tools);
+    if (refusal) throw workflowError(refusal, "WORKFLOW_RUNTIME_REQUIRES_SHELL", 400);
+}
+
 export class PilotSwarmClient {
     private config!: PilotSwarmClientOptions & { waitThreshold: number };
     private _catalog!: SessionCatalog;
@@ -208,8 +230,21 @@ export class PilotSwarmClient {
      * saved copy. A second call with the same `sessionId` and the same
      * request returns the existing session without starting a second run; a
      * different request is refused with `WORKFLOW_ADMISSION_CONFLICT`.
+     *
+     * Script states call the parent agent's tools, captured from its live
+     * session when it calls spawn_workflow, and saved with the start
+     * request (`admission.toolBinding`, internal: never taken from YAML or a
+     * public payload). A call without it is refused with
+     * `WORKFLOW_PARENT_CONTEXT_REQUIRED`: workflows are started by an
+     * agent's spawn_workflow, and there is no generic tool set to fall back
+     * to. Python and PowerShell states need a shell tool among those tools
+     * (`WORKFLOW_RUNTIME_REQUIRES_SHELL`).
      */
-    async createWorkflowSession(config: WorkflowSessionConfig & { notifyParent?: boolean }): Promise<{ sessionId: string; workflowName: string }> {
+    async createWorkflowSession(
+        config: WorkflowSessionConfig & { notifyParent?: boolean },
+        /** @internal Set by spawn_workflow on the parent's worker. */
+        admission?: { toolBinding?: WorkflowToolBinding },
+    ): Promise<{ sessionId: string; workflowName: string }> {
         if (!this.duroxideClient) throw new Error("PilotSwarmClient is not started.");
         const parentSessionId = typeof config.parentSessionId === "string" ? config.parentSessionId.trim() : "";
         if (!parentSessionId) {
@@ -223,8 +258,9 @@ export class PilotSwarmClient {
             ? config.inputs
             : {};
         let workflowName: string;
+        let compiled: CompiledWorkflow;
         try {
-            const compiled = compileWorkflow(config.yaml);
+            compiled = compileWorkflow(config.yaml);
             validateWorkflowInputs(compiled, inputs);
             workflowName = compiled.name;
         } catch (error) {
@@ -261,6 +297,7 @@ export class PilotSwarmClient {
             // stopped before it could start it. Only the second case acts.
             if (existing.orchestrationId || existing.state !== "pending") return { sessionId, workflowName };
             await this._assertWorkflowParent(parentSessionId, config.owner ?? null);
+            await this._assertWorkflowTools(sessionId, compiled);
             await this._startWorkflowRun(sessionId, orchestrationId, stored);
             return { sessionId, workflowName };
         }
@@ -277,6 +314,16 @@ export class PilotSwarmClient {
             );
         }
         const owner = await this._assertWorkflowParent(parentSessionId, config.owner ?? null);
+        const toolBinding = admission?.toolBinding;
+        if (!toolBinding) {
+            throw workflowError(
+                "Workflows are started by an agent's spawn_workflow: a workflow's scripts call the tools of the agent that started it, "
+                + "captured from that agent's live session. This call has no parent tool set to capture.",
+                "WORKFLOW_PARENT_CONTEXT_REQUIRED",
+                400,
+            );
+        }
+        assertWorkflowToolBinding(toolBinding, parentSessionId, owner, compiled);
         if (priorStatus && priorStatus !== "NotFound" && priorStatus !== "Unknown") {
             await this.duroxideClient.deleteInstance(orchestrationId, true);
         }
@@ -286,7 +333,7 @@ export class PilotSwarmClient {
             ...(owner ? { owner } : {}),
             ...(config.groupId ? { groupId: config.groupId } : {}),
             ...(config.visibility ? { visibility: config.visibility } : {}),
-            creationConfig: { workflowStart: requested },
+            creationConfig: { workflowStart: requested, workflowToolBinding: toolBinding },
         });
         // A concurrent create with the same id may have saved its request
         // first; the saved copy decides, and a different one is refused.
@@ -297,9 +344,29 @@ export class PilotSwarmClient {
         assertSameWorkflowStart(sessionId, stored, requested);
         const row = await this._catalog.getSession(sessionId).catch(() => null);
         if (row?.orchestrationId || (row && row.state !== "pending")) return { sessionId, workflowName };
+        await this._assertWorkflowTools(sessionId, compiled);
         await this._catalog.updateSession(sessionId, { title: `Workflow: ${workflowName}`, titleLocked: true });
         await this._startWorkflowRun(sessionId, orchestrationId, stored);
         return { sessionId, workflowName };
+    }
+
+    /**
+     * The saved parent tool set must exist and allow the workflow's
+     * runtimes. A concurrent create may have saved a different capture of
+     * the same parent first; the saved one is what runs.
+     */
+    private async _assertWorkflowTools(sessionId: string, workflow: CompiledWorkflow): Promise<void> {
+        const creation = await this._catalog.getSessionCreationConfig?.(sessionId);
+        const binding = readWorkflowToolBinding(creation?.workflowToolBinding);
+        if (!binding) {
+            throw workflowError(
+                `Workflow session ${sessionId} has no saved parent tool set, so it cannot be started. Workflows are started by an agent's spawn_workflow.`,
+                "WORKFLOW_PARENT_CONTEXT_REQUIRED",
+                400,
+            );
+        }
+        const refusal = workflowRuntimeRefusal(workflow, binding.tools);
+        if (refusal) throw workflowError(refusal, "WORKFLOW_RUNTIME_REQUIRES_SHELL", 400);
     }
 
     /** The start request saved by a workflow session's first create, or null. */

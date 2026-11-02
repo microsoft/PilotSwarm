@@ -24,7 +24,13 @@ states:
 const ALICE = { provider: "test", subject: "alice" };
 const BOB = { provider: "test", subject: "bob" };
 
-function harness({ parent = { state: "running", owner: ALICE }, createSession } = {}) {
+/** What spawn_workflow captures from the parent's live session. */
+const binding = (owner = ALICE, tools = [{ name: "bash", schemaHash: "h" }, { name: "store_fact", schemaHash: "h" }], parentSessionId = "parent") => ({
+    policy: "parent-tools-v1", parentSessionId, owner, config: { model: "m" },
+    capabilities: { revision: 0, selections: [] }, tools, excludedTools: [],
+});
+
+function harness({ parent = { state: "running", owner: ALICE }, createSession, bindingOwner = ALICE } = {}) {
     const rows = new Map();
     const configs = new Map();
     const calls = [];
@@ -55,6 +61,9 @@ function harness({ parent = { state: "running", owner: ALICE }, createSession } 
     const client = new PilotSwarmClient({ store: "postgres://unused" });
     client._catalog = catalog;
     client.duroxideClient = duroxide;
+    // Every create below comes from spawn_workflow with the parent's tools, unless a test says otherwise.
+    const create = client.createWorkflowSession.bind(client);
+    client.createWorkflowSession = (config, admission = { toolBinding: binding(bindingOwner, undefined, config.parentSessionId) }) => create(config, admission);
     return { client, rows, configs, calls, starts };
 }
 
@@ -108,7 +117,7 @@ test("the workflow gets its parent's effective owner unless the caller names the
     await explicit.client.createWorkflowSession(request({ owner: { ...ALICE, email: "a@example.com" } }));
     assert.deepEqual(explicit.calls[0][2].owner, { ...ALICE, email: "a@example.com" });
 
-    const system = harness({ parent: { state: "running", owner: null, isSystem: true } });
+    const system = harness({ parent: { state: "running", owner: null, isSystem: true }, bindingOwner: SYSTEM_USER_PRINCIPAL });
     await system.client.createWorkflowSession(request());
     assert.deepEqual(system.calls[0][2].owner, SYSTEM_USER_PRINCIPAL);
 
@@ -126,6 +135,7 @@ test("the first create saves the start request and starts the run from the saved
     assert.equal(create[2].parentSessionId, "parent");
     assert.deepEqual(create[2].creationConfig, {
         workflowStart: { sessionId: "wf", yaml: YAML, inputs: { day: "mon" }, parentSessionId: "parent", notifyParent: true },
+        workflowToolBinding: binding(),
     });
     assert.equal(h.starts.length, 1);
     assert.equal(h.starts[0].id, "session-wf");
@@ -174,7 +184,7 @@ test("a create that stopped before the start is finished from the saved copy, af
     const h = harness();
     const stored = { sessionId: "wf", yaml: YAML, inputs: { day: "mon" }, parentSessionId: "parent", notifyParent: true };
     h.rows.set("wf", { sessionId: "wf", sessionKind: "workflow", state: "pending", orchestrationId: null, parentSessionId: "parent" });
-    h.configs.set("wf", { workflowStart: stored });
+    h.configs.set("wf", { workflowStart: stored, workflowToolBinding: binding() });
     await h.client.createWorkflowSession(request());
     assert.equal(h.starts.length, 1);
     assert.equal(h.starts[0].input, stored);
@@ -183,7 +193,7 @@ test("a create that stopped before the start is finished from the saved copy, af
 
     const ended = harness({ parent: { state: "failed", owner: ALICE } });
     ended.rows.set("wf", { sessionId: "wf", sessionKind: "workflow", state: "pending", orchestrationId: null });
-    ended.configs.set("wf", { workflowStart: stored });
+    ended.configs.set("wf", { workflowStart: stored, workflowToolBinding: binding() });
     await assert.rejects(ended.client.createWorkflowSession(request()), { code: "WORKFLOW_PARENT_INVALID" });
     assert.deepEqual(ended.starts, []);
 });
@@ -193,7 +203,7 @@ test("when a concurrent create saved its request first, that request decides", a
     const lost = harness({
         createSession: async (id, _opts, { rows, configs }) => {
             rows.set(id, { sessionId: id, sessionKind: "workflow", state: "pending", orchestrationId: null });
-            configs.set(id, { workflowStart: theirs });
+            configs.set(id, { workflowStart: theirs, workflowToolBinding: binding() });
         },
     });
     await assert.rejects(lost.client.createWorkflowSession(request()), { code: "WORKFLOW_ADMISSION_CONFLICT" });
@@ -203,7 +213,7 @@ test("when a concurrent create saved its request first, that request decides", a
     const tied = harness({
         createSession: async (id, _opts, { rows, configs }) => {
             rows.set(id, { sessionId: id, sessionKind: "workflow", state: "pending", orchestrationId: null });
-            configs.set(id, { workflowStart: same });
+            configs.set(id, { workflowStart: same, workflowToolBinding: binding() });
         },
     });
     await tied.client.createWorkflowSession(request());
@@ -238,4 +248,52 @@ test("a deleted id whose run is still going is refused; a finished one is cleare
     await finished.client.createWorkflowSession(request());
     assert.deepEqual(finished.calls[0], ["deleteInstance", "session-wf"]);
     assert.equal(finished.starts.length, 1);
+});
+
+// ── The parent's tools: captured by spawn_workflow, never a generic set ──
+
+test("a create with no captured parent tool set is refused, and nothing is written", async () => {
+    const h = harness();
+    await assert.rejects(h.client.createWorkflowSession(request(), {}), (error) => {
+        assert.equal(error.code, "WORKFLOW_PARENT_CONTEXT_REQUIRED");
+        assert.equal(error.status, 400);
+        assert.match(error.message, /^Workflows are started by an agent's spawn_workflow: a workflow's scripts call the tools of the agent that started it, captured from that agent's live session\. This call has no parent tool set to capture\.$/);
+        return true;
+    });
+    assert.deepEqual(h.calls, []);
+    assert.deepEqual(h.starts, []);
+});
+
+test("a tool set captured from another parent or owner is refused", async () => {
+    for (const toolBinding of [binding(ALICE, undefined, "someone-else"), binding(BOB), { ...binding(), policy: "other" }]) {
+        const h = harness();
+        await assert.rejects(h.client.createWorkflowSession(request(), { toolBinding }), { code: "WORKFLOW_PARENT_INVALID" });
+        assert.deepEqual(h.starts, []);
+    }
+});
+
+test("python and powershell states need a shell among the parent's tools; node does not", async () => {
+    const python = YAML.replace("runtime: node", "runtime: python");
+    const noShell = binding(ALICE, [{ name: "view", schemaHash: "h" }]);
+    const refused = harness();
+    await assert.rejects(refused.client.createWorkflowSession(request({ yaml: python }), { toolBinding: noShell }), (error) => {
+        assert.equal(error.code, "WORKFLOW_RUNTIME_REQUIRES_SHELL");
+        assert.match(error.message, /^Python and PowerShell scripts need the parent agent to have a shell tool \(bash or powershell\); use runtime: node\. States: 'only' \(python\)\.$/);
+        return true;
+    });
+    assert.deepEqual(refused.calls, []);
+    const node = harness();
+    await node.client.createWorkflowSession(request(), { toolBinding: noShell });
+    assert.equal(node.starts.length, 1);
+    const shell = harness();
+    await shell.client.createWorkflowSession(request({ yaml: python }));
+    assert.equal(shell.starts.length, 1);
+});
+
+test("a pending workflow whose saved request has no tool set is not started", async () => {
+    const h = harness();
+    h.rows.set("wf", { sessionId: "wf", sessionKind: "workflow", state: "pending", orchestrationId: null, parentSessionId: "parent" });
+    h.configs.set("wf", { workflowStart: { sessionId: "wf", yaml: YAML, inputs: { day: "mon" }, parentSessionId: "parent", notifyParent: true } });
+    await assert.rejects(h.client.createWorkflowSession(request()), { code: "WORKFLOW_PARENT_CONTEXT_REQUIRED" });
+    assert.deepEqual(h.starts, []);
 });

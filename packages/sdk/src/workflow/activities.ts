@@ -4,6 +4,7 @@ import {
     describeWorkflowWait,
     validateWorkflowInputs,
     workflowNotRunnableReason,
+    workflowUsesScripts,
     workflowStateTypesDisabledMessage,
     type CompiledWorkflow,
 } from "./compiler.js";
@@ -18,7 +19,8 @@ import {
     type WorkflowWaitResult,
 } from "./orchestration.js";
 import { runScriptNode, type RunScriptNodeResult, type ScriptRunnerOptions } from "./runner.js";
-import { parseScriptMcpToolName, ScriptMcpConnections } from "./mcp.js";
+import { workflowRuntimeRefusal, type WorkflowToolBinding } from "./tool-policy.js";
+import type { WorkflowToolExecutor } from "./tool-executor.js";
 import { buildWorkflowCanvasHtml, foldWorkflowCanvasState, type WorkflowCanvasPublisher } from "./canvas.js";
 
 /** The events a workflow writes; the canvas state is folded from them. */
@@ -45,10 +47,13 @@ export interface WorkflowActivityDeps {
      * A workflow that uses a type not in it fails at its start, or at that state.
      */
     stateTypes: () => ReadonlySet<string>;
-    /** The tools a script in this workflow session may call, by name. */
-    resolveTools: (sessionId: string) => Promise<Map<string, ScriptToolHandler>>;
-    /** The MCP servers a script may call as `<server>/<tool>`. Absent: none. */
-    resolveMcpServers?: (sessionId: string) => Record<string, any> | Promise<Record<string, any>>;
+    /**
+     * The parent's tool set captured by spawn_workflow and saved with the
+     * start request. Null: the workflow has none, and its scripts do not run.
+     */
+    resolveToolBinding: (sessionId: string) => Promise<WorkflowToolBinding | null>;
+    /** Opens the tool session one script state calls its tools through. */
+    openToolExecutor: (sessionId: string, binding: WorkflowToolBinding, step: number) => Promise<WorkflowToolExecutor>;
     /** Remove a deleted workflow session: CMS soft delete and its session facts. */
     deleteSession?: (sessionId: string) => Promise<void>;
     /** Deliver a system prompt to the parent session's message queue. */
@@ -63,10 +68,21 @@ export interface WorkflowActivityDeps {
 /** Why a script state does not run on a worker without 'script' in its state types. */
 export const WORKFLOW_SCRIPTS_DISABLED_MESSAGE = workflowStateTypesDisabledMessage(["script"]);
 
+/** Why a workflow with script states and no captured parent tool set does not run. */
+export const WORKFLOW_TOOL_BINDING_MISSING_MESSAGE =
+    "WORKFLOW_PARENT_CONTEXT_REQUIRED: this workflow has no parent tool set. Script states call the tools of the agent "
+    + "that started the workflow with spawn_workflow, and this workflow was not started that way.";
+
 const PREVIEW_CHARS = 1_000;
 
-/** Lists the MCP tools a script may call. */
-export const LIST_MCP_TOOLS = "list_mcp_tools";
+/** The saved binding a workflow with script states needs, with its runtimes checked against it. */
+async function requireToolBinding(deps: WorkflowActivityDeps, sessionId: string, workflow: CompiledWorkflow): Promise<WorkflowToolBinding> {
+    const binding = await deps.resolveToolBinding(sessionId);
+    if (!binding) throw new Error(WORKFLOW_TOOL_BINDING_MISSING_MESSAGE);
+    const refusal = workflowRuntimeRefusal(workflow, binding.tools);
+    if (refusal) throw new Error(`WORKFLOW_RUNTIME_REQUIRES_SHELL: ${refusal}`);
+    return binding;
+}
 
 function preview(value: unknown): string {
     let text: string;
@@ -164,6 +180,7 @@ export function registerWorkflowActivities(runtime: any, deps: WorkflowActivityD
         const notRunnable = workflowNotRunnableReason(workflow, deps.stateTypes());
         if (notRunnable) throw new Error(notRunnable);
         validateWorkflowInputs(workflow, input.inputs ?? {});
+        if (workflowUsesScripts(workflow)) await requireToolBinding(deps, input.sessionId, workflow);
         await deps.catalog?.updateSession(input.sessionId, { state: "running", lastError: null, lastActiveAt: new Date() })
             .catch(() => undefined);
         await record(deps, input.sessionId, "workflow.started", {
@@ -194,37 +211,30 @@ export function registerWorkflowActivities(runtime: any, deps: WorkflowActivityD
             ...(input.visit !== undefined ? { visit: input.visit } : {}),
         });
         await refreshCanvas(deps, input.sessionId);
-        let tools: Map<string, ScriptToolHandler> | null = null;
-        let mcp: ScriptMcpConnections | null = null;
-        const mcpConnections = async () => {
-            mcp ??= new ScriptMcpConnections((await deps.resolveMcpServers?.(input.sessionId)) ?? {});
-            return mcp;
+        // The tool session opens at the state's first tool call, so a
+        // script that calls no tool starts no Copilot CLI session.
+        let binding: WorkflowToolBinding | undefined;
+        let opening: Promise<WorkflowToolExecutor> | undefined;
+        let stopping = false;
+        const executor = () => {
+            if (stopping) return Promise.reject(new Error("WORKFLOW_STATE_STOPPING: the workflow state is stopping; the tool call did not run."));
+            opening ??= deps.openToolExecutor(input.sessionId, binding!, input.step);
+            return opening;
         };
-        const callTool = async (call: ScriptToolCall): Promise<unknown> => {
-            tools ??= await deps.resolveTools(input.sessionId);
-            const handler = tools.get(call.name);
-            if (handler) return handler(call.arguments);
-            if (call.name === LIST_MCP_TOOLS) {
-                const connections = await mcpConnections();
-                const wanted = typeof call.arguments.server === "string" ? [call.arguments.server] : connections.serverNames;
-                const listed: Array<{ name: string; description?: string }> = [];
-                for (const server of wanted) listed.push(...await connections.listTools(server));
-                return { servers: connections.serverNames, tools: listed };
-            }
-            const mcpName = parseScriptMcpToolName(call.name);
-            if (mcpName && (await mcpConnections()).has(mcpName.server)) {
-                return (await mcpConnections()).call(mcpName.server, mcpName.tool, call.arguments);
-            }
-            const servers = (await mcpConnections()).serverNames;
-            throw new Error(
-                `Tool '${call.name}' is not available to workflow scripts. Available: ${[...tools.keys()].sort().join(", ") || "(none)"}`
-                + (servers.length ? `; MCP servers (call as <server>/<tool>, or ${LIST_MCP_TOOLS}): ${servers.join(", ")}` : "")
-                + ".",
-            );
+        const callTool = async (call: ScriptToolCall): Promise<unknown> => (await executor()).call(call.name, call.arguments);
+        const closeTools = async () => {
+            stopping = true;
+            const open = opening;
+            if (!open) return;
+            let opened: WorkflowToolExecutor;
+            try { opened = await open; }
+            catch { return; }
+            await opened.close();
         };
 
         let result: RunScriptNodeResult;
         try {
+            binding = await requireToolBinding(deps, input.sessionId, { states: { [input.node.id]: input.node } } as unknown as CompiledWorkflow);
             result = await runNode({
                 sessionId: input.sessionId,
                 workflowName: input.workflowName,
@@ -233,11 +243,16 @@ export function registerWorkflowActivities(runtime: any, deps: WorkflowActivityD
                 priorOutput: input.priorOutput,
                 step: input.step,
                 callTool,
+                cancelTools: closeTools,
                 ...(typeof activityCtx?.isCancelled === "function"
                     ? { isCancelled: () => { try { return activityCtx.isCancelled() === true; } catch { return false; } } }
                     : {}),
             }, deps.runnerOptions);
+            // A tool session whose shells could not be stopped fails the state.
+            await closeTools();
         } catch (error) {
+            try { await closeTools(); }
+            catch { /* the first error is the one to report */ }
             await record(deps, input.sessionId, "workflow.state_failed", {
                 stateId: input.stateId,
                 step: input.step,
@@ -245,8 +260,6 @@ export function registerWorkflowActivities(runtime: any, deps: WorkflowActivityD
             });
             await refreshCanvas(deps, input.sessionId);
             throw error;
-        } finally {
-            await (mcp as ScriptMcpConnections | null)?.close();
         }
 
         if (result.resultSource === "cancelled") {

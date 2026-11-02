@@ -45,6 +45,7 @@ import {
     WORKFLOW_SESSION_ORCHESTRATION_NAME,
     WORKFLOW_SESSION_ORCHESTRATION_REGISTRY,
     WORKFLOW_RUNNABLE_STATE_TYPES,
+    readWorkflowToolBinding,
 } from "./workflow/index.js";
 import fs from "node:fs";
 import os from "node:os";
@@ -1008,8 +1009,13 @@ export class PilotSwarmWorker {
                 artifactStore: this.artifactStore,
                 ...(this.config.workerNodeId ? { workerNodeId: this.config.workerNodeId } : {}),
             }),
-            resolveTools: (sessionId) => this.sessionManager.resolveScriptTools(sessionId),
-            resolveMcpServers: () => this.sessionManager.scriptMcpServers(),
+            // The parent's tools, captured by spawn_workflow and saved with
+            // the start request; the per-state tool session is built from it.
+            resolveToolBinding: async (sessionId) => {
+                const creation = await this._catalog?.getSessionCreationConfig?.(sessionId);
+                return readWorkflowToolBinding(creation?.workflowToolBinding);
+            },
+            openToolExecutor: (sessionId, binding, step) => this.sessionManager.openWorkflowToolExecutor(sessionId, binding, step),
             deleteSession: async (sessionId) => {
                 await this._catalog?.softDeleteSession(sessionId);
                 await this.factStore?.deleteSessionFactsForSession(sessionId).catch(() => undefined);

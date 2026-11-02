@@ -2693,7 +2693,9 @@ let canvasDrawChain: Promise<void> = Promise.resolve();
                 resolveOwner: async () => catalog
                     ? resolveEffectiveSpawnOwner((id) => catalog!.getSession(id), input.sessionId)
                     : null,
-                createWorkflowSession: async (config) => (await getInlineClient()).createWorkflowSession(config),
+                // Read from this session's live CLI session, during its turn, on this worker.
+                captureToolBinding: () => sessionManager.captureWorkflowToolBinding(input.sessionId),
+                createWorkflowSession: async (config, admission) => (await getInlineClient()).createWorkflowSession(config, admission),
             }),
 
             /**

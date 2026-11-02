@@ -1,15 +1,17 @@
 /**
  * Workflow sessions end to end: a real worker and client on
  * PostgreSQL (CMS, facts and duroxide), real script processes, and the
- * worker's own tool set. No LLM is needed: the workflow runs no model.
+ * parent agent's own tools through a Copilot CLI tool session. The parent
+ * is a live agent session on the scripted model; the workflow runs no model.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { useSuiteEnv } from "../helpers/local-env.js";
-import { createManagementClient, withClient } from "../helpers/local-workers.js";
+import { createManagementClient } from "../helpers/local-workers.js";
 import { createCatalog } from "../helpers/cms-helpers.js";
+import { withWorkflowParent } from "../helpers/workflow-parent.mjs";
 
 const getEnv = useSuiteEnv(import.meta.url);
 const hasPython = spawnSync("python3", ["--version"]).status === 0;
@@ -73,11 +75,6 @@ async function createParent(env, { owner = null, state = null } = {}) {
     }
 }
 
-/** Start a workflow under a new parent, without waking that parent at the end. */
-async function startWorkflow(env, client, config) {
-    const parentSessionId = config.parentSessionId ?? await createParent(env);
-    return client.createWorkflowSession({ notifyParent: false, ...config, parentSessionId });
-}
 
 async function waitForTerminal(mgmt, sessionId, timeoutMs = 90_000) {
     const deadline = Date.now() + timeoutMs;
@@ -93,14 +90,14 @@ async function waitForTerminal(mgmt, sessionId, timeoutMs = 90_000) {
 describe("script workflow sessions (worker + client + PostgreSQL)", () => {
     it("runs the graph durably, gives scripts the session's tools, and records an execution log", async () => {
         const env = getEnv();
-        await withClient(env, { worker: { workflows: { stateTypes: ["script"] } } }, async (client) => {
+        await withWorkflowParent(env, { worker: { workflows: { stateTypes: ["script"] } } }, async ({ client, startWorkflow, liveParent, toolBinding }) => {
             const mgmt = await createManagementClient(env);
             try {
-                await expect(startWorkflow(env, client, { yaml: WORKFLOW.replace("type: script", "type: agent") }))
+                await expect(startWorkflow({ yaml: WORKFLOW.replace("type: script", "type: agent") }))
                     .rejects.toMatchObject({ code: "WORKFLOW_STATE_TYPE_UNSUPPORTED", status: 400 });
 
-                const parentSessionId = await createParent(env);
-                const { sessionId, workflowName } = await startWorkflow(env, client, {
+                const parentSessionId = await liveParent();
+                const { sessionId, workflowName } = await startWorkflow({
                     yaml: WORKFLOW,
                     inputs: { run: "first" },
                     parentSessionId,
@@ -148,7 +145,7 @@ describe("script workflow sessions (worker + client + PostgreSQL)", () => {
                 expect(await mgmt.stopSessionTurn(sessionId)).toMatchObject({ outcome: "no_active_turn" });
 
                 // Creating with the same id again returns it without a second run.
-                const again = await startWorkflow(env, client, { sessionId, yaml: WORKFLOW, inputs: { run: "first" }, parentSessionId });
+                const again = await startWorkflow({ sessionId, yaml: WORKFLOW, inputs: { run: "first" }, parentSessionId });
                 expect(again.sessionId).toBe(sessionId);
                 const after = await mgmt.getSessionEvents(sessionId);
                 expect(after.filter((event) => event.eventType === "workflow.started")).toHaveLength(1);
@@ -156,7 +153,7 @@ describe("script workflow sessions (worker + client + PostgreSQL)", () => {
                 // After the session is deleted, the same id starts a new run instead of reviving a dead row.
                 await mgmt.deleteSession(sessionId, "start over");
                 expect(await mgmt.getSession(sessionId)).toBeNull();
-                await startWorkflow(env, client, { sessionId, yaml: WORKFLOW, inputs: { run: "second" }, parentSessionId });
+                await startWorkflow({ sessionId, yaml: WORKFLOW, inputs: { run: "second" }, parentSessionId });
                 const rerun = await waitForTerminal(mgmt, sessionId);
                 expect(rerun.status).toBe("completed");
             } finally {
@@ -167,10 +164,10 @@ describe("script workflow sessions (worker + client + PostgreSQL)", () => {
 
     it("fails the workflow with a clear reason when the worker has workflows off", async () => {
         const env = getEnv();
-        await withClient(env, { worker: { workflows: { stateTypes: [] } } }, async (client) => {
+        await withWorkflowParent(env, { worker: { workflows: { stateTypes: [] } } }, async ({ client, startWorkflow, liveParent, toolBinding }) => {
             const mgmt = await createManagementClient(env);
             try {
-                const { sessionId } = await startWorkflow(env, client, { yaml: WORKFLOW, inputs: { run: "off" } });
+                const { sessionId } = await startWorkflow({ yaml: WORKFLOW, inputs: { run: "off" } });
                 const view = await waitForTerminal(mgmt, sessionId);
                 expect(view.status).toBe("failed");
                 const events = await mgmt.getSessionEvents(sessionId);
@@ -201,7 +198,7 @@ states:
     transition: { next: { success: done } }
   done: { type: terminal, outcome: succeeded }
 `;
-        await withClient(env, { worker: { workflows: { stateTypes: ["script"] } } }, async (client) => {
+        await withWorkflowParent(env, { worker: { workflows: { stateTypes: ["script"] } } }, async ({ client, startWorkflow, liveParent, toolBinding }) => {
             const mgmt = await createManagementClient(env);
             try {
                 const waitForEvent = async (sessionId, type) => {
@@ -214,7 +211,7 @@ states:
                     throw new Error(`no ${type} on ${sessionId}`);
                 };
 
-                const first = await startWorkflow(env, client, { yaml: LONG });
+                const first = await startWorkflow({ yaml: LONG });
                 await waitForEvent(first.sessionId, "workflow.state_started");
                 // Stop targets a turn; a workflow has none, so it answers at once and the run goes on.
                 expect(await mgmt.stopSessionTurn(first.sessionId, { timeoutMs: 5_000 })).toEqual({
@@ -241,13 +238,13 @@ states:
                 const end = (await waitForEvent(first.sessionId, "workflow.cancelled"))[0];
                 expect(end.data).toMatchObject({ reason: "no longer needed", steps: 1 });
 
-                const second = await startWorkflow(env, client, { yaml: LONG });
+                const second = await startWorkflow({ yaml: LONG });
                 await waitForEvent(second.sessionId, "workflow.state_started");
                 await mgmt.deleteSession(second.sessionId, "cleanup");
                 expect(await mgmt.getSession(second.sessionId)).toBeNull();
 
                 // Deleting through the SDK client ends the run the same way: the script stops and the end is recorded.
-                const third = await startWorkflow(env, client, { yaml: LONG });
+                const third = await startWorkflow({ yaml: LONG });
                 await waitForEvent(third.sessionId, "workflow.state_started");
                 await client.deleteSession(third.sessionId);
                 const thirdEnd = (await waitForEvent(third.sessionId, "workflow.cancelled"))[0];
@@ -280,15 +277,15 @@ states:
     transition: { next: { success: done } }
   done: { type: terminal, outcome: succeeded, output: "\${states.use.result}" }
 `;
-        await withClient(env, {
+        await withWorkflowParent(env, {
             worker: {
                 workflows: { stateTypes: ["script"] },
                 mcpServers: { calc: { command: process.execPath, args: [calc], tools: ["add"] } },
             },
-        }, async (client) => {
+        }, async ({ startWorkflow }) => {
             const mgmt = await createManagementClient(env);
             try {
-                const { sessionId } = await startWorkflow(env, client, { yaml });
+                const { sessionId } = await startWorkflow({ yaml });
                 const view = await waitForTerminal(mgmt, sessionId);
                 const done = (await mgmt.getSessionEvents(sessionId, 0, 200, ["workflow.completed", "workflow.failed"]))[0];
                 expect(view.status, JSON.stringify(done?.data)).toBe("completed");
@@ -398,13 +395,13 @@ ${hasPwsh
   wrong: { type: terminal, outcome: failed, summary: A route that should not be taken was taken. }
 `;
         const env = getEnv();
-        await withClient(env, {
+        await withWorkflowParent(env, {
             worker: { workflows: { stateTypes: ["script"], executables: { powershell: pwshExecutable } } },
-        }, async (client) => {
+        }, async ({ startWorkflow }) => {
             const mgmt = await createManagementClient(env);
             try {
                 const run = `ks-${Math.random().toString(36).slice(2)}`;
-                const { sessionId } = await startWorkflow(env, client, { yaml, inputs: { run, seed: 7, loops: LOOPS } });
+                const { sessionId } = await startWorkflow({ yaml, inputs: { run, seed: 7, loops: LOOPS } });
                 const view = await waitForTerminal(mgmt, sessionId);
                 const events = await mgmt.getSessionEvents(sessionId, 0, 1_000);
                 const workflowEvents = events.filter((event) => event.eventType.startsWith("workflow."));
@@ -510,11 +507,11 @@ states:
 
     it("checks, waits and checks again until it finds work, then handles it and ends", { timeout: 120_000 }, async () => {
         const env = getEnv();
-        await withClient(env, { worker: { workflows: { stateTypes: ["script"] } } }, async (client) => {
+        await withWorkflowParent(env, { worker: { workflows: { stateTypes: ["script"] } } }, async ({ client, startWorkflow, liveParent, toolBinding }) => {
             const mgmt = await createManagementClient(env);
             try {
                 const run = `poll-${Math.random().toString(36).slice(2)}`;
-                const { sessionId } = await startWorkflow(env, client, { yaml: pollYaml(3), inputs: { run } });
+                const { sessionId } = await startWorkflow({ yaml: pollYaml(3), inputs: { run } });
                 const view = await waitForTerminal(mgmt, sessionId);
                 const events = (await mgmt.getSessionEvents(sessionId, 0, 1_000)).filter((e) => e.eventType.startsWith("workflow."));
                 const end = events.at(-1);
@@ -543,10 +540,10 @@ states:
             .replace("found: handle, idle: sleep", "found: sleep, idle: sleep")
             .replace(/  finished:[\s\S]*$/, "")
             .replace("seconds: 1", "seconds: 2");
-        await withClient(env, { worker: { workflows: { stateTypes: ["script"] } } }, async (client) => {
+        await withWorkflowParent(env, { worker: { workflows: { stateTypes: ["script"] } } }, async ({ client, startWorkflow, liveParent, toolBinding }) => {
             const mgmt = await createManagementClient(env);
             try {
-                const { sessionId } = await startWorkflow(env, client, { yaml, inputs: { run: `forever-${Math.random().toString(36).slice(2)}` } });
+                const { sessionId } = await startWorkflow({ yaml, inputs: { run: `forever-${Math.random().toString(36).slice(2)}` } });
                 const deadline = Date.now() + 60_000;
                 let waits = [];
                 while (Date.now() < deadline) {
@@ -601,7 +598,7 @@ states:
 
     it("refuses a workflow without a parent, and with a parent that cannot own a run", async () => {
         const env = getEnv();
-        await withClient(env, { worker: { workflows: { stateTypes: ["script"] } } }, async (client) => {
+        await withWorkflowParent(env, { worker: { workflows: { stateTypes: ["script"] } } }, async ({ client, startWorkflow, liveParent, toolBinding }) => {
             const catalog = await createCatalog(env);
             try {
                 const lonely = crypto.randomUUID();
@@ -627,8 +624,8 @@ states:
                     await invalid(await createParent(env, { state }), new RegExp(`it has ended \\(state ${state}\\)`));
                 }
 
-                const agent = await createParent(env, { owner: ALICE });
-                const workflow = await client.createWorkflowSession({ yaml: SHORT, inputs: { run: "parent" }, parentSessionId: agent, notifyParent: false });
+                const agent = await liveParent({ owner: ALICE });
+                const workflow = await startWorkflow({ yaml: SHORT, inputs: { run: "parent" }, parentSessionId: agent });
                 await invalid(workflow.sessionId, /it is a workflow session/, ALICE);
 
                 await invalid(agent, /belongs to a different owner/, BOB);
@@ -641,13 +638,13 @@ states:
 
     it("gives the workflow its parent's owner, and the caller's when they match", async () => {
         const env = getEnv();
-        await withClient(env, { worker: { workflows: { stateTypes: ["script"] } } }, async (client) => {
+        await withWorkflowParent(env, { worker: { workflows: { stateTypes: ["script"] } } }, async ({ client, startWorkflow, liveParent, toolBinding }) => {
             const catalog = await createCatalog(env);
             try {
-                const parentSessionId = await createParent(env, { owner: ALICE });
-                const inherited = await client.createWorkflowSession({ yaml: SHORT, inputs: { run: "a" }, parentSessionId, notifyParent: false });
+                const parentSessionId = await liveParent({ owner: ALICE });
+                const inherited = await startWorkflow({ yaml: SHORT, inputs: { run: "a" }, parentSessionId });
                 expect((await catalog.getSession(inherited.sessionId)).owner).toMatchObject({ provider: "test", subject: "alice" });
-                const explicit = await client.createWorkflowSession({ yaml: SHORT, inputs: { run: "b" }, parentSessionId, owner: { provider: "test", subject: "alice" }, notifyParent: false });
+                const explicit = await startWorkflow({ yaml: SHORT, inputs: { run: "b" }, parentSessionId, owner: { provider: "test", subject: "alice" } });
                 const row = await catalog.getSession(explicit.sessionId);
                 expect(row.owner).toMatchObject({ provider: "test", subject: "alice" });
                 expect(row.parentSessionId).toBe(parentSessionId);
@@ -659,33 +656,33 @@ states:
 
     it("saves the first start request: the same request returns the session with one run, a different one is refused", { timeout: 60_000 }, async () => {
         const env = getEnv();
-        await withClient(env, { worker: { workflows: { stateTypes: ["script"] } } }, async (client) => {
+        await withWorkflowParent(env, { worker: { workflows: { stateTypes: ["script"] } } }, async ({ client, startWorkflow, liveParent, toolBinding }) => {
             const mgmt = await createManagementClient(env);
             const catalog = await createCatalog(env);
             try {
-                const parentSessionId = await createParent(env);
+                const parentSessionId = await liveParent();
                 const sessionId = crypto.randomUUID();
                 const request = { sessionId, yaml: SHORT, inputs: { run: "one", extra: { b: 2, a: 1 } }, parentSessionId, notifyParent: false };
-                await client.createWorkflowSession(request);
+                await startWorkflow(request);
                 const saved = (await catalog.getSessionCreationConfig(sessionId)).workflowStart;
                 expect(saved).toEqual({ sessionId, yaml: SHORT, inputs: { run: "one", extra: { a: 1, b: 2 } }, parentSessionId, notifyParent: false });
 
                 // Key order does not make a request different.
-                const again = await client.createWorkflowSession({ ...request, inputs: { extra: { a: 1, b: 2 }, run: "one" } });
+                const again = await startWorkflow({ ...request, inputs: { extra: { a: 1, b: 2 }, run: "one" } });
                 expect(again).toEqual({ sessionId, workflowName: "short" });
                 const view = await waitForTerminal(mgmt, sessionId);
                 expect(view.status).toBe("completed");
-                expect(await client.createWorkflowSession(request)).toEqual({ sessionId, workflowName: "short" });
+                expect(await startWorkflow(request)).toEqual({ sessionId, workflowName: "short" });
                 expect(await mgmt.getSessionEvents(sessionId, 0, 200, ["workflow.started"])).toHaveLength(1);
 
-                const otherParent = await createParent(env);
+                const otherParent = await liveParent();
                 for (const change of [
                     { inputs: { run: "two", extra: { a: 1, b: 2 } } },
                     { notifyParent: true },
                     { parentSessionId: otherParent },
                     { yaml: SHORT.replace("name: short", "name: shorter") },
                 ]) {
-                    await expect(client.createWorkflowSession({ ...request, ...change }))
+                    await expect(startWorkflow({ ...request, ...change }))
                         .rejects.toMatchObject({ code: "WORKFLOW_ADMISSION_CONFLICT", status: 409, message: expect.stringMatching(/already started with a different request/) });
                 }
                 expect((await catalog.getSessionCreationConfig(sessionId)).workflowStart).toEqual(saved);
@@ -699,22 +696,22 @@ states:
 
     it("concurrent creates of one id keep the first request: the same request runs once, a different one is refused", { timeout: 60_000 }, async () => {
         const env = getEnv();
-        await withClient(env, { worker: { workflows: { stateTypes: ["script"] } } }, async (client) => {
+        await withWorkflowParent(env, { worker: { workflows: { stateTypes: ["script"] } } }, async ({ client, startWorkflow, liveParent, toolBinding }) => {
             const mgmt = await createManagementClient(env);
             const catalog = await createCatalog(env);
             try {
-                const parentSessionId = await createParent(env);
+                const parentSessionId = await liveParent();
                 const same = crypto.randomUUID();
                 const request = { sessionId: same, yaml: SHORT, inputs: { run: "same" }, parentSessionId, notifyParent: false };
-                const results = await Promise.all([client.createWorkflowSession(request), client.createWorkflowSession(request)]);
+                const results = await Promise.all([startWorkflow(request), startWorkflow(request)]);
                 expect(results.map((result) => result.sessionId)).toEqual([same, same]);
                 await waitForTerminal(mgmt, same);
                 expect(await mgmt.getSessionEvents(same, 0, 200, ["workflow.started"])).toHaveLength(1);
 
                 const raced = crypto.randomUUID();
                 const settled = await Promise.allSettled([
-                    client.createWorkflowSession({ ...request, sessionId: raced, inputs: { run: "left" } }),
-                    client.createWorkflowSession({ ...request, sessionId: raced, inputs: { run: "right" } }),
+                    startWorkflow({ ...request, sessionId: raced, inputs: { run: "left" } }),
+                    startWorkflow({ ...request, sessionId: raced, inputs: { run: "right" } }),
                 ]);
                 const won = settled.filter((result) => result.status === "fulfilled");
                 const lost = settled.filter((result) => result.status === "rejected");
@@ -730,6 +727,36 @@ states:
             } finally {
                 await catalog.close();
                 await mgmt.stop?.();
+            }
+        });
+    });
+
+    it("refuses a create with no captured parent tool set, and python or powershell when the parent has no shell", { timeout: 120_000 }, async () => {
+        const env = getEnv();
+        await withWorkflowParent(env, { worker: { workflows: { stateTypes: ["script"] } } }, async ({ client, liveParent, toolBinding }) => {
+            const catalog = await createCatalog(env);
+            try {
+                // A valid parent, but no live session to capture tools from: there is no generic tool set to fall back to.
+                const plain = await createParent(env);
+                const sessionId = crypto.randomUUID();
+                await expect(client.createWorkflowSession({ sessionId, yaml: SHORT, inputs: { run: "x" }, parentSessionId: plain }))
+                    .rejects.toMatchObject({ code: "WORKFLOW_PARENT_CONTEXT_REQUIRED", status: 400, message: expect.stringMatching(/^Workflows are started by an agent's spawn_workflow/) });
+                expect(await catalog.getSession(sessionId)).toBeNull();
+
+                const parentSessionId = await liveParent();
+                const captured = await toolBinding(parentSessionId);
+                expect(captured.tools.map((tool) => tool.name)).toEqual(expect.arrayContaining(["bash", "view", "store_fact"]));
+                for (const control of ["wait", "cron", "spawn_agent", "spawn_workflow", "ask_user", "set_session_model"]) {
+                    expect(captured.tools.map((tool) => tool.name)).not.toContain(control);
+                }
+                const python = SHORT.replace("runtime: node", "runtime: python");
+                const noShell = { ...captured, tools: captured.tools.filter((tool) => !["bash", "powershell"].includes(tool.name)) };
+                const refused = crypto.randomUUID();
+                await expect(client.createWorkflowSession({ sessionId: refused, yaml: python, inputs: { run: "x" }, parentSessionId }, { toolBinding: noShell }))
+                    .rejects.toMatchObject({ code: "WORKFLOW_RUNTIME_REQUIRES_SHELL", message: expect.stringMatching(/need the parent agent to have a shell tool/) });
+                expect(await catalog.getSession(refused)).toBeNull();
+            } finally {
+                await catalog.close();
             }
         });
     });

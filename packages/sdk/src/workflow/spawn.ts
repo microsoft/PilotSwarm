@@ -3,6 +3,7 @@ import { systemChildAgentUUID } from "../agent-loader.js";
 import type { WorkflowSessionConfig, SessionOwnerInfo } from "../types.js";
 import { compileWorkflow, validateWorkflowInputs, workflowHasWaits, workflowNotRunnableReason, WORKFLOWS_DISABLED_MESSAGE } from "./compiler.js";
 import type { SpawnWorkflowToolArgs } from "./tool-spec.js";
+import { workflowRuntimeRefusal, type WorkflowToolBinding } from "./tool-policy.js";
 
 export interface SpawnWorkflowDeps {
     /** The agent session calling spawn_workflow; it becomes the workflow's parent. */
@@ -11,7 +12,12 @@ export interface SpawnWorkflowDeps {
     stateTypes: () => ReadonlySet<string>;
     getSession: (sessionId: string) => Promise<{ title?: string | null; state?: string | null } | null>;
     resolveOwner: () => Promise<SessionOwnerInfo | null>;
-    createWorkflowSession: (config: WorkflowSessionConfig & { notifyParent?: boolean }) => Promise<{ sessionId: string; workflowName: string }>;
+    /** The calling agent's own tools, read from its live session (minus the workflow excluded list). */
+    captureToolBinding: () => Promise<WorkflowToolBinding>;
+    createWorkflowSession: (
+        config: WorkflowSessionConfig & { notifyParent?: boolean },
+        admission: { toolBinding: WorkflowToolBinding },
+    ) => Promise<{ sessionId: string; workflowName: string }>;
 }
 
 /**
@@ -42,8 +48,9 @@ export async function spawnWorkflowFromTool(
         }
         let workflowName: string;
         let loops = false;
+        let compiled: ReturnType<typeof compileWorkflow>;
         try {
-            const compiled = compileWorkflow(args.yaml);
+            compiled = compileWorkflow(args.yaml);
             validateWorkflowInputs(compiled, args.inputs ?? {});
             workflowName = compiled.name;
             loops = workflowHasWaits(compiled);
@@ -64,6 +71,9 @@ export async function spawnWorkflowFromTool(
         }
         const owner = await deps.resolveOwner().catch(() => null);
         const notify = args.notify_on_completion !== false;
+        const toolBinding = await deps.captureToolBinding();
+        const runtimeRefusal = workflowRuntimeRefusal(compiled, toolBinding.tools);
+        if (runtimeRefusal) return `[SYSTEM: spawn_workflow refused — ${runtimeRefusal} Nothing was started.]`;
         await deps.createWorkflowSession({
             sessionId: workflowSessionId,
             yaml: args.yaml,
@@ -71,7 +81,7 @@ export async function spawnWorkflowFromTool(
             parentSessionId: deps.parentSessionId,
             ...(owner ? { owner } : {}),
             notifyParent: notify,
-        });
+        }, { toolBinding });
         return `[SYSTEM: started workflow session ${workflowSessionId} running "${workflowName}". `
             + (loops
                 ? "It repeats through its wait state by itself until it reaches a terminal state or is cancelled (cancel_agent); "
@@ -91,7 +101,8 @@ export async function spawnWorkflowFromTool(
             return `[SYSTEM: spawn_workflow refused — ${message} This key already names a workflow run with a different YAML, inputs `
                 + "or notify_on_completion. Call again with the same arguments to resume it, or pass a different key for a new run.]";
         }
-        if (code === "WORKFLOW_PARENT_REQUIRED" || code === "WORKFLOW_PARENT_INVALID") {
+        if (code === "WORKFLOW_PARENT_REQUIRED" || code === "WORKFLOW_PARENT_INVALID" || code === "WORKFLOW_PARENT_CONTEXT_REQUIRED"
+            || code === "WORKFLOW_TOOLS_NOT_DELEGABLE" || code === "WORKFLOW_RUNTIME_REQUIRES_SHELL") {
             return `[SYSTEM: spawn_workflow refused — ${message} Nothing was started.]`;
         }
         return `[SYSTEM: spawn_workflow failed — ${error instanceof Error ? error.message : String(error)}]`;

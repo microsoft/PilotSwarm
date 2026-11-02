@@ -1646,7 +1646,7 @@ export class ManagedSession {
         }
     }
 
-    private async _runTurnWithState(prompt: string, turnState: TurnState, opts?: TurnOptions): Promise<TurnResult> {
+    private buildToolHandlers(turnState: TurnState, opts?: TurnOptions): Tool<any>[] {
         const controlBridge = opts?.controlToolBridge;
 
         // Build system tools (wait tool + ask_user tool)
@@ -3265,6 +3265,49 @@ export class ManagedSession {
             ...manageAgentSessionForTurn,
             ...workspaceToolsForTurn,
         ];
+        return allTools;
+    }
+
+    /**
+     * Reuse the same data-tool handlers without a conversational turn or model send.
+     * The caller supplies declarations already restricted to the captured tool ceiling.
+     */
+    async prepareWorkflowTools(
+        allowedNames: ReadonlySet<string>,
+        overrides: Map<string, (args: Record<string, unknown>) => Promise<unknown>>,
+    ): Promise<void> {
+        const state: TurnState = {
+            pendingActions: [], queuedActions: [], session: this.copilotSession,
+            waitThreshold: this.config.waitThreshold ?? 30,
+        };
+        const tools = this.buildToolHandlers(state).filter(tool => allowedNames.has(tool.name)).map(tool => {
+            const handler = overrides.get(tool.name) ?? tool.handler;
+            if (!handler) throw new Error(`Workflow tool '${tool.name}' has no handler.`);
+            return { ...tool, handler: async (args: Record<string, unknown>, invocation: Parameters<NonNullable<typeof tool.handler>>[1]) => {
+                const result = await handler(args, invocation);
+                if (state.pendingActions.length || state.queuedActions.length) {
+                    throw new Error(`Workflow tool '${tool.name}' attempted conversational control.`);
+                }
+                if (result !== null && typeof result === "object" && !("resultType" in result)) {
+                    return { resultType: "success" as const, textResultForLlm: JSON.stringify(result), structuredContent: result };
+                }
+                return result;
+            } };
+        });
+        // The pinned SDK keeps handler registration separate from RPC declarations.
+        const handlerRegistry = this.copilotSession as CopilotSession & { registerTools(tools: Tool<any>[]): void };
+        if (typeof handlerRegistry.registerTools !== "function") throw new Error("Copilot handler registration is unavailable.");
+        handlerRegistry.registerTools(tools);
+        await this.copilotSession.rpc.tools.initializeAndValidate();
+    }
+
+    getWorkflowToolSession(): CopilotSession {
+        return this.copilotSession;
+    }
+
+    private async _runTurnWithState(prompt: string, turnState: TurnState, opts?: TurnOptions): Promise<TurnResult> {
+        const durableSessionId = this.sessionId;
+        const allTools = this.buildToolHandlers(turnState, opts);
 
         if (opts?.requiredTool && !allTools.some((tool: any) => tool.name === opts.requiredTool)) {
             return {

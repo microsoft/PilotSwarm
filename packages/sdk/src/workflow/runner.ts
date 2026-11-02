@@ -45,6 +45,11 @@ export interface RunScriptNodeRequest {
     callTool: (call: ScriptToolCall) => Promise<unknown>;
     /** True once the workflow stopped waiting for this node (cancel, complete or delete). */
     isCancelled?: () => boolean;
+    /**
+     * Stops the state's tool session (its running call and background
+     * shells) when the script is stopped. Awaited before the state ends.
+     */
+    cancelTools?: () => Promise<void>;
 }
 
 export interface RunScriptNodeResult {
@@ -331,6 +336,7 @@ export async function runScriptNode(
     const token = randomBytes(32).toString("hex");
     const toolCalls: ScriptToolCallRecord[] = [];
     let toolCallsAdmitted = 0;
+    let acceptingToolCalls = true;
     let reported: { outcome: string; output: unknown } | null = null;
 
     const server = http.createServer(async (req, res) => {
@@ -356,6 +362,7 @@ export async function runScriptNode(
             return;
         }
         if (req.url === "/tool") {
+            if (!acceptingToolCalls) { reply(409, { ok: false, error: "the workflow state is stopping" }); return; }
             const name = typeof body?.name === "string" ? body.name.trim() : "";
             if (!name) { reply(400, { ok: false, error: "name is required" }); return; }
             // Counted before the call runs, so concurrent calls cannot pass the limit.
@@ -417,6 +424,7 @@ export async function runScriptNode(
         const stderr = new StreamTail();
         let timedOut = false;
         let cancelled = false;
+        let toolCancellation: Promise<void> | undefined;
 
         const exitCode = await new Promise<number | null>((resolve, reject) => {
             // On POSIX the script leads its own process group, so everything
@@ -438,6 +446,13 @@ export async function runScriptNode(
             // Never signal by pid after the script exited: the pid may already
             // belong to another process.
             const stop = () => {
+                acceptingToolCalls = false;
+                // A tool call the script was waiting on (and any shell it
+                // started) stops with the script.
+                if (request.cancelTools && !toolCancellation) {
+                    toolCancellation = request.cancelTools();
+                    void toolCancellation.catch(() => undefined);
+                }
                 if (exited !== undefined) return;
                 killGroup();
                 if (!killProcessTree(child.pid)) child.kill("SIGKILL");
@@ -504,6 +519,15 @@ export async function runScriptNode(
             }));
         });
 
+        acceptingToolCalls = false;
+        if (toolCancellation) {
+            try { await toolCancellation; }
+            catch (error) {
+                throw new WorkflowExecutionError(
+                    `Script state '${node.id}' ${cancelled ? "was cancelled" : "timed out"}, and its tool session did not stop cleanly: ${errorText(error)}`,
+                );
+            }
+        }
         const stdoutTail = stdout.text();
         const stderrTail = stderr.text();
         const common = {
