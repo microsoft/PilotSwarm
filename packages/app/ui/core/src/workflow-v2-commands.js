@@ -3,9 +3,10 @@
  * and 07, mocks M03, M04, M15 and M16; R04, R05, R17, R18, R26; INACTIVE): the
  * run controls (pause, resume, stop, cancel), the run's variables (set_vars:
  * set or remove a key at the expected KV revision), the draft's YAML
- * (replace_definition at the revision the edit started from) and the
+ * (replace_definition at the revision the edit started from), the
  * definition's publication (publish the exact revision shown, publish it and
- * start its live run, start the published revision's live run). Pure: nothing here
+ * start its live run, start the published revision's live run) and a test of
+ * the exact revision shown (test, with its agent mode). Pure: nothing here
  * calls anything. The controller sends a command (sendWorkflowRunCommand) as
  * an updateWorkflow command through the transport; this module says which
  * commands the workflow offers, checks what a person typed, and says what the
@@ -26,9 +27,22 @@ const ENDED = new Set(["completed", "failed", "cancelled", "stopped"]);
 const LABELS = { pause: "Pause", resume: "Resume", stop: "Stop", cancel: "Cancel" };
 /** How a notice names each command. */
 const NOTICE_LABELS = { ...LABELS, set_vars: "The variables update", publish: "Publish", publish_and_start: "Publish and start", start: "Start",
-    replace_definition: "Saving the draft" };
-/** The definition's commands: they name no run. */
-const DEFINITION_OPERATIONS = new Set(["replace_definition", "publish", "publish_and_start", "start"]);
+    replace_definition: "Saving the draft", test: "Starting the test" };
+/** The definition's commands: they name no run (a test makes its own). */
+const DEFINITION_OPERATIONS = new Set(["replace_definition", "publish", "publish_and_start", "start", "test"]);
+/** The longest test scenario name (tools.ts). */
+const SCENARIO_MAX = 128;
+
+/**
+ * What every test run says, and what a test with real agents adds (the SDK's
+ * WORKFLOW_V2_TEST_NOTICE and WORKFLOW_V2_TEST_REAL_AGENT_NOTICE, test-mode.ts):
+ * shown before a test starts; the run's own notices come back with its read
+ * model once it runs.
+ */
+export const WORKFLOW_V2_TEST_NOTICE_TEXT = "TEST — scripts run normally; framework tools are mocked. Direct script effects (network, files, "
+    + "processes, the clock, randomness) are real, and a test result is not evidence that the definition is safe to run live.";
+export const WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT = "Agent states run real agent sessions: they spend model tokens and their results vary as a "
+    + "model's do. Their framework tool calls are mocked; their model's own built-in tools (shell, files) run normally; MCP tools are refused.";
 /** The largest workflow YAML (compiler.ts WORKFLOW_V2_MAX_YAML_BYTES); the server checks it again. */
 const YAML_MAX_BYTES = 256 * 1024;
 /** The longest KV key (store.ts WORKFLOW_V2_KV_LIMITS.maxKeyLength). */
@@ -140,9 +154,12 @@ export function workflowV2RunCommandArgs(operation, input = {}) {
  * shown (`expectedRevision`) and its exact `definitionHash`; publish_and_start
  * also takes the run's `inputs` (a JSON object, `{}` when absent) and,
  * optionally, its initial variables (`vars`, a JSON object); start takes the
- * published revision's `definitionHash`, `inputs` and optional `vars`. The
- * server refuses a revision or hash that is no longer current (a stale
- * publish), inputs its schema refuses, and anything else it refuses.
+ * published revision's `definitionHash`, `inputs` and optional `vars`; test
+ * takes the current revision (`expectedRevision`) and its `definitionHash`,
+ * `inputs`, optional `vars`, its `agentMode` ("mocked", the default, or
+ * "real") and an optional `scenario` name (1 to 128 characters). The server
+ * refuses a revision or hash that is no longer current (a stale publish or
+ * test), inputs its schema refuses, and anything else it refuses.
  */
 function definitionArgs(operation, input) {
     if (!isRecord(input)) return { ok: false };
@@ -154,14 +171,23 @@ function definitionArgs(operation, input) {
     }
     const hash = typeof input.definitionHash === "string" && input.definitionHash ? input.definitionHash : null;
     if (hash === null) return { ok: false };
-    if (operation === "publish" || operation === "publish_and_start") {
+    if (operation === "publish" || operation === "publish_and_start" || operation === "test") {
         if (!Number.isSafeInteger(input.expectedRevision) || input.expectedRevision < 1) return { ok: false };
         if (operation === "publish") return { ok: true, args: { expectedRevision: input.expectedRevision, definitionHash: hash } };
     }
     const inputs = input.inputs === undefined ? {} : input.inputs;
     if (!isRecord(inputs) || (input.vars !== undefined && !isRecord(input.vars))) return { ok: false };
-    return { ok: true, args: { ...(operation === "publish_and_start" ? { expectedRevision: input.expectedRevision } : {}), definitionHash: hash, inputs,
-        ...(input.vars !== undefined ? { vars: input.vars } : {}) } };
+    const run = { definitionHash: hash, inputs, ...(input.vars !== undefined ? { vars: input.vars } : {}) };
+    if (operation === "test") {
+        const agentMode = input.agentMode === undefined ? "mocked" : input.agentMode;
+        if (agentMode !== "mocked" && agentMode !== "real") return { ok: false };
+        if (input.scenario !== undefined && (typeof input.scenario !== "string" || !input.scenario.trim() || input.scenario.length > SCENARIO_MAX)) {
+            return { ok: false };
+        }
+        return { ok: true, args: { expectedRevision: input.expectedRevision, ...run, agentMode,
+            ...(input.scenario !== undefined ? { scenario: input.scenario } : {}) } };
+    }
+    return { ok: true, args: { ...(operation === "publish_and_start" ? { expectedRevision: input.expectedRevision } : {}), ...run } };
 }
 
 /** Whether a command acts on a run (and so needs the run's id): every command but the definition's. */
@@ -185,6 +211,8 @@ export function workflowV2RunCommandWire(operation, runId, operationId, args = n
         command.definition_hash = args?.definitionHash;
         if (args?.inputs !== undefined) command.inputs = args.inputs;
         if (args?.vars !== undefined) command.vars = args.vars;
+        if (args?.agentMode !== undefined) command.agent_mode = args.agentMode;
+        if (args?.scenario !== undefined) command.scenario = args.scenario;
         return command;
     }
     const command = { operation, operation_id: operationId, run_id: runId };
@@ -348,6 +376,49 @@ export function workflowV2DefinitionControls(model, command = null) {
 }
 
 /**
+ * The test review (design 05; mocks M18 to M20; R19, R20, R26, R28) given the
+ * view's last command, or null: without `personCommands` (the deployment
+ * takes no person's commands), when the workflow takes no test from people (a
+ * host that does not run controller 1.9.0, or a workflow agent state's
+ * subtree) or without a definition in a recognized state. Never throws.
+ *
+ * A test runs the exact current revision (draft or published) with its
+ * definition hash, beside the live run, which it never changes. Start is
+ * disabled, with the reason as its title, for a revision with compile errors,
+ * a viewer who may not command the workflow, an unknown revision or hash, and
+ * while a command is being sent.
+ */
+export function workflowV2TestControls(model, command = null) {
+    if (!isRecord(model) || !isRecord(model.personCommands) || !isRecord(model.definition) || !isRecord(model.revision)) return null;
+    const state = model.definition.state === "draft" || model.definition.state === "published" ? model.definition.state : null;
+    const commands = model.personCommands;
+    if (state === null || !Array.isArray(commands.operations) || !commands.operations.includes("test")) return null;
+    const viewer = isRecord(commands.viewer) ? commands.viewer : null;
+    const denied = viewer?.allowed === false ? text(viewer.reason) ?? "You cannot command this workflow." : null;
+    const busy = isRecord(command) && command.phase === "pending";
+    const pending = busy && command.operation === "test";
+    const revision = Number.isSafeInteger(model.revision.revision) && model.revision.revision >= 1 ? model.revision.revision : null;
+    const definitionHash = text(model.revision.definitionHash);
+    const valid = model.revision.valid === true;
+    const errors = Array.isArray(model.revision.diagnostics)
+        ? model.revision.diagnostics.filter(item => isRecord(item) && item.severity !== "warning").length : 0;
+    const reason = busy ? (pending ? "This command is being sent." : "Another command for this workflow is being sent.")
+        : denied ?? (!valid ? `Revision ${revision ?? "shown"} has ${errors || "unlisted"} error${errors === 1 ? "" : "s"} and cannot be tested; fix them first.`
+            : revision === null || definitionHash === null ? "The revision or its definition hash is not known; read the workflow again." : null);
+    return { state, name: text(model.revision.name), semver: text(model.definition.semver), revision, definitionHash, valid, errors,
+        control: { operation: "test", label: pending ? "Starting test…" : "Start test", enabled: reason === null, pending,
+            title: reason ?? `Test revision ${revision} beside the live run, which it never changes.` },
+        busy, viewerReason: denied };
+}
+
+/** A scenario name a person typed for a test: absent when empty, else 1 to 128 characters kept as typed. */
+export function workflowV2ScenarioDraft(source) {
+    const name = typeof source === "string" ? source : "";
+    if (!name.trim()) return { ok: true, value: undefined };
+    return name.length > SCENARIO_MAX ? { ok: false, error: `A scenario name is at most ${SCENARIO_MAX} characters.` } : { ok: true, value: name };
+}
+
+/**
  * The draft editor (design 04 replace_definition; mocks M01 and M02; R03,
  * R17, R26) given the view's last command, or null: without
  * `personCommands.draft` (the deployment takes no person's commands, the
@@ -430,6 +501,12 @@ export function workflowV2RunCommandAccepted(operation, runId, receipt, args = n
         const valid = isRecord(receipt) && receipt.valid === false
             ? ` It has ${errors || "unlisted"} error${errors === 1 ? "" : "s"}, so it cannot be published until they are fixed.` : "";
         return `Saved the draft as ${saved}.${valid}${again}`;
+    }
+    if (operation === "test") {
+        const tested = isRecord(receipt) && Number.isSafeInteger(receipt.revision) ? receipt.revision : args?.expectedRevision;
+        const started = isRecord(receipt) && isRecord(receipt.run) && typeof receipt.run.runId === "string" ? ` ${shortId(receipt.run.runId)}` : "";
+        const agents = args?.agentMode === "real" ? "real agents, which spend model tokens" : "mocked agents";
+        return `Started test run${started} of revision ${tested ?? "shown"} with ${agents}. A test result is not evidence that the definition is safe to run live.${again}`;
     }
     if (DEFINITION_OPERATIONS.has(operation)) {
         const published = isRecord(receipt) && Number.isSafeInteger(receipt.publishedRevision) ? receipt.publishedRevision : args?.expectedRevision;

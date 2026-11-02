@@ -3,7 +3,8 @@ import {
     compactWorkflowV2Executions, formatSeconds, formatWorkflowValue, projectWorkflowV2ReadModel, workflowV2RouteKind,
 } from "../../core/src/workflow-v2-view.js";
 import {
-    workflowV2DraftEdit, workflowV2JsonObjectDraft, workflowV2VariableDraft, workflowV2VariableRemoval,
+    WORKFLOW_V2_TEST_NOTICE_TEXT, WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT, workflowV2DraftEdit, workflowV2JsonObjectDraft, workflowV2ScenarioDraft,
+    workflowV2VariableDraft, workflowV2VariableRemoval,
 } from "../../core/src/workflow-v2-commands.js";
 
 const h = React.createElement;
@@ -535,4 +536,78 @@ export function WorkflowV2DraftEditor({ controller, sessionId, model, id }) {
         h("button", { type: "button", className: "ps-mini-button",
             onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { draftOpen: false } }) }, "Close"),
         edit.changed && !edit.conflict ? h("span", { role: "status", style: { color: "var(--ps-muted)" } }, "Unsaved changes") : null));
+}
+
+/** The header button that opens and closes the test review (the view's `testOpen`). */
+export function WorkflowV2TestToggle({ controller, sessionId, model, open, controls }) {
+    if (!model) return null;
+    return h("button", { type: "button", className: "ps-mini-button", "aria-expanded": Boolean(open), "aria-controls": open ? controls : undefined,
+        onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { testOpen: !open } }) }, "Test…");
+}
+
+/**
+ * Test review (design 05; mocks M18 to M20; R19, R20, R26, R28; INACTIVE: only a read model that says the workflow takes
+ * a test from people has it). `model` is workflowV2TestControls' answer. It shows exactly what is tested (the definition,
+ * the current revision and its full definition hash) and the test notice: scripts run for real, framework tools are
+ * mocked, and a test result is not evidence that the definition is safe to run live. Agents are mocked by default; real
+ * agents spend model tokens, and the notice says so before the test starts. Start test sends the revision and hash with
+ * the inputs and optional initial variables (JSON objects) and an optional scenario name; once it starts, the view shows
+ * the new test run.
+ */
+export function WorkflowV2TestPanel({ controller, sessionId, model, id }) {
+    const [inputs, setInputs] = React.useState("{}");
+    const [vars, setVars] = React.useState("");
+    const [scenario, setScenario] = React.useState("");
+    const [agentMode, setAgentMode] = React.useState("mocked");
+    const [error, setError] = React.useState(null);
+    const mounted = React.useRef(true);
+    React.useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
+    const modeName = `wf-test-agents-${React.useId().replace(/:/g, "")}`;
+    if (!model) return null;
+    const start = async () => {
+        const parsedInputs = workflowV2JsonObjectDraft(inputs, { label: "Inputs" });
+        const parsedVars = workflowV2JsonObjectDraft(vars, { label: "Initial variables", optional: true });
+        const parsedScenario = workflowV2ScenarioDraft(scenario);
+        const refused = [parsedInputs, parsedVars, parsedScenario].find(item => !item.ok);
+        if (refused) { setError(refused.error); return; }
+        setError(null);
+        const result = await controller.sendWorkflowRunCommand(sessionId, { operation: "test", expectedRevision: model.revision,
+            definitionHash: model.definitionHash, inputs: parsedInputs.value, agentMode,
+            ...(parsedVars.value !== undefined ? { vars: parsedVars.value } : {}), ...(parsedScenario.value !== undefined ? { scenario: parsedScenario.value } : {}) });
+        const runId = result?.ok && typeof result.receipt?.run?.runId === "string" ? result.receipt.run.runId : null;
+        if (result?.ok && mounted.current) {
+            controller.dispatch({ type: "ui/workflowView", sessionId, view: { testOpen: false, ...(runId ? { selectedRunId: runId } : {}) } });
+        }
+    };
+    const row = (label, value) => h("div", { className: "ps-workflow-property" }, h("span", null, label), h("strong", null, value));
+    const radio = (value, label) => h("label", { style: { display: "inline-flex", alignItems: "center", gap: 4, marginRight: 12 } },
+        h("input", { type: "radio", name: modeName, value, checked: agentMode === value, onChange: () => setAgentMode(value), "data-agent-mode": value }), label);
+    return h("section", { id, className: "ps-workflow-test-review", "aria-label": "Test review", "data-revision": model.revision ?? undefined,
+        style: { display: "grid", gap: 6, padding: "6px 12px", fontSize: "0.75rem", borderBottom: "1px solid var(--ps-border)" } },
+    h("h3", { style: { margin: 0, fontSize: "0.8rem" } }, "Test review · not a sandbox"),
+    h("p", { role: "note", style: { margin: 0, color: TONES.warning } }, WORKFLOW_V2_TEST_NOTICE_TEXT),
+    row("Definition", [model.name, model.semver].filter(Boolean).join(" ") || "Not named"),
+    row(model.state === "draft" ? "Draft revision" : "Revision", model.revision === null ? "Not known" : String(model.revision)),
+    row("Definition hash", h("code", { style: { overflowWrap: "anywhere" }, "data-field": "definition-hash" }, model.definitionHash ?? "Not known")),
+    row("Validity", model.valid ? "Valid" : `${model.errors || "Unlisted"} error${model.errors === 1 ? "" : "s"}: it cannot be tested`),
+    h("fieldset", { style: { margin: 0, padding: "4px 8px", border: "1px solid var(--ps-border)" } },
+        h("legend", null, "Agent states"),
+        radio("mocked", "Mocked: the parent answers each agent state"),
+        radio("real", "Real agents (spend model tokens)")),
+    agentMode === "real" ? h("p", { role: "note", "data-notice": "real-agents", style: { margin: 0, color: TONES.warning } },
+        WORKFLOW_V2_TEST_REAL_AGENT_NOTICE_TEXT) : null,
+    h("label", { style: { display: "grid", gap: 2 } }, "Inputs (JSON object)",
+        h("textarea", { value: inputs, rows: 3, onChange: event => setInputs(event.target.value), "data-field": "inputs",
+            style: { fontFamily: "var(--ps-font-mono, monospace)", width: "100%" } })),
+    h("label", { style: { display: "grid", gap: 2 } }, "Initial variables (JSON object, optional)",
+        h("textarea", { value: vars, rows: 2, onChange: event => setVars(event.target.value), "data-field": "vars",
+            style: { fontFamily: "var(--ps-font-mono, monospace)", width: "100%" } })),
+    h("label", { style: { display: "grid", gap: 2 } }, "Scenario name (optional)",
+        h("input", { type: "text", value: scenario, maxLength: 128, onChange: event => setScenario(event.target.value), "data-field": "scenario" })),
+    h("div", { style: { display: "flex", flexWrap: "wrap", gap: 6 } },
+        h("button", { type: "button", className: "ps-mini-button", "data-operation": "test", disabled: !model.control.enabled, title: model.control.title,
+            onClick: () => { start(); } }, model.control.label),
+        h("button", { type: "button", className: "ps-mini-button",
+            onClick: () => controller.dispatch({ type: "ui/workflowView", sessionId, view: { testOpen: false } }) }, "Close")),
+    error ? h("span", { role: "alert", style: { color: TONES.error } }, error) : null);
 }

@@ -472,6 +472,7 @@ publication gate on declared test scenarios (not in the YAML design).
 | Portal workflow view run controls (INACTIVE: only with `personCommands`) | `personCommands` and the shown run | a person's `pause`, `resume`, `stop`, `cancel` of the shown run, as `updateWorkflow` commands |
 | Portal workflow view variables panel (INACTIVE: only with `personCommands`) | the shown run's `kv` preview and `kvRevision` | a person's `set_vars` of one variable (set, or remove after confirming) at the revision shown |
 | Portal workflow view draft editor (INACTIVE: only with `personCommands.draft`) | the draft's current revision and YAML, for a caller who may change it | a person's `replace_definition` at the revision the edit started from |
+| Portal workflow view test review (INACTIVE: only with `personCommands` listing `test`) | the definition's current revision, definition hash and validity | a person's `test` of that exact revision, with inputs, agent mode and an optional scenario name |
 | Portal workflow view publication review (INACTIVE: only with `personCommands`) | the definition's state, revision, definition hash, validity and runs | a person's `publish`, `publish_and_start` (exact revision and hash) or `start` (published hash), with JSON inputs and optional initial variables |
 | Portal and TUI composer, management client, SDK client | session access (`canSendPrompt`, `canAnswer`, `canSteer`) | human input, refused for an agent state's subtree at the SDK |
 | REST `POST /sessions/:id/workflow/commands`, SDK (direct and web) and TUI `updateWorkflow`, MCP `update_workflow` (INACTIVE: test-only option `workflowCommands`) | — | a person's `update_workflow` command (below) |
@@ -499,8 +500,9 @@ the same agent child, branch, stop, test and pin fields. The shared UI
 - **Human input.** A session whose access reports `canSendPrompt: false` has
   no composer; the note gives the reason and the controlling agent. The
   server refuses the input anyway.
-- **Run controls, variables, the draft editor and publication (R03, R04,
-  R05, R17, R18, R26; mocks M01 to M04, M15, M16; INACTIVE).** See below.
+- **Run controls, variables, the draft editor, publication and test starts
+  (R03, R04, R05, R17 to R20, R26, R28; mocks M01 to M04, M15, M16, M18 to
+  M20; INACTIVE).** See below.
 
 **A person's workflow command (`updateWorkflow`; design 04, R26; INACTIVE).**
 The direct management client takes a person's command to a workflow
@@ -646,6 +648,27 @@ same view lets a person who may change a draft edit its YAML.
   with compile errors is kept and reported; it cannot be published until
   they are fixed.
 
+**Starting a test from the workflow view (R19, R20, R26, R28; mocks M18 to
+M20; INACTIVE).** When the read model's `personCommands` lists `test` (a
+host that runs controller 1.9.0; never in a workflow agent state's
+subtree), a Test… button opens a review of exactly what is tested: the
+definition's name and version, its current revision (draft or published),
+the full definition hash and its validity, under the test notice (scripts
+run normally and their direct effects are real, framework tools are mocked,
+and a test result is not evidence that the definition is safe to run live).
+Agent states are mocked by default; choosing real agents shows, before the
+test starts, that they spend model tokens, that their results vary, that
+their framework tool calls are mocked and their model's built-in tools run.
+Start test sends `test` with that revision (`expected_revision`) and hash,
+the inputs (a JSON object), optional initial variables, the agent mode and
+an optional scenario name (at most 128 characters); the command names no
+run, and once the test starts the view selects the new test run. A revision
+that moved on is refused (409 `REVISION_CONFLICT` or
+`DEFINITION_HASH_MISMATCH`) and the workflow read again; a revision with
+compile errors, a caller who may not command the workflow, an unknown hash
+or a command in flight disable it, with the reason. The live run is never
+changed.
+
 **Publishing and starting from the workflow view (R17, R18, R26; mocks M01,
 M03; INACTIVE).** The same view lets a person publish a draft and start its
 live run, through the same `updateWorkflow` transport.
@@ -683,9 +706,11 @@ Unfulfilled requirements (open, not waived; R26):
   design 04's separate `/test-runs` and `/inbox` paths, and the final path
   names, are API review item D11.
 - **The rest of the UI commands**: the portal sends the run controls,
-  one-variable updates, draft edits and publication (above). The test
-  operations (start, answer an interception, advance the virtual clock) have
-  no screen yet, and the TUI has no workflow command keys (it does not draw
+  one-variable updates, draft edits, publication and test starts (above).
+  Answering an intercepted effect (`test_respond`) and advancing a test
+  run's virtual clock (`test_advance`) have no screen yet (the view shows a
+  test's interceptions read-only), test fixtures go through the API, MCP or
+  the agent tool, and the TUI has no workflow command keys (it does not draw
   the workflow view).
 
 **Responses and completions stay in process (owner scope, 2026-11-02).**
