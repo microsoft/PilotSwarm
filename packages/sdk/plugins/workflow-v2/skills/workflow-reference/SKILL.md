@@ -133,14 +133,16 @@ Output: the agent's validated output. The agent may report `needs_input` or
 invalid completions), `unavailable`, `forbidden` and `cancelled`.
 
 `interface: <name>@<version>` (for example `review_change@1`) names the
-workflow interface that the package agent exports. The state must declare
-`outputSchema`. At publication, and when a real-agent test starts, the
-state's outcomes and `outputSchema` must be exactly the interface's, and so
-must `inputSchema` when the interface has one. Copy each interface schema
-into `schemas` without changes, and refer to it from the state. Do not add a
-`$ref` inside the copy. A stricter or looser schema does not match. A
-mismatch refuses with `CONTRACT_MISMATCH` and its `problems`; a match pins
-the interface's digest with the package revision.
+workflow interface that the package agent exports. `ps_list_agents` lists
+it as the entry's `workflowInterface` (`ref`, `outcomes`, `inputSchema`,
+`outputSchema`, `digest`); set `package` to the entry's `namespace`. The
+state must declare `outputSchema`. At publication, and when a real-agent
+test starts, the state's outcomes and `outputSchema` must be exactly the
+interface's, and so must `inputSchema` when the interface has one. Copy
+each interface schema into `schemas` without changes, and refer to it from
+the state. Do not add a `$ref` inside the copy. A stricter or looser schema
+does not match. A mismatch refuses with `CONTRACT_MISMATCH` and its
+`problems`; a match pins the interface's digest with the package revision.
 
 ### parallel
 

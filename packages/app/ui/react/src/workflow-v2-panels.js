@@ -1,6 +1,6 @@
 import React from "react";
 import {
-    compactWorkflowV2Executions, formatSeconds, formatWorkflowValue, workflowV2RouteKind,
+    compactWorkflowV2Executions, formatSeconds, formatWorkflowValue, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2RouteKind,
 } from "../../core/src/workflow-v2-view.js";
 import { workflowV2RunPickerModel } from "../../core/src/workflow-v2-run-picker.js";
 import {
@@ -81,10 +81,8 @@ function kindProperties(node, current) {
         if (node.kind === "request" && node.timeoutSeconds !== undefined) rows.push(["Response deadline", typeof node.timeoutSeconds === "number" ? formatSeconds(node.timeoutSeconds) : String(node.timeoutSeconds)]);
     }
     if (node.kind === "agent") {
-        const task = node.invoke?.source === "agent"
-            ? `${node.invoke.name}${node.invoke.package ? ` · ${node.invoke.package}${node.invoke.version ? ` ${node.invoke.version}` : ""}` : ""}`
-            : "Inline prompt";
-        rows.push(["Agent", task], ["Outcomes", (node.outcomes || []).join(", ") || "—"]);
+        // The workflow interface the state names and what the shown run pins it to (package revision, interface digest).
+        rows.push(["Agent", workflowV2AgentTask(node)], ...workflowV2AgentBindingRows(node.binding), ["Outcomes", (node.outcomes || []).join(", ") || "—"]);
         if (node.timeoutSeconds !== undefined) rows.push(["Deadline", typeof node.timeoutSeconds === "number" ? formatSeconds(node.timeoutSeconds) : String(node.timeoutSeconds)]);
         if (current?.deadline) rows.push(["Deadline at", current.deadline]);
     }

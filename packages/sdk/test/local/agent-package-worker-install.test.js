@@ -5,12 +5,14 @@
  * packages published to the registry materialize into the worker's agent
  * catalog at start(), refreshAgentPackages() converges on registry changes
  * without a restart, a broken worker-module quarantines ONLY its package,
- * and agent_worker_state carries the fleet truth.
+ * and agent_worker_state carries the fleet truth. A schemaVersion 5 agent's
+ * workflow interface, exported into its version's manifest at publication,
+ * is what ps_list_agents shows for it, and a republish shows the new one.
  *
  * Run: npx vitest run test/local/agent-package-worker-install.test.js
  */
 
-import { describe, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { useSuiteEnv } from "../helpers/local-env.js";
@@ -18,6 +20,7 @@ import { createCatalog } from "../helpers/cms-helpers.js";
 import { withClient } from "../helpers/local-workers.js";
 import { assert, assertEqual } from "../helpers/assertions.js";
 import { FilesystemArtifactStore, publishAgentPackageDir } from "../../src/index.ts";
+import { workflowInterfaceDigest } from "../../src/workflow/v2/package-interface.ts";
 
 const TIMEOUT = 180_000;
 const getEnv = useSuiteEnv(import.meta.url);
@@ -65,6 +68,26 @@ function writeFixturePackage(dir, {
         "    }],",
         "};",
         "",
+    ].join("\n"));
+    return dir;
+}
+
+const REVIEW_RESULT = { type: "object", required: ["verdict"], properties: { verdict: { type: "string" } }, additionalProperties: false };
+
+/** A package with a schemaVersion 5 agent that exports workflow interface review_change@1 (`outcomes`), and one without. */
+function writeInterfacePackage(dir, { name, version, outcomes }) {
+    fs.mkdirSync(path.join(dir, "agents"), { recursive: true });
+    fs.mkdirSync(path.join(dir, "contracts"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "plugin.json"), JSON.stringify({ name, version, description: "workflow interface fixture" }));
+    fs.writeFileSync(path.join(dir, "contracts", "review-result.schema.json"), JSON.stringify(REVIEW_RESULT));
+    fs.writeFileSync(path.join(dir, "agents", "contract-reviewer.agent.md"), [
+        "---", "name: contract-reviewer", "description: Reviews a change against a workflow contract", "schemaVersion: 5", `version: ${version}`,
+        "workflowInterface:", "  name: review_change", "  version: \"1\"", "  outputSchema: ./contracts/review-result.schema.json",
+        `  outcomes: [${outcomes.join(", ")}]`, "---", "", "You review the change you are given and report a typed verdict.",
+    ].join("\n"));
+    fs.writeFileSync(path.join(dir, "agents", "plain-reviewer.agent.md"), [
+        "---", "name: plain-reviewer", "description: Reviews a change", "schemaVersion: 1", `version: ${version}`, "---", "",
+        "You review the change you are given.",
     ].join("\n"));
     return dir;
 }
@@ -284,6 +307,67 @@ describe("agent-package worker install", () => {
                 assert(worker.loadedAgents.some((a) => a.name === "healthy-kit-agent"), "a healthy package installs");
                 assert(worker.sessionManager.toolRegistry?.get?.("reserved_name_echo"), "its tool is a package tool");
                 assertEqual(mine.installed["healthy-kit"].status, "ok");
+            });
+        } finally {
+            await catalog.close();
+        }
+    });
+
+    it("lists a package agent's workflow interface from its installed version, as the version's manifest exports it", { timeout: TIMEOUT }, async () => {
+        // INACTIVE in effect: only Workflow V2 publication on a 1.9.0 host matches an interface. Discovery shows it for authors.
+        const env = await getEnv();
+        const catalog = await createCatalog(env);
+        const artifactStore = new FilesystemArtifactStore(path.join(path.dirname(env.sessionStateDir), "artifacts"));
+        const ctx = { catalog, artifactStore };
+        const fixtures = path.join(env.baseDir, "interface-fixtures");
+        const modelProvidersPath = path.join(env.baseDir, "model-providers.interface.json");
+        const workerNodeId = `pkg-interface-${env.runId}`;
+        const publish = (dir) => publishAgentPackageDir(ctx, { dir, scope: "shared", owner: OWNER, createdBy: "fixture@test", isAdmin: false });
+        const exportOf = (outcome) => outcome.manifest.agents.find((a) => a.name === "contract-reviewer").workflowInterface;
+        try {
+            // No LLM turn runs here; an isolated fake provider, as above.
+            fs.writeFileSync(modelProvidersPath, JSON.stringify({
+                providers: [{ id: "fixture-openai-type", type: "openai", baseUrl: "https://example.invalid/v1", models: [{ name: "fixture-model" }] }],
+            }));
+            await catalog.providers.createProvider({
+                name: "fixture-provider", typeId: "fixture-openai-type", class: "shared", secretRef: { apiKey: "fixture-key" },
+            }, null, true);
+            await catalog.providers.setClusterDefault({ provider: "fixture-provider", model: "fixture-provider:fixture-model", reasoning: null, context: null }, true);
+
+            // Publication validated the package and exported the interface into the manifest the registry keeps with the version.
+            const v1 = await publish(writeInterfacePackage(path.join(fixtures, "v1"), { name: "contract-kit", version: "1.0.0", outcomes: ["accepted"] }));
+            const first = exportOf(v1);
+            assertEqual(first.digest, workflowInterfaceDigest({ name: "review_change", version: "1", inputSchema: null, outputSchema: REVIEW_RESULT,
+                outcomes: ["accepted"] }), "the digest covers the interface's name, version, schemas and outcomes");
+            assert(!("workflowInterface" in v1.manifest.agents.find((a) => a.name === "plain-reviewer")), "an agent without one exports none");
+            const kept = (await catalog.getAgentPackagesInstallManifest()).find((entry) => entry.name === "contract-kit");
+            assertEqual(kept.manifest.agents.find((a) => a.name === "contract-reviewer").workflowInterface.digest, first.digest);
+
+            await withClient(env, {
+                workerNodeId,
+                worker: { workerPool: "default", modelProvidersPath, agentPackages: { cacheDir: path.join(env.baseDir, "agent-packages-interface"), refreshIntervalMs: 0 } },
+                client: { modelProvidersPath },
+            }, async (_client, worker) => {
+                await worker.refreshAgentPackages({ force: true });
+                assert(worker.loadedAgents.some((a) => a.name === "contract-reviewer"), "this build's worker loads a schemaVersion 5 agent");
+                const discovery = worker.sessionManager.toolRegistry.get("ps_list_agents");
+                assert(discovery, "the worker serves ps_list_agents");
+                const listed = async () => JSON.parse(await discovery.handler({}, {})).agents;
+                let agents = await listed();
+                expect(agents.find((a) => a.name === "contract-reviewer").workflowInterface).toEqual({
+                    ref: "review_change@1", name: "review_change", version: "1", outcomes: ["accepted"], inputSchema: null, outputSchema: REVIEW_RESULT,
+                    digest: first.digest,
+                });
+                assert(!("workflowInterface" in agents.find((a) => a.name === "plain-reviewer")), "an agent without one lists none");
+
+                // A republish with another interface: the refreshed worker lists the new version's.
+                const second = exportOf(await publish(writeInterfacePackage(path.join(fixtures, "v2"),
+                    { name: "contract-kit", version: "1.1.0", outcomes: ["accepted", "changes_required"] })));
+                assert(second.digest !== first.digest, "another interface has another digest");
+                await worker.refreshAgentPackages({ force: true });
+                agents = await listed();
+                expect(agents.find((a) => a.name === "contract-reviewer").workflowInterface)
+                    .toMatchObject({ ref: "review_change@1", outcomes: ["accepted", "changes_required"], digest: second.digest });
             });
         } finally {
             await catalog.close();

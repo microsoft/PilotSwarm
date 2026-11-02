@@ -1,6 +1,8 @@
 import { layoutWorkflowGraph, workflowNodeViews, workflowReadModelView } from "./workflow-view.js";
 import { workflowV2RunPickerModel } from "./workflow-v2-run-picker.js";
-import { compactWorkflowV2Executions, projectWorkflowV2, workflowV2RouteKind } from "./workflow-v2-view.js";
+import {
+    compactWorkflowV2Executions, projectWorkflowV2, workflowV2AgentBindingRows, workflowV2AgentTask, workflowV2RouteKind,
+} from "./workflow-v2-view.js";
 
 /**
  * The TUI's read-only workflow view (design 02 "Portal/TUI: graph, observed
@@ -18,6 +20,10 @@ import { compactWorkflowV2Executions, projectWorkflowV2, workflowV2RouteKind } f
  * nothing and changes nothing: a person's commands, the draft editor and test
  * controls are not part of it, and the server keeps refusing human input to
  * an agent state's subtree.
+ *
+ * For an agent state it also shows the agent, the workflow interface the
+ * state names and what the shown run pins it to (the package revision and
+ * the interface's digest; design 04, 09, mock M17), as the portal does.
  *
  * The TUI's composer for a session in an agent state's subtree (design 03
  * human-input denial; T115, T116) is read-only, as the portal's is: what a
@@ -288,6 +294,11 @@ function detailLines(selection, width) {
     add(`Executions: ${selected.runs}${selected.partial ? " in loaded history" : ""}`);
     if (node.shape === "v2") {
         add(`Last outcome: ${node.outcome ? `${node.outcome} · ${node.resultKind === "runtime_error" ? "runtime error" : "business outcome"}` : "Not recorded"}`);
+        // An agent state's task, the workflow interface it names and what the shown run pins it to, as the portal says them.
+        if (node.kind === "agent") {
+            add(`Agent: ${workflowV2AgentTask(node)}`);
+            for (const [label, value] of workflowV2AgentBindingRows(node.binding)) add(`${label}: ${value}`);
+        }
         for (const line of node.description || []) add(line, "gray");
     } else if (node.outcome) {
         add(`Last outcome: ${node.outcome}`);

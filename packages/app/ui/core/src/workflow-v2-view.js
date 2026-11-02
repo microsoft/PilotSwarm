@@ -124,6 +124,58 @@ export function formatSeconds(seconds) {
 
 const party = value => value === null || value === undefined ? "any permitted sender" : value === "parent" ? "the parent session" : String(value);
 
+/** An agent state's task as one line: the agent it names, with the package and version it names, or an inline prompt. */
+export function workflowV2AgentTask(node) {
+    return node?.invoke?.source === "agent"
+        ? `${node.invoke.name}${node.invoke.package ? ` · ${node.invoke.package}${node.invoke.version ? ` ${node.invoke.version}` : ""}` : ""}`
+        : "Inline prompt";
+}
+
+const SHA256_HEX = /^[0-9a-f]{64}$/;
+const shortHash = value => `${value.slice(0, 12)}…`;
+
+/**
+ * What a named agent state is bound to (design 03, 04, 09; R09, R18; mock
+ * M17 "Inspect package pin"): the workflow interface the state names (its
+ * graph's `invoke.interface`, `<name>@<version>`), and its pin in `source`,
+ * the shown run's pins (projectWorkflowV2): `{ by: "publication" | "test",
+ * pins }` (migration 0099's publication pins, or a real-agent test run's,
+ * migration 0101), or `{ by: "mocked" }` for a mocked test run, whose
+ * agents do not run. A pin is the package, version, exact revision and the
+ * interface's digest publication matched. Null for any other state.
+ */
+export function workflowV2AgentBinding(node, source = null) {
+    if (node?.type !== "agent" || node.invoke?.source !== "agent") return null;
+    const named = typeof node.invoke.interface === "string" && node.invoke.interface ? node.invoke.interface : null;
+    const raw = isRecord(source?.pins) && isRecord(source.pins[node.id]) ? source.pins[node.id] : null;
+    const iface = raw && isRecord(raw.interface) && text(raw.interface.name) && text(raw.interface.version)
+        && typeof raw.interface.digest === "string" && SHA256_HEX.test(raw.interface.digest)
+        ? { ref: `${raw.interface.name}@${raw.interface.version}`, digest: raw.interface.digest } : null;
+    const pin = raw ? {
+        name: text(raw.name) ?? null, package: text(raw.package) ?? null, version: text(raw.version) ?? null,
+        revision: typeof raw.revision === "string" && SHA256_HEX.test(raw.revision) ? raw.revision : null, interface: iface,
+    } : null;
+    return { interface: named, pinnedBy: pin ? source.by : null, mocked: source?.by === "mocked", pin };
+}
+
+/** The binding as `[label, value]` rows for a state's details, in the same words in the portal and the TUI. */
+export function workflowV2AgentBindingRows(binding) {
+    if (!binding) return [];
+    const rows = [];
+    if (binding.interface) rows.push(["Interface", binding.interface]);
+    if (binding.mocked) rows.push(["Agent in this test", "Mocked: the parent or a fixture gives its typed result"]);
+    const pin = binding.pin;
+    if (pin) {
+        const what = pin.package
+            ? `${pin.package}${pin.version ? ` ${pin.version}` : ""}${pin.revision ? ` · revision ${shortHash(pin.revision)}` : " · by version"}`
+            : `${pin.name ?? "agent"} · a deployment agent, by name`;
+        rows.push([binding.pinnedBy === "test" ? "Pinned for this test" : "Pinned by publication", what]);
+        if (pin.interface) rows.push(["Interface digest", `${pin.interface.ref} · ${shortHash(pin.interface.digest)}`]);
+        else if (binding.interface) rows.push(["Interface digest", "Not pinned"]);
+    }
+    return rows;
+}
+
 /** One short line that names what the state does. */
 export function workflowV2NodeLabel(node) {
     switch (workflowV2Kind(node)) {
@@ -277,6 +329,8 @@ export function projectWorkflowV2ReadModel(model) {
         ok: true, status, workflowId: model.workflowId, definition: graph, diagnostics, banners, workflowBanners, run, overlay, runRevision,
         lifecycle: lifecycle.state, semver: lifecycle.semver ?? null, currentRevision: lifecycle.currentRevision,
         publishedRevision: lifecycle.publishedRevision ?? null, validRevision: revision.valid, runs: model.runs,
+        // What publication pinned each named agent state to (migration 0099; only a definition with any has them).
+        publishedAgentPins: isRecord(lifecycle.publishedAgentPins) ? lifecycle.publishedAgentPins : null,
     };
 }
 
@@ -550,13 +604,29 @@ function nodeView(node, executions, context) {
         phase = "done"; outcome = node.outcome; resultKind = "business"; stateLabel = `Ended · ${node.outcome}`;
     }
     const history = [...list].reverse().slice(0, 40);
+    const binding = workflowV2AgentBinding(node, context.pins);
     return {
         ...node, shape: "v2", kind, label: workflowV2NodeLabel(node), state, phase, stateLabel, runs,
+        ...(binding ? { binding } : {}),
         partial: !context.complete || stalePending || runs > list.length,
         outcome: outcome ?? (node.type === "terminal" ? node.outcome : undefined), resultKind,
         result, pending: pending || null, current: pending || latestDone || null, executions: history,
         description: describeWorkflowV2Execution(node, pending || latestDone),
     };
+}
+
+/**
+ * The pins that apply to the graph's named agent states for the shown run (R18): a real-agent test run's own (only
+ * when its revision is the graph's), none for a mocked test run, otherwise the publication's when the graph is the
+ * published revision. Null when none apply (a draft, or no read model).
+ */
+function agentPinSource(shared, run, bound, active) {
+    if (run?.test) {
+        if (run.test.agentMode !== "real") return { by: "mocked", pins: null };
+        return bound && isRecord(run.test.agentPins) ? { by: "test", pins: run.test.agentPins } : null;
+    }
+    return shared?.ok && isRecord(shared.publishedAgentPins) && Number.isSafeInteger(shared.publishedRevision)
+        && active?.revision === shared.publishedRevision ? { by: "publication", pins: shared.publishedAgentPins } : null;
 }
 
 /**
@@ -619,7 +689,8 @@ export function projectWorkflowV2({ definition = null, readModel = null, workflo
     const unknown = executions.filter(item => !known.has(item.stateId)).length;
     if (unknown) banners.push({ level: "warning", text: `${unknown} execution${unknown === 1 ? "" : "s"} belong to states that are not in this graph.` });
     const context = { run: status, hasRun: status.phase !== "none", terminalState: bound ? status.terminalState ?? run?.terminalState ?? null : null,
-        complete: Boolean(run && bound && !run.executionsTruncated), stateless: !bound && runId ? "Run not overlaid" : undefined };
+        complete: Boolean(run && bound && !run.executionsTruncated), stateless: !bound && runId ? "Run not overlaid" : undefined,
+        pins: agentPinSource(shared, run, bound, active) };
     const nodes = (active?.states || []).map(node => nodeView(node, executions, context));
     return {
         shape: "v2", status, definition: active, nodes, banners, readModel: model, runId, bound,

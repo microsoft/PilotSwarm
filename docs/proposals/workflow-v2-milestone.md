@@ -577,6 +577,32 @@ build.
 - **Runtime.** Unchanged: the run binds the child to the pinned revision
   (R18), whose interface cannot change, and checks the child's output
   against the state's own `outputSchema`, which is the interface's.
+- **Discovery (`agent-discovery.ts`, `worker.ts`).** `ps_list_agents`
+  lists, for a published agent whose installed active version exports an
+  interface, `workflowInterface: { ref, name, version, outcomes,
+  inputSchema, outputSchema, digest }`: what the state names (`ref`, with
+  `package` set to the entry's `namespace`) and the schemas to copy. The
+  worker reads each export from its installed version's install manifest
+  (by package id and agent name), in the same snapshot as the agents, and
+  checks it again (shape, schemas, digest); a record that is not well
+  formed is not listed. The entry is otherwise unchanged, every other entry
+  is unchanged, and the tool takes no new option. Visibility is the
+  listing's: an agent the caller cannot see is not listed, with or without
+  an interface. The listed interface is the installed version's; a worker
+  that has not refreshed after a republish lists the previous one, and
+  publication, which reads the registry, reports any mismatch.
+- **Display (`workflow-v2-view.js`, the portal's node details, the TUI's
+  workflow view).** An agent state's details show its agent and package,
+  the interface it names, and what the shown run pins it to: the
+  publication's pin for the published revision (`Pinned by publication`),
+  a real-agent test run's own pin when it tested the graph's revision
+  (`Pinned for this test`), or that a mocked test run's agent is mocked.
+  A pin shows the package, version and the first 12 characters of the
+  exact revision and of the interface's digest; a pin made before
+  revisions shows `by version`, a deployment agent is pinned `by name`, and
+  a state that names an interface whose pin has no digest shows
+  `Not pinned`. A malformed pin shows only what it holds. The portal and
+  the TUI use the same rows (`workflowV2AgentBindingRows`).
 - **Compatibility.** A publication without an interface, its pins and its
   runs are as before (a pin's extra `interface` field is ignored by the
   binding). A package without a `workflowInterface`, at schemaVersion 1 to
@@ -591,16 +617,22 @@ carries the export), and on PostgreSQL `workflow-v2-agent-resolver.test.js`
 (a person's publication: digest pinned with the revision; mismatch,
 missing and forged exports refused; a republish keeps the pin; a real-agent
 test refused) and `workflow-v2-agent-node.test.js` (the compiler).
+Discovery: `agent-discovery.test.mjs` (listed, checked, visibility, the
+snapshot, the tool) and on PostgreSQL `agent-package-worker-install.test.js`
+(a published package's export in the registry manifest and in a real
+worker's `ps_list_agents`, and a republish's). Display:
+`workflow-v2-agent-binding.test.mjs` (the projection, the portal's details
+and the TUI's view for publication, test, mocked, draft, older and
+malformed pins).
 
-Not covered (required, not waived): an authoring agent cannot yet discover
-which interface a package agent exports, or its schemas, through the agent
-catalog (`ps_list_agents`); only the registry's package manifest holds it.
-The portal and TUI do not show a state's interface or the pinned digest. A
-run on a worker is not yet exercised with an interface-pinned publication
-(its binding is the revision's, unchanged). No adapter maps a workflow
-schema to an interface other than exact equality. The interface schemas
-ride the install manifest that every worker reads (at most 64 KiB per
-schema file).
+Not covered (required, not waived): a run on a worker is not yet exercised
+with an interface-pinned publication (its binding is the revision's,
+unchanged). No adapter maps a workflow schema to an interface other than
+exact equality (mock M17's "Edit input mapping" is the draft editor only).
+The portal's agent picker and package views do not show interfaces (the
+package manifest the registry APIs return holds them). The interface
+schemas ride the install manifest that every worker reads (at most 64 KiB
+per schema file).
 
 ## Surfaces: what each one shows and takes (design 04, 07; R13, R23, R26)
 

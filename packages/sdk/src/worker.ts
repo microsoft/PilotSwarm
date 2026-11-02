@@ -346,6 +346,13 @@ export class PilotSwarmWorker {
     private _capabilitySources: CapabilitySource[] = [];
     private _packageDirOwners = new Map<string, PackageDirProvenance>();
     /**
+     * The workflow interfaces (agent schemaVersion 5; design 04 "Package-agent
+     * I/O export") that the installed active package versions export, by
+     * packageAgentKey, as each version's install manifest records them: what
+     * ps_list_agents shows for a package agent. Replaced with every refresh.
+     */
+    private _packageWorkflowInterfaces = new Map<string, unknown>();
+    /**
      * Exact earlier package revisions that sessions on this worker are bound
      * to (workflow package pins, R18; INACTIVE), by pinned id. Installed with
      * every refresh beside the active versions; their agents serve only the
@@ -1142,6 +1149,10 @@ export class PilotSwarmWorker {
             // with MCP references already reduced to their admitted grants.
             getUserAgents: () => this._loadedAgents,
             getSystemAgents: () => this._loadedSystemAgents,
+            // A package agent's workflow interface, from its installed version's install manifest (INACTIVE in effect: only
+            // a schemaVersion 5 package exports one, and only Workflow V2 publication on a 1.9.0 host matches it).
+            getWorkflowInterface: (agent) => typeof agent?.packageId === "string" && typeof agent?.name === "string"
+                ? this._packageWorkflowInterfaces.get(packageAgentKey(agent.packageId, agent.name)) : undefined,
             getCallerOwnerKey: async (sessionId) => {
                 if (!this._catalog || !sessionId) return null;
                 const owner = await resolveEffectiveSpawnOwner((id) => this._catalog!.getSession(id), sessionId);
@@ -1587,7 +1598,19 @@ export class PilotSwarmWorker {
                 if (p.status !== "ok") continue;
                 packageDirOwners.set(path.resolve(p.dir), { packageId: p.packageId, revision: p.sha256, scope: p.scope, owner: p.owner, pinnedOf: p.pinnedOf });
             }
+            // The interfaces the active versions export (a pinned revision's agents are not listed). Checked when they are read.
+            const packageWorkflowInterfaces = new Map<string, unknown>();
+            for (const p of result.packages) {
+                const agents = p.status === "ok" ? (p.manifest as { agents?: unknown })?.agents : undefined;
+                if (!Array.isArray(agents)) continue;
+                for (const agent of agents) {
+                    if (agent && typeof agent === "object" && typeof agent.name === "string" && agent.workflowInterface !== undefined) {
+                        packageWorkflowInterfaces.set(packageAgentKey(p.packageId, agent.name), agent.workflowInterface);
+                    }
+                }
+            }
             this._packageDirOwners = packageDirOwners;
+            this._packageWorkflowInterfaces = packageWorkflowInterfaces;
 
             // Synchronous swap — no await between reset and reload, so no
             // turn can observe the intermediate empty state.
