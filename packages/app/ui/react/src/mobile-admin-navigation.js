@@ -48,7 +48,7 @@ export function useMobileAdminNavigation(controller, mobile, visible) {
         current.pendingBack = false;
         begin();
     }, [begin]);
-    const rewind = React.useCallback(depth => {
+    const rewind = React.useCallback((depth, attempt = 0) => {
         const current = historyRef.current;
         current.rewindStarted = true;
         const api = window.navigation;
@@ -63,7 +63,21 @@ export function useMobileAdminNavigation(controller, mobile, visible) {
                     && api.currentEntry.key === key) finishRewind();
             }, error => {
                 if (!mounted.current || !current.rewinding || current.rewindId !== id) return;
-                if (error.name === "AbortError") return;
+                if (error.name === "AbortError") {
+                    // Another navigation interrupted the rewind. Once it lands,
+                    // either we already left the console's entries, or we
+                    // retry; never stay "rewinding", which blocks reopening.
+                    const settle = () => {
+                        if (!mounted.current || !current.rewinding || current.rewindId !== id) return;
+                        const entry = window.history.state?.psMobileAdmin;
+                        if (entry?.token === token.current && attempt < 2) rewind(entry.path.length, attempt + 1);
+                        else finishRewind();
+                    };
+                    const landing = api.transition?.finished;
+                    if (landing) landing.then(settle, settle);
+                    else settle();
+                    return;
+                }
                 console.error("Could not restore the page before the phone console.", error);
                 finishRewind();
             });

@@ -276,6 +276,36 @@ test("phone closed history does not trap browser Back after toolbar exit", async
     } finally { await f.stop(); }
 });
 
+test("phone console reopens after an interrupted exit rewind", async ({ page }) => {
+    // Abort the first Navigation API rewind without moving, as a competing
+    // navigation would. The console must still close and open again.
+    await page.addInitScript(() => {
+        const api = window.navigation;
+        if (!api) return;
+        const original = api.traverseTo.bind(api);
+        let aborted = false;
+        api.traverseTo = (key, options) => {
+            if (aborted) return original(key, options);
+            aborted = true;
+            const error = new DOMException("Interrupted by a test", "AbortError");
+            const finished = Promise.reject(error);
+            finished.catch(() => {});
+            return { committed: finished, finished };
+        };
+    });
+    const f = await phoneFixture(page);
+    try {
+        await openConsole(page);
+        await page.getByRole("button", { name: "Packages", exact: true }).click();
+        await page.locator(".ps-toolbar.is-mobile").getByRole("button", { name: /Sessions/ }).click();
+        await expect(consoleRoot(page)).toHaveCount(0);
+        await expect.poll(() => page.evaluate(() => Boolean(history.state?.psMobileAdmin))).toBe(false);
+        await openConsole(page);
+        await page.getByRole("button", { name: "Packages", exact: true }).click();
+        await expect(consoleRoot(page).locator("[data-level='1']")).toBeVisible();
+        expect(f.errors).toEqual([]);
+    } finally { await f.stop(); }
+});
 test("phone providers have one entry, scope switch and full-screen add sheet", async ({ page }) => {
     const f = await phoneFixture(page);
     try {
